@@ -327,6 +327,92 @@ def _v2_build_evalresult(matches, agent_name: str) -> EvalResult:
 # consistent across both engines makes parity testing trivial — the
 # operator can spot-diff two messages and only care about the agent slug.
 
+
+def _v2_format_threshold(kind: str, threshold) -> str:
+    """Format a threshold value with units appropriate to the alert kind.
+
+    kind must be one of {static_pct, rate_pct, static_abs, rate_abs,
+    negative_cash, negative_margin}. Non-numeric thresholds fall through to
+    the str() fallback via the except branch.
+    """
+    try:
+        thr = float(threshold)
+        if kind in ('static_pct', 'rate_pct'):
+            return f"{thr:.2f}%" + ("/min" if kind == 'rate_pct' else "")
+        else:
+            return f"-₹{abs(thr):,.0f}" + ("/min" if kind == 'rate_abs' else "")
+    except Exception:
+        return str(threshold)
+
+
+def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
+                           value) -> tuple[float, float | None]:
+    """Return (pnl, pct) appropriate for the given section.
+
+    - Holdings  → day_change_val + day_change_percentage
+    - Positions → pnl; pct stays None (computed later when used_margin is known)
+    - Funds     → metric-driven field; pct always None
+    """
+    if section == 'Holdings':
+        pnl: float = float(row.get('day_change_val', 0) or 0)
+        pct: float | None = (
+            float(row.get('day_change_percentage', 0) or 0)
+            if row.get('day_change_percentage') is not None else None
+        )
+    elif section == 'Positions':
+        pnl = float(row.get('pnl', 0) or 0)
+        pct = None  # computed later only when we have used_margin
+    else:  # Funds
+        if metric == 'cash':
+            pnl = float(row.get('avail opening_balance', 0) or 0)
+        elif metric == 'avail_margin':
+            pnl = float(row.get('net', 0) or 0)
+        else:
+            pnl = float(value or 0)
+        pct = None
+    return pnl, pct
+
+
+def _v2_underlying_breakdown(df_positions, scope_label: str) -> list[dict]:
+    """Compute per-underlying P&L breakdown for a position alert row.
+
+    Returns empty list when the breakdown feature flag is off, when imports
+    fail, or when df_positions is None (caller guards that before calling).
+    """
+    from backend.shared.helpers.settings import get_bool, get_int
+    from backend.shared.helpers.summarise import breakdown_positions_by_underlying
+    if not get_bool('alerts.show_underlying_breakdown', True):
+        return []
+    top_n = get_int('alerts.max_underlyings_per_alert', 5)
+    return breakdown_positions_by_underlying(df_positions, account=scope_label, top_n=top_n)
+
+
+def _v2_static_rate_enrichment(alert_state: dict, kind: str, scope_label: str,
+                               rate_window_min: int) -> float | None:
+    """Compute ΔP&L/min from pnl_history for static position alerts.
+
+    Returns the rate value (float ₹/min) when at least 2 history samples
+    span a non-zero time window, otherwise None.  Reads the same history
+    bucket that rate-metric evaluators use so the numbers are consistent.
+    """
+    from backend.shared.helpers.settings import get_bool
+    if not get_bool('alerts.show_rate_in_static_alerts', True):
+        return None
+    hist = (alert_state.get('pnl_history') or {}).get(('positions', scope_label), []) or []
+    if len(hist) < 2:
+        return None
+    cutoff_window = hist[-1][0] - timedelta(minutes=rate_window_min)
+    window = [s for s in hist if s[0] >= cutoff_window]
+    if len(window) < 2:
+        return None
+    oldest, latest = window[0], window[-1]
+    mins = (latest[0] - oldest[0]).total_seconds() / 60.0
+    if mins <= 0:
+        return None
+    # field_idx=1 → pnl ₹/min, matching rate_abs metric
+    return (latest[1] - oldest[1]) / mins
+
+
 def _v2_match_to_alertrow(match: dict, *,
                           df_positions=None,
                           alert_state: dict | None = None,
@@ -369,34 +455,11 @@ def _v2_match_to_alertrow(match: dict, *,
 
     # pnl — section-appropriate ₹ value. For rate alerts we still want the
     # current raw pnl/day_val shown, plus the rate value in rate_val.
-    if section == 'Holdings':
-        pnl = float(row.get('day_change_val', 0) or 0)
-        pct = float(row.get('day_change_percentage', 0) or 0) if row.get('day_change_percentage') is not None else None
-    elif section == 'Positions':
-        pnl = float(row.get('pnl', 0) or 0)
-        pct = None  # computed later only when we have used_margin
-    else:  # Funds
-        if metric == 'cash':
-            pnl = float(row.get('avail opening_balance', 0) or 0)
-        elif metric == 'avail_margin':
-            pnl = float(row.get('net', 0) or 0)
-        else:
-            pnl = float(value or 0)
-        pct = None
+    pnl, pct = _v2_extract_pnl_fields(row, section, metric, value)
 
     rate_val = value if kind in ('rate_abs', 'rate_pct') else None
 
-    # threshold display — format with units appropriate to the kind
-    try:
-        thr = float(threshold)
-        if kind in ('static_pct', 'rate_pct'):
-            thr_str = f"{thr:.2f}%" + ("/min" if kind == 'rate_pct' else "")
-        elif kind in ('static_abs', 'rate_abs', 'negative_cash', 'negative_margin'):
-            thr_str = f"-₹{abs(thr):,.0f}" + ("/min" if kind == 'rate_abs' else "")
-        else:
-            thr_str = str(threshold)
-    except Exception:
-        thr_str = str(threshold)
+    thr_str = _v2_format_threshold(kind, threshold)
 
     scope_label = str(row.get('account', 'TOTAL'))
 
@@ -412,38 +475,14 @@ def _v2_match_to_alertrow(match: dict, *,
     underlyings_breakdown: list[dict] = []
     if section == 'Positions' and df_positions is not None:
         try:
-            from backend.shared.helpers.settings import get_bool, get_int
-            from backend.shared.helpers.summarise import (
-                breakdown_positions_by_underlying,
-            )
-            if get_bool('alerts.show_underlying_breakdown', True):
-                top_n = get_int('alerts.max_underlyings_per_alert', 5)
-                underlyings_breakdown = breakdown_positions_by_underlying(
-                    df_positions, account=scope_label, top_n=top_n,
-                )
+            underlyings_breakdown = _v2_underlying_breakdown(df_positions, scope_label)
         except Exception as e:
             logger.warning(f"underlying breakdown failed: {e}")
 
-    # Compute rate for static position alerts on the same (section, scope)
-    # bucket the rate metrics use. alert_state is keyed by ('positions',
-    # scope) tuple per agent_evaluator.Context._compute_rate.
     if (section == 'Positions' and rate_val is None and alert_state
             and kind in ('static_pct', 'static_abs')):
         try:
-            from backend.shared.helpers.settings import get_bool
-            if get_bool('alerts.show_rate_in_static_alerts', True):
-                hist = (alert_state.get('pnl_history') or {}).get(
-                    ('positions', scope_label), []
-                ) or []
-                if len(hist) >= 2:
-                    cutoff_window = hist[-1][0] - timedelta(minutes=rate_window_min)
-                    window = [s for s in hist if s[0] >= cutoff_window]
-                    if len(window) >= 2:
-                        oldest, latest = window[0], window[-1]
-                        mins = (latest[0] - oldest[0]).total_seconds() / 60.0
-                        if mins > 0:
-                            # field_idx=1 → pnl ₹/min, matching rate_abs metric
-                            rate_val = (latest[1] - oldest[1]) / mins
+            rate_val = _v2_static_rate_enrichment(alert_state, kind, scope_label, rate_window_min)
         except Exception as e:
             logger.warning(f"static-alert rate enrichment failed: {e}")
 
@@ -1174,6 +1213,321 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
     return ctx
 
 
+# ─── run_cycle gate helpers ────────────────────────────────────────────────
+# Pure-boolean helpers extracted from run_cycle to reduce its cyclomatic
+# complexity. Each returns True when the agent SHOULD be skipped on the
+# current tick. No mutation of agent state; no DB calls.
+
+def _cycle_should_skip_schedule(agent, *, any_market_open: bool,
+                                bypass_schedule: bool) -> bool:
+    """True when the agent should be skipped due to its schedule setting.
+
+    schedule='never' → always skip.
+    schedule='market_hours' → skip when no market is open (unless bypassed).
+    """
+    if agent.schedule == "never":
+        return True
+    if (not bypass_schedule
+            and agent.schedule == "market_hours"
+            and not any_market_open):
+        return True
+    return False
+
+
+def _cycle_in_cooldown(agent, *, bypass_schedule: bool) -> bool:
+    """True when the agent is in cooldown and the window has not elapsed."""
+    if agent.status != "cooldown" or bypass_schedule:
+        return False
+    if not agent.last_triggered_at:
+        return False
+    elapsed = (datetime.now(timezone.utc) - agent.last_triggered_at).total_seconds() / 60
+    return elapsed < agent.cooldown_minutes
+
+
+def _cycle_outside_fire_at(agent, now, *, bypass_schedule: bool) -> bool:
+    """True when fire_at_time is set and the current time is outside its window."""
+    if bypass_schedule or not getattr(agent, "fire_at_time", None):
+        return False
+    window_sec = int(get_int('alerts.fire_at_window_sec', 360))
+    return not _fire_at_window_active(agent.fire_at_time, now, window_sec=window_sec)
+
+
+def _cycle_in_blackout(agent, now, *, bypass_schedule: bool) -> bool:
+    """True when the current time falls inside a configured blackout window."""
+    if bypass_schedule:
+        return False
+    blackouts = getattr(agent, "blackout_windows", None) or []
+    return bool(blackouts and _in_blackout_window(now, blackouts))
+
+
+def _cycle_baseline_not_ready(agent, alert_state: dict, now, cfg: dict, *,
+                              bypass_schedule: bool) -> bool:
+    """True when a rate-metric agent should be suppressed during the baseline window."""
+    return (
+        not bypass_schedule
+        and _v2_has_rate_metric(agent.conditions)
+        and not _v2_baseline_live(alert_state, now, cfg['baseline_offset_min'])
+    )
+
+
+async def _cycle_maybe_expire_lifespan(agent, now, *, bypass_schedule: bool,
+                                       broadcast_fn) -> bool:
+    """Auto-complete until_date agents whose expiry has passed.
+
+    Returns True when the agent was completed (caller should `continue`).
+    Skipped entirely in sim runs (bypass_schedule=True) so the simulator
+    never mutates real DB state.
+    """
+    if bypass_schedule:
+        return False
+    if (getattr(agent, "lifespan_type", "persistent") != "until_date"
+            or not agent.lifespan_expires_at
+            or now < agent.lifespan_expires_at):
+        return False
+    async with async_session() as session:
+        await session.execute(
+            update(Agent).where(Agent.id == agent.id).values(status="completed")
+        )
+        await session.commit()
+    if broadcast_fn:
+        broadcast_fn("agent_state", {"slug": agent.slug, "status": "completed"})
+    return True
+
+
+async def _cycle_persist_untriggered_state(
+    agent,
+    *,
+    debounce_first_true_changed: bool,
+    debounce_new_first_true_at,
+    broadcast_fn,
+) -> None:
+    """Persist non-triggered state transitions to the DB.
+
+    Two cases:
+      1. Agent was in cooldown but didn't fire → transition back to active.
+      2. Debounce latch changed (armed or cleared) without a fire → write the
+         new condition_first_true_at so a process restart doesn't reset it.
+    """
+    if agent.status == "cooldown":
+        async with async_session() as session:
+            await session.execute(
+                update(Agent).where(Agent.id == agent.id).values(status="active")
+            )
+            await session.commit()
+        if broadcast_fn:
+            broadcast_fn("agent_state", {"slug": agent.slug, "status": "active"})
+    elif debounce_first_true_changed:
+        async with async_session() as session:
+            await session.execute(
+                update(Agent).where(Agent.id == agent.id).values(
+                    condition_first_true_at=debounce_new_first_true_at
+                )
+            )
+            await session.commit()
+
+
+async def _cycle_load_agents(only_agent_ids: list[int] | None) -> list:
+    """Load the agent rows to evaluate this tick.
+
+    Three semantics for only_agent_ids:
+      None       → every active / cooldown agent (live path)
+      [id1, id2] → only those agents, regardless of DB status (simulator)
+      []         → no agents (market-scenario explorer)
+    """
+    async with async_session() as session:
+        if only_agent_ids is not None:
+            if not only_agent_ids:
+                return []
+            result = await session.execute(
+                select(Agent).where(Agent.id.in_(only_agent_ids))
+            )
+            return list(result.scalars().all())
+        result = await session.execute(
+            select(Agent).where(Agent.status.in_(["active", "cooldown"]))
+        )
+        return list(result.scalars().all())
+
+
+def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now) -> list:
+    """Build a V2Context for the agent and run the condition tree evaluator.
+
+    Returns the list of match dicts (empty on no match or on evaluator error).
+    """
+    alert_state = context.get("alert_state") or {}
+    v2_ctx = V2Context(
+        sum_holdings=context.get("sum_holdings"),
+        sum_positions=context.get("sum_positions"),
+        df_margins=context.get("df_margins"),
+        watchlist_rows=context.get("watchlist_rows") or [],
+        position_rows=context.get("position_rows") or [],
+        spot_prices=context.get("spot_prices") or {},
+        alert_state=alert_state,
+        now=now,
+        segments=context.get("segments", []),
+        rate_window_min=cfg['rate_window_min'],
+        agent=agent,
+    )
+    try:
+        return v2_evaluate(agent.conditions, v2_ctx)
+    except Exception as e:
+        logger.error(f"Agent [{agent.slug}] v2 evaluate failed: {e}")
+        return []
+
+
+def _cycle_maybe_buffer_fire(
+    agent,
+    matches: list,
+    *,
+    now,
+    bypass_suppression: bool,
+    bypass_schedule: bool,
+    sim_mode: bool,
+    alert_state: dict,
+    cfg: dict,
+    broadcast_fn,
+    debounce_min: int,
+    pending_dispatches: list,
+) -> bool:
+    """Evaluate the suppression gate and, when the agent fires, buffer a dispatch entry.
+
+    Returns True when the agent fired (triggered), False otherwise.
+    Mutates pending_dispatches in place on fire.
+    """
+    if not matches:
+        return False
+    if not (bypass_suppression or not _v2_should_suppress(agent, matches, now, cfg)):
+        return False
+
+    result = _v2_build_evalresult(matches, agent.name)
+    if sim_mode:
+        _cycle_shadow_lifespan_decrement(agent, alert_state)
+    if broadcast_fn:
+        broadcast_fn("agent_state", {"slug": agent.slug, "status": "triggered"})
+    new_status, _ = _cycle_compute_post_fire_status(agent, bypass_schedule=bypass_schedule)
+    pending_dispatches.append({
+        'agent':           agent,
+        'matches':         matches,
+        'result':          result,
+        'sim_mode':        sim_mode,
+        'alert_state':     alert_state,
+        'bypass_schedule': bypass_schedule,
+        'new_status':      new_status,
+        'debounce_min':    debounce_min,
+    })
+    return True
+
+
+def _cycle_apply_debounce(
+    agent,
+    matches: list,
+    now,
+    *,
+    sim_mode: bool,
+) -> tuple[list, object, bool]:
+    """Apply the debounce state machine and return updated latch state.
+
+    Returns (matches_after, new_first_true_at, latch_changed).
+
+    State machine (runs only when debounce_minutes > 0 and not sim_mode):
+      match=False + latch set  → clear latch (re-arm); matches unchanged
+      match=True  + latch None → set latch to now, suppress (matches=[])
+      match=True  + latch set, elapsed < window → suppress (matches=[])
+      match=True  + latch set, elapsed >= window → fire normally
+    """
+    debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
+    new_first_true_at = agent.condition_first_true_at
+    changed = False
+
+    if debounce_min <= 0 or sim_mode:
+        # Sim runs bypass debounce; zero window = no gate.
+        return matches, new_first_true_at, changed
+
+    if not matches:
+        if agent.condition_first_true_at is not None:
+            new_first_true_at = None
+            changed = True
+    else:
+        if agent.condition_first_true_at is None:
+            new_first_true_at = now
+            changed = True
+            logger.info(
+                f"Agent [{agent.slug}] debounce armed "
+                f"({debounce_min}m); waiting for sustained condition"
+            )
+            matches = []
+        else:
+            elapsed_min = (now - agent.condition_first_true_at).total_seconds() / 60.0
+            if elapsed_min < debounce_min:
+                matches = []
+            # else: window crossed — let matches through; latch cleared
+            # naturally after the fire commit.
+
+    return matches, new_first_true_at, changed
+
+
+def _cycle_shadow_lifespan_exhausted(agent, alert_state: dict) -> bool:
+    """Check (and initialise if needed) the sim shadow-lifespan quota.
+
+    Returns True when the agent's shadow quota is exhausted for this sim
+    iteration.  Mutates alert_state to initialise the shadow slot and to mark
+    exhaustion so the simulator report doesn't double-count.
+    """
+    ls_state = alert_state.setdefault('shadow_lifespan', {})
+    shadow = ls_state.get(agent.id)
+    if shadow is None:
+        shadow = {
+            'remaining': _initial_shadow_remaining(agent),
+            'exhausted': False,
+        }
+        ls_state[agent.id] = shadow
+    if shadow.get('exhausted') or (shadow['remaining'] is not None
+                                   and shadow['remaining'] <= 0):
+        exh = alert_state.setdefault('lifespan_exhausted_agents', [])
+        if agent.id not in exh:
+            exh.append(agent.id)
+        shadow['exhausted'] = True
+        return True
+    return False
+
+
+def _cycle_shadow_lifespan_decrement(agent, alert_state: dict) -> None:
+    """Decrement the sim shadow-lifespan counter after a fire.
+
+    Marks exhaustion when remaining hits 0 so the next tick's skip check
+    fires correctly.
+    """
+    ls_state = alert_state.setdefault('shadow_lifespan', {})
+    shadow = ls_state.get(agent.id)
+    if shadow is not None and shadow.get('remaining') is not None:
+        shadow['remaining'] -= 1
+        if shadow['remaining'] <= 0:
+            shadow['exhausted'] = True
+            exh = alert_state.setdefault('lifespan_exhausted_agents', [])
+            if agent.id not in exh:
+                exh.append(agent.id)
+
+
+def _cycle_compute_post_fire_status(agent, *, bypass_schedule: bool) -> tuple[str, int]:
+    """Compute (new_status, new_trigger_count) for an agent that just fired.
+
+    When bypass_schedule is True (sim mode) the agent's DB row must not be
+    mutated, so we return the current values unchanged.
+    """
+    if bypass_schedule:
+        return agent.status, (agent.trigger_count or 0)
+    new_trigger_count = (agent.trigger_count or 0) + 1
+    lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
+    if lifespan == "one_shot":
+        new_status: str = "completed"
+    elif (lifespan == "n_fires"
+          and agent.lifespan_max_fires is not None
+          and new_trigger_count >= agent.lifespan_max_fires):
+        new_status = "completed"
+    else:
+        new_status = "cooldown"
+    return new_status, new_trigger_count
+
+
 async def run_cycle(context: dict, broadcast_fn=None,
                     only_agent_ids: list[int] | None = None,
                     bypass_schedule: bool = False,
@@ -1223,27 +1577,7 @@ async def run_cycle(context: dict, broadcast_fn=None,
     # Each entry: {agent, matches, result, sim_mode, alert_state}.
     pending_dispatches: list[dict] = []
 
-    # Load agents. Three distinct semantics for `only_agent_ids`:
-    #   - None        → run every active / cooldown agent (default live path)
-    #   - [id1, id2]  → run ONLY those agents, regardless of DB status
-    #                   (simulator "Run in Simulator" + multi-agent sim)
-    #   - []          → run NO agents — pure market-scenario explorer
-    #                   (sim with positions only; no triggers, no orders)
-    async with async_session() as session:
-        if only_agent_ids is not None:
-            if not only_agent_ids:
-                agents = []   # empty list → explicit "no agents"
-            else:
-                result = await session.execute(
-                    select(Agent).where(Agent.id.in_(only_agent_ids))
-                )
-                agents = result.scalars().all()
-        else:
-            result = await session.execute(
-                select(Agent).where(Agent.status.in_(["active", "cooldown"]))
-            )
-            agents = result.scalars().all()
-
+    agents = await _cycle_load_agents(only_agent_ids)
     if not agents:
         return
 
@@ -1269,368 +1603,171 @@ async def run_cycle(context: dict, broadcast_fn=None,
     cfg = _v2_cfg()
 
     for agent in agents:
-        # Lifespan deadline — auto-complete `until_date` agents whose
-        # expiry has passed. Done before any other gates so a stale
-        # agent doesn't fire on its last tick. Sim runs (bypass_schedule)
-        # never mutate agent state, so the deadline check is gated.
-        if (not bypass_schedule
-                and getattr(agent, "lifespan_type", "persistent") == "until_date"
-                and agent.lifespan_expires_at
-                and now >= agent.lifespan_expires_at):
-            async with async_session() as session:
-                await session.execute(
-                    update(Agent).where(Agent.id == agent.id).values(status="completed")
-                )
-                await session.commit()
-            if broadcast_fn:
-                broadcast_fn("agent_state", {"slug": agent.slug, "status": "completed"})
+        # Lifespan deadline — auto-complete expired until_date agents.
+        if await _cycle_maybe_expire_lifespan(
+            agent, now, bypass_schedule=bypass_schedule, broadcast_fn=broadcast_fn
+        ):
             continue
 
-        # schedule="never" agents (e.g. the "manual" audit agent) must
-        # never be evaluated by run_cycle — they only receive events written
-        # explicitly via record_manual_event.
-        if agent.schedule == "never":
+        # schedule / cooldown / fire_at_time / blackout gates
+        if _cycle_should_skip_schedule(agent, any_market_open=any_market_open,
+                                       bypass_schedule=bypass_schedule):
+            continue
+        if _cycle_in_cooldown(agent, bypass_schedule=bypass_schedule):
+            continue
+        if _cycle_outside_fire_at(agent, now, bypass_schedule=bypass_schedule):
+            continue
+        if _cycle_in_blackout(agent, now, bypass_schedule=bypass_schedule):
             continue
 
-        # Enforce schedule: "market_hours" agents only run while some market
-        # is open — unless the caller asked to bypass (isolated sim test).
-        if (not bypass_schedule
-                and agent.schedule == "market_hours" and not any_market_open):
-            continue
-        # Check cooldown (also skippable during isolated sim runs)
-        if agent.status == "cooldown" and not bypass_schedule:
-            if agent.last_triggered_at:
-                elapsed = (datetime.now(timezone.utc) - agent.last_triggered_at).total_seconds() / 60
-                if elapsed < agent.cooldown_minutes:
-                    continue
-
-        # fire_at_time gate — when set ("HH:MM" IST), the agent only
-        # evaluates if the current IST wall-clock falls inside a small
-        # window around that time. The window is the run_cycle poll
-        # interval + 60 s slack so a 5-minute poll cadence still
-        # reliably catches the slot. Bypass on sim runs so the
-        # "Run in Simulator" button never has to wait for wall-clock.
-        if not bypass_schedule and getattr(agent, "fire_at_time", None):
-            if not _fire_at_window_active(agent.fire_at_time, now,
-                                          window_sec=int(get_int('alerts.fire_at_window_sec', 360))):
-                continue
-
-        # ── Phase 22 — blackout windows ─────────────────────────────────
-        # When the current IST wall-clock falls INSIDE any configured
-        # blackout window, skip this agent entirely. Operators use this
-        # for "no alerts during 12:00-13:00 lunch" or "muted during
-        # scheduled deploy window". Sim bypasses so operators can test
-        # against any time. Industry analogue: Datadog `mute_until`,
-        # PagerDuty maintenance windows.
-        if not bypass_schedule:
-            blackouts = getattr(agent, "blackout_windows", None) or []
-            if blackouts and _in_blackout_window(now, blackouts):
-                continue
-
-        # v2 grammar dispatch: metric/scope leaves or all/any/not composites
-        # go through backend.api.algo.agent_evaluator. Baseline gate and
-        # suppression are applied here rather than inside the evaluator so
-        # the evaluator stays a pure tree walker.
         alert_state = context.get("alert_state") or {}
-        # `sim_mode` is set by the simulator; it flows through V2Context and
-        # tags every downstream artefact (Telegram, email, agent_events,
-        # algo_orders) with a SIMULATOR marker so real and simulated fires
-        # can't be confused in the logs or the group chat.
         sim_mode = bool(alert_state.get("sim_mode") or context.get("sim_mode"))
         _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
         triggered = False
 
-        # Baseline gate: skip every rate-based agent for the first N min
-        # of the session to avoid the opening-gap firing rate alerts. The
-        # isolated-sim path bypasses this so operators can test rate rules
-        # without waiting 15 minutes of simulated time.
-        if (not bypass_schedule
-                and _v2_has_rate_metric(agent.conditions)
-                and not _v2_baseline_live(alert_state, now, cfg['baseline_offset_min'])):
+        # Baseline gate: skip rate-based agents during the opening offset window.
+        if _cycle_baseline_not_ready(agent, alert_state, now, cfg,
+                                     bypass_schedule=bypass_schedule):
             continue
 
-        v2_ctx = V2Context(
-            sum_holdings=context.get("sum_holdings"),
-            sum_positions=context.get("sum_positions"),
-            df_margins=context.get("df_margins"),
-            watchlist_rows=context.get("watchlist_rows") or [],
-            # Phase 25 — expiry agents read per-symbol rows + underlying
-            # spot prices via these context fields. Callers (background
-            # tasks, simulator, dry-run) populate them when available;
-            # absent ⇒ expiry-* metric resolvers return None gracefully.
-            position_rows=context.get("position_rows") or [],
-            spot_prices=context.get("spot_prices") or {},
-            alert_state=alert_state,
-            now=now,
-            segments=context.get("segments", []),
-            rate_window_min=cfg['rate_window_min'],
-            agent=agent,
-        )
-
-        try:
-            matches = v2_evaluate(agent.conditions, v2_ctx)
-        except Exception as e:
-            logger.error(f"Agent [{agent.slug}] v2 evaluate failed: {e}")
-            matches = []
-
-        # No matches this tick — clear any static-agent latch so the agent
-        # re-arms for a future re-breach. This is the other half of the
-        # latching semantic defined in `_v2_should_suppress`.
+        # Evaluate condition tree; unlatch static agents on no-match.
+        matches = _cycle_evaluate_agent(agent, context, cfg, now)
         if not matches:
             _v2_unlatch(agent)
 
         # ── Phase 21 — debounce gate ("for N minutes" clauses) ─────────────
-        # If debounce_minutes > 0, the condition must hold for that many
-        # consecutive minutes before the agent fires. Eliminates spike-
-        # driven false positives (a single quote glitch no longer trips
-        # a 30-min cooldown). Industry pattern: Datadog `For:`, Grafana
-        # `For:`, CloudWatch `EvaluationPeriods`.
-        #
-        # State machine on agent.condition_first_true_at:
-        #   match=False              → reset to NULL (re-arm)
-        #   match=True + ts=NULL     → set to `now`, suppress this fire
-        #   match=True + ts<window   → still inside the window, suppress
-        #   match=True + ts≥window   → window crossed, fire normally
+        # State machine on agent.condition_first_true_at — see _cycle_apply_debounce.
+        matches, debounce_new_first_true_at, debounce_first_true_changed = (
+            _cycle_apply_debounce(agent, matches, now, sim_mode=sim_mode)
+        )
         debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
-        debounce_first_true_changed = False
-        debounce_new_first_true_at = agent.condition_first_true_at
-        if debounce_min > 0 and not sim_mode:
-            # Sim runs bypass debounce — operators iterating in the
-            # simulator shouldn't wait N minutes of fake time per fire.
-            if not matches:
-                if agent.condition_first_true_at is not None:
-                    debounce_new_first_true_at = None
-                    debounce_first_true_changed = True
-            else:
-                if agent.condition_first_true_at is None:
-                    # First true tick — start the clock, don't fire yet.
-                    debounce_new_first_true_at = now
-                    debounce_first_true_changed = True
-                    logger.info(
-                        f"Agent [{agent.slug}] debounce armed "
-                        f"({debounce_min}m); waiting for sustained condition"
-                    )
-                    matches = []
-                else:
-                    elapsed_min = (now - agent.condition_first_true_at).total_seconds() / 60.0
-                    if elapsed_min < debounce_min:
-                        # Still inside the window — suppress.
-                        matches = []
-                    # else: window crossed; condition_first_true_at stays
-                    # set (the cooldown latch / suppression will clear it
-                    # naturally after the fire commit).
 
-        # Shadow-lifespan gate (sim mode only): every iteration the
-        # simulator seeds a per-agent shadow `trigger_count` from the
-        # agent's REAL DB row. Each sim fire decrements the shadow;
-        # when it hits 0 (or until_date passes in sim's simulated clock)
-        # the agent stops firing for the rest of this iteration. The
-        # real DB row is never mutated — this is purely a "what-if"
-        # preview so the operator sees how a one-shot / n-fires agent
-        # would behave under the regime.
+        # Shadow-lifespan gate (sim mode only) — see _cycle_shadow_lifespan_exhausted.
         if matches and sim_mode:
-            ls_state = alert_state.setdefault('shadow_lifespan', {})
-            shadow = ls_state.get(agent.id)
-            if shadow is None:
-                shadow = {
-                    'remaining': _initial_shadow_remaining(agent),
-                    'exhausted': False,
-                }
-                ls_state[agent.id] = shadow
-            if shadow.get('exhausted') or (shadow['remaining'] is not None
-                                            and shadow['remaining'] <= 0):
-                # Record the agent as exhausted this iteration (only once
-                # per iteration so the report doesn't double-count).
-                exh = alert_state.setdefault('lifespan_exhausted_agents', [])
-                if agent.id not in exh:
-                    exh.append(agent.id)
-                shadow['exhausted'] = True
+            if _cycle_shadow_lifespan_exhausted(agent, alert_state):
                 continue   # skip the suppression + fire decision below
 
-        # Suppression gate: general sim runs and the live path BOTH go
-        # through it; only isolated single-agent sim runs bypass it so
-        # repeated "Run in Simulator" clicks always fire.
-        if matches and (bypass_suppression or not _v2_should_suppress(agent, matches, now, cfg)):
-            triggered = True
-            result = _v2_build_evalresult(matches, agent.name)
+        # Suppression gate + fire buffering.
+        triggered = _cycle_maybe_buffer_fire(
+            agent, matches,
+            now=now,
+            bypass_suppression=bypass_suppression,
+            bypass_schedule=bypass_schedule,
+            sim_mode=sim_mode,
+            alert_state=alert_state,
+            cfg=cfg,
+            broadcast_fn=broadcast_fn,
+            debounce_min=debounce_min,
+            pending_dispatches=pending_dispatches,
+        )
 
-            # Shadow-lifespan decrement — sim mode only. Records this
-            # iteration's "would have exhausted" state for the report.
-            if sim_mode:
-                ls_state = alert_state.setdefault('shadow_lifespan', {})
-                shadow = ls_state.get(agent.id)
-                if shadow is not None and shadow.get('remaining') is not None:
-                    shadow['remaining'] -= 1
-                    if shadow['remaining'] <= 0:
-                        shadow['exhausted'] = True
-                        exh = alert_state.setdefault('lifespan_exhausted_agents', [])
-                        if agent.id not in exh:
-                            exh.append(agent.id)
-
-            if broadcast_fn:
-                broadcast_fn("agent_state", {"slug": agent.slug, "status": "triggered"})
-
-            # Compute the post-fire status now so it can be stored on the
-            # dispatch entry and used by the survivor loop after topic-tier
-            # suppression is resolved. DB mutation and _v2_record are
-            # intentionally deferred: a suppressed agent must NOT consume
-            # its lifespan quota or start its cooldown timer.
-            if not bypass_schedule:
-                _new_trigger_count = (agent.trigger_count or 0) + 1
-                _lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
-                if _lifespan == "one_shot":
-                    _new_status: str = "completed"
-                elif (_lifespan == "n_fires"
-                      and agent.lifespan_max_fires is not None
-                      and _new_trigger_count >= agent.lifespan_max_fires):
-                    _new_status = "completed"
-                else:
-                    _new_status = "cooldown"
-            else:
-                _new_status = agent.status
-                _new_trigger_count = agent.trigger_count or 0
-
-            # Buffer dispatch + actions for the post-loop suppression pass.
-            # _v2_record, DB mutation (trigger_count, status, cooldown_until,
-            # condition_first_true_at), and the post-fire WS broadcast are
-            # deferred to the survivor loop so that suppressed agents never
-            # have their state mutated.
-            pending_dispatches.append({
-                'agent':            agent,
-                'matches':          matches,
-                'result':           result,
-                'sim_mode':         sim_mode,
-                'alert_state':      alert_state,
-                'bypass_schedule':  bypass_schedule,
-                'new_status':       _new_status,
-                'debounce_min':     debounce_min,
-            })
-
-        # Update state for the non-triggered paths only. For any sim run
-        # (schedule-bypassed) we never mutate the agent row — the whole
-        # point of the simulator is to exercise the pipeline without leaking
-        # cooldown / trigger count into real-market state. The real path
-        # runs with bypass_schedule=False and does update the row.
-        #
-        # NOTE: the `if triggered` branch that previously lived here has
-        # been moved into the post-loop survivor section so that topic-tier
-        # suppressed agents do NOT have their DB state mutated.
-        if not bypass_schedule:
-            if not triggered:
-                if agent.status == "cooldown":
-                    _untriggered_status = "active"
-                    async with async_session() as session:
-                        await session.execute(
-                            update(Agent).where(Agent.id == agent.id).values(
-                                status=_untriggered_status
-                            )
-                        )
-                        await session.commit()
-                    if broadcast_fn:
-                        broadcast_fn("agent_state", {
-                            "slug": agent.slug, "status": _untriggered_status
-                        })
-                elif debounce_first_true_changed:
-                    # Phase 21 — persist the debounce latch transitions
-                    # even when we don't fire (else the latch lives only
-                    # in process memory and a restart resets it).
-                    async with async_session() as session:
-                        await session.execute(
-                            update(Agent).where(Agent.id == agent.id).values(
-                                condition_first_true_at=debounce_new_first_true_at
-                            )
-                        )
-                        await session.commit()
+        # Persist non-triggered state changes (cooldown→active recovery,
+        # debounce latch arm/clear). Skipped for sim runs.
+        if not bypass_schedule and not triggered:
+            await _cycle_persist_untriggered_state(
+                agent,
+                debounce_first_true_changed=debounce_first_true_changed,
+                debounce_new_first_true_at=debounce_new_first_true_at,
+                broadcast_fn=broadcast_fn,
+            )
 
     # ── Post-loop: topic-scoped tier suppression + dispatch survivors ────
-    #
-    # Suppression rule: within each topic, find the highest-priority tier
-    # that fired this tick. Drop every lower-tier fire in that topic — they
-    # get an audit-log entry as `triggered_suppressed` but no push
-    # notification, no action execution. The operator gets ONE alert per
-    # topic per tick instead of N stacked alarms for the same root cause.
     if pending_dispatches:
-        suppressed_ids = _compute_topic_suppression(pending_dispatches)
-        for entry in pending_dispatches:
-            agent       = entry['agent']
-            matches_    = entry['matches']
-            result      = entry['result']
-            sim_mode_p  = entry['sim_mode']
+        await _cycle_dispatch_survivors(pending_dispatches, now, context, broadcast_fn)
 
-            if agent.id in suppressed_ids:
-                # Audit-log only. Channel push + actions skipped.
-                supp_by = suppressed_ids[agent.id]
-                detail_text = (
-                    f"Suppressed by higher-tier agent '{supp_by}' in topic "
-                    f"'{getattr(agent, 'topic', 'general')}'."
-                )
-                try:
-                    await log_event(
-                        agent, 'triggered_suppressed',
-                        f"{result.condition_text} — {detail_text}",
-                        detail={'suppressed_by': supp_by,
-                                'topic': getattr(agent, 'topic', 'general'),
-                                'tier':  getattr(agent, 'tier',  'medium')},
-                        sim_mode=sim_mode_p,
-                    )
-                except Exception as _le:
-                    logger.debug(f"suppressed-event log failed: {_le}")
-                if broadcast_fn:
-                    broadcast_fn('agent_state', {
-                        'slug': agent.slug,
-                        'status': 'suppressed',
-                        'suppressed_by': supp_by,
-                    })
-                continue
 
-            # Survivor path — agent passed topic-tier suppression.
-            # Now safe to commit side-effects that must NOT run for
-            # suppressed agents: latch _v2_record (updates _V2_LAST_ALERT
-            # used by cooldown gate), write trigger_count / status / cooldown
-            # to DB, and emit the final WS status broadcast.
-            _v2_record(agent, matches_, now)
-            _bypass_schedule_p = entry.get('bypass_schedule', False)
-            if not _bypass_schedule_p:
-                _new_status_p = entry['new_status']
-                _debounce_min_p = entry.get('debounce_min', 0)
-                async with async_session() as session:
-                    _db_values: dict = dict(
-                        status=_new_status_p,
-                        last_triggered_at=datetime.now(timezone.utc),
-                        trigger_count=Agent.trigger_count + 1,
-                    )
-                    # Phase 21 — clear the debounce latch after a fire so
-                    # the next true tick starts a fresh window.
-                    if _debounce_min_p > 0:
-                        _db_values["condition_first_true_at"] = None
-                    await session.execute(
-                        update(Agent).where(Agent.id == agent.id).values(**_db_values)
-                    )
-                    await session.commit()
-                if broadcast_fn:
-                    broadcast_fn("agent_state", {"slug": agent.slug, "status": _new_status_p})
+async def _cycle_dispatch_survivors(
+    pending_dispatches: list[dict],
+    now,
+    context: dict,
+    broadcast_fn,
+) -> None:
+    """Post-loop: apply topic-tier suppression, then dispatch survivors.
 
-            # Full dispatch path — same code that used to live inside the
-            # per-agent loop, now driven from the buffer.
-            rich_sent = await _v2_send_rich_alert(
-                agent, matches_, now, sim_mode=sim_mode_p, context=context,
+    Suppressed agents get an audit-log entry only; no push notification and
+    no action execution. Survivor agents commit all side-effects (DB state,
+    WS broadcast, rich alert / dispatch, actions).
+    """
+    suppressed_ids = _compute_topic_suppression(pending_dispatches)
+    for entry in pending_dispatches:
+        agent       = entry['agent']
+        matches_    = entry['matches']
+        result      = entry['result']
+        sim_mode_p  = entry['sim_mode']
+
+        if agent.id in suppressed_ids:
+            # Audit-log only. Channel push + actions skipped.
+            supp_by = suppressed_ids[agent.id]
+            detail_text = (
+                f"Suppressed by higher-tier agent '{supp_by}' in topic "
+                f"'{getattr(agent, 'topic', 'general')}'."
             )
-            if not rich_sent:
-                await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p)
-            else:
-                await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode_p)
-                if broadcast_fn:
-                    broadcast_fn('agent_alert', {
-                        'slug': agent.slug,
-                        'message': result.condition_text,
-                        'timestamp': now.isoformat(),
-                        'sim_mode': sim_mode_p,
-                    })
-            if agent.actions:
-                action_ctx = dict(context)
-                action_ctx["account"] = "TOTAL"
-                action_ctx["sim_mode"] = sim_mode_p
-                await execute(agent, agent.actions, action_ctx)
+            try:
+                await log_event(
+                    agent, 'triggered_suppressed',
+                    f"{result.condition_text} — {detail_text}",
+                    detail={'suppressed_by': supp_by,
+                            'topic': getattr(agent, 'topic', 'general'),
+                            'tier':  getattr(agent, 'tier',  'medium')},
+                    sim_mode=sim_mode_p,
+                )
+            except Exception as _le:
+                logger.debug(f"suppressed-event log failed: {_le}")
+            if broadcast_fn:
+                broadcast_fn('agent_state', {
+                    'slug': agent.slug,
+                    'status': 'suppressed',
+                    'suppressed_by': supp_by,
+                })
+            continue
+
+        # Survivor path — agent passed topic-tier suppression.
+        # Now safe to commit side-effects that must NOT run for
+        # suppressed agents: latch _v2_record (updates _V2_LAST_ALERT
+        # used by cooldown gate), write trigger_count / status / cooldown
+        # to DB, and emit the final WS status broadcast.
+        _v2_record(agent, matches_, now)
+        _bypass_schedule_p = entry.get('bypass_schedule', False)
+        if not _bypass_schedule_p:
+            _new_status_p = entry['new_status']
+            _debounce_min_p = entry.get('debounce_min', 0)
+            async with async_session() as session:
+                _db_values: dict = dict(
+                    status=_new_status_p,
+                    last_triggered_at=datetime.now(timezone.utc),
+                    trigger_count=Agent.trigger_count + 1,
+                )
+                # Phase 21 — clear the debounce latch after a fire so
+                # the next true tick starts a fresh window.
+                if _debounce_min_p > 0:
+                    _db_values["condition_first_true_at"] = None
+                await session.execute(
+                    update(Agent).where(Agent.id == agent.id).values(**_db_values)
+                )
+                await session.commit()
+            if broadcast_fn:
+                broadcast_fn("agent_state", {"slug": agent.slug, "status": _new_status_p})
+
+        # Full dispatch path.
+        rich_sent = await _v2_send_rich_alert(
+            agent, matches_, now, sim_mode=sim_mode_p, context=context,
+        )
+        if not rich_sent:
+            await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p)
+        else:
+            await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode_p)
+            if broadcast_fn:
+                broadcast_fn('agent_alert', {
+                    'slug': agent.slug,
+                    'message': result.condition_text,
+                    'timestamp': now.isoformat(),
+                    'sim_mode': sim_mode_p,
+                })
+        if agent.actions:
+            action_ctx = dict(context)
+            action_ctx["account"] = "TOTAL"
+            action_ctx["sim_mode"] = sim_mode_p
+            await execute(agent, agent.actions, action_ctx)
 
 
 # Tier rank for topic-suppression. Lower = higher priority.

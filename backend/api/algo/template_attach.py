@@ -303,6 +303,189 @@ def _wing_symbol(parent_symbol: str, offset: int) -> Optional[str]:
     return f"{root}{expiry_token}{wing_strike}{opt}"
 
 
+def _wing_score_candidate(
+    q: dict,
+    target_premium: float,
+) -> Optional[tuple[float, int, float, float]]:
+    """Extract scoring fields from a single broker quote dict *q*.
+
+    Returns ``(ltp, oi, spread_pct, score)`` when the quote has a positive
+    LTP, or ``None`` when the quote is absent / zero (candidate skipped).
+
+    Score formula: ``abs(ltp − target) + (spread_pct / 100) × target``.
+    A lower score is better (closer premium, tighter spread).
+    ``spread_pct`` is ``0.0`` when depth data is absent so thin-book
+    options are not unfairly penalised.
+    """
+    ltp = float(q.get("last_price") or 0)
+    if ltp <= 0:
+        return None
+    oi = int(q.get("oi") or 0)
+    depth = q.get("depth") or {}
+    buys  = depth.get("buy") or []
+    sells = depth.get("sell") or []
+    bid = float(buys[0].get("price") if buys else 0) or 0
+    ask = float(sells[0].get("price") if sells else 0) or 0
+    spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
+    dist  = abs(ltp - target_premium)
+    score = dist + (spread_pct / 100.0) * target_premium
+    return ltp, oi, spread_pct, score
+
+
+def _wing_scan_candidates(
+    candidates: list[dict],
+    quote_data: dict,
+    target_premium: float,
+    min_oi: int,
+    max_spread_pct: float,
+) -> tuple[Optional[dict], Optional[dict], int, int, int]:
+    """Score every candidate in *candidates* against *target_premium*.
+
+    Returns ``(best, fallback, scanned, dropped_oi, dropped_spread)``:
+
+    * ``best``      — highest-scoring candidate that also passed OI / spread
+                      hard filters; ``None`` when every candidate failed.
+    * ``fallback``  — highest-scoring candidate *ignoring* the hard filters,
+                      used when ``best is None`` (stock options with thin OI).
+    * ``scanned``   — count of candidates with a positive LTP.
+    * ``dropped_oi``     — candidates dropped by the OI gate.
+    * ``dropped_spread`` — candidates dropped by the spread% gate.
+
+    Score formula: ``abs(ltp − target) + (spread_pct / 100) × target``.
+    A lower score is better (closer premium + tighter spread).
+    """
+    best: Optional[dict] = None
+    best_score = float("inf")
+    # Filter-relaxed fallback — best candidate by premium score
+    # ignoring OI / spread gates. Stock options (e.g. DIXON) have
+    # OI of a few hundred per strike, so the index-tuned min_oi=1000
+    # default drops every candidate. When that happens we still want
+    # a wing attached; we keep the filter-passing winner if any, and
+    # fall back to this when nothing passes.
+    fallback: Optional[dict] = None
+    fallback_score = float("inf")
+    scanned = dropped_oi = dropped_spread = 0
+    for c in candidates:
+        key = f"{c['exch']}:{c['ts']}"
+        q = quote_data.get(key) or {}
+        scored = _wing_score_candidate(q, target_premium)
+        if scored is None:
+            continue
+        ltp, oi, spread_pct, score = scored
+        scanned += 1
+        # Track best-overall (ignoring filters) for the fallback path.
+        if score < fallback_score:
+            fallback_score = score
+            fallback = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+        # Hard filters — OI / spread — preferred winner.
+        if min_oi > 0 and oi < min_oi:
+            dropped_oi += 1
+            continue
+        if max_spread_pct < 100 and spread_pct > max_spread_pct:
+            dropped_spread += 1
+            continue
+        if score < best_score:
+            best_score = score
+            best = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+    return best, fallback, scanned, dropped_oi, dropped_spread
+
+
+def _wing_build_chain(
+    insts_resp,
+    root: str,
+    expiry_token: str,
+    opt: str,
+    parent_strike: int,
+    chain_radius: int,
+) -> tuple[list[dict], Optional[str]]:
+    """Filter the instruments cache to the matching option chain and
+    apply the radius slice around *parent_strike*.
+
+    Returns ``(candidates, error_reason)``:
+
+    * On success: ``(non-empty list, None)``
+    * On failure: ``([], reason_string)``
+
+    The reason strings match the substrings asserted by the test suite
+    ("no chain candidates", "chain_radius filter eliminated").
+    """
+    # Filter to (root, expiry_token, opt_type) — match exactly the
+    # parent contract's chain. Use the cached `s` (tradingsymbol)
+    # field's prefix as the discriminator so MCX vs NFO doesn't
+    # matter; the parent's exchange flows through unchanged.
+    parent_prefix = f"{root}{expiry_token}"
+    suffix        = opt   # 'CE' or 'PE'
+    candidates: list[dict] = []
+    for inst in (insts_resp.items if insts_resp else []):
+        ts = str(inst.s).upper()
+        if not ts.startswith(parent_prefix):
+            continue
+        if not ts.endswith(suffix):
+            continue
+        if inst.k is None:
+            continue
+        candidates.append({
+            "ts":     ts,
+            "strike": float(inst.k),
+            "exch":   inst.e,
+        })
+
+    if not candidates:
+        return [], (
+            f"wing_premium_pct skipped — no chain candidates found "
+            f"for {root}{expiry_token}{suffix}"
+        )
+
+    # Slice to within chain_radius strikes of the parent. Sorted by
+    # strike for the slice arithmetic.
+    candidates.sort(key=lambda c: c["strike"])
+    parent_idx = next(
+        (i for i, c in enumerate(candidates) if c["strike"] == parent_strike),
+        None,
+    )
+    if parent_idx is not None:
+        lo = max(0, parent_idx - chain_radius)
+        hi = min(len(candidates), parent_idx + chain_radius + 1)
+        candidates = candidates[lo:hi]
+
+    if not candidates:
+        return [], (
+            "wing_premium_pct skipped — chain_radius filter eliminated "
+            "all candidates"
+        )
+
+    return candidates, None
+
+
+async def _wing_fetch_quotes(
+    candidates: list[dict],
+    parent_exchange: str,
+) -> tuple[dict, Optional[str]]:
+    """Batch-fetch broker quotes for all *candidates* in one round-trip.
+
+    Offloads the synchronous broker call to a thread so the event loop
+    is not blocked during the network round-trip.
+
+    Returns ``(quote_data, error_reason)``:
+
+    * On success: ``(dict keyed by "EXCH:SYMBOL", None)``
+    * On failure: ``({}, reason_string)``
+    """
+    quote_keys = [f"{c['exch']}:{c['ts']}" for c in candidates]
+    try:
+        import asyncio as _aio
+        from backend.brokers.registry import get_market_data_broker
+        broker = get_market_data_broker()
+        quote_data = (
+            await _aio.to_thread(broker.quote, quote_keys)
+        ) or {}
+        return quote_data, None
+    except Exception as e:
+        return {}, (
+            f"wing_premium_pct skipped — broker.quote() failed: {e}"
+        )
+
+
 async def _pick_wing_by_premium(
     parent_symbol:    str,
     parent_exchange:  str,
@@ -378,108 +561,19 @@ async def _pick_wing_by_premium(
             f"failed: {e}"
         )
 
-    # Filter to (root, expiry_token, opt_type) — match exactly the
-    # parent contract's chain. Use the cached `s` (tradingsymbol)
-    # field's prefix as the discriminator so MCX vs NFO doesn't
-    # matter; the parent's exchange flows through unchanged.
-    parent_prefix = f"{root}{expiry_token}"
-    suffix        = opt   # 'CE' or 'PE'
-    candidates: list[dict] = []
-    for inst in (insts_resp.items if insts_resp else []):
-        ts = str(inst.s).upper()
-        if not ts.startswith(parent_prefix):
-            continue
-        if not ts.endswith(suffix):
-            continue
-        if inst.k is None:
-            continue
-        candidates.append({
-            "ts":     ts,
-            "strike": float(inst.k),
-            "exch":   inst.e,
-        })
-
-    if not candidates:
-        return None, None, (
-            f"wing_premium_pct skipped — no chain candidates found "
-            f"for {root}{expiry_token}{suffix}"
-        )
-
-    # Slice to within chain_radius strikes of the parent. Sorted by
-    # strike for the slice arithmetic.
-    candidates.sort(key=lambda c: c["strike"])
-    parent_idx = next(
-        (i for i, c in enumerate(candidates) if c["strike"] == parent_strike),
-        None,
+    candidates, chain_err = _wing_build_chain(
+        insts_resp, root, expiry_token, opt, parent_strike, chain_radius,
     )
-    if parent_idx is not None:
-        lo = max(0, parent_idx - chain_radius)
-        hi = min(len(candidates), parent_idx + chain_radius + 1)
-        candidates = candidates[lo:hi]
+    if chain_err:
+        return None, None, chain_err
 
-    if not candidates:
-        return None, None, (
-            f"wing_premium_pct skipped — chain_radius filter eliminated "
-            f"all candidates"
-        )
+    quote_data, quote_err = await _wing_fetch_quotes(candidates, parent_exchange)
+    if quote_err:
+        return None, None, quote_err
 
-    # Batched quote — one round-trip across every candidate. Offload
-    # the sync broker call to a thread so we don't block the event
-    # loop while the round-trip is in flight.
-    quote_keys = [f"{c['exch']}:{c['ts']}" for c in candidates]
-    try:
-        import asyncio as _aio
-        from backend.brokers.registry import get_market_data_broker
-        broker = get_market_data_broker()
-        quote_data = (
-            await _aio.to_thread(broker.quote, quote_keys)
-        ) or {}
-    except Exception as e:
-        return None, None, (
-            f"wing_premium_pct skipped — broker.quote() failed: {e}"
-        )
-
-    best = None
-    best_score = float("inf")
-    # Filter-relaxed fallback — best candidate by premium score
-    # ignoring OI / spread gates. Stock options (e.g. DIXON) have
-    # OI of a few hundred per strike, so the index-tuned min_oi=1000
-    # default drops every candidate. When that happens we still want
-    # a wing attached; we keep the filter-passing winner if any, and
-    # fall back to this when nothing passes.
-    fallback = None
-    fallback_score = float("inf")
-    scanned, dropped_oi, dropped_spread = 0, 0, 0
-    for c in candidates:
-        key = f"{c['exch']}:{c['ts']}"
-        q = quote_data.get(key) or {}
-        ltp = float(q.get("last_price") or 0)
-        if ltp <= 0:
-            continue
-        scanned += 1
-        oi = int(q.get("oi") or 0)
-        depth = q.get("depth") or {}
-        buys = depth.get("buy") or []
-        sells = depth.get("sell") or []
-        bid = float(buys[0].get("price") if buys else 0) or 0
-        ask = float(sells[0].get("price") if sells else 0) or 0
-        spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
-        dist = abs(ltp - target_premium)
-        score = dist + (spread_pct / 100.0) * target_premium
-        # Track best-overall (ignoring filters) for the fallback path.
-        if score < fallback_score:
-            fallback_score = score
-            fallback = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
-        # Hard filters — OI / spread — preferred winner.
-        if min_oi > 0 and oi < min_oi:
-            dropped_oi += 1
-            continue
-        if max_spread_pct < 100 and spread_pct > max_spread_pct:
-            dropped_spread += 1
-            continue
-        if score < best_score:
-            best_score = score
-            best = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+    best, fallback, scanned, dropped_oi, dropped_spread = _wing_scan_candidates(
+        candidates, quote_data, target_premium, min_oi, max_spread_pct,
+    )
 
     used_fallback = False
     if best is None:
