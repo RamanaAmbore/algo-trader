@@ -971,6 +971,46 @@ async def _preflight_build_basket_orders(
     return basket
 
 
+def _preflight_leg_required(entry: dict) -> float:
+    """
+    Extract the required margin for a single basket-margin leg entry.
+
+    Prefers `final.total` (net spread margin) over `initial.total`
+    (naked margin), and falls back to the top-level `required` field.
+    Returns 0.0 on any parsing failure.
+    """
+    if not isinstance(entry, dict):
+        return 0.0
+    for branch in ("final", "initial"):
+        slot = (entry.get(branch) or {}).get("total")
+        if slot is not None:
+            try:
+                return float(slot)
+            except (TypeError, ValueError):
+                pass
+    try:
+        return float(entry.get("required") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _preflight_parse_basket_margin(bm_result: object) -> float:
+    """
+    Parse the raw return value of broker.basket_order_margins into a
+    single ``required`` float.
+
+    Kite returns a list (one dict per leg) or occasionally a bare dict.
+    Multi-leg: sum per-leg final/initial totals so the spread offset is
+    captured. Single-leg list: unwrap and read the single entry.
+    Dict fallback: read as a single entry.
+    """
+    if isinstance(bm_result, list) and bm_result:
+        if len(bm_result) > 1:
+            return float(sum(_preflight_leg_required(r) for r in bm_result))
+        return _preflight_leg_required(bm_result[0])
+    return _preflight_leg_required(bm_result if isinstance(bm_result, dict) else {})
+
+
 async def run_preflight(
     account: str,
     order: dict,
@@ -1186,35 +1226,9 @@ async def run_preflight(
         # Kite's /margins/basket returns one entry per input leg. Each
         # has BOTH `initial.total` (bare margin for this leg in
         # isolation) AND `final.total` (per-leg margin after the basket
-        # hedge offset). Audit fix: summing `initial.total` overstated
-        # paired SELL+wing margin by ignoring the spread offset —
-        # operator was seeing the naked-short number even with the
-        # protective wing factored in. Prefer `final.total` when the
-        # broker ships it; fall back to `initial.total` otherwise.
-        def _leg_required(entry: dict) -> float:
-            if not isinstance(entry, dict):
-                return 0.0
-            for branch in ("final", "initial"):
-                slot = (entry.get(branch) or {}).get("total")
-                if slot is not None:
-                    try:
-                        return float(slot)
-                    except (TypeError, ValueError):
-                        pass
-            try:
-                return float(entry.get("required") or 0)
-            except (TypeError, ValueError):
-                return 0.0
-
-        if isinstance(bm_result, list) and bm_result:
-            if len(bm_result) > 1:
-                required = float(sum(_leg_required(r) for r in bm_result))
-                bm_result = {"required": required, "_legs": bm_result}
-            else:
-                bm_result = bm_result[0]
-                required  = _leg_required(bm_result)
-        else:
-            required = _leg_required(bm_result if isinstance(bm_result, dict) else {})
+        # hedge offset). Prefer `final.total` — it captures the net
+        # spread margin offset. See _preflight_parse_basket_margin.
+        required = _preflight_parse_basket_margin(bm_result)
 
         # Initialise locals used across both the negative-margin path and
         # the normal path below so the `if shortfall > 0` block at the
