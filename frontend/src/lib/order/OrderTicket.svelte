@@ -29,6 +29,7 @@
   import OrderDepth from './OrderDepth.svelte';
   import ChaseAggPicker from './ChaseAggPicker.svelte';
   import Select from '$lib/Select.svelte';
+  import OrderKnobsRow from '$lib/order/OrderKnobsRow.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
@@ -2087,73 +2088,17 @@
           </button>
         </div>
       </div>
-      <div class="ot-knob">
-        <label class="ot-label" for="ot-type-sel">Type</label>
-        <Select id="ot-type-sel"
-                bind:value={_type}
-                ariaLabel="Order type"
-                disabled={_noSymbol}
-                options={[
-                  { value: 'MARKET', label: 'MARKET' },
-                  { value: 'LIMIT',  label: 'LIMIT'  },
-                  { value: 'SL',     label: 'SL'     },
-                  { value: 'SL-M',   label: 'SL-M'   },
-                ]} />
-      </div>
-      <div class="ot-knob">
-        <label class="ot-label" for="ot-product-sel">Product</label>
-        <Select id="ot-product-sel"
-                bind:value={_product}
-                ariaLabel="Product"
-                disabled={_noSymbol}
-                options={productOptions.map(p => ({ value: p, label: p }))} />
-      </div>
-      <!-- Exchange — operator picks for dual-listed symbols (IFCI on
-           NSE+BSE, RELIANCE futures on NFO+BFO, etc.). Read-only chip
-           for single-listing instruments (RELIANCE futures on NFO only,
-           CRUDEOIL on MCX only) so the operator can't pick an exchange
-           the symbol doesn't trade on. Dropdown only when there are
-           ≥2 actual listings; defaults to the first (NSE / NFO) until
-           the operator picks otherwise. -->
-      <div class="ot-knob">
-        <label class="ot-label" for="ot-exchange-sel">Exchange</label>
-        {#if exchangeOptions.length > 1}
-          <Select id="ot-exchange-sel"
-                  value={_exchange}
-                  ariaLabel="Exchange"
-                  disabled={_noSymbol}
-                  onValueChange={(v) => { _exchange = String(v); _exchangeTouched = true; }}
-                  options={exchangeOptions.map(e => ({ value: e, label: e }))} />
-        {:else}
-          <div class="ot-exchange-locked" id="ot-exchange-sel"
-               title="This symbol trades on only one exchange — no override available.">
-            {exchangeOptions[0] || _exchange || '—'}
-          </div>
-        {/if}
-      </div>
-      <div class="ot-knob">
-        <label class="ot-label" for="ot-variety-sel">Variety</label>
-        <Select id="ot-variety-sel"
-                bind:value={_variety}
-                ariaLabel="Variety"
-                disabled={_noSymbol}
-                options={[
-                  { value: 'regular', label: 'REG' },
-                  { value: 'amo',     label: 'AMO' },
-                  { value: 'co',      label: 'CO'  },
-                ]} />
-      </div>
-      <div class="ot-knob">
-        <label class="ot-label" for="ot-validity-sel">Validity</label>
-        <Select id="ot-validity-sel"
-                bind:value={_validity}
-                ariaLabel="Validity"
-                disabled={_noSymbol}
-                options={[
-                  { value: 'DAY', label: 'DAY' },
-                  { value: 'IOC', label: 'IOC' },
-                ]} />
-      </div>
+      <OrderKnobsRow
+        bind:type={_type}
+        bind:product={_product}
+        bind:variety={_variety}
+        bind:validity={_validity}
+        exchange={_exchange}
+        onExchangeChange={(v) => { _exchange = String(v); _exchangeTouched = true; }}
+        disabled={_noSymbol}
+        {productOptions}
+        {exchangeOptions}
+      />
       <!-- Strategy attribution (slice 7b). Optional in v1 — None /
            "—" means "no strategy" and the AlgoOrder.strategy_id is
            saved as NULL. Picker reads active strategies from
@@ -2934,30 +2879,7 @@
     text-transform: none;
     user-select: none;
   }
-  /* Read-only exchange chip — rendered when the symbol trades on a
-     single exchange. Height-matches the Select chip next to it (1.55rem)
-     so the row stays aligned; muted bg + slightly faded text reads as
-     "informational, not editable" without the operator confusing it
-     for a broken / disabled dropdown. */
-  .ot-exchange-locked {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    height: 1.55rem;
-    padding: 0 0.6rem;
-    box-sizing: border-box;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    color: rgba(200, 216, 240, 0.80);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-lg);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    cursor: default;
-    user-select: none;
-  }
+  /* .ot-exchange-locked moved to OrderKnobsRow.svelte — exclusive to that component */
   .ot-side-toggle-compact {
     display: inline-flex;
     width: 100%;
