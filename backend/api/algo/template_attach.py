@@ -303,6 +303,72 @@ def _wing_symbol(parent_symbol: str, offset: int) -> Optional[str]:
     return f"{root}{expiry_token}{wing_strike}{opt}"
 
 
+def _wing_scan_candidates(
+    candidates: list[dict],
+    quote_data: dict,
+    target_premium: float,
+    min_oi: int,
+    max_spread_pct: float,
+) -> tuple[Optional[dict], Optional[dict], int, int, int]:
+    """Score every candidate in *candidates* against *target_premium*.
+
+    Returns ``(best, fallback, scanned, dropped_oi, dropped_spread)``:
+
+    * ``best``      — highest-scoring candidate that also passed OI / spread
+                      hard filters; ``None`` when every candidate failed.
+    * ``fallback``  — highest-scoring candidate *ignoring* the hard filters,
+                      used when ``best is None`` (stock options with thin OI).
+    * ``scanned``   — count of candidates with a positive LTP.
+    * ``dropped_oi``     — candidates dropped by the OI gate.
+    * ``dropped_spread`` — candidates dropped by the spread% gate.
+
+    Score formula: ``abs(ltp − target) + (spread_pct / 100) × target``.
+    A lower score is better (closer premium + tighter spread).
+    """
+    best: Optional[dict] = None
+    best_score = float("inf")
+    # Filter-relaxed fallback — best candidate by premium score
+    # ignoring OI / spread gates. Stock options (e.g. DIXON) have
+    # OI of a few hundred per strike, so the index-tuned min_oi=1000
+    # default drops every candidate. When that happens we still want
+    # a wing attached; we keep the filter-passing winner if any, and
+    # fall back to this when nothing passes.
+    fallback: Optional[dict] = None
+    fallback_score = float("inf")
+    scanned = dropped_oi = dropped_spread = 0
+    for c in candidates:
+        key = f"{c['exch']}:{c['ts']}"
+        q = quote_data.get(key) or {}
+        ltp = float(q.get("last_price") or 0)
+        if ltp <= 0:
+            continue
+        scanned += 1
+        oi = int(q.get("oi") or 0)
+        depth = q.get("depth") or {}
+        buys = depth.get("buy") or []
+        sells = depth.get("sell") or []
+        bid = float(buys[0].get("price") if buys else 0) or 0
+        ask = float(sells[0].get("price") if sells else 0) or 0
+        spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
+        dist = abs(ltp - target_premium)
+        score = dist + (spread_pct / 100.0) * target_premium
+        # Track best-overall (ignoring filters) for the fallback path.
+        if score < fallback_score:
+            fallback_score = score
+            fallback = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+        # Hard filters — OI / spread — preferred winner.
+        if min_oi > 0 and oi < min_oi:
+            dropped_oi += 1
+            continue
+        if max_spread_pct < 100 and spread_pct > max_spread_pct:
+            dropped_spread += 1
+            continue
+        if score < best_score:
+            best_score = score
+            best = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+    return best, fallback, scanned, dropped_oi, dropped_spread
+
+
 async def _pick_wing_by_premium(
     parent_symbol:    str,
     parent_exchange:  str,
@@ -439,47 +505,9 @@ async def _pick_wing_by_premium(
             f"wing_premium_pct skipped — broker.quote() failed: {e}"
         )
 
-    best = None
-    best_score = float("inf")
-    # Filter-relaxed fallback — best candidate by premium score
-    # ignoring OI / spread gates. Stock options (e.g. DIXON) have
-    # OI of a few hundred per strike, so the index-tuned min_oi=1000
-    # default drops every candidate. When that happens we still want
-    # a wing attached; we keep the filter-passing winner if any, and
-    # fall back to this when nothing passes.
-    fallback = None
-    fallback_score = float("inf")
-    scanned, dropped_oi, dropped_spread = 0, 0, 0
-    for c in candidates:
-        key = f"{c['exch']}:{c['ts']}"
-        q = quote_data.get(key) or {}
-        ltp = float(q.get("last_price") or 0)
-        if ltp <= 0:
-            continue
-        scanned += 1
-        oi = int(q.get("oi") or 0)
-        depth = q.get("depth") or {}
-        buys = depth.get("buy") or []
-        sells = depth.get("sell") or []
-        bid = float(buys[0].get("price") if buys else 0) or 0
-        ask = float(sells[0].get("price") if sells else 0) or 0
-        spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
-        dist = abs(ltp - target_premium)
-        score = dist + (spread_pct / 100.0) * target_premium
-        # Track best-overall (ignoring filters) for the fallback path.
-        if score < fallback_score:
-            fallback_score = score
-            fallback = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
-        # Hard filters — OI / spread — preferred winner.
-        if min_oi > 0 and oi < min_oi:
-            dropped_oi += 1
-            continue
-        if max_spread_pct < 100 and spread_pct > max_spread_pct:
-            dropped_spread += 1
-            continue
-        if score < best_score:
-            best_score = score
-            best = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+    best, fallback, scanned, dropped_oi, dropped_spread = _wing_scan_candidates(
+        candidates, quote_data, target_premium, min_oi, max_spread_pct,
+    )
 
     used_fallback = False
     if best is None:
