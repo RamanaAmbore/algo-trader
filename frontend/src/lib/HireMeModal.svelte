@@ -11,6 +11,8 @@
   preferred channels (currently placeholder).
 -->
 <script>
+  import ModalShell from '$lib/ModalShell.svelte';
+
   /**
    * @typedef {object} Props
    * @property {() => void} onClose
@@ -18,19 +20,11 @@
   /** @type {Props} */
   let { onClose } = $props();
 
-  // ESC + overlay click to close — same UX vocabulary as ChartModal /
-  // SymbolPanel / every other modal in the app.
-  function onKey(/** @type {KeyboardEvent} */ e) {
-    if (e.key === 'Escape') onClose();
-  }
+  // Scroll lock — ModalShell owns Esc + backdrop; we just lock body scroll.
   $effect(() => {
-    document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prev;
-    };
+    return () => { document.body.style.overflow = prev; };
   });
 
   const HIGHLIGHTS = [
@@ -61,9 +55,7 @@
   };
 </script>
 
-<div class="hm-overlay" onclick={onClose}
-     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClose(); }}
-     role="presentation">
+<ModalShell open={true} {onClose} zIndex={100} clickOutside={true}>
   <div class="hm-modal algo-modal" role="dialog" aria-modal="true" aria-labelledby="hm-title" tabindex="-1"
        onclick={(e) => e.stopPropagation()}
        onkeydown={(e) => e.stopPropagation()}>
@@ -157,17 +149,9 @@
       </a>
     </div>
   </div>
-</div>
+</ModalShell>
 
 <style>
-  .hm-overlay {
-    position: fixed; inset: 0;
-    background: rgba(8, 12, 20, 0.75);
-    backdrop-filter: blur(3px);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 100;
-    padding: 1rem;
-  }
   .hm-modal {
     /* Composes .algo-modal chrome. Overrides:
        - overflow: auto (algo-modal sets hidden) — this dialog scrolls
