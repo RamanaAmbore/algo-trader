@@ -7,6 +7,11 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: process.env.CI ? 'github' : 'list',
+  // globalSetup runs once before all tests — fetches auth token via API,
+  // caches it to e2e/.auth/state.json. loginAsAdmin reuses this cached token
+  // to bypass the /signin form, eliminating N×3 concurrent rate-limit hits
+  // when fullyParallel=true + 3 viewport projects.
+  globalSetup: './e2e/global-setup.js',
   // Default per-test timeout. beforeAll hooks with loginAsAdmin + slow
   // dev-server pages (SSE keeps networkidle busy) need headroom beyond 30 s.
   timeout: 90_000,
