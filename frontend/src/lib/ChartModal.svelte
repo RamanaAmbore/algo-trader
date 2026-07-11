@@ -11,12 +11,10 @@
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { chartStore } from '$lib/data/chartStore.svelte.js';
 
-  let {
-    /** @type {string} */ symbol = '',
-    /** @type {string} */ exchange = '',
-    /** @type {'live'|'sim'|'paper'} */ mode = 'live',
-    /** @type {() => void} */ onClose,
-  } = $props();
+  // Store the raw props proxy so native event handlers always read the
+  // current onClose value via _p.onClose?.() rather than a potentially
+  // stale destructured copy. _p is the live Svelte 5 props proxy.
+  const _p = $props();
 
   let _modalEl  = $state(/** @type {HTMLElement|null} */ (null));
   // Svelte 5 delegates onclick handlers at the mount root; nodes portaled to
@@ -40,8 +38,9 @@
   let _loading = $state(false);
 
   const _ariaLabel = $derived.by(() => {
-    const rl = rootOfLabel(symbol, exchange);
-    return 'Chart — ' + (rl !== symbol ? rl : formatSymbol(symbol));
+    const s = _p.symbol ?? '', ex = _p.exchange ?? '';
+    const rl = rootOfLabel(s, ex);
+    return 'Chart — ' + (rl !== s ? rl : formatSymbol(s));
   });
 
   function _focusables() {
@@ -57,7 +56,7 @@
       // ChartModal is the top-of-stack modal. Also blocks ModalShell's
       // svelte:window Esc handler since this capture phase runs first.
       e.stopImmediatePropagation();
-      onClose?.();
+      _p.onClose?.();
       return;
     }
     if (e.key === 'Tab') {
@@ -72,10 +71,17 @@
     }
   }
 
-  function _onCloseClick(e) {
-    e.stopPropagation();
-    onClose?.();
-  }
+  // $effect tracks _closeBtnEl reactively so the click listener is
+  // registered even if bind:this inside the ModalShell snippet fires
+  // after onMount (Svelte 5 snippet rendering timing).
+  $effect(() => {
+    const btn = _closeBtnEl;
+    if (!btn) return;
+    // Read onClose via live props proxy — avoids stale destructured copy.
+    function _onClick(e) { e.stopPropagation(); _p.onClose?.(); }
+    btn.addEventListener('click', _onClick);
+    return () => btn.removeEventListener('click', _onClick);
+  });
 
   onMount(() => {
     // Seed the shared chartStore with this modal's symbol + exchange so
@@ -85,20 +91,16 @@
     // seeding here first means the store is correct before the workspace
     // mounts (useful for any consumers that read the store on their own
     // mount cycle).
-    if (symbol) chartStore.setSymbol(symbol);
-    if (exchange) chartStore.setExchange(exchange);
+    if (_p.symbol) chartStore.setSymbol(_p.symbol);
+    if (_p.exchange) chartStore.setExchange(_p.exchange);
     // Capture phase: fires before any bubble-phase listener (including
     // SymbolPanel's window listener) — Esc closes only ChartModal, not
     // the SymbolPanel behind it.
     window.addEventListener('keydown', _onKey, { capture: true });
-    // Native click listener — Svelte 5 delegation doesn't reach portaled
-    // nodes (see _closeBtnEl comment above).
-    _closeBtnEl?.addEventListener('click', _onCloseClick);
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
   });
   onDestroy(() => {
     window.removeEventListener('keydown', _onKey, { capture: true });
-    _closeBtnEl?.removeEventListener('click', _onCloseClick);
   });
 </script>
 
@@ -107,7 +109,7 @@
      clickOutside=false (close via × or Esc only), z-index matches
      .canonical-modal-overlay from app.css. ChartModal keeps its own
      capture-phase keydown for Tab trap + Esc stopImmediatePropagation. -->
-<ModalShell open={true} {onClose} passthrough={true} dim={false} clickOutside={false}
+<ModalShell open={true} onClose={_p.onClose} passthrough={true} dim={false} clickOutside={false}
             zIndex={10500} ariaLabel={_ariaLabel}>
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
@@ -162,9 +164,9 @@
       <div class="cm-chart-card">
         <ChartWorkspace
           bind:loading={_loading}
-          symbol={symbol}
-          exchange={exchange}
-          mode={mode}
+          symbol={_p.symbol ?? ''}
+          exchange={_p.exchange ?? ''}
+          mode={_p.mode ?? 'live'}
           compact={false}
           showHeader={false}
         />
