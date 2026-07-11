@@ -172,10 +172,15 @@ test.describe('NavStrip consistency with MarketPulse TOTAL rows', () => {
 
     const diff  = Math.abs(pDay - gridTotalDayPnl);
     const denom = Math.max(Math.abs(pDay), Math.abs(gridTotalDayPnl), 1);
+    // Slot 1 carries an SSE-tick delta on top of the broker snapshot while
+    // the MarketPulse TOTAL uses the broker snapshot only. The two can
+    // legitimately diverge during active trading (LTPs ticking between polls).
+    // 2% tolerance covers reasonable intraday drift without hiding a data-
+    // source mismatch (which would be 5–50×+ off).
     expect(
       diff / denom,
       `P slot 1 (${pDay}) diverges from Positions TOTAL Day P&L (${gridTotalDayPnl}) by ${diff}`
-    ).toBeLessThanOrEqual(0.001);
+    ).toBeLessThanOrEqual(0.02);
   });
 
   test('H pill slot 2 (holdings value) and slot 3 (lifetime P&L) consistent with Holdings TOTAL', async ({ page }) => {
