@@ -3206,6 +3206,144 @@ _ticker_alert_state: dict = {
 }
 
 
+async def _watchdog_deferred_recycle() -> None:
+    """Execute HARD-mode deferred ticker recycle if the flag is pending."""
+    try:
+        from backend.api.persistence.runtime_state import consume_ticker_reset_pending
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+        if consume_ticker_reset_pending():
+            try:
+                _get_ticker().recycle()
+                logger.info("ticker watchdog: ran deferred HARD-mode recycle")
+            except Exception as e:
+                logger.warning(f"ticker watchdog: deferred HARD-mode recycle failed: {e}")
+    except Exception as e:
+        logger.warning(f"ticker watchdog: pending-flag check failed: {e}")
+
+
+async def _watchdog_check_market_open(
+    holiday_cache: dict,
+    holiday_year_ref: list,
+    fetch_holidays: object,
+) -> bool:
+    """Refresh holiday cache if needed and return True if any segment is open."""
+    now = timestamp_indian().replace(tzinfo=None)
+    segments = _build_segments()
+    if holiday_year_ref[0] != now.year:
+        holiday_cache.clear()
+        holiday_year_ref[0] = now.year
+    for seg in segments:
+        exch = seg['holiday_exchange']
+        if exch not in holiday_cache:
+            try:
+                holiday_cache[exch] = await asyncio.to_thread(fetch_holidays, exch)  # type: ignore[operator]
+            except Exception:
+                holiday_cache[exch] = set()
+    return any(
+        is_market_open(
+            now,
+            holiday_cache.get(seg['holiday_exchange'], set()),
+            seg['hours_start'],
+            seg['hours_end'],
+            special_sessions=_fetch_special_sessions_safe(seg['holiday_exchange']),
+        )
+        for seg in segments
+    )
+
+
+async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
+    """Send a Telegram recovery alert when a previously-degraded ticker reconnects."""
+    from backend.shared.helpers.alert_utils import _send_telegram
+    from backend.shared.helpers.utils import is_enabled
+    _ticker_alert_state["alert_active"] = False
+    now_ts = _time.time()
+    duration_min = int((now_ts - _ticker_alert_state["incident_start"]) / 60)
+    branch = config.get("deploy_branch", "main")
+    branch_tag = f" [{branch}]" if branch != "main" else ""
+    ts = timestamp_display()
+    connected_acct = status.get("account", ticker.current_account() or "?")  # type: ignore[union-attr]
+    msg = (
+        f"TickerWatchdog{branch_tag} — recovered\n"
+        f"Ticker connected on {connected_acct}\n"
+        f"Duration of incident: {duration_min} min\n"
+        f"Time: {ts}"
+    )
+    logger.info(f"ticker watchdog: recovered on {connected_acct} after {duration_min} min")
+    if is_enabled("telegram"):
+        await asyncio.to_thread(_send_telegram, msg)
+
+
+def _watchdog_select_failover(
+    eligible: list,
+    current: Optional[str],
+    ticker: object,
+    failover_cooloff_s: float,
+) -> Optional[tuple[str, str, str]]:
+    """Return (acct, api_key, access_token) for the next eligible failover account, or None."""
+    for b in eligible:
+        acct = getattr(b, "account", "") or ""
+        if not acct or acct == current:
+            continue
+        if ticker.is_account_in_failover_cooloff(acct, failover_cooloff_s):  # type: ignore[union-attr]
+            continue
+        kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
+        api_key = getattr(kc, "api_key", None)
+        access_token = (
+            getattr(kc, "_access_token", None)
+            or getattr(kc, "access_token", None)
+        )
+        if api_key and access_token:
+            return (acct, api_key, access_token)
+    return None
+
+
+async def _watchdog_alert_degraded(
+    ticker: object,
+    eligible: list,
+    current: Optional[str],
+    alert_refire_s: float,
+) -> None:
+    """Fire (or re-fire) the Telegram degraded alert when all accounts are blocked."""
+    from backend.shared.helpers.alert_utils import _send_telegram
+    from backend.shared.helpers.utils import is_enabled
+    now_ts = _time.time()
+    should_alert = (
+        not _ticker_alert_state["alert_active"]
+        or (now_ts - _ticker_alert_state["last_alerted_at"]) > alert_refire_s
+    )
+    if not should_alert:
+        return
+    if not _ticker_alert_state["alert_active"]:
+        _ticker_alert_state["alert_active"] = True
+        _ticker_alert_state["incident_start"] = now_ts
+    _ticker_alert_state["last_alerted_at"] = now_ts
+    branch = config.get("deploy_branch", "main")
+    branch_tag = f" [{branch}]" if branch != "main" else ""
+    ts = timestamp_display()
+    disconnected_s = ticker.seconds_since_disconnect()  # type: ignore[union-attr]
+    acct_list = ", ".join(
+        b_acct for b in eligible
+        if (b_acct := getattr(b, "account", "") or "")
+    ) or "?"
+    is_refire = _ticker_alert_state["last_alerted_at"] != _ticker_alert_state["incident_start"]
+    refire_note = " (re-alert)" if is_refire else ""
+    msg = (
+        f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
+        f"Both Kite accounts in failover cool-off.\n"
+        f"Disconnect: {current or '?'} → {acct_list} (all blocked)\n"
+        f"Sparkline degrading to broker.ltp() polling.\n"
+        f"Disconnected for: {disconnected_s:.0f}s\n"
+        f"Time: {ts}"
+    )
+    logger.warning(
+        f"ticker watchdog: no eligible failover account "
+        f"(current={current or '?'}, disconnected_s={disconnected_s:.0f}) — "
+        f"continuing to wait for primary to recover"
+    )
+    if is_enabled("telegram"):
+        await asyncio.to_thread(_send_telegram, msg)
+
+
 async def _task_ticker_watchdog(state: dict) -> None:
     CHECK_INTERVAL_S    = 30.0   # how often to poll ticker.status()
     # Raised from 60s in BG to absorb one full Twisted reconnect cycle.
@@ -3225,7 +3363,7 @@ async def _task_ticker_watchdog(state: dict) -> None:
     # Per-watchdog holiday cache keyed by year so off-hours gating doesn't
     # hammer nseindia.com every 30 s. Refreshes naturally at year rollover.
     _wd_holiday_cache: dict = {}
-    _wd_holiday_year: int | None = None
+    _wd_holiday_year_ref: list = [None]  # mutable container for year tracking
 
     # Cutover branch — when KiteTicker lives in conn_service, the WS
     # lifecycle is its job (conn_service has its own ticker_watchdog).
@@ -3244,70 +3382,14 @@ async def _task_ticker_watchdog(state: dict) -> None:
     while True:
         try:
             await asyncio.sleep(CHECK_INTERVAL_S)
-            # HARD-mode deferred recycle — runs BEFORE the dev-idle and
-            # market-hours gates so an operator who flips HARD overnight
-            # or from a sync context still gets the ticker rebuilt on
-            # the next watchdog tick. consume_ticker_reset_pending()
-            # atomically read-and-clears the flag, so two simultaneous
-            # watchdog ticks (impossible in practice) would still only
-            # fire one recycle.
-            try:
-                from backend.api.persistence.runtime_state import (
-                    consume_ticker_reset_pending,
-                )
-                if consume_ticker_reset_pending():
-                    from backend.brokers.kite_ticker import get_ticker
-                    try:
-                        get_ticker().recycle()
-                        logger.info("ticker watchdog: ran deferred HARD-mode recycle")
-                    except Exception as e:
-                        logger.warning(
-                            f"ticker watchdog: deferred HARD-mode recycle failed: {e}"
-                        )
-            except Exception as e:
-                logger.warning(f"ticker watchdog: pending-flag check failed: {e}")
-            # Dev-idle gate — skip ticker watchdog on dev when engine is
-            # idle. The ticker isn't started either (per app.py gate) so
-            # there's nothing to watch; this short-circuit prevents the
-            # alert state machine from misfiring when the operator
-            # toggles dev_active off mid-session.
+            await _watchdog_deferred_recycle()
+
             from backend.shared.helpers.utils import is_engine_idle
             if is_engine_idle():
                 continue
 
-            # Market-hours gate — when no segment is open (overnight,
-            # weekend, holiday) Kite drops the WebSocket as expected:
-            # there are no ticks to deliver. The watchdog has no useful
-            # work in that window. Alerting here was pure noise — the
-            # operator got "TickerWatchdog — degraded" pings at 3 AM
-            # because the WS legitimately closed at 23:30 IST after MCX
-            # session end. Clear any active incident silently on entry
-            # so the next session starts with a clean slate; we don't
-            # ping a recovery because there was no real recovery — the
-            # market just closed.
-            now = timestamp_indian().replace(tzinfo=None)
-            segments = _build_segments()
-            if _wd_holiday_year != now.year:
-                _wd_holiday_cache = {}
-                _wd_holiday_year = now.year
-            for seg in segments:
-                exch = seg['holiday_exchange']
-                if exch not in _wd_holiday_cache:
-                    try:
-                        _wd_holiday_cache[exch] = await asyncio.to_thread(
-                            fetch_holidays, exch
-                        )
-                    except Exception:
-                        _wd_holiday_cache[exch] = set()
-            any_open = any(
-                is_market_open(
-                    now,
-                    _wd_holiday_cache.get(seg['holiday_exchange'], set()),
-                    seg['hours_start'],
-                    seg['hours_end'],
-                    special_sessions=_fetch_special_sessions_safe(seg['holiday_exchange']),
-                )
-                for seg in segments
+            any_open = await _watchdog_check_market_open(
+                _wd_holiday_cache, _wd_holiday_year_ref, fetch_holidays
             )
             if not any_open:
                 if _ticker_alert_state["alert_active"]:
@@ -3324,107 +3406,25 @@ async def _task_ticker_watchdog(state: dict) -> None:
             if not status.get("started"):
                 continue
             if status.get("connected"):
-                # Ticker is healthy — clear any outstanding degraded incident.
                 if _ticker_alert_state["alert_active"]:
-                    from backend.shared.helpers.alert_utils import _send_telegram
-                    from backend.shared.helpers.utils import is_enabled
-                    _ticker_alert_state["alert_active"] = False
-                    now_ts = _time.time()
-                    duration_min = int(
-                        (now_ts - _ticker_alert_state["incident_start"]) / 60
-                    )
-                    branch = config.get("deploy_branch", "main")
-                    branch_tag = f" [{branch}]" if branch != "main" else ""
-                    ts = timestamp_display()
-                    connected_acct = status.get("account", ticker.current_account() or "?")
-                    msg = (
-                        f"TickerWatchdog{branch_tag} — recovered\n"
-                        f"Ticker connected on {connected_acct}\n"
-                        f"Duration of incident: {duration_min} min\n"
-                        f"Time: {ts}"
-                    )
-                    logger.info(
-                        f"ticker watchdog: recovered on {connected_acct} "
-                        f"after {duration_min} min"
-                    )
-                    if is_enabled("telegram"):
-                        await asyncio.to_thread(_send_telegram, msg)
+                    await _watchdog_handle_recovery(ticker, status)
                 continue  # healthy
             if ticker.seconds_since_disconnect() < FAILOVER_THRESHOLD_S:
                 continue  # within KiteTicker's own retry window
 
             # Disconnected for too long — find the next eligible account.
-            # get_historical_brokers() honours the historical_data_enabled
-            # flag in settings and the 30s rate-limit cool-off — exactly
-            # the gating the operator wanted ("if it is enabled for
-            # historical data in settings, we are good").
             try:
                 eligible = get_historical_brokers()
             except Exception as e:
                 logger.warning(f"ticker watchdog: eligible-broker lookup failed: {e}")
                 continue
             current = ticker.current_account()
-            next_kc = None
-            for b in eligible:
-                acct = getattr(b, "account", "") or ""
-                if not acct or acct == current:
-                    continue
-                if ticker.is_account_in_failover_cooloff(acct, FAILOVER_COOLOFF_S):
-                    continue
-                # Extract live api_key + access_token from the broker's
-                # underlying KiteConnection (same pattern app.py uses).
-                kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
-                api_key = getattr(kc, "api_key", None)
-                access_token = (
-                    getattr(kc, "_access_token", None)
-                    or getattr(kc, "access_token", None)
-                )
-                if api_key and access_token:
-                    next_kc = (acct, api_key, access_token)
-                    break
+            next_kc = _watchdog_select_failover(
+                eligible, current, ticker, FAILOVER_COOLOFF_S
+            )
 
             if not next_kc:
-                # All accounts are in failover cool-off (or unavailable).
-                # Alert once on entry, then re-fire every 30 min while degraded.
-                from backend.shared.helpers.alert_utils import _send_telegram
-                from backend.shared.helpers.utils import is_enabled
-                now_ts = _time.time()
-                should_alert = (
-                    not _ticker_alert_state["alert_active"]
-                    or (now_ts - _ticker_alert_state["last_alerted_at"]) > ALERT_REFIRE_S
-                )
-                if should_alert:
-                    if not _ticker_alert_state["alert_active"]:
-                        # First entry into the incident.
-                        _ticker_alert_state["alert_active"] = True
-                        _ticker_alert_state["incident_start"] = now_ts
-                    _ticker_alert_state["last_alerted_at"] = now_ts
-
-                    branch = config.get("deploy_branch", "main")
-                    branch_tag = f" [{branch}]" if branch != "main" else ""
-                    ts = timestamp_display()
-                    disconnected_s = ticker.seconds_since_disconnect()
-                    acct_list = ", ".join(
-                        b_acct for b in eligible
-                        if (b_acct := getattr(b, "account", "") or "")
-                    ) or "?"
-                    is_refire = _ticker_alert_state["last_alerted_at"] != _ticker_alert_state["incident_start"]
-                    refire_note = " (re-alert)" if is_refire else ""
-                    msg = (
-                        f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
-                        f"Both Kite accounts in failover cool-off.\n"
-                        f"Disconnect: {current or '?'} → {acct_list} (all blocked)\n"
-                        f"Sparkline degrading to broker.ltp() polling.\n"
-                        f"Disconnected for: {disconnected_s:.0f}s\n"
-                        f"Time: {ts}"
-                    )
-                    logger.warning(
-                        f"ticker watchdog: no eligible failover account "
-                        f"(current={current or '?'}, disconnected_s={disconnected_s:.0f}) — "
-                        f"continuing to wait for primary to recover"
-                    )
-                    if is_enabled("telegram"):
-                        await asyncio.to_thread(_send_telegram, msg)
+                await _watchdog_alert_degraded(ticker, eligible, current, ALERT_REFIRE_S)
                 continue
 
             acct, api_key, access_token = next_kc
