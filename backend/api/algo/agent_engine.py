@@ -1270,6 +1270,105 @@ def _cycle_baseline_not_ready(agent, alert_state: dict, now, cfg: dict, *,
     )
 
 
+async def _cycle_maybe_expire_lifespan(agent, now, *, bypass_schedule: bool,
+                                       broadcast_fn) -> bool:
+    """Auto-complete until_date agents whose expiry has passed.
+
+    Returns True when the agent was completed (caller should `continue`).
+    Skipped entirely in sim runs (bypass_schedule=True) so the simulator
+    never mutates real DB state.
+    """
+    if bypass_schedule:
+        return False
+    if (getattr(agent, "lifespan_type", "persistent") != "until_date"
+            or not agent.lifespan_expires_at
+            or now < agent.lifespan_expires_at):
+        return False
+    async with async_session() as session:
+        await session.execute(
+            update(Agent).where(Agent.id == agent.id).values(status="completed")
+        )
+        await session.commit()
+    if broadcast_fn:
+        broadcast_fn("agent_state", {"slug": agent.slug, "status": "completed"})
+    return True
+
+
+async def _cycle_persist_untriggered_state(
+    agent,
+    *,
+    debounce_first_true_changed: bool,
+    debounce_new_first_true_at,
+    broadcast_fn,
+) -> None:
+    """Persist non-triggered state transitions to the DB.
+
+    Two cases:
+      1. Agent was in cooldown but didn't fire → transition back to active.
+      2. Debounce latch changed (armed or cleared) without a fire → write the
+         new condition_first_true_at so a process restart doesn't reset it.
+    """
+    if agent.status == "cooldown":
+        async with async_session() as session:
+            await session.execute(
+                update(Agent).where(Agent.id == agent.id).values(status="active")
+            )
+            await session.commit()
+        if broadcast_fn:
+            broadcast_fn("agent_state", {"slug": agent.slug, "status": "active"})
+    elif debounce_first_true_changed:
+        async with async_session() as session:
+            await session.execute(
+                update(Agent).where(Agent.id == agent.id).values(
+                    condition_first_true_at=debounce_new_first_true_at
+                )
+            )
+            await session.commit()
+
+
+def _cycle_maybe_buffer_fire(
+    agent,
+    matches: list,
+    *,
+    now,
+    bypass_suppression: bool,
+    bypass_schedule: bool,
+    sim_mode: bool,
+    alert_state: dict,
+    cfg: dict,
+    broadcast_fn,
+    debounce_min: int,
+    pending_dispatches: list,
+) -> bool:
+    """Evaluate the suppression gate and, when the agent fires, buffer a dispatch entry.
+
+    Returns True when the agent fired (triggered), False otherwise.
+    Mutates pending_dispatches in place on fire.
+    """
+    if not matches:
+        return False
+    if not (bypass_suppression or not _v2_should_suppress(agent, matches, now, cfg)):
+        return False
+
+    result = _v2_build_evalresult(matches, agent.name)
+    if sim_mode:
+        _cycle_shadow_lifespan_decrement(agent, alert_state)
+    if broadcast_fn:
+        broadcast_fn("agent_state", {"slug": agent.slug, "status": "triggered"})
+    new_status, _ = _cycle_compute_post_fire_status(agent, bypass_schedule=bypass_schedule)
+    pending_dispatches.append({
+        'agent':           agent,
+        'matches':         matches,
+        'result':          result,
+        'sim_mode':        sim_mode,
+        'alert_state':     alert_state,
+        'bypass_schedule': bypass_schedule,
+        'new_status':      new_status,
+        'debounce_min':    debounce_min,
+    })
+    return True
+
+
 def _cycle_apply_debounce(
     agent,
     matches: list,
@@ -1476,21 +1575,10 @@ async def run_cycle(context: dict, broadcast_fn=None,
     cfg = _v2_cfg()
 
     for agent in agents:
-        # Lifespan deadline — auto-complete `until_date` agents whose
-        # expiry has passed. Done before any other gates so a stale
-        # agent doesn't fire on its last tick. Sim runs (bypass_schedule)
-        # never mutate agent state, so the deadline check is gated.
-        if (not bypass_schedule
-                and getattr(agent, "lifespan_type", "persistent") == "until_date"
-                and agent.lifespan_expires_at
-                and now >= agent.lifespan_expires_at):
-            async with async_session() as session:
-                await session.execute(
-                    update(Agent).where(Agent.id == agent.id).values(status="completed")
-                )
-                await session.commit()
-            if broadcast_fn:
-                broadcast_fn("agent_state", {"slug": agent.slug, "status": "completed"})
+        # Lifespan deadline — auto-complete expired until_date agents.
+        if await _cycle_maybe_expire_lifespan(
+            agent, now, bypass_schedule=bypass_schedule, broadcast_fn=broadcast_fn
+        ):
             continue
 
         # schedule / cooldown / fire_at_time / blackout gates
@@ -1564,76 +1652,29 @@ async def run_cycle(context: dict, broadcast_fn=None,
             if _cycle_shadow_lifespan_exhausted(agent, alert_state):
                 continue   # skip the suppression + fire decision below
 
-        # Suppression gate: general sim runs and the live path BOTH go
-        # through it; only isolated single-agent sim runs bypass it so
-        # repeated "Run in Simulator" clicks always fire.
-        if matches and (bypass_suppression or not _v2_should_suppress(agent, matches, now, cfg)):
-            triggered = True
-            result = _v2_build_evalresult(matches, agent.name)
+        # Suppression gate + fire buffering.
+        triggered = _cycle_maybe_buffer_fire(
+            agent, matches,
+            now=now,
+            bypass_suppression=bypass_suppression,
+            bypass_schedule=bypass_schedule,
+            sim_mode=sim_mode,
+            alert_state=alert_state,
+            cfg=cfg,
+            broadcast_fn=broadcast_fn,
+            debounce_min=debounce_min,
+            pending_dispatches=pending_dispatches,
+        )
 
-            # Shadow-lifespan decrement — sim mode only.
-            if sim_mode:
-                _cycle_shadow_lifespan_decrement(agent, alert_state)
-
-            if broadcast_fn:
-                broadcast_fn("agent_state", {"slug": agent.slug, "status": "triggered"})
-
-            # Compute post-fire status (deferred DB write to post-loop survivor path).
-            _new_status, _new_trigger_count = _cycle_compute_post_fire_status(
-                agent, bypass_schedule=bypass_schedule
+        # Persist non-triggered state changes (cooldown→active recovery,
+        # debounce latch arm/clear). Skipped for sim runs.
+        if not bypass_schedule and not triggered:
+            await _cycle_persist_untriggered_state(
+                agent,
+                debounce_first_true_changed=debounce_first_true_changed,
+                debounce_new_first_true_at=debounce_new_first_true_at,
+                broadcast_fn=broadcast_fn,
             )
-
-            # Buffer dispatch + actions for the post-loop suppression pass.
-            # _v2_record, DB mutation (trigger_count, status, cooldown_until,
-            # condition_first_true_at), and the post-fire WS broadcast are
-            # deferred to the survivor loop so that suppressed agents never
-            # have their state mutated.
-            pending_dispatches.append({
-                'agent':            agent,
-                'matches':          matches,
-                'result':           result,
-                'sim_mode':         sim_mode,
-                'alert_state':      alert_state,
-                'bypass_schedule':  bypass_schedule,
-                'new_status':       _new_status,
-                'debounce_min':     debounce_min,
-            })
-
-        # Update state for the non-triggered paths only. For any sim run
-        # (schedule-bypassed) we never mutate the agent row — the whole
-        # point of the simulator is to exercise the pipeline without leaking
-        # cooldown / trigger count into real-market state. The real path
-        # runs with bypass_schedule=False and does update the row.
-        #
-        # NOTE: the `if triggered` branch that previously lived here has
-        # been moved into the post-loop survivor section so that topic-tier
-        # suppressed agents do NOT have their DB state mutated.
-        if not bypass_schedule:
-            if not triggered:
-                if agent.status == "cooldown":
-                    _untriggered_status = "active"
-                    async with async_session() as session:
-                        await session.execute(
-                            update(Agent).where(Agent.id == agent.id).values(
-                                status=_untriggered_status
-                            )
-                        )
-                        await session.commit()
-                    if broadcast_fn:
-                        broadcast_fn("agent_state", {
-                            "slug": agent.slug, "status": _untriggered_status
-                        })
-                elif debounce_first_true_changed:
-                    # Phase 21 — persist the debounce latch transitions
-                    # even when we don't fire (else the latch lives only
-                    # in process memory and a restart resets it).
-                    async with async_session() as session:
-                        await session.execute(
-                            update(Agent).where(Agent.id == agent.id).values(
-                                condition_first_true_at=debounce_new_first_true_at
-                            )
-                        )
-                        await session.commit()
 
     # ── Post-loop: topic-scoped tier suppression + dispatch survivors ────
     if pending_dispatches:
