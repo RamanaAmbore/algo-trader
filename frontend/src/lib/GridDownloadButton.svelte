@@ -21,6 +21,14 @@
     onClick = null,
     /** Card name for a11y / tooltip. */
     label = 'grid',
+    /**
+     * When true (default), applies `margin-left: auto` so the button
+     * self-positions to the far right in a flex row. Set false when the
+     * parent flex container (CardControls spacer, caption flex, etc.)
+     * already handles right-alignment — prevents competing auto-margins
+     * from fighting for free space in fullscreen or resized layouts.
+     */
+    autoMargin = true,
   } = $props();
 </script>
 
@@ -28,6 +36,7 @@
   <button
     type="button"
     class="grid-download-btn"
+    class:with-auto-margin={autoMargin}
     title="Download {label} as CSV"
     aria-label="Download {label} as CSV"
     onclick={onClick}>
@@ -59,7 +68,7 @@
     width: 1.4rem;
     height: 1.4rem;
     padding: 0;
-    margin: 0 0 0 auto;
+    margin: 0;
     background: var(--algo-cyan-bg);
     border: 1px solid var(--algo-cyan-border);
     border-radius: 3px;
@@ -67,6 +76,13 @@
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
+  }
+  /* Apply auto-margin only when the parent hasn't opted out via
+     autoMargin={false}. Standalone use (PerformancePage, NavBreakdown
+     caption) retains self-positioning. CardControls passes false so
+     the spacer before it handles right-alignment without conflict. */
+  .grid-download-btn.with-auto-margin {
+    margin-left: auto;
   }
   .grid-download-btn:hover {
     background: rgba(34, 211, 238, 0.26);
@@ -79,13 +95,14 @@
   }
 
   /*
-    When the search input is visible just before this button, or when the
-    search button itself precedes this button, remove the auto-margin so
-    the cluster stays tight. The sibling `.grid-search-btn + .grid-download-btn`
-    selector cancels margin-left:auto when Search is directly adjacent.
+    When the search input or search button directly precedes this button,
+    cancel the auto-margin so the cluster stays tight. Only applies when
+    `autoMargin` is true (i.e. the .with-auto-margin class is present);
+    CardControls sets autoMargin={false} so these selectors are moot for
+    the cluster case anyway.
   */
-  :global(.grid-search-btn) + .grid-download-btn,
-  :global(.grid-search-input) + .grid-download-btn {
+  :global(.grid-search-btn) + .grid-download-btn.with-auto-margin,
+  :global(.grid-search-input) + .grid-download-btn.with-auto-margin {
     margin-left: 0;
   }
 </style>

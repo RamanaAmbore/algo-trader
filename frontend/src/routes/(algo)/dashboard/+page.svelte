@@ -401,6 +401,8 @@
   let _eqPosEl     = $state(/** @type {HTMLDivElement|null} */ (null));
   let _eqHoldEl    = $state(/** @type {HTMLDivElement|null} */ (null));
   let _fundsGrid, _marginGrid, _winGrid, _losGrid, _eqPosGrid, _eqHoldGrid;
+  /** @type {{ downloadCsv: () => void } | null} */
+  let _navBdRef = $state(null);
   let _fundsReady  = $state(false);
   let _marginReady = $state(false);
   let _winReady    = $state(false);
@@ -2095,6 +2097,7 @@
           onRefresh={_refreshAll}
           bind:refreshLoading={_refreshing}
           showSearch={false}
+          onDownload={() => _navBdRef?.downloadCsv?.()}
         />
       {:else if _capEqTab === 'capital'}
         <CardControls
@@ -2130,7 +2133,7 @@
          level marketDataStores so a single broker fetch warms both
          surfaces and they can't drift. -->
     <div class="card-body" hidden={_capEqTab !== 'nav' || _colNavBd}>
-      <NavBreakdown accountFilter={_eqAccounts} />
+      <NavBreakdown bind:this={_navBdRef} accountFilter={_eqAccounts} />
     </div>
 
     <!-- Capital panel -->
