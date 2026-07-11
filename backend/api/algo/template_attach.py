@@ -1298,6 +1298,243 @@ def has_any_override(overrides: Optional[dict]) -> bool:
     return any(overrides.get(k) is not None for k in keys)
 
 
+def _check_applies_to_guard(
+    template:          dict,
+    parent_side:       str,
+    parent_symbol:     str,
+    parent_account:    str,
+    parent_qty:        int,
+    parent_fill_price: float,
+    parent_order_id:   Optional[int],
+) -> bool:
+    """Enforce the template's applies_to field against the parent order's
+    side and kind (incident 2026-06-22 guard).
+
+    Returns True when the attach must be REFUSED (mismatch detected —
+    caller should return None). Fires Telegram + email alert as a
+    side-effect when refusing. Returns False when the attach is allowed.
+
+    'both' and 'none' are always allowed (no filtering).
+    """
+    applies_to = (template.get("applies_to") or "both").strip().lower()
+    if applies_to in ("both", "none"):
+        return False
+
+    parent_side_u = (parent_side or "").upper().strip()
+    is_option = bool(_OPT_SYM_RE.match((parent_symbol or "").upper()))
+    # buy_any:    BUY anything
+    # sell_any:   SELL anything
+    # buy_option: BUY of CE/PE only
+    # sell_option:SELL of CE/PE only
+    wants_buy          = applies_to in ("buy_any", "buy_option")
+    wants_sell         = applies_to in ("sell_any", "sell_option")
+    wants_option_only  = applies_to in ("buy_option", "sell_option")
+    mismatch_reason: Optional[str] = None
+    if wants_buy and parent_side_u != "BUY":
+        mismatch_reason = (
+            f"side mismatch — template requires BUY parent but got {parent_side_u}"
+        )
+    elif wants_sell and parent_side_u != "SELL":
+        mismatch_reason = (
+            f"side mismatch — template requires SELL parent but got {parent_side_u}"
+        )
+    elif wants_option_only and not is_option:
+        mismatch_reason = (
+            f"kind mismatch — template is option-only but {parent_symbol!r} is not an option"
+        )
+
+    if mismatch_reason:
+        slug = template.get("slug", "?")
+        logger.warning(
+            f"template_attach.applies_to_guard: refusing to attach "
+            f"template slug={slug!r} (applies_to={applies_to}) to "
+            f"{parent_side_u} {parent_symbol!r} parent_order={parent_order_id} — "
+            f"{mismatch_reason}. 2026-06-22 incident pattern; non-destructive skip."
+        )
+        # Fire-and-forget alert so the operator gets immediate
+        # Telegram + email visibility on every guard fire. The
+        # PARENT order already filled successfully; this alert
+        # tells the operator "your exit plan didn't attach —
+        # check + manually arm if needed".
+        _fire_guard_alert(
+            template_slug=slug,
+            applies_to=applies_to,
+            parent_side=parent_side_u,
+            parent_symbol=parent_symbol,
+            parent_account=parent_account,
+            parent_qty=parent_qty,
+            parent_fill_price=parent_fill_price,
+            parent_order_id=parent_order_id,
+            reason=mismatch_reason,
+        )
+        return True
+
+    return False
+
+
+async def _resolve_lot_size_for_order(
+    template:          dict,
+    parent_exchange:   str,
+    parent_symbol:     str,
+    parent_account:    str,
+    parent_side:       str,
+    parent_qty:        int,
+    parent_fill_price: float,
+) -> tuple[int, Optional[AttachResult]]:
+    """Async lot_size resolution for F&O exchanges (MCX/NCO/NFO/BFO/CDS).
+
+    Returns (lot_size, None) on success. Returns (1, AttachResult_with_errors)
+    on failure — caller must return the error result immediately.
+
+    For non-derivative exchanges, returns (1, None) immediately (no-op).
+    """
+    if parent_exchange.upper() not in ("MCX", "NCO", "NFO", "BFO", "CDS"):
+        return 1, None
+
+    def _err_plan() -> TemplatePlan:
+        return TemplatePlan(
+            template_id=template.get("id"),
+            template_name=template.get("name") or "(unnamed)",
+            template_slug=template.get("slug"),
+            parent_account=parent_account,
+            parent_symbol=parent_symbol,
+            parent_side=parent_side,
+            parent_qty=parent_qty,
+            parent_exchange=parent_exchange,
+            parent_fill_price=float(parent_fill_price),
+            parent_lot_size=1,
+        )
+
+    try:
+        from backend.brokers.adapters.kite import get_lot_size
+        _ls = await get_lot_size(parent_exchange, parent_symbol)
+        if _ls > 1:
+            return _ls, None
+        # 0 = cache miss, 1 = equity sentinel — both are dangerous on
+        # F&O exchanges. Surface to caller as a hard failure so no
+        # untranslated qty ever reaches the broker.
+        logger.error(
+            "[GTT-QTY-GUARD] lot_size=%s for %s/%s — "
+            "instruments cache miss or sub-lot. Refusing template attach.",
+            _ls, parent_exchange, parent_symbol,
+        )
+        result_err = AttachResult(plan=_err_plan())
+        result_err.errors.append(
+            f"[GTT-QTY-GUARD] lot_size={_ls} for "
+            f"{parent_exchange}/{parent_symbol} — instruments cache miss. "
+            f"Cannot safely translate qty to lots. Template attach refused."
+        )
+        return 1, result_err
+    except Exception as _e:
+        logger.error(
+            "[GTT-QTY-GUARD] get_lot_size failed for %s/%s: %s — "
+            "refusing F&O template attach.", parent_exchange, parent_symbol, _e,
+        )
+        result_err = AttachResult(plan=_err_plan())
+        result_err.errors.append(
+            f"[GTT-QTY-GUARD] lot_size lookup failed for "
+            f"{parent_exchange}/{parent_symbol}: {_e}. "
+            f"Template attach refused to prevent F&O oversize."
+        )
+        return 1, result_err
+
+
+def _route_apply_path(
+    plan:            TemplatePlan,
+    apply_path:      str,
+    parent_account:  str,
+    parent_order_id: Optional[int],
+) -> AttachResult:
+    """Route the resolved plan into sim, live, or preview path.
+
+    'preview': return AttachResult(plan) with no broker calls.
+    'sim' / 'auto'+SimDriver.active: route to apply_plan_sim.
+    'live' / 'auto'+not sim: resolve broker + route to apply_plan_live.
+    Fallback: return AttachResult(plan) unchanged.
+    """
+    # Preview short-circuit — never apply.
+    if apply_path == "preview":
+        return AttachResult(plan=plan)
+
+    # Resolve sim vs live.
+    sim_active = False
+    if apply_path == "auto":
+        try:
+            from backend.api.algo.sim.driver import SimDriver
+            sim_active = SimDriver.instance().active
+        except Exception:
+            sim_active = False
+
+    if apply_path == "sim" or (apply_path == "auto" and sim_active):
+        from backend.api.algo.sim.driver import SimDriver
+        return apply_plan_sim(plan, SimDriver.instance(),
+                              parent_order_id=parent_order_id)
+
+    if apply_path == "live" or (apply_path == "auto" and not sim_active):
+        try:
+            from backend.brokers.registry import get_broker
+            broker = get_broker(parent_account)
+        except Exception as e:
+            result = AttachResult(plan=plan)
+            result.errors.append(
+                f"could not resolve broker for {parent_account!r}: {e}"
+            )
+            return result
+        return apply_plan_live(plan, broker, parent_order_id=parent_order_id)
+
+    return AttachResult(plan=plan)
+
+
+async def _maybe_scan_wing_by_premium(
+    template:          dict,
+    overrides:         dict,
+    parent_side:       str,
+    parent_symbol:     str,
+    parent_exchange:   str,
+    parent_fill_price: float,
+) -> tuple[dict, Optional[str]]:
+    """Phase 1B — when the template's wing mode is premium% AND the
+    operator has not supplied an explicit wing_strike_offset, run the
+    async chain scan and inject the picked symbol into overrides.
+
+    Returns (overrides_possibly_augmented, wing_scan_note_or_None).
+    On any failure, wing_scan_note carries the reason and overrides is
+    returned unchanged — the parent order is never blocked by a scan
+    error.
+    """
+    wing_offset_pre = (overrides.get("wing_strike_offset") if overrides else None)
+    if wing_offset_pre is None:
+        wing_offset_pre = template.get("wing_strike_offset")
+    wing_pct_pre = (overrides.get("wing_premium_pct") if overrides else None)
+    if wing_pct_pre is None:
+        wing_pct_pre = template.get("wing_premium_pct")
+
+    if not (parent_side == "SELL"
+            and bool(_OPT_SYM_RE.match(parent_symbol.upper()))
+            and wing_pct_pre is not None
+            and wing_offset_pre is None
+            and parent_fill_price > 0):
+        return overrides, None
+
+    try:
+        wsym, wltp, reason = await _pick_wing_by_premium(
+            parent_symbol=parent_symbol,
+            parent_exchange=parent_exchange,
+            parent_fill_price=parent_fill_price,
+            wing_premium_pct=float(wing_pct_pre),
+        )
+    except Exception as e:
+        wsym, wltp, reason = None, None, f"wing_premium_pct scan errored: {e}"
+
+    if wsym:
+        overrides = dict(overrides or {})
+        overrides["_wing_picked_symbol"] = wsym
+        if wltp is not None:
+            overrides["_wing_picked_ltp"] = wltp
+
+    return overrides, reason
+
+
 async def apply_template_to_order(
     *,
     template_id:        Optional[int],
@@ -1356,55 +1593,11 @@ async def apply_template_to_order(
     # leg shape it wasn't built for. Mismatch → log + alert (Telegram
     # + email) + return None. The PARENT order itself already filled;
     # we just don't add exits. Non-destructive failure mode.
-    applies_to = (template.get("applies_to") or "both").strip().lower()
-    if applies_to not in ("both", "none"):
-        parent_side_u = (parent_side or "").upper().strip()
-        is_option = bool(_OPT_SYM_RE.match((parent_symbol or "").upper()))
-        # buy_any:    BUY anything
-        # sell_any:   SELL anything
-        # buy_option: BUY of CE/PE only
-        # sell_option:SELL of CE/PE only
-        wants_buy   = applies_to in ("buy_any", "buy_option")
-        wants_sell  = applies_to in ("sell_any", "sell_option")
-        wants_option_only = applies_to in ("buy_option", "sell_option")
-        mismatch_reason: Optional[str] = None
-        if wants_buy and parent_side_u != "BUY":
-            mismatch_reason = (
-                f"side mismatch — template requires BUY parent but got {parent_side_u}"
-            )
-        elif wants_sell and parent_side_u != "SELL":
-            mismatch_reason = (
-                f"side mismatch — template requires SELL parent but got {parent_side_u}"
-            )
-        elif wants_option_only and not is_option:
-            mismatch_reason = (
-                f"kind mismatch — template is option-only but {parent_symbol!r} is not an option"
-            )
-        if mismatch_reason:
-            slug = template.get("slug", "?")
-            logger.warning(
-                f"template_attach.applies_to_guard: refusing to attach "
-                f"template slug={slug!r} (applies_to={applies_to}) to "
-                f"{parent_side_u} {parent_symbol!r} parent_order={parent_order_id} — "
-                f"{mismatch_reason}. 2026-06-22 incident pattern; non-destructive skip."
-            )
-            # Fire-and-forget alert so the operator gets immediate
-            # Telegram + email visibility on every guard fire. The
-            # PARENT order already filled successfully; this alert
-            # tells the operator "your exit plan didn't attach —
-            # check + manually arm if needed".
-            _fire_guard_alert(
-                template_slug=slug,
-                applies_to=applies_to,
-                parent_side=parent_side_u,
-                parent_symbol=parent_symbol,
-                parent_account=parent_account,
-                parent_qty=parent_qty,
-                parent_fill_price=parent_fill_price,
-                parent_order_id=parent_order_id,
-                reason=mismatch_reason,
-            )
-            return None
+    if _check_applies_to_guard(
+        template, parent_side, parent_symbol,
+        parent_account, parent_qty, parent_fill_price, parent_order_id,
+    ):
+        return None
 
     # Capability lookup — only needed for live path's OCO-vs-singles
     # decision. Sim path uses two-leg unconditionally (SimGttBook
@@ -1422,63 +1615,12 @@ async def apply_template_to_order(
     # is async and we're already in async context here.  For non-derivative
     # exchanges this is always 1 (no-op translation later).
     # Covers MCX/NCO (commodities) + NFO/BFO/CDS (index/currency F&O).
-    parent_lot_size: int = 1
-    if parent_exchange.upper() in ("MCX", "NCO", "NFO", "BFO", "CDS"):
-        try:
-            from backend.brokers.adapters.kite import get_lot_size
-            _ls = await get_lot_size(parent_exchange, parent_symbol)
-            if _ls > 1:
-                parent_lot_size = _ls
-            elif _ls <= 1:
-                # 0 = cache miss, 1 = equity sentinel — both are dangerous on
-                # F&O exchanges. Surface to caller as a hard failure so no
-                # untranslated qty ever reaches the broker.
-                logger.error(
-                    "[GTT-QTY-GUARD] lot_size=%s for %s/%s — "
-                    "instruments cache miss or sub-lot. Refusing template attach.",
-                    _ls, parent_exchange, parent_symbol,
-                )
-                result_err = AttachResult(plan=TemplatePlan(
-                    template_id=template.get("id"),
-                    template_name=template.get("name") or "(unnamed)",
-                    template_slug=template.get("slug"),
-                    parent_account=parent_account,
-                    parent_symbol=parent_symbol,
-                    parent_side=parent_side,
-                    parent_qty=parent_qty,
-                    parent_exchange=parent_exchange,
-                    parent_fill_price=float(parent_fill_price),
-                    parent_lot_size=1,
-                ))
-                result_err.errors.append(
-                    f"[GTT-QTY-GUARD] lot_size={_ls} for "
-                    f"{parent_exchange}/{parent_symbol} — instruments cache miss. "
-                    f"Cannot safely translate qty to lots. Template attach refused."
-                )
-                return result_err
-        except Exception as _e:
-            logger.error(
-                "[GTT-QTY-GUARD] get_lot_size failed for %s/%s: %s — "
-                "refusing F&O template attach.", parent_exchange, parent_symbol, _e,
-            )
-            result_err = AttachResult(plan=TemplatePlan(
-                template_id=template.get("id"),
-                template_name=template.get("name") or "(unnamed)",
-                template_slug=template.get("slug"),
-                parent_account=parent_account,
-                parent_symbol=parent_symbol,
-                parent_side=parent_side,
-                parent_qty=parent_qty,
-                parent_exchange=parent_exchange,
-                parent_fill_price=float(parent_fill_price),
-                parent_lot_size=1,
-            ))
-            result_err.errors.append(
-                f"[GTT-QTY-GUARD] lot_size lookup failed for "
-                f"{parent_exchange}/{parent_symbol}: {_e}. "
-                f"Template attach refused to prevent F&O oversize."
-            )
-            return result_err
+    parent_lot_size, _lot_err = await _resolve_lot_size_for_order(
+        template, parent_exchange, parent_symbol,
+        parent_account, parent_side, parent_qty, parent_fill_price,
+    )
+    if _lot_err is not None:
+        return _lot_err
 
     # Phase 1B — when the template says "pick wing by premium %" AND
     # no explicit wing_strike_offset overrides it, run the chain scan
@@ -1486,36 +1628,10 @@ async def apply_template_to_order(
     # back into the synchronous resolver via the merged overrides dict.
     # Scan failures convert to a plan note + skip wing attach; the
     # parent order is never blocked.
-    wing_scan_note: Optional[str] = None
-    wing_offset_pre = (overrides.get("wing_strike_offset")
-                       if overrides else None)
-    if wing_offset_pre is None:
-        wing_offset_pre = template.get("wing_strike_offset")
-    wing_pct_pre = (overrides.get("wing_premium_pct") if overrides else None)
-    if wing_pct_pre is None:
-        wing_pct_pre = template.get("wing_premium_pct")
-    if (parent_side == "SELL"
-            and bool(_OPT_SYM_RE.match(parent_symbol.upper()))
-            and wing_pct_pre is not None
-            and wing_offset_pre is None
-            and parent_fill_price > 0):
-        try:
-            wsym, wltp, reason = await _pick_wing_by_premium(
-                parent_symbol=parent_symbol,
-                parent_exchange=parent_exchange,
-                parent_fill_price=parent_fill_price,
-                wing_premium_pct=float(wing_pct_pre),
-            )
-        except Exception as e:
-            wsym, wltp, reason = None, None, (
-                f"wing_premium_pct scan errored: {e}"
-            )
-        wing_scan_note = reason
-        if wsym:
-            overrides = dict(overrides or {})
-            overrides["_wing_picked_symbol"] = wsym
-            if wltp is not None:
-                overrides["_wing_picked_ltp"] = wltp
+    overrides, wing_scan_note = await _maybe_scan_wing_by_premium(
+        template, overrides, parent_side, parent_symbol,
+        parent_exchange, parent_fill_price,
+    )
 
     plan = resolve_template_plan(
         template, overrides,
@@ -1532,34 +1648,4 @@ async def apply_template_to_order(
     if wing_scan_note:
         plan.notes.append(wing_scan_note)
 
-    # Preview short-circuit — never apply.
-    if apply_path == "preview":
-        return AttachResult(plan=plan)
-
-    # Resolve sim vs live.
-    sim_active = False
-    if apply_path == "auto":
-        try:
-            from backend.api.algo.sim.driver import SimDriver
-            sim_active = SimDriver.instance().active
-        except Exception:
-            sim_active = False
-
-    if apply_path == "sim" or (apply_path == "auto" and sim_active):
-        from backend.api.algo.sim.driver import SimDriver
-        return apply_plan_sim(plan, SimDriver.instance(),
-                              parent_order_id=parent_order_id)
-
-    if apply_path == "live" or (apply_path == "auto" and not sim_active):
-        try:
-            from backend.brokers.registry import get_broker
-            broker = get_broker(parent_account)
-        except Exception as e:
-            result = AttachResult(plan=plan)
-            result.errors.append(
-                f"could not resolve broker for {parent_account!r}: {e}"
-            )
-            return result
-        return apply_plan_live(plan, broker, parent_order_id=parent_order_id)
-
-    return AttachResult(plan=plan)
+    return _route_apply_path(plan, apply_path, parent_account, parent_order_id)
