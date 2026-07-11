@@ -115,6 +115,8 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 - §21. [Data refresh — PositionStrip + Dashboard](#21-data-refresh--positionstrip--dashboard)
 - §21.5. [Frontend → broker API — full round-trip](#215-frontend--broker-api--full-round-trip)
 - §21.5.5. [Day P&L backstop — SSOT](#2155-day-pnl-backstop--ssot)
+- §21.5.6. [MCX snapshot multiplier fix](#2156-mcx-snapshot-multiplier-fix--closed-hours-position-undercount)
+- §21.5.7. [Holdings snapshot close_price fix](#2157-holdings-snapshot-close_price-fix--preserves-prior-session-close)
 - §21.6. [Persistence three-tier — cache → DB → broker](#216-persistence-three-tier--cache--db--broker)
 - §21.7. [Stale data semantics — keepStaleOnEmpty and error recovery](#217-stale-data-semantics--keepstaleoneempty-and-error-recovery)
 - §22. [Demo mode](#22-demo-mode)
@@ -129,6 +131,8 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 - §22.13. [Audit slice D — UX consistency + palette consolidation + 2 defects](#2213-audit-slice-d--ux-consistency--palette-consolidation--2-defects)
 - §22.14. [Market-status — broker API beats bellwether-quote probe](#2214-market-status--broker-api-beats-bellwether-quote-probe)
 - §22.15. [Chart indicator system — pure module + overlay persistence](#2215-chart-indicator-system--pure-module--overlay-persistence)
+- §22.16. [Derivatives page — cold-start and payoff improvements](#2216-derivatives-page--cold-start-and-payoff-improvements)
+- §22.17. [Derivatives page — `_throttledTick` market-close gate](#2217-derivatives-page--_throttledtick-market-close-gate)
 
 **Part VII — Operations**
 
@@ -2809,6 +2813,39 @@ Intraday P&L is complex because Kite sometimes omits `day_change_val` for new po
 - `frontend/src/lib/data/nav.js::baseDayPnlForPosition`
 - All callers listed above
 
+### 21.5.6 MCX snapshot multiplier fix — closed-hours position undercount
+
+`_positions_snapshot` in `backend/api/routes/positions.py` reads closed-hours
+snapshots from `daily_book` and rebuilds position rows. Pre-fix, raw Kite
+`quantity` fields (in lots for MCX) were passed directly to the row builder,
+while the live path (`broker_apis.fetch_positions`) multiplies by Kite's
+`multiplier` field to return contracts. This asymmetry meant closed-hours MCX
+options showed 100× undercount (qty in lots instead of contracts).
+
+**Fix:** `backend/api/routes/positions_helpers.py` exports
+`extract_snapshot_multiplier(snapshot_payload)` which reads the `multiplier`
+field from the snapshot JSON. `_positions_snapshot` applies it before building
+each row, ensuring closed and open hours show identical contract quantities.
+
+**Files:**
+- `backend/api/routes/positions_helpers.py::extract_snapshot_multiplier` — extracts + applies multiplier
+- `backend/api/routes/positions.py::_positions_snapshot` — caller
+- `backend/tests/test_positions_helpers.py` — 5 tests covering MCX extraction + conversion
+
+### 21.5.7 Holdings snapshot `close_price` fix — preserves prior-session close
+
+`_overlay_snapshot_for_closed_exchanges` in `backend/api/routes/holdings.py`
+was overwriting `close_price` with the snapshot LTP value. During closed hours,
+this zeroed the day P&L formula: `(snapLtp − close_price) × qty = 0` when both
+fields held the same snapshot value, masking actual overnight price changes.
+
+**Fix:** `close_price` is no longer overwritten. It preserves the broker's
+prior-session close, so the formula remains correct: `(snapLtp − prior_close) ×
+qty` computes legitimate overnight P&L.
+
+**Files:**
+- `backend/api/routes/holdings.py::_overlay_snapshot_for_closed_exchanges` — preserves close_price field
+
 ---
 
 ## 21.6 Persistence three-tier — cache → DB → broker
@@ -3731,6 +3768,37 @@ Technical indicators (SMA, EMA, VWAP, Bollinger Bands, RSI, MACD) live in a sing
 - `frontend/scripts/indicators.test.js` — 52-test unit suite (`node --test`) covering indicator math + 5 signal helpers
 - `frontend/e2e/chart_overlays.spec.js` — indicator paths Playwright spec
 - `frontend/e2e/chart_signals.spec.js` — buy/sell markers Playwright spec (chromium-desktop + mobile-portrait)
+
+---
+
+## 22.16. Derivatives page — cold-start and payoff improvements
+
+Three improvements accelerate page load + rendering fidelity on the `/admin/derivatives` page:
+
+**Picker ordering** — `_getCandidates()` now prioritizes symbols in descending order of relevance: options positions → futures positions → holdings → popular underlyings. On page mount, the first candidate is auto-selected, ensuring the most-likely underlying is prefilled without waiting for candidates to load.
+
+**Cold-start seed** — Page no longer waits for `await loadInstruments()` to complete before rendering. Instead, `OptionsPayoff.svelte` is seeded immediately with `POPULAR_UNDERLYINGS[0]` (e.g. NIFTY 50), so the payoff chart renders instantly. When instruments arrive, the page resolves to the operator's preferred symbol or re-runs `loadStrategy()`.
+
+**Stub today_value** — `_clientPayoffStub` in `backend/api/routes/derivatives.py` now returns `today_value: null` instead of `expiry_value`. This prevents the frontend's "today" curve from rendering with an incorrect negative slope before Black-Scholes pricing arrives. `OptionsPayoff.svelte` skips the today curve entirely when `hasTodayValues=false`.
+
+**Files:**
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — picker ordering + cold-start seed
+- `frontend/src/lib/OptionsPayoff.svelte` — `hasTodayValues` check
+- `backend/api/routes/derivatives.py` — stub today_value change
+
+---
+
+## 22.17. Derivatives page — `_throttledTick` market-close gate
+
+`_throttledTick` is a counter that drives all `$derived.by` blocks on the derivatives page (liveSpot, _clientPayoffStub, _legsExpPnlTotal, _expiryProfit, etc.). Each increment triggers a payoff chart re-render.
+
+**Bug:** Pre-fix, the counter incremented on every `symbolTickCount` event unconditionally — even during closed hours when `MarketPulse`'s reduced-cadence WebSocket poll still fires. Each increment caused `_clientPayoffStub` to produce a new array reference, forcing `OptionsPayoff.svelte` to re-animate continuously overnight (expensive + misleading).
+
+**Fix:** `_throttledTick++` is now gated behind `if (isMarketOpen())` in both `derivatives/+page.svelte` and `PositionStrip.svelte`. During closed hours, the counter stays frozen. The edge-detect clock in `marketAwareInterval` fires `loadStrategy()` once on the closed→open transition.
+
+**Files:**
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — market-close gate
+- `frontend/src/lib/PositionStrip.svelte` — same gate for consistency
 
 ---
 
