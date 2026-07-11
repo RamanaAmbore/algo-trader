@@ -411,13 +411,17 @@
   // equity intraday positions alongside F&O so the P pill stays in sync
   // with the Pulse positions total on every page.
   // baseDayPnlForPosition applies the new-position override (oq=0 → pnl).
-  // SSE-tick delta added on top for live correction (market-open gated).
+  //
+  // NO SSE delta here — MarketPulse TOTAL explicitly uses broker snapshot
+  // `_broker_pnl` (= Σ r.pnl) without a live-tick delta so both surfaces
+  // stay in sync. Adding a delta to slot 2 (lifetime P&L) would diverge from
+  // the TOTAL row whenever SSE ticks arrive between polls, which is the root
+  // cause of the operator-reported slot-2 inconsistency. Slot 1 (day P&L)
+  // carries the live signal via dispPositionsToday which IS delta-corrected.
   const _livePositionsPnl = $derived.by(() => {
     let pnlTotal = 0;
     for (const p of positions) pnlTotal += Number(p?.pnl || 0);
-    let delta = 0;
-    for (const p of positions) delta += _delta(p, 'P');
-    return pnlTotal + delta;
+    return pnlTotal;
   });
   const _livePositionsToday = $derived.by(() => {
     let dayTotal = 0;
@@ -439,14 +443,20 @@
     for (const h of holdings)  s += Number(h?.day_change_val || 0) + _delta(h, 'H');
     return s;
   });
+  // NO SSE delta on _liveHoldingsTotal / _liveHoldingsValue — mirrors the
+  // same rationale as _livePositionsPnl: MarketPulse Holdings TOTAL uses
+  // _broker_pnl (= Σ r.pnl) and liveHold-recomputed cur_val per-row, but
+  // the TOTAL row falls back to broker snapshot for cross-surface sync. Pure
+  // broker-snapshot sums here keep H pill slots 2 + 3 consistent with the
+  // Holdings grid TOTAL.
   const _liveHoldingsTotal = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.pnl || 0) + _delta(h, 'H');
+    for (const h of holdings)  s += Number(h?.pnl || 0);
     return s;
   });
   const _liveHoldingsValue = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.cur_val || 0) + _delta(h, 'H');
+    for (const h of holdings)  s += Number(h?.cur_val || 0);
     return s;
   });
 

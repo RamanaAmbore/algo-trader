@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-md_file = Path("DESIGN_GUIDE.md")
+md_file = Path("docs/DESIGN_GUIDE.md")
 pdf_file = Path("DESIGN_GUIDE.pdf")
 
 if not md_file.exists():

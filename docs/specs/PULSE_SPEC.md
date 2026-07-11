@@ -113,6 +113,42 @@ See Section 5 for DB-first policy and fallback ladder.
 - Day P&L: always via `baseDayPnlForPosition(p)` — NEVER read `day_change_val` directly
 - Do NOT use `positions.close_price` (stale overnight); use `daily_book.ltp`
 
+### 4.5 Card Controls — CSV Export Button
+
+All ag-Grid cards on `/pulse` and related admin surfaces include a Download button for
+immediate CSV export of the current grid view (filtered, sorted).
+
+**Position in CardControls cluster**: Search · **Download** · Collapse · DefaultSize · Fullscreen
+
+**Cards that include Download**:
+- Watchlist + Movers sections: Pinned, Winners, Losers (all watch-type grids)
+- Positions and Holdings (account grids)
+- Derivatives Legs grid (options/futures legs)
+- Orders grid (current/filled orders)
+- Automation Templates grid (saved agent rules)
+- Automation Activity grid (agent execution log)
+
+**Cards that do NOT include Download**:
+- Chart cards (no ag-Grid present)
+- News / Summary cards (static content, not tabular)
+
+**Behavior**: Clicking the Download icon immediately triggers `onDownload` callback in
+`CardControls.svelte`, which calls ag-Grid's export API with the current filter/sort state.
+
+**File naming convention**:
+- Pinned/custom watchlist: `watchlist.csv`
+- Winners: `winners.csv`
+- Losers: `losers.csv`
+- Positions: `positions.csv`
+- Holdings: `holdings.csv`
+- Derivatives legs: `legs.csv`
+- Orders: `orders.csv`
+- Automation templates: `templates.csv`
+- Automation activity: `activity.csv`
+
+**Component**: `GridDownloadButton.svelte` (reusable). Accepts `onDownload` callback prop
+passed from `CardControls.svelte` to parent ag-Grid wrapper.
+
 ---
 
 ## 5. Data Source Ladder — DB-First Policy
