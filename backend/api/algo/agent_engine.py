@@ -1326,6 +1326,54 @@ async def _cycle_persist_untriggered_state(
             await session.commit()
 
 
+async def _cycle_load_agents(only_agent_ids: list[int] | None) -> list:
+    """Load the agent rows to evaluate this tick.
+
+    Three semantics for only_agent_ids:
+      None       → every active / cooldown agent (live path)
+      [id1, id2] → only those agents, regardless of DB status (simulator)
+      []         → no agents (market-scenario explorer)
+    """
+    async with async_session() as session:
+        if only_agent_ids is not None:
+            if not only_agent_ids:
+                return []
+            result = await session.execute(
+                select(Agent).where(Agent.id.in_(only_agent_ids))
+            )
+            return list(result.scalars().all())
+        result = await session.execute(
+            select(Agent).where(Agent.status.in_(["active", "cooldown"]))
+        )
+        return list(result.scalars().all())
+
+
+def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now) -> list:
+    """Build a V2Context for the agent and run the condition tree evaluator.
+
+    Returns the list of match dicts (empty on no match or on evaluator error).
+    """
+    alert_state = context.get("alert_state") or {}
+    v2_ctx = V2Context(
+        sum_holdings=context.get("sum_holdings"),
+        sum_positions=context.get("sum_positions"),
+        df_margins=context.get("df_margins"),
+        watchlist_rows=context.get("watchlist_rows") or [],
+        position_rows=context.get("position_rows") or [],
+        spot_prices=context.get("spot_prices") or {},
+        alert_state=alert_state,
+        now=now,
+        segments=context.get("segments", []),
+        rate_window_min=cfg['rate_window_min'],
+        agent=agent,
+    )
+    try:
+        return v2_evaluate(agent.conditions, v2_ctx)
+    except Exception as e:
+        logger.error(f"Agent [{agent.slug}] v2 evaluate failed: {e}")
+        return []
+
+
 def _cycle_maybe_buffer_fire(
     agent,
     matches: list,
@@ -1529,27 +1577,7 @@ async def run_cycle(context: dict, broadcast_fn=None,
     # Each entry: {agent, matches, result, sim_mode, alert_state}.
     pending_dispatches: list[dict] = []
 
-    # Load agents. Three distinct semantics for `only_agent_ids`:
-    #   - None        → run every active / cooldown agent (default live path)
-    #   - [id1, id2]  → run ONLY those agents, regardless of DB status
-    #                   (simulator "Run in Simulator" + multi-agent sim)
-    #   - []          → run NO agents — pure market-scenario explorer
-    #                   (sim with positions only; no triggers, no orders)
-    async with async_session() as session:
-        if only_agent_ids is not None:
-            if not only_agent_ids:
-                agents = []   # empty list → explicit "no agents"
-            else:
-                result = await session.execute(
-                    select(Agent).where(Agent.id.in_(only_agent_ids))
-                )
-                agents = result.scalars().all()
-        else:
-            result = await session.execute(
-                select(Agent).where(Agent.status.in_(["active", "cooldown"]))
-            )
-            agents = result.scalars().all()
-
+    agents = await _cycle_load_agents(only_agent_ids)
     if not agents:
         return
 
@@ -1592,15 +1620,7 @@ async def run_cycle(context: dict, broadcast_fn=None,
         if _cycle_in_blackout(agent, now, bypass_schedule=bypass_schedule):
             continue
 
-        # v2 grammar dispatch: metric/scope leaves or all/any/not composites
-        # go through backend.api.algo.agent_evaluator. Baseline gate and
-        # suppression are applied here rather than inside the evaluator so
-        # the evaluator stays a pure tree walker.
         alert_state = context.get("alert_state") or {}
-        # `sim_mode` is set by the simulator; it flows through V2Context and
-        # tags every downstream artefact (Telegram, email, agent_events,
-        # algo_orders) with a SIMULATOR marker so real and simulated fires
-        # can't be confused in the logs or the group chat.
         sim_mode = bool(alert_state.get("sim_mode") or context.get("sim_mode"))
         _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
         triggered = False
@@ -1610,33 +1630,8 @@ async def run_cycle(context: dict, broadcast_fn=None,
                                      bypass_schedule=bypass_schedule):
             continue
 
-        v2_ctx = V2Context(
-            sum_holdings=context.get("sum_holdings"),
-            sum_positions=context.get("sum_positions"),
-            df_margins=context.get("df_margins"),
-            watchlist_rows=context.get("watchlist_rows") or [],
-            # Phase 25 — expiry agents read per-symbol rows + underlying
-            # spot prices via these context fields. Callers (background
-            # tasks, simulator, dry-run) populate them when available;
-            # absent ⇒ expiry-* metric resolvers return None gracefully.
-            position_rows=context.get("position_rows") or [],
-            spot_prices=context.get("spot_prices") or {},
-            alert_state=alert_state,
-            now=now,
-            segments=context.get("segments", []),
-            rate_window_min=cfg['rate_window_min'],
-            agent=agent,
-        )
-
-        try:
-            matches = v2_evaluate(agent.conditions, v2_ctx)
-        except Exception as e:
-            logger.error(f"Agent [{agent.slug}] v2 evaluate failed: {e}")
-            matches = []
-
-        # No matches this tick — clear any static-agent latch so the agent
-        # re-arms for a future re-breach. This is the other half of the
-        # latching semantic defined in `_v2_should_suppress`.
+        # Evaluate condition tree; unlatch static agents on no-match.
+        matches = _cycle_evaluate_agent(agent, context, cfg, now)
         if not matches:
             _v2_unlatch(agent)
 
