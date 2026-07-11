@@ -5,7 +5,7 @@
   "private": true,
   "description": "Self-contained PDF generator for repo markdown docs. Run with `npm install && npm run build:design`.",
   "scripts": {
-    "build:design": "node build.mjs ../../DESIGN_GUIDE.md ../../DESIGN_GUIDE.pdf"
+    "build:design": "node build.mjs ../../docs/DESIGN_GUIDE.md ../../DESIGN_GUIDE.pdf"
   },
   "dependencies": {
     "marked": "^14.1.3",
