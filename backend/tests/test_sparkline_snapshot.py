@@ -289,3 +289,116 @@ async def test_snapshot_sparkline_uses_correct_call_signature():
     payload = json.loads(rows[0]["payload_json"])
     assert "points" in payload
     assert len(payload["points"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_close_handler_fires_sparkline_snapshot_unsettled():
+    """On `<exch>:close` event (not settled), sparkline snapshot is fired
+    with settled=False."""
+    from backend.api.algo import market_lifecycle_handlers as mlh
+
+    with patch("backend.api.algo.daily_snapshot.snapshot_daily_book",
+               new=AsyncMock(return_value={
+                   "accounts": [], "holdings_rows": 0,
+                   "positions_rows": 0, "trades_rows": 0,
+                   "funds_rows": 0, "errors": [],
+               })), \
+         patch("backend.api.algo.daily_snapshot.snapshot_sparkline",
+               new=AsyncMock(return_value={"symbols": 3, "errors": []})) as m_sp:
+        await mlh._snapshot_close("nse", "close")
+
+    m_sp.assert_awaited_once()
+    _, kwargs = m_sp.call_args
+    assert kwargs.get("settled") is False, \
+        f"Expected settled=False for close event, got {kwargs}"
+
+
+@pytest.mark.asyncio
+async def test_mcx_close_fires_both_snapshots():
+    """On MCX close event, both snapshot_daily_book AND snapshot_sparkline
+    are fired (not just one). Verifies that MCX close also triggers sparkline
+    persistence."""
+    from backend.api.algo import market_lifecycle_handlers as mlh
+
+    m_daily = AsyncMock(return_value={
+        "accounts": ["MCX_ACCT"],
+        "holdings_rows": 2,
+        "positions_rows": 4,
+        "trades_rows": 1,
+        "funds_rows": 1,
+    })
+    m_spark = AsyncMock(return_value={
+        "symbols": 10,
+        "errors": [],
+    })
+
+    with patch("backend.api.algo.daily_snapshot.snapshot_daily_book", m_daily), \
+         patch("backend.api.algo.daily_snapshot.snapshot_sparkline", m_spark):
+        await mlh._snapshot_close("mcx", "close")
+
+    # Both handlers must have been called exactly once
+    assert m_daily.await_count == 1, "snapshot_daily_book should be called for MCX"
+    assert m_spark.await_count == 1, "snapshot_sparkline should be called for MCX"
+
+    # Verify settled=False was passed to both
+    _, daily_kwargs = m_daily.call_args
+    _, spark_kwargs = m_spark.call_args
+    assert daily_kwargs.get("settled") is False
+    assert spark_kwargs.get("settled") is False
+
+
+@pytest.mark.asyncio
+async def test_cds_close_handler_fires():
+    """CDS close event fires sparkline snapshot with settled=True when
+    it's a close_settled event."""
+    from backend.api.algo import market_lifecycle_handlers as mlh
+
+    m_daily = AsyncMock(return_value={
+        "accounts": [],
+        "holdings_rows": 0,
+        "positions_rows": 1,
+        "trades_rows": 0,
+        "funds_rows": 0,
+    })
+    m_spark = AsyncMock(return_value={
+        "symbols": 2,
+        "errors": [],
+    })
+
+    with patch("backend.api.algo.daily_snapshot.snapshot_daily_book", m_daily), \
+         patch("backend.api.algo.daily_snapshot.snapshot_sparkline", m_spark):
+        await mlh._snapshot_close("cds", "close_settled")
+
+    assert m_daily.await_count == 1
+    assert m_spark.await_count == 1
+
+    _, spark_kwargs = m_spark.call_args
+    assert spark_kwargs.get("settled") is True, \
+        "Expected settled=True for CDS close_settled event"
+
+
+@pytest.mark.asyncio
+async def test_settled_kwarg_sequence_close_then_settled():
+    """Sequence of close then close_settled events shows proper settled flag progression."""
+    from backend.api.algo import market_lifecycle_handlers as mlh
+
+    spark_calls: list[dict] = []
+
+    async def _fake_sparkline(*, settled: bool = False):
+        spark_calls.append({"settled": settled})
+        return {"symbols": 5, "errors": []}
+
+    with patch("backend.api.algo.daily_snapshot.snapshot_daily_book",
+               new=AsyncMock(return_value={"accounts": [], "holdings_rows": 0,
+                                          "positions_rows": 0, "trades_rows": 0,
+                                          "funds_rows": 0, "errors": []})), \
+         patch("backend.api.algo.daily_snapshot.snapshot_sparkline",
+               side_effect=_fake_sparkline):
+        await mlh._snapshot_close("nse", "close")
+        await mlh._snapshot_close("nse", "close_settled")
+
+    assert len(spark_calls) == 2, f"Expected 2 sparkline calls, got {len(spark_calls)}"
+    assert spark_calls[0]["settled"] is False, \
+        f"First call should have settled=False, got {spark_calls[0]}"
+    assert spark_calls[1]["settled"] is True, \
+        f"Second call should have settled=True, got {spark_calls[1]}"

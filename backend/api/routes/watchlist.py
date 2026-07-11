@@ -1775,7 +1775,7 @@ class WatchlistController(Controller):
     # ── Movers ────────────────────────────────────────────────────────
 
     @get("/movers", guards=[auth_or_demo_guard])
-    async def get_movers(self) -> MoversResponse:
+    async def get_movers(self, request: Request) -> MoversResponse:
         """Session-sticky movers under the unified animation model (Jul 2026).
 
         Single pass over the merged NSE + MCX universe. For every symbol:
@@ -1810,6 +1810,11 @@ class WatchlistController(Controller):
             _session_movers = {}
             _mcx_fut_map = {}   # cleared alongside _mcx_underlyings_cache_date buster
             _session_date = ist_today
+
+        # Demo sessions never touch the live broker — serve the same
+        # closed-hours snapshot path that anonymous visitors see.
+        if getattr(request.state, "is_demo", False):
+            return await _movers_offhours_response(ist_today)
 
         # ── Market-state probe ────────────────────────────────────────
         nse_is_open, mcx_is_open = _movers_probe_market_state(ist_now)

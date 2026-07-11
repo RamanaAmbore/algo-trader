@@ -36,6 +36,7 @@ downstream parsers and the instruments cache resolve consistently.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable
 from urllib.request import urlopen
 
@@ -166,6 +167,7 @@ _dhan_instruments_lock = threading.Lock()
 _DHAN_INSTRUMENTS_DATE: str = ""            # IST date string when cache was built
 _DHAN_BY_EXCHANGE: dict[str, list[dict]] = {}   # kite_exchange → [instrument rows]
 _DHAN_BY_SYMBOL: dict[tuple, str] = {}          # (kite_exchange, tradingsymbol) → security_id
+_DHAN_INSTRUMENTS_FAIL_UNTIL: float = 0.0       # epoch seconds; retry blocked until this time
 
 
 def _ist_today() -> str:
@@ -362,7 +364,7 @@ def _load_dhan_instruments() -> None:
       Both old and new column names are probed so a future schema revert
       doesn't silently zero lot sizes.
     """
-    global _DHAN_INSTRUMENTS_DATE, _DHAN_BY_EXCHANGE, _DHAN_BY_SYMBOL
+    global _DHAN_INSTRUMENTS_DATE, _DHAN_BY_EXCHANGE, _DHAN_BY_SYMBOL, _DHAN_INSTRUMENTS_FAIL_UNTIL
     by_exchange: dict[str, list[dict]] = {}
     by_symbol: dict[tuple, str] = {}
     try:
@@ -419,12 +421,15 @@ def _load_dhan_instruments() -> None:
                     f"across {len(by_exchange)} exchanges "
                     f"({'new' if has_seg_col else 'legacy'} schema)")
     except Exception as e:
-        logger.warning(f"DhanBroker: instruments cache load failed: {e}")
+        _DHAN_INSTRUMENTS_FAIL_UNTIL = time.time() + 300  # 5-min cooloff on network error / 429
+        logger.warning(f"DhanBroker: instruments cache load failed: {e}; retry blocked for 5 min")
 
 
 def _ensure_dhan_instruments() -> None:
     """Ensure the instruments cache is warm for today's IST date."""
     with _dhan_instruments_lock:
+        if time.time() < _DHAN_INSTRUMENTS_FAIL_UNTIL:
+            return  # still in cooloff after a failed fetch — skip retry
         if _DHAN_INSTRUMENTS_DATE != _ist_today():
             _load_dhan_instruments()
 

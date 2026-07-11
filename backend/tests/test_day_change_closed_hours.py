@@ -35,6 +35,8 @@ _POS_SRC     = Path(__file__).parent.parent / "api" / "routes" / "positions.py"
 _POS_HELPERS_SRC = Path(__file__).parent.parent / "api" / "routes" / "positions_helpers.py"
 _HOL_SRC     = Path(__file__).parent.parent / "api" / "routes" / "holdings.py"
 _PULSE_SRC   = Path(__file__).parent.parent.parent / "frontend" / "src" / "lib" / "MarketPulse.svelte"
+_PULSE_UNIFIED_SRC = Path(__file__).parent.parent.parent / "frontend" / "src" / "lib" / "data" / "pulseUnified.js"
+_NAV_SRC     = Path(__file__).parent.parent.parent / "frontend" / "src" / "lib" / "data" / "nav.js"
 
 
 def _src(p: Path) -> str:
@@ -101,29 +103,56 @@ class TestSourceChecks:
         )
 
     def test_marketpulse_contract_a_gated_on_market_open(self):
-        """Contract A branch in MarketPulse.svelte is gated on _mktOpen / isMarketOpen().
-        The `else if` condition guard (_mktOpen &&) must appear on the same line as
-        `Contract A —` to enforce that the branch only fires during open hours."""
-        src = _src(_PULSE_SRC)
-        # The `else if` branch header must include both _mktOpen AND reference Contract A
-        # in the same code block. We check the guard variable is declared before the
-        # `else if` line that contains "Contract A" in its comment.
-        mkt_open_idx     = src.find("_mktOpen = isMarketOpen()")
-        contract_a_guard = src.find("_mktOpen && livePos != null && closePx === 0")
-        assert mkt_open_idx != -1, "_mktOpen = isMarketOpen() not found in MarketPulse"
-        assert contract_a_guard != -1, (
-            "Contract A else-if branch must be gated with _mktOpen: "
-            "expected `else if (_mktOpen && livePos != null && closePx === 0 ...)`"
+        """Contract A branch is gated on isMarketOpen().
+
+        After the pulseUnified refactor (f378ce53), the gate lives in two
+        places rather than one inline block in MarketPulse.svelte:
+
+          1. pulseUnified.js  — `_mktOpen = isMarketOpen()` guards legLiveLtp
+             so positions only receive a live LTP during open hours.
+          2. nav.js           — `livePositionDayPnl` checks `marketOpen &&
+             live != null && closePx === 0` for the Contract A branch
+             (new position opened today, no prior close_price).
+
+        Both checks must survive future refactors.
+        """
+        unified_src = _src(_PULSE_UNIFIED_SRC)
+        nav_src     = _src(_NAV_SRC)
+
+        mkt_open_idx = unified_src.find("_mktOpen")
+        assert mkt_open_idx != -1 and "isMarketOpen" in unified_src, (
+            "_mktOpen (isMarketOpen gate) not found in pulseUnified.js — "
+            "positions live-LTP gate removed"
         )
-        assert mkt_open_idx < contract_a_guard, (
-            "_mktOpen must be declared before the Contract A else-if guard"
+
+        contract_a_guard = nav_src.find("marketOpen && live != null && closePx === 0")
+        assert contract_a_guard != -1, (
+            "Contract A branch (`marketOpen && live != null && closePx === 0`) "
+            "not found in nav.js livePositionDayPnl — guard removed"
         )
 
     def test_marketpulse_holdings_recompute_gated_on_market_open(self):
-        """Holdings day_pnl live-recompute in MarketPulse is also gated on isMarketOpen."""
-        src = _src(_PULSE_SRC)
-        assert "_holdMktOpen = isMarketOpen()" in src, (
-            "Holdings live-recompute must be gated on _holdMktOpen = isMarketOpen()"
+        """Holdings day_pnl live-recompute in pulseUnified uses LTP unconditionally.
+
+        Holdings do NOT need a market-open gate: there is no Contract A case
+        for holdings (they always have a prior close_price), and the day_pnl
+        formula is (liveHold − holdClose) × qty which is valid during both
+        open and closed hours using snapshot LTP.
+
+        This test guards that:
+          1. mergeHoldingRows in pulseUnified.js uses the `isMarketOpen`
+             ctx injection (so the dependency is explicit even if unused).
+          2. There is NO _holdMktOpen gate suppressing LTP in closed hours
+             (that would break closed-hours sparklines — Bug 1 from PULSE_SPEC).
+        """
+        unified_src = _src(_PULSE_UNIFIED_SRC)
+        assert "isMarketOpen" in unified_src, (
+            "pulseUnified.js must accept isMarketOpen via ctx"
+        )
+        # Holdings must NOT suppress LTP behind a market-open gate.
+        assert "_holdMktOpen = isMarketOpen()" not in unified_src, (
+            "_holdMktOpen market-open gate must NOT exist in pulseUnified — "
+            "holdings use LTP (snapshot or live) unconditionally"
         )
 
 

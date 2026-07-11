@@ -581,7 +581,7 @@ def get_historical_brokers() -> list[Broker]:
       3. Accounts currently in rate-limit cool-off are EXCLUDED so the
          caller doesn't waste a network round-trip on a known-throttled
          account.  The cool-off expires after _RATE_LIMIT_COOLOFF_SECONDS
-         (30 s by default); the account re-enters the list on the next
+         (60 s by default); the account re-enters the list on the next
          call automatically.
 
     Returns an empty list when every eligible account is in cool-off or

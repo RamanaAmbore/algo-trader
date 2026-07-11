@@ -123,6 +123,27 @@ _local_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ramboq-s
 
 
 # ---------------------------------------------------------------------------
+# Safe fetch helper
+# ---------------------------------------------------------------------------
+
+from typing import Any as _Any, Callable as _Callable
+
+
+def _safe_fetch(label: str, fn: _Callable[..., _Any], *args: _Any, default: _Any = None) -> _Any:
+    """Call *fn* with *args*, log a warning and return *default* on any exception.
+
+    Used for per-kind broker fetches in ``_fetch_account_data`` where a failure
+    in one kind must not abort the others. The ``label`` is embedded in the
+    warning message so the operator can grep by kind (e.g. "holdings", "trades").
+    """
+    try:
+        return fn(*args)
+    except Exception as e:
+        logger.warning("Snapshot %s fetch failed: %s", label, e)
+        return default if default is not None else []
+
+
+# ---------------------------------------------------------------------------
 # Segment classifier
 # ---------------------------------------------------------------------------
 
@@ -260,10 +281,7 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
         "holdings": [], "positions": [], "trades": [], "funds": [],
     }
 
-    try:
-        out["holdings"] = broker.holdings() or []
-    except Exception as e:
-        logger.warning(f"Snapshot [{account}] holdings fetch failed: {e}")
+    out["holdings"] = _safe_fetch(f"[{account}] holdings", broker.holdings) or []
 
     try:
         raw_pos = broker.positions() or {}
@@ -292,10 +310,7 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
         logger.warning(f"Snapshot [{account}] backfill failed (non-fatal): {e}")
 
     if is_today:
-        try:
-            out["trades"] = broker.trades() or []
-        except Exception as e:
-            logger.warning(f"Snapshot [{account}] trades fetch failed: {e}")
+        out["trades"] = _safe_fetch(f"[{account}] trades", broker.trades) or []
         # Funds snapshot — capture today's per-segment margin
         # balances so the History → Funds tab can show a per-
         # account ledger over time. Stored as one row per segment
@@ -764,41 +779,19 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
     # not the virtual root (CRUDEOIL). Without this step symbols like
     # CRUDEOIL from old position snapshots return bars=None → skipped silently.
     try:
-        from backend.api.routes.watchlist import (
-            _resolve_mcx_commodity,
-            _resolve_cds_currency,
-        )
-        from backend.api.algo.symbol_resolver import _strip_next
-
-        resolved_universe: list[tuple[str, str]] = []
-        for (sym, exch) in universe:
-            root, _is_next = _strip_next(sym)
-            is_bare_root = root.isalpha() and len(root) <= 12
-            if exch == "MCX" and is_bare_root:
-                try:
-                    actual = await _resolve_mcx_commodity(root)
-                    if actual:
-                        sym = actual.upper()
-                except Exception:
-                    pass
-            elif exch == "CDS" and is_bare_root:
-                try:
-                    actual = await _resolve_cds_currency(root)
-                    if actual:
-                        sym = actual.upper()
-                except Exception:
-                    pass
-            resolved_universe.append((sym, exch))
-        universe = resolved_universe
+        from backend.api.algo.symbol_resolver import resolve_virtual_roots
+        universe = await resolve_virtual_roots(universe)
     except Exception as e:
         logger.warning(f"snapshot_sparkline: virtual-root resolution failed: {e}")
 
     # Read close-bar series from ohlcv_store for each symbol (5-day tail).
+    # DB reads are cheap and fire concurrently. Broker fallback is gated
+    # by a semaphore (cap=3) so we don't hammer the broker on a cold cache.
     from backend.api.persistence import ohlcv_store as _oh
-    _broker_sem = asyncio.Semaphore(3)   # cap concurrent broker fallbacks
+    _broker_sem = asyncio.Semaphore(3)
     from_d = target_date - timedelta(days=10)
-    rows: list[dict] = []
-    for (sym, exch) in universe:
+
+    async def _fetch_bars(sym: str, exch: str) -> tuple[str, str, list]:
         try:
             bars = await _oh.get_or_fetch_daily(
                 sym, exch,
@@ -818,6 +811,12 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
                     )
         except Exception:
             bars = None
+        return sym, exch, bars or []
+
+    results = await asyncio.gather(*[_fetch_bars(sym, exch) for (sym, exch) in universe])
+
+    rows: list[dict] = []
+    for sym, exch, bars in results:
         if not bars:
             continue
         points = []

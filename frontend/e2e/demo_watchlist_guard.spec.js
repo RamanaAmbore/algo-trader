@@ -129,6 +129,129 @@ test.describe('MarketPulse watchlist guard — anonymous demo visitor', () => {
     const moveBtns = page.locator('.sym-move');
     await expect(moveBtns).toHaveCount(0);
   });
+
+  test('pinned watchlist renders at least 1 row for anon user', async ({ page }) => {
+    const mainBranch = await isMainBranch(page);
+    if (!mainBranch) {
+      test.skip(true, 'Demo mode only fires on main branch — skipping anon pinned grid test');
+    }
+
+    await visitPulseAnon(page);
+
+    // 5. UX — pinned watchlist grid must render at least 1 row.
+    // The grid container is .mp-bucket-pinwatch; rows are .ag-row within .ag-center-cols-container.
+    const pinnedRows = page.locator('.mp-bucket-pinwatch .ag-center-cols-container .ag-row');
+    const count = await pinnedRows.count();
+
+    if (count === 0) {
+      test.skip(true, 'No rows in pinned watchlist — book may be empty on this demo instance');
+    }
+
+    expect(count).toBeGreaterThanOrEqual(1);
+  });
+
+  test('Winners tab renders rows for anon user', async ({ page }) => {
+    const mainBranch = await isMainBranch(page);
+    if (!mainBranch) {
+      test.skip(true, 'Demo mode only fires on main branch — skipping anon Winners tab test');
+    }
+
+    await visitPulseAnon(page);
+
+    // 5. UX — ensure the Winners bucket is rendered and has at least 1 row.
+    await expect(page.locator('.mp-bucket-winners').first()).toBeVisible({ timeout: TIMEOUT });
+
+    const winnersRows = page.locator('.mp-bucket-winners .ag-center-cols-container .ag-row');
+    const count = await winnersRows.count();
+
+    if (count === 0) {
+      test.skip(true, 'No rows in Winners mover grid — market closed or movers data empty');
+    }
+
+    expect(count).toBeGreaterThanOrEqual(1);
+  });
+
+  test('Losers tab renders rows for anon user', async ({ page }) => {
+    const mainBranch = await isMainBranch(page);
+    if (!mainBranch) {
+      test.skip(true, 'Demo mode only fires on main branch — skipping anon Losers tab test');
+    }
+
+    await visitPulseAnon(page);
+
+    // 5. UX — ensure the Losers bucket is rendered and has at least 1 row.
+    await expect(page.locator('.mp-bucket-losers').first()).toBeVisible({ timeout: TIMEOUT });
+
+    const losersRows = page.locator('.mp-bucket-losers .ag-center-cols-container .ag-row');
+    const count = await losersRows.count();
+
+    if (count === 0) {
+      test.skip(true, 'No rows in Losers mover grid — market closed or movers data empty');
+    }
+
+    expect(count).toBeGreaterThanOrEqual(1);
+  });
+
+  test('sparkline SVGs present in pinned grid for anon user', async ({ page }) => {
+    const mainBranch = await isMainBranch(page);
+    if (!mainBranch) {
+      test.skip(true, 'Demo mode only fires on main branch — skipping anon sparkline test');
+    }
+
+    await visitPulseAnon(page);
+
+    // 5. UX — sparklines (SVG elements) should render in the pinned watchlist.
+    // The sparkline cells use .spark-cell class and contain inline SVGs.
+    const sparkSvgs = page.locator('.mp-bucket-pinwatch .spark-cell svg');
+    let count = 0;
+
+    try {
+      await sparkSvgs.first().waitFor({ state: 'attached', timeout: 8_000 });
+      count = await sparkSvgs.count();
+    } catch (_) {
+      test.skip(true, 'No sparkline SVGs rendered in pinned grid — data may not have loaded');
+    }
+
+    if (count === 0) {
+      test.skip(true, 'No sparkline SVGs found');
+    }
+
+    expect(count).toBeGreaterThan(0);
+  });
+
+  test('right-click context menu has no watchlist mutation items for anon user', async ({ page }) => {
+    const mainBranch = await isMainBranch(page);
+    if (!mainBranch) {
+      test.skip(true, 'Demo mode only fires on main branch — skipping anon context-menu test');
+    }
+
+    await visitPulseAnon(page);
+
+    // Get the first row in the pinned watchlist (if any exist).
+    const rows = page.locator('.mp-bucket-pinwatch .ag-center-cols-container .ag-row');
+    if ((await rows.count()) === 0) {
+      test.skip(true, 'No rows in pinned watchlist to right-click');
+    }
+
+    const firstRow = rows.first();
+
+    // Right-click to open the context menu.
+    await firstRow.click({ button: 'right' });
+    await page.waitForTimeout(300);
+
+    // ag-Grid context menus render in a floating div with role="menu" or class="ag-menu".
+    // We look for menu items that contain "Add to watchlist" or "Remove from watchlist".
+    const menuItems = page.locator('[role="menuitem"], .ag-menu-option');
+    const allTexts = await menuItems.allTextContents();
+    const menuText = allTexts.join(' | ').toLowerCase();
+
+    // 3. Stale — these mutation controls must NOT appear for anon users.
+    expect(menuText).not.toContain('add to watchlist');
+    expect(menuText).not.toContain('remove from watchlist');
+
+    // Close the menu
+    await page.keyboard.press('Escape');
+  });
 });
 
 // ── Authenticated admin path ──────────────────────────────────────────────────

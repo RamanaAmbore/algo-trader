@@ -184,6 +184,11 @@ function _publishWatchQuotes(byItemId) {
         bid:            q.bid,
         ask:            q.ask,
         exchange:       q.exchange,
+        // Propagate animation gate so symbolStore snapshots carry the
+        // is_animating/price_source fields; mergeWatchlistRows reads
+        // them via _propagateStaleAndSource(row, snap).
+        is_animating:   q.is_animating,
+        price_source:   q.price_source ?? q.ltp_source,
       },
       ts: { ltp_ts: 0, snapshot_ts: ts },
     });
@@ -464,6 +469,11 @@ export const moversStore = createDataStore({
         _moverGroups:    effectiveGroups,
         _moverGroup:     effectiveGroups[0],   // legacy compat — first membership
         _moverDirection: pct >= 0 ? 'winners' : 'losers',
+        // Propagate animation gate from the backend response so
+        // _propagateStaleAndSource can suppress animation during
+        // closed hours (backend sets is_animating:false for snapshots).
+        is_animating:    it.is_animating,
+        price_source:    it.price_source ?? it.ltp_source,
       });
     }
     // Hardening: dev-only shape check (Vite strips in prod).

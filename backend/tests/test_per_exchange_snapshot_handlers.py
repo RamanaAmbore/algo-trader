@@ -226,3 +226,67 @@ async def test_audit_table_has_indexes():
     ).read_text(encoding="utf-8")
     assert "ix_lifecycle_fired_at" in src
     assert "ix_lifecycle_exch_type_fired" in src
+
+
+# =============================================================================
+# Movers lifecycle tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_nse_close_fires_force_movers_snapshot():
+    """On NSE close event, _force_movers_snapshot is called to persist
+    the movers snapshot to the database for off-hours access."""
+    from backend.api.algo import market_lifecycle_handlers as mh
+
+    mock_movers = AsyncMock(return_value=2)  # 2 rows written
+
+    with patch("backend.api.routes.watchlist._force_movers_snapshot",
+               mock_movers):
+        await mh._snapshot_movers("nse", "close")
+
+    # Verify the movers snapshot was called
+    mock_movers.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mcx_close_does_not_fire_movers_snapshot():
+    """MCX close event should NOT fire movers snapshot.
+    Movers are NSE-only; MCX close should not overwrite NSE movers."""
+    from backend.api.algo import market_lifecycle_handlers as mh
+
+    # _snapshot_movers is only registered for nse:close, not mcx:close.
+    # We verify this by checking that the handler is only in NSE registrations.
+    src = _hsrc()
+    body = re.search(
+        r"def register_default_handlers\(\).*?(?=\ndef |\Z)",
+        src,
+        re.DOTALL
+    ).group(0)
+
+    # Count how many times _snapshot_movers is registered
+    movers_registrations = body.count("_snapshot_movers")
+    # Should only appear for nse:close, not mcx or cds
+    assert movers_registrations == 1, (
+        f"_snapshot_movers should be registered exactly once (for nse:close), "
+        f"found {movers_registrations} registrations"
+    )
+
+    # Additional check: verify it's registered to "nse:close" specifically
+    assert 'register("nse:close", _snapshot_movers)' in body, \
+        "_snapshot_movers should be registered to nse:close"
+
+
+@pytest.mark.asyncio
+async def test_nse_close_settled_fires_movers_snapshot():
+    """When close_settled event fires on NSE, movers snapshot is also
+    persisted (idempotent via UPSERT)."""
+    from backend.api.algo import market_lifecycle_handlers as mh
+
+    mock_movers = AsyncMock(return_value=3)
+
+    with patch("backend.api.routes.watchlist._force_movers_snapshot",
+               mock_movers):
+        await mh._snapshot_movers("nse", "close_settled")
+
+    mock_movers.assert_awaited_once()

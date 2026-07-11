@@ -53,8 +53,8 @@ logger = get_logger(__name__)
 #
 #   RateLimit (429)
 #     → exponential backoff: 1 / 2 / 4 / 8 s (capped at 30 s), up to
-#       3 retries. Do NOT re-mint — the token is valid. Logs
-#       [GROWW-RATE-LIMIT] at WARN. After 3 retries, re-raises so
+#       4 retries (5 total attempts). Do NOT re-mint — the token is valid.
+#       Logs [GROWW-RATE-LIMIT] at WARN. After 4 retries, re-raises so
 #       broker_apis records ok=False (amber health badge).
 #
 #   Timeout (504)
@@ -127,7 +127,7 @@ def _retry_groww_auth(fn: Callable) -> Callable:
                 self._conn.refresh()
                 return fn(self, *args, **kwargs)
 
-            # RateLimit → exponential backoff up to 3 retries
+            # RateLimit → exponential backoff up to 4 retries (5 total attempts)
             except _GROWW_RATE_EXC as e:  # type: ignore[misc]
                 sleep_s = _GROWW_RATE_LIMIT_BASE_SLEEP_S
                 for attempt in range(1, _GROWW_RATE_LIMIT_MAX_RETRIES + 1):
@@ -156,7 +156,7 @@ def _retry_groww_auth(fn: Callable) -> Callable:
                     f"{self.account!r} timed out — retrying once: {e}"
                 )
                 try:
-                    self._conn.refresh_session()
+                    self._conn.refresh()
                 except Exception:
                     pass  # refresh_session is best-effort; proceed regardless
                 return fn(self, *args, **kwargs)

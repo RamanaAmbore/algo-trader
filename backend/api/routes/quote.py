@@ -336,13 +336,7 @@ async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | Non
 
     sym  = tradingsymbol.upper().strip()
     exch = exchange.upper().strip()
-    # For equity (NSE/BSE), pair them immediately so a BSE-only symbol is
-    # found on the first fallback without walking through derivatives exchanges.
-    if exch in ("NSE", "BSE"):
-        _companion = "BSE" if exch == "NSE" else "NSE"
-        order = [exch, _companion] + [e for e in ("MCX", "CDS", "NFO", "BFO") if e not in (exch, _companion)]
-    else:
-        order = [exch] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch]
+    order = _exchange_walk_order(exch)
 
     # Fast path: day-cached token map (built once per IST day by batch_sparkline).
     try:
@@ -422,14 +416,8 @@ def _fetch_ltp(
         ltp = float(full.get("last_price") or 0.0)
         volume = int(full.get("volume") or 0)
         depth = full.get("depth") or {}
-        for level in (depth.get("buy") or [])[:5]:
-            p, q, o = float(level.get("price") or 0), int(level.get("quantity") or 0), int(level.get("orders") or 0)
-            if p > 0:
-                depth_buy.append(DepthLevel(price=p, quantity=q, orders=o))
-        for level in (depth.get("sell") or [])[:5]:
-            p, q, o = float(level.get("price") or 0), int(level.get("quantity") or 0), int(level.get("orders") or 0)
-            if p > 0:
-                depth_sell.append(DepthLevel(price=p, quantity=q, orders=o))
+        depth_buy  = _parse_depth_levels(depth.get("buy"))
+        depth_sell = _parse_depth_levels(depth.get("sell"))
         if depth_buy:
             bid = depth_buy[0].price
         if depth_sell:
@@ -901,6 +889,35 @@ def _ist_today() -> str:
         return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
 
 
+def _exchange_walk_order(exch: str) -> list[str]:
+    """Priority-ordered exchange walk for token resolution.
+
+    Equity (NSE/BSE): pair the companion exchange immediately so a BSE-only
+    symbol is found on the first fallback without walking derivatives exchanges.
+    All others: start with the requested exchange then walk the remaining list.
+    """
+    if exch in ("NSE", "BSE"):
+        companion = "BSE" if exch == "NSE" else "NSE"
+        return [exch, companion] + [e for e in ("MCX", "CDS", "NFO", "BFO") if e not in (exch, companion)]
+    return [exch] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch]
+
+
+def _parse_depth_levels(side: list | None) -> list["DepthLevel"]:
+    """Parse one side of a broker depth payload into a list of DepthLevel structs.
+
+    Iterates up to 5 levels, coercing price/quantity/orders to the correct types.
+    Levels with zero or missing price are excluded. Pure function — no I/O.
+    """
+    out: list[DepthLevel] = []
+    for level in (side or [])[:5]:
+        p = float(level.get("price") or 0)
+        q = int(level.get("quantity") or 0)
+        o = int(level.get("orders") or 0)
+        if p > 0:
+            out.append(DepthLevel(price=p, quantity=q, orders=o))
+    return out
+
+
 # ── Sparkline schemas ─────────────────────────────────────────────────────────
 
 class SparklineSymbol(msgspec.Struct):
@@ -1360,11 +1377,7 @@ async def _build_spark_token_map(
         for s in norm_syms:
             if s.tradingsymbol in token_map:
                 continue
-            if s.exchange in ("NSE", "BSE"):
-                _c = "BSE" if s.exchange == "NSE" else "NSE"
-                pref = [s.exchange, _c] + [e for e in ("MCX", "CDS", "NFO", "BFO") if e not in (s.exchange, _c)]
-            else:
-                pref = [s.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != s.exchange]
+            pref = _exchange_walk_order(s.exchange)
             for _ex in pref:
                 tok = _full_map.get((s.tradingsymbol, _ex))
                 if tok is not None:
@@ -1535,7 +1548,7 @@ class SparklineController(Controller):
     path = "/api/quotes"
     guards = [auth_or_demo_guard]
 
-    @post("/sparkline")
+    @post("/sparkline", status_code=200)
     async def batch_sparkline(self, data: SparklineRequest) -> SparklineResponse:
         """
         POST /api/quotes/sparkline
@@ -1588,16 +1601,10 @@ class SparklineController(Controller):
             norm_syms, from_daily, yesterday, today_date, days, db_only,
         )
 
-        # ── Step 1b: Self-heal — db_only guard, empty on both tiers ───────
-        if db_only:
-            await _self_heal_empty_bars(
-                norm_syms, past_result, today_result,
-                from_daily, yesterday, today_date, days,
-            )
-
-        # ── Step 1c: Tier 4 — daily_book sparkline fallback ───────────────
-        # When ohlcv_store + self-heal are both cold (fresh deploy, persistence
-        # reset, warm task still running), fall back to the persisted
+        # ── Step 1b: Tier 4 — daily_book sparkline fallback ──────────────
+        # Per PULSE_SPEC.md §5: check daily_book BEFORE broker fallback.
+        # When ohlcv_store DB is cold (fresh deploy, persistence reset,
+        # warm task still running), fall back to the persisted
         # daily_book kind='sparkline' snapshots written at market close.
         # Only activated in db_only mode — open sessions must serve live data.
         if db_only:
@@ -1610,6 +1617,15 @@ class SparklineController(Controller):
                 await _fill_from_daily_book_sparkline(
                     _db_fallback_syms, past_result, orig_to_resolved,
                 )
+
+        # ── Step 1c: Self-heal — db_only guard, empty on both tiers ──────
+        # Broker fallback only fires if Tier 1 (ohlcv_store) AND Tier 4
+        # (daily_book) both miss — avoids unnecessary broker calls.
+        if db_only:
+            await _self_heal_empty_bars(
+                norm_syms, past_result, today_result,
+                from_daily, yesterday, today_date, days,
+            )
 
         # ── Steps 2+3: token map + LTP (tick_map → broker.ltp fallback) ───
         req_exchs_spark = {s.exchange.upper() for s in norm_syms}
@@ -1806,11 +1822,7 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         for sym_n, exch_n in norm:
             if sym_n in token_map:
                 continue
-            if exch_n in ("NSE", "BSE"):
-                _c = "BSE" if exch_n == "NSE" else "NSE"
-                pref = [exch_n, _c] + [e for e in ("MCX", "CDS", "NFO", "BFO") if e not in (exch_n, _c)]
-            else:
-                pref = [exch_n] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch_n]
+            pref = _exchange_walk_order(exch_n)
             for ex in pref:
                 tok = _full_map.get((sym_n, ex))
                 if tok is not None:

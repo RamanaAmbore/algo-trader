@@ -450,3 +450,60 @@ async def resolve_market_data_keys(keys: list[str]) -> "MarketDataKeyMap":
         input_to_broker=input_to_broker,
         broker_to_input=broker_to_input,
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch virtual-root resolver for (symbol, exchange) pairs
+# ---------------------------------------------------------------------------
+
+async def resolve_virtual_roots(
+    pairs: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Resolve MCX/CDS bare-root virtual symbols to their front-month contracts.
+
+    Takes a list of (tradingsymbol, exchange) pairs and returns a resolved list
+    of the same length in the same order.  Each pair is checked: if the symbol
+    is a bare alphabetic root on MCX or CDS it is resolved to the active
+    front-month futures contract via the watchlist resolver helpers.  ``_NEXT``
+    suffixes are NOT handled here — use ``resolve_symbol`` directly for those.
+    Non-virtual symbols and non-MCX/CDS exchanges are passed through unchanged.
+
+    Errors per-symbol are swallowed silently; the original symbol is kept on
+    failure so a single bad resolver response cannot drop the whole universe.
+
+    Parameters
+    ----------
+    pairs:
+        List of (tradingsymbol, exchange) tuples, e.g. from a watchlist or
+        sparkline universe query.
+
+    Returns
+    -------
+    list[tuple[str, str]]
+        Resolved (tradingsymbol, exchange) pairs, same order as input.
+    """
+    from backend.api.routes.watchlist import (
+        _resolve_mcx_commodity,
+        _resolve_cds_currency,
+    )
+
+    resolved: list[tuple[str, str]] = []
+    for (sym, exch) in pairs:
+        root, _is_next = _strip_next(sym)
+        is_bare_root = root.isalpha() and len(root) <= 12
+        if exch == "MCX" and is_bare_root:
+            try:
+                actual = await _resolve_mcx_commodity(root)
+                if actual:
+                    sym = actual.upper()
+            except Exception:
+                pass
+        elif exch == "CDS" and is_bare_root:
+            try:
+                actual = await _resolve_cds_currency(root)
+                if actual:
+                    sym = actual.upper()
+            except Exception:
+                pass
+        resolved.append((sym, exch))
+    return resolved

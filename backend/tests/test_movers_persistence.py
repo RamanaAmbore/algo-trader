@@ -115,7 +115,7 @@ def test_route_calls_save_on_live_result():
     """get_movers calls _save_movers_snapshot when rows is non-empty."""
     src = _wl_source()
     match = re.search(
-        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match, "Could not find get_movers in watchlist.py"
@@ -134,7 +134,7 @@ def test_route_calls_load_on_market_closed():
     src = _wl_source()
     # Case A — inline (pre-refactor).
     match = re.search(
-        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match, "Could not find get_movers in watchlist.py"
@@ -250,7 +250,7 @@ def test_route_uses_nse_specific_predicate_not_any_segment():
     """
     src = _wl_source()
     match = re.search(
-        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match, "get_movers not found in watchlist.py"
@@ -432,7 +432,7 @@ def test_off_hours_path_reads_db_and_returns_captured_at():
     `_movers_offhours_response`; accept the check in either location."""
     src = _wl_source()
     match = re.search(
-        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match, "get_movers not found"
@@ -460,7 +460,7 @@ def test_live_path_fires_save_as_task():
     """get_movers: live path fires _save_movers_snapshot via asyncio.create_task."""
     src = _wl_source()
     match = re.search(
-        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match

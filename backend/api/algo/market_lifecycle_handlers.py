@@ -9,7 +9,7 @@ Three families of handlers, all registered at module-import time
                                 land in ``daily_book``.
 
   ``<exch>:close_settled``   → fire ``snapshot_daily_book()`` again
-                                **45 min** after close. This overwrites
+                                **15 min** after close. This overwrites
                                 the previous snapshot rows (the
                                 ``UPSERT ... ON CONFLICT DO UPDATE``
                                 path in daily_snapshot._upsert_rows)
@@ -64,9 +64,10 @@ async def _snapshot_close(exchange: str, event_type: str) -> None:
     Also fires a sparkline snapshot on the same event so the frontend's
     tick-flash / animation gate has a durable 5-day close-bar series.
     """
+    settled = (event_type == "close_settled")
+
     try:
         from backend.api.algo.daily_snapshot import snapshot_daily_book
-        settled = (event_type == "close_settled")
         result = await snapshot_daily_book(settled=settled)
         logger.info(
             f"market_lifecycle[{exchange}:{event_type}] daily_book snapshot "
@@ -87,7 +88,6 @@ async def _snapshot_close(exchange: str, event_type: str) -> None:
     # frontend cell renderer's non-animating path. Idempotent.
     try:
         from backend.api.algo.daily_snapshot import snapshot_sparkline
-        settled = (event_type == "close_settled")
         result = await snapshot_sparkline(settled=settled)
         logger.info(
             f"market_lifecycle[{exchange}:{event_type}] sparkline snapshot "

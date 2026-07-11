@@ -1188,7 +1188,8 @@ class AdminController(Controller):
                 # broker was Kite Connect directly — PriceBroker doesn't
                 # expose `.kite` and the call silently 500'd, leaving the
                 # dashboard NIFTY / SENSEX overlay blank.
-                broker = get_market_data_broker()
+                from backend.brokers.registry import get_historical_brokers
+                broker = get_historical_brokers()[0]
                 raw    = broker.historical_data(
                     token,
                     d_from,

@@ -7,7 +7,7 @@ async callbacks. Three event flavours per exchange:
 
   - `<exchange>:open`           — fired at session open (calendar-aware).
   - `<exchange>:close`          — fired at session close.
-  - `<exchange>:close_settled`  — fired 45 minutes AFTER `<exchange>:close`.
+  - `<exchange>:close_settled`  — fired 15 minutes AFTER `<exchange>:close`.
                                   This is the hook that catches the
                                   broker's adjusted close_price (Kite
                                   weighted-avg-last-30-min) which lands
@@ -309,7 +309,7 @@ class MarketLifecycle:
 # ---------------------------------------------------------------------------
 
 def _settled_offset_minutes() -> int:
-    """Operator-tunable settled-close offset. Default 45 min.
+    """Operator-tunable settled-close offset. Default 15 min.
 
     Reads `market_lifecycle.settled_offset_min` from /admin/settings if
     present, otherwise the in-code default. Re-read per poll so a

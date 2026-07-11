@@ -84,7 +84,7 @@
   // resolveUnderlying helpers used by loadPulse are imported via pulseLoad.js.
   import CardControls from '$lib/CardControls.svelte';
   import { createPerformanceSocket } from '$lib/ws';
-  import { lastRefreshAt, formatDualTz } from '$lib/stores';
+  import { lastRefreshAt, formatDualTz, logTimeIst } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional, fmtPctScaled } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -1423,13 +1423,16 @@
     // cadence (that path is not gated by the interval).
     const _HIDDEN_TICK_MS = 30_000;
     async function _readTickSetting() {
+      // R2: skip settings poll for anonymous / demo users — they have
+      // no auth token and would generate repeated 401 responses.
+      if (!$authStore.user) return _tickMs;
       try {
         const rows = await fetchSettings();
         const all = Array.isArray(rows) ? rows : (rows?.settings || []);
         const row = all.find?.(s => s?.key === 'pulse.tick_interval_ms');
         const v = Number(row?.value ?? row?.default_value);
         if (Number.isFinite(v) && v >= 500 && v <= 60000) return v;
-      } catch (_) { /* anon/demo — keep current */ }
+      } catch (_) { /* keep current */ }
       return _tickMs;
     }
     _tickMs = await _readTickSetting();
@@ -1474,14 +1477,18 @@
     // (The wider `book_changed` bus also fires loadPulse — kept
     // here for the qty-delta optimistic patch path which only
     // emits on FILL, not on CANCELLED/REJECTED.)
-    stopWS = createPerformanceSocket((msg) => {
-      if (msg?.event === 'position_filled') {
-        // Order just filled — refresh both books right now so the
-        // grid shows the new qty within a tick. The 10 s pulse
-        // poll keeps running as a backstop.
-        loadPulse();
-      }
-    });
+    // R1: anonymous / demo users have no auth token — skip the WS
+    // entirely to avoid a flood of 401/403 upgrade attempts.
+    if (!isDemo) {
+      stopWS = createPerformanceSocket((msg) => {
+        if (msg?.event === 'position_filled') {
+          // Order just filled — refresh both books right now so the
+          // grid shows the new qty within a tick. The 10 s pulse
+          // poll keeps running as a backstop.
+          loadPulse();
+        }
+      });
+    }
 
     // Keyboard shortcuts — scoped to this wrapper only.
     document.addEventListener('keydown', handleKeydown);
@@ -2016,6 +2023,23 @@
   // +1 for the pinned TOTAL row at the bottom of each book grid.
   const _bRowsPositions = $derived(Math.max(1, positionsRows.length + 1));
   const _bRowsHoldings  = $derived(Math.max(1, holdingsRows.length  + 1));
+
+  // Compact "DD Mon HH:MM IST" label for the movers closed-hours snapshot.
+  // Non-null only when the backend returned a persisted off-hours snapshot;
+  // null during live market hours (no "as of" caveat needed).
+  const _moversAsOf = $derived.by(() => {
+    const ts = moversSnapshotAt.value;
+    if (!ts) return null;
+    try {
+      const d = new Date(ts);
+      if (isNaN(d.getTime())) return null;
+      const datePart = d.toLocaleDateString('en-GB', {
+        day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata',
+      });
+      const timePart = logTimeIst(ts).slice(0, 5); // HH:MM only
+      return `${datePart} ${timePart} IST`;
+    } catch (_) { return null; }
+  });
 
   // One effect per grid — Svelte 5 reactivity tracks the closed-over
   // derivation so any source change automatically pushes fresh row
@@ -4067,6 +4091,9 @@
                    style="--bucket-rows:{_bRowsWinners}">
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+              {#if _moversAsOf}
+                <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
+              {/if}
               <div class="mp-head-tabs">
                 <AlgoTabs
                   tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: winnerCounts[t] || undefined }))}
@@ -4097,6 +4124,9 @@
                    style="--bucket-rows:{_bRowsLosers}">
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+              {#if _moversAsOf}
+                <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
+              {/if}
               <div class="mp-head-tabs">
                 <AlgoTabs
                   tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: loserCounts[t] || undefined }))}
@@ -4217,7 +4247,7 @@
     <button class="ctx-item" role="menuitem" onclick={() => ctxOpenOrders(ctxMenu?.row)}>Orders →</button>
     <button class="ctx-item" role="menuitem" onclick={() => ctxOpenLog(ctxMenu?.row)}>Log →</button>
     <div class="ctx-sep"></div>
-    {#if !ctxMenu?.row?.src?.w}
+    {#if !ctxMenu?.row?.src?.w && !isDemo}
       <!-- ★ Add to watchlist — visible when the symbol is NOT already
            in the operator's watchlist. The other branch below shows
            the Remove counterpart. -->
@@ -4233,7 +4263,7 @@
     {#if hasOverrides}
       <button class="ctx-item" role="menuitem" onclick={() => { resetOverrides(); closeContextMenu(); }}>↻ Reset all overrides</button>
     {/if}
-    {#if ctxMenu?.row?.src?.w && ctxMenu?.row?.watchlist_item_id != null}
+    {#if ctxMenu?.row?.src?.w && ctxMenu?.row?.watchlist_item_id != null && !isDemo}
       <div class="ctx-sep"></div>
       <button class="ctx-item ctx-item-danger" onclick={() => ctxRemoveWatch(ctxMenu?.row)}>Remove from watchlist</button>
     {/if}
@@ -4982,6 +5012,18 @@
     flex-wrap: nowrap;
   }
   .mp-bucket-head .mp-bucket-label { margin-bottom: 0; }
+  /* Closed-hours snapshot age — shown only when moversSnapshotAt is
+     non-null (off-hours persisted snapshot). Sits inline after the
+     Winners / Losers label; kept small + muted so it doesn't compete
+     with the label hierarchy. */
+  .mp-movers-as-of {
+    font-size: 0.65rem;
+    color: rgba(156, 163, 175, 0.75); /* text-gray-400 muted */
+    white-space: nowrap;
+    margin-left: 0.35rem;
+    align-self: center;
+    font-variant-numeric: tabular-nums;
+  }
   /* Spacer pushes the CollapseButton to the FAR RIGHT of the
      header regardless of card content. Label sits left, spacer
      absorbs the gap, button locks to the right edge. Card width
