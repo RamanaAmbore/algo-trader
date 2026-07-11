@@ -1011,6 +1011,67 @@ def _preflight_parse_basket_margin(bm_result: object) -> float:
     return _preflight_leg_required(bm_result if isinstance(bm_result, dict) else {})
 
 
+def _preflight_check_segment(
+    profile_res: dict | None,
+    exchange: str,
+) -> dict | None:
+    """
+    Return a SEGMENT_INACTIVE blocker when *exchange* is not in the
+    broker profile's enabled exchange list, or None when the check passes
+    (or is not applicable because profile_res is None / empty).
+    """
+    if profile_res is None:
+        return None
+    enabled_exchanges = set(profile_res.get("exchanges") or [])
+    if enabled_exchanges and exchange not in enabled_exchanges:
+        return {
+            "code":   "SEGMENT_INACTIVE",
+            "reason": f"{exchange} segment not activated on this account",
+            "fix":    (f"Activate the {exchange} segment in the Kite developer "
+                       "console for this account, then re-test"),
+            "data":   {"enabled_exchanges": sorted(enabled_exchanges)},
+        }
+    return None
+
+
+def _preflight_check_qty_freeze(
+    instruments_res: list | None,
+    symbol: str,
+    qty: int,
+) -> dict | None:
+    """
+    Return a QTY_FREEZE blocker when *qty* exceeds the instrument's
+    exchange-imposed freeze quantity, or None when the check passes
+    (or is not applicable because instruments_res is None / empty).
+    """
+    if not instruments_res:
+        return None
+    freeze_qty: int | None = None
+    lot_size: int = 1
+    for inst in instruments_res:
+        if inst.get("tradingsymbol") == symbol:
+            freeze_qty = inst.get("freeze_qty") or None
+            lot_size   = int(inst.get("lot_size") or 1)
+            break
+    if freeze_qty is not None and qty > int(freeze_qty):
+        max_qty  = int(freeze_qty)
+        max_lots = max(1, max_qty // lot_size) if lot_size > 0 else max_qty
+        return {
+            "code":   "QTY_FREEZE",
+            "reason": (f"Quantity {qty} exceeds {symbol} freeze qty "
+                       f"{freeze_qty}"),
+            "fix":    (f"Reduce qty to {max_qty:,} "
+                       f"({max_lots:,} lot{'s' if max_lots != 1 else ''}) "
+                       "or split into multiple orders"),
+            "data":   {
+                "freeze_qty": int(freeze_qty),
+                "lot_size":   lot_size,
+                "requested":  qty,
+            },
+        }
+    return None
+
+
 async def run_preflight(
     account: str,
     order: dict,
@@ -1173,42 +1234,14 @@ async def run_preflight(
     )
 
     # ── Apply segment-inactive gate from profile result ──────────────────
-    if profile_res is not None:
-        enabled_exchanges = set(profile_res.get("exchanges") or [])
-        if enabled_exchanges and exchange not in enabled_exchanges:
-            blocked.append({
-                "code":   "SEGMENT_INACTIVE",
-                "reason": f"{exchange} segment not activated on this account",
-                "fix":    (f"Activate the {exchange} segment in the Kite developer "
-                           "console for this account, then re-test"),
-                "data":   {"enabled_exchanges": sorted(enabled_exchanges)},
-            })
+    _seg_blocker = _preflight_check_segment(profile_res, exchange)
+    if _seg_blocker is not None:
+        blocked.append(_seg_blocker)
 
     # ── Apply qty-freeze gate from instruments result ────────────────────
-    if instruments_res is not None:
-        freeze_qty: int | None = None
-        lot_size: int = 1
-        for inst in instruments_res:
-            if inst.get("tradingsymbol") == symbol:
-                freeze_qty = inst.get("freeze_qty") or None
-                lot_size   = int(inst.get("lot_size") or 1)
-                break
-        if freeze_qty is not None and qty > int(freeze_qty):
-            max_qty = int(freeze_qty)
-            max_lots = max(1, max_qty // lot_size) if lot_size > 0 else max_qty
-            blocked.append({
-                "code":   "QTY_FREEZE",
-                "reason": (f"Quantity {qty} exceeds {symbol} freeze qty "
-                           f"{freeze_qty}"),
-                "fix":    (f"Reduce qty to {max_qty:,} "
-                           f"({max_lots:,} lot{'s' if max_lots != 1 else ''}) "
-                           "or split into multiple orders"),
-                "data":   {
-                    "freeze_qty": int(freeze_qty),
-                    "lot_size":   lot_size,
-                    "requested":  qty,
-                },
-            })
+    _freeze_blocker = _preflight_check_qty_freeze(instruments_res, symbol, qty)
+    if _freeze_blocker is not None:
+        blocked.append(_freeze_blocker)
 
     # ── Margin-shortfall gate (basket_order_margins + account margins) ───
     if isinstance(bm_res, Exception):
