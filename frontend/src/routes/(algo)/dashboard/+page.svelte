@@ -8,6 +8,7 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import CardControls from '$lib/CardControls.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
@@ -1830,29 +1831,30 @@
   <section class="bucket-card row1-col-chart"
     class:fs-card-on={_fsEquityCurve}
     class:is-collapsed={_colEquityCurve}>
-    <div class="card-header-row">
-      <AlgoTabs
-        tabs={[
-          { id: 'nav',         label: 'NAV'         },
-          { id: 'intraday',    label: 'Intraday'    },
-          { id: 'performance', label: 'Performance' },
-        ]}
-        bind:value={_chartTab}
-        compact={true}
-      />
+    <CardHeader
+      bind:isCollapsed={_colEquityCurve}
+      bind:isFullscreen={_fsEquityCurve}
+      label="Chart"
+      onRefresh={_refreshAll}
+      bind:refreshLoading={_refreshing}
+      showSearch={false}
+    >
       <!-- No cardId — collapse state resets to expanded on every page
            load. Operator can still toggle in-session. Matches the
            "no card collapsed if there's no data by default" rule
            applied across the dashboard. -->
-      <CardControls
-        bind:isCollapsed={_colEquityCurve}
-        bind:isFullscreen={_fsEquityCurve}
-        label="Chart"
-        onRefresh={_refreshAll}
-        bind:refreshLoading={_refreshing}
-        showSearch={false}
-      />
-    </div>
+      {#snippet middle()}
+        <AlgoTabs
+          tabs={[
+            { id: 'nav',         label: 'NAV'         },
+            { id: 'intraday',    label: 'Intraday'    },
+            { id: 'performance', label: 'Performance' },
+          ]}
+          bind:value={_chartTab}
+          compact={true}
+        />
+      {/snippet}
+    </CardHeader>
 
     <!-- NAV panel — firm NAV history curve (NavTab). Default tab.
          Polls /api/nav/history?days=90 on a market-aware interval;
@@ -2252,24 +2254,25 @@
 <section class="bucket-card dash-agent"
   class:fs-card-on={_fsAgent}
   class:is-collapsed={_colAgent}>
-  <div class="card-header-row dash-agent-summary">
-    <span class="mp-section-label mp-section-label--bar">AGENT ACTIVITY</span>
-    <span class="dash-agent-chip">
-      <span class="dash-agent-count">{_firesToday}</span>
-      <span class="dash-agent-label">fires today</span>
-    </span>
+  <CardHeader
+    title="AGENT ACTIVITY"
+    bind:isCollapsed={_colAgent}
+    bind:isFullscreen={_fsAgent}
+    label="Agent activity"
+    onRefresh={_refreshAll}
+    bind:refreshLoading={_refreshing}
+    showSearch={false}
+  >
     <!-- Default expanded — was previously `initialCollapsed=true` so
          the empty-state "No agent fires yet today" was hidden behind
          a collapse the operator had to click to discover. -->
-    <CardControls
-      bind:isCollapsed={_colAgent}
-      bind:isFullscreen={_fsAgent}
-      label="Agent activity"
-      onRefresh={_refreshAll}
-      bind:refreshLoading={_refreshing}
-      showSearch={false}
-    />
-  </div>
+    {#snippet left()}
+      <span class="dash-agent-chip">
+        <span class="dash-agent-count">{_firesToday}</span>
+        <span class="dash-agent-label">fires today</span>
+      </span>
+    {/snippet}
+  </CardHeader>
   <div class="card-body" hidden={_colAgent}>
     <ActionEventsToggle bind:value={_agentLogShowActions} />
     <UnifiedLog
@@ -2725,35 +2728,6 @@
   /* .dash-row2 + .wl-tile* family retired — Winners / Losers cards
      moved to /pulse where they sit in the 6-grid layout alongside
      the rest of the monitoring surfaces. */
-  /* Card-header row used by every card carrying a FullscreenButton —
-     section label on the left, expand toggle pushed to the right. */
-  /* Canonical card-header pattern — left content packed naturally,
-     trailing control trio pushed right via the first button's own
-     `margin-left: auto`. Earlier `justify-content: space-between`
-     spread items unevenly the moment a picker / count chip was
-     added in the middle. */
-  .card-header-row {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    margin-bottom: 0.4rem;
-  }
-  /* AccountMultiSelect (.ams) is LEFT-aligned in card-header-row,
-     matching the canonical card-header rule (text + picker on the
-     LEFT, control trio on the right via the first button's
-     `margin-left: auto`). */
-  .card-header-row > :global(.ams) { margin-left: 0; }
-  /* AGENT ACTIVITY label uses .mp-section-label--bar which carries a
-     margin-bottom for the standalone (non-flex) row-separator context.
-     Inside .card-header-row the label sits in a flex `align-items:
-     center` row alongside the fires chip + CardControls. The bottom
-     margin shifts the label's outer box downward but not its baseline,
-     so visually the text sat above the center of its siblings.
-     Operator 2026-07-01: "This text is not vertically aligned in header
-     in dashboard page: AGENT ACTIVITY." Zero the margin only in the
-     flex-header context so standalone uses (dash-agent-summary as row
-     separator elsewhere) are untouched. */
-  .card-header-row > :global(.mp-section-label--bar) { margin-bottom: 0; }
 
   /* Compact ag-Grid wrappers inside the Capital + W/L cards. Width
      is 100% (grid columns flex to fill); height is driven by the
