@@ -103,10 +103,6 @@
   // re-derives whenever fetchBrokerOrder() resolves after cold load.
   let _derivOrderMap = $state(/** @type {Record<string,number>} */ ({}));
   const _unsubDerivsOrder = accountDisplayOrder.subscribe(m => { _derivOrderMap = m; });
-  onDestroy(() => {
-    for (const t of _orderToastTimers) clearTimeout(t);
-    _orderToastTimers.clear();
-  });
   let loading       = $state(false);
   // `loading` is toggled by loadStrategy() and short-circuits on
   // its leg-cache shortcut, so RefreshButton wired to `loading`
@@ -162,6 +158,10 @@
   let _orderToastSeq = 0;
   /** Tracks all live auto-dismiss timer handles so onDestroy can clear them. */
   const _orderToastTimers = new Set(/** @type {ReturnType<typeof setTimeout>[]} */ ([]));
+  onDestroy(() => {
+    for (const t of _orderToastTimers) clearTimeout(t);
+    _orderToastTimers.clear();
+  });
   function _pushOrderToast(/** @type {any} */ payload) {
     const resp  = payload?.broker_response || {};
     const px    = payload.price != null
