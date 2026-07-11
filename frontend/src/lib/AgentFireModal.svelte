@@ -17,9 +17,9 @@
     - AgentNotifications bell rows (click → opens modal)
 -->
 <script>
-  import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { chipsAsTextFromJson } from '$lib/logChips';
+  import ModalShell from '$lib/ModalShell.svelte';
 
   /** @type {{
    *   fire: {
@@ -44,20 +44,6 @@
   const palette = $derived(TIER_PALETTE[/** @type {keyof typeof TIER_PALETTE} */ (tier)] || TIER_PALETTE.info);
   const detailText = $derived(chipsAsTextFromJson(fire?.detail));
 
-  function onEsc(/** @type {KeyboardEvent} */ e) {
-    if (e.key === 'Escape') onClose();
-  }
-  onMount(() => {
-    if (typeof document !== 'undefined') {
-      document.addEventListener('keydown', onEsc);
-    }
-  });
-  onDestroy(() => {
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('keydown', onEsc);
-    }
-  });
-
   function openAgent() {
     if (fire?.slug) {
       goto(`/automation?q=${encodeURIComponent(fire.slug)}`);
@@ -66,14 +52,7 @@
   }
 </script>
 
-<!-- Overlay close fires only when the click target IS the overlay
-     element (not a bubbled child click). That removes the need for
-     a stopPropagation onclick on the modal wrapper, keeping the
-     inner div free of interaction listeners (a11y). -->
-<div class="afm-overlay" role="dialog" aria-modal="true" aria-label="Agent fire"
-     tabindex="-1"
-     onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-     onkeydown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onClose(); }}>
+<ModalShell open={true} {onClose} zIndex={9998} clickOutside={true}>
   <div class="afm-modal algo-modal" role="document"
        style="border-color: {palette.border}">
     <div class="afm-header">
@@ -124,19 +103,9 @@
       <button type="button" class="afm-btn" onclick={onClose}>Acknowledge</button>
     </div>
   </div>
-</div>
+</ModalShell>
 
 <style>
-  .afm-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 9998;
-    padding: 1rem;
-  }
   .afm-modal {
     /* Composes .algo-modal chrome. Overrides:
        - background: elevated navy gradient (lifts above already-dark
