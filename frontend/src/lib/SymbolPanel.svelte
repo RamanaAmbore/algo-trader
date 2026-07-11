@@ -42,6 +42,7 @@
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
   import ChaseAggPicker  from '$lib/order/ChaseAggPicker.svelte';
+  import TemplateBar     from '$lib/TemplateBar.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
@@ -2266,70 +2267,22 @@
            title={!_shellUsingNone && _selectedTemplate
              ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
              : 'Default attaches the saved template that matches the current side + symbol type. None opts out of any GTT attach.'}>
-        <span class="oes-basket-tpl-pick">
-          <span class="oes-basket-tpl-label">Template</span>
-          <span class="oes-tpl-toggle"
-                class:oes-tpl-toggle-none={_shellUsingNone}
-                role="group" aria-label="Template attach">
-            <button type="button"
-                    class={'oes-tpl-btn oes-tpl-btn-default' + (!_shellUsingNone ? ' on' : '')}
-                    disabled={!_sideAwareDefault}
-                    title={_sideAwareDefault
-                      ? `Attach ${_sideAwareDefault.name} on fill`
-                      : 'No side-default template configured for this scope'}
-                    onclick={() => {
-                      if (_sideAwareDefault) _sharedTemplateId = _sideAwareDefault.id;
-                    }}>
-              Default
-            </button>
-            <button type="button"
-                    class={'oes-tpl-btn oes-tpl-btn-none' + (_shellUsingNone ? ' on' : '')}
-                    title="No template — entry only, no GTT / no wing"
-                    onclick={() => {
-                      if (_noneTpl) _sharedTemplateId = _noneTpl.id;
-                    }}>
-              None
-            </button>
-          </span>
-          {#if !_shellUsingNone && _selectedTemplate}
-            <!-- Active template name + description so the operator sees
-                 WHICH default Default resolved to (relevant when there
-                 are multiple side-defaults seeded). -->
-            <span class="oes-basket-tpl-name" title={_selectedTemplate.description || ''}>
-              {_selectedTemplate.name || _selectedTemplate.slug}
-            </span>
-          {/if}
-        </span>
-        {#if !_shellUsingNone && _selectedTemplate}
-          <div class="oes-basket-tpl-params">
-            <label class="oes-basket-tpl-param" title="Take-profit % above (BUY) or below (SELL) the fill price.">
-              <span>TP%</span>
-              <input type="number" step="0.5"
-                placeholder={_selectedTemplate.tp_pct != null ? String(_selectedTemplate.tp_pct) : '—'}
-                bind:value={_sharedTpOverride} />
-            </label>
-            <label class="oes-basket-tpl-param" title="Stop-loss % opposite the TP side.">
-              <span>SL%</span>
-              <input type="number" step="0.5"
-                placeholder={_selectedTemplate.sl_pct != null ? String(_selectedTemplate.sl_pct) : '—'}
-                bind:value={_sharedSlOverride} />
-            </label>
-            {#if _sharedTplShowsWing}
-              <label class="oes-basket-tpl-param" title="Protective wing BUY at this many strikes away from the parent.">
-                <span>Wing strike+</span>
-                <input type="number" step="50"
-                  placeholder={_selectedTemplate.wing_strike_offset != null ? String(_selectedTemplate.wing_strike_offset) : '—'}
-                  bind:value={_sharedWingStrikeOffsetOverride} />
-              </label>
-              <label class="oes-basket-tpl-param" title="Wing premium target as a % of the parent's premium.">
-                <span>Wing prem%</span>
-                <input type="number" step="0.5"
-                  placeholder={_selectedTemplate.wing_premium_pct != null ? String(_selectedTemplate.wing_premium_pct) : '—'}
-                  bind:value={_sharedWingPremPctOverride} />
-              </label>
-            {/if}
-          </div>
-        {/if}
+        <TemplateBar
+          selectedTemplate={_selectedTemplate}
+          sideAwareDefault={_sideAwareDefault}
+          showsWing={_sharedTplShowsWing}
+          shellUsingNone={_shellUsingNone}
+          bind:tpOverride={_sharedTpOverride}
+          bind:slOverride={_sharedSlOverride}
+          bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
+          bind:wingPremPctOverride={_sharedWingPremPctOverride}
+          onSelectDefault={() => {
+            if (_sideAwareDefault) _sharedTemplateId = _sideAwareDefault.id;
+          }}
+          onSelectNone={() => {
+            if (_noneTpl) _sharedTemplateId = _noneTpl.id;
+          }}
+        />
         <!-- On-fill preview chip + cap warning. Piped up from OrderTicket
              via onPreviewPlanUpdate (mirrors onMarginUpdate). Visible on
              BOTH tabs because it lives in the shell-level Template
@@ -3403,161 +3356,15 @@
     color: rgba(180, 200, 230, 0.65);
     font-style: italic;
   }
-  /* Parameter override row — sits inline with the Select. Each
-     param is a tight label+input pair. The input is bare-monospace
-     for density; placeholder shows the template's value so the
-     operator sees what the value would be without overrides. */
-  .oes-basket-tpl-params {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.45rem;
-    flex-wrap: wrap;
-    margin-left: 0.4rem;
-  }
-  .oes-basket-tpl-param {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-family: monospace;
-    font-size: var(--fs-xs);
-    color: var(--algo-muted);
-  }
-  .oes-basket-tpl-param > span {
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-weight: 700;
-    color: rgba(251, 191, 36, 0.85);
-  }
-  /* On-fill param inputs — amber accent on dark navy. The new
-     container gradient already carries an amber wash, so the input
-     borders use a solid amber that pops against the gradient and
-     reads as algo-primary. Focus state inverts to bright amber with
-     an inset glow so the active field jumps out. */
-  .oes-basket-tpl-param > input {
-    width: 3.6rem;
-    height: 1.4rem;
-    padding: 0 0.35rem;
-    background: rgba(12, 18, 32, 0.82);
-    border: 1px solid rgba(251, 191, 36, 0.70);
-    border-radius: 3px;
-    color: #f8fafc;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 600;
-    text-align: right;
-    box-sizing: border-box;
-    font-variant-numeric: tabular-nums;
-    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.10);
-    transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
-  }
-  .oes-basket-tpl-param > input:hover {
-    border-color: rgba(251, 191, 36, 0.95);
-  }
-  .oes-basket-tpl-param > input:focus {
-    outline: none;
-    border-color: var(--algo-amber, var(--c-action));
-    background: rgba(28, 22, 8, 0.92);
-    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.55),
-                0 0 0 2px rgba(251, 191, 36, 0.20);
-  }
-  .oes-basket-tpl-param > input::placeholder {
-    color: rgba(251, 191, 36, 0.75);
-    font-style: italic;
-  }
-  .oes-basket-tpl-pick {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-family: monospace;
-    font-size: var(--fs-sm);
-    color: var(--algo-muted);
-  }
+  /* .oes-basket-tpl-pick, .oes-basket-tpl-params, .oes-basket-tpl-param,
+     .oes-tpl-toggle, .oes-tpl-btn, .oes-basket-tpl-name
+     — moved to TemplateBar.svelte (Phase 3 extraction). */
   .oes-basket-tpl-label {
     text-transform: uppercase;
     letter-spacing: 0.08em;
     font-weight: 800;
     color: var(--algo-amber, var(--c-action));
     font-size: var(--fs-sm);
-  }
-  /* Default / None two-pill toggle — mirrors the Side toggle in
-     OrderTicket so the operator's mental model is the same: Default
-     attaches the platform-resolved template, None opts out.
-     Distinct color schemes per active state so the operator can tell
-     them apart at a glance. Operator: "for default and none, template
-     values use a different color scheme for text".
-       Default ON → amber (algo primary, "rule is armed")
-       None ON    → slate-gray (neutral, "nothing fires post-fill")
-     The container's border tracks the active pill so the row itself
-     reads as either amber-armed or slate-neutral. */
-  .oes-tpl-toggle {
-    display: inline-flex;
-    height: 1.4rem;
-    min-height: 1.4rem;
-    border-radius: 3px;
-    overflow: hidden;
-    background: rgba(8, 14, 28, 0.55);
-    border: 1px solid rgba(251, 191, 36, 0.55);
-    box-sizing: border-box;
-    transition: border-color 0.12s;
-  }
-  .oes-tpl-toggle-none {
-    border-color: rgba(148, 163, 184, 0.55);
-  }
-  .oes-tpl-btn {
-    flex: 0 0 auto;
-    padding: 0 0.75rem;
-    background: transparent;
-    border: 0;
-    color: rgba(200, 216, 240, 0.65);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 800;
-    letter-spacing: 0.05em;
-    line-height: 1;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-  }
-  .oes-tpl-btn + .oes-tpl-btn {
-    border-left: 1px solid rgba(251, 191, 36, 0.30);
-  }
-  .oes-tpl-toggle-none .oes-tpl-btn + .oes-tpl-btn {
-    border-left-color: rgba(148, 163, 184, 0.30);
-  }
-  .oes-tpl-btn-default:hover:not(.on):not([disabled]) {
-    background: rgba(251, 191, 36, 0.08);
-    color: #f1f7ff;
-  }
-  .oes-tpl-btn-none:hover:not(.on):not([disabled]) {
-    background: rgba(148, 163, 184, 0.10);
-    color: #f1f7ff;
-  }
-  .oes-tpl-btn-default.on {
-    background: rgba(251, 191, 36, 0.24);
-    color: var(--algo-amber, var(--c-action));
-    text-shadow: 0 0 8px rgba(251, 191, 36, 0.45);
-  }
-  .oes-tpl-btn-none.on {
-    background: rgba(148, 163, 184, 0.22);
-    color: #cbd5e1;
-    text-shadow: 0 0 6px rgba(148, 163, 184, 0.45);
-  }
-  .oes-tpl-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-  }
-  /* Active-template name chip — sits inline next to the Default pill
-     so the operator sees WHICH default Default resolved to (relevant
-     once 4 side-defaults are seeded). */
-  .oes-basket-tpl-name {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 600;
-    color: #f8fafc;
-    background: rgba(251, 191, 36, 0.10);
-    border: 1px solid rgba(251, 191, 36, 0.32);
-    padding: 0.12rem 0.42rem;
-    border-radius: 3px;
-    letter-spacing: 0.02em;
   }
   /* Cap warning + on-fill preview chips — lifted from OrderTicket so
      they're visible on both Ticket and Chain tabs. Same palette family

@@ -29,7 +29,6 @@
   import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { navByAccount, navTotalRow } from '$lib/data/nav';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import GridDownloadButton from '$lib/GridDownloadButton.svelte';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
 
   /** @type {{
@@ -41,6 +40,15 @@
     // filtered subset.
     accountFilter = /** @type {string[]} */ ([]),
   } = $props();
+
+  /**
+   * Public method — lets a parent component (e.g. dashboard CardControls
+   * toolbar) trigger the CSV download without needing to own the data.
+   * Usage: bind:this={ref} then ref?.downloadCsv?.()
+   */
+  export function downloadCsv() {
+    _downloadCsv();
+  }
 
   // Module-level store reads — $derived so the table re-renders
   // whenever loadHero (or any other surface) writes through the
@@ -220,10 +228,11 @@
     </table>
     <!-- Caption — same formula footnote PerformancePage carries inline
          in its column-header tooltip; surfaced here so the operator
-         glances and knows what each column means without hovering. -->
+         glances and knows what each column means without hovering.
+         Download is exposed via the exported downloadCsv() method so the
+         parent can wire it into its CardControls toolbar. -->
     <div class="nav-bd-caption">
       <span>NAV = Cash (SOD + long-option premium) + Σ position M2M + Σ holdings MTM</span>
-      <GridDownloadButton onClick={_downloadCsv} label="NAV Breakdown" />
     </div>
   </div>
 {:else if _anyError && !_inFlight}
