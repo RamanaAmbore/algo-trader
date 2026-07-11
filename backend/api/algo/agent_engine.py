@@ -1348,12 +1348,15 @@ async def _cycle_load_agents(only_agent_ids: list[int] | None) -> list:
         return list(result.scalars().all())
 
 
-def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now) -> list:
+def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dict) -> list:
     """Build a V2Context for the agent and run the condition tree evaluator.
+
+    alert_state must be the same dict object held by run_cycle so that any
+    mutations made by the evaluator (e.g. pnl_history updates) remain visible
+    to subsequent per-agent gates on the same tick.
 
     Returns the list of match dicts (empty on no match or on evaluator error).
     """
-    alert_state = context.get("alert_state") or {}
     v2_ctx = V2Context(
         sum_holdings=context.get("sum_holdings"),
         sum_positions=context.get("sum_positions"),
@@ -1631,7 +1634,7 @@ async def run_cycle(context: dict, broadcast_fn=None,
             continue
 
         # Evaluate condition tree; unlatch static agents on no-match.
-        matches = _cycle_evaluate_agent(agent, context, cfg, now)
+        matches = _cycle_evaluate_agent(agent, context, cfg, now, alert_state)
         if not matches:
             _v2_unlatch(agent)
 
