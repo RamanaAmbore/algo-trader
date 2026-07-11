@@ -41,6 +41,7 @@
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
+  import ChaseAggPicker  from '$lib/order/ChaseAggPicker.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
@@ -1970,20 +1971,7 @@
              hides the whole row). -->
         {#if _chaseEnabled}
           <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-          <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'low'}
-                    title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                    onclick={() => _setSharedChaseAgg('low')}>L</button>
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'med'}
-                    title="Medium — peg to midpoint of bid+ask."
-                    onclick={() => _setSharedChaseAgg('med')}>M</button>
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'high'}
-                    title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                    onclick={() => _setSharedChaseAgg('high')}>H</button>
-          </div>
+          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
         {/if}
         {#if basketLegs.length > 0}
           <button type="button" class="oes-common-clear oes-common-clear-inline"
@@ -4603,30 +4591,6 @@
     letter-spacing: 0.06em;
   }
   .oes-common-chase-label.on { color: var(--c-action); }
-
-  .oes-common-chase-agg {
-    display: inline-flex;
-    border: 1px solid rgba(251,191,36,0.32);
-    border-radius: 3px;
-    overflow: hidden;
-  }
-  .oes-common-chase-agg-pill {
-    padding: 0.14rem 0.4rem;
-    background: transparent;
-    color: rgba(200,216,240,0.65);
-    border: 0;
-    border-right: 1px solid rgba(251,191,36,0.20);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    cursor: pointer;
-  }
-  .oes-common-chase-agg-pill:last-child { border-right: 0; }
-  .oes-common-chase-agg-pill:hover { color: var(--c-action); background: rgba(251,191,36,0.08); }
-  .oes-common-chase-agg-pill.on {
-    color: #0c1830;
-    background: var(--c-action);
-  }
 
   /* Margin strip — sits BELOW the action buttons. MARGIN · Avail ·
      After · (Short) cells in a horizontal row. After is colour-coded

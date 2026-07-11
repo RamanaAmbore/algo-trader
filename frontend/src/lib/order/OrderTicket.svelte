@@ -27,6 +27,7 @@
   import { onMount, onDestroy, untrack, getContext } from 'svelte';
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
+  import ChaseAggPicker from './ChaseAggPicker.svelte';
   import Select from '$lib/Select.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
@@ -2366,23 +2367,7 @@
           <span class="ot-chase-label" class:on={_chase}>CHASE</span>
         </label>
         {#if _chase}
-          <div class="ot-chase-agg" role="group" aria-label="Chase aggressiveness">
-            <button type="button"
-                    class="ot-chase-agg-pill ot-chase-agg-low"
-                    class:on={_chaseAgg === 'low'}
-                    title="Low — patient. SELL pegs to ASK, BUY pegs to BID. Order rests on your own side; fills only if the market lifts it."
-                    onclick={() => _setChaseAgg('low')}>L</button>
-            <button type="button"
-                    class="ot-chase-agg-pill ot-chase-agg-med"
-                    class:on={_chaseAgg === 'med'}
-                    title="Medium — peg to midpoint of bid+ask. Fills when the inside moves halfway in your favour."
-                    onclick={() => _setChaseAgg('med')}>M</button>
-            <button type="button"
-                    class="ot-chase-agg-pill ot-chase-agg-high"
-                    class:on={_chaseAgg === 'high'}
-                    title="High — urgent. SELL pegs to BID, BUY pegs to ASK. Crosses the spread to take liquidity on the next tick."
-                    onclick={() => _setChaseAgg('high')}>H</button>
-          </div>
+          <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
         {/if}
       {/if}
     </div>
@@ -3076,46 +3061,6 @@
     border-color: rgba(251,191,36,0.55);
     color: var(--c-action);
   }
-
-  /* Aggressiveness segment — three square pills (L · M · H) sitting
-     immediately right of the CHASE checkbox. Color graduates from
-     sky-blue (low/patient) → amber (med) → red (high/urgent) so
-     the operator's eye lands on the urgency level without reading
-     the glyph. Only the active pill carries the filled bg. */
-  .ot-chase-agg {
-    display: inline-flex;
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 3px;
-    overflow: hidden;
-    margin-left: 0.3rem;
-  }
-  .ot-chase-agg-pill {
-    width: 1.4rem;
-    height: 1.1rem;
-    padding: 0;
-    border: 0;
-    border-right: 1px solid rgba(255,255,255,0.12);
-    background: rgba(255,255,255,0.04);
-    color: var(--text-muted);
-    font-family: monospace;
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    line-height: 1;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.1s, color 0.1s, border-color 0.1s;
-  }
-  .ot-chase-agg-pill:last-child { border-right: 0; }
-  .ot-chase-agg-pill:hover { color: var(--algo-slate); background: rgba(255,255,255,0.08); }
-  /* Audit fix — add border-color in .on state so the active pill
-     visually matches OptionChainTab's chain-basket-chase-pill family.
-     Pre-fix, switching from Ticket to Chain tab caused the same three
-     pills to gain/lose visible borders. */
-  .ot-chase-agg-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
-  .ot-chase-agg-med.on  { background: rgba(251,191,36,0.20);  color: var(--c-action); border-color: rgba(251,191,36,0.55); }
-  .ot-chase-agg-high.on { background: rgba(248,113,113,0.20); color: var(--c-short); border-color: rgba(248,113,113,0.55); }
 
   .ot-err {
     background: var(--c-short-10);
