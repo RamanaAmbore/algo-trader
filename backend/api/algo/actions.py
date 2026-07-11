@@ -907,6 +907,70 @@ def _preflight_validate_account(account: str) -> dict | None:
     return None
 
 
+async def _preflight_build_basket_orders(
+    broker: object,
+    exchange: str,
+    symbol: str,
+    side: str,
+    qty: int,
+    order_type: str,
+    product: str,
+    variety: str,
+    price: float,
+    paired_orders: list[dict] | None,
+) -> list[dict]:
+    """
+    Build the list of basket-order dicts for basket_order_margins.
+
+    The primary leg is always index 0. Each paired leg is appended;
+    invalid paired legs (missing symbol, zero qty, or any exception)
+    are skipped with a debug log.
+    """
+    from backend.brokers.adapters.kite import get_lot_size
+
+    _lot_size = await get_lot_size(exchange, symbol)
+    _broker_qty = broker.normalise_qty(exchange, qty, _lot_size)
+    primary_leg = {
+        "exchange":         exchange,
+        "tradingsymbol":    symbol,
+        "transaction_type": side,
+        "quantity":         _broker_qty,
+        "order_type":       order_type,
+        "product":          product,
+        "price":            float(price) if price else 0.0,
+        "variety":          variety,
+    }
+    basket: list[dict] = [primary_leg]
+    # Paired legs (typically the template's wing) factored into the
+    # basket. Kite's basket_order_margins returns the NET margin across
+    # every leg, so a short option + protective long wing reads as the
+    # capped spread margin instead of the naked SPAN. Operator sees the
+    # actual margin they'll be charged, not a scarier naked-short number.
+    for pl in paired_orders or []:
+        try:
+            _pl_exchange = str(pl.get("exchange") or exchange)
+            _pl_symbol   = str(pl.get("tradingsymbol") or pl.get("symbol") or "")
+            if not _pl_symbol:
+                continue
+            _pl_qty = int(pl.get("quantity") or 0)
+            if _pl_qty <= 0:
+                continue
+            _pl_lot = await get_lot_size(_pl_exchange, _pl_symbol)
+            basket.append({
+                "exchange":         _pl_exchange,
+                "tradingsymbol":    _pl_symbol,
+                "transaction_type": str(pl.get("transaction_type") or pl.get("side") or "BUY"),
+                "quantity":         broker.normalise_qty(_pl_exchange, _pl_qty, _pl_lot),
+                "order_type":       str(pl.get("order_type") or "MARKET"),
+                "product":          str(pl.get("product") or product),
+                "price":            float(pl.get("price") or 0),
+                "variety":          str(pl.get("variety") or "regular"),
+            })
+        except Exception as _e:
+            logger.debug(f"[PREFLIGHT] paired leg skipped: {_e}")
+    return basket
+
+
 async def run_preflight(
     account: str,
     order: dict,
@@ -999,52 +1063,14 @@ async def run_preflight(
     order_type = str(order.get("order_type", "LIMIT"))
     variety   = str(order.get("variety", "regular"))
 
-    # ── Stage 1: build inputs (cheap, synchronous) ────────────────────────
+    # ── Stage 1: build basket orders (primary leg + paired wings) ───────────
     # Done before the broker-call fan-out so basket_orders is ready when
     # the parallel gather fires. get_lot_size + normalise_qty are
     # cache-hits; no broker network.
-    from backend.brokers.adapters.kite import get_lot_size
-    _lot_size = await get_lot_size(exchange, symbol)
-    _broker_qty = broker.normalise_qty(exchange, qty, _lot_size)
-    basket_order = {
-        "exchange":         exchange,
-        "tradingsymbol":    symbol,
-        "transaction_type": side,
-        "quantity":         _broker_qty,
-        "order_type":       order_type,
-        "product":          product,
-        "price":            float(price) if price else 0.0,
-        "variety":          variety,
-    }
-    # Paired legs (typically the template's wing) factored into the
-    # basket. Kite's basket_order_margins returns the NET margin across
-    # every leg, so a short option + protective long wing reads as the
-    # capped spread margin instead of the naked SPAN. Operator sees the
-    # actual margin they'll be charged, not a scarier naked-short
-    # number.
-    basket_orders = [basket_order]
-    for pl in paired_orders or []:
-        try:
-            _pl_exchange = str(pl.get("exchange") or exchange)
-            _pl_symbol   = str(pl.get("tradingsymbol") or pl.get("symbol") or "")
-            if not _pl_symbol:
-                continue
-            _pl_qty = int(pl.get("quantity") or 0)
-            if _pl_qty <= 0:
-                continue
-            _pl_lot = await get_lot_size(_pl_exchange, _pl_symbol)
-            basket_orders.append({
-                "exchange":         _pl_exchange,
-                "tradingsymbol":    _pl_symbol,
-                "transaction_type": str(pl.get("transaction_type") or pl.get("side") or "BUY"),
-                "quantity":         broker.normalise_qty(_pl_exchange, _pl_qty, _pl_lot),
-                "order_type":       str(pl.get("order_type") or "MARKET"),
-                "product":          str(pl.get("product") or product),
-                "price":            float(pl.get("price") or 0),
-                "variety":          str(pl.get("variety") or "regular"),
-            })
-        except Exception as _e:
-            logger.debug(f"[PREFLIGHT] paired leg skipped: {_e}")
+    basket_orders = await _preflight_build_basket_orders(
+        broker, exchange, symbol, side, qty,
+        order_type, product, variety, price, paired_orders,
+    )
 
     # ── Stage 2: fan out 4 independent broker calls in parallel ──────────
     # All four are orthogonal — no data dependency between them. Pre-fix
@@ -1217,7 +1243,7 @@ async def run_preflight(
             logger.warning(
                 f"[PREFLIGHT] negative basket margin for {account}/{symbol}: "
                 f"required={required:.2f} — treating as legitimate netting "
-                f"credit (qty={_broker_qty} contracts is unit-safe via "
+                f"credit (qty={qty} is unit-safe via "
                 f"translate_qty). Kite's place_order will reject if the "
                 f"actual SPAN check fails."
             )
