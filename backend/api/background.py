@@ -2432,6 +2432,135 @@ async def _task_trail_stop() -> None:
             logger.debug(f"[TRAIL] poll iteration failed: {e}")
 
 
+async def _oco_fetch_account_gtts(acct: str) -> Optional[list]:
+    """Fetch GTTs for one account; returns None on any error."""
+    from backend.brokers.registry import get_broker
+    try:
+        broker = get_broker(acct)
+    except Exception:
+        return None
+    try:
+        return await asyncio.to_thread(broker.get_gtts)
+    except Exception as e:
+        logger.debug(f"[OCO-WATCH] get_gtts failed for {acct}: {e}")
+        return None
+
+
+async def _oco_handle_settled_pair(
+    entry: dict,
+    by_id: dict,
+    row_id: int,
+    my_id: str,
+    sib_id: str,
+) -> None:
+    """Handle the both-settled case: log + optional Telegram + clear pointers."""
+    logger.warning(
+        f"[OCO-WATCH] row={row_id} both legs settled "
+        f"within one poll window (my={my_id} sib={sib_id}). "
+        f"Symbol={entry.get('parent_symbol', '?')} — "
+        f"verify no double-close at the broker."
+    )
+    try:
+        from backend.shared.helpers.utils import is_enabled
+        if is_enabled('telegram'):
+            from backend.shared.helpers.alert_utils import _send_telegram
+            await asyncio.to_thread(
+                _send_telegram,
+                f"⚠ OCO double-fire (emulated): "
+                f"{entry.get('parent_symbol', '?')} on "
+                f"{entry.get('parent_account', '?')} — "
+                f"both legs settled in one 15s poll "
+                f"window. Verify broker position; "
+                f"manual close may be needed.",
+            )
+    except Exception as _alert_err:
+        logger.debug(f"[OCO-WATCH] double-fire alert failed: {_alert_err}")
+    entry.pop("sibling_id", None)
+    sib_entry = by_id.get(sib_id)
+    if sib_entry:
+        sib_entry.pop("sibling_id", None)
+
+
+async def _oco_cancel_survivor(
+    entry: dict,
+    by_id: dict,
+    broker: object,
+    row_id: int,
+    my_id: str,
+    sib_id: str,
+) -> bool:
+    """Cancel the surviving sibling GTT; clears pointers on success. Returns changed flag."""
+    sib_entry = by_id.get(sib_id) or {}
+    sib_exchange = (
+        sib_entry.get("parent_exchange")
+        or entry.get("parent_exchange")
+        or "NFO"
+    )
+    try:
+        await asyncio.to_thread(broker.cancel_gtt, sib_id, exchange=sib_exchange)
+        logger.info(
+            f"[OCO-WATCH] row={row_id} cancelled survivor "
+            f"sibling={sib_id} (my id={my_id} fired)"
+        )
+        entry.pop("sibling_id", None)
+        if sib_entry:
+            sib_entry.pop("sibling_id", None)
+        return True
+    except Exception as e:
+        logger.warning(
+            f"[OCO-WATCH] row={row_id} cancel sibling "
+            f"{sib_id} failed: {e}"
+        )
+        return False
+
+
+async def _oco_process_account_entries(
+    acct: str,
+    acct_rows: list,
+    attached_by_row: dict,
+    broker_gtts: dict,
+) -> list[tuple[int, str]]:
+    """Process all OCO rows for one account; returns (row_id, json_str) update pairs."""
+    import json as _json
+    from backend.brokers.registry import get_broker
+
+    pending: list[tuple[int, str]] = []
+    try:
+        broker = get_broker(acct)
+    except Exception:
+        return pending
+
+    for row in acct_rows:
+        attached = attached_by_row.get(row.id) or []
+        changed = False
+        by_id: dict[str, dict] = {
+            str(e.get("id")): e
+            for e in attached
+            if isinstance(e, dict) and e.get("id")
+        }
+        for entry in attached:
+            if not (isinstance(entry, dict) and entry.get("sibling_id")):
+                continue
+            my_id  = str(entry.get("id") or "")
+            sib_id = str(entry.get("sibling_id") or "")
+            if not (my_id and sib_id):
+                continue
+            my_active  = my_id in broker_gtts
+            sib_active = sib_id in broker_gtts
+            if my_active or not sib_active:
+                if not my_active and not sib_active:
+                    await _oco_handle_settled_pair(entry, by_id, row.id, my_id, sib_id)
+                    changed = True
+                continue
+            # MY leg gone, sibling still alive → cancel it.
+            did_cancel = await _oco_cancel_survivor(entry, by_id, broker, row.id, my_id, sib_id)
+            if did_cancel:
+                changed = True
+        if changed:
+            pending.append((row.id, _json.dumps(attached)))
+    return pending
+
+
 async def _task_oco_pair_watcher() -> None:
     """OCO sibling-watcher for brokers without native OCO (Groww).
 
@@ -2457,7 +2586,6 @@ async def _task_oco_pair_watcher() -> None:
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    from backend.brokers.registry import get_broker
     from backend.shared.helpers.settings import get_int
     from sqlalchemy import select as _sel, update as _update
     import json as _json
@@ -2533,17 +2661,7 @@ async def _task_oco_pair_watcher() -> None:
             # watcher tick. Now wall-time = max(per-account get_gtts).
             gtts_by_account: dict[str, dict[str, dict]] = {}
             _accts = list(rows_by_account.keys())
-            async def _gtts_for(acct: str):
-                try:
-                    broker = get_broker(acct)
-                except Exception:
-                    return None
-                try:
-                    return await asyncio.to_thread(broker.get_gtts)
-                except Exception as e:
-                    logger.debug(f"[OCO-WATCH] get_gtts failed for {acct}: {e}")
-                    return None
-            results = await asyncio.gather(*(_gtts_for(a) for a in _accts))
+            results = await asyncio.gather(*(_oco_fetch_account_gtts(a) for a in _accts))
             for acct, gtts in zip(_accts, results):
                 if gtts is None:
                     continue
@@ -2552,112 +2670,13 @@ async def _task_oco_pair_watcher() -> None:
                     for g in (gtts or [])
                     if isinstance(g, dict)
                 }
-            # Walk each row, decide if a sibling needs cancelling.
+            # Walk each account's rows via the extracted helper.
             for acct, acct_rows in rows_by_account.items():
                 broker_gtts = gtts_by_account.get(acct, {})
-                try:
-                    broker = get_broker(acct)
-                except Exception:
-                    continue
-                for row in acct_rows:
-                    attached = attached_by_row.get(row.id) or []
-                    changed = False
-                    # Build a quick id→entry map so we can mark siblings
-                    # as cancelled in the same JSON blob.
-                    by_id: dict[str, dict] = {
-                        str(e.get("id")): e
-                        for e in attached
-                        if isinstance(e, dict) and e.get("id")
-                    }
-                    for entry in attached:
-                        if not (isinstance(entry, dict)
-                                and entry.get("sibling_id")):
-                            continue
-                        my_id  = str(entry.get("id") or "")
-                        sib_id = str(entry.get("sibling_id") or "")
-                        if not (my_id and sib_id):
-                            continue
-                        # If MY id is no longer active on the broker
-                        # (fired or already cancelled) AND my sibling
-                        # IS still active → cancel the sibling.
-                        my_active  = my_id in broker_gtts
-                        sib_active = sib_id in broker_gtts
-                        if my_active or not sib_active:
-                            # Either we're still waiting (both active)
-                            # or both already gone — nothing to do.
-                            if not my_active and not sib_active:
-                                # Both legs settled — clear sibling
-                                # pointer so we stop polling this row.
-                                # Audit fix (H-8) — when BOTH legs of
-                                # an emulated OCO settle within one
-                                # 15s poll window, the operator may
-                                # have double-closed the position (TP
-                                # fired AND SL fired before the pair
-                                # watcher could cancel the sibling).
-                                # Pre-fix this branch was silent. Now
-                                # log at WARNING level + fire a
-                                # Telegram alert so the operator can
-                                # verify and manually close any over-
-                                # exit. is_enabled('telegram') gates
-                                # the alert per the platform's notify
-                                # config.
-                                logger.warning(
-                                    f"[OCO-WATCH] row={row.id} both legs settled "
-                                    f"within one poll window (my={my_id} sib={sib_id}). "
-                                    f"Symbol={entry.get('parent_symbol', '?')} — "
-                                    f"verify no double-close at the broker."
-                                )
-                                try:
-                                    from backend.shared.helpers.utils import is_enabled
-                                    if is_enabled('telegram'):
-                                        from backend.shared.helpers.alert_utils import _send_telegram
-                                        await asyncio.to_thread(
-                                            _send_telegram,
-                                            f"⚠ OCO double-fire (emulated): "
-                                            f"{entry.get('parent_symbol', '?')} on "
-                                            f"{entry.get('parent_account', '?')} — "
-                                            f"both legs settled in one 15s poll "
-                                            f"window. Verify broker position; "
-                                            f"manual close may be needed.",
-                                        )
-                                except Exception as _alert_err:
-                                    logger.debug(
-                                        f"[OCO-WATCH] double-fire alert failed: {_alert_err}"
-                                    )
-                                entry.pop("sibling_id", None)
-                                sib_entry = by_id.get(sib_id)
-                                if sib_entry:
-                                    sib_entry.pop("sibling_id", None)
-                                changed = True
-                            continue
-                        # MY leg gone, sibling still alive → cancel it.
-                        sib_entry = by_id.get(sib_id) or {}
-                        sib_exchange = (
-                            sib_entry.get("parent_exchange")
-                            or entry.get("parent_exchange")
-                            or "NFO"
-                        )
-                        try:
-                            await asyncio.to_thread(
-                                broker.cancel_gtt, sib_id, exchange=sib_exchange
-                            )
-                            logger.info(
-                                f"[OCO-WATCH] row={row.id} cancelled survivor "
-                                f"sibling={sib_id} (my id={my_id} fired)"
-                            )
-                            # Drop sibling pointer on both ends — pair
-                            # is fully resolved.
-                            entry.pop("sibling_id", None)
-                            if sib_entry:
-                                sib_entry.pop("sibling_id", None)
-                            changed = True
-                        except Exception as e:
-                            logger.warning(
-                                f"[OCO-WATCH] row={row.id} cancel sibling "
-                                f"{sib_id} failed: {e}"
-                            )
-                    if changed:
-                        pending_oco_updates.append((row.id, _json.dumps(attached)))
+                updates = await _oco_process_account_entries(
+                    acct, acct_rows, attached_by_row, broker_gtts
+                )
+                pending_oco_updates.extend(updates)
             # Batch flush — one session, N UPDATE statements, one commit.
             if pending_oco_updates:
                 async with async_session() as s2:
