@@ -51,7 +51,6 @@
     fetchSimStatus,
     fetchPaperStatus,
     fetchStrategyAnalytics,
-    fetchChartSymbols,
     fetchWatchlists,
     fetchWatchlist,
   } from '$lib/api';
@@ -61,8 +60,7 @@
     emaSignals, vwapSignals, bollingerSignals, rsiSignals, macdSignals,
   } from '$lib/chart/indicators.js';
   import {
-    loadInstruments, searchByPrefix, suggestUnderlyings,
-    findEquity, findNearestFuture, getInstrument,
+    loadInstruments, findNearestFuture,
   } from '$lib/data/instruments';
   import { resolveUnderlying, MCX_COMMODITIES, CDS_CURRENCIES, INDEX_LTP_KEY } from '$lib/data/resolveUnderlying';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';

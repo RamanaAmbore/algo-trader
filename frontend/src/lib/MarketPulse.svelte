@@ -686,9 +686,14 @@
   // and rejections (which don't emit `position_filled`) also trigger
   // a single-iteration update. The store is debounced 200ms upstream
   // so a basket-order burst coalesces into one loadPulse.
+  // Bridge the legacy writable store through $state so Svelte 5's
+  // runes scheduler sees a proper reactive dependency (avoids stale-
+  // cache risk from reading a writable store directly inside $effect).
+  let _bookChangedVal = $state(0);
+  const _unsubBook = bookChanged.subscribe(/** @param {number} n */ n => { _bookChangedVal = n; });
   let _pulseBookCounter = 0;
   $effect(() => {
-    const n = $bookChanged;
+    const n = _bookChangedVal;
     if (n <= _pulseBookCounter) return;
     _pulseBookCounter = n;
     loadPulse();
@@ -2430,6 +2435,7 @@
 
   onDestroy(() => {
     _unsubMpOrder();
+    _unsubBook();
     stopPulseTick?.(); stopTickSettingPoll?.(); _stopClosedSparkPoll?.(); stopWS?.();
     if (_deferredSparkTimer) { clearTimeout(_deferredSparkTimer); _deferredSparkTimer = null; }
     stopQuoteStream();
@@ -3845,26 +3851,6 @@
       ev.preventDefault();
       if (!isDemo) openSearch();
       return;
-    }
-    if (ev.key === 'j' || ev.key === 'k') {
-      // j/k navigation retired in the 6-grid refactor — focus would
-      // need a "current grid" tracker to walk rows across instances.
-      // Operator can still use ag-Grid's native arrow-key nav inside
-      // whichever grid has focus.
-      if (false) {
-      ev.preventDefault();
-      const api = /** @type {any} */ (null);
-      // Attempt to move selection.
-      try {
-        const focused = api.getFocusedCell();
-        if (!focused) {
-          api.setFocusedCell(0, 'tradingsymbol');
-        } else {
-          const next = focused.rowIndex + (ev.key === 'j' ? 1 : -1);
-          if (next >= 0) api.setFocusedCell(next, focused.column);
-        }
-      } catch (_) {}
-      }  // end if(false) — j/k handler suppressed for 6-grid layout
     }
   }
 

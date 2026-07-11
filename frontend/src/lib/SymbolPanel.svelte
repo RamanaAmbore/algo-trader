@@ -34,9 +34,9 @@
   import { ORDER_TABS } from '$lib/order/tabs.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { aggregateCapWarnings } from '$lib/data/brokerCapWarnings';
-  import { placeTicketOrder, placeBasket, fetchBasketMargin, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent, previewTicketTemplate } from '$lib/api';
+  import { placeBasket, fetchBasketMargin, fetchLiveStatus, previewTicketTemplate } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
-  import { logTime, executionMode, visibleInterval } from '$lib/stores';
+  import { executionMode } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -466,12 +466,6 @@
     }
   }
 
-
-  // ── Bottom-panel tab state ───────────────────────────────────────────
-  // Default to Order Book — same as ActivityLogModal so the operator
-  // sees the same first surface whether the activity appears as a card
-  // tab inside SymbolPanel or as a modal from the page-header Log icon.
-  let _bottomTab = $state(/** @type {'orders'|'log'} */ ('orders'));
 
   // ── Basket state (shared across all tabs) ───────────────────────────
   // When basketMode is active (Chain tab is selected), submissions from
@@ -1825,79 +1819,13 @@
     }
   }
 
-  // ── Command tab pre-fill ─────────────────────────────────────────────
-  // Ticket pre-fill state — when the Command tab parses an order command
-  // it routes back here to switch to the Ticket tab pre-filled (or adds
-  // to basket when basketMode is active).
-  /** @type {any} */
-  let _cmdOrderProps = $state(null);
-
-  function handleParsedOrder(/** @type {any} */ props) {
-    _cmdOrderProps = props;
+  function handleParsedOrder(/** @type {any} */ _props) {
     _setActiveTab('ticket');
   }
 
-  /** Called by CommandLineTab when basketMode is on. */
-  function handleCmdAddToBasket(/** @type {any} */ leg) {
-    addToBasket(leg);
-  }
-
-  // ── Orders tab state ─────────────────────────────────────────────────
-  let _orders       = $state(/** @type {any[]} */ ([]));
-  let _algoRejected = $state(/** @type {any[]} */ ([]));
-  /** @type {(() => void) | undefined} */
-  let _ordersPoll;
   // Focus-trap anchor — bound to .oes-modal so Tab cycles stay inside.
   let _modalEl      = $state(/** @type {HTMLElement|null} */ (null));
 
-  // Kite statuses: OPEN / TRIGGER PENDING / VALIDATION PENDING are
-  // pending; COMPLETE / REJECTED / CANCELLED / UNFILLED are terminal.
-  const PENDING_STATUSES = new Set([
-    'OPEN', 'TRIGGER PENDING', 'VALIDATION PENDING', 'PENDING',
-  ]);
-  const _ordersPending   = $derived(_orders.filter(o => PENDING_STATUSES.has(o.status)));
-
-  // Completed section: Kite terminal orders + LOCAL REJECTED algo_orders.
-  // Local rows carry a `_local: true` flag so the template can render
-  // a "LOCAL" chip distinguishing "we blocked it" from "broker rejected".
-  const _ordersCompleted = $derived.by(() => {
-    const kite = /** @type {any[]} */ (_orders).filter(o => !PENDING_STATUSES.has(o.status));
-    const local = /** @type {any[]} */ (_algoRejected).map(o => ({ .../** @type {any} */ (o), _local: true }));
-    return [...kite, ...local]
-      .sort((a, b) => {
-        const ta = a.exchange_update_timestamp ?? a.order_timestamp ?? a.filled_at ?? a.created_at ?? '';
-        const tb = b.exchange_update_timestamp ?? b.order_timestamp ?? b.filled_at ?? b.created_at ?? '';
-        return (tb || '').localeCompare(ta || '');
-      })
-      .slice(0, 30);
-  });
-
-  async function _loadOrdersData() {
-    try {
-      const [ordRes, algoRejRes] = await Promise.all([
-        // Real Kite broker orders — same source the /orders page uses.
-        fetchOrders(),
-        // Local REJECTED algo_orders that never reached Kite (preflight blocks).
-        fetchAlgoOrdersRecent(20, 'live'),
-      ]);
-      _orders       = (Array.isArray(ordRes) ? ordRes : (ordRes?.rows ?? ordRes ?? []));
-      const allAlgo = (Array.isArray(algoRejRes) ? algoRejRes : (algoRejRes?.orders ?? algoRejRes ?? []));
-      _algoRejected = allAlgo.filter((/** @type {any} */ o) => (o.status ?? '').toUpperCase() === 'REJECTED');
-    } catch (_) { /* silent */ }
-  }
-
-  /** Format an ISO UTC timestamp to HH:MM:SS for order-card meta lines. */
-  function _fmtEventTime(/** @type {unknown} */ ts) {
-    if (!ts || typeof ts !== 'string') return '—';
-    const out = logTime(ts.endsWith('Z') ? ts : ts + 'Z');
-    return out || '—';
-  }
-
-  // Close on Escape + conditional order-data poll.
-  // CRIT 2: when hideBottomPanel=true (PageHeaderActions case) the order
-  // history section is never rendered — skip both the initial load and the
-  // 3-second interval to avoid firing two API calls per tick for the full
-  // modal lifetime.
   function _oesFocusables() {
     return /** @type {HTMLElement[]} */ (
       Array.from(_modalEl?.querySelectorAll(
@@ -1940,11 +1868,6 @@
       }
     };
     window.addEventListener('keydown', onKey);
-    if (!hideBottomPanel) {
-      _loadOrdersData();
-      // visibleInterval: pauses when tab hidden, refires immediately on return.
-      _ordersPoll = visibleInterval(_loadOrdersData, 3000);
-    }
     // HIGH 1: prevent background page scroll while the modal is open.
     // Only applies in overlay mode (not inline) — inline renders as a
     // flat page element so scroll should remain enabled.
@@ -1954,7 +1877,6 @@
     }
     return () => {
       window.removeEventListener('keydown', onKey);
-      if (_ordersPoll) { _ordersPoll(); _ordersPoll = undefined; }
       if (_wlToastTimer) { clearTimeout(_wlToastTimer); _wlToastTimer = null; }
       if (!wasInline) {
         document.body.style.overflow = '';
@@ -1977,15 +1899,11 @@
                              { dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' }),
   }));
 
-  // Effective OrderTicket props — merge _cmdOrderProps (from Command tab
-  // parse) on top of the shell's own props, so a typed command wins.
-  const _ticketProps = $derived.by(() => {
-    if (_cmdOrderProps) return _cmdOrderProps;
-    return {
-      symbol, exchange, side, action, qty, product, orderType, variety,
-      price, trigger, lotSize, accounts, account, orderId,
-      currentQty, onAddToBasket,
-    };
+  // Effective OrderTicket props — shell-level props forwarded to the ticket.
+  const _ticketProps = $derived({
+    symbol, exchange, side, action, qty, product, orderType, variety,
+    price, trigger, lotSize, accounts, account, orderId,
+    currentQty, onAddToBasket,
   });
 </script>
 
