@@ -1647,76 +1647,56 @@
   // sequence (watchlist 1 → positions 2 → holdings 3 → movers 4).
   // First row of each major gets `_majorFirst=true` so the row
   // styling can paint a divider above it.
-  const mainRows = $derived.by(() => {
-    const rows = unifiedRows.filter(r => {
-      // Pinned major lives in pinnedTopRows; never appears in main.
-      if (r._majorGroup === 'pinned') return false;
-      // Watchlist major gated by the operator's source toggle.
-      if (r._majorGroup === 'watchlist' && !showWatchlist) return false;
-      // Positions / Holdings / Movers are pre-filtered at buildUnified
-      // entry via includePos / includeHold / includeMovers, so no
-      // additional gate needed here. (Symbols already absent.)
-      return true;
-    });
-    // Sort: major first → underlying-group within major → anchor before
-    // options within the same underlying → alphabetical tradingsymbol as
-    // the final tiebreaker.
-    //
-    // Why group by `underlying` and not by tradingsymbol alphabetic?
-    // Anchors (src.u-only rows) carry a tradingsymbol that may differ
-    // from their underlying name — MCX same-month-future stubs land as
-    // `CRUDEOIL26JUNFUT`, alphabetically AFTER `CRUDEOIL26JUN10000CE`,
-    // which orphans the anchor at the BOTTOM of the positions block.
-    // Sorting by `underlying` first pins every row carrying
-    // underlying='CRUDEOIL' to one contiguous block; within that block,
-    // anchor rows (tier 0/1) precede option rows (tier 2).
-    const _ugKey = (r) => String(r.underlying || r.tradingsymbol || '').toUpperCase();
-    const _tier  = (r) => (r.kind === 'spot' ? 0 : r.kind === 'fut' ? 1 : r.kind === 'mcx' ? 1 : r.kind === 'opt' ? 2 : 3);
-    // Sub-group order WITHIN the Movers major — underlying first
-    // (most-actively-traded, F&O-eligible names), then large_cap, then
-    // midcap, then smallcap. Unknown / null sub-groups go last (defensive
-    // — every row from loadMovers carries one of the four tags).
-    const MOVER_GROUP_ORDER = { underlying: 0, large_cap: 1, midcap: 2, smallcap: 3 };
-    // Direction order: Winners first, Losers second. Within each
-    // direction the underlying → large_cap → midcap → smallcap sub-grouping
-    // applies. Result inside Movers:
-    //   Winners → Underlyings, Large Cap, Midcap, Smallcap
-    //   Losers  → Underlyings, Large Cap, Midcap, Smallcap
-    const MOVER_DIRECTION_ORDER = { winners: 0, losers: 1 };
-    const _mgOrder = (r) =>
-      r._majorGroup === 'movers' ? (MOVER_GROUP_ORDER[r._moverGroup] ?? 9) : -1;
-    const _mdOrder = (r) =>
-      r._majorGroup === 'movers' ? (MOVER_DIRECTION_ORDER[r._moverDirection] ?? 9) : -1;
-    rows.sort((a, b) => {
-      const moA = a._majorOrder ?? 99, moB = b._majorOrder ?? 99;
-      if (moA !== moB) return moA - moB;
-      // Direction first inside Movers (winners → losers).
-      const mdA = _mdOrder(a), mdB = _mdOrder(b);
-      if (mdA !== mdB) return mdA - mdB;
-      // Sub-group ordering applies ONLY to the Movers major — other
-      // majors keep their existing underlying-then-tier sort. _mgOrder
-      // returns -1 for non-mover rows so this branch is a no-op there.
-      const mgA = _mgOrder(a), mgB = _mgOrder(b);
-      if (mgA !== mgB) return mgA - mgB;
-      // Inside a Movers sub-group, biggest mover first (by % change abs).
-      if (a._majorGroup === 'movers' && b._majorGroup === 'movers') {
-        const pA = Math.abs(Number(a._mover_change_pct) || Number(a.change_pct) || 0);
-        const pB = Math.abs(Number(b._mover_change_pct) || Number(b.change_pct) || 0);
-        if (pA !== pB) return pB - pA;
-      }
-      const ua = _ugKey(a), ub = _ugKey(b);
-      if (ua !== ub) return ua.localeCompare(ub);
-      const ta = _tier(a),  tb = _tier(b);
-      if (ta !== tb) return ta - tb;
-      return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
-    });
-    // First-row flags: major divider as before; direction divider for
-    // the first row of each Winners/Losers block; sub-group divider for
-    // each (underlying / midcap / smallcap) section inside the
-    // direction block.
-    let lastMajor = null;
-    let lastMoverDirection = null;
-    let lastMoverGroup = null;
+  // ── mainRows sort helpers (module-level pure fns, no reactive deps) ───────
+  // Extracted from the $derived.by body to reduce cyclomatic complexity
+  // (sort comparator was CC 13; now mainRows derived is CC 3).
+
+  // Sub-group order WITHIN the Movers major — underlying first
+  // (most-actively-traded, F&O-eligible names), then large_cap → midcap →
+  // smallcap. Unknown / null sub-groups go last.
+  const _MOVER_GROUP_ORDER     = { underlying: 0, large_cap: 1, midcap: 2, smallcap: 3 };
+  // Direction order: Winners first, Losers second.
+  const _MOVER_DIRECTION_ORDER = { winners: 0, losers: 1 };
+
+  function _mrUgKey(r) { return String(r.underlying || r.tradingsymbol || '').toUpperCase(); }
+  function _mrTier(r) {
+    if (r.kind === 'spot')                       return 0;
+    if (r.kind === 'fut' || r.kind === 'mcx')    return 1;
+    if (r.kind === 'opt')                        return 2;
+    return 3;
+  }
+  function _mrMgOrder(r) {
+    return r._majorGroup === 'movers' ? (_MOVER_GROUP_ORDER[r._moverGroup] ?? 9) : -1;
+  }
+  function _mrMdOrder(r) {
+    return r._majorGroup === 'movers' ? (_MOVER_DIRECTION_ORDER[r._moverDirection] ?? 9) : -1;
+  }
+  // Sort: major → direction (Movers) → sub-group (Movers) → biggest
+  // mover first → underlying-group → anchor-before-options → symbol.
+  // Why underlying-group over alphabetic? Anchors (spot/fut stubs) carry
+  // tradingsymbol that differs from underlying — sorting by underlying
+  // keeps them contiguous with their options block.
+  function _compareMainRows(a, b) {
+    const moA = a._majorOrder ?? 99, moB = b._majorOrder ?? 99;
+    if (moA !== moB) return moA - moB;
+    const mdA = _mrMdOrder(a), mdB = _mrMdOrder(b);
+    if (mdA !== mdB) return mdA - mdB;
+    const mgA = _mrMgOrder(a), mgB = _mrMgOrder(b);
+    if (mgA !== mgB) return mgA - mgB;
+    if (a._majorGroup === 'movers' && b._majorGroup === 'movers') {
+      const pA = Math.abs(Number(a._mover_change_pct) || Number(a.change_pct) || 0);
+      const pB = Math.abs(Number(b._mover_change_pct) || Number(b.change_pct) || 0);
+      if (pA !== pB) return pB - pA;
+    }
+    const ua = _mrUgKey(a), ub = _mrUgKey(b);
+    if (ua !== ub) return ua.localeCompare(ub);
+    const ta = _mrTier(a), tb = _mrTier(b);
+    if (ta !== tb) return ta - tb;
+    return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
+  }
+  // Annotate first-row divider flags (major / direction / sub-group) in-place.
+  function _annotateMainRowFlags(rows) {
+    let lastMajor = null, lastMoverDirection = null, lastMoverGroup = null;
     for (const r of rows) {
       r._majorFirst = (r._majorGroup !== lastMajor);
       lastMajor = r._majorGroup;
@@ -1724,8 +1704,7 @@
         r._moverDirectionFirst = (r._moverDirection !== lastMoverDirection);
         lastMoverDirection = r._moverDirection;
         // Reset sub-group tracker when direction flips so the first
-        // sub-group of Losers gets its own divider regardless of what
-        // the last Winners sub-group was.
+        // sub-group of Losers gets its own divider.
         if (r._moverDirectionFirst) lastMoverGroup = null;
         r._moverGroupFirst = (r._moverGroup !== lastMoverGroup);
         lastMoverGroup = r._moverGroup;
@@ -1734,6 +1713,16 @@
         r._moverGroupFirst = false;
       }
     }
+  }
+
+  const mainRows = $derived.by(() => {
+    const rows = unifiedRows.filter(r => {
+      if (r._majorGroup === 'pinned')                       return false;
+      if (r._majorGroup === 'watchlist' && !showWatchlist)  return false;
+      return true;
+    });
+    rows.sort(_compareMainRows);
+    _annotateMainRowFlags(rows);
     return rows;
   });
 
