@@ -45,7 +45,7 @@ Specialized subagents in `~/.claude/agents/` dispatched in parallel by default:
 | `backend-test` | Layer 1+2 | pytest + pytest-asyncio — broker + API tests | haiku |
 | `playwright` | Layer 3 | Playwright e2e — browser flows, mobile viewport | haiku |
 | `audit` | All | Read-only defect review — no writes | sonnet |
-| `doc` | All | CLAUDE.md / USER_GUIDE.md / ADMIN_GUIDE.md | haiku |
+| `doc` | All | CLAUDE.md / docs/guides/ / docs/specs/ | haiku |
 
 **Parallel by default** — independent sub-tasks fire together. Sequence only when 
 one output feeds another or when audit finds defects.

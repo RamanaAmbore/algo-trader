@@ -19,7 +19,7 @@ cd tools/pdf-gen
 npm run build:design
 ```
 
-Writes `DESIGN_GUIDE.pdf` to the repo root.
+Reads `docs/DESIGN_GUIDE.md`, writes `DESIGN_GUIDE.pdf` to the repo root.
 
 ## Generate any markdown
 
