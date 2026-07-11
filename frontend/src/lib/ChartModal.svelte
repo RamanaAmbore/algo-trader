@@ -18,7 +18,12 @@
     /** @type {() => void} */ onClose,
   } = $props();
 
-  let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
+  let _modalEl  = $state(/** @type {HTMLElement|null} */ (null));
+  // Svelte 5 delegates onclick handlers at the mount root; nodes portaled to
+  // document.body by ModalShell are outside that root, so onclick={...} never
+  // fires on them. Use a native addEventListener in onMount instead — same
+  // workaround as the pre-ModalShell implementation.
+  let _closeBtnEl = $state(/** @type {HTMLElement|null} */ (null));
   // ChartWorkspace exposes its fetch state via $bindable `loading`. While
   // a refresh is in flight, the modal goes into a "busy" guard mode:
   //   - chart body becomes pointer-events:none so the operator can't
@@ -67,6 +72,11 @@
     }
   }
 
+  function _onCloseClick(e) {
+    e.stopPropagation();
+    onClose?.();
+  }
+
   onMount(() => {
     // Seed the shared chartStore with this modal's symbol + exchange so
     // that navigating to /charts while the modal is open (or after
@@ -81,10 +91,14 @@
     // SymbolPanel's window listener) — Esc closes only ChartModal, not
     // the SymbolPanel behind it.
     window.addEventListener('keydown', _onKey, { capture: true });
+    // Native click listener — Svelte 5 delegation doesn't reach portaled
+    // nodes (see _closeBtnEl comment above).
+    _closeBtnEl?.addEventListener('click', _onCloseClick);
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
   });
   onDestroy(() => {
     window.removeEventListener('keydown', _onKey, { capture: true });
+    _closeBtnEl?.removeEventListener('click', _onCloseClick);
   });
 </script>
 
@@ -135,7 +149,7 @@
         </span>
         <button type="button" class="cm-close"
                 aria-label="Close chart modal"
-                onclick={() => onClose?.()}>×</button>
+                bind:this={_closeBtnEl}>×</button>
       </span>
     </div>
     <div class="cm-body">
