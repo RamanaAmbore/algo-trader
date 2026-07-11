@@ -3950,44 +3950,11 @@ async def _task_funds_offhours() -> None:
         await asyncio.sleep(30 * 60)
 
 
-async def _task_warm_backfill() -> None:
-    """One-shot startup backfill for ohlcv_daily and intraday_bars.
-
-    Fires 60 s after process start to give the conn_service time to mint
-    fresh broker tokens.  Runs exactly once per process lifetime.
-
-    OHLCV backfill (historical — broker serves even when markets closed):
-    always runs on startup regardless of market hours.  Checks coverage for
-    every symbol in the warm universe (watchlist + holdings + positions +
-    movers, 300-symbol cap) and force-fetches any symbol with fewer than
-    target_days × 0.7 bars.
-
-    Intraday backfill (today's bars — broker only during open hours):
-    deferred when no segment is open because today's intraday bars are still
-    accumulating during the session.  When markets are closed the intraday
-    bars from the prior session are already in intraday_bars via the
-    persistence pipeline's regular write-back.
-    """
-    # Guard: only fire once per process (idempotent against module reloads).
-    if getattr(_task_warm_backfill, "_fired", False):
-        return
-    _task_warm_backfill._fired = True   # type: ignore[attr-defined]
-
-    # Startup settle — wait for conn_service token mint.
-    await asyncio.sleep(60)
-
-    from backend.api.persistence.backfill import backfill_ohlcv_daily, backfill_intraday_today
-    from backend.shared.helpers.date_time_utils import is_any_segment_open
-
-    # Build the same symbol universe as _task_sparkline_warm (300-symbol cap).
-    # We reuse _collect_symbols defined inside _task_sparkline_warm — but that
-    # is a closure; we duplicate the same DB + broker_apis logic here using the
-    # same helpers so there is no hidden coupling.  A future refactor can lift
-    # _collect_symbols to a module-level helper when more callers need it.
-    symbols: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-
-    # 1. Watchlist.
+async def _backfill_collect_watchlist(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append watchlist symbols (with MCX/CDS resolution) into symbols/seen in place."""
     try:
         from backend.api.database import async_session
         from backend.api.models import WatchlistItem
@@ -4018,7 +3985,12 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.warning(f"backfill warm: watchlist collect failed: {exc}")
 
-    # 2. Holdings.
+
+async def _backfill_collect_holdings(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append holding symbols from broker API into symbols/seen in place."""
     try:
         import pandas as pd
         from backend.brokers import broker_apis
@@ -4038,7 +4010,12 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.warning(f"backfill warm: holdings collect failed: {exc}")
 
-    # 3. Positions.
+
+async def _backfill_collect_positions(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append position symbols from broker API into symbols/seen in place."""
     try:
         import pandas as pd
         from backend.brokers import broker_apis
@@ -4058,7 +4035,12 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.warning(f"backfill warm: positions collect failed: {exc}")
 
-    # 4. Mover universe (fills remaining capacity up to 300-symbol cap).
+
+def _backfill_collect_movers(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append mover-universe symbols into symbols/seen in place."""
     try:
         from backend.shared.helpers.mover_universe import mover_warm_pairs
         for key in mover_warm_pairs():
@@ -4068,7 +4050,9 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.warning(f"backfill warm: mover universe collect failed: {exc}")
 
-    # Hard cap — same split logic as _task_sparkline_warm.
+
+def _backfill_apply_cap(symbols: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Apply the 300-symbol cap (book pairs first, then movers)."""
     try:
         from backend.shared.helpers.mover_universe import mover_warm_pairs as _mwp
         _mover_set  = set(_mwp())
@@ -4076,17 +4060,14 @@ async def _task_warm_backfill() -> None:
         mover_pairs = [p for p in symbols if p in _mover_set]
         cap         = 300
         remaining   = max(0, cap - len(book_pairs))
-        symbols     = book_pairs + mover_pairs[:remaining]
+        return book_pairs + mover_pairs[:remaining]
     except Exception:
-        symbols = symbols[:300]
+        return symbols[:300]
 
-    if not symbols:
-        logger.warning("backfill warm: empty symbol universe — nothing to backfill")
-        return
 
-    logger.info(f"backfill warm: universe={len(symbols)} symbols")
-
-    # ── OHLCV daily backfill (historical — runs regardless of market hours) ──
+async def _backfill_run_ohlcv(symbols: list[tuple[str, str]]) -> None:
+    """Run the OHLCV daily backfill and log the result."""
+    from backend.api.persistence.backfill import backfill_ohlcv_daily
     try:
         result = await backfill_ohlcv_daily(symbols, target_days=365, max_concurrent=3)
         logger.info(
@@ -4097,7 +4078,11 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.error(f"backfill warm: ohlcv_daily failed: {exc}")
 
-    # ── Intraday today backfill (defer when markets are closed) ──────────────
+
+async def _backfill_run_intraday(symbols: list[tuple[str, str]]) -> None:
+    """Run today's intraday backfill (deferred when no segment is open)."""
+    from backend.api.persistence.backfill import backfill_intraday_today
+    from backend.shared.helpers.date_time_utils import is_any_segment_open
     try:
         now_ist = timestamp_indian()
         if is_any_segment_open(now_ist):
@@ -4114,6 +4099,52 @@ async def _task_warm_backfill() -> None:
             )
     except Exception as exc:
         logger.error(f"backfill warm: intraday_today failed: {exc}")
+
+
+async def _task_warm_backfill() -> None:
+    """One-shot startup backfill for ohlcv_daily and intraday_bars.
+
+    Fires 60 s after process start to give the conn_service time to mint
+    fresh broker tokens.  Runs exactly once per process lifetime.
+
+    OHLCV backfill (historical — broker serves even when markets closed):
+    always runs on startup regardless of market hours.  Checks coverage for
+    every symbol in the warm universe (watchlist + holdings + positions +
+    movers, 300-symbol cap) and force-fetches any symbol with fewer than
+    target_days × 0.7 bars.
+
+    Intraday backfill (today's bars — broker only during open hours):
+    deferred when no segment is open because today's intraday bars are still
+    accumulating during the session.  When markets are closed the intraday
+    bars from the prior session are already in intraday_bars via the
+    persistence pipeline's regular write-back.
+    """
+    # Guard: only fire once per process (idempotent against module reloads).
+    if getattr(_task_warm_backfill, "_fired", False):
+        return
+    _task_warm_backfill._fired = True   # type: ignore[attr-defined]
+
+    # Startup settle — wait for conn_service token mint.
+    await asyncio.sleep(60)
+
+    # Build the same symbol universe as _task_sparkline_warm (300-symbol cap).
+    symbols: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    await _backfill_collect_watchlist(symbols, seen)
+    await _backfill_collect_holdings(symbols, seen)
+    await _backfill_collect_positions(symbols, seen)
+    _backfill_collect_movers(symbols, seen)
+    symbols = _backfill_apply_cap(symbols)
+
+    if not symbols:
+        logger.warning("backfill warm: empty symbol universe — nothing to backfill")
+        return
+
+    logger.info(f"backfill warm: universe={len(symbols)} symbols")
+
+    await _backfill_run_ohlcv(symbols)
+    await _backfill_run_intraday(symbols)
 
 
 def _parse_perf_snapshot_rows(snap: dict) -> list:

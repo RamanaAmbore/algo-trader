@@ -237,15 +237,16 @@ async def test_warm_backfill_cds_currency_resolved():
 
 @pytest.mark.asyncio
 async def test_warm_backfill_holdings_via_to_thread():
-    """Holdings are fetched via asyncio.to_thread(broker_apis.fetch_holdings)."""
+    """Holdings are fetched via asyncio.to_thread(broker_apis.fetch_holdings)
+    in the extracted helper _backfill_collect_holdings."""
     import inspect
-    from backend.api.background import _task_warm_backfill
+    from backend.api.background import _backfill_collect_holdings
 
-    src = inspect.getsource(_task_warm_backfill)
+    src = inspect.getsource(_backfill_collect_holdings)
 
-    # Verify the to_thread call is present
+    # Verify the to_thread call is present in the helper
     assert "asyncio.to_thread(broker_apis.fetch_holdings)" in src, (
-        "_task_warm_backfill must call asyncio.to_thread(broker_apis.fetch_holdings), "
+        "_backfill_collect_holdings must call asyncio.to_thread(broker_apis.fetch_holdings), "
         "not block the event loop"
     )
 
@@ -254,15 +255,16 @@ async def test_warm_backfill_holdings_via_to_thread():
 
 @pytest.mark.asyncio
 async def test_warm_backfill_positions_via_to_thread():
-    """Positions are fetched via asyncio.to_thread(broker_apis.fetch_positions)."""
+    """Positions are fetched via asyncio.to_thread(broker_apis.fetch_positions)
+    in the extracted helper _backfill_collect_positions."""
     import inspect
-    from backend.api.background import _task_warm_backfill
+    from backend.api.background import _backfill_collect_positions
 
-    src = inspect.getsource(_task_warm_backfill)
+    src = inspect.getsource(_backfill_collect_positions)
 
-    # Verify the to_thread call is present
+    # Verify the to_thread call is present in the helper
     assert "asyncio.to_thread(broker_apis.fetch_positions)" in src, (
-        "_task_warm_backfill must call asyncio.to_thread(broker_apis.fetch_positions), "
+        "_backfill_collect_positions must call asyncio.to_thread(broker_apis.fetch_positions), "
         "not block the event loop"
     )
 
