@@ -165,8 +165,10 @@ async def _query_max_dates(dsn: str) -> dict[str, date | None]:
     try:
         conn = await asyncpg.connect(asyncpg_dsn, timeout=10)
     except Exception as exc:
+        # Exit 3 = DB unreachable (local dev / no DB role). TLM treats this
+        # as skip rather than P1 so it doesn't fire false alerts off-server.
         print(f"[error] DB connection failed: {exc}", file=sys.stderr)
-        sys.exit(2)
+        sys.exit(3)
 
     try:
         for label, table, where, date_col in _SURFACES:

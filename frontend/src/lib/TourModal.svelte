@@ -122,7 +122,7 @@
   // No JS RAF loop needed.
 </script>
 
-<ModalShell open={true} {onClose} zIndex={110} clickOutside={true}>
+<ModalShell open={true} {onClose} zIndex={110} clickOutside={true} ariaLabel="Product tour">
   <div class="tour-modal algo-modal" role="dialog" aria-modal="true" aria-labelledby="tour-title" tabindex="-1"
        onclick={(e) => e.stopPropagation()}
        onkeydown={(e) => e.stopPropagation()}>

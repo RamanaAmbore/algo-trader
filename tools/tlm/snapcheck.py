@@ -61,6 +61,11 @@ class SnapCheck(TlmTool):
                 findings=[],
                 exit_code=1,
             )
+        elif r.returncode == 3:
+            return TlmResult.skip(
+                self.name,
+                "DB unreachable (local dev / no DB role) — skipping stale snapshot check",
+            )
         else:
             return TlmResult.tool_error(
                 self.name, f"check_stale_snapshots.py exited with code {r.returncode}"

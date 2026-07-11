@@ -167,6 +167,63 @@ function _isAnimating(row) {
   return true;
 }
 
+// Resolve the avg price for a row — positions take precedence over holdings.
+function _ltpAvgFor(row) {
+  if (row.qty_pos && row.avg_pos) return row.avg_pos;
+  if (row.qty_hold && row.avg_hold) return row.avg_hold;
+  return null;
+}
+
+// Return the tick-flash class for a symbol, or null when not flashing.
+// Uses getter functions (not frozen Set values) so the closure stays live.
+function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown) {
+  if (getLtpFlashUp().has(sym))   return 'ltp-flash-up';
+  if (getLtpFlashDown().has(sym)) return 'ltp-flash-down';
+  return null;
+}
+
+// Return the heat class comparing `ltp` to a reference price (`ref`).
+// Returns null when either value is not a positive number.
+function _ltpHeatVs(ltp, ref, upCls, downCls, flatCls) {
+  if (typeof ltp !== 'number' || typeof ref !== 'number' || !(ref > 0)) return null;
+  return ltp > ref ? upCls : ltp < ref ? downCls : flatCls;
+}
+
+// Build the vs-avg and vs-prev heat classes for a given ltp / row.
+function _ltpHeatClasses(ltp, avg, prev) {
+  const out = [];
+  const avgCls  = _ltpHeatVs(ltp, avg,  'ltp-vs-avg-up',  'ltp-vs-avg-down',  'ltp-vs-avg-flat');
+  const prevCls = _ltpHeatVs(ltp, prev, 'ltp-vs-prev-up', 'ltp-vs-prev-down', 'ltp-vs-prev-flat');
+  if (avgCls)  out.push(avgCls);
+  if (prevCls) out.push(prevCls);
+  return out;
+}
+
+// Consolidate all cellClass branches for the LTP column into one named function.
+// `resolveCellLtp` is the pre-bound resolver from mkResolveCellLtp so it sees
+// the current live-snap map at render time (not a frozen snapshot).
+function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
+  if (!p.data || p.data._isTotal) return RA;
+  const sym  = String(p.data.tradingsymbol || '').toUpperCase();
+  const ltp  = resolveCellLtp(p);
+  const cls  = [RA];
+  // Animation gate — tick-flash only when the row's exchange is
+  // currently open. Snapshot rows render static.
+  if (_isAnimating(p.data)) {
+    const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown);
+    if (fc) cls.push(fc);
+  } else {
+    cls.push('ltp-snap');
+    // Slight visual differentiation for the pre-settle window —
+    // frontend can style .ltp-snap-unsettled with a dashed border
+    // to convey "close_price not yet published".
+    if (_normalisePriceSource(p.data) === 'snapshot_unsettled') cls.push('ltp-snap-unsettled');
+  }
+  const heatCls = _ltpHeatClasses(ltp, _ltpAvgFor(p.data), p.data.close ?? null);
+  for (const c of heatCls) cls.push(c);
+  return cls.join(' ');
+}
+
 /**
  * LTP column with real-time SSE tick, directional flash, and vs-avg/vs-prev
  * heat encoding. Snapshot rows (is_animating=false) render a static LTP
@@ -186,39 +243,7 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
   return {
     colId: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
     type: 'numericColumn', headerClass: numericHdr,
-    cellClass: (p) => {
-      if (!p.data || p.data._isTotal) return RA;
-      const sym  = String(p.data.tradingsymbol || '').toUpperCase();
-      const ltp  = resolveCellLtp(p);
-      const prev = p.data.close ?? null;
-      const avg  = (p.data.qty_pos && p.data.avg_pos) ? p.data.avg_pos
-                 : (p.data.qty_hold && p.data.avg_hold) ? p.data.avg_hold
-                 : null;
-      const cls = [RA];
-      const animating = _isAnimating(p.data);
-      const ps = _normalisePriceSource(p.data);
-      // Animation gate — tick-flash only when the row's exchange is
-      // currently open. Snapshot rows render static.
-      if (animating) {
-        const ltpFlashUp   = getLtpFlashUp();
-        const ltpFlashDown = getLtpFlashDown();
-        if      (ltpFlashUp.has(sym))   cls.push('ltp-flash-up');
-        else if (ltpFlashDown.has(sym)) cls.push('ltp-flash-down');
-      } else {
-        cls.push('ltp-snap');
-        // Slight visual differentiation for the pre-settle window —
-        // frontend can style .ltp-snap-unsettled with a dashed border
-        // to convey "close_price not yet published".
-        if (ps === 'snapshot_unsettled') cls.push('ltp-snap-unsettled');
-      }
-      if (typeof ltp === 'number' && typeof avg === 'number' && avg > 0) {
-        cls.push(ltp > avg ? 'ltp-vs-avg-up' : ltp < avg ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat');
-      }
-      if (typeof ltp === 'number' && typeof prev === 'number' && prev > 0) {
-        cls.push(ltp > prev ? 'ltp-vs-prev-up' : ltp < prev ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat');
-      }
-      return cls.join(' ');
-    },
+    cellClass: (p) => _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown),
     valueGetter: resolveCellLtp,
     valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
   };
@@ -373,6 +398,38 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
   ]);
 }
 
+// ─── mkRightColDefs private helpers ─────────────────────────────────
+
+// Day P&L % — one-day return on yesterday's market value (close × qty).
+// NOT cost basis: close × qty is the honest denominator — per-symbol
+// this collapses to change_pct; TOTAL gets a market-value-weighted
+// day return.
+function _dayPnlPctValueGetter(p) {
+  const dpnl = Number(p.data?.day_pnl);
+  const prev = Number(p.data?._prev_market_value);
+  if (!Number.isFinite(dpnl) || prev <= 0) {
+    const cp = Number(p.data?.change_pct);
+    return Number.isFinite(cp) ? cp : null;
+  }
+  return (dpnl / prev) * 100;
+}
+
+// P&L as % of cost basis.
+function _pnlPctValueGetter(p) {
+  const pnl  = Number(p.data?.pnl);
+  const cost = Number(p.data?._cost_basis);
+  if (!Number.isFinite(pnl) || !(cost > 0)) return null;
+  return (pnl / cost) * 100;
+}
+
+// Net qty (positions + holdings combined). Returns null when zero so the
+// cell renders as "—" rather than "0".
+function _qtyNetValueGetter(p) {
+  if (p.data?._isTotal) return null;
+  const q = (Number(p.data?.qty_pos) || 0) + (Number(p.data?.qty_hold) || 0);
+  return q === 0 ? null : q;
+}
+
 // ─── Right column-def array ──────────────────────────────────────────
 
 /**
@@ -426,22 +483,10 @@ export function mkRightColDefs({
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'day_pnl'),
       valueFormatter: aggFmtGrid },
-    // Day P&L % — one-day return on yesterday's market value (close × qty).
-    // NOT cost basis: close × qty is the honest denominator — per-symbol
-    // this collapses to change_pct; TOTAL gets a market-value-weighted
-    // day return.
     { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
-      valueGetter: (p) => {
-        const dpnl = Number(p.data?.day_pnl);
-        const prev = Number(p.data?._prev_market_value);
-        if (!Number.isFinite(dpnl) || prev <= 0) {
-          const cp = Number(p.data?.change_pct);
-          return Number.isFinite(cp) ? cp : null;
-        }
-        return (dpnl / prev) * 100;
-      },
+      valueGetter: _dayPnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
     prevCol,
@@ -452,22 +497,13 @@ export function mkRightColDefs({
     { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
-      valueGetter: (p) => {
-        const pnl  = Number(p.data?.pnl);
-        const cost = Number(p.data?._cost_basis);
-        if (!Number.isFinite(pnl) || !(cost > 0)) return null;
-        return (pnl / cost) * 100;
-      },
+      valueGetter: _pnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: 'P&L as % of cost basis.' },
     { field: 'qty_net', headerName: 'Qty', width: 56, colId: 'qty_net',
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: RA,
-      valueGetter: (p) => {
-        if (p.data?._isTotal) return null;
-        const q = (Number(p.data?.qty_pos) || 0) + (Number(p.data?.qty_hold) || 0);
-        return q === 0 ? null : q;
-      },
+      valueGetter: _qtyNetValueGetter,
       valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
     { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
       type: 'numericColumn', headerClass: numericHdr,
