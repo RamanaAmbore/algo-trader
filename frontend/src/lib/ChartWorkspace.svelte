@@ -72,6 +72,8 @@
   import Select from '$lib/Select.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
+  import OhlcvTooltip from '$lib/chart/OhlcvTooltip.svelte';
+  import TickTooltip from '$lib/chart/TickTooltip.svelte';
 
   // The Pinned dropdown is driven entirely by the operator's actual
   // pinned watchlists (rows on /pulse with `is_pinned=true`). No
@@ -1359,23 +1361,7 @@
     _intradayPinned = false;
   });
 
-  // ── Timestamp formatters for hover popups ─────────────────────────
-  function _fmtBarTs(/** @type {string} */ ts) {
-    if (!ts) return '';
-    const d = new Date(ts);
-    if (!Number.isFinite(d.getTime())) return ts.slice(0, 10);
-    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`;
-  }
-  function _fmtTickTs(/** @type {string} */ ts) {
-    if (!ts) return '';
-    const d = new Date(ts);
-    if (!Number.isFinite(d.getTime())) return ts.slice(11, 19) || ts;
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mm = String(d.getMinutes()).padStart(2, '0');
-    const ss = String(d.getSeconds()).padStart(2, '0');
-    return `${hh}:${mm}:${ss} IST`;
-  }
+
 
   // ── Zoom + pan handlers ───────────────────────────────────────────
   function _xValueAt(/** @type {SVGSVGElement} */ svg, /** @type {number} */ clientX) {
@@ -1835,42 +1821,13 @@
          click location and renders a small × close button so the
          operator can dismiss without clicking the chart again. -->
     {#if _chartHover && !_overlayOpen && !pan}
-      {@const ch = Number(_chartHover.bar.close) - Number(_chartHover.bar.open)}
-      {@const pct = Number(_chartHover.bar.open) ? (ch / Number(_chartHover.bar.open)) * 100 : 0}
-      <div class="chart-tooltip" class:chart-tooltip-pinned={_chartPinned}
-           style="left: {_chartHover.pxLeft}px; top: {_chartHover.pxTop}px;">
-        {#if _chartPinned}
-          <button type="button" class="chart-tooltip-close"
-                  aria-label="Close pinned popup"
-                  title="Close (or click the chart again)"
-                  onclick={(e) => { e.stopPropagation(); _chartPinned = false; _chartHover = null; }}>×</button>
-        {/if}
-        <div class="chart-tooltip-ts">{_fmtBarTs(_chartHover.bar.ts)}</div>
-        <div class="chart-tooltip-row">
-          <span class="chart-tooltip-label">O</span>
-          <span class="chart-tooltip-value">₹{priceFmt(_chartHover.bar.open)}</span>
-          <span class="chart-tooltip-label">H</span>
-          <span class="chart-tooltip-value">₹{priceFmt(_chartHover.bar.high)}</span>
-        </div>
-        <div class="chart-tooltip-row">
-          <span class="chart-tooltip-label">L</span>
-          <span class="chart-tooltip-value">₹{priceFmt(_chartHover.bar.low)}</span>
-          <span class="chart-tooltip-label">C</span>
-          <span class="chart-tooltip-value">₹{priceFmt(_chartHover.bar.close)}</span>
-        </div>
-        {#if _chartHover.bar.volume}
-          <div class="chart-tooltip-row">
-            <span class="chart-tooltip-label">Vol</span>
-            <span class="chart-tooltip-value">{Number(_chartHover.bar.volume).toLocaleString()}</span>
-          </div>
-        {/if}
-        <div class="chart-tooltip-row">
-          <span class="chart-tooltip-label">Δ</span>
-          <span class="chart-tooltip-value" class:up={ch >= 0} class:down={ch < 0}>
-            {ch >= 0 ? '+' : ''}{ch.toFixed(2)} ({pct.toFixed(2)}%)
-          </span>
-        </div>
-      </div>
+      <OhlcvTooltip
+        bar={_chartHover.bar}
+        pxLeft={_chartHover.pxLeft}
+        pxTop={_chartHover.pxTop}
+        pinned={_chartPinned}
+        onClose={() => { _chartPinned = false; _chartHover = null; }}
+      />
     {/if}
 
     {#if !symbol}
@@ -2222,28 +2179,13 @@
         })}
         <!-- Intraday hover popup -->
         {#if _intradayHover && !_overlayOpen}
-          <div class="chart-tooltip" class:chart-tooltip-pinned={_intradayPinned}
-               style="left: {_intradayHover.pxLeft}px; top: {_intradayHover.pxTop}px;">
-            {#if _intradayPinned}
-              <button type="button" class="chart-tooltip-close"
-                      aria-label="Close pinned popup"
-                      title="Close (or click the chart again)"
-                      onclick={(e) => { e.stopPropagation(); _intradayPinned = false; _intradayHover = null; }}>×</button>
-            {/if}
-            <div class="chart-tooltip-ts">{_fmtTickTs(_intradayHover.tick.ts)}</div>
-            <div class="chart-tooltip-row">
-              <span class="chart-tooltip-label">LTP</span>
-              <span class="chart-tooltip-value">₹{priceFmt(_intradayHover.tick.ltp)}</span>
-            </div>
-            {#if _intradayHover.tick.bid != null && _intradayHover.tick.ask != null}
-              <div class="chart-tooltip-row">
-                <span class="chart-tooltip-label">Bid</span>
-                <span class="chart-tooltip-value">₹{priceFmt(_intradayHover.tick.bid)}</span>
-                <span class="chart-tooltip-label">Ask</span>
-                <span class="chart-tooltip-value">₹{priceFmt(_intradayHover.tick.ask)}</span>
-              </div>
-            {/if}
-          </div>
+          <TickTooltip
+            tick={_intradayHover.tick}
+            pxLeft={_intradayHover.pxLeft}
+            pxTop={_intradayHover.pxTop}
+            pinned={_intradayPinned}
+            onClose={() => { _intradayPinned = false; _intradayHover = null; }}
+          />
         {/if}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
