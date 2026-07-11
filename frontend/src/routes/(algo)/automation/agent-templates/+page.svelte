@@ -24,7 +24,7 @@
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import CardControls from '$lib/CardControls.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import {
     fetchAgentFragments, createAgentFragment,
     patchAgentFragment, deleteAgentFragment, reloadFragments,
@@ -211,30 +211,31 @@
 <section class="bucket-card p-3 mb-3"
   class:fs-card-on={_fsTemplates}
   class:is-collapsed={_colTemplates}>
-  <div class="bucket-header">
-    <div class="filter-row">
-      <span class="filter-label">Show:</span>
-      {#each ['all', 'notify', 'condition'] as k}
-        <button
-          class="filter-btn"
-          class:filter-btn-on={filterKind === k}
-          onclick={() => filterKind = /** @type {any} */ (k)}
-          type="button">{k}</button>
-      {/each}
-      <span class="filter-hint">
-        {fragments.length} total · {visible.length} shown
-      </span>
-    </div>
-    <CardControls
-      bind:isCollapsed={_colTemplates}
-      bind:isFullscreen={_fsTemplates}
-      cardId="automation-agent-templates"
-      label="Agent Templates"
-      onRefresh={doReload}
-      bind:refreshLoading={busy}
-      showSearch={false}
-    />
-  </div>
+  <CardHeader
+    bind:isCollapsed={_colTemplates}
+    bind:isFullscreen={_fsTemplates}
+    cardId="automation-agent-templates"
+    label="Agent Templates"
+    onRefresh={doReload}
+    bind:refreshLoading={busy}
+    showSearch={false}
+  >
+    {#snippet middle()}
+      <div class="filter-row">
+        <span class="filter-label">Show:</span>
+        {#each ['all', 'notify', 'condition'] as k}
+          <button
+            class="filter-btn"
+            class:filter-btn-on={filterKind === k}
+            onclick={() => filterKind = /** @type {any} */ (k)}
+            type="button">{k}</button>
+        {/each}
+        <span class="filter-hint">
+          {fragments.length} total · {visible.length} shown
+        </span>
+      </div>
+    {/snippet}
+  </CardHeader>
 
   <div class="card-body" hidden={_colTemplates}>
 
@@ -340,7 +341,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    flex: 1;
+    width: 100%;
     min-width: 0;
   }
   .filter-label {

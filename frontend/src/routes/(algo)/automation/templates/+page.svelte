@@ -22,7 +22,7 @@
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import CardControls from '$lib/CardControls.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
@@ -337,37 +337,38 @@
 <section class="bucket-card p-3 mb-3"
   class:fs-card-on={_fsTemplates}
   class:is-collapsed={_colTemplates}>
-  <div class="bucket-header">
-    <div class="flex items-center gap-1 flex-wrap" style="flex:1;min-width:0">
-      <span class="mp-section-label">Filter:</span>
-      <button class="tpl-chip {filterScope === 'all' ? 'tpl-chip-on' : ''}"
-              onclick={() => { filterScope = 'all'; }} type="button">All</button>
-      {#each _SCOPES as s}
-        <button
-          class="tpl-chip {filterScope === s.value ? 'tpl-chip-on' : ''}"
-          onclick={() => { filterScope = s.value; }}
-          type="button"
-        >{s.label}</button>
-      {/each}
-      <button class="tpl-chip {filterScope === 'both' ? 'tpl-chip-on' : ''}"
-              onclick={() => { filterScope = 'both'; }} type="button"
-              title="Custom templates that target every direction">Both</button>
-      {#if !isDemo}
-        <button class="tpl-create-btn" onclick={startCreate} type="button">
-          + Create custom template
-        </button>
-      {/if}
-    </div>
-    <CardControls
-      bind:isCollapsed={_colTemplates}
-      bind:isFullscreen={_fsTemplates}
-      cardId="automation-templates"
-      label="Templates"
-      onRefresh={load}
-      bind:refreshLoading={loading}
-      showSearch={false}
-    />
-  </div>
+  <CardHeader
+    bind:isCollapsed={_colTemplates}
+    bind:isFullscreen={_fsTemplates}
+    cardId="automation-templates"
+    label="Templates"
+    onRefresh={load}
+    bind:refreshLoading={loading}
+    showSearch={false}
+  >
+    {#snippet middle()}
+      <div class="flex items-center gap-1 flex-wrap" style="min-width:0">
+        <span class="mp-section-label">Filter:</span>
+        <button class="tpl-chip {filterScope === 'all' ? 'tpl-chip-on' : ''}"
+                onclick={() => { filterScope = 'all'; }} type="button">All</button>
+        {#each _SCOPES as s}
+          <button
+            class="tpl-chip {filterScope === s.value ? 'tpl-chip-on' : ''}"
+            onclick={() => { filterScope = s.value; }}
+            type="button"
+          >{s.label}</button>
+        {/each}
+        <button class="tpl-chip {filterScope === 'both' ? 'tpl-chip-on' : ''}"
+                onclick={() => { filterScope = 'both'; }} type="button"
+                title="Custom templates that target every direction">Both</button>
+        {#if !isDemo}
+          <button class="tpl-create-btn" onclick={startCreate} type="button">
+            + Create custom template
+          </button>
+        {/if}
+      </div>
+    {/snippet}
+  </CardHeader>
   <div class="card-body" hidden={_colTemplates}>
 
     {#if error}

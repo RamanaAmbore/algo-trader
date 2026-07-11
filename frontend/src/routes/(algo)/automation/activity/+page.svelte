@@ -13,7 +13,7 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
-  import CardControls from '$lib/CardControls.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   // Match the dashboard's default — fires only, with an opt-in to
   // surface action successes / errors.
@@ -56,19 +56,22 @@
 <section class="bucket-card"
   class:fs-card-on={_fsActivity}
   class:is-collapsed={_colActivity}>
-  <div class="bucket-header">
-    <span class="mp-section-label">Agent Activity</span>
-    <ActionEventsToggle bind:value={showActions} />
-    <CardControls
-      bind:isCollapsed={_colActivity}
-      bind:isFullscreen={_fsActivity}
-      cardId="automation-activity"
-      label="Activity"
-      onRefresh={_onRefresh}
-      refreshLoading={_refreshing}
-      showSearch={false}
-    />
-  </div>
+  <CardHeader
+    bind:isCollapsed={_colActivity}
+    bind:isFullscreen={_fsActivity}
+    cardId="automation-activity"
+    label="Activity"
+    onRefresh={_onRefresh}
+    refreshLoading={_refreshing}
+    showSearch={false}
+  >
+    {#snippet left()}
+      <span class="mp-section-label">Agent Activity</span>
+    {/snippet}
+    {#snippet right()}
+      <ActionEventsToggle bind:value={showActions} />
+    {/snippet}
+  </CardHeader>
   <div class="card-body" hidden={_colActivity}>
     <UnifiedLog
       filter={{ kinds }}
