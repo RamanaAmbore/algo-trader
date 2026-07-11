@@ -105,6 +105,11 @@ export function baseDayPnlForPosition(p) {
   return dcv;
 }
 
+/** Aggregate Day P&L for a positions array, applying the new-position override. SSOT for all TOTAL row day_pnl calculations. */
+export function aggregateDayPnlForPositions(rows) {
+  return rows.reduce((sum, r) => sum + baseDayPnlForPosition(r), 0);
+}
+
 /**
  * Live-LTP-aware Day P&L for a single position.
  *
