@@ -31,6 +31,7 @@
   import QtyInput from './QtyInput.svelte';
   import Select from '$lib/Select.svelte';
   import OrderKnobsRow from '$lib/order/OrderKnobsRow.svelte';
+  import SideToggle from '$lib/order/SideToggle.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
@@ -2054,36 +2055,13 @@
            without taking more space." Sized to match the surrounding
            Selects (1.55 rem height, same knob flex slot) so the row
            stays a single-pass horizontal sweep. -->
-      <div class="ot-knob ot-knob-side">
-        <label class="ot-label" for="ot-side-toggle">Side</label>
-        <div id="ot-side-toggle" class="ot-side-toggle-compact"
-             role="group" aria-label="Side">
-          <button type="button"
-                  class={'ot-side-btn ot-side-buy' + (_side === 'BUY' ? ' on' : '')}
-                  disabled={action === 'modify' || _noSymbol}
-                  aria-pressed={_side === 'BUY'}
-                  title={sideLabels.BUY === 'ADD' ? 'Add to position (BUY)' :
-                         sideLabels.BUY === 'CLOSE' ? 'Close short position (BUY)' :
-                         'Buy'}
-                  onclick={() => { if (action !== 'modify') {
-                    _side = 'BUY'; onSideChange?.('BUY');
-                  } }}>
-            {sideLabels.BUY}
-          </button>
-          <button type="button"
-                  class={'ot-side-btn ot-side-sell' + (_side === 'SELL' ? ' on' : '')}
-                  disabled={action === 'modify' || _noSymbol}
-                  aria-pressed={_side === 'SELL'}
-                  title={sideLabels.SELL === 'ADD' ? 'Add to position (SELL)' :
-                         sideLabels.SELL === 'CLOSE' ? 'Close long position (SELL)' :
-                         'Sell'}
-                  onclick={() => { if (action !== 'modify') {
-                    _side = 'SELL'; onSideChange?.('SELL');
-                  } }}>
-            {sideLabels.SELL}
-          </button>
-        </div>
-      </div>
+      <SideToggle
+        bind:side={_side}
+        {currentQty}
+        disabled={_noSymbol}
+        locked={action === 'modify'}
+        onChange={(s) => onSideChange?.(s)}
+      />
       <OrderKnobsRow
         bind:type={_type}
         bind:product={_product}
@@ -2626,8 +2604,7 @@
     justify-content: center;
     line-height: 1;
   }
-  .ot-side-buy.on  { background: rgba(74,222,128,0.18);  color: var(--c-long); }
-  .ot-side-sell.on { background: rgba(248,113,113,0.18); color: var(--c-short); }
+  /* .ot-side-buy.on / .ot-side-sell.on moved to SideToggle.svelte */
 
   /* Stacks label above the [−] N [+] row so the block lines up with
      the sibling .ot-side-block (also label-on-top). Previously the
@@ -2791,8 +2768,7 @@
     background: rgba(255, 255, 255, 0.06);
     color: #cbd5e1;
   }
-  .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on  { background: var(--algo-green-bg-strong); color: var(--c-long); }
-  .ot-side-toggle-compact .ot-side-btn.ot-side-sell.on { background: var(--algo-red-bg-strong);   color: var(--c-short); }
+  /* .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on / .ot-side-sell.on moved to SideToggle.svelte */
   .ot-side-toggle-compact .ot-side-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
   /* Mode row */
