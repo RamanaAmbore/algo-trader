@@ -112,6 +112,10 @@
   import {
     collectUnderlyings, assembleQuoteKeys, buildQuoteMaps, planAccountSeeding,
   } from '$lib/data/pulseLoad';
+  import {
+    PULSE_DEFAULT_COL_DEF, PULSE_SORTING_ORDER,
+    pulseRowId, summaryRowId, postSortGroups,
+  } from '$lib/data/pulseGridSetup';
 
   let {
     title              = 'Pulse',
@@ -3446,59 +3450,7 @@
     //
     // Rows without an underlying (cash equity, watchlist items
     // without F&O coverage) keep their post-sort position individually.
-    function postSortGroups({ nodes }) {
-      if (!nodes || nodes.length === 0) return;
-      const byKey = new Map();   // groupKey → array of nodes
-      const orderedGroupKeys = [];   // first-appearance order of groups
-      const standaloneOrder = [];   // rows with no group key
-      const standaloneIdx = new Map();   // node → its index in standaloneOrder
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
-        const d = n.data || {};
-        // Group key: underlying name. Rows without an underlying
-        // (cash equity, pinned indices, watchlist symbols that
-        // aren't derivatives) get a unique key so they don't
-        // collapse into one another's group.
-        const u = String(d.underlying || '').toUpperCase();
-        if (!u) {
-          standaloneIdx.set(n, standaloneOrder.length);
-          standaloneOrder.push(n);
-          continue;
-        }
-        if (!byKey.has(u)) {
-          byKey.set(u, []);
-          orderedGroupKeys.push(u);
-        }
-        byKey.get(u).push(n);
-      }
-      // Build the final order. Interleave standalone rows and group
-      // blocks based on the first occurrence of each in the original
-      // sorted list — preserves the relative sort order between
-      // (groups + non-grouped rows).
-      const firstIdxOf = new Map();   // groupKey → idx in original `nodes` of its first member
-      for (const k of orderedGroupKeys) {
-        firstIdxOf.set(k, nodes.indexOf(byKey.get(k)[0]));
-      }
-      // Combine groups + standalone rows, sorted by their first
-      // occurrence in the ag-Grid sort result.
-      const seq = [];
-      for (const k of orderedGroupKeys) seq.push({ first: firstIdxOf.get(k), kind: 'g', key: k });
-      for (const n of standaloneOrder) seq.push({ first: nodes.indexOf(n), kind: 's', node: n });
-      seq.sort((a, b) => a.first - b.first);
-
-      // Reassemble in place — ag-Grid mutates the nodes array.
-      const out = [];
-      for (const entry of seq) {
-        if (entry.kind === 'g') {
-          for (const n of byKey.get(entry.key)) out.push(n);
-        } else {
-          out.push(entry.node);
-        }
-      }
-      // Mutate nodes in place (ag-Grid postSortRows contract).
-      nodes.length = 0;
-      for (const n of out) nodes.push(n);
-    }
+    // postSortGroups imported from $lib/data/pulseGridSetup — pure fn, no closure.
 
     // Factory: every per-bucket grid shares the same shape (height
     // tracks, getRowClass, sort + resize defaults, click handlers).
@@ -3509,12 +3461,9 @@
         columnDefs,
         rowData: [],
         pinnedBottomRowData: pinnedBottom,
-        getRowId: ({ data }) => String(data?.key || data?.tradingsymbol || ''),
-        defaultColDef: {
-          resizable: true, sortable: true, suppressMovable: true,
-          suppressHeaderMenuButton: true,
-        },
-        sortingOrder: ['asc', 'desc', null],
+        getRowId: pulseRowId,
+        defaultColDef: PULSE_DEFAULT_COL_DEF,
+        sortingOrder: PULSE_SORTING_ORDER,
         overlayNoRowsTemplate:
           `<span style="font-size: var(--fs-md);color:var(--c-muted)">${emptyMsg}</span>`,
         domLayout: 'normal',
@@ -3577,12 +3526,9 @@
         theme: 'legacy',
         columnDefs: posSummaryCols,
         rowData: [],
-        getRowId: ({ data }) => String(data?.account || ''),
-        defaultColDef: {
-          resizable: true, sortable: true, suppressMovable: true,
-          suppressHeaderMenuButton: true,
-        },
-        sortingOrder: ['asc', 'desc', null],
+        getRowId: summaryRowId,
+        defaultColDef: PULSE_DEFAULT_COL_DEF,
+        sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
         rowHeight: 26,
       });
@@ -3596,12 +3542,9 @@
         theme: 'legacy',
         columnDefs: holdSummaryCols,
         rowData: [],
-        getRowId: ({ data }) => String(data?.account || ''),
-        defaultColDef: {
-          resizable: true, sortable: true, suppressMovable: true,
-          suppressHeaderMenuButton: true,
-        },
-        sortingOrder: ['asc', 'desc', null],
+        getRowId: summaryRowId,
+        defaultColDef: PULSE_DEFAULT_COL_DEF,
+        sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
         rowHeight: 26,
       });
@@ -3615,12 +3558,9 @@
         theme: 'legacy',
         columnDefs: fundsCols,
         rowData: [],
-        getRowId: ({ data }) => String(data?.account || ''),
-        defaultColDef: {
-          resizable: true, sortable: true, suppressMovable: true,
-          suppressHeaderMenuButton: true,
-        },
-        sortingOrder: ['asc', 'desc', null],
+        getRowId: summaryRowId,
+        defaultColDef: PULSE_DEFAULT_COL_DEF,
+        sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
         rowHeight: 26,
       });
