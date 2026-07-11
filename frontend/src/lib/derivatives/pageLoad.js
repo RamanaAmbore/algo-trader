@@ -142,6 +142,55 @@ export function bumpExcluded(excluded, acct, delta) {
  * @param {any} p  - normalised position row (buildPositionRowFromBroker output)
  * @returns {any[]}
  */
+/**
+ * Compute the weighted average exit price for the closed portion.
+ * Long positions exit via sells; short positions exit via buys.
+ * @param {number} oq   overnight_quantity
+ * @param {number} dbq  day_buy_quantity
+ * @param {number} dsq  day_sell_quantity
+ * @param {number} dbv  day_buy_value
+ * @param {number} dsv  day_sell_value
+ * @returns {number}
+ */
+function _exitPrice(oq, dbq, dsq, dbv, dsv) {
+  if (oq > 0) return dsq > 0 ? dsv / dsq : 0;
+  return dbq > 0 ? dbv / dbq : 0;
+}
+
+/**
+ * Day P&L on the closed portion.
+ * Long: (exit − prev_close) × closedQty. Short: (prev_close − exit) × closedQty.
+ * @param {number} oq          overnight_quantity
+ * @param {number} exitPrice
+ * @param {number} close       prev_close
+ * @param {number} closedQty
+ * @returns {number}
+ */
+function _closedDayPnl(oq, exitPrice, close, closedQty) {
+  return oq > 0
+    ? (exitPrice - close) * closedQty
+    : (close - exitPrice) * closedQty;
+}
+
+/**
+ * Lifetime P&L attributable to the closed portion.
+ * When broker already closed the whole position (brokerQty=0) use p.pnl;
+ * otherwise compute from cost basis. Arithmetic is identical to original.
+ * @param {number} brokerQty   Math.abs(p.qty)
+ * @param {number} pnl         p.pnl
+ * @param {number} oq          overnight_quantity
+ * @param {number} exitPrice
+ * @param {number} avgCost     p.avg_cost
+ * @param {number} closedQty
+ * @returns {number}
+ */
+function _closedLifetimePnl(brokerQty, pnl, oq, exitPrice, avgCost, closedQty) {
+  if (brokerQty === 0) return pnl;
+  return oq > 0
+    ? (exitPrice - avgCost) * closedQty
+    : (avgCost - exitPrice) * closedQty;
+}
+
 export function splitClosedReopened(p) {
   const oq  = Number(p.overnight_quantity || 0);
   const dbq = Number(p.day_buy_quantity   || 0);
@@ -155,21 +204,14 @@ export function splitClosedReopened(p) {
   const closed_qty = oq > 0 ? Math.min(oq, dsq) : Math.min(-oq, dbq);
   if (closed_qty <= 0) return [p];
 
-  const exit_price = oq > 0
-    ? (dsq > 0 ? dsv / dsq : 0)
-    : (dbq > 0 ? dbv / dbq : 0);
+  const exit_price       = _exitPrice(oq, dbq, dsq, dbv, dsv);
+  const closed_day_pnl   = _closedDayPnl(oq, exit_price, close, closed_qty);
 
-  const closed_day_pnl = oq > 0
-    ? (exit_price - close) * closed_qty
-    : (close - exit_price) * closed_qty;
-
-  const brokerQty = Math.abs(Number(p.qty || 0));
-  const avg_cost = Number(p.avg_cost || 0);
-  const closed_lifetime_pnl = brokerQty === 0
-    ? Number(p.pnl || 0)
-    : (oq > 0
-        ? (exit_price - avg_cost) * closed_qty
-        : (avg_cost - exit_price) * closed_qty);
+  const brokerQty        = Math.abs(Number(p.qty || 0));
+  const avg_cost         = Number(p.avg_cost || 0);
+  const closed_lifetime_pnl = _closedLifetimePnl(
+    brokerQty, Number(p.pnl || 0), oq, exit_price, avg_cost, closed_qty
+  );
 
   const open_dcv = Number(p.day_change_val || 0) - closed_day_pnl;
 

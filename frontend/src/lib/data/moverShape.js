@@ -34,6 +34,56 @@ const _isDev = (typeof import.meta !== 'undefined')
   && import.meta.env
   && import.meta.env.DEV;
 
+// ── Field-level assertion helpers ─────────────────────────────────────────────
+// Each throws with a field-attributed message so dev errors point directly
+// to the offending field without the caller needing to build the message.
+
+/** @param {any} r @param {string} at @param {string} field @param {string} [sym] */
+function _assertString(r, at, field, sym) {
+  if (typeof r[field] !== 'string' || !r[field]) {
+    const who = sym ? ` ${sym}` : '';
+    throw new Error(`MoverRow${at}${who}: ${field} missing or non-string (got ${typeof r[field]})`);
+  }
+}
+
+/** @param {any} r @param {string} at @param {string} sym @param {string} field */
+function _assertFiniteNum(r, at, sym, field) {
+  if (typeof r[field] !== 'number' || !Number.isFinite(r[field])) {
+    throw new Error(`MoverRow${at} ${sym}: ${field} not a finite number (got ${r[field]})`);
+  }
+}
+
+/** @param {any} r @param {string} at @param {string} sym */
+function _assertNullableFiniteNum(r, at, sym) {
+  // previous_close is nullable when the backend served a snapshot pre-dating
+  // that column addition; treat null as OK but non-number as invalid.
+  if (r.previous_close !== null && (typeof r.previous_close !== 'number' || !Number.isFinite(r.previous_close))) {
+    throw new Error(`MoverRow${at} ${sym}: previous_close not finite (got ${r.previous_close})`);
+  }
+}
+
+/** @param {any} r @param {string} at @param {string} sym */
+function _assertBooleanSticky(r, at, sym) {
+  if (typeof r.sticky !== 'boolean') {
+    throw new Error(`MoverRow${at} ${sym}: sticky not boolean (got ${typeof r.sticky})`);
+  }
+}
+
+/** @param {any} r @param {string} at @param {string} sym */
+function _assertEnrichmentFields(r, at, sym) {
+  // Frontend enrichment fields — added by moversStore.fetcher.
+  if (r._moverGroups !== undefined && !Array.isArray(r._moverGroups)) {
+    throw new Error(`MoverRow${at} ${sym}: _moverGroups not array (got ${typeof r._moverGroups})`);
+  }
+  if (r._moverDirection !== undefined
+      && r._moverDirection !== 'winners' && r._moverDirection !== 'losers') {
+    throw new Error(`MoverRow${at} ${sym}: _moverDirection must be 'winners'|'losers' (got ${r._moverDirection})`);
+  }
+}
+
+/** Required finite-number fields (in order of validation). */
+const _FINITE_NUM_FIELDS = ['last_price', 'change_pct', 'peak_pct'];
+
 /**
  * Assert a MoverRow-shaped object. Throws Error with a specific
  * field-attribution message when the shape drifts.
@@ -47,34 +97,13 @@ export function assertMoverRow(r, idx = -1) {
   if (!r || typeof r !== 'object') {
     throw new Error(`MoverRow${at}: not an object (got ${typeof r})`);
   }
-  if (typeof r.tradingsymbol !== 'string' || !r.tradingsymbol) {
-    throw new Error(`MoverRow${at}: tradingsymbol missing or non-string (got ${typeof r.tradingsymbol})`);
-  }
-  if (typeof r.exchange !== 'string' || !r.exchange) {
-    throw new Error(`MoverRow${at} ${r.tradingsymbol}: exchange missing or non-string`);
-  }
-  const numFields = ['last_price', 'change_pct', 'peak_pct'];
-  for (const f of numFields) {
-    if (typeof r[f] !== 'number' || !Number.isFinite(r[f])) {
-      throw new Error(`MoverRow${at} ${r.tradingsymbol}: ${f} not a finite number (got ${r[f]})`);
-    }
-  }
-  // previous_close is nullable when the backend served a snapshot pre-dating
-  // that column addition; treat null as OK but non-number as invalid.
-  if (r.previous_close !== null && (typeof r.previous_close !== 'number' || !Number.isFinite(r.previous_close))) {
-    throw new Error(`MoverRow${at} ${r.tradingsymbol}: previous_close not finite (got ${r.previous_close})`);
-  }
-  if (typeof r.sticky !== 'boolean') {
-    throw new Error(`MoverRow${at} ${r.tradingsymbol}: sticky not boolean (got ${typeof r.sticky})`);
-  }
-  // Frontend enrichment fields — added by moversStore.fetcher.
-  if (r._moverGroups !== undefined && !Array.isArray(r._moverGroups)) {
-    throw new Error(`MoverRow${at} ${r.tradingsymbol}: _moverGroups not array (got ${typeof r._moverGroups})`);
-  }
-  if (r._moverDirection !== undefined
-      && r._moverDirection !== 'winners' && r._moverDirection !== 'losers') {
-    throw new Error(`MoverRow${at} ${r.tradingsymbol}: _moverDirection must be 'winners'|'losers' (got ${r._moverDirection})`);
-  }
+  _assertString(r, at, 'tradingsymbol');
+  const sym = r.tradingsymbol;
+  _assertString(r, at, 'exchange', sym);
+  for (const f of _FINITE_NUM_FIELDS) _assertFiniteNum(r, at, sym, f);
+  _assertNullableFiniteNum(r, at, sym);
+  _assertBooleanSticky(r, at, sym);
+  _assertEnrichmentFields(r, at, sym);
 }
 
 /**

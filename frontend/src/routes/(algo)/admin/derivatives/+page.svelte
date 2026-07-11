@@ -470,6 +470,51 @@
   // Hoisted — used in the {#each} template; defining inside {#if} would
   // allocate a new object on every render cycle.
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
+
+  /**
+   * Multi-source spot resolver for the expiry-close analysis.
+   * Resolution chain (matches the `liveSpot` chain):
+   *   1. strategy anchor contract tick (SSE) — only when strategy is for selUnd
+   *   2. bare selUnd SSE tick
+   *   3. _underlyingQuotes batchQuote cache
+   *   4. strategy.spot server-poll value  (same underlying only)
+   *
+   * When strategy.underlying ≠ selectedUnderlying the strategy-derived keys
+   * are deliberately skipped to avoid returning stale spot for a different
+   * underlying (e.g. NIFTY 24500 as BHEL's spot — see comment in derived block).
+   *
+   * Called inside untrack() so this helper does not add reactive subscriptions.
+   *
+   * @param {string}                selUnd            - selectedUnderlying
+   * @param {any}                   strategy          - current strategy response
+   * @param {Record<string,any>}    underlyingQuotes  - _underlyingQuotes map
+   * @param {(sym:string)=>any}     getSnapshotFn     - symbolStore.getSnapshot
+   * @returns {number}  0 when no source resolves (triggers early-return in caller)
+   */
+  function _resolveExpirySpot(selUnd, strategy, underlyingQuotes, getSnapshotFn) {
+    const selKey   = String(selUnd    || '').toUpperCase();
+    const stratUnd = String(strategy?.underlying || '').toUpperCase();
+    if (selKey && stratUnd === selKey) {
+      // strategy is current for this underlying — try its anchor keys first.
+      const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+      if (anchor) {
+        const v = Number(getSnapshotFn(anchor)?.ltp);
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+      const v2 = Number(getSnapshotFn(selKey)?.ltp);
+      if (Number.isFinite(v2) && v2 > 0) return v2;
+      const bqLtp = underlyingQuotes[selUnd]?.ltp;
+      if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
+      return Number(strategy?.spot || 0);
+    }
+    // strategy still loading for selUnd — skip strategy-derived keys.
+    const v3 = Number(getSnapshotFn(selKey)?.ltp);
+    if (Number.isFinite(v3) && v3 > 0) return v3;
+    const bqLtp = underlyingQuotes[selUnd]?.ltp;
+    if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
+    return 0;
+  }
+
   // Band sort order — shared by both equity + commodity sort comparators.
   const expiryCloseAnalysis = $derived.by(() => {
     // Track candidatePositions + selectedExpiries reactively (this is
@@ -484,51 +529,13 @@
     // since the only way bands flip is positions adding/closing.
     const cps = candidatePositions;
     const expFilter = selectedExpiries;
-    // Use the same spot resolution chain as `liveSpot` (SSE tick →
-    // _underlyingQuotes batchQuote → strategy.spot server poll).
-    // Previously read `strategy?.spot` directly which could be a stale
-    // server-poll value while the SSE-ticked liveSpot already showed the
-    // true price — causing wrong ITM/OTM band classification (SUZLON 60
-    // CE shown as ITM when spot had drifted below 60). Both reads are
-    // wrapped in untrack() so this derived doesn't re-fire on every tick;
-    // re-classification happens naturally when candidatePositions changes.
-    //
-    // Guard: strategy can lag selectedUnderlying. When the operator
-    // switches underlying (e.g. from NIFTY → BHEL), candidatePositions
-    // re-derives immediately on the new position set but strategy may
-    // still carry the previous underlying's response. Reading
-    // strategy.spot_anchor_contract (e.g. NIFTY26JUNFUT) and passing it
-    // to getSnapshot would return NIFTY's LTP (~24 500) as BHEL's spot,
-    // making every BHEL PE appear OTM (24500 ≥ 420 → spot ≥ strike →
-    // OTM). Validate that strategy.underlying matches selectedUnderlying
-    // before using any strategy-derived keys; fall straight to the
-    // _underlyingQuotes / zero path when there is a mismatch.
-    const spot = untrack(() => {
-      const selUnd  = String(selectedUnderlying    || '').toUpperCase();
-      const stratUnd = String(strategy?.underlying || '').toUpperCase();
-      // strategy is live for this underlying — use its anchor keys.
-      if (selUnd && stratUnd === selUnd) {
-        const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
-        if (anchor) {
-          const v = Number(getSnapshot(anchor)?.ltp);
-          if (Number.isFinite(v) && v > 0) return v;
-        }
-        const v2 = Number(getSnapshot(selUnd)?.ltp);
-        if (Number.isFinite(v2) && v2 > 0) return v2;
-        // strategy.spot is confirmed for this underlying — safe fallback.
-        const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
-        if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-        return Number(strategy?.spot || 0);
-      }
-      // strategy is for a different underlying (still loading for selUnd).
-      // Try the SSE tick for selUnd directly; then batchQuote; then 0
-      // (triggers the !spot early-return below — safer than a wrong price).
-      const v3 = Number(getSnapshot(selUnd)?.ltp);
-      if (Number.isFinite(v3) && v3 > 0) return v3;
-      const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
-      if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-      return 0;
-    });
+    // Spot resolution: SSE tick → batchQuote → strategy poll. Both reads
+    // are wrapped in untrack() so this derived re-fires only when
+    // candidatePositions changes, not on every SSE tick. See
+    // _resolveExpirySpot for full chain + strategy-mismatch guard.
+    const spot = untrack(() =>
+      _resolveExpirySpot(selectedUnderlying, strategy, _underlyingQuotes, getSnapshot)
+    );
     const legA = untrack(() => legAnalyticsBySymbol);
     void expFilter;
     const empty = /** @type {{equity:any[], commodity:any[]}} */ ({ equity: [], commodity: [] });
@@ -668,6 +675,76 @@
     return null;
   }
 
+  /**
+   * Accumulate one F&O position into the exp-P&L map.
+   * Returns false when the row should be skipped (wrong source/account/kind).
+   * Mutates `out` in place via `ensure`.
+   *
+   * @param {any}    p            - position row
+   * @param {string} wantedSource - 'sim' | 'live'
+   * @param {Function} matchAccount
+   * @param {Function} matchStrategy
+   * @param {Function} ensure     - (root) => out[root]
+   * @returns {boolean}  true if row was accumulated
+   */
+  function _accumulatePosExpPnl(p, wantedSource, matchAccount, matchStrategy, ensure) {
+    if (p.source !== wantedSource) return false;
+    if (!matchAccount(p.account)) return false;
+    if (!matchStrategy(p.symbol || p.tradingsymbol)) return false;
+    const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
+    if (!sym) return false;
+    const isFut = /FUT$/i.test(sym);
+    const isOpt = /(CE|PE)$/i.test(sym);
+    if (!isFut && !isOpt) return false;
+    const root = (decomposeSymbol(sym).root || sym).toUpperCase();
+    if (!root) return false;
+    // SSOT: prefer backend-stamped underlying_ltp (positions.py Pass 3).
+    // Falls through to client-side chain when missing (sim/legacy payloads).
+    const p_ul = Number(p.underlying_ltp || 0);
+    // untrack — _underlyingQuotes replaced wholesale every 30s; without
+    // untrack this derived fires on snapshot cycle AND positions cycle,
+    // doubling SVG re-renders that starve click events.
+    const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
+    const v = _expiryPnl({
+      symbol: sym, qty: p.quantity ?? p.qty,
+      avg_cost: p.average_price ?? p.avg_cost,
+      kind: isOpt ? 'opt' : 'fut',
+    }, spot);
+    if (v == null) return false;
+    const g = ensure(root);
+    g.with    += v;
+    g.without += v;
+    return true;
+  }
+
+  /**
+   * Accumulate one equity holding into the exp-P&L map.
+   * Proxy targets route to their root keys; plain equities key on symbol.
+   * Mutates `out` in place via `ensure`.
+   *
+   * @param {any}      h       - holding row
+   * @param {Function} matchAccount
+   * @param {Function} ensure  - (root) => out[root]
+   */
+  function _accumulateHoldingExpPnl(h, matchAccount, ensure) {
+    if (!matchAccount(h.account)) return;
+    const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
+    if (!sym) return;
+    // Use h.qty (current quantity) to match the legs grid (c.qty).
+    // h.opening_qty diverges when equity is partially sold intraday.
+    const qty  = Number(h.qty ?? h.quantity) || 0;
+    const cost = Number(h.average_price ?? h.avg_cost) || 0;
+    const _targets = targetsForProxy(sym);
+    const credits = _targets.length ? _targets : [sym];
+    for (const root of credits) {
+      const spot = untrack(() => _rootSpot(root));
+      if (spot == null) continue;
+      const v = (Number(spot) - cost) * qty;
+      if (!isFinite(v)) continue;
+      ensure(root).with += v;
+    }
+  }
+
   /** Per-underlying Exp P&L at current spot — { ROOT: { eq: number, no_eq: number } }.
    *  Walks the same positions + holdings universe the Snapshot uses, but
    *  computes each leg's expiry-day P&L (intrinsic - cost × qty for
@@ -685,58 +762,10 @@
     const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
 
     for (const _p of positions) {
-      const p = /** @type {any} */ (_p);
-      if (p.source !== wantedSource) continue;
-      if (!matchAccount(p.account)) continue;
-      if (!matchStrategy(p.symbol || p.tradingsymbol)) continue;
-      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      const isFut = /FUT$/i.test(sym);
-      const isOpt = /(CE|PE)$/i.test(sym);
-      if (!isFut && !isOpt) continue;
-      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
-      if (!root) continue;
-      // SSOT: prefer backend-stamped underlying_ltp on the row itself
-      // (positions.py _enrich_positions Pass 3). Operator 2026-07-01:
-      // "use ssot." Falls through to the client-side chain only when
-      // the field is missing (demo/sim mode + legacy payloads).
-      const p_ul = Number(p.underlying_ltp || 0);
-      // untrack — same pattern as bbe2d9b3 for liveSpot. `_underlyingQuotes`
-      // is replaced wholesale every 30 s snapshot poll; without untrack this
-      // derived walks every position + every holding on the snapshot cycle
-      // AND on the positions cycle, doubling work and cascading OptionsPayoff
-      // SVG re-renders that starve the main thread of click events.
-      const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
-      const v = _expiryPnl({
-        symbol: sym, qty: p.quantity ?? p.qty,
-        avg_cost: p.average_price ?? p.avg_cost,
-        kind: isOpt ? 'opt' : 'fut',
-      }, spot);
-      if (v == null) continue;
-      const g = ensure(root);
-      g.with    += v;
-      g.without += v;
+      _accumulatePosExpPnl(/** @type {any} */ (_p), wantedSource, matchAccount, matchStrategy, ensure);
     }
     for (const _h of holdings) {
-      const h = /** @type {any} */ (_h);
-      if (!matchAccount(h.account)) continue;
-      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      // Use h.qty (current quantity) to match the legs grid, which reads
-      // c.qty from the same normalised holding row spread via candidatePositions.
-      // h.opening_qty (opening_quantity) diverges from the legs grid when
-      // equity is partially/fully sold intraday — causing snapshot vs grid mismatch.
-      const qty = Number(h.qty ?? h.quantity) || 0;
-      const cost = Number(h.average_price ?? h.avg_cost) || 0;
-      const _targets = targetsForProxy(sym);
-      const credits = _targets.length ? _targets : [sym];
-      for (const root of credits) {
-        const spot = untrack(() => _rootSpot(root));
-        if (spot == null) continue;
-        const v = (Number(spot) - cost) * qty;
-        if (!isFinite(v)) continue;
-        ensure(root).with += v;
-      }
+      _accumulateHoldingExpPnl(/** @type {any} */ (_h), matchAccount, ensure);
     }
     return out;
   });
@@ -1063,6 +1092,69 @@
     } catch (_) { /* leave previous values up — chip stays */ }
   }
 
+  /**
+   * Accumulate one F&O position into the TOTAL row accumulator.
+   * Mutates `t` and `rootsWithFnO` in place.
+   * Returns false when the row should be skipped (wrong source / account / kind).
+   *
+   * @param {any}    p             - position row
+   * @param {string} wantedSource  - 'sim' | 'live'
+   * @param {Function} matchAccount
+   * @param {object} t             - running totals object
+   * @param {Set<string>} rootsWithFnO - mutable set populated here
+   * @returns {boolean}
+   */
+  function _accumulateFnOTotal(p, wantedSource, matchAccount, t, rootsWithFnO) {
+    if (p.source !== wantedSource) return false;
+    if (!matchAccount(p.account)) return false;
+    const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
+    if (!/FUT$|(CE|PE)$/i.test(sym)) return false;
+    const qty = Number(p.quantity ?? p.qty) || 0;
+    const pnl = Number(p.pnl) || 0;
+    // baseDayPnlForPosition: new-position override (oq=0 + dcv=0 + pnl≠0).
+    // PositionStrip P1 uses the same helper — keeps TOTAL in sync with strip.
+    const day = baseDayPnlForPosition(p);
+    t.qty_fno      += qty;
+    t.legs_with++;
+    t.legs_without++;
+    t.pnl_with     += pnl;
+    t.pnl_without  += pnl;
+    t.day_with     += day;
+    t.day_without  += day;
+    const root = (decomposeSymbol(sym).root || sym).toUpperCase();
+    if (root) rootsWithFnO.add(root);
+    return true;
+  }
+
+  /**
+   * Accumulate one equity holding into the TOTAL row accumulator.
+   * Credits only when the holding's root has an F&O position in the snapshot
+   * AND that root has an F&O lot size (Operator 2026-07-01 invariant).
+   * Mutates `t` in place.
+   *
+   * @param {any}           h           - holding row
+   * @param {Function}      matchAccount
+   * @param {Set<string>}   rootsWithFnO - populated by _accumulateFnOTotal pass
+   * @param {object}        t            - running totals object
+   */
+  function _accumulateHoldingTotal(h, matchAccount, rootsWithFnO, t) {
+    if (!matchAccount(h.account)) return;
+    const qty = Number(h.opening_qty ?? h.opening_quantity ?? h.quantity ?? h.qty) || 0;
+    const pnl = Number(h.pnl) || 0;
+    const day = Number(h.day_change_val) || 0;
+    t.qty_eq += qty;
+    const sym  = String(h.symbol || h.tradingsymbol || '').toUpperCase();
+    const tgts = sym ? targetsForProxy(sym) : [];
+    const root = tgts[0] || sym;
+    if (!root || !rootsWithFnO.has(root)) return;
+    const lot = getOptionUnderlyingLot(root);
+    if (lot > 0) {
+      t.legs_with += qty / lot;
+      t.pnl_with  += pnl;
+      t.day_with  += day;
+    }
+  }
+
   /** TOTAL row — sums across EVERY filtered position + holding so the
    *  rollup reconciles to the navbar PositionStrip's P / P∆ chips
    *  exactly. Operator: "make sure snapshot totals are in sync with
@@ -1078,63 +1170,19 @@
                 legs_with: 0, legs_without: 0,
                 pnl_with: 0, pnl_without: 0,
                 day_with: 0, day_without: 0 };
-    // First pass — F&O positions. Track the set of roots that carry an
-    // active option/future in the snapshot; the holdings pass below only
-    // credits equities whose root is in this set.
-    // Use baseDayPnlForPosition for the new-position override (oq=0 + dcv=0
-    // + pnl≠0 → fall back to lifetime pnl). PositionStrip P1 uses the same
-    // helper; this keeps the Snapshot TOTAL in sync with the strip.
+    // First pass — F&O positions. Tracks roots with active option/future;
+    // the holdings pass only credits equities whose root is in this set.
     /** @type {Set<string>} */
     const _rootsWithFnO = new Set();
     for (const _p of positions) {
-      const p = /** @type {any} */ (_p);
-      if (p.source !== wantedSource) continue;
-      if (!matchAccount(p.account)) continue;
-      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
-      if (!/FUT$|(CE|PE)$/i.test(sym)) continue;
-      const qty = Number(p.quantity ?? p.qty) || 0;
-      const pnl = Number(p.pnl) || 0;
-      const day = baseDayPnlForPosition(p);
-      t.qty_fno      += qty;
-      t.legs_with++;
-      t.legs_without++;
-      t.pnl_with     += pnl;
-      t.pnl_without  += pnl;
-      t.day_with     += day;
-      t.day_without  += day;
-      const _root = (decomposeSymbol(sym).root || sym).toUpperCase();
-      if (_root) _rootsWithFnO.add(_root);
+      _accumulateFnOTotal(/** @type {any} */ (_p), wantedSource, matchAccount, t, _rootsWithFnO);
     }
-    // Holdings — credit only when the underlying root has an F&O position
-    // in the snapshot AND that root has an F&O lot size. Operator 2026-07-01:
-    // "should include equities underlying for which option positions
-    // present in snapshot." Non-F&O equities and equities without a
-    // snapshot F&O position are excluded from the pill count entirely.
+    // Holdings — credit only when root has F&O position + F&O lot size.
     for (const _h of holdings) {
-      const h = /** @type {any} */ (_h);
-      if (!matchAccount(h.account)) continue;
-      const qty = Number(h.opening_qty ?? h.opening_quantity ?? h.quantity ?? h.qty) || 0;
-      const pnl = Number(h.pnl) || 0;
-      const day = Number(h.day_change_val) || 0;
-      t.qty_eq    += qty;
-      const _sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-      const _tgts = _sym ? targetsForProxy(_sym) : [];
-      const _root = _tgts[0] || _sym;
-      if (!_root || !_rootsWithFnO.has(_root)) continue;
-      const _lot = getOptionUnderlyingLot(_root);
-      if (_lot > 0) {
-        t.legs_with += qty / _lot;
-        t.pnl_with  += pnl;
-        t.day_with  += day;
-      }
+      _accumulateHoldingTotal(/** @type {any} */ (_h), matchAccount, _rootsWithFnO, t);
     }
-    // Excluded-rows adjustment removed 2026-07-01. The Snapshot TOTAL
-    // now targets F&O-only (Day P&L / P&L / Exp P&L) that matches
-    // NavStrip P — adding back equity intraday positions or derivative-
-    // looking holdings would break that invariant. The Net variants
-    // already include F&O + equity holdings via the primary loops; the
-    // excluded rows were creating an over-count of ~200 Cr on some
-    // books (operator 2026-07-01: "231.12C is not correct as a total").
+    // Excluded-rows adjustment removed 2026-07-01. Snapshot TOTAL targets
+    // F&O-only to match NavStrip P. Net variants include equity via loops above.
     return t;
   });
 

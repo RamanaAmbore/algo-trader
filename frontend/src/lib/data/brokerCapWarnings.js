@@ -22,8 +22,8 @@
  */
 export function capWarningFor(t, c, exchange) {
   if (!t || !c) return '';
-  const wantsOco   = (t.tp_pct != null && t.sl_pct != null);
-  const wantsTrail = t.sl_trail_pct != null;
+  const wantsOco        = (t.tp_pct != null && t.sl_pct != null);
+  const wantsTrail      = t.sl_trail_pct != null;
   // wantsGttComplex: needs OCO, trail, or scale-ladder — features that go
   // beyond a single native trigger. Used to decide whether the poll-lag
   // warning is meaningful: a TP-only template on a broker with gtt_single
@@ -31,31 +31,22 @@ export function capWarningFor(t, c, exchange) {
   // not a gap the operator needs to act on.
   const wantsGttComplex = wantsOco || wantsTrail || !!t.tp_scales_json;
   // wantsGtt: any GTT-type exit at all (including TP-only or SL-only).
-  const wantsGtt   = wantsGttComplex
-                     || t.tp_pct != null || t.sl_pct != null;
-  const isMcx = ['MCX', 'NCO'].includes(String(exchange || '').toUpperCase());
-  const display = c.display_name || 'broker';
-  const parts = [];
-  if (wantsOco && !c.gtt_oco) {
-    parts.push(`${display} OCO emulated — ~15s race window`);
-  }
-  if (wantsTrail && !c.gtt_modify) {
-    parts.push(`${display} can't trail — SL stays fixed`);
-  }
-  if (t.tp_scales_json && !c.gtt_single) {
-    parts.push(`${display} has no GTT — scale-out won't attach`);
-  }
-  if (isMcx && c.gtt_supports_mcx === false) {
-    parts.push(`${display} GTT can't run on MCX — template won't attach`);
-  }
+  const wantsGtt        = wantsGttComplex || t.tp_pct != null || t.sl_pct != null;
+  const isMcx           = ['MCX', 'NCO'].includes(String(exchange || '').toUpperCase());
+  const display         = c.display_name || 'broker';
+
   // Poll-lag warning: only raise it when the template needs a complex GTT
   // (OCO, trail, or scale-ladder) OR when the broker has no native single-
   // GTT support. A TP-only template on a broker with gtt_single=true uses
   // that feature as intended; the poll lag is expected, not a gap.
-  if (c.postback_gtt === 'poll_only' && (wantsGttComplex || !c.gtt_single) && wantsGtt) {
-    parts.push(`${display} GTT fires via poll — up to ~15s detection lag`);
-  }
-  return parts.join(' · ');
+  const checks = [
+    { when: wantsOco && !c.gtt_oco,                                                          msg: `${display} OCO emulated — ~15s race window` },
+    { when: wantsTrail && !c.gtt_modify,                                                      msg: `${display} can't trail — SL stays fixed` },
+    { when: !!t.tp_scales_json && !c.gtt_single,                                              msg: `${display} has no GTT — scale-out won't attach` },
+    { when: isMcx && c.gtt_supports_mcx === false,                                            msg: `${display} GTT can't run on MCX — template won't attach` },
+    { when: c.postback_gtt === 'poll_only' && (wantsGttComplex || !c.gtt_single) && wantsGtt, msg: `${display} GTT fires via poll — up to ~15s detection lag` },
+  ];
+  return checks.filter(x => x.when).map(x => x.msg).join(' · ');
 }
 
 /**

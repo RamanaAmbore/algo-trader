@@ -299,79 +299,61 @@
   // whole-map churn of the old liveLtp writable. Touch symbolStore.size
   // once at the top so the derived also re-runs when symbols are
   // ADDED to the store (first SSE tick for a previously-unknown sym).
+  // Helper: populate delta entries for one row array into m.
+  // Called from inside $derived.by so positions/holdings reads stay
+  // in reactive scope. untrack is preserved per-snapshot so we don't
+  // register per-symbol deps that would defeat the 4 Hz throttle.
+  // Guard order, Number() coercions, and key format must not change —
+  // _delta() consumes this map with the exact same key shape.
+  function _addDeltaEntries(
+    /** @type {Map<string, number>} */ m,
+    /** @type {any[]} */ rows,
+    /** @type {'P'|'H'} */ kind,
+    /** @type {(row: any) => boolean} */ appliesToRow,
+  ) {
+    for (const row of rows) {
+      if (!appliesToRow(row)) continue;
+      const sym  = String(row?.tradingsymbol || '').toUpperCase();
+      // Only use SSE ticks (ltp_ts > 0). REST publishers set ltp_ts=0
+      // to prevent phantom deltas when batchQuote races the SSE stream.
+      const snap = untrack(() => getSnapshot(sym));
+      if (!snap || !(snap.ltp_ts > 0)) continue;
+      const live = snap.ltp;
+      // LTP flicker fix: treat any non-positive live as "no tick yet".
+      if (typeof live !== 'number' || !(live > 0)) continue;
+      const pollLtp = Number(row?.last_price || 0);
+      const qty     = Number(row?.quantity   || 0);
+      if (!pollLtp || !qty) continue;
+      // BUGFIX: prefix key by kind so same symbol in positions + holdings
+      // for the same account doesn't collide ('P' vs 'H' namespace).
+      const key = kind + '\x00' + sym + '\x00' + String(row?.account || '');
+      m.set(key, (live - pollLtp) * qty);
+    }
+  }
+
   const _liveDeltaByRow = $derived.by(() => {
     /** @type {Map<string, number>} */
     const m = new Map();
     // Read _throttledTick so the derived re-runs at 4 Hz max — not on
     // every SvelteMap entry change (which fires per-tick). getSnapshot
-    // calls below are wrapped in untrack so they don't register
-    // per-symbol reactive deps that would defeat the throttle. This
-    // is the same scheduler-pressure fix BH6 applied to MarketPulse
-    // buildUnified after the order-button saturation incident.
+    // calls inside _addDeltaEntries are wrapped in untrack so they don't
+    // register per-symbol reactive deps that would defeat the throttle.
+    // Same scheduler-pressure fix BH6 applied to MarketPulse buildUnified.
     void _throttledTick;
     // Read _mktTick so the derived re-runs on the market open/close
     // boundary (otherwise we'd wait up to 30s for _load to pick it up).
     void _mktTick;
-    // Operator: "are the position calculations are correct?" — outside
-    // market hours the SSE store holds the LAST tick from before close
-    // while broker.quote() returns today's close, so their per-row
-    // divergence sums to phantom P∆. Gate the delta per exchange:
-    // MCX rows during MCX hours (09:00–23:30 IST), NSE/BSE/NFO/BFO/CDS
-    // rows during NSE hours (09:15–15:30 IST).
+    // Gate the delta per exchange: MCX rows during MCX hours (09:00–23:30
+    // IST), NSE/BSE/NFO/BFO/CDS rows during NSE hours (09:15–15:30 IST).
     const nseOpen = isNseOpen();
     const mcxOpen = isMcxOpen();
-    const _appliesToRow = (/** @type {any} */ row) => {
+    const appliesToRow = (/** @type {any} */ row) => {
       const exch = String(row?.exchange || '').toUpperCase();
       if (exch === 'MCX') return mcxOpen;
       return nseOpen;
     };
-    // BUGFIX: positions + holdings used to share the same map key
-    // `sym + account`. When the same symbol appeared in BOTH for the
-    // same account (operator holds long-term INFY + has an intraday
-    // INFY position), the holdings loop ran AFTER positions and
-    // overwrote the positions delta in the map — so the positions sum
-    // picked up the holdings-qty-based delta. Operator: "position
-    // profit in nav strip is not correct." Fix: prefix the key by
-    // kind ('P' vs 'H') so each kind owns its own delta entry.
-    // LTP flicker fix (Jun 2026): treat any non-positive `live` as
-    // "no live tick yet" rather than as a 0 delta. With the new
-    // symbolStore zero-guard a 0 should never be stored at all, but
-    // a `Number()`-coerced edge case (null/NaN) would otherwise pass
-    // the `live == null` test and feed (0 − pollLtp) × qty = a
-    // negative phantom delta into the strip sum.
-    for (const row of positions) {
-      if (!_appliesToRow(row)) continue;
-      const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      // Only apply the SSE-tick delta when an actual live tick has stamped
-      // ltp_ts > 0. REST publishers (publishPulseQuotes, _publishPositionsRows)
-      // both use ltp_ts=0 — when they race (e.g. derivatives page batchQuotes
-      // the same futures contract that is also a position), the last writer wins
-      // and liveLtp oscillates between two REST values, producing a phantom
-      // ±60k delta. Gating on ltp_ts > 0 prevents REST-sourced LTPs from
-      // contributing here; SSE ticks (ltp_ts=Date.now()) are unaffected.
-      const snap = untrack(() => getSnapshot(sym));
-      if (!snap || !(snap.ltp_ts > 0)) continue;
-      const live = snap.ltp;
-      if (typeof live !== 'number' || !(live > 0)) continue;
-      const pollLtp = Number(row?.last_price || 0);
-      const qty     = Number(row?.quantity   || 0);
-      if (!pollLtp || !qty) continue;
-      const key = 'P\x00' + sym + '\x00' + String(row?.account || '');
-      m.set(key, (live - pollLtp) * qty);
-    }
-    for (const row of holdings) {
-      if (!_appliesToRow(row)) continue;
-      const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const snap = untrack(() => getSnapshot(sym));
-      if (!snap || !(snap.ltp_ts > 0)) continue;
-      const live = snap.ltp;
-      if (typeof live !== 'number' || !(live > 0)) continue;
-      const pollLtp = Number(row?.last_price || 0);
-      const qty     = Number(row?.quantity   || 0);
-      if (!pollLtp || !qty) continue;
-      const key = 'H\x00' + sym + '\x00' + String(row?.account || '');
-      m.set(key, (live - pollLtp) * qty);
-    }
+    _addDeltaEntries(m, positions, 'P', appliesToRow);
+    _addDeltaEntries(m, holdings,  'H', appliesToRow);
     return m;
   });
 
@@ -589,6 +571,104 @@
   //
   // Gated by _throttledTick (4 Hz) not per-SSE-tick to avoid scheduler
   // pressure; matches the same throttle already used by _liveDeltaByRow.
+
+  /** Returns true when the exchange is a derivative segment (not equity). */
+  function _isDerivativeExch(/** @type {string} */ exch) {
+    return ['NFO', 'MCX', 'CDS', 'BFO'].includes(exch);
+  }
+
+  /**
+   * Step 1: try the backend-stamped underlying_ltp (SSOT, always preferred).
+   * Step 2: symbolStore snapshot chain for resolved tradingsymbol / root / inst.u.
+   * Step 3: row-scan of positions + holdings for a matching last_price.
+   * Returns the spot price, or 0 when none found.
+   *
+   * @param {any} p - raw position row (for underlying_ltp)
+   * @param {string} root - underlying root name (e.g. "NIFTY", "GOLD")
+   * @param {any} inst - instrument record from instruments cache
+   * @param {any} resolved - result of resolveUnderlying()
+   * @param {any[]} posRows - positions array for row-scan fallback
+   * @param {any[]} holdRows - holdings array for row-scan fallback
+   * @returns {number}
+   */
+  function _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows) {
+    // SSOT: backend stamps underlying_ltp on each option row (positions.py
+    // _enrich_positions Pass 3). Prefer this — it's what Greeks / IV used,
+    // and it's populated even during closed hours via LKG cache.
+    let spot = Number(p?.underlying_ltp || 0);
+    if (spot > 0) return spot;
+
+    // Fallback chain — demo/sim mode + legacy payloads without underlying_ltp.
+    // Same 4 steps as derivatives/+page.svelte:_rootSpot().
+    for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
+      const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
+      if (typeof v === 'number' && v > 0) { spot = v; break; }
+    }
+    if (spot > 0) return spot;
+
+    // Row-scan fallback: check positions then holdings for a matching symbol.
+    const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();
+    const wantRoot = String(root).toUpperCase();
+    for (const src of [posRows, holdRows]) {
+      if (spot > 0) break;
+      for (const _row of (src ?? [])) {
+        const row = /** @type {any} */ (_row);
+        const rSym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
+        if (!rSym) continue;
+        if (rSym === wantKey || rSym === wantRoot) {
+          const lp = Number(row?.last_price || 0);
+          if (lp > 0) { spot = lp; break; }
+        }
+      }
+    }
+    return spot;
+  }
+
+  /**
+   * Compute expiry P&L for one option leg.
+   * Returns the contribution (number) or null when spot cannot be resolved.
+   *
+   * @param {any} p - raw position row
+   * @param {string} sym - tradingsymbol (upper-cased)
+   * @param {number} qty - signed quantity
+   * @param {number} avg - average price
+   * @param {any[]} posRows - positions for spot row-scan fallback
+   * @param {any[]} holdRows - holdings for spot row-scan fallback
+   * @returns {number | null}
+   */
+  function _optionLegExpiryPnl(p, sym, qty, avg, posRows, holdRows) {
+    // Resolve underlying root — regex-first so cold instruments cache
+    // doesn't gate the compute.
+    const decomp = decomposeSymbol(sym);
+    const inst   = getInstrument(sym);
+    const root   = decomp.root || inst?.u || null;
+    if (!root) return null;
+
+    const resolved = resolveUnderlying(root, findNearestFuture);
+    const spot = _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows);
+    if (!(spot > 0)) return null;
+
+    // SHARED SSOT — same helper the derivatives page uses.
+    return expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
+  }
+
+  /**
+   * Compute expiry P&L for one futures leg.
+   * Returns the contribution (number) or null when LTP is unavailable.
+   *
+   * @param {any} p - raw position row
+   * @param {string} sym - tradingsymbol (upper-cased)
+   * @param {number} qty - signed quantity
+   * @param {number} avg - average price
+   * @returns {number | null}
+   */
+  function _futureLegExpiryPnl(p, sym, qty, avg) {
+    // Future spot = its own LTP; use shared helper for parity.
+    const live = untrack(() => getSnapshot(sym)?.ltp) || Number(p?.last_price || 0);
+    if (!(live > 0)) return null;
+    return expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
+  }
+
   const _expiryProfit = $derived.by(() => {
     void _throttledTick;
     void _mktTick;
@@ -600,68 +680,19 @@
       if (!qty) continue;
       // Derivative exchanges only (exclude equity CNC holdings in positions)
       const exch = String(p?.exchange || '').toUpperCase();
-      if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
+      if (!_isDerivativeExch(exch)) continue;
 
       const isCE  = sym.endsWith('CE');
       const isPE  = sym.endsWith('PE');
       const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
 
+      let v = null;
       if (isCE || isPE) {
-        // Resolve the underlying root (regex-first so cold instruments cache
-        // doesn't gate the compute).
-        const decomp = decomposeSymbol(sym);
-        const inst   = getInstrument(sym);
-        const root   = decomp.root || inst?.u || null;
-        if (!root) continue;
-        // SSOT: backend now stamps underlying_ltp on the option row
-        // (positions.py _enrich_positions Pass 3). Operator 2026-07-01:
-        // "use ssot." Prefer this over any client-side chain; it's the
-        // exact spot the backend used for Greeks / IV, and it's populated
-        // even during closed hours (via LKG cache in broker.quote).
-        let spot = Number(p?.underlying_ltp || 0);
-        const resolved = resolveUnderlying(root, findNearestFuture);
-        if (!(spot > 0)) {
-          // Fallback chain — for demo/sim mode + legacy payloads without
-          // the underlying_ltp field. Same 4 steps as
-          // derivatives/+page.svelte:_rootSpot().
-          for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
-            const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
-            if (typeof v === 'number' && v > 0) { spot = v; break; }
-          }
-        }
-        if (!(spot > 0)) {
-          const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();
-          const wantRoot = String(root).toUpperCase();
-          for (const src of [positions, holdings]) {
-            if (spot > 0) break;
-            for (const _row of (src ?? [])) {
-              const row = /** @type {any} */ (_row);
-              const rSym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
-              if (!rSym) continue;
-              if (rSym === wantKey || rSym === wantRoot) {
-                const lp = Number(row?.last_price || 0);
-                if (lp > 0) { spot = lp; break; }
-              }
-            }
-          }
-        }
-        if (!(spot > 0)) continue;
-        // SHARED SSOT — same helper the derivatives page uses.
-        const v = expiryPnl(
-          { symbol: sym, qty, avg_cost: avg, kind: 'opt' },
-          spot,
-        );
-        if (v != null) total += v;
+        v = _optionLegExpiryPnl(p, sym, qty, avg, positions, holdings);
       } else if (isFut) {
-        // Future — spot = its own LTP; use shared helper for parity.
-        const live = untrack(() => getSnapshot(sym)?.ltp) || Number(p?.last_price || 0);
-        if (!(live > 0)) continue;
-        const v = expiryPnl(
-          { symbol: sym, qty, avg_cost: avg, kind: 'fut' },
-          live,
-        );
-        if (v != null) total += v;
+        v = _futureLegExpiryPnl(p, sym, qty, avg);
       }
+      if (v != null) total += v;
     }
     return total;
   });

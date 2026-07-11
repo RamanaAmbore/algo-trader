@@ -126,6 +126,61 @@ function _canPair(A, B, remaining) {
 }
 
 /**
+ * Find the highest-|theta| eligible partner for row A in the remaining map.
+ * Returns null when no valid partner exists.
+ *
+ * @param {any} A
+ * @param {any[]} sortedAbs
+ * @param {Map<any,number>} remaining
+ * @returns {any|null}
+ */
+function _findBestPartner(A, sortedAbs, remaining) {
+  let bestB = null;
+  let bestT = -1;
+  for (const B of sortedAbs) {
+    if (B === A) continue;
+    if (!_canPair(A, B, remaining)) continue;
+    const t = Math.abs(B._theta || 0);
+    if (t > bestT) { bestB = B; bestT = t; }
+  }
+  return bestB;
+}
+
+/**
+ * Consume one netting step between A and B: update `remaining`, push two
+ * rows into `nettedRows`, and return the new qty of A.
+ *
+ * @param {any} A
+ * @param {any} B
+ * @param {Map<any,number>} remaining
+ * @param {string} pairId
+ * @param {Array<{row:any,consumedQty:number,pairId:string,splitNote:string}>} nettedRows
+ * @returns {number} updated qty of A after consumption
+ */
+function _consumeNettingPair(A, B, remaining, pairId, nettedRows) {
+  const aq = remaining.get(A) || 0;
+  const bq = remaining.get(B) || 0;
+  const netAmt = Math.min(Math.abs(aq), Math.abs(bq));
+  const newAq = aq - netAmt * Math.sign(aq);
+  const newBq = bq - netAmt * Math.sign(bq);
+  remaining.set(A, newAq);
+  remaining.set(B, newBq);
+  nettedRows.push({
+    row: A,
+    consumedQty: netAmt * Math.sign(aq),
+    pairId,
+    splitNote: newAq !== 0 ? `split ${aq > 0 ? '+' : ''}${aq}→${netAmt * Math.sign(aq)}` : '',
+  });
+  nettedRows.push({
+    row: B,
+    consumedQty: netAmt * Math.sign(bq),
+    pairId,
+    splitNote: newBq !== 0 ? `split ${bq > 0 ? '+' : ''}${bq}→${netAmt * Math.sign(bq)}` : '',
+  });
+  return remaining.get(A) || 0;
+}
+
+/**
  * Perform greedy theta-priority netting for one (account, underlying, expiry)
  * group of ITM commodity rows. Returns netted rows with pair metadata and
  * residual (to-close) rows.
@@ -148,38 +203,10 @@ export function netMcxGroup(grp) {
   for (const A of sortedAbs) {
     let aq = remaining.get(A) || 0;
     while (aq !== 0) {
-      let bestB = null;
-      let bestT = -1;
-      for (const B of sortedAbs) {
-        if (B === A) continue;
-        if (!_canPair(A, B, remaining)) continue;
-        const t = Math.abs(B._theta || 0);
-        if (t > bestT) { bestB = B; bestT = t; }
-      }
+      const bestB = _findBestPartner(A, sortedAbs, remaining);
       if (!bestB) break;
       pairCounter++;
-      const pairId = `N${pairCounter}`;
-      const bq = remaining.get(bestB) || 0;
-      const netAmt = Math.min(Math.abs(aq), Math.abs(bq));
-      const newAq = aq - netAmt * Math.sign(aq);
-      const newBq = bq - netAmt * Math.sign(bq);
-      remaining.set(A, newAq);
-      remaining.set(bestB, newBq);
-      const aSplit = newAq !== 0;
-      const bSplit = newBq !== 0;
-      nettedRows.push({
-        row: A,
-        consumedQty: netAmt * Math.sign(aq),
-        pairId,
-        splitNote: aSplit ? `split ${aq > 0 ? '+' : ''}${aq}→${netAmt * Math.sign(aq)}` : '',
-      });
-      nettedRows.push({
-        row: bestB,
-        consumedQty: netAmt * Math.sign(bq),
-        pairId,
-        splitNote: bSplit ? `split ${bq > 0 ? '+' : ''}${bq}→${netAmt * Math.sign(bq)}` : '',
-      });
-      aq = remaining.get(A) || 0;
+      aq = _consumeNettingPair(A, bestB, remaining, `N${pairCounter}`, nettedRows);
     }
   }
 

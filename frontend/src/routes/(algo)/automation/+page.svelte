@@ -337,6 +337,55 @@
     }
   }
 
+  /**
+   * Parse the blackout_windows textarea JSON.
+   * Returns {ok: true, value} on success, {ok: false, error} on failure.
+   */
+  function _parseBlackoutWindows() {
+    let bw;
+    try { bw = JSON.parse(editForm.blackout_windows || '[]'); }
+    catch (e) { return { ok: false, error: `blackout_windows JSON invalid: ${e.message}` }; }
+    if (!Array.isArray(bw)) {
+      return { ok: false, error: 'blackout_windows must be a JSON array of {start, end} entries' };
+    }
+    return { ok: true, value: bw };
+  }
+
+  /**
+   * Build the PATCH payload from editForm + resolved tags and blackout windows.
+   * All conditional field coercions (lifespan, nulls) live here.
+   * @param {string[]} tagsList
+   * @param {any[]} bw
+   */
+  function _buildEditPayload(tagsList, bw) {
+    return {
+      name: editForm.name,
+      long_name: editForm.long_name || null,
+      description: editForm.description,
+      conditions: JSON.parse(editForm.conditions),
+      events: JSON.parse(editForm.events),
+      actions: JSON.parse(editForm.actions),
+      cooldown_minutes: editForm.cooldown_minutes,
+      scope: editForm.scope,
+      schedule: editForm.schedule,
+      fire_at_time: editForm.fire_at_time || '',
+      lifespan_type: editForm.lifespan_type || 'persistent',
+      lifespan_max_fires: (editForm.lifespan_type === 'n_fires'
+        && editForm.lifespan_max_fires !== '' && editForm.lifespan_max_fires != null)
+        ? Number(editForm.lifespan_max_fires) : null,
+      lifespan_expires_at: (editForm.lifespan_type === 'until_date'
+        && editForm.lifespan_expires_at)
+        ? String(editForm.lifespan_expires_at) : null,
+      tier:              editForm.tier  || 'medium',
+      topic:             editForm.topic || 'general',
+      digest_window_sec: Number(editForm.digest_window_sec) || 30,
+      trade_mode:        editForm.trade_mode || 'paper',
+      debounce_minutes:  Number(editForm.debounce_minutes) || 0,
+      tags:              tagsList,
+      blackout_windows:  bw,
+    };
+  }
+
   async function saveEdit() {
     // Server-side validation must pass for v2 trees before we touch the
     // agent row — v1 trees are accepted as-is.
@@ -344,44 +393,14 @@
     if (!ok) return;
     // Parse blackout_windows JSON — invalid surfaces as a validation error
     // (saves get blocked) instead of a silent 400 from the backend.
-    let bw;
-    try { bw = JSON.parse(editForm.blackout_windows || '[]'); }
-    catch (e) { validationErrors = [`blackout_windows JSON invalid: ${e.message}`]; return; }
-    if (!Array.isArray(bw)) {
-      validationErrors = ['blackout_windows must be a JSON array of {start, end} entries'];
-      return;
-    }
+    const bwResult = _parseBlackoutWindows();
+    if (!bwResult.ok) { validationErrors = [bwResult.error]; return; }
     // Tags: split on comma, trim, drop empty. Operator types
     // "iron-condor, nifty, review-q3" — round-tripped to a list.
     const tagsList = String(editForm.tags || '')
       .split(',').map(t => t.trim()).filter(Boolean);
     try {
-      await updateAgent(editing, {
-        name: editForm.name,
-        long_name: editForm.long_name || null,
-        description: editForm.description,
-        conditions: JSON.parse(editForm.conditions),
-        events: JSON.parse(editForm.events),
-        actions: JSON.parse(editForm.actions),
-        cooldown_minutes: editForm.cooldown_minutes,
-        scope: editForm.scope,
-        schedule: editForm.schedule,
-        fire_at_time: editForm.fire_at_time || '',
-        lifespan_type: editForm.lifespan_type || 'persistent',
-        lifespan_max_fires: (editForm.lifespan_type === 'n_fires'
-          && editForm.lifespan_max_fires !== '' && editForm.lifespan_max_fires != null)
-          ? Number(editForm.lifespan_max_fires) : null,
-        lifespan_expires_at: (editForm.lifespan_type === 'until_date'
-          && editForm.lifespan_expires_at)
-          ? String(editForm.lifespan_expires_at) : null,
-        tier:               editForm.tier  || 'medium',
-        topic:              editForm.topic || 'general',
-        digest_window_sec:  Number(editForm.digest_window_sec) || 30,
-        trade_mode:         editForm.trade_mode || 'paper',
-        debounce_minutes:   Number(editForm.debounce_minutes) || 0,
-        tags:               tagsList,
-        blackout_windows:   bw,
-      });
+      await updateAgent(editing, _buildEditPayload(tagsList, bwResult.value));
       editing = null;
       validationErrors = []; validationGrammar = '';
       toast.success(`Agent saved: ${editForm.name}`);

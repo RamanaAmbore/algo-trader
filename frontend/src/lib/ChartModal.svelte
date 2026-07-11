@@ -1,7 +1,8 @@
 <script>
   // ChartModal — thin overlay wrapper around ChartWorkspace.
   // Opens as a fixed-inset modal with an amber-glow navy panel.
-  // Esc key and overlay click both close.
+  // Esc key and × close; overlay is pointer-events:none so the
+  // navbar / menu underneath remain reachable.
 
   import { onMount, onDestroy } from 'svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
@@ -17,32 +18,19 @@
     /** @type {() => void} */ onClose,
   } = $props();
 
-  let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
+  let _modalEl  = $state(/** @type {HTMLElement|null} */ (null));
   let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
-  // ChartWorkspace exposes its fetch state via $bindable `loading`. While
-  // a refresh is in flight, the modal goes into a "busy" guard mode:
-  //   - chart body becomes pointer-events:none so the operator can't
-  //     queue a second fetch behind the in-flight one (no range pill
-  //     change, no symbol re-pick, no overlay toggle)
-  //   - × close button + Esc key still close the modal
-  //   - overlay stays pointer-events:none so the navbar / menu
-  //     underneath remain reachable (operator: "only menu and modal
-  //     should be active" — they want to be able to navigate while a
-  //     fetch is running, just not re-trigger the chart)
-  // Mirrors industry pattern (TWS dialog modal lock, Bloomberg busy
-  // cursor) — but with the lock scoped to the chart canvas instead of
-  // the whole viewport.
   let _loading = $state(false);
-  // _initialBump retired — ChartWorkspace's onMount now reliably
-  // fires the historical fetch and the symbol-effect skips its
-  // own initial Svelte-runs-once tick (see ChartWorkspace.svelte
-  // _firstSymEffect). Was causing 3 fetches per modal open;
-  // audit defect #7.
+
+  // $derived.by for clean reactive aria-label (avoids inline IIFE in template).
+  const _ariaLabel = $derived.by(() => {
+    const rl = rootOfLabel(symbol, exchange);
+    return 'Chart — ' + (rl !== symbol ? rl : formatSymbol(symbol));
+  });
 
   // The cm-overlay is portaled to document.body, OUTSIDE the SvelteKit
   // mount root (<div id="svelte">). Svelte 5 delegates onclick handlers
-  // at the mount root, so any onclick={...} on nodes inside the portal
-  // never fires — the click bubbles up to <body> and stops there.
+  // at the mount root, so onclick={...} on portaled nodes never fires.
   // Bind the X-button click natively via addEventListener instead.
   function _onCloseClick(/** @type {MouseEvent} */ e) {
     e.stopPropagation();
@@ -77,13 +65,6 @@
   }
 
   onMount(() => {
-    // Seed the shared chartStore with this modal's symbol + exchange so
-    // that navigating to /charts while the modal is open (or after
-    // closing it) shows the same chart without a duplicate fetch.
-    // ChartWorkspace.onMount will also call setSymbol/setExchange, but
-    // seeding here first means the store is correct before the workspace
-    // mounts (useful for any consumers that read the store on their own
-    // mount cycle).
     if (symbol) chartStore.setSymbol(symbol);
     if (exchange) chartStore.setExchange(exchange);
     window.addEventListener('keydown', _onKey, { capture: true });
@@ -101,7 +82,7 @@
      operator uses × button or Esc. tabindex retained for screen readers. -->
 <div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
      use:portal role="dialog" aria-modal="true"
-     aria-label="Chart — {(() => { const rl = rootOfLabel(symbol, exchange); return rl !== symbol ? rl : formatSymbol(symbol); })()}" tabindex="-1">
+     aria-label={_ariaLabel} tabindex="-1">
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
@@ -145,12 +126,6 @@
       </span>
     </div>
     <div class="cm-body">
-      <!-- Chart card — operator: "for charts, the chart card inside the
-           modal have curved corners on the top left and right.. make
-           it look like orders". Wraps the workspace in a bucket-card
-           style frame with rounded top corners, navy gradient, white
-           inset highlight, and a cyan left-edge accent matching the
-           modal's identity. -->
       <div class="cm-chart-card">
         <ChartWorkspace
           bind:loading={_loading}

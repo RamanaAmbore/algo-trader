@@ -325,46 +325,99 @@
     } catch (_) {}
   }
 
+  /**
+   * Parse and validate the Advanced settings JSON textarea.
+   * @returns {{ ok: true, parsedExtra: object } | { ok: false, error: string }}
+   */
+  function _parseExtraConfig() {
+    try {
+      const parsedExtra = JSON.parse(form.extra_config_text || '{}');
+      if (!parsedExtra || typeof parsedExtra !== 'object' || Array.isArray(parsedExtra)) {
+        return { ok: false, error: 'Advanced settings must be a JSON object.' };
+      }
+      return { ok: true, parsedExtra };
+    } catch (parseErr) {
+      return { ok: false, error: `Advanced settings JSON invalid: ${parseErr.message}` };
+    }
+  }
+
+  /**
+   * Returns labels of required fields missing from the form for the current broker.
+   * @param {Array<{key:string,label:string,secret:boolean,required:boolean}>} fields
+   * @returns {string[]}
+   */
+  function _findMissingRequiredFields(fields) {
+    return fields.filter(f => f.required && !form[f.key]).map(f => f.label);
+  }
+
+  /**
+   * Build the PATCH payload for an Edit save.
+   * Only sends secret fields when the operator has typed a new value.
+   * @param {object} parsedExtra
+   * @param {Array<{key:string,secret:boolean}>} fields
+   * @returns {object}
+   */
+  function _buildEditPayload(parsedExtra, fields) {
+    const payload = /** @type {Record<string,any>} */ ({
+      broker_id: form.broker_id,
+      api_key: form.api_key,
+      client_id: form.client_id || '',
+      source_ip: form.source_ip,
+      is_active: form.is_active,
+      historical_data_enabled: _formHistEnabled,
+      notes: form.notes,
+      priority: Number(form.priority) || 100,
+      display_order: Number(form.display_order) || 500,
+      extra_config: parsedExtra,
+    });
+    // Only send each secret if the operator typed a new value AND
+    // that field is actually relevant to the selected broker.
+    for (const f of fields) {
+      if (f.secret && form[f.key]) payload[f.key] = form[f.key];
+    }
+    return payload;
+  }
+
+  /**
+   * Build the POST payload for a Create save.
+   * @param {object} parsedExtra
+   * @returns {object}
+   */
+  function _buildCreatePayload(parsedExtra) {
+    return {
+      account:     form.account,
+      broker_id:   form.broker_id,
+      api_key:     form.api_key || '',
+      api_secret:  form.api_secret || '',
+      password:    form.password || '',
+      totp_token:  form.totp_token || '',
+      client_id:   form.client_id || '',
+      access_token: form.access_token || '',
+      source_ip:   form.source_ip,
+      is_active:   form.is_active,
+      historical_data_enabled: _formHistEnabled,
+      notes:       form.notes,
+      priority:      Number(form.priority) || 100,
+      display_order: Number(form.display_order) || 500,
+      extra_config: parsedExtra,
+    };
+  }
+
   async function save() {
     error = '';
     try {
       // Parse + validate Advanced JSON. Bad JSON aborts the save so the
       // operator never accidentally persists a malformed config.
-      let parsedExtra;
-      try {
-        parsedExtra = JSON.parse(form.extra_config_text || '{}');
-        if (!parsedExtra || typeof parsedExtra !== 'object' || Array.isArray(parsedExtra)) {
-          error = 'Advanced settings must be a JSON object.';
-          return;
-        }
-      } catch (parseErr) {
-        error = `Advanced settings JSON invalid: ${parseErr.message}`;
-        return;
-      }
+      const extraResult = _parseExtraConfig();
+      if (!extraResult.ok) { error = /** @type {any} */ (extraResult).error; return; }
+      const { parsedExtra } = /** @type {{ ok: true, parsedExtra: object }} */ (extraResult);
       const fieldsForThisBroker = credentialFields(form.broker_id);
 
       if (isEditing) {
         // PATCH — only send fields with values; empty secret fields are
         // explicitly omitted so the backend's "leave unchanged" logic
         // gets the right signal.
-        const payload = {
-          broker_id: form.broker_id,
-          api_key: form.api_key,
-          client_id: form.client_id || '',
-          source_ip: form.source_ip,
-          is_active: form.is_active,
-          historical_data_enabled: _formHistEnabled,
-          notes: form.notes,
-          priority: Number(form.priority) || 100,
-          display_order: Number(form.display_order) || 500,
-          extra_config: parsedExtra,
-        };
-        // Only send each secret if the operator typed a new value AND
-        // that field is actually relevant to the selected broker.
-        for (const f of fieldsForThisBroker) {
-          if (f.secret && form[f.key]) payload[f.key] = form[f.key];
-        }
-        await updateBrokerAccount(editing, payload);
+        await updateBrokerAccount(editing, _buildEditPayload(parsedExtra, fieldsForThisBroker));
         toast.success(`Updated ${editing}`);
       } else {
         if (!form.account) { error = 'Account code is required.'; return; }
@@ -372,31 +425,12 @@
         // which fields are mandatory at create time (Kite needs 4 fields,
         // Dhan only 2). Missing any one of them aborts the save with a
         // specific error so the operator knows what to fill in.
-        const missing = fieldsForThisBroker
-          .filter(f => f.required && !form[f.key])
-          .map(f => f.label);
+        const missing = _findMissingRequiredFields(fieldsForThisBroker);
         if (missing.length) {
           error = `Required for ${form.broker_id}: ${missing.join(', ')}.`;
           return;
         }
-        const payload = {
-          account:     form.account,
-          broker_id:   form.broker_id,
-          api_key:     form.api_key || '',
-          api_secret:  form.api_secret || '',
-          password:    form.password || '',
-          totp_token:  form.totp_token || '',
-          client_id:   form.client_id || '',
-          access_token: form.access_token || '',
-          source_ip:   form.source_ip,
-          is_active:   form.is_active,
-          historical_data_enabled: _formHistEnabled,
-          notes:       form.notes,
-          priority:      Number(form.priority) || 100,
-          display_order: Number(form.display_order) || 500,
-          extra_config: parsedExtra,
-        };
-        await createBrokerAccount(payload);
+        await createBrokerAccount(_buildCreatePayload(parsedExtra));
         toast.success(`Created ${form.account}`);
       }
       resetForm();

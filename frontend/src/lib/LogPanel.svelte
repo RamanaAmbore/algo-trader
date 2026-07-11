@@ -649,44 +649,91 @@
       availableAccounts = ax;
     }
   });
-  const filteredOrderRows = $derived.by(() => {
-    let rows = orderRows || [];
+  // ── filteredOrderRows filter predicates ────────────────────────────────
+  // Each _apply* helper is a pure function that returns a new rows array.
+  // They are called in sequence inside filteredOrderRows.
+
+  /**
+   * Apply mode gate: when gateByMode is active use the execution-mode store;
+   * otherwise apply the operator-selected orderModeFilter chip (skip on 'all').
+   * @param {any[]} rows
+   * @param {string|null} gatingMode
+   * @param {string} modeFilter
+   * @returns {any[]}
+   */
+  function _applyModeFilter(rows, gatingMode, modeFilter) {
     // When gateByMode is active, filter by executionMode directly.
     // The om-bar chip strip is hidden in this state so orderModeFilter
     // is not applicable — the store is the filter.
-    if (_gatingMode) {
-      rows = rows.filter(o => (o?.mode || 'live') === _gatingMode);
-    } else if (orderModeFilter !== 'all') {
-      rows = rows.filter(o => (o?.mode || 'live') === orderModeFilter);
+    if (gatingMode) {
+      return rows.filter(o => (o?.mode || 'live') === gatingMode);
     }
-    if (orderAccountFilter.length > 0) {
-      const want = new Set(orderAccountFilter);
-      rows = rows.filter(o => want.has(String(o?.account || '')));
+    if (modeFilter !== 'all') {
+      return rows.filter(o => (o?.mode || 'live') === modeFilter);
     }
-    // Status filter wired from the /orders page counter cards.
-    if (statusFilter && statusFilter !== 'all') {
-      rows = rows.filter(o => {
-        const st = (o?.status || '').toUpperCase();
-        if (statusFilter === 'open')      return st === 'OPEN' || st === 'TRIGGER PENDING';
-        if (statusFilter === 'complete')  return st === 'COMPLETE';
-        if (statusFilter === 'rejected')  return st === 'REJECTED';
-        if (statusFilter === 'cancelled') return st === 'CANCELLED';
-        return true;
-      });
-    }
-    // Slice 7g — symbol filter (strategy scope). When set, narrow to
-    // rows whose tradingsymbol is in the allowed Set. Used by
-    // /orders to thread the global strategy filter through.
-    if (symbolFilter && symbolFilter.size > 0) {
-      rows = rows.filter(o => {
-        const sym = String(o?.tradingsymbol || o?.symbol || '').toUpperCase();
-        return symbolFilter.has(sym);
-      });
-    } else if (symbolFilter && symbolFilter.size === 0) {
-      // Empty Set with non-null instance signals "strategy picked
-      // but it has no open lots" — show no rows rather than all.
-      rows = [];
-    }
+    return rows;
+  }
+
+  /**
+   * Narrow to rows belonging to the selected accounts.
+   * Empty array = no filter (pass all through).
+   * @param {any[]} rows
+   * @param {string[]} accountFilter
+   * @returns {any[]}
+   */
+  function _applyAccountFilter(rows, accountFilter) {
+    if (accountFilter.length === 0) return rows;
+    const want = new Set(accountFilter);
+    return rows.filter(o => want.has(String(o?.account || '')));
+  }
+
+  /** @type {Record<string, (st: string) => boolean>} */
+  const _STATUS_PREDICATES = {
+    open:      st => st === 'OPEN' || st === 'TRIGGER PENDING',
+    complete:  st => st === 'COMPLETE',
+    rejected:  st => st === 'REJECTED',
+    cancelled: st => st === 'CANCELLED',
+  };
+
+  /**
+   * Status filter wired from the /orders page counter cards.
+   * Pass 'all' or falsy to skip.
+   * @param {any[]} rows
+   * @param {string|null|undefined} filter
+   * @returns {any[]}
+   */
+  function _applyStatusFilter(rows, filter) {
+    if (!filter || filter === 'all') return rows;
+    const pred = _STATUS_PREDICATES[filter];
+    if (!pred) return rows;
+    return rows.filter(o => pred((o?.status || '').toUpperCase()));
+  }
+
+  /**
+   * Slice 7g — symbol filter (strategy scope). When set, narrow to rows
+   * whose tradingsymbol is in the allowed Set. An empty Set with a non-null
+   * instance signals "strategy picked but it has no open lots" — return []
+   * rather than passing all rows through.
+   * @param {any[]} rows
+   * @param {Set<string>|null|undefined} filter
+   * @returns {any[]}
+   */
+  function _applySymbolFilter(rows, filter) {
+    if (!filter) return rows;
+    if (filter.size === 0) return [];
+    return rows.filter(o => {
+      const sym = String(o?.tradingsymbol || o?.symbol || '').toUpperCase();
+      return filter.has(sym);
+    });
+  }
+
+  const filteredOrderRows = $derived.by(() => {
+    let rows = orderRows || [];
+    rows = _applyModeFilter(rows, _gatingMode, orderModeFilter);
+    rows = _applyAccountFilter(rows, orderAccountFilter);
+    rows = _applyStatusFilter(rows, statusFilter);
+    // Used by /orders to thread the global strategy filter through.
+    rows = _applySymbolFilter(rows, symbolFilter);
     return rows;
   });
 

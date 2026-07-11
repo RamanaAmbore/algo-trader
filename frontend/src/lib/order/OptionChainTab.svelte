@@ -663,70 +663,61 @@
     basketError = '';
   }
 
-  async function placeBasket() {
-    // When the basket is lifted to the shell, delegate entirely.
-    if (_externalBasket && onSubmitBasket) {
-      onSubmitBasket();
-      return;
-    }
-    if (basketPlacing || !chainBasket.length) return;
-    const acct = _account;
-    if (!acct) { basketError = 'No routable account. Pick an account above.'; return; }
+  /** @returns {'live'|'paper'} */
+  function _resolveBasketMode() {
+    const m = String($executionMode || 'paper').toLowerCase();
+    return m === 'live' ? 'live' : 'paper';
+  }
 
-    // Audit fix — read mode from the $executionMode store instead of
-    // an async fetchLiveStatus() round-trip. Same source the navbar
-    // dropdown writes to + SymbolPanel and OrderTicket read from, so
-    // a navbar mode change between the operator clicking Place and
-    // the response arriving can't desync the basket. `idle` / `sim` /
-    // `replay` / `shadow` fall through to paper since this standalone
-    // path is only for the chain modal's own basket; live mode here
-    // is gated by the same store the page-level chrome reads.
-    const _modeNow = String($executionMode || 'paper').toLowerCase();
-    const basketMode = _modeNow === 'live' ? 'live' : 'paper';
-
-    basketPlacing = true; basketError = ''; basketProgress = 0;
-    /** @type {string[]} */ const failures = [];
-    for (const leg of chainBasket) {
-      try {
-        const hasLimit = Number(leg.limit) > 0;
-        if (!hasLimit) {
-          // Default to LIMIT + chase[low]; refuse a placement that
-          // would silently downgrade to MARKET because the quote
-          // hadn't arrived yet. Operator can wait for chain quotes
-          // to load (auto-poll every 5 s) and resubmit.
-          failures.push(`${leg.side} ${leg.sym}: no quote yet — re-open the chain so the bid/ask price loads, then submit again.`);
-          basketProgress += 1;
-          continue;
-        }
-        // v2 API (2026-07-08): send LOTS for F&O (lotSize > 1),
-        // raw shares for equity. Backend multiplies lots × lot_size
-        // to get contracts internally.
-        const _isFO = Number(leg.lotSize) > 1;
-        const _requestQty = _isFO
-          ? Math.max(1, Number(leg.lots) || 1)
-          : Math.max(1, (Number(leg.lots) || 1) * (Number(leg.lotSize) || 1));
-        await placeTicketOrder({
-          mode: basketMode, side: leg.side, tradingsymbol: leg.sym,
-          quantity: _requestQty, exchange: leg.exchange,
-          lot_size_hint: Number(leg.lotSize) > 0 ? Number(leg.lotSize) : null,
-          product: leg.product || 'NRML',
-          order_type: 'LIMIT',
-          price: Number(leg.limit),
-          variety: 'regular', account: leg.account || acct,
-          chase: true, chase_aggressiveness: leg.chaseAgg || 'low',
-          // Same template attaches to every leg in the basket. The
-          // backend ticket route reads `template_id` and runs
-          // apply_template_to_order on fill — TP / SL / Wing GTTs
-          // for each leg get queued individually.
-          template_id: templateId,
-        });
-      } catch (e) {
-        failures.push(`${leg.side} ${leg.sym}: ${String(/** @type {any} */ (e)?.message || e || 'failed')}`);
-      }
-      basketProgress += 1;
+  /**
+   * Place a single basket leg. Returns null on success, an error string on failure.
+   * Does NOT mutate basketProgress — the caller increments after every leg.
+   * @param {any} leg @param {'live'|'paper'} mode @param {string} acct
+   * @returns {Promise<string|null>}
+   */
+  async function _placeOneLeg(leg, mode, acct) {
+    if (!(Number(leg.limit) > 0)) {
+      // Default to LIMIT + chase[low]; refuse a placement that
+      // would silently downgrade to MARKET because the quote
+      // hadn't arrived yet. Operator can wait for chain quotes
+      // to load (auto-poll every 5 s) and resubmit.
+      return `${leg.side} ${leg.sym}: no quote yet — re-open the chain so the bid/ask price loads, then submit again.`;
     }
-    const total = chainBasket.length;
-    basketPlacing = false;
+    // v2 API (2026-07-08): send LOTS for F&O (lotSize > 1),
+    // raw shares for equity. Backend multiplies lots × lot_size
+    // to get contracts internally.
+    const _isFO = Number(leg.lotSize) > 1;
+    const _requestQty = _isFO
+      ? Math.max(1, Number(leg.lots) || 1)
+      : Math.max(1, (Number(leg.lots) || 1) * (Number(leg.lotSize) || 1));
+    try {
+      await placeTicketOrder({
+        mode, side: leg.side, tradingsymbol: leg.sym,
+        quantity: _requestQty, exchange: leg.exchange,
+        lot_size_hint: Number(leg.lotSize) > 0 ? Number(leg.lotSize) : null,
+        product: leg.product || 'NRML',
+        order_type: 'LIMIT',
+        price: Number(leg.limit),
+        variety: 'regular', account: leg.account || acct,
+        chase: true, chase_aggressiveness: leg.chaseAgg || 'low',
+        // Same template attaches to every leg in the basket. The
+        // backend ticket route reads `template_id` and runs
+        // apply_template_to_order on fill — TP / SL / Wing GTTs
+        // for each leg get queued individually.
+        template_id: templateId,
+      });
+      return null;
+    } catch (e) {
+      return `${leg.side} ${leg.sym}: ${String(/** @type {any} */ (e)?.message || e || 'failed')}`;
+    }
+  }
+
+  /**
+   * Resolve basket outcome: set basketError, clear/reset _localBasket,
+   * fire basketJustDone flash, and call onBasketPlace callback.
+   * @param {string[]} failures @param {number} total
+   */
+  function _finalizeBasket(failures, total) {
     if (failures.length === total) {
       basketError = failures[0] || 'All legs failed';
     } else if (failures.length) {
@@ -737,6 +728,32 @@
       setTimeout(() => { basketJustDone = false; }, 2200);
     }
     onBasketPlace?.({ ok: total - failures.length, fail: failures.length });
+  }
+
+  async function placeBasket() {
+    // When the basket is lifted to the shell, delegate entirely.
+    if (_externalBasket && onSubmitBasket) { onSubmitBasket(); return; }
+    if (basketPlacing || !chainBasket.length) return;
+    const acct = _account;
+    if (!acct) { basketError = 'No routable account. Pick an account above.'; return; }
+
+    // Audit fix — read mode from the $executionMode store instead of
+    // an async fetchLiveStatus() round-trip. Same source the navbar
+    // dropdown writes to + SymbolPanel and OrderTicket read from, so
+    // a navbar mode change between the operator clicking Place and
+    // the response arriving can't desync the basket.
+    const basketMode = _resolveBasketMode();
+
+    basketPlacing = true; basketError = ''; basketProgress = 0;
+    /** @type {string[]} */ const failures = [];
+    for (const leg of chainBasket) {
+      const err = await _placeOneLeg(leg, basketMode, acct);
+      if (err) failures.push(err);
+      basketProgress += 1;
+    }
+    const total = chainBasket.length;
+    basketPlacing = false;
+    _finalizeBasket(failures, total);
   }
 
   onMount(async () => {

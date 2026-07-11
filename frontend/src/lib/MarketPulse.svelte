@@ -1647,76 +1647,56 @@
   // sequence (watchlist 1 → positions 2 → holdings 3 → movers 4).
   // First row of each major gets `_majorFirst=true` so the row
   // styling can paint a divider above it.
-  const mainRows = $derived.by(() => {
-    const rows = unifiedRows.filter(r => {
-      // Pinned major lives in pinnedTopRows; never appears in main.
-      if (r._majorGroup === 'pinned') return false;
-      // Watchlist major gated by the operator's source toggle.
-      if (r._majorGroup === 'watchlist' && !showWatchlist) return false;
-      // Positions / Holdings / Movers are pre-filtered at buildUnified
-      // entry via includePos / includeHold / includeMovers, so no
-      // additional gate needed here. (Symbols already absent.)
-      return true;
-    });
-    // Sort: major first → underlying-group within major → anchor before
-    // options within the same underlying → alphabetical tradingsymbol as
-    // the final tiebreaker.
-    //
-    // Why group by `underlying` and not by tradingsymbol alphabetic?
-    // Anchors (src.u-only rows) carry a tradingsymbol that may differ
-    // from their underlying name — MCX same-month-future stubs land as
-    // `CRUDEOIL26JUNFUT`, alphabetically AFTER `CRUDEOIL26JUN10000CE`,
-    // which orphans the anchor at the BOTTOM of the positions block.
-    // Sorting by `underlying` first pins every row carrying
-    // underlying='CRUDEOIL' to one contiguous block; within that block,
-    // anchor rows (tier 0/1) precede option rows (tier 2).
-    const _ugKey = (r) => String(r.underlying || r.tradingsymbol || '').toUpperCase();
-    const _tier  = (r) => (r.kind === 'spot' ? 0 : r.kind === 'fut' ? 1 : r.kind === 'mcx' ? 1 : r.kind === 'opt' ? 2 : 3);
-    // Sub-group order WITHIN the Movers major — underlying first
-    // (most-actively-traded, F&O-eligible names), then large_cap, then
-    // midcap, then smallcap. Unknown / null sub-groups go last (defensive
-    // — every row from loadMovers carries one of the four tags).
-    const MOVER_GROUP_ORDER = { underlying: 0, large_cap: 1, midcap: 2, smallcap: 3 };
-    // Direction order: Winners first, Losers second. Within each
-    // direction the underlying → large_cap → midcap → smallcap sub-grouping
-    // applies. Result inside Movers:
-    //   Winners → Underlyings, Large Cap, Midcap, Smallcap
-    //   Losers  → Underlyings, Large Cap, Midcap, Smallcap
-    const MOVER_DIRECTION_ORDER = { winners: 0, losers: 1 };
-    const _mgOrder = (r) =>
-      r._majorGroup === 'movers' ? (MOVER_GROUP_ORDER[r._moverGroup] ?? 9) : -1;
-    const _mdOrder = (r) =>
-      r._majorGroup === 'movers' ? (MOVER_DIRECTION_ORDER[r._moverDirection] ?? 9) : -1;
-    rows.sort((a, b) => {
-      const moA = a._majorOrder ?? 99, moB = b._majorOrder ?? 99;
-      if (moA !== moB) return moA - moB;
-      // Direction first inside Movers (winners → losers).
-      const mdA = _mdOrder(a), mdB = _mdOrder(b);
-      if (mdA !== mdB) return mdA - mdB;
-      // Sub-group ordering applies ONLY to the Movers major — other
-      // majors keep their existing underlying-then-tier sort. _mgOrder
-      // returns -1 for non-mover rows so this branch is a no-op there.
-      const mgA = _mgOrder(a), mgB = _mgOrder(b);
-      if (mgA !== mgB) return mgA - mgB;
-      // Inside a Movers sub-group, biggest mover first (by % change abs).
-      if (a._majorGroup === 'movers' && b._majorGroup === 'movers') {
-        const pA = Math.abs(Number(a._mover_change_pct) || Number(a.change_pct) || 0);
-        const pB = Math.abs(Number(b._mover_change_pct) || Number(b.change_pct) || 0);
-        if (pA !== pB) return pB - pA;
-      }
-      const ua = _ugKey(a), ub = _ugKey(b);
-      if (ua !== ub) return ua.localeCompare(ub);
-      const ta = _tier(a),  tb = _tier(b);
-      if (ta !== tb) return ta - tb;
-      return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
-    });
-    // First-row flags: major divider as before; direction divider for
-    // the first row of each Winners/Losers block; sub-group divider for
-    // each (underlying / midcap / smallcap) section inside the
-    // direction block.
-    let lastMajor = null;
-    let lastMoverDirection = null;
-    let lastMoverGroup = null;
+  // ── mainRows sort helpers (module-level pure fns, no reactive deps) ───────
+  // Extracted from the $derived.by body to reduce cyclomatic complexity
+  // (sort comparator was CC 13; now mainRows derived is CC 3).
+
+  // Sub-group order WITHIN the Movers major — underlying first
+  // (most-actively-traded, F&O-eligible names), then large_cap → midcap →
+  // smallcap. Unknown / null sub-groups go last.
+  const _MOVER_GROUP_ORDER     = { underlying: 0, large_cap: 1, midcap: 2, smallcap: 3 };
+  // Direction order: Winners first, Losers second.
+  const _MOVER_DIRECTION_ORDER = { winners: 0, losers: 1 };
+
+  function _mrUgKey(r) { return String(r.underlying || r.tradingsymbol || '').toUpperCase(); }
+  function _mrTier(r) {
+    if (r.kind === 'spot')                       return 0;
+    if (r.kind === 'fut' || r.kind === 'mcx')    return 1;
+    if (r.kind === 'opt')                        return 2;
+    return 3;
+  }
+  function _mrMgOrder(r) {
+    return r._majorGroup === 'movers' ? (_MOVER_GROUP_ORDER[r._moverGroup] ?? 9) : -1;
+  }
+  function _mrMdOrder(r) {
+    return r._majorGroup === 'movers' ? (_MOVER_DIRECTION_ORDER[r._moverDirection] ?? 9) : -1;
+  }
+  // Sort: major → direction (Movers) → sub-group (Movers) → biggest
+  // mover first → underlying-group → anchor-before-options → symbol.
+  // Why underlying-group over alphabetic? Anchors (spot/fut stubs) carry
+  // tradingsymbol that differs from underlying — sorting by underlying
+  // keeps them contiguous with their options block.
+  function _compareMainRows(a, b) {
+    const moA = a._majorOrder ?? 99, moB = b._majorOrder ?? 99;
+    if (moA !== moB) return moA - moB;
+    const mdA = _mrMdOrder(a), mdB = _mrMdOrder(b);
+    if (mdA !== mdB) return mdA - mdB;
+    const mgA = _mrMgOrder(a), mgB = _mrMgOrder(b);
+    if (mgA !== mgB) return mgA - mgB;
+    if (a._majorGroup === 'movers' && b._majorGroup === 'movers') {
+      const pA = Math.abs(Number(a._mover_change_pct) || Number(a.change_pct) || 0);
+      const pB = Math.abs(Number(b._mover_change_pct) || Number(b.change_pct) || 0);
+      if (pA !== pB) return pB - pA;
+    }
+    const ua = _mrUgKey(a), ub = _mrUgKey(b);
+    if (ua !== ub) return ua.localeCompare(ub);
+    const ta = _mrTier(a), tb = _mrTier(b);
+    if (ta !== tb) return ta - tb;
+    return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
+  }
+  // Annotate first-row divider flags (major / direction / sub-group) in-place.
+  function _annotateMainRowFlags(rows) {
+    let lastMajor = null, lastMoverDirection = null, lastMoverGroup = null;
     for (const r of rows) {
       r._majorFirst = (r._majorGroup !== lastMajor);
       lastMajor = r._majorGroup;
@@ -1724,8 +1704,7 @@
         r._moverDirectionFirst = (r._moverDirection !== lastMoverDirection);
         lastMoverDirection = r._moverDirection;
         // Reset sub-group tracker when direction flips so the first
-        // sub-group of Losers gets its own divider regardless of what
-        // the last Winners sub-group was.
+        // sub-group of Losers gets its own divider.
         if (r._moverDirectionFirst) lastMoverGroup = null;
         r._moverGroupFirst = (r._moverGroup !== lastMoverGroup);
         lastMoverGroup = r._moverGroup;
@@ -1734,6 +1713,16 @@
         r._moverGroupFirst = false;
       }
     }
+  }
+
+  const mainRows = $derived.by(() => {
+    const rows = unifiedRows.filter(r => {
+      if (r._majorGroup === 'pinned')                       return false;
+      if (r._majorGroup === 'watchlist' && !showWatchlist)  return false;
+      return true;
+    });
+    rows.sort(_compareMainRows);
+    _annotateMainRowFlags(rows);
     return rows;
   });
 
@@ -1915,50 +1904,52 @@
   const winRows  = $derived(_topRowsFor('winners', _effWinTab));
   const loseRows = $derived(_topRowsFor('losers',  _effLoseTab));
 
+  // ── _totalsRowFor helpers ─────────────────────────────────────────
+  // Seed a blank accumulator for _accumTotalsRow.
+  function _blankTotalsAcc() {
+    return {
+      day_pnl: 0, pnl: 0, cost: 0, prevMktVal: 0,
+      invSum: 0, curSum: 0, qty_pos: 0, qty_hold: 0,
+      anyDayPnl: false, anyPnl: false, anyInv: false, anyCur: false,
+    };
+  }
+
+  // Accumulate one row into acc (mutates in place).
+  // Prefers broker raw values so the TOTAL matches PositionStrip exactly.
+  // anyDayPnl/anyPnl/anyInv/anyCur flags decide null vs 0 in the return.
+  function _accumTotalsRow(/** @type {ReturnType<typeof _blankTotalsAcc>} */ acc, /** @type {any} */ r) {
+    const rowPnl    = (r._broker_pnl     != null) ? r._broker_pnl     : r.pnl;
+    const rowDayPnl = (r._broker_day_pnl != null) ? r._broker_day_pnl : r.day_pnl;
+    if (rowDayPnl != null) { acc.day_pnl += Number(rowDayPnl) || 0; acc.anyDayPnl = true; }
+    if (rowPnl    != null) { acc.pnl     += Number(rowPnl)    || 0; acc.anyPnl    = true; }
+    acc.cost       += Math.abs(Number(r._cost_basis)        || 0);
+    acc.prevMktVal += Math.abs(Number(r._prev_market_value) || 0);
+    if (r.inv_val != null) { acc.invSum += Number(r.inv_val) || 0; acc.anyInv = true; }
+    if (r.cur_val != null) { acc.curSum += Number(r.cur_val) || 0; acc.anyCur = true; }
+    acc.qty_pos  += Number(r.qty_pos)  || 0;
+    acc.qty_hold += Number(r.qty_hold) || 0;
+  }
+
   // TOTAL row for one major (positions / holdings). Each carries
   // summed day_pnl + pnl + cost_basis so the Day P&L % and P&L %
   // columns auto-derive via their valueGetters. Wrapped in an array
-  // for direct use as pinnedBottomRowData (ag-Grid accepts an empty
-  // array when there's nothing to sum).
+  // for direct use as pinnedBottomRowData.
   function _totalsRowFor(rows, major, label) {
     if (!rows.length) return null;
-    let day_pnl = 0, pnl = 0, cost = 0, prevMktVal = 0;
-    let invSum = 0, curSum = 0;
-    let anyInv = false, anyCur = false;
-    let qty_pos = 0, qty_hold = 0;
-    let anyDayPnl = false, anyPnl = false;
-    for (const r of rows) {
-      // Prefer the BROKER raw values (`_broker_pnl`, `_broker_day_pnl`
-      // mirrored on each row inside buildUnified) so the TOTAL row
-      // matches PositionStrip exactly — the strip reads `r.pnl` and
-      // `r.day_change_val` straight off the API. Per-row P&L cells
-      // still display the live-recomputed `row.pnl` / `row.day_pnl`
-      // so they tick with quotes; only the TOTAL falls back to the
-      // broker snapshot for cross-surface sync. Small per-row vs
-      // TOTAL delta during active trading is an accepted tradeoff.
-      const rowPnl     = (r._broker_pnl     != null) ? r._broker_pnl     : r.pnl;
-      const rowDayPnl  = (r._broker_day_pnl != null) ? r._broker_day_pnl : r.day_pnl;
-      if (rowDayPnl != null) { day_pnl += Number(rowDayPnl) || 0; anyDayPnl = true; }
-      if (rowPnl    != null) { pnl     += Number(rowPnl)    || 0; anyPnl    = true; }
-      cost       += Math.abs(Number(r._cost_basis)        || 0);
-      prevMktVal += Math.abs(Number(r._prev_market_value) || 0);
-      if (r.inv_val != null) { invSum += Number(r.inv_val) || 0; anyInv = true; }
-      if (r.cur_val != null) { curSum += Number(r.cur_val) || 0; anyCur = true; }
-      qty_pos += Number(r.qty_pos)  || 0;
-      qty_hold += Number(r.qty_hold) || 0;
-    }
+    const acc = _blankTotalsAcc();
+    for (const r of rows) _accumTotalsRow(acc, r);
     return {
       key: `__total_${major}`,
       _isTotal: true,
       _majorGroup: major,
       tradingsymbol: label,
-      day_pnl:  anyDayPnl ? day_pnl : null,
-      pnl:      anyPnl    ? pnl     : null,
-      _cost_basis: cost,
-      _prev_market_value: prevMktVal,
-      inv_val:  anyInv ? invSum : null,
-      cur_val:  anyCur ? curSum : null,
-      qty_pos, qty_hold,
+      day_pnl:  acc.anyDayPnl ? acc.day_pnl : null,
+      pnl:      acc.anyPnl    ? acc.pnl     : null,
+      _cost_basis: acc.cost,
+      _prev_market_value: acc.prevMktVal,
+      inv_val:  acc.anyInv ? acc.invSum : null,
+      cur_val:  acc.anyCur ? acc.curSum : null,
+      qty_pos: acc.qty_pos, qty_hold: acc.qty_hold,
     };
   }
   const positionsTotalRows = $derived.by(() => {
@@ -3040,65 +3031,27 @@
 
   // ── Grid setup ────────────────────────────────────────────────────
 
-  function symRenderer(params) {
-    const row = params.data || {};
-    // Two alias sources can light up the cell:
-    //   - row.display_name — operator-supplied nickname on the
-    //     WatchlistItem (e.g. "Crude oil" for CRUDEOIL26JUNFUT). Wins
-    //     over the quote-key alias when present.
-    //   - row.alias — quote-key vs tradingsymbol shim ("NIFTY 50"
-    //     spot keyed off "NIFTY"). Shown as a "→ raw symbol" hint.
-    const opAlias = row.display_name ? String(row.display_name) : '';
-    // When the row's `main` is the raw tradingsymbol (no operator alias,
-    // no quote-key alias), apply the Dhan-style hyphenated transform
-    // so the cell reads as NIFTY-26JUN-22000-CE not NIFTY26JUN22000CE.
-    // Aliases (display_name / quote-key) are operator-visible labels —
-    // those bypass the formatter.
-    const main    = opAlias
-                    || row.alias
-                    || _pulseFmtSym(row.tradingsymbol || '', row.exchange || '');
-    // Always surface the raw tradingsymbol after the main when an alias
-    // is in play so the operator can still see what the row really is.
-    const aliasTail = (opAlias || row.alias)
-      ? `<span class="sym-alias" title="Tradingsymbol"> → ${_pulseFmtSym(row.tradingsymbol || '', row.exchange || '')}</span>`
-      : '';
-    // CE / PE tint on the symbol text — Sensibull / Streak convention.
-    // Green = Call (right to BUY the underlying), red = Put (right to
-    // SELL). Operator scanning their book tells calls from puts at a
-    // glance without reading the strike.
-    const optClass = row.opt_type === 'CE' ? 'sym-ce'
-                    : row.opt_type === 'PE' ? 'sym-pe'
-                    : '';
-    // Lot-viable chip — sits IMMEDIATELY after the symbol text (before
-    // any P/H/W/U/M badge group) so the operator's eye lands on the
-    // actionable "how many covered calls can I write" number first.
-    // Operator: "keep lot chip immediately after the symbol." Shown
-    // only when the holding qty ≥ 1 whole lot of an F&O underlying.
-    //
-    // Colour rule (operator: "color code the lot chip based on if
-    // underlying active positions exist"):
-    //   no derivative position on this underlying → GREEN  (clean,
-    //     covered-call viable; write something new)
-    //   existing derivative position on this underlying → AMBER
-    //     (the operator already has exposure here — covered call /
-    //      hedge / spread in play; double-writing would compound risk)
+  // ── symRenderer helpers ──────────────────────────────────────────
+  // Closes over module-level symbols: _fnoLotFor, _underlyingsWithActivePositions,
+  // lotsForRow, fmtLots, qtyFmt, fmtPctScaled (all defined in scope).
+
+  /**
+   * Build the lot-chip and P/H/W/U/M badge cluster HTML for the symbol cell.
+   * Returns { lotChip, badgeHtml } separately so symRenderer can interleave
+   * aliasTail between them (matching original: sym + lotChip + aliasTail + badgeHtml).
+   */
+  function _symCellBadges(row) {
     let lotChip = '';
     if (row.src?.h) {
       try {
         const symStr = String(row.tradingsymbol || '').toUpperCase();
         const lot = symStr ? _fnoLotFor(symStr) : 0;
         if (lot > 0) {
-          // SSOT: lotsForRow + fmtLots (shared with Position badge, Lots
-          // column, PerformancePage, Dashboard) — same math, one source.
-          // Holdings rows are EQ so lotsForRow routes through the
-          // getOptionUnderlyingLot / qty_hold path (identical to `qHold/lot`).
-          // Threshold ≥ 0.1 hides noise from negligible holdings.
           const lotsRounded = lotsForRow(row) ?? 0;
           if (lotsRounded >= 0.1) {
             const lotsStr = fmtLots(lotsRounded);
             const _hasPos = _underlyingsWithActivePositions.has(symStr);
-            const _cls = _hasPos ? 'badge-fno-lot badge-fno-lot-pos'
-                                 : 'badge-fno-lot';
+            const _cls = _hasPos ? 'badge-fno-lot badge-fno-lot-pos' : 'badge-fno-lot';
             const _plural = lotsRounded === 1 ? '' : 's';
             const _title = _hasPos
               ? `Covered-call viable — ${lotsStr} lot${_plural} (lot size ${lot}). Underlying already has an open derivative position; review exposure before writing more.`
@@ -3111,13 +3064,8 @@
     const badges = [];
     if (row.src?.p) {
       const q = Number(row.qty_pos) || 0;
-      // F&O positions: show lots via SSOT lotsForRow so the badge is
-      // consistent with the Lots column. E.g. CRUDEOIL 100 contracts =
-      // 1 lot → "P 1L". Cash equity shows raw qty (no lot context).
       const _pLots = lotsForRow(row);
-      const _pLabel = (_pLots != null && _pLots > 0)
-        ? `${fmtLots(_pLots)}L`
-        : qtyFmt(q);
+      const _pLabel = (_pLots != null && _pLots > 0) ? `${fmtLots(_pLots)}L` : qtyFmt(q);
       badges.push(`<span class="sym-badge badge-p" title="Position (${qtyFmt(q)} contracts)">P ${_pLabel}</span>`);
     }
     if (row.src?.h) {
@@ -3139,6 +3087,97 @@
       badges.push(`<span class="sym-badge badge-m badge-m-${dir}" title="Top mover ${label}${sticky}">M${arrow}</span>`);
     }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
+    return { lotChip, badgeHtml };
+  }
+
+  /**
+   * Return { optClass, symTitle } for the symbol span.
+   * optClass: CE/PE tint class (or empty string).
+   * symTitle: virtual-root title attribute string for MCX/CDS rows (or empty string).
+   */
+  function _symCellClasses(row, main) {
+    const optClass = row.opt_type === 'CE' ? 'sym-ce'
+                   : row.opt_type === 'PE' ? 'sym-pe'
+                   : '';
+    const _exchU = String(row.exchange || '').toUpperCase();
+    const _isMcxCds = _exchU === 'MCX' || _exchU === 'CDS';
+    const _rawSym = String(row.tradingsymbol || '');
+    const _resolvedContract = _isMcxCds ? resolveVirtual(_rawSym, _exchU) : _rawSym;
+    const symTitle = (_isMcxCds && _resolvedContract && _resolvedContract !== main)
+      ? ` title="${_resolvedContract}"`
+      : '';
+    return { optClass, symTitle };
+  }
+
+  // ── getRowClass helpers ──────────────────────────────────────────
+
+  /** Returns CSS classes for Movers direction/group dividers within the movers major-group. */
+  function _moverRowClasses(r) {
+    const out = [];
+    if (r._moverDirectionFirst && !r._majorFirst) out.push('mover-direction-divider');
+    if (r._moverDirection)                        out.push(`mover-dir-row-${r._moverDirection}`);
+    if (r._moverGroupFirst && !r._majorFirst && !r._moverDirectionFirst) out.push('mover-group-divider');
+    if (r._moverGroup)                            out.push(`mover-${r._moverGroup}`);
+    return out;
+  }
+
+  /**
+   * Returns CSS classes driven by row source flags (p/h/w/u).
+   * Preserves the original two-statement structure so that rows with s.p+s.u or
+   * s.h+s.u receive BOTH the position/holding class AND row-und (s.u can co-fire).
+   */
+  function _sourceRowClasses(r, s) {
+    const out = [];
+    if (s.p) {
+      const q = Number(r.qty_pos) || 0;
+      if (q < 0) out.push('pos-short');
+      else if (q > 0) out.push('pos-long');
+      else out.push('row-pos');
+    } else if (s.h) {
+      const pnl = Number(r.pnl);
+      if (Number.isFinite(pnl) && pnl > 0) out.push('row-hold-up');
+      else if (Number.isFinite(pnl) && pnl < 0) out.push('row-hold-down');
+      else out.push('row-hold-flat');
+      try {
+        if (getInstrument) {
+          const sym = String(r.tradingsymbol || '').toUpperCase();
+          if (_fnoLotFor(sym) > 0) out.push('row-hold-fno');
+        }
+      } catch (_) { /* defensive — cache miss shouldn't break row class */ }
+    }
+    if (s.w && !s.p && !s.h) out.push('row-watch');
+    else if (s.u) out.push('row-und');
+    return out;
+  }
+
+  function symRenderer(params) {
+    const row = params.data || {};
+    // Two alias sources can light up the cell:
+    //   - row.display_name — operator-supplied nickname on the
+    //     WatchlistItem (e.g. "Crude oil" for CRUDEOIL26JUNFUT). Wins
+    //     over the quote-key alias when present.
+    //   - row.alias — quote-key vs tradingsymbol shim ("NIFTY 50"
+    //     spot keyed off "NIFTY"). Shown as a "→ raw symbol" hint.
+    const opAlias = row.display_name ? String(row.display_name) : '';
+    // When the row's `main` is the raw tradingsymbol (no operator alias,
+    // no quote-key alias), apply the Dhan-style hyphenated transform
+    // so the cell reads as NIFTY-26JUN-22000-CE not NIFTY26JUN22000CE.
+    // Aliases (display_name / quote-key) are operator-visible labels —
+    // those bypass the formatter.
+    const main = opAlias
+               || row.alias
+               || _pulseFmtSym(row.tradingsymbol || '', row.exchange || '');
+    // Always surface the raw tradingsymbol after the main when an alias
+    // is in play so the operator can still see what the row really is.
+    const aliasTail = (opAlias || row.alias)
+      ? `<span class="sym-alias" title="Tradingsymbol"> → ${_pulseFmtSym(row.tradingsymbol || '', row.exchange || '')}</span>`
+      : '';
+    // CE/PE tint + virtual-root title attribute (MCX/CDS only).
+    const { optClass, symTitle } = _symCellClasses(row, main);
+    // Lot-viable chip + P/H/W/U/M badge cluster.
+    // lotChip sits immediately after the symbol text (before aliasTail + badgeHtml)
+    // so the operator's eye lands on the actionable covered-call count first.
+    const { lotChip, badgeHtml } = _symCellBadges(row);
     // Per-row remove (×) — operator can drop a watchlist row inline.
     // Hidden on the shared global Pinned row for non-admin / non-
     // designated users since the backend would 403 the delete; UI
@@ -3172,19 +3211,7 @@
       if (q > 0) dirLabel = '<span class="sr-only">Long position</span>';
       else if (q < 0) dirLabel = '<span class="sr-only">Short position</span>';
     }
-    // Virtual-root tooltip — MCX/CDS only. When the displayed label is a
-    // short alias (e.g. "GOLDM", "GOLDM.NEXT") the operator can hover to
-    // see the actual contract it resolves to (e.g. "GOLDM26JULFUT").
-    // Gate is exchange-scoped so NFO options (hyphenated display ≠ raw sym)
-    // never get a redundant title attribute.
-    const _exchU = String(row.exchange || '').toUpperCase();
-    const _isMcxCds = _exchU === 'MCX' || _exchU === 'CDS';
-    const _rawSym = String(row.tradingsymbol || '');
-    const _resolvedContract = _isMcxCds ? resolveVirtual(_rawSym, _exchU) : _rawSym;
-    const _symTitle = (_isMcxCds && _resolvedContract && _resolvedContract !== main)
-      ? ` title="${_resolvedContract}"`
-      : '';
-    return `<span class="sym-main ${optClass}"${_symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+    return `<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
   }
 
   /**
@@ -3279,98 +3306,15 @@
     const r = params.data || {};
     const s = r.src || {};
     const classes = [];
-    // TOTAL rows on the right grid — bold, slightly-elevated tint
-    // so the operator's eye lands on the consolidated number.
     if (r._isTotal) {
       classes.push('mp-total-row');
       classes.push(`mp-total-${r._majorGroup || 'misc'}`);
     }
-    // Pin-category divider — first row of each pinned sub-group
-    // (indices → forex → commodity) gets a top-border so the three
-    // mini-sections at the very top of the grid feel distinct.
-    if (r._pinFirst && r._pinCategory) {
-      classes.push(`pin-divider pin-cat-${r._pinCategory}`);
-    }
-    // Major-group divider — first row of each major in mainRows
-    // (watchlist → positions → holdings → movers) gets an amber
-    // top-border + section label. Operator sees four visually
-    // distinct blocks below the Pinned strip.
-    if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned') {
+    if (r._pinFirst && r._pinCategory) classes.push(`pin-divider pin-cat-${r._pinCategory}`);
+    if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned')
       classes.push(`major-divider major-${r._majorGroup}`);
-    }
-    // Within Movers, first row of each direction (Winners / Losers)
-    // carries a stronger top-divider + colour label (green for winners,
-    // red for losers). Suppressed on the major-first row because that
-    // already paints the Movers divider; the operator sees the major
-    // label then the direction label as the body begins.
-    if (r._majorGroup === 'movers' && r._moverDirectionFirst && !r._majorFirst) {
-      // Direction-specific sub-class (`mover-dir-winners` / `-losers`)
-      // was retired with the per-colour divider rules; only the
-      // parent class is consumed by CSS now.
-      classes.push('mover-direction-divider');
-    }
-    if (r._majorGroup === 'movers' && r._moverDirection) {
-      classes.push(`mover-dir-row-${r._moverDirection}`);
-    }
-    // Within each direction, first row of each sub-group (underlying /
-    // midcap / smallcap) gets a thinner divider so operators can scan
-    // the three universes individually. Skip when the row is ALSO the
-    // major-first OR direction-first (those already paint dividers —
-    // stacking three would triple-line).
-    if (r._majorGroup === 'movers' && r._moverGroupFirst
-        && !r._majorFirst && !r._moverDirectionFirst) {
-      // Group-specific sub-class (`mover-grp-underlying` / `-midcap`
-      // / `-smallcap`) was retired with the per-colour divider rules;
-      // only the parent class is consumed by CSS now. The per-group
-      // left-edge accent uses `mover-${r._moverGroup}` (a different
-      // class, pushed below).
-      classes.push('mover-group-divider');
-    }
-    if (r._majorGroup === 'movers' && r._moverGroup) {
-      classes.push(`mover-${r._moverGroup}`);
-    }
-    if (s.p) {
-      const q = Number(r.qty_pos) || 0;
-      if (q < 0) classes.push('pos-short');
-      else if (q > 0) classes.push('pos-long');
-      else classes.push('row-pos');
-    }
-    else if (s.h) {
-      // Differentiate Holdings rows by P&L sign so the symbol-cell
-      // tint border encodes "this holding is up / down / flat" at a
-      // glance, matching the pos-long / pos-short visual idiom on
-      // Positions. Earlier every Holding got the same green tint
-      // regardless of whether the operator was up or down on it —
-      // visually uniform but information-blind.
-      const pnl = Number(r.pnl);
-      if (Number.isFinite(pnl) && pnl > 0) classes.push('row-hold-up');
-      else if (Number.isFinite(pnl) && pnl < 0) classes.push('row-hold-down');
-      else classes.push('row-hold-flat');
-      // F&O-eligibility tagging — one class, one visual treatment:
-      //   row-hold-fno → stock has options listed (green left stripe)
-      // Lot-count viability is communicated via the NL badge appended
-      // to the symbol cell by symRenderer, not by a second row class.
-      try {
-        if (getInstrument) {
-          const sym = String(r.tradingsymbol || '').toUpperCase();
-          if (_fnoLotFor(sym) > 0) classes.push('row-hold-fno');
-        }
-      } catch (_) { /* defensive — cache miss shouldn't break row class */ }
-    }
-    // Day-P&L indicator deprecated — the symbol-cell right border now
-    // encodes POSITION direction (pos-long/pos-short) or HOLDING
-    // direction (row-hold-up/-down) instead of today's P&L sign.
-    // Operator preferred the position-direction encoding so the cell
-    // border tells "am I long or short?" at a glance, without grey
-    // for flat rows. See app.css :: ".ag-row.pos-long .ag-col-sym".
-    if (s.w && !s.p && !s.h) classes.push('row-watch');
-    else if (s.u) classes.push('row-und');
-    // Account-level staleness (Jul 2026) — rows served from broker_apis
-    // LKG cache when the account's circuit breaker was OPEN at fetch
-    // time. Slate row tint + reduced opacity so the operator sees the
-    // rows persist across breaker-open cycles instead of flickering to
-    // empty, but knows they aren't live. Distinct from `last_price_stale`
-    // (LTP-only staleness); this is a whole-row staleness.
+    if (r._majorGroup === 'movers') classes.push(..._moverRowClasses(r));
+    classes.push(..._sourceRowClasses(r, s));
     if (r.account_stale === true) classes.push('row-account-stale');
     return classes.join(' ');
   }
@@ -3564,30 +3508,30 @@
     }
   }
 
-  async function handleRowClick(ev) {
-    if (!ev.data) return;
-    const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
+  // ── handleRowClick helpers ────────────────────────────────────────
+  // Returns true when a cell-button click was consumed so the outer
+  // dispatcher can short-circuit without opening the order ticket.
+  // Note: remove-button does NOT call stopPropagation (intentional);
+  // move + actions buttons do — preserve that asymmetry.
+  function _tryHandleRowButton(ev, /** @type {HTMLElement | null} */ target) {
     const rmBtn = target?.closest?.('.sym-remove');
     if (rmBtn) {
       const itemId = Number(rmBtn.getAttribute('data-item'));
       const listId = Number(rmBtn.getAttribute('data-list'));
       if (itemId && listId) removeItem(listId, itemId);
-      return;
+      return true;
     }
     // ▲/▼ group-move buttons — bump the row's whole underlying group
-    // up or down. The bucket stays the same (pinned indices stay in
-    // pinned, watchlist in watchlist) so swaps are constrained.
+    // up or down. Bucket membership is preserved.
     const moveBtn = target?.closest?.('.sym-move');
     if (moveBtn) {
       ev.event?.stopPropagation?.();
       const dir = Number(moveBtn.getAttribute('data-dir')) || 0;
       if (dir !== 0) moveGroup(ev.data, dir);
-      return;
+      return true;
     }
-    // ⋯ actions button — re-uses the existing right-click context
-    // menu (which already has Open in Options / Open ticket / Copy
-    // symbol / Set price alert items). Positioning is anchored to
-    // the button's bottom-right so it pops next to the symbol.
+    // ⋯ actions button — opens the right-click context menu anchored
+    // to the button's bottom-right corner.
     const actBtn = target?.closest?.('.sym-actions');
     if (actBtn) {
       ev.event?.stopPropagation?.();
@@ -3596,36 +3540,41 @@
         { clientX: rect.right, clientY: rect.bottom + 4, preventDefault: () => {} },
         ev.data,
       );
-      return;
+      return true;
     }
-    if (!allowOrders) return;
-    const r = ev.data;
+    return false;
+  }
+
+  // Derive BUY/SELL side from the position's signed qty.
+  function _computeTicketSide(/** @type {any} */ r) {
+    if (r.src?.p && r.qty_pos > 0) return 'SELL';
+    return 'BUY';
+  }
+
+  // Lazy-resolve realAccounts if onMount hasn't finished yet.
+  async function _ensureRealAccountsLoaded() {
+    if (realAccounts.length) return;
+    try {
+      const r2 = await fetchAccounts();
+      realAccounts = (r2?.accounts || [])
+        .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
+        .filter(Boolean);
+    } catch (_) { /* leave empty — ticket's self-fetch backstop will fill */ }
+  }
+
+  // Build and open the order ticket from a unified row object.
+  // Use the row's own account field directly — each position/holding
+  // row carries one unmasked account id for admin sessions.
+  async function _openTicketFromRow(/** @type {any} */ r) {
     const inst = getInstrument?.(r.tradingsymbol);
     const lot = Number(inst?.ls || 1);
-    let side = 'BUY';
-    if (r.src?.p && r.qty_pos < 0) side = 'BUY';
-    else if (r.src?.p && r.qty_pos > 0) side = 'SELL';
-    // Use the row's own account field directly — each position/holding
-    // row carries one unmasked account id for admin sessions, so this
-    // is always correct. The Set+length=1 heuristic was unreliable when
-    // a single account appeared after async realAccounts resolution.
-    const isRealAcct = (a) => !!(a && !String(a).includes('#'));
+    const side = _computeTicketSide(r);
+    const isRealAcct = (/** @type {any} */ a) => !!(a && !String(a).includes('#'));
     const preAccount = isRealAcct(r.account) ? String(r.account) : '';
-    // Ensure accounts are resolved before opening the ticket — avoids
-    // a blank picker on first click when onMount hasn't finished yet.
-    if (!realAccounts.length) {
-      try {
-        const r2 = await fetchAccounts();
-        realAccounts = (r2?.accounts || [])
-          .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
-          .filter(Boolean);
-      } catch (_) { /* leave empty — ticket's self-fetch backstop will fill */ }
-    }
+    await _ensureRealAccountsLoaded();
     // Pass currentQty (signed position qty) so SymbolPanel's footer
-    // button shows "CLOSE BUY" / "CLOSE SELL" for position rows and
-    // the ADD/CLOSE verb in _addCloseVerb() activates correctly.
-    // For watchlist/mover/anchor rows (no position), currentQty=0 so
-    // the ticket opens as a plain BUY/SELL without close semantics.
+    // button shows "CLOSE BUY" / "CLOSE SELL" for position rows.
+    // Watchlist/mover/anchor rows (no position) get currentQty=0.
     const posQty = r.src?.p ? (Number(r.qty_pos) || 0) : 0;
     openTicket({
       symbol:     r.tradingsymbol,
@@ -3638,6 +3587,14 @@
       currentQty: posQty,
       action:     posQty !== 0 ? 'close' : 'open',
     });
+  }
+
+  async function handleRowClick(ev) {
+    if (!ev.data) return;
+    const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
+    if (_tryHandleRowButton(ev, target)) return;
+    if (!allowOrders) return;
+    await _openTicketFromRow(ev.data);
   }
 
   function openTicket(p) { ticketProps = { defaultTab: 'ticket', ...p }; }

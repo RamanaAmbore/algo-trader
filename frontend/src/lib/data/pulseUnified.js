@@ -186,7 +186,180 @@ function _optUnderlyingSet(rows, getInst) {
   return out;
 }
 
+/**
+ * Apply quote fields from snap/liveQ priority chain onto a row object.
+ * Returns true if ltp was written from snap or liveQ; false if neither
+ * source had an ltp value and the caller must handle its own fallback.
+ *
+ * Module-private — not exported.
+ *
+ * @param {Record<string, any>} row   target aggregated pulse row (mutated)
+ * @param {any}  snap                 symbolStore snapshot (may be null/undefined)
+ * @param {any}  liveQ                contracts quote-bag entry (may be null/undefined)
+ * @returns {boolean}
+ */
+function _applyQuoteFields(row, snap, liveQ) {
+  const snapLtp = snap?.ltp;
+  if (snapLtp != null) {
+    row.ltp        = snapLtp;
+    row.bid        = snap.bid        ?? liveQ?.bid        ?? row.bid        ?? null;
+    row.ask        = snap.ask        ?? liveQ?.ask        ?? row.ask        ?? null;
+    row.open       = snap.open       ?? liveQ?.open       ?? row.open       ?? null;
+    row.close      = snap.close      ?? liveQ?.close      ?? row.close      ?? null;
+    row.change     = snap.day_change     ?? liveQ?.change     ?? row.change     ?? null;
+    row.change_pct = snap.day_change_pct ?? liveQ?.change_pct ?? row.change_pct ?? null;
+    row.volume     = snap.volume ?? liveQ?.volume ?? row.volume ?? null;
+    row.oi         = snap.oi     ?? liveQ?.oi     ?? row.oi     ?? null;
+    return true;
+  }
+  if (liveQ?.ltp) {
+    row.ltp        = liveQ.ltp;
+    row.bid        = liveQ.bid        ?? row.bid        ?? null;
+    row.ask        = liveQ.ask        ?? row.ask        ?? null;
+    row.open       = liveQ.open       ?? row.open       ?? null;
+    row.close      = liveQ.close      ?? row.close      ?? null;
+    row.change     = liveQ.change     ?? row.change     ?? null;
+    row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
+    row.volume     = liveQ.volume     ?? row.volume     ?? null;
+    row.oi         = liveQ.oi         ?? row.oi         ?? null;
+    return true;
+  }
+  return false; // caller handles its own no-data fallback
+}
+
 // ── Section helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Apply quote fields from a symbolStore `snap` onto a watchlist row.
+ * Always writes all nine fields (null when snap has no value) so grid
+ * cells never see `undefined`. Watchlist rows have no liveQ bag.
+ *
+ * @param {Record<string, any>} row   target row (mutated)
+ * @param {any}  snap                 symbolStore snapshot (may be null/undefined)
+ */
+function _applyWatchlistQuoteFields(row, snap) {
+  row.ltp        = snap?.ltp            ?? row.ltp        ?? null;
+  row.bid        = snap?.bid            ?? row.bid        ?? null;
+  row.ask        = snap?.ask            ?? row.ask        ?? null;
+  row.open       = snap?.open           ?? row.open       ?? null;
+  row.close      = snap?.close          ?? row.close      ?? null;
+  row.change     = snap?.day_change     ?? row.change     ?? null;
+  row.change_pct = snap?.day_change_pct ?? row.change_pct ?? null;
+  row.volume     = snap?.volume         ?? row.volume     ?? null;
+  row.oi         = snap?.oi             ?? row.oi         ?? null;
+}
+
+/**
+ * Apply quote fields from an underlying-quote bag `q` onto an anchor row.
+ * Split write policy: ltp/bid/ask always overwrite; close/change/open/
+ * high/low/volume/oi only-if-null. Includes high+low (not in _applyQuoteFields).
+ * Field names: q.change_pct / q.change (not q.day_change_pct) — anchor shape.
+ *
+ * @param {Record<string, any>} row   target row (mutated)
+ * @param {any}  q                    underlying quote bag entry
+ */
+function _applyUnderlyingQuoteFields(row, q) {
+  row.ltp        = q.ltp        ?? row.ltp        ?? null;
+  row.bid        = q.bid        ?? row.bid        ?? null;
+  row.ask        = q.ask        ?? row.ask        ?? null;
+  if (row.close      == null) row.close      = q.close      ?? null;
+  if (row.change     == null) row.change     = q.change     ?? null;
+  if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
+  if (row.open       == null) row.open       = q.open       ?? null;
+  if (row.high       == null) row.high       = q.high       ?? null;
+  if (row.low        == null) row.low        = q.low        ?? null;
+  if (row.volume     == null) row.volume     = q.volume     ?? null;
+  if (row.oi         == null) row.oi         = q.oi         ?? null;
+}
+
+/**
+ * Build the set of tradingsymbols already present in visible majors.
+ * Used by mergeMoverRows to decide whether a mover symbol already has
+ * a row (badge-only) vs needs a brand-new Movers-major row.
+ *
+ * @param {Record<string, any>} byKey
+ * @param {boolean} includePos
+ * @param {boolean} includeHold
+ * @param {boolean} includeWatch
+ * @returns {Set<string>}
+ */
+function _buildVisibleSymbolSet(byKey, includePos, includeHold, includeWatch) {
+  const out = new Set();
+  for (const row of Object.values(byKey)) {
+    if (!row.tradingsymbol) continue;
+    const mg = row._majorGroup;
+    if (mg === 'positions' && !includePos)   continue;
+    if (mg === 'holdings'  && !includeHold)  continue;
+    if (mg === 'watchlist' && !includeWatch) continue;
+    out.add(row.tradingsymbol);
+  }
+  return out;
+}
+
+/**
+ * Badge every existing row for `sym` with mover metadata.
+ * Applies to positions/holdings/watchlist rows that share the same symbol
+ * as an incoming mover entry.
+ *
+ * @param {Record<string, any>} byKey
+ * @param {string}              sym            UPPER tradingsymbol
+ * @param {any}                 m              raw mover row
+ * @param {number|null}         liveChangePct  pre-computed change_pct for this mover
+ */
+function _badgeExistingRowsForMover(byKey, sym, m, liveChangePct) {
+  for (const row of Object.values(byKey)) {
+    if (row.tradingsymbol !== sym) continue;
+    row.src.m = true;
+    row._mover_sticky     = m.sticky ?? row._mover_sticky     ?? false;
+    row._mover_change_pct = liveChangePct ?? row._mover_change_pct ?? null;
+    _propagateStaleAndSource(row, m);
+  }
+}
+
+/**
+ * Populate a dedicated Movers-major row from the raw mover entry + snap.
+ * Caller is responsible for creating the row via `get(sym, 'movers')`.
+ *
+ * @param {Record<string, any>} row           target movers-major row (mutated)
+ * @param {any}                 m             raw mover row
+ * @param {any}                 snap          symbolStore snapshot (may be null)
+ * @param {number|null}         liveLtp       pre-computed ltp for this mover
+ * @param {number|null}         liveChangePct pre-computed change_pct
+ * @param {number|null}         liveClose     pre-computed close price
+ */
+function _populateMoverRow(row, m, snap, liveLtp, liveChangePct, liveClose) {
+  row.src.m = true;
+  row.exchange      = row.exchange || m.exchange || 'NSE';
+  row.tradingsymbol = String(m.tradingsymbol || '').toUpperCase();
+  if (m.quote_symbol) row.quote_symbol = m.quote_symbol;
+  if (row.ltp        == null && liveLtp       != null) row.ltp        = liveLtp;
+  if (row.change_pct == null && liveChangePct != null) row.change_pct = liveChangePct;
+  if (row.close      == null && liveClose     != null) row.close      = liveClose;
+  if (liveClose != null && row.change == null && row.ltp != null)
+    row.change = row.ltp - liveClose;
+  if (row.open   == null && snap?.open   != null) row.open   = snap.open;
+  if (row.high   == null && snap?.high   != null) row.high   = snap.high;
+  if (row.low    == null && snap?.low    != null) row.low    = snap.low;
+  if (row.volume == null && snap?.volume != null) row.volume = snap.volume;
+  if (row.oi     == null && snap?.oi     != null) row.oi     = snap.oi;
+  row._mover_sticky     = m.sticky ?? false;
+  row._mover_change_pct = liveChangePct ?? null;
+  if (m._moverGroups)    row._moverGroups    = m._moverGroups;
+  if (m._moverGroup)     row._moverGroup     = m._moverGroup;
+  if (m._moverDirection) row._moverDirection = m._moverDirection;
+  _propagateStaleAndSource(row, m);
+}
+
+/**
+ * Remove all Movers-major rows from byKey (called when includeMovers=false).
+ *
+ * @param {Record<string, any>} byKey
+ */
+function _stripMoversMajor(byKey) {
+  for (const [k, row] of Object.entries(byKey)) {
+    if (row._majorGroup === 'movers') delete byKey[k];
+  }
+}
 
 /**
  * Section 1 — merge watchlist rows.
@@ -218,15 +391,7 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
       row.src.w = true;
       if (major === 'pinned') row._fromPinnedList = true;
       const snap = snapOf(sym);
-      row.ltp        = snap?.ltp            ?? row.ltp        ?? null;
-      row.bid        = snap?.bid            ?? row.bid        ?? null;
-      row.ask        = snap?.ask            ?? row.ask        ?? null;
-      row.close      = snap?.close          ?? row.close      ?? null;
-      row.open       = snap?.open           ?? row.open       ?? null;
-      row.change     = snap?.day_change     ?? row.change     ?? null;
-      row.change_pct = snap?.day_change_pct ?? row.change_pct ?? null;
-      row.volume     = snap?.volume         ?? row.volume     ?? null;
-      row.oi         = snap?.oi             ?? row.oi         ?? null;
+      _applyWatchlistQuoteFields(row, snap);
       fillSymbolMeta(row, sym, getInst);
       // Propagate is_animating / price_source from the symbolStore
       // snapshot (populated by publishWatchQuotes) so watchlist rows
@@ -274,28 +439,8 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // Market fields — symbolStore first, then contracts quote bag fallback.
     const snap  = snapOf(sym);
     const liveQ = cq?.[`${exch}:${sym}`];
-    const snapLtp = snap?.ltp;
-    if (snapLtp != null) {
-      row.ltp        = snapLtp;
-      row.bid        = snap.bid    ?? liveQ?.bid    ?? row.bid    ?? null;
-      row.ask        = snap.ask    ?? liveQ?.ask    ?? row.ask    ?? null;
-      row.open       = snap.open   ?? liveQ?.open   ?? row.open   ?? null;
-      row.close      = snap.close  ?? liveQ?.close  ?? row.close  ?? null;
-      row.change     = snap.day_change     ?? liveQ?.change     ?? row.change     ?? null;
-      row.change_pct = snap.day_change_pct ?? liveQ?.change_pct ?? row.change_pct ?? null;
-      row.volume     = snap.volume ?? liveQ?.volume ?? row.volume ?? null;
-      row.oi         = snap.oi     ?? liveQ?.oi     ?? row.oi     ?? null;
-    } else if (liveQ?.ltp) {
-      row.ltp        = liveQ.ltp;
-      row.bid        = liveQ.bid ?? row.bid ?? null;
-      row.ask        = liveQ.ask ?? row.ask ?? null;
-      row.open       = liveQ.open  ?? row.open  ?? null;
-      row.close      = liveQ.close ?? row.close ?? null;
-      row.change     = liveQ.change     ?? row.change     ?? null;
-      row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
-      row.volume     = liveQ.volume ?? row.volume ?? null;
-      row.oi         = liveQ.oi     ?? row.oi     ?? null;
-    } else if (row.ltp == null) {
+    const _hadLtp = _applyQuoteFields(row, snap, liveQ);
+    if (!_hadLtp && row.ltp == null) {
       row.ltp = r.last_price ?? null;
     }
     // Day P&L recompute — delegates to livePositionDayPnl (nav.js SSOT).
@@ -360,26 +505,15 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     // Market fields — symbolStore first, then contracts quote bag fallback.
     const snap  = snapOf(sym);
     const liveQ = cq?.[`${exch}:${sym}`];
-    const snapLtp = snap?.ltp;
-    if (snapLtp != null) {
-      row.ltp        = snapLtp;
-      row.bid        = snap.bid    ?? liveQ?.bid    ?? row.bid    ?? null;
-      row.ask        = snap.ask    ?? liveQ?.ask    ?? row.ask    ?? null;
-      row.open       = snap.open   ?? liveQ?.open   ?? row.open   ?? null;
-      row.close      = snap.close  ?? liveQ?.close  ?? row.close  ?? Number(r.close_price) ?? null;
-      row.change     = snap.day_change     ?? liveQ?.change     ?? row.change     ?? null;
-      row.change_pct = snap.day_change_pct ?? liveQ?.change_pct ?? row.change_pct ?? null;
-      if (snap.volume != null) row.volume = snap.volume;
-      if (snap.oi     != null) row.oi     = snap.oi;
-    } else if (liveQ?.ltp) {
-      row.ltp        = liveQ.ltp;
-      row.bid        = liveQ.bid ?? row.bid ?? null;
-      row.ask        = liveQ.ask ?? row.ask ?? null;
-      row.open       = liveQ.open  ?? row.open  ?? null;
-      row.close      = liveQ.close ?? row.close ?? null;
-      row.change     = liveQ.change     ?? row.change     ?? null;
-      row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
-    } else {
+    const _snapLtp = snap?.ltp;
+    const _hadLtp  = _applyQuoteFields(row, snap, liveQ);
+    // Holdings snap-branch: close falls back to broker r.close_price when
+    // snap.close / liveQ.close / row.close are all null (position branch
+    // does NOT have this extra tail — holdings-specific).
+    if (_snapLtp != null && row.close == null) {
+      row.close = Number(r.close_price) ?? null;
+    }
+    if (!_hadLtp) {
       if (row.ltp == null) row.ltp = r.last_price ?? null;
       if (r.day_change != null && row.change == null)
         row.change = Number(r.day_change);
@@ -391,7 +525,7 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     if (liveQ?.volume != null) row.volume = liveQ.volume;
     if (liveQ?.oi     != null) row.oi     = liveQ.oi;
     // Day P&L and total P&L — use snapshot LTP regardless of market-open state.
-    const liveHold = (snapLtp != null && Number(snapLtp) > 0) ? Number(snapLtp)
+    const liveHold = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
                    : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
     const holdClose = Number(r.close_price) || 0;
     const holdAvg   = Number(r.average_price) || 0;
@@ -448,19 +582,9 @@ export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, include
     row.exchange      = row.exchange || info.exchange;
     row.tradingsymbol = info.tradingsymbol;
     row.src.u = true;
-    row.underlying    = info.displayUnderlying || info.underlying_group;
-    row.kind          = info.kind;
-    row.ltp        = q.ltp        ?? row.ltp        ?? null;
-    row.bid        = q.bid        ?? row.bid        ?? null;
-    row.ask        = q.ask        ?? row.ask        ?? null;
-    if (row.close      == null) row.close      = q.close      ?? null;
-    if (row.change     == null) row.change     = q.change     ?? null;
-    if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
-    if (row.open       == null) row.open       = q.open       ?? null;
-    if (row.high       == null) row.high       = q.high       ?? null;
-    if (row.low        == null) row.low        = q.low        ?? null;
-    if (row.volume     == null) row.volume     = q.volume     ?? null;
-    if (row.oi         == null) row.oi         = q.oi         ?? null;
+    row.underlying = info.displayUnderlying || info.underlying_group;
+    row.kind       = info.kind;
+    _applyUnderlyingQuoteFields(row, q);
   }
 }
 
@@ -482,70 +606,25 @@ export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, include
 export function mergeMoverRows(byKey, moverRows, includeMovers, includePos, includeHold, includeWatch, ctx) {
   const get = makeRowFactory(byKey);
   const { snapOf } = ctx;
-  // Build existing-symbols set scoped to currently-visible majors.
-  const existingSymbols = new Set();
-  for (const row of Object.values(byKey)) {
-    if (!row.tradingsymbol) continue;
-    const mg = row._majorGroup;
-    if (mg === 'positions' && !includePos)  continue;
-    if (mg === 'holdings'  && !includeHold) continue;
-    if (mg === 'watchlist' && !includeWatch) continue;
-    existingSymbols.add(row.tradingsymbol);
-  }
+  const existingSymbols = _buildVisibleSymbolSet(byKey, includePos, includeHold, includeWatch);
   for (const m of (moverRows || [])) {
     const sym = String(m.tradingsymbol || '').toUpperCase();
     if (!sym) continue;
     const snap = snapOf(sym);
-    const liveLtp       = snap?.ltp            ?? m.last_price ?? null;
+    const liveLtp = snap?.ltp ?? m.last_price ?? null;
     // Prefer moversStore-owned change_pct over symbolStore during closed hours
     // to avoid poll-to-poll oscillation from multiple publishers.
     const liveChangePct = m.change_pct ?? snap?.day_change_pct ?? null;
-    const liveClose     = snap?.close          ?? m.previous_close ?? null;
+    const liveClose     = snap?.close  ?? m.previous_close     ?? null;
     if (existingSymbols.has(sym)) {
-      for (const row of Object.values(byKey)) {
-        if (row.tradingsymbol === sym) {
-          row.src.m = true;
-          row._mover_sticky     = m.sticky ?? row._mover_sticky     ?? false;
-          row._mover_change_pct = liveChangePct ?? row._mover_change_pct ?? null;
-          // Propagate animation gate / price_source to non-mover-major
-          // rows that share this symbol (positions, holdings, watchlist).
-          _propagateStaleAndSource(row, m);
-        }
-      }
+      _badgeExistingRowsForMover(byKey, sym, m, liveChangePct);
     }
     // Create dedicated Movers-major row (both pure movers AND symbols
     // already in other majors get one via the __mov key).
-    const row = get(sym, 'movers');
-    row.src.m = true;
-    row.exchange      = row.exchange || m.exchange || 'NSE';
-    row.tradingsymbol = sym;
-    if (m.quote_symbol) row.quote_symbol = m.quote_symbol;
-    if (row.ltp == null && liveLtp != null)              row.ltp        = liveLtp;
-    if (row.change_pct == null && liveChangePct != null) row.change_pct = liveChangePct;
-    if (row.close == null && liveClose != null)          row.close      = liveClose;
-    if (liveClose != null && row.change == null && row.ltp != null)
-      row.change = row.ltp - liveClose;
-    if (row.open   == null && snap?.open   != null) row.open   = snap.open;
-    if (row.high   == null && snap?.high   != null) row.high   = snap.high;
-    if (row.low    == null && snap?.low    != null) row.low    = snap.low;
-    if (row.volume == null && snap?.volume != null) row.volume = snap.volume;
-    if (row.oi     == null && snap?.oi     != null) row.oi     = snap.oi;
-    row._mover_sticky     = m.sticky ?? false;
-    row._mover_change_pct = liveChangePct ?? null;
-    if (m._moverGroups)    row._moverGroups    = m._moverGroups;
-    if (m._moverGroup)     row._moverGroup     = m._moverGroup;
-    if (m._moverDirection) row._moverDirection = m._moverDirection;
-    // Propagate is_animating / price_source from the movers API row so
-    // _isAnimating() returns false during closed hours (backend sets
-    // is_animating:false for persisted snapshots).
-    _propagateStaleAndSource(row, m);
+    _populateMoverRow(get(sym, 'movers'), m, snap, liveLtp, liveChangePct, liveClose);
   }
   // Strip Movers-major rows when showMovers is off.
-  if (!includeMovers) {
-    for (const [k, row] of Object.entries(byKey)) {
-      if (row._majorGroup === 'movers') delete byKey[k];
-    }
-  }
+  if (!includeMovers) _stripMoversMajor(byKey);
 }
 
 /**

@@ -382,6 +382,23 @@ export function rsiSignals(rsiArr, oversold = 30, overbought = 70) {
 }
 
 /**
+ * Extract a numeric value from a macd() output element or raw number.
+ * Falls back to `.value` when `key` is absent (allows raw-number arrays too).
+ * @param {any} x
+ * @param {'macd'|'signal'} key
+ * @returns {number|null}
+ */
+function _pickMacdValue(x, key) {
+  if (x == null) return null;
+  if (typeof x === 'number') return Number.isFinite(x) ? x : null;
+  if (typeof x === 'object') {
+    const v = x[key] ?? x.value;
+    return v != null && Number.isFinite(v) ? v : null;
+  }
+  return null;
+}
+
+/**
  * MACD line/signal crossover.
  * Buy:  MACD crosses ABOVE signal.
  * Sell: MACD crosses BELOW signal.
@@ -393,21 +410,11 @@ export function macdSignals(macdLine, signalLine) {
   /** @type {Array<{i:number,type:'buy'|'sell'}>} */
   const out = [];
   const n = Math.min(macdLine?.length ?? 0, signalLine?.length ?? 0);
-  /** @param {any} x @param {'macd'|'signal'} key */
-  const pick = (x, key) => {
-    if (x == null) return null;
-    if (typeof x === 'number') return Number.isFinite(x) ? x : null;
-    if (typeof x === 'object') {
-      const v = x[key] ?? x.value;
-      return v != null && Number.isFinite(v) ? v : null;
-    }
-    return null;
-  };
   for (let i = 1; i < n; i++) {
-    const mPrev = pick(macdLine[i - 1], 'macd');
-    const sPrev = pick(signalLine[i - 1], 'signal');
-    const mCur  = pick(macdLine[i],     'macd');
-    const sCur  = pick(signalLine[i],   'signal');
+    const mPrev = _pickMacdValue(macdLine[i - 1], 'macd');
+    const sPrev = _pickMacdValue(signalLine[i - 1], 'signal');
+    const mCur  = _pickMacdValue(macdLine[i],     'macd');
+    const sCur  = _pickMacdValue(signalLine[i],   'signal');
     if (mPrev == null || sPrev == null || mCur == null || sCur == null) continue;
     if (mPrev <= sPrev && mCur > sCur) out.push({ i, type: 'buy' });
     else if (mPrev >= sPrev && mCur < sCur) out.push({ i, type: 'sell' });

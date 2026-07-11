@@ -64,27 +64,37 @@
     return iso ? (logTime(iso) || '') : '';
   }
 
-  /** Group flat events array into per-order sections.
-   *  orders is already shaped per-order from the API; if it's a flat list
-   *  we group by order_id here. */
-  const grouped = $derived.by(() => {
-    if (!orders?.length) return [];
-    // If the API returns per-order objects with .events, use them directly.
-    if (orders[0] && 'events' in orders[0]) {
-      // Sort: non-terminal first, terminal last; within each group newest first.
-      return [...orders].sort((a, b) => {
-        const at = isTerminal(a.events ?? []);
-        const bt = isTerminal(b.events ?? []);
-        if (at !== bt) return at ? 1 : -1;
-        const aTs = a.events?.[0]?.created_at ?? '';
-        const bTs = b.events?.[0]?.created_at ?? '';
-        return bTs.localeCompare(aTs);
-      });
-    }
-    // Flat event array — group by order_id.
+  /**
+   * Comparator: non-terminal sections first, terminal last;
+   * within each group newest-event-first by created_at.
+   * @param {any} a @param {any} b @returns {number}
+   */
+  function _sectionComparator(a, b) {
+    const at = isTerminal(a.events ?? []);
+    const bt = isTerminal(b.events ?? []);
+    if (at !== bt) return at ? 1 : -1;
+    const aTs = (a.events?.[0]?.created_at) ?? '';
+    const bTs = (b.events?.[0]?.created_at) ?? '';
+    return bTs.localeCompare(aTs);
+  }
+
+  /**
+   * Sort an already-shaped (per-order) orders array — non-terminal first,
+   * terminal last; within group newest first.
+   * @param {any[]} shaped @returns {any[]}
+   */
+  function _sortPreShapedOrders(shaped) {
+    return [...shaped].sort(_sectionComparator);
+  }
+
+  /**
+   * Collapse a flat event list into per-order section objects, then sort.
+   * @param {any[]} evList @returns {any[]}
+   */
+  function _groupFlatEvents(evList) {
     /** @type {Map<string, {order_id: string, symbol: string, side: string, qty: number, mode: string, events: any[]}>} */
     const map = new Map();
-    for (const ev of orders) {
+    for (const ev of evList) {
       const id = ev.order_id ?? ev.id ?? 'unknown';
       if (!map.has(id)) {
         map.set(id, {
@@ -98,16 +108,20 @@
       }
       map.get(id).events.push(ev);
     }
-    const sections = Array.from(map.values());
-    // Sort: non-terminal first; within each group newest-event first.
-    return sections.sort((a, b) => {
-      const at = isTerminal(a.events);
-      const bt = isTerminal(b.events);
-      if (at !== bt) return at ? 1 : -1;
-      const aTs = a.events[0]?.created_at ?? '';
-      const bTs = b.events[0]?.created_at ?? '';
-      return bTs.localeCompare(aTs);
-    });
+    return Array.from(map.values()).sort(_sectionComparator);
+  }
+
+  /** Group flat events array into per-order sections.
+   *  orders is already shaped per-order from the API; if it's a flat list
+   *  we group by order_id here. */
+  const grouped = $derived.by(() => {
+    if (!orders?.length) return [];
+    // If the API returns per-order objects with .events, use them directly.
+    if (orders[0] && 'events' in orders[0]) {
+      return _sortPreShapedOrders(orders);
+    }
+    // Flat event array — group by order_id.
+    return _groupFlatEvents(orders);
   });
 
   // ── Keyboard dismiss ──────────────────────────────────────────────────
