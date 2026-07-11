@@ -812,6 +812,73 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
         return False, str(e)[:240]
 
 
+async def _preflight_validate_lots(
+    exchange: str,
+    symbol: str,
+    qty: int,
+    is_close: bool,
+) -> tuple[list[dict], bool]:
+    """
+    G1 (LOT_MULTIPLE) + G2 (FAT_FINGER_5_LOT_CAP) guards.
+
+    Returns (blockers, hard_stop). hard_stop=True when LOT_MULTIPLE or
+    LOT_SIZE_UNKNOWN fires — caller should short-circuit immediately.
+    FAT_FINGER_5_LOT_CAP does NOT set hard_stop; broker instruments may
+    also report QTY_FREEZE which must be surfaced alongside.
+    """
+    blockers: list[dict] = []
+    _FO_EXCHANGES = ("NFO", "MCX", "NCO", "CDS", "BFO")
+    if exchange not in _FO_EXCHANGES or qty <= 0 or not symbol:
+        return blockers, False
+
+    try:
+        from backend.brokers.adapters.kite import get_lot_size as _pf_get_lot_size
+        _pf_lot = int(await _pf_get_lot_size(exchange, symbol) or 0)
+    except Exception:
+        _pf_lot = 0
+
+    if _pf_lot > 1:
+        if qty % _pf_lot != 0:
+            blockers.append({
+                "code": "LOT_MULTIPLE",
+                "reason": (
+                    f"qty={qty} is not a multiple of "
+                    f"lot_size={_pf_lot} (would be "
+                    f"{qty / _pf_lot:.2f} lots)"
+                ),
+                "fix": (
+                    f"send qty={_pf_lot} for 1 lot, or N × {_pf_lot} for N lots"
+                ),
+                "data": {"qty": qty, "lot_size": _pf_lot},
+            })
+        elif not is_close:
+            _pf_lots = qty // _pf_lot
+            # MCX/NCO: the route-level MCX size guard (20-lot cap, 422) is
+            # the authoritative check. Skip the 5-lot FAT_FINGER cap here
+            # to avoid a 422 preflight-block that shadows the MCX route guard.
+            _is_mcx_exch = exchange in ("MCX", "NCO")
+            if _pf_lots > 5 and not _is_mcx_exch:
+                blockers.append({
+                    "code": "FAT_FINGER_5_LOT_CAP",
+                    "reason": (
+                        f"{_pf_lots} lots exceeds the 5-lot safety cap "
+                        f"(qty={qty}, lot_size={_pf_lot})"
+                    ),
+                    "fix": (
+                        "split into ≤5-lot orders or contact ops to raise the cap"
+                    ),
+                    "data": {"qty": qty, "lot_size": _pf_lot,
+                             "lots": _pf_lots, "cap": 5},
+                })
+
+    # MCX/NCO cold-cache: the route raises 503 before calling preflight,
+    # so LOT_SIZE_UNKNOWN should never fire here for live orders. It remains
+    # as a backstop for agent-driven calls that bypass the route-level guard.
+    hard_codes = {"LOT_MULTIPLE", "LOT_SIZE_UNKNOWN"}
+    hard_stop = any(b["code"] in hard_codes for b in blockers)
+    return blockers, hard_stop
+
+
 async def run_preflight(
     account: str,
     order: dict,
@@ -868,57 +935,19 @@ async def run_preflight(
         _qty_check = int(order.get("quantity") or order.get("qty") or 0)
     except Exception:
         _qty_check = 0
-    if _exch in ("NFO", "MCX", "NCO", "CDS", "BFO") and _qty_check > 0 and _sym:
-        try:
-            from backend.brokers.adapters.kite import get_lot_size as _pf_get_lot_size
-            _pf_lot = int(await _pf_get_lot_size(_exch, _sym) or 0)
-        except Exception:
-            _pf_lot = 0
-        if _pf_lot > 1:
-            if _qty_check % _pf_lot != 0:
-                blocked.append({
-                    "code": "LOT_MULTIPLE",
-                    "reason": (
-                        f"qty={_qty_check} is not a multiple of "
-                        f"lot_size={_pf_lot} (would be "
-                        f"{_qty_check / _pf_lot:.2f} lots)"
-                    ),
-                    "fix": (
-                        f"send qty={_pf_lot} for 1 lot, or N × {_pf_lot} for N lots"
-                    ),
-                    "data": {"qty": _qty_check, "lot_size": _pf_lot},
-                })
-            elif not _is_close:
-                _pf_lots = _qty_check // _pf_lot
-                # MCX/NCO: the route-level MCX size guard (20-lot cap, 422) is
-                # the authoritative check. Skip the 5-lot FAT_FINGER cap here
-                # to avoid a 422 preflight-block that shadows the MCX route guard.
-                _is_mcx_exch = _exch in ("MCX", "NCO")
-                if _pf_lots > 5 and not _is_mcx_exch:
-                    blocked.append({
-                        "code": "FAT_FINGER_5_LOT_CAP",
-                        "reason": (
-                            f"{_pf_lots} lots exceeds the 5-lot safety cap "
-                            f"(qty={_qty_check}, lot_size={_pf_lot})"
-                        ),
-                        "fix": (
-                            "split into ≤5-lot orders or contact ops to raise the cap"
-                        ),
-                        "data": {"qty": _qty_check, "lot_size": _pf_lot,
-                                 "lots": _pf_lots, "cap": 5},
-                    })
-        # MCX/NCO cold-cache: the route raises 503 before calling preflight,
-        # so LOT_SIZE_UNKNOWN should never fire here for live orders. It remains
-        # as a backstop for agent-driven calls that bypass the route-level guard.
+    _lot_blockers, _hard_stop = await _preflight_validate_lots(
+        _exch, _sym, _qty_check, _is_close
+    )
+    blocked.extend(_lot_blockers)
     # Early-return for hard blockers that make further broker checks meaningless:
     # LOT_MULTIPLE (qty is not a valid multiple — freeze_qty irrelevant) and
     # LOT_SIZE_UNKNOWN (MCX qty unknown — can't validate anything).
     # FAT_FINGER_5_LOT_CAP does NOT short-circuit — broker instruments may
     # also report QTY_FREEZE which must be surfaced alongside the lot cap.
-    _hard_step0 = [b for b in blocked
-                   if b["code"] in ("LOT_MULTIPLE", "LOT_SIZE_UNKNOWN")]
-    if _hard_step0:
-        return {"ok": False, "blocked": _hard_step0, "diagnostics": diagnostics}
+    if _hard_stop:
+        _hard_blockers = [b for b in blocked
+                          if b["code"] in ("LOT_MULTIPLE", "LOT_SIZE_UNKNOWN")]
+        return {"ok": False, "blocked": _hard_blockers, "diagnostics": diagnostics}
 
     # ── 1. ACCOUNT_UNKNOWN ────────────────────────────────────────────────
     conns = Connections()
