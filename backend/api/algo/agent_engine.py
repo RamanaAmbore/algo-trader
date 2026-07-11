@@ -328,6 +328,23 @@ def _v2_build_evalresult(matches, agent_name: str) -> EvalResult:
 # operator can spot-diff two messages and only care about the agent slug.
 
 
+def _v2_format_threshold(kind: str, threshold) -> str:
+    """Format a threshold value with units appropriate to the alert kind.
+
+    kind must be one of {static_pct, rate_pct, static_abs, rate_abs,
+    negative_cash, negative_margin}. Non-numeric thresholds fall through to
+    the str() fallback via the except branch.
+    """
+    try:
+        thr = float(threshold)
+        if kind in ('static_pct', 'rate_pct'):
+            return f"{thr:.2f}%" + ("/min" if kind == 'rate_pct' else "")
+        else:
+            return f"-₹{abs(thr):,.0f}" + ("/min" if kind == 'rate_abs' else "")
+    except Exception:
+        return str(threshold)
+
+
 def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
                            value) -> tuple[float, float | None]:
     """Return (pnl, pct) appropriate for the given section.
@@ -402,17 +419,7 @@ def _v2_match_to_alertrow(match: dict, *,
 
     rate_val = value if kind in ('rate_abs', 'rate_pct') else None
 
-    # threshold display — format with units appropriate to the kind.
-    # kind is exhaustively one of {static_pct, rate_pct, static_abs,
-    # rate_abs, negative_cash, negative_margin}; no else branch needed.
-    try:
-        thr = float(threshold)
-        if kind in ('static_pct', 'rate_pct'):
-            thr_str = f"{thr:.2f}%" + ("/min" if kind == 'rate_pct' else "")
-        else:
-            thr_str = f"-₹{abs(thr):,.0f}" + ("/min" if kind == 'rate_abs' else "")
-    except Exception:
-        thr_str = str(threshold)
+    thr_str = _v2_format_threshold(kind, threshold)
 
     scope_label = str(row.get('account', 'TOTAL'))
 
