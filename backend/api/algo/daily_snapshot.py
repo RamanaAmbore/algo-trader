@@ -795,15 +795,27 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
 
     # Read close-bar series from ohlcv_store for each symbol (5-day tail).
     from backend.api.persistence import ohlcv_store as _oh
+    _broker_sem = asyncio.Semaphore(3)   # cap concurrent broker fallbacks
+    from_d = target_date - timedelta(days=10)
     rows: list[dict] = []
     for (sym, exch) in universe:
         try:
             bars = await _oh.get_or_fetch_daily(
                 sym, exch,
-                from_d=target_date - timedelta(days=10),
+                from_d=from_d,
                 to_d=target_date,
                 db_only=True,
             )
+            if not bars:
+                # DB miss — fetch from broker (persists result back to DB
+                # so the next run hits the DB path).
+                async with _broker_sem:
+                    bars = await _oh.get_or_fetch_daily(
+                        sym, exch,
+                        from_d=from_d,
+                        to_d=target_date,
+                        db_only=False,
+                    )
         except Exception:
             bars = None
         if not bars:

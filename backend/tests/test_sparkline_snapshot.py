@@ -101,13 +101,21 @@ async def test_snapshot_sparkline_settled_flag_writes_true():
 @pytest.mark.asyncio
 async def test_snapshot_sparkline_skips_symbols_without_bars():
     """Symbols with no OHLCV in ohlcv_store are silently skipped
-    (not upserted as an empty payload)."""
+    (not upserted as an empty payload).
+
+    The mock returns None for MISSING on BOTH calls (db_only=True and
+    db_only=False) so that the broker-fallback path also produces nothing
+    and the symbol is still skipped after the retry.
+    """
     from backend.api.algo import daily_snapshot as ds
 
     universe = [("RELIANCE", "NSE"), ("MISSING", "NSE")]
 
-    async def _fake_bars_for(sym, exch, from_d, to_d, db_only=False, bypass_cache=None):
-        return _fake_bars(3) if sym == "RELIANCE" else None
+    async def _fake_bars_for(sym, exch, from_d=None, to_d=None, db_only=False, bypass_cache=None):
+        # Both DB and broker return nothing for MISSING.
+        if sym == "MISSING":
+            return None
+        return _fake_bars(3)  # RELIANCE hits on first or second call
 
     with patch.object(ds, "_sparkline_universe_symbols",
                       new=AsyncMock(return_value=universe)), \
@@ -121,6 +129,44 @@ async def test_snapshot_sparkline_skips_symbols_without_bars():
     rows = m_up.call_args[0][0]
     assert len(rows) == 1
     assert rows[0]["symbol"] == "RELIANCE"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sparkline_fetches_from_broker_on_db_miss():
+    """When DB returns empty bars (db_only=True), the function retries
+    without db_only=True to fetch from broker and writes the result."""
+    from backend.api.algo import daily_snapshot as ds
+
+    universe = [("RELIANCE", "NSE")]
+
+    call_log: list[bool] = []
+
+    async def _two_call_mock(sym, exch, from_d=None, to_d=None, db_only=False, bypass_cache=None):
+        call_log.append(db_only)
+        if db_only:
+            return []          # first call: DB miss
+        return _fake_bars(5)   # second call: broker hit
+
+    with patch.object(ds, "_sparkline_universe_symbols",
+                      new=AsyncMock(return_value=universe)), \
+         patch("backend.api.persistence.ohlcv_store.get_or_fetch_daily",
+               new=AsyncMock(side_effect=_two_call_mock)) as m_ohlc, \
+         patch.object(ds, "_upsert_rows",
+                      new=AsyncMock(return_value=1)) as m_up:
+        result = await ds.snapshot_sparkline(settled=False)
+
+    # get_or_fetch_daily called TWICE for the symbol: DB miss then broker hit.
+    assert m_ohlc.await_count == 2, f"Expected 2 calls, got {m_ohlc.await_count}"
+    assert call_log == [True, False], f"Expected [db_only=True, db_only=False], got {call_log}"
+
+    # Verify the broker result was written as a sparkline row with 5 points.
+    assert result["symbols"] == 1
+    rows = m_up.call_args[0][0]
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "RELIANCE"
+    assert rows[0]["kind"] == "sparkline"
+    payload = json.loads(rows[0]["payload_json"])
+    assert len(payload["points"]) == 5
 
 
 @pytest.mark.asyncio
