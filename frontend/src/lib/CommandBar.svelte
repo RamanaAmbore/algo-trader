@@ -16,6 +16,37 @@
 
   import { suggestAt, applySuggestion, parse } from '$lib/command/engine';
 
+  // Roles that always show suggestions regardless of prefix length.
+  const _ALWAYS_SHOW_ROLES = new Set(['verb', 'account', 'orderType', 'instType', 'order_id', 'qty', 'price', 'strike', 'expiry', 'chase']);
+
+  /**
+   * Filter the suggestion list based on prefix-length gating.
+   * Large-list roles (symbol/exchange/etc.) require `minPrefixLen` chars.
+   * Always-show roles and kwarg roles bypass the gate.
+   */
+  function _applyPrefixGate(list, newRole, currentPrefix, minLen) {
+    const isGatedRole = !_ALWAYS_SHOW_ROLES.has(newRole) && !newRole?.startsWith('kwarg:');
+    if (isGatedRole && currentPrefix.length < minLen) return [];
+    return list;
+  }
+
+  /**
+   * Compute the next suggIdx after a suggestions refresh.
+   * Honours _focusIndex on the list when the role changes or focus shifts.
+   * Falls back to clamping the current index to the new list length.
+   */
+  function _resolveSuggIdx(newList, roleChanged, currentIdx, prevFocusIn) {
+    const focus = /** @type {any} */ (newList)._focusIndex;
+    const hasFocus = typeof focus === 'number' && focus >= 0 && focus < newList.length;
+    if (roleChanged) {
+      return { idx: hasFocus ? focus : 0, newPrev: hasFocus ? focus : -1 };
+    }
+    if (hasFocus && focus !== prevFocusIn) {
+      return { idx: focus, newPrev: focus };
+    }
+    return { idx: Math.min(currentIdx, Math.max(0, newList.length - 1)), newPrev: prevFocusIn };
+  }
+
   let {
     grammar,
     context = {},
@@ -135,38 +166,23 @@
     if (!grammar) { suggList = []; parsedPairs = []; return; }
     try {
       const result = suggestAt(value, cursor, grammar, context);
-      let newList = result.suggestions || [];
+      const rawList = result.suggestions || [];
       const newRole = result.role;
       const roleChanged = newRole !== prevRole;
       // Enforce minimum prefix length for large-list roles (symbol/strike/etc.)
-      // Verb, account, kwarg-key, and fixed-value roles (orderType, instType, chase)
-      // always show. Free-text roles require `minPrefixLen` chars typed.
-      const alwaysShowRoles = new Set(['verb', 'account', 'orderType', 'instType', 'order_id', 'qty', 'price', 'strike', 'expiry', 'chase']);
-      const currentPrefix = _currentPrefix();
-      const isGatedRole = !alwaysShowRoles.has(newRole) && !newRole?.startsWith('kwarg:');
-      if (isGatedRole && currentPrefix.length < minPrefixLen) {
-        newList = [];
-      }
+      // _ALWAYS_SHOW_ROLES and kwarg roles bypass the gate.
+      const newList = _applyPrefixGate(rawList, newRole, _currentPrefix(), minPrefixLen);
       suggList = newList;
       role = newRole;
       hint = result.hint;
       parsedPairs = _computeParsedPairs(newRole);
       // Apply _focusIndex on role change OR when it changes (e.g. ATM
       // recalculated after async equity quote arrives).
-      const focus = /** @type {any} */ (newList)._focusIndex;
-      const hasFocus = typeof focus === 'number' && focus >= 0 && focus < newList.length;
-      if (roleChanged) {
-        suggIdx = hasFocus ? focus : 0;
-        prevFocus = hasFocus ? focus : -1;
-      } else if (hasFocus && focus !== prevFocus) {
-        suggIdx = focus;
-        prevFocus = focus;
-      } else {
-        suggIdx = Math.min(suggIdx, Math.max(0, newList.length - 1));
-      }
+      const { idx, newPrev } = _resolveSuggIdx(newList, roleChanged, suggIdx, prevFocus);
+      suggIdx = idx;
+      prevFocus = newPrev;
       prevRole = newRole;
-      if (!suggOpen && newList.length > 0) suggOpen = true;
-      if (newList.length === 0) suggOpen = false;
+      suggOpen = newList.length > 0 ? (suggOpen || true) : false;
       // Scroll active item into view after DOM updates
       if (suggOpen && newList.length > 0) {
         queueMicrotask(_scrollActiveIntoView);
