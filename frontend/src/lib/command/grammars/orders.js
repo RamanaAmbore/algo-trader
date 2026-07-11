@@ -99,6 +99,52 @@ function symbolSuggest(prefix, ctx) {
   return listUnderlyingsByType(mapped, prefix, 20);
 }
 
+/** Get cached equity LTP for `underlying`; kicks off background fetch on miss. Returns 0 on miss. */
+function _atmPriceFor(underlying) {
+  const eq = findEquity(underlying);
+  if (!eq) return 0;
+  const eqEntry = _ltpCache.get(`${eq.e}:${eq.s}`);
+  if (eqEntry) return eqEntry.ltp;
+  _fetchLtp(eq.e, eq.s); // background fetch — triggers re-render via _onQuoteLoaded
+  return 0;
+}
+
+/** Find index of strike nearest to atmPrice; falls back to middle of array. */
+function _nearestStrikeIdx(strikes, atmPrice) {
+  if (atmPrice <= 0) return Math.floor(strikes.length / 2);
+  let bestDist = Infinity;
+  let idx = Math.floor(strikes.length / 2);
+  for (let i = 0; i < strikes.length; i++) {
+    const dist = Math.abs(strikes[i] - atmPrice);
+    if (dist < bestDist) { bestDist = dist; idx = i; }
+  }
+  return idx;
+}
+
+/** Spread-width quality marker: 0–5 ticks clean, >20 very wide. */
+function _spreadStar(spreadTicks) {
+  if (spreadTicks > 20) return ' ***';
+  if (spreadTicks > 10) return ' **';
+  if (spreadTicks > 5) return ' *';
+  return '';
+}
+
+/** Build the display label for one strike. Kicks off background LTP fetch on cache miss. */
+function _strikeLabel(k, underlying, mapped, expiry) {
+  const opt = findOption(underlying, mapped, k, expiry);
+  if (!opt) return String(k);
+  const entry = _ltpCache.get(`${opt.e}:${opt.s}`);
+  if (!entry) {
+    _fetchLtp(opt.e, opt.s); // background fetch — triggers re-render via _onQuoteLoaded
+    return String(k);
+  }
+  const hasBoth = entry.bid && entry.ask && entry.bid > 0 && entry.ask > 0;
+  if (!hasBoth) return `${k} (no quotes)`;
+  const spread = entry.ask - entry.bid;
+  const tick = opt.ts || 0.05;
+  return `${k} (${entry.ltp.toFixed(2)})${_spreadStar(Math.round(spread / tick))}`;
+}
+
 function strikeSuggest(prefix, ctx) {
   const instType = (ctx && ctx.instType ? String(ctx.instType) : '').toUpperCase();
   const mapped = INST_TYPE_MAP[instType];
@@ -110,55 +156,18 @@ function strikeSuggest(prefix, ctx) {
   const allStrikes = listStrikes(underlying, mapped, expiry);
   if (allStrikes.length === 0) return [];
 
-  // Find ATM from equity LTP (or cached option LTP)
-  const eq = findEquity(underlying);
-  let atmPrice = 0;
-  if (eq) {
-    const eqKey = `${eq.e}:${eq.s}`;
-    const eqEntry = _ltpCache.get(eqKey);
-    if (eqEntry) {
-      atmPrice = eqEntry.ltp;
-    } else {
-      _fetchLtp(eq.e, eq.s); // kick off background fetch
-    }
-  }
+  const atmPrice = _atmPriceFor(underlying);
+  let atmIdx = _nearestStrikeIdx(allStrikes, atmPrice);
 
-  // Find nearest strike to ATM, or fall back to middle of list
-  let atmIdx = Math.floor(allStrikes.length / 2);
-  if (atmPrice > 0) {
-    let bestDist = Infinity;
-    for (let i = 0; i < allStrikes.length; i++) {
-      const dist = Math.abs(allStrikes[i] - atmPrice);
-      if (dist < bestDist) { bestDist = dist; atmIdx = i; }
-    }
-  }
   // Narrow to ±15 strikes around ATM
   const lo = Math.max(0, atmIdx - 15);
   const hi = Math.min(allStrikes.length, atmIdx + 16);
   const strikes = allStrikes.slice(lo, hi);
   atmIdx = atmIdx - lo; // adjust for sliced array
 
-  // Build labels with quote info
-  const labels = strikes.map(k => {
-    const opt = findOption(underlying, mapped, k, expiry);
-    if (!opt) return String(k);
-    const cacheKey = `${opt.e}:${opt.s}`;
-    const entry = _ltpCache.get(cacheKey);
-    if (!entry) {
-      _fetchLtp(opt.e, opt.s); // background fetch
-      return String(k);
-    }
-    const hasBoth = entry.bid && entry.ask && entry.bid > 0 && entry.ask > 0;
-    if (!hasBoth) return `${k} (no quotes)`;
-    const spread = entry.ask - entry.bid;
-    const tick = opt.ts || 0.05;
-    const spreadTicks = Math.round(spread / tick);
-    const star = spreadTicks > 20 ? ' ***' : spreadTicks > 10 ? ' **' : spreadTicks > 5 ? ' *' : '';
-    return `${k} (${entry.ltp.toFixed(2)})${star}`;
-  });
+  const labels = strikes.map(k => _strikeLabel(k, underlying, mapped, expiry));
 
   if (!prefix) {
-    // Focus on ATM strike
     Object.defineProperty(labels, '_focusIndex', { value: atmIdx, enumerable: false });
     return labels;
   }
@@ -184,53 +193,66 @@ function _liquidityTag(totalDepth, qty) {
   return ' ✗';
 }
 
+/** Resolve instrument + lot-size + isFO from ctx. Fallback to ctx hints on error. */
+function _resolveQtyContext(ctx) {
+  try {
+    const inst = resolveInstrument({
+      instType: ctx.instType || 'EQ',
+      symbol: ctx.symbol,
+      strike: ctx.strike,
+      expiry: ctx.expiry,
+    });
+    const ls = inst.ls || 1;
+    const isFO = inst.t === 'CE' || inst.t === 'PE' || inst.t === 'FUT';
+    return { inst, ls, isFO };
+  } catch {
+    const ls = ctx._lotSize || 1;
+    const isFO = ls > 1 || ['CALL', 'PUT', 'FUT'].includes((ctx.instType || '').toUpperCase());
+    return { inst: null, ls, isFO };
+  }
+}
+
+/** Sum bid + ask depth quantities from a cache entry. */
+function _totalDepth(entry) {
+  const totalBid = (entry?.depth_buy || []).reduce((s, d) => s + d.quantity, 0);
+  const totalAsk = (entry?.depth_sell || []).reduce((s, d) => s + d.quantity, 0);
+  return totalBid + totalAsk;
+}
+
+/** Build F&O lot-count suggestions for `qtySuggest`. */
+function _qtyForLots(prefix, ctx, ls, totalDepth) {
+  const maxLots = ctx.maxLots || 0;
+  let lotOptions = prefix ? [Number(prefix) || 1] : [1, 2, 3, 5, 10];
+  if (maxLots > 0) lotOptions = lotOptions.filter(n => n <= maxLots);
+  if (maxLots > 0 && !lotOptions.includes(maxLots)) lotOptions.push(maxLots);
+  return lotOptions.map(n => {
+    const total = n * ls;
+    const liq = _liquidityTag(totalDepth, total);
+    return `${n} (×${ls}=${total})${liq}`;
+  });
+}
+
+/** Build equity share-count suggestions for `qtySuggest`. */
+function _qtyForEquity(prefix, ctx, totalDepth) {
+  const maxQty = ctx.maxLots || 0;
+  let counts = prefix ? [Number(prefix) || 1] : [1, 5, 10, 25, 50, 100, 500];
+  if (maxQty > 0) counts = counts.filter(n => n <= maxQty);
+  if (maxQty > 0 && !counts.includes(maxQty)) counts.push(maxQty);
+  return counts.map(n => {
+    const liq = _liquidityTag(totalDepth, n);
+    return liq ? `${n} (${liq.trim()})` : String(n);
+  });
+}
+
 function qtySuggest(prefix, ctx) {
   try {
-    let ls = 1;
-    let isFO = false;
-    let inst = null;
-    try {
-      inst = resolveInstrument({
-        instType: ctx.instType || 'EQ',
-        symbol: ctx.symbol,
-        strike: ctx.strike,
-        expiry: ctx.expiry,
-      });
-      ls = inst.ls || 1;
-      isFO = inst.t === 'CE' || inst.t === 'PE' || inst.t === 'FUT';
-    } catch {
-      ls = ctx._lotSize || 1;
-      isFO = ls > 1 || ['CALL','PUT','FUT'].includes((ctx.instType || '').toUpperCase());
-    }
-
-    // Get total depth for liquidity indicator
+    const { inst, ls, isFO } = _resolveQtyContext(ctx);
     const cacheKey = inst ? `${inst.e}:${inst.s}` : '';
     const entry = cacheKey ? _ltpCache.get(cacheKey) : null;
     if (inst && !entry) _fetchLtp(inst.e, inst.s);
-    const totalBid = (entry?.depth_buy || []).reduce((s, d) => s + d.quantity, 0);
-    const totalAsk = (entry?.depth_sell || []).reduce((s, d) => s + d.quantity, 0);
-    const totalDepth = totalBid + totalAsk;
-
-    if (isFO && ls > 1) {
-      const maxLots = ctx.maxLots || 0;
-      let lotOptions = prefix ? [Number(prefix) || 1] : [1, 2, 3, 5, 10];
-      if (maxLots > 0) lotOptions = lotOptions.filter(n => n <= maxLots);
-      if (maxLots > 0 && !lotOptions.includes(maxLots)) lotOptions.push(maxLots);
-      return lotOptions.map(n => {
-        const total = n * ls;
-        const liq = _liquidityTag(totalDepth, total);
-        return `${n} (×${ls}=${total})${liq}`;
-      });
-    }
-    // Equity: plain share counts with liquidity
-    const maxQty = ctx.maxLots || 0;
-    let counts = prefix ? [Number(prefix) || 1] : [1, 5, 10, 25, 50, 100, 500];
-    if (maxQty > 0) counts = counts.filter(n => n <= maxQty);
-    if (maxQty > 0 && !counts.includes(maxQty)) counts.push(maxQty);
-    return counts.map(n => {
-      const liq = _liquidityTag(totalDepth, n);
-      return liq ? `${n} (${liq.trim()})` : String(n);
-    });
+    const depth = _totalDepth(entry);
+    if (isFO && ls > 1) return _qtyForLots(prefix, ctx, ls, depth);
+    return _qtyForEquity(prefix, ctx, depth);
   } catch {
     if (prefix) return [];
     return ['1', '5', '10', '25', '50', '100', '500'];

@@ -63,39 +63,69 @@
     return eq >= 0 ? tok.slice(eq + 1) : tok;
   }
 
-  function _computeParsedPairs(currentRole) {
-    if (!grammar) return [];
-    const verbName = value.trim().split(/\s+/)[0]?.toLowerCase();
-    if (!verbName) return [];
-    const verb = grammar.verbs?.[verbName];
-    if (!verb?.tokens) return [];
+  /** Parse `value` safely; return `{ args, kwargs, ctx }`. */
+  function _safeParse(verbName) {
     let args = {}, kwargs = {}, ctx = { ...context };
     try {
       const p = parse(value, grammar, context);
       args = p.args || {}; kwargs = p.kwargs || {};
       ctx = { ...context, ...args, ...kwargs };
     } catch {}
-    const pairs = [];
-    for (const spec of verb.tokens) {
-      const isFilled = spec.role in args;
-      if (typeof spec.required === 'function' && !spec.required(ctx) && !isFilled) continue;
-      const val = args[spec.role];
-      let status = 'pending';
-      if (val !== undefined) status = 'filled';
-      else if (spec.role === currentRole) status = 'current';
-      pairs.push({ role: spec.role, value: val !== undefined ? String(val) : '', status });
-    }
-    for (const [k, v] of Object.entries(kwargs)) {
-      pairs.push({ role: k, value: String(v), status: v ? 'filled' : 'current' });
-    }
-    // Show shortcut kwargs as chips
-    for (const [k, v] of Object.entries(_shortcutKwargs)) {
-      if (!(k in kwargs)) pairs.push({ role: k, value: v, status: 'filled' });
-    }
-    // Show pending kwarg being selected
+    return { args, kwargs, ctx };
+  }
+
+  /** Build one token pair or null if the token is not relevant. */
+  function _tokenPair(spec, args, ctx, currentRole) {
+    const isFilled = spec.role in args;
+    if (typeof spec.required === 'function' && !spec.required(ctx) && !isFilled) return null;
+    const val = args[spec.role];
+    let status = 'pending';
+    if (val !== undefined) status = 'filled';
+    else if (spec.role === currentRole) status = 'current';
+    return { role: spec.role, value: val !== undefined ? String(val) : '', status };
+  }
+
+  /** Build pairs for already-parsed kwarg key/value entries. */
+  function _kwargPairs(kwargs) {
+    return Object.entries(kwargs).map(([k, v]) => ({ role: k, value: String(v), status: v ? 'filled' : 'current' }));
+  }
+
+  /** Build pairs for shortcut kwargs not already present in parsed kwargs. */
+  function _shortcutPairs(kwargs) {
+    return Object.entries(_shortcutKwargs)
+      .filter(([k]) => !(k in kwargs))
+      .map(([k, v]) => ({ role: k, value: v, status: 'filled' }));
+  }
+
+  /** Return a 'current' pair for a pending kwarg, or null. */
+  function _pendingPair(kwargs) {
     if (_pendingKwarg && !(_pendingKwarg in kwargs) && !(_pendingKwarg in _shortcutKwargs)) {
-      pairs.push({ role: _pendingKwarg, value: '', status: 'current' });
+      return { role: _pendingKwarg, value: '', status: 'current' };
     }
+    return null;
+  }
+
+  function _computeParsedPairs(currentRole) {
+    if (!grammar) return [];
+    const verbName = value.trim().split(/\s+/)[0]?.toLowerCase();
+    if (!verbName) return [];
+    const verb = grammar.verbs?.[verbName];
+    if (!verb?.tokens) return [];
+
+    const { args, kwargs, ctx } = _safeParse(verbName);
+
+    const tokenPairs = verb.tokens
+      .map(spec => _tokenPair(spec, args, ctx, currentRole))
+      .filter(Boolean);
+
+    const pending = _pendingPair(kwargs);
+    const pairs = [
+      ...tokenPairs,
+      ..._kwargPairs(kwargs),
+      ..._shortcutPairs(kwargs),
+      ...(pending ? [pending] : []),
+    ];
+
     ctx._verb = verbName;
     return enrichPairs ? enrichPairs(pairs, ctx) : pairs;
   }
