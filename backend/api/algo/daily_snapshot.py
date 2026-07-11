@@ -794,11 +794,13 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
         logger.warning(f"snapshot_sparkline: virtual-root resolution failed: {e}")
 
     # Read close-bar series from ohlcv_store for each symbol (5-day tail).
+    # DB reads are cheap and fire concurrently. Broker fallback is gated
+    # by a semaphore (cap=3) so we don't hammer the broker on a cold cache.
     from backend.api.persistence import ohlcv_store as _oh
-    _broker_sem = asyncio.Semaphore(3)   # cap concurrent broker fallbacks
+    _broker_sem = asyncio.Semaphore(3)
     from_d = target_date - timedelta(days=10)
-    rows: list[dict] = []
-    for (sym, exch) in universe:
+
+    async def _fetch_bars(sym: str, exch: str) -> tuple[str, str, list]:
         try:
             bars = await _oh.get_or_fetch_daily(
                 sym, exch,
@@ -818,6 +820,12 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
                     )
         except Exception:
             bars = None
+        return sym, exch, bars or []
+
+    results = await asyncio.gather(*[_fetch_bars(sym, exch) for (sym, exch) in universe])
+
+    rows: list[dict] = []
+    for sym, exch, bars in results:
         if not bars:
             continue
         points = []
