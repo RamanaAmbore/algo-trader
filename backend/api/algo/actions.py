@@ -868,7 +868,7 @@ async def run_preflight(
         _qty_check = int(order.get("quantity") or order.get("qty") or 0)
     except Exception:
         _qty_check = 0
-    if _exch in ("NFO", "MCX", "CDS", "BFO") and _qty_check > 0 and _sym:
+    if _exch in ("NFO", "MCX", "NCO", "CDS", "BFO") and _qty_check > 0 and _sym:
         try:
             from backend.brokers.adapters.kite import get_lot_size as _pf_get_lot_size
             _pf_lot = int(await _pf_get_lot_size(_exch, _sym) or 0)
@@ -1915,6 +1915,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     # Fetch LTP as the initial limit price — the chase engine re-quotes
     # on every subsequent attempt so this is just the first bid.
     price = None
+    broker = None
     try:
         broker = get_broker(account)
         loop = asyncio.get_running_loop()
@@ -1979,7 +1980,10 @@ async def _action_live_close_position(agent, context: dict, params: dict):
             "price": price or 0, "variety": "regular",
         }
         try:
-            diag = await diagnose_live_failure(broker, diag_order, str(e))
+            if broker is not None:
+                diag = await diagnose_live_failure(broker, diag_order, str(e))
+            else:
+                diag = "broker resolve failed — no diagnosis available"
         except Exception:
             diag = "diagnosis unavailable"
         logger.error(f"[LIVE] close_position failed for {account} {exchange}/{symbol} "

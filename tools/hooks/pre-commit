@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# pre-commit hook — auto-regenerate DESIGN_GUIDE.pdf when .md is staged.
+#
+# Install: cp tools/hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# Or run:  npm run hooks:install   (from repo root, if wired in package.json)
+#
+# Behaviour:
+#   - When docs/DESIGN_GUIDE.md is in the staged changeset, regenerates
+#     DESIGN_GUIDE.pdf and adds it to the same commit automatically.
+#   - If the generator fails (missing playwright, network down, etc.) the
+#     commit is ABORTED so a stale PDF never lands alongside a fresh .md.
+#   - When docs/DESIGN_GUIDE.md is NOT staged, hook exits immediately (zero cost).
+
+set -euo pipefail
+
+DESIGN_MD="docs/DESIGN_GUIDE.md"
+PDF_OUT="DESIGN_GUIDE.pdf"
+PDF_GEN_DIR="tools/pdf-gen"
+
+# Only act when the design guide .md is part of this commit.
+if ! git diff --cached --name-only | grep -q "^${DESIGN_MD}$"; then
+  exit 0
+fi
+
+echo ""
+echo "╔─────────────────────────────────────────────────────╗"
+echo "│  docs/DESIGN_GUIDE.md staged — regenerating PDF     │"
+echo "╚─────────────────────────────────────────────────────╝"
+
+# Verify prerequisites.
+if [ ! -d "${PDF_GEN_DIR}/node_modules" ]; then
+  echo "ERROR: ${PDF_GEN_DIR}/node_modules not found."
+  echo "       Run: cd ${PDF_GEN_DIR} && npm install && npx playwright install chromium"
+  exit 1
+fi
+
+# Run the generator from the repo root (build:design reads docs/DESIGN_GUIDE.md
+# and writes DESIGN_GUIDE.pdf relative to the repo root).
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "${REPO_ROOT}/${PDF_GEN_DIR}"
+npm run build:design 2>&1
+STATUS=$?
+cd "${REPO_ROOT}"
+
+if [ "${STATUS}" -ne 0 ]; then
+  echo "ERROR: PDF generation failed (exit ${STATUS}). Commit aborted."
+  echo "       Fix the error above, then retry git commit."
+  exit 1
+fi
+
+# Stage the regenerated PDF so it lands in the same commit as the .md.
+git add "${PDF_OUT}"
+
+echo "✓ ${PDF_OUT} regenerated and staged — both files will land in this commit."
+echo ""
