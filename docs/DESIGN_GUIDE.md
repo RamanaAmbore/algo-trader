@@ -3981,11 +3981,11 @@ coverage of both the modal and bookmarkable-page variants of each surface.
 - All 8 indicators fully specified (SMA 20/50, EMA 20/50 Wilder, VWAP vol-guard,
   Bollinger ±2σ 20-period, RSI 14, MACD 12/26/9)
 - Known defects:
-  - **P1 — Chart hang on null/unresolved symbol:** modal opens with
-    `chartStore.symbol = null`, `clearData()` runs but fetch fires with null
-    symbol → backend 422 not surfaced to user; chart stays in perpetual loading.
-    Workaround: close and reopen, pick an explicit symbol. Fix: guard fetch with
-    `if (!symbol) return;` + show "Select a symbol" empty state.
+  - **P1 — Chart hang on null/unresolved symbol:** RESOLVED in commit `cafcf0f7`.
+    Root cause was `$effect` calling `clearData()` on empty-string symbol +
+    `_loadHistorical` early return skipping the loading-reset logic. Fix: `$effect`
+    guards against `!symbol`; early return now explicitly resets loading state
+    before returning. Spec: `docs/specs/CHART_SPEC.md` §15.
   - **P2 — MCX rollover stale bars:** virtual root may resolve to expiring
     contract on rollover day; workaround is manual range change to force refetch.
 

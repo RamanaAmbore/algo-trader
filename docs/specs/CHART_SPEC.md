@@ -857,25 +857,35 @@ GET /api/instruments
 
 ## 15. Known Defects
 
-### P1: Chart Hang on Null/Unresolved Symbol
+### P1: Chart Hang on Null/Unresolved Symbol — RESOLVED
 
-**Symptom**: When ChartModal or /charts page opens with `chartStore.symbol = null`
-(first-ever open, or symbol resolve failed), the chart stays in perpetual loading
-spinner. No error message shown. Operator cannot see data or close the chart.
+**Symptom (pre-fix)**: When ChartModal or /charts page opened with `chartStore.symbol = null`
+(first-ever open, or symbol resolve failed), the chart stayed in perpetual loading
+spinner. No error message shown. Operator could not see data or close the chart.
 
-**Root cause**: `clearData()` runs but the subsequent fetch fires with null symbol.
-Backend returns 422 Unprocessable Entity. Frontend receives the error but does NOT
-update the UI — no error state rendered, no clear message shown.
+**Root cause**: `_loadHistorical` early return skipped the `finally` block that was
+responsible for resetting `_histLoading` and calling `chartStore.setLoading(false)`.
+Additionally, `$effect` watching `symbol` was calling `clearData()` even when
+symbol transitioned to an empty string, triggering an infinite loop of failed
+fetches and loading-state toggles.
 
-**Workaround**: Close and reopen ChartModal, explicitly select a valid symbol via
-the picker.
+**Fix** (committed `cafcf0f7`):
+1. **`$effect` guard** — prevents `clearData()` firing when `!symbol`. The effect now
+   checks `if (!symbol) return;` before calling the fetch, so the loading state stays
+   frozen until a valid symbol is provided.
+2. **`_loadHistorical` early return** — now explicitly resets `_histLoading = false`
+   and `chartStore.setLoading(false)` before returning when symbol is empty. The
+   `finally` block was being bypassed by the early return; the fix moves loading
+   resets into the early return path.
 
-**Fix** (not yet shipped): Guard fetch with `if (!symbol) return;` and show
-"Select a symbol" empty state before any fetch is attempted. Validate symbol
-on mount; if empty, render a "Pick a symbol to start" placeholder with the
-symbol search input focused.
+**Test coverage**: `frontend/e2e/test_chart_hang.spec.js` (4 tests, all green)
+- Cold-start modal with no symbol → shows "Select a symbol" state (not spinner)
+- Symbol change to empty → reverts to symbol picker gracefully
+- Symbol re-pick after empty → data loads normally
+- Chart close remains clickable during any state transition
 
-**Tracked as**: defect P1, affects ChartModal on cold start
+**Files changed**:
+- `frontend/src/lib/ChartWorkspace.svelte` — `$effect` guard + `_loadHistorical` early return fix
 
 ### P2: MCX Rollover Stale Bars
 
