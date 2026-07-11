@@ -11,36 +11,27 @@
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { chartStore } from '$lib/data/chartStore.svelte.js';
 
-  // Store the raw props proxy so native event handlers always read the
-  // current onClose value via _p.onClose?.() rather than a potentially
-  // stale destructured copy. _p is the live Svelte 5 props proxy.
-  const _p = $props();
+  let {
+    /** @type {string} */ symbol = '',
+    /** @type {string} */ exchange = '',
+    /** @type {'live'|'sim'|'paper'} */ mode = 'live',
+    /** @type {() => void} */ onClose,
+  } = $props();
 
   let _modalEl  = $state(/** @type {HTMLElement|null} */ (null));
   // Svelte 5 delegates onclick handlers at the mount root; nodes portaled to
   // document.body by ModalShell are outside that root, so onclick={...} never
-  // fires on them. Use a native addEventListener in onMount instead — same
-  // workaround as the pre-ModalShell implementation.
+  // fires on them. Use a native addEventListener instead — same workaround as
+  // the pre-ModalShell implementation. $effect (not onMount) is used because
+  // bind:this inside a ModalShell snippet may fire after onMount in Svelte 5,
+  // so _closeBtnEl can be null at mount time; $effect re-runs when it becomes
+  // non-null.
   let _closeBtnEl = $state(/** @type {HTMLElement|null} */ (null));
-  // ChartWorkspace exposes its fetch state via $bindable `loading`. While
-  // a refresh is in flight, the modal goes into a "busy" guard mode:
-  //   - chart body becomes pointer-events:none so the operator can't
-  //     queue a second fetch behind the in-flight one (no range pill
-  //     change, no symbol re-pick, no overlay toggle)
-  //   - × close button + Esc key still close the modal
-  //   - overlay stays pointer-events:none so the navbar / menu
-  //     underneath remain reachable (operator: "only menu and modal
-  //     should be active" — they want to be able to navigate while a
-  //     fetch is running, just not re-trigger the chart)
-  // Mirrors industry pattern (TWS dialog modal lock, Bloomberg busy
-  // cursor) — but with the lock scoped to the chart canvas instead of
-  // the whole viewport.
   let _loading = $state(false);
 
   const _ariaLabel = $derived.by(() => {
-    const s = _p.symbol ?? '', ex = _p.exchange ?? '';
-    const rl = rootOfLabel(s, ex);
-    return 'Chart — ' + (rl !== s ? rl : formatSymbol(s));
+    const rl = rootOfLabel(symbol, exchange);
+    return 'Chart — ' + (rl !== symbol ? rl : formatSymbol(symbol));
   });
 
   function _focusables() {
@@ -56,7 +47,7 @@
       // ChartModal is the top-of-stack modal. Also blocks ModalShell's
       // svelte:window Esc handler since this capture phase runs first.
       e.stopImmediatePropagation();
-      _p.onClose?.();
+      onClose?.();
       return;
     }
     if (e.key === 'Tab') {
@@ -71,14 +62,12 @@
     }
   }
 
-  // $effect tracks _closeBtnEl reactively so the click listener is
-  // registered even if bind:this inside the ModalShell snippet fires
-  // after onMount (Svelte 5 snippet rendering timing).
+  // $effect tracks _closeBtnEl so the click listener registers even when
+  // bind:this fires after onMount (Svelte 5 snippet rendering timing).
   $effect(() => {
     const btn = _closeBtnEl;
     if (!btn) return;
-    // Read onClose via live props proxy — avoids stale destructured copy.
-    function _onClick(e) { e.stopPropagation(); _p.onClose?.(); }
+    function _onClick(e) { e.stopPropagation(); onClose?.(); }
     btn.addEventListener('click', _onClick);
     return () => btn.removeEventListener('click', _onClick);
   });
@@ -91,8 +80,8 @@
     // seeding here first means the store is correct before the workspace
     // mounts (useful for any consumers that read the store on their own
     // mount cycle).
-    if (_p.symbol) chartStore.setSymbol(_p.symbol);
-    if (_p.exchange) chartStore.setExchange(_p.exchange);
+    if (symbol) chartStore.setSymbol(symbol);
+    if (exchange) chartStore.setExchange(exchange);
     // Capture phase: fires before any bubble-phase listener (including
     // SymbolPanel's window listener) — Esc closes only ChartModal, not
     // the SymbolPanel behind it.
@@ -109,7 +98,7 @@
      clickOutside=false (close via × or Esc only), z-index matches
      .canonical-modal-overlay from app.css. ChartModal keeps its own
      capture-phase keydown for Tab trap + Esc stopImmediatePropagation. -->
-<ModalShell open={true} onClose={_p.onClose} passthrough={true} dim={false} clickOutside={false}
+<ModalShell open={true} {onClose} passthrough={true} dim={false} clickOutside={false}
             zIndex={10500} ariaLabel={_ariaLabel}>
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
@@ -164,9 +153,9 @@
       <div class="cm-chart-card">
         <ChartWorkspace
           bind:loading={_loading}
-          symbol={_p.symbol ?? ''}
-          exchange={_p.exchange ?? ''}
-          mode={_p.mode ?? 'live'}
+          symbol={symbol}
+          exchange={exchange}
+          mode={mode}
           compact={false}
           showHeader={false}
         />
