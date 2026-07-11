@@ -2568,6 +2568,50 @@ When you add a new piece of shell-visible state, decide once:
 - Does any tab need to READ it? → Pipe down via prop.
 - Does any tab need to WRITE it? → `bind:` it.
 
+### 18.3 Frontend column factory SSOT — pulseColumns.js
+
+`frontend/src/lib/data/pulseColumns.js` is the **single source of truth** for ag-Grid column
+definitions across the platform. Factory functions replace inline column specs, enabling
+consistent styling and behaviour across surfaces. New factories added this session:
+
+| Factory | Returns | Used by |
+|---|---|---|
+| `mkWeightPctCol()` | Column spec for portfolio weight % | PerformancePage, Dashboard |
+| `mkDeltaCol()` | Column spec for P&L delta | PerformancePage |
+| `mkThetaCol()` | Column spec for option theta | /admin/derivatives |
+| `mkNavBreakdownCols(segments)` | Array of NAV breakdown columns | Dashboard NavBreakdown card |
+| `mkUtilPctCol()` | Column spec for margin utilization % | /admin/funds |
+| `mkFundsDetailCols()` | Array of funds detail columns | /admin/history Funds tab |
+
+⚙ **TECH — Centralized column specs vs inline definitions** — `WHY` Operator brief: "weight % looks different on three pages". Inline column specs (valueFormatter, width, headerName, tooltips) scatter across components; a missed update breaks visual consistency. `WHAT` Every column that appears on multiple pages gets a factory in `pulseColumns.js`. Pages call the factory instead of defining columns inline. `HOW` Factories export immutable column objects; pages `.map()` them into the ag-Grid `columnDefs` prop. `WHERE` `frontend/src/lib/data/pulseColumns.js`; used by PerformancePage, Dashboard, /admin/derivatives, /admin/history, /admin/funds.
+
+**Usage pattern:**
+
+```javascript
+// Before: inline spec on every page
+const positionCols = [
+  { headerName: "Weight %", valueFormatter: pctFmt, width: 90, ... },
+  { headerName: "Delta", valueFormatter: aggFmt, width: 80, ... },
+];
+
+// After: factory-based
+const positionCols = [
+  mkWeightPctCol(),
+  mkDeltaCol(),
+];
+```
+
+**Shared formatters** — `frontend/src/lib/format.js` now exports `aggFmtGrid({ value })` and
+`pctFmtGrid({ value })` — ag-Grid-compatible wrapper functions over the existing `aggCompact`
+and `pctFmt` formatters. These return styled strings with the correct precision; used by column
+factories for MarketPulse and PerformancePage grid definitions.
+
+**Files:**
+- `frontend/src/lib/data/pulseColumns.js` — factory SSOT
+- `frontend/src/lib/format.js` — `aggFmtGrid()` and `pctFmtGrid()` ag-Grid wrappers
+- `frontend/src/lib/data/nav.js` — `aggregateDayPnlForPositions()` helper (see §19.1)
+- Callers: PerformancePage, Dashboard, /admin/derivatives, /admin/history
+
 ---
 
 ## 19. The preview pipeline
@@ -2584,6 +2628,32 @@ The chip render switches between them based on `_activeTab === 'chain' && basket
 Both call the same backend endpoint (`previewTicketTemplate`) with the same payload shape. The frontend just feeds them differently.
 
 ⚙ **TECH — Backend preview endpoint vs frontend simulation** — `WHY` Operators trust ₹ values that come from the same code path that will ACTUALLY fire on fill. Computing them in the frontend would risk drift; computing them in the backend guarantees the chip reflects reality. `WHAT` `POST /api/orders/preview-ticket-template` returns `{plan: {gtts: [...], wing: {...}, notes: [...]}}`. `HOW` Frontend debounces 200ms after any override change; backend runs `resolve_template_plan` with `apply_path="preview"` so no broker calls fire. `WHERE` `backend/api/routes/orders.py::preview_ticket_template`.
+
+### 19.1 aggregateDayPnlForPositions helper
+
+`frontend/src/lib/data/nav.js::aggregateDayPnlForPositions(rows)` reduces position rows using
+`baseDayPnlForPosition(r)` per row. Used wherever total Day P&L across all positions must be
+summed (e.g. PerformancePage TOTAL row, Dashboard hero, NavStrip P pill).
+
+```javascript
+export function aggregateDayPnlForPositions(rows) {
+  if (!rows || rows.length === 0) return 0;
+  return rows.reduce((sum, r) => sum + baseDayPnlForPosition(r), 0);
+}
+```
+
+**Why not `sum(day_change_val)`?** The `day_change_val` field omits Kite's edge cases (new positions,
+fully-flat intraday closes). `baseDayPnlForPosition(r)` applies the override: when
+`r.overnight_quantity === 0 && r.pnl !== 0`, use `r.pnl` instead. Aggregating with the helper
+ensures the total matches the sum of individual per-cell Day P&L values.
+
+**Callers:**
+- PerformancePage TOTAL row aggregation
+- Dashboard hero P&L + position summary
+- NavStrip P pill slot 1
+
+**Files:**
+- `frontend/src/lib/data/nav.js::aggregateDayPnlForPositions` + `baseDayPnlForPosition`
 
 ---
 
@@ -2640,12 +2710,42 @@ gantt
 
 **Mover grace-window** — `loadSparklines()` in MarketPulse carries the previous mover rotation's pairs into each new call via `_prevMoverSparkPairs`. Symbols that just left the winners/losers list get a one-rotation (30s) grace period before sparklines are pruned from cache. Symbols re-entering the top 10 show instantly from cache rather than fetching fresh.
 
+**Sparkline gradient fill** — sparkline SVG cells now render a gradient area fill beneath each curve. Color is trend-aware: up-trend = teal `rgba(91,142,149,0.3)` tapering to 0% at bottom, down-trend = amber `rgba(196,122,61,0.3)`, flat = slate `rgba(126,151,184,0.3)`. SVG uses `<defs><linearGradient>` with 30% opacity at the curve tapering to 0% at the cell bottom; `<polygon>` fills the area, `<polyline>` draws the line on top. Implemented in `frontend/src/lib/components/SparklineCell.svelte`.
+
 **Files:**
 - `backend/api/background.py::_task_sparkline_warm`
 - `backend/api/routes/sparkline.py::snapshot_sparkline`, `batch_sparkline`
 - `backend/api/algo/symbol_resolver.py::resolve_symbol`
 - `frontend/src/lib/PerformancePage.svelte::_mergeSparkSeries`
 - `frontend/src/lib/MarketPulse.svelte::loadSparklines` — grace-window logic + `_prevMoverSparkPairs`
+- `frontend/src/lib/components/SparklineCell.svelte` — gradient fill rendering
+
+### 20.2 Background task async safety — broker API calls in to_thread
+
+`backend/api/background.py::_task_warm_backfill` and other background tasks invoke broker SDK
+methods (`fetch_holdings()`, `fetch_positions()`) which are synchronous. These are now wrapped with
+`await asyncio.to_thread(...)` to prevent blocking the event loop during backfill warm or other
+background operations.
+
+Pre-fix: sync broker calls in background tasks could block asyncio schedulers, causing delayed
+response handling on concurrent HTTP requests.
+
+**Files:**
+- `backend/api/background.py::_task_warm_backfill` — to_thread wrappers on broker calls
+
+### 20.3 OCO pair watcher — mutual sibling pointer cleanup
+
+`backend/api/background.py::_task_oco_pair_watcher` now clears mutual `sibling_id` pointers when
+both OCO entries settle simultaneously. When entry A and entry B both reach a terminal status in
+the same poll cycle, `sib_entry.pop("sibling_id", None)` is called for the sibling entry (in
+addition to the primary), so the bidirectional reference is fully cleared in the both-settled
+branch.
+
+Pre-fix: only the primary entry's sibling pointer was cleared, leaving the sibling entry with a
+dangling reference to a potentially stale ID.
+
+**Files:**
+- `backend/api/background.py::_task_oco_pair_watcher` — mutual pointer cleanup
 
 ---
 
@@ -2681,6 +2781,19 @@ sequenceDiagram
 **`/admin/derivatives` Snapshot TOTAL reconciles to PositionStrip** by adding back the rows the page filters out (equity intraday positions + derivative-looking holdings) via `_excludedByAccount`. See `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (search `_byUnderlyingTotal`).
 
 ⚙ **TECH — `marketAwareInterval` polling vs WebSocket** — `WHY` Position state changes when fills happen; we already get fills via KiteTicker, but positions are aggregated server-side. Polling is cheaper than rebuilding aggregations client-side. `WHAT` `marketAwareInterval(fn, 30000)` polls every 30s during market hours, pauses on `document.hidden`. `HOW` Use the helper from `$lib/stores`; never raw `setInterval`. `WHERE` `frontend/src/lib/stores.js::marketAwareInterval`.
+
+### 21.1 PositionStrip tick-border animation gate
+
+`frontend/src/lib/PositionStrip.svelte` `tickBus.subscribe()` callback has a market-hours gate.
+If `!isNseOpen() && !isMcxOpen()`, the bottom-border refresh animation is skipped immediately.
+This prevents the tick animation from firing during closed hours and giving a false "live data
+refreshing" impression to the operator.
+
+Pre-fix: animation ran continuously even when markets were closed and the WebSocket was sending
+stale ticks (reduced-cadence poll during quiet hours).
+
+**Files:**
+- `frontend/src/lib/PositionStrip.svelte::tickBus.subscribe` — market-hours gate
 
 ---
 
@@ -3996,6 +4109,74 @@ coverage of both the modal and bookmarkable-page variants of each surface.
 
 ---
 
+## 22.22. Agent execution — actions.py updates (NCO guard + async close)
+
+Three changes to `backend/api/algo/actions.py` ensure agent-driven orders are guarded correctly:
+
+**NCO (NSE Commodity) added to G1/G2 exchange guard** — `run_preflight` previously bypassed the
+LOT_MULTIPLE (G1) and FAT_FINGER (G2) guards for F&O on "unknown" exchanges. NCO was added to the
+exchange set `("MCX", "NCO", "NFO", "BFO", "CDS")`, so NCO orders now receive the same lot
+validation as MCX orders. Pre-fix: NCO orders bypassed both guards, risking over-placement.
+
+**Unbound broker guard in _action_live_close_position** — `broker` variable was not initialized
+before the try block. On exception, `diagnose_live_failure(broker=broker)` would reference an
+undefined variable. Fix: `broker = None` before try; guarded `if broker is not None` before
+calling diagnose. Pre-fix: exceptions swallowed silently in Python < 3.11, or masked by unrelated
+NameError in 3.11+.
+
+**Files:**
+- `backend/api/algo/actions.py::run_preflight` — NCO added to exchange guard
+- `backend/api/algo/actions.py::_action_live_close_position` — broker initialization + guard
+
+---
+
+## 22.23. Template attach — parent_lot_size NFO/BFO/CDS support
+
+`backend/api/algo/template_attach.py::apply_plan_live` now resolves `parent_lot_size` for all
+F&O exchanges: `("MCX", "NCO", "NFO", "BFO", "CDS")`. Previously, lot-size resolution was limited
+to MCX/NCO only, causing the G1 (LOT_MULTIPLE) guard to be dead for NFO/BFO/CDS GTT template legs.
+
+**How it works:**
+1. `apply_template_to_order` calls `await get_lot_size(symbol, exchange)` for all F&O exchanges
+2. `plan.parent_lot_size` is always resolved (never 0) before `apply_plan_live` is called
+3. `apply_plan_live` G1 check verifies every GTT leg + wing qty against `parent_lot_size`
+4. On failure, returns `AttachResult.errors` immediately (upstream of broker call)
+
+Pre-fix: G1 was dead for NFO/BFO/CDS because lot_size was unknown; orders could be placed with
+qty not a multiple of lot_size, causing rejects or silent qty truncation by the broker.
+
+**Files:**
+- `backend/api/algo/template_attach.py::apply_plan_live` — parent_lot_size resolution extended
+
+---
+
+## 22.24. Agent engine — topic suppression doesn't burn lifespan
+
+`backend/api/algo/agent_engine.py::_v2_record()` call and the triggered-branch DB mutation block
+(increment `trigger_count`, set status to `cooldown`, clear `condition_first_true_at`) are now
+deferred from the per-agent loop into a post-loop survivor section (after
+`_compute_topic_suppression` runs). Non-triggered paths (cooldown→active transition, debounce
+latch persist) remain inline.
+
+**Behavioral change:** a low-priority agent suppressed by a higher-tier agent on the same topic
+no longer has its trigger quota burned. It remains `active` and can fire on a future tick when
+the high-priority agent is not suppressing. Pre-fix: suppressed agents still consumed their
+quota as if they fired, leading to premature cooldown of secondary strategies.
+
+**Example scenario:**
+- Agent A (loss-hedge, tier=high): fires on -5% loss
+- Agent B (loss-rebalance, tier=low, topic="loss"): fires on -3% loss
+- Tick 1: A fires, suppresses B
+- Tick 2: loss hits -3% but A is in cooldown → B should fire now
+
+Pre-fix: B's quota was burned on tick 1 (suppressed), so it wouldn't fire on tick 2 even though
+A was cooling.
+
+**Files:**
+- `backend/api/algo/agent_engine.py::run_cycle` — survivor-section mutation deferral
+
+---
+
 # Part VII — Operations
 
 ## 23. How to add a new template field
@@ -4080,6 +4261,41 @@ GitHub push → webhook.ramboq.com → /etc/webhook/dispatch.sh
 **Manual server work after SSH:** always `chown -R www-data:www-data /opt/ramboq /opt/ramboq_dev`. Webhook deploys fail silently if file owner is wrong.
 
 ⚙ **TECH — Webhook-based deploy vs CI/CD platform** — `WHY` We're a single-server setup; GitHub Actions would add 30-60s to every deploy plus a $/runner cost. The webhook is bash + git, zero dependencies. `WHAT` `webhook` (Adnan Hajdarbegovic's daemon) listens on port 9000, validates the HMAC, runs `dispatch.sh`. `HOW` Push to a watched branch triggers it automatically. Logs in `hook.log`. `WHERE` `/etc/webhook/hooks.json` (on server); `webhook/dispatch.sh` + `webhook/deploy.sh` (in repo).
+
+## 26.1 Pre-commit hook for PDF sync
+
+New file `tools/hooks/pre-commit` — bash hook that auto-regenerates `DESIGN_GUIDE.pdf` when
+`docs/DESIGN_GUIDE.md` is staged for commit. PDF is staged and included in the same commit.
+Commit is aborted if generation fails (prevents stale PDF landing with fresh .md).
+
+**Install:**
+
+```bash
+cp tools/hooks/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+**Prerequisites:**
+- `cd tools/pdf-gen && npm install && npx playwright install chromium`
+- `python3` with `PIL` / `Pillow` (standard in venv)
+
+**How it works:**
+1. Hook runs on `git commit`
+2. Checks if `docs/DESIGN_GUIDE.md` is in the staging area
+3. If yes, runs `python3 tools/pdf-gen/generate_pdf.py` to rebuild PDF
+4. Stages `docs/DESIGN_GUIDE.pdf` if successful
+5. Commits both .md and .pdf together
+6. Fails commit if PDF generation errors (forces operator to fix .md syntax before pushing)
+
+**Operator experience:**
+- `git add docs/DESIGN_GUIDE.md` (and any other changes)
+- `git commit -m "docs(...): update architecture section"`
+- Hook automatically regenerates PDF and stages it
+- PDF is in the commit; no separate manual step needed
+
+**Files:**
+- `tools/hooks/pre-commit` — new hook script
+- `tools/pdf-gen/generate_pdf.py` — unchanged PDF generation logic
 
 ---
 
