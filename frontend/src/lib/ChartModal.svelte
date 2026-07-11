@@ -1,11 +1,12 @@
 <script>
   // ChartModal — thin overlay wrapper around ChartWorkspace.
   // Opens as a fixed-inset modal with an amber-glow navy panel.
-  // Esc key and overlay click both close.
+  // Esc key closes; overlay is pointer-events:none (passthrough) so the
+  // navbar / menu underneath remain reachable.
 
   import { onMount, onDestroy } from 'svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
-  import { portal } from '$lib/portal';
+  import ModalShell from '$lib/ModalShell.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { chartStore } from '$lib/data/chartStore.svelte.js';
@@ -18,7 +19,6 @@
   } = $props();
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
-  let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
   // ChartWorkspace exposes its fetch state via $bindable `loading`. While
   // a refresh is in flight, the modal goes into a "busy" guard mode:
   //   - chart body becomes pointer-events:none so the operator can't
@@ -33,21 +33,11 @@
   // cursor) — but with the lock scoped to the chart canvas instead of
   // the whole viewport.
   let _loading = $state(false);
-  // _initialBump retired — ChartWorkspace's onMount now reliably
-  // fires the historical fetch and the symbol-effect skips its
-  // own initial Svelte-runs-once tick (see ChartWorkspace.svelte
-  // _firstSymEffect). Was causing 3 fetches per modal open;
-  // audit defect #7.
 
-  // The cm-overlay is portaled to document.body, OUTSIDE the SvelteKit
-  // mount root (<div id="svelte">). Svelte 5 delegates onclick handlers
-  // at the mount root, so any onclick={...} on nodes inside the portal
-  // never fires — the click bubbles up to <body> and stops there.
-  // Bind the X-button click natively via addEventListener instead.
-  function _onCloseClick(/** @type {MouseEvent} */ e) {
-    e.stopPropagation();
-    onClose?.();
-  }
+  const _ariaLabel = $derived.by(() => {
+    const rl = rootOfLabel(symbol, exchange);
+    return 'Chart — ' + (rl !== symbol ? rl : formatSymbol(symbol));
+  });
 
   function _focusables() {
     return /** @type {NodeListOf<HTMLElement>} */ (
@@ -59,7 +49,8 @@
     if (e.key === 'Escape') {
       // stopImmediatePropagation prevents the parent SymbolPanel's
       // capture-phase listener from also firing and closing it when
-      // ChartModal is the top-of-stack modal.
+      // ChartModal is the top-of-stack modal. Also blocks ModalShell's
+      // svelte:window Esc handler since this capture phase runs first.
       e.stopImmediatePropagation();
       onClose?.();
       return;
@@ -86,22 +77,24 @@
     // mount cycle).
     if (symbol) chartStore.setSymbol(symbol);
     if (exchange) chartStore.setExchange(exchange);
+    // Capture phase: fires before any bubble-phase listener (including
+    // SymbolPanel's window listener) — Esc closes only ChartModal, not
+    // the SymbolPanel behind it.
     window.addEventListener('keydown', _onKey, { capture: true });
-    _closeBtnEl?.addEventListener('click', _onCloseClick);
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
   });
   onDestroy(() => {
     window.removeEventListener('keydown', _onKey, { capture: true });
-    _closeBtnEl?.removeEventListener('click', _onCloseClick);
   });
 </script>
 
-<!-- svelte-ignore a11y_interactive_supports_focus -->
-<!-- overlay is pointer-events:none so click-outside-to-close is gone;
-     operator uses × button or Esc. tabindex retained for screen readers. -->
-<div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
-     use:portal role="dialog" aria-modal="true"
-     aria-label="Chart — {(() => { const rl = rootOfLabel(symbol, exchange); return rl !== symbol ? rl : formatSymbol(symbol); })()}" tabindex="-1">
+<!-- ModalShell owns: portal to document.body, dim=false (transparent overlay),
+     passthrough=true (pointer-events:none so navbar/menu remain reachable),
+     clickOutside=false (close via × or Esc only), z-index matches
+     .canonical-modal-overlay from app.css. ChartModal keeps its own
+     capture-phase keydown for Tab trap + Esc stopImmediatePropagation. -->
+<ModalShell open={true} {onClose} passthrough={true} dim={false} clickOutside={false}
+            zIndex={10500} ariaLabel={_ariaLabel}>
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
@@ -140,8 +133,9 @@
             <path d="M13.5 3v3h-3" />
           </svg>
         </span>
-        <button type="button" class="cm-close" bind:this={_closeBtnEl}
-                aria-label="Close chart modal">×</button>
+        <button type="button" class="cm-close"
+                aria-label="Close chart modal"
+                onclick={() => onClose?.()}>×</button>
       </span>
     </div>
     <div class="cm-body">
@@ -163,7 +157,7 @@
       </div>
     </div>
   </div>
-</div>
+</ModalShell>
 
 <style>
   /* Frame (overlay + panel positioning, size, border, gradient) lives in

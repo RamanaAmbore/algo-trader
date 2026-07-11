@@ -51,7 +51,9 @@
 <svelte:window onkeydown={handleWindowKey} />
 
 {#if open}
-  <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <!-- svelte-ignore a11y_interactive_supports_focus -->
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div
     class="ms-overlay"
     class:ms-dim={dim}
@@ -61,6 +63,7 @@
     role="dialog"
     aria-modal="true"
     aria-label={ariaLabel}
+    tabindex="-1"
     onclick={handleBackdrop}
   >
     {@render children()}
