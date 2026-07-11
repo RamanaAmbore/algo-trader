@@ -868,7 +868,7 @@ async def run_preflight(
         _qty_check = int(order.get("quantity") or order.get("qty") or 0)
     except Exception:
         _qty_check = 0
-    if _exch in ("NFO", "MCX", "CDS", "BFO") and _qty_check > 0 and _sym:
+    if _exch in ("NFO", "MCX", "NCO", "CDS", "BFO") and _qty_check > 0 and _sym:
         try:
             from backend.brokers.adapters.kite import get_lot_size as _pf_get_lot_size
             _pf_lot = int(await _pf_get_lot_size(_exch, _sym) or 0)
