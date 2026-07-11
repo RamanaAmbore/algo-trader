@@ -42,6 +42,7 @@
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { mkUtilPctCol } from '$lib/data/pulseColumns.js';
 
   // ag-Grid module registration — idempotent across re-mounts.
   ModuleRegistry.registerModules([AllCommunityModule]);
@@ -1436,17 +1437,7 @@
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
           valueFormatter: _agAggFmt },
-        { field: 'util_pct', headerName: 'Util %', minWidth: 62, flex: 0.7,
-          type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: (p) => {
-            const v = Number(p.value) || 0;
-            const cls = v >= 0.85 ? 'pnl-loss'
-                      : v >= 0.70 ? 'util-warn'
-                      : v >= 0.50 ? 'util-mild'
-                      : 'pnl-gain';
-            return `ag-right-aligned-cell ${cls}`;
-          },
-          valueFormatter: _agUtilFmt },
+        mkUtilPctCol({ numericHdr: _numericHdr }),
       ],
       rowData: [],
       domLayout: 'autoHeight',
