@@ -3245,10 +3245,25 @@
     const yOf   = (v) => flat ? yMid : (PAD + (1 - (v - min) / range) * (H - PAD * 2));
     const pts   = closes.map((v, i) => `${(PAD + i * xStep).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
     const up    = closes[closes.length - 1] >= closes[0];
-    const color = flat
+    const lineColor = flat
       ? 'rgba(126,151,184,0.55)'  // muted slate for the no-movement case
       : (up ? 'rgba(91,142,149,0.85)' : 'rgba(196,122,61,0.85)');
-    return `<span style="display:flex;align-items:center;justify-content:center;height:100%"><svg width="${W}" height="${H}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg></span>`;
+    const areaBase = flat
+      ? 'rgba(126,151,184,1)'
+      : (up ? 'rgba(91,142,149,1)' : 'rgba(196,122,61,1)');
+    const gradId = `sg${sym.replace(/[^A-Za-z0-9]/g, '')}`;
+    const firstX = PAD.toFixed(1);
+    const lastX  = (PAD + (closes.length - 1) * xStep).toFixed(1);
+    const areaPts = `${firstX},${H} ${pts} ${lastX},${H}`;
+    const svgInner = [
+      `<defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">`,
+      `<stop offset="0%" stop-color="${areaBase}" stop-opacity="0.22"/>`,
+      `<stop offset="100%" stop-color="${areaBase}" stop-opacity="0"/>`,
+      `</linearGradient></defs>`,
+      `<polygon points="${areaPts}" fill="url(#${gradId})" stroke="none"/>`,
+      `<polyline points="${pts}" fill="none" stroke="${lineColor}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>`,
+    ].join('');
+    return `<span style="display:flex;align-items:center;justify-content:center;height:100%"><svg width="${W}" height="${H}" style="display:block;overflow:visible">${svgInner}</svg></span>`;
   }
 
   // dirCls is imported from pulseColumns.js (line 77 import) — the local
