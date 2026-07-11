@@ -1072,6 +1072,210 @@ def _preflight_check_qty_freeze(
     return None
 
 
+async def _preflight_check_margin(
+    bm_res: object,
+    margins_res: tuple,
+    segment: str,
+    account: str,
+    symbol: str,
+    qty: int,
+    loop: object,
+) -> tuple[list[dict], dict]:
+    """
+    Evaluate basket-order margin and account margin to emit blockers.
+
+    Returns ``(new_blockers, diag_updates)`` where *diag_updates* is a
+    partial diagnostics dict that the caller should merge into its own.
+    Never raises — broker-call failures are handled internally.
+    """
+    import math
+
+    new_blockers: list[dict] = []
+    diag: dict = {}
+
+    if isinstance(bm_res, Exception):
+        bm_exception: Exception | None = bm_res
+        bm_result = None
+    else:
+        bm_exception = None
+        bm_result = bm_res
+
+    try:
+        if bm_exception is not None:
+            raise bm_exception
+
+        required = _preflight_parse_basket_margin(bm_result)
+
+        available: float | None = None
+        shortfall: float = 0.0
+
+        # ── Negative-margin sanity check ────────────────────────────────
+        # Kite's basket_order_margins can return a negative `required` value
+        # when existing positions on the account NET with the new leg to
+        # release margin (deep-OTM short option positions carrying "credit
+        # margin" at the basket level). That's a LEGITIMATE outcome — the
+        # operator receives premium and the basket's total margin drops.
+        #
+        # The original safety-blocker landed on 2026-06-30 to catch the
+        # "qty sent in lots instead of contracts" bug that produced grossly
+        # over-sized negative margins (up to -₹8.5cr on a 1-lot order).
+        # That bug is now prevented at the source by `translate_qty` (same
+        # commit 29f3ef58), so this branch no longer needs to block — the
+        # qty unit is guaranteed correct before the broker call.
+        #
+        # We keep the WARNING log + diagnostic surfacing so the operator
+        # sees any unusual value; Kite's own place_order remains the
+        # ultimate gate for insufficient funds.
+        if required < 0:
+            logger.warning(
+                f"[PREFLIGHT] negative basket margin for {account}/{symbol}: "
+                f"required={required:.2f} — treating as legitimate netting "
+                f"credit (qty={qty} is unit-safe via "
+                f"translate_qty). Kite's place_order will reject if the "
+                f"actual SPAN check fails."
+            )
+            diag["basket_margin_used"]   = required
+            diag["available_margin"]     = None
+            diag["margin_shortfall"]     = None
+            diag["negative_margin_note"] = (
+                "Broker returned a credit basket margin — usually indicates "
+                "existing positions net with the new leg. Broker will still "
+                "verify at order-placement time."
+            )
+
+        else:
+            # Available margin came from `_fetch_account_margins` in the
+            # earlier gather. `margins_res` is `(seg_dict, err_str_or_None)`.
+            # Segment routing: MCX/NCO → commodity wallet, everything else
+            # (NSE/BSE/NFO/BFO/CDS/BCD) → equity wallet. Zerodha keeps the
+            # two wallets separate.
+            m, _m_err = (margins_res or (None, None))
+            m = m or {}
+            available = None
+            m_enabled = None
+            if _m_err:
+                logger.warning(f"[PREFLIGHT] margins({segment}) failed for {account}: {_m_err}")
+            else:
+                m_enabled = bool(m.get("enabled"))
+                net = m.get("net")
+                if isinstance(net, (int, float)) and not math.isnan(float(net)):
+                    available = float(net)
+
+            diag["basket_margin_used"] = required
+            diag["available_margin"]   = available
+            diag["margin_shortfall"]   = None
+
+            # ── Available-is-zero gate ────────────────────────────────────
+            # When available=0 AND required>0 AND segment is enabled, the
+            # order has zero chance of going through — block immediately.
+            # Pre-fix: shortfall = max(0, required − 0) = required > 0 would
+            # have blocked. This path is a belt-and-suspenders guard for the
+            # edge case where `net` parses as 0.0 when the real balance is
+            # non-zero due to a Kite API quirk (unreachable margins endpoint
+            # returns {} → available stays None, not 0). Explicit 0.0 check
+            # only fires when we DID get a numeric 0, not when we skipped.
+            if m_enabled and available == 0.0 and required > 0:
+                logger.warning(
+                    f"[PREFLIGHT] available_margin=0 with required={required:.2f} "
+                    f"for {account} — blocking as INSUFFICIENT_FUNDS."
+                )
+                new_blockers.append({
+                    "code":   "INSUFFICIENT_FUNDS",
+                    "reason": (
+                        f"Available margin is ₹0 but order requires "
+                        f"₹{required:,.0f}. Account has no usable balance "
+                        f"in the {segment} segment."
+                    ),
+                    "fix": (
+                        f"Add at least ₹{required:,.0f} to the {segment} wallet "
+                        f"before placing this order."
+                    ),
+                    "data": {"required": required, "available": 0.0},
+                })
+                diag["margin_shortfall"] = required
+
+            # Four states for the margin gate:
+            #   1. enabled=False (or margins call failed): API key likely
+            #      lacks the "Read Margin" permission, or the segment is
+            #      not subscribed. We can't reliably know available — DO
+            #      NOT block. Let Kite's place_order reject if needed. This
+            #      mirrors what happens when the operator places the same
+            #      order through kite.zerodha.com directly (Kite's web app
+            #      uses cookie auth which has full permissions and lets
+            #      the order through).
+            #   2. enabled=True + net = 0: blocked above as INSUFFICIENT_FUNDS.
+            #   3. enabled=True + net < required: real shortfall — block.
+            #   4. enabled=True + net >= required: pass.
+            # (shortfall initialised to 0.0 before the if/else above)
+            if m_enabled and available is not None and available != 0.0:
+                shortfall = max(0.0, required - available)
+                diag["margin_shortfall"] = shortfall if shortfall > 0 else None
+            elif required > 0 and not (m_enabled and available == 0.0):
+                # Segment-permission gap: log + skip the block.
+                logger.info(
+                    f"[PREFLIGHT] margin check SKIPPED for {account} "
+                    f"(segment={segment} enabled={m_enabled} available={available}); "
+                    f"required={required:.2f} — relying on Kite place_order for the real verdict"
+                )
+
+        if shortfall > 0 and not math.isnan(shortfall):
+            # Estimate the reduced qty that would fit within available margin.
+            if required > 0 and available > 0:
+                # Infer per-unit margin and solve for max fillable qty aligned
+                # to lot_size.
+                per_unit = required / qty if qty > 0 else 0
+                if per_unit > 0:
+                    max_qty_fit = int(available / per_unit)
+                    # Round down to nearest lot boundary (if we know lot_size).
+                    try:
+                        lot_size_hint = 1
+                        try:
+                            from backend.api.routes.instruments import _fetch_instruments
+                            await loop.run_in_executor(
+                                None, lambda: None  # avoid re-fetching; use cached
+                            )
+                        except Exception:
+                            pass
+                        if lot_size_hint > 0:
+                            max_qty_fit = (max_qty_fit // lot_size_hint) * lot_size_hint
+                        max_qty_fit = max(0, max_qty_fit)
+                        fix_qty = (f" or reduce qty to {max_qty_fit:,}" if max_qty_fit > 0
+                                   else "")
+                    except Exception:
+                        fix_qty = ""
+                else:
+                    fix_qty = ""
+            else:
+                fix_qty = ""
+
+            new_blockers.append({
+                "code":   "MARGIN_SHORTFALL",
+                "reason": (f"Required margin ₹{required:,.0f} exceeds available "
+                           f"₹{available:,.0f} (shortfall ₹{shortfall:,.0f})"),
+                "fix":    (f"Add ₹{shortfall:,.0f} more margin to the account"
+                           + fix_qty),
+                "data":   {
+                    "required":   required,
+                    "available":  available,
+                    "shortfall":  shortfall,
+                },
+            })
+    except Exception as e:
+        bm_msg = str(e).lower()
+        # basket_margin raised — interpret the error signal.
+        if any(k in bm_msg for k in ("margin", "fund", "shortfall", "balance")):
+            new_blockers.append({
+                "code":   "MARGIN_SHORTFALL",
+                "reason": f"Margin check failed: {str(e)[:160]}",
+                "fix":    "Add margin to the account or reduce quantity",
+                "data":   {"broker_error": str(e)[:240]},
+            })
+        else:
+            logger.debug(f"[PREFLIGHT] basket_margin raised for {account}: {e}")
+
+    return new_blockers, diag
+
+
 async def run_preflight(
     account: str,
     order: dict,
@@ -1244,197 +1448,11 @@ async def run_preflight(
         blocked.append(_freeze_blocker)
 
     # ── Margin-shortfall gate (basket_order_margins + account margins) ───
-    if isinstance(bm_res, Exception):
-        # Existing fallback below the try-block handles broker
-        # unreachable / SDK error — preserve that path by raising
-        # through the original except branch.
-        bm_exception = bm_res
-    else:
-        bm_exception = None
-        bm_result = bm_res
-
-    try:
-        if bm_exception is not None:
-            raise bm_exception
-        # Kite's /margins/basket returns one entry per input leg. Each
-        # has BOTH `initial.total` (bare margin for this leg in
-        # isolation) AND `final.total` (per-leg margin after the basket
-        # hedge offset). Prefer `final.total` — it captures the net
-        # spread margin offset. See _preflight_parse_basket_margin.
-        required = _preflight_parse_basket_margin(bm_result)
-
-        # Initialise locals used across both the negative-margin path and
-        # the normal path below so the `if shortfall > 0` block at the
-        # end always has valid bindings even when we take the anomaly branch.
-        available: float | None = None
-        shortfall: float = 0.0
-
-        # ── Negative-margin sanity check ────────────────────────────────
-        # Kite's basket_order_margins can return a negative `required` value
-        # when existing positions on the account NET with the new leg to
-        # release margin (deep-OTM short option positions carrying "credit
-        # margin" at the basket level). That's a LEGITIMATE outcome — the
-        # operator receives premium and the basket's total margin drops.
-        #
-        # The original safety-blocker landed on 2026-06-30 to catch the
-        # "qty sent in lots instead of contracts" bug that produced grossly
-        # over-sized negative margins (up to -₹8.5cr on a 1-lot order).
-        # That bug is now prevented at the source by `translate_qty` (same
-        # commit 29f3ef58), so this branch no longer needs to block — the
-        # qty unit is guaranteed correct before the broker call.
-        #
-        # We keep the WARNING log + diagnostic surfacing so the operator
-        # sees any unusual value; Kite's own place_order remains the
-        # ultimate gate for insufficient funds.
-        if required < 0:
-            logger.warning(
-                f"[PREFLIGHT] negative basket margin for {account}/{symbol}: "
-                f"required={required:.2f} — treating as legitimate netting "
-                f"credit (qty={qty} is unit-safe via "
-                f"translate_qty). Kite's place_order will reject if the "
-                f"actual SPAN check fails."
-            )
-            diagnostics["basket_margin_used"]  = required
-            diagnostics["available_margin"]    = None
-            diagnostics["margin_shortfall"]    = None
-            diagnostics["negative_margin_note"] = (
-                "Broker returned a credit basket margin — usually indicates "
-                "existing positions net with the new leg. Broker will still "
-                "verify at order-placement time."
-            )
-
-        else:
-            # Available margin came from `_fetch_account_margins` in the
-            # earlier gather. `margins_res` is `(seg_dict, err_str_or_None)`.
-            # Segment routing: MCX/NCO → commodity wallet, everything else
-            # (NSE/BSE/NFO/BFO/CDS/BCD) → equity wallet. Zerodha keeps the
-            # two wallets separate.
-            m, _m_err = (margins_res or (None, None))
-            m = m or {}
-            available = None
-            m_enabled = None
-            if _m_err:
-                logger.warning(f"[PREFLIGHT] margins({segment}) failed for {account}: {_m_err}")
-            else:
-                m_enabled = bool(m.get("enabled"))
-                net = m.get("net")
-                if isinstance(net, (int, float)) and not math.isnan(float(net)):
-                    available = float(net)
-
-            diagnostics["basket_margin_used"] = required
-            diagnostics["available_margin"]   = available
-            diagnostics["margin_shortfall"]   = None
-
-            # ── Available-is-zero gate ────────────────────────────────────
-            # When available=0 AND required>0 AND segment is enabled, the
-            # order has zero chance of going through — block immediately.
-            # Pre-fix: shortfall = max(0, required − 0) = required > 0 would
-            # have blocked. This path is a belt-and-suspenders guard for the
-            # edge case where `net` parses as 0.0 when the real balance is
-            # non-zero due to a Kite API quirk (unreachable margins endpoint
-            # returns {} → available stays None, not 0). Explicit 0.0 check
-            # only fires when we DID get a numeric 0, not when we skipped.
-            if m_enabled and available == 0.0 and required > 0:
-                logger.warning(
-                    f"[PREFLIGHT] available_margin=0 with required={required:.2f} "
-                    f"for {account} — blocking as INSUFFICIENT_FUNDS."
-                )
-                blocked.append({
-                    "code":   "INSUFFICIENT_FUNDS",
-                    "reason": (
-                        f"Available margin is ₹0 but order requires "
-                        f"₹{required:,.0f}. Account has no usable balance "
-                        f"in the {segment} segment."
-                    ),
-                    "fix": (
-                        f"Add at least ₹{required:,.0f} to the {segment} wallet "
-                        f"before placing this order."
-                    ),
-                    "data": {"required": required, "available": 0.0},
-                })
-                diagnostics["margin_shortfall"] = required
-
-            # Four states for the margin gate:
-            #   1. enabled=False (or margins call failed): API key likely
-            #      lacks the "Read Margin" permission, or the segment is
-            #      not subscribed. We can't reliably know available — DO
-            #      NOT block. Let Kite's place_order reject if needed. This
-            #      mirrors what happens when the operator places the same
-            #      order through kite.zerodha.com directly (Kite's web app
-            #      uses cookie auth which has full permissions and lets
-            #      the order through).
-            #   2. enabled=True + net = 0: blocked above as INSUFFICIENT_FUNDS.
-            #   3. enabled=True + net < required: real shortfall — block.
-            #   4. enabled=True + net >= required: pass.
-            # (shortfall initialised to 0.0 before the if/else above)
-            if m_enabled and available is not None and available != 0.0:
-                shortfall = max(0.0, required - available)
-                diagnostics["margin_shortfall"] = shortfall if shortfall > 0 else None
-            elif required > 0 and not (m_enabled and available == 0.0):
-                # Segment-permission gap: log + skip the block.
-                logger.info(
-                    f"[PREFLIGHT] margin check SKIPPED for {account} "
-                    f"(segment={segment} enabled={m_enabled} available={available}); "
-                    f"required={required:.2f} — relying on Kite place_order for the real verdict"
-                )
-
-        if shortfall > 0 and not math.isnan(shortfall):
-            # Estimate the reduced qty that would fit within available margin.
-            if required > 0 and available > 0:
-                # Infer per-unit margin and solve for max fillable qty aligned
-                # to lot_size.
-                per_unit = required / qty if qty > 0 else 0
-                if per_unit > 0:
-                    max_qty_fit = int(available / per_unit)
-                    # Round down to nearest lot boundary (if we know lot_size).
-                    try:
-                        from backend.api.cache import get_or_fetch
-                        lot_size_hint = 1
-                        instr_cache = None
-                        instr_cache_raw = None
-                        try:
-                            from backend.api.routes.instruments import _fetch_instruments
-                            instr_cache = await loop.run_in_executor(
-                                None, lambda: None  # avoid re-fetching; use cached
-                            )
-                        except Exception:
-                            pass
-                        if lot_size_hint > 0:
-                            max_qty_fit = (max_qty_fit // lot_size_hint) * lot_size_hint
-                        max_qty_fit = max(0, max_qty_fit)
-                        fix_qty = (f" or reduce qty to {max_qty_fit:,}" if max_qty_fit > 0
-                                   else "")
-                    except Exception:
-                        fix_qty = ""
-                else:
-                    fix_qty = ""
-            else:
-                fix_qty = ""
-
-            blocked.append({
-                "code":   "MARGIN_SHORTFALL",
-                "reason": (f"Required margin ₹{required:,.0f} exceeds available "
-                           f"₹{available:,.0f} (shortfall ₹{shortfall:,.0f})"),
-                "fix":    (f"Add ₹{shortfall:,.0f} more margin to the account"
-                           + fix_qty),
-                "data":   {
-                    "required":   required,
-                    "available":  available,
-                    "shortfall":  shortfall,
-                },
-            })
-    except Exception as e:
-        bm_msg = str(e).lower()
-        # basket_margin raised — interpret the error signal.
-        if any(k in bm_msg for k in ("margin", "fund", "shortfall", "balance")):
-            blocked.append({
-                "code":   "MARGIN_SHORTFALL",
-                "reason": f"Margin check failed: {str(e)[:160]}",
-                "fix":    "Add margin to the account or reduce quantity",
-                "data":   {"broker_error": str(e)[:240]},
-            })
-        else:
-            logger.debug(f"[PREFLIGHT] basket_margin raised for {account}: {e}")
+    _margin_blockers, _margin_diag = await _preflight_check_margin(
+        bm_res, margins_res, segment, account, symbol, qty, loop
+    )
+    blocked.extend(_margin_blockers)
+    diagnostics.update(_margin_diag)
 
     return {
         "ok":          len(blocked) == 0,
