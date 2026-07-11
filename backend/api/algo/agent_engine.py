@@ -327,6 +327,35 @@ def _v2_build_evalresult(matches, agent_name: str) -> EvalResult:
 # consistent across both engines makes parity testing trivial — the
 # operator can spot-diff two messages and only care about the agent slug.
 
+
+def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
+                           value) -> tuple[float, float | None]:
+    """Return (pnl, pct) appropriate for the given section.
+
+    - Holdings  → day_change_val + day_change_percentage
+    - Positions → pnl; pct stays None (computed later when used_margin is known)
+    - Funds     → metric-driven field; pct always None
+    """
+    if section == 'Holdings':
+        pnl: float = float(row.get('day_change_val', 0) or 0)
+        pct: float | None = (
+            float(row.get('day_change_percentage', 0) or 0)
+            if row.get('day_change_percentage') is not None else None
+        )
+    elif section == 'Positions':
+        pnl = float(row.get('pnl', 0) or 0)
+        pct = None  # computed later only when we have used_margin
+    else:  # Funds
+        if metric == 'cash':
+            pnl = float(row.get('avail opening_balance', 0) or 0)
+        elif metric == 'avail_margin':
+            pnl = float(row.get('net', 0) or 0)
+        else:
+            pnl = float(value or 0)
+        pct = None
+    return pnl, pct
+
+
 def _v2_match_to_alertrow(match: dict, *,
                           df_positions=None,
                           alert_state: dict | None = None,
@@ -369,20 +398,7 @@ def _v2_match_to_alertrow(match: dict, *,
 
     # pnl — section-appropriate ₹ value. For rate alerts we still want the
     # current raw pnl/day_val shown, plus the rate value in rate_val.
-    if section == 'Holdings':
-        pnl = float(row.get('day_change_val', 0) or 0)
-        pct = float(row.get('day_change_percentage', 0) or 0) if row.get('day_change_percentage') is not None else None
-    elif section == 'Positions':
-        pnl = float(row.get('pnl', 0) or 0)
-        pct = None  # computed later only when we have used_margin
-    else:  # Funds
-        if metric == 'cash':
-            pnl = float(row.get('avail opening_balance', 0) or 0)
-        elif metric == 'avail_margin':
-            pnl = float(row.get('net', 0) or 0)
-        else:
-            pnl = float(value or 0)
-        pct = None
+    pnl, pct = _v2_extract_pnl_fields(row, section, metric, value)
 
     rate_val = value if kind in ('rate_abs', 'rate_pct') else None
 
