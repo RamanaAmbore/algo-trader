@@ -91,12 +91,82 @@ class PyCheck(TlmTool):
     name = "PYCHECK"
     description = "Pytest baseline tracker — detects new test failures vs prior snapshot."
 
+    def add_args(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--quick",
+            metavar="MODULE",
+            default=None,
+            help=(
+                "Quick mode: run only tests matching backend/tests/test_<MODULE>*.py "
+                "instead of the full suite. Snapshot is NOT updated in quick mode."
+            ),
+        )
+
     def _print_dry_run_plan(self, args: argparse.Namespace) -> None:
-        print(f"  Would run: python -m pytest {TEST_DIR} -q --tb=no")
-        print("  Would compare against previous snapshot in .log/pytest_snapshot_*.txt")
-        print("  Would save today's snapshot to .log/pytest_snapshot_YYYY-MM-DD.txt")
+        if getattr(args, "quick", None):
+            print(f"  Would run quick mode tests for module: {args.quick}")
+            print(f"  Would match: backend/tests/test_{args.quick}*.py")
+            print("  Would NOT update snapshot (quick mode).")
+        else:
+            print(f"  Would run: python -m pytest {TEST_DIR} -q --tb=no")
+            print("  Would compare against previous snapshot in .log/pytest_snapshot_*.txt")
+            print("  Would save today's snapshot to .log/pytest_snapshot_YYYY-MM-DD.txt")
+
+    def _run_quick(self, args: argparse.Namespace) -> TlmResult:
+        """Quick mode: run only tests for a specific module, no snapshot update."""
+        module = args.quick
+        test_dir = REPO_ROOT / TEST_DIR
+        if not test_dir.exists():
+            return TlmResult.skip(self.name, f"Test directory not found: {TEST_DIR}")
+
+        matched = sorted(test_dir.glob(f"test_{module}*.py"))
+        if not matched:
+            return TlmResult.skip(
+                self.name,
+                f"(quick mode) No test files found matching test_{module}*.py",
+            )
+
+        cmd = [sys.executable, "-m", "pytest"] + [str(p) for p in matched] + ["-q", "--tb=line"]
+        try:
+            import pytest_timeout  # noqa: F401
+            cmd.append("--timeout=30")
+        except ImportError:
+            pass
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(REPO_ROOT),
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            return TlmResult.tool_error(self.name, "pytest (quick) timed out after 120s")
+        except FileNotFoundError:
+            return TlmResult.skip(self.name, "python/pytest not found")
+
+        passed, skipped, failed, failed_tests = _parse_pytest_output(proc.stdout, proc.stderr)
+        findings: list[TlmFinding] = []
+        for t in failed_tests:
+            findings.append(
+                TlmFinding(
+                    item=t,
+                    detail=f"Failing (quick mode — module: {module})",
+                    severity="P1",
+                )
+            )
+        ok_msg = (
+            f"{passed} passed, {skipped} skipped, {failed} failed "
+            f"(quick mode — {len(matched)} file(s) matched test_{module}*.py)"
+        )
+        return self.build_result(self.name, findings, ok_msg)
 
     def run(self, args: argparse.Namespace) -> TlmResult:
+        # Delegate to quick mode if --quick was passed
+        if getattr(args, "quick", None):
+            return self._run_quick(args)
+
         test_path = REPO_ROOT / TEST_DIR
         if not test_path.exists():
             return TlmResult.skip(self.name, f"Test directory not found: {TEST_DIR}")
