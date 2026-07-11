@@ -85,7 +85,7 @@
   import CardControls from '$lib/CardControls.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { lastRefreshAt, formatDualTz, logTimeIst } from '$lib/stores';
-  import { priceFmt, pctFmt, aggCompact, qtyFmt, directional, fmtPctScaled } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact, aggFmtGrid, pctFmtGrid, qtyFmt, directional, fmtPctScaled } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
@@ -132,13 +132,10 @@
     flat               = false,
   } = $props();
 
-  // AG Grid valueFormatter wrappers — the canonical idiom every other
-  // algo grid uses. Single source of truth for how numbers render:
-  // no `+` prefix on positives (colour carries direction), no `₹`
-  // prefix, en-IN grouping, '—' for null.
+  // AG Grid valueFormatter wrappers — imported from $lib/format (shared SSOT).
+  // aggFmtGrid / pctFmtGrid are the canonical formatters used across every
+  // algo grid. numFmt uses priceFmt for per-share tick precision.
   const numFmt     = ({ value }) => value == null ? '—' : priceFmt(value);
-  const aggFmtGrid = ({ value }) => value == null ? '—' : aggCompact(value);
-  const pctFmtGrid = ({ value }) => value == null ? '—' : `${pctFmt(value)}%`;
   const numericHdr = 'ag-right-aligned-header';
 
   ModuleRegistry.registerModules([AllCommunityModule]);
