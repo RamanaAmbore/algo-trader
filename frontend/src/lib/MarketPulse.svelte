@@ -4067,6 +4067,7 @@
               label="Pinned/Watchlist"
               onRefresh={refreshAllNow}
               refreshLoading={_refreshing}
+              onDownload={() => (topTab === 'pinned' ? gridPinned : gridWatch)?.exportDataAsCsv({ fileName: 'watchlist.csv' })}
             />
           </div>
           <!-- Sub-tab strip retired — each user watchlist now lives
@@ -4111,6 +4112,7 @@
                 label="Winners"
                 onRefresh={refreshAllNow}
                 refreshLoading={_refreshing}
+                onDownload={() => gridWin?.exportDataAsCsv({ fileName: 'winners.csv' })}
               />
             </div>
             <div bind:this={gridWinEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
@@ -4144,6 +4146,7 @@
                 label="Losers"
                 onRefresh={refreshAllNow}
                 refreshLoading={_refreshing}
+                onDownload={() => gridLose?.exportDataAsCsv({ fileName: 'losers.csv' })}
               />
             </div>
             <div bind:this={gridLoseEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
@@ -4180,6 +4183,7 @@
               label="Positions"
               onRefresh={refreshAllNow}
               refreshLoading={_refreshing}
+              onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
             />
           </div>
           <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
@@ -4206,6 +4210,7 @@
               label="Holdings"
               onRefresh={refreshAllNow}
               refreshLoading={_refreshing}
+              onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
             />
           </div>
           <div bind:this={gridHoldingsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>

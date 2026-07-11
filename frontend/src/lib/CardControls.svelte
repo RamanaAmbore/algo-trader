@@ -34,6 +34,7 @@
   import CollapseButton from '$lib/CollapseButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import GridDownloadButton from '$lib/GridDownloadButton.svelte';
   import GridSearchButton from '$lib/GridSearchButton.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
 
@@ -47,6 +48,7 @@
    *   refreshLoading?: boolean,
    *   showSearch?: boolean,
    *   refreshAlwaysVisible?: boolean,
+   *   onDownload?: ((...args: any[]) => void) | null,
    * }} */
   let {
     isCollapsed = $bindable(false),
@@ -58,6 +60,7 @@
     refreshLoading = $bindable(false),
     showSearch = true,
     refreshAlwaysVisible = false,
+    onDownload = null,
   } = $props();
 </script>
 
@@ -67,6 +70,7 @@
 {#if showSearch}
   <GridSearchButton bind:filter {label} />
 {/if}
+<GridDownloadButton onClick={onDownload} {label} />
 <CollapseButton bind:isCollapsed {cardId} {label} />
 <DefaultSizeButton bind:isFullscreen bind:isCollapsed {label} />
 <FullscreenButton bind:isFullscreen {label} />
