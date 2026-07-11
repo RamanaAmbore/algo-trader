@@ -1634,6 +1634,36 @@
     leg.account || _sharedAccount || account || '';
 
   /** Submit every leg in the shell basket via POST /api/orders/basket. */
+  // Resolves effective basket execution mode: if the current mode is
+  // paper/live, confirms against the server's branch + paper_trading_mode
+  // flag so a dev-branch basket doesn't silently go live.
+  async function _resolveBasketMode(/** @type {string} */ mode) {
+    if (mode !== 'paper' && mode !== 'live') return mode;
+    try {
+      const live = await fetchLiveStatus();
+      if (live && (live.branch !== 'main' || live.paper_trading_mode === true)) return 'paper';
+    } catch { /* keep caller's pick */ }
+    return mode;
+  }
+
+  // Applies shared template override fields to a built leg object.
+  // Per-leg template picks opt out of shell overrides — see inline
+  // comment in submitBasket for the audit fix rationale.
+  function _applySharedOverrides(/** @type {any} */ l) {
+    const hasLegTpl = (l.template_id !== _sharedTemplateId);
+    return {
+      ...l,
+      tp_pct_override:             l.tp_pct_override ?? (hasLegTpl
+        ? null : (_sharedTpOverride !== '' ? Number(_sharedTpOverride) : null)),
+      sl_pct_override:             l.sl_pct_override ?? (hasLegTpl
+        ? null : (_sharedSlOverride !== '' ? Number(_sharedSlOverride) : null)),
+      wing_premium_pct_override:   l.wing_premium_pct_override ?? (hasLegTpl
+        ? null : (_sharedWingPremPctOverride !== '' ? Number(_sharedWingPremPctOverride) : null)),
+      wing_strike_offset_override: l.wing_strike_offset_override ?? (hasLegTpl
+        ? null : (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null)),
+    };
+  }
+
   async function submitBasket() {
     if (basketSubmitting || !basketLegs.length) return;
     basketSubmitting = true; basketResultMsg = '';
@@ -1649,15 +1679,7 @@
     }
 
     // Resolve effective mode from the global store (Phase B: no per-ticket override).
-    let basketMode2 = $executionMode || 'paper';
-    if (basketMode2 === 'paper' || basketMode2 === 'live') {
-      try {
-        const live = await fetchLiveStatus();
-        if (live && (live.branch !== 'main' || live.paper_trading_mode === true)) {
-          basketMode2 = 'paper';
-        }
-      } catch { /* keep operator's pick */ }
-    }
+    const basketMode2 = await _resolveBasketMode($executionMode || 'paper');
 
     // Build groups: one group per distinct account.
     /** @type {Map<string, {legIndex: number, leg: any}[]>} */
@@ -1700,24 +1722,7 @@
         // silently contaminates T2's params with T1's overrides. Per-
         // leg legs MUST opt-in to each override field independently.
         template_id:      leg.template_id ?? _sharedTemplateId,
-      })).map(/** @param {any} l */ (l) => {
-        const _hasLegTpl = (l.template_id !== _sharedTemplateId);
-        return {
-          ...l,
-          tp_pct_override:             l.tp_pct_override ?? (_hasLegTpl
-            ? null
-            : (_sharedTpOverride !== '' ? Number(_sharedTpOverride) : null)),
-          sl_pct_override:             l.sl_pct_override ?? (_hasLegTpl
-            ? null
-            : (_sharedSlOverride !== '' ? Number(_sharedSlOverride) : null)),
-          wing_premium_pct_override:   l.wing_premium_pct_override ?? (_hasLegTpl
-            ? null
-            : (_sharedWingPremPctOverride !== '' ? Number(_sharedWingPremPctOverride) : null)),
-          wing_strike_offset_override: l.wing_strike_offset_override ?? (_hasLegTpl
-            ? null
-            : (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null)),
-        };
-      }),
+      })).map(_applySharedOverrides),
     }));
 
     const total = basketLegs.length;
