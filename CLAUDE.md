@@ -3,6 +3,19 @@
 For Claude Code. Three-layer architecture reference + guardrails. Sprint diaries + 
 completed-slice history live in [CLAUDE_HISTORY.md](CLAUDE_HISTORY.md).
 
+**Docs layout** — all markdown except CLAUDE.md / CLAUDE_HISTORY.md / README.md lives under `docs/`:
+
+| Path | Contents |
+|---|---|
+| `docs/specs/` | Feature behavioral contracts — PULSE_SPEC, BROKER_SPEC, NAVSTRIP_SPEC |
+| `docs/guides/` | Operator guides — USER_GUIDE, ADMIN_GUIDE, AGENTS_GUIDE, LAB_MCP_GUIDE, SIMULATOR_GUIDE |
+| `docs/audits/` | Point-in-time audit snapshots — AUDIT_DEAD_CODE, AUDIT_PERF, AUDIT_UI |
+| `docs/DESIGN_GUIDE.md` | Complete architecture + design reference (source for PDF) |
+| `docs/MIGRATION.md` | DB migration history |
+| `docs/deployment.md` | Server / infra ops runbook |
+
+Spec files are **not** auto-loaded — read them explicitly when working on or testing the relevant surface.
+
 ---
 
 ## Contents
@@ -623,3 +636,8 @@ Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
 | Chart state (symbol, range, OHLCV) | `frontend/src/lib/data/chartStore.svelte.js` |
 | Activity tab persistence | `frontend/src/lib/data/activityStore.svelte.js` |
 | Order ticket prefill | `frontend/src/lib/stores.js` |
+| Update feature spec | `docs/specs/<NAME>_SPEC.md` |
+| Update operator guide | `docs/guides/<NAME>_GUIDE.md` |
+| Update architecture doc | `docs/DESIGN_GUIDE.md` → regenerate with `python3 generate_pdf.py` |
+| Add audit snapshot | `docs/audits/AUDIT_<TOPIC>.md` |
+| Update ops runbook | `docs/deployment.md` |
