@@ -212,6 +212,12 @@
     return r === 'admin' || r === 'designated';
   });
 
+  // True when the visitor is anonymous (no authenticated user). Demo
+  // users can view all data but cannot mutate watchlists — the backend
+  // already rejects writes with 403; the UI must not surface controls
+  // that will fail so anonymous visitors don't get a confusing error.
+  const isDemo = $derived(!$authStore.user);
+
   // Add-symbol form state.
   let symInput   = $state('');
   // Optional display name (operator's nickname for the contract). Sent
@@ -3111,7 +3117,7 @@
     // designated users since the backend would 403 the delete; UI
     // shouldn't tease an affordance that won't work.
     const _isGlobalRow = _globalListIds.has(row.watchlist_list_id);
-    const _canRemoveHere = !_isGlobalRow || _isDesignated;
+    const _canRemoveHere = (!_isGlobalRow || _isDesignated) && !isDemo;
     const removeBtn = (row.src?.w && row.watchlist_item_id != null && _canRemoveHere)
       ? `<span class="sym-remove" data-item="${row.watchlist_item_id}" data-list="${row.watchlist_list_id ?? ''}" title="Remove from watchlist">×</span>`
       : '';
@@ -3128,7 +3134,7 @@
     // or down within its bucket. Visible on row hover (CSS handles
     // the hover-only display); the actual move happens in
     // handleRowClick via data-attr dispatch.
-    const moveBtns = sym
+    const moveBtns = (sym && !isDemo)
       ? `<span class="sym-move" data-dir="-1" title="Move group up">▲</span>` +
         `<span class="sym-move" data-dir="1"  title="Move group down">▼</span>`
       : '';
@@ -3486,8 +3492,10 @@
 
     // Left-column buckets (monitoring views — leftColDefs).
     if (gridPinnedEl) {
-      gridPinned = makeBucketGrid(gridPinnedEl, leftColDefs,
-        'Pinned watchlist is empty — add a symbol via the + button.');
+      const _pinnedEmptyMsg = isDemo
+        ? 'Sign in to add symbols to the watchlist.'
+        : 'Pinned watchlist is empty — add a symbol via the + button.';
+      gridPinned = makeBucketGrid(gridPinnedEl, leftColDefs, _pinnedEmptyMsg);
       gridPinnedReady = true;
     }
     if (gridWatchEl) {
@@ -3799,7 +3807,7 @@
     }
     if (ev.key === '/') {
       ev.preventDefault();
-      openSearch();
+      if (!isDemo) openSearch();
       return;
     }
     if (ev.key === 'j' || ev.key === 'k') {
@@ -4009,21 +4017,23 @@
                  "add" but the modal does much more — switched to a
                  pencil-edits-list glyph (horizontal lines + pencil)
                  which reads as "manage list". Same shortcut (/). -->
-            <button onclick={openSearch}
-                    title="Manage watchlists — add / rename / delete (/)"
-                    aria-label="Manage watchlists"
-                    class="mp-add-btn">
-              <svg width="14" height="14" viewBox="0 0 16 16"
-                   fill="none" stroke="currentColor" stroke-width="1.5"
-                   stroke-linecap="round" stroke-linejoin="round"
-                   aria-hidden="true">
-                <!-- list lines on the left -->
-                <path d="M2.5 5h5M2.5 8h5M2.5 11h3.5" />
-                <!-- pencil overlaid on the right -->
-                <path d="M11 3l2 2L8 10l-2.3 0.6L6.4 8.3L11 3z" />
-                <path d="M9.7 4.3l2 2" />
-              </svg>
-            </button>
+            {#if !isDemo}
+              <button onclick={openSearch}
+                      title="Manage watchlists — add / rename / delete (/)"
+                      aria-label="Manage watchlists"
+                      class="mp-add-btn">
+                <svg width="14" height="14" viewBox="0 0 16 16"
+                     fill="none" stroke="currentColor" stroke-width="1.5"
+                     stroke-linecap="round" stroke-linejoin="round"
+                     aria-hidden="true">
+                  <!-- list lines on the left -->
+                  <path d="M2.5 5h5M2.5 8h5M2.5 11h3.5" />
+                  <!-- pencil overlaid on the right -->
+                  <path d="M11 3l2 2L8 10l-2.3 0.6L6.4 8.3L11 3z" />
+                  <path d="M9.7 4.3l2 2" />
+                </svg>
+              </button>
+            {/if}
             <span class="mp-bucket-head-spacer"></span>
             <CardControls
               bind:isCollapsed={_colPinWatch}
@@ -4270,7 +4280,7 @@
                   value: l.id,
                   label: l.is_default ? `${l.name} ★` : l.name,
                 })),
-                { value: 'NEW', label: '+ New watchlist' },
+                ...(!isDemo ? [{ value: 'NEW', label: '+ New watchlist' }] : []),
               ]} />
           </div>
           {#if typeof targetListId === 'number'}
@@ -4281,51 +4291,54 @@
                  it can't be deleted (would leave every user without a
                  pinned list). Designated users can still add / remove
                  ITEMS on it via the symbol picker + per-row × glyph;
-                 only the list-level rename / delete is locked out. -->
-            {#if _tgtList && !_tgtList.is_global}
-              <!-- ✎ Rename — reveals the inline name input row below
-                   so the operator can edit the watchlist's name without
-                   leaving the popup. -->
-              <button type="button"
-                onclick={(e) => {
-                  e.preventDefault();
-                  const id = /** @type {number} */ (targetListId);
-                  if (_renameId === id) { cancelRename(); return; }
-                  _renameId = id;
-                  _renameName = _tgtList.name;
-                  _renameError = '';
-                  _pendingDeleteId = null;
-                }}
-                class="text-[0.7rem] py-1 px-3 rounded font-bold border"
-                style="background: rgba(56,189,248,0.2); color: var(--algo-sky); border-color: rgba(56,189,248,0.55);"
-                title={_renameId === targetListId ? 'Cancel rename' : `Rename "${_tgtList.name}" watchlist`}>
-                {_renameId === targetListId ? '× Cancel' : '✎ Rename'}
-              </button>
-              <button type="button"
-                onclick={async (e) => {
-                  e.preventDefault();
-                  // Single-click delete (operator picked the list +
-                  // clicked Delete inside the Manage popup — that's
-                  // confirmation enough). The earlier two-click
-                  // pattern confused operators ("when I delete test
-                  // watchlist it is not getting deleted" — they
-                  // missed the 4-second confirm window).
-                  const id = /** @type {number} */ (targetListId);
-                  try {
-                    await dropList(id);
-                    closeSearch();
-                  } catch (err) {
-                    // Surface the failure inline so the operator sees
-                    // why nothing happened (auth lapse, 403 on Pinned,
-                    // network drop, etc.) instead of a silent no-op.
-                    _renameError = (err && err.message) || 'Delete failed.';
-                  }
-                }}
-                class="text-[0.7rem] py-1 px-3 rounded font-bold border"
-                style="background: rgba(248,113,113,0.2); color: var(--c-short); border-color: var(--algo-red-border);"
-                title={`Delete "${_tgtList.name}" watchlist`}>
-                🗑 Delete
-              </button>
+                 only the list-level rename / delete is locked out.
+                 Demo (anonymous) users cannot rename or delete anything. -->
+            {#if !isDemo}
+              {#if _tgtList && !_tgtList.is_global}
+                <!-- ✎ Rename — reveals the inline name input row below
+                     so the operator can edit the watchlist's name without
+                     leaving the popup. -->
+                <button type="button"
+                  onclick={(e) => {
+                    e.preventDefault();
+                    const id = /** @type {number} */ (targetListId);
+                    if (_renameId === id) { cancelRename(); return; }
+                    _renameId = id;
+                    _renameName = _tgtList.name;
+                    _renameError = '';
+                    _pendingDeleteId = null;
+                  }}
+                  class="text-[0.7rem] py-1 px-3 rounded font-bold border"
+                  style="background: rgba(56,189,248,0.2); color: var(--algo-sky); border-color: rgba(56,189,248,0.55);"
+                  title={_renameId === targetListId ? 'Cancel rename' : `Rename "${_tgtList.name}" watchlist`}>
+                  {_renameId === targetListId ? '× Cancel' : '✎ Rename'}
+                </button>
+                <button type="button"
+                  onclick={async (e) => {
+                    e.preventDefault();
+                    // Single-click delete (operator picked the list +
+                    // clicked Delete inside the Manage popup — that's
+                    // confirmation enough). The earlier two-click
+                    // pattern confused operators ("when I delete test
+                    // watchlist it is not getting deleted" — they
+                    // missed the 4-second confirm window).
+                    const id = /** @type {number} */ (targetListId);
+                    try {
+                      await dropList(id);
+                      closeSearch();
+                    } catch (err) {
+                      // Surface the failure inline so the operator sees
+                      // why nothing happened (auth lapse, 403 on Pinned,
+                      // network drop, etc.) instead of a silent no-op.
+                      _renameError = (err && err.message) || 'Delete failed.';
+                    }
+                  }}
+                  class="text-[0.7rem] py-1 px-3 rounded font-bold border"
+                  style="background: rgba(248,113,113,0.2); color: var(--c-short); border-color: var(--algo-red-border);"
+                  title={`Delete "${_tgtList.name}" watchlist`}>
+                  🗑 Delete
+                </button>
+              {/if}
             {/if}
           {/if}
         </div>
@@ -4373,82 +4386,84 @@
           {/if}
         {/if}
 
-        <div class="mp-add-divider"></div>
+        {#if !isDemo}
+          <div class="mp-add-divider"></div>
 
-        <!-- Symbol + Type. The two-letter type picker after the symbol
-             input lets the operator disambiguate equity vs derivative
-             without picking a raw exchange code (EQ/FU/CE/PE → NSE/NFO
-             internally). Typeahead picks override the type from the
-             matched instrument's tradingsymbol suffix. -->
-        <div class="mp-add-section-label">Add symbol</div>
-        <div class="search-row">
-          <input bind:this={symInputEl} bind:value={symInput}
-            oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
-            onfocus={() => typeaheadOpen = true}
-            onkeydown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
-                else addRow();
-              } else if (e.key === 'Escape') {
-                // First Esc closes the typeahead suggestions if they're
-                // ACTUALLY rendered (typeaheadOpen AND non-empty); a
-                // second Esc closes the popup. When the dropdown is
-                // invisible — onfocus sets typeaheadOpen=true even when
-                // typeahead is [] — first Esc would otherwise no-op,
-                // forcing operators to press Esc twice to dismiss.
-                e.preventDefault();
-                if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
-                else { closeSearch(); }
-              }
-            }}
-            class="field-input text-[0.7rem] py-1 px-2 flex-1"
-            placeholder="Symbol (≥ 3 chars) — stocks, futures, options" autocomplete="off" />
-          <div class="w-16">
-            <Select ariaLabel="Type" bind:value={typeInput}
-              options={[
-                { value: 'EQ', label: 'EQ' },
-                { value: 'FU', label: 'FU' },
-                { value: 'CE', label: 'CE' },
-                { value: 'PE', label: 'PE' },
-              ]} />
+          <!-- Symbol + Type. The two-letter type picker after the symbol
+               input lets the operator disambiguate equity vs derivative
+               without picking a raw exchange code (EQ/FU/CE/PE → NSE/NFO
+               internally). Typeahead picks override the type from the
+               matched instrument's tradingsymbol suffix. -->
+          <div class="mp-add-section-label">Add symbol</div>
+          <div class="search-row">
+            <input bind:this={symInputEl} bind:value={symInput}
+              oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
+              onfocus={() => typeaheadOpen = true}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
+                  else addRow();
+                } else if (e.key === 'Escape') {
+                  // First Esc closes the typeahead suggestions if they're
+                  // ACTUALLY rendered (typeaheadOpen AND non-empty); a
+                  // second Esc closes the popup. When the dropdown is
+                  // invisible — onfocus sets typeaheadOpen=true even when
+                  // typeahead is [] — first Esc would otherwise no-op,
+                  // forcing operators to press Esc twice to dismiss.
+                  e.preventDefault();
+                  if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
+                  else { closeSearch(); }
+                }
+              }}
+              class="field-input text-[0.7rem] py-1 px-2 flex-1"
+              placeholder="Symbol (≥ 3 chars) — stocks, futures, options" autocomplete="off" />
+            <div class="w-16">
+              <Select ariaLabel="Type" bind:value={typeInput}
+                options={[
+                  { value: 'EQ', label: 'EQ' },
+                  { value: 'FU', label: 'FU' },
+                  { value: 'CE', label: 'CE' },
+                  { value: 'PE', label: 'PE' },
+                ]} />
+            </div>
+            <button onclick={addRow}
+              disabled={!symInput.trim() || (targetListId === 'NEW' && !newListName.trim())}
+              class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
+              title="Add to target watchlist">Add</button>
           </div>
-          <button onclick={addRow}
-            disabled={!symInput.trim() || (targetListId === 'NEW' && !newListName.trim())}
-            class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
-            title="Add to target watchlist">Add</button>
-        </div>
-        <!-- Optional display name (alias). Lets the operator label a
-             contract by its underlying nickname — e.g. type "Crude oil"
-             for CRUDEOIL26JUNFUT. Empty leaves the grid showing the
-             raw tradingsymbol; non-empty replaces the symbol cell with
-             the alias (and the tradingsymbol moves to the tooltip). -->
-        <div class="search-row" style="margin-top: 0.4rem;">
-          <input bind:value={aliasInput}
-            onkeydown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); addRow(); }
-              else if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
-            }}
-            class="field-input text-[0.7rem] py-1 px-2 flex-1"
-            placeholder="Display name (optional) — e.g. Crude oil"
-            autocomplete="off" />
-        </div>
-        {#if typeahead.length}
-          <div class="search-typeahead">
-            {#each typeahead as inst}
-              <button onclick={() => pickFromTypeahead(inst)}
-                class="search-typeahead-item">
-                <!-- displaySymbol renders GOLD_NEXT → GOLD.NEXT for virtual roots;
-                     real contracts pass through unchanged. -->
-                <span class="font-mono text-[var(--c-action)]">{displaySymbol(inst.s)}</span>
-                <span class="text-[0.6rem] text-[var(--c-muted)] ml-2">{inst.e}{inst.virtual ? ' · virtual' : ''}</span>
-              </button>
-            {/each}
+          <!-- Optional display name (alias). Lets the operator label a
+               contract by its underlying nickname — e.g. type "Crude oil"
+               for CRUDEOIL26JUNFUT. Empty leaves the grid showing the
+               raw tradingsymbol; non-empty replaces the symbol cell with
+               the alias (and the tradingsymbol moves to the tooltip). -->
+          <div class="search-row" style="margin-top: 0.4rem;">
+            <input bind:value={aliasInput}
+              onkeydown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); addRow(); }
+                else if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
+              }}
+              class="field-input text-[0.7rem] py-1 px-2 flex-1"
+              placeholder="Display name (optional) — e.g. Crude oil"
+              autocomplete="off" />
+          </div>
+          {#if typeahead.length}
+            <div class="search-typeahead">
+              {#each typeahead as inst}
+                <button onclick={() => pickFromTypeahead(inst)}
+                  class="search-typeahead-item">
+                  <!-- displaySymbol renders GOLD_NEXT → GOLD.NEXT for virtual roots;
+                       real contracts pass through unchanged. -->
+                  <span class="font-mono text-[var(--c-action)]">{displaySymbol(inst.s)}</span>
+                  <span class="text-[0.6rem] text-[var(--c-muted)] ml-2">{inst.e}{inst.virtual ? ' · virtual' : ''}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+          <div class="search-hint">
+            Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
           </div>
         {/if}
-        <div class="search-hint">
-          Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
-        </div>
       </div>
     </div>
   </div>
