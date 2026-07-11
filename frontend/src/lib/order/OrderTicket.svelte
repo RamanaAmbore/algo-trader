@@ -1235,9 +1235,18 @@
   // F&O, so the G1 multiple-of-lot check is obsolete — qty = lots ×
   // lotSize is a valid multiple by construction. Only the 5-lot fat-
   // finger cap remains.
-  const validationErr = $derived.by(() => {
-    if (!Number(_qty) || Number(_qty) <= 0) {
-      if (_lotSize > 0) return `Qty required (1 lot = ${_lotSize} for ${formatSymbol(symbol)})`;
+
+  /**
+   * Validate qty / lots fields. Returns an error string or null.
+   * @param {number} qty
+   * @param {number} lots
+   * @param {number} lotSize
+   * @param {string} sym
+   * @returns {string | null}
+   */
+  function _validateQtyLots(qty, lots, lotSize, sym) {
+    if (!qty || qty <= 0) {
+      if (lotSize > 0) return `Qty required (1 lot = ${lotSize} for ${formatSymbol(sym)})`;
       return 'Qty required';
     }
     // Fat-finger 5-lot cap — operator 2026-07-01: "the code by
@@ -1246,35 +1255,59 @@
     // when lot_size > 1 (F&O). Backend enforces the same limit as a
     // defense-in-depth layer; front here shows a clear message before
     // Submit is attempted.
-    if (_lotSize > 1 && Number(_lots) > 5) {
-      return `Refusing ${Number(_lots)} lots — the 5-lot safety cap prevents fat-finger errors. Reduce lots to ≤5.`;
+    if (lotSize > 1 && lots > 5) {
+      return `Refusing ${lots} lots — the 5-lot safety cap prevents fat-finger errors. Reduce lots to ≤5.`;
     }
-    if (showLimit   && !Number(_price))   return 'Limit price required';
-    if (showTrigger && !Number(_trigger)) return 'Trigger price required';
-    if (Number(_price) < 0)   return 'Price must be ≥ 0';
-    if (Number(_trigger) < 0) return 'Trigger must be ≥ 0';
+    return null;
+  }
+
+  /**
+   * Validate price / trigger fields including tick-alignment.
+   * Returns an error string or null.
+   * @param {boolean} needsLimit
+   * @param {boolean} needsTrigger
+   * @param {number} price
+   * @param {number} trigger
+   * @param {number} tickSize
+   * @param {number} tickDecimals
+   * @returns {string | null}
+   */
+  function _validatePriceTrigger(needsLimit, needsTrigger, price, trigger, tickSize, tickDecimals) {
+    if (needsLimit   && !price)   return 'Limit price required';
+    if (needsTrigger && !trigger) return 'Trigger price required';
+    if (price   < 0) return 'Price must be ≥ 0';
+    if (trigger < 0) return 'Trigger must be ≥ 0';
     // Tick-alignment check — blur snap should catch operator-typed
     // input, but a draft loaded from an older session may carry a
     // stale non-aligned price. Tolerance is one-tenth of a tick so
     // floating-point noise (590.7999999999999) doesn't trip the gate.
-    if (_tickSize > 0) {
-      const tol = _tickSize / 10;
-      const checkAligned = (/** @type {number} */ n) => {
-        const rem = Math.abs(n - Math.round(n / _tickSize) * _tickSize);
-        return rem < tol;
-      };
-      if (showLimit && !checkAligned(Number(_price))) {
-        return `Price must be a multiple of ₹${_tickSize.toFixed(_tickDecimals)}`;
-      }
-      if (showTrigger && !checkAligned(Number(_trigger))) {
-        return `Trigger must be a multiple of ₹${_tickSize.toFixed(_tickDecimals)}`;
-      }
+    if (tickSize > 0) {
+      const tol = tickSize / 10;
+      const aligned = (/** @type {number} */ n) =>
+        Math.abs(n - Math.round(n / tickSize) * tickSize) < tol;
+      if (needsLimit   && !aligned(price))   return `Price must be a multiple of ₹${tickSize.toFixed(tickDecimals)}`;
+      if (needsTrigger && !aligned(trigger)) return `Trigger must be a multiple of ₹${tickSize.toFixed(tickDecimals)}`;
     }
-    if ((_mode === 'paper' || _mode === 'live') && !_account) {
-      return 'Pick an account';
-    }
-    return '';
-  });
+    return null;
+  }
+
+  /**
+   * Validate order context (account, mode). Returns an error string or null.
+   * @param {string} mode
+   * @param {string} acct
+   * @returns {string | null}
+   */
+  function _validateOrderContext(mode, acct) {
+    if ((mode === 'paper' || mode === 'live') && !acct) return 'Pick an account';
+    return null;
+  }
+
+  const validationErr = $derived.by(() =>
+    _validateQtyLots(Number(_qty), Number(_lots), _lotSize, symbol) ??
+    _validatePriceTrigger(showLimit, showTrigger, Number(_price), Number(_trigger), _tickSize, _tickDecimals) ??
+    _validateOrderContext(_mode, _account) ??
+    ''
+  );
 
   // Pipe validation state to the host (SymbolPanel) so its common-action
   // footer can surface the error as a toast when Submit is clicked while
