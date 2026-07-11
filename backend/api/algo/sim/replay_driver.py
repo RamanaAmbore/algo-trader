@@ -154,14 +154,26 @@ class SimReplayDriver:
         )
         return self.snapshot()
 
+    def reset(self) -> None:
+        """Reset to idle state. Called by tests and stop() to clear stale playhead."""
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self.active = False
+        self.recording_id = None
+        self.recording_label = ""
+        self.events = []
+        self.cursor = 0
+        self.speed = 1.0
+        self.paused = False
+        self.started_at = None
+        self._task = None
+        self.total_events = 0
+
     async def stop(self) -> dict:
         if not self.active:
             return self.snapshot()
-        self.active = False
-        if self._task and not self._task.done():
-            self._task.cancel()
-        self._task = None
-        logger.info(f"[REPLAY] stopped at cursor={self.cursor}/{self.total_events}")
+        self.reset()
+        logger.info(f"[REPLAY] stopped")
         return self.snapshot()
 
     def pause(self) -> dict:

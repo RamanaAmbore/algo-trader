@@ -708,7 +708,8 @@ async def test_sparkline_closed_skips_broker_ltp():
          patch("backend.api.routes.watchlist._resolve_mcx_commodity",
                new=AsyncMock(return_value=None)), \
          patch("backend.api.routes.watchlist._resolve_cds_currency",
-               new=AsyncMock(return_value=None)):
+               new=AsyncMock(return_value=None)), \
+         patch("backend.brokers.broker_apis.get_last_good_ltp", return_value=0.0):
         _mock_sp_reg.return_value = MagicMock()
         _mock_sp_reg.return_value.ltp = mock_ltp_call
         ticker_mock = MagicMock()

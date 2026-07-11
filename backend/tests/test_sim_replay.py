@@ -21,10 +21,11 @@ import pytest
 
 @pytest.fixture
 def replay():
-    """Fresh SimReplayDriver instance (not the singleton) for test
-    isolation."""
+    """SimReplayDriver singleton, reset to idle state before each test."""
     from backend.api.algo.sim.replay_driver import SimReplayDriver
-    return SimReplayDriver()
+    drv = SimReplayDriver.instance()
+    drv.reset()
+    return drv
 
 
 @pytest.fixture
