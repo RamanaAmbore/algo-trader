@@ -299,79 +299,61 @@
   // whole-map churn of the old liveLtp writable. Touch symbolStore.size
   // once at the top so the derived also re-runs when symbols are
   // ADDED to the store (first SSE tick for a previously-unknown sym).
+  // Helper: populate delta entries for one row array into m.
+  // Called from inside $derived.by so positions/holdings reads stay
+  // in reactive scope. untrack is preserved per-snapshot so we don't
+  // register per-symbol deps that would defeat the 4 Hz throttle.
+  // Guard order, Number() coercions, and key format must not change —
+  // _delta() consumes this map with the exact same key shape.
+  function _addDeltaEntries(
+    /** @type {Map<string, number>} */ m,
+    /** @type {any[]} */ rows,
+    /** @type {'P'|'H'} */ kind,
+    /** @type {(row: any) => boolean} */ appliesToRow,
+  ) {
+    for (const row of rows) {
+      if (!appliesToRow(row)) continue;
+      const sym  = String(row?.tradingsymbol || '').toUpperCase();
+      // Only use SSE ticks (ltp_ts > 0). REST publishers set ltp_ts=0
+      // to prevent phantom deltas when batchQuote races the SSE stream.
+      const snap = untrack(() => getSnapshot(sym));
+      if (!snap || !(snap.ltp_ts > 0)) continue;
+      const live = snap.ltp;
+      // LTP flicker fix: treat any non-positive live as "no tick yet".
+      if (typeof live !== 'number' || !(live > 0)) continue;
+      const pollLtp = Number(row?.last_price || 0);
+      const qty     = Number(row?.quantity   || 0);
+      if (!pollLtp || !qty) continue;
+      // BUGFIX: prefix key by kind so same symbol in positions + holdings
+      // for the same account doesn't collide ('P' vs 'H' namespace).
+      const key = kind + '\x00' + sym + '\x00' + String(row?.account || '');
+      m.set(key, (live - pollLtp) * qty);
+    }
+  }
+
   const _liveDeltaByRow = $derived.by(() => {
     /** @type {Map<string, number>} */
     const m = new Map();
     // Read _throttledTick so the derived re-runs at 4 Hz max — not on
     // every SvelteMap entry change (which fires per-tick). getSnapshot
-    // calls below are wrapped in untrack so they don't register
-    // per-symbol reactive deps that would defeat the throttle. This
-    // is the same scheduler-pressure fix BH6 applied to MarketPulse
-    // buildUnified after the order-button saturation incident.
+    // calls inside _addDeltaEntries are wrapped in untrack so they don't
+    // register per-symbol reactive deps that would defeat the throttle.
+    // Same scheduler-pressure fix BH6 applied to MarketPulse buildUnified.
     void _throttledTick;
     // Read _mktTick so the derived re-runs on the market open/close
     // boundary (otherwise we'd wait up to 30s for _load to pick it up).
     void _mktTick;
-    // Operator: "are the position calculations are correct?" — outside
-    // market hours the SSE store holds the LAST tick from before close
-    // while broker.quote() returns today's close, so their per-row
-    // divergence sums to phantom P∆. Gate the delta per exchange:
-    // MCX rows during MCX hours (09:00–23:30 IST), NSE/BSE/NFO/BFO/CDS
-    // rows during NSE hours (09:15–15:30 IST).
+    // Gate the delta per exchange: MCX rows during MCX hours (09:00–23:30
+    // IST), NSE/BSE/NFO/BFO/CDS rows during NSE hours (09:15–15:30 IST).
     const nseOpen = isNseOpen();
     const mcxOpen = isMcxOpen();
-    const _appliesToRow = (/** @type {any} */ row) => {
+    const appliesToRow = (/** @type {any} */ row) => {
       const exch = String(row?.exchange || '').toUpperCase();
       if (exch === 'MCX') return mcxOpen;
       return nseOpen;
     };
-    // BUGFIX: positions + holdings used to share the same map key
-    // `sym + account`. When the same symbol appeared in BOTH for the
-    // same account (operator holds long-term INFY + has an intraday
-    // INFY position), the holdings loop ran AFTER positions and
-    // overwrote the positions delta in the map — so the positions sum
-    // picked up the holdings-qty-based delta. Operator: "position
-    // profit in nav strip is not correct." Fix: prefix the key by
-    // kind ('P' vs 'H') so each kind owns its own delta entry.
-    // LTP flicker fix (Jun 2026): treat any non-positive `live` as
-    // "no live tick yet" rather than as a 0 delta. With the new
-    // symbolStore zero-guard a 0 should never be stored at all, but
-    // a `Number()`-coerced edge case (null/NaN) would otherwise pass
-    // the `live == null` test and feed (0 − pollLtp) × qty = a
-    // negative phantom delta into the strip sum.
-    for (const row of positions) {
-      if (!_appliesToRow(row)) continue;
-      const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      // Only apply the SSE-tick delta when an actual live tick has stamped
-      // ltp_ts > 0. REST publishers (publishPulseQuotes, _publishPositionsRows)
-      // both use ltp_ts=0 — when they race (e.g. derivatives page batchQuotes
-      // the same futures contract that is also a position), the last writer wins
-      // and liveLtp oscillates between two REST values, producing a phantom
-      // ±60k delta. Gating on ltp_ts > 0 prevents REST-sourced LTPs from
-      // contributing here; SSE ticks (ltp_ts=Date.now()) are unaffected.
-      const snap = untrack(() => getSnapshot(sym));
-      if (!snap || !(snap.ltp_ts > 0)) continue;
-      const live = snap.ltp;
-      if (typeof live !== 'number' || !(live > 0)) continue;
-      const pollLtp = Number(row?.last_price || 0);
-      const qty     = Number(row?.quantity   || 0);
-      if (!pollLtp || !qty) continue;
-      const key = 'P\x00' + sym + '\x00' + String(row?.account || '');
-      m.set(key, (live - pollLtp) * qty);
-    }
-    for (const row of holdings) {
-      if (!_appliesToRow(row)) continue;
-      const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const snap = untrack(() => getSnapshot(sym));
-      if (!snap || !(snap.ltp_ts > 0)) continue;
-      const live = snap.ltp;
-      if (typeof live !== 'number' || !(live > 0)) continue;
-      const pollLtp = Number(row?.last_price || 0);
-      const qty     = Number(row?.quantity   || 0);
-      if (!pollLtp || !qty) continue;
-      const key = 'H\x00' + sym + '\x00' + String(row?.account || '');
-      m.set(key, (live - pollLtp) * qty);
-    }
+    _addDeltaEntries(m, positions, 'P', appliesToRow);
+    _addDeltaEntries(m, holdings,  'H', appliesToRow);
     return m;
   });
 

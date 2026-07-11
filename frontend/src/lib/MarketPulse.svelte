@@ -1904,50 +1904,52 @@
   const winRows  = $derived(_topRowsFor('winners', _effWinTab));
   const loseRows = $derived(_topRowsFor('losers',  _effLoseTab));
 
+  // ── _totalsRowFor helpers ─────────────────────────────────────────
+  // Seed a blank accumulator for _accumTotalsRow.
+  function _blankTotalsAcc() {
+    return {
+      day_pnl: 0, pnl: 0, cost: 0, prevMktVal: 0,
+      invSum: 0, curSum: 0, qty_pos: 0, qty_hold: 0,
+      anyDayPnl: false, anyPnl: false, anyInv: false, anyCur: false,
+    };
+  }
+
+  // Accumulate one row into acc (mutates in place).
+  // Prefers broker raw values so the TOTAL matches PositionStrip exactly.
+  // anyDayPnl/anyPnl/anyInv/anyCur flags decide null vs 0 in the return.
+  function _accumTotalsRow(/** @type {ReturnType<typeof _blankTotalsAcc>} */ acc, /** @type {any} */ r) {
+    const rowPnl    = (r._broker_pnl     != null) ? r._broker_pnl     : r.pnl;
+    const rowDayPnl = (r._broker_day_pnl != null) ? r._broker_day_pnl : r.day_pnl;
+    if (rowDayPnl != null) { acc.day_pnl += Number(rowDayPnl) || 0; acc.anyDayPnl = true; }
+    if (rowPnl    != null) { acc.pnl     += Number(rowPnl)    || 0; acc.anyPnl    = true; }
+    acc.cost       += Math.abs(Number(r._cost_basis)        || 0);
+    acc.prevMktVal += Math.abs(Number(r._prev_market_value) || 0);
+    if (r.inv_val != null) { acc.invSum += Number(r.inv_val) || 0; acc.anyInv = true; }
+    if (r.cur_val != null) { acc.curSum += Number(r.cur_val) || 0; acc.anyCur = true; }
+    acc.qty_pos  += Number(r.qty_pos)  || 0;
+    acc.qty_hold += Number(r.qty_hold) || 0;
+  }
+
   // TOTAL row for one major (positions / holdings). Each carries
   // summed day_pnl + pnl + cost_basis so the Day P&L % and P&L %
   // columns auto-derive via their valueGetters. Wrapped in an array
-  // for direct use as pinnedBottomRowData (ag-Grid accepts an empty
-  // array when there's nothing to sum).
+  // for direct use as pinnedBottomRowData.
   function _totalsRowFor(rows, major, label) {
     if (!rows.length) return null;
-    let day_pnl = 0, pnl = 0, cost = 0, prevMktVal = 0;
-    let invSum = 0, curSum = 0;
-    let anyInv = false, anyCur = false;
-    let qty_pos = 0, qty_hold = 0;
-    let anyDayPnl = false, anyPnl = false;
-    for (const r of rows) {
-      // Prefer the BROKER raw values (`_broker_pnl`, `_broker_day_pnl`
-      // mirrored on each row inside buildUnified) so the TOTAL row
-      // matches PositionStrip exactly — the strip reads `r.pnl` and
-      // `r.day_change_val` straight off the API. Per-row P&L cells
-      // still display the live-recomputed `row.pnl` / `row.day_pnl`
-      // so they tick with quotes; only the TOTAL falls back to the
-      // broker snapshot for cross-surface sync. Small per-row vs
-      // TOTAL delta during active trading is an accepted tradeoff.
-      const rowPnl     = (r._broker_pnl     != null) ? r._broker_pnl     : r.pnl;
-      const rowDayPnl  = (r._broker_day_pnl != null) ? r._broker_day_pnl : r.day_pnl;
-      if (rowDayPnl != null) { day_pnl += Number(rowDayPnl) || 0; anyDayPnl = true; }
-      if (rowPnl    != null) { pnl     += Number(rowPnl)    || 0; anyPnl    = true; }
-      cost       += Math.abs(Number(r._cost_basis)        || 0);
-      prevMktVal += Math.abs(Number(r._prev_market_value) || 0);
-      if (r.inv_val != null) { invSum += Number(r.inv_val) || 0; anyInv = true; }
-      if (r.cur_val != null) { curSum += Number(r.cur_val) || 0; anyCur = true; }
-      qty_pos += Number(r.qty_pos)  || 0;
-      qty_hold += Number(r.qty_hold) || 0;
-    }
+    const acc = _blankTotalsAcc();
+    for (const r of rows) _accumTotalsRow(acc, r);
     return {
       key: `__total_${major}`,
       _isTotal: true,
       _majorGroup: major,
       tradingsymbol: label,
-      day_pnl:  anyDayPnl ? day_pnl : null,
-      pnl:      anyPnl    ? pnl     : null,
-      _cost_basis: cost,
-      _prev_market_value: prevMktVal,
-      inv_val:  anyInv ? invSum : null,
-      cur_val:  anyCur ? curSum : null,
-      qty_pos, qty_hold,
+      day_pnl:  acc.anyDayPnl ? acc.day_pnl : null,
+      pnl:      acc.anyPnl    ? acc.pnl     : null,
+      _cost_basis: acc.cost,
+      _prev_market_value: acc.prevMktVal,
+      inv_val:  acc.anyInv ? acc.invSum : null,
+      cur_val:  acc.anyCur ? acc.curSum : null,
+      qty_pos: acc.qty_pos, qty_hold: acc.qty_hold,
     };
   }
   const positionsTotalRows = $derived.by(() => {
@@ -3506,30 +3508,30 @@
     }
   }
 
-  async function handleRowClick(ev) {
-    if (!ev.data) return;
-    const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
+  // ── handleRowClick helpers ────────────────────────────────────────
+  // Returns true when a cell-button click was consumed so the outer
+  // dispatcher can short-circuit without opening the order ticket.
+  // Note: remove-button does NOT call stopPropagation (intentional);
+  // move + actions buttons do — preserve that asymmetry.
+  function _tryHandleRowButton(ev, /** @type {HTMLElement | null} */ target) {
     const rmBtn = target?.closest?.('.sym-remove');
     if (rmBtn) {
       const itemId = Number(rmBtn.getAttribute('data-item'));
       const listId = Number(rmBtn.getAttribute('data-list'));
       if (itemId && listId) removeItem(listId, itemId);
-      return;
+      return true;
     }
     // ▲/▼ group-move buttons — bump the row's whole underlying group
-    // up or down. The bucket stays the same (pinned indices stay in
-    // pinned, watchlist in watchlist) so swaps are constrained.
+    // up or down. Bucket membership is preserved.
     const moveBtn = target?.closest?.('.sym-move');
     if (moveBtn) {
       ev.event?.stopPropagation?.();
       const dir = Number(moveBtn.getAttribute('data-dir')) || 0;
       if (dir !== 0) moveGroup(ev.data, dir);
-      return;
+      return true;
     }
-    // ⋯ actions button — re-uses the existing right-click context
-    // menu (which already has Open in Options / Open ticket / Copy
-    // symbol / Set price alert items). Positioning is anchored to
-    // the button's bottom-right so it pops next to the symbol.
+    // ⋯ actions button — opens the right-click context menu anchored
+    // to the button's bottom-right corner.
     const actBtn = target?.closest?.('.sym-actions');
     if (actBtn) {
       ev.event?.stopPropagation?.();
@@ -3538,36 +3540,41 @@
         { clientX: rect.right, clientY: rect.bottom + 4, preventDefault: () => {} },
         ev.data,
       );
-      return;
+      return true;
     }
-    if (!allowOrders) return;
-    const r = ev.data;
+    return false;
+  }
+
+  // Derive BUY/SELL side from the position's signed qty.
+  function _computeTicketSide(/** @type {any} */ r) {
+    if (r.src?.p && r.qty_pos > 0) return 'SELL';
+    return 'BUY';
+  }
+
+  // Lazy-resolve realAccounts if onMount hasn't finished yet.
+  async function _ensureRealAccountsLoaded() {
+    if (realAccounts.length) return;
+    try {
+      const r2 = await fetchAccounts();
+      realAccounts = (r2?.accounts || [])
+        .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
+        .filter(Boolean);
+    } catch (_) { /* leave empty — ticket's self-fetch backstop will fill */ }
+  }
+
+  // Build and open the order ticket from a unified row object.
+  // Use the row's own account field directly — each position/holding
+  // row carries one unmasked account id for admin sessions.
+  async function _openTicketFromRow(/** @type {any} */ r) {
     const inst = getInstrument?.(r.tradingsymbol);
     const lot = Number(inst?.ls || 1);
-    let side = 'BUY';
-    if (r.src?.p && r.qty_pos < 0) side = 'BUY';
-    else if (r.src?.p && r.qty_pos > 0) side = 'SELL';
-    // Use the row's own account field directly — each position/holding
-    // row carries one unmasked account id for admin sessions, so this
-    // is always correct. The Set+length=1 heuristic was unreliable when
-    // a single account appeared after async realAccounts resolution.
-    const isRealAcct = (a) => !!(a && !String(a).includes('#'));
+    const side = _computeTicketSide(r);
+    const isRealAcct = (/** @type {any} */ a) => !!(a && !String(a).includes('#'));
     const preAccount = isRealAcct(r.account) ? String(r.account) : '';
-    // Ensure accounts are resolved before opening the ticket — avoids
-    // a blank picker on first click when onMount hasn't finished yet.
-    if (!realAccounts.length) {
-      try {
-        const r2 = await fetchAccounts();
-        realAccounts = (r2?.accounts || [])
-          .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
-          .filter(Boolean);
-      } catch (_) { /* leave empty — ticket's self-fetch backstop will fill */ }
-    }
+    await _ensureRealAccountsLoaded();
     // Pass currentQty (signed position qty) so SymbolPanel's footer
-    // button shows "CLOSE BUY" / "CLOSE SELL" for position rows and
-    // the ADD/CLOSE verb in _addCloseVerb() activates correctly.
-    // For watchlist/mover/anchor rows (no position), currentQty=0 so
-    // the ticket opens as a plain BUY/SELL without close semantics.
+    // button shows "CLOSE BUY" / "CLOSE SELL" for position rows.
+    // Watchlist/mover/anchor rows (no position) get currentQty=0.
     const posQty = r.src?.p ? (Number(r.qty_pos) || 0) : 0;
     openTicket({
       symbol:     r.tradingsymbol,
@@ -3580,6 +3587,14 @@
       currentQty: posQty,
       action:     posQty !== 0 ? 'close' : 'open',
     });
+  }
+
+  async function handleRowClick(ev) {
+    if (!ev.data) return;
+    const target = /** @type {HTMLElement | null} */ (ev.event?.target ?? null);
+    if (_tryHandleRowButton(ev, target)) return;
+    if (!allowOrders) return;
+    await _openTicketFromRow(ev.data);
   }
 
   function openTicket(p) { ticketProps = { defaultTab: 'ticket', ...p }; }
