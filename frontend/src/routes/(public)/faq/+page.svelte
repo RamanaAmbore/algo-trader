@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   const faqs = [
     {
@@ -226,9 +227,7 @@
 <div class="space-y-6">
   {#each diagrams as d}
     <div class="flow-card">
-      <div class="flow-card-header">
-        <h3 class="flow-card-title">{d.title}</h3>
-      </div>
+      <CardHeader title={d.title} showControls={false} />
       <div class="p-4 overflow-x-auto">
         <div id="mermaid-{d.id}" class="mermaid-container flex justify-center"
              role="button"
@@ -334,18 +333,6 @@
     border-radius: 4px;
     overflow: hidden;
   }
-  .flow-card-header {
-    padding: 0.65rem 1rem;
-    border-bottom: 1px solid #ddd8ce;
-    background: #f5f2eb;
-  }
-  .flow-card-title {
-    font-size: 0.78rem;
-    font-weight: 700;
-    color: #1a2744;
-    letter-spacing: 0.01em;
-  }
-
   /* Diagrams render at their native SVG size and scale down via
      max-width: 100% on desktop. On mobile the source SVG is wider
      than 390px and was being squashed — nodes shrank past readable

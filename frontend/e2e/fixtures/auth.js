@@ -1,17 +1,16 @@
 /**
- * Authenticate a Playwright page as an operator by driving the real
- * /signin form (Username + Password + Sign In button). The form goes
- * through /api/auth/login like a normal user, then the SvelteKit auth
- * store populates from the response — no sessionStorage stuffing.
+ * Authenticate a Playwright page as an operator.
+ *
+ * FAST PATH (default): globalSetup cached an auth token to e2e/.auth/state.json.
+ * Inject it into sessionStorage + Authorization header — no browser, no form, no rate-limit hit.
+ *
+ * SLOW PATH (fallback): Cache miss or stale token. Fall back to driving the real /signin form
+ * (Username + Password + Sign In button). The form goes through /api/auth/login like a normal
+ * user, then the SvelteKit auth store populates from the response.
  *
  * Defaults (rambo / admin1234) match the local-dev setup; override
  * via PLAYWRIGHT_USER / PLAYWRIGHT_PASS env vars (e.g. ambore + their
  * real password when testing against prod).
- *
- * Why this over the previous API-only shortcut? The operator wants
- * the test to behave as close to a real session as possible — the
- * signin form is the first surface a visitor sees, and bypassing it
- * would miss regressions in the form / auth-store / redirect chain.
  */
 
 const DEFAULT_USER = process.env.PLAYWRIGHT_USER || 'rambo';
@@ -25,6 +24,28 @@ const DEFAULT_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
 export async function loginAsAdmin(page, opts = {}) {
   const user = opts.user || DEFAULT_USER;
   const pass = opts.pass || DEFAULT_PASS;
+
+  // FAST PATH: Reuse cached token from globalSetup — no form, no rate-limit hit.
+  try {
+    const { readFileSync } = await import('fs');
+    const saved = JSON.parse(readFileSync('e2e/.auth/state.json', 'utf-8'));
+    if (saved?.token && saved?.user === user) {
+      // Inject token into sessionStorage via addInitScript (runs before page.goto)
+      await page.addInitScript((tok) => {
+        sessionStorage.setItem('ramboq_token', tok);
+      }, saved.token);
+      // Attach JWT to APIRequestContext for spec-level page.request calls
+      await page.context().setExtraHTTPHeaders({
+        Authorization: `Bearer ${saved.token}`,
+      });
+      return { user_id: user, token: saved.token };
+    }
+  } catch (_) {
+    // No cached state, file unreadable, user mismatch, or user changed defaults.
+    // Fall through to slow-path form login below.
+  }
+
+  // SLOW PATH: Full form login (fallback when cache missing or stale).
 
   // Start at /signin like a real visitor. Submitting the form
   // triggers /api/auth/login → the auth store populates → the page

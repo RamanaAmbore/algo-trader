@@ -58,6 +58,7 @@
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   // Pinned anchors: no hardcoded list — SymbolSearchInput's own
   // _autoLoadPins() fires when no `pins` prop is supplied and loads
@@ -1936,55 +1937,61 @@
     <!-- Minimal header — Orders title + close. Symbol + Account
          pickers moved INTO the tabs that need them (Ticket has its
          own; Chain derives from the picked underlying via the symbol
-         passed from context). Matches the Charts / Activity modal
-         header shape (icon + name + close X — nothing else). -->
-    <div class="oes-header">
-      <span class="oes-modal-name">
-        <!-- Order-slip / receipt glyph — matches the page-header Order
-             button (PageHeaderActions). Rectangle with order lines
-             inside reads as "order entry form" without the directional
-             confusion the prior dual-arrow caused (operator: read as a
-             refresh icon). -->
-        <svg class="oes-modal-name-icon" width="13" height="13" viewBox="0 0 16 16"
-             fill="none" stroke="currentColor" stroke-width="1.5"
-             stroke-linecap="round" aria-hidden="true">
-          <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
-          <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
-        </svg>
-        Order entry
-      </span>
-      {#if _wlToast}
-        <span class="oes-wl-toast" class:ok={_wlToast?.ok} class:err={!_wlToast?.ok}>
-          {_wlToast?.msg}
-        </span>
-      {/if}
-      <!-- Operator: "mode and chase should be left aligned. chase value
-           should be selectable." Cluster sits immediately AFTER the
-           title chip with no margin-left:auto (left-aligned). The close
-           X gets the auto margin so it stays anchored to the right. -->
-      <span class="oes-header-cluster">
-        <!-- Operator: "remove live chip from order modal and page.
-             navbar live is enough." The mode chip used to sit here. -->
-        <!-- L/M/H selector. Operator: "on cold start show chase with
-             L as active." Default 'low' so L is highlighted out of
-             the gate; CHASE label always shows alongside since the
-             cluster is opt-out by switching to MARKET/SL-M (which
-             hides the whole row). -->
-        {#if _chaseEnabled}
-          <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
-        {/if}
-        {#if basketLegs.length > 0}
-          <button type="button" class="oes-common-clear oes-common-clear-inline"
-            title="Clear all basket legs"
-            disabled={basketSubmitting}
-            onclick={clearBasket}>Clear</button>
-        {/if}
-      </span>
-      {#if !inline}
-        <button type="button" class="oes-close" title="Close" aria-label="Close"
-                onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
-      {/if}
+         passed from context). Uses CardHeader with showControls=false;
+         amber gradient bg + border supplied by the algo layout's
+         CardHeader theme tokens. -->
+    <div style="--ch-padding: 0.35rem 0.65rem">
+      <CardHeader showControls={false}>
+        <svelte:fragment slot="left">
+          <span class="oes-modal-name">
+            <!-- Order-slip / receipt glyph — matches the page-header Order
+                 button (PageHeaderActions). Rectangle with order lines
+                 inside reads as "order entry form" without the directional
+                 confusion the prior dual-arrow caused (operator: read as a
+                 refresh icon). -->
+            <svg class="oes-modal-name-icon" width="13" height="13" viewBox="0 0 16 16"
+                 fill="none" stroke="currentColor" stroke-width="1.5"
+                 stroke-linecap="round" aria-hidden="true">
+              <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
+              <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
+            </svg>
+            Order entry
+          </span>
+          {#if _wlToast}
+            <span class="oes-wl-toast" class:ok={_wlToast?.ok} class:err={!_wlToast?.ok}>
+              {_wlToast?.msg}
+            </span>
+          {/if}
+        </svelte:fragment>
+        <svelte:fragment slot="right">
+          <!-- Operator: "mode and chase should be left aligned. chase value
+               should be selectable." Cluster sits immediately AFTER the
+               title chip (left-aligned). The close X stays anchored right. -->
+          <span class="oes-header-cluster">
+            <!-- Operator: "remove live chip from order modal and page.
+                 navbar live is enough." The mode chip used to sit here. -->
+            <!-- L/M/H selector. Operator: "on cold start show chase with
+                 L as active." Default 'low' so L is highlighted out of
+                 the gate; CHASE label always shows alongside since the
+                 cluster is opt-out by switching to MARKET/SL-M (which
+                 hides the whole row). -->
+            {#if _chaseEnabled}
+              <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+              <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
+            {/if}
+            {#if basketLegs.length > 0}
+              <button type="button" class="oes-common-clear oes-common-clear-inline"
+                title="Clear all basket legs"
+                disabled={basketSubmitting}
+                onclick={clearBasket}>Clear</button>
+            {/if}
+          </span>
+          {#if !inline}
+            <button type="button" class="oes-close" title="Close" aria-label="Close"
+                    onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
+          {/if}
+        </svelte:fragment>
+      </CardHeader>
     </div>
     {/if}
 
@@ -2983,18 +2990,6 @@
      the header for modals." Stronger amber-tinted gradient bg
      acts as the visual separator from the body; bottom border is
      a hairline (1px low-alpha). */
-  .oes-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.35rem 0.5rem;
-    background: linear-gradient(180deg,
-                  rgba(251, 191, 36, 0.18) 0%,
-                  rgba(251, 191, 36, 0.06) 100%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    flex-shrink: 0;
-  }
   /* Plain title text — operator: "remove pill kind of decoration
      for modal header text". Bold uppercase amber glyphs on the
      navy gradient strip; the gradient itself is the prominence.
@@ -4111,14 +4106,6 @@
   }
   .oes-order-card-done {
     opacity: 0.75;
-  }
-  .oes-card-head {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.3rem 0.5rem;
-    font-size: var(--fs-sm);
-    font-weight: 700;
   }
   .oes-card-meta {
     margin-top: 0.2rem;

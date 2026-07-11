@@ -598,4 +598,26 @@
     border-bottom: 1px dotted rgba(200,168,75,0.45);
   }
   .pub-footer-link:hover { color: #e9c870; border-bottom-color: #e9c870; }
+
+  /* ── CardHeader theming — public light/cream scheme ─────────────────
+     Matches .flow-card-header + .flow-card-title from /faq:
+     cream bg (#f5f2eb), warm tan border (#ddd8ce), generous padding.
+     Title uses navy body text (#1a2744), inherit font stack (not
+     monospace), no uppercase, tight 0.01em tracking.
+     Scoped to .pub-viewport (the public layout root) so these values
+     override the algo :global(body) vars that ship as the base set. */
+  .pub-viewport {
+    --ch-bg: #f5f2eb;
+    --ch-border-bottom: 1px solid #ddd8ce;
+    --ch-padding: 0.65rem 1rem;
+    --ch-gap: 0.4rem;
+    --ch-title-font-family: inherit;
+    --ch-title-size: 0.78rem;
+    --ch-title-weight: 700;
+    --ch-title-color: #1a2744;
+    --ch-title-letter-spacing: 0.01em;
+    --ch-title-transform: none;
+    --ch-ts-size: 0.65rem;
+    --ch-ts-color: rgba(26, 39, 68, 0.55);
+  }
 </style>

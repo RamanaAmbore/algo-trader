@@ -6,7 +6,7 @@
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import CardControls from '$lib/CardControls.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
@@ -345,7 +345,8 @@
      bucket-header's section label isn't duplicated. -->
 <section class="bucket-card bucket-card-entry mt-1 mb-2"
   class:fs-card-on={_fsEntry}
-  class:is-collapsed={_colEntry}>
+  class:is-collapsed={_colEntry}
+  style="--ch-padding:0.35rem 0.5rem">
   <!-- Operator: "make sure all the elements from order entry panel
        in orders modal should be present in order entry panel in
        orders page". Bucket-header now carries only the section
@@ -361,57 +362,57 @@
        OWN internal header strip (the duplicate "ORDER ENTRY" chip
        + close button) is suppressed — operator wanted just one
        row, not two stacked. -->
-  <div class="bucket-header oc-entry-header-bare">
-    <span class="oc-entry-label">
-      <svg class="oc-entry-icon" width="13" height="13" viewBox="0 0 16 16"
-           fill="none" stroke="currentColor" stroke-width="1.5"
-           stroke-linecap="round" aria-hidden="true">
-        <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
-        <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
-      </svg>
-      ORDER ENTRY
-    </span>
-    <!-- Operator: "mode and chase should be left aligned. chase value
-         should be selectable." Cluster sits left, immediately after
-         the ORDER ENTRY label. The chase + aggressiveness collapse
-         into a single Select dropdown so the operator picks one of
-         off / low / med / high in one click. State is two-way bound
-         to the SymbolPanel below so a flip in either surface updates
-         the other. -->
-    <span class="oc-header-cluster">
-      <!-- Operator: "on cold start show chase with L as active."
-           Default 'low' so L is amber-highlighted out of the gate. -->
-      <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-      <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-        <button type="button" class="oes-common-chase-agg-pill"
-                class:on={_pageChaseAgg === 'low'}
-                title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                onclick={() => _pageChaseAgg = 'low'}>L</button>
-        <button type="button" class="oes-common-chase-agg-pill"
-                class:on={_pageChaseAgg === 'med'}
-                title="Medium — peg to midpoint of bid+ask."
-                onclick={() => _pageChaseAgg = 'med'}>M</button>
-        <button type="button" class="oes-common-chase-agg-pill"
-                class:on={_pageChaseAgg === 'high'}
-                title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                onclick={() => _pageChaseAgg = 'high'}>H</button>
-      </div>
-      {#if _pageBasketCount > 0}
-        <button type="button" class="oes-common-clear oes-common-clear-inline"
-          title="Clear all basket legs"
-          onclick={() => _triggerClear++}>Clear</button>
-      {/if}
-    </span>
-    <span class="oc-spacer"></span>
-    <CardControls
-      bind:isCollapsed={_colEntry}
-      bind:isFullscreen={_fsEntry}
-      label="Order Entry"
-      onRefresh={loadOrders}
-      bind:refreshLoading={loading}
-      showSearch={false}
-    />
-  </div>
+  <CardHeader
+    bind:isCollapsed={_colEntry}
+    bind:isFullscreen={_fsEntry}
+    label="Order Entry"
+    onRefresh={loadOrders}
+    bind:refreshLoading={loading}
+    showSearch={false}
+  >
+    {#snippet left()}
+      <span class="oc-entry-label">
+        <svg class="oc-entry-icon" width="13" height="13" viewBox="0 0 16 16"
+             fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" aria-hidden="true">
+          <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
+          <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
+        </svg>
+        ORDER ENTRY
+      </span>
+      <!-- Operator: "mode and chase should be left aligned. chase value
+           should be selectable." Cluster sits left, immediately after
+           the ORDER ENTRY label. The chase + aggressiveness collapse
+           into a single Select dropdown so the operator picks one of
+           off / low / med / high in one click. State is two-way bound
+           to the SymbolPanel below so a flip in either surface updates
+           the other. -->
+      <span class="oc-header-cluster">
+        <!-- Operator: "on cold start show chase with L as active."
+             Default 'low' so L is amber-highlighted out of the gate. -->
+        <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+        <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'low'}
+                  title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                  onclick={() => _pageChaseAgg = 'low'}>L</button>
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'med'}
+                  title="Medium — peg to midpoint of bid+ask."
+                  onclick={() => _pageChaseAgg = 'med'}>M</button>
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'high'}
+                  title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                  onclick={() => _pageChaseAgg = 'high'}>H</button>
+        </div>
+        {#if _pageBasketCount > 0}
+          <button type="button" class="oes-common-clear oes-common-clear-inline"
+            title="Clear all basket legs"
+            onclick={() => _triggerClear++}>Clear</button>
+        {/if}
+      </span>
+    {/snippet}
+  </CardHeader>
   <div class="card-body" hidden={_colEntry}>
     <!-- `headerless` re-added: SymbolPanel's internal header strip
          (title chip + close X) was the "current orders row" the
@@ -458,9 +459,11 @@
      clean during idle hours. -->
 {#if _showChases}
 <section class="bucket-card bucket-card-chase mb-2">
-  <div class="bucket-header oc-chase-header">
-    <span class="mp-section-label">Chases</span>
-  </div>
+  <CardHeader showControls={false}>
+    {#snippet left()}
+      <span class="mp-section-label">Chases</span>
+    {/snippet}
+  </CardHeader>
   <div class="card-body oc-chase-body">
     <ChaseCard pollMs={3000} onKilled={() => loadOrders()} bind:activeCount={_activeChases} />
   </div>
@@ -489,28 +492,30 @@
   class:fs-card-on={_fsActivity}
   class:is-collapsed={_colActivity}
   use:listenModifyOrder>
-  <div class="bucket-header">
-    <span class="mp-section-label oc-act-title">
-      <BellIcon width="12" height="12" class="oc-act-title-icon" />
-      Activity
-    </span>
-    <span class="oc-spacer"></span>
-    <!-- Account + level filters — shared component with the modal.
-         Operator: "activity should use the same reusable code across
-         all the pages and modals." -->
-    <ActivityHeaderFilters
-      bind:accountFilter={_actAccountFilter}
-      bind:levelFilter={_actLevelFilter}
-      availableAccounts={_actAvailableAccounts} />
-    <CardControls
-      bind:isCollapsed={_colActivity}
-      bind:isFullscreen={_fsActivity}
-      label="Activity"
-      onRefresh={loadOrders}
-      bind:refreshLoading={loading}
-      showSearch={false}
-    />
-  </div>
+  <CardHeader
+    bind:isCollapsed={_colActivity}
+    bind:isFullscreen={_fsActivity}
+    label="Activity"
+    onRefresh={loadOrders}
+    bind:refreshLoading={loading}
+    showSearch={false}
+  >
+    {#snippet left()}
+      <span class="mp-section-label oc-act-title">
+        <BellIcon width="12" height="12" class="oc-act-title-icon" />
+        Activity
+      </span>
+    {/snippet}
+    {#snippet right()}
+      <!-- Account + level filters — shared component with the modal.
+           Operator: "activity should use the same reusable code across
+           all the pages and modals." -->
+      <ActivityHeaderFilters
+        bind:accountFilter={_actAccountFilter}
+        bind:levelFilter={_actLevelFilter}
+        availableAccounts={_actAvailableAccounts} />
+    {/snippet}
+  </CardHeader>
   <div class="card-body oc-act-body" hidden={_colActivity}>
     <!-- Canonical config wrapper — bindable state stays here so the
          header's ActivityAccountSelect sees the same selection +
@@ -691,12 +696,10 @@
   /* Hide the outer chase card chrome when ChaseCard renders nothing
      (no active chases). Avoids an empty card on idle pages. */
   .bucket-card-chase:not(:has(.cc-root)) { display: none; }
-  .oc-chase-header { margin-bottom: 0.25rem; }
   .oc-chase-body { padding: 0; }
   :global(.oc-chase-body .cc-root) { width: 100%; }
   /* bucket-card-book retired (Order Book merged into Activity card). */
 
-  .bucket-header { margin-bottom: 0.35rem; }
   /* .mp-section-label is defined globally in app.css. */
   /* Match each card's section-label colour to its left-edge accent. */
   /* .bucket-card-activity section-label color override retired —
@@ -720,11 +723,6 @@
      oc-act-status[-pending|-complete|-rejected|-cancelled],
      oc-act-side, oc-act-qty, oc-act-sym, oc-act-px, oc-act-meta. */
 
-  /* Flex spacer pushes the bucket-header's [Collapse · DefaultSize ·
-     Fullscreen] trio to the card's right edge. Matches the
-     `.cap-eq-spacer` pattern on /dashboard. */
-  .oc-spacer { flex: 1 1 0; }
-
   /* Common action footer at the bottom of the Order Entry card.
      Mode pills · Exit · +Basket · Side · BUY/SELL submit. The
      buttons dispatch to whichever tab is active (Ticket / Chain /
@@ -735,22 +733,6 @@
      SymbolPanel's shared .oes-common-actions block so both surfaces
      (modal + /orders) read from one component. ~80 lines dropped. */
 
-  /* Flat section header — only the card-control trio rides here
-     now (Collapse / DefaultSize / Fullscreen). Section label +
-     other decorations removed per operator request. */
-  /* Flat section header — display row matching every other bucket-card.
-     `.oc-entry-header` merged into this rule (same semantics, always
-     co-applied). Small inset padding so the label + collapse trio don't
-     slam against the bucket-card frame. */
-  .oc-entry-header-bare {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-    margin: 0;
-    min-height: 1.4rem;
-    padding: 0.35rem 0.5rem;
-  }
   /* "ORDER ENTRY" label — matches the page's `.mp-section-label`
      convention used by Chase + Activity cards (0.6rem, weight 700,
      amber-70%, 0.08em letter-spacing). */
@@ -768,21 +750,15 @@
   }
   .oc-entry-icon { color: currentColor; flex-shrink: 0; width: 11px; height: 11px; }
   /* Mode + CHASE + L/M/H + Clear cluster inside the bucket header.
-     Sits between the "ORDER ENTRY" label and the .oc-spacer that
-     pushes the icon trio to the right. Inline-flex so all children
-     line up on the row's baseline; matches the modal's
-     `.oes-header-cluster` cadence. */
+     Sits between the "ORDER ENTRY" label and the CardHeader middle
+     spacer zone. Inline-flex so all children line up on the row's
+     baseline; matches the modal's `.oes-header-cluster` cadence. */
   .oc-header-cluster {
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
     flex-shrink: 0;
   }
-  /* Header — plain row matching every other bucket-card on the page.
-     Small inset padding so the label + collapse/fullscreen trio
-     don't slam against the bucket-card frame (since
-     `.bucket-card-entry` has its outer padding zeroed for the
-     SymbolPanel content alignment). */
   /* Status filter cards — polished chrome with richer gradients +
      inner highlight + soft outer shadow. Each card carries:
        • two-stop status-tinted gradient (richer than the previous

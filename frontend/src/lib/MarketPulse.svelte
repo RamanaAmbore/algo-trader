@@ -83,6 +83,7 @@
   } from '$lib/data/marketDataStores.svelte.js';
   // resolveUnderlying helpers used by loadPulse are imported via pulseLoad.js.
   import CardControls from '$lib/CardControls.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { lastRefreshAt, formatDualTz, logTimeIst } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, aggFmtGrid, pctFmtGrid, qtyFmt, directional, fmtPctScaled } from '$lib/format';
@@ -93,6 +94,7 @@
   import Select      from '$lib/Select.svelte';
   import { openActivityModal } from '$lib/stores';
   import ChartModal from '$lib/ChartModal.svelte';
+  import AddToPulseModal from '$lib/AddToPulseModal.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
@@ -237,10 +239,6 @@
   // the literal 'NEW' (reveals the inline new-list name input). Seeded
   // from the user's default watchlist when the Add popup opens.
   let targetListId = $state(/** @type {number | 'NEW' | null} */ (null));
-  // Two-click delete confirmation for the watchlist delete button in
-  // the Add popup. First click arms it (4s window); second click
-  // actually deletes. Cleared on timeout or success.
-  let _pendingDeleteId = $state(/** @type {number | null} */ (null));
   // Search popup — opened by the magnifier button at the top of the
   // header row (and by the `/` keyboard shortcut). Houses the symbol
   // input + exchange picker + typeahead + Add button. Hiding the
@@ -2960,9 +2958,7 @@
     // any other list from the dropdown.
     const def = lists.find(l => l.is_default);
     targetListId = focusedListId ?? def?.id ?? lists[0]?.id ?? null;
-    // Defer focus until the popup mounts. requestAnimationFrame is
-    // enough — the input is rendered in the same Svelte tick.
-    requestAnimationFrame(() => { symInputEl?.focus(); symInputEl?.select(); });
+    // Focus is now managed by AddToPulseModal's $effect (tick + focus).
   }
   function closeSearch() {
     searchOpen = false;
@@ -3769,7 +3765,6 @@
 
   // ── Keyboard shortcuts ────────────────────────────────────────────
   let pulseWrapper = $state(/** @type {HTMLElement | null} */ (null));
-  /** @type {HTMLInputElement | null} */ let symInputEl = $state(null);
 
   function handleKeydown(ev) {
     // Never intercept shortcuts when typing in an input/textarea.
@@ -3943,7 +3938,16 @@
                  class:is-collapsed={_effColPinWatch}
                  class:fs-card-on={_fsPinWatch}
                  style="--bucket-rows:{_bRowsPinWatch}">
-          <div class="mp-bucket-head">
+          <CardHeader
+            bind:isCollapsed={_colPinWatch}
+            bind:isFullscreen={_fsPinWatch}
+            bind:filter={_filterPinWatch}
+            cardId="pulse-pinwatch"
+            label="Pinned/Watchlist"
+            onRefresh={refreshAllNow}
+            refreshLoading={_refreshing}
+            onDownload={() => (topTab === 'pinned' ? gridPinned : gridWatch)?.exportDataAsCsv({ fileName: 'watchlist.csv' })}
+          >
             <!-- Top-tab strip. Pinned (Default + Markets merged feed)
                  lives on the left; each operator-created watchlist is
                  its own peer tab to the right, labelled with the list
@@ -3958,56 +3962,47 @@
                  string-encoded as `wl:<id>` since AlgoTabs uses string
                  ids; onChange decodes back to the number/'pinned'
                  union the rest of MarketPulse expects. -->
-            <AlgoTabs
-              tabs={[
-                { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
-                /* Operator (2026-07-01): "active tab text color must be
-                   consistent". User-created watchlists previously took
-                   the sky variant to distinguish them from Pinned; now
-                   every tab shares the canonical amber palette so the
-                   active state reads uniform across the platform. */
-                ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('amber') }))
-              ]}
-              value={topTab === 'pinned' ? 'pinned' : `wl:${topTab}`}
-              onChange={(id) => { topTab = id === 'pinned' ? 'pinned' : Number(id.slice(3)); }}
-              compact={true}
-            />
-            <!-- Watchlist manage button — opens the Add-to-Pulse modal
-                 which handles every list-level operation: add a symbol,
-                 create a new watchlist, rename existing, delete it,
-                 add/remove items. Earlier "+" glyph only conveyed
-                 "add" but the modal does much more — switched to a
-                 pencil-edits-list glyph (horizontal lines + pencil)
-                 which reads as "manage list". Same shortcut (/). -->
-            {#if !isDemo}
-              <button onclick={openSearch}
-                      title="Manage watchlists — add / rename / delete (/)"
-                      aria-label="Manage watchlists"
-                      class="mp-add-btn">
-                <svg width="14" height="14" viewBox="0 0 16 16"
-                     fill="none" stroke="currentColor" stroke-width="1.5"
-                     stroke-linecap="round" stroke-linejoin="round"
-                     aria-hidden="true">
-                  <!-- list lines on the left -->
-                  <path d="M2.5 5h5M2.5 8h5M2.5 11h3.5" />
-                  <!-- pencil overlaid on the right -->
-                  <path d="M11 3l2 2L8 10l-2.3 0.6L6.4 8.3L11 3z" />
-                  <path d="M9.7 4.3l2 2" />
-                </svg>
-              </button>
-            {/if}
-            <span class="mp-bucket-head-spacer"></span>
-            <CardControls
-              bind:isCollapsed={_colPinWatch}
-              bind:isFullscreen={_fsPinWatch}
-              bind:filter={_filterPinWatch}
-              cardId="pulse-pinwatch"
-              label="Pinned/Watchlist"
-              onRefresh={refreshAllNow}
-              refreshLoading={_refreshing}
-              onDownload={() => (topTab === 'pinned' ? gridPinned : gridWatch)?.exportDataAsCsv({ fileName: 'watchlist.csv' })}
-            />
-          </div>
+            <svelte:fragment slot="left">
+              <AlgoTabs
+                tabs={[
+                  { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
+                  /* Operator (2026-07-01): "active tab text color must be
+                     consistent". User-created watchlists previously took
+                     the sky variant to distinguish them from Pinned; now
+                     every tab shares the canonical amber palette so the
+                     active state reads uniform across the platform. */
+                  ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('amber') }))
+                ]}
+                value={topTab === 'pinned' ? 'pinned' : `wl:${topTab}`}
+                onChange={(id) => { topTab = id === 'pinned' ? 'pinned' : Number(id.slice(3)); }}
+                compact={true}
+              />
+              <!-- Watchlist manage button — opens the Add-to-Pulse modal
+                   which handles every list-level operation: add a symbol,
+                   create a new watchlist, rename existing, delete it,
+                   add/remove items. Earlier "+" glyph only conveyed
+                   "add" but the modal does much more — switched to a
+                   pencil-edits-list glyph (horizontal lines + pencil)
+                   which reads as "manage list". Same shortcut (/). -->
+              {#if !isDemo}
+                <button onclick={openSearch}
+                        title="Manage watchlists — add / rename / delete (/)"
+                        aria-label="Manage watchlists"
+                        class="mp-add-btn">
+                  <svg width="14" height="14" viewBox="0 0 16 16"
+                       fill="none" stroke="currentColor" stroke-width="1.5"
+                       stroke-linecap="round" stroke-linejoin="round"
+                       aria-hidden="true">
+                    <!-- list lines on the left -->
+                    <path d="M2.5 5h5M2.5 8h5M2.5 11h3.5" />
+                    <!-- pencil overlaid on the right -->
+                    <path d="M11 3l2 2L8 10l-2.3 0.6L6.4 8.3L11 3z" />
+                    <path d="M9.7 4.3l2 2" />
+                  </svg>
+                </button>
+              {/if}
+            </svelte:fragment>
+          </CardHeader>
           <!-- Sub-tab strip retired — each user watchlist now lives
                as its own top-tab next to Pinned. -->
 
@@ -4028,31 +4023,33 @@
                    class:is-empty={_winnersTotal === 0}
                    class:fs-card-on={_fsWinners}
                    style="--bucket-rows:{_bRowsWinners}">
-            <div class="mp-bucket-head">
-              <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
-              {#if _moversAsOf}
-                <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
-              {/if}
-              <div class="mp-head-tabs">
-                <AlgoTabs
-                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: winnerCounts[t] || undefined }))}
-                  value={_effWinTab}
-                  onChange={(id) => { winTab = /** @type {MoverTab} */ (id); }}
-                  compact={true}
-                />
-              </div>
-              <span class="mp-bucket-head-spacer"></span>
-              <CardControls
-                bind:isCollapsed={_colWinners}
-                bind:isFullscreen={_fsWinners}
-                bind:filter={_filterWinners}
-                cardId="pulse-winners"
-                label="Winners"
-                onRefresh={refreshAllNow}
-                refreshLoading={_refreshing}
-                onDownload={() => gridWin?.exportDataAsCsv({ fileName: 'winners.csv' })}
-              />
-            </div>
+            <CardHeader
+              bind:isCollapsed={_colWinners}
+              bind:isFullscreen={_fsWinners}
+              bind:filter={_filterWinners}
+              cardId="pulse-winners"
+              label="Winners"
+              onRefresh={refreshAllNow}
+              refreshLoading={_refreshing}
+              onDownload={() => gridWin?.exportDataAsCsv({ fileName: 'winners.csv' })}
+            >
+              <svelte:fragment slot="left">
+                <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+                {#if _moversAsOf}
+                  <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
+                {/if}
+              </svelte:fragment>
+              <svelte:fragment slot="middle">
+                <div class="mp-head-tabs">
+                  <AlgoTabs
+                    tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: winnerCounts[t] || undefined }))}
+                    value={_effWinTab}
+                    onChange={(id) => { winTab = /** @type {MoverTab} */ (id); }}
+                    compact={true}
+                  />
+                </div>
+              </svelte:fragment>
+            </CardHeader>
             <div bind:this={gridWinEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
         {/if}
@@ -4062,31 +4059,33 @@
                    class:is-empty={_losersTotal === 0}
                    class:fs-card-on={_fsLosers}
                    style="--bucket-rows:{_bRowsLosers}">
-            <div class="mp-bucket-head">
-              <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
-              {#if _moversAsOf}
-                <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
-              {/if}
-              <div class="mp-head-tabs">
-                <AlgoTabs
-                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: loserCounts[t] || undefined }))}
-                  value={_effLoseTab}
-                  onChange={(id) => { loseTab = /** @type {MoverTab} */ (id); }}
-                  compact={true}
-                />
-              </div>
-              <span class="mp-bucket-head-spacer"></span>
-              <CardControls
-                bind:isCollapsed={_colLosers}
-                bind:isFullscreen={_fsLosers}
-                bind:filter={_filterLosers}
-                cardId="pulse-losers"
-                label="Losers"
-                onRefresh={refreshAllNow}
-                refreshLoading={_refreshing}
-                onDownload={() => gridLose?.exportDataAsCsv({ fileName: 'losers.csv' })}
-              />
-            </div>
+            <CardHeader
+              bind:isCollapsed={_colLosers}
+              bind:isFullscreen={_fsLosers}
+              bind:filter={_filterLosers}
+              cardId="pulse-losers"
+              label="Losers"
+              onRefresh={refreshAllNow}
+              refreshLoading={_refreshing}
+              onDownload={() => gridLose?.exportDataAsCsv({ fileName: 'losers.csv' })}
+            >
+              <svelte:fragment slot="left">
+                <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+                {#if _moversAsOf}
+                  <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
+                {/if}
+              </svelte:fragment>
+              <svelte:fragment slot="middle">
+                <div class="mp-head-tabs">
+                  <AlgoTabs
+                    tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: loserCounts[t] || undefined }))}
+                    value={_effLoseTab}
+                    onChange={(id) => { loseTab = /** @type {MoverTab} */ (id); }}
+                    compact={true}
+                  />
+                </div>
+              </svelte:fragment>
+            </CardHeader>
             <div bind:this={gridLoseEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
         {/if}
@@ -4097,60 +4096,60 @@
                  class:is-collapsed={_effColPositions}
                  class:fs-card-on={_fsPositions}
                  style="--bucket-rows:{_bRowsPositions}">
-          <div class="mp-bucket-head">
-            <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
-            {#if accountPicker && availableAccounts.length > 0}
-              <!-- Per-card Account picker. Positions and Holdings each
-                   carry their own filter so an operator can scope
-                   Positions to ZG#### (intraday) while Holdings
-                   tracks ZJ#### (long-term) independently. Left-anchored
-                   so it reads as part of the card's identity strip
-                   (label + filter), not part of the controls cluster. -->
-              <div class="mp-head-acct">
-                <AccountMultiSelect bind:value={positionsAccounts}
-                  options={availableAccounts.map(a => ({ value: a, label: a }))}
-                  ariaLabel="Filter Positions by broker account" />
-              </div>
-            {/if}
-            <span class="mp-bucket-head-spacer"></span>
-            <CardControls
-              bind:isCollapsed={_colPositions}
-              bind:isFullscreen={_fsPositions}
-              bind:filter={_filterPositions}
-              cardId="pulse-positions"
-              label="Positions"
-              onRefresh={refreshAllNow}
-              refreshLoading={_refreshing}
-              onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
-            />
-          </div>
+          <CardHeader
+            bind:isCollapsed={_colPositions}
+            bind:isFullscreen={_fsPositions}
+            bind:filter={_filterPositions}
+            cardId="pulse-positions"
+            label="Positions"
+            onRefresh={refreshAllNow}
+            refreshLoading={_refreshing}
+            onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
+          >
+            <svelte:fragment slot="left">
+              <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
+              {#if accountPicker && availableAccounts.length > 0}
+                <!-- Per-card Account picker. Positions and Holdings each
+                     carry their own filter so an operator can scope
+                     Positions to ZG#### (intraday) while Holdings
+                     tracks ZJ#### (long-term) independently. Left-anchored
+                     so it reads as part of the card's identity strip
+                     (label + filter), not part of the controls cluster. -->
+                <div class="mp-head-acct">
+                  <AccountMultiSelect bind:value={positionsAccounts}
+                    options={availableAccounts.map(a => ({ value: a, label: a }))}
+                    ariaLabel="Filter Positions by broker account" />
+                </div>
+              {/if}
+            </svelte:fragment>
+          </CardHeader>
           <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
         <section class="mp-bucket-wrap mp-bucket-holdings"
                  class:is-collapsed={_effColHoldings}
                  class:fs-card-on={_fsHoldings}
                  style="--bucket-rows:{_bRowsHoldings}">
-          <div class="mp-bucket-head">
-            <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
-            {#if accountPicker && availableAccounts.length > 0}
-              <div class="mp-head-acct">
-                <AccountMultiSelect bind:value={holdingsAccounts}
-                  options={availableAccounts.map(a => ({ value: a, label: a }))}
-                  ariaLabel="Filter Holdings by broker account" />
-              </div>
-            {/if}
-            <span class="mp-bucket-head-spacer"></span>
-            <CardControls
-              bind:isCollapsed={_colHoldings}
-              bind:isFullscreen={_fsHoldings}
-              bind:filter={_filterHoldings}
-              cardId="pulse-holdings"
-              label="Holdings"
-              onRefresh={refreshAllNow}
-              refreshLoading={_refreshing}
-              onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
-            />
-          </div>
+          <CardHeader
+            bind:isCollapsed={_colHoldings}
+            bind:isFullscreen={_fsHoldings}
+            bind:filter={_filterHoldings}
+            cardId="pulse-holdings"
+            label="Holdings"
+            onRefresh={refreshAllNow}
+            refreshLoading={_refreshing}
+            onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
+          >
+            <svelte:fragment slot="left">
+              <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
+              {#if accountPicker && availableAccounts.length > 0}
+                <div class="mp-head-acct">
+                  <AccountMultiSelect bind:value={holdingsAccounts}
+                    options={availableAccounts.map(a => ({ value: a, label: a }))}
+                    ariaLabel="Filter Holdings by broker account" />
+                </div>
+              {/if}
+            </svelte:fragment>
+          </CardHeader>
           <div bind:this={gridHoldingsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
       </div>
@@ -4226,221 +4225,23 @@
 {/if}
 
 <!-- Unified Add popup — opened by the `+` button in the chrome row (or
-     the `/` keyboard shortcut). Single modal: pick a target watchlist
-     (default / existing / new), then type a symbol + pick its type
-     (EQ / FU / CE / PE), then Add. Click-outside / Esc to dismiss. -->
-{#if searchOpen}
-  <div class="search-overlay" role="dialog" aria-modal="true"
-       aria-label="Add to Pulse" tabindex="-1"
-       onclick={closeSearch}
-       onkeydown={(e) => { if (e.key === 'Escape') closeSearch(); }}>
-    <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
-      <div class="search-header">
-        <span class="search-title">Manage watchlists</span>
-        <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeSearch}>×</button>
-      </div>
-      <div class="search-body">
-        <!-- Watchlist target — Default ★ pre-selected; "+ New watchlist"
-             reveals an inline name input which is created on Add. The
-             trailing × button deletes the currently-selected list
-             (disabled for the Default list and the "+ New" sentinel). -->
-        <div class="mp-add-section-label">Watchlist</div>
-        <div class="search-row">
-          <div class="flex-1">
-            <Select ariaLabel="Watchlist" bind:value={targetListId}
-              options={[
-                ...lists.map(l => ({
-                  value: l.id,
-                  label: l.is_default ? `${l.name} ★` : l.name,
-                })),
-                ...(!isDemo ? [{ value: 'NEW', label: '+ New watchlist' }] : []),
-              ]} />
-          </div>
-          {#if typeof targetListId === 'number'}
-            {@const _tgtList = lists.find(l => l.id === targetListId)}
-            <!-- Show the Rename / Delete affordances for operator-
-                 created lists only. The shared global Pinned is the
-                 canonical always-present list — its name is fixed and
-                 it can't be deleted (would leave every user without a
-                 pinned list). Designated users can still add / remove
-                 ITEMS on it via the symbol picker + per-row × glyph;
-                 only the list-level rename / delete is locked out.
-                 Demo (anonymous) users cannot rename or delete anything. -->
-            {#if !isDemo}
-              {#if _tgtList && !_tgtList.is_global}
-                <!-- ✎ Rename — reveals the inline name input row below
-                     so the operator can edit the watchlist's name without
-                     leaving the popup. -->
-                <button type="button"
-                  onclick={(e) => {
-                    e.preventDefault();
-                    const id = /** @type {number} */ (targetListId);
-                    if (_renameId === id) { cancelRename(); return; }
-                    _renameId = id;
-                    _renameName = _tgtList.name;
-                    _renameError = '';
-                    _pendingDeleteId = null;
-                  }}
-                  class="text-[0.7rem] py-1 px-3 rounded font-bold border"
-                  style="background: rgba(56,189,248,0.2); color: var(--algo-sky); border-color: rgba(56,189,248,0.55);"
-                  title={_renameId === targetListId ? 'Cancel rename' : `Rename "${_tgtList.name}" watchlist`}>
-                  {_renameId === targetListId ? '× Cancel' : '✎ Rename'}
-                </button>
-                <button type="button"
-                  onclick={async (e) => {
-                    e.preventDefault();
-                    // Single-click delete (operator picked the list +
-                    // clicked Delete inside the Manage popup — that's
-                    // confirmation enough). The earlier two-click
-                    // pattern confused operators ("when I delete test
-                    // watchlist it is not getting deleted" — they
-                    // missed the 4-second confirm window).
-                    const id = /** @type {number} */ (targetListId);
-                    try {
-                      await dropList(id);
-                      closeSearch();
-                    } catch (err) {
-                      // Surface the failure inline so the operator sees
-                      // why nothing happened (auth lapse, 403 on Pinned,
-                      // network drop, etc.) instead of a silent no-op.
-                      _renameError = (err && err.message) || 'Delete failed.';
-                    }
-                  }}
-                  class="text-[0.7rem] py-1 px-3 rounded font-bold border"
-                  style="background: rgba(248,113,113,0.2); color: var(--c-short); border-color: var(--algo-red-border);"
-                  title={`Delete "${_tgtList.name}" watchlist`}>
-                  🗑 Delete
-                </button>
-              {/if}
-            {/if}
-          {/if}
-        </div>
-        {#if _renameId !== null && _renameId === targetListId}
-          <div class="search-row" style="margin-top: 0.4rem;">
-            <input bind:value={_renameName}
-              onkeydown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); commitRename(); }
-                else if (e.key === 'Escape') { e.preventDefault(); cancelRename(); }
-              }}
-              class="field-input text-[0.7rem] py-1 px-2 flex-1"
-              placeholder="New name" autocomplete="off" />
-            <button type="button" onclick={commitRename}
-              disabled={!_renameName.trim()}
-              class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50">Save</button>
-          </div>
-          {#if _renameError}
-            <div class="search-hint" style="color:var(--c-short)">{_renameError}</div>
-          {:else}
-            <div class="search-hint">Enter to save · Esc to cancel · names are case-insensitive and must be unique.</div>
-          {/if}
-        {/if}
-        {#if targetListId === 'NEW'}
-          <div class="search-row" style="margin-top: 0.4rem;">
-            <input bind:value={newListName}
-              onkeydown={(e) => {
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
-                  else { closeSearch(); }
-                }
-              }}
-              class="field-input text-[0.7rem] py-1 px-2 flex-1"
-              placeholder="New watchlist name" autocomplete="off" />
-          </div>
-          <div class="search-hint">
-            Names are case-insensitive and must be unique. The list is created when you press Add.
-          </div>
-        {:else if typeof targetListId === 'number'}
-          {@const _tgtCheck = lists.find(l => l.id === targetListId)}
-          {#if _tgtCheck && !_tgtCheck.is_default}
-            <div class="search-hint">
-              Pick a different list to switch target. Click 🗑 Delete to remove "{_tgtCheck.name}".
-            </div>
-          {/if}
-        {/if}
-
-        {#if !isDemo}
-          <div class="mp-add-divider"></div>
-
-          <!-- Symbol + Type. The two-letter type picker after the symbol
-               input lets the operator disambiguate equity vs derivative
-               without picking a raw exchange code (EQ/FU/CE/PE → NSE/NFO
-               internally). Typeahead picks override the type from the
-               matched instrument's tradingsymbol suffix. -->
-          <div class="mp-add-section-label">Add symbol</div>
-          <div class="search-row">
-            <input bind:this={symInputEl} bind:value={symInput}
-              oninput={(e) => { searchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
-              onfocus={() => typeaheadOpen = true}
-              onkeydown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  if (typeaheadOpen && typeahead.length && symInput.trim()) pickFromTypeahead(typeahead[0]);
-                  else addRow();
-                } else if (e.key === 'Escape') {
-                  // First Esc closes the typeahead suggestions if they're
-                  // ACTUALLY rendered (typeaheadOpen AND non-empty); a
-                  // second Esc closes the popup. When the dropdown is
-                  // invisible — onfocus sets typeaheadOpen=true even when
-                  // typeahead is [] — first Esc would otherwise no-op,
-                  // forcing operators to press Esc twice to dismiss.
-                  e.preventDefault();
-                  if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
-                  else { closeSearch(); }
-                }
-              }}
-              class="field-input text-[0.7rem] py-1 px-2 flex-1"
-              placeholder="Symbol (≥ 3 chars) — stocks, futures, options" autocomplete="off" />
-            <div class="w-16">
-              <Select ariaLabel="Type" bind:value={typeInput}
-                options={[
-                  { value: 'EQ', label: 'EQ' },
-                  { value: 'FU', label: 'FU' },
-                  { value: 'CE', label: 'CE' },
-                  { value: 'PE', label: 'PE' },
-                ]} />
-            </div>
-            <button onclick={addRow}
-              disabled={!symInput.trim() || (targetListId === 'NEW' && !newListName.trim())}
-              class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50"
-              title="Add to target watchlist">Add</button>
-          </div>
-          <!-- Optional display name (alias). Lets the operator label a
-               contract by its underlying nickname — e.g. type "Crude oil"
-               for CRUDEOIL26JUNFUT. Empty leaves the grid showing the
-               raw tradingsymbol; non-empty replaces the symbol cell with
-               the alias (and the tradingsymbol moves to the tooltip). -->
-          <div class="search-row" style="margin-top: 0.4rem;">
-            <input bind:value={aliasInput}
-              onkeydown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); addRow(); }
-                else if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
-              }}
-              class="field-input text-[0.7rem] py-1 px-2 flex-1"
-              placeholder="Display name (optional) — e.g. Crude oil"
-              autocomplete="off" />
-          </div>
-          {#if typeahead.length}
-            <div class="search-typeahead">
-              {#each typeahead as inst}
-                <button onclick={() => pickFromTypeahead(inst)}
-                  class="search-typeahead-item">
-                  <!-- displaySymbol renders GOLD_NEXT → GOLD.NEXT for virtual roots;
-                       real contracts pass through unchanged. -->
-                  <span class="font-mono text-[var(--c-action)]">{displaySymbol(inst.s)}</span>
-                  <span class="text-[0.6rem] text-[var(--c-muted)] ml-2">{inst.e}{inst.virtual ? ' · virtual' : ''}</span>
-                </button>
-              {/each}
-            </div>
-          {/if}
-          <div class="search-hint">
-            Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
-          </div>
-        {/if}
-      </div>
-    </div>
-  </div>
-{/if}
+     the `/` keyboard shortcut). Extracted to AddToPulseModal.svelte;
+     all async backend-calling functions remain here in MarketPulse. -->
+<AddToPulseModal
+  bind:open={searchOpen}
+  {lists} {focusedListId} {isDemo}
+  bind:targetListId bind:newListName
+  bind:symInput bind:typeInput bind:aliasInput
+  bind:typeahead bind:typeaheadOpen
+  bind:renameId={_renameId} bind:renameName={_renameName} bind:renameError={_renameError}
+  onAdd={addRow}
+  onDropList={dropList}
+  onCommitRename={commitRename}
+  onCancelRename={cancelRename}
+  onSearchSymbols={searchSymbols}
+  onPickTypeahead={pickFromTypeahead}
+  onClose={closeSearch}
+/>
 
 <!-- Option-chain picker modal — opens when the operator picks an F&O
      underlying from the Add popup's typeahead. Previously this rendered
@@ -4937,24 +4738,9 @@
   .mp-bucket-label-winners   { color: rgba(74, 222, 128, 0.85); }
   .mp-bucket-label-losers    { color: rgba(248, 113, 113, 0.85); }
 
-  /* Bucket header — label + universe tabs on the same row above
-     each Winners / Losers grid. The label keeps its left-border
-     accent (inherited from .mp-bucket-label) so the section still
-     reads as part of the 6-bucket family. */
-  .mp-bucket-head {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-bottom: 0.1rem;
-    /* flex-wrap: nowrap so the CollapseButton stays on the same
-       row as the label across every card — uniform vertical
-       offset (operator: "watchlist expand should align with the
-       others"). Tabs moved into a dedicated .mp-bucket-subhead
-       row below so they no longer compete with the button for
-       header-row space. */
-    flex-wrap: nowrap;
-  }
-  .mp-bucket-head .mp-bucket-label { margin-bottom: 0; }
+  /* Label lives inside CardHeader's .ch-left flex row —
+     neutralise the base margin-bottom so it centres correctly. */
+  .mp-bucket-label { margin-bottom: 0; }
   /* Closed-hours snapshot age — shown only when moversSnapshotAt is
      non-null (off-hours persisted snapshot). Sits inline after the
      Winners / Losers label; kept small + muted so it doesn't compete
@@ -4966,14 +4752,6 @@
     margin-left: 0.35rem;
     align-self: center;
     font-variant-numeric: tabular-nums;
-  }
-  /* Spacer pushes the CollapseButton to the FAR RIGHT of the
-     header regardless of card content. Label sits left, spacer
-     absorbs the gap, button locks to the right edge. Card width
-     is set by the parent column flex so collapse doesn't move
-     the button. */
-  .mp-bucket-head-spacer {
-    flex: 1 1 0;
   }
   /* Hidden grid container (inactive tab) — display:none keeps it
      in the DOM so bind:this lands at mount, but ag-Grid won't
