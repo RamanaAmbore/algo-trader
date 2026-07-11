@@ -129,9 +129,9 @@ export function seedRootMapFromInstruments(items) {
 // Core helpers
 // ---------------------------------------------------------------------------
 
-/** @returns {string}  Today's date as YYYY-MM-DD (local, not IST — close enough for UI) */
+/** @returns {string}  Today's date as YYYY-MM-DD in IST (matches backend _ist_today_iso) */
 function _todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 }
 
 // Kite FUT pattern: ROOT + YY + MON + FUT   e.g. CRUDEOIL26JUNFUT

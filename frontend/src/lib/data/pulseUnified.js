@@ -398,6 +398,7 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     if (liveHold != null && holdClose > 0 && heldQty !== 0) {
       row.day_pnl = (row.day_pnl ?? 0) + (liveHold - holdClose) * heldQty;
     } else {
+      // Holdings: day_change_val is correct (no new-position overnight_qty=0 edge case — holdings don't have intraday P&L splits)
       row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
     }
     if (liveHold != null && holdAvg > 0 && heldQty !== 0) {
