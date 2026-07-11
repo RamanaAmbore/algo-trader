@@ -166,3 +166,8 @@ export function fmtPctFraction(v, decimals = null, signed = false) {
   if (v == null || !isFinite(v)) return '—';
   return fmtPctScaled(Number(v) * 100, decimals, signed);
 }
+
+/** ag-Grid value formatter wrapping aggCompact — null-safe. */
+export function aggFmtGrid({ value }) { return value == null ? '' : aggCompact(value); }
+/** ag-Grid value formatter wrapping pctFmt — appends %. */
+export function pctFmtGrid({ value }) { return value == null ? '' : `${pctFmt(value)}%`; }

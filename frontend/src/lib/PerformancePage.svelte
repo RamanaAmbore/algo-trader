@@ -65,7 +65,7 @@
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact, aggFmtGrid, pctFmtGrid } from '$lib/format';
   import NavCard from '$lib/NavCard.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
@@ -282,9 +282,10 @@
   // tradingsymbol so no derivation is needed.
 
   // AG Grid valueFormatter wrappers — receive { value } objects.
+  // aggFmtGrid / pctFmtGrid imported from $lib/format (shared SSOT).
+  // TODO: pnl-gain/pnl-loss classes here vs cell-pos/cell-neg in pulseColumns.js
+  //   — requires CSS audit before renaming; classes may have rules in different files.
   const numFmt = ({ value }) => value == null ? '' : priceFmt(value);
-  const aggFmtGrid = ({ value }) => value == null ? '' : aggCompact(value);
-  const pctFmtGrid = ({ value }) => value == null ? '' : `${pctFmt(value)}%`;
   // Theme-aware P&L colors — actual colors live in app.css keyed to the grid theme.
   // Include 'ag-right-aligned-cell' because user-provided cellClass overrides the
   // class AG Grid adds via type: 'numericColumn'.
