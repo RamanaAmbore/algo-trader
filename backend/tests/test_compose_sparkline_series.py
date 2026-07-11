@@ -45,13 +45,28 @@ def test_live_full_series_market_open():
     assert reason == "live"
 
 
-def test_snapshot_series_market_closed():
-    """past + today, market closed, LTP suppressed → 'snapshot' reason."""
+def test_snapshot_series_market_closed_with_ltp():
+    """past + today + LTP, market closed → LTP IS appended as frozen tail, reason='snapshot'.
+
+    When closed, ltp_val comes from daily_book.ltp / 24h LKG cache — valid frozen
+    data representing the last known price. Appending it prevents the frontend's
+    _mergeSparkSeries from rejecting the fresh series as "too short" and falling
+    back to yesterday's cached curve shape.
+    """
     past = [100.0, 101.0, 102.0]
     today = [102.5, 103.0]
     ltp = 103.5
     series, reason = compose_sparkline_series(past, today, ltp, market_closed=True)
-    # Closed hours: LTP tail is NOT appended (would create false 'current' point).
+    # Closed hours: LTP tail IS appended (valid frozen last-known price from daily_book).
+    assert series == [100.0, 101.0, 102.0, 102.5, 103.0, 103.5]
+    assert reason == "snapshot"
+
+
+def test_snapshot_series_market_closed_no_ltp():
+    """past + today, market closed, no LTP available → LTP not appended, reason='snapshot'."""
+    past = [100.0, 101.0, 102.0]
+    today = [102.5, 103.0]
+    series, reason = compose_sparkline_series(past, today, None, market_closed=True)
     assert series == [100.0, 101.0, 102.0, 102.5, 103.0]
     assert reason == "snapshot"
 
@@ -61,6 +76,48 @@ def test_past_only_market_open_with_ltp():
     series, reason = compose_sparkline_series([100.0, 101.0], [], 102.0, False)
     assert series == [100.0, 101.0, 102.0]
     assert reason == "live"
+
+
+def test_closed_hours_ltp_tail_appended_from_daily_book():
+    """market_closed=True + ltp_val from daily_book.ltp → LTP appended as frozen tail.
+
+    Regression guard for the closed-hours sparkline stale-curve bug:
+    Without this fix, compose_sparkline_series suppressed the LTP tail when
+    market_closed=True, making the fresh series shorter than the cached version
+    (which included past+intraday+LTP from the last open session). The frontend's
+    _mergeSparkSeries length-gate then rejected the fresh series, locking in
+    yesterday's curve shape for the entire closed-hours window.
+
+    Fix: when ltp_val is provided (sourced from daily_book.ltp or 24h LKG cache),
+    it is valid frozen data — the last known price at market close — and should
+    always be appended regardless of market_closed status.
+    """
+    past = [2800.0, 2820.0, 2835.0, 2845.0, 2850.0]
+    today = [2851.0, 2855.0, 2860.0]
+    # ltp from daily_book.ltp — the last price when the market closed
+    ltp = 2862.5
+
+    series, reason = compose_sparkline_series(past, today, ltp, market_closed=True)
+
+    assert reason == "snapshot", f"Expected 'snapshot', got {reason!r}"
+    assert series[-1] == ltp, (
+        f"daily_book LTP {ltp} must be the final data point in the series. "
+        f"Got series ending at {series[-1] if series else 'empty'}"
+    )
+    assert series == past + today + [ltp], (
+        f"Expected past+today+[ltp], got {series}"
+    )
+
+
+def test_closed_hours_no_ltp_past_only():
+    """market_closed=True + no ltp_val → series is past+today (no tail)."""
+    past = [100.0, 101.0, 102.0]
+    today = [102.5, 103.0]
+
+    series, reason = compose_sparkline_series(past, today, None, market_closed=True)
+
+    assert reason == "snapshot"
+    assert series == past + today, f"Expected past+today, got {series}"
 
 
 # --- Padding cases --------------------------------------------------------
@@ -76,10 +133,16 @@ def test_ltp_only_flat_pad_market_open():
 
 
 def test_ltp_only_market_closed_flat_pad():
-    """Closed hours + only LTP (mmap last-known) → 2-pt flat via ltp_only_flat_pad."""
+    """Closed hours + only LTP (last-known price) → 2-pt flat baseline.
+
+    With market_closed=True the tail_ltp is now always appended (Bug 1 fix),
+    so series=[ltp] (1 point) hits the single_point_pad branch rather than
+    ltp_only_flat_pad. Both produce [ltp, ltp] — the observable shape is the
+    same; only the reason differs.
+    """
     series, reason = compose_sparkline_series([], [], 100.5, market_closed=True)
     assert series == [100.5, 100.5]
-    assert reason == "ltp_only_flat_pad"
+    assert reason in ("single_point_pad", "ltp_only_flat_pad")
 
 
 # --- Empty cases: reason attribution --------------------------------------

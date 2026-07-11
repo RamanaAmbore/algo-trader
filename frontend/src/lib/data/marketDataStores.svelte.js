@@ -575,11 +575,10 @@ function _mergeSparkSeries(cached, fresh) {
   // Strong preference: real curve beats flat line. Discard a fresh
   // degenerate series if the cache holds a real curve.
   if (cachedVar && !freshVar) return cached;
-  // Both flat OR both have variation → take the longer one (fresh
-  // wins on ties so live-LTP tail updates still propagate).
-  if (fresh.length >= cached.length) return fresh;
-  // Fresh strictly shorter AND no variation → cache wins.
-  if (!freshVar) return cached;
+  // Fresh has variation (or cached doesn't) — take fresh regardless of length.
+  // The prior length-gate blocked valid closed-hours series that were shorter
+  // than the cached version (past+intraday+LTP vs past+intraday only when
+  // the market-close LTP tail was missing), causing yesterday's curve to persist.
   return fresh;
 }
 

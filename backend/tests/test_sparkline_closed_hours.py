@@ -505,8 +505,14 @@ async def test_empty_daily_book_graceful_empty_series():
 # Test 9: compose_sparkline_series — market_closed=True, past>=1
 # ---------------------------------------------------------------------------
 
-def test_compose_market_closed_past_present_no_ltp_tail():
-    """market_closed=True, past>=1 → LTP tail is NOT appended."""
+def test_compose_market_closed_past_present_with_ltp_tail():
+    """market_closed=True, past>=1, ltp available → LTP IS appended as frozen tail.
+
+    When closed, ltp_val (sourced from daily_book.ltp or 24h LKG cache) represents
+    the last known price at market close — valid frozen data. Appending it ensures
+    the fresh series is at least as long as the cached version so _mergeSparkSeries
+    doesn't fall back to yesterday's curve shape.
+    """
     from backend.api.routes.quote import compose_sparkline_series
 
     past = [100.0, 101.0, 102.0]
@@ -515,12 +521,28 @@ def test_compose_market_closed_past_present_no_ltp_tail():
 
     series, reason = compose_sparkline_series(past, today_bars, ltp, market_closed=True)
 
-    # LTP must NOT appear in the series (stale overnight LTP would mislead)
-    assert series == [100.0, 101.0, 102.0, 102.5], (
-        f"Unexpected series when market closed: {series}. LTP should not be appended."
+    # LTP MUST appear as the final point (frozen last-known price from daily_book)
+    assert series == [100.0, 101.0, 102.0, 102.5, 103.5], (
+        f"Unexpected series when market closed: {series}. "
+        "daily_book LTP should be appended as frozen tail."
     )
     assert reason == "snapshot"
-    assert ltp not in series, "Stale LTP was appended despite market_closed=True"
+    assert series[-1] == ltp, "daily_book LTP must be the final data point"
+
+
+def test_compose_market_closed_past_present_no_ltp():
+    """market_closed=True, past>=1, ltp=None → LTP not appended, series is past+today."""
+    from backend.api.routes.quote import compose_sparkline_series
+
+    past = [100.0, 101.0, 102.0]
+    today_bars = [102.5]
+
+    series, reason = compose_sparkline_series(past, today_bars, None, market_closed=True)
+
+    assert series == [100.0, 101.0, 102.0, 102.5], (
+        f"Unexpected series: {series}. Without LTP, series should be past+today only."
+    )
+    assert reason == "snapshot"
 
 
 # ---------------------------------------------------------------------------

@@ -944,8 +944,8 @@ def compose_sparkline_series(
 
     Ladder (top wins):
       past >= 1 AND (today_bars >= 1 OR ltp_val > 0):
-        → past + today_bars + [ltp_val if open], reason='live'
-      past >= 1 AND market closed:
+        → past + today_bars + [ltp_val], reason='live' (open) or 'snapshot' (closed)
+      past >= 1 AND market closed AND ltp_val is None:
         → past + today_bars, reason='snapshot'
       past == 0 AND ltp_val > 0:
         → [ltp_val, ltp_val] flat baseline, reason='ltp_only_flat_pad'
@@ -958,14 +958,22 @@ def compose_sparkline_series(
           - spark_past_cache_miss (today ok, past empty)
           - spark_today_cache_miss (past ok, today empty, no LTP)
 
-    Reason 'live' == "actually rendered from live-ish data".
-    Reason 'snapshot' == "actually rendered from stale cache" — still
+    Reason 'live' == "actually rendered from live-ish data (market open)".
+    Reason 'snapshot' == "rendered from frozen data (market closed)" — still
     displayable but the frontend can label it "as of <time>".
+
+    When market_closed=True and ltp_val is provided (sourced from daily_book.ltp
+    or 24h LKG cache), it IS appended as the final data point. This is the last
+    known price from when the market closed — valid frozen data that prevents
+    the frontend from rejecting the series as "too short" and falling back to
+    yesterday's cached curve shape.
     """
-    # Live LTP tail only when market is open (mirrors existing batch endpoint
-    # semantics: appending stale LTP overnight would create a misleading
-    # "current" data point on top of good history).
-    tail_ltp = (ltp_val if (ltp_val and ltp_val > 0) else None) if not market_closed else None
+    # Append LTP tail when available. When closed, ltp_val comes from
+    # daily_book.ltp / 24h LKG cache — valid frozen data, not a stale
+    # "current" price. Without it the series is shorter than the cached
+    # version (which had past+intraday+LTP), causing _mergeSparkSeries to
+    # reject the fresh series and lock in yesterday's curve shape.
+    tail_ltp = ltp_val if (ltp_val and ltp_val > 0) else None
 
     series = list(past) + list(today_bars)
     if tail_ltp is not None:
