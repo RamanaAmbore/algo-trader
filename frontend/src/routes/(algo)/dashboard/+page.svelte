@@ -2113,6 +2113,10 @@
           onRefresh={_refreshAll}
           bind:refreshLoading={_refreshing}
           showSearch={false}
+          onDownload={() => {
+            _marginGrid?.exportDataAsCsv({ fileName: 'margin.csv' });
+            _fundsGrid?.exportDataAsCsv({ fileName: 'funds.csv' });
+          }}
         />
       {:else}
         <CardControls
@@ -2122,6 +2126,10 @@
           onRefresh={_refreshAll}
           bind:refreshLoading={_refreshing}
           showSearch={false}
+          onDownload={() => {
+            _eqPosGrid?.exportDataAsCsv({ fileName: 'positions.csv' });
+            _eqHoldGrid?.exportDataAsCsv({ fileName: 'holdings.csv' });
+          }}
         />
       {/if}
     </div>

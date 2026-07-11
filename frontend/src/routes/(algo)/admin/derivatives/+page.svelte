@@ -51,6 +51,7 @@
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
   import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
+  import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -4109,6 +4110,20 @@
           label="Legs"
           onRefresh={_refreshAll}
           bind:refreshLoading={_refreshing}
+          onDownload={() => exportRowsToCsv(
+            displayedCandidates,
+            [
+              { header: 'Symbol',    key: 'symbol' },
+              { header: 'Exchange',  key: 'exchange' },
+              { header: 'Account',   key: 'account' },
+              { header: 'Qty',       key: 'qty' },
+              { header: 'Avg',       key: 'avg_cost',        format: (v) => v == null ? '' : String(v) },
+              { header: 'LTP',       key: 'ltp',             format: (v) => v == null ? '' : String(v) },
+              { header: 'Day P&L',   key: 'day_change_val',  format: (v) => v == null ? '' : String(v) },
+              { header: 'P&L',       key: 'pnl',             format: (v) => v == null ? '' : String(v) },
+            ],
+            'legs.csv'
+          )}
         />
       </span>
     </div>
@@ -4608,6 +4623,52 @@
         label="Snapshot"
         onRefresh={_refreshAll}
         bind:refreshLoading={_refreshing}
+        onDownload={() => {
+          const rows = _byUnderlyingTotals.map(g => {
+            const _q      = _underlyingQuotes[g.underlying];
+            const dayVal  = _dayPnlByRootMap[g.underlying] ?? 0;
+            const pnlVal  = _pnlByRootMap[g.underlying] ?? 0;
+            const expVal  = _expPnlByRootMap[g.underlying] ?? 0;
+            const hDay    = _hDayByRoot[g.underlying] || 0;
+            const hPnl    = _hPnlByRoot[g.underlying] || 0;
+            return {
+              underlying:  g.underlying,
+              spot:        _q ? _q.ltp        : '',
+              day_pct:     _q && _q.day_pct != null ? _q.day_pct : '',
+              prev_close:  _q ? _q.prev_close : '',
+              day_pnl:     dayVal,
+              h_day_pnl:   hDay,
+              pnl:         pnlVal,
+              exp_pnl:     expVal,
+              day_pnl_net: dayVal + hDay,
+              pnl_net:     pnlVal + hPnl,
+              exp_pnl_net: expVal + hPnl,
+              legs:        g.legs_with,
+              qty_fno:     g.qty_fno || '',
+              qty_eq:      g.qty_eq  || '',
+            };
+          });
+          exportRowsToCsv(
+            rows,
+            [
+              { header: 'Underlying',   key: 'underlying' },
+              { header: 'Spot',         key: 'spot',        format: (v) => v == null ? '' : String(v) },
+              { header: 'Day %',        key: 'day_pct',     format: (v) => v === '' ? '' : Number(v).toFixed(2) },
+              { header: 'Close',        key: 'prev_close',  format: (v) => v == null ? '' : String(v) },
+              { header: 'Day P&L',      key: 'day_pnl',     format: (v) => String(v) },
+              { header: 'H Day P&L',    key: 'h_day_pnl',   format: (v) => String(v) },
+              { header: 'P&L',          key: 'pnl',         format: (v) => String(v) },
+              { header: 'Exp P&L',      key: 'exp_pnl',     format: (v) => String(v) },
+              { header: 'Day P&L Net',  key: 'day_pnl_net', format: (v) => String(v) },
+              { header: 'P&L Net',      key: 'pnl_net',     format: (v) => String(v) },
+              { header: 'Exp P&L Net',  key: 'exp_pnl_net', format: (v) => String(v) },
+              { header: 'Legs',         key: 'legs',        format: (v) => String(v) },
+              { header: 'F&O Qty',      key: 'qty_fno',     format: (v) => v == null ? '' : String(v) },
+              { header: 'Eq Qty',       key: 'qty_eq',      format: (v) => v == null ? '' : String(v) },
+            ],
+            'snapshot.csv'
+          );
+        }}
       />
     </span>
   </div>
