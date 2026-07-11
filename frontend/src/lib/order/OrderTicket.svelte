@@ -39,6 +39,7 @@
   } from './orderTicketSubmit.js';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
+  import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
   import { getDefaultAccount } from '$lib/data/accounts';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
@@ -692,14 +693,6 @@
   const _selectedTemplate = $derived(
     _templates.find(t => t.id === templateId) || null
   );
-
-  function _appliesToFor(side, sym) {
-    if (side === 'SELL' && /\d+(CE|PE)$/i.test(sym || '')) return 'sell_option';
-    if (side === 'SELL') return 'sell_any';
-    if (side === 'BUY'  && /\d+(CE|PE)$/i.test(sym || '')) return 'buy_option';
-    if (side === 'BUY')  return 'buy_any';
-    return 'both';
-  }
 
   // Two-state Template toggle (Default / None) — replaces the legacy
   // multi-row Select. Operator: "Keep it simple to start using it."

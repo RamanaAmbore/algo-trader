@@ -50,6 +50,7 @@
   // attached per leg in submitBasket. Single source of truth so
   // CRUD on /automation/templates propagates here without a refresh.
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
+  import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
@@ -823,14 +824,6 @@
   // current direction. Returns 'sell_option' for SELL CE/PE legs (the
   // only scope that wants a protective wing), 'sell_any' / 'buy_any'
   // for the directional defaults, and 'both' as a no-op catch.
-  /** @param {string} sd @param {string} sym */
-  function _appliesToFor(sd, sym) {
-    if (sd === 'SELL' && /\d+(CE|PE)$/i.test(sym || '')) return 'sell_option';
-    if (sd === 'SELL') return 'sell_any';
-    if (sd === 'BUY'  && /\d+(CE|PE)$/i.test(sym || '')) return 'buy_option';
-    if (sd === 'BUY')  return 'buy_any';
-    return 'both';
-  }
   // Shell-level template parameter overrides. Editing these in the
   // "On fill" row updates them; OrderTicket binds them so its own
   // submit carries the values. Operator: "on fill selected, if there
