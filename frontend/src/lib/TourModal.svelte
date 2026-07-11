@@ -12,6 +12,7 @@
 -->
 <script>
   import { goto } from '$app/navigation';
+  import ModalShell from '$lib/ModalShell.svelte';
 
   /**
    * @typedef {object} Props
@@ -121,9 +122,7 @@
   // No JS RAF loop needed.
 </script>
 
-<div class="tour-overlay" onclick={onClose}
-     onkeydown={(e) => { if (e.key === 'Enter') onClose(); }}
-     role="presentation">
+<ModalShell open={true} {onClose} zIndex={110} clickOutside={true}>
   <div class="tour-modal algo-modal" role="dialog" aria-modal="true" aria-labelledby="tour-title" tabindex="-1"
        onclick={(e) => e.stopPropagation()}
        onkeydown={(e) => e.stopPropagation()}>
@@ -166,17 +165,9 @@
       </button>
     </div>
   </div>
-</div>
+</ModalShell>
 
 <style>
-  .tour-overlay {
-    position: fixed; inset: 0;
-    background: rgba(8, 12, 20, 0.78);
-    backdrop-filter: blur(4px);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 110;
-    padding: 1rem;
-  }
   .tour-modal {
     /* Composes .algo-modal chrome. Overrides:
        - background: elevated-dark gradient (intentional splash-mode
@@ -187,6 +178,7 @@
     position: relative;
     max-width: 36rem;
     width: 100%;
+    margin: 1rem;
     background: linear-gradient(180deg, #0f172a 0%, #131c33 100%);
     border: 1px solid var(--algo-amber-border);
     padding: 0 1.6rem 1.2rem;
