@@ -3984,7 +3984,7 @@ async def _task_warm_backfill() -> None:
         import pandas as pd
         from backend.brokers import broker_apis
 
-        dfs = broker_apis.fetch_holdings()
+        dfs = await asyncio.to_thread(broker_apis.fetch_holdings)
         df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
         if not df_h.empty and "tradingsymbol" in df_h.columns:
             _h_exch = df_h["exchange"] if "exchange" in df_h.columns else pd.Series(["NSE"] * len(df_h))
@@ -4004,7 +4004,7 @@ async def _task_warm_backfill() -> None:
         import pandas as pd
         from backend.brokers import broker_apis
 
-        dfs = broker_apis.fetch_positions()
+        dfs = await asyncio.to_thread(broker_apis.fetch_positions)
         df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
         if not df_p.empty and "tradingsymbol" in df_p.columns:
             _p_exch = df_p["exchange"] if "exchange" in df_p.columns else pd.Series(["NFO"] * len(df_p))
