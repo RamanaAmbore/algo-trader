@@ -879,6 +879,34 @@ async def _preflight_validate_lots(
     return blockers, hard_stop
 
 
+def _preflight_validate_account(account: str) -> dict | None:
+    """
+    Check that *account* is present in the loaded broker connections.
+
+    Returns a blocker dict when unknown, None when valid.
+    Side-effect free; does not modify any shared state.
+    """
+    from backend.brokers.connections import Connections
+    conns = Connections()
+    loaded_accounts: set[str] = set(conns.conn.keys())
+    # Cutover branch — local Connections is empty when conn_service owns
+    # the sessions, so consult /internal/accounts for the canonical list.
+    from backend.brokers.client import is_cutover_on
+    if is_cutover_on() and not loaded_accounts:
+        from backend.brokers.client.remote_broker import list_remote_accounts
+        loaded_accounts = {r["account"] for r in list_remote_accounts() if r.get("account")}
+    if account not in loaded_accounts:
+        from backend.shared.helpers.utils import mask_account
+        masked = mask_account(account) if account else account
+        return {
+            "code":   "ACCOUNT_UNKNOWN",
+            "reason": f"Account {masked} not loaded in broker connections",
+            "fix":    "Add the account in /admin/brokers and verify it shows LOADED",
+            "data":   {},
+        }
+    return None
+
+
 async def run_preflight(
     account: str,
     order: dict,
@@ -910,7 +938,6 @@ async def run_preflight(
     """
     import asyncio
     import math
-    from backend.brokers.connections import Connections
 
     blocked: list[dict] = []
     diagnostics: dict = {
@@ -950,23 +977,9 @@ async def run_preflight(
         return {"ok": False, "blocked": _hard_blockers, "diagnostics": diagnostics}
 
     # ── 1. ACCOUNT_UNKNOWN ────────────────────────────────────────────────
-    conns = Connections()
-    loaded_accounts: set[str] = set(conns.conn.keys())
-    # Cutover branch — local Connections is empty when conn_service owns
-    # the sessions, so consult /internal/accounts for the canonical list.
-    from backend.brokers.client import is_cutover_on
-    if is_cutover_on() and not loaded_accounts:
-        from backend.brokers.client.remote_broker import list_remote_accounts
-        loaded_accounts = {r["account"] for r in list_remote_accounts() if r.get("account")}
-    if account not in loaded_accounts:
-        from backend.shared.helpers.utils import mask_account
-        masked = mask_account(account) if account else account
-        blocked.append({
-            "code":   "ACCOUNT_UNKNOWN",
-            "reason": f"Account {masked} not loaded in broker connections",
-            "fix":    "Add the account in /admin/brokers and verify it shows LOADED",
-            "data":   {},
-        })
+    _acct_blocker = _preflight_validate_account(account)
+    if _acct_blocker is not None:
+        blocked.append(_acct_blocker)
         return {"ok": False, "blocked": blocked, "diagnostics": diagnostics}
 
     # Resolve via the Broker registry — every method below is on the
