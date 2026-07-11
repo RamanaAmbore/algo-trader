@@ -221,28 +221,17 @@ async def auth_or_demo_guard(connection: ASGIConnection, handler: BaseRouteHandl
     Soft authentication guard for endpoints that serve both authenticated
     admins AND anonymous demo visitors (the algo UI's data endpoints).
 
-    On prod (main):
-      - admin JWT present → request flows like jwt_guard would have allowed
-      - no admin JWT       → request is allowed but tagged as demo via
-                            connection.state.is_demo = True
+    Authenticated (any valid JWT) → request flows like jwt_guard.
+    Anonymous → request is allowed and tagged as demo via
+                connection.state.is_demo = True.
 
-    On dev (non-main):
-      - admin JWT required (mirrors the existing jwt_guard behaviour),
-        because dev has no demo mode.
+    Works on both prod (main) and dev (non-main) branches.
 
     Endpoints that share data between admin and demo paths read
     `connection.state.is_demo` to branch — typically gating off broker
     access via Connections._kite_for() (which raises in demo) and
     routing reads to demo fixtures.
     """
-    from backend.shared.helpers.utils import is_prod_branch
-
-    if not is_prod_branch():
-        # No demo mode on dev — fall through to the strict guard.
-        await jwt_guard(connection, handler)
-        connection.state.is_demo = False
-        return
-
     if is_authenticated_request(connection):
         # ANY valid JWT (designated / admin / trader / risk / partner)
         # → run the strict guard so live-state checks fire
@@ -254,7 +243,7 @@ async def auth_or_demo_guard(connection: ASGIConnection, handler: BaseRouteHandl
         connection.state.is_demo = False
         return
 
-    # Anonymous on prod → demo session.
+    # Anonymous → demo session (prod and dev).
     connection.state.token_payload = {"role": "demo", "user": "demo"}
     connection.state.is_demo = True
 
