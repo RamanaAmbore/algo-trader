@@ -18,7 +18,7 @@
   } from '$lib/data/marketDataStores.svelte.js';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
-  import GridSearchButton from '$lib/GridSearchButton.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import GridDownloadButton from '$lib/GridDownloadButton.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
@@ -1335,14 +1335,12 @@
 
 <!-- Summary (active tab) -->
 <section class:hidden={activeTab !== 'positions'}>
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Summary</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    <GridDownloadButton
-      onClick={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
-      label="Positions Summary"
-    />
-  </div>
+  <CardHeader
+    title="Summary"
+    showSearch={false}
+    onDownload={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
+    label="Positions Summary"
+  />
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
@@ -1350,14 +1348,12 @@
 </section>
 
 <section class:hidden={activeTab !== 'holdings'}>
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Summary</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    <GridDownloadButton
-      onClick={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
-      label="Holdings Summary"
-    />
-  </div>
+  <CardHeader
+    title="Summary"
+    showSearch={false}
+    onDownload={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
+    label="Holdings Summary"
+  />
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
@@ -1369,28 +1365,22 @@
 
 <!-- Detail (active tab) — the per-symbol drill-down -->
 <section class:hidden={activeTab !== 'positions'}>
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Breakdown</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    <GridSearchButton bind:filter={_filterPositions} label="Positions" />
-    <GridDownloadButton
-      onClick={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
-      label="Positions"
-    />
-  </div>
+  <CardHeader
+    title="Breakdown"
+    bind:filter={_filterPositions}
+    onDownload={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
+    label="Positions"
+  />
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
 <section class:hidden={activeTab !== 'holdings'}>
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Breakdown</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
-    <GridDownloadButton
-      onClick={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
-      label="Holdings"
-    />
-  </div>
+  <CardHeader
+    title="Breakdown"
+    bind:filter={_filterHoldings}
+    onDownload={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
+    label="Holdings"
+  />
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
@@ -1493,14 +1483,6 @@
   .perf-ts-row {
     border-bottom: 1px solid var(--card-ts-divider, #d8d4cc);
   }
-  /* Tighter heading-to-grid gap on the public side. The .perf-strategy
-     marker (always present on the public route, absent on the algo
-     dashboard) scopes this and every other public-only style below. */
-  :global(.perf-strategy ~ section .section-heading),
-  :global(.perf-strategy ~ h2.section-heading) {
-    margin-bottom: 0.25rem;
-  }
-
   /* Strategy thesis — operator: "flip card decoration between first
      and second cards in performance page." Strategy traded its
      prominent .pub-callout (warm #f0ead8 + #d4c89f) for the softer
@@ -1726,31 +1708,7 @@
     background: rgba(212, 146, 12, 0.07) !important;
   }
 
-  /* Heading row for the Positions / Holdings grids — pairs the h2
-     with a <GridSearchButton> at the right. Same baseline-pull as
-     funds-heading-row so the icon doesn't visually drift above the
-     heading text. */
-  .perf-grid-headrow {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.25rem;
-  }
-  .perf-grid-headrow .section-heading {
-    margin-bottom: 0;
-    line-height: 1.4;
-    display: inline-flex;
-    align-items: center;
-  }
-  .perf-grid-headrow-spacer { flex: 1; }
-
   /* ── Dark (algo) overrides ─────────────────────────────────────────────── */
-  /* Section headings ("Fund Balances", "Summary", "Positions",
-     "Holdings") demoted from full amber to light blue so the three
-     heading tiers (page title amber → section label muted blue →
-     section heading light blue) read as distinct strata. Previously
-     all three tiers rendered in var(--c-action) and the hierarchy collapsed. */
-  .perf-dark :global(.section-heading) { color: var(--algo-slate); }
 
   /* Refresh button */
   .perf-dark :global(.btn-secondary) {
