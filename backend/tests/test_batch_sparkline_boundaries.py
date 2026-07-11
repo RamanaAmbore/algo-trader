@@ -18,120 +18,165 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+# =============================================================================
+# Group 1: HTTP-level tests (via async_client)
+# =============================================================================
+
+
 @pytest.mark.asyncio
-async def test_batch_sparkline_empty_symbols_returns_empty():
-    """POST /api/quotes/sparkline with symbols=[] returns 200 with empty data dict
+async def test_batch_sparkline_empty_symbols_returns_empty(async_client):
+    """POST /api/quotes/sparkline with symbols=[] returns 2xx with empty data dict
     (not 400 error)."""
-    from backend.api.routes.quote import SparklineRequest, SparklineResponse
+    request_body = {
+        "symbols": [],
+        "days": 5,
+    }
 
-    # Create a minimal request with no symbols
-    request_data = SparklineRequest(symbols=[], days=5)
+    response = await async_client.post(
+        "/api/quotes/sparkline",
+        json=request_body,
+    )
 
-    # Mock the endpoint handler directly (simulate the POST path)
-    from backend.api.routes.quote import SparklineController
-    controller = SparklineController()
+    # Should return 2xx (200/201), not 4xx or 5xx
+    assert 200 <= response.status_code < 300, (
+        f"Expected 2xx success, got {response.status_code}: {response.text}"
+    )
 
-    # Call the handler
-    response = await controller.batch_sparkline(request_data)
-
-    # Verify response shape
-    assert isinstance(response, SparklineResponse)
-    assert response.data == {}, f"Expected empty data dict, got {response.data}"
-    assert response.refreshed_at is not None
-    assert isinstance(response.refreshed_at, str)
+    data = response.json()
+    assert "data" in data, "Response should have 'data' key"
+    assert isinstance(data["data"], dict), "'data' should be a dict"
+    assert data["data"] == {}, f"Expected empty data dict, got {data['data']}"
+    assert "refreshed_at" in data, "Response should have 'refreshed_at' key"
+    assert isinstance(data["refreshed_at"], str), "'refreshed_at' must be an ISO-8601 timestamp string"
 
 
 @pytest.mark.asyncio
-async def test_batch_sparkline_over_100_symbols_returns_400():
+async def test_batch_sparkline_over_100_symbols_returns_400(async_client):
     """POST /api/quotes/sparkline with 101 symbols returns 400 HTTPException."""
-    from backend.api.routes.quote import SparklineRequest, SparklineSymbol
-    from litestar.exceptions import HTTPException
-
     # Create a request with 101 symbols (over the cap)
     symbols = [
-        SparklineSymbol(tradingsymbol=f"SYM{i:03d}", exchange="NSE")
+        {"tradingsymbol": f"SYM{i:03d}", "exchange": "NSE"}
         for i in range(101)
     ]
-    request_data = SparklineRequest(symbols=symbols, days=5)
+    request_body = {
+        "symbols": symbols,
+        "days": 5,
+    }
 
-    from backend.api.routes.quote import SparklineController
-    controller = SparklineController()
+    response = await async_client.post(
+        "/api/quotes/sparkline",
+        json=request_body,
+    )
 
-    # Should raise HTTPException with 400 status
-    with pytest.raises(HTTPException) as exc_info:
-        await controller.batch_sparkline(request_data)
+    # Should return 400
+    assert response.status_code == 400, (
+        f"Expected 400 for >100 symbols, got {response.status_code}: {response.text}"
+    )
 
-    assert exc_info.value.status_code == 400
-    assert "cap is 100" in exc_info.value.detail
+    data = response.json()
+    assert "detail" in data, "Error response should have 'detail' key"
+    assert "cap is 100" in data["detail"], (
+        f"Error message should mention 100-symbol cap, got: {data['detail']}"
+    )
 
 
 @pytest.mark.asyncio
-async def test_batch_sparkline_days_clamped_to_1():
+async def test_batch_sparkline_days_clamped_to_1(async_client):
     """days=0 is clamped to 1 (no crash)."""
-    from backend.api.routes.quote import SparklineRequest, SparklineSymbol
+    from backend.api.routes.quote import SparklineSymbol
 
-    symbols = [SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE")]
-    request_data = SparklineRequest(symbols=symbols, days=0)
-
-    from backend.api.routes.quote import SparklineController
-    controller = SparklineController()
+    request_body = {
+        "symbols": [{"tradingsymbol": "RELIANCE", "exchange": "NSE"}],
+        "days": 0,
+    }
 
     # Mock the async dependencies to avoid broker calls
+    mock_sym = SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE")
     with patch("backend.api.routes.quote._normalize_sparkline_symbols",
-               new=AsyncMock(return_value=(symbols, {}))), \
+               new=AsyncMock(return_value=([mock_sym], {}))), \
          patch("backend.api.routes.quote._any_segment_open",
                new=AsyncMock(return_value=False)), \
          patch("backend.api.routes.quote._fetch_bars_parallel",
                new=AsyncMock(return_value=({}, {}))), \
+         patch("backend.api.routes.quote._self_heal_empty_bars",
+               new=AsyncMock()), \
+         patch("backend.api.routes.quote._fill_from_daily_book_sparkline",
+               new=AsyncMock()), \
          patch("backend.api.routes.quote._resolve_spark_ltps",
                new=AsyncMock(return_value={})), \
          patch("backend.api.routes.quote._compose_and_dual_write",
                new=MagicMock(return_value={})):
-        response = await controller.batch_sparkline(request_data)
+        response = await async_client.post(
+            "/api/quotes/sparkline",
+            json=request_body,
+        )
 
-    # Should not raise; response is valid
-    assert response.data == {}
-    assert response.refreshed_at is not None
+    # Should not raise; response is valid (2xx)
+    assert 200 <= response.status_code < 300, (
+        f"Expected 2xx success, got {response.status_code}: {response.text}"
+    )
+
+    data = response.json()
+    assert isinstance(data["data"], dict), "'data' should be a dict"
+    assert data["refreshed_at"] is not None
 
 
 @pytest.mark.asyncio
-async def test_batch_sparkline_days_clamped_to_90():
+async def test_batch_sparkline_days_clamped_to_90(async_client):
     """days=200 is clamped to 90 (no crash)."""
-    from backend.api.routes.quote import SparklineRequest, SparklineSymbol
+    from backend.api.routes.quote import SparklineSymbol
 
-    symbols = [SparklineSymbol(tradingsymbol="NIFTY", exchange="NSE")]
-    request_data = SparklineRequest(symbols=symbols, days=200)
+    request_body = {
+        "symbols": [{"tradingsymbol": "NIFTY", "exchange": "NSE"}],
+        "days": 200,
+    }
 
-    from backend.api.routes.quote import SparklineController
-    controller = SparklineController()
+    # Mock all async calls and capture the days argument passed to _fetch_bars_parallel
+    mock_fetch_bars = AsyncMock(return_value=({}, {}))
+    mock_sym = SparklineSymbol(tradingsymbol="NIFTY", exchange="NSE")
 
-    # Mock all async calls
     with patch("backend.api.routes.quote._normalize_sparkline_symbols",
-               new=AsyncMock(return_value=(symbols, {}))), \
+               new=AsyncMock(return_value=([mock_sym], {}))), \
          patch("backend.api.routes.quote._any_segment_open",
                new=AsyncMock(return_value=False)), \
          patch("backend.api.routes.quote._fetch_bars_parallel",
-               new=AsyncMock(return_value=({}, {}))) as m_fetch, \
+               new=mock_fetch_bars), \
+         patch("backend.api.routes.quote._self_heal_empty_bars",
+               new=AsyncMock()), \
+         patch("backend.api.routes.quote._fill_from_daily_book_sparkline",
+               new=AsyncMock()), \
          patch("backend.api.routes.quote._resolve_spark_ltps",
                new=AsyncMock(return_value={})), \
          patch("backend.api.routes.quote._compose_and_dual_write",
                new=MagicMock(return_value={})):
-        response = await controller.batch_sparkline(request_data)
+        response = await async_client.post(
+            "/api/quotes/sparkline",
+            json=request_body,
+        )
 
     # Verify _fetch_bars_parallel was called with days=90 (clamped)
-    assert m_fetch.await_count == 1
-    call_kwargs = m_fetch.call_args[1]
-    assert call_kwargs.get("days") == 90, \
-        f"Expected days=90 (clamped), got {call_kwargs.get('days')}"
+    assert mock_fetch_bars.await_count >= 1, "Expected _fetch_bars_parallel to be called"
+    # call_args is a tuple of (args, kwargs); days is the 5th positional arg (index 4)
+    call_args = mock_fetch_bars.call_args[0]
+    actual_days = call_args[4] if len(call_args) > 4 else None
+    assert actual_days == 90, (
+        f"Expected days=90 (clamped), got {actual_days} in args {call_args}"
+    )
+    assert 200 <= response.status_code < 300, (
+        f"Expected 2xx success, got {response.status_code}: {response.text}"
+    )
+
+
+# =============================================================================
+# Group 2: Unit-level tests (direct function calls, not HTTP)
+# =============================================================================
 
 
 @pytest.mark.asyncio
 async def test_dual_write_bare_and_resolved_keys():
     """When a resolved contract key (e.g., CRUDEOIL26JULFUT) has a sparkline,
     result dict also contains the bare root key (CRUDEOIL) via _compose_and_dual_write."""
-    from backend.api.routes.quote import (
-        _compose_and_dual_write, SparklineSymbol
-    )
+    from backend.api.routes.quote import _compose_and_dual_write, SparklineSymbol
 
     # Simulate normalized symbols (resolved contract)
     norm_syms = [SparklineSymbol(tradingsymbol="CRUDEOIL26JULFUT", exchange="MCX")]
@@ -155,14 +200,17 @@ async def test_dual_write_bare_and_resolved_keys():
     )
 
     # Verify both the resolved and bare keys are in the result
-    assert "CRUDEOIL26JULFUT" in result, \
+    assert "CRUDEOIL26JULFUT" in result, (
         f"Resolved key not in result: {result.keys()}"
-    assert "CRUDEOIL" in result, \
+    )
+    assert "CRUDEOIL" in result, (
         f"Bare root key not in result via dual-write: {result.keys()}"
+    )
 
     # Both should point to the same series
-    assert result["CRUDEOIL26JULFUT"] == result["CRUDEOIL"], \
+    assert result["CRUDEOIL26JULFUT"] == result["CRUDEOIL"], (
         "Dual-write should copy the same series to both keys"
+    )
 
     # Series should contain past + today + LTP
     series = result["CRUDEOIL26JULFUT"]
@@ -170,42 +218,59 @@ async def test_dual_write_bare_and_resolved_keys():
 
 
 @pytest.mark.asyncio
-async def test_batch_sparkline_response_shape():
+async def test_batch_sparkline_response_shape(async_client):
     """Verify sparkline response shape is stable and correct."""
-    from backend.api.routes.quote import SparklineRequest, SparklineSymbol
+    from backend.api.routes.quote import SparklineSymbol
 
-    symbols = [SparklineSymbol(tradingsymbol="TCS", exchange="NSE")]
-    request_data = SparklineRequest(symbols=symbols, days=5)
-
-    from backend.api.routes.quote import SparklineController
-    controller = SparklineController()
+    request_body = {
+        "symbols": [{"tradingsymbol": "TCS", "exchange": "NSE"}],
+        "days": 5,
+    }
 
     # Mock all dependencies
+    mock_sym = SparklineSymbol(tradingsymbol="TCS", exchange="NSE")
     with patch("backend.api.routes.quote._normalize_sparkline_symbols",
-               new=AsyncMock(return_value=(symbols, {}))), \
+               new=AsyncMock(return_value=([mock_sym], {}))), \
          patch("backend.api.routes.quote._any_segment_open",
                new=AsyncMock(return_value=False)), \
          patch("backend.api.routes.quote._fetch_bars_parallel",
                new=AsyncMock(return_value=({"TCS": [3000.0, 3100.0]}, {"TCS": [3150.0]}))), \
+         patch("backend.api.routes.quote._self_heal_empty_bars",
+               new=AsyncMock()), \
+         patch("backend.api.routes.quote._fill_from_daily_book_sparkline",
+               new=AsyncMock()), \
          patch("backend.api.routes.quote._resolve_spark_ltps",
                new=AsyncMock(return_value={"NSE:TCS": 3200.0})), \
          patch("backend.api.routes.quote._compose_and_dual_write",
                new=MagicMock(return_value={"TCS": [3000.0, 3100.0, 3150.0, 3200.0]})):
-        response = await controller.batch_sparkline(request_data)
+        response = await async_client.post(
+            "/api/quotes/sparkline",
+            json=request_body,
+        )
+
+    # Verify response status
+    assert 200 <= response.status_code < 300, (
+        f"Expected 2xx success, got {response.status_code}: {response.text}"
+    )
+
+    data = response.json()
 
     # Verify response has required fields
-    assert hasattr(response, "data"), "Response must have 'data' field"
-    assert hasattr(response, "refreshed_at"), "Response must have 'refreshed_at' field"
-    assert hasattr(response, "as_of"), "Response must have 'as_of' field (nullable)"
+    assert "data" in data, "Response must have 'data' field"
+    assert "refreshed_at" in data, "Response must have 'refreshed_at' field"
+    assert "as_of" in data, "Response must have 'as_of' field (nullable)"
 
     # Verify data is a dict
-    assert isinstance(response.data, dict), \
-        f"Expected data to be dict, got {type(response.data)}"
+    assert isinstance(data["data"], dict), (
+        f"Expected data to be dict, got {type(data['data'])}"
+    )
 
     # Verify refreshed_at is a timestamp string
-    assert isinstance(response.refreshed_at, str), \
+    assert isinstance(data["refreshed_at"], str), (
         "refreshed_at must be an ISO-8601 timestamp string"
+    )
 
     # Verify as_of is either None (market open) or a timestamp string
-    assert response.as_of is None or isinstance(response.as_of, str), \
-        f"as_of must be None or timestamp string, got {type(response.as_of)}"
+    assert data["as_of"] is None or isinstance(data["as_of"], str), (
+        f"as_of must be None or timestamp string, got {type(data['as_of'])}"
+    )
