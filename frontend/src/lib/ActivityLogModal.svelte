@@ -19,7 +19,7 @@
   import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
-  import { portal } from '$lib/portal';
+  import ModalShell from '$lib/ModalShell.svelte';
   import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import { activityStore } from '$lib/data/activityStore.svelte.js';
 
@@ -83,8 +83,7 @@
   });
 </script>
 
-<div class="canonical-modal-overlay alm-overlay" use:portal role="dialog" aria-modal="true"
-     aria-label="Activity log" tabindex="-1">
+<ModalShell open={true} {onClose} zIndex={10500} dim={false} passthrough={true} clickOutside={false}>
   <div class="canonical-modal-panel alm-panel" bind:this={_modalEl}>
     <!-- Modal chrome — title + close button. Tabs live inside LogPanel
          so the tab strip is consistent with every other LogPanel mount. -->
@@ -138,7 +137,7 @@
         onTabChange={(id) => { activityStore.activeTab = id; }} />
     </div>
   </div>
-</div>
+</ModalShell>
 
 <style>
   .alm-header {
