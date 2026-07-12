@@ -256,6 +256,63 @@ def _fetch_rss() -> list[tuple[datetime, dict]]:
     return list(merged.values())
 
 
+async def _purge_stale_db_rows(s) -> tuple[list[str], set[str]]:
+    """Delete question-mark titles, re-filter noisy rows, and cross-dedupe.
+
+    Returns (stale_links, seen_fps) so the insert phase can skip already-seen
+    fingerprints without a second query.
+    """
+    # 1. '?' titles (clickbait / speculative).
+    await s.execute(delete(NewsHeadline).where(NewsHeadline.title.like('%?%')))
+    # 2. Re-apply current filters + cross-publisher dedupe to existing rows so
+    #    legacy rows from earlier code versions don't linger on the feed.
+    all_rows = await s.execute(
+        select(NewsHeadline.link, NewsHeadline.title)
+        .order_by(NewsHeadline.published_at.desc())
+    )
+    seen_fps: set[str] = set()
+    stale_links: list[str] = []
+    for link, title in all_rows.all():
+        if _NOISE_RE.search(title) or _is_low_info(title):
+            stale_links.append(link)
+            continue
+        fp = _title_fingerprint(title)
+        if not fp or fp in seen_fps:
+            stale_links.append(link)
+            continue
+        seen_fps.add(fp)
+    if stale_links:
+        await s.execute(delete(NewsHeadline).where(NewsHeadline.link.in_(stale_links)))
+        logger.info(f"News: purged {len(stale_links)} stale/duplicate rows")
+    return stale_links, seen_fps
+
+
+async def _insert_new_headlines(s, fresh: list, stale_links: list[str], seen_fps: set[str]) -> int:
+    """Insert fresh RSS rows not already present in DB after the purge.
+
+    Returns the number of headlines added.
+    """
+    if not fresh:
+        return 0
+    existing_links = await s.execute(
+        select(NewsHeadline.link).where(
+            NewsHeadline.link.in_([row["link"] for _, row in fresh])
+        )
+    )
+    have_links = {r[0] for r in existing_links} - set(stale_links)
+    added = 0
+    for _dt, row in fresh:
+        if row["link"] in have_links:
+            continue
+        fp = _title_fingerprint(row["title"])
+        if not fp or fp in seen_fps:
+            continue
+        seen_fps.add(fp)
+        s.add(NewsHeadline(**row))
+        added += 1
+    return added
+
+
 async def _fetch_and_accumulate() -> NewsResponse:
     """Fetch RSS feeds, insert new links into DB, return the full accumulated list."""
     if not is_enabled('market_feed'):
@@ -272,56 +329,12 @@ async def _fetch_and_accumulate() -> NewsResponse:
 
     try:
         async with async_session() as s:
-            # ── Purge stale rows on every fetch ────────────────────────────
-            # 1. '?' titles (clickbait / speculative).
-            await s.execute(delete(NewsHeadline).where(NewsHeadline.title.like('%?%')))
-            # 2. Re-apply current filters + cross-publisher dedupe to whatever
-            #    is already stored, so legacy rows from earlier code versions
-            #    don't linger on the feed.
-            all_rows = await s.execute(
-                select(NewsHeadline.link, NewsHeadline.title)
-                .order_by(NewsHeadline.published_at.desc())
-            )
-            seen_fps: set[str] = set()
-            stale_links: list[str] = []
-            for link, title in all_rows.all():
-                if _NOISE_RE.search(title) or _is_low_info(title):
-                    stale_links.append(link)
-                    continue
-                fp = _title_fingerprint(title)
-                if not fp or fp in seen_fps:
-                    stale_links.append(link)
-                    continue
-                seen_fps.add(fp)
-            if stale_links:
-                await s.execute(
-                    delete(NewsHeadline).where(NewsHeadline.link.in_(stale_links))
-                )
-                logger.info(f"News: purged {len(stale_links)} stale/duplicate rows")
-
-            if fresh:
-                # Exact-link dedupe against what remains after the purge.
-                existing_links = await s.execute(
-                    select(NewsHeadline.link).where(
-                        NewsHeadline.link.in_([row["link"] for _, row in fresh])
-                    )
-                )
-                have_links = {r[0] for r in existing_links} - set(stale_links)
-
-                added = 0
-                for _dt, row in fresh:
-                    if row["link"] in have_links:
-                        continue
-                    fp = _title_fingerprint(row["title"])
-                    if not fp or fp in seen_fps:
-                        continue
-                    seen_fps.add(fp)
-                    s.add(NewsHeadline(**row))
-                    added += 1
-                if added or stale_links:
-                    await s.commit()
-                if added:
-                    logger.info(f"News: +{added} new headlines")
+            stale_links, seen_fps = await _purge_stale_db_rows(s)
+            added = await _insert_new_headlines(s, fresh, stale_links, seen_fps)
+            if added or stale_links:
+                await s.commit()
+            if added:
+                logger.info(f"News: +{added} new headlines")
 
             rows = await s.execute(
                 select(NewsHeadline).order_by(NewsHeadline.published_at.desc())
@@ -339,10 +352,8 @@ async def _fetch_and_accumulate() -> NewsResponse:
         items = []
         db_items = []
 
-    # `refreshed_at` reflects the timestamp of the most recent headline
-    # — i.e., when the news content was actually last updated, not when
-    # this poll ran. Falls back to "now" only when no headlines have
-    # been persisted yet (cold-start before the first feed fetch).
+    # `refreshed_at` reflects the timestamp of the most recent headline.
+    # Falls back to "now" only on cold-start before the first feed fetch.
     from backend.shared.helpers.date_time_utils import format_dual_tz
     if db_items:
         refreshed = format_dual_tz(db_items[0].published_at)

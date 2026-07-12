@@ -327,17 +327,24 @@ class TestInstrumentsCallsite:
             )
 
     def test_instruments_iterates_kite_accts(self):
-        """_fetch_instruments must iterate kite_accts (not pick [0])."""
+        """_fetch_instruments (or its extracted helper) must iterate kite_accts.
+
+        Cross-account failover for Kite rate-limits must be present somewhere
+        in the instruments fetch call-chain. The loop may live in the top-level
+        function or in a dedicated helper (_fetch_exchange_raw) — both are valid
+        refactors as long as the iteration pattern exists.
+        """
         import inspect
         from backend.api.routes import instruments as instr_mod
 
-        fn = instr_mod._fetch_instruments
-        src = inspect.getsource(fn)
-        # Fix requires walking every loaded Kite account (cross-account
-        # failover for rate-limits) rather than hard-coding kite_accts[0].
-        assert "for _acct in kite_accts" in src or "for acct in kite_accts" in src, (
-            "_fetch_instruments must iterate kite_accts for cross-account "
-            "failover on Kite rate-limits (never single-account [0])"
+        # Collect source from _fetch_instruments and any extracted helper.
+        combined_src = inspect.getsource(instr_mod._fetch_instruments)
+        if hasattr(instr_mod, "_fetch_exchange_raw"):
+            combined_src += inspect.getsource(instr_mod._fetch_exchange_raw)
+
+        assert "for _acct in kite_accts" in combined_src or "for acct in kite_accts" in combined_src, (
+            "_fetch_instruments (or _fetch_exchange_raw) must iterate kite_accts "
+            "for cross-account failover on Kite rate-limits (never single-account [0])"
         )
 
     def test_price_broker_instruments_has_kite_shape_gate(self):

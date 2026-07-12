@@ -28,6 +28,72 @@ from backend.shared.helpers.utils import mask_account
 logger = get_logger(__name__)
 
 
+_BROKER_STATUS_MAP = {
+    "COMPLETE":  "FILLED",
+    "CANCELLED": "CANCELLED",
+    "REJECTED":  "REJECTED",
+    "EXPIRED":   "UNFILLED",
+}
+
+
+async def _sync_algo_order_rows(
+    *,
+    broker_id: str,
+    order_id: str,
+    status: str,
+    price,
+    status_message: str,
+    qty,
+) -> list:
+    """Update AlgoOrder rows for broker_order_id, write order events, return filled rows.
+
+    Handles the DB session block of _process_broker_postback: status update,
+    fill_price + filled_at assignment, detail annotation, commit, and
+    order-event writes. Returns a list of rows that transitioned to FILLED
+    so the caller can fire template-attach for each.
+    """
+    from sqlalchemy import select as _sql_select
+    from backend.api.database import async_session as _async_s
+    from backend.api.models import AlgoOrder as _AO
+    from backend.api.algo.order_events import write_event as _write_event
+
+    _new_status = _BROKER_STATUS_MAP.get(status)
+    _filled_rows: list = []
+
+    async with _async_s() as _s:
+        _rows = (await _s.execute(
+            _sql_select(_AO).where(_AO.broker_order_id == str(order_id))
+        )).scalars().all()
+        for _r in _rows:
+            if _new_status and _r.status != _new_status:
+                _r.status = _new_status
+                if _new_status == "FILLED":
+                    try:
+                        _r.fill_price = float(price) if price else _r.fill_price
+                    except (TypeError, ValueError):
+                        pass
+                    _r.filled_at = datetime.now(timezone.utc)
+                    _filled_rows.append(_r)
+                _r.detail = (
+                    (_r.detail or "")[:200]
+                    + f" · {broker_id} postback {status}"
+                    + (f": {status_message}" if status_message else "")
+                )
+        await _s.commit()
+        for _r in _rows:
+            try:
+                await _write_event(
+                    _r.id, "broker_postback",
+                    f"{status}{(' · ' + status_message) if status_message else ''}",
+                    payload={"broker_id": broker_id, "broker_order_id": order_id,
+                             "status": status, "qty": qty, "price": price},
+                )
+            except Exception as _we:
+                logger.debug(f"order_events write skipped: {_we}")
+
+    return _filled_rows
+
+
 async def _process_broker_postback(
     *,
     broker_id: str,
@@ -54,9 +120,6 @@ async def _process_broker_postback(
     Best-effort: never raises. Failures log + drop so the broker's
     webhook gets a 200 OK and stops retrying.
     """
-    from sqlalchemy import select as _sql_select
-    from backend.api.database import async_session as _async_s
-    from backend.api.models import AlgoOrder as _AO
     masked = mask_account(account)
 
     logger.info(
@@ -68,48 +131,10 @@ async def _process_broker_postback(
 
     # Sync AlgoOrder row + record event.
     try:
-        from backend.api.algo.order_events import write_event as _write_event
-        _KITE_STATUS_MAP = {
-            "COMPLETE":  "FILLED",
-            "CANCELLED": "CANCELLED",
-            "REJECTED":  "REJECTED",
-            "EXPIRED":   "UNFILLED",
-        }
-        _new_status = _KITE_STATUS_MAP.get(status)
-
-        _filled_rows: list = []
-        async with _async_s() as _s:
-            _rows = (await _s.execute(
-                _sql_select(_AO).where(_AO.broker_order_id == str(order_id))
-            )).scalars().all()
-            for _r in _rows:
-                if _new_status and _r.status != _new_status:
-                    _r.status = _new_status
-                    if _new_status == "FILLED":
-                        try:
-                            _r.fill_price = float(price) if price else _r.fill_price
-                        except (TypeError, ValueError):
-                            pass
-                        _r.filled_at = datetime.now(timezone.utc)
-                        _filled_rows.append(_r)
-                    _r.detail = ((_r.detail or "")[:200]
-                                 + f" · {broker_id} postback {status}"
-                                 + (f": {status_message}" if status_message else ""))
-            await _s.commit()
-            for _r in _rows:
-                try:
-                    await _write_event(
-                        _r.id, "broker_postback",
-                        f"{status}{(' · ' + status_message) if status_message else ''}",
-                        payload={"broker_id": broker_id, "broker_order_id": order_id,
-                                 "status": status, "qty": qty, "price": price},
-                    )
-                except Exception as _we:
-                    logger.debug(f"order_events write skipped: {_we}")
-        # Fire template-attach on FILL — mirrors the Kite postback path
-        # (`_pb_event`). Idempotency lives inside
-        # `_fire_template_attach_on_fill` (attached_gtts_json check) so a
-        # duplicate postback can't double-place TP/SL GTTs.
+        _filled_rows = await _sync_algo_order_rows(
+            broker_id=broker_id, order_id=order_id, status=status,
+            price=price, status_message=status_message, qty=qty,
+        )
         for _r in _filled_rows:
             try:
                 from backend.api.routes.orders_place import (

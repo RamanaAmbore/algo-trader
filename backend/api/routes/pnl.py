@@ -115,6 +115,73 @@ def _side_sign(transaction_type: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Accumulation helpers
+# ---------------------------------------------------------------------------
+
+def _accumulate_order(g: dict, order) -> None:
+    """Update group bucket g with one order's contribution (in-place)."""
+    g["order_count"] += 1
+    status = (order.status or "").upper()
+    is_filled = status == "FILLED"
+    if is_filled:
+        g["filled_count"] += 1
+    if is_filled and order.fill_price is not None and order.initial_price is not None:
+        sign = _side_sign(order.transaction_type)
+        qty = int(order.quantity or 0)
+        contribution = (order.fill_price - order.initial_price) * qty * sign
+        g["pnl_sum"] += contribution
+        if contribution > 0:
+            g["win_count"] += 1
+    if is_filled and order.slippage is not None:
+        g["slippage_sum"] += float(order.slippage)
+        g["slippage_count"] += 1
+
+
+def _group_orders(orders, agent_meta: dict[int, tuple[str, str]]) -> dict:
+    """Group algo_orders by agent_id, accumulating PnL + slippage stats."""
+    groups: dict[Optional[int], dict] = {}
+    for order in orders:
+        key: Optional[int] = order.agent_id
+        if key not in groups:
+            if key is not None and key in agent_meta:
+                slug, name = agent_meta[key]
+            else:
+                slug, name = None, _OPERATOR_TICKET_NAME
+            groups[key] = {
+                "agent_id": key, "agent_slug": slug, "agent_name": name,
+                "order_count": 0, "filled_count": 0, "pnl_sum": 0.0,
+                "win_count": 0, "slippage_sum": 0.0, "slippage_count": 0,
+            }
+        _accumulate_order(groups[key], order)
+    return groups
+
+
+def _build_agent_pnl_list(groups: dict) -> list[AgentPnL]:
+    """Sort groups and construct AgentPnL structs."""
+    def _sort_key(item: tuple[Optional[int], dict]) -> tuple[int, str]:
+        _, g = item
+        slug = g["agent_slug"] or ""
+        return (0 if slug else 1, slug)
+
+    result: list[AgentPnL] = []
+    for _, g in sorted(groups.items(), key=_sort_key):
+        filled = g["filled_count"]
+        slippage_count = g["slippage_count"]
+        result.append(AgentPnL(
+            agent_id=g["agent_id"],
+            agent_slug=g["agent_slug"],
+            agent_name=g["agent_name"],
+            order_count=g["order_count"],
+            filled_count=filled,
+            gross_pnl=round(g["pnl_sum"], 2),
+            win_count=g["win_count"],
+            win_rate=round(g["win_count"] / filled, 4) if filled > 0 else 0.0,
+            avg_slippage=round(g["slippage_sum"] / slippage_count, 2) if slippage_count > 0 else 0.0,
+        ))
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
 
@@ -178,80 +245,5 @@ class PnLController(Controller):
             a.id: (a.slug, a.name) for a in agents_rows
         }
 
-        # Group orders by agent_id (None = operator ticket).
-        # Each group accumulates: order_count, filled_count, pnl_sum,
-        # win_count, slippage_sum, slippage_count.
-        groups: dict[Optional[int], dict] = {}
-
-        for order in orders:
-            key: Optional[int] = order.agent_id  # None for operator-ticket orders
-            if key not in groups:
-                if key is not None and key in agent_meta:
-                    slug, name = agent_meta[key]
-                else:
-                    slug, name = None, _OPERATOR_TICKET_NAME
-                groups[key] = {
-                    "agent_id": key,
-                    "agent_slug": slug,
-                    "agent_name": name,
-                    "order_count": 0,
-                    "filled_count": 0,
-                    "pnl_sum": 0.0,
-                    "win_count": 0,
-                    "slippage_sum": 0.0,
-                    "slippage_count": 0,
-                }
-            g = groups[key]
-            g["order_count"] += 1
-
-            status = (order.status or "").upper()
-            is_filled = status == "FILLED"
-            if is_filled:
-                g["filled_count"] += 1
-
-            # PnL contribution: only for filled orders with both prices.
-            if (is_filled
-                    and order.fill_price is not None
-                    and order.initial_price is not None):
-                sign = _side_sign(order.transaction_type)
-                qty = int(order.quantity or 0)
-                contribution = (
-                    (order.fill_price - order.initial_price)
-                    * qty
-                    * sign
-                )
-                g["pnl_sum"] += contribution
-                if contribution > 0:
-                    g["win_count"] += 1
-
-            # Slippage — AlgoOrder.slippage is written by the chase engine
-            # as the signed ₹ difference (negative = filled worse than limit).
-            if is_filled and order.slippage is not None:
-                g["slippage_sum"] += float(order.slippage)
-                g["slippage_count"] += 1
-
-        # Sort: named agents (by slug) first, operator-ticket group last.
-        def _sort_key(item: tuple[Optional[int], dict]) -> tuple[int, str]:
-            _, g = item
-            slug = g["agent_slug"] or ""
-            return (0 if slug else 1, slug)
-
-        result: list[AgentPnL] = []
-        for _, g in sorted(groups.items(), key=_sort_key):
-            filled = g["filled_count"]
-            slippage_count = g["slippage_count"]
-            result.append(AgentPnL(
-                agent_id=g["agent_id"],
-                agent_slug=g["agent_slug"],
-                agent_name=g["agent_name"],
-                order_count=g["order_count"],
-                filled_count=filled,
-                gross_pnl=round(g["pnl_sum"], 2),
-                win_count=g["win_count"],
-                win_rate=round(g["win_count"] / filled, 4) if filled > 0 else 0.0,
-                avg_slippage=round(
-                    g["slippage_sum"] / slippage_count, 2
-                ) if slippage_count > 0 else 0.0,
-            ))
-
-        return result
+        groups = _group_orders(orders, agent_meta)
+        return _build_agent_pnl_list(groups)

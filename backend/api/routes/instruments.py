@@ -102,6 +102,76 @@ class InstrumentsResponse(msgspec.Struct):
     items: list[Instrument]
 
 
+def _fetch_exchange_raw(exch: str, kite_accts: list) -> "list | None":
+    """Attempt to fetch the Kite instrument dump for one exchange.
+
+    Walks every loaded Kite account and returns the first non-empty
+    Kite-shaped response, or None when all accounts fail / return empty.
+    Logs warnings on every failure; caller skips the exchange on None.
+
+    NEVER falls over to Dhan/Groww — a partial Kite cache is strictly
+    better than a poisoned schema with missing instrument_type/name fields.
+    """
+    from backend.brokers.registry import get_broker
+    _last_err: Exception | None = None
+    for _acct in kite_accts:
+        try:
+            broker = get_broker(_acct)
+            _resp = broker.instruments(exch)
+        except Exception as e:
+            _last_err = e
+            continue
+        if not _resp:
+            continue
+        # Kite-shape sanity check: `instrument_type` must be present on row 0.
+        if not isinstance(_resp[0], dict) or "instrument_type" not in _resp[0]:
+            logger.warning(
+                f"Instruments: {exch} on {_acct} returned non-Kite shape "
+                f"({list(_resp[0].keys()) if isinstance(_resp[0], dict) else type(_resp[0]).__name__}) "
+                f"— trying next account"
+            )
+            continue
+        return _resp
+    # All accounts failed or empty.
+    if _last_err is not None:
+        logger.warning(f"Instruments: {exch} fetch failed on every Kite account: {_last_err}")
+    else:
+        logger.warning(f"Instruments: {exch} returned no usable data on any Kite account")
+    return None
+
+
+def _build_instrument_row(inst: dict, exch: str, mcx_diag_logged: set) -> Instrument:
+    """Construct a single Instrument struct from one raw Kite instrument dict.
+
+    Applies MCX lot-size overrides and emits one diagnostic log line per
+    MCX derivative type per fetch cycle (tracked via mcx_diag_logged set).
+    """
+    itype   = inst.get("instrument_type", "")
+    expiry  = inst.get("expiry")
+    strike  = inst.get("strike")
+    ls_raw  = int(inst.get("lot_size") or 1)
+    if exch == "MCX":
+        if itype in ("CE", "PE", "FUT") and itype not in mcx_diag_logged:
+            mcx_diag_logged.add(itype)
+            logger.info(
+                f"[MCX-INSTR-DIAG] kind={itype} "
+                f"tradingsymbol={inst.get('tradingsymbol')} "
+                f"name='{inst.get('name')}' "
+                f"lot_size={inst.get('lot_size')}"
+            )
+        ls_raw = _MCX_LOT_OVERRIDES.get((inst.get("name") or "").upper(), ls_raw)
+    return Instrument(
+        s=inst["tradingsymbol"],
+        e=inst["exchange"],
+        t=itype,
+        ls=ls_raw,
+        ts=float(inst.get("tick_size") or 0.05),
+        u=inst.get("name") or None,
+        x=expiry.isoformat() if isinstance(expiry, date) else (expiry or None),
+        k=float(strike) if strike not in (None, 0, 0.0) else None,
+    )
+
+
 def _fetch_instruments() -> InstrumentsResponse:
     """Fetch full instrument dump from Kite across all relevant exchanges.
 
@@ -111,28 +181,12 @@ def _fetch_instruments() -> InstrumentsResponse:
     When RAMBOQ_USE_CONN_SERVICE=1, get_broker() returns RemoteBroker stubs
     that proxy through conn_service, so the Kite filter still applies.
 
-    Kite-only walk (Jul 2026 defect fix): Prior implementation routed through
-    `get_market_data_broker()` (PriceBroker with cross-broker failover) which
-    silently fell over to Dhan when Kite hit its per-account rate-limit
-    cool-off. Dhan's `instruments()` returns rows with schema
-    ``{tradingsymbol, security_id, instrument_token, exchange, exchange_segment,
-    lot_size, tick_size}`` — no `instrument_type`, `name`, `expiry`, or `strike`.
-    The cache then had 156K rows with `t=''` / `u=None` / `x=None`, which broke
-    every downstream call site that filters `inst.t == "FUT" and inst.u ==
-    root` (symbol_resolver.list_active_futures / _list_all_futures_fallback,
-    movers underlyings, chart historical fallback, MCX/CDS virtual-root
-    resolution). Symptom in browser: MCX bare-root rows (CRUDEOIL, GOLDM,
-    GOLD, SILVER, USDINR) rendered with blank LTP / sparkline / OHLCV
-    because virtual resolution silently failed and LKG cache read the wrong
-    key.
-
-    Fix: iterate ALL loaded Kite accounts explicitly, break on first success
-    per exchange. When every Kite account is rate-limited on a given
-    exchange we skip that exchange (log-warn); the daily 08:00 IST re-warm
-    picks it up on the next pass. NEVER fall over to Dhan/Groww — a partial
-    Kite cache is strictly better than a poisoned Dhan cache.
+    Kite-only walk (Jul 2026 defect fix): iterate ALL loaded Kite accounts
+    explicitly; break on first success per exchange. NEVER fall over to
+    Dhan/Groww — a partial Kite cache is strictly better than a poisoned
+    Dhan cache with missing instrument_type/name/expiry/strike fields.
     """
-    from backend.brokers.registry import _loaded_accounts, _broker_id_for, get_broker
+    from backend.brokers.registry import _loaded_accounts, _broker_id_for
     accts = _loaded_accounts()
     kite_accts = [a for a in accts if _broker_id_for(a) in {"zerodha_kite", "kite"}]
     if not kite_accts:
@@ -141,77 +195,13 @@ def _fetch_instruments() -> InstrumentsResponse:
 
     items: list[Instrument] = []
     for exch in _EXCHANGES:
-        raw = None
-        _last_err: Exception | None = None
-        # Walk every Kite account; stop at the first one that returns a
-        # non-empty Kite-shape response. This gives us cross-account
-        # failover for Kite rate-limits without ever landing on Dhan's
-        # stripped schema.
-        for _acct in kite_accts:
-            try:
-                broker = get_broker(_acct)
-                _resp = broker.instruments(exch)
-            except Exception as e:
-                _last_err = e
-                continue
-            if not _resp:
-                continue
-            # Kite-shape sanity check: the first row must carry
-            # `instrument_type` (present on every real Kite instrument row).
-            # Guards against a future broker adapter silently substituting
-            # its own stripped schema.
-            if not isinstance(_resp[0], dict) or "instrument_type" not in _resp[0]:
-                logger.warning(
-                    f"Instruments: {exch} on {_acct} returned non-Kite shape "
-                    f"({list(_resp[0].keys()) if isinstance(_resp[0], dict) else type(_resp[0]).__name__}) "
-                    f"— trying next account"
-                )
-                continue
-            raw = _resp
-            break
+        raw = _fetch_exchange_raw(exch, kite_accts)
         if raw is None:
-            if _last_err is not None:
-                logger.warning(f"Instruments: {exch} fetch failed on every Kite account: {_last_err}")
-            else:
-                logger.warning(f"Instruments: {exch} returned no usable data on any Kite account")
             continue
-
-        # MCX diagnostic: log the first CE, PE, and FUT row per fetch cycle
-        # so we can verify that Kite's `name` field matches the keys in
-        # _MCX_LOT_OVERRIDES (e.g. "CRUDEOIL" vs "CRUDE OIL"). A mismatch
-        # would cause the override to silently miss, leaving lot_size=1.
+        # MCX diagnostic set: one log line per derivative type per cycle.
         _mcx_diag_logged: set[str] = set()
-
         for inst in raw:
-            itype = inst.get("instrument_type", "")
-            expiry = inst.get("expiry")
-            strike = inst.get("strike")
-            # MCX commodities → real lot sizes from the override map
-            # (Kite reports them all as 1). Other exchanges keep the
-            # vendor-supplied lot_size verbatim.
-            ls_raw = int(inst.get("lot_size") or 1)
-            if exch == "MCX":
-                if itype in ("CE", "PE", "FUT") and itype not in _mcx_diag_logged:
-                    _mcx_diag_logged.add(itype)
-                    logger.info(
-                        f"[MCX-INSTR-DIAG] kind={itype} "
-                        f"tradingsymbol={inst.get('tradingsymbol')} "
-                        f"name='{inst.get('name')}' "
-                        f"lot_size={inst.get('lot_size')}"
-                    )
-                ls_raw = _MCX_LOT_OVERRIDES.get(
-                    (inst.get("name") or "").upper(), ls_raw
-                )
-            items.append(Instrument(
-                s=inst["tradingsymbol"],
-                e=inst["exchange"],
-                t=itype,
-                ls=ls_raw,
-                ts=float(inst.get("tick_size") or 0.05),
-                u=inst.get("name") or None,
-                x=expiry.isoformat() if isinstance(expiry, date) else (expiry or None),
-                k=float(strike) if strike not in (None, 0, 0.0) else None,
-            ))
+            items.append(_build_instrument_row(inst, exch, _mcx_diag_logged))
 
     logger.info(f"Instruments: loaded {len(items)} rows across {len(_EXCHANGES)} exchanges")
     return InstrumentsResponse(
