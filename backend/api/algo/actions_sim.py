@@ -174,6 +174,124 @@ async def _write_sim_order(agent, action_type: str, resolved: dict):
     return algo_order_id
 
 
+async def _sim_chase_close(agent, action_type: str, params: dict) -> None:
+    """Expand a chase_close / chase_close_positions action across sim positions."""
+    positions = _sim_positions_in_scope(params)
+    if not positions:
+        # Scope matched nothing — still record one row so the fire is
+        # visible in the logs, but make it obvious nothing closed.
+        logger.warning(f"[SIM] {agent.slug} → {action_type}: scope matched 0 positions")
+        await _write_sim_order(agent, action_type, {
+            "account": str(params.get("account") or "TOTAL"),
+            "symbol":  "(no positions in scope)",
+            "side":    "SELL", "qty": 0, "price": None,
+            "exchange": "NFO",
+        })
+        return
+    for p in positions:
+        qty_held = int(p.get("quantity") or 0)
+        side = "SELL" if qty_held > 0 else "BUY"
+        # SELL hits the bid, BUY lifts the ask — matches what the live
+        # chase engine does on Kite. Fall back to LTP when the spread
+        # helper isn't populated yet.
+        price = (p.get("bid") if side == "SELL" else p.get("ask")) \
+                or p.get("last_price")
+        await _write_sim_order(agent, action_type, {
+            "account":  str(p.get("account", "SIM")),
+            "symbol":   str(p.get("tradingsymbol", "")),
+            "side":     side,
+            "qty":      abs(qty_held),
+            "price":    price,
+            "exchange": str(p.get("exchange") or "NFO"),
+        })
+
+
+async def _sim_expiry_close(agent, action_type: str, params: dict) -> None:
+    """Sim-mode dry-run for the expiry_auto_close action.
+
+    Closes whatever is in the sim book on the matching exchange.
+    Hedging filter is not applied in sim mode — the operator is
+    validating the timing + condition path, not the live ExpiryEngine
+    grouping logic.
+    """
+    exch = (params.get("exchange") or "NFO").upper()
+    all_pos = _sim_positions_in_scope({"scope": "total"})
+    targets = [p for p in all_pos
+               if (p.get("exchange") or "").upper() == exch]
+    if not targets:
+        logger.info(f"[SIM] expiry_auto_close: no {exch} positions in sim book "
+                    f"for {agent.slug}")
+        await _write_sim_order(agent, action_type, {
+            "account":  "TOTAL",
+            "symbol":   f"(no {exch} positions in sim book)",
+            "side":     "SELL", "qty": 0, "price": None,
+            "exchange": exch,
+        })
+        return
+    for p in targets:
+        qty_held = int(p.get("quantity") or 0)
+        if qty_held == 0:
+            continue
+        side = "SELL" if qty_held > 0 else "BUY"
+        price = (p.get("bid") if side == "SELL" else p.get("ask")) \
+                or p.get("last_price")
+        await _write_sim_order(agent, action_type, {
+            "account":  str(p.get("account", "SIM")),
+            "symbol":   str(p.get("tradingsymbol", "")),
+            "side":     side,
+            "qty":      abs(qty_held),
+            "price":    price,
+            "exchange": exch,
+        })
+
+
+async def _sim_place_or_close(agent, action_type: str, params: dict) -> None:
+    """Handle place_order / close_position in sim mode: resolve LTP, write sim order, attach template."""
+    account = str(params.get("account") or "SIM")
+    symbol  = str(params.get("symbol")  or f"{agent.slug}-{action_type}")
+    ltp, bid, ask, qty_held = _sim_prices_for(account, symbol)
+    if params.get("side") in ("BUY", "SELL"):
+        side = params.get("side")
+    elif params.get("transaction_type") in ("BUY", "SELL"):
+        side = params.get("transaction_type")
+    elif qty_held is not None:
+        side = "SELL" if qty_held > 0 else "BUY"
+    else:
+        side = "SELL"
+    if params.get("quantity") is not None:
+        qty = int(params.get("quantity") or 0)
+    elif qty_held is not None:
+        qty = abs(int(qty_held))
+    else:
+        qty = 0
+    side_price = bid if side == "SELL" else ask
+    price = side_price if side_price is not None else (
+        ltp if ltp is not None else params.get("price")
+    )
+    algo_order_id = await _write_sim_order(agent, action_type, {
+        "account":  account,
+        "symbol":   symbol,
+        "side":     side,
+        "qty":      qty,
+        "price":    price,
+        "exchange": str(params.get("exchange") or "NFO"),
+    })
+    # Template attach — when the action's params carry template_id /
+    # template_slug / *_override fields, fan out TP/SL GTTs + wing
+    # into SimGttBook + SimDriver._paper. Mirrors the OrderTicket flow.
+    # Lazy import to avoid circular dependency (actions.py imports us).
+    from backend.api.algo.actions import _maybe_attach_template_from_action
+    await _maybe_attach_template_from_action(
+        agent, action_type, params,
+        algo_order_id=algo_order_id,
+        parent_account=account, parent_symbol=symbol,
+        parent_side=side, parent_qty=qty,
+        parent_exchange=str(params.get("exchange") or "NFO"),
+        parent_price=float(price) if price is not None else 0.0,
+        apply_path="sim",
+    )
+
+
 async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict):
     """
     Paper-trade dispatcher for sim-mode action fires.
@@ -191,119 +309,15 @@ async def _sim_paper_trade(agent, action_type: str, params: dict, context: dict)
       just the log_event that execute() already writes.
     """
     if action_type in {"chase_close", "chase_close_positions"}:
-        positions = _sim_positions_in_scope(params)
-        if not positions:
-            # Scope matched nothing — still record one row so the fire is
-            # visible in the logs, but make it obvious nothing closed.
-            logger.warning(f"[SIM] {agent.slug} → {action_type}: scope matched 0 positions")
-            await _write_sim_order(agent, action_type, {
-                "account": str(params.get("account") or "TOTAL"),
-                "symbol":  "(no positions in scope)",
-                "side":    "SELL", "qty": 0, "price": None,
-                "exchange": "NFO",
-            })
-            return
-        for p in positions:
-            qty_held = int(p.get("quantity") or 0)
-            side = "SELL" if qty_held > 0 else "BUY"
-            # SELL hits the bid, BUY lifts the ask — matches what the live
-            # chase engine does on Kite. Fall back to LTP when the spread
-            # helper isn't populated yet.
-            price = (p.get("bid") if side == "SELL" else p.get("ask")) \
-                    or p.get("last_price")
-            await _write_sim_order(agent, action_type, {
-                "account":  str(p.get("account", "SIM")),
-                "symbol":   str(p.get("tradingsymbol", "")),
-                "side":     side,
-                "qty":      abs(qty_held),
-                "price":    price,
-                "exchange": str(p.get("exchange") or "NFO"),
-            })
+        await _sim_chase_close(agent, action_type, params)
         return
 
     if action_type == "expiry_auto_close":
-        # Sim-mode dry-run for the expiry agents. The synthesizer +
-        # market_state preset (expiry_day) can drive the condition,
-        # so the operator can verify the agent fires; the action then
-        # closes whatever's in the sim book on the matching exchange.
-        # Hedging filter is not applied in sim mode — the operator's
-        # validating the timing + condition path, not the live
-        # ExpiryEngine grouping logic.
-        exch = (params.get("exchange") or "NFO").upper()
-        all_pos = _sim_positions_in_scope({"scope": "total"})
-        targets = [p for p in all_pos
-                   if (p.get("exchange") or "").upper() == exch]
-        if not targets:
-            logger.info(f"[SIM] expiry_auto_close: no {exch} positions in sim book "
-                        f"for {agent.slug}")
-            await _write_sim_order(agent, action_type, {
-                "account":  "TOTAL",
-                "symbol":   f"(no {exch} positions in sim book)",
-                "side":     "SELL", "qty": 0, "price": None,
-                "exchange": exch,
-            })
-            return
-        for p in targets:
-            qty_held = int(p.get("quantity") or 0)
-            if qty_held == 0:
-                continue
-            side = "SELL" if qty_held > 0 else "BUY"
-            price = (p.get("bid") if side == "SELL" else p.get("ask")) \
-                    or p.get("last_price")
-            await _write_sim_order(agent, action_type, {
-                "account":  str(p.get("account", "SIM")),
-                "symbol":   str(p.get("tradingsymbol", "")),
-                "side":     side,
-                "qty":      abs(qty_held),
-                "price":    price,
-                "exchange": exch,
-            })
+        await _sim_expiry_close(agent, action_type, params)
         return
 
     if action_type in {"place_order", "close_position"}:
-        account = str(params.get("account") or "SIM")
-        symbol  = str(params.get("symbol")  or f"{agent.slug}-{action_type}")
-        ltp, bid, ask, qty_held = _sim_prices_for(account, symbol)
-        if params.get("side") in ("BUY", "SELL"):
-            side = params.get("side")
-        elif params.get("transaction_type") in ("BUY", "SELL"):
-            side = params.get("transaction_type")
-        elif qty_held is not None:
-            side = "SELL" if qty_held > 0 else "BUY"
-        else:
-            side = "SELL"
-        if params.get("quantity") is not None:
-            qty = int(params.get("quantity") or 0)
-        elif qty_held is not None:
-            qty = abs(int(qty_held))
-        else:
-            qty = 0
-        side_price = bid if side == "SELL" else ask
-        price = side_price if side_price is not None else (
-            ltp if ltp is not None else params.get("price")
-        )
-        algo_order_id = await _write_sim_order(agent, action_type, {
-            "account":  account,
-            "symbol":   symbol,
-            "side":     side,
-            "qty":      qty,
-            "price":    price,
-            "exchange": str(params.get("exchange") or "NFO"),
-        })
-        # Template attach — when the action's params carry template_id /
-        # template_slug / *_override fields, fan out TP/SL GTTs + wing
-        # into SimGttBook + SimDriver._paper. Mirrors the OrderTicket flow.
-        # Lazy import to avoid circular dependency (actions.py imports us).
-        from backend.api.algo.actions import _maybe_attach_template_from_action
-        await _maybe_attach_template_from_action(
-            agent, action_type, params,
-            algo_order_id=algo_order_id,
-            parent_account=account, parent_symbol=symbol,
-            parent_side=side, parent_qty=qty,
-            parent_exchange=str(params.get("exchange") or "NFO"),
-            parent_price=float(price) if price is not None else 0.0,
-            apply_path="sim",
-        )
+        await _sim_place_or_close(agent, action_type, params)
         return
 
     # Non-order action — no paper row. The log_event call in execute()

@@ -130,6 +130,126 @@ async def _write_paper_order(agent, action_type: str, resolved: dict, context: d
         })
 
 
+async def _paper_chase_close(
+    agent, action_type: str, params: dict, context: dict
+) -> None:
+    """Expand a paper-mode chase_close / chase_close_positions across live positions."""
+    positions = _live_positions_in_scope(context, params)
+    if not positions:
+        logger.warning(f"[PAPER] {agent.slug} → {action_type}: scope matched 0 positions")
+        await _write_paper_order(agent, action_type, {
+            "account":  str(params.get("account") or "TOTAL"),
+            "symbol":   "(no positions in scope)",
+            "side":     "SELL", "qty": 0, "price": None,
+            "exchange": "NFO",
+        }, context)
+        return
+    for p in positions:
+        qty_held = int(p.get("quantity") or 0)
+        if qty_held == 0:
+            continue
+        side = "SELL" if qty_held > 0 else "BUY"
+        # For the initial limit: use LTP ± half spread so the mode-2
+        # path mirrors what the chase engine does on Kite. Real
+        # bid/ask will come from LiveQuoteSource on the first tick.
+        ltp = p.get("last_price") or p.get("close_price")
+        price = float(ltp) if ltp is not None else None
+        await _write_paper_order(agent, action_type, {
+            "account":  str(p.get("account", "")),
+            "symbol":   str(p.get("tradingsymbol", "")),
+            "side":     side,
+            "qty":      abs(qty_held),
+            "price":    price,
+            "exchange": str(p.get("exchange") or "NFO"),
+        }, context)
+
+
+async def _paper_expiry_close(
+    agent, action_type: str, params: dict, context: dict
+) -> None:
+    """Paper-mode dry-run for expiry_auto_close.
+
+    Reads live positions, filters by exchange + DTE ≤ 1.5, writes a paper
+    order per matched row. The MCX hedging-net filter is NOT applied in
+    paper mode — operators reviewing the paper book want to see EVERY
+    ITM/NTM expiring leg; the live ExpiryEngine path is where the hedging
+    check actually fires.
+    """
+    from backend.api.algo.derivatives import parse_tradingsymbol, days_to_expiry
+
+    exch = (params.get("exchange") or "").upper()
+    if exch not in ("NFO", "MCX"):
+        logger.warning(f"[PAPER] expiry_auto_close: invalid exchange {exch!r} for {agent.slug}")
+        return
+    all_positions = _live_positions_in_scope(context, {"scope": "total"})
+    targets = []
+    for p in all_positions:
+        if (p.get("exchange") or "").upper() != exch:
+            continue
+        qty_held = int(p.get("quantity") or 0)
+        if qty_held == 0:
+            continue
+        parsed = parse_tradingsymbol(p.get("tradingsymbol") or "")
+        if not parsed or not parsed.get("expiry"):
+            continue
+        try:
+            close_time = (23, 30) if exch == "MCX" else (15, 30)
+            d = float(days_to_expiry(parsed["expiry"], ref=context.get("now"),
+                                     close_time=close_time))
+        except Exception:
+            continue
+        if d > 1.5:
+            continue
+        targets.append(p)
+    if not targets:
+        logger.info(f"[PAPER] expiry_auto_close: no {exch} expiring positions "
+                    f"for {agent.slug}")
+        await _write_paper_order(agent, action_type, {
+            "account":  "TOTAL",
+            "symbol":   f"(no {exch} expiring positions)",
+            "side":     "SELL", "qty": 0, "price": None,
+            "exchange": exch,
+        }, context)
+        return
+    for p in targets:
+        qty_held = int(p.get("quantity") or 0)
+        side = "SELL" if qty_held > 0 else "BUY"
+        ltp = p.get("last_price") or p.get("close_price")
+        price = float(ltp) if ltp is not None else None
+        await _write_paper_order(agent, action_type, {
+            "account":  str(p.get("account", "")),
+            "symbol":   str(p.get("tradingsymbol", "")),
+            "side":     side,
+            "qty":      abs(qty_held),
+            "price":    price,
+            "exchange": exch,
+        }, context)
+
+
+async def _paper_place_or_close(
+    agent, action_type: str, params: dict, context: dict
+) -> None:
+    """Handle place_order / close_position / modify_order / cancel_order / cancel_all_orders in paper mode."""
+    account = str(params.get("account") or "")
+    symbol  = str(params.get("symbol")  or f"{agent.slug}-{action_type}")
+    if params.get("side") in ("BUY", "SELL"):
+        side = params.get("side")
+    elif params.get("transaction_type") in ("BUY", "SELL"):
+        side = params.get("transaction_type")
+    else:
+        side = "SELL"
+    qty   = int(params.get("quantity") or 0)
+    price = params.get("price")
+    await _write_paper_order(agent, action_type, {
+        "account":  account,
+        "symbol":   symbol,
+        "side":     side,
+        "qty":      qty,
+        "price":    price,
+        "exchange": str(params.get("exchange") or "NFO"),
+    }, context)
+
+
 async def _paper_trade(agent, action_type: str, params: dict, context: dict):
     """
     Mode-2 dispatcher — mirrors `_sim_paper_trade` but:
@@ -138,112 +258,14 @@ async def _paper_trade(agent, action_type: str, params: dict, context: dict):
       - Registers with the prod PaperTradeEngine (LiveQuoteSource)
     """
     if action_type in {"chase_close", "chase_close_positions"}:
-        positions = _live_positions_in_scope(context, params)
-        if not positions:
-            logger.warning(f"[PAPER] {agent.slug} → {action_type}: scope matched 0 positions")
-            await _write_paper_order(agent, action_type, {
-                "account":  str(params.get("account") or "TOTAL"),
-                "symbol":   "(no positions in scope)",
-                "side":     "SELL", "qty": 0, "price": None,
-                "exchange": "NFO",
-            }, context)
-            return
-        for p in positions:
-            qty_held = int(p.get("quantity") or 0)
-            if qty_held == 0:
-                continue
-            side = "SELL" if qty_held > 0 else "BUY"
-            # For the initial limit: use LTP ± half spread so the mode-2
-            # path mirrors what the chase engine does on Kite. Real
-            # bid/ask will come from LiveQuoteSource on the first tick.
-            ltp = p.get("last_price") or p.get("close_price")
-            price = float(ltp) if ltp is not None else None
-            await _write_paper_order(agent, action_type, {
-                "account":  str(p.get("account", "")),
-                "symbol":   str(p.get("tradingsymbol", "")),
-                "side":     side,
-                "qty":      abs(qty_held),
-                "price":    price,
-                "exchange": str(p.get("exchange") or "NFO"),
-            }, context)
+        await _paper_chase_close(agent, action_type, params, context)
         return
 
     if action_type == "expiry_auto_close":
-        # Paper-mode dry-run: read live positions, filter by exchange,
-        # filter to F&O contracts expiring today, and write a paper
-        # order per matched row. The MCX hedging-net filter is NOT
-        # applied in paper mode — operators reviewing the paper book
-        # want to see EVERY ITM/NTM expiring leg the live path would
-        # consider; the live ExpiryEngine path is where the hedging
-        # check actually fires.
-        from backend.api.algo.derivatives import parse_tradingsymbol, days_to_expiry
-        exch = (params.get("exchange") or "").upper()
-        if exch not in ("NFO", "MCX"):
-            logger.warning(f"[PAPER] expiry_auto_close: invalid exchange {exch!r} for {agent.slug}")
-            return
-        all_positions = _live_positions_in_scope(context, {"scope": "total"})
-        targets = []
-        for p in all_positions:
-            if (p.get("exchange") or "").upper() != exch:
-                continue
-            qty_held = int(p.get("quantity") or 0)
-            if qty_held == 0:
-                continue
-            parsed = parse_tradingsymbol(p.get("tradingsymbol") or "")
-            if not parsed or not parsed.get("expiry"):
-                continue
-            try:
-                close_time = (23, 30) if exch == "MCX" else (15, 30)
-                d = float(days_to_expiry(parsed["expiry"], ref=context.get("now"),
-                                         close_time=close_time))
-            except Exception:
-                continue
-            if d > 1.5:
-                continue
-            targets.append(p)
-        if not targets:
-            logger.info(f"[PAPER] expiry_auto_close: no {exch} expiring positions "
-                        f"for {agent.slug}")
-            await _write_paper_order(agent, action_type, {
-                "account":  "TOTAL",
-                "symbol":   f"(no {exch} expiring positions)",
-                "side":     "SELL", "qty": 0, "price": None,
-                "exchange": exch,
-            }, context)
-            return
-        for p in targets:
-            qty_held = int(p.get("quantity") or 0)
-            side = "SELL" if qty_held > 0 else "BUY"
-            ltp = p.get("last_price") or p.get("close_price")
-            price = float(ltp) if ltp is not None else None
-            await _write_paper_order(agent, action_type, {
-                "account":  str(p.get("account", "")),
-                "symbol":   str(p.get("tradingsymbol", "")),
-                "side":     side,
-                "qty":      abs(qty_held),
-                "price":    price,
-                "exchange": exch,
-            }, context)
+        await _paper_expiry_close(agent, action_type, params, context)
         return
 
     if action_type in {"place_order", "close_position", "modify_order",
                        "cancel_order", "cancel_all_orders"}:
-        account = str(params.get("account") or "")
-        symbol  = str(params.get("symbol")  or f"{agent.slug}-{action_type}")
-        if params.get("side") in ("BUY", "SELL"):
-            side = params.get("side")
-        elif params.get("transaction_type") in ("BUY", "SELL"):
-            side = params.get("transaction_type")
-        else:
-            side = "SELL"
-        qty   = int(params.get("quantity") or 0)
-        price = params.get("price")
-        await _write_paper_order(agent, action_type, {
-            "account":  account,
-            "symbol":   symbol,
-            "side":     side,
-            "qty":      qty,
-            "price":    price,
-            "exchange": str(params.get("exchange") or "NFO"),
-        }, context)
+        await _paper_place_or_close(agent, action_type, params, context)
         return

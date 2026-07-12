@@ -510,63 +510,51 @@ async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
                 f"{total_errors} errors (agent={agent.slug})")
 
 
-async def _action_live_chase_close_positions(agent, context: dict, params: dict):
+def _chase_resolve_positions(context: dict, params: dict) -> list[dict]:
+    """Read df_positions from context, apply scope filter, drop zero-qty rows.
+
+    Returns an empty list when the DataFrame is missing, empty, or cannot
+    be converted — caller checks and returns early.
     """
-    Close every open position in scope using the adaptive chase engine.
+    scope      = (params.get("scope") or "total").lower()
+    scope_acct = str(params.get("account") or "") if scope == "account" else None
 
-    Scope resolution — params.scope:
-      'total'   (default) — every position across all accounts
-      'account'           — positions for params.account only
-
-    For each non-zero position, derives the closing side (SELL for long,
-    BUY for short), fetches LTP for the initial limit, writes an
-    AlgoOrder(mode='live') row, then fires chase_order() as an asyncio
-    task so multiple positions close concurrently (same pattern as the
-    expiry engine).
-
-    We deliberately do NOT use ExpiryEngine.scan_positions() here because
-    that scanner applies expiry-day ITM/NTM filters that are irrelevant
-    for a generic loss-agent close.  Instead we read directly from
-    context['df_positions'] (the live Kite snapshot already in context)
-    which is a pandas DataFrame with columns: account, tradingsymbol,
-    exchange, quantity, last_price, close_price, …
-    """
-    import asyncio
-    from backend.api.algo.chase import chase_order, ChaseConfig
-    from backend.brokers import get_broker
-    # Lazy import — _write_live_order lives in actions.py; patch path
-    # "backend.api.algo.actions._write_live_order" must remain valid.
-    from backend.api.algo.actions import _write_live_order
-
-    scope        = (params.get("scope") or "total").lower()
-    scope_acct   = str(params.get("account") or "") if scope == "account" else None
-    loop         = asyncio.get_running_loop()
-
-    # Read live positions from context (already fetched by _task_performance).
     df = context.get("df_positions")
     if df is None or (hasattr(df, "empty") and df.empty):
-        logger.warning(f"[LIVE] chase_close_positions: no positions in context for agent {agent.slug}")
-        return
+        return []
 
     try:
         rows: list[dict] = df.to_dict(orient="records")
     except Exception as e:
         logger.error(f"[LIVE] chase_close_positions: could not read df_positions: {e}")
-        return
+        return []
 
     if scope_acct:
         rows = [r for r in rows if str(r.get("account")) == scope_acct]
 
     # Filter to non-zero positions only.
     rows = [r for r in rows if int(r.get("quantity") or 0) != 0]
+    return rows
 
-    if not rows:
-        logger.warning(f"[LIVE] chase_close_positions: scope matched 0 positions "
-                       f"(agent={agent.slug}, scope={scope})")
-        return
+
+async def _chase_build_tasks(
+    agent, rows: list[dict]
+) -> "tuple[list, list[dict]]":
+    """Run preflight for each position row; build chase task list.
+
+    For each row:
+      - Run run_preflight; on failure write REJECTED AlgoOrder + alert + skip.
+      - On success write OPEN AlgoOrder + append chase_order task.
+
+    Returns (chase_tasks, task_rows) where task_rows[i] matches chase_tasks[i].
+    """
+    import asyncio
+    from backend.api.algo.chase import chase_order, ChaseConfig
+    from backend.api.algo.actions import _write_live_order
 
     chase_tasks: list = []
     task_rows:   list[dict] = []
+
     for p in rows:
         acct     = str(p.get("account", ""))
         symbol   = str(p.get("tradingsymbol", ""))
@@ -576,7 +564,7 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
         qty      = abs(qty_held)
 
         # Best effort initial limit price from LTP in context row.
-        ltp = p.get("last_price") or p.get("close_price")
+        ltp   = p.get("last_price") or p.get("close_price")
         price = float(ltp) if ltp is not None else None
 
         # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes) ─
@@ -629,47 +617,98 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
         task_rows.append(p)
         logger.info(f"[LIVE] chase_close_positions: queued {side} {qty} {symbol} [{acct}]")
 
+    return chase_tasks, task_rows
+
+
+async def _chase_handle_results(
+    results: list, task_rows: list[dict], agent
+) -> None:
+    """Diagnose and log failed chase tasks.
+
+    Iterates gather() results; for each Exception entry, fetches a
+    basket_margin diagnosis and fires a failure alert.  Must be async
+    because diagnose_live_failure is awaited.
+
+    task_rows[i] must correspond to chase_tasks[i] (only preflight-passed
+    rows are included — blocked positions are excluded from both lists).
+    """
+    from backend.brokers import get_broker
+
+    for i, res in enumerate(results):
+        if not isinstance(res, Exception):
+            continue
+        # Diagnose via basket_margin so the log distinguishes
+        # margin-shortfall from segment-permission for this leg.
+        p        = task_rows[i]
+        acct     = str(p.get("account", ""))
+        symbol   = str(p.get("tradingsymbol", ""))
+        exchange = str(p.get("exchange") or "NFO")
+        qty      = abs(int(p.get("quantity") or 0))
+        side     = "SELL" if int(p.get("quantity") or 0) > 0 else "BUY"
+        ltp      = p.get("last_price") or p.get("close_price") or 0
+        diag_order = {
+            "exchange": exchange, "symbol": symbol, "side": side,
+            "qty": qty, "order_type": "LIMIT", "product": "NRML",
+            "price": float(ltp) if ltp else 0, "variety": "regular",
+        }
+        try:
+            broker = get_broker(acct)
+            diag = await diagnose_live_failure(broker, diag_order, str(res))
+        except Exception:
+            diag = "diagnosis unavailable"
+        logger.error(f"[LIVE] chase_close_positions task {i} failed for "
+                     f"{acct} {exchange}/{symbol} {side} {qty}: "
+                     f"{res} | diag: {diag}")
+        try:
+            from backend.shared.helpers.alert_utils import send_order_failure_alert
+            send_order_failure_alert(
+                account=acct, symbol=symbol, exchange=exchange,
+                side=side, qty=qty, mode="live",
+                source=f"agent:{getattr(agent, 'slug', 'chase_close_positions')}",
+                error=f"{res} | {diag}",
+            )
+        except Exception:
+            pass
+
+
+async def _action_live_chase_close_positions(agent, context: dict, params: dict):
+    """
+    Close every open position in scope using the adaptive chase engine.
+
+    Scope resolution — params.scope:
+      'total'   (default) — every position across all accounts
+      'account'           — positions for params.account only
+
+    For each non-zero position, derives the closing side (SELL for long,
+    BUY for short), fetches LTP for the initial limit, writes an
+    AlgoOrder(mode='live') row, then fires chase_order() as an asyncio
+    task so multiple positions close concurrently (same pattern as the
+    expiry engine).
+
+    We deliberately do NOT use ExpiryEngine.scan_positions() here because
+    that scanner applies expiry-day ITM/NTM filters that are irrelevant
+    for a generic loss-agent close.  Instead we read directly from
+    context['df_positions'] (the live Kite snapshot already in context)
+    which is a pandas DataFrame with columns: account, tradingsymbol,
+    exchange, quantity, last_price, close_price, …
+    """
+    import asyncio
+
+    scope = (params.get("scope") or "total").lower()
+
+    rows = _chase_resolve_positions(context, params)
+    if not rows:
+        logger.warning(f"[LIVE] chase_close_positions: no positions in context "
+                       f"(agent={agent.slug}, scope={scope})")
+        return
+
+    chase_tasks, task_rows = await _chase_build_tasks(agent, rows)
+    if not chase_tasks:
+        return
+
     # Await all chase tasks concurrently — each manages its own retry loop.
-    if chase_tasks:
-        results = await asyncio.gather(*chase_tasks, return_exceptions=True)
-        for i, res in enumerate(results):
-            if isinstance(res, Exception):
-                # Diagnose via basket_margin so the log distinguishes
-                # margin-shortfall from segment-permission for this leg.
-                # Use task_rows[i] — not rows[i] — because chase_tasks only
-                # contains entries for positions that passed preflight; rows
-                # includes every position (including blocked ones), so rows[i]
-                # would map to the wrong position whenever any row was skipped.
-                p = task_rows[i]
-                acct     = str(p.get("account", ""))
-                symbol   = str(p.get("tradingsymbol", ""))
-                exchange = str(p.get("exchange") or "NFO")
-                qty      = abs(int(p.get("quantity") or 0))
-                side     = "SELL" if int(p.get("quantity") or 0) > 0 else "BUY"
-                ltp      = p.get("last_price") or p.get("close_price") or 0
-                diag_order = {
-                    "exchange": exchange, "symbol": symbol, "side": side,
-                    "qty": qty, "order_type": "LIMIT", "product": "NRML",
-                    "price": float(ltp) if ltp else 0, "variety": "regular",
-                }
-                try:
-                    broker = get_broker(acct)
-                    diag = await diagnose_live_failure(broker, diag_order, str(res))
-                except Exception:
-                    diag = "diagnosis unavailable"
-                logger.error(f"[LIVE] chase_close_positions task {i} failed for "
-                             f"{acct} {exchange}/{symbol} {side} {qty}: "
-                             f"{res} | diag: {diag}")
-                try:
-                    from backend.shared.helpers.alert_utils import send_order_failure_alert
-                    send_order_failure_alert(
-                        account=acct, symbol=symbol, exchange=exchange,
-                        side=side, qty=qty, mode="live",
-                        source=f"agent:{getattr(agent, 'slug', 'chase_close_positions')}",
-                        error=f"{res} | {diag}",
-                    )
-                except Exception:
-                    pass
+    results = await asyncio.gather(*chase_tasks, return_exceptions=True)
+    await _chase_handle_results(results, task_rows, agent)
 
 
 async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
