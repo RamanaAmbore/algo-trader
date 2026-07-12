@@ -68,6 +68,9 @@ const BAND_ORDER = { close: 0, netted: 1, otm: 2 };
 export function annotateOptionCandidates({
   candidates, spot, expFilter, mcxUnderlyings, legAnalytics, getInstrument,
 }) {
+  // `spot` may be a per-underlying resolver function (expiry-close full-book
+  // analysis) or a plain number (single-underlying payoff analysis).
+  const resolveSpot = typeof spot === 'function' ? spot : () => spot;
   const annotated = [];
   for (const c of candidates) {
     const qty = Number(c.qty || 0);
@@ -82,11 +85,12 @@ export function annotateOptionCandidates({
     const underlying = String(inst.u || '').toUpperCase();
     const expiry = String(inst.x || '');
     const segment = mcxUnderlyings.has(underlying) ? 'commodity' : 'equity';
-    const isITM = optType === 'CE' ? spot > strike : spot < strike;
+    const candSpot = resolveSpot(underlying);
+    const isITM = optType === 'CE' ? candSpot > strike : candSpot < strike;
     const lg = legAnalytics[c.symbol];
     const theta = Number(lg?.greeks?.theta ?? 0) || 0;
     const otmDist = isITM ? 0
-      : (optType === 'CE' ? strike - spot : spot - strike);
+      : (optType === 'CE' ? strike - candSpot : candSpot - strike);
     annotated.push({
       ...c,
       _strike: strike,
@@ -95,7 +99,7 @@ export function annotateOptionCandidates({
       _optType: optType,
       _segment: segment,
       _isITM: isITM,
-      _spot: spot,
+      _spot: candSpot,
       _qty: qty,
       _theta: theta,
       _otmDist: otmDist,
