@@ -24,6 +24,10 @@ from _base import TlmTool, TlmResult, TlmFinding, REPO_ROOT, LOG_DIR  # noqa: E4
 # Files to analyse — keep in sync with CI if this list grows
 CC_TARGETS = [
     "backend/api/algo/actions.py",
+    "backend/api/algo/actions_live.py",
+    "backend/api/algo/actions_paper.py",
+    "backend/api/algo/actions_preflight.py",
+    "backend/api/algo/actions_sim.py",
     "backend/api/algo/agent_engine.py",
     "backend/api/algo/template_attach.py",
     "backend/api/background.py",
