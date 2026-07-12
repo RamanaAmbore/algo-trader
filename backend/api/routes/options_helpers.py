@@ -382,6 +382,105 @@ def _historical_closed_guard(
     return None
 
 
+async def _resolve_token_for_broker(
+    broker: object,
+    sym: str,
+    exchange_arms: tuple[str, ...],
+    instruments_cache_get: object,
+    instruments_cache_put: object,
+) -> Optional[int]:
+    """Walk ``exchange_arms`` until the trading-symbol is found in the
+    instruments cache (fetching from broker when stale).  Returns the
+    integer token or ``None`` when the symbol isn't listed on any arm.
+    """
+    for ex in exchange_arms:
+        token_map = instruments_cache_get(broker.account, ex)  # type: ignore[operator]
+        if token_map is None:
+            insts = await asyncio.to_thread(broker.instruments, ex) or []
+            token_map = {}
+            for inst in insts:
+                ts = str(inst.get("tradingsymbol") or "").upper()
+                tk = inst.get("instrument_token")
+                if ts and tk:
+                    token_map[ts] = int(tk)
+            instruments_cache_put(broker.account, ex, token_map)  # type: ignore[operator]
+        tk = token_map.get(sym)
+        if tk is not None:
+            return int(tk)
+    return None
+
+
+def _build_and_cache_hist_result(
+    sym: str,
+    interval: str,
+    token: Optional[int],
+    raw: list,
+    cache_key: tuple,
+    cache_ttl_ok: int,
+    cache_ttl_empty: int,
+    hist_cache_put: object,
+    record_first_cold_empty: object,
+    HistoricalBarCls: type,
+    HistoricalResponseCls: type,
+    ohlcv_trace_enabled: object,
+    exchange: str,
+    days: int,
+    broker_account: str,
+) -> object:
+    """Convert raw broker rows → HistoricalBar list, build the
+    HistoricalResponse, write it to the cache, and return it.
+    Partial=True when no bars came back.
+    """
+    bars = [
+        HistoricalBarCls(  # type: ignore[operator]
+            ts=str(b["date"]) if not isinstance(b.get("date"), datetime)
+                              else b["date"].isoformat(),
+            open=float(b.get("open") or 0),
+            high=float(b.get("high") or 0),
+            low=float(b.get("low") or 0),
+            close=float(b.get("close") or 0),
+            volume=int(b.get("volume") or 0),
+        )
+        for b in raw
+    ]
+    result = HistoricalResponseCls(  # type: ignore[operator]
+        symbol=sym, instrument_token=token, interval=interval,
+        bars=bars, partial=not bool(bars),
+    )
+    hist_cache_put(  # type: ignore[operator]
+        cache_key, result,
+        cache_ttl_ok if bars else cache_ttl_empty,
+    )
+    if not bars:
+        record_first_cold_empty(sym)  # type: ignore[operator]
+    if ohlcv_trace_enabled():  # type: ignore[operator]
+        logger.info(
+            "[ohlcv-route] symbol=%s exchange=%s days=%d interval=%s "
+            "bars=%d source=broker_loop broker=%s",
+            sym, exchange or "auto", days, interval, len(bars), broker_account,
+        )
+    return result
+
+
+def _make_empty_hist_result(
+    sym: str,
+    interval: str,
+    cache_key: tuple,
+    cache_ttl_empty: int,
+    hist_cache_put: object,
+    record_first_cold_empty: object,
+    HistoricalResponseCls: type,
+) -> object:
+    """Build a zero-bar partial result, cache it, and return it."""
+    result = HistoricalResponseCls(  # type: ignore[operator]
+        symbol=sym, instrument_token=None, interval=interval,
+        bars=[], partial=True,
+    )
+    hist_cache_put(cache_key, result, cache_ttl_empty)  # type: ignore[operator]
+    record_first_cold_empty(sym)  # type: ignore[operator]
+    return result
+
+
 async def _historical_broker_loop(
     sym: str,
     exchange: str,
@@ -410,10 +509,9 @@ async def _historical_broker_loop(
         get_historical_brokers, _mark_rate_limited,
     )
 
-    if exchange:
-        exchange_arms: tuple[str, ...] = (exchange,)
-    else:
-        exchange_arms = ("NFO", "BFO", "NSE", "BSE", "MCX", "CDS")
+    exchange_arms: tuple[str, ...] = (
+        (exchange,) if exchange else ("NFO", "BFO", "NSE", "BSE", "MCX", "CDS")
+    )
 
     brokers = get_historical_brokers()
     if not brokers:
@@ -422,37 +520,21 @@ async def _historical_broker_loop(
             "(all historical_data_enabled=False or in rate-limit cool-off)",
             sym,
         )
-        result = HistoricalResponseCls(  # type: ignore[operator]
-            symbol=sym, instrument_token=None, interval=interval,
-            bars=[], partial=True,
+        return _make_empty_hist_result(
+            sym, interval, cache_key, cache_ttl_empty,
+            hist_cache_put, record_first_cold_empty, HistoricalResponseCls,
         )
-        hist_cache_put(cache_key, result, cache_ttl_empty)  # type: ignore[operator]
-        record_first_cold_empty(sym)  # type: ignore[operator]
-        return result
 
     to_d = datetime.now()
     from_d = to_d - timedelta(days=days)
 
     for broker in brokers:
         broker_key = f"{broker.broker_id}/{broker.account}"
-        token: Optional[int] = None
         try:
-            for ex in exchange_arms:
-                token_map = instruments_cache_get(broker.account, ex)  # type: ignore[operator]
-                if token_map is None:
-                    insts = await asyncio.to_thread(broker.instruments, ex) or []
-                    token_map = {}
-                    for inst in insts:
-                        ts = str(inst.get("tradingsymbol") or "").upper()
-                        tk = inst.get("instrument_token")
-                        if ts and tk:
-                            token_map[ts] = int(tk)
-                    instruments_cache_put(broker.account, ex, token_map)  # type: ignore[operator]
-                tk = token_map.get(sym)
-                if tk is not None:
-                    token = tk
-                    break
-
+            token = await _resolve_token_for_broker(
+                broker, sym, exchange_arms,
+                instruments_cache_get, instruments_cache_put,
+            )
             if not token:
                 continue
 
@@ -476,35 +558,13 @@ async def _historical_broker_loop(
                 )
             continue
 
-        bars = [
-            HistoricalBarCls(  # type: ignore[operator]
-                ts=str(b["date"]) if not isinstance(b.get("date"), datetime)
-                                  else b["date"].isoformat(),
-                open=float(b.get("open") or 0),
-                high=float(b.get("high") or 0),
-                low=float(b.get("low") or 0),
-                close=float(b.get("close") or 0),
-                volume=int(b.get("volume") or 0),
-            )
-            for b in raw
-        ]
-        result = HistoricalResponseCls(  # type: ignore[operator]
-            symbol=sym, instrument_token=token, interval=interval,
-            bars=bars, partial=not bool(bars),
+        return _build_and_cache_hist_result(
+            sym, interval, token, raw,
+            cache_key, cache_ttl_ok, cache_ttl_empty,
+            hist_cache_put, record_first_cold_empty,
+            HistoricalBarCls, HistoricalResponseCls,
+            ohlcv_trace_enabled, exchange, days, broker.account,
         )
-        hist_cache_put(  # type: ignore[operator]
-            cache_key, result,
-            cache_ttl_ok if bars else cache_ttl_empty,
-        )
-        if not bars:
-            record_first_cold_empty(sym)  # type: ignore[operator]
-        if ohlcv_trace_enabled():  # type: ignore[operator]
-            logger.info(
-                "[ohlcv-route] symbol=%s exchange=%s days=%d interval=%s "
-                "bars=%d source=broker_loop broker=%s",
-                sym, exchange or "auto", days, interval, len(bars), broker.account,
-            )
-        return result
 
     # All brokers tried and none succeeded.
     _tried = exchange if exchange else "NFO/BFO/NSE/BSE/MCX/CDS"
@@ -513,12 +573,10 @@ async def _historical_broker_loop(
         "(exchanges=%s, brokers tried=%s)",
         sym, _tried, [b.account for b in brokers],
     )
-    result = HistoricalResponseCls(  # type: ignore[operator]
-        symbol=sym, instrument_token=None, interval=interval,
-        bars=[], partial=True,
+    result = _make_empty_hist_result(
+        sym, interval, cache_key, cache_ttl_empty,
+        hist_cache_put, record_first_cold_empty, HistoricalResponseCls,
     )
-    hist_cache_put(cache_key, result, cache_ttl_empty)  # type: ignore[operator]
-    record_first_cold_empty(sym)  # type: ignore[operator]
     if ohlcv_trace_enabled():  # type: ignore[operator]
         logger.info(
             "[ohlcv-route] symbol=%s exchange=%s days=%d interval=%s "

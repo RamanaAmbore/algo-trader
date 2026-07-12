@@ -497,6 +497,45 @@ def _fetch() -> HoldingsResponse:
     )
 
 
+async def _scope_and_mask_holdings(
+    resp: "HoldingsResponse",
+    request: "Request",
+) -> "HoldingsResponse":
+    """Apply trader horizontal scoping then account-ID masking.
+
+    Trader role: filter rows + summary to the user's assigned_accounts.
+    Non-admin: replace raw account codes with masked versions
+    (copy-not-mutate so the shared cache doesn't end up holding masked
+    codes — prevents the demo→signin lag bug).
+
+    The two transforms are always applied in order (scope first, then mask)
+    so a trader who is also non-admin gets both filters.
+    """
+    import msgspec as _msc
+
+    role = normalise_role(resolve_role_from_connection(request))
+    if role == "trader":
+        allowed, _ = await user_scope_for_connection(request)
+        allowed_set = {str(a).upper() for a in (allowed or [])}
+        resp = _msc.structs.replace(
+            resp,
+            rows=[r for r in resp.rows
+                  if str(getattr(r, "account", "")).upper() in allowed_set],
+            summary=[s for s in resp.summary
+                     if str(getattr(s, "account", "")).upper() in allowed_set
+                     or str(getattr(s, "account", "")).upper() == "TOTAL"],
+        )
+    if not is_admin_request(request):
+        def _mask_row(row: "HoldingRow") -> "HoldingRow":
+            return _msc.structs.replace(row, account=mask_account(row.account))
+        resp = _msc.structs.replace(
+            resp,
+            rows=[_mask_row(r) for r in resp.rows],
+            summary=[_mask_row(s) for s in resp.summary],
+        )
+    return resp
+
+
 class HoldingsController(Controller):
     path = "/api/holdings"
 
@@ -505,20 +544,17 @@ class HoldingsController(Controller):
         self, request: Request, fresh: bool = False, skip_ltp: bool = False,
     ) -> HoldingsResponse:
         try:
-            # ── Closed-hours gate via canonical helper ──────────────────────
+            # ── Inner helpers ───────────────────────────────────────────────
             # Holdings are long-dated (days–weeks) so their LTP doesn't
             # change between sessions.  closed_hours_or_broker decides
             # whether to call the broker or serve the daily_book snapshot.
             # `?fresh=1` bypasses the gate.
             # `?skip_ltp=1` — force snapshot path even when a segment is open.
-            # RefreshButton sends this during both-markets-closed clicks so
-            # the operator can still refresh cash/margins/holdings-metadata
-            # without hitting the broker for LTPs.
-
             async def _snapshot_fn() -> HoldingsResponse:
                 snap = await _holdings_snapshot()
                 if snap is None:
-                    return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
+                    return HoldingsResponse(rows=[], summary=[],
+                                            refreshed_at=timestamp_display())
                 return snap
 
             async def _broker_fn() -> HoldingsResponse:
@@ -550,14 +586,10 @@ class HoldingsController(Controller):
                 import msgspec as _msc
                 return _msc.structs.replace(_resp, rows=_new_rows)
 
-            # ?skip_ltp=1 — RefreshButton's both-closed click. Runs the
-            # normal broker path so holdings metadata refreshes (qty +
-            # avg_cost change on corporate actions, dividend credits,
-            # delivery-to-holdings transitions); the row-level overlay
-            # in _broker_fn tags every closed-exchange row with
-            # price_source='snapshot_*' and freezes its last_price to
-            # the daily_book close_settled value. Funds stays on its own
-            # broker path in parallel.
+            # ── Route selector ──────────────────────────────────────────────
+            # ?skip_ltp=1 — RefreshButton's both-closed click: broker path
+            # refreshes metadata; overlay freezes closed-exchange LTPs.
+            # ?fresh=1 — bypass closed-hours gate entirely.
             if skip_ltp:
                 resp = await _broker_fn()
             elif not fresh:
@@ -569,71 +601,21 @@ class HoldingsController(Controller):
                     route_key="holdings",
                 )
                 if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
+                    # Market closed — snapshot path: scope + mask then return.
                     logger.info(
                         f"holdings: market closed ({source}) — serving daily_book snapshot"
                     )
-                    role = normalise_role(resolve_role_from_connection(request))
-                    if role == "trader":
-                        allowed, _ = await user_scope_for_connection(request)
-                        allowed_set = {str(a).upper() for a in (allowed or [])}
-                        import msgspec
-                        resp = msgspec.structs.replace(
-                            resp,
-                            rows=[r for r in resp.rows
-                                  if str(getattr(r, "account", "")).upper() in allowed_set],
-                            summary=[s for s in resp.summary
-                                     if str(getattr(s, "account", "")).upper() in allowed_set
-                                     or str(getattr(s, "account", "")).upper() == "TOTAL"],
-                        )
-                    if not is_admin_request(request):
-                        import msgspec
-                        def _mask_snap(row):
-                            return msgspec.structs.replace(row, account=mask_account(row.account))
-                        resp = msgspec.structs.replace(
-                            resp,
-                            rows=[_mask_snap(r) for r in resp.rows],
-                            summary=[_mask_snap(s) for s in resp.summary],
-                        )
-                    return resp
+                    return await _scope_and_mask_holdings(resp, request)
                 # Market is open (or stale-live), or no snapshot exists yet —
-                # continue to live path (resp already holds broker or stale-live).
+                # continue to live path.
                 if source not in ("live", "stale-live"):
                     resp = await _broker_fn()
             else:
-                # ?fresh=1 — bypass closed-hours gate entirely
                 resp = await _broker_fn()
-            # Horizontal scoping (slice 5) — trader sees only their
-            # assigned_accounts. Firm-wide roles untouched. Filter
-            # BEFORE masking so the trader's assigned-list match
-            # works against unmasked codes.
-            role = normalise_role(resolve_role_from_connection(request))
-            if role == "trader":
-                allowed, _ = await user_scope_for_connection(request)
-                allowed_set = {str(a).upper() for a in (allowed or [])}
-                import msgspec
-                resp = msgspec.structs.replace(
-                    resp,
-                    rows=[r for r in resp.rows
-                          if str(getattr(r, "account", "")).upper() in allowed_set],
-                    summary=[s for s in resp.summary
-                             if str(getattr(s, "account", "")).upper() in allowed_set
-                             or str(getattr(s, "account", "")).upper() == "TOTAL"],
-                )
-            # Account-ID masking — admin/designated only see raw codes.
-            # Copy-not-mutate so the shared cache doesn't end up holding
-            # masked codes (was the demo→signin lag bug).
-            if not is_admin_request(request):
-                import msgspec
-                def _mask(row):
-                    return msgspec.structs.replace(
-                        row, account=mask_account(row.account)
-                    )
-                return msgspec.structs.replace(
-                    resp,
-                    rows=[_mask(r) for r in resp.rows],
-                    summary=[_mask(s) for s in resp.summary],
-                )
-            return resp
+
+            # Live path: scope + mask before returning.
+            return await _scope_and_mask_holdings(resp, request)
+
         except Exception as e:
             logger.error(f"Holdings API error: {e}")
             if _is_broker_outage(e):
