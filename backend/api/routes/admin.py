@@ -101,6 +101,318 @@ async def _tail_log_response(log_path: Path, n: int) -> "LogsResponse":
 
 
 # ---------------------------------------------------------------------------
+# update_user helpers
+# ---------------------------------------------------------------------------
+
+# Roles that bypass the email-verification gate (internal actors).
+_INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
+
+# Fields iterated by update_user.
+_UPDATABLE_FIELDS = (
+    'display_name', 'role', 'receive_alerts', 'email_verified',
+    'email', 'phone', 'pan',
+    'kyc_verified', 'address_line1', 'address_line2',
+    'city', 'state', 'pincode', 'contribution', 'contribution_date',
+    'share_pct', 'bank_name', 'bank_account', 'bank_ifsc',
+    'nominee_name', 'nominee_relation', 'nominee_phone',
+    'join_date', 'notes',
+    'assigned_accounts', 'assigned_strategies',
+    'compliance_designated',
+)
+
+# Sentinel returned by field validators to signal "skip this field".
+_SKIP = object()
+
+
+def _validate_role_field(val: str, allowed_role_change: bool) -> object:
+    """Validate + gate the 'role' field.
+
+    Returns the value unchanged when the actor is allowed and the role is valid.
+    Returns _SKIP when the actor is not permitted to change the role (silently
+    dropped — same semantics as the original ``continue`` in the loop).
+    Raises HTTPException(422) when the role value is not in VALID_ROLES.
+    """
+    if not allowed_role_change:
+        return _SKIP
+    from backend.api.rbac import VALID_ROLES
+    if val not in VALID_ROLES or val == 'demo':
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "role must be one of: "
+                + ', '.join(r for r in VALID_ROLES if r != 'demo')
+            ),
+        )
+    return val
+
+
+def _validate_email_verified_field(val: bool, allowed_role_change: bool, user: "User") -> object:
+    """Gate the 'email_verified' field.
+
+    Returns val when the actor is permitted or when the value is unchanged
+    (echo-back no-op). Returns _SKIP when a non-designated actor echoes the
+    current state back. Raises HTTPException(403) when a non-designated actor
+    actually tries to flip the value.
+    """
+    if allowed_role_change:
+        return val
+    if bool(val) != bool(user.email_verified):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only designated role can flip email_verified "
+                "directly. Use Resend Verification instead."
+            ),
+        )
+    return _SKIP
+
+
+def _validate_designated_only_field(val: object, allowed_role_change: bool) -> object:
+    """Gate fields that require designated authority.
+
+    Returns val when allowed; returns _SKIP otherwise (silently dropped —
+    matches the original ``continue`` in the loop; UI hides the inputs too).
+    """
+    if not allowed_role_change:
+        return _SKIP
+    return val
+
+
+def _coerce_assigned_accounts(val: object) -> list[str]:
+    """Validate and normalise assigned_accounts list."""
+    if not isinstance(val, list) or not all(isinstance(a, str) for a in val):
+        raise HTTPException(
+            status_code=422,
+            detail="assigned_accounts must be a list of broker-account strings",
+        )
+    return [a.strip().upper() for a in val if a and a.strip()]
+
+
+def _coerce_assigned_strategies(val: object) -> list[int]:
+    """Validate and normalise assigned_strategies list."""
+    if not isinstance(val, list):
+        raise HTTPException(
+            status_code=422,
+            detail="assigned_strategies must be a list of strategy ids",
+        )
+    return [int(s) for s in val if s is not None]
+
+
+def _coerce_date_str(val: object) -> object:
+    """Convert ISO date strings to date objects; pass date objects through."""
+    from datetime import date as _dt_date
+    return _dt_date.fromisoformat(val) if isinstance(val, str) else val
+
+
+def _apply_user_field_updates(
+    user: "User",
+    data: "UpdateUserRequest",
+    allowed_role_change: bool,
+) -> None:
+    """Apply all non-None fields from *data* to *user* in-place.
+
+    Each field passes through its own gate / coercion helper.  A field that
+    returns _SKIP is silently ignored (same as the original ``continue``).
+    """
+    for field in _UPDATABLE_FIELDS:
+        val = getattr(data, field, None)
+        if val is None:
+            continue
+
+        if field == 'role':
+            val = _validate_role_field(val, allowed_role_change)
+        elif field == 'email_verified':
+            val = _validate_email_verified_field(val, allowed_role_change, user)
+        elif field in ('share_pct', 'contribution', 'contribution_date'):
+            val = _validate_designated_only_field(val, allowed_role_change)
+        elif field in ('assigned_accounts', 'assigned_strategies', 'compliance_designated'):
+            val = _validate_designated_only_field(val, allowed_role_change)
+            if val is not _SKIP:
+                if field == 'assigned_accounts':
+                    val = _coerce_assigned_accounts(val)
+                elif field == 'assigned_strategies':
+                    val = _coerce_assigned_strategies(val)
+
+        if val is _SKIP:
+            continue
+
+        if field == 'pan' and isinstance(val, str):
+            val = val.upper()
+        if field in ('date_of_birth', 'join_date', 'contribution_date'):
+            val = _coerce_date_str(val)
+
+        setattr(user, field, val)
+
+
+def _maybe_bump_token_and_auto_verify(
+    user: "User",
+    data: "UpdateUserRequest",
+    allowed_role_change: bool,
+    prior_role: str,
+) -> None:
+    """Bump token_version on role mutations and auto-verify email when a
+    partner is promoted to an internal role."""
+    if data.role is not None and allowed_role_change:
+        user.token_version = (user.token_version or 1) + 1
+        if user.role in _INTERNAL_ROLES and prior_role not in _INTERNAL_ROLES:
+            user.email_verified = True
+
+
+# ---------------------------------------------------------------------------
+# pnl_upload_csv helpers
+# ---------------------------------------------------------------------------
+
+# Column aliases for the Kite Console CSV (column names vary by report type).
+_PNL_COL: dict[str, list[str]] = {
+    "tradingsymbol": ["tradingsymbol", "trading symbol", "symbol"],
+    "exchange":      ["exchange"],
+    "qty":           ["open quantity", "quantity", "open_quantity"],
+    "avg_cost":      ["open average", "open average price", "average_price", "buy average"],
+    "ltp":           ["previous closing price", "last price", "ltp"],
+    "day_pnl":       ["unrealized p&l", "unrealized pnl", "day_pnl"],
+    "total_pnl":     ["realized p&l", "realized pnl", "total_pnl"],
+}
+
+_TS_ALIASES = {"tradingsymbol", "trading symbol", "symbol"}
+
+
+def _extract_upload_fields(data: object) -> "tuple[str, str, UploadFile | None]":
+    """Extract (account_val, date_val, file_upload) from a multipart payload.
+
+    Litestar may deliver multipart as a dict or as an object with attributes
+    depending on version — handle both.
+    """
+    if isinstance(data, dict):
+        account_val: str = data.get("account", "") or ""
+        date_val:    str = data.get("date",    "") or ""
+        file_upload      = data.get("file")
+    else:
+        account_val = getattr(data, "account", "") or ""
+        date_val    = getattr(data, "date",    "") or ""
+        file_upload = getattr(data, "file",    None)
+    return account_val.strip(), date_val.strip(), file_upload
+
+
+def _resolve_upload_date(date_val: str) -> "dt_date":
+    """Parse *date_val* into a ``dt_date``.
+
+    Accepts empty string / ``'today'`` (returns today IST) or ISO-format
+    ``'YYYY-MM-DD'``.  Raises HTTPException(422) on bad input.
+    """
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    today_str = timestamp_indian().date().isoformat()
+    if not date_val or date_val.lower() == "today":
+        return dt_date.fromisoformat(today_str)
+    try:
+        return dt_date.fromisoformat(date_val)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"Invalid date: {date_val!r} — use YYYY-MM-DD"
+        )
+
+
+def _decode_csv_bytes(raw_bytes: bytes) -> str:
+    """Decode *raw_bytes* as UTF-8-sig or fall back to CP1252."""
+    try:
+        return raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw_bytes.decode("cp1252", errors="replace")
+
+
+def _validate_csv_headers(reader: "csv.DictReader") -> None:  # type: ignore[name-defined]
+    """Raise HTTPException(422) when required columns are absent."""
+    if reader.fieldnames is None:
+        raise HTTPException(status_code=422, detail="CSV has no header row")
+    lower_fields = {f.strip().lower() for f in reader.fieldnames}
+    missing: list[str] = []
+    if not (lower_fields & _TS_ALIASES):
+        missing.append("tradingsymbol (or 'Trading Symbol' / 'Symbol')")
+    if "exchange" not in lower_fields:
+        missing.append("exchange")
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"CSV missing required columns: {missing}",
+        )
+
+
+def _csv_col_val(row: dict, aliases: list[str]) -> "str | None":
+    """Return the first matching value from *row* given a list of column aliases."""
+    for alias in aliases:
+        for k, v in row.items():
+            if k.strip().lower() == alias:
+                return v
+    return None
+
+
+def _csv_float(s: "str | None") -> "float | None":
+    """Parse a numeric string that may contain commas; return None on failure."""
+    if not s:
+        return None
+    try:
+        return float(str(s).replace(",", "").strip())
+    except ValueError:
+        return None
+
+
+def _build_pnl_upsert_row(
+    raw_row: dict,
+    target: "dt_date",
+    account_val: str,
+    now_utc: "datetime",  # type: ignore[name-defined]
+) -> "dict | None":
+    """Convert one CSV row to an upsert dict; return None to signal skip."""
+    from backend.api.algo.daily_snapshot import kite_seg_from_exchange
+    from datetime import datetime, timezone  # noqa: F401 (datetime used in caller)
+
+    symbol   = (_csv_col_val(raw_row, _PNL_COL["tradingsymbol"]) or "").strip()
+    exchange = (_csv_col_val(raw_row, _PNL_COL["exchange"])   or "").strip().upper()
+    if not symbol or not exchange:
+        return None
+    qty_raw = _csv_float(_csv_col_val(raw_row, _PNL_COL["qty"]))
+    return {
+        "date":         target,
+        "account":      account_val,
+        "segment":      kite_seg_from_exchange(exchange),
+        "kind":         "holdings",
+        "symbol":       symbol,
+        "exchange":     exchange,
+        "qty":          int(qty_raw) if qty_raw is not None else 0,
+        "avg_cost":     _csv_float(_csv_col_val(raw_row, _PNL_COL["avg_cost"])),
+        "ltp":          _csv_float(_csv_col_val(raw_row, _PNL_COL["ltp"])),
+        "day_pnl":      _csv_float(_csv_col_val(raw_row, _PNL_COL["day_pnl"])),
+        "total_pnl":    _csv_float(_csv_col_val(raw_row, _PNL_COL["total_pnl"])),
+        "payload_json": None,
+        "captured_at":  now_utc,
+    }
+
+
+async def _execute_pnl_upsert(
+    rows: list[dict],
+    target: "dt_date",
+    account_val: str,
+) -> "tuple[int, int]":
+    """UPSERT *rows* into daily_book; return (inserted, updated)."""
+    from backend.api.algo.daily_snapshot import _UPSERT_SQL
+
+    async with async_session() as session:
+        pre_count_res = await session.execute(
+            text(
+                "SELECT COUNT(*) FROM daily_book "
+                "WHERE date = :d AND account = :a AND kind = 'holdings'"
+            ),
+            {"d": target, "a": account_val},
+        )
+        pre_count = int(pre_count_res.scalar() or 0)
+        await session.execute(_UPSERT_SQL, rows)
+        await session.commit()
+
+    inserted = max(0, len(rows) - pre_count)
+    updated  = len(rows) - inserted
+    return inserted, updated
+
+
+# ---------------------------------------------------------------------------
 # Schemas (msgspec)
 # ---------------------------------------------------------------------------
 
@@ -463,7 +775,6 @@ class AdminController(Controller):
             # but partners created HERE by a designated user with an email on
             # file are also auto-verified: the operator is vouching for the
             # address, so requiring a verify link is redundant friction.
-            _INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
             admin_vetted = (
                 eff_role in _INTERNAL_ROLES
                 or (is_designated and eff_role == "partner" and bool(data.email))
@@ -509,7 +820,6 @@ class AdminController(Controller):
             # Any role promotion / explicit approval by designated/admin
             # counts as vetting — clear the email-verification gate so
             # trader/risk/admin accounts can log in immediately.
-            _INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
             if user.role in _INTERNAL_ROLES:
                 user.email_verified = True
                 # Bump token_version so any pre-approval JWT is invalidated;
@@ -546,127 +856,20 @@ class AdminController(Controller):
             user = result.scalar_one_or_none()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
-            # Admin can edit own profile + partner profiles. The
-            # field-level gates further down still block admin from
-            # changing role or flipping email_verified on a non-partner
-            # target, so opening up the route doesn't grant a
-            # privilege-escalation surface.
+            # Admin can edit own profile + partner profiles. Field-level gates
+            # in the helpers below still block admin from changing role or
+            # flipping email_verified on a non-partner target.
             self._check_action(request, user, admin_self_ok=True, admin_partner_ok=True)
-            # `role` only flows through this endpoint for designated
-            # actors. An admin self-editing their own row would otherwise
-            # be able to PATCH role to 'designated' (self-elevation) or
-            # to 'partner' (self-demote). Promote/Demote between admin
-            # and designated has its own audited route (toggle-designated).
+            # `role` changes are designated-only so an admin self-editing
+            # cannot PATCH to 'designated' (self-elevation). Promote/Demote
+            # between admin and designated has its own audited route.
             payload = getattr(request.state, "token_payload", {}) or {}
             actor_role = payload.get("role", "")
             allowed_role_change = (actor_role == "designated")
-
-            # Snapshot prior role before the mutation loop so we can
-            # detect partner→internal promotions below.
+            # Snapshot prior role BEFORE the mutation loop.
             prior_role = user.role
-
-            # Apply all non-None fields from the request
-            for field in (
-                'display_name', 'role', 'receive_alerts', 'email_verified',
-                'email', 'phone', 'pan',
-                'kyc_verified', 'address_line1', 'address_line2',
-                'city', 'state', 'pincode', 'contribution', 'contribution_date',
-                'share_pct', 'bank_name', 'bank_account', 'bank_ifsc',
-                'nominee_name', 'nominee_relation', 'nominee_phone',
-                'join_date', 'notes',
-                # Slice 5 — RBAC horizontal scope. Designated-only fields
-                # (they control PRIVILEGE distribution).
-                'assigned_accounts', 'assigned_strategies',
-                'compliance_designated',
-            ):
-                val = getattr(data, field, None)
-                if val is None:
-                    continue
-                if field == 'role':
-                    # Privilege-changing field — designated only.
-                    # Accepts the 5 canonical roles: designated /
-                    # trader / risk / admin / partner.
-                    if not allowed_role_change:
-                        continue
-                    from backend.api.rbac import VALID_ROLES
-                    if val not in VALID_ROLES or val == 'demo':
-                        raise HTTPException(
-                            status_code=422,
-                            detail=(
-                                f"role must be one of: "
-                                + ', '.join(r for r in VALID_ROLES if r != 'demo')
-                            ),
-                        )
-                if field == 'email_verified':
-                    # Manually flipping email_verified bypasses the
-                    # email-token flow — designated only. Admin can
-                    # trigger a verification email via the dedicated
-                    # /resend-verification endpoint but cannot mark a
-                    # user verified directly.
-                    # Raise 403 only when the actor is actually trying to
-                    # change the value — a non-designated actor echoing
-                    # back the current state (common when the frontend
-                    # sends the full form payload) is a no-op and passes
-                    # through silently.
-                    if not allowed_role_change:
-                        if bool(val) != bool(user.email_verified):
-                            raise HTTPException(
-                                status_code=403,
-                                detail=(
-                                    "Only designated role can flip email_verified "
-                                    "directly. Use Resend Verification instead."
-                                ),
-                            )
-                        continue
-                if field in ('share_pct', 'contribution', 'contribution_date'):
-                    # Capital + share split — designated-only. Admin can
-                    # operate the platform on designated's behalf but
-                    # cannot change a partner's economic stake without
-                    # the principal's authority. Silently dropped for
-                    # non-designated actors (UI hides the inputs too).
-                    if not allowed_role_change:
-                        continue
-                if field in ('assigned_accounts', 'assigned_strategies',
-                             'compliance_designated'):
-                    # Slice 5 RBAC horizontal scope — designated-only.
-                    # Granting accounts / strategies / compliance
-                    # designation is a privilege-allocation decision,
-                    # same gate as the role field itself. Admin can
-                    # READ these via /users but cannot WRITE.
-                    if not allowed_role_change:
-                        continue
-                    if field == 'assigned_accounts':
-                        if not isinstance(val, list) or not all(isinstance(a, str) for a in val):
-                            raise HTTPException(
-                                status_code=422,
-                                detail="assigned_accounts must be a list of broker-account strings",
-                            )
-                        val = [a.strip().upper() for a in val if a and a.strip()]
-                    elif field == 'assigned_strategies':
-                        if not isinstance(val, list):
-                            raise HTTPException(
-                                status_code=422,
-                                detail="assigned_strategies must be a list of strategy ids",
-                            )
-                        val = [int(s) for s in val if s is not None]
-                if field == 'pan':
-                    val = val.upper()
-                if field in ('date_of_birth', 'join_date', 'contribution_date'):
-                    from datetime import date as dt_date
-                    val = dt_date.fromisoformat(val) if isinstance(val, str) else val
-                setattr(user, field, val)
-            # Bump token_version when role or username flow could grant
-            # new privileges; safest is to bump on any role mutation so
-            # any active JWT for the affected user gets re-issued on the
-            # next request via jwt_guard.
-            if data.role is not None and allowed_role_change:
-                user.token_version = (user.token_version or 1) + 1
-                # Auto-verify email on partner→internal promotion so the
-                # promoted user can sign in immediately without hitting the
-                # email_verified gate.
-                _INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
-                if user.role in _INTERNAL_ROLES and prior_role not in _INTERNAL_ROLES:
-                    user.email_verified = True
+            _apply_user_field_updates(user, data, allowed_role_change)
+            _maybe_bump_token_and_auto_verify(user, data, allowed_role_change, prior_role)
             await session.commit()
         email_verified_after = user.email_verified
         await refresh_alert_recipients()
@@ -1248,147 +1451,40 @@ class AdminController(Controller):
           file     — the CSV file
         """
         import csv as csv_mod
-        from backend.api.algo.daily_snapshot import kite_seg_from_exchange, _UPSERT_SQL
-        from backend.shared.helpers.date_time_utils import timestamp_indian
         from datetime import datetime, timezone
 
-        account_val: str = data.get("account", "") if isinstance(data, dict) else ""
-        date_val:    str = data.get("date",    "") if isinstance(data, dict) else ""
-        file_upload: UploadFile | None = data.get("file") if isinstance(data, dict) else None
-
-        # Litestar delivers multipart as a dict-like object; handle both dict and
-        # attribute access depending on Litestar version.
-        if not isinstance(data, dict):
-            account_val = getattr(data, "account", "") or ""
-            date_val    = getattr(data, "date",    "") or ""
-            file_upload = getattr(data, "file",    None)
-
-        account_val = (account_val or "").strip()
-        date_val    = (date_val    or "").strip()
+        account_val, date_val, file_upload = _extract_upload_fields(data)
 
         if not account_val:
             raise HTTPException(status_code=422, detail="account field is required")
         if file_upload is None:
             raise HTTPException(status_code=422, detail="file field is required")
 
-        today_str = timestamp_indian().date().isoformat()
-        if not date_val or date_val.lower() == "today":
-            target = dt_date.fromisoformat(today_str)
-        else:
-            try:
-                target = dt_date.fromisoformat(date_val)
-            except ValueError:
-                raise HTTPException(
-                    status_code=422, detail=f"Invalid date: {date_val!r} — use YYYY-MM-DD"
-                )
+        target = _resolve_upload_date(date_val)
 
         raw_bytes = await file_upload.read()
         if not raw_bytes:
             raise HTTPException(status_code=422, detail="Uploaded file is empty")
 
-        # Kite CSV may be UTF-8 or Windows-1252
-        try:
-            text_content = raw_bytes.decode("utf-8-sig")
-        except UnicodeDecodeError:
-            text_content = raw_bytes.decode("cp1252", errors="replace")
-
+        text_content = _decode_csv_bytes(raw_bytes)
         reader = csv_mod.DictReader(io.StringIO(text_content))
-        if reader.fieldnames is None:
-            raise HTTPException(status_code=422, detail="CSV has no header row")
-
-        # Normalise fieldnames to stripped lower-case
-        lower_fields = {f.strip().lower() for f in reader.fieldnames}
-
-        # The symbol column has two common aliases; exchange must be present.
-        # Use alias resolution to check: at least one of the tradingsymbol
-        # aliases AND the exchange column must exist in the header.
-        _TS_ALIASES  = {"tradingsymbol", "trading symbol", "symbol"}
-        has_symbol   = bool(lower_fields & _TS_ALIASES)
-        has_exchange = "exchange" in lower_fields
-        missing: list[str] = []
-        if not has_symbol:
-            missing.append("tradingsymbol (or 'Trading Symbol' / 'Symbol')")
-        if not has_exchange:
-            missing.append("exchange")
-        if missing:
-            raise HTTPException(
-                status_code=422,
-                detail=f"CSV missing required columns: {missing}"
-            )
-
-        # Column aliases (Kite Console column names vary by report type)
-        _COL = {
-            "tradingsymbol": ["tradingsymbol", "trading symbol", "symbol"],
-            "exchange":      ["exchange"],
-            "qty":           ["open quantity", "quantity", "open_quantity"],
-            "avg_cost":      ["open average", "open average price", "average_price", "buy average"],
-            "ltp":           ["previous closing price", "last price", "ltp"],
-            "day_pnl":       ["unrealized p&l", "unrealized pnl", "day_pnl"],
-            "total_pnl":     ["realized p&l", "realized pnl", "total_pnl"],
-        }
-
-        def _col_val(row: dict, aliases: list[str]) -> str | None:
-            for alias in aliases:
-                for k, v in row.items():
-                    if k.strip().lower() == alias:
-                        return v
-            return None
-
-        def _float_or_none(s: str | None) -> float | None:
-            if not s:
-                return None
-            try:
-                return float(str(s).replace(",", "").strip())
-            except ValueError:
-                return None
+        _validate_csv_headers(reader)
 
         rows_to_upsert: list[dict] = []
         skipped = 0
         now_utc = datetime.now(timezone.utc)
 
         for raw_row in reader:
-            symbol = (_col_val(raw_row, _COL["tradingsymbol"]) or "").strip()
-            exchange = (_col_val(raw_row, _COL["exchange"])   or "").strip().upper()
-            if not symbol or not exchange:
+            row = _build_pnl_upsert_row(raw_row, target, account_val, now_utc)
+            if row is None:
                 skipped += 1
                 continue
-            qty_raw = _float_or_none(_col_val(raw_row, _COL["qty"]))
-            rows_to_upsert.append({
-                "date":         target,
-                "account":      account_val,
-                "segment":      kite_seg_from_exchange(exchange),
-                "kind":         "holdings",
-                "symbol":       symbol,
-                "exchange":     exchange,
-                "qty":          int(qty_raw) if qty_raw is not None else 0,
-                "avg_cost":     _float_or_none(_col_val(raw_row, _COL["avg_cost"])),
-                "ltp":          _float_or_none(_col_val(raw_row, _COL["ltp"])),
-                "day_pnl":      _float_or_none(_col_val(raw_row, _COL["day_pnl"])),
-                "total_pnl":    _float_or_none(_col_val(raw_row, _COL["total_pnl"])),
-                "payload_json": None,
-                "captured_at":  now_utc,
-            })
+            rows_to_upsert.append(row)
 
         if not rows_to_upsert:
             return PnlCsvUploadResponse(inserted=0, updated=0, skipped=skipped, sample=[])
 
-        # Count pre-existing rows for this account+date to separate
-        # insert vs update counts.
-        async with async_session() as session:
-            pre_count_res = await session.execute(
-                text(
-                    "SELECT COUNT(*) FROM daily_book "
-                    "WHERE date = :d AND account = :a AND kind = 'holdings'"
-                ),
-                {"d": target, "a": account_val},
-            )
-            pre_count = int(pre_count_res.scalar() or 0)
-
-            await session.execute(_UPSERT_SQL, rows_to_upsert)
-            await session.commit()
-
-        inserted = max(0, len(rows_to_upsert) - pre_count)
-        updated  = len(rows_to_upsert) - inserted
+        inserted, updated = await _execute_pnl_upsert(rows_to_upsert, target, account_val)
 
         sample = [
             {k: (str(v) if not isinstance(v, (int, float, type(None))) else v)

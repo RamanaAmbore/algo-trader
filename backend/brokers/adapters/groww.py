@@ -1216,35 +1216,11 @@ class GrowwBroker(Broker):
                 page=page,
                 page_size=50,
             )
-            data = resp.get("data") if isinstance(resp, dict) else {}
-            rows = []
-            if isinstance(data, dict):
-                rows = data.get("smart_orders") or data.get("orders") or []
-            elif isinstance(data, list):
-                rows = data
+            rows = _extract_groww_gtt_rows(resp)
             if not rows:
                 break
             for r in rows:
-                trig_price = float(r.get("trigger_price") or 0)
-                order_inner = r.get("order") or {}
-                out.append({
-                    "gtt_id":       str(r.get("smart_order_id") or r.get("reference_id") or ""),
-                    "status":       (r.get("status") or "active").lower(),
-                    "trigger_type": "single",
-                    "tradingsymbol": r.get("trading_symbol") or "",
-                    "exchange":     r.get("exchange") or "",
-                    "trigger_values": [trig_price],
-                    "last_price":   float(r.get("last_price") or 0),
-                    "orders": [{
-                        "transaction_type": order_inner.get("transaction_type") or "SELL",
-                        "quantity":         int(r.get("quantity") or 0),
-                        "price":            float(order_inner.get("price") or 0),
-                        "order_type":       order_inner.get("order_type") or "LIMIT",
-                        "product":          r.get("product_type") or "NRML",
-                    }],
-                    "created_at":   r.get("created_at") or "",
-                    "_raw":         r,
-                })
+                out.append(_normalise_groww_gtt_row(r))
             # Groww paginates; if fewer than 50 rows came back we're on the last page
             if len(rows) < 50:
                 break
@@ -1272,6 +1248,35 @@ class GrowwBroker(Broker):
 # ── Response normalisers ──────────────────────────────────────────────
 
 
+def _gi(row: dict, *keys: str, default: int = 0) -> int:
+    """Tolerant int coercion — tries each key in order, falls back to default.
+    Equivalent to ``int(row.get(k1, row.get(k2, default)) or default)`` for
+    any number of fallback keys. Eliminates repeated ``or 0`` guard patterns
+    in per-field normalisation branches.
+    """
+    for k in keys:
+        v = row.get(k)
+        if v is not None:
+            try:
+                return int(v) or default
+            except (TypeError, ValueError):
+                pass
+    return default
+
+
+def _gf(row: dict, *keys: str, default: float = 0.0) -> float:
+    """Tolerant float coercion — same as _gi but returns float."""
+    for k in keys:
+        v = row.get(k)
+        if v is not None:
+            try:
+                result = float(v)
+                return result if result else default
+            except (TypeError, ValueError):
+                pass
+    return default
+
+
 def _unwrap(resp: Any, key: str = "data") -> Any:
     """Most Groww responses look like {"status": "SUCCESS", "data": ...}.
     Unwrap the inner payload; return [] if it's not a list/dict we can
@@ -1295,16 +1300,40 @@ def _iter_rows(payload: Any, *candidate_keys: str) -> list[dict]:
     return []
 
 
+def _holding_derive_pnl(h: dict, ltp: float, avg: float, qty: int) -> float:
+    """Broker pnl when present, otherwise (ltp − avg) × qty."""
+    pnl = _gf(h, "pnl")
+    if not pnl and ltp > 0 and avg > 0 and qty:
+        return (ltp - avg) * qty
+    return pnl
+
+
+def _holding_derive_day_change(h: dict, ltp: float, close: float) -> float:
+    """Broker day_change when present, otherwise ltp − close."""
+    day_change = _gf(h, "day_change")
+    if not day_change and ltp > 0 and close > 0:
+        return ltp - close
+    return day_change
+
+
+def _holding_derive_day_change_pct(h: dict, day_change: float, close: float) -> float:
+    """Broker day_change_percentage when present, else derive from day_change/close."""
+    pct = _gf(h, "day_change_percentage")
+    if not pct and close > 0:
+        return (day_change / close) * 100
+    return pct
+
+
 def _normalise_holdings(resp: Any) -> list[dict]:
     payload = _unwrap(resp)
     rows = _iter_rows(payload, "holdings")
     out: list[dict] = []
     for h in rows:
-        qty    = int(h.get("quantity", 0) or 0)
-        t1_qty = int(h.get("t1_quantity", 0) or 0)
-        avg    = float(h.get("average_price",  h.get("avg_price", 0)) or 0)
-        ltp    = float(h.get("last_price",     h.get("ltp", 0)) or 0)
-        close  = float(h.get("close_price",    h.get("previous_close", 0)) or 0)
+        qty    = _gi(h, "quantity")
+        t1_qty = _gi(h, "t1_quantity")
+        avg    = _gf(h, "average_price", "avg_price")
+        ltp    = _gf(h, "last_price", "ltp")
+        close  = _gf(h, "close_price", "previous_close")
         # opening_quantity is REQUIRED by the holdings API model — rows
         # missing it get dropped at serialisation, which is why a Groww
         # holding (HFCL / NATIONALUM …) would silently disappear from
@@ -1324,15 +1353,9 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         # so the operator-facing Day P&L column read 0 (looks flat)
         # instead of waiting for the backfill (looks unknown). Now
         # we leave close=0 like Dhan does — backfill picks them up.
-        pnl = float(h.get("pnl", 0) or 0)
-        if not pnl and ltp > 0 and avg > 0 and qty:
-            pnl = (ltp - avg) * qty
-        day_change = float(h.get("day_change", 0) or 0)
-        if not day_change and ltp > 0 and close > 0:
-            day_change = ltp - close
-        day_change_pct = float(h.get("day_change_percentage", 0) or 0)
-        if not day_change_pct and close > 0:
-            day_change_pct = (day_change / close) * 100
+        pnl = _holding_derive_pnl(h, ltp, avg, qty)
+        day_change = _holding_derive_day_change(h, ltp, close)
+        day_change_pct = _holding_derive_day_change_pct(h, day_change, close)
         out.append({
             "tradingsymbol":   h.get("trading_symbol") or h.get("tradingsymbol") or "",
             "exchange":        h.get("exchange") or "NSE",
@@ -1353,6 +1376,22 @@ def _normalise_holdings(resp: Any) -> list[dict]:
     return out
 
 
+def _position_day_buy_value(p: dict) -> float:
+    """day_buy_value: prefer the direct field, fall back to price × qty."""
+    direct = _gf(p, "day_buy_value")
+    if direct:
+        return direct
+    return _gf(p, "day_buy_price") * _gi(p, "day_buy_quantity")
+
+
+def _position_day_sell_value(p: dict) -> float:
+    """day_sell_value: prefer the direct field, fall back to price × qty."""
+    direct = _gf(p, "day_sell_value")
+    if direct:
+        return direct
+    return _gf(p, "day_sell_price") * _gi(p, "day_sell_quantity")
+
+
 def _normalise_positions(resp: Any) -> dict:
     payload = _unwrap(resp)
     rows = _iter_rows(payload, "positions")
@@ -1364,25 +1403,17 @@ def _normalise_positions(resp: Any) -> dict:
             "exchange":        p.get("exchange") or "",
             "instrument_token": p.get("exchange_token") or p.get("instrument_token"),
             "product":         p.get("product", "NRML"),
-            "quantity":        int(p.get("quantity",       0) or 0),
-            "overnight_quantity": int(p.get("net_carry_forward_quantity",
-                                            p.get("overnight_quantity", 0)) or 0),
-            "day_buy_quantity":   int(p.get("day_buy_quantity",  0) or 0),
-            "day_sell_quantity":  int(p.get("day_sell_quantity", 0) or 0),
+            "quantity":        _gi(p, "quantity"),
+            "overnight_quantity": _gi(p, "net_carry_forward_quantity", "overnight_quantity"),
+            "day_buy_quantity":   _gi(p, "day_buy_quantity"),
+            "day_sell_quantity":  _gi(p, "day_sell_quantity"),
             # Day-trade cash values — forwarded to the /admin/derivatives
             # Candidates panel where `splitClosedReopened` splits a
-            # closed-and-reopened leg into two display rows. Not used by
-            # the day_change_val recompute in broker_apis any more
-            # (that was the retired "split P∆" formula; current shape
-            # is the universal (LTP-close)*qty applied at the
-            # chokepoint). Derive from price × qty when Groww doesn't
-            # return value directly. ₹ cash to match Kite convention.
-            "day_buy_value":      float(p.get("day_buy_value",  0) or 0)
-                                  or (float(p.get("day_buy_price",  0) or 0)
-                                      * int(p.get("day_buy_quantity",  0) or 0)),
-            "day_sell_value":     float(p.get("day_sell_value", 0) or 0)
-                                  or (float(p.get("day_sell_price", 0) or 0)
-                                      * int(p.get("day_sell_quantity", 0) or 0)),
+            # closed-and-reopened leg into two display rows. Derive from
+            # price × qty when Groww doesn't return value directly.
+            # ₹ cash to match Kite convention.
+            "day_buy_value":      _position_day_buy_value(p),
+            "day_sell_value":     _position_day_sell_value(p),
             # Hard-coded to 1 (mirrors Dhan adapter at brokers/dhan.py:1654).
             # Groww ships quantity + value fields in CONTRACTS across
             # all segments including MCX — no lot→contract conversion
@@ -1396,19 +1427,16 @@ def _normalise_positions(resp: Any) -> dict:
             # makes the broker_apis multiply a safe no-op for Groww
             # regardless of what's in Groww's positions payload.
             "multiplier":      1,
-            "close_price":     float(p.get("close_price",
-                                           p.get("previous_close", 0)) or 0),
-            "average_price":   float(p.get("average_price",
-                                           p.get("net_price", 0)) or 0),
-            "last_price":      float(p.get("last_price",
-                                           p.get("ltp", 0)) or 0),
-            "buy_price":       float(p.get("buy_price",  p.get("buy_avg_price", 0)) or 0),
-            "sell_price":      float(p.get("sell_price", p.get("sell_avg_price", 0)) or 0),
-            "buy_quantity":    int(p.get("buy_quantity",  0) or 0),
-            "sell_quantity":   int(p.get("sell_quantity", 0) or 0),
-            "pnl":             float(p.get("pnl",        p.get("unrealised_pnl", 0)) or 0),
-            "realised":        float(p.get("realised_pnl", 0) or 0),
-            "unrealised":      float(p.get("unrealised_pnl", 0) or 0),
+            "close_price":     _gf(p, "close_price", "previous_close"),
+            "average_price":   _gf(p, "average_price", "net_price"),
+            "last_price":      _gf(p, "last_price", "ltp"),
+            "buy_price":       _gf(p, "buy_price", "buy_avg_price"),
+            "sell_price":      _gf(p, "sell_price", "sell_avg_price"),
+            "buy_quantity":    _gi(p, "buy_quantity"),
+            "sell_quantity":   _gi(p, "sell_quantity"),
+            "pnl":             _gf(p, "pnl", "unrealised_pnl"),
+            "realised":        _gf(p, "realised_pnl"),
+            "unrealised":      _gf(p, "unrealised_pnl"),
             "_raw":            p,
         }
         # Groww splits intraday vs CF via product/quantity context — for
@@ -1495,35 +1523,72 @@ _GROWW_STATUS_TO_KITE = {
 }
 
 
+def _order_status(o: dict) -> str:
+    """Map raw Groww order status string to Kite canonical value."""
+    raw = (o.get("order_status") or o.get("status") or "").upper()
+    return _GROWW_STATUS_TO_KITE.get(raw, raw)
+
+
 def _normalise_orders(resp: Any) -> list[dict]:
     payload = _unwrap(resp)
     rows = _iter_rows(payload, "order_list", "orders")
     out: list[dict] = []
     for o in rows:
-        _raw_status = (o.get("order_status") or o.get("status") or "").upper()
-        _status = _GROWW_STATUS_TO_KITE.get(_raw_status, _raw_status)
         out.append({
             "order_id":         str(o.get("groww_order_id") or o.get("order_id") or ""),
             "tradingsymbol":    o.get("trading_symbol") or o.get("tradingsymbol") or "",
             "exchange":         o.get("exchange") or "",
-            "status":           _status,
+            "status":           _order_status(o),
             "transaction_type": o.get("transaction_type") or "BUY",
             "order_type":       o.get("order_type") or "MARKET",
             "product":          o.get("product") or "NRML",
-            "quantity":         int(o.get("quantity",         0) or 0),
-            "filled_quantity":  int(o.get("filled_quantity",  0) or 0),
-            "pending_quantity": int(o.get("remaining_quantity",
-                                          o.get("pending_quantity", 0)) or 0),
-            "price":            float(o.get("price",         0) or 0),
-            "trigger_price":    float(o.get("trigger_price", 0) or 0),
-            "average_price":    float(o.get("average_price",
-                                            o.get("filled_avg_price", 0)) or 0),
+            "quantity":         _gi(o, "quantity"),
+            "filled_quantity":  _gi(o, "filled_quantity"),
+            "pending_quantity": _gi(o, "remaining_quantity", "pending_quantity"),
+            "price":            _gf(o, "price"),
+            "trigger_price":    _gf(o, "trigger_price"),
+            "average_price":    _gf(o, "average_price", "filled_avg_price"),
             "order_timestamp":  o.get("created_at") or o.get("order_timestamp") or "",
             "exchange_timestamp": o.get("exchange_time") or "",
             "status_message":   o.get("remark") or o.get("status_message") or "",
             "_raw":             o,
         })
     return out
+
+
+def _extract_groww_gtt_rows(resp: Any) -> list:
+    """Unwrap a Groww get_smart_order_list response into a flat list of rows.
+    Handles both {data: {smart_orders: [...]}} and {data: [...]} shapes."""
+    data = resp.get("data") if isinstance(resp, dict) else {}
+    if isinstance(data, dict):
+        return data.get("smart_orders") or data.get("orders") or []
+    if isinstance(data, list):
+        return data
+    return []
+
+
+def _normalise_groww_gtt_row(r: dict) -> dict:
+    """Normalise a single Groww Smart Order row to Kite GTT shape."""
+    trig_price = float(r.get("trigger_price") or 0)
+    order_inner = r.get("order") or {}
+    return {
+        "gtt_id":       str(r.get("smart_order_id") or r.get("reference_id") or ""),
+        "status":       (r.get("status") or "active").lower(),
+        "trigger_type": "single",
+        "tradingsymbol": r.get("trading_symbol") or "",
+        "exchange":     r.get("exchange") or "",
+        "trigger_values": [trig_price],
+        "last_price":   float(r.get("last_price") or 0),
+        "orders": [{
+            "transaction_type": order_inner.get("transaction_type") or "SELL",
+            "quantity":         int(r.get("quantity") or 0),
+            "price":            float(order_inner.get("price") or 0),
+            "order_type":       order_inner.get("order_type") or "LIMIT",
+            "product":          r.get("product_type") or "NRML",
+        }],
+        "created_at":   r.get("created_at") or "",
+        "_raw":         r,
+    }
 
 
 def _normalise_quote_row(data: dict) -> dict:

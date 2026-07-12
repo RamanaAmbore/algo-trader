@@ -361,19 +361,32 @@ def test_expiry_curve_computation_single_ssot():
     assert "_leg_curve_cache_get" in curves_src, (
         "_strategy_compute_curves must call _leg_curve_cache_get on each request"
     )
-    # And the impl must delegate to _strategy_compute_curves (no parallel path).
+    # The impl must delegate to _strategy_aggregate (which calls
+    # _strategy_compute_curves) — no direct curve computation in the impl.
     impl_src = inspect.getsource(
         _options_mod.OptionsController.__dict__["_strategy_analytics_impl"]
     )
-    assert "_strategy_compute_curves" in impl_src, (
-        "_strategy_analytics_impl must delegate curve computation to "
+    assert "_strategy_aggregate" in impl_src, (
+        "_strategy_analytics_impl must delegate to _strategy_aggregate "
+        "(which owns the _strategy_compute_curves call — single source of truth "
+        "for the leg-curve cache short-circuit path)"
+    )
+    # The aggregate helper (not the impl) must call _strategy_compute_curves.
+    agg_src = inspect.getsource(_options_mod._strategy_aggregate)
+    assert "_strategy_compute_curves" in agg_src, (
+        "_strategy_aggregate must delegate curve computation to "
         "_strategy_compute_curves (single source of truth for the leg-curve "
         "cache short-circuit path)"
     )
-    # And there must be no direct multileg_intermediate_curves call in impl
-    # (otherwise a parallel cache-bypass path could exist).
+    # And there must be no direct multileg_intermediate_curves call in either
+    # function (otherwise a parallel cache-bypass path could exist).
     assert "multileg_intermediate_curves" not in impl_src, (
         "_strategy_analytics_impl must NOT call multileg_intermediate_curves "
+        "directly — that would bypass the leg-curve cache. Delegate via "
+        "_strategy_aggregate / _strategy_compute_curves."
+    )
+    assert "multileg_intermediate_curves" not in agg_src, (
+        "_strategy_aggregate must NOT call multileg_intermediate_curves "
         "directly — that would bypass the leg-curve cache. Delegate via "
         "_strategy_compute_curves."
     )

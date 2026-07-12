@@ -833,6 +833,252 @@ async def _resolve_user_id(session, username: str) -> int:
     return int(uid)
 
 
+async def _sgp_migration_done(session, key: str) -> bool:
+    """Return True when the one-shot migration *key* has already been applied."""
+    from backend.api.models import Setting
+    row = (await session.execute(
+        select(Setting).where(Setting.key == key)
+    )).scalar_one_or_none()
+    return row is not None and row.value == "1"
+
+
+async def _sgp_mark_migration(session, key: str) -> None:
+    """Persist a one-shot migration marker so the cleanup wave never re-fires."""
+    from backend.api.models import Setting
+    now_ts = datetime.now(timezone.utc)
+    existing = (await session.execute(
+        select(Setting).where(Setting.key == key)
+    )).scalar_one_or_none()
+    if existing is None:
+        session.add(Setting(
+            category="migrations",
+            key=key,
+            value_type="string",
+            value="1",
+            default_value="0",
+            description=f"One-shot pinned cleanup: {key}",
+            updated_at=now_ts,
+        ))
+    else:
+        existing.value = "1"
+        existing.updated_at = now_ts
+
+
+async def _sgp_find_or_create_global(session, now: datetime) -> "Watchlist":
+    """Return the single global Pinned Watchlist row, creating it if absent."""
+    global_row = (await session.execute(
+        select(Watchlist).where(Watchlist.is_global == True).limit(1)
+    )).scalar_one_or_none()
+    if global_row is None:
+        global_row = Watchlist(
+            user_id=None, name="Pinned", sort_order=0,
+            is_default=True, is_pinned=True, is_global=True,
+            created_at=now, updated_at=now,
+        )
+        session.add(global_row)
+        await session.flush()
+        logger.info("Watchlist: seeded global Pinned (id=%s)", global_row.id)
+    return global_row
+
+
+async def _sgp_migrate_legacy(session, global_row, now: datetime) -> None:
+    """Absorb any per-user Pinned/Default rows into the global row then delete them."""
+    from sqlalchemy import delete as sa_delete
+    legacy_rows = (await session.execute(
+        select(Watchlist)
+        .where(
+            Watchlist.is_global == False,
+            Watchlist.is_pinned == True,
+            Watchlist.name.in_(["Pinned", "Default"]),
+        )
+    )).scalars().all()
+    legacy_ids = [r.id for r in legacy_rows]
+    if not legacy_ids:
+        return
+
+    existing_pairs = {
+        (r.tradingsymbol.upper(), r.exchange.upper())
+        for r in (await session.execute(
+            select(WatchlistItem).where(WatchlistItem.watchlist_id == global_row.id)
+        )).scalars().all()
+    }
+    sort_max = (await session.execute(
+        select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
+        .where(WatchlistItem.watchlist_id == global_row.id)
+    )).scalar() or -1
+    sort_next = int(sort_max) + 1
+
+    legacy_items = (await session.execute(
+        select(WatchlistItem).where(WatchlistItem.watchlist_id.in_(legacy_ids))
+    )).scalars().all()
+    for it in legacy_items:
+        key = (it.tradingsymbol.upper(), it.exchange.upper())
+        if key in existing_pairs:
+            continue
+        existing_pairs.add(key)
+        session.add(WatchlistItem(
+            watchlist_id=global_row.id,
+            tradingsymbol=it.tradingsymbol,
+            exchange=it.exchange,
+            alias=getattr(it, "alias", None),
+            sort_order=sort_next,
+            added_at=it.added_at or now,
+        ))
+        sort_next += 1
+
+    await session.execute(sa_delete(Watchlist).where(Watchlist.id.in_(legacy_ids)))
+    logger.info("Watchlist: migrated %d legacy Pinned rows into global", len(legacy_ids))
+
+
+async def _sgp_run_delete_wave(
+    session, global_row, key: str, pairs: list[tuple[str, str]], label: str
+) -> None:
+    """One-shot cleanup wave: delete pinned items for the given (symbol, exchange)
+    pairs if the migration marker *key* has not yet been applied.
+    """
+    from sqlalchemy import delete as sa_delete
+    if await _sgp_migration_done(session, key):
+        return
+    for _sym, _exch in pairs:
+        await session.execute(
+            sa_delete(WatchlistItem).where(
+                WatchlistItem.watchlist_id == global_row.id,
+                WatchlistItem.tradingsymbol == _sym,
+                WatchlistItem.exchange == _exch,
+            )
+        )
+    await _sgp_mark_migration(session, key)
+    logger.info("Watchlist: one-shot cleanup %s done", label)
+
+
+async def _sgp_wave4_usdinr_bare_root(session, global_row) -> None:
+    """Wave 4: drop USDINR contract-name rows so top-up seeds the bare root."""
+    from sqlalchemy import delete as sa_delete
+    import re as _re
+    _W4_KEY = "migrations.pinned_usdinr_bare_root_v1"
+    if await _sgp_migration_done(session, _W4_KEY):
+        return
+    # Regex applied Python-side — SQLite (test dialect) lacks native REGEXP;
+    # the CDS row-set is tiny so load-then-DELETE is cheap.
+    _CONTRACT_PAT = _re.compile(
+        r'^USDINR\d{2}(?:[A-Z]{3}|\d{3,4})FUT$', _re.IGNORECASE
+    )
+    all_cds = (await session.execute(
+        select(WatchlistItem.id, WatchlistItem.tradingsymbol).where(
+            WatchlistItem.watchlist_id == global_row.id,
+            WatchlistItem.exchange == "CDS",
+        )
+    )).all()
+    victim_ids = [_id for (_id, _sym) in all_cds if _CONTRACT_PAT.match(_sym or "")]
+    if victim_ids:
+        await session.execute(
+            sa_delete(WatchlistItem).where(WatchlistItem.id.in_(victim_ids))
+        )
+    await _sgp_mark_migration(session, _W4_KEY)
+    logger.info("Watchlist: one-shot cleanup wave 4 (USDINR bare root) done")
+
+
+async def _sgp_wave5_next_adjacency(session, global_row, now: datetime) -> None:
+    """Wave 5: enforce canonical sort_order for MARKETS_DEFAULT rows and
+    insert missing _NEXT back-month variants adjacent to their roots.
+    """
+    _W5_KEY = "migrations.pinned_seed_next_variants_v1"
+    if await _sgp_migration_done(session, _W5_KEY):
+        return
+    from backend.api.algo.watchlist_defaults import (
+        MARKETS_DEFAULT as _MD,
+        markets_default_rows as _mdr,
+    )
+    canonical_rows = _mdr()
+    canonical_sort: dict[tuple[str, str], int] = {
+        (r["tradingsymbol"].upper(), r["exchange"].upper()): r["sort_order"]
+        for r in canonical_rows
+    }
+    canonical_max = len(_MD) * 10  # e.g. 23*10 = 230
+
+    all_items = (await session.execute(
+        select(WatchlistItem).where(WatchlistItem.watchlist_id == global_row.id)
+    )).scalars().all()
+    existing_keys = {(it.tradingsymbol.upper(), it.exchange.upper()) for it in all_items}
+
+    # Step A: push operator extras above the canonical range.
+    extra_base = canonical_max + 100
+    extra_seq = extra_base
+    for it in sorted(all_items, key=lambda r: r.sort_order):
+        key = (it.tradingsymbol.upper(), it.exchange.upper())
+        if key not in canonical_sort and it.sort_order < extra_base:
+            it.sort_order = extra_seq
+            extra_seq += 10
+
+    # Step B: stamp canonical sort_orders on existing canonical rows.
+    for it in all_items:
+        key = (it.tradingsymbol.upper(), it.exchange.upper())
+        if key in canonical_sort:
+            it.sort_order = canonical_sort[key]
+
+    # Step C: insert missing canonical rows (including all _NEXT variants).
+    inserted = 0
+    for cr in canonical_rows:
+        key = (cr["tradingsymbol"].upper(), cr["exchange"].upper())
+        if key in existing_keys:
+            continue
+        existing_keys.add(key)
+        session.add(WatchlistItem(
+            watchlist_id=global_row.id,
+            tradingsymbol=cr["tradingsymbol"],
+            exchange=cr["exchange"],
+            sort_order=cr["sort_order"],
+            added_at=now,
+        ))
+        inserted += 1
+
+    await _sgp_mark_migration(session, _W5_KEY)
+    logger.info(
+        "Watchlist: wave 5 (_NEXT adjacency) done — inserted %d new rows", inserted,
+    )
+
+
+async def _sgp_topup_defaults(session, global_row, now: datetime) -> None:
+    """Top up global Pinned with any MARKETS_DEFAULT item not already present.
+    Additive only — never removes operator-curated extras.
+    """
+    from backend.api.algo.watchlist_defaults import markets_default_rows
+    canonical: dict[tuple[str, str], int] = {
+        (r["tradingsymbol"].upper(), r["exchange"].upper()): r["sort_order"]
+        for r in markets_default_rows()
+    }
+    current_pairs = {
+        (r.tradingsymbol.upper(), r.exchange.upper())
+        for r in (await session.execute(
+            select(WatchlistItem).where(WatchlistItem.watchlist_id == global_row.id)
+        )).scalars().all()
+    }
+    max_sort = (await session.execute(
+        select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
+        .where(WatchlistItem.watchlist_id == global_row.id)
+    )).scalar() or -1
+    next_sort = int(max_sort) + 10
+    added = 0
+    for row in markets_default_rows():
+        key = (row["tradingsymbol"].upper(), row["exchange"].upper())
+        if key in current_pairs:
+            continue
+        current_pairs.add(key)
+        sort_val = canonical.get(key, next_sort)
+        session.add(WatchlistItem(
+            watchlist_id=global_row.id,
+            tradingsymbol=row["tradingsymbol"],
+            exchange=row["exchange"],
+            sort_order=sort_val,
+            added_at=now,
+        ))
+        if sort_val == next_sort:
+            next_sort += 10
+        added += 1
+    if added:
+        logger.info("Watchlist: topped up global Pinned with %d default symbols", added)
+
+
 async def seed_global_pinned() -> None:
     """Idempotent: ensure exactly one global 'Pinned' watchlist exists +
     consolidate any legacy per-user Pinned/Default rows into it.
@@ -841,315 +1087,39 @@ async def seed_global_pinned() -> None:
     rows are untouched. Global Pinned rows have user_id=NULL.
     """
     async with async_session() as session:
-        # 1. Pull every Pinned-style legacy row (user-owned 'Pinned' or
-        #    'Default' with is_pinned=True). These will be migrated into
-        #    the global row + then deleted.
-        legacy_rows = (await session.execute(
-            select(Watchlist)
-            .where(
-                Watchlist.is_global == False,
-                Watchlist.is_pinned == True,
-                Watchlist.name.in_(["Pinned", "Default"]),
-            )
-        )).scalars().all()
-        legacy_ids = [r.id for r in legacy_rows]
-
-        # 2. Find-or-create the single global Pinned row.
-        global_row = (await session.execute(
-            select(Watchlist).where(Watchlist.is_global == True).limit(1)
-        )).scalar_one_or_none()
         now = datetime.now(timezone.utc)
-        if global_row is None:
-            global_row = Watchlist(
-                user_id=None, name="Pinned", sort_order=0,
-                is_default=True, is_pinned=True, is_global=True,
-                created_at=now, updated_at=now,
-            )
-            session.add(global_row)
-            await session.flush()
-            logger.info("Watchlist: seeded global Pinned (id=%s)", global_row.id)
 
-        # 3. Migrate legacy items in — dedupe on (tradingsymbol, exchange).
-        if legacy_ids:
-            existing_pairs = {(r.tradingsymbol.upper(), r.exchange.upper())
-                              for r in (await session.execute(
-                                  select(WatchlistItem)
-                                  .where(WatchlistItem.watchlist_id == global_row.id)
-                              )).scalars().all()}
-            sort_max = (await session.execute(
-                select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
-                .where(WatchlistItem.watchlist_id == global_row.id)
-            )).scalar() or -1
-            sort_next = int(sort_max) + 1
-            legacy_items = (await session.execute(
-                select(WatchlistItem)
-                .where(WatchlistItem.watchlist_id.in_(legacy_ids))
-            )).scalars().all()
-            for it in legacy_items:
-                key = (it.tradingsymbol.upper(), it.exchange.upper())
-                if key in existing_pairs:
-                    continue
-                existing_pairs.add(key)
-                session.add(WatchlistItem(
-                    watchlist_id=global_row.id,
-                    tradingsymbol=it.tradingsymbol,
-                    exchange=it.exchange,
-                    alias=getattr(it, "alias", None),
-                    sort_order=sort_next,
-                    added_at=it.added_at or now,
-                ))
-                sort_next += 1
-            # 4. Drop the legacy per-user rows (cascade nukes their items).
-            from sqlalchemy import delete as sa_delete
-            await session.execute(
-                sa_delete(Watchlist).where(Watchlist.id.in_(legacy_ids))
-            )
-            logger.info("Watchlist: migrated %d legacy Pinned rows into global",
-                        len(legacy_ids))
+        # 1+2. Find-or-create global row, then absorb legacy per-user rows.
+        global_row = await _sgp_find_or_create_global(session, now)
+        await _sgp_migrate_legacy(session, global_row, now)
 
-        # 5a. One-shot cleanup: remove retired symbols from global Pinned.
-        #     Each wave is guarded by a settings marker so the DELETE fires
-        #     ONCE at the first boot after the code lands, then never again.
-        #     This preserves operator intent: if the operator manually re-adds
-        #     a symbol after cleanup, it stays on subsequent restarts.
-        #
-        #     Marker keys live in the `settings` table (category='migrations',
-        #     value_type='string', value='1'). We read/write them directly here
-        #     to avoid a circular import with routes/settings.py.
-        from sqlalchemy import delete as sa_delete  # noqa: F811 (idempotent re-import)
-        from backend.api.models import Setting
+        # 5a. One-shot cleanup waves — each fires ONCE then is gated by a
+        #     settings marker so operator re-adds survive subsequent restarts.
+        await _sgp_run_delete_wave(
+            session, global_row,
+            "migrations.pinned_remove_goldm_usdinr_v1",
+            [("GOLDM", "MCX"), ("USDINR", "CDS")],
+            "wave 1 (GOLDM/USDINR)",
+        )
+        await _sgp_run_delete_wave(
+            session, global_row,
+            "migrations.pinned_remove_mcx_futures_v1",
+            [("COPPER", "MCX"), ("CRUDEOIL", "MCX"),
+             ("NATURALGAS", "MCX"), ("SILVERM", "MCX")],
+            "wave 2 (MCX futures)",
+        )
+        await _sgp_run_delete_wave(
+            session, global_row,
+            "migrations.pinned_remove_silver_mcx_v1",
+            [("SILVER", "MCX")],
+            "wave 3 (SILVER MCX)",
+        )
+        await _sgp_wave4_usdinr_bare_root(session, global_row)
+        await _sgp_wave5_next_adjacency(session, global_row, now)
 
-        async def _migration_done(key: str) -> bool:
-            row = (await session.execute(
-                select(Setting).where(Setting.key == key)
-            )).scalar_one_or_none()
-            return row is not None and row.value == "1"
+        # 6. Additive top-up with MARKETS_DEFAULT entries.
+        await _sgp_topup_defaults(session, global_row, now)
 
-        async def _mark_migration(key: str) -> None:
-            now_ts = datetime.now(timezone.utc)
-            existing = (await session.execute(
-                select(Setting).where(Setting.key == key)
-            )).scalar_one_or_none()
-            if existing is None:
-                session.add(Setting(
-                    category="migrations",
-                    key=key,
-                    value_type="string",
-                    value="1",
-                    default_value="0",
-                    description=f"One-shot pinned cleanup: {key}",
-                    updated_at=now_ts,
-                ))
-            else:
-                existing.value = "1"
-                existing.updated_at = now_ts
-
-        # Wave 1 — GOLDM (MCX mini), USDINR (CDS) removed Jun 2026
-        _W1_KEY = "migrations.pinned_remove_goldm_usdinr_v1"
-        if not await _migration_done(_W1_KEY):
-            for _sym, _exch in [("GOLDM", "MCX"), ("USDINR", "CDS")]:
-                await session.execute(
-                    sa_delete(WatchlistItem).where(
-                        WatchlistItem.watchlist_id == global_row.id,
-                        WatchlistItem.tradingsymbol == _sym,
-                        WatchlistItem.exchange == _exch,
-                    )
-                )
-            await _mark_migration(_W1_KEY)
-            logger.info("Watchlist: one-shot cleanup wave 1 (GOLDM/USDINR) done")
-
-        # Wave 2 — MCX bare-root futures removed Jul 2026
-        # COPPER, CRUDEOIL, NATURALGAS, SILVERM resolve to near-month futures;
-        # operator adds F&O to pinned explicitly via /pulse if wanted.
-        _W2_KEY = "migrations.pinned_remove_mcx_futures_v1"
-        if not await _migration_done(_W2_KEY):
-            for _sym, _exch in [
-                ("COPPER",      "MCX"),
-                ("CRUDEOIL",    "MCX"),
-                ("NATURALGAS",  "MCX"),
-                ("SILVERM",     "MCX"),
-            ]:
-                await session.execute(
-                    sa_delete(WatchlistItem).where(
-                        WatchlistItem.watchlist_id == global_row.id,
-                        WatchlistItem.tradingsymbol == _sym,
-                        WatchlistItem.exchange == _exch,
-                    )
-                )
-            await _mark_migration(_W2_KEY)
-            logger.info("Watchlist: one-shot cleanup wave 2 (MCX futures) done")
-
-        # Wave 3 — SILVER (MCX) removed Jul 2026
-        # Operator confirmed SILVER MCX was added by mistake (a single
-        # near-month future was appearing in the pinned grid). Remove it
-        # from the global Pinned; the operator can re-add explicitly if
-        # wanted. SILVER is not in MARKETS_DEFAULT so top-up will NOT
-        # re-add it on subsequent boots.
-        _W3_KEY = "migrations.pinned_remove_silver_mcx_v1"
-        if not await _migration_done(_W3_KEY):
-            await session.execute(
-                sa_delete(WatchlistItem).where(
-                    WatchlistItem.watchlist_id == global_row.id,
-                    WatchlistItem.tradingsymbol == "SILVER",
-                    WatchlistItem.exchange == "MCX",
-                )
-            )
-            await _mark_migration(_W3_KEY)
-            logger.info("Watchlist: one-shot cleanup wave 3 (SILVER MCX) done")
-
-        # Wave 4 — USDINR contract rows replaced with bare root (Jul 2026)
-        # CDS roots follow the same bare-root convention as MCX (GOLD,
-        # CRUDEOIL) — the resolver translates root→contract at quote /
-        # tick time. Drop any contract-name USDINR row so top-up can
-        # seed the bare root cleanly.
-        _W4_KEY = "migrations.pinned_usdinr_bare_root_v1"
-        if not await _migration_done(_W4_KEY):
-            # Single bulk DELETE — matches waves 1-3's SSOT (no per-row
-            # DELETE storm). Regex applied Python-side because SQLite
-            # (test dialect) lacks native REGEXP; the CDS row-set is
-            # tiny (<20 rows) so the extra load-then-DELETE is cheap.
-            # Pattern covers monthly YY+MON (`USDINR26JULFUT`) and
-            # weekly YY+MMDD (`USDINR260703FUT`) contract naming.
-            import re as _re
-            _CONTRACT_PAT = _re.compile(
-                r'^USDINR\d{2}(?:[A-Z]{3}|\d{3,4})FUT$', _re.IGNORECASE
-            )
-            all_cds = (await session.execute(
-                select(WatchlistItem.id, WatchlistItem.tradingsymbol).where(
-                    WatchlistItem.watchlist_id == global_row.id,
-                    WatchlistItem.exchange == "CDS",
-                )
-            )).all()
-            _victim_ids = [
-                _id for (_id, _sym) in all_cds
-                if _CONTRACT_PAT.match(_sym or "")
-            ]
-            if _victim_ids:
-                await session.execute(
-                    sa_delete(WatchlistItem).where(
-                        WatchlistItem.id.in_(_victim_ids),
-                    )
-                )
-            await _mark_migration(_W4_KEY)
-            logger.info("Watchlist: one-shot cleanup wave 4 (USDINR bare root) done")
-
-        # Wave 5 — _NEXT back-month variants added adjacent to their roots
-        # (Jul 2026). Enforces sort_order = index*10 for all MARKETS_DEFAULT
-        # rows so root and _NEXT are always consecutive in the Pinned grid.
-        # Also inserts missing _NEXT rows. SILVER MCX re-added as virtual root.
-        #
-        # Sort-order scheme: canonical sort_order = MARKETS_DEFAULT index * 10.
-        # Operator-added extras that happen to sit in the 0..max_canonical
-        # range are pushed above len(MARKETS_DEFAULT)*10+100 so they don't
-        # collide with the canonical slots. This is the only wave that
-        # *modifies* existing rows (all prior waves only DELETE).
-        _W5_KEY = "migrations.pinned_seed_next_variants_v1"
-        if not await _migration_done(_W5_KEY):
-            from backend.api.algo.watchlist_defaults import (
-                MARKETS_DEFAULT as _MD,
-                markets_default_rows as _mdr,
-            )
-            _canonical_rows = _mdr()
-            # lookup: (SYM_UPPER, EXCH_UPPER) -> canonical sort_order
-            _canonical_sort: dict[tuple[str, str], int] = {
-                (r["tradingsymbol"].upper(), r["exchange"].upper()): r["sort_order"]
-                for r in _canonical_rows
-            }
-            _canonical_max = len(_MD) * 10  # e.g. 23*10 = 230
-
-            _all_items_w5 = (await session.execute(
-                select(WatchlistItem)
-                .where(WatchlistItem.watchlist_id == global_row.id)
-            )).scalars().all()
-
-            _existing_keys_w5 = {
-                (it.tradingsymbol.upper(), it.exchange.upper())
-                for it in _all_items_w5
-            }
-
-            # Step A: push operator extras out of the canonical range.
-            # Extra = row NOT in canonical AND sort_order < canonical_max+100.
-            _extra_base = _canonical_max + 100
-            _extra_seq = _extra_base
-            for _it in sorted(_all_items_w5, key=lambda r: r.sort_order):
-                _key = (_it.tradingsymbol.upper(), _it.exchange.upper())
-                if _key in _canonical_sort:
-                    continue
-                if _it.sort_order < _extra_base:
-                    _it.sort_order = _extra_seq
-                    _extra_seq += 10
-
-            # Step B: stamp canonical sort_orders on existing canonical rows.
-            for _it in _all_items_w5:
-                _key = (_it.tradingsymbol.upper(), _it.exchange.upper())
-                if _key in _canonical_sort:
-                    _it.sort_order = _canonical_sort[_key]
-
-            # Step C: insert missing canonical rows (incl. all _NEXT variants).
-            _inserted_w5 = 0
-            for _cr in _canonical_rows:
-                _key = (_cr["tradingsymbol"].upper(), _cr["exchange"].upper())
-                if _key in _existing_keys_w5:
-                    continue
-                _existing_keys_w5.add(_key)
-                session.add(WatchlistItem(
-                    watchlist_id=global_row.id,
-                    tradingsymbol=_cr["tradingsymbol"],
-                    exchange=_cr["exchange"],
-                    sort_order=_cr["sort_order"],
-                    added_at=now,
-                ))
-                _inserted_w5 += 1
-
-            await _mark_migration(_W5_KEY)
-            logger.info(
-                "Watchlist: wave 5 (_NEXT adjacency) done — inserted %d new rows",
-                _inserted_w5,
-            )
-
-        # 6. Top up the global Pinned with any MARKETS_DEFAULT item
-        #    that isn't already in it. Additive — never removes the
-        #    operator's curated extras. The (tradingsymbol, exchange)
-        #    pair is the dedupe key. Uses canonical sort_order from
-        #    markets_default_rows() for new entries.
-        from backend.api.algo.watchlist_defaults import markets_default_rows
-        _topup_canonical: dict[tuple[str, str], int] = {
-            (r["tradingsymbol"].upper(), r["exchange"].upper()): r["sort_order"]
-            for r in markets_default_rows()
-        }
-        current_pairs = {
-            (r.tradingsymbol.upper(), r.exchange.upper())
-            for r in (await session.execute(
-                select(WatchlistItem)
-                .where(WatchlistItem.watchlist_id == global_row.id)
-            )).scalars().all()
-        }
-        max_sort = (await session.execute(
-            select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
-            .where(WatchlistItem.watchlist_id == global_row.id)
-        )).scalar() or -1
-        next_sort = int(max_sort) + 10
-        added = 0
-        for row in markets_default_rows():
-            key = (row["tradingsymbol"].upper(), row["exchange"].upper())
-            if key in current_pairs:
-                continue
-            current_pairs.add(key)
-            sort_val = _topup_canonical.get(key, next_sort)
-            session.add(WatchlistItem(
-                watchlist_id=global_row.id,
-                tradingsymbol=row["tradingsymbol"],
-                exchange=row["exchange"],
-                sort_order=sort_val,
-                added_at=now,
-            ))
-            if sort_val == next_sort:
-                next_sort += 10
-            added += 1
-        if added:
-            logger.info(
-                "Watchlist: topped up global Pinned with %d default symbols", added,
-            )
         await session.commit()
 
 

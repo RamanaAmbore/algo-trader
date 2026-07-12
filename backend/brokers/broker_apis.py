@@ -1191,6 +1191,93 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     return df_holdings
 
 
+def _build_holdings_pnl_expr(
+    lf: "pl.DataFrame",
+    has_pnl: bool,
+) -> "pl.Expr":
+    """Polars expression for the `pnl` column in holdings enrichment.
+    Trust broker pnl when not-null; otherwise compute from (ltp-avg)*qty.
+    Caller must confirm has_ltp + has_avg + has_qty before calling.
+    """
+    _ltp = _col_f64(lf, "last_price")
+    _avg = _col_f64(lf, "average_price")
+    _qty = _col_f64(lf, "opening_quantity")
+    _pnl_calc = (_ltp - _avg) * _qty
+    if has_pnl:
+        _broker_pnl = _col_f64_nullable(lf, "pnl")
+        return (
+            pl.when(_broker_pnl.is_not_null())
+            .then(_broker_pnl)
+            .otherwise(_pnl_calc)
+            .alias("pnl")
+        )
+    return (
+        pl.when((_ltp > 0) & (_avg > 0))
+        .then(_pnl_calc)
+        .otherwise(pl.lit(0.0))
+        .alias("pnl")
+    )
+
+
+def _build_holdings_curval_exprs(lf: "pl.DataFrame") -> list["pl.Expr"]:
+    """Polars expressions for cur_val and pnl_percentage.
+    Depends on the `pnl` alias already being planned in the same
+    with_columns() call; caller must include both in the same pass.
+    """
+    _pnl_expr = pl.col("pnl")
+    _inv_expr = _col_f64(lf, "inv_val")
+    return [
+        (_inv_expr + _pnl_expr).alias("cur_val"),
+        pl.when(_inv_expr != 0.0)
+        .then(_pnl_expr / _inv_expr * 100.0)
+        .otherwise(pl.lit(0.0))
+        .alias("pnl_percentage"),
+    ]
+
+
+def _build_holdings_dcv_expr(
+    lf: "pl.DataFrame",
+    has_avg: bool,
+    has_pnl: bool,
+    has_dcv: bool,
+) -> "pl.Expr":
+    """Polars expression for day_change_val in holdings enrichment.
+    Caller must confirm has_ltp + has_close + has_qty before calling.
+    Day P&L = pnl − overnight_pnl (handles still-held / partial-sold /
+    full-sold positions). Falls back to (ltp-close)*qty when intraday
+    fields or broker pnl are absent.
+    """
+    _ltp = _col_f64(lf, "last_price")
+    _cls = _col_f64(lf, "close_price")
+    _qty = _col_f64(lf, "opening_quantity")
+    if has_avg and has_pnl:
+        _avg2      = _col_f64(lf, "average_price")
+        _pnl2      = _col_f64_nullable(lf, "pnl")
+        _overnight = (_cls - _avg2) * _qty
+        _dcv_calc = pl.when(_pnl2.is_not_null()).then(
+            _pnl2 - _overnight
+        ).otherwise(
+            (_ltp - _cls) * _qty
+        )
+    else:
+        _dcv_calc = (_ltp - _cls) * _qty
+
+    if has_dcv:
+        _broker_dcv = _col_f64_nullable(lf, "day_change_val")
+        return (
+            pl.when(_broker_dcv.is_not_null())
+            .then(_broker_dcv)
+            .otherwise(_dcv_calc)
+            .alias("day_change_val")
+        )
+    return (
+        pl.when((_ltp > 0) & (_cls > 0))
+        .then(_dcv_calc)
+        .otherwise(pl.lit(0.0))
+        .alias("day_change_val")
+    )
+
+
 def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     """Polars-vectorized computed-column enrichment for holdings DataFrames.
 
@@ -1222,55 +1309,26 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     # in one go — avoids repeated from_pandas / to_pandas round-trips.
     cols = set(df.columns)  # refresh after inv_val
 
-    # Gather all expressions we'll compute so we can fire one
-    # with_columns() call.
-    computed_exprs: list[pl.Expr] = []
-
-    has_ltp    = "last_price"     in cols
-    has_avg    = "average_price"  in cols
+    has_ltp    = "last_price"       in cols
+    has_avg    = "average_price"    in cols
     has_qty    = "opening_quantity" in cols
-    has_close  = "close_price"    in cols
-    has_pnl    = "pnl"            in cols
-    has_invval = "inv_val"        in cols
-    has_dcv    = "day_change_val" in cols
+    has_close  = "close_price"      in cols
+    has_pnl    = "pnl"              in cols
+    has_invval = "inv_val"          in cols
+    has_dcv    = "day_change_val"   in cols
 
     lf = pl.from_pandas(df, nan_to_null=True)
+    computed_exprs: list[pl.Expr] = []
 
     if has_ltp and has_avg and has_qty:
-        _ltp = _col_f64(lf, "last_price")
-        _avg = _col_f64(lf, "average_price")
-        _qty = _col_f64(lf, "opening_quantity")
-        _pnl_calc = ((_ltp - _avg) * _qty)
-        if has_pnl:
-            # Reconciled posture: trust broker pnl when not-null.
-            _broker_pnl = _col_f64_nullable(lf, "pnl")
-            computed_exprs.append(
-                pl.when(_broker_pnl.is_not_null())
-                .then(_broker_pnl)
-                .otherwise(_pnl_calc)
-                .alias("pnl")
-            )
-        else:
-            computed_exprs.append(
-                pl.when((_ltp > 0) & (_avg > 0))
-                .then(_pnl_calc)
-                .otherwise(pl.lit(0.0))
-                .alias("pnl")
-            )
+        computed_exprs.append(_build_holdings_pnl_expr(lf, has_pnl))
+        if not has_pnl:
             has_pnl = True  # will exist after this pass
 
     if has_pnl and has_invval:
         # These depend on pnl, which may have just been (re)written above.
         # We reference the planned alias directly.
-        _pnl_expr = pl.col("pnl")
-        _inv_expr = _col_f64(lf, "inv_val")
-        computed_exprs.append((_inv_expr + _pnl_expr).alias("cur_val"))
-        computed_exprs.append(
-            pl.when(_inv_expr != 0.0)
-            .then(_pnl_expr / _inv_expr * 100.0)
-            .otherwise(pl.lit(0.0))
-            .alias("pnl_percentage")
-        )
+        computed_exprs.extend(_build_holdings_curval_exprs(lf))
 
     if has_close and has_avg:
         computed_exprs.append(
@@ -1279,40 +1337,9 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     if has_ltp and has_close and has_qty:
-        _ltp2 = _col_f64(lf, "last_price")
-        _cls  = _col_f64(lf, "close_price")
-        _qty2 = _col_f64(lf, "opening_quantity")
-        # Day P&L = pnl − overnight_pnl (see original comments for the
-        # full derivation — handles still-held / partial-sold / full-sold).
-        if has_avg and has_pnl:
-            _avg2      = _col_f64(lf, "average_price")
-            _pnl2      = _col_f64_nullable(lf, "pnl")
-            _overnight = (_cls - _avg2) * _qty2
-            _dcv_main  = _pnl2 - _overnight
-            _dcv_fallback = (_ltp2 - _cls) * _qty2
-            _dcv_calc = (
-                pl.when(_pnl2.is_not_null())
-                .then(_dcv_main)
-                .otherwise(_dcv_fallback)
-            )
-        else:
-            _dcv_calc = (_ltp2 - _cls) * _qty2
-
-        if has_dcv:
-            _broker_dcv = _col_f64_nullable(lf, "day_change_val")
-            computed_exprs.append(
-                pl.when(_broker_dcv.is_not_null())
-                .then(_broker_dcv)
-                .otherwise(_dcv_calc)
-                .alias("day_change_val")
-            )
-        else:
-            computed_exprs.append(
-                pl.when((_ltp2 > 0) & (_cls > 0))
-                .then(_dcv_calc)
-                .otherwise(pl.lit(0.0))
-                .alias("day_change_val")
-            )
+        computed_exprs.append(
+            _build_holdings_dcv_expr(lf, has_avg, has_pnl, has_dcv)
+        )
     elif {"day_change", "opening_quantity"}.issubset(cols):
         computed_exprs.append(
             (_col_f64(lf, "day_change") * _col_f64(lf, "opening_quantity"))
@@ -1404,6 +1431,78 @@ def fetch_positions(*args, **kwargs):
     return result
 
 
+def _extract_net_rows(broker, kite):
+    """Unwrap broker.positions() or kite.positions() to a flat list of net rows.
+    Returns None when neither source is available (caller records failure).
+    """
+    if broker is not None:
+        resp = broker.positions()
+        # Every adapter (Kite + Dhan + Groww) normalises to the Kite-shape
+        # dict {net: [...], day: [...]}.
+        if isinstance(resp, dict):
+            return resp.get("net", [])
+        if isinstance(resp, list):
+            return resp
+        return None
+    if kite is not None:
+        return kite.positions()["net"]
+    return None
+
+
+def _maybe_log_kite_mcx_diag(df: "pd.DataFrame") -> None:
+    """Fire a one-time operator diagnostic for the first MCX row with
+    day_buy_quantity > 0, verifying whether Kite ships day_buy_value in
+    lot-units or absolute ₹.  Idempotent — sets _KITE_VALUE_UNIT_LOGGED
+    so subsequent calls are a cheap boolean check.
+    """
+    if _KITE_VALUE_UNIT_LOGGED:
+        return
+    if df.empty or 'multiplier' not in df.columns:
+        return
+    _diag = df[
+        (df['multiplier'] > 1)
+        & (df.get('day_buy_quantity', 0) > 0)
+    ].head(1)
+    if _diag.empty:
+        return
+    _r = _diag.iloc[0].to_dict()
+    _mult_v   = _r.get('multiplier', 1)
+    _dbq_lots = _r.get('day_buy_quantity', 0)
+    _dbv_raw  = _r.get('day_buy_value', 0)
+    _avg      = _r.get('average_price', 0)
+    _expected_lot_units  = float(_dbq_lots) * float(_avg)
+    _expected_abs_rupees = float(_dbq_lots) * float(_mult_v) * float(_avg)
+    logger.warning(
+        f"[KITE-MCX-DIAG] {_r.get('tradingsymbol', '?')} "
+        f"mult={_mult_v} dbq_lots={_dbq_lots} "
+        f"day_buy_value={_dbv_raw:.2f} avg={_avg:.4f} | "
+        f"if≈{_expected_lot_units:.2f} → LOT-UNITS (5b995ccb correct), "
+        f"if≈{_expected_abs_rupees:.2f} → ABSOLUTE ₹ (5b995ccb overcounts {_mult_v}×)"
+    )
+    globals()['_KITE_VALUE_UNIT_LOGGED'] = True
+
+
+def _apply_mcx_multiplier(df: "pd.DataFrame") -> None:
+    """Multiply quantity-field columns by `multiplier` (lot_size) in-place.
+
+    MCX commodities: Kite ships `quantity` in LOTS but `last_price` /
+    `close_price` are per CONTRACT so we convert to contract units so
+    downstream `qty × price = ₹` works uniformly.
+
+    REVERTED Jun 26 2026 (commit 5b995ccb): day_buy_value / day_sell_value
+    are NOT scaled — Kite ships them as ABSOLUTE ₹ already.  Only the qty
+    columns (quantity, overnight_quantity, day_buy/sell_quantity) are
+    multiplied.
+    """
+    if df.empty or 'multiplier' not in df.columns:
+        return
+    _mult = df['multiplier']
+    df['quantity'] = df['quantity'] * _mult
+    for _c in ('overnight_quantity', 'day_buy_quantity', 'day_sell_quantity'):
+        if _c in df.columns:
+            df[_c] = df[_c] * _mult
+
+
 @for_all_accounts
 def _fetch_positions_local(connections=Connections, account=None, kite=None, broker=None):
     """Multi-broker positions fetch. Same broker-vs-kite resolution
@@ -1430,93 +1529,18 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
     if account:
         _update_dhan_next_poll(account, broker)
     try:
-        net_rows = None
-        if broker is not None:
-            resp = broker.positions()
-            # broker.positions() returns a Kite-shape dict {net: [...], day: [...]}
-            # for every adapter (Kite + Dhan + Groww normalise to this).
-            if isinstance(resp, dict):
-                net_rows = resp.get("net", [])
-            elif isinstance(resp, list):
-                net_rows = resp
-        elif kite is not None:
-            net_rows = kite.positions()["net"]
+        net_rows = _extract_net_rows(broker, kite)
         if net_rows is None:
             df_positions.attrs['fetch_failed'] = True
             _record_fetch(account, ok=False, error="broker.positions() returned None")
             return df_positions
         df_positions = pd.DataFrame(net_rows)
         _record_fetch(account, ok=True)
-        # ── One-time diagnostic — verifies Kite ships day_buy_value in
-        # lot-units (lots × price) as `5b995ccb` assumes, NOT in absolute
-        # ₹ (lots × multiplier × price). The Jun 26 audit could not
-        # confirm Kite's convention from code alone. Fires once per
-        # process restart for the first MCX-multiplier row encountered
-        # so the operator can sanity-check on the next MCX session
-        # without a separate probe. Confirms / falsifies the patch.
-        if (not df_positions.empty
-                and 'multiplier' in df_positions.columns
-                and not _KITE_VALUE_UNIT_LOGGED):
-            _diag = df_positions[
-                (df_positions['multiplier'] > 1)
-                & (df_positions.get('day_buy_quantity', 0) > 0)
-            ].head(1)
-            if not _diag.empty:
-                _r = _diag.iloc[0].to_dict()
-                _mult_v   = _r.get('multiplier', 1)
-                _dbq_lots = _r.get('day_buy_quantity', 0)  # pre-multiply
-                _dbv_raw  = _r.get('day_buy_value', 0)
-                _avg      = _r.get('average_price', 0)
-                _expected_lot_units  = float(_dbq_lots) * float(_avg)
-                _expected_abs_rupees = float(_dbq_lots) * float(_mult_v) * float(_avg)
-                logger.warning(
-                    f"[KITE-MCX-DIAG] {_r.get('tradingsymbol', '?')} "
-                    f"mult={_mult_v} dbq_lots={_dbq_lots} "
-                    f"day_buy_value={_dbv_raw:.2f} avg={_avg:.4f} | "
-                    f"if≈{_expected_lot_units:.2f} → LOT-UNITS (5b995ccb correct), "
-                    f"if≈{_expected_abs_rupees:.2f} → ABSOLUTE ₹ (5b995ccb overcounts {_mult_v}×)"
-                )
-                globals()['_KITE_VALUE_UNIT_LOGGED'] = True
-        if not df_positions.empty and "multiplier" in df_positions.columns:
-            # MCX commodities: Kite ships `quantity` in LOTS but
-            # `last_price` / `close_price` are per CONTRACT (gram for
-            # GOLDM, barrel for CRUDEOIL, etc.) so we multiply qty by
-            # `multiplier` (lot_size) to put it in contract units —
-            # downstream consumers can do `qty × price = ₹` without
-            # caring about the per-instrument lot size.
-            #
-            # CRITICAL: do the same for overnight_quantity +
-            # day_buy_quantity + day_sell_quantity. They land in the
-            # decomposed day_pnl formula alongside last_price/close_price
-            # so they MUST be in the same unit. Pre-fix, MCX intraday
-            # fields stayed in lots and `sq × LTP` was off by `multiplier`
-            # — producing the GOLDM146000CE ₹61 537 phantom that pushed
-            # the strip's P∆ to ₹1.11 L on a real ~₹50 k day.
-            #
-            # REVERTED Jun 26 2026 (commit 5b995ccb): the second-pass
-            # multiply of `day_buy_value` + `day_sell_value` was based
-            # on the assumption Kite ships them as `lots × per_unit_price`
-            # (lot-units). Operator empirical data refutes that:
-            # GOLDM day net showed −35.68 L in snapshot vs a real
-            # ~−35 k, an exact ×100 overcount matching the GOLDM
-            # multiplier. Kite actually ships day_buy_value /
-            # day_sell_value as ABSOLUTE ₹ (lots × multiplier × price)
-            # — the same magnitude as the final answer.
-            #
-            # So the formula `(_bq × LTP − _bv) + (_sv − _sq × LTP)`
-            # is already balanced WITHOUT scaling the value fields:
-            #   _bq (post-multiply) × LTP = contract_qty × per-contract LTP = ₹ total
-            #   _bv (Kite native)          = ₹ total
-            # diff = day_pnl. Correct.
-            #
-            # Keep multiplying only the quantity fields (the original
-            # pre-5b995ccb behaviour that operator confirmed working).
-            _mult = df_positions['multiplier']
-            df_positions['quantity'] = df_positions['quantity'] * _mult
-            for _c in ('overnight_quantity', 'day_buy_quantity', 'day_sell_quantity'):
-                if _c in df_positions.columns:
-                    df_positions[_c] = df_positions[_c] * _mult
-
+        # One-time diagnostic — verifies Kite ships day_buy_value in
+        # lot-units (lots × price) vs absolute ₹. Fires once per
+        # process restart for the first MCX-multiplier row encountered.
+        _maybe_log_kite_mcx_diag(df_positions)
+        _apply_mcx_multiplier(df_positions)
         if not df_positions.empty:
             df_positions["account"] = account
             df_positions["type"] = "P"

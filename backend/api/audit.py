@@ -215,6 +215,154 @@ def write_audit_event(
     ))
 
 
+_BODY_CAP = 2048
+
+
+def _audit_should_skip(scope: Scope) -> bool:
+    """Return True for non-HTTP scopes, non-mutating methods, and suppressed paths."""
+    if scope.get("type") != "http":
+        return True
+    method = scope.get("method") or ""
+    if method not in _MUTATING:
+        return True
+    path = (scope.get("path") or "").rstrip("/") or "/"
+    if any(path.startswith(p) for p in _SUPPRESS_PREFIXES):
+        return True
+    return False
+
+
+def _audit_ensure_request_id(scope: Scope) -> str:
+    """Return the existing request_id from scope.state or mint a new UUID."""
+    request_id = scope.get("state", {}).get("request_id")
+    if not request_id:
+        request_id = str(uuid.uuid4())
+        scope.setdefault("state", {})["request_id"] = request_id
+    return request_id
+
+
+def _audit_make_send_wrapper(send: Send, request_id: str, captured: dict):
+    """Return an ASGI send wrapper that records status + buffers body chunks."""
+    async def _send_wrapper(message):
+        if message.get("type") == "http.response.start":
+            captured["status"] = int(message.get("status") or 0)
+            # Inject the X-Request-ID header so the client can
+            # correlate the request to a specific audit row.
+            headers = list(message.get("headers") or [])
+            headers.append((b"x-request-id", request_id.encode("ascii")))
+            message["headers"] = headers
+        elif message.get("type") == "http.response.body":
+            body = message.get("body") or b""
+            if captured["body_len"] < _BODY_CAP:
+                captured["body_chunks"].append(body[:_BODY_CAP - captured["body_len"]])
+                captured["body_len"] += len(body)
+        await send(message)
+    return _send_wrapper
+
+
+def _audit_should_write(status: int) -> bool:
+    """Return True when the status code warrants an audit row.
+
+    200–399 always written. 400+ only when the operator opt-in flag is set;
+    returns False on any settings read failure too (fail closed).
+    """
+    if status < 200:
+        return False
+    if status < 400:
+        return True
+    # Failed mutations (4xx / 5xx). Opt-in via audit.log_failed_mutations.
+    try:
+        from backend.shared.helpers.settings import get_bool as _get_bool
+        return _get_bool("audit.log_failed_mutations", False)
+    except Exception:
+        return False
+
+
+def _audit_extract_actor(scope: Scope) -> tuple[Optional[int], str, str]:
+    """Return (actor_user_id, actor_username, actor_role) from JWT payload in scope.state."""
+    state = scope.get("state") or {}
+    payload = state.get("token_payload") or {}
+    actor_username = str(payload.get("sub") or "")
+    actor_role = str(payload.get("role") or "")
+    actor_user_id = None
+    try:
+        actor_user_id = int(payload.get("user_id")) if payload.get("user_id") else None
+    except (TypeError, ValueError):
+        actor_user_id = None
+    # Demo writes shouldn't reach this point (cap_guard 403s before the
+    # handler runs) but if a route somehow lets demo write something, we
+    # still capture the row — the empty username + 'demo' role makes it
+    # visible in the UI.
+    if actor_role == "demo":
+        actor_username = "demo"
+    return actor_user_id, actor_username, actor_role
+
+
+def _audit_extract_client(scope: Scope) -> tuple[str, str]:
+    """Return (client_ip, user_agent) from ASGI scope headers."""
+    # Client IP + user-agent from headers.
+    headers = dict(scope.get("headers") or [])
+    # Litestar passes headers as a list of (bytes, bytes) tuples; convert.
+    if isinstance(scope.get("headers"), list):
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1", errors="replace")
+                   for k, v in scope.get("headers")}
+    client_ip = headers.get("x-forwarded-for", "").split(",")[0].strip() \
+                or headers.get("x-real-ip", "") \
+                or (scope.get("client") or ("",))[0]
+    user_agent = headers.get("user-agent", "")[:255]
+    return client_ip, user_agent
+
+
+def _audit_parse_summary(body_bytes: bytes) -> Optional[str]:
+    """Best-effort summary from response body. Prefers `detail` / `message`
+    JSON keys; falls back to the first line of the decoded text."""
+    if not body_bytes:
+        return None
+    try:
+        import json as _json
+        obj = _json.loads(body_bytes.decode("utf-8", errors="replace"))
+        if isinstance(obj, dict):
+            summary = obj.get("detail") or obj.get("message") or None
+            if summary:
+                return summary
+    except Exception:
+        pass
+    # Plain-text fallback — first line, capped to 2048 chars.
+    return body_bytes.decode("utf-8", errors="replace").splitlines()[0][:2048]
+
+
+def _audit_schedule_write(
+    actor_user_id: Optional[int],
+    actor_username: str,
+    actor_role: str,
+    method: str,
+    path: str,
+    status: int,
+    summary: Optional[str],
+    request_id: str,
+    client_ip: str,
+    user_agent: str,
+    category: str,
+) -> None:
+    """Schedule the out-of-band audit write task. Silently drops when no loop."""
+    try:
+        asyncio.get_running_loop().create_task(_write_audit(
+            actor_user_id=actor_user_id,
+            actor_username=actor_username,
+            actor_role=actor_role,
+            method=method,
+            path=path,
+            status_code=status,
+            summary=summary,
+            request_id=request_id,
+            client_ip=client_ip or None,
+            user_agent=user_agent or None,
+            category=category,
+        ))
+    except RuntimeError:
+        # No running loop (sync test harness) — skip silently.
+        pass
+
+
 class AuditMiddleware(ASGIMiddleware):
     """ASGI middleware. Watches every response; for mutating methods
     that produced a 2xx/3xx status, writes an audit row out-of-band.
@@ -228,147 +376,35 @@ class AuditMiddleware(ASGIMiddleware):
 
     async def handle(self, scope: Scope, receive: Receive, send: Send,
                      next_app: ASGIApp) -> None:
-        if scope.get("type") != "http":
+        if _audit_should_skip(scope):
             await next_app(scope, receive, send)
             return
 
         method = scope.get("method") or ""
         path = (scope.get("path") or "").rstrip("/") or "/"
-
-        # Fast path — skip non-mutating + suppressed paths without any
-        # extra work. The ~99% read traffic hits this branch.
-        if method not in _MUTATING:
-            await next_app(scope, receive, send)
-            return
-        if any(path.startswith(p) for p in _SUPPRESS_PREFIXES):
-            await next_app(scope, receive, send)
-            return
-
-        # Generate the request id NOW (before the route handler runs)
-        # so the route can pick it off scope.state and surface it in
-        # response headers. Idempotent — if upstream middleware
-        # already set one, reuse it.
-        request_id = scope.get("state", {}).get("request_id")
-        if not request_id:
-            request_id = str(uuid.uuid4())
-            scope.setdefault("state", {})["request_id"] = request_id
+        request_id = _audit_ensure_request_id(scope)
 
         # Wrap `send` so we can capture the response status code.
         # Buffer the response body for the summary (truncated to 2 KB
         # so we don't double the response memory cost).
-        _BODY_CAP = 2048
-        captured = {"status": 0, "body_chunks": [], "body_len": 0}
-
-        async def _send_wrapper(message):
-            if message.get("type") == "http.response.start":
-                captured["status"] = int(message.get("status") or 0)
-                # Inject the X-Request-ID header so the client can
-                # correlate the request to a specific audit row.
-                headers = list(message.get("headers") or [])
-                headers.append((b"x-request-id", request_id.encode("ascii")))
-                message["headers"] = headers
-            elif message.get("type") == "http.response.body":
-                body = message.get("body") or b""
-                if captured["body_len"] < _BODY_CAP:
-                    captured["body_chunks"].append(body[:_BODY_CAP - captured["body_len"]])
-                    captured["body_len"] += len(body)
-            await send(message)
-
-        await next_app(scope, receive, _send_wrapper)
+        captured: dict = {"status": 0, "body_chunks": [], "body_len": 0}
+        await next_app(scope, receive, _audit_make_send_wrapper(send, request_id, captured))
 
         status = captured["status"]
-        if status < 200:
+        if not _audit_should_write(status):
             return
-        if status >= 400:
-            # Failed mutations (4xx / 5xx). Opt-in via the
-            # `audit.log_failed_mutations` setting — useful for
-            # defect tracking + post-mortem ("the operator clicked
-            # SUBMIT and got 422; what happened?"). Off by default
-            # so the audit log doesn't balloon with rate-limited /
-            # validation-error noise.
-            try:
-                from backend.shared.helpers.settings import get_bool as _get_bool
-                if not _get_bool("audit.log_failed_mutations", False):
-                    return
-            except Exception:
-                return
 
-        # Resolve actor from the token payload stamped by jwt_guard /
-        # auth_or_demo_guard. State scope is set by the guard during
-        # request handling.
-        state = scope.get("state") or {}
-        payload = state.get("token_payload") or {}
-        actor_username = str(payload.get("sub") or "")
-        actor_role = str(payload.get("role") or "")
-        actor_user_id = None
-        try:
-            actor_user_id = int(payload.get("user_id")) if payload.get("user_id") else None
-        except (TypeError, ValueError):
-            actor_user_id = None
-
-        # Demo writes shouldn't reach this point (cap_guard 403s
-        # before the handler runs) but if a route somehow lets demo
-        # write something, we still capture the row — the empty
-        # username + 'demo' role makes that visible in the UI.
-        if actor_role == "demo":
-            actor_username = "demo"
-
-        # Client IP + user-agent from headers.
-        headers = dict(scope.get("headers") or [])
-        # Litestar passes headers as a list of (bytes, bytes) tuples; convert.
-        if isinstance(scope.get("headers"), list):
-            headers = {k.decode("latin-1").lower(): v.decode("latin-1", errors="replace")
-                       for k, v in scope.get("headers")}
-        client_ip = headers.get("x-forwarded-for", "").split(",")[0].strip() \
-                    or headers.get("x-real-ip", "") \
-                    or (scope.get("client") or ("",))[0]
-        user_agent = headers.get("user-agent", "")[:255]
-
-        # Parse summary — most JSON responses include a `detail`
-        # string for status messages. Best-effort: take the first 2 KB
-        # of body, try to decode as JSON, pluck `detail` if present;
-        # else fall back to the truncated text.
+        actor_user_id, actor_username, actor_role = _audit_extract_actor(scope)
+        client_ip, user_agent = _audit_extract_client(scope)
         body_bytes = b"".join(captured["body_chunks"])[:2048]
-        summary: Optional[str] = None
-        if body_bytes:
-            try:
-                import json as _json
-                obj = _json.loads(body_bytes.decode("utf-8", errors="replace"))
-                if isinstance(obj, dict):
-                    summary = obj.get("detail") or obj.get("message") or None
-            except Exception:
-                pass
-            if not summary:
-                # Plain-text fallback — drop the JSON wrapping if it
-                # didn't parse, take the first line so the audit UI
-                # row is glanceable (cap 2048 chars to match buffer).
-                summary = body_bytes.decode("utf-8", errors="replace").splitlines()[0][:2048]
-
-        # Path → category tag so the audit UI can filter HTTP rows by
-        # business surface alongside the explicit category set on
-        # background-task / postback rows. Best-effort prefix match;
-        # unknown paths fall through to the default 'http' label.
+        summary = _audit_parse_summary(body_bytes)
         category = _derive_category_from_path(method, path)
 
-        # Schedule the write out-of-band. Don't await — the response
-        # has already started leaving the server.
-        try:
-            asyncio.get_running_loop().create_task(_write_audit(
-                actor_user_id=actor_user_id,
-                actor_username=actor_username,
-                actor_role=actor_role,
-                method=method,
-                path=path,
-                status_code=status,
-                summary=summary,
-                request_id=request_id,
-                client_ip=client_ip or None,
-                user_agent=user_agent or None,
-                category=category,
-            ))
-        except RuntimeError:
-            # No running loop (sync test harness) — skip silently.
-            pass
+        _audit_schedule_write(
+            actor_user_id, actor_username, actor_role,
+            method, path, status, summary, request_id,
+            client_ip, user_agent, category,
+        )
 
 
 _PATH_CATEGORY_RULES: tuple[tuple[str, str], ...] = (

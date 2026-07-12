@@ -1760,6 +1760,131 @@ def _strategy_compute_curves(
     return curve, slices, max_p, max_l, agg_rr
 
 
+def _strategy_build_legs(
+    data: "StrategyRequest",
+    parsed_by_sym: dict,
+    quote_resp: dict,
+    S: float,
+    _is_commodity: bool,
+    _close_time: tuple,
+    _leg_scale_ratios: dict,
+) -> tuple[list[dict], list[dict], float, float]:
+    """Iterate ``data.legs`` and dispatch each to the futures or options
+    builder.  Returns ``(resolved_legs, leg_details, sigma_weight_num,
+    sigma_weight_den)`` so the caller can derive the qty-weighted IV proxy.
+    """
+    resolved_legs: list[dict] = []
+    leg_details: list[dict] = []
+    sigma_weight_num = 0.0
+    sigma_weight_den = 0.0
+    for leg in data.legs:
+        sym = leg.symbol.upper().strip()
+        parsed = parsed_by_sym.get(sym)
+        leg_expiry = date.fromisoformat(_leg_expiry_iso(leg, parsed))
+        T_yrs = days_to_expiry(leg_expiry, close_time=_close_time) / 365.0
+        qty = int(leg.qty or 0)
+        if qty == 0:
+            raise HTTPException(status_code=400, detail=f"leg '{sym}' has qty=0")
+        scale_ratio = _leg_scale_ratios.get(sym, 1.0) if _is_commodity else 1.0
+        S_leg = S * scale_ratio
+
+        if parsed.get("kind") == "fut":
+            fut_resolved, fut_detail = _strategy_build_futures_leg(
+                leg, sym, quote_resp, S_leg, scale_ratio, qty,
+            )
+            resolved_legs.append(fut_resolved)
+            leg_details.append(fut_detail)
+            continue
+
+        opt_resolved, opt_detail, sig = _strategy_build_option_leg(
+            leg, sym, parsed, quote_resp, S_leg, T_yrs, scale_ratio, qty,
+        )
+        resolved_legs.append(opt_resolved)
+        leg_details.append(opt_detail)
+        sigma_weight_num += sig * abs(qty)
+        sigma_weight_den += abs(qty)
+    return resolved_legs, leg_details, sigma_weight_num, sigma_weight_den
+
+
+def _strategy_aggregate(
+    data: "StrategyRequest",
+    resolved_legs: list[dict],
+    leg_details: list[dict],
+    parsed_by_sym: dict,
+    expiries: set,
+    underlying: str,
+    S: float,
+    sigma_weight_num: float,
+    sigma_weight_den: float,
+    T_yrs_shared: float,
+    eval_T: float,
+    _close_time: tuple,
+    spot_prev_close: "float | None",
+    span_pct_resolved: float,
+    _spot_anchor: "str | None",
+    _spot_src: str,
+) -> "StrategyResponse":
+    """Phase-4 aggregate analytics: Greeks, curves, EV, R:R, breakevens.
+
+    Builds and returns the final ``StrategyResponse`` from the already-
+    resolved leg list.  All inputs are pure values — no broker I/O.
+    """
+    sigma_proxy = sigma_weight_num / sigma_weight_den if sigma_weight_den else DEFAULT_IV
+    pts = max(11, min(int(data.points or 51), 121))
+    _n_slices = max(0, min(int(data.time_slices or 0), 5))
+
+    curve, slices, max_p, max_l, agg_rr = _strategy_compute_curves(
+        resolved_legs, S, span_pct_resolved, pts, _n_slices,
+        eval_T, float(data.span_sigmas),
+    )
+    agg_greeks = multileg_greeks(resolved_legs, S=S)
+    bes        = find_breakevens(curve)
+    pop        = multileg_pop(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy)
+    net_cost   = sum(l["entry_price"] * l["qty"] for l in resolved_legs)
+    agg_ev     = expected_value(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy)
+    agg_ev_pct = (round(agg_ev / abs(net_cost) * 100.0, 2)
+                  if abs(net_cost) > 0 else None)
+
+    # Prefer min(option expiries) — options drive "time to expiry".
+    option_expiries = {
+        _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
+        for leg in data.legs
+        if (p := parsed_by_sym.get(leg.symbol.upper().strip())) and p.get("kind") == "opt"
+    }
+    shared_expiry_iso = min(option_expiries) if option_expiries else min(expiries)
+    shared_expiry     = date.fromisoformat(shared_expiry_iso)
+    return StrategyResponse(
+        underlying=underlying,
+        expiry=shared_expiry_iso,
+        days_to_expiry=days_to_expiry(shared_expiry, close_time=_close_time),
+        spot=S,
+        net_cost=net_cost,
+        net_qty=sum(int(l["qty"]) for l in resolved_legs),
+        iv_proxy=sigma_proxy,
+        aggregate_greeks=OptionGreeks(**agg_greeks),
+        risk=StrategyRisk(
+            max_profit=max_p, max_loss=max_l,
+            breakevens=bes, pop=pop,
+            ev=agg_ev, ev_pct=agg_ev_pct, rr_ratio=agg_rr,
+        ),
+        payoff=[PayoffPoint(**p) for p in curve],
+        intermediate_curves=[IntermediateCurve(**s) for s in slices],
+        legs=[LegDetail(
+            symbol=l["symbol"], opt_type=l["opt_type"], strike=l["strike"],
+            qty=l["qty"], avg_cost=l["avg_cost"], ltp=l["ltp"], iv=l["iv"],
+            theoretical=l["theoretical"], discrepancy=l["discrepancy"],
+            greeks=OptionGreeks(**l["greeks"]),
+            ltp_source=l["ltp_source"], iv_source=l["iv_source"],
+        ) for l in leg_details],
+        spot_prev_close=spot_prev_close,
+        span_pct=span_pct_resolved,
+        span_sigmas=float(data.span_sigmas) if data.span_pct is None else 0.0,
+        multi_expiry=len(option_expiries) > 1,
+        spot_anchor_contract=_spot_anchor,
+        spot_source=_spot_src,
+    )
+
+
 # ── Controller ────────────────────────────────────────────────────────
 
 class OptionsController(Controller):
@@ -2367,41 +2492,28 @@ class OptionsController(Controller):
         # ── 1. Parse + validate leg metadata ──────────────────────────
         parsed_by_sym = _strategy_validate_and_parse(data)
         roots, expiries, need_quote = _strategy_collect_leg_metadata(data, parsed_by_sym)
-        # Mixed expiries are supported — near-expiry evaluation is used for
-        # the payoff curve and the far leg is re-priced with its remaining T.
         underlying = next(iter(roots))
 
-        # Single get_market_data_broker() call per request — contextvar cache
-        # means all callsites in this request share one broker session.
         from backend.brokers.registry import get_market_data_broker
         _price_broker = get_market_data_broker()
 
-        # Bulk quote fetch — for legs without operator-supplied ltp, hit
-        # broker.quote() once (richer than ltp(): includes ohlc.close +
-        # depth, so the per-leg fallback can pick `close` when no live
-        # last_price is on the wire — handy for off-hours / illiquid).
+        # Bulk quote — richer than ltp(); includes ohlc.close for off-hours.
         quote_resp: dict = {}
         if need_quote:
             try:
-                quote_resp = await asyncio.to_thread(_price_broker.quote, list(need_quote.keys())) or {}
+                quote_resp = await asyncio.to_thread(
+                    _price_broker.quote, list(need_quote.keys()),
+                ) or {}
             except Exception as e:
-                # Don't fail the whole request — sim legs + operator overrides
-                # + per-leg fallbacks (avg_cost) can still produce useful output.
                 logger.warning(f"Strategy quote() failed: {e}")
 
-        # ── 2. Resolve spot (request override > sim > broker > fallback) ─
-        # Strike-of-the-median-leg is the synthetic-spot fallback so the
-        # strategy still draws a payoff curve when broker data is unreachable.
-        # Only options have strikes — futures contribute no strike anchor.
+        # ── 2. Resolve spot ───────────────────────────────────────────
         sorted_strikes = sorted({
             p["strike"]
             for l in data.legs
             if (p := parsed_by_sym.get((l.symbol or "").upper().strip())) and "strike" in p
         })
-        median_strike = (sorted_strikes[len(sorted_strikes) // 2]
-                         if sorted_strikes else None)
-        # Modal-expiry, option-preferred, front-month tie-break anchor pick.
-        # See `_strategy_pick_spot_anchor` for the exhaustive rationale.
+        median_strike = sorted_strikes[len(sorted_strikes) // 2] if sorted_strikes else None
         anchor_symbol, expiry_hint = _strategy_pick_spot_anchor(data, parsed_by_sym)
         S, _spot_src, spot_prev_close, _spot_anchor = await _resolve_spot(
             underlying, data.spot,
@@ -2417,122 +2529,31 @@ class OptionsController(Controller):
             )
 
         # ── 3. Build resolved-leg list with σ calibrated per leg ──────
-        # eval_T — payoff curve's "expiry" evaluation point (near leg).
-        # T_yrs_shared — far horizon used for POP / EV / span_pct.
         _is_commodity = is_mcx_underlying(underlying)
         _close_time = (23, 30) if _is_commodity else (15, 30)
         eval_T, T_yrs_shared = _strategy_option_T_range(data, parsed_by_sym, _close_time)
 
-        # MCX per-leg scale_ratio = S_leg_current / S_near — see the
-        # `_strategy_mcx_scale_ratios` docstring for full rationale.
         _leg_scale_ratios: dict[str, float] = {}
         if _is_commodity:
             _leg_scale_ratios = await _strategy_mcx_scale_ratios(
                 data, parsed_by_sym, underlying, S, _price_broker,
             )
 
-        # Per-leg loop — dispatch on kind (fut / opt) to the appropriate
-        # builder. Sigma is accumulated (qty-weighted) for the aggregate
-        # POP/EV lognormal below.
-        resolved_legs: list[dict] = []
-        leg_details: list[dict] = []
-        sigma_weight_num = 0.0
-        sigma_weight_den = 0.0
-        for leg in data.legs:
-            sym = leg.symbol.upper().strip()
-            parsed = parsed_by_sym.get(sym)
-            leg_expiry = date.fromisoformat(_leg_expiry_iso(leg, parsed))
-            T_yrs = days_to_expiry(leg_expiry, close_time=_close_time) / 365.0
-            qty = int(leg.qty or 0)
-            if qty == 0:
-                raise HTTPException(status_code=400,
-                    detail=f"leg '{sym}' has qty=0")
-            scale_ratio = _leg_scale_ratios.get(sym, 1.0) if _is_commodity else 1.0
-            S_leg = S * scale_ratio
-
-            if parsed.get("kind") == "fut":
-                fut_resolved, fut_detail = _strategy_build_futures_leg(
-                    leg, sym, quote_resp, S_leg, scale_ratio, qty,
-                )
-                resolved_legs.append(fut_resolved)
-                leg_details.append(fut_detail)
-                continue
-
-            opt_resolved, opt_detail, sig = _strategy_build_option_leg(
-                leg, sym, parsed, quote_resp, S_leg, T_yrs, scale_ratio, qty,
+        resolved_legs, leg_details, sigma_weight_num, sigma_weight_den = (
+            _strategy_build_legs(
+                data, parsed_by_sym, quote_resp, S,
+                _is_commodity, _close_time, _leg_scale_ratios,
             )
-            resolved_legs.append(opt_resolved)
-            leg_details.append(opt_detail)
-            sigma_weight_num += sig * abs(qty)
-            sigma_weight_den += abs(qty)
+        )
 
         # ── 4. Aggregate analytics ────────────────────────────────────
-        # qty-weighted IV drives the lognormal used for POP.
-        sigma_proxy = (sigma_weight_num / sigma_weight_den
-                       if sigma_weight_den else DEFAULT_IV)
-        # Span auto-derived from σ × √T_shared; operator override via data.span_pct.
+        sigma_proxy = sigma_weight_num / sigma_weight_den if sigma_weight_den else DEFAULT_IV
         span_pct_resolved = _resolve_span_pct(
             sigma=sigma_proxy, T_years=T_yrs_shared,
             span_pct=data.span_pct, span_sigmas=data.span_sigmas,
         )
-        pts = max(11, min(int(data.points or 51), 121))
-        _n_slices = max(0, min(int(data.time_slices or 0), 5))
-
-        # Phase-4 leg-curve cache short-circuit → today_value always fresh;
-        # expiry_value + slices reused from cache on hit.
-        curve, slices, max_p, max_l, agg_rr = _strategy_compute_curves(
-            resolved_legs, S, span_pct_resolved, pts, _n_slices,
-            eval_T, float(data.span_sigmas),
-        )
-
-        agg_greeks  = multileg_greeks(resolved_legs, S=S)
-        bes         = find_breakevens(curve)
-        pop = multileg_pop(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy)
-        net_cost = sum(l["entry_price"] * l["qty"] for l in resolved_legs)
-
-        # Aggregate EV — trapezoidal integration against risk-neutral lognormal.
-        agg_ev = expected_value(curve, S=S, T_years=T_yrs_shared,
-                                sigma=sigma_proxy)
-        agg_ev_pct = (round(agg_ev / abs(net_cost) * 100.0, 2)
-                      if abs(net_cost) > 0 else None)
-
-        # Prefer min(option expiries) — options drive "time to expiry"
-        # (futures track spot 1:1 with no time decay). MCX futures + options
-        # on the same contract month have DIFFERENT expiries.
-        option_expiries = {
-            _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
-            for leg in data.legs
-            if (p := parsed_by_sym.get(leg.symbol.upper().strip())) and p.get("kind") == "opt"
-        }
-        shared_expiry_iso = min(option_expiries) if option_expiries else min(expiries)
-        shared_expiry     = date.fromisoformat(shared_expiry_iso)
-        return StrategyResponse(
-            underlying=underlying,
-            expiry=shared_expiry_iso,
-            days_to_expiry=days_to_expiry(shared_expiry, close_time=_close_time),
-            spot=S,
-            net_cost=net_cost,
-            net_qty=sum(int(l["qty"]) for l in resolved_legs),
-            iv_proxy=sigma_proxy,
-            aggregate_greeks=OptionGreeks(**agg_greeks),
-            risk=StrategyRisk(
-                max_profit=max_p, max_loss=max_l,
-                breakevens=bes, pop=pop,
-                ev=agg_ev, ev_pct=agg_ev_pct, rr_ratio=agg_rr,
-            ),
-            payoff=[PayoffPoint(**p) for p in curve],
-            intermediate_curves=[IntermediateCurve(**s) for s in slices],
-            legs=[LegDetail(
-                symbol=l["symbol"], opt_type=l["opt_type"], strike=l["strike"],
-                qty=l["qty"], avg_cost=l["avg_cost"], ltp=l["ltp"], iv=l["iv"],
-                theoretical=l["theoretical"], discrepancy=l["discrepancy"],
-                greeks=OptionGreeks(**l["greeks"]),
-                ltp_source=l["ltp_source"], iv_source=l["iv_source"],
-            ) for l in leg_details],
-            spot_prev_close=spot_prev_close,
-            span_pct=span_pct_resolved,
-            span_sigmas=float(data.span_sigmas) if data.span_pct is None else 0.0,
-            multi_expiry=len(option_expiries) > 1,
-            spot_anchor_contract=_spot_anchor,
-            spot_source=_spot_src,
+        return _strategy_aggregate(
+            data, resolved_legs, leg_details, parsed_by_sym, expiries,
+            underlying, S, sigma_weight_num, sigma_weight_den, T_yrs_shared, eval_T,
+            _close_time, spot_prev_close, span_pct_resolved, _spot_anchor, _spot_src,
         )

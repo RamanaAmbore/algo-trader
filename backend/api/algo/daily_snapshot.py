@@ -165,6 +165,72 @@ def kite_seg_from_exchange(exchange: str) -> str:
 # Per-account fetch helpers (sync — run in executor)
 # ---------------------------------------------------------------------------
 
+def _backfill_build_df(rows: list[dict], qty_col: str):
+    """Build a pandas DataFrame from *rows*, ensuring all columns that
+    ``backfill_market_data`` inspects are present.  Returns ``(df, _bf)``
+    where *_bf* is the broker patcher callable, or ``None`` on import error.
+    """
+    try:
+        import pandas as _pd
+        from backend.brokers.broker_apis import backfill_market_data as _bf
+    except Exception:
+        return None, None
+    df = _pd.DataFrame(rows)
+    if df.empty:
+        return None, None
+    for _col in ("last_price", "close_price", "tradingsymbol", "exchange"):
+        if _col not in df.columns:
+            df[_col] = 0 if _col in ("last_price", "close_price") else ""
+    if qty_col == "quantity" and "opening_quantity" not in df.columns:
+        df["opening_quantity"] = df["quantity"] if "quantity" in df.columns else 0
+    return df, _bf
+
+
+def _backfill_patch_prices(rows: list[dict], df, qty_col: str) -> int:
+    """Write ``last_price`` / ``close_price`` from *df* back onto *rows*
+    and recompute ``pnl`` / ``day_change`` for rows where the broker shipped
+    zeros.  Returns the number of rows where ``last_price`` was patched.
+    """
+    patched = 0
+    for i, r in enumerate(rows):
+        try:
+            _new_ltp = float(df.iloc[i]["last_price"] or 0)
+            _new_cls = float(df.iloc[i]["close_price"] or 0)
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+        _old_ltp = float(r.get("last_price") or 0)
+        _old_cls = float(r.get("close_price") or 0)
+        if _new_ltp > 0 and _new_ltp != _old_ltp:
+            r["last_price"] = _new_ltp
+            patched += 1
+        if _new_cls > 0 and _new_cls != _old_cls:
+            r["close_price"] = _new_cls
+        _backfill_recompute_derived(r, qty_col)
+    return patched
+
+
+def _backfill_recompute_derived(r: dict, qty_col: str) -> None:
+    """Recompute ``pnl`` / ``day_change`` on a single row after price patch.
+
+    Fills in Groww-shape rows where the normaliser derived these from
+    ``(ltp - close)`` when both were zero at snapshot time.  Mutates
+    *r* in-place; does not affect the caller's ``patched`` count.
+    """
+    try:
+        _avg = float(r.get("average_price") or 0)
+        _qty = int(r.get(qty_col) or r.get("quantity")
+                    or r.get("opening_quantity") or 0)
+    except (ValueError, TypeError):
+        _avg = 0.0
+        _qty = 0
+    _cur_ltp = float(r.get("last_price") or 0)
+    _cur_cls = float(r.get("close_price") or 0)
+    if _cur_ltp > 0 and _avg > 0 and _qty and not r.get("pnl"):
+        r["pnl"] = (_cur_ltp - _avg) * _qty
+    if _cur_ltp > 0 and _cur_cls > 0 and not r.get("day_change"):
+        r["day_change"] = _cur_ltp - _cur_cls
+
+
 def _backfill_market_data_dicts(rows: list[dict], *, qty_col: str = "opening_quantity") -> int:
     """Groww / Dhan often ship holdings + positions with `last_price=0`
     and `close_price=0` when their own market-data cache is cold. The
@@ -192,73 +258,15 @@ def _backfill_market_data_dicts(rows: list[dict], *, qty_col: str = "opening_qua
     """
     if not rows:
         return 0
-    try:
-        import pandas as _pd
-        from backend.brokers.broker_apis import backfill_market_data as _bf
-    except Exception:
+    df, _bf = _backfill_build_df(rows, qty_col)
+    if df is None:
         return 0
-    df = _pd.DataFrame(rows)
-    if df.empty:
-        return 0
-    # Ensure the columns backfill inspects exist — Groww holdings ships
-    # both `last_price` + `close_price`; Groww positions the same. If
-    # a broker skipped a column entirely, fill with zeros so the
-    # missing-value gate ( <= 0 ) still fires.
-    for _col in ("last_price", "close_price", "tradingsymbol", "exchange"):
-        if _col not in df.columns:
-            df[_col] = 0 if _col in ("last_price", "close_price") else ""
-    # backfill expects an `opening_quantity` column for the day_change
-    # recompute; positions ship `quantity` instead. Provide it as an
-    # alias so the recompute succeeds — no impact on our dicts (we only
-    # copy `last_price` / `close_price` back).
-    if qty_col == "quantity" and "opening_quantity" not in df.columns:
-        df["opening_quantity"] = df["quantity"] if "quantity" in df.columns else 0
-
     try:
         _bf(df)
     except Exception as e:
         logger.debug(f"snapshot backfill_market_data failed: {e}")
         return 0
-
-    patched = 0
-    # Write the patched fields back onto the original dicts. iloc keeps
-    # us in sync with pandas' row order (which mirrors input list order
-    # from DataFrame constructor).
-    for i, r in enumerate(rows):
-        try:
-            _new_ltp = float(df.iloc[i]["last_price"] or 0)
-            _new_cls = float(df.iloc[i]["close_price"] or 0)
-        except (KeyError, IndexError, ValueError, TypeError):
-            continue
-        _old_ltp = float(r.get("last_price") or 0)
-        _old_cls = float(r.get("close_price") or 0)
-        if _new_ltp > 0 and _new_ltp != _old_ltp:
-            r["last_price"] = _new_ltp
-            patched += 1
-        if _new_cls > 0 and _new_cls != _old_cls:
-            r["close_price"] = _new_cls
-        # Recompute day_change / pnl on Groww-shape rows where the
-        # normaliser derived them from (ltp - close) but both were
-        # zero at that moment. After backfill lands both numbers,
-        # rewrite so the writer's `_is_zero_payload_row` doesn't
-        # filter the row on a stale zero.
-        try:
-            _avg = float(r.get("average_price") or 0)
-            # For holdings the qty column is `opening_quantity`; for
-            # positions it's `quantity`. Prefer the caller-specified
-            # column, fall back to whichever is present.
-            _qty = int(r.get(qty_col) or r.get("quantity")
-                        or r.get("opening_quantity") or 0)
-        except (ValueError, TypeError):
-            _avg = 0.0
-            _qty = 0
-        _cur_ltp = float(r.get("last_price") or 0)
-        _cur_cls = float(r.get("close_price") or 0)
-        if _cur_ltp > 0 and _avg > 0 and _qty and not r.get("pnl"):
-            r["pnl"] = (_cur_ltp - _avg) * _qty
-        if _cur_ltp > 0 and _cur_cls > 0 and not r.get("day_change"):
-            r["day_change"] = _cur_ltp - _cur_cls
-    return patched
+    return _backfill_patch_prices(rows, df, qty_col)
 
 
 def _fetch_account_data(broker, account: str, target_date: date) -> dict:

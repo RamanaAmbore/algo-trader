@@ -167,6 +167,88 @@ def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
     )
 
 
+_VALID_POLL_PRIORITIES: frozenset[str] = frozenset({"hot", "warm", "cold"})
+
+
+def _apply_nonsecret_fields(row: BrokerAccount, data: "BrokerAccountUpdate") -> None:
+    """Patch plain (non-encrypted) fields onto *row* in-place.
+
+    Each field is only touched when the operator supplied a non-None value,
+    so a partial PATCH never blanks fields the caller didn't intend to touch.
+    ``poll_priority`` raises HTTPException(400) on an unrecognised value and
+    clears the auto-downgrade stamps when the operator explicitly changes it.
+    """
+    if data.broker_id is not None:  row.broker_id = data.broker_id
+    if data.api_key   is not None:  row.api_key   = data.api_key
+    if data.client_id is not None:  row.client_id = data.client_id or None
+    if data.source_ip is not None:  row.source_ip = data.source_ip or None
+    if data.is_active is not None:  row.is_active = bool(data.is_active)
+    if data.notes     is not None:  row.notes     = data.notes
+    if data.priority  is not None:  row.priority  = int(data.priority)
+    if data.extra_config is not None:
+        row.extra_config = dict(data.extra_config or {})
+    if data.historical_data_enabled is not None:
+        row.historical_data_enabled = bool(data.historical_data_enabled)
+    if data.poll_priority is not None:
+        if data.poll_priority not in _VALID_POLL_PRIORITIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"poll_priority must be one of: {sorted(_VALID_POLL_PRIORITIES)}",
+            )
+        row.poll_priority = data.poll_priority
+        # Manual change clears auto-downgrade stamps so the UI can
+        # distinguish manual vs auto priority changes.
+        if data.poll_priority != getattr(row, "auto_downgrade_reason", None):
+            row.auto_downgraded_at = None
+            row.auto_downgrade_reason = None
+    if data.auto_downgrade_enabled is not None:
+        row.auto_downgrade_enabled = bool(data.auto_downgrade_enabled)
+    if data.circuit_breaker_enabled is not None:
+        row.circuit_breaker_enabled = bool(data.circuit_breaker_enabled)
+    if data.display_order is not None:
+        row.display_order = int(data.display_order)
+
+
+def _apply_secret_fields(row: BrokerAccount, data: "BrokerAccountUpdate") -> None:
+    """Encrypt and store credential fields. Empty / None → unchanged."""
+    if data.api_secret:    row.api_secret_enc   = encrypt(data.api_secret)
+    if data.password:      row.password_enc     = encrypt(data.password)
+    if data.totp_token:    row.totp_token_enc   = encrypt(data.totp_token)
+    if data.access_token:  row.access_token_enc = encrypt(data.access_token)
+
+
+async def _flush_priority_caches(
+    account: str, row: BrokerAccount, data: "BrokerAccountUpdate",
+) -> None:
+    """Push poll-priority + circuit-breaker opt-in into the in-process
+    cache immediately — before rebuild_from_db completes — so the
+    interval gate sees the new value on the very next poll cycle."""
+    if data.poll_priority is None and data.circuit_breaker_enabled is None:
+        return
+    try:
+        from backend.brokers.broker_apis import (
+            set_dhan_priority_cache,
+            set_breaker_optin_cache,
+        )
+        if data.poll_priority is not None:
+            set_dhan_priority_cache(account, row.poll_priority or "hot")
+        if data.circuit_breaker_enabled is not None:
+            set_breaker_optin_cache(account, bool(row.circuit_breaker_enabled))
+    except Exception:
+        pass
+
+
+async def _flush_display_order_cache(data: "BrokerAccountUpdate") -> None:
+    """Invalidate the display_order cache when the operator changed it."""
+    if data.display_order is None:
+        return
+    try:
+        from backend.brokers.broker_apis import invalidate_account_order_cache
+        invalidate_account_order_cache()
+    except Exception:
+        pass
+
+
 async def _reload_connections() -> None:
     """Trigger Connections.rebuild_from_db so subsequent broker calls
     pick up the new state. Failures are logged but don't fail the
@@ -324,73 +406,14 @@ class BrokersController(Controller):
                 raise HTTPException(status_code=404,
                     detail=f"Broker account {account!r} not found")
 
-            # Non-secret fields — straight-through.
-            if data.broker_id is not None:  row.broker_id = data.broker_id
-            if data.api_key   is not None:  row.api_key   = data.api_key
-            if data.client_id is not None:  row.client_id = data.client_id or None
-            if data.source_ip is not None:  row.source_ip = data.source_ip or None
-            if data.is_active is not None:  row.is_active = bool(data.is_active)
-            if data.notes     is not None:  row.notes     = data.notes
-            if data.priority  is not None:  row.priority  = int(data.priority)
-            if data.extra_config is not None: row.extra_config = dict(data.extra_config or {})
-            if data.historical_data_enabled is not None:
-                row.historical_data_enabled = bool(data.historical_data_enabled)
-            if data.poll_priority is not None:
-                valid_priorities = {"hot", "warm", "cold"}
-                if data.poll_priority not in valid_priorities:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"poll_priority must be one of: {sorted(valid_priorities)}"
-                    )
-                row.poll_priority = data.poll_priority
-                # Manual priority change clears auto-downgrade stamps so
-                # the UI can distinguish manual vs auto priority changes.
-                if data.poll_priority != getattr(row, "auto_downgrade_reason", None):
-                    row.auto_downgraded_at = None
-                    row.auto_downgrade_reason = None
-            if data.auto_downgrade_enabled is not None:
-                row.auto_downgrade_enabled = bool(data.auto_downgrade_enabled)
-            if data.circuit_breaker_enabled is not None:
-                row.circuit_breaker_enabled = bool(data.circuit_breaker_enabled)
-            if data.display_order is not None:
-                row.display_order = int(data.display_order)
-
-            # Secret fields — only update when the operator passed a
-            # NON-EMPTY string. Empty / None means "leave unchanged" so
-            # a partial edit doesn't blank a credential.
-            if data.api_secret:    row.api_secret_enc   = encrypt(data.api_secret)
-            if data.password:      row.password_enc     = encrypt(data.password)
-            if data.totp_token:    row.totp_token_enc   = encrypt(data.totp_token)
-            if data.access_token:  row.access_token_enc = encrypt(data.access_token)
-
+            _apply_nonsecret_fields(row, data)   # may raise HTTPException(400)
+            _apply_secret_fields(row, data)
             row.updated_at = datetime.now(timezone.utc)
             await s.commit()
             await s.refresh(row)
 
-        # Immediately update the in-process caches so the interval gate and
-        # circuit-breaker opt-in check see the new value even before
-        # rebuild_from_db completes (it will also update the caches).
-        if data.poll_priority is not None or data.circuit_breaker_enabled is not None:
-            try:
-                from backend.brokers.broker_apis import (
-                    set_dhan_priority_cache,
-                    set_breaker_optin_cache,
-                )
-                if data.poll_priority is not None:
-                    set_dhan_priority_cache(account, row.poll_priority or "hot")
-                if data.circuit_breaker_enabled is not None:
-                    set_breaker_optin_cache(account, bool(row.circuit_breaker_enabled))
-            except Exception:
-                pass
-        # Invalidate the display_order cache so the next sort_accounts() call
-        # re-reads fresh values from the DB.
-        if data.display_order is not None:
-            try:
-                from backend.brokers.broker_apis import invalidate_account_order_cache
-                invalidate_account_order_cache()
-            except Exception:
-                pass
-
+        await _flush_priority_caches(account, row, data)
+        await _flush_display_order_cache(data)
         await _reload_connections()
         logger.warning(f"broker_accounts: updated {account!r} via /admin/brokers")
         return _to_info(row, loaded=(account in _loaded_accounts()))
