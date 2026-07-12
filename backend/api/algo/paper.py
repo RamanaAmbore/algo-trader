@@ -772,7 +772,6 @@ class PaperTradeEngine:
         from backend.api.database import async_session
         from backend.api.models  import AlgoOrder
         from sqlalchemy          import select as _select
-        from backend.api.algo.order_events import write_event
 
         async with async_session() as s:
             row = (await s.execute(
@@ -780,49 +779,13 @@ class PaperTradeEngine:
             )).scalar_one_or_none()
             if not row:
                 return
-            # Status transitions:
-            #   modify   → stays OPEN (attempts + detail refresh)
-            #   fill     → FILLED, fill_price + slippage + filled_at
-            #   unfilled → UNFILLED, attempts frozen at the cap
-            if kind == "fill":
-                row.status = "FILLED"
-            elif kind == "unfilled":
-                row.status = "UNFILLED"
-            row.attempts = int(order.get("attempts", 0))
 
             tag    = self._label.upper()
-            side   = order.get("side") or "?"
-            qty    = order.get("qty") or 0
             symbol = order.get("symbol") or "?"
             limit  = order.get("limit_price")
-            agent  = order.get("agent_slug", "?")
 
-            if kind == "modify":
-                if limit is not None:
-                    row.detail = (
-                        f"[{tag}] {agent} {side} {qty} {symbol} · "
-                        f"chase #{row.attempts} limit=₹{limit:,.2f}"
-                    )
-                else:
-                    row.detail = (
-                        f"[{tag}] {agent} {side} {qty} {symbol} · "
-                        f"chase #{row.attempts}"
-                    )
-            elif kind == "fill" and order.get("fill_price") is not None:
-                row.fill_price = float(order["fill_price"])
-                initial = row.initial_price or 0
-                if initial:
-                    row.slippage = float(order["fill_price"]) - float(initial)
-                row.filled_at = datetime.now(timezone.utc)
-                row.detail = (
-                    f"[{tag}] {agent} {side} {qty} {symbol} · "
-                    f"FILLED @₹{row.fill_price:,.2f} after {row.attempts} chase(s)"
-                )
-            elif kind == "unfilled":
-                row.detail = (
-                    f"[{tag}] {agent} {side} {qty} {symbol} · "
-                    f"UNFILLED — gave up after {row.attempts} chase(s)"
-                )
+            _paper_update_row_fields(row, kind, order, tag)
+
             # Snapshot row fields used downstream for the template-attach
             # fire — captured BEFORE leaving the session so SQLAlchemy
             # doesn't lazy-load post-commit.
@@ -872,6 +835,39 @@ class PaperTradeEngine:
                     f"#{order['algo_order_id']}: {_e}"
                 )
 
+        row_snap = {
+            "_row_account":  _row_account,
+            "_row_symbol":   _row_symbol,
+            "_row_exchange": _row_exchange,
+            "_row_side":     _row_side,
+            "_row_qty":      _row_qty,
+        }
+        await self._paper_write_terminal_event(order, kind, symbol, limit, row_snap)
+
+    async def _paper_write_terminal_event(
+        self,
+        order: dict,
+        kind: str,
+        symbol: str,
+        limit,
+        row_snap: dict,
+    ) -> None:
+        """Write timeline event, fire postback fanout and audit log.
+
+        Called after the AlgoOrder row is committed so the event row is
+        never orphaned ahead of the status it describes. `row_snap` carries
+        the pre-commit snapshot fields needed for fanout and audit.
+        """
+        from backend.api.algo.order_events import write_event
+
+        _row_account  = row_snap["_row_account"]
+        _row_symbol   = row_snap["_row_symbol"]
+        _row_exchange = row_snap["_row_exchange"]
+        _row_side     = row_snap["_row_side"]
+        _row_qty      = row_snap["_row_qty"]
+
+        _attempts = int(order.get("attempts", 0))
+
         # Write the timeline event AFTER the AlgoOrder update commits so the
         # event row is never orphaned ahead of the status it describes.
         event_kind = {
@@ -881,7 +877,7 @@ class PaperTradeEngine:
         }.get(kind, kind)
 
         payload: dict = {
-            "attempts": int(order.get("attempts", 0)),
+            "attempts": _attempts,
             "limit_price": order.get("limit_price"),
             "account": order.get("account"),
             "symbol": symbol,
@@ -894,14 +890,14 @@ class PaperTradeEngine:
 
         # Build the message that mirrors row.detail for easy reading.
         if kind == "modify":
-            msg = (f"chase #{row.attempts} limit=₹{limit:,.2f}"
-                   if limit is not None else f"chase #{row.attempts}")
+            msg = (f"chase #{_attempts} limit=₹{limit:,.2f}"
+                   if limit is not None else f"chase #{_attempts}")
         elif kind == "fill":
             fp = order.get("fill_price")
-            msg = (f"FILLED @₹{fp:,.2f} after {row.attempts} chase(s)"
-                   if fp is not None else f"FILLED after {row.attempts} chase(s)")
+            msg = (f"FILLED @₹{fp:,.2f} after {_attempts} chase(s)"
+                   if fp is not None else f"FILLED after {_attempts} chase(s)")
         else:
-            msg = f"UNFILLED — gave up after {row.attempts} chase(s)"
+            msg = f"UNFILLED — gave up after {_attempts} chase(s)"
 
         await write_event(order["algo_order_id"], event_kind, msg, payload)
 
@@ -952,6 +948,7 @@ class PaperTradeEngine:
         if kind in ("fill", "unfilled"):
             try:
                 from backend.api.audit import write_audit_event
+                from backend.shared.helpers.utils import mask_account
                 _aud_cat = "order.fill" if kind == "fill" else "order.expired"
                 _aud_fp  = order.get("fill_price")
                 write_audit_event(
@@ -972,6 +969,64 @@ class PaperTradeEngine:
                     f"PaperTradeEngine[{self._label}] audit write skipped "
                     f"for #{order['algo_order_id']}: {_ae}"
                 )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Module-level helpers used by PaperTradeEngine internals
+# ═════════════════════════════════════════════════════════════════════════
+
+
+def _paper_update_row_fields(row, kind: str, order: dict, tag: str) -> None:
+    """Mutate an AlgoOrder row in-place based on the chase outcome kind.
+
+    Called inside an active SQLAlchemy session before commit so all
+    attribute writes are tracked. Does not use ``self``; extracted to
+    reduce the cyclomatic complexity of ``_update_algo_order``.
+
+    Status transitions:
+      modify   → stays OPEN (attempts + detail refresh)
+      fill     → FILLED, fill_price + slippage + filled_at
+      unfilled → UNFILLED, attempts frozen at the cap
+    """
+    # Status transitions:
+    if kind == "fill":
+        row.status = "FILLED"
+    elif kind == "unfilled":
+        row.status = "UNFILLED"
+    row.attempts = int(order.get("attempts", 0))
+
+    agent  = order.get("agent_slug", "?")
+    side   = order.get("side") or "?"
+    qty    = order.get("qty") or 0
+    symbol = order.get("symbol") or "?"
+    limit  = order.get("limit_price")
+
+    if kind == "modify":
+        if limit is not None:
+            row.detail = (
+                f"[{tag}] {agent} {side} {qty} {symbol} · "
+                f"chase #{row.attempts} limit=₹{limit:,.2f}"
+            )
+        else:
+            row.detail = (
+                f"[{tag}] {agent} {side} {qty} {symbol} · "
+                f"chase #{row.attempts}"
+            )
+    elif kind == "fill" and order.get("fill_price") is not None:
+        row.fill_price = float(order["fill_price"])
+        initial = row.initial_price or 0
+        if initial:
+            row.slippage = float(order["fill_price"]) - float(initial)
+        row.filled_at = datetime.now(timezone.utc)
+        row.detail = (
+            f"[{tag}] {agent} {side} {qty} {symbol} · "
+            f"FILLED @₹{row.fill_price:,.2f} after {row.attempts} chase(s)"
+        )
+    elif kind == "unfilled":
+        row.detail = (
+            f"[{tag}] {agent} {side} {qty} {symbol} · "
+            f"UNFILLED — gave up after {row.attempts} chase(s)"
+        )
 
 
 # ═════════════════════════════════════════════════════════════════════════

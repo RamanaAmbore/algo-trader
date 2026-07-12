@@ -425,6 +425,107 @@ async def _pb_event_kite(
         logger.debug(f"postback event write failed: {_pe}")
 
 
+async def _pb_verify_signature(
+    order_id: str,
+    order_timestamp: str,
+    checksum: str,
+    account: str,
+) -> bool:
+    """Verify the Kite postback HMAC signature.
+
+    Handles both the conn_service path (delegates to the remote
+    ``verify_postback`` RPC) and the direct-Connections path
+    (local SHA-256 / hmac comparison). Returns ``True`` if any
+    candidate account produces a matching signature, ``False``
+    otherwise. Never raises.
+    """
+    import hashlib
+    import hmac
+    import os as _os
+
+    _use_conn_svc = _os.environ.get(
+        "RAMBOQ_USE_CONN_SERVICE", "",
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+    if _use_conn_svc:
+        from backend.brokers.client.remote_broker import (
+            list_remote_accounts, verify_postback,
+        )
+        kite_candidates = [
+            r["account"] for r in list_remote_accounts()
+            if r.get("broker_id") in ("zerodha_kite", "kite")
+        ]
+        candidates = (
+            [account] + [a for a in kite_candidates if a != account]
+            if account and account in kite_candidates
+            else kite_candidates
+        )
+        for acct in candidates:
+            if verify_postback(
+                acct,
+                order_id=order_id,
+                order_timestamp=order_timestamp,
+                checksum=checksum,
+            ):
+                return True
+        return False
+    else:
+        from backend.brokers.connections import Connections, KiteConnection
+        conns = Connections()
+        kite_candidates: list[str] = [
+            a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
+        ]
+        if account and account in kite_candidates:
+            candidates: list[str] = [account] + [a for a in kite_candidates if a != account]
+        else:
+            candidates = kite_candidates
+        for acct in candidates:
+            api_secret = conns.conn[acct].api_secret
+            msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
+            expected = hashlib.sha256(msg).hexdigest()
+            if hmac.compare_digest(expected, str(checksum)):
+                return True
+        return False
+
+
+def _pb_write_audit(
+    status: str,
+    txn: str,
+    qty,
+    tradingsymbol: str,
+    price,
+    order_id: str,
+    masked: str,
+    status_msg: str,
+) -> None:
+    """Write the audit-log entry for a Kite postback event.
+
+    Best-effort — logs and swallows on failure so the postback
+    acknowledgement is never blocked by an audit write error.
+    """
+    try:
+        from backend.api.audit import write_audit_event
+        _status_u = str(status or "").upper()
+        _cat = ("order.fill"     if _status_u == "COMPLETE"
+                else "order.cancel"  if _status_u == "CANCELLED"
+                else "order.reject"  if _status_u == "REJECTED"
+                else "order.expired" if _status_u == "EXPIRED"
+                else "order")
+        write_audit_event(
+            category=_cat,
+            action=f"BROKER_{_status_u or 'EVENT'}",
+            actor_username="broker",
+            actor_role="system",
+            target_type="broker_order",
+            target_id=str(order_id) if order_id else None,
+            summary=(f"{_status_u} {txn} {qty} {tradingsymbol} "
+                     f"@₹{price} acct={masked}"
+                     + (f" msg={status_msg}" if status_msg else ""))[:1000],
+        )
+    except Exception as _exc:
+        logger.debug(f"postback audit write skipped: {_exc}")
+
+
 async def kite_postback_handler(request) -> dict:
     """Full Kite postback logic — HMAC verification + row sync + broadcast.
 
@@ -432,10 +533,7 @@ async def kite_postback_handler(request) -> dict:
     _pb_event_kite for async timeline work, then calls _postback_broadcast_fanout
     (lazily imported from orders.py to avoid circular import).
     """
-    import hashlib
-    import hmac
     from litestar.exceptions import HTTPException
-    from backend.brokers.connections import Connections
     from backend.shared.helpers.utils import mask_account
 
     try:
@@ -452,55 +550,7 @@ async def kite_postback_handler(request) -> dict:
         status_msg      = body.get("status_message") or ""
         masked          = mask_account(account)
 
-        import os as _os
-        _use_conn_svc = _os.environ.get(
-            "RAMBOQ_USE_CONN_SERVICE", "",
-        ).strip().lower() in ("1", "true", "yes", "on")
-
-        if _use_conn_svc:
-            from backend.brokers.client.remote_broker import (
-                list_remote_accounts, verify_postback,
-            )
-            kite_candidates = [
-                r["account"] for r in list_remote_accounts()
-                if r.get("broker_id") in ("zerodha_kite", "kite")
-            ]
-            candidates = (
-                [account] + [a for a in kite_candidates if a != account]
-                if account and account in kite_candidates
-                else kite_candidates
-            )
-            sig_valid = False
-            for acct in candidates:
-                if verify_postback(
-                    acct,
-                    order_id=order_id,
-                    order_timestamp=order_timestamp,
-                    checksum=checksum,
-                ):
-                    sig_valid = True
-                    break
-        else:
-            conns = Connections()
-            from backend.brokers.connections import KiteConnection
-            kite_candidates: list[str] = [
-                a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
-            ]
-            candidates: list[str] = []
-            if account and account in kite_candidates:
-                candidates = [account] + [a for a in kite_candidates if a != account]
-            else:
-                candidates = kite_candidates
-
-            sig_valid = False
-            for acct in candidates:
-                api_secret = conns.conn[acct].api_secret
-                msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
-                expected = hashlib.sha256(msg).hexdigest()
-                if hmac.compare_digest(expected, str(checksum)):
-                    sig_valid = True
-                    break
-
+        sig_valid = await _pb_verify_signature(order_id, order_timestamp, checksum, account)
         if not sig_valid:
             logger.warning(
                 "postback signature mismatch",
@@ -514,27 +564,7 @@ async def kite_postback_handler(request) -> dict:
         logger.info(f"Postback: {order_id} [{masked}] {status} {txn} {qty} "
                     f"{tradingsymbol} price={price} msg={status_msg}")
 
-        try:
-            from backend.api.audit import write_audit_event
-            _status_u = str(status or "").upper()
-            _cat = ("order.fill"     if _status_u == "COMPLETE"
-                    else "order.cancel"  if _status_u == "CANCELLED"
-                    else "order.reject"  if _status_u == "REJECTED"
-                    else "order.expired" if _status_u == "EXPIRED"
-                    else "order")
-            write_audit_event(
-                category=_cat,
-                action=f"BROKER_{_status_u or 'EVENT'}",
-                actor_username="broker",
-                actor_role="system",
-                target_type="broker_order",
-                target_id=str(order_id) if order_id else None,
-                summary=(f"{_status_u} {txn} {qty} {tradingsymbol} "
-                         f"@₹{price} acct={masked}"
-                         + (f" msg={status_msg}" if status_msg else ""))[:1000],
-            )
-        except Exception as _exc:
-            logger.debug(f"postback audit write skipped: {_exc}")
+        _pb_write_audit(status, txn, qty, tradingsymbol, price, order_id, masked, status_msg)
 
         try:
             asyncio.create_task(_pb_event_kite(
