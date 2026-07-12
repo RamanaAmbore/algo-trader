@@ -21,5 +21,13 @@ frontend/.svelte-kit/
 # Claude Code ephemeral state
 .claude/scheduled_tasks.lock
 
-# Generated PDF output from tools/pdf-gen — regenerate via `cd tools/pdf-gen && npm run build:design`
+# Generated PDF output — regenerate via `python3 docs/generate_pdf.py`
 *.pdf
+
+# Test artifacts
+test-results/
+htmlcov/
+.pytest_cache/
+
+# Pandoc mermaid-filter error log (generated on every PDF build)
+mermaid-filter.err
