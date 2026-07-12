@@ -241,6 +241,38 @@ affect Greeks scale + expected value calibration.
 
 ## 7. Edge Cases
 
+### Spot parameter API flexibility
+`annotateOptionCandidates` in `frontend/src/lib/data/derivativesMath.js` accepts `spot` as either:
+- A number: single spot value (backward-compatible)
+- A function `(underlying: string) => number`: per-underlying resolver (new v2026-07)
+
+Internally: `const resolveSpot = typeof spot === 'function' ? spot : () => spot;` then
+`resolveSpot(underlying)` per row. Enables per-underlying spot resolution in full-book analysis
+(Exp Close tab) where positions span NIFTY, BANKNIFTY, CRUDEOIL etc. simultaneously.
+
+### Exp Close full-book spot resolution
+Expiry-close analysis (`frontend/src/routes/(algo)/admin/derivatives/+page.svelte::expiryCloseAnalysis`)
+uses a `spotResolver` closure that resolves spot per-underlying:
+1. SSE tick via `getSnapshot(key)?.ltp`
+2. Batch quote cache `_underlyingQuotes[key]?.ltp`
+3. Fallback `0`
+
+**Previous behavior**: Single underlying's spot via `_resolveExpirySpot(selectedUnderlying, ...)`.
+Early gate `if (!spot || !cps.length) return empty` blocked analysis when spot=0 or no candidates.
+
+**Current behavior**: Spot=0 no longer blocks analysis (removed early gate). Each row's underlying
+resolves independently, supporting mixed-underlying baskets. Full-book expiry close works across
+all positions regardless of selectedUnderlying selection.
+
+### TOTAL row decoration — CSS convention
+TOTAL row in Legs/Exp-close grids uses a two-layer CSS structure:
+- **Outer container** (`cand-row-total`): `display:grid; grid-template-columns:subgrid; grid-column:1/-1`
+  for alignment only
+- **Inner `> span` children**: amber background, border-top/bottom, font-size, font-family, text-align
+
+Matches the Snapshot grid's `.byund-row-total > span` pattern. Container alignment delegated to
+subgrid; decoration lives on cells themselves so visual styling doesn't interfere with grid layout.
+
 ### Far-OTM options (BS instability)
 - Black-Scholes can oscillate when intrinsic ≈ 0 and theta → 0
 - Mitigated by clamping IV to [0.05, 2.0] and limiting Newton iterations
@@ -300,4 +332,5 @@ affect Greeks scale + expected value calibration.
 
 | Date | Change |
 |---|---|
+| 2026-07-11 | v1.1 add Exp Close spot resolver (function-type) + TOTAL row CSS convention |
 | 2026-07-11 | v1.0 initial spec from codebase audit |
