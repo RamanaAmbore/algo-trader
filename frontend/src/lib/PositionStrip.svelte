@@ -764,13 +764,31 @@
   let _heartbeatTimer = null;
   $effect(() => {
     if (_pollCycleStamp === 0) return;  // skip mount paint
-    if (_mktTick === 0) return;         // both markets closed — no heartbeat
+    if (_mktTick === 0) return;         // both markets closed — slate pulse handles it
     _heartbeatOn = true;
     if (_heartbeatTimer) clearTimeout(_heartbeatTimer);
     // 300ms — unified duration (tick-bus synchrony). Previously 450ms.
     _heartbeatTimer = setTimeout(() => {
       _heartbeatOn = false;
       _heartbeatTimer = null;
+    }, 300);
+  });
+
+  // Closed-hours poll pulse — dim slate border flash when both markets are
+  // closed but the background poller still refreshes broker data (positions,
+  // holdings, funds, margins, settlement updates). Distinct from the amber
+  // heartbeat: slate palette signals "data refreshed, no live ticks."
+  let _pollPulseOn = $state(false);
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _pollPulseTimer = null;
+  $effect(() => {
+    if (_pollCycleStamp === 0) return;  // skip mount paint
+    if (_mktTick !== 0) return;         // at least one market open — amber handles it
+    _pollPulseOn = true;
+    if (_pollPulseTimer) clearTimeout(_pollPulseTimer);
+    _pollPulseTimer = setTimeout(() => {
+      _pollPulseOn = false;
+      _pollPulseTimer = null;
     }, 300);
   });
 
@@ -794,7 +812,7 @@
   let _tickBusUnsub = null;
 </script>
 
-<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
+<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
   <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L / F&O expiry profit at current spot">
     <span class="ps-agg-k">P</span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
@@ -894,6 +912,15 @@
     background: linear-gradient(180deg, #1a1200 0%, #1a1500 100%);
     border-bottom-color: rgba(251, 146, 60, 0.6);
   }
+  /* Closed-hours poll pulse — dim slate border flash when both markets are
+     closed but broker data still refreshes (positions, holdings, funds,
+     margins, settlement). Distinct from the amber heartbeat: slate signals
+     "data refreshed, no live ticks." Same 300ms gate as the heartbeat. */
+  .ps-strip.ps-poll-pulse {
+    border-bottom-color: rgba(126, 151, 184, 0.60);
+    background: linear-gradient(180deg, #0a1020 0%, #141c2e 100%);
+  }
+
   /* Tick-border shimmer — per-SSE-tick sky-300 border flash driven by
      tickBus. Neutral (no direction). 300ms cubic-bezier(0.4,0,0.2,1)
      easing matches the unified animation spec.
@@ -918,6 +945,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .ps-strip.ps-heartbeat { transition: none; }
+    .ps-strip.ps-poll-pulse { transition: none; }
     .ps-strip.ps-tick-border-a,
     .ps-strip.ps-tick-border-b { animation: none; }
   }
