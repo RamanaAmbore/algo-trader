@@ -6,36 +6,24 @@
 
   import { onMount, onDestroy } from 'svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
-  import { portal } from '$lib/portal';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { chartStore } from '$lib/data/chartStore.svelte.js';
+  import { closeChartModal } from '$lib/stores';
 
   let {
     /** @type {string} */ symbol = '',
     /** @type {string} */ exchange = '',
     /** @type {'live'|'sim'|'paper'} */ mode = 'live',
-    /** @type {() => void} */ onClose,
   } = $props();
 
-  let _modalEl  = $state(/** @type {HTMLElement|null} */ (null));
-  let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
+  let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   let _loading = $state(false);
 
-  // $derived.by for clean reactive aria-label (avoids inline IIFE in template).
   const _ariaLabel = $derived.by(() => {
     const rl = rootOfLabel(symbol, exchange);
     return 'Chart — ' + (rl !== symbol ? rl : formatSymbol(symbol));
   });
-
-  // The cm-overlay is portaled to document.body, OUTSIDE the SvelteKit
-  // mount root (<div id="svelte">). Svelte 5 delegates onclick handlers
-  // at the mount root, so onclick={...} on portaled nodes never fires.
-  // Bind the X-button click natively via addEventListener instead.
-  function _onCloseClick(/** @type {MouseEvent} */ e) {
-    e.stopPropagation();
-    onClose?.();
-  }
 
   function _focusables() {
     return /** @type {NodeListOf<HTMLElement>} */ (
@@ -45,11 +33,10 @@
 
   function _onKey(/** @type {KeyboardEvent} */ e) {
     if (e.key === 'Escape') {
-      // stopImmediatePropagation prevents the parent SymbolPanel's
-      // capture-phase listener from also firing and closing it when
-      // ChartModal is the top-of-stack modal.
+      // stopImmediatePropagation prevents a parent SymbolPanel's
+      // capture-phase listener from also firing when ChartModal is on top.
       e.stopImmediatePropagation();
-      onClose?.();
+      closeChartModal();
       return;
     }
     if (e.key === 'Tab') {
@@ -68,12 +55,10 @@
     if (symbol) chartStore.setSymbol(symbol);
     if (exchange) chartStore.setExchange(exchange);
     window.addEventListener('keydown', _onKey, { capture: true });
-    _closeBtnEl?.addEventListener('click', _onCloseClick);
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
   });
   onDestroy(() => {
     window.removeEventListener('keydown', _onKey, { capture: true });
-    _closeBtnEl?.removeEventListener('click', _onCloseClick);
   });
 </script>
 
@@ -81,7 +66,7 @@
 <!-- overlay is pointer-events:none so click-outside-to-close is gone;
      operator uses × button or Esc. tabindex retained for screen readers. -->
 <div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
-     use:portal role="dialog" aria-modal="true"
+     role="dialog" aria-modal="true"
      aria-label={_ariaLabel} tabindex="-1">
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
@@ -121,19 +106,20 @@
             <path d="M13.5 3v3h-3" />
           </svg>
         </span>
-        <button type="button" class="cm-close" bind:this={_closeBtnEl}
+        <button type="button" class="cm-close"
+                onclick={closeChartModal}
                 aria-label="Close chart modal">×</button>
       </span>
     </div>
     <div class="cm-body">
       <div class="cm-chart-card">
         <ChartWorkspace
-          bind:loading={_loading}
           symbol={symbol}
           exchange={exchange}
           mode={mode}
-          compact={false}
+          compact={true}
           showHeader={false}
+          bind:loading={_loading}
         />
       </div>
     </div>

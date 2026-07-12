@@ -11,9 +11,8 @@
    */
 
   import { getContext, onMount, onDestroy } from 'svelte';
-  import { executionMode, openActivityModal, orderTicketModal, chartModalTrigger, closeOrderTicketModal, closeChartModalTrigger } from '$lib/stores';
+  import { executionMode, openActivityModal, orderTicketModal, closeOrderTicketModal, openChartModal } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
-  import ChartModal from '$lib/ChartModal.svelte';
   import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   // Symbol-resolver imports retired — operators pick tradeable
@@ -96,7 +95,8 @@
 
   // ── Internal modal state ──────────────────────────────────────────────
   let _orderOpen = $state(false);
-  let _chartOpen = $state(false);
+  // _chartOpen lifted to the global chartModal store (same as _logOpen →
+  // activityModal). ChartModal is now mounted once in (algo)/+layout.svelte.
   // _logOpen lifted to the global activityModal store — the modal is
   // now mounted once in (algo)/+layout.svelte so multiple opener
   // surfaces (this button, the navbar broker-status chip) don't end
@@ -112,12 +112,8 @@
   let _orderPrefill = $state(null);
 
   // ── Global keyboard-shortcut bridge ────────────────────────────────
-  // `t` (trade) → order ticket. `k` (kline) → chart modal.
-  // Both stores are written by the layout's _onGlobalKeydown; we
-  // react here because PageHeaderActions owns the modal render trees.
-  // Subscriptions use onDestroy cleanup to prevent listener leaks.
+  // `t` (trade) → order ticket. `k` (kline) → chart modal (now via store).
   let _unsubOrder = /** @type {(() => void) | null} */ (null);
-  let _unsubChart = /** @type {(() => void) | null} */ (null);
   onMount(() => {
     _unsubOrder = orderTicketModal.subscribe((v) => {
       if (v.open) {
@@ -126,14 +122,10 @@
         closeOrderTicketModal();
       }
     });
-    _unsubChart = chartModalTrigger.subscribe((v) => {
-      if (v.open) { _openChart(); closeChartModalTrigger(); }
-    });
   });
-  onDestroy(() => { _unsubOrder?.(); _unsubChart?.(); });
+  onDestroy(() => { _unsubOrder?.(); });
 
   async function _openOrder(/** @type {{ fromStore?: boolean }} */ opts = {}) {
-    _chartOpen = false;
     // When called directly by the header button (not from the store path),
     // clear any stale prefill so the modal opens as a blank ticket.
     if (!opts.fromStore) _orderPrefill = null;
@@ -149,20 +141,14 @@
   }
 
   async function _openChart() {
-    // Always open the ChartModal inline — the modal carries its own
-    // symbol search + pinned-dropdown so the operator can pick any
-    // symbol from inside. Same default-symbol wait as _openOrder so
-    // the chart opens against the right anchor on first invoke.
-    _orderOpen = false;
     if (!_accountsReady) {
       try { await loadAccounts(); } catch (_) { /* open anyway */ }
     }
-    _chartOpen = true;
+    openChartModal(_effectiveSymbol, _effectiveExchange);
   }
 
   function _openLog() {
     _orderOpen = false;
-    _chartOpen = false;
     openActivityModal();
   }
 </script>
@@ -259,18 +245,10 @@
   />
 {/if}
 
-{#if _chartOpen}
-  <ChartModal
-    symbol={_effectiveSymbol}
-    exchange={_effectiveExchange}
-    onClose={() => { _chartOpen = false; }}
-  />
-{/if}
-
-<!-- ActivityLogModal is mounted once at the (algo) layout level —
-     consuming the activityModal store — so this component no longer
-     needs its own copy. _openLog() above writes to the store; the
-     layout's mount opens. -->
+<!-- ChartModal and ActivityLogModal are mounted once at the (algo) layout
+     level — consuming chartModal/activityModal stores — so this component
+     no longer needs its own copies. _openChart() and _openLog() above
+     write to the stores; the layout's mount opens. -->
 
 
 <style>

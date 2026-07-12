@@ -1069,20 +1069,22 @@ export function closeOrderTicketModal() {
 }
 
 // ── Chart modal control ──────────────────────────────────────────────
-// Keyboard shortcut `k` (kline) writes to this store; PageHeaderActions
-// subscribes and calls _openChart(). Shape: { open: bool }
-export const chartModalTrigger = writable(
-  /** @type {{ open: boolean }} */
-  ({ open: false })
+// Mounted once in (algo)/+layout.svelte (same as ActivityLogModal).
+// `k` keyboard shortcut + PageHeaderActions chart button both call
+// openChartModal(); closeChartModal() is passed as onClose prop.
+// Shape: { open: bool, symbol: string, exchange: string }
+export const chartModal = writable(
+  /** @type {{ open: boolean, symbol: string, exchange: string }} */
+  ({ open: false, symbol: '', exchange: '' })
 );
 
-/** Open the chart modal from any context (e.g. keyboard `k`). */
-export function openChartModalTrigger() {
-  chartModalTrigger.set({ open: true });
+/** Open the chart modal, optionally with a pre-selected symbol. */
+export function openChartModal(symbol = '', exchange = '') {
+  chartModal.set({ open: true, symbol, exchange });
 }
-/** Close the chart modal trigger store (after component has consumed it). */
-export function closeChartModalTrigger() {
-  chartModalTrigger.set({ open: false });
+/** Close the chart modal. */
+export function closeChartModal() {
+  chartModal.update((s) => ({ ...s, open: false }));
 }
 
 // ── Connection-status store ──────────────────────────────────────────
