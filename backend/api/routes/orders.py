@@ -472,6 +472,199 @@ def _postback_broadcast_fanout(
         logger.warning(f"postback fan-out failed: {_be}")
 
 
+# ── Controller-level helpers (_rco_*) ─────────────────────────────────────────
+# Extracted from D-grade controller methods to reduce cyclomatic complexity.
+
+async def _rco_kill_paper_mode(row) -> str:
+    """Cancel a paper-mode chase row via the engine's canonical cancel path.
+    Returns an error string on failure, empty string on success."""
+    try:
+        from backend.api.algo.paper import get_prod_paper_engine
+        eng = get_prod_paper_engine()
+        cancelled = eng.cancel_paper_order(row.id)
+        if not cancelled:
+            return "paper engine no longer tracking"
+        return ""
+    except Exception as e:
+        return f"paper cancel failed: {e}"
+
+
+async def _rco_kill_live_mode(row) -> str:
+    """Cancel a live-mode chase row at the broker. Returns error string on
+    failure, empty string on success. Marks the broker_order_id as killed
+    before the broker call so the chase loop sees the flag even if a poll
+    lands between cancel and DB mark."""
+    from backend.brokers import get_broker
+    if not str(row.account or "").strip():
+        return "no account on row"
+    if not (row.broker_order_id or "").strip():
+        return "no broker_order_id on row"
+    try:
+        broker = get_broker(str(row.account))
+    except Exception as _ge:
+        return f"broker not loaded for {row.account}: {_ge}"
+    try:
+        from backend.api.algo.chase import mark_killed
+        mark_killed(str(row.broker_order_id))
+    except Exception:
+        pass
+    try:
+        await asyncio.to_thread(
+            broker.cancel_order,
+            str(row.broker_order_id),
+            variety="regular",
+        )
+        return ""
+    except Exception as e:
+        return f"broker cancel failed: {e}"
+
+
+async def _rco_reconcile_account(
+    acct: str, acct_rows: list, _attach_queue: list,
+) -> tuple[int, int]:
+    """Reconcile one account's OPEN live rows against the broker order book.
+    Returns (updated, missing) delta counts. Appends FILLED rows to
+    _attach_queue for post-commit template-attach dispatch."""
+    from backend.brokers import get_broker
+    from datetime import datetime, timezone
+
+    _KITE_TO_ALGO = {
+        "COMPLETE":  "FILLED",
+        "CANCELLED": "CANCELLED",
+        "REJECTED":  "REJECTED",
+        "EXPIRED":   "UNFILLED",
+    }
+    try:
+        broker = get_broker(acct)
+    except Exception as e:
+        logger.warning(f"reconcile: get_broker({acct}) failed: {e}")
+        return 0, 0
+    try:
+        broker_orders = await asyncio.to_thread(broker.orders)
+    except Exception as e:
+        logger.warning(f"reconcile: broker.orders() for {acct} failed: {e}")
+        return 0, 0
+
+    by_id = {str(o.get("order_id")): o for o in (broker_orders or [])}
+    updated = 0
+    missing = 0
+    for r in acct_rows:
+        bid = str(r.broker_order_id or "")
+        if not bid:
+            continue
+        bo = by_id.get(bid)
+        if bo is None:
+            r.status = "UNFILLED"
+            r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
+            missing += 1
+            continue
+        kite_status = str(bo.get("status") or "").upper()
+        new_status = _KITE_TO_ALGO.get(kite_status)
+        if new_status and r.status != new_status:
+            r.status = new_status
+            if new_status == "FILLED":
+                try:
+                    ap = bo.get("average_price") or bo.get("price")
+                    if ap is not None:
+                        r.fill_price = float(ap)
+                    r.filled_at = datetime.now(timezone.utc)
+                except (TypeError, ValueError):
+                    pass
+                _attach_queue.append(r)
+            updated += 1
+    return updated, missing
+
+
+def _rco_parse_preflight_body(body: dict) -> tuple:
+    """Parse and coerce the raw JSON body for `preflight_order`.
+    Returns (account, exchange, tradingsymbol, quantity, order_type,
+    product, variety, side, price, trigger_price, paired_legs)."""
+    account       = str(body.get("account") or "").strip()
+    exchange      = str(body.get("exchange") or "NFO").strip().upper()
+    tradingsymbol = str(body.get("tradingsymbol") or "").strip().upper()
+    quantity      = int(body.get("quantity") or 0)
+    order_type    = str(body.get("order_type") or "LIMIT").strip().upper()
+    product       = str(body.get("product") or "NRML").strip().upper()
+    variety       = str(body.get("variety") or "regular").strip().lower()
+    side          = str(body.get("side") or body.get("transaction_type") or "BUY").strip().upper()
+    price         = float(body.get("price") or 0)
+    trigger_price = float(body.get("trigger_price") or 0)
+    paired_legs   = body.get("paired_legs") or []
+    if not isinstance(paired_legs, list):
+        paired_legs = []
+    return (account, exchange, tradingsymbol, quantity, order_type,
+            product, variety, side, price, trigger_price, paired_legs)
+
+
+def _rco_validate_preflight_params(
+    account: str, tradingsymbol: str, quantity: int, exchange: str, side: str,
+) -> None:
+    """Validate required fields for preflight_order. Raises HTTPException on failure."""
+    if not account:
+        raise HTTPException(status_code=400, detail="account is required")
+    if not tradingsymbol:
+        raise HTTPException(status_code=400, detail="tradingsymbol is required")
+    if quantity <= 0:
+        raise HTTPException(status_code=400, detail="quantity must be > 0")
+    if exchange not in _EXCHANGES:
+        raise HTTPException(status_code=400,
+            detail=f"exchange must be one of {sorted(_EXCHANGES)}")
+    if side not in _TXN_TYPES:
+        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+
+
+def _rco_apply_reconcile_status(
+    r,
+    bo: Optional[dict],
+    kite_status: Optional[str],
+    target: Optional[str],
+) -> tuple[bool, str, bool]:
+    """Apply the broker status onto a single AlgoOrder row.
+
+    Returns (updated, note, attach_after_commit).
+    `attach_after_commit` is True when the row was just flipped to FILLED
+    and has a template that should be fired post-commit.
+    """
+    from datetime import datetime, timezone
+
+    updated = False
+    note = ""
+    attach_after_commit = False
+
+    if r is None:
+        if bo is None:
+            note = f"broker has no order (no algo row to update)"
+        else:
+            note = f"broker status={kite_status} (no algo row to update)"
+    elif bo is None:
+        if r.status == "OPEN":
+            r.status = "UNFILLED"
+            r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
+            updated = True
+            note = "broker no longer carries order_id"
+        else:
+            note = "broker has no order and algo row already terminal"
+    else:
+        if target and r.status != target:
+            r.status = target
+            if target == "FILLED" and bo.get("average_price"):
+                try:
+                    r.fill_price = float(bo["average_price"])
+                    r.filled_at = datetime.now(timezone.utc)
+                except Exception:
+                    pass
+                attach_after_commit = True
+            r.detail = (r.detail or "") + f" [reconciled → {target}]"
+            updated = True
+            note = f"broker status={kite_status} → {target}"
+        elif target and r.status == target:
+            note = f"already {target}"
+        else:
+            note = f"broker status={kite_status} (no algo mapping)"
+
+    return updated, note, attach_after_commit
+
+
 class OrdersController(Controller):
     path = "/api/orders"
     guards = [auth_or_demo_guard]
@@ -655,8 +848,8 @@ class OrdersController(Controller):
           via _safe_update_algo_order_cancel.
         - Live: call broker.cancel_order(variety, broker_order_id).
         - Shadow: just flip the row's status (nothing real to cancel).
-        Sets AlgoOrder.status='CANCELLED' and writes a 'killed' event so
-        the timeline reflects the operator action.
+        Sets AlgoOrder.status='CANCELLED' (or CANCEL_FAILED on error) and
+        writes a 'killed' event so the timeline reflects the operator action.
         """
         from sqlalchemy import select as _sql_select
         from datetime import datetime, timezone
@@ -674,76 +867,17 @@ class OrdersController(Controller):
                 return {"ok": True, "already_terminal": True, "status": row.status}
 
             mode = (row.mode or "").lower()
-            err_msg = ""
-
             if mode == "paper":
-                try:
-                    from backend.api.algo.paper import get_prod_paper_engine
-                    eng = get_prod_paper_engine()
-                    # Delegate to the engine's canonical cancel path — it writes
-                    # the AlgoOrderEvent(kind='cancel') row and flips the DB row
-                    # to CANCELLED via _safe_update_algo_order_cancel, preventing
-                    # a race with the engine's concurrent step() tick.
-                    cancelled = eng.cancel_paper_order(row.id)
-                    if not cancelled:
-                        err_msg = "paper engine no longer tracking"
-                except Exception as e:
-                    err_msg = f"paper cancel failed: {e}"
-
+                err_msg = await _rco_kill_paper_mode(row)
             elif mode == "live":
-                try:
-                    # Use the broker registry — Connections.conn[account]
-                    # holds the raw KiteConnection (or vendor connection
-                    # object) which does NOT expose cancel_order. The
-                    # vendor-agnostic Broker adapter from get_broker()
-                    # is what every other order-mutating path uses.
-                    # Earlier this called Connections().conn.get(account)
-                    # directly and silently failed every kill on prod with
-                    # "'KiteConnection' object has no attribute 'cancel_order'".
-                    from backend.brokers import get_broker
-                    if not str(row.account or "").strip():
-                        err_msg = "no account on row"
-                    elif not (row.broker_order_id or "").strip():
-                        err_msg = "no broker_order_id on row"
-                    else:
-                        try:
-                            broker = get_broker(str(row.account))
-                        except Exception as _ge:
-                            broker = None
-                            err_msg = f"broker not loaded for {row.account}: {_ge}"
-                        if broker is not None:
-                            # Mark BEFORE the broker call so the chase
-                            # loop sees the kill flag even if its 20-s
-                            # poll lands between cancel and mark. The
-                            # CANCELLED-handler in chase_order checks
-                            # is_killed(current_order_id) and exits
-                            # cleanly instead of re-placing.
-                            try:
-                                from backend.api.algo.chase import mark_killed
-                                mark_killed(str(row.broker_order_id))
-                            except Exception:
-                                pass
-                            # ChaseEngine + every other live-cancel path
-                            # passes order_id positionally then variety
-                            # kwarg — match that convention so adapters
-                            # don't double-bind 'order_id'.
-                            await asyncio.to_thread(
-                                broker.cancel_order,
-                                str(row.broker_order_id),
-                                variety="regular",
-                            )
-                except Exception as e:
-                    err_msg = f"broker cancel failed: {e}"
+                err_msg = await _rco_kill_live_mode(row)
+            else:
+                err_msg = ""
 
-            # Audit fix: only commit CANCELLED to the DB when the
-            # broker cancel actually succeeded. Pre-fix, a broker-side
-            # failure (network blip, "order not found" race with a
-            # post-postback delete, vendor-specific error) still
-            # flipped the row to CANCELLED — operator's UI claimed the
-            # order was killed while the exchange still carried the
-            # live position. CANCEL_FAILED keeps the row visible in
-            # the chase grid with a clear surface for the operator to
-            # retry or reconcile.
+            # Audit fix: only commit CANCELLED when the broker cancel
+            # actually succeeded. CANCEL_FAILED keeps the row visible in
+            # the chase grid with a clear surface for the operator to retry
+            # or reconcile.
             if err_msg:
                 row.status = "CANCEL_FAILED"
                 row.detail = ((row.detail or "")[:200]
@@ -884,15 +1018,6 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
-        from backend.brokers import get_broker
-        from datetime import datetime, timezone
-
-        _KITE_TO_ALGO = {
-            "COMPLETE":  "FILLED",
-            "CANCELLED": "CANCELLED",
-            "REJECTED":  "REJECTED",
-            "EXPIRED":   "UNFILLED",
-        }
 
         # Pull every live OPEN algo_orders row.
         async with async_session() as s:
@@ -914,71 +1039,22 @@ class OrdersController(Controller):
             updated = 0
             missing = 0
             # Audit fix — collect rows that need template attach AFTER
-            # commit instead of firing inline. The attach pipeline opens
-            # its own session and reads the row by id; if we call inside
-            # this loop, the in-memory mutations (status=FILLED,
-            # fill_price set) haven't committed yet so the attach reads
-            # the pre-commit state. Now ordering is: mutate in-memory →
-            # commit → fire attach → attach reads committed FILLED state.
+            # commit so the attach pipeline reads the committed FILLED
+            # state rather than the in-memory pre-commit mutation.
             _attach_queue: list = []
 
             for acct, acct_rows in by_acct.items():
-                # Route via the broker registry — Connections.conn.get()
-                # returned the raw KiteConnection wrapper which has no
-                # .orders() method, so every reconcile silently failed
-                # at the broker and the operator's "Reconcile" click did
-                # nothing (the GOLDM 146000CE stayed OPEN even after
-                # filling at Kite). Same KiteConnection bug fixed in
-                # kill_chase (commit 41133e16).
-                try:
-                    broker = get_broker(acct)
-                except Exception as e:
-                    logger.warning(f"reconcile: get_broker({acct}) failed: {e}")
-                    continue
-                try:
-                    broker_orders = await asyncio.to_thread(broker.orders)
-                except Exception as e:
-                    logger.warning(f"reconcile: broker.orders() for {acct} failed: {e}")
-                    continue
-                by_id = {str(o.get("order_id")): o for o in (broker_orders or [])}
-
-                for r in acct_rows:
-                    bid = str(r.broker_order_id or "")
-                    if not bid:
-                        continue
-                    bo = by_id.get(bid)
-                    if bo is None:
-                        # Broker doesn't carry this order any more.
-                        r.status = "UNFILLED"
-                        r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
-                        missing += 1
-                        continue
-                    kite_status = str(bo.get("status") or "").upper()
-                    new_status = _KITE_TO_ALGO.get(kite_status)
-                    if new_status and r.status != new_status:
-                        r.status = new_status
-                        if new_status == "FILLED":
-                            try:
-                                ap = bo.get("average_price") or bo.get("price")
-                                if ap is not None:
-                                    r.fill_price = float(ap)
-                                r.filled_at = datetime.now(timezone.utc)
-                            except (TypeError, ValueError):
-                                pass
-                            # Sprint A — missed postback recovered via
-                            # reconcile must still fire the template
-                            # attach. Pre-fix, a templated row reconciled
-                            # to FILLED silently lost its TP/SL bracket.
-                            # Audit fix — defer attach to AFTER commit.
-                            _attach_queue.append(r)
-                        updated += 1
+                _upd, _miss = await _rco_reconcile_account(
+                    acct, acct_rows, _attach_queue,
+                )
+                updated += _upd
+                missing += _miss
 
             await s.commit()
             if updated or missing:
                 invalidate("orders")
-            # Fire template attach AFTER commit so the new session opened
-            # inside `_fire_template_attach_on_fill` reads the committed
-            # FILLED state, not the pre-commit OPEN state.
+            # Fire template attach AFTER commit so the new session reads
+            # the committed FILLED state.
             for _r in _attach_queue:
                 _maybe_fire_template_attach_for_reconcile(_r)
 
@@ -1005,7 +1081,6 @@ class OrdersController(Controller):
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
         from backend.brokers import get_broker
-        from datetime import datetime, timezone
 
         _KITE_TO_ALGO = {
             "COMPLETE":  "FILLED",
@@ -1018,9 +1093,8 @@ class OrdersController(Controller):
         if not acct:
             raise HTTPException(status_code=400, detail="account required")
 
-        # Same broker-registry routing as reconcile_algo_orders /
-        # kill_chase — Connections().conn.get(acct) returns the raw
-        # KiteConnection wrapper which has no .orders() method.
+        # Route via broker registry (not raw Connections.conn) — same fix
+        # as kill_chase / reconcile_algo_orders.
         try:
             broker = get_broker(acct)
         except Exception as e:
@@ -1038,56 +1112,16 @@ class OrdersController(Controller):
         kite_status = str(bo.get("status") or "").upper() if bo else None
         target = _KITE_TO_ALGO.get(kite_status) if kite_status else None
 
-        _attach_after_commit = False
         async with async_session() as s:
             r = (await s.execute(
                 _sql_select(AlgoOrder).where(
                     AlgoOrder.broker_order_id == str(broker_order_id),
                 )
             )).scalars().first()
-            updated = False
-            note = ""
 
-            if r is None:
-                if bo is None:
-                    note = f"broker has no order {broker_order_id}"
-                else:
-                    note = f"broker status={kite_status} (no algo row to update)"
-            elif bo is None:
-                if r.status == "OPEN":
-                    r.status = "UNFILLED"
-                    r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
-                    updated = True
-                    note = "broker no longer carries order_id"
-                else:
-                    note = "broker has no order and algo row already terminal"
-            else:
-                if target and r.status != target:
-                    r.status = target
-                    if target == "FILLED" and bo.get("average_price"):
-                        try:
-                            r.fill_price = float(bo["average_price"])
-                            r.filled_at = datetime.now(timezone.utc)
-                        except Exception:
-                            pass
-                        # Audit fix (C-4) — defer template attach to
-                        # AFTER commit. Pre-fix the attach pipeline
-                        # opened its own session and read the row by id
-                        # WHILE the outer session still held the row at
-                        # status=OPEN in committed state. GTT sizes were
-                        # computed from pre-commit in-memory mutation;
-                        # if the outer commit failed after GTTs landed
-                        # at broker, no cleanup. reconcile_algo_orders
-                        # was already fixed via _attach_queue (commit
-                        # 257c1ed1); this single-order path was missed.
-                        _attach_after_commit = True
-                    r.detail = (r.detail or "") + f" [reconciled → {target}]"
-                    updated = True
-                    note = f"broker status={kite_status} → {target}"
-                elif target and r.status == target:
-                    note = f"already {target}"
-                else:
-                    note = f"broker status={kite_status} (no algo mapping)"
+            updated, note, _attach_after_commit = _rco_apply_reconcile_status(
+                r, bo, kite_status, target,
+            )
 
             if updated:
                 await s.commit()
@@ -1218,7 +1252,6 @@ class OrdersController(Controller):
         Gated by jwt_guard (admin) — demo callers see 401; this endpoint
         intentionally never proxies to broker on demo sessions.
         """
-        import msgspec as _ms
         from backend.api.algo.actions import run_preflight
 
         if getattr(request.state, "is_demo", False):
@@ -1230,36 +1263,11 @@ class OrdersController(Controller):
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid JSON body")
 
-        account       = str(body.get("account") or "").strip()
-        exchange      = str(body.get("exchange") or "NFO").strip().upper()
-        tradingsymbol = str(body.get("tradingsymbol") or "").strip().upper()
-        quantity      = int(body.get("quantity") or 0)
-        order_type    = str(body.get("order_type") or "LIMIT").strip().upper()
-        product       = str(body.get("product") or "NRML").strip().upper()
-        variety       = str(body.get("variety") or "regular").strip().lower()
-        side          = str(body.get("side") or body.get("transaction_type") or "BUY").strip().upper()
-        price         = float(body.get("price") or 0)
-        trigger_price = float(body.get("trigger_price") or 0)
-        # Optional paired legs — typically the template's auto-wing for
-        # a SELL option. Factored into basket_order_margins so the
-        # "Required" number reads as the bracketed-strategy margin,
-        # not the naked-short margin. Frontend pipes this in only when
-        # the preview plan resolved a wing successfully.
-        paired_legs   = body.get("paired_legs") or []
-        if not isinstance(paired_legs, list):
-            paired_legs = []
+        (account, exchange, tradingsymbol, quantity, order_type,
+         product, variety, side, price, trigger_price,
+         paired_legs) = _rco_parse_preflight_body(body)
 
-        if not account:
-            raise HTTPException(status_code=400, detail="account is required")
-        if not tradingsymbol:
-            raise HTTPException(status_code=400, detail="tradingsymbol is required")
-        if quantity <= 0:
-            raise HTTPException(status_code=400, detail="quantity must be > 0")
-        if exchange not in _EXCHANGES:
-            raise HTTPException(status_code=400,
-                detail=f"exchange must be one of {sorted(_EXCHANGES)}")
-        if side not in _TXN_TYPES:
-            raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+        _rco_validate_preflight_params(account, tradingsymbol, quantity, exchange, side)
 
         result = await run_preflight(account, {
             "exchange":         exchange,
