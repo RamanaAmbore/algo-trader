@@ -33,6 +33,7 @@
   import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, visibleInterval, postHibernationRefiring } from '$lib/stores';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
+  import { bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { onMount, onDestroy, untrack } from 'svelte';
 
@@ -75,6 +76,12 @@
   let _pulseTimer = null;
   /** @type {(() => void) | null} */
   let _pulseUnsub = null;
+  // Poll-pulse — slow slate halo fired on every background broker-data poll
+  // (positions, holdings, funds, margins). Fires regardless of market hours
+  // so the operator can see that non-ticker data is still refreshing when
+  // both markets are closed. Distinct from the fast sky-blue tick-pulse:
+  // 1.5s duration, slate palette, no SVG rotation (icon stays still).
+  let _pollPulseClass = $state(/** @type {'' | 'rf-poll-a' | 'rf-poll-b'} */ (''));
 
   // Post-hibernation refire state — true while _exitHibernation() is running
   // its subscriber flush. Causes the button to spin via _showSpinning so the
@@ -207,13 +214,27 @@
   const _refireOnly = $derived(_refiring && !loading);
 
   // Belt-and-suspenders: when spinner engages (via either source), clear any
-  // residual tick-pulse class so the in-flight tick animation cannot
-  // override the spin animation via cascade. Tracks the combined state
-  // and only writes when the value actually changes (no chain re-fires).
+  // residual tick-pulse or poll-pulse class so neither animation can
+  // override the spin animation via cascade.
   $effect(() => {
-    if (_showSpinning && _tickPulseClass !== '') {
-      untrack(() => { _tickPulseClass = ''; });
+    if (_showSpinning) {
+      untrack(() => {
+        if (_tickPulseClass !== '') _tickPulseClass = '';
+        if (_pollPulseClass !== '') _pollPulseClass = '';
+      });
     }
+  });
+
+  // Poll-pulse — fires on every bookPollerTick (background position/holdings/
+  // funds/margin poll, ~5 min cadence). Always active: during market hours the
+  // slow slate halo sits behind the fast sky-blue tick-pulse; during closed
+  // hours it's the only active signal, showing that broker data still refreshes.
+  $effect(() => {
+    void bookPollerTick.value;
+    if (_showSpinning) return;
+    untrack(() => {
+      _pollPulseClass = _pollPulseClass === 'rf-poll-a' ? 'rf-poll-b' : 'rf-poll-a';
+    });
   });
 
   // Post-loading cooldown — after the spinner stops (loading true → false),
@@ -419,7 +440,7 @@
 <div class="rf-wrap">
 <button
   type="button"
-  class="rf-btn {_mktClass} {_tickPulseClass}"
+  class="rf-btn {_mktClass} {_tickPulseClass} {_pollPulseClass}"
   class:rf-spinning={_showSpinning}
   class:rf-refiring={_refireOnly}
   onclick={(e) => { e.stopPropagation(); _handleClick(); }}
@@ -643,11 +664,36 @@
     from { transform: rotate(0deg); }
     to   { transform: rotate(180deg); }
   }
+  /* Poll-pulse — slow slate halo (1.5s) for background broker-data polls
+     (positions / holdings / funds / margins). Always fires regardless of
+     market hours: during open sessions the fast sky-blue tick-pulse dominates
+     visually; during closed hours this is the only active signal. No SVG
+     rotation — icon stays still so the operator reads "data refreshed"
+     (slower, calmer) vs "live ticks arriving" (fast rotation).
+     Distinct keyframe names (rf-poll-pulse-a / rf-poll-pulse-b) follow the
+     same a/b toggle pattern as the tick-pulse so the browser restarts the
+     animation on every poll cycle. */
+  .rf-btn.rf-poll-a {
+    animation: rf-poll-pulse-a 1.5s ease-out;
+  }
+  .rf-btn.rf-poll-b {
+    animation: rf-poll-pulse-b 1.5s ease-out;
+  }
+  @keyframes rf-poll-pulse-a {
+    0%   { box-shadow: 0 0 0 0 rgba(126, 151, 184, 0.50); }
+    100% { box-shadow: 0 0 10px 3px rgba(126, 151, 184, 0); }
+  }
+  @keyframes rf-poll-pulse-b {
+    0%   { box-shadow: 0 0 0 0 rgba(126, 151, 184, 0.50); }
+    100% { box-shadow: 0 0 10px 3px rgba(126, 151, 184, 0); }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .rf-btn.rf-spinning svg { animation: none; }
     .rf-btn.rf-spinning.rf-refiring svg { animation: none; }
     .rf-btn.rf-tick-a, .rf-btn.rf-tick-b { animation: none; }
     .rf-btn.rf-tick-a svg, .rf-btn.rf-tick-b svg { animation: none; }
+    .rf-btn.rf-poll-a, .rf-btn.rf-poll-b { animation: none; }
   }
 
   /* ── Market-closed confirmation popup ────────────────────────────
