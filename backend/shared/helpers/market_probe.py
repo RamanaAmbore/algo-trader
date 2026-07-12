@@ -114,6 +114,40 @@ def _parse_overrides() -> dict[str, list[str]]:
     return out
 
 
+def _parse_expiry(exp: Any) -> "date | None":
+    """Return a date from an expiry field (date object or ISO string), or None."""
+    from datetime import date as _date
+    if exp is None:
+        return None
+    if hasattr(exp, "date") and hasattr(exp, "isoformat") and "T" in str(exp):
+        return exp.date()
+    if isinstance(exp, _date):
+        return exp
+    try:
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(str(exp)[:10]).date()
+    except Exception:
+        return None
+
+
+def _group_active_futures(
+    instruments: list[dict], today: Any,
+) -> dict[str, list[tuple]]:
+    """Group active (unexpired) MCX FUT instruments by underlying name → [(expiry, ts)]."""
+    by_name: dict[str, list[tuple]] = {}
+    for i in instruments or []:
+        if (i.get("instrument_type") or "").upper() != "FUT":
+            continue
+        exp_date = _parse_expiry(i.get("expiry"))
+        if exp_date is None or exp_date < today:
+            continue
+        name = (i.get("name") or "").upper()
+        if not name:
+            continue
+        by_name.setdefault(name, []).append((exp_date, i.get("tradingsymbol") or ""))
+    return by_name
+
+
 def _discover_mcx_bellwethers(broker: Any) -> list[str]:
     """Pull the live MCX instruments dump and pick the nearest
     unexpired futures contract for each liquid commodity.
@@ -139,29 +173,7 @@ def _discover_mcx_bellwethers(broker: Any) -> list[str]:
         logger.debug(f"market_probe: MCX instruments fetch failed: {e}")
         return []
 
-    # Group active futures by underlying name, sorted by expiry asc.
-    by_name: dict[str, list[dict]] = {}
-    for i in instruments or []:
-        if (i.get("instrument_type") or "").upper() != "FUT":
-            continue
-        exp = i.get("expiry")
-        if not exp:
-            continue
-        # Tolerate both date objects and ISO strings.
-        if hasattr(exp, "date"):
-            exp_date = exp.date() if hasattr(exp, "isoformat") and "T" in str(exp) else exp
-        else:
-            try:
-                from datetime import datetime as _dt
-                exp_date = _dt.fromisoformat(str(exp)[:10]).date()
-            except Exception:
-                continue
-        if exp_date < today:
-            continue
-        name = (i.get("name") or "").upper()
-        if not name:
-            continue
-        by_name.setdefault(name, []).append((exp_date, i.get("tradingsymbol") or ""))
+    by_name = _group_active_futures(instruments, today)
 
     out: list[str] = []
     for name in _MCX_LIQUID_COMMODITIES:
@@ -201,6 +213,96 @@ def _ist_now() -> datetime:
     return timestamp_indian()
 
 
+def _probe_cache_get(exchange: str, now_ts: float) -> Optional[bool]:
+    """Return cached probe result if still fresh, else None."""
+    with _PROBE_LOCK:
+        cached = _PROBE_CACHE.get(exchange)
+        if cached and (now_ts - cached[0]) < _CACHE_TTL_SEC:
+            return cached[1]
+    return None
+
+
+def _probe_cache_put(exchange: str, now_ts: float, verdict: Optional[bool]) -> None:
+    """Store a probe result in the cache."""
+    with _PROBE_LOCK:
+        _PROBE_CACHE[exchange] = (now_ts, verdict)
+
+
+def _probe_via_broker_status(
+    exchange: str, now_ts: float,
+) -> Optional[bool]:
+    """Step 1: iterate broker adapters and return the first bool verdict."""
+    try:
+        from backend.brokers.registry import all_brokers
+        for broker_adapter in all_brokers():
+            try:
+                verdict = broker_adapter.market_status(exchange)
+            except Exception as e:
+                logger.debug(
+                    f"market_probe: {broker_adapter.broker_id} "
+                    f"market_status({exchange}) raised: {e}"
+                )
+                continue
+            if isinstance(verdict, bool):
+                logger.debug(
+                    f"market_probe: {broker_adapter.broker_id} reports "
+                    f"{exchange}={'open' if verdict else 'closed'}"
+                )
+                _probe_cache_put(exchange, now_ts, verdict)
+                return verdict
+    except Exception as e:
+        logger.debug(f"market_probe: broker iteration failed: {e}")
+    return None
+
+
+def _resolve_kite_and_broker(kite: Any) -> tuple[Any, Any]:
+    """Lazy-resolve a Kite handle + Broker adapter when caller passed kite=None."""
+    broker = None
+    if kite is not None:
+        return kite, broker
+    try:
+        from backend.brokers.connections import Connections
+        for acct, c in (Connections().conn or {}).items():
+            if not hasattr(c, "get_kite_conn"):
+                continue
+            try:
+                kite = c.get_kite_conn()
+                try:
+                    from backend.brokers.registry import get_broker
+                    broker = get_broker(acct)
+                except Exception:
+                    broker = None
+                break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return kite, broker
+
+
+def _probe_via_bellwether(
+    kite: Any, candidates: list[str], max_age_min: int,
+) -> bool:
+    """Step 2: check last_trade_time freshness for bellwether symbols."""
+    from backend.shared.helpers.date_time_utils import INDIAN_TIMEZONE
+    cutoff = _ist_now() - timedelta(minutes=max_age_min)
+    q = kite.quote(candidates)
+    for sym, row in (q or {}).items():
+        ltt = row.get("last_trade_time")
+        if ltt is None:
+            continue
+        if isinstance(ltt, str):
+            try:
+                ltt = datetime.fromisoformat(ltt)
+            except Exception:
+                continue
+        if ltt.tzinfo is None:
+            ltt = ltt.replace(tzinfo=INDIAN_TIMEZONE)
+        if ltt >= cutoff:
+            return True
+    return False
+
+
 def probe_market_active(exchange: str, kite: Any = None,
                         max_age_min: int = _STALE_THRESHOLD_MIN
                         ) -> Optional[bool]:
@@ -228,104 +330,34 @@ def probe_market_active(exchange: str, kite: Any = None,
     if not exchange:
         return None
 
-    # Cache hit?
     now_ts = time.monotonic()
-    with _PROBE_LOCK:
-        cached = _PROBE_CACHE.get(exchange)
-        if cached and (now_ts - cached[0]) < _CACHE_TTL_SEC:
-            return cached[1]
+    cached = _probe_cache_get(exchange, now_ts)
+    if cached is not None:
+        return cached
 
-    # ── Step 1: broker market-status API ──────────────────────────────
-    # Iterate brokers, ask each for an authoritative answer. ANY
-    # definitive True/False wins; None means the adapter doesn't
-    # implement the method or the call failed — try the next broker.
-    try:
-        from backend.brokers.registry import all_brokers
-        for broker_adapter in all_brokers():
-            try:
-                verdict = broker_adapter.market_status(exchange)
-            except Exception as e:
-                logger.debug(
-                    f"market_probe: {broker_adapter.broker_id} "
-                    f"market_status({exchange}) raised: {e}"
-                )
-                continue
-            if isinstance(verdict, bool):
-                logger.debug(
-                    f"market_probe: {broker_adapter.broker_id} reports "
-                    f"{exchange}={'open' if verdict else 'closed'}"
-                )
-                with _PROBE_LOCK:
-                    _PROBE_CACHE[exchange] = (now_ts, verdict)
-                return verdict
-    except Exception as e:
-        logger.debug(f"market_probe: broker iteration failed: {e}")
+    # Step 1: broker market-status API
+    verdict = _probe_via_broker_status(exchange, now_ts)
+    if verdict is not None:
+        return verdict
 
-    # ── Step 2: bellwether-quote probe (Kite fallback) ────────────────
-    # Lazy-resolve a Kite handle + a Broker adapter from Connections()
-    # / the broker registry when the caller didn't pass them. Quote
-    # access is shared across the operator's accounts; instruments
-    # are exposed via the Broker ABC.
-    broker = None
-    if kite is None:
-        try:
-            from backend.brokers.connections import Connections
-            for acct, c in (Connections().conn or {}).items():
-                if hasattr(c, "get_kite_conn"):
-                    try:
-                        kite = c.get_kite_conn()
-                        # Attach a Broker adapter for instruments-dump
-                        # lookups (used by MCX dynamic discovery).
-                        try:
-                            from backend.brokers.registry import get_broker
-                            broker = get_broker(acct)
-                        except Exception:
-                            broker = None
-                        break
-                    except Exception:
-                        continue
-        except Exception:
-            pass
+    # Step 2: bellwether-quote probe (Kite fallback)
+    kite, broker = _resolve_kite_and_broker(kite)
     if kite is None:
         return None
 
     candidates = _candidates(exchange, broker=broker)
     if not candidates:
-        with _PROBE_LOCK:
-            _PROBE_CACHE[exchange] = (now_ts, None)
+        _probe_cache_put(exchange, now_ts, None)
         return None
 
     try:
-        q = kite.quote(candidates)
+        active = _probe_via_bellwether(kite, candidates, max_age_min)
     except Exception as e:
         logger.debug(f"market_probe: kite.quote({exchange}) failed: {e}")
-        with _PROBE_LOCK:
-            _PROBE_CACHE[exchange] = (now_ts, None)
+        _probe_cache_put(exchange, now_ts, None)
         return None
 
-    cutoff = _ist_now() - timedelta(minutes=max_age_min)
-    active = False
-    for sym, row in (q or {}).items():
-        ltt = row.get("last_trade_time")
-        if ltt is None:
-            continue
-        if isinstance(ltt, str):
-            # Some SDK versions stringify timestamps. Best-effort parse.
-            try:
-                ltt = datetime.fromisoformat(ltt)
-            except Exception:
-                continue
-        if ltt.tzinfo is None:
-            # Kite returns naive IST timestamps; attach the IST tz so
-            # the cutoff comparison is sound.
-            from backend.shared.helpers.date_time_utils import INDIAN_TIMEZONE
-            ltt = ltt.replace(tzinfo=INDIAN_TIMEZONE)
-        if ltt >= cutoff:
-            active = True
-            break
-
-    with _PROBE_LOCK:
-        _PROBE_CACHE[exchange] = (now_ts, active)
+    _probe_cache_put(exchange, now_ts, active)
     return active
 
 

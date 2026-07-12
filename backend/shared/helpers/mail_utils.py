@@ -64,6 +64,37 @@ def _normalise_recipients(value) -> list[str]:
     return out
 
 
+def _email_build_message(
+    name: str, to_addrs: list[str], subject: str, html_body: str,
+    mail_from: str, mail_from_name: str,
+) -> MIMEMultipart:
+    """Build the MIMEMultipart message object (without attachments)."""
+    if len(to_addrs) == 1 and name:
+        to_header = formataddr((name, to_addrs[0]))
+    else:
+        to_header = ", ".join(to_addrs)
+    msg = MIMEMultipart()
+    msg["From"] = formataddr((mail_from_name, mail_from))
+    msg["To"] = to_header
+    msg["Reply-To"] = msg["From"]
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html_body, "html"))
+    return msg
+
+
+def _email_attach_files(
+    msg: MIMEMultipart, attachments: list | None,
+) -> None:
+    """Attach binary files to a MIMEMultipart message in place."""
+    for blob, filename, mime_type in (attachments or []):
+        main, _, sub = mime_type.partition("/")
+        part = MIMEBase(main or "application", sub or "octet-stream")
+        part.set_payload(blob)
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+        msg.attach(part)
+
+
 def send_email(name, email_id, subject, html_body, attachments=None):
     """
     Email one or more recipients with the operator's brand address
@@ -89,7 +120,6 @@ def send_email(name, email_id, subject, html_body, attachments=None):
     a header/envelope mismatch. Use `secrets.mail_skip_bcc_brand: True`
     to suppress the Bcc when the operator doesn't want a copy.
     """
-
     # Dev-idle suppression — same contract as _send_telegram. When
     # dev's engine is idle, no operator-facing alerts fire. Contact-form
     # submissions DO still send (they go via send_email but only from
@@ -101,67 +131,27 @@ def send_email(name, email_id, subject, html_body, attachments=None):
     except Exception:
         pass
 
-    smtp_server = secrets['smtp_server']
-    smtp_port = secrets['smtp_port']
-    smtp_user = secrets['smtp_user']
-    smtp_pass = secrets['smtp_pass']
+    smtp_server    = secrets['smtp_server']
+    smtp_port      = secrets['smtp_port']
+    smtp_user      = secrets['smtp_user']
+    smtp_pass      = secrets['smtp_pass']
     smtp_user_name = secrets.get('smtp_user_name', '')
 
-    # Sender shown to recipients — defaults to rambo@ramboq.com.
-    mail_from = secrets.get('mail_from') or DEFAULT_MAIL_FROM
+    mail_from      = secrets.get('mail_from') or DEFAULT_MAIL_FROM
     mail_from_name = secrets.get('mail_from_name') or smtp_user_name or DEFAULT_MAIL_FROM_NAME
 
-    # ── Recipients ────────────────────────────────────────────────────
-    # Normalise — caller may pass a single email, comma-separated string,
-    # or list. Whatever shape lands here becomes a clean list.
     to_addrs = _normalise_recipients(email_id)
     if not to_addrs:
         return False, "Email send error: no recipient address"
 
-    # Build the visible To header — keep the friendly name only when
-    # exactly one recipient; multi-recipient sends get a flat
-    # comma-separated address list (no per-address display name).
-    if len(to_addrs) == 1 and name:
-        to_header = formataddr((name, to_addrs[0]))
-    else:
-        to_header = ", ".join(to_addrs)
-
-    # Operator brand copy — Bcc not Cc so the recipient doesn't see the
-    # operator inbox in their headers. Opt-out via secrets.mail_skip_bcc_brand.
     skip_bcc_brand = bool(secrets.get('mail_skip_bcc_brand', False))
     bcc_brand = "" if skip_bcc_brand else mail_from
-    # Don't double-deliver if the recipient list already includes the
-    # brand address (case-insensitive).
     if bcc_brand and bcc_brand.lower() in {a.lower() for a in to_addrs}:
         bcc_brand = ""
 
-    # --- Build message ---
-    msg = MIMEMultipart()
-    msg["From"] = formataddr((mail_from_name, mail_from))
-    msg["To"] = to_header
-    msg["Reply-To"] = msg["From"]  # ensure replies route to the brand address
-    msg["Subject"] = subject
-    # Bcc is intentionally NOT added to msg headers — Bcc must stay
-    # blind. The address goes into the SMTP envelope only.
+    msg = _email_build_message(name, to_addrs, subject, html_body, mail_from, mail_from_name)
+    _email_attach_files(msg, attachments)
 
-    msg.attach(MIMEText(html_body, "html"))
-
-    for blob, filename, mime_type in (attachments or []):
-        # mime_type expected as "application/pdf" → maintype/subtype
-        main, _, sub = mime_type.partition("/")
-        part = MIMEBase(main or "application", sub or "octet-stream")
-        part.set_payload(blob)
-        encoders.encode_base64(part)
-        part.add_header(
-            "Content-Disposition", f'attachment; filename="{filename}"',
-        )
-        msg.attach(part)
-
-    # Final SMTP envelope recipients — the To addrs + the brand Bcc.
-    # This is what actually controls delivery; the headers are display
-    # only. Pre-fix the envelope was just the single `email_id` string,
-    # which meant: (a) Cc-header brand wasn't delivered; (b) any
-    # comma-separated input went out as one malformed address.
     envelope_to = list(to_addrs)
     if bcc_brand:
         envelope_to.append(bcc_brand)
@@ -171,18 +161,10 @@ def send_email(name, email_id, subject, html_body, attachments=None):
             with _IPv4SMTP(smtp_server, smtp_port) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_pass)
-                # Envelope sender = the authenticated smtp_user (no
-                # SMTP relay rejects this). The header-From carries the
-                # brand address mail_from; that's what recipients see
-                # in their inbox.
                 server.sendmail(smtp_user, envelope_to, msg.as_string())
             return True, '✅ Your message has been sent successfully!'
         else:
-            # Capability disabled — never log the body. The body of a
-            # verify-email or password-reset message contains a live
-            # one-time link; printing it to stdout (which is captured
-            # by the systemd journal + api_error_file) would leak that
-            # link to anyone with log access. Surface only metadata.
+            # Capability disabled — never log the body (contains live one-time links).
             logger.info(
                 f"Email suppressed (mail capability off): "
                 f"to={to_addrs} subject={subject!r}"
@@ -190,9 +172,6 @@ def send_email(name, email_id, subject, html_body, attachments=None):
             return True, "Non-prod mode only"
 
     except smtplib.SMTPRecipientsRefused as e:
-        # SMTP server rejected one or more recipients — surface which
-        # ones so the operator can diagnose. Hostinger returns this
-        # for invalid addresses inside a group expansion.
         refused = list(getattr(e, 'recipients', {}).keys()) or envelope_to
         err_msg = f"Email send error: recipients refused {refused}"
         logger.warning(err_msg)
