@@ -1118,6 +1118,14 @@
           </button>
         {/if}
 
+        <!-- About — first element in demo navbar so recruiters see it immediately -->
+        {#if isDemo}
+          <button onclick={() => _hireOpen = true} class="algo-nav-btn algo-hire-btn"
+                  title="Built by Ramana Ambore — engineering highlights + contact channels">
+            About
+          </button>
+        {/if}
+
         <!-- DEMO badge — session-state indicator (anonymous-on-prod),
              not a mode setting, so it stays separate from the mode chip. -->
         {#if isDemo}
@@ -1141,10 +1149,6 @@
           </span>
           <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
         {:else if isDemo}
-          <button onclick={() => _hireOpen = true} class="algo-nav-btn algo-hire-btn"
-                  title="Built by Ramana Ambore — engineering highlights + contact channels">
-            About
-          </button>
           <button onclick={() => goto('/signin')} class="algo-nav-btn algo-nav-btn-ghost">Sign In</button>
         {/if}
         <button onclick={() => goto('/about')} class="algo-pub-link">↙ Investor site</button>
