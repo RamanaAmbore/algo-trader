@@ -529,24 +529,31 @@
     // since the only way bands flip is positions adding/closing.
     const cps = candidatePositions;
     const expFilter = selectedExpiries;
-    // Spot resolution: SSE tick → batchQuote → strategy poll. Both reads
-    // are wrapped in untrack() so this derived re-fires only when
-    // candidatePositions changes, not on every SSE tick. See
-    // _resolveExpirySpot for full chain + strategy-mismatch guard.
-    const spot = untrack(() =>
-      _resolveExpirySpot(selectedUnderlying, strategy, _underlyingQuotes, getSnapshot)
-    );
+    // Per-underlying spot resolver — reads SSE snapshot → batchQuote → 0.
+    // Wrapped in untrack() so this derived re-fires only when candidatePositions
+    // changes, not on every SSE tick. Full-book expiry analysis needs a spot
+    // for every underlying in the book, not just selectedUnderlying.
+    const uq = untrack(() => _underlyingQuotes);
     const legA = untrack(() => legAnalyticsBySymbol);
     void expFilter;
     const empty = /** @type {{equity:any[], commodity:any[]}} */ ({ equity: [], commodity: [] });
-    if (!spot || !cps.length) return empty;
+    if (!cps.length) return empty;
+
+    const spotResolver = (/** @type {string} */ underlying) => {
+      const key = String(underlying || '').toUpperCase();
+      const v = Number(getSnapshot(key)?.ltp);
+      if (Number.isFinite(v) && v > 0) return v;
+      const bq = Number(uq[key]?.ltp);
+      if (Number.isFinite(bq) && bq > 0) return bq;
+      return 0;
+    };
 
     // annotateOptionCandidates + computeExpiryBands are pure helpers in
-    // derivativesMath.js. The untrack() wraps above keep the reactive
-    // dependency on candidatePositions only (not every spot tick).
+    // derivativesMath.js. The spotResolver function is called per-row so
+    // each underlying resolves its own spot independently.
     const annotated = annotateOptionCandidates({
       candidates: cps,
-      spot,
+      spot: spotResolver,
       expFilter,
       mcxUnderlyings: _MCX_UNDERLYINGS,
       legAnalytics: legA,
@@ -5601,6 +5608,11 @@
     display: grid;
     grid-template-columns: subgrid;
     grid-column: 1 / -1;
+    padding: 0.2rem 0.3rem;
+    align-items: center;
+    font-size: var(--fs-sm);
+    font-family: monospace;
+    font-variant-numeric: tabular-nums;
     font-weight: 700;
     /* Layered over opaque #1d2a44 base — sticky-pinned TOTAL row
        is fully opaque so scrolled rows behind it cannot bleed. */
@@ -5635,6 +5647,16 @@
   }
   /* cand-split-tag, cand-eq-tag, cand-proxy-tag, cand-row.cand-eq, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */
+  /* Right-align numeric cells in the TOTAL row — mirrors .cand-row > .num
+     in CandidateLegRow.svelte which is scoped and cannot reach this element. */
+  .cand-row.cand-row-total > .num {
+    text-align: right;
+    justify-self: end;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   /* Cell-level truncation for the header row's numeric cells. The same
      rule for .cand-row > .num lives in CandidateLegRow.svelte. */
   .cand-headrow > .num {
