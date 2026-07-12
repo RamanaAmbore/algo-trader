@@ -951,63 +951,16 @@ class DhanBroker(Broker):
                 f"returning {{}} for {len(symbols)} symbol(s): {_inst_err}"
             )
             return {}
-        seg_to_sids: dict[str, list[str]] = {}
-        # Reverse map: (seg, sid) → original quote key so the response
-        # round-trips into the Kite-style dict the caller expects.
-        sid_to_key: dict[tuple[str, str], str] = {}
-        for key in symbols:
-            if ":" not in str(key):
-                continue
-            ex_kite, ts = str(key).split(":", 1)
-            ts = ts.strip().upper()
-            ex_kite = ex_kite.strip().upper()
-            sid = _resolve_security_id(ts, ex_kite)
-            if not sid:
-                continue
-            seg = _EXCHANGE_TO_DHAN.get(ex_kite)
-            if not seg:
-                continue
-            seg_to_sids.setdefault(seg, []).append(sid)
-            sid_to_key[(seg, sid)] = key
+        seg_to_sids, sid_to_key = _resolve_dhan_ltp_symbols(symbols)
         if not seg_to_sids:
             return {}
-        # Single SDK call covers every segment in one batch. Dhan's
-        # response shape: {"data": {"NSE_EQ": {"<sid>": {"last_price":
-        # 2500.0, ...}}, ...}}. The SDK normalizes the wrapper but the
-        # per-row dict is what we need.
+        # Single SDK call covers every segment in one batch.
         try:
             resp = self._safe_call(lambda d: d.ohlc_data(securities=seg_to_sids))
         except Exception as e:
             logger.debug(f"DhanBroker.ltp ohlc_data failed: {e}")
             return {}
-        out: dict = {}
-        # Unwrap the outer envelope (status / data / remarks).
-        data = resp.get("data") if isinstance(resp, dict) else None
-        if not isinstance(data, dict):
-            logger.warning(
-                f"DhanBroker.ltp: ohlc_data returned unexpected shape "
-                f"(got {type(data).__name__}) for {len(symbols)} symbol(s) — returning {{}}"
-            )
-            return {}
-        for seg, by_sid in data.items():
-            if not isinstance(by_sid, dict):
-                continue
-            for sid, row in by_sid.items():
-                key = sid_to_key.get((str(seg), str(sid)))
-                if not key:
-                    continue
-                # Dhan returns last_price for OHLC rows. Fall back to
-                # ohlc.close → close → 0 to be defensive against SDK
-                # version drift.
-                lp = 0.0
-                if isinstance(row, dict):
-                    lp = float(row.get("last_price")
-                               or (row.get("ohlc") or {}).get("close")
-                               or row.get("close")
-                               or 0)
-                if lp > 0:
-                    out[key] = {"last_price": lp, "instrument_token": sid}
-        return out
+        return _parse_dhan_ohlc_response(resp, sid_to_key, len(symbols))
 
     def quote(self, symbols: list[str]) -> dict:
         """Empty dict — `quote()` is a richer shape than `ltp()`
@@ -1479,35 +1432,7 @@ class DhanBroker(Broker):
         rows = _unwrap(resp)
         if not isinstance(rows, list):
             rows = []
-        out: list[dict] = []
-        for r in rows:
-            flag = (r.get("orderFlag") or "SINGLE").upper()
-            ttype = "single" if flag == "SINGLE" else "two-leg"
-            seg = r.get("exchangeSegment") or ""
-            kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(seg, seg)
-            # Build trigger_values list from the response fields
-            t0 = float(r.get("triggerPrice") or r.get("trigger_Price") or 0)
-            t1 = float(r.get("triggerPrice1") or r.get("trigger_Price1") or 0)
-            trigger_values = [t0, t1] if ttype == "two-leg" else [t0]
-            out.append({
-                "gtt_id":       str(r.get("orderId") or r.get("order_id") or ""),
-                "status":       (r.get("orderStatus") or r.get("status") or "").lower(),
-                "trigger_type": ttype,
-                "tradingsymbol": r.get("tradingSymbol") or r.get("symbol") or "",
-                "exchange":     kite_exch,
-                "trigger_values": trigger_values,
-                "last_price":   float(r.get("lastTradedPrice") or 0),
-                "orders": [{
-                    "transaction_type": r.get("transactionType") or "SELL",
-                    "quantity":         int(r.get("quantity") or 0),
-                    "price":            float(r.get("price") or 0),
-                    "order_type":       r.get("orderType") or "LIMIT",
-                    "product":          r.get("productType") or "NRML",
-                }],
-                "created_at":   r.get("createTime") or "",
-                "_raw":         r,
-            })
-        return out
+        return [_normalise_dhan_gtt_row(r) for r in rows]
 
     # ── Qty translation ───────────────────────────────────────────────
 
@@ -1559,6 +1484,119 @@ def _unwrap(resp: Any) -> list[dict]:
         if isinstance(data, list):
             return data
     return []
+
+
+def _resolve_dhan_ltp_symbols(
+    symbols: list[str],
+) -> tuple[dict[str, list[str]], dict[tuple[str, str], str]]:
+    """Parse "EXCHANGE:TRADINGSYMBOL" quote keys and resolve to Dhan
+    security IDs.
+
+    Returns:
+        seg_to_sids  — {dhan_segment: [security_id, ...]}  for ohlc_data batch
+        sid_to_key   — {(segment, sid): original_quote_key} for response mapping
+    """
+    seg_to_sids: dict[str, list[str]] = {}
+    sid_to_key: dict[tuple[str, str], str] = {}
+    for key in symbols:
+        if ":" not in str(key):
+            continue
+        ex_kite, ts = str(key).split(":", 1)
+        ts = ts.strip().upper()
+        ex_kite = ex_kite.strip().upper()
+        sid = _resolve_security_id(ts, ex_kite)
+        if not sid:
+            continue
+        seg = _EXCHANGE_TO_DHAN.get(ex_kite)
+        if not seg:
+            continue
+        seg_to_sids.setdefault(seg, []).append(sid)
+        sid_to_key[(seg, sid)] = key
+    return seg_to_sids, sid_to_key
+
+
+def _parse_dhan_ohlc_response(
+    resp: Any,
+    sid_to_key: dict[tuple[str, str], str],
+    n_symbols: int,
+) -> dict:
+    """Unwrap a Dhan ohlc_data response and build the Kite-shape LTP map.
+
+    Response shape: {"data": {"NSE_EQ": {"<sid>": {"last_price": …}}}}
+    Falls back to ohlc.close → close → 0 for SDK version drift.
+    """
+    data = resp.get("data") if isinstance(resp, dict) else None
+    if not isinstance(data, dict):
+        logger.warning(
+            f"DhanBroker.ltp: ohlc_data returned unexpected shape "
+            f"(got {type(data).__name__}) for {n_symbols} symbol(s) — returning {{}}"
+        )
+        return {}
+    out: dict = {}
+    for seg, by_sid in data.items():
+        if not isinstance(by_sid, dict):
+            continue
+        for sid, row in by_sid.items():
+            key = sid_to_key.get((str(seg), str(sid)))
+            if not key:
+                continue
+            # Dhan returns last_price for OHLC rows. Fall back to
+            # ohlc.close → close → 0 to be defensive against SDK version drift.
+            lp = 0.0
+            if isinstance(row, dict):
+                lp = float(
+                    row.get("last_price")
+                    or (row.get("ohlc") or {}).get("close")
+                    or row.get("close")
+                    or 0
+                )
+            if lp > 0:
+                out[key] = {"last_price": lp, "instrument_token": sid}
+    return out
+
+
+def _dhan_gtt_trigger_type(r: dict) -> str:
+    """Map Dhan orderFlag to Kite trigger_type string."""
+    flag = (r.get("orderFlag") or "SINGLE").upper()
+    return "single" if flag == "SINGLE" else "two-leg"
+
+
+def _dhan_gtt_trigger_values(r: dict, ttype: str) -> list[float]:
+    """Build the trigger_values list for a Dhan Forever Order row."""
+    t0 = float(r.get("triggerPrice") or r.get("trigger_Price") or 0)
+    if ttype == "two-leg":
+        t1 = float(r.get("triggerPrice1") or r.get("trigger_Price1") or 0)
+        return [t0, t1]
+    return [t0]
+
+
+def _dhan_gtt_order_leg(r: dict) -> dict:
+    """Build the single-element `orders` list item for a Dhan GTT row."""
+    return {
+        "transaction_type": r.get("transactionType") or "SELL",
+        "quantity":         int(r.get("quantity") or 0),
+        "price":            float(r.get("price") or 0),
+        "order_type":       r.get("orderType") or "LIMIT",
+        "product":          r.get("productType") or "NRML",
+    }
+
+
+def _normalise_dhan_gtt_row(r: dict) -> dict:
+    """Normalise a single Dhan Forever Order row to Kite GTT shape."""
+    ttype = _dhan_gtt_trigger_type(r)
+    seg = r.get("exchangeSegment") or ""
+    return {
+        "gtt_id":         str(r.get("orderId") or r.get("order_id") or ""),
+        "status":         (r.get("orderStatus") or r.get("status") or "").lower(),
+        "trigger_type":   ttype,
+        "tradingsymbol":  r.get("tradingSymbol") or r.get("symbol") or "",
+        "exchange":       _DHAN_SEGMENT_TO_EXCHANGE.get(seg, seg),
+        "trigger_values": _dhan_gtt_trigger_values(r, ttype),
+        "last_price":     float(r.get("lastTradedPrice") or 0),
+        "orders":         [_dhan_gtt_order_leg(r)],
+        "created_at":     r.get("createTime") or "",
+        "_raw":           r,
+    }
 
 
 def _normalise_holdings(resp: Any) -> list[dict]:

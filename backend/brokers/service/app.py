@@ -232,6 +232,97 @@ async def _start_kite_ticker(app: Litestar) -> None:
     _loop.create_task(_ticker_watchdog())
 
 
+def _watchdog_threshold() -> int:
+    """Unhealthy-cycle threshold before a failover swap is attempted.
+    Read each iteration so /admin/settings edits take effect without restart.
+    Minimum 1: 0 would swap on every cycle including transient blips.
+    """
+    from backend.shared.helpers.settings import get_int
+    return max(1, get_int("kite_ticker.unhealthy_threshold", 2))
+
+
+def _watchdog_cooldown_s() -> float:
+    """Minimum seconds between consecutive account swaps."""
+    from backend.shared.helpers.settings import get_int
+    return float(max(30, get_int("kite_ticker.swap_cooldown_seconds", 300)))
+
+
+def _watchdog_slowed_interval_s() -> float:
+    """Watchdog sleep cadence when all accounts are exhausted."""
+    from backend.shared.helpers.settings import get_int
+    return float(max(30, get_int("kite_ticker.all_down_watchdog_seconds", 60)))
+
+
+def _attempt_failover_swap(ticker, log, cooldown_s: float, slowed_s: float) -> bool:
+    """Phase 4 of the watchdog state machine: try to swap to a healthier
+    Kite account.
+
+    Returns True when the caller should set unavailable_mode=False (swap
+    succeeded or swap was suppressed by cooldown — i.e. "not yet all-down").
+    Returns False when no eligible account was found (caller should set
+    unavailable_mode=True).
+
+    Side-effects: calls ticker.restart_with_account, writes audit row.
+    Does NOT call sys.exit — reactor-dead exit remains in the loop body.
+    """
+    # Ping-pong prevention: enforce a minimum window between consecutive swaps.
+    if ticker.swaps_since(cooldown_s) > 0:
+        last_swap = ticker.last_swap_at()
+        since_last = (time.time() - last_swap) if last_swap else 0.0
+        log.info(
+            "ticker_watchdog: swap suppressed by cooldown (%.0f s since last)",
+            since_last,
+        )
+        return True  # still within cooldown — not all-down
+
+    current = ticker.current_account() or ""
+    eligible = _kite_failover_list(exclude={current})
+    eligible = [
+        a for a in eligible
+        if not ticker.is_account_in_failover_cooloff(a, cooldown_s)
+    ]
+
+    next_account = eligible[0] if eligible else None
+    if next_account is None:
+        # Defensive belt+braces: the top-of-loop is_reactor_dead() check
+        # already handles reactor death. This branch is only reachable when
+        # the reactor was alive at the top of the loop but died mid-iteration
+        # (e.g. a stop() inside restart_with_account). Exit immediately
+        # rather than looping _try_start_ticker() forever.
+        if ticker.is_reactor_dead():
+            import sys
+            log.critical(
+                "ticker_watchdog: Twisted reactor is dead and all Kite "
+                "accounts are unavailable — exiting for systemd restart "
+                "(Restart=always, RestartSec=5s)"
+            )
+            sys.exit(1)
+        return False  # all accounts exhausted
+
+    api_key, access_token = _resolve_kite_creds(next_account)
+    if not (api_key and access_token):
+        log.warning(
+            "ticker_watchdog: %s picked as next failover but has no "
+            "live token — skipping this cycle",
+            next_account,
+        )
+        return True  # skip this cycle; not conclusively all-down
+
+    ok = ticker.restart_with_account(api_key, access_token, next_account)
+    _write_ticker_swap_audit(current, next_account, ok)
+    if ok:
+        log.info(
+            "ticker_watchdog: failover %s → %s (started, awaiting connect)",
+            current or "?", next_account,
+        )
+    else:
+        log.warning(
+            "ticker_watchdog: failover to %s did not start",
+            next_account,
+        )
+    return True  # swap attempted; caller clears unavailable_mode on ok
+
+
 async def _ticker_watchdog() -> None:
     """Background supervisor that runs the auto-failover state machine.
 
@@ -258,13 +349,7 @@ async def _ticker_watchdog() -> None:
 
       4. Started + N consecutive bad cycles (>= unhealthy_threshold) →
          attempt to swap to the next Kite account in the failover list.
-         Gated by:
-           - swap_cooldown_seconds since the last swap (5 min default),
-           - the account isn't in per-account cool-off (also 5 min),
-           - the account has a live api_key + access_token.
-         All accounts exhausted → mark `_ticker_unavailable` mode
-         (log + slowed cadence). Main API's mmap read path already
-         degrades gracefully to broker.ltp() REST fallback for LTPs.
+         Delegated to `_attempt_failover_swap()`.
 
       5. Boot grace period (`supervisor_uptime_seconds()` < BOOT_GRACE_S)
          → suppress swap decisions entirely. Prevents a swap during the
@@ -283,23 +368,9 @@ async def _ticker_watchdog() -> None:
     import asyncio
     log = logger
     from backend.brokers.kite_ticker import get_ticker
-    from backend.shared.helpers.settings import get_int
 
     INTERVAL_S = 30.0
     BOOT_GRACE_S = 60.0     # suppress swap decisions during first minute
-
-    # Read tunables once per iteration so an operator edit via /admin/settings
-    # takes effect on the next cycle without a restart. Cheap: get_int hits
-    # an in-process cache when the settings table hasn't been touched.
-    def _threshold() -> int:
-        # Minimum 1: 0 would swap on every cycle including transient blips.
-        return max(1, get_int("kite_ticker.unhealthy_threshold", 2))
-
-    def _cooldown_s() -> float:
-        return float(max(30, get_int("kite_ticker.swap_cooldown_seconds", 300)))
-
-    def _slowed_interval_s() -> float:
-        return float(max(30, get_int("kite_ticker.all_down_watchdog_seconds", 60)))
 
     ticker = get_ticker()
     ticker.mark_supervisor_started()
@@ -310,7 +381,9 @@ async def _ticker_watchdog() -> None:
 
     while True:
         try:
-            await asyncio.sleep(_slowed_interval_s() if unavailable_mode else INTERVAL_S)
+            await asyncio.sleep(
+                _watchdog_slowed_interval_s() if unavailable_mode else INTERVAL_S
+            )
             ticker = get_ticker()
 
             # ── Reactor-dead exit (must check before all other phases) ──
@@ -369,14 +442,16 @@ async def _ticker_watchdog() -> None:
             unhealthy_count = ticker.bump_unhealthy()
             log.warning(
                 "ticker_watchdog: active=%s unhealthy cycle %d (threshold=%d)",
-                ticker.current_account() or "?", unhealthy_count, _threshold(),
+                ticker.current_account() or "?",
+                unhealthy_count,
+                _watchdog_threshold(),
             )
 
             # Under threshold: keep prodding the SAME account. _try_start_ticker
             # is idempotent — no-op if the socket is already connected. This
             # covers the transient-blip case where Twisted's own reconnect
             # loop catches up within one watchdog tick.
-            if unhealthy_count < _threshold():
+            if unhealthy_count < _watchdog_threshold():
                 _try_start_ticker()
                 continue
 
@@ -388,79 +463,18 @@ async def _ticker_watchdog() -> None:
                 continue
 
             # ── Phase 4: swap eligibility ───────────────────────────────
-            # Ping-pong prevention: enforce a minimum window between
-            # consecutive swaps. Use the ticker's own swap history so
-            # cross-restart state doesn't leak (Kite tokens are per-
-            # session; a swap on a fresh boot is fine even if the
-            # previous process just swapped).
-            if ticker.swaps_since(_cooldown_s()) > 0:
-                last_swap = ticker.last_swap_at()
-                since_last = (time.time() - last_swap) if last_swap else 0.0
-                log.info(
-                    "ticker_watchdog: swap suppressed by cooldown "
-                    "(%.0f s since last)", since_last,
-                )
-                continue
-
-            current = ticker.current_account() or ""
-            eligible = _kite_failover_list(exclude={current})
-            eligible = [
-                a for a in eligible
-                if not ticker.is_account_in_failover_cooloff(a, _cooldown_s())
-            ]
-
-            next_account = eligible[0] if eligible else None
-            if next_account is None:
+            swap_has_candidates = _attempt_failover_swap(
+                ticker, log, _watchdog_cooldown_s(), _watchdog_slowed_interval_s()
+            )
+            if not swap_has_candidates:
                 if not unavailable_mode:
                     unavailable_mode = True
                     log.critical(
                         "ticker_watchdog: all Kite accounts unhealthy — "
                         "LTP REST poll fallback active (slowed cadence %.0fs)",
-                        _slowed_interval_s(),
+                        _watchdog_slowed_interval_s(),
                     )
-                # Defensive belt+braces: the top-of-loop `is_reactor_dead()`
-                # check at line ~296 already handles reactor death via
-                # sys.exit(1) at the start of every iteration. This branch
-                # is only reachable when the reactor was alive at the top
-                # of the loop but died mid-iteration (e.g., via a stop()
-                # call inside restart_with_account triggered by a swap that
-                # then failed). If we're now in the "no eligible accounts"
-                # branch and the reactor is dead, exit immediately rather
-                # than looping through _try_start_ticker() forever.
-                if ticker.is_reactor_dead():
-                    import sys
-                    log.critical(
-                        "ticker_watchdog: Twisted reactor is dead and all Kite "
-                        "accounts are unavailable — exiting for systemd restart "
-                        "(Restart=always, RestartSec=5s)"
-                    )
-                    sys.exit(1)
-                # Keep trying the primary at the slowed cadence.
                 _try_start_ticker()
-                continue
-
-            api_key, access_token = _resolve_kite_creds(next_account)
-            if not (api_key and access_token):
-                log.warning(
-                    "ticker_watchdog: %s picked as next failover but has no "
-                    "live token — skipping this cycle",
-                    next_account,
-                )
-                continue
-
-            ok = ticker.restart_with_account(api_key, access_token, next_account)
-            _write_ticker_swap_audit(current, next_account, ok)
-            if ok:
-                log.info(
-                    "ticker_watchdog: failover %s → %s (started, awaiting connect)",
-                    current or "?", next_account,
-                )
-                unavailable_mode = False
-            else:
-                log.warning(
-                    "ticker_watchdog: failover to %s did not start",
-                    next_account,
-                )
 
         except asyncio.CancelledError:
             return

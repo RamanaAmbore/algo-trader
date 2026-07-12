@@ -930,6 +930,100 @@ class DhanConnection:
         )
         return None
 
+    def _is_token_expired(self, now) -> bool:
+        """True when the connection is older than CONN_RESET_HOURS or was
+        never created."""
+        return (
+            self._conn_created_at is None
+            or now - self._conn_created_at > timedelta(hours=CONN_RESET_HOURS)
+        )
+
+    def _check_recency_guard(self, now, test_conn: bool) -> bool:
+        """Return True when the recent-token guard applies and the caller
+        should skip the re-mint.
+
+        When ``test_conn=True`` (caller hit DH-906 / "Invalid Token") but
+        the cached token was minted in the last 60 s, another thread already
+        minted a fresh token under this same lock — returning ``_dhan``
+        avoids a cascade of concurrent re-mints, each invalidating the
+        previous. Caller logs at INFO level when this fires.
+        """
+        return (
+            test_conn
+            and self._access_token is not None
+            and self._conn_created_at is not None
+            and self._dhan is not None
+            and (now - self._conn_created_at) < timedelta(seconds=60)
+        )
+
+    def _check_login_rate_limit(self, test_conn: bool):
+        """Enforce Dhan's 2-min generate_token rate-limit cool-off.
+
+        Raises RuntimeError when inside the cool-off window and no cached
+        client is available. Returns the cached client (or None) to signal
+        the caller to skip the mint.  Caller must import ``time`` before
+        invoking.
+        """
+        import time as _time_mod
+        if _time_mod.time() >= self._login_blocked_until:
+            return None  # not in cool-off — proceed to mint
+        wait_s = int(self._login_blocked_until - _time_mod.time())
+        if test_conn:
+            # Token is known-dead; raise so the broker layer surfaces the
+            # failure rather than returning empty DataFrames for 130 s.
+            raise RuntimeError(
+                f"Dhan login rate-limited for {self.account!r} — "
+                f"token known dead; wait {wait_s}s before retrying"
+            )
+        if self._dhan is not None:
+            logger.warning(
+                f"Dhan login blocked for {self.account!r} "
+                f"({wait_s}s left in rate-limit window); "
+                f"returning last-known client"
+            )
+            return self._dhan
+        raise RuntimeError(
+            f"Dhan login rate-limited for {self.account!r} — "
+            f"wait {wait_s}s before retrying"
+        )
+
+    def _mint_and_build(self) -> None:
+        """Run _do_login → persist token → build SDK client → record login event.
+
+        Must be called inside ``_login_lock`` + ``_cross_process_login_lock``.
+        Sets ``_login_blocked_until`` on failure (130 s cool-off).
+        """
+        import time as _time_mod
+        try:
+            access_token = self._do_login()
+        except RuntimeError as e:
+            # 130 s = Dhan's 2-min limit + 10 s safety margin.
+            self._login_blocked_until = _time_mod.time() + 130.0
+            logger.error(
+                f"Dhan _do_login failed for {self.account!r}: {e!s:.200} — "
+                f"blocking re-login attempts for 130 s"
+            )
+            raise
+        # Success — clear any prior cool-off.
+        self._login_blocked_until = 0.0
+        self._access_token = access_token
+        self._conn_created_at = timestamp_indian()
+        self._save_token(access_token)
+        self._build_client(access_token)
+        # Side-channel: stamp this account's login moment in the
+        # cross-account ledger so the rotation-pattern detector in
+        # DhanBroker._safe_call can correlate "this account's token
+        # died" with "that other account's recent login". Imported
+        # lazily to avoid the connections ↔ brokers circular import.
+        try:
+            from backend.brokers.adapters.dhan import record_dhan_login_event
+            record_dhan_login_event(self.account)
+        except Exception:
+            pass
+        logger.info(
+            f"Dhan login complete for {self.account} (token cached, valid ~24h)"
+        )
+
     def get_dhan_conn(self, test_conn: bool = False):
         """Return a ready dhanhq client.
 
@@ -940,23 +1034,15 @@ class DhanConnection:
         same Partner-API app.
         """
         now = timestamp_indian()
-        expired = (
-            self._conn_created_at is None
-            or now - self._conn_created_at > timedelta(hours=CONN_RESET_HOURS)
-        )
 
-        if not (expired or test_conn) and self._dhan is not None:
+        if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
             return self._dhan
 
         with self._login_lock, _cross_process_login_lock(self._cache_key()):
             # Double-check under the lock — a peer may have just minted
             # a fresh token while we were waiting.
             now = timestamp_indian()
-            expired = (
-                self._conn_created_at is None
-                or now - self._conn_created_at > timedelta(hours=CONN_RESET_HOURS)
-            )
-            if not (expired or test_conn) and self._dhan is not None:
+            if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
                 return self._dhan
 
             # Try the on-disk cache (peer may have just written a token).
@@ -969,136 +1055,31 @@ class DhanConnection:
             # ── Recency guard for test_conn=True ─────────────────────
             # When `_safe_call` detects a DH-906 / "Invalid Token" it
             # calls us with `test_conn=True` to force a re-mint. But
-            # multiple concurrent broker calls (background polling +
-            # frontend polling + agent ticks) routinely fail in lockstep
+            # multiple concurrent broker calls routinely fail in lockstep
             # against the same invalidated token — without this guard
-            # each one walks past the cache check above and mints its
-            # own NEW token via `generate_token`. Every Dhan
-            # `generate_token` call invalidates the previously-issued
-            # token, so the parade of fresh logins ends with only the
-            # LAST token valid, all earlier tokens (already cached + in
-            # use by other callers) silently invalidated. Operator saw
-            # this as a 6-minute "Login complete → DH-906 → Login
-            # complete" loop in the api log.
-            #
-            # If the cached token was minted in the last 60 s (by THIS
-            # process via a peer thread, or by another process whose
-            # write we read from disk), assume it's the freshest and
-            # return it. The caller that triggered `test_conn=True`
-            # already retried once via _safe_call so a brief return of
-            # a known-recent token is the right tradeoff.
-            if (test_conn
-                    and self._access_token
-                    and self._conn_created_at is not None
-                    and self._dhan is not None
-                    and (now - self._conn_created_at) < timedelta(seconds=60)):
+            # each one mints its own NEW token, each invalidating the
+            # previous. See _check_recency_guard docstring for details.
+            if self._check_recency_guard(now, test_conn):
                 logger.info(
                     f"Dhan {self.account!r}: test_conn=True but token minted "
                     f"<60 s ago — skipping re-mint to avoid invalidation race"
                 )
                 return self._dhan
 
-            # Login-rate-limit cool-off — Dhan's auth endpoint
-            # rejects a second call within 2 minutes of the first.
-            # When the previous _do_login raised because of that, we
-            # set _login_blocked_until = now + 130s (2 min + 10s
-            # safety). Re-login attempts within that window short-
-            # circuit:
-            #
-            #   - test_conn=True (caller hit DH-906 / "Invalid Token"):
-            #     the cached token IS dead. Returning self._dhan would
-            #     keep handing out the dead handle for the next 130 s,
-            #     and every position / holdings / margins fetch would
-            #     silently come back empty (the auth-failure response
-            #     shape unwraps to []), so the Candidates panel +
-            #     PositionStrip lose all Dhan rows for two minutes
-            #     after every token expiry. Raise instead so the
-            #     broker layer (`fetch_positions` etc.) logs the
-            #     failure cleanly and the frontend gets an explicit
-            #     "broker unavailable" surface. The 130 s window
-            #     elapses and the very next fetch attempts a fresh
-            #     login.
-            #
-            #   - test_conn=False (routine refresh, token might still
-            #     be live): the cached token COULD still be valid, so
-            #     return self._dhan and let the SDK try. If the SDK
-            #     succeeds, great; if it fails with DH-906, _safe_call
-            #     retries with test_conn=True which falls into the
-            #     raise-on-dead path above.
-            import time as _time_mod
-            if _time_mod.time() < self._login_blocked_until:
-                wait_s = int(self._login_blocked_until - _time_mod.time())
-                if test_conn:
-                    raise RuntimeError(
-                        f"Dhan login rate-limited for {self.account!r} — "
-                        f"token known dead; wait {wait_s}s before retrying"
-                    )
-                if self._dhan is not None:
-                    logger.warning(
-                        f"Dhan login blocked for {self.account!r} "
-                        f"({wait_s}s left in rate-limit window); "
-                        f"returning last-known client"
-                    )
-                    return self._dhan
-                raise RuntimeError(
-                    f"Dhan login rate-limited for {self.account!r} — "
-                    f"wait {wait_s}s before retrying"
-                )
+            # ── Login-rate-limit cool-off ─────────────────────────────
+            # Dhan's auth endpoint rejects a second call within 2 minutes.
+            # _check_login_rate_limit returns cached client or raises.
+            # See its docstring for the test_conn vs False distinction.
+            cached = self._check_login_rate_limit(test_conn)
+            if cached is not None:
+                return cached
 
             # ── Token mint via _do_login ─────────────────────────────
-            # The `_try_renew()` call that used to live here was
-            # hitting `api.dhan.co/v2/RenewToken` — wrong domain. The
-            # data API at api.dhan.co/v2 has no token-renewal endpoint;
-            # all auth lives on auth.dhan.co. Result: `_try_renew` has
-            # ALWAYS returned None silently (verified: zero "token
-            # renewed" log entries across the entire api_log_file
-            # history), and every "renewal" cycle has actually been a
-            # full re-mint via `_do_login`. Dropping the broken call
-            # so the flow is honest about what's happening.
-            #
-            # If a real renewal endpoint is later confirmed (likely at
-            # auth.dhan.co/app/RenewToken or similar), re-add it here
-            # as a best-effort skip-the-mint path. Until then, we
-            # rely on:
-            #   • Tokens lasting 24h-30d (set in Dhan dashboard)
-            #   • The 60s recency guard above (multiple concurrent
-            #     DH-906s under the same lock window share one mint)
-            #   • The 130s rate-limit cool-off (catches the 2-min
-            #     "Token can be generated once every 2 minutes" guard)
-            access_token: str | None = None
-
-            if access_token is None:
-                try:
-                    access_token = self._do_login()
-                except RuntimeError as e:
-                    # _do_login failed — set the cool-off so subsequent
-                    # callers don't pile up. 130s = Dhan's 2-min limit +
-                    # a 10s safety margin against clock drift.
-                    self._login_blocked_until = _time_mod.time() + 130.0
-                    logger.error(
-                        f"Dhan _do_login failed for {self.account!r}: {e!s:.200} — "
-                        f"blocking re-login attempts for 130 s"
-                    )
-                    raise
-                # Success path — clear any prior cool-off.
-                self._login_blocked_until = 0.0
-            self._access_token   = access_token
-            self._conn_created_at = timestamp_indian()
-            self._save_token(access_token)
-            self._build_client(access_token)
-            # Side-channel: stamp this account's login moment in the
-            # cross-account ledger so the rotation-pattern detector in
-            # DhanBroker._safe_call can correlate "this account's
-            # token died" with "that other account's recent login".
-            # Imported lazily to avoid the connections ↔ brokers
-            # circular import at module load.
-            try:
-                from backend.brokers.adapters.dhan import record_dhan_login_event
-                record_dhan_login_event(self.account)
-            except Exception:
-                pass
-            logger.info(f"Dhan login complete for {self.account} "
-                        f"(token cached, valid ~24h)")
+            # _try_renew() was dropped (it hit the wrong domain).
+            # See prior inline comments for the rationale.
+            # Tokens last 24h-30d; the 60s recency guard + 130s
+            # rate-limit cool-off handle concurrent re-mint races.
+            self._mint_and_build()
 
         if self._dhan is None:
             raise RuntimeError(
