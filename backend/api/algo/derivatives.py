@@ -474,6 +474,141 @@ def _next_nse_future(items, root: str, today_iso: str) -> str | None:
     return candidates[0].s
 
 
+def _ist_today_iso() -> str:
+    """Return today's date as an ISO string anchored to Asia/Kolkata.
+    Falls back to UTC date if the ZoneInfo lookup fails (unlikely in
+    production but defensive for test environments)."""
+    from datetime import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        return _dt.now(_ZI("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        return _dt.utcnow().date().isoformat()
+
+
+async def _load_instruments_items() -> list:
+    """Fetch instruments from the TTL cache. Returns an empty list on
+    any error so callers can treat a cache-miss as a no-op."""
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        return resp.items if resp else []
+    except Exception:
+        return []
+
+
+def _check_option_expired(sym: str, items: list, today_iso: str) -> bool:
+    """Return True when the option `sym` has a known expiry on or before
+    `today_iso` (i.e. MCX commodity options that expire 5 business days
+    before the futures). Uses the O(1) instrument index."""
+    if not items:
+        return False
+    index = _instrument_index(items)
+    inst = index.get(sym)
+    if inst is None:
+        return False
+    opt_expiry = (inst.x or "")
+    return bool(opt_expiry and opt_expiry <= today_iso)
+
+
+async def _roll_past_month(
+    root: str,
+    items: list,
+    matched_fut_expiry: str,
+    today_iso: str,
+) -> str | None:
+    """Pick the first future for *root* whose expiry is strictly AFTER
+    *matched_fut_expiry*. Using the matched future's expiry as the cutoff
+    (not just the option's expiry or today) correctly skips the entire
+    matched month — on Jun 16 for a JUN option, the matched JUN future
+    expires Jun 18, so the cutoff > Jun 18 lands on JUL future (Jul 20),
+    not back on JUN."""
+    cutoff = matched_fut_expiry or today_iso
+    if is_mcx_underlying(root):
+        target_u = root.upper()
+        candidates = [
+            inst for inst in items
+            if (inst.e == "MCX"
+                and inst.t == "FUT"
+                and (inst.u or "").upper() == target_u
+                and inst.x
+                and inst.x > cutoff)
+        ]
+        if candidates:
+            candidates.sort(key=lambda i: i.x or "")
+            return candidates[0].s
+        return await lookup_mcx_front_month_future(root)
+    # NSE / NFO equivalent
+    return _next_nse_future(items, root, cutoff)
+
+
+async def _matched_or_roll(
+    inst,
+    root: str,
+    items: list,
+    opt_expired: bool,
+    today_iso: str,
+) -> str | None:
+    """Return the matched instrument's symbol when it is still live and
+    the option has not expired; otherwise roll past this month."""
+    inst_expiry = (inst.x or "")
+    is_live = bool(inst_expiry and inst_expiry > today_iso)
+    if is_live and not opt_expired:
+        return inst.s
+    return await _roll_past_month(root, items, inst_expiry, today_iso)
+
+
+async def _resolve_monthly_option_future(sym: str, m_monthly) -> str | None:
+    """Resolve the matching future for a MONTHLY option symbol.
+
+    Pass 1: exact symbol match via O(1) index (covers NSE/NFO).
+    Pass 2: prefix match with FUT suffix (covers MCX day-suffix variants,
+            e.g. CRUDEOIL26JUL19FUT where the bare form is CRUDEOIL26JULFUT).
+    Returns None on cache miss (future not listed yet).
+    """
+    root, yy, mon, _strike, _opt = m_monthly.groups()
+    fut_sym = f"{root}{yy}{mon}FUT"
+    items = await _load_instruments_items()
+    if not items:
+        return None
+    today = _ist_today_iso()
+    opt_expired = _check_option_expired(sym, items, today)
+    fut_sym_upper = fut_sym.upper()
+    prefix = f"{root}{yy}{mon}".upper()  # e.g. CRUDEOIL26JUL
+    # Pass 1: exact match (covers NSE/NFO) — O(1) via instrument index.
+    exact = _instrument_index(items).get(fut_sym_upper)
+    if exact is not None:
+        return await _matched_or_roll(exact, root, items, opt_expired, today)
+    # Pass 2: prefix match ending in FUT (covers MCX day-suffix).
+    # When multiple matches exist (rare) we take the FIRST in cache order,
+    # which is the contract listed closest to the canonical month.
+    for inst in items:
+        s = (inst.s or "").upper()
+        if s.startswith(prefix) and s.endswith("FUT") and s != fut_sym_upper:
+            return await _matched_or_roll(inst, root, items, opt_expired, today)
+    # Cache miss — future for this month not listed yet.
+    return None
+
+
+async def _resolve_weekly_option_future(sym: str, m_weekly) -> str | None:
+    """Resolve the front-month future for a WEEKLY option symbol.
+
+    Weekly options (Kite single-digit month + 2-digit day format) share
+    the front-month future of their underlying index. MCX delegates to
+    `lookup_mcx_front_month_future`; NSE/NFO scans the instruments cache
+    for the nearest non-expired NFO future for the root."""
+    root = m_weekly.group(1)
+    if is_mcx_underlying(root):
+        return await lookup_mcx_front_month_future(root)
+    items = await _load_instruments_items()
+    if not items:
+        return None
+    today = _ist_today_iso()
+    return _next_nse_future(items, root, today)
+
+
 async def lookup_future_for_option(option_symbol: str) -> str | None:
     """Return the futures tradingsymbol matching this option's month token,
     e.g. NIFTY26JUN22000CE → NIFTY26JUNFUT, CRUDEOIL25JUN5800CE → CRUDEOIL25JUNFUT.
@@ -489,163 +624,13 @@ async def lookup_future_for_option(option_symbol: str) -> str | None:
     """
     if not option_symbol:
         return None
-
     sym = option_symbol.upper().strip()
-
-    # Try to extract a monthly token from the symbol.
-    # Monthly options match: <ROOT><YY><MON><STRIKE><CE|PE>
-    # e.g. CRUDEOIL25JUN5800CE, NIFTY26JUN22000CE
     m_monthly = _OPT_MONTHLY.match(sym)
     if m_monthly:
-        root, yy, mon, _strike, _opt = m_monthly.groups()
-        # Construct the BARE constructed form (e.g. CRUDEOIL26JULFUT).
-        fut_sym = f"{root}{yy}{mon}FUT"
-        # MCX commodities — Kite's actual tradingsymbol carries a
-        # day-of-month suffix (CRUDEOIL26JUL19FUT, GOLDM26AUG05FUT)
-        # that the constructed bare form doesn't capture. Match by
-        # PREFIX so the suffix variants resolve to the right contract.
-        # NSE / NFO futures use the bare form (NIFTY26JUNFUT) and
-        # match exactly, so the prefix logic is a superset.
-        from backend.api.cache import get_or_fetch
-        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-        try:
-            resp = await get_or_fetch("instruments", _fetch_instruments,
-                                      ttl_seconds=_TTL_SECONDS)
-            items = resp.items if resp else []
-        except Exception:
-            items = []
-        # Today (IST) — used to skip already-settled contracts. MCX
-        # commodity expiry afternoon (CRUDEOIL ≈ 19th, GOLDM ≈ 5th)
-        # turns the matched future's last_price into a stale settlement
-        # value; the operator's broker app rolls to the next month and
-        # so should we.
-        from datetime import datetime as _dt
-        try:
-            from zoneinfo import ZoneInfo as _ZI
-            _today_iso = _dt.now(_ZI("Asia/Kolkata")).date().isoformat()
-        except Exception:
-            _today_iso = _dt.utcnow().date().isoformat()
-        def _live(inst):
-            """A future is 'live' when its expiry is strictly after today
-            IST. On expiry day itself (today == inst.x) the contract is
-            settling; its quote during late session is the settlement
-            price, not a tradable spot. Treat as expired so the
-            same-month-rollover path picks the next-out future."""
-            x = (inst.x or "")
-            return x and x > _today_iso
-        # Has the OPTION itself expired? Even when the matching future is
-        # still alive (MCX commodity options expire 5 business days
-        # BEFORE the futures), the operator's broker app rolls to the
-        # next-out FUTURE because the held option position is settled
-        # for the rest of the session. Look up the option's own expiry
-        # from the instruments cache and treat today >= option.x as an
-        # expired option that should anchor to the next future.
-        opt_expired = False
-        opt_expiry_iso = ""
-        if items:
-            # O(1) lookup via the per-cache by-symbol index. Walking the
-            # 90k-row items list per call (and again below for futures)
-            # added measurable latency to multi-leg strategy requests.
-            index = _instrument_index(items)
-            _inst = index.get(sym)
-            if _inst is not None:
-                opt_expiry_iso = (_inst.x or "")
-                if opt_expiry_iso and opt_expiry_iso <= _today_iso:
-                    opt_expired = True
-
-        async def _roll_past_month(matched_fut_expiry: str):
-            """Pick the first future for this underlying whose expiry is
-            strictly AFTER the MATCHED future's expiry. Using the
-            matched future's expiry as the cutoff (not just the option's
-            expiry or today) correctly skips the entire matched month —
-            on Jun 16 for a JUN option, the matched JUN future expires
-            Jun 18, so the cutoff > Jun 18 lands on JUL future (Jul 20),
-            not back on JUN."""
-            cutoff = matched_fut_expiry or _today_iso
-            if is_mcx_underlying(root):
-                target_u = root.upper()
-                candidates = [
-                    inst for inst in items
-                    if (inst.e == "MCX"
-                        and inst.t == "FUT"
-                        and (inst.u or "").upper() == target_u
-                        and inst.x
-                        and inst.x > cutoff)
-                ]
-                if candidates:
-                    candidates.sort(key=lambda i: i.x or "")
-                    return candidates[0].s
-                return await lookup_mcx_front_month_future(root)
-            # NSE / NFO equivalent
-            return _next_nse_future(items, root, cutoff)
-        if items:
-            fut_sym_upper = fut_sym.upper()
-            prefix = f"{root}{yy}{mon}".upper()  # e.g. CRUDEOIL26JUL
-            # Pass 1: exact match (covers NSE/NFO) via the by-symbol
-            # index — O(1) instead of a full items walk.
-            _exact = _instrument_index(items).get(fut_sym_upper)
-            if _exact is not None:
-                inst = _exact
-                if _live(inst) and not opt_expired:
-                    return inst.s
-                rolled = await _roll_past_month(inst.x or "")
-                if rolled:
-                    return rolled
-                return None
-            # Pass 2: prefix match ending in FUT (covers MCX day-suffix).
-            # When multiple matches exist (rare — e.g. CRUDEOIL26JUL19FUT
-            # vs an extension) we pick the FIRST in instrument-cache
-            # order, which is typically the front contract listed
-            # closest to the canonical month.
-            for inst in items:
-                s = (inst.s or "").upper()
-                if (s.startswith(prefix) and s.endswith("FUT")
-                        and s != fut_sym_upper):
-                    if _live(inst) and not opt_expired:
-                        return inst.s
-                    rolled = await _roll_past_month(inst.x or "")
-                    if rolled:
-                        return rolled
-                    return None
-        # Cache miss — the future for this month isn't listed yet.
-        return None
-
-    # Weekly option — no monthly token extractable. Fall back to front-month.
+        return await _resolve_monthly_option_future(sym, m_monthly)
     m_weekly = _OPT_WEEKLY.match(sym)
     if m_weekly:
-        root = m_weekly.group(1)
-        if is_mcx_underlying(root):
-            return await lookup_mcx_front_month_future(root)
-        # NSE/NFO weekly: find the first listed NFO future for this underlying.
-        from backend.api.cache import get_or_fetch
-        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-        try:
-            resp = await get_or_fetch("instruments", _fetch_instruments,
-                                      ttl_seconds=_TTL_SECONDS)
-            items = resp.items if resp else []
-        except Exception:
-            items = []
-        if not items:
-            return None
-        root_upper = root.upper()
-        from datetime import datetime as _dt
-        try:
-            _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-        except Exception:
-            _ist_today_iso = _dt.utcnow().date().isoformat()
-        candidates = [
-            inst for inst in items
-            if (inst.e in ("NFO", "NSE")
-                and inst.t == "FUT"
-                and (inst.u or "").upper() == root_upper
-                and inst.x
-                and inst.x > _ist_today_iso)
-        ]
-        if not candidates:
-            return None
-        candidates.sort(key=lambda i: i.x or "")
-        return candidates[0].s
-
+        return await _resolve_weekly_option_future(sym, m_weekly)
     return None
 
 
