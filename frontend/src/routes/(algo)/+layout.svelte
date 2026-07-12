@@ -93,6 +93,9 @@
   // or Escape (HireMeModal handles its own teardown).
   let _hireOpen = $state(false);
 
+  // Demo banner dismiss state — persisted across reloads in localStorage.
+  let _demoBannerDismissed = $state(false);
+
   // ── Keyboard shortcuts (slice AU) ─────────────────────────────────
   // Global keydown listener wired below in onMount. Pauses while the
   // operator is typing in a field (input, textarea, contenteditable)
@@ -316,6 +319,11 @@
   function signOut() {
     authStore.logout();
     goto('/about');
+  }
+
+  function _dismissDemoBanner() {
+    _demoBannerDismissed = true;
+    localStorage.setItem('ramboq.demo_banner_dismissed', '1');
   }
 
   // Grouped by operator activity, ordered by daily-touch frequency:
@@ -763,6 +771,7 @@
     };
   }
   onMount(() => {
+    _demoBannerDismissed = localStorage.getItem('ramboq.demo_banner_dismissed') === '1';
     // Global keyboard shortcuts (slice AU). Window-level keydown
     // listener; pauses while the operator is typing in a field.
     window.addEventListener('keydown', _onGlobalKeydown);
@@ -1321,6 +1330,16 @@
     />
 
     <ImpersonationBanner />
+
+    {#if isDemo && !_demoBannerDismissed}
+      <div class="demo-banner" role="status">
+        <span class="demo-banner-text">
+          <strong>Rambo Terminal — live production</strong> · real broker data · accounts masked · paper-only writes.
+          <a href="/showcase" class="demo-banner-link">Take the tour</a>
+        </span>
+        <button onclick={_dismissDemoBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
+      </div>
+    {/if}
 
     <main class="algo-content">
       {@render children()}
@@ -2592,4 +2611,40 @@
     --ch-ts-size: 0.65rem;
     --ch-ts-color: #7e97b8;
   }
+
+  /* Demo banner — global across all algo pages when in demo mode */
+  .demo-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.45rem 0.75rem;
+    margin: 0 var(--page-h-pad, 1rem) 0.75rem;
+    border-radius: 4px;
+    background: rgba(168,85,247,0.15);
+    border: 1px solid rgba(168,85,247,0.35);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+  }
+  .demo-banner-text { color: #d8b4fe; flex: 1; }
+  .demo-banner-text strong { color: #e9d5ff; font-weight: 700; }
+  .demo-banner-link {
+    color: #c084fc;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    font-weight: 600;
+  }
+  .demo-banner-link:hover { color: #e9d5ff; }
+  .demo-banner-close {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: rgba(168,85,247,0.6);
+    cursor: pointer;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 0.15rem;
+    transition: color 0.1s;
+  }
+  .demo-banner-close:hover { color: #c084fc; }
 </style>
