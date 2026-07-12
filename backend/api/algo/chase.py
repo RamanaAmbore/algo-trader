@@ -30,6 +30,161 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
+async def _chase_terminal_update_db(
+    algo_order_id: int | None,
+    broker_order_id: str,
+    outcome: str,
+    attempts: int,
+    final_price: float | None,
+    error: str | None,
+) -> tuple[int | None, dict | None]:
+    """Look up AlgoOrder, mutate status/fill fields, commit, return (agent_id, row_snap).
+
+    Lookup priority: algo_order_id (Phase 0.5 — chase passes the row
+    id explicitly, immune to mid-chase broker_order_id mutation) →
+    broker_order_id (legacy callers that don't yet pass the row id).
+
+    Snapshots all fields needed by the downstream auto-TP + template
+    attach paths AFTER the optional mutation + commit so subsequent
+    readers see post-commit values. Returns (None, None) when no row
+    is found.
+    """
+    # Map chase outcome → AlgoOrder.status.
+    _OUTCOME_TO_STATUS = {
+        "chase_fill":      "FILLED",
+        "chase_unfilled":  "UNFILLED",
+        "chase_cancelled": "CANCELLED",
+        "chase_failed":    "REJECTED",
+    }
+    _new_status = _OUTCOME_TO_STATUS.get(outcome)
+
+    agent_id = None
+    _row_snap: dict | None = None
+    async with _async_session() as _s:
+        row = None
+        if algo_order_id is not None:
+            row = (await _s.execute(
+                _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
+            )).scalar_one_or_none()
+        if row is None:
+            row = (await _s.execute(
+                _sql_select(_AlgoOrder).where(
+                    _AlgoOrder.broker_order_id == broker_order_id
+                )
+            )).scalar_one_or_none()
+        if row is not None:
+            agent_id = getattr(row, "agent_id", None)
+            if _new_status and row.status != _new_status:
+                row.status = _new_status
+                if attempts:
+                    try:
+                        row.attempts = int(attempts)
+                    except (TypeError, ValueError):
+                        pass
+                if _new_status == "FILLED":
+                    if final_price is not None:
+                        try:
+                            row.fill_price = float(final_price)
+                        except (TypeError, ValueError):
+                            pass
+                    row.filled_at = datetime.now(timezone.utc)
+                if error:
+                    row.detail = (row.detail or "")[:200] + f" · {error[:120]}"
+                await _s.commit()
+            # Snapshot AFTER the optional mutation + commit so the
+            # downstream attach paths read post-commit values.
+            _row_snap = {
+                "id":                int(row.id),
+                "target_pct":        row.target_pct,
+                "target_abs":        row.target_abs,
+                "parent_order_id":   row.parent_order_id,
+                "template_id":       row.template_id,
+                "account":           str(row.account or ""),
+                "symbol":            str(row.symbol or broker_order_id),
+                "exchange":          str(row.exchange or "NFO"),
+                "transaction_type":  str(row.transaction_type or ""),
+                "product":           str(row.product or "NRML"),
+                "mode":              str(row.mode or "live"),
+                "filled_quantity":   int(row.filled_quantity or 0),
+                "quantity":          int(row.quantity or 0),
+            }
+    return agent_id, _row_snap
+
+
+def _chase_terminal_fire_fill_hooks(
+    row_snap: dict,
+    outcome: str,
+    final_price: float | None,
+) -> None:
+    """Fire auto-TP shim and/or template attach task on chase_fill.
+
+    Only runs when outcome == 'chase_fill' and a filled row_snap is
+    available. Both hooks are gated on parent_order_id IS NULL to
+    prevent TP-of-TP chains. This function is synchronous — it only
+    calls asyncio.create_task(); no awaits.
+    """
+    if outcome != "chase_fill" or not final_price or row_snap is None:
+        return
+    try:
+        _filled_snap = row_snap
+        # Phase 3D #6 — gate the legacy single-target TP shim on
+        # template_id IS NULL so a row with BOTH legacy
+        # target_pct AND a template doesn't attach exits twice.
+        if (_filled_snap.get("target_pct") or _filled_snap.get("target_abs")) \
+                and _filled_snap.get("parent_order_id") is None \
+                and _filled_snap.get("template_id") is None:
+            from backend.api.routes.orders import _arm_take_profit
+            asyncio.create_task(_arm_take_profit(
+                parent_row_id=_filled_snap["id"],
+                parent_account=_filled_snap["account"],
+                parent_symbol=_filled_snap["symbol"],
+                parent_exchange=_filled_snap["exchange"],
+                parent_side=_filled_snap["transaction_type"],
+                fill_price=float(final_price),
+                target_pct=float(_filled_snap.get("target_pct") or 0.0),
+                target_abs=(_filled_snap.get("target_abs")
+                            and float(_filled_snap.get("target_abs"))),
+                parent_mode=_filled_snap["mode"],
+            ))
+        # Phase 0.5 — template attach on chase fill. Same
+        # idempotency guard (attached_gtts_json populated →
+        # skip) lives inside _fire_template_attach_on_fill,
+        # so a race against the postback hook is safe.
+        # Audit fix — drop the `mode == "live"` guard. The
+        # paper engine has its own attach path
+        # (`_update_algo_order`), but if a paper-mode row is
+        # ever chased directly via `chase_order()` (e.g.
+        # after a `recover_from_db` that re-hydrated mode),
+        # the gate silently dropped the attach. The downstream
+        # `apply_template_to_order(apply_path="live")` is the
+        # right call for both modes per Sprint A intent.
+        if _filled_snap.get("template_id") \
+                and _filled_snap.get("parent_order_id") is None:
+            from backend.api.routes.orders import (
+                _fire_template_attach_on_fill,
+            )
+            # Sprint B (#4) — size exit GTTs against the
+            # ACTUAL filled qty when the chase took partials.
+            _attach_qty = (
+                _filled_snap["filled_quantity"]
+                if _filled_snap["filled_quantity"] > 0
+                else _filled_snap["quantity"]
+            )
+            asyncio.create_task(_fire_template_attach_on_fill(
+                parent_row_id=_filled_snap["id"],
+                parent_account=_filled_snap["account"],
+                parent_symbol=_filled_snap["symbol"],
+                parent_exchange=_filled_snap["exchange"],
+                parent_side=_filled_snap["transaction_type"],
+                parent_qty=_attach_qty,
+                fill_price=float(final_price),
+                template_id=int(_filled_snap["template_id"]),
+                parent_product=_filled_snap["product"],
+            ))
+    except Exception as _tp_e:
+        logger.debug(f"_emit_chase_terminal TP arm failed: {_tp_e}")
+
+
 async def _emit_chase_terminal(
     broker_order_id: str,
     outcome: str,          # chase_fill | chase_unfilled | chase_failed | chase_cancelled
@@ -58,71 +213,13 @@ async def _emit_chase_terminal(
     try:
         from backend.api.algo.agent_engine import record_chase_terminal  # circular: lazy OK
 
-        # Map chase outcome → AlgoOrder.status.
-        _OUTCOME_TO_STATUS = {
-            "chase_fill":      "FILLED",
-            "chase_unfilled":  "UNFILLED",
-            "chase_cancelled": "CANCELLED",
-            "chase_failed":    "REJECTED",
-        }
-        _new_status = _OUTCOME_TO_STATUS.get(outcome)
-
-        agent_id = None
         # Audit fix — snapshot the fields the downstream Auto-TP + template
-        # attach paths need (target_pct, target_abs, parent_order_id,
-        # template_id, mode, product, exchange, transaction_type, account,
-        # symbol, id, filled_quantity, quantity) BEFORE commit so we don't
-        # have to re-open a second session to re-fetch the same row at
-        # line ~120. Halves the DB round-trips on every chase fill event.
-        _row_snap: dict | None = None
-        async with _async_session() as _s:
-            row = None
-            if algo_order_id is not None:
-                row = (await _s.execute(
-                    _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
-                )).scalar_one_or_none()
-            if row is None:
-                row = (await _s.execute(
-                    _sql_select(_AlgoOrder).where(
-                        _AlgoOrder.broker_order_id == broker_order_id
-                    )
-                )).scalar_one_or_none()
-            if row is not None:
-                agent_id = getattr(row, "agent_id", None)
-                if _new_status and row.status != _new_status:
-                    row.status = _new_status
-                    if attempts:
-                        try:
-                            row.attempts = int(attempts)
-                        except (TypeError, ValueError):
-                            pass
-                    if _new_status == "FILLED":
-                        if final_price is not None:
-                            try:
-                                row.fill_price = float(final_price)
-                            except (TypeError, ValueError):
-                                pass
-                        row.filled_at = datetime.now(timezone.utc)
-                    if error:
-                        row.detail = (row.detail or "")[:200] + f" · {error[:120]}"
-                    await _s.commit()
-                # Snapshot AFTER the optional mutation + commit so the
-                # downstream attach paths read post-commit values.
-                _row_snap = {
-                    "id":                int(row.id),
-                    "target_pct":        row.target_pct,
-                    "target_abs":        row.target_abs,
-                    "parent_order_id":   row.parent_order_id,
-                    "template_id":       row.template_id,
-                    "account":           str(row.account or ""),
-                    "symbol":            str(row.symbol or symbol),
-                    "exchange":          str(row.exchange or "NFO"),
-                    "transaction_type":  str(row.transaction_type or side),
-                    "product":           str(row.product or "NRML"),
-                    "mode":              str(row.mode or "live"),
-                    "filled_quantity":   int(row.filled_quantity or 0),
-                    "quantity":          int(row.quantity or qty),
-                }
+        # attach paths need BEFORE commit so we don't have to re-open a
+        # second session to re-fetch the same row. Halves the DB
+        # round-trips on every chase fill event.
+        agent_id, _row_snap = await _chase_terminal_update_db(
+            algo_order_id, broker_order_id, outcome, attempts, final_price, error
+        )
 
         await record_chase_terminal(
             agent_id=agent_id,
@@ -139,70 +236,7 @@ async def _emit_chase_terminal(
         # Auto TP + Template attach — fire after a chase fill on a
         # parent row (parent_order_id IS NULL so we never create
         # TP-of-TP chains).
-        # Audit fix — uses the pre-commit snapshot above instead of
-        # re-fetching the same row in a second session. Pre-fix the
-        # function paid two full DB round-trips per chase fill event;
-        # now it pays one. The downstream `_fire_template_attach_on_fill`
-        # opens its own session to read the row state independently.
-        if outcome == "chase_fill" and final_price and _row_snap is not None:
-            try:
-                _filled_snap = _row_snap
-                # Phase 3D #6 — gate the legacy single-target TP shim on
-                # template_id IS NULL so a row with BOTH legacy
-                # target_pct AND a template doesn't attach exits twice.
-                if (_filled_snap.get("target_pct") or _filled_snap.get("target_abs")) \
-                        and _filled_snap.get("parent_order_id") is None \
-                        and _filled_snap.get("template_id") is None:
-                    from backend.api.routes.orders import _arm_take_profit
-                    asyncio.create_task(_arm_take_profit(
-                        parent_row_id=_filled_snap["id"],
-                        parent_account=_filled_snap["account"],
-                        parent_symbol=_filled_snap["symbol"],
-                        parent_exchange=_filled_snap["exchange"],
-                        parent_side=_filled_snap["transaction_type"],
-                        fill_price=float(final_price),
-                        target_pct=float(_filled_snap.get("target_pct") or 0.0),
-                        target_abs=(_filled_snap.get("target_abs")
-                                    and float(_filled_snap.get("target_abs"))),
-                        parent_mode=_filled_snap["mode"],
-                    ))
-                # Phase 0.5 — template attach on chase fill. Same
-                # idempotency guard (attached_gtts_json populated →
-                # skip) lives inside _fire_template_attach_on_fill,
-                # so a race against the postback hook is safe.
-                # Audit fix — drop the `mode == "live"` guard. The
-                # paper engine has its own attach path
-                # (`_update_algo_order`), but if a paper-mode row is
-                # ever chased directly via `chase_order()` (e.g.
-                # after a `recover_from_db` that re-hydrated mode),
-                # the gate silently dropped the attach. The downstream
-                # `apply_template_to_order(apply_path="live")` is the
-                # right call for both modes per Sprint A intent.
-                if _filled_snap.get("template_id") \
-                        and _filled_snap.get("parent_order_id") is None:
-                    from backend.api.routes.orders import (
-                        _fire_template_attach_on_fill,
-                    )
-                    # Sprint B (#4) — size exit GTTs against the
-                    # ACTUAL filled qty when the chase took partials.
-                    _attach_qty = (
-                        _filled_snap["filled_quantity"]
-                        if _filled_snap["filled_quantity"] > 0
-                        else _filled_snap["quantity"]
-                    )
-                    asyncio.create_task(_fire_template_attach_on_fill(
-                        parent_row_id=_filled_snap["id"],
-                        parent_account=_filled_snap["account"],
-                        parent_symbol=_filled_snap["symbol"],
-                        parent_exchange=_filled_snap["exchange"],
-                        parent_side=_filled_snap["transaction_type"],
-                        parent_qty=_attach_qty,
-                        fill_price=float(final_price),
-                        template_id=int(_filled_snap["template_id"]),
-                        parent_product=_filled_snap["product"],
-                    ))
-            except Exception as _tp_e:
-                logger.debug(f"_emit_chase_terminal TP arm failed: {_tp_e}")
+        _chase_terminal_fire_fill_hooks(_row_snap, outcome, final_price)
 
     except Exception as _e:
         logger.debug(f"_emit_chase_terminal: {_e}")
@@ -653,6 +687,194 @@ async def _record_partial_fill(algo_order_id: int | None,
         logger.debug(f"_record_partial_fill failed: {_e}")
 
 
+async def _chase_poll_status(
+    account: str,
+    current_order_id: str,
+    cfg: ChaseConfig,
+    symbol: str,
+    transaction_type: str,
+    quantity: int,
+    result: ChaseResult,
+    attempt: int,
+    remaining_qty: int,
+    algo_order_id: int | None,
+    emit: Callable,
+) -> tuple[str | None, int]:
+    """Check order status after the per-attempt sleep. Mutates result in-place.
+
+    Returns (signal, new_remaining_qty) where signal is one of:
+      'filled'            — order fully complete; caller should return result
+      'killed'            — operator cancelled; caller should return result
+      'rejected'          — broker rejected; caller should return result
+      'cancelled_continue'— broker/external cancel, NOT operator; caller resets
+                            current_order_id and sleeps backoff before continuing
+      None                — partial fill or no notable status; caller continues loop
+
+    The consecutive_errors counter is NOT managed here — it lives in
+    chase_order's outer except block so broker exceptions (raised before
+    this helper is called) are still caught correctly.
+    """
+    # Check status
+    status = await _run(_order_status, account, current_order_id)
+    order_status = status.get("status", "").upper()
+    # Sprint D — Kite reports `filled_quantity` in WHATEVER
+    # units `place_order` was given. For MCX/NCO we placed in
+    # LOTS (translate_qty divides by lot_size), so the status
+    # filled_quantity is also in lots — but our `remaining_qty`
+    # / `quantity` track CONTRACTS. Without the reverse-
+    # translate, every MCX partial-fill comparison fires
+    # (1 lot < 100 contracts always) and AlgoOrder.filled_qty
+    # accumulated as lots into a contracts column. Reverse-
+    # translate once here so downstream math is in one unit.
+    _kite_filled = int(status.get("filled_quantity", 0) or 0)
+    if cfg.exchange in ("MCX", "NCO") and _kite_filled > 0:
+        from backend.brokers.adapters.kite import from_kite_qty
+        _lot = _lot_size_sync(cfg.exchange, symbol)
+        filled_qty = from_kite_qty(cfg.exchange, _kite_filled, _lot)
+    else:
+        filled_qty = _kite_filled
+    avg_price = status.get("average_price", 0)
+
+    if order_status == "COMPLETE":
+        result.status = ChaseStatus.FILLED
+        result.fill_price = avg_price
+        # Slippage uses the ACTUAL filled qty, not the original
+        # ask. Pre-fix the formula `abs(diff) * quantity` over-
+        # stated slippage on partial fills by quantity/filled_qty
+        # — operator audit trail showed a misleadingly high
+        # number that didn't match what actually traded.
+        result.slippage = abs(avg_price - result.initial_price) * (filled_qty or quantity)
+        result.detail = f"Filled at {avg_price} in {attempt} attempts"
+        emit("order_filled", {
+            "order_id": current_order_id, "fill_price": avg_price,
+            "attempts": attempt, "slippage": result.slippage,
+        })
+        logger.info(f"Chase {symbol}: FILLED @ {avg_price} "
+                    f"(attempt {attempt}, slippage ₹{result.slippage:.2f})")
+        import asyncio as _asyncio
+        _asyncio.create_task(_emit_chase_terminal(
+            current_order_id, "chase_fill",
+            symbol, transaction_type, quantity,
+            final_price=avg_price, attempts=attempt,
+            slippage=result.slippage,
+            algo_order_id=algo_order_id,
+        ))
+        return "filled", remaining_qty
+
+    # Audit fix (C-1): `filled_qty` is BROKER-CUMULATIVE (not
+    # per-poll delta). Compute the delta vs the in-memory
+    # `quantity - remaining_qty` so we only react to NEW fills.
+    # Pre-fix the partial branch only fired ONCE (the first
+    # poll where filled_qty > 0); subsequent partials were
+    # silently dropped because `filled_qty < remaining_qty`
+    # failed after the first decrement. _record_partial_fill
+    # is now idempotent + cumulative-aware so we can call it
+    # every poll cycle.
+    _already_filled = quantity - remaining_qty
+    _new_delta = filled_qty - _already_filled
+    if filled_qty > 0 and _new_delta > 0 and filled_qty < quantity:
+        # New partial since the last poll — chase the residual.
+        remaining_qty = max(0, quantity - filled_qty)
+        # Sprint E (audit) — flip the in-memory status to
+        # PARTIAL so the ChaseResult returned to callers
+        # reflects partial-fill state. Pre-fix the enum value
+        # existed but was never set anywhere; downstream
+        # consumers (chase panel, MCP audit log) couldn't
+        # distinguish "still chasing the residual" from "no
+        # progress yet". Persistent state on the AlgoOrder row
+        # still uses OPEN / FILLED / UNFILLED — PARTIAL is an
+        # in-process classifier, not a DB-status.
+        result.status = ChaseStatus.PARTIAL
+        logger.info(
+            f"Chase {symbol}: partial fill +{_new_delta} "
+            f"(total {filled_qty}/{quantity}, remaining {remaining_qty})"
+        )
+        emit("partial_fill", {
+            "filled": filled_qty,
+            "delta": _new_delta,
+            "remaining": remaining_qty,
+        })
+        # _record_partial_fill MAX-clamps against the prior DB
+        # value, so out-of-order polls or restarts can't roll
+        # the row backwards or inflate it past `quantity`.
+        await _record_partial_fill(
+            algo_order_id, filled_qty, avg_price, quantity
+        )
+
+    if order_status == "REJECTED":
+        # Broker rejected the order — invalid product / no permission /
+        # margin shortfall / tick violation / price band, etc. The
+        # same parameters will be rejected again next attempt, so we
+        # abort the chase immediately rather than burn through
+        # `max_attempts` re-submitting an order Kite has already
+        # said no to. Operator gets an alert with the broker's
+        # status_message so they can fix the underlying issue.
+        status_msg = status.get("status_message", "") or "rejected by broker"
+        abort_msg = f"Order rejected by broker: {status_msg}"
+        logger.error(f"Chase {symbol}: REJECTED — {status_msg}. Aborting chase.")
+        result.status = ChaseStatus.FAILED
+        result.detail = abort_msg
+        emit("chase_failed", {
+            "attempts": attempt, "error": abort_msg,
+            "reason": "broker_rejected",
+            "status_message": status_msg,
+        })
+        try:
+            from backend.shared.helpers.alert_utils import send_order_failure_alert
+            send_order_failure_alert(
+                account=account, symbol=symbol,
+                exchange=cfg.exchange, side=transaction_type,
+                qty=quantity, mode="live", source="chase",
+                error=abort_msg,
+            )
+        except Exception:
+            pass
+        import asyncio as _asyncio
+        _asyncio.create_task(_emit_chase_terminal(
+            current_order_id, "chase_failed",
+            symbol, transaction_type, quantity,
+            attempts=attempt, error=abort_msg,
+            algo_order_id=algo_order_id,
+        ))
+        return "rejected", remaining_qty
+
+    if order_status == "CANCELLED":
+        # External cancel — three possible sources:
+        #   (a) operator clicked Kill in the chase panel
+        #   (b) broker auto-cancelled (circuit / session-end)
+        #   (c) operator cancelled directly in Kite app
+        # For (a), the kill route adds the broker_order_id to
+        # `_KILLED_ORDER_IDS` BEFORE issuing the broker cancel.
+        # Without this check the loop treated every CANCELLED
+        # as a transient hiccup and silently re-placed — the
+        # operator's kill was effectively ignored.
+        killed_by_op = is_killed(current_order_id)
+        logger.warning(
+            f"Chase {symbol}: order CANCELLED "
+            f"(operator_kill={killed_by_op}) — "
+            f"{status.get('status_message', '')}"
+        )
+        if killed_by_op:
+            result.status = ChaseStatus.CANCELLED
+            result.detail = "Chase cancelled by operator"
+            emit("chase_cancelled", {"attempts": attempt})
+            import asyncio as _asyncio
+            _asyncio.create_task(_emit_chase_terminal(
+                current_order_id, "chase_cancelled",
+                symbol, transaction_type, quantity,
+                attempts=attempt,
+                algo_order_id=algo_order_id,
+            ))
+            return "killed", remaining_qty
+        # Non-operator cancel (broker auto-cancel, circuit, session-end,
+        # or direct Kite-app cancel). Signal the outer loop to reset
+        # current_order_id and sleep backoff before placing a fresh order.
+        return "cancelled_continue", remaining_qty
+
+    # No terminal status — partial fill or benign (e.g. OPEN/TRIGGER_PENDING).
+    return None, remaining_qty
+
+
 async def chase_order(
     account: str,
     symbol: str,
@@ -801,165 +1023,17 @@ async def chase_order(
             # Wait for fill
             await asyncio.sleep(cfg.interval_seconds)
 
-            # Check status
-            status = await _run(_order_status, account, current_order_id)
-            order_status = status.get("status", "").upper()
-            # Sprint D — Kite reports `filled_quantity` in WHATEVER
-            # units `place_order` was given. For MCX/NCO we placed in
-            # LOTS (translate_qty divides by lot_size), so the status
-            # filled_quantity is also in lots — but our `remaining_qty`
-            # / `quantity` track CONTRACTS. Without the reverse-
-            # translate, every MCX partial-fill comparison fires
-            # (1 lot < 100 contracts always) and AlgoOrder.filled_qty
-            # accumulated as lots into a contracts column. Reverse-
-            # translate once here so downstream math is in one unit.
-            _kite_filled = int(status.get("filled_quantity", 0) or 0)
-            if cfg.exchange in ("MCX", "NCO") and _kite_filled > 0:
-                from backend.brokers.adapters.kite import from_kite_qty
-                _lot = _lot_size_sync(cfg.exchange, symbol)
-                filled_qty = from_kite_qty(cfg.exchange, _kite_filled, _lot)
-            else:
-                filled_qty = _kite_filled
-            avg_price = status.get("average_price", 0)
-
-            if order_status == "COMPLETE":
-                result.status = ChaseStatus.FILLED
-                result.fill_price = avg_price
-                # Slippage uses the ACTUAL filled qty, not the original
-                # ask. Pre-fix the formula `abs(diff) * quantity` over-
-                # stated slippage on partial fills by quantity/filled_qty
-                # — operator audit trail showed a misleadingly high
-                # number that didn't match what actually traded.
-                result.slippage = abs(avg_price - result.initial_price) * (filled_qty or quantity)
-                result.detail = f"Filled at {avg_price} in {attempt} attempts"
-                emit("order_filled", {
-                    "order_id": current_order_id, "fill_price": avg_price,
-                    "attempts": attempt, "slippage": result.slippage,
-                })
-                logger.info(f"Chase {symbol}: FILLED @ {avg_price} "
-                            f"(attempt {attempt}, slippage ₹{result.slippage:.2f})")
-                import asyncio as _asyncio
-                _asyncio.create_task(_emit_chase_terminal(
-                    current_order_id, "chase_fill",
-                    symbol, transaction_type, quantity,
-                    final_price=avg_price, attempts=attempt,
-                    slippage=result.slippage,
-                    algo_order_id=algo_order_id,
-                ))
+            signal, remaining_qty = await _chase_poll_status(
+                account, current_order_id, cfg, symbol, transaction_type,
+                quantity, result, attempt, remaining_qty, algo_order_id, emit,
+            )
+            if signal in ("filled", "killed", "rejected"):
                 return result
-
-            # Audit fix (C-1): `filled_qty` is BROKER-CUMULATIVE (not
-            # per-poll delta). Compute the delta vs the in-memory
-            # `quantity - remaining_qty` so we only react to NEW fills.
-            # Pre-fix the partial branch only fired ONCE (the first
-            # poll where filled_qty > 0); subsequent partials were
-            # silently dropped because `filled_qty < remaining_qty`
-            # failed after the first decrement. _record_partial_fill
-            # is now idempotent + cumulative-aware so we can call it
-            # every poll cycle.
-            _already_filled = quantity - remaining_qty
-            _new_delta = filled_qty - _already_filled
-            if filled_qty > 0 and _new_delta > 0 and filled_qty < quantity:
-                # New partial since the last poll — chase the residual.
-                remaining_qty = max(0, quantity - filled_qty)
-                # Sprint E (audit) — flip the in-memory status to
-                # PARTIAL so the ChaseResult returned to callers
-                # reflects partial-fill state. Pre-fix the enum value
-                # existed but was never set anywhere; downstream
-                # consumers (chase panel, MCP audit log) couldn't
-                # distinguish "still chasing the residual" from "no
-                # progress yet". Persistent state on the AlgoOrder row
-                # still uses OPEN / FILLED / UNFILLED — PARTIAL is an
-                # in-process classifier, not a DB-status.
-                result.status = ChaseStatus.PARTIAL
-                logger.info(
-                    f"Chase {symbol}: partial fill +{_new_delta} "
-                    f"(total {filled_qty}/{quantity}, remaining {remaining_qty})"
-                )
-                emit("partial_fill", {
-                    "filled": filled_qty,
-                    "delta": _new_delta,
-                    "remaining": remaining_qty,
-                })
-                # _record_partial_fill MAX-clamps against the prior DB
-                # value, so out-of-order polls or restarts can't roll
-                # the row backwards or inflate it past `quantity`.
-                await _record_partial_fill(
-                    algo_order_id, filled_qty, avg_price, quantity
-                )
-
-            if order_status == "REJECTED":
-                # Broker rejected the order — invalid product / no permission /
-                # margin shortfall / tick violation / price band, etc. The
-                # same parameters will be rejected again next attempt, so we
-                # abort the chase immediately rather than burn through
-                # `max_attempts` re-submitting an order Kite has already
-                # said no to. Operator gets an alert with the broker's
-                # status_message so they can fix the underlying issue.
-                status_msg = status.get("status_message", "") or "rejected by broker"
-                abort_msg = f"Order rejected by broker: {status_msg}"
-                logger.error(f"Chase {symbol}: REJECTED — {status_msg}. Aborting chase.")
-                result.status = ChaseStatus.FAILED
-                result.detail = abort_msg
-                rejected_order_id = current_order_id
+            if signal == "cancelled_continue":
+                # Non-operator cancel (broker auto-cancel, circuit, session-end).
+                # Reset current_order_id and sleep backoff so the next attempt
+                # places a fresh order rather than trying to cancel a vanished one.
                 current_order_id = None
-                emit("chase_failed", {
-                    "attempts": attempt, "error": abort_msg,
-                    "reason": "broker_rejected",
-                    "status_message": status_msg,
-                })
-                try:
-                    from backend.shared.helpers.alert_utils import send_order_failure_alert
-                    send_order_failure_alert(
-                        account=account, symbol=symbol,
-                        exchange=cfg.exchange, side=transaction_type,
-                        qty=quantity, mode="live", source="chase",
-                        error=abort_msg,
-                    )
-                except Exception:
-                    pass
-                if rejected_order_id:
-                    import asyncio as _asyncio
-                    _asyncio.create_task(_emit_chase_terminal(
-                        rejected_order_id, "chase_failed",
-                        symbol, transaction_type, quantity,
-                        attempts=attempt, error=abort_msg,
-                        algo_order_id=algo_order_id,
-                    ))
-                return result
-
-            if order_status == "CANCELLED":
-                # External cancel — three possible sources:
-                #   (a) operator clicked Kill in the chase panel
-                #   (b) broker auto-cancelled (circuit / session-end)
-                #   (c) operator cancelled directly in Kite app
-                # For (a), the kill route adds the broker_order_id to
-                # `_KILLED_ORDER_IDS` BEFORE issuing the broker cancel.
-                # Without this check the loop treated every CANCELLED
-                # as a transient hiccup and silently re-placed — the
-                # operator's kill was effectively ignored.
-                killed_by_op = is_killed(current_order_id)
-                logger.warning(
-                    f"Chase {symbol}: order CANCELLED "
-                    f"(operator_kill={killed_by_op}) — "
-                    f"{status.get('status_message', '')}"
-                )
-                if killed_by_op:
-                    result.status = ChaseStatus.CANCELLED
-                    result.detail = "Chase cancelled by operator"
-                    emit("chase_cancelled", {"attempts": attempt})
-                    cancelled_order_id = current_order_id
-                    current_order_id = None
-                    if cancelled_order_id:
-                        import asyncio as _asyncio
-                        _asyncio.create_task(_emit_chase_terminal(
-                            cancelled_order_id, "chase_cancelled",
-                            symbol, transaction_type, quantity,
-                            attempts=attempt,
-                            algo_order_id=algo_order_id,
-                        ))
-                    return result
-                current_order_id = None  # Need fresh order
                 backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
                 logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
                 await asyncio.sleep(backoff)

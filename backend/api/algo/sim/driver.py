@@ -799,52 +799,19 @@ class SimDriver:
 
     # ── Control ───────────────────────────────────────────────────────
 
-    def start(self, scenario_slug: str, rate_ms: int = 2000,
-              *, seed_mode: str = "scripted",
-              only_agent_ids: list[int] | None = None,
-              positions_every_n_ticks: int | None = None,
-              market_state_override: dict | None = None,
-              inline_scenario: dict | None = None,
-              pct_overrides: list[float] | None = None,
-              symbol_filter: list[str] | None = None,
-              spread_pct: float | None = None,
-              custom_positions: list[dict] | None = None,
-              walk_drift: float | None = None,
-              walk_vol: float | None = None,
-              walk_seed: int | None = None,
-              chase_max_attempts: int | None = None,
-              inputs: list[str] | None = None,
-              accounts: list[str] | None = None,
-              record_mode: bool = False,
-              recording_label: str | None = None,
-              recording_owner_user_id: int | None = None) -> dict:
+    def _start_normalise_scenario(
+        self,
+        scen: dict,
+        pct_overrides: list[float] | None,
+        walk_drift: float | None,
+        walk_vol: float | None,
+        walk_seed: int | None,
+    ) -> dict:
         """
-        Start the sim against a named scenario from scenarios.yaml, or an
-        `inline_scenario` dict (same shape) built at call time by the
-        synthesiser. Inline scenarios do not live in the YAML catalog —
-        useful for per-agent auto-generated tests.
+        Return a (possibly deep-copied) scenario dict with pct_overrides
+        and walk-param overrides baked in. The original dict is not mutated
+        unless neither override is requested.
         """
-        assert_enabled()
-        if self.active:
-            raise SimGuardError("Sim is already running — stop it first.")
-        if inline_scenario is not None:
-            scen = inline_scenario
-            scenario_slug = scen.get("slug") or scenario_slug
-        else:
-            scen = get_scenario(scenario_slug)
-            if not scen:
-                raise SimGuardError(f"Unknown scenario '{scenario_slug}'")
-            # Realism check — non-inline scenarios are YAML-authored
-            # and should drive market change via underlying_* moves so
-            # derivatives reprice coherently off spot via BS. Direct-LTP
-            # primitives (pct/abs/random_walk/target_pnl) on positions
-            # scopes bypass the spot path and produce unrealistic option
-            # ticks. The synthesizer (inline_scenario != None) is exempt
-            # because it deliberately uses target_pnl to force agent
-            # thresholds. Soft warning only — operator may still want
-            # to run the scenario for ad-hoc testing.
-            _warn_unrealistic_moves(scen, scenario_slug)
-
         # Apply pct_overrides into the scenario's ticks before we store
         # it. The shape we handle cleanly: every override slot [i] replaces
         # the `value` of every `pct`-typed move in ticks[i].moves. Scenarios
@@ -882,9 +849,25 @@ class SimDriver:
                         if walk_vol is not None:
                             move["vol"]   = float(walk_vol)
 
-        self.scenario_slug  = scenario_slug
-        self.scenario       = scen
-        self.seed_mode      = seed_mode
+        return scen
+
+    def _start_resolve_run_params(
+        self,
+        scen: dict,
+        rate_ms: int,
+        positions_every_n_ticks: int | None,
+        spread_pct: float | None,
+        market_state_override: dict | None,
+        chase_max_attempts: int | None,
+        only_agent_ids: list[int] | None,
+        inputs: list[str] | None,
+        accounts: list[str] | None,
+    ) -> None:
+        """
+        Resolve and store all run-level parameters onto self. Must be called
+        before _start_init_recording because recording setup reads
+        self.started_at and self.rate_ms.
+        """
         # Input buckets — normalise to a clean list of known values.
         # Defaults to ["positions"] (historical behaviour). Unknown
         # values are silently dropped so a future "options-only" or
@@ -894,46 +877,11 @@ class SimDriver:
         self.inputs = [s for s in _req_inputs if s in _known_inputs] or ["positions"]
         # Account scope — stored for snapshot serialization + passed
         # to seed_live below. Empty list = all loaded accounts.
-        self.accounts = [str(a).strip().upper() for a in (accounts or []) if a]
+        self.accounts       = [str(a).strip().upper() for a in (accounts or []) if a]
         self.rate_ms        = max(200, int(rate_ms))
         self.tick_index     = 0
         self.started_at     = datetime.now()
         self.only_agent_ids = list(only_agent_ids) if only_agent_ids else None
-        self._paper.reset()
-        # Wipe the GTT book — a fresh sim run starts with no triggers.
-        self._gtt_book.reset()
-
-        # Recording — fresh buffer for this run. If record_mode is on
-        # we wire SimGttBook's on_record hook to append into _recording_events
-        # for the lifetime of this run; on stop() the buffer flushes to
-        # sim_recordings. Recording is per-run state: it never carries
-        # across stop()→start() boundaries.
-        self._recording_active:    bool = bool(record_mode)
-        self._recording_label:     str  = (recording_label or "").strip()[:160]
-        self._recording_owner_id:  int | None = recording_owner_user_id
-        self._recording_events:    list[dict] = []
-        self._recording_started_at = self.started_at if self._recording_active else None
-        # Re-wire the GTT book's on_record to point at our buffer. When
-        # record_mode is off we leave it as a no-op so the book's per-event
-        # callback stays cheap.
-        self._gtt_book._on_record = self._record if self._recording_active else None
-        if self._recording_active:
-            self._record("sim_start", {
-                "scenario":  scenario_slug,
-                "seed_mode": seed_mode,
-                "rate_ms":   self.rate_ms,
-                "label":     self._recording_label,
-            })
-
-        # Reset the rate-history bucket so consecutive sim runs don't
-        # inherit stale samples — the rate evaluator otherwise sees
-        # a stale baseline across the boundary between two runs of
-        # different scenarios.
-        self._sim_alert_state['pnl_history'] = {}
-        # Anchor session_date so the engine's `_update_pnl_history`
-        # rollover wipe doesn't trip on the first tick of the new run.
-        if hasattr(self.started_at, 'date'):
-            self._sim_alert_state['session_date'] = self.started_at.date()
 
         # Spread — request override > scenario YAML > DB setting. Stored as
         # a decimal fraction internally (0.001 = 0.10%). The UI submits a
@@ -984,6 +932,65 @@ class SimDriver:
             else "mid_session"
         )
 
+    def _start_init_recording(
+        self,
+        record_mode: bool,
+        recording_label: str | None,
+        recording_owner_user_id: int | None,
+        scenario_slug: str,
+        seed_mode: str,
+    ) -> None:
+        """
+        Initialise per-run recording state and wire the GTT book hook.
+        Reads self.started_at and self.rate_ms — must be called after
+        _start_resolve_run_params.
+        """
+        # Recording — fresh buffer for this run. If record_mode is on
+        # we wire SimGttBook's on_record hook to append into _recording_events
+        # for the lifetime of this run; on stop() the buffer flushes to
+        # sim_recordings. Recording is per-run state: it never carries
+        # across stop()→start() boundaries.
+        self._recording_active:    bool = bool(record_mode)
+        self._recording_label:     str  = (recording_label or "").strip()[:160]
+        self._recording_owner_id:  int | None = recording_owner_user_id
+        self._recording_events:    list[dict] = []
+        self._recording_started_at = self.started_at if self._recording_active else None
+        # Re-wire the GTT book's on_record to point at our buffer. When
+        # record_mode is off we leave it as a no-op so the book's per-event
+        # callback stays cheap.
+        self._gtt_book._on_record = self._record if self._recording_active else None
+        if self._recording_active:
+            self._record("sim_start", {
+                "scenario":  scenario_slug,
+                "seed_mode": seed_mode,
+                "rate_ms":   self.rate_ms,
+                "label":     self._recording_label,
+            })
+
+        # Reset the rate-history bucket so consecutive sim runs don't
+        # inherit stale samples — the rate evaluator otherwise sees
+        # a stale baseline across the boundary between two runs of
+        # different scenarios.
+        self._sim_alert_state['pnl_history'] = {}
+        # Anchor session_date so the engine's `_update_pnl_history`
+        # rollover wipe doesn't trip on the first tick of the new run.
+        if hasattr(self.started_at, 'date'):
+            self._sim_alert_state['session_date'] = self.started_at.date()
+
+    def _start_seed_state(
+        self,
+        seed_mode: str,
+        scen: dict,
+        custom_positions: list[dict] | None,
+        symbol_filter: list[str] | None,
+    ) -> None:
+        """
+        Seed positions, holdings, watchlist and margins from live broker
+        snapshot, scripted scenario initial block, or both. Applies
+        custom_positions on top, recomputes rows, applies symbol_filter,
+        and auto-upgrades scripted→live when the scripted initial is empty.
+        Raises SimGuardError if the final state contains no positions or margins.
+        """
         # Seed the running state — either from scenario.initial, the live-book
         # snapshot, or both stacked. For the live modes, auto-snapshot if the
         # operator hasn't pressed "Load live book" yet. Holdings is now
@@ -1057,7 +1064,7 @@ class SimDriver:
         # live / live+scenario paths already seeded earlier.
         if seed_mode == "scripted" and not (self._positions_rows or self._margins_rows):
             logger.info(
-                f"[SIM] '{scenario_slug}' has no scripted initial — "
+                f"[SIM] '{scen.get('slug', '?')}' has no scripted initial — "
                 f"auto-loading live book."
             )
             try:
@@ -1072,7 +1079,7 @@ class SimDriver:
                 self.scenario = None
                 self.active   = False
                 raise SimGuardError(
-                    f"Scenario '{scenario_slug}' has no scripted initial state "
+                    f"Scenario '{scen.get('slug', '?')}' has no scripted initial state "
                     f"and auto-load of live book failed: {e}"
                 )
 
@@ -1080,9 +1087,79 @@ class SimDriver:
             self.scenario = None
             self.active   = False
             raise SimGuardError(
-                f"Scenario '{scenario_slug}' has no initial state and the live "
+                f"Scenario '{scen.get('slug', '?')}' has no initial state and the live "
                 f"book returned no positions or margins. Nothing to simulate."
             )
+
+    def start(self, scenario_slug: str, rate_ms: int = 2000,
+              *, seed_mode: str = "scripted",
+              only_agent_ids: list[int] | None = None,
+              positions_every_n_ticks: int | None = None,
+              market_state_override: dict | None = None,
+              inline_scenario: dict | None = None,
+              pct_overrides: list[float] | None = None,
+              symbol_filter: list[str] | None = None,
+              spread_pct: float | None = None,
+              custom_positions: list[dict] | None = None,
+              walk_drift: float | None = None,
+              walk_vol: float | None = None,
+              walk_seed: int | None = None,
+              chase_max_attempts: int | None = None,
+              inputs: list[str] | None = None,
+              accounts: list[str] | None = None,
+              record_mode: bool = False,
+              recording_label: str | None = None,
+              recording_owner_user_id: int | None = None) -> dict:
+        """
+        Start the sim against a named scenario from scenarios.yaml, or an
+        `inline_scenario` dict (same shape) built at call time by the
+        synthesiser. Inline scenarios do not live in the YAML catalog —
+        useful for per-agent auto-generated tests.
+        """
+        assert_enabled()
+        if self.active:
+            raise SimGuardError("Sim is already running — stop it first.")
+        if inline_scenario is not None:
+            scen = inline_scenario
+            scenario_slug = scen.get("slug") or scenario_slug
+        else:
+            scen = get_scenario(scenario_slug)
+            if not scen:
+                raise SimGuardError(f"Unknown scenario '{scenario_slug}'")
+            # Realism check — non-inline scenarios are YAML-authored
+            # and should drive market change via underlying_* moves so
+            # derivatives reprice coherently off spot via BS. Direct-LTP
+            # primitives (pct/abs/random_walk/target_pnl) on positions
+            # scopes bypass the spot path and produce unrealistic option
+            # ticks. The synthesizer (inline_scenario != None) is exempt
+            # because it deliberately uses target_pnl to force agent
+            # thresholds. Soft warning only — operator may still want
+            # to run the scenario for ad-hoc testing.
+            _warn_unrealistic_moves(scen, scenario_slug)
+
+        scen = self._start_normalise_scenario(
+            scen, pct_overrides, walk_drift, walk_vol, walk_seed
+        )
+
+        self.scenario_slug = scenario_slug
+        self.scenario      = scen
+        self.seed_mode     = seed_mode
+        self._paper.reset()
+        # Wipe the GTT book — a fresh sim run starts with no triggers.
+        self._gtt_book.reset()
+
+        # Resolve run params first — recording setup reads self.started_at
+        # and self.rate_ms which are set here.
+        self._start_resolve_run_params(
+            scen, rate_ms, positions_every_n_ticks, spread_pct,
+            market_state_override, chase_max_attempts,
+            only_agent_ids, inputs, accounts,
+        )
+        self._start_init_recording(
+            record_mode, recording_label, recording_owner_user_id,
+            scenario_slug, seed_mode,
+        )
+        self._start_seed_state(seed_mode, scen, custom_positions, symbol_filter)
 
         rng_seed = scen.get("seed")
         self._rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
@@ -1100,13 +1177,13 @@ class SimDriver:
         self._seed_derivatives(scen)
         self._record_tick(
             kind="started", moves=[], changes=[],
-            note=(f"{scenario_slug} · seed={seed_mode} · "
+            note=(f"{scenario_slug} · seed={self.seed_mode} · "
                   f"{len(self._holdings_rows)} holdings · "
                   f"{len(self._positions_rows)} positions"),
         )
         self.active = True
         logger.warning(
-            f"[SIM] Started scenario={scenario_slug} seed={seed_mode} "
+            f"[SIM] Started scenario={scenario_slug} seed={self.seed_mode} "
             f"rate={self.rate_ms}ms agents={self.only_agent_ids or 'all'}"
         )
         self._task = asyncio.create_task(self._run_loop(), name="sim-driver")

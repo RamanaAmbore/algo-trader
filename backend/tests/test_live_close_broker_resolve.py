@@ -18,6 +18,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import backend.api.algo.actions as _mod
+import backend.api.algo.actions_live as _mod_live
 
 
 # ---------------------------------------------------------------------------
@@ -83,21 +84,21 @@ async def test_live_close_broker_resolve_failure_does_not_raise_and_logs_correct
         raise KeyError(f"account not found: {acc!r}")
 
     with (
-        patch.object(_mod, "logger",       mock_logger),
+        # logger lives in actions_live; patch there so _action_live_close_position sees it.
+        patch.object(_mod_live, "logger",       mock_logger),
         # get_broker is imported locally from backend.brokers inside the function;
         # patch the source so the local `from backend.brokers import get_broker` picks it up.
         patch("backend.brokers.get_broker", side_effect=_raising_get_broker),
-        # run_preflight is defined in the same module; patch via module object.
-        patch.object(_mod, "run_preflight",
+        # run_preflight is module-level in actions_live (imported from actions_preflight).
+        patch.object(_mod_live, "run_preflight",
                      new=AsyncMock(return_value={"ok": True, "blocked": []})),
-        # _write_live_order is defined in the same module.
+        # _write_live_order is lazy-imported from actions.py; patch path stays there.
         patch.object(_mod, "_write_live_order", new=AsyncMock()),
         # chase_order is imported locally from backend.api.algo.chase.
         patch("backend.api.algo.chase.chase_order",
               new=AsyncMock(side_effect=RuntimeError("broker unavailable"))),
-        # diagnose_live_failure is defined in the same module; should NOT be called
-        # (broker is None), but stub it to catch any accidental invocation.
-        patch.object(_mod, "diagnose_live_failure",
+        # diagnose_live_failure is module-level in actions_live.
+        patch.object(_mod_live, "diagnose_live_failure",
                      new=AsyncMock(return_value="should not be reached")),
         # alert helper — stub to avoid network/import side-effects.
         patch("backend.shared.helpers.alert_utils.send_order_failure_alert",
