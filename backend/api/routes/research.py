@@ -556,6 +556,180 @@ def _consume_token(token: str, user_id: int | None, purpose_hash: str) -> str | 
     return None
 
 
+# ── mint_confirm_token per-kind helpers ──────────────────────────────
+# Each helper validates its inputs and returns (purpose_hash, purpose_string).
+# Raising HTTPException here keeps the validation logic close to the hash
+# functions; the route method becomes a thin dispatcher.
+
+def _mint_place_hash_and_purpose(data: "MintTokenRequest", acct: str,
+                                  qty: int, order_type: str) -> tuple[str, str]:
+    """Validate + hash a PLACE mint request."""
+    side = (data.side or "").upper().strip()
+    mode = (data.mode or "paper").lower().strip()
+    sym  = (data.tradingsymbol or "").upper().strip()
+    if side not in ("BUY", "SELL"):
+        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+    if mode not in ("paper", "live"):
+        raise HTTPException(status_code=400, detail="mode must be paper or live")
+    if not sym or qty <= 0:
+        raise HTTPException(status_code=400,
+            detail="tradingsymbol and quantity > 0 are required for place")
+    ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
+                             data.price, data.trigger_price)
+    price_chunk = (
+        f" @₹{data.price:g}" if data.price else
+        (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
+    )
+    purpose = f"PLACE [{mode.upper()}] · {side} {qty} {sym}{price_chunk} · acct={acct}"
+    return ph, purpose
+
+
+def _mint_cancel_hash_and_purpose(data: "MintTokenRequest", acct: str, oid: str) -> tuple[str, str]:
+    """Validate + hash a CANCEL mint request."""
+    if not oid:
+        raise HTTPException(status_code=400, detail="order_id is required for cancel")
+    mode_cm = (data.mode or "live").lower().strip()
+    if mode_cm not in ("paper", "live"):
+        raise HTTPException(status_code=400, detail="mode must be paper or live")
+    ph = _purpose_hash_cancel(acct, oid, mode_cm)
+    purpose = f"CANCEL [{mode_cm.upper()}] · order_id={oid} · acct={acct}"
+    return ph, purpose
+
+
+def _mint_modify_hash_and_purpose(data: "MintTokenRequest", acct: str,
+                                   oid: str, qty: int, order_type: str) -> tuple[str, str]:
+    """Validate + hash a MODIFY mint request."""
+    if not oid:
+        raise HTTPException(status_code=400, detail="order_id is required for modify")
+    mode_cm = (data.mode or "live").lower().strip()
+    if mode_cm not in ("paper", "live"):
+        raise HTTPException(status_code=400, detail="mode must be paper or live")
+    ph = _purpose_hash_modify(acct, oid, qty, order_type, data.price, data.trigger_price, mode_cm)
+    mod_chunk = " ".join(filter(None, [
+        f"qty={qty}" if qty else None,
+        f"type={order_type}" if order_type else None,
+        f"@₹{data.price:g}" if data.price else None,
+        f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
+    ])) or "no changes"
+    purpose = f"MODIFY [{mode_cm.upper()}] · order_id={oid} · {mod_chunk} · acct={acct}"
+    return ph, purpose
+
+
+def _mint_agent_status_hash_and_purpose(kind: str, agent_slug: str) -> tuple[str, str]:
+    """Validate + hash an ACTIVATE / DEACTIVATE mint request."""
+    if not agent_slug:
+        raise HTTPException(status_code=400, detail=f"agent_slug is required for {kind}")
+    ph = _purpose_hash_agent_status(kind, agent_slug)
+    purpose = f"{kind.upper()} · agent={agent_slug}"
+    return ph, purpose
+
+
+def _mint_update_hash_and_purpose(agent_slug: str, proposed: dict) -> tuple[str, str]:
+    """Validate + hash an UPDATE-agent mint request."""
+    if not agent_slug:
+        raise HTTPException(status_code=400, detail="agent_slug is required for update")
+    filtered = _canonical_changes(proposed or {})
+    if not filtered:
+        raise HTTPException(status_code=400,
+            detail=(
+                "proposed_changes must include at least one of: "
+                + ", ".join(_AGENT_UPDATE_FIELDS)
+            ))
+    ph = _purpose_hash_update_agent(agent_slug, filtered)
+    purpose = f"UPDATE · agent={agent_slug} · fields={','.join(sorted(filtered.keys()))}"
+    return ph, purpose
+
+
+_MINT_KIND_WHITELIST = frozenset(("place", "cancel", "modify", "activate", "deactivate", "update"))
+_ORDER_KINDS         = frozenset(("place", "cancel", "modify"))
+
+
+# ── promote_thread helpers ────────────────────────────────────────────
+
+def _validate_promote_request(data: "PromoteRequest") -> None:
+    """Raise 400 if the PromoteRequest fields are not well-formed."""
+    if not data.name or not data.name.strip():
+        raise HTTPException(status_code=400, detail="name is required")
+    if data.scope not in _VALID_SCOPE:
+        raise HTTPException(status_code=400,
+                            detail=f"scope must be one of {sorted(_VALID_SCOPE)}")
+    if not isinstance(data.conditions, dict) or not data.conditions:
+        raise HTTPException(status_code=400, detail="conditions must be a non-empty dict")
+
+
+def _check_promote_grammar(conditions: dict) -> None:
+    """Optional grammar dry-check — log + continue when registry not loaded."""
+    try:
+        from backend.api.algo.agent_evaluator import validate as validate_condition
+        errors = validate_condition(conditions)
+        if errors:
+            raise HTTPException(status_code=400,
+                                detail=f"condition validation: {'; '.join(errors)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"promote: skipped grammar validation: {e}")
+
+
+def _parse_lifespan(data: "PromoteRequest") -> tuple[str, int | None, datetime | None]:
+    """Parse + validate lifespan fields. Returns (lifespan_type, max_fires, expires_at)."""
+    lifespan_type = (data.lifespan_type or "persistent").lower().strip()
+    if lifespan_type not in ("persistent", "one_shot", "n_fires", "until_date"):
+        raise HTTPException(status_code=400,
+            detail="lifespan_type must be one of persistent, one_shot, n_fires, until_date")
+
+    lifespan_max_fires: int | None = data.lifespan_max_fires
+    if lifespan_type == "n_fires":
+        if not lifespan_max_fires or int(lifespan_max_fires) < 1:
+            raise HTTPException(status_code=400,
+                detail="lifespan_max_fires (≥ 1) is required when lifespan_type='n_fires'")
+    else:
+        lifespan_max_fires = None
+
+    lifespan_expires_at: datetime | None = None
+    if lifespan_type == "until_date":
+        if not data.lifespan_expires_at:
+            raise HTTPException(status_code=400,
+                detail="lifespan_expires_at (ISO datetime) is required when lifespan_type='until_date'")
+        try:
+            lifespan_expires_at = datetime.fromisoformat(data.lifespan_expires_at)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                detail=f"lifespan_expires_at must be ISO format, got {data.lifespan_expires_at!r}")
+
+    return lifespan_type, lifespan_max_fires, lifespan_expires_at
+
+
+def _build_agent(data: "PromoteRequest", slug: str, thread_id: int,
+                 thread_symbol: str,
+                 lifespan_type: str, lifespan_max_fires: int | None,
+                 lifespan_expires_at: "datetime | None") -> "Agent":
+    """Construct an Agent row from validated promote inputs (not yet added to session)."""
+    description = (
+        data.description.strip()[:1024] if data.description
+        else f"Promoted from research thread #{thread_id} ({thread_symbol})"
+    )
+    return Agent(
+        slug=slug,
+        name=data.name.strip()[:128],
+        description=description,
+        conditions=data.conditions,
+        events=data.events,
+        actions=data.actions,
+        scope=data.scope,
+        schedule=data.schedule,
+        cooldown_minutes=max(1, int(data.cooldown_minutes or 30)),
+        debounce_minutes=max(0, int(data.debounce_minutes or 0)),
+        status="inactive",
+        trade_mode="paper",
+        lifespan_type=lifespan_type,
+        lifespan_max_fires=lifespan_max_fires,
+        lifespan_expires_at=lifespan_expires_at,
+        tags=list(data.tags or []),
+        blackout_windows=list(data.blackout_windows or []),
+    )
+
+
 def _slugify(s: str) -> str:
     """Lower-kebab-case, ascii-safe. Used for auto-generating an Agent
     slug from a thread + name pair when the LLM doesn't supply one."""
@@ -710,29 +884,12 @@ class ResearchController(Controller):
         must explicitly flip status + trade_mode on /agents — this
         endpoint cannot create an active or live agent.
         """
-        # Validate inputs first.
-        if not data.name or not data.name.strip():
-            raise HTTPException(status_code=400, detail="name is required")
-        if data.scope not in _VALID_SCOPE:
-            raise HTTPException(status_code=400,
-                                detail=f"scope must be one of {sorted(_VALID_SCOPE)}")
-        if not isinstance(data.conditions, dict) or not data.conditions:
-            raise HTTPException(status_code=400, detail="conditions must be a non-empty dict")
+        _validate_promote_request(data)
         # Optional grammar dry-check — surface a precise error if the
         # condition tree references unknown tokens. Keeps the operator
         # from landing a broken draft in the Drafts tab.
-        try:
-            from backend.api.algo.agent_evaluator import validate as validate_condition
-            errors = validate_condition(data.conditions)
-            if errors:
-                raise HTTPException(status_code=400,
-                                    detail=f"condition validation: {'; '.join(errors)}")
-        except HTTPException:
-            raise
-        except Exception as e:
-            # Grammar registry not loaded yet — log + continue (the
-            # /agents page's own validator will catch it before activate).
-            logger.warning(f"promote: skipped grammar validation: {e}")
+        _check_promote_grammar(data.conditions)
+        lifespan_type, lifespan_max_fires, lifespan_expires_at = _parse_lifespan(data)
 
         async with async_session() as s:
             thread = (await s.execute(
@@ -747,51 +904,9 @@ class ResearchController(Controller):
             base = _slugify(f"{thread.symbol}-{data.name}")[:48]
             slug = await _unique_slug(s, base)
 
-            # Phase 19 — validate lifespan params before constructing
-            # the Agent row. The engine enforces the terminal state in
-            # run_cycle; the route enforces well-formed inputs.
-            lifespan_type = (data.lifespan_type or "persistent").lower().strip()
-            if lifespan_type not in ("persistent", "one_shot", "n_fires", "until_date"):
-                raise HTTPException(status_code=400,
-                    detail="lifespan_type must be one of persistent, one_shot, n_fires, until_date")
-            lifespan_max_fires = data.lifespan_max_fires
-            if lifespan_type == "n_fires":
-                if not lifespan_max_fires or int(lifespan_max_fires) < 1:
-                    raise HTTPException(status_code=400,
-                        detail="lifespan_max_fires (≥ 1) is required when lifespan_type='n_fires'")
-            elif lifespan_type != "n_fires":
-                # Clear max_fires on non-n_fires types so the column never carries stale data.
-                lifespan_max_fires = None
-            lifespan_expires_at = None
-            if lifespan_type == "until_date":
-                if not data.lifespan_expires_at:
-                    raise HTTPException(status_code=400,
-                        detail="lifespan_expires_at (ISO datetime) is required when lifespan_type='until_date'")
-                try:
-                    lifespan_expires_at = datetime.fromisoformat(data.lifespan_expires_at)
-                except (TypeError, ValueError):
-                    raise HTTPException(status_code=400,
-                        detail=f"lifespan_expires_at must be ISO format, got {data.lifespan_expires_at!r}")
-
-            agent = Agent(
-                slug=slug,
-                name=data.name.strip()[:128],
-                description=data.description.strip()[:1024] if data.description else
-                            f"Promoted from research thread #{thread.id} ({thread.symbol})",
-                conditions=data.conditions,
-                events=data.events,
-                actions=data.actions,
-                scope=data.scope,
-                schedule=data.schedule,
-                cooldown_minutes=max(1, int(data.cooldown_minutes or 30)),
-                debounce_minutes=max(0, int(data.debounce_minutes or 0)),
-                status="inactive",
-                trade_mode="paper",
-                lifespan_type=lifespan_type,
-                lifespan_max_fires=lifespan_max_fires,
-                lifespan_expires_at=lifespan_expires_at,
-                tags=list(data.tags or []),
-                blackout_windows=list(data.blackout_windows or []),
+            agent = _build_agent(
+                data, slug, thread.id, thread.symbol,
+                lifespan_type, lifespan_max_fires, lifespan_expires_at,
             )
             s.add(agent)
             await s.flush()           # populate agent.id
@@ -922,82 +1037,29 @@ class ResearchController(Controller):
         cleanly to multi-step LLM chains (LLM calls place_order
         without needing a UI round-trip mid-conversation, as long as
         the operator pre-minted the token)."""
-        kind = (data.kind or "place").lower().strip()
-        acct = (data.account or "").strip()
-        if kind not in ("place", "cancel", "modify", "activate", "deactivate", "update"):
-            raise HTTPException(status_code=400,
-                detail="kind must be place, cancel, modify, activate, deactivate, or update")
-        # Agent kinds don't need an account.
-        if kind in ("place", "cancel", "modify") and not acct:
-            raise HTTPException(status_code=400, detail="account is required")
-
+        kind       = (data.kind or "place").lower().strip()
+        acct       = (data.account or "").strip()
         order_type = (data.order_type or "LIMIT").upper().strip()
-        qty = int(data.quantity or 0)
-        oid = (data.order_id or "").strip()
+        qty        = int(data.quantity or 0)
+        oid        = (data.order_id or "").strip()
         agent_slug = (data.agent_slug or "").strip()
 
+        if kind not in _MINT_KIND_WHITELIST:
+            raise HTTPException(status_code=400,
+                detail="kind must be place, cancel, modify, activate, deactivate, or update")
+        if kind in _ORDER_KINDS and not acct:
+            raise HTTPException(status_code=400, detail="account is required")
+
         if kind == "place":
-            side = (data.side or "").upper().strip()
-            mode = (data.mode or "paper").lower().strip()
-            sym = (data.tradingsymbol or "").upper().strip()
-            if side not in ("BUY", "SELL"):
-                raise HTTPException(status_code=400, detail="side must be BUY or SELL")
-            if mode not in ("paper", "live"):
-                raise HTTPException(status_code=400, detail="mode must be paper or live")
-            if not sym or qty <= 0:
-                raise HTTPException(status_code=400,
-                    detail="tradingsymbol and quantity > 0 are required for place")
-            ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
-                                     data.price, data.trigger_price)
-            price_chunk = (
-                f" @₹{data.price:g}" if data.price else
-                (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
-            )
-            purpose = f"PLACE [{mode.upper()}] · {side} {qty} {sym}{price_chunk} · acct={acct}"
+            ph, purpose = _mint_place_hash_and_purpose(data, acct, qty, order_type)
         elif kind == "cancel":
-            if not oid:
-                raise HTTPException(status_code=400, detail="order_id is required for cancel")
-            mode_cm = (data.mode or "live").lower().strip()
-            if mode_cm not in ("paper", "live"):
-                raise HTTPException(status_code=400, detail="mode must be paper or live")
-            ph = _purpose_hash_cancel(acct, oid, mode_cm)
-            purpose = f"CANCEL [{mode_cm.upper()}] · order_id={oid} · acct={acct}"
+            ph, purpose = _mint_cancel_hash_and_purpose(data, acct, oid)
         elif kind == "modify":
-            if not oid:
-                raise HTTPException(status_code=400, detail="order_id is required for modify")
-            mode_cm = (data.mode or "live").lower().strip()
-            if mode_cm not in ("paper", "live"):
-                raise HTTPException(status_code=400, detail="mode must be paper or live")
-            ph = _purpose_hash_modify(acct, oid, qty, order_type, data.price, data.trigger_price, mode_cm)
-            mod_chunk = " ".join(filter(None, [
-                f"qty={qty}" if qty else None,
-                f"type={order_type}" if order_type else None,
-                f"@₹{data.price:g}" if data.price else None,
-                f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
-            ])) or "no changes"
-            purpose = f"MODIFY [{mode_cm.upper()}] · order_id={oid} · {mod_chunk} · acct={acct}"
+            ph, purpose = _mint_modify_hash_and_purpose(data, acct, oid, qty, order_type)
         elif kind in ("activate", "deactivate"):
-            if not agent_slug:
-                raise HTTPException(status_code=400,
-                    detail=f"agent_slug is required for {kind}")
-            ph = _purpose_hash_agent_status(kind, agent_slug)
-            purpose = f"{kind.upper()} · agent={agent_slug}"
+            ph, purpose = _mint_agent_status_hash_and_purpose(kind, agent_slug)
         else:
-            # update — agent_slug + non-empty whitelisted-changes dict
-            if not agent_slug:
-                raise HTTPException(status_code=400, detail="agent_slug is required for update")
-            filtered = _canonical_changes(data.proposed_changes or {})
-            if not filtered:
-                raise HTTPException(status_code=400,
-                    detail=(
-                        "proposed_changes must include at least one of: "
-                        + ", ".join(_AGENT_UPDATE_FIELDS)
-                    ))
-            ph = _purpose_hash_update_agent(agent_slug, filtered)
-            # Short, human-readable purpose label — JSON canonical form
-            # is too long for a Telegram subject, so just enumerate which
-            # fields are changing.
-            purpose = f"UPDATE · agent={agent_slug} · fields={','.join(sorted(filtered.keys()))}"
+            ph, purpose = _mint_update_hash_and_purpose(agent_slug, data.proposed_changes)
 
         token, expires = _mint_token(_user_id(request), ph)
         now = int(time.time())
