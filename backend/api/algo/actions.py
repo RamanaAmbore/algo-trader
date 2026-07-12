@@ -155,6 +155,117 @@ def _exchange_gate_passes(action_type: str, params: dict, context: dict) -> tupl
     )
 
 
+async def _dispatch_live_action(agent, action_type: str, params: dict, context: dict) -> None:
+    """Route a live-mode action to its broker handler.
+
+    All imports are lazy (inside function body) to preserve the existing
+    circular-import avoidance pattern from the original execute() body.
+    Exceptions bubble to the caller (execute's outer try/except).
+    """
+    from backend.api.algo.actions_live import (
+        _action_place_order, _action_live_close_position,
+        _action_live_modify_order, _action_live_cancel_order,
+        _action_live_cancel_all_orders, _action_live_chase_close_positions,
+        _action_live_expiry_auto_close,
+    )
+    if action_type in ("chase_close", "chase_close_positions"):
+        await _action_live_chase_close_positions(agent, context, params)
+    elif action_type == "place_order":
+        await _action_place_order(context, params)
+    elif action_type == "close_position":
+        await _action_live_close_position(agent, context, params)
+    elif action_type == "modify_order":
+        await _action_live_modify_order(agent, context, params)
+    elif action_type == "cancel_order":
+        await _action_live_cancel_order(agent, context, params)
+    elif action_type == "cancel_all_orders":
+        await _action_live_cancel_all_orders(agent, context, params)
+    elif action_type == "expiry_auto_close":
+        await _action_live_expiry_auto_close(agent, context, params)
+    else:
+        logger.warning(f"Agent [{agent.slug}]: live action '{action_type}' has no wired handler")
+
+
+async def _dispatch_noop_action(agent, action_type: str, params: dict, context: dict) -> bool:
+    """Route a noop-mode (non-broker) action to its handler.
+
+    Returns True when the action completed successfully and the caller
+    should proceed to log action_success.  Returns False when the handler
+    raised an internally-swallowed exception — in that case the caller
+    must `continue` (skip success logging) to match the original semantics
+    where each inner try/except did `continue` on failure.
+
+    All imports are lazy to preserve the existing circular-import pattern.
+    """
+    from backend.api.algo.actions_live import (
+        _action_send_summary, _action_chase_close,
+    )
+    if action_type == "send_summary":
+        await _action_send_summary(context, params)
+    elif action_type == "chase_close":
+        # chase_close is in BROKER_ACTIONS so we'd only get here if
+        # BROKER_ACTIONS is misconfigured — safety net.
+        await _action_chase_close(context, params)
+    elif action_type == "monitor_order":
+        try:
+            await monitor_order(context, params)
+        except Exception as e:
+            logger.error(f"Agent [{agent.slug}]: monitor_order failed: {e}")
+            return False
+    elif action_type == "deactivate_agent":
+        try:
+            await deactivate_agent(context, params)
+        except Exception as e:
+            logger.error(f"Agent [{agent.slug}]: deactivate_agent failed: {e}")
+            return False
+    elif action_type == "set_flag":
+        try:
+            await set_flag(context, params)
+        except Exception as e:
+            logger.error(f"Agent [{agent.slug}]: set_flag failed: {e}")
+            return False
+    elif action_type == "emit_log":
+        try:
+            await emit_log(context, params)
+        except Exception as e:
+            logger.error(f"Agent [{agent.slug}]: emit_log failed: {e}")
+            return False
+    else:
+        logger.warning(f"Agent [{agent.slug}]: unknown action type '{action_type}'")
+        return False
+    return True
+
+
+async def _log_action_success(
+    agent, action_type: str, params: dict, tag: str, sim_mode: bool
+) -> None:
+    """Log a successful action dispatch: logger line + log_event + optional audit."""
+    logger.info(f"{tag}Agent [{agent.slug}]: action '{action_type}' completed")
+    from backend.api.algo.events import log_event
+    await log_event(agent, "action_success", f"{tag}Action: {action_type}",
+                    params, sim_mode=sim_mode)
+    # Audit trail for every agent-triggered action that mutates state.
+    # Skipped when sim — sim_mode actions are already isolated in their own
+    # logs + don't touch real broker / DB state beyond agent_events.
+    if not sim_mode:
+        try:
+            from backend.api.audit import write_audit_event
+            _sym = (params.get("symbol") or params.get("tradingsymbol") or "")
+            _acct = (params.get("account") or "")
+            write_audit_event(
+                category="agent.action",
+                action=f"AGENT_{action_type.upper()}",
+                actor_username=f"agent:{agent.slug}",
+                actor_role="system",
+                target_type="agent",
+                target_id=str(agent.id) if getattr(agent, "id", None) else None,
+                summary=(f"{tag}{action_type} {_sym} acct={_acct}".strip())[:1000],
+                status_code=200,
+            )
+        except Exception as _aud_e:
+            logger.debug(f"agent action audit skipped: {_aud_e}")
+
+
 async def execute(agent, actions: list, context: dict):
     """
     Execute action chain sequentially. Every broker-hitting action
@@ -172,13 +283,6 @@ async def execute(agent, actions: list, context: dict):
         _sim_paper_trade, _replay_paper_trade, _shadow_trade,
     )
     from backend.api.algo.actions_paper import _paper_trade
-    from backend.api.algo.actions_live import (
-        _action_place_order, _action_live_close_position,
-        _action_live_modify_order, _action_live_cancel_order,
-        _action_live_cancel_all_orders, _action_live_chase_close_positions,
-        _action_live_expiry_auto_close,
-        _action_send_summary, _action_chase_close,
-    )
 
     sim_mode = bool(context.get("sim_mode"))
     for action in actions:
@@ -224,82 +328,12 @@ async def execute(agent, actions: list, context: dict):
             elif mode == "live":
                 # Real broker path. Only reached on main AND with
                 # execution.paper_trading_mode = False (navbar LIVE).
-                if action_type in ("chase_close", "chase_close_positions"):
-                    await _action_live_chase_close_positions(agent, context, params)
-                elif action_type == "place_order":
-                    await _action_place_order(context, params)
-                elif action_type == "close_position":
-                    await _action_live_close_position(agent, context, params)
-                elif action_type == "modify_order":
-                    await _action_live_modify_order(agent, context, params)
-                elif action_type == "cancel_order":
-                    await _action_live_cancel_order(agent, context, params)
-                elif action_type == "cancel_all_orders":
-                    await _action_live_cancel_all_orders(agent, context, params)
-                elif action_type == "expiry_auto_close":
-                    await _action_live_expiry_auto_close(agent, context, params)
-                else:
-                    logger.warning(f"Agent [{agent.slug}]: live action '{action_type}' has no wired handler")
+                await _dispatch_live_action(agent, action_type, params, context)
             else:  # 'noop' — non-broker action
-                if action_type == "send_summary":
-                    await _action_send_summary(context, params)
-                elif action_type == "chase_close":
-                    # chase_close is in BROKER_ACTIONS so we'd only get
-                    # here if BROKER_ACTIONS is misconfigured — safety net
-                    await _action_chase_close(context, params)
-                elif action_type == "monitor_order":
-                    try:
-                        await monitor_order(context, params)
-                    except Exception as e:
-                        logger.error(f"Agent [{agent.slug}]: monitor_order failed: {e}")
-                        continue
-                elif action_type == "deactivate_agent":
-                    try:
-                        await deactivate_agent(context, params)
-                    except Exception as e:
-                        logger.error(f"Agent [{agent.slug}]: deactivate_agent failed: {e}")
-                        continue
-                elif action_type == "set_flag":
-                    try:
-                        await set_flag(context, params)
-                    except Exception as e:
-                        logger.error(f"Agent [{agent.slug}]: set_flag failed: {e}")
-                        continue
-                elif action_type == "emit_log":
-                    try:
-                        await emit_log(context, params)
-                    except Exception as e:
-                        logger.error(f"Agent [{agent.slug}]: emit_log failed: {e}")
-                        continue
-                else:
-                    logger.warning(f"Agent [{agent.slug}]: unknown action type '{action_type}'")
+                if not await _dispatch_noop_action(agent, action_type, params, context):
                     continue
 
-            logger.info(f"{tag}Agent [{agent.slug}]: action '{action_type}' completed")
-            from backend.api.algo.events import log_event
-            await log_event(agent, "action_success", f"{tag}Action: {action_type}",
-                            params, sim_mode=sim_mode)
-            # Audit trail for every agent-triggered action that
-            # mutates state. Skipped when sim — sim_mode actions are
-            # already isolated in their own logs + don't touch real
-            # broker / DB state beyond agent_events.
-            if not sim_mode:
-                try:
-                    from backend.api.audit import write_audit_event
-                    _sym = (params.get("symbol") or params.get("tradingsymbol") or "")
-                    _acct = (params.get("account") or "")
-                    write_audit_event(
-                        category="agent.action",
-                        action=f"AGENT_{action_type.upper()}",
-                        actor_username=f"agent:{agent.slug}",
-                        actor_role="system",
-                        target_type="agent",
-                        target_id=str(agent.id) if getattr(agent, "id", None) else None,
-                        summary=(f"{tag}{action_type} {_sym} acct={_acct}".strip())[:1000],
-                        status_code=200,
-                    )
-                except Exception as _aud_e:
-                    logger.debug(f"agent action audit skipped: {_aud_e}")
+            await _log_action_success(agent, action_type, params, tag, sim_mode)
 
         except Exception as e:
             logger.error(f"{tag}Agent [{agent.slug}]: action '{action_type}' failed: {e}")
