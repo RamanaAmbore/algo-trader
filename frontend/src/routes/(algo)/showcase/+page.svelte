@@ -191,6 +191,7 @@
         'Fullscreen mode reverses to Refresh + Default — Collapse is hidden, OrderNotif + AgentNotif bells lift to viewport top-right',
         'Page-header Orders / Charts / Activity modals share one frame (.canonical-modal-overlay/-panel) — same position, same close affordance, same Esc behaviour',
         'Activity modal reuses the same 6-tab log surface (Orders / Agents / Terminal / Ticks / System / News) the Order-modal bottom panel and /console + /automation pages mount — single LogPanel, every callsite',
+        '2-column magazine layout on wide viewports — Agents, Terminal, System, Conn, News tabs switch to CSS Grid two-column at ≥900px so the operator scans twice the events per scroll; Orders tab stays single-column to preserve the orders book layout',
         'Symbol anchors auto-resolve to the tradeable contract (NIFTY 50 → NIFTY26JUNFUT, CRUDEOIL → CRUDEOILM26JUNFUT) so chart + order modals open with the real future / option, not the spot key',
         'Connection badge on Refresh: green (all broker accounts loaded), amber (partial), red (none) — single 15 s global poll, every Refresh icon subscribes',
         'Charts scale to viewport in fullscreen mode (OptionsPayoff, PriceChart, dashboard equity curve)',
