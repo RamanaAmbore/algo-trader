@@ -343,7 +343,7 @@
     // ── Tour ── narrative entry point; recruiter / demo lands here from
     // the public-side "Platform Demo" link and walks the architecture
     // before clicking into the live surfaces.
-    { href: '/showcase',         label: 'Tour',      group: 'monitor' },
+    { href: '/showcase',         label: 'About',     group: 'monitor' },
     // ── Monitor ── ordered by daily-trader workflow frequency:
     //   Pulse → Dashboard (the two always-open watch surfaces)
     //   Orders (active trading entry point)
@@ -1112,14 +1112,6 @@
           </button>
         {/if}
 
-        <!-- About — first element in demo navbar so recruiters see it immediately -->
-        {#if isDemo}
-          <button onclick={() => goto('/showcase')} class="algo-nav-btn algo-hire-btn"
-                  title="Built by Ramana Ambore — engineering highlights + contact channels">
-            About
-          </button>
-        {/if}
-
         <!-- DEMO badge — session-state indicator (anonymous-on-prod),
              not a mode setting, so it stays separate from the mode chip. -->
         {#if isDemo}
@@ -1292,8 +1284,6 @@
           {#if $authStore.user}
             <button onclick={() => { signOut(); closeMenu(); }} class="algo-mobile-item">Sign Out</button>
           {:else}
-            <button onclick={() => { goto('/showcase'); closeMenu(); }}
-                    class="algo-mobile-item algo-hire-btn">About</button>
             <button onclick={() => { goto('/signin'); closeMenu(); }} class="algo-mobile-item">Sign In</button>
           {/if}
         </nav>
@@ -1329,7 +1319,7 @@
       <div class="demo-banner" role="status">
         <span class="demo-banner-text">
           <strong>Rambo Terminal — live production</strong> · real broker data · accounts masked · paper-only writes.
-          <a href="/showcase" class="demo-banner-link">Take the tour</a>
+          <a href="/showcase" class="demo-banner-link">About</a>
         </span>
         <button onclick={_dismissDemoBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
       </div>
@@ -1562,38 +1552,8 @@
     color: var(--c-action);
     border-left-color: var(--c-action);
   }
-  /* "Hire Me" button — demo-only nav CTA. Amber-on-amber so it reads
-     as a primary affordance without competing with the active-nav
-     amber underline pattern. Subtle pulse animation on the border so
-     a recruiter who lands cold sees there's a contact channel here.
-     Don't go bigger / brighter — operator's request was "showcase",
-     not "billboard". */
-  :global(.algo-nav-btn.algo-hire-btn) {
-    background: rgba(251, 191, 36, 0.16);
-    color: var(--c-action);
-    border-left-color: var(--c-action);
-    font-weight: 700;
-    animation: algo-hire-glow 3.6s ease-in-out infinite;
-  }
-  :global(.algo-nav-btn.algo-hire-btn:hover) {
-    background: rgba(251, 191, 36, 0.30);
-    color: #fcd34d;
-    animation: none;
-  }
-  @keyframes algo-hire-glow {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.0); }
-    50%      { box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.28); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    :global(.algo-nav-btn.algo-hire-btn) { animation: none; }
-  }
-  :global(.algo-mobile-item.algo-hire-btn) {
-    color: var(--c-action);
-    font-weight: 700;
-  }
-  /* Ghost variant — demo Sign In button. Further reduces the base
-     muted color so the About (amber, animated) button reads as
-     the primary CTA and Sign In recedes as a fallback affordance. */
+  /* Ghost variant — demo Sign In button. De-emphasised so Sign In
+     recedes as a secondary affordance. */
   :global(.algo-nav-btn.algo-nav-btn-ghost) {
     color: rgba(180, 200, 230, 0.40);
     font-weight: 400;
