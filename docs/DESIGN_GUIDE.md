@@ -4303,6 +4303,74 @@ is now Refresh (leftmost) → Download → Search. Changed by adjusting the
 
 ---
 
+## 22.26. Derivatives rows + LogPanel CSS Grid — border-bottom + 2-col grid layout
+
+Two CSS refinements improve visual clarity and fix layout bugs.
+
+### Derivatives candidate grid — row separation via border-bottom
+
+**Problem:** `.cand-grid` used `row-gap: 0.2rem` for visual separation between rows. The gap is transparent,
+so the parent grid's dark navy background bled through, creating unintended dark horizontal stripes.
+
+**Fix:** Switched to `border-bottom: 1px solid rgba(126,151,184,0.10)` on each `.cand-row` (matches
+`.byund-row` pattern in Snapshot grid). Result: clean row-level separation using the row's own background,
+not the parent's. Row visual definition is now explicit and isolated.
+
+**Files:** `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — `.cand-grid` CSS + `.cand-row` CSS
+
+### Unified amber TOTAL row stratum (single CSS rule, two mechanisms)
+
+**Problem:** TOTAL rows in two grids (Legs + Snapshot) were styled separately, with subtle color inconsistencies.
+
+**Solution:** Single unified CSS rule now covers both:
+```css
+.cand-row.cand-row-total,
+.byund-row-total > span {
+  background: linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)), #1d2a44 !important;
+  border-top: 2px solid rgba(251,191,36,0.70);
+  border-bottom: 1px solid rgba(251,191,36,0.40);
+  color: var(--c-action);
+  font-weight: 700;
+}
+```
+
+**Why two different mechanisms achieve the same visual:**
+
+- **Legs grid (`.cand-row-total`)**: Uses `display: grid; grid-template-columns: subgrid; grid-column: 1/-1` with
+  `column-gap: 0.6rem`. Amber rule applied to the **container** so it covers gap areas. Child `> span` elements
+  receive only typography overrides (no color/background/border).
+
+- **Snapshot grid (`.byund-row-total`)**: Uses `display: contents` with zero column-gap. Amber rule applied to
+  per-span children directly (each span gets its own amber background, border-top/bottom, color, font-weight).
+
+**Why this split design?** — The container-level rule works for subgrid (grid-gap areas need coverage from parent).
+Per-span rules work for `display: contents` (eliminates the parent layer, leaving bare span children). By applying
+the same CSS rule to both selectors, we get identical visual styling across two different grid architectures —
+reducing maintenance burden and ensuring TOTAL rows render consistently everywhere.
+
+**Files:** `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — shared `.cand-row.cand-row-total` +
+`.byund-row-total > span` CSS rule in app.css
+
+### LogPanel 2-column layout — CSS Grid instead of column-count
+
+**Problem:** `LogPanel.svelte` used CSS `column-count: 2` for multi-column magazine layout on Agent/Terminal/System/Conn
+tabs (≥900px). Magazine layouts rely on the browser computing column heights automatically — but this breaks inside
+`overflow-y: auto` scrollable containers. The browser can't determine column heights when the container itself can scroll,
+causing layout thrashing.
+
+**Fix:** Switched to CSS Grid: `display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.5rem; align-content: start`.
+Grid handles dynamic row heights cleanly; scroll axis is independent from layout computation. Column divider via
+`background-image: linear-gradient(...)` (CSS `column-rule` only works with `column-count`, not Grid).
+
+**Breakpoint:** ≥900px uses Grid; <900px uses `display: block` (single-column).
+
+**Template gate:** `{multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}` — Orders tab always single-column
+(preserves traditional table layout).
+
+**Files:** `frontend/src/lib/LogPanel.svelte` — `.lp-multicol` CSS + template gate
+
+---
+
 # Part VII — Operations
 
 ## 23. How to add a new template field
