@@ -275,7 +275,7 @@
    composes `.algo-modal` chrome + its content-rich 78vw/82vh dimensions.
 
    Bespoke modals (ConfirmModal, RefreshButton closed-hours popup, TourModal,
-   AgentFireModal, HireMeModal, BrokerHealthBadge, OptionsPayoff zoom)
+   AgentFireModal, BrokerHealthBadge, OptionsPayoff zoom)
    adopt `.algo-modal` for visual chrome (gradient + amber halo + radius +
    shadow + flex column + overflow hidden) and keep their own width/height
    so a confirm dialog still sits at 22rem, not 78vw.
