@@ -1309,7 +1309,7 @@
      changed. Audit defect #11 (the old @html-joined-string
      approach destroyed all row DOM identity on every poll,
      killing text selection inside the log). -->
-<div class="log-panel log-rows {heightClass} {multiColumn ? 'lp-multicol' : ''}">
+<div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}">
   {#if logTab === 'terminal'}
     {@html _terminalHtmlDerived}
   {:else if logTab === 'agent'}
@@ -1457,30 +1457,38 @@
     padding: 0.25rem 0.55rem;
     background: transparent;
   }
-  /* Multi-column flow for the agent / terminal / system / conn tabs
-     when the panel sits in a wide container (orders page card, /
-     console). Operator: "make agents, terminal, system, conn lines
-     on desktop, I want two lines in a single row as there is more
-     width available, similar to market news in dashboard." Same
-     CSS pattern as NewsList — magazine-style column flow. */
+  /* Two-column magazine layout for agent / terminal / system / conn tabs
+     on wide viewports. Uses CSS Grid (not column-count) because the panel
+     has overflow-y:auto — column-count fails inside scrollable containers
+     (browser can't determine column heights so columns collapse or scroll
+     horizontally). Grid works correctly with vertical overflow.
+     align-content:start prevents the last-row items from stretching to fill
+     remaining space. Column divider rendered via background-image gradient
+     (column-rule only works with column-count, not grid). */
   :global(.log-panel.log-rows.lp-multicol) {
-    column-count: 2;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     column-gap: 1.5rem;
-    column-rule: 1px solid rgba(148, 163, 184, 0.22);
+    align-content: start;
+    /* Column divider between the two grid columns */
+    background-image: linear-gradient(
+      rgba(148, 163, 184, 0.22) 0%,
+      rgba(148, 163, 184, 0.22) 100%
+    );
+    background-size: 1px 100%;
+    background-position: center;
+    background-repeat: no-repeat;
   }
-  /* Per-row safety so a row's two visual lines (time/tag + msg)
-     don't break across columns mid-row — keeps the metadata strip
-     glued to its message. */
   :global(.log-panel.log-rows.lp-multicol .log-row) {
-    break-inside: avoid;
+    min-width: 0; /* prevent overflow out of grid cell */
   }
   /* Below 900px the row text gets too narrow for the two-line
      timestamp + message layout to be readable; collapse to single
      column (mirrors NewsList's @media breakpoint). */
   @media (max-width: 900px) {
     :global(.log-panel.log-rows.lp-multicol) {
-      column-count: 1;
-      column-rule: none;
+      display: block;
+      background-image: none;
     }
   }
   /* Operator: "for agents, terminal, ticks, and system, the row
