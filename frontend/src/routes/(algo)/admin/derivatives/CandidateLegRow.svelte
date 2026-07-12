@@ -350,6 +350,7 @@
     border-radius: 3px;
     cursor: pointer;
     transition: background 0.1s;
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .cand-row:hover { background: rgba(34,211,238,0.05); }  /* cyan — matches History hover */
 

@@ -5409,19 +5409,9 @@
     text-transform: none;
   }
 
-  /* TOTAL row — same canonical amber stratum the Legs TOTAL uses
-     (commit fb0344fc). Override the alternating + hover bg so the
-     amber reads uniformly. Layered over opaque #1d2a44 base so
-     sticky-pinned TOTAL row is fully opaque (no scroll bleed). */
-  .byund-row-total > span {
-    background:
-      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
-      #1d2a44 !important;
-    border-top: 2px solid rgba(251,191,36,0.70);
-    border-bottom: 1px solid rgba(251,191,36,0.40);
-    color: var(--c-action);
-    font-weight: 700;
-  }
+  /* byund TOTAL > span: amber background/border/color/font-weight from shared
+     .cand-row.cand-row-total, .byund-row-total > span rule above.
+     Padding inherited from .byund-row > span. Direction tints below. */
   .byund-row-total > .cell-pos { color: #86efac !important; }
   .byund-row-total > .cell-neg { color: #fca5a5 !important; }
   .byund-empty {
@@ -5594,34 +5584,14 @@
       minmax(56px, max-content)            /* vega */
       minmax(62px, max-content);           /* ev */
     column-gap: 0.6rem;
-    row-gap: 0.2rem;
     width: max-content;
   }
-  /* TOTAL row — canonical amber stratum identical to the Snapshot
-     TOTAL row (.byund-row-total). The Legs grid uses subgrid rows
-     (`.cand-row` is `display: grid` with subgrid columns), so the
-     row container itself paints the band — applying the amber to
-     the children would leave the column gutters un-tinted. Sticky
-     pin keeps the rollup visible on a tall list. Override the
-     pointer-events default so hover doesn't dim the amber. */
-  /* TOTAL row — subgrid container for column alignment; sticky pin
-     keeps rollup visible on a tall list. No background/border on the
-     container — decoration lives on the child spans (matches
-     .byund-row-total > span pattern used by the Snapshot grid). */
-  .cand-row.cand-row-total {
-    display: grid;
-    grid-template-columns: subgrid;
-    grid-column: 1 / -1;
-    font-weight: 700;
-    color: var(--c-action);
-    position: sticky;
-    bottom: 0;
-    z-index: 2;
-    cursor: default;
-  }
-  /* Amber stratum on every child span — identical to byund-row-total. */
-  .cand-row.cand-row-total > span {
-    padding: 0.32rem 0.45rem;
+  /* Amber TOTAL stratum — single rule drives both Snapshot (byund-row-total > span)
+     and Legs/ExpClose (cand-row-total container). The Legs TOTAL row uses a subgrid
+     container that spans grid-column:1/-1, covering column-gap areas, so the amber
+     lives on the container (not > span) to avoid dark column-gap gaps. */
+  .cand-row.cand-row-total,
+  .byund-row-total > span {
     background:
       linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
       #1d2a44 !important;
@@ -5629,6 +5599,21 @@
     border-bottom: 1px solid rgba(251,191,36,0.40);
     color: var(--c-action);
     font-weight: 700;
+  }
+  /* Legs TOTAL row — layout + positioning only (amber comes from shared rule above). */
+  .cand-row.cand-row-total {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    cursor: default;
+  }
+  /* Legs TOTAL row cell typography — font + padding + overflow on each span.
+     Background/border live on the container (shared rule above). */
+  .cand-row.cand-row-total > span {
+    padding: 0.32rem 0.45rem;
     font-size: var(--fs-sm);
     font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
@@ -5637,12 +5622,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .cand-row.cand-row-total > span.num {
-    text-align: right;
-  }
-  /* Direction-tint variants — lighter green/red readable on amber. */
-  .cand-row.cand-row-total > .cell-pos { color: #86efac !important; }
-  .cand-row.cand-row-total > .cell-neg { color: #fca5a5 !important; }
+  .cand-row.cand-row-total > span.num { text-align: right; }
+  /* Direction tints — lighter green/red readable against amber. */
+  .cand-row.cand-row-total > .cell-pos  { color: #86efac !important; }
+  .cand-row.cand-row-total > .cell-neg  { color: #fca5a5 !important; }
   .cand-row.cand-row-total > .cell-flat { color: rgba(251,191,36,0.75) !important; }
   .cand-total-label {
     color: var(--c-action);
