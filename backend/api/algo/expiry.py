@@ -81,6 +81,78 @@ class ExpiryState:
     total_slippage: float = 0.0
 
 
+def _best_opt_partner(
+    A: "OptionPosition",
+    opts_sorted: "list[OptionPosition]",
+    remaining_opt: "dict[int, int]",
+) -> "tuple[Optional[OptionPosition], float]":
+    """Return the best option-option netting partner for A (highest |theta|).
+
+    Valid pairs:
+      - Same type, opposite sign (rules 1 & 2: long CE + short CE, long PE + short PE).
+      - Opposite type, same sign (rules 3 & 4: long CE + long PE, short CE + short PE).
+    Returns (None, -1.0) when no valid partner exists.
+    """
+    aq = remaining_opt.get(id(A), 0)
+    best: "Optional[OptionPosition]" = None
+    best_t = -1.0
+    for B in opts_sorted:
+        if B is A:
+            continue
+        bq = remaining_opt.get(id(B), 0)
+        if aq == 0 or bq == 0:
+            continue
+        same_type = A.instrument_type == B.instrument_type
+        opp_sign  = (aq > 0) != (bq > 0)
+        if same_type and opp_sign:
+            pass   # rules 1, 2
+        elif (not same_type) and (not opp_sign):
+            pass   # rules 3, 4
+        else:
+            continue
+        t = abs(B.theta or 0.0)
+        if t > best_t:
+            best = B
+            best_t = t
+    return best, best_t
+
+
+def _best_fut_partner(
+    A: "OptionPosition",
+    futures: "list[FuturePosition]",
+    remaining_opt: "dict[int, int]",
+    remaining_fut: "dict[int, int]",
+) -> "tuple[Optional[FuturePosition], int]":
+    """Return the best futures netting partner for A (largest |qty|).
+
+    Long CE / Short PE (option delta +) pairs with short futures (qty < 0).
+    Short CE / Long PE (option delta -) pairs with long futures (qty > 0).
+    Returns (None, 0) when no valid partner exists.
+    """
+    oq = remaining_opt.get(id(A), 0)
+    best: "Optional[FuturePosition]" = None
+    best_fq = 0
+    for f in futures:
+        fq = remaining_fut.get(id(f), 0)
+        if oq == 0 or fq == 0:
+            continue
+        opt_long_delta = (
+            (A.instrument_type == "CE" and oq > 0)
+            or (A.instrument_type == "PE" and oq < 0)
+        )
+        if opt_long_delta and fq < 0:
+            pass
+        elif (not opt_long_delta) and fq > 0:
+            pass
+        else:
+            continue
+        afq = abs(fq)
+        if afq > best_fq:
+            best = f
+            best_fq = afq
+    return best, best_fq
+
+
 class ExpiryEngine:
     def __init__(self, on_event: Callable | None = None):
         self.state = ExpiryState()
@@ -241,59 +313,11 @@ class ExpiryEngine:
         remaining_fut: dict[int, int] = {id(f): f.quantity for f in futures}
         opts_sorted = sorted(options, key=lambda o: abs(o.theta or 0.0), reverse=True)
 
-        def _opt_pair_ok(a: OptionPosition, b: OptionPosition) -> bool:
-            aq = remaining_opt.get(id(a), 0)
-            bq = remaining_opt.get(id(b), 0)
-            if aq == 0 or bq == 0:
-                return False
-            same_type = a.instrument_type == b.instrument_type
-            opp_sign  = (aq > 0) != (bq > 0)
-            if same_type and opp_sign:
-                return True                       # rules 1, 2
-            if (not same_type) and (not opp_sign):
-                return True                       # rules 3, 4
-            return False
-
-        def _fut_pair_ok(o: OptionPosition, f: FuturePosition) -> bool:
-            oq = remaining_opt.get(id(o), 0)
-            fq = remaining_fut.get(id(f), 0)
-            if oq == 0 or fq == 0:
-                return False
-            # Long CE / Short PE → option delta +; needs short fut (qty < 0).
-            # Short CE / Long PE → option delta −; needs long  fut (qty > 0).
-            opt_long_delta = (
-                (o.instrument_type == "CE" and oq > 0)
-                or (o.instrument_type == "PE" and oq < 0)
-            )
-            if opt_long_delta and fq < 0:
-                return True
-            if (not opt_long_delta) and fq > 0:
-                return True
-            return False
-
         for A in opts_sorted:
             aq = remaining_opt.get(id(A), 0)
             while aq != 0:
-                # Best option partner — highest |theta|.
-                best_opt: Optional[OptionPosition] = None
-                best_t = -1.0
-                for B in opts_sorted:
-                    if B is A or not _opt_pair_ok(A, B):
-                        continue
-                    t = abs(B.theta or 0.0)
-                    if t > best_t:
-                        best_opt = B
-                        best_t = t
-                # Best futures partner — largest |qty|.
-                best_fut: Optional[FuturePosition] = None
-                best_fq = 0
-                for f in futures:
-                    if not _fut_pair_ok(A, f):
-                        continue
-                    fq = abs(remaining_fut.get(id(f), 0))
-                    if fq > best_fq:
-                        best_fut = f
-                        best_fq = fq
+                best_opt, best_t = _best_opt_partner(A, opts_sorted, remaining_opt)
+                best_fut, best_fq = _best_fut_partner(A, futures, remaining_opt, remaining_fut)
                 if not best_opt and not best_fut:
                     break
                 # Prefer option-option pair when both available — option
@@ -408,6 +432,56 @@ class ExpiryEngine:
             logger.error(f"Expiry: LTP fetch failed: {e}")
             return {}
 
+    def _classify_expiring_positions(
+        self,
+        expiring: list[OptionPosition],
+        all_futs: list[FuturePosition],
+    ) -> None:
+        """Mark each expiring position with needs_close and close_reason.
+
+        NFO: all ITM + NTM are flagged unconditionally (no netting exception).
+        MCX: apply 4-rule + futures greedy theta-priority netting per
+             (account, underlying, expiry) group; only non-zero residual qty
+             is flagged for closing.  Mutates positions in place.
+        """
+        # Equity (NFO) — ALL ITM + NTM closes, no netting exception.
+        for p in expiring:
+            if p.exchange == "NFO" and p.moneyness in ("ITM", "NTM"):
+                p.needs_close = True
+                p.close_reason = f"Equity {p.moneyness} — must close before expiry"
+
+        # Commodity (MCX) — 4-rule + futures greedy theta netting per group.
+        mcx_in_money = [
+            p for p in expiring
+            if p.exchange == "MCX" and p.moneyness in ("ITM", "NTM")
+        ]
+        groups: dict[tuple[str, str, date], list[OptionPosition]] = {}
+        for p in mcx_in_money:
+            groups.setdefault((p.account, p.underlying, p.expiry), []).append(p)
+
+        for (acct, underlying, _expiry), group in groups.items():
+            # Same-account futures on the same underlying are offset
+            # candidates. Different-account futures can't net (each
+            # account settles independently).
+            futs = [
+                f for f in all_futs
+                if f.account == acct and f.underlying == underlying
+            ]
+            self._net_commodity_group(group, futs)
+            for p in group:
+                if p.residual_qty != 0:
+                    p.needs_close = True
+                    p.close_reason = (
+                        f"MCX unhedged {p.moneyness} after 4-rule netting "
+                        f"(residual qty {p.residual_qty:+d}; "
+                        f"theta={p.theta:.3f})"
+                    )
+                else:
+                    logger.info(
+                        f"Expiry: MCX {p.tradingsymbol} ({acct}) fully netted, "
+                        f"no close needed."
+                    )
+
     def scan_positions(self) -> list[OptionPosition]:
         """
         Scan all option positions and identify those expiring today
@@ -455,45 +529,7 @@ class ExpiryEngine:
             p.theta = self._compute_theta(p)
             p.residual_qty = p.quantity   # default before netting
 
-        # Equity (NFO) — ALL ITM + NTM closes, no netting exception.
-        for p in expiring:
-            if p.exchange == "NFO" and p.moneyness in ("ITM", "NTM"):
-                p.needs_close = True
-                p.close_reason = f"Equity {p.moneyness} — must close before expiry"
-
-        # Commodity (MCX) — 4-rule + futures greedy theta netting per
-        # (account, underlying, expiry). Anything with non-zero
-        # residual qty after the netting pass needs closing.
-        mcx_in_money = [
-            p for p in expiring
-            if p.exchange == "MCX" and p.moneyness in ("ITM", "NTM")
-        ]
-        groups: dict[tuple[str, str, date], list[OptionPosition]] = {}
-        for p in mcx_in_money:
-            groups.setdefault((p.account, p.underlying, p.expiry), []).append(p)
-
-        for (acct, underlying, _expiry), group in groups.items():
-            # Same-account futures on the same underlying are offset
-            # candidates. Different-account futures can't net (each
-            # account settles independently).
-            futs = [
-                f for f in all_futs
-                if f.account == acct and f.underlying == underlying
-            ]
-            self._net_commodity_group(group, futs)
-            for p in group:
-                if p.residual_qty != 0:
-                    p.needs_close = True
-                    p.close_reason = (
-                        f"MCX unhedged {p.moneyness} after 4-rule netting "
-                        f"(residual qty {p.residual_qty:+d}; "
-                        f"theta={p.theta:.3f})"
-                    )
-                else:
-                    logger.info(
-                        f"Expiry: MCX {p.tradingsymbol} ({acct}) fully netted, "
-                        f"no close needed."
-                    )
+        self._classify_expiring_positions(expiring, all_futs)
 
         to_close = [p for p in expiring if p.needs_close]
         self.state.positions = expiring

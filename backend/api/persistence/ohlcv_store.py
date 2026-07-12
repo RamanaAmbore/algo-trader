@@ -411,6 +411,85 @@ def _enqueue_persist_impl(symbol: str, exchange: str, bars: list[OHLCVBar]) -> N
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _extract_bars_in_range(
+    result: Any, from_iso: str, to_iso: str,
+) -> list[OHLCVBar]:
+    """Return bars from a dict or list filtered to [from_iso, to_iso]."""
+    if isinstance(result, dict):
+        bars = [v for k, v in result.items() if from_iso <= k <= to_iso]
+        bars.sort(key=lambda b: b["date"])
+        return bars
+    return list(result)
+
+
+async def _bypass_full_fetch(
+    full_key: "_FullKey", from_d: date, to_d: date,
+) -> list[OHLCVBar]:
+    """Tier 3 bypass: skip memory + DB and go straight to broker."""
+    result = await _ohlcv_store.get(full_key, bypass_cache=True)
+    if result is None:
+        return []
+    return _extract_bars_in_range(result, from_d.isoformat(), to_d.isoformat())
+
+
+def _serve_tier1_hit(
+    cached: Any, from_d: date, to_d: date,
+) -> list[OHLCVBar]:
+    """Return Tier 1 cached bars, incrementing the hit counter."""
+    _ohlcv_store._tier1_hits += 1
+    return _extract_bars_in_range(cached, from_d.isoformat(), to_d.isoformat())
+
+
+def _serve_tier2_complete(
+    full_key: "_FullKey", db_bars: list[OHLCVBar],
+) -> list[OHLCVBar]:
+    """Populate Tier 1 from a complete DB result and return sorted bars."""
+    _ohlcv_store._mem_set(full_key, db_bars)
+    _ohlcv_store._tier2_hits += 1
+    return sorted(db_bars, key=lambda b: b["date"])
+
+
+async def _fetch_and_merge_slices(
+    sym: str, exch: str,
+    db_bars: list[OHLCVBar],
+    missing: list[tuple[date, date]],
+    today: date,
+) -> dict[str, OHLCVBar]:
+    """Fetch missing slices from broker concurrently and merge with DB bars."""
+    merged: dict[str, OHLCVBar] = {b["date"]: b for b in db_bars}
+    slice_results = await asyncio.gather(
+        *[_ohlcv_store._fetch_slice(sym, exch, s_from, s_to, today)
+          for s_from, s_to in missing],
+        return_exceptions=True,
+    )
+    broker_bar_count = 0
+    for res in slice_results:
+        if isinstance(res, Exception):
+            logger.warning(
+                f"ohlcv_store: slice fetch raised {res} for {sym}/{exch} — "
+                "returning partial coverage"
+            )
+            continue
+        for bar in res:  # type: ignore[union-attr]
+            merged[bar["date"]] = bar
+            broker_bar_count += 1
+    return merged, broker_bar_count
+
+
+def _maybe_trace(
+    sym: str, exch: str, from_d: date, to_d: date,
+    db_bars: list[OHLCVBar], missing: list[tuple[date, date]],
+    merged: dict[str, OHLCVBar], broker_bar_count: int,
+) -> None:
+    """Emit trace log when merged is empty or broker returned zero bars."""
+    if (not merged or (missing and broker_bar_count == 0)) and _trace_enabled():
+        logger.info(
+            f"[ohlcv] symbol={sym} exch={exch} from={from_d} to={to_d} "
+            f"tier2_bars={len(db_bars)} missing_ranges={missing} "
+            f"broker_bars={broker_bar_count} merged_bars={len(merged)}"
+        )
+
+
 async def get_or_fetch_daily(
     symbol: str, exchange: str, from_d: date, to_d: date,
     bypass_cache: bool | None = None,
@@ -459,49 +538,25 @@ async def get_or_fetch_daily(
     if bypass_cache is None:
         bypass_cache = runtime_state.is_bypass_on()
 
-    # ── Bypass: skip all cache tiers, full broker fetch ───────────────────────
     if bypass_cache:
-        # Delegate to the base get() with bypass_cache=True.  That path
-        # increments _bypass_reads and calls _broker_fetch for the full range.
-        result = await _ohlcv_store.get(full_key, bypass_cache=True)
-        if result is None:
-            return []
-        if isinstance(result, dict):
-            bars = [v for k, v in result.items()
-                    if from_d.isoformat() <= k <= to_d.isoformat()]
-            bars.sort(key=lambda b: b["date"])
-            return bars
-        return list(result)
+        return await _bypass_full_fetch(full_key, from_d, to_d)
 
     # ── Tier 1: in-memory cache ───────────────────────────────────────────────
     cached = _ohlcv_store._mem_get(full_key)
     if cached is not None and _ohlcv_store._is_complete(cached, full_key):
-        _ohlcv_store._tier1_hits += 1
-        if isinstance(cached, dict):
-            bars = [v for k, v in cached.items()
-                    if from_d.isoformat() <= k <= to_d.isoformat()]
-            bars.sort(key=lambda b: b["date"])
-            return bars
-        return list(cached)
+        return _serve_tier1_hit(cached, from_d, to_d)
 
-    # ── Tier 2: DB fetch (unconditional — we need what's there) ───────────────
+    # ── Tier 2: DB fetch ──────────────────────────────────────────────────────
     today = date.today()
     db_bars = await _ohlcv_store._db_fetch_existing(sym, exch, from_d, to_d)
 
     if db_bars and _is_complete_range(db_bars, from_d, to_d):
-        # DB covers the full range — populate Tier 1 and return.
-        _ohlcv_store._mem_set(full_key, db_bars)
-        _ohlcv_store._tier2_hits += 1
-        return sorted(db_bars, key=lambda b: b["date"])
+        return _serve_tier2_complete(full_key, db_bars)
 
-    # ── Partial-range fetch: compute missing slices ────────────────────────────
     missing = _compute_missing_ranges(db_bars, from_d, to_d)
 
     if not missing:
-        # Gaps are all within the holiday/weekend tolerance — DB bars suffice.
-        _ohlcv_store._mem_set(full_key, db_bars)
-        _ohlcv_store._tier2_hits += 1
-        return sorted(db_bars, key=lambda b: b["date"])
+        return _serve_tier2_complete(full_key, db_bars)
 
     # db_only: skip Tier 3, return whatever DB has (partial is OK).
     if db_only:
@@ -511,59 +566,15 @@ async def get_or_fetch_daily(
             return sorted(db_bars, key=lambda b: b["date"])
         return []
 
-    # Fetch each missing slice from the broker (Tier 3).
-    # Slices are independent so we can fire them concurrently.
-    slice_results = await asyncio.gather(
-        *[
-            _ohlcv_store._fetch_slice(sym, exch, s_from, s_to, today)
-            for s_from, s_to in missing
-        ],
-        return_exceptions=True,
+    # ── Tier 3: broker fetch for missing slices ───────────────────────────────
+    merged, broker_bar_count = await _fetch_and_merge_slices(
+        sym, exch, db_bars, missing, today,
     )
-
-    # Merge: existing DB bars + newly fetched slices.
-    # This is a UNION (dict-keyed by date) so an empty broker response
-    # for a slice can never clobber bars already returned from the DB.
-    # If the broker returned zero bars (rate-limit, missing instrument
-    # token, or the symbol genuinely has no listing for the requested
-    # range), `merged` retains whatever `db_bars` contributed.
-    merged: dict[str, OHLCVBar] = {b["date"]: b for b in db_bars}
-    broker_bar_count = 0
-    for res in slice_results:
-        if isinstance(res, Exception):
-            logger.warning(
-                f"ohlcv_store: slice fetch raised {res} for {sym}/{exch} — "
-                "returning partial coverage"
-            )
-            continue
-        for bar in res:  # type: ignore[union-attr]
-            merged[bar["date"]] = bar
-            broker_bar_count += 1
-
-    # ── Trace: emit per-fetch breakdown for race-condition debugging ─────
-    # Gated by `debug.ohlcv_trace` (Setting, default False) so prod never
-    # sees this line on the hot path. Operator flips the flag to
-    # diagnose intermittent "No data available" reports for individual
-    # symbols (BEL was the trigger). The format is intentionally
-    # grep-friendly: `[ohlcv]` prefix + key=value pairs.
-    #
-    # Emit when:
-    #   - merged is empty (zero bars returned — caller sees "no data")
-    #   - broker returned zero bars but slices were requested (likely
-    #     instruments-map miss OR rate-limit cool-off)
-    if (not merged or (missing and broker_bar_count == 0)) and _trace_enabled():
-        logger.info(
-            f"[ohlcv] symbol={sym} exch={exch} from={from_d} to={to_d} "
-            f"tier2_bars={len(db_bars)} missing_ranges={missing} "
-            f"broker_bars={broker_bar_count} merged_bars={len(merged)}"
-        )
+    _maybe_trace(sym, exch, from_d, to_d, db_bars, missing, merged, broker_bar_count)
 
     if not merged:
         return []
 
     all_bars = sorted(merged.values(), key=lambda b: b["date"])
-
-    # Populate Tier 1 with the full merged set for future range queries.
     _ohlcv_store._mem_set(full_key, all_bars)
-
     return all_bars

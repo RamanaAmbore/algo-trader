@@ -342,6 +342,28 @@ def _build_polars_summary(df: "pl.DataFrame") -> "pl.DataFrame":
     ).rename({'_prev_val': 'day_prev_val'})
 
 
+def _apply_flat_row_hygiene(raw: "pd.DataFrame") -> None:
+    """Zero day_change and day_change_percentage for quantity==0 rows (in-place).
+
+    LTP is meaningless for a closed intraday position. The backstop restores
+    the aggregate rupee value; this helper zeroes the per-share delta and the
+    percentage on those same rows so the frontend doesn't show a stale tick.
+    No-ops when raw is empty or the relevant columns are absent.
+    """
+    import pandas as _pd
+    if raw.empty or 'quantity' not in raw.columns:
+        return
+    _flat_mask = _pd.to_numeric(raw['quantity'], errors='coerce').fillna(0) == 0
+    if not _flat_mask.any():
+        return
+    if 'day_change' in raw.columns:
+        raw.loc[_flat_mask, 'day_change'] = 0.0
+    # day_change_percentage: denominator collapses to 0 when qty=0;
+    # undefined percentage — zero it rather than show a spurious value.
+    if 'day_change_percentage' in raw.columns:
+        raw.loc[_flat_mask, 'day_change_percentage'] = 0.0
+
+
 async def _fetch() -> PositionsResponse:
     # Three sync broker_apis calls below — each holds the event loop
     # (~50ms each typical, up to 500-1000ms on cold UDS hits). Wrap
@@ -403,21 +425,8 @@ async def _fetch() -> PositionsResponse:
 
     # Flat-row hygiene (route-only): rows with quantity == 0 should not
     # report a per-share day_change delta (LTP is meaningless for a closed
-    # position). This is separate from the day_change_val backstop above —
-    # the backstop restores the aggregate rupee value; this block zeroes
-    # the per-share delta and the percentage on the same rows.
-    if not raw.empty and 'quantity' in raw.columns:
-        _qty_all = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
-        _flat_mask = _qty_all == 0
-        if _flat_mask.any():
-            if 'day_change' in raw.columns:
-                raw.loc[_flat_mask, 'day_change'] = 0.0
-            # day_change_percentage: with close × qty = 0 the denominator
-            # collapses; keep the row's field at 0.0 (percentage of nothing
-            # is undefined). The absolute rupee value is the operator's
-            # authoritative display.
-            if 'day_change_percentage' in raw.columns:
-                raw.loc[_flat_mask, 'day_change_percentage'] = 0.0
+    # position). Separate from the day_change_val backstop above.
+    _apply_flat_row_hygiene(raw)
 
     numeric = raw.select_dtypes(include='number').columns
     raw[numeric] = raw[numeric].fillna(0)

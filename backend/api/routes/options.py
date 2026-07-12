@@ -898,6 +898,36 @@ def _resolve_span_pct(*, sigma: float, T_years: float,
     return 0.10
 
 
+def _finite_or_null(x: float) -> "float | None":
+    """Return None for ±inf so msgspec doesn't choke; UI renders '∞'."""
+    return None if x == float("inf") or x == float("-inf") else x
+
+
+def _resolve_iv_for_analytics(
+    iv: Optional[float],
+    ltp_val: float,
+    ltp_src: str,
+    S: float,
+    K: float,
+    T_yrs: float,
+    opt_type: str,
+) -> tuple[float, str]:
+    """Resolve the implied-vol (sigma) to use for analytics, plus the source label.
+
+    Priority: explicit override > calibrated from LTP > default IV.
+    Falls back to 'default' when calibration round-trips on an estimated LTP.
+    """
+    if iv is not None and iv > 0:
+        return float(iv), "override"
+    calibrated = implied_vol(ltp_val, S, K, T_yrs, DEFAULT_RISK_FREE, opt_type)
+    # When the calibrated value equals DEFAULT_IV (bisection failed / degenerate
+    # inputs), or when the LTP itself came from a fallback source, treat as default
+    # so the UI can flag lower confidence.
+    if calibrated == DEFAULT_IV or ltp_src in ("close", "depth", "avg_cost", "estimated"):
+        return calibrated, "default" if calibrated == DEFAULT_IV else "calibrated"
+    return calibrated, "calibrated"
+
+
 def _ltp_from_quote(q: dict) -> tuple[Optional[float], str]:
     """
     Pick the best price out of a Kite quote dict. Order:
@@ -1257,6 +1287,45 @@ def _leg_expiry_iso(leg, parsed: dict) -> str:
     return parsed["expiry"].isoformat()
 
 
+def _ltp_sim_lookup(symbol: str) -> Optional[tuple[float, str]]:
+    """Return (price, 'sim') if a SimDriver row matches *symbol*, else None."""
+    from backend.api.algo.sim.driver import get_driver
+    for r in get_driver()._positions_rows:
+        if str(r.get("tradingsymbol", "")).upper() == symbol.upper():
+            lp = r.get("last_price")
+            if lp not in (None, 0, 0.0):
+                return (float(lp), "sim")
+    return None
+
+
+async def _ltp_broker_quote(symbol: str) -> Optional[tuple[float, str]]:
+    """Fetch a live broker quote for *symbol*; return (price, src) or None."""
+    from backend.brokers.registry import get_market_data_broker
+    key = option_quote_key(symbol)
+    try:
+        resp = await asyncio.to_thread(get_market_data_broker().quote, [key]) or {}
+    except Exception as e:
+        logger.warning(f"options LTP quote() failed for {symbol}: {e}")
+        resp = {}
+    price, src = _ltp_from_quote(resp.get(key) or {})
+    return (price, src) if price is not None else None
+
+
+def _ltp_bs_estimate(estimate_inputs: dict) -> Optional[tuple[float, str]]:
+    """Synthesise an LTP via Black-Scholes at DEFAULT_IV as the last resort.
+    Returns (price, 'estimated') when inputs are valid, else None.
+    """
+    S = float(estimate_inputs.get("spot") or 0)
+    K = float(estimate_inputs.get("strike") or 0)
+    T = float(estimate_inputs.get("T_years") or 0)
+    opt = str(estimate_inputs.get("opt_type") or "CE")
+    if S > 0 and K > 0 and T > 0:
+        est = black_scholes(S, K, T, DEFAULT_RISK_FREE, DEFAULT_IV, opt)
+        if est > 0:
+            return (est, "estimated")
+    return None
+
+
 async def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
                  override: Optional[float],
                  avg_cost_hint: Optional[float] = None,
@@ -1284,26 +1353,16 @@ async def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
         return (float(override), "override")
 
     if mode == "sim":
-        from backend.api.algo.sim.driver import get_driver
-        for r in get_driver()._positions_rows:
-            if str(r.get("tradingsymbol", "")).upper() == symbol.upper():
-                lp = r.get("last_price")
-                if lp not in (None, 0, 0.0):
-                    return (float(lp), "sim")
+        hit = _ltp_sim_lookup(symbol)
+        if hit is not None:
+            return hit
         # Sim mode but no row — operator may be requesting a contract
         # outside the sim. Fall through to broker fallbacks (handy when
         # the sim is paused but real-data analytics are still useful).
 
-    from backend.brokers.registry import get_market_data_broker
-    key = option_quote_key(symbol)
-    try:
-        resp = await asyncio.to_thread(get_market_data_broker().quote, [key]) or {}
-    except Exception as e:
-        logger.warning(f"options LTP quote() failed for {symbol}: {e}")
-        resp = {}
-    price, src = _ltp_from_quote(resp.get(key) or {})
-    if price is not None:
-        return (price, src)
+    broker_hit = await _ltp_broker_quote(symbol)
+    if broker_hit is not None:
+        return broker_hit
 
     if avg_cost_hint is not None and avg_cost_hint > 0:
         return (float(avg_cost_hint), "avg_cost")
@@ -1312,17 +1371,9 @@ async def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
     # The payoff curve still renders something the operator can read;
     # the UI shows 'estimated' so they know not to trust absolute P&L.
     if estimate_inputs:
-        S = float(estimate_inputs.get("spot") or 0)
-        K = float(estimate_inputs.get("strike") or 0)
-        T = float(estimate_inputs.get("T_years") or 0)
-        opt = str(estimate_inputs.get("opt_type") or "CE")
-        if S > 0 and K > 0 and T > 0:
-            from backend.api.algo.derivatives import (
-                DEFAULT_IV, black_scholes
-            )
-            est = black_scholes(S, K, T, DEFAULT_RISK_FREE, DEFAULT_IV, opt)
-            if est > 0:
-                return (est, "estimated")
+        bs_hit = _ltp_bs_estimate(estimate_inputs)
+        if bs_hit is not None:
+            return bs_hit
 
     raise HTTPException(
         status_code=502,
@@ -1461,6 +1512,72 @@ def _strategy_option_T_range(
     return eval_T, T_yrs_shared
 
 
+def _mcx_collect_month_keys(
+    data: "StrategyRequest",
+    parsed_by_sym: dict,
+    underlying: str,
+) -> tuple[dict[tuple[int, int], tuple[str, float]], dict[tuple[int, int], Optional[str]]]:
+    """Phase 1: Partition legs by expiry month into cached vs. needs-lookup buckets."""
+    month_to_cached: dict[tuple[int, int], tuple[str, float]] = {}
+    month_to_fut_sym: dict[tuple[int, int], Optional[str]] = {}
+    for _leg in data.legs:
+        _lsym = _leg.symbol.upper().strip()
+        _lparsed = parsed_by_sym.get(_lsym)
+        if not _lparsed:
+            continue
+        _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
+        _mk = (_leg_exp.year, _leg_exp.month)
+        if _mk in month_to_cached or _mk in month_to_fut_sym:
+            continue
+        _cached = _mcx_fut_cache_get(underlying, _leg_exp.year, _leg_exp.month)
+        if _cached is not None:
+            month_to_cached[_mk] = _cached
+        else:
+            month_to_fut_sym[_mk] = None
+    return month_to_cached, month_to_fut_sym
+
+
+async def _mcx_resolve_fut_symbols(
+    underlying: str,
+    month_to_fut_sym: dict[tuple[int, int], Optional[str]],
+) -> None:
+    """Phase 2: Resolve future tradingsymbols for months not in cache (in-place)."""
+    for _mk in list(month_to_fut_sym.keys()):
+        _hint = date(_mk[0], _mk[1], 1)
+        try:
+            _fut_sym = await _lookup_mcx_future(underlying, _hint)
+            month_to_fut_sym[_mk] = _fut_sym
+        except Exception:
+            pass
+
+
+async def _mcx_batch_quote_futures(
+    underlying: str,
+    month_to_fut_sym: dict[tuple[int, int], Optional[str]],
+    month_to_cached: dict[tuple[int, int], tuple[str, float]],
+    price_broker,
+) -> None:
+    """Phase 3: Batch-quote MCX futures and populate month_to_cached (in-place)."""
+    _fut_quote_keys = [f"MCX:{fs}" for fs in month_to_fut_sym.values() if fs]
+    _fut_quote_resp: dict = {}
+    if _fut_quote_keys:
+        try:
+            _fut_quote_resp = await asyncio.to_thread(price_broker.quote, _fut_quote_keys) or {}
+        except Exception as _e:
+            logger.warning(
+                f"MCX per-leg futures batch quote failed: {_e}; "
+                "falling back to scale_ratio=1 for all legs"
+            )
+    for _mk, _fut_sym in month_to_fut_sym.items():
+        if not _fut_sym:
+            continue
+        _qdict = _fut_quote_resp.get(f"MCX:{_fut_sym}") or {}
+        _s_fresh, _ = _ltp_from_quote(_qdict)
+        if _s_fresh and _s_fresh > 0:
+            _mcx_fut_cache_put(underlying, _mk[0], _mk[1], _fut_sym, _s_fresh)
+            month_to_cached[_mk] = (_fut_sym, _s_fresh)
+
+
 async def _strategy_mcx_scale_ratios(
     data: "StrategyRequest",
     parsed_by_sym: dict,
@@ -1474,50 +1591,11 @@ async def _strategy_mcx_scale_ratios(
     _leg_scale_ratios: dict[str, float] = {}
     if not (S > 0):
         return _leg_scale_ratios
-    _month_to_cached: dict[tuple[int, int], tuple[str, float]] = {}
-    _month_to_fut_sym: dict[tuple[int, int], Optional[str]] = {}
-    for _leg in data.legs:
-        _lsym = _leg.symbol.upper().strip()
-        _lparsed = parsed_by_sym.get(_lsym)
-        if not _lparsed:
-            continue
-        _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
-        _month_key = (_leg_exp.year, _leg_exp.month)
-        if _month_key in _month_to_cached or _month_key in _month_to_fut_sym:
-            continue
-        _cached = _mcx_fut_cache_get(underlying, _leg_exp.year, _leg_exp.month)
-        if _cached is not None:
-            _month_to_cached[_month_key] = _cached
-        else:
-            _month_to_fut_sym[_month_key] = None
 
-    for _mk in list(_month_to_fut_sym.keys()):
-        _hint = date(_mk[0], _mk[1], 1)
-        try:
-            _fut_sym = await _lookup_mcx_future(underlying, _hint)
-            _month_to_fut_sym[_mk] = _fut_sym
-        except Exception:
-            pass
-
-    _fut_quote_keys = [f"MCX:{fs}" for fs in _month_to_fut_sym.values() if fs]
-    _fut_quote_resp: dict = {}
-    if _fut_quote_keys:
-        try:
-            _fut_quote_resp = await asyncio.to_thread(price_broker.quote, _fut_quote_keys) or {}
-        except Exception as _e:
-            logger.warning(
-                f"MCX per-leg futures batch quote failed: {_e}; "
-                "falling back to scale_ratio=1 for all legs"
-            )
-
-    for _mk, _fut_sym in _month_to_fut_sym.items():
-        if not _fut_sym:
-            continue
-        _qdict = _fut_quote_resp.get(f"MCX:{_fut_sym}") or {}
-        _s_fresh, _ = _ltp_from_quote(_qdict)
-        if _s_fresh and _s_fresh > 0:
-            _mcx_fut_cache_put(underlying, _mk[0], _mk[1], _fut_sym, _s_fresh)
-            _month_to_cached[_mk] = (_fut_sym, _s_fresh)
+    month_to_cached, month_to_fut_sym = _mcx_collect_month_keys(
+        data, parsed_by_sym, underlying)
+    await _mcx_resolve_fut_symbols(underlying, month_to_fut_sym)
+    await _mcx_batch_quote_futures(underlying, month_to_fut_sym, month_to_cached, price_broker)
 
     for _leg in data.legs:
         _lsym = _leg.symbol.upper().strip()
@@ -1527,7 +1605,7 @@ async def _strategy_mcx_scale_ratios(
             continue
         _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
         _mk = (_leg_exp.year, _leg_exp.month)
-        _month_data = _month_to_cached.get(_mk)
+        _month_data = month_to_cached.get(_mk)
         if _month_data:
             _fut_sym_leg, _s_leg = _month_data
             _leg_scale_ratios[_lsym] = _s_leg / S if _s_leg > 0 else 1.0
@@ -1885,6 +1963,97 @@ def _strategy_aggregate(
     )
 
 
+# ── chain_quotes helpers ──────────────────────────────────────────────
+
+
+def _best_depth_price(book: list) -> "float | None":
+    """Top-of-book price from a depth.buy / depth.sell list.
+    Returns None when every level is empty/zero."""
+    for level in (book or []):
+        p = level.get("price")
+        if p not in (None, 0, 0.0):
+            return float(p)
+    return None
+
+
+def _chain_quotes_build_sym_map(
+    inst_resp, und: str, exp: str
+) -> dict[float, dict[str, str]]:
+    """Build strike → {CE: sym, PE: sym} from the instruments response."""
+    sym_by_strike: dict[float, dict[str, str]] = {}
+    for inst in inst_resp.items:
+        if (inst.u or "").upper() != und:
+            continue
+        if inst.x != exp:
+            continue
+        if inst.t not in ("CE", "PE"):
+            continue
+        if inst.k is None:
+            continue
+        sym_by_strike.setdefault(float(inst.k), {"CE": "", "PE": ""})[inst.t] = inst.s
+    return sym_by_strike
+
+
+async def _chain_quotes_batch_quote(
+    sym_by_strike: dict[float, dict[str, str]],
+    und: str,
+    exp: str,
+) -> tuple[dict, dict[str, tuple[float, str]]]:
+    """Build quote keys, fire one broker.quote() call, return (quote_resp, key_meta)."""
+    keys: list[str] = []
+    key_meta: dict[str, tuple[float, str]] = {}
+    for strike, sides in sym_by_strike.items():
+        for side, sym in sides.items():
+            if not sym:
+                continue
+            qk = option_quote_key(sym)
+            keys.append(qk)
+            key_meta[qk] = (strike, side)
+
+    from backend.brokers.registry import get_market_data_broker
+    quote_resp: dict = {}
+    if keys:
+        try:
+            quote_resp = await asyncio.to_thread(get_market_data_broker().quote, keys) or {}
+        except Exception as e:
+            logger.warning(f"chain-quotes quote() failed for {und}/{exp}: {e}")
+    return quote_resp, key_meta
+
+
+def _chain_quotes_build_book(
+    sym_by_strike: dict[float, dict[str, str]],
+    quote_resp: dict,
+    key_meta: dict[str, tuple[float, str]],
+) -> dict[float, dict[str, dict[str, "float | None"]]]:
+    """Populate bid/ask per strike+side from the broker quote response."""
+    book_by_strike: dict[float, dict[str, dict[str, "float | None"]]] = {
+        k: {"CE": {"bid": None, "ask": None},
+            "PE": {"bid": None, "ask": None}}
+        for k in sym_by_strike
+    }
+    for qk, (strike, side) in key_meta.items():
+        q = quote_resp.get(qk) or {}
+        depth = q.get("depth") or {}
+        bid = _best_depth_price(depth.get("buy"))
+        ask = _best_depth_price(depth.get("sell"))
+        # LTP fallback — when the depth array is empty (illiquid PE
+        # strikes especially have this on RELIANCE / index options
+        # outside the front 5 strikes), surface last_price as a
+        # single-value approximation for both bid and ask instead
+        # of leaving the cell as "—". last_price > 0 is the gate so
+        # a true no-quote still shows "—".
+        if bid is None or ask is None:
+            lp = float(q.get("last_price") or 0.0)
+            if lp > 0:
+                if bid is None:
+                    bid = lp
+                if ask is None:
+                    ask = lp
+        book_by_strike[strike][side]["bid"] = bid
+        book_by_strike[strike][side]["ask"] = ask
+    return book_by_strike
+
+
 # ── Controller ────────────────────────────────────────────────────────
 
 class OptionsController(Controller):
@@ -1965,24 +2134,15 @@ class OptionsController(Controller):
             },
         )
         # IV: explicit override > calibrate from current LTP > default
-        if iv is not None and iv > 0:
-            sigma     = float(iv)
-            iv_src    = "override"
-        else:
-            calibrated = implied_vol(ltp_val, S, parsed["strike"], T_yrs,
-                                     DEFAULT_RISK_FREE, parsed["opt_type"])
-            # implied_vol returns DEFAULT_IV (0.15) on bracket failure or
-            # near-intrinsic / degenerate inputs; treat that as the
-            # "default" source so the UI can flag it. Estimated-LTP
-            # fallback also forces 'default' since the calibration
-            # would just be a self-referential round-trip.
-            if (calibrated == DEFAULT_IV
-                or ltp_src in ("close", "depth", "avg_cost", "estimated")):
-                sigma  = calibrated
-                iv_src = "default" if calibrated == DEFAULT_IV else "calibrated"
-            else:
-                sigma  = calibrated
-                iv_src = "calibrated"
+        # implied_vol returns DEFAULT_IV (0.15) on bracket failure or
+        # near-intrinsic / degenerate inputs; treat that as the
+        # "default" source so the UI can flag it. Estimated-LTP
+        # fallback also forces 'default' since the calibration
+        # would just be a self-referential round-trip.
+        sigma, iv_src = _resolve_iv_for_analytics(
+            iv, ltp_val, ltp_src,
+            S, parsed["strike"], T_yrs, parsed["opt_type"],
+        )
 
         theo = black_scholes(S, parsed["strike"], T_yrs,
                              DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
@@ -2033,11 +2193,6 @@ class OptionsController(Controller):
             points=pts,
             time_slices=max(0, min(int(time_slices), 5)),
         )
-
-        # Sanitize +inf in JSON — msgspec will choke; the API surface
-        # uses null and the UI renders "∞".
-        def _finite_or_null(x: float) -> float | None:
-            return None if x == float("inf") or x == float("-inf") else x
 
         # Position-level expected value via lognormal integration over
         # the payoff curve. Tells the operator "weighted by win/loss
@@ -2155,80 +2310,15 @@ class OptionsController(Controller):
             return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
 
         # Map (strike, side) → tradingsymbol for the matching contracts.
-        sym_by_strike: dict[float, dict[str, str]] = {}
-        for inst in inst_resp.items:
-            if (inst.u or "").upper() != und:
-                continue
-            if inst.x != exp:
-                continue
-            if inst.t not in ("CE", "PE"):
-                continue
-            if inst.k is None:
-                continue
-            sym_by_strike.setdefault(
-                float(inst.k), {"CE": "", "PE": ""}
-            )[inst.t] = inst.s
-
+        sym_by_strike = _chain_quotes_build_sym_map(inst_resp, und, exp)
         if not sym_by_strike:
             return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
 
-        # Build the batch quote keys (MCX vs NFO routing handled by
-        # `option_quote_key`). Track key → (strike, side) so the
-        # response can be redistributed back into the chain map.
-        keys: list[str] = []
-        key_meta: dict[str, tuple[float, str]] = {}
-        for strike, sides in sym_by_strike.items():
-            for side, sym in sides.items():
-                if not sym:
-                    continue
-                qk = option_quote_key(sym)
-                keys.append(qk)
-                key_meta[qk] = (strike, side)
+        # Build quote keys, fire one broker.quote() call.
+        quote_resp, key_meta = await _chain_quotes_batch_quote(sym_by_strike, und, exp)
 
-        from backend.brokers.registry import get_market_data_broker
-        quote_resp: dict = {}
-        if keys:
-            try:
-                quote_resp = await asyncio.to_thread(get_market_data_broker().quote, keys) or {}
-            except Exception as e:
-                logger.warning(
-                    f"chain-quotes quote() failed for {und}/{exp}: {e}")
-
-        def _best(book: list) -> float | None:
-            """Top-of-book price from a depth.buy / depth.sell list.
-            Returns None when every level is empty/zero."""
-            for level in (book or []):
-                p = level.get("price")
-                if p not in (None, 0, 0.0):
-                    return float(p)
-            return None
-
-        book_by_strike: dict[float, dict[str, dict[str, float | None]]] = {
-            k: {"CE": {"bid": None, "ask": None},
-                "PE": {"bid": None, "ask": None}}
-            for k in sym_by_strike
-        }
-        for qk, (strike, side) in key_meta.items():
-            q = quote_resp.get(qk) or {}
-            depth = q.get("depth") or {}
-            bid = _best(depth.get("buy"))
-            ask = _best(depth.get("sell"))
-            # LTP fallback — when the depth array is empty (illiquid PE
-            # strikes especially have this on RELIANCE / index options
-            # outside the front 5 strikes), surface last_price as a
-            # single-value approximation for both bid and ask instead
-            # of leaving the cell as "—". Operator: "in chain, bid/ask
-            # prices for PE side not getting updated" — the broker was
-            # returning ltp but no depth, so the cell rendered blank.
-            # last_price > 0 is the gate so a true no-quote still
-            # shows "—".
-            if bid is None or ask is None:
-                lp = float(q.get("last_price") or 0.0)
-                if lp > 0:
-                    if bid is None: bid = lp
-                    if ask is None: ask = lp
-            book_by_strike[strike][side]["bid"] = bid
-            book_by_strike[strike][side]["ask"] = ask
+        # Populate bid/ask per strike+side.
+        book_by_strike = _chain_quotes_build_book(sym_by_strike, quote_resp, key_meta)
 
         rows = [
             ChainQuoteRow(

@@ -523,6 +523,49 @@ def _validate_slug(slug: str) -> str:
     return s
 
 
+# ── Metrics helpers (module-level) ────────────────────────────────────────
+
+import math as _math
+
+
+def _metrics_stdev(deltas: list[float], mean: float) -> float:
+    """Sample stdev (n-1) of daily deltas; 0.0 when fewer than 2 samples."""
+    n = len(deltas)
+    if n < 2:
+        return 0.0
+    var = sum((d - mean) ** 2 for d in deltas) / (n - 1)
+    return _math.sqrt(var)
+
+
+def _metrics_downside_vol(deltas: list[float]) -> float:
+    """Downside deviation on negative deltas; single-sample heuristic for n=1."""
+    neg = [d for d in deltas if d < 0]
+    if len(neg) > 1:
+        d_mean = sum(neg) / len(neg)
+        d_var  = sum((d - d_mean) ** 2 for d in neg) / (len(neg) - 1)
+        return _math.sqrt(d_var)
+    if len(neg) == 1:
+        return abs(neg[0])
+    return 0.0
+
+
+def _metrics_max_drawdown(cum: list[float]) -> tuple[float, Optional[float]]:
+    """Peak-to-trough max drawdown on cumulative P&L.
+    Returns (max_dd_abs, max_dd_pct_or_None)."""
+    peak = cum[0]
+    max_dd = 0.0
+    max_dd_pct: Optional[float] = None
+    for v in cum:
+        if v > peak:
+            peak = v
+        dd = peak - v
+        if dd > max_dd:
+            max_dd = dd
+            if peak > 0:
+                max_dd_pct = dd / peak
+    return max_dd, max_dd_pct
+
+
 # ── Controller ────────────────────────────────────────────────────────────
 
 
@@ -721,7 +764,6 @@ class StrategiesController(Controller):
         retail platforms use. Empty result (n=0) when the snapshot
         task hasn't fired enough days for this strategy."""
         from datetime import timedelta, datetime, timezone
-        import math
         days = max(2, min(int(days or 90), 365))
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
         async with async_session() as s:
@@ -731,8 +773,6 @@ class StrategiesController(Controller):
                          StrategySnapshot.as_of_date >= cutoff)
                   .order_by(StrategySnapshot.as_of_date.asc())
             )).scalars().all()
-        # Cumulative P&L series — sum realised + unrealised at each
-        # snapshot point. Daily delta drives every ratio below.
         cum = [float((r.realised_pnl or 0.0)) + float((r.unrealised_pnl or 0.0))
                for r in rows]
         n_snap = len(cum)
@@ -748,46 +788,12 @@ class StrategiesController(Controller):
         deltas = [cum[i] - cum[i - 1] for i in range(1, n_snap)]
         n = len(deltas)
         mean = sum(deltas) / n
-        # Sample standard deviation (n-1 denominator) — standard for
-        # any small-sample estimator. Avoids zero-divide when all
-        # deltas identical (every snapshot value equal) by short-
-        # circuiting the ratios.
-        if n > 1:
-            var = sum((d - mean) ** 2 for d in deltas) / (n - 1)
-            stdev = math.sqrt(var)
-        else:
-            stdev = 0.0
-        # Downside deviation — same formula but only on negative
-        # deltas. Operator's mental model: "the volatility of bad days".
-        # Numerator counts ALL samples (n-1) per Sortino's convention,
-        # not just the negative ones — divisor stability matters more
-        # than purity of the sample.
-        neg = [d for d in deltas if d < 0]
-        if len(neg) > 1:
-            d_mean = sum(neg) / len(neg)
-            d_var  = sum((d - d_mean) ** 2 for d in neg) / (len(neg) - 1)
-            d_stdev = math.sqrt(d_var)
-        elif len(neg) == 1:
-            d_stdev = abs(neg[0])         # single-sample heuristic
-        else:
-            d_stdev = 0.0
-        sqrt252 = math.sqrt(252.0)
-        sharpe  = (mean / stdev)  * sqrt252 if stdev  > 0 else None
+        stdev   = _metrics_stdev(deltas, mean)
+        d_stdev = _metrics_downside_vol(deltas)
+        sqrt252 = _math.sqrt(252.0)
+        sharpe  = (mean / stdev)   * sqrt252 if stdev   > 0 else None
         sortino = (mean / d_stdev) * sqrt252 if d_stdev > 0 else None
-        # Max drawdown — peak-to-trough on the cumulative P&L. Walk
-        # the series tracking running maximum; DD at each point is
-        # peak - current (positive number = drop).
-        peak = cum[0]
-        max_dd = 0.0
-        max_dd_pct: Optional[float] = None
-        for v in cum:
-            if v > peak:
-                peak = v
-            dd = peak - v
-            if dd > max_dd:
-                max_dd = dd
-                if peak > 0:
-                    max_dd_pct = dd / peak
+        max_dd, max_dd_pct = _metrics_max_drawdown(cum)
         win_rate = sum(1 for d in deltas if d > 0) / n
         return StrategyMetrics(
             n_samples=n, days=days,

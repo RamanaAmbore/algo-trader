@@ -413,6 +413,56 @@ def _v2_static_rate_enrichment(alert_state: dict, kind: str, scope_label: str,
     return (latest[1] - oldest[1]) / mins
 
 
+def _v2_derive_section(scope_tok: str) -> str:
+    """Map a scope token prefix to its alert section label."""
+    if scope_tok.startswith('holdings'):
+        return 'Holdings'
+    if scope_tok.startswith('positions'):
+        return 'Positions'
+    return 'Funds'
+
+
+def _v2_derive_kind(metric: str) -> str:
+    """Map a metric token to its alert kind label."""
+    if metric in ('cash',):
+        return 'negative_cash'
+    if metric in ('avail_margin',):
+        return 'negative_margin'
+    if '_rate_abs' in metric:
+        return 'rate_abs'
+    if '_rate_pct' in metric:
+        return 'rate_pct'
+    if metric.endswith('_pct') or metric == 'pnl_pct':
+        return 'static_pct'
+    return 'static_abs'
+
+
+def _v2_enrich_position_alert(
+    section: str, kind: str, scope_label: str,
+    df_positions, alert_state, rate_window_min: int, rate_val,
+) -> tuple[list[dict], object]:
+    """Compute optional position-alert enrichment fields.
+
+    Returns (underlyings_breakdown, rate_val) after applying per-underlying
+    breakdown and static-rate enrichment where applicable.
+    """
+    underlyings_breakdown: list[dict] = []
+    if section == 'Positions' and df_positions is not None:
+        try:
+            underlyings_breakdown = _v2_underlying_breakdown(df_positions, scope_label)
+        except Exception as e:
+            logger.warning(f"underlying breakdown failed: {e}")
+
+    if (section == 'Positions' and rate_val is None and alert_state
+            and kind in ('static_pct', 'static_abs')):
+        try:
+            rate_val = _v2_static_rate_enrichment(alert_state, kind, scope_label, rate_window_min)
+        except Exception as e:
+            logger.warning(f"static-alert rate enrichment failed: {e}")
+
+    return underlyings_breakdown, rate_val
+
+
 def _v2_match_to_alertrow(match: dict, *,
                           df_positions=None,
                           alert_state: dict | None = None,
@@ -437,54 +487,16 @@ def _v2_match_to_alertrow(match: dict, *,
     value     = match.get('value')
     threshold = match.get('threshold')
 
-    # section — derived from scope token prefix
-    if scope_tok.startswith('holdings'):
-        section = 'Holdings'
-    elif scope_tok.startswith('positions'):
-        section = 'Positions'
-    else:
-        section = 'Funds'
-
-    # kind — derived from metric token. Drives row colour / label.
-    if   metric in ('cash',):                kind = 'negative_cash'
-    elif metric in ('avail_margin',):        kind = 'negative_margin'
-    elif '_rate_abs' in metric:              kind = 'rate_abs'
-    elif '_rate_pct' in metric:              kind = 'rate_pct'
-    elif metric.endswith('_pct') or metric == 'pnl_pct':  kind = 'static_pct'
-    else:                                    kind = 'static_abs'
-
-    # pnl — section-appropriate ₹ value. For rate alerts we still want the
-    # current raw pnl/day_val shown, plus the rate value in rate_val.
-    pnl, pct = _v2_extract_pnl_fields(row, section, metric, value)
-
-    rate_val = value if kind in ('rate_abs', 'rate_pct') else None
-
-    thr_str = _v2_format_threshold(kind, threshold)
-
+    section     = _v2_derive_section(scope_tok)
+    kind        = _v2_derive_kind(metric)
+    pnl, pct    = _v2_extract_pnl_fields(row, section, metric, value)
+    rate_val    = value if kind in ('rate_abs', 'rate_pct') else None
+    thr_str     = _v2_format_threshold(kind, threshold)
     scope_label = str(row.get('account', 'TOTAL'))
 
-    # ── Optional enrichment for position alerts ────────────────────────
-    # 1) Per-underlying breakdown — operator wants to see `NIFTY -₹22k ·
-    #    BANKNIFTY -₹13k` alongside the bare account total. Honours the
-    #    `alerts.show_underlying_breakdown` and `alerts.max_underlyings_per_alert`
-    #    settings, with fallbacks so a settings-cache miss doesn't block.
-    # 2) Rate-of-loss enrichment for STATIC alerts — rate-based metrics
-    #    already populate rate_val above. For static_pct / static_abs we
-    #    reach into alert_state's pnl_history (same source the rate
-    #    metrics use) and compute ΔP&L over the rate window.
-    underlyings_breakdown: list[dict] = []
-    if section == 'Positions' and df_positions is not None:
-        try:
-            underlyings_breakdown = _v2_underlying_breakdown(df_positions, scope_label)
-        except Exception as e:
-            logger.warning(f"underlying breakdown failed: {e}")
-
-    if (section == 'Positions' and rate_val is None and alert_state
-            and kind in ('static_pct', 'static_abs')):
-        try:
-            rate_val = _v2_static_rate_enrichment(alert_state, kind, scope_label, rate_window_min)
-        except Exception as e:
-            logger.warning(f"static-alert rate enrichment failed: {e}")
+    underlyings_breakdown, rate_val = _v2_enrich_position_alert(
+        section, kind, scope_label, df_positions, alert_state, rate_window_min, rate_val,
+    )
 
     return dict(
         section=section, scope=scope_label, kind=kind,
@@ -1531,6 +1543,83 @@ def _cycle_compute_post_fire_status(agent, *, bypass_schedule: bool) -> tuple[st
     return new_status, new_trigger_count
 
 
+async def _cycle_process_agent(
+    agent, *, agents, context: dict, cfg: dict,
+    now, any_market_open: bool,
+    bypass_schedule: bool, bypass_suppression: bool,
+    broadcast_fn, pending_dispatches: list,
+) -> None:
+    """Evaluate a single agent within a run_cycle tick.
+
+    Encapsulates the gate chain, debounce, shadow-lifespan check, suppression
+    buffering and non-triggered persist so run_cycle's top-level body stays
+    below the D-grade threshold.
+    """
+    if await _cycle_maybe_expire_lifespan(
+        agent, now, bypass_schedule=bypass_schedule, broadcast_fn=broadcast_fn
+    ):
+        return
+
+    # schedule / cooldown / fire_at_time / blackout gates
+    if _cycle_should_skip_schedule(agent, any_market_open=any_market_open,
+                                   bypass_schedule=bypass_schedule):
+        return
+    if _cycle_in_cooldown(agent, bypass_schedule=bypass_schedule):
+        return
+    if _cycle_outside_fire_at(agent, now, bypass_schedule=bypass_schedule):
+        return
+    if _cycle_in_blackout(agent, now, bypass_schedule=bypass_schedule):
+        return
+
+    alert_state = context.get("alert_state") or {}
+    sim_mode = bool(alert_state.get("sim_mode") or context.get("sim_mode"))
+    _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
+
+    # Baseline gate: skip rate-based agents during the opening offset window.
+    if _cycle_baseline_not_ready(agent, alert_state, now, cfg,
+                                 bypass_schedule=bypass_schedule):
+        return
+
+    # Evaluate condition tree; unlatch static agents on no-match.
+    matches = _cycle_evaluate_agent(agent, context, cfg, now, alert_state)
+    if not matches:
+        _v2_unlatch(agent)
+
+    # Phase 21 — debounce gate ("for N minutes" clauses).
+    matches, debounce_new_first_true_at, debounce_first_true_changed = (
+        _cycle_apply_debounce(agent, matches, now, sim_mode=sim_mode)
+    )
+    debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
+
+    # Shadow-lifespan gate (sim mode only).
+    if matches and sim_mode and _cycle_shadow_lifespan_exhausted(agent, alert_state):
+        return
+
+    # Suppression gate + fire buffering.
+    triggered = _cycle_maybe_buffer_fire(
+        agent, matches,
+        now=now,
+        bypass_suppression=bypass_suppression,
+        bypass_schedule=bypass_schedule,
+        sim_mode=sim_mode,
+        alert_state=alert_state,
+        cfg=cfg,
+        broadcast_fn=broadcast_fn,
+        debounce_min=debounce_min,
+        pending_dispatches=pending_dispatches,
+    )
+
+    # Persist non-triggered state changes (cooldown→active recovery,
+    # debounce latch arm/clear). Skipped for sim runs.
+    if not bypass_schedule and not triggered:
+        await _cycle_persist_untriggered_state(
+            agent,
+            debounce_first_true_changed=debounce_first_true_changed,
+            debounce_new_first_true_at=debounce_new_first_true_at,
+            broadcast_fn=broadcast_fn,
+        )
+
+
 async def run_cycle(context: dict, broadcast_fn=None,
                     only_agent_ids: list[int] | None = None,
                     bypass_schedule: bool = False,
@@ -1606,73 +1695,12 @@ async def run_cycle(context: dict, broadcast_fn=None,
     cfg = _v2_cfg()
 
     for agent in agents:
-        # Lifespan deadline — auto-complete expired until_date agents.
-        if await _cycle_maybe_expire_lifespan(
-            agent, now, bypass_schedule=bypass_schedule, broadcast_fn=broadcast_fn
-        ):
-            continue
-
-        # schedule / cooldown / fire_at_time / blackout gates
-        if _cycle_should_skip_schedule(agent, any_market_open=any_market_open,
-                                       bypass_schedule=bypass_schedule):
-            continue
-        if _cycle_in_cooldown(agent, bypass_schedule=bypass_schedule):
-            continue
-        if _cycle_outside_fire_at(agent, now, bypass_schedule=bypass_schedule):
-            continue
-        if _cycle_in_blackout(agent, now, bypass_schedule=bypass_schedule):
-            continue
-
-        alert_state = context.get("alert_state") or {}
-        sim_mode = bool(alert_state.get("sim_mode") or context.get("sim_mode"))
-        _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
-        triggered = False
-
-        # Baseline gate: skip rate-based agents during the opening offset window.
-        if _cycle_baseline_not_ready(agent, alert_state, now, cfg,
-                                     bypass_schedule=bypass_schedule):
-            continue
-
-        # Evaluate condition tree; unlatch static agents on no-match.
-        matches = _cycle_evaluate_agent(agent, context, cfg, now, alert_state)
-        if not matches:
-            _v2_unlatch(agent)
-
-        # ── Phase 21 — debounce gate ("for N minutes" clauses) ─────────────
-        # State machine on agent.condition_first_true_at — see _cycle_apply_debounce.
-        matches, debounce_new_first_true_at, debounce_first_true_changed = (
-            _cycle_apply_debounce(agent, matches, now, sim_mode=sim_mode)
+        await _cycle_process_agent(
+            agent, agents=agents, context=context, cfg=cfg,
+            now=now, any_market_open=any_market_open,
+            bypass_schedule=bypass_schedule, bypass_suppression=bypass_suppression,
+            broadcast_fn=broadcast_fn, pending_dispatches=pending_dispatches,
         )
-        debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
-
-        # Shadow-lifespan gate (sim mode only) — see _cycle_shadow_lifespan_exhausted.
-        if matches and sim_mode:
-            if _cycle_shadow_lifespan_exhausted(agent, alert_state):
-                continue   # skip the suppression + fire decision below
-
-        # Suppression gate + fire buffering.
-        triggered = _cycle_maybe_buffer_fire(
-            agent, matches,
-            now=now,
-            bypass_suppression=bypass_suppression,
-            bypass_schedule=bypass_schedule,
-            sim_mode=sim_mode,
-            alert_state=alert_state,
-            cfg=cfg,
-            broadcast_fn=broadcast_fn,
-            debounce_min=debounce_min,
-            pending_dispatches=pending_dispatches,
-        )
-
-        # Persist non-triggered state changes (cooldown→active recovery,
-        # debounce latch arm/clear). Skipped for sim runs.
-        if not bypass_schedule and not triggered:
-            await _cycle_persist_untriggered_state(
-                agent,
-                debounce_first_true_changed=debounce_first_true_changed,
-                debounce_new_first_true_at=debounce_new_first_true_at,
-                broadcast_fn=broadcast_fn,
-            )
 
     # ── Post-loop: topic-scoped tier suppression + dispatch survivors ────
     if pending_dispatches:

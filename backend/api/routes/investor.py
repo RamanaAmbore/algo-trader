@@ -168,6 +168,90 @@ def _is_active(row: InvestorToken, now: datetime) -> bool:
     return row.revoked_at is None and row.expires_at > now
 
 
+def _resolve_prior_month() -> tuple[int, int]:
+    """Return (year, month) for the calendar month before today (UTC)."""
+    from datetime import date as _date
+    today = datetime.now(timezone.utc).date()
+    first_of_this = _date(today.year, today.month, 1)
+    prior_end = first_of_this - timedelta(days=1)
+    return prior_end.year, prior_end.month
+
+
+def _build_eligible_rows(
+    eligible_users: list,
+    rows_by_user: dict,
+    year: int,
+    month: int,
+) -> tuple[list, int, int, int]:
+    """Build _StatementRow entries for eligible users; return (rows, sent, failed, pending)."""
+    out: list[_StatementRow] = []
+    sent = failed = pending = 0
+    for u in eligible_users:
+        r = rows_by_user.get(u.id)
+        if r is None:
+            pending += 1
+            out.append(_StatementRow(
+                id=None, user_id=u.id, username=u.username,
+                display_name=u.display_name or u.username,
+                email=u.email, share_pct=float(u.share_pct),
+                period_year=year, period_month=month,
+                status="pending",
+                generated_at=None, sent_at=None,
+                recipients=[], pdf_size_bytes=None, error=None,
+            ))
+        else:
+            status = "sent" if r.sent_at is not None else "failed"
+            if status == "sent": sent += 1
+            else: failed += 1
+            out.append(_StatementRow(
+                id=r.id, user_id=u.id, username=u.username,
+                display_name=u.display_name or u.username,
+                email=u.email, share_pct=float(u.share_pct),
+                period_year=year, period_month=month,
+                status=status,
+                generated_at=_iso(r.generated_at),
+                sent_at=_iso(r.sent_at),
+                recipients=list(r.recipients_json or []),
+                pdf_size_bytes=r.pdf_size_bytes,
+                error=r.error,
+            ))
+    return out, sent, failed, pending
+
+
+def _build_extra_rows(
+    stmt_rows: list,
+    eligible_ids: set,
+    extra_user_map: dict,
+    year: int,
+    month: int,
+) -> tuple[list, int, int]:
+    """Append rows for formerly-eligible users still carrying audit rows."""
+    out: list[_StatementRow] = []
+    sent = failed = 0
+    for r in stmt_rows:
+        if r.user_id in eligible_ids:
+            continue
+        u = extra_user_map.get(r.user_id)
+        if u is None:
+            continue
+        status = "sent" if r.sent_at is not None else "failed"
+        if status == "sent": sent += 1
+        else: failed += 1
+        out.append(_StatementRow(
+            id=r.id, user_id=u.id, username=u.username,
+            display_name=u.display_name or u.username,
+            email=u.email, share_pct=float(u.share_pct),
+            period_year=year, period_month=month,
+            status=status,
+            generated_at=_iso(r.generated_at),
+            sent_at=_iso(r.sent_at),
+            recipients=list(r.recipients_json or []),
+            pdf_size_bytes=r.pdf_size_bytes,
+            error=r.error,
+        ))
+    return out, sent, failed
+
+
 async def _resolve_token(token: str) -> tuple[InvestorToken, User]:
     """Look up the token, validate it's active, return (row, user).
     Raises 401 for missing / revoked / expired tokens."""
@@ -506,11 +590,7 @@ class InvestorStatementsController(Controller):
         the bg task's filter so the operator sees exactly what the
         next 02:00 IST wake will process."""
         if not year or not month:
-            from datetime import date as _date
-            today = datetime.now(timezone.utc).date()
-            first_of_this = _date(today.year, today.month, 1)
-            prior_end = first_of_this - timedelta(days=1)
-            year, month = prior_end.year, prior_end.month
+            year, month = _resolve_prior_month()
 
         async with async_session() as s:
             eligible_users = (await s.execute(
@@ -529,44 +609,11 @@ class InvestorStatementsController(Controller):
             )).scalars().all()
 
         rows_by_user = {r.user_id: r for r in stmt_rows}
-        out: list[_StatementRow] = []
-        sent = failed = pending = 0
-        for u in eligible_users:
-            r = rows_by_user.get(u.id)
-            if r is None:
-                pending += 1
-                out.append(_StatementRow(
-                    id=None, user_id=u.id, username=u.username,
-                    display_name=u.display_name or u.username,
-                    email=u.email, share_pct=float(u.share_pct),
-                    period_year=year, period_month=month,
-                    status="pending",
-                    generated_at=None, sent_at=None,
-                    recipients=[], pdf_size_bytes=None, error=None,
-                ))
-            else:
-                status = "sent" if r.sent_at is not None else "failed"
-                if status == "sent": sent += 1
-                else: failed += 1
-                out.append(_StatementRow(
-                    id=r.id, user_id=u.id, username=u.username,
-                    display_name=u.display_name or u.username,
-                    email=u.email, share_pct=float(u.share_pct),
-                    period_year=year, period_month=month,
-                    status=status,
-                    generated_at=_iso(r.generated_at),
-                    sent_at=_iso(r.sent_at),
-                    recipients=list(r.recipients_json or []),
-                    pdf_size_bytes=r.pdf_size_bytes,
-                    error=r.error,
-                ))
+        out, sent, failed, pending = _build_eligible_rows(
+            list(eligible_users), rows_by_user, year, month,
+        )
 
-        # Audit rows whose user is no longer eligible (changed share_pct
-        # to 0, deactivated, dropped email) — still surface them so the
-        # operator can see "this LP got a statement before; their row
-        # still exists." Tagged with status from the audit row.
-        # Slice Q — bulk-fetch formerly-eligible users in one query
-        # instead of opening a fresh session per row (N+1 defect).
+        # Audit rows whose user is no longer eligible — still surface them.
         eligible_ids = {u.id for u in eligible_users}
         extra_ids = {r.user_id for r in stmt_rows if r.user_id not in eligible_ids}
         extra_user_map: dict = {}
@@ -576,30 +623,13 @@ class InvestorStatementsController(Controller):
                     select(User).where(User.id.in_(extra_ids))
                 )).scalars().all()
             extra_user_map = {u.id: u for u in extra_rows}
-        for r in stmt_rows:
-            if r.user_id in eligible_ids:
-                continue
-            u = extra_user_map.get(r.user_id)
-            if u is None:
-                continue
-            status = "sent" if r.sent_at is not None else "failed"
-            if status == "sent": sent += 1
-            else: failed += 1
-            out.append(_StatementRow(
-                id=r.id, user_id=u.id, username=u.username,
-                display_name=u.display_name or u.username,
-                email=u.email, share_pct=float(u.share_pct),
-                period_year=year, period_month=month,
-                status=status,
-                generated_at=_iso(r.generated_at),
-                sent_at=_iso(r.sent_at),
-                recipients=list(r.recipients_json or []),
-                pdf_size_bytes=r.pdf_size_bytes,
-                error=r.error,
-            ))
+        extra_out, extra_sent, extra_failed = _build_extra_rows(
+            list(stmt_rows), eligible_ids, extra_user_map, year, month,
+        )
+        out.extend(extra_out)
+        sent += extra_sent
+        failed += extra_failed
 
-        # Stable sort: pending first (need attention), then failed,
-        # then sent; within group alphabetical by username.
         order = {"pending": 0, "failed": 1, "sent": 2}
         out.sort(key=lambda r: (order.get(r.status, 9), r.username))
 

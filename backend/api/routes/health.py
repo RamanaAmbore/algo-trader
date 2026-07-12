@@ -774,6 +774,33 @@ def _ts_to_ist_label(unix_ts: float | None) -> str:
         return ""
 
 
+def _cb_classify(cb_until, now: float) -> str:
+    """Return 'open', 'half-open', or 'closed' for a circuit-breaker entry."""
+    if cb_until is not None and now < cb_until:
+        return "open"
+    if cb_until is not None and now >= cb_until:
+        return "half-open"
+    return "closed"
+
+
+def _derive_fail_reason(last_fail: float, last_msg: str) -> str:
+    label = _ts_to_ist_label(last_fail)
+    reason = f"auth invalid since {label}" if label else "last fetch failed"
+    if last_msg:
+        reason = f"{reason} — {last_msg[:80]}"
+    return reason
+
+
+def _derive_healthy_reason(last_ok: float, now: float) -> tuple[str, str]:
+    """Return (state, reason) for a healthy account (last_ok >= last_fail)."""
+    age = now - last_ok
+    label = _ts_to_ist_label(last_ok)
+    if age <= _BROKER_HEALTH_FRESH_WINDOW_S:
+        return "green", (f"healthy, last good at {label}" if label else "healthy")
+    mins = int(age // 60)
+    return "amber", (f"stale — last good {mins} min ago at {label}" if label else f"stale — {mins} min ago")
+
+
 def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int, Optional[str]]:
     """Return ``(state, reason, circuit_state, consecutive_fail_count, circuit_open_until_iso)``
     for one _FETCH_HEALTH entry.
@@ -789,19 +816,11 @@ def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int,
     last_fail = entry.get("last_fail_at", 0.0) or 0.0
     last_msg  = entry.get("last_fail_msg", "") or ""
 
-    # Circuit-breaker fields (may be absent on legacy entries).
     cb_until  = entry.get("circuit_open_until") or None
     cb_count  = int(entry.get("consecutive_fail_count", 0) or 0)
-    if cb_until is not None and now < cb_until:
-        cb_state = "open"
-    elif cb_until is not None and now >= cb_until:
-        cb_state = "half-open"
-    else:
-        cb_state = "closed"
-
+    cb_state  = _cb_classify(cb_until, now)
     cb_until_iso: Optional[str] = _ts_to_iso(cb_until) if cb_until else None
 
-    # Circuit OPEN → always red, with retry timestamp in reason.
     if cb_state == "open":
         label = _ts_to_ist_label(cb_until)
         reason = f"circuit open — auto retry at {label}" if label else "circuit open"
@@ -811,22 +830,95 @@ def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int,
         return "amber", "no fetch attempt recorded yet", cb_state, cb_count, cb_until_iso
 
     if last_fail > last_ok:
-        label = _ts_to_ist_label(last_fail)
-        reason = f"auth invalid since {label}" if label else "last fetch failed"
-        if last_msg:
-            short_msg = last_msg[:80]
-            reason = f"{reason} — {short_msg}"
-        return "red", reason, cb_state, cb_count, cb_until_iso
+        return "red", _derive_fail_reason(last_fail, last_msg), cb_state, cb_count, cb_until_iso
 
-    # last_ok >= last_fail — account is currently healthy
-    age = now - last_ok
-    if age <= _BROKER_HEALTH_FRESH_WINDOW_S:
-        label = _ts_to_ist_label(last_ok)
-        return "green", (f"healthy, last good at {label}" if label else "healthy"), cb_state, cb_count, cb_until_iso
-    else:
-        label = _ts_to_ist_label(last_ok)
-        mins = int(age // 60)
-        return "amber", (f"stale — last good {mins} min ago at {label}" if label else f"stale — {mins} min ago"), cb_state, cb_count, cb_until_iso
+    state, reason = _derive_healthy_reason(last_ok, now)
+    return state, reason, cb_state, cb_count, cb_until_iso
+
+
+async def _load_broker_label_and_priority_maps() -> tuple[dict[str, str], dict[str, dict]]:
+    """Query DB for broker label + poll-priority metadata for every account.
+
+    Returns (broker_label_map, poll_priority_map). Both are empty dicts on
+    DB failure (caller logs a warning and falls back to sensible defaults).
+    """
+    broker_label_map: dict[str, str] = {}
+    poll_priority_map: dict[str, dict] = {}
+    async with shared_async_session() as _sess:
+        rows = (await _sess.execute(
+            select(BrokerAccount).order_by(BrokerAccount.account)
+        )).scalars().all()
+        for row in rows:
+            broker_label_map[row.account] = _broker_id_to_label(row.broker_id or "")
+            adt = getattr(row, "auto_downgraded_at", None)
+            poll_priority_map[row.account] = {
+                "poll_priority": str(getattr(row, "poll_priority", "hot") or "hot"),
+                "auto_downgrade_enabled": bool(getattr(row, "auto_downgrade_enabled", False)),
+                "auto_downgraded_at": (adt.isoformat() if adt else None),
+                "auto_downgrade_reason": getattr(row, "auto_downgrade_reason", None),
+                "circuit_breaker_enabled": bool(getattr(row, "circuit_breaker_enabled", False)),
+            }
+    return broker_label_map, poll_priority_map
+
+
+def _resolve_active_ticker_account() -> str:
+    """Return the account currently driving the KiteTicker WS, or ''."""
+    try:
+        from backend.brokers.kite_ticker import get_ticker as _gt
+        return str(_gt().current_account() or "")
+    except Exception:
+        return ""
+
+
+def _build_account_health_entry(
+    acct: str,
+    entry: dict,
+    now: float,
+    broker_label_map: dict[str, str],
+    poll_priority_map: dict[str, dict],
+    active_ticker_acct: str,
+) -> BrokerAccountHealth:
+    """Construct a single BrokerAccountHealth struct from raw health-map entry."""
+    state, reason, cb_state, cb_count, cb_until_iso = _derive_account_health(entry, now)
+    last_ok    = entry.get("last_ok_at",   0.0) or 0.0
+    last_fail  = entry.get("last_fail_at", 0.0) or 0.0
+    last_check = max(last_ok, last_fail)
+    _pp = poll_priority_map.get(acct, {})
+    return BrokerAccountHealth(
+        account=acct,
+        broker=broker_label_map.get(acct, "kite"),
+        state=state,
+        reason=reason,
+        last_good_at=_ts_to_iso(last_ok if last_ok else None),
+        last_check_at=_ts_to_iso(last_check if last_check else None),
+        is_active_ticker=bool(active_ticker_acct and acct == active_ticker_acct),
+        circuit_state=cb_state,
+        consecutive_fail_count=cb_count,
+        circuit_open_until=cb_until_iso,
+        poll_priority=_pp.get("poll_priority", "hot"),
+        auto_downgrade_enabled=bool(_pp.get("auto_downgrade_enabled", False)),
+        auto_downgraded_at=_pp.get("auto_downgraded_at"),
+        auto_downgrade_reason=_pp.get("auto_downgrade_reason"),
+        circuit_breaker_enabled=bool(_pp.get("circuit_breaker_enabled", False)),
+    )
+
+
+def _resolve_primary_mdb_account() -> str:
+    """Return the account get_price_broker() would pick for a fresh request, or ''."""
+    try:
+        from backend.brokers.registry import get_price_broker as _gpb
+        return str(getattr(_gpb(), "account", "") or "")
+    except Exception:
+        return ""
+
+
+def _resolve_entitlement_denied() -> dict:
+    """Return Groww entitlement-denied counters (empty dict for Kite/Dhan)."""
+    try:
+        from backend.brokers.adapters.groww import get_entitlement_denied_snapshot as _ged
+        return _ged()
+    except Exception:
+        return {}
 
 
 class BrokerHealthController(Controller):
@@ -850,96 +942,32 @@ class BrokerHealthController(Controller):
         # fetch_health_snapshot() may hit conn_service over UDS (sync).
         # Off-load to thread so the event loop stays free.
         health_map: dict[str, dict] = await _asyncio.to_thread(_fhs)
-
         now = _time.time()
 
-        # Build per-account entries.  Include every account present in
-        # health_map; fall back to BrokerAccount rows for broker label.
         broker_label_map: dict[str, str] = {}
-        # poll_priority_map: account → dict with poll_priority fields
         poll_priority_map: dict[str, dict] = {}
         try:
-            async with shared_async_session() as _sess:
-                rows = (await _sess.execute(
-                    select(BrokerAccount).order_by(BrokerAccount.account)
-                )).scalars().all()
-                for row in rows:
-                    broker_label_map[row.account] = _broker_id_to_label(
-                        row.broker_id or ""
-                    )
-                    adt = getattr(row, "auto_downgraded_at", None)
-                    poll_priority_map[row.account] = {
-                        "poll_priority": str(
-                            getattr(row, "poll_priority", "hot") or "hot"
-                        ),
-                        "auto_downgrade_enabled": bool(
-                            getattr(row, "auto_downgrade_enabled", False)
-                        ),
-                        "auto_downgraded_at": (
-                            adt.isoformat() if adt else None
-                        ),
-                        "auto_downgrade_reason": getattr(
-                            row, "auto_downgrade_reason", None
-                        ),
-                        "circuit_breaker_enabled": bool(
-                            getattr(row, "circuit_breaker_enabled", False)
-                        ),
-                    }
+            broker_label_map, poll_priority_map = await _load_broker_label_and_priority_maps()
         except Exception as _label_exc:
             logger.warning(
                 "broker-health: broker_label_map DB query failed — "
                 "broker column will fall back to 'kite': %s", _label_exc
             )
 
-        # Resolve which Kite account is currently the active ticker so
-        # the frontend can render a chip next to that row. Non-fatal:
-        # a conn_service outage leaves every row is_active_ticker=False
-        # (chip absent) rather than blocking the whole endpoint.
-        active_ticker_acct = ""
-        try:
-            from backend.brokers.kite_ticker import get_ticker as _gt
-            active_ticker_acct = str(_gt().current_account() or "")
-        except Exception:
-            pass
+        active_ticker_acct = _resolve_active_ticker_account()
 
-        accounts: list[BrokerAccountHealth] = []
-        for acct, entry in health_map.items():
-            # Skip health entries for accounts that no longer exist in the DB
-            # (orphan entries from past sessions / deleted rows). They would
-            # otherwise render as "broker: unknown" in the popup.
-            if broker_label_map and acct not in broker_label_map:
-                continue
-            state, reason, cb_state, cb_count, cb_until_iso = _derive_account_health(entry, now)
-            last_ok   = entry.get("last_ok_at",   0.0) or 0.0
-            last_fail = entry.get("last_fail_at", 0.0) or 0.0
-            last_check = max(last_ok, last_fail)
-            _pp = poll_priority_map.get(acct, {})
-            accounts.append(BrokerAccountHealth(
-                account=acct,
-                broker=broker_label_map.get(acct, "kite"),
-                state=state,
-                reason=reason,
-                last_good_at=_ts_to_iso(last_ok if last_ok else None),
-                last_check_at=_ts_to_iso(last_check if last_check else None),
-                is_active_ticker=bool(
-                    active_ticker_acct and acct == active_ticker_acct
-                ),
-                circuit_state=cb_state,
-                consecutive_fail_count=cb_count,
-                circuit_open_until=cb_until_iso,
-                poll_priority=_pp.get("poll_priority", "hot"),
-                auto_downgrade_enabled=bool(_pp.get("auto_downgrade_enabled", False)),
-                auto_downgraded_at=_pp.get("auto_downgraded_at"),
-                auto_downgrade_reason=_pp.get("auto_downgrade_reason"),
-                circuit_breaker_enabled=bool(
-                    _pp.get("circuit_breaker_enabled", False)
-                ),
-            ))
+        # Build per-account entries, skipping orphan entries for accounts
+        # that no longer exist in the DB (deleted rows).
+        accounts: list[BrokerAccountHealth] = [
+            _build_account_health_entry(
+                acct, entry, now, broker_label_map, poll_priority_map, active_ticker_acct
+            )
+            for acct, entry in health_map.items()
+            if not broker_label_map or acct in broker_label_map
+        ]
 
-        # Sort by canonical display_order (operator-configured) so the
-        # chip popup always shows accounts in the requested sequence:
-        # Kite → DH3747 → Groww → DH6847. Falls back to (999, account)
-        # for unknown entries so new accounts land at the end.
+        # Sort by canonical display_order so the chip popup always shows
+        # accounts in the operator-configured sequence.
         try:
             from backend.brokers.broker_apis import get_account_order_map as _gaom
             _display_order_map = _gaom()
@@ -949,31 +977,8 @@ class BrokerHealthController(Controller):
             key=lambda a: (_display_order_map.get(a.account, 999), a.account)
         )
 
-        # Entitlement-denied counters (Groww only — always empty for
-        # Kite/Dhan, harmless to include in the response).
-        entitlement_denied: dict = {}
-        try:
-            from backend.brokers.adapters.groww import (
-                get_entitlement_denied_snapshot as _ged,
-            )
-            entitlement_denied = _ged()
-        except Exception:
-            pass
-
-        # Primary market-data account — the first underlying broker that
-        # get_market_data_broker() would pick for a fresh request. Surfaced
-        # here so the /admin/broker-health UI can annotate the active
-        # market-data session. Non-fatal: empty string if not resolvable.
-        primary_mdb_account = ""
-        try:
-            from backend.brokers.registry import get_price_broker as _gpb
-            _pb = _gpb()
-            primary_mdb_account = str(getattr(_pb, "account", "") or "")
-        except Exception:
-            pass
-
         return BrokerHealthResponse(
             accounts=accounts,
-            groww_entitlement_denied=entitlement_denied,
-            primary_market_data_account=primary_mdb_account,
+            groww_entitlement_denied=_resolve_entitlement_denied(),
+            primary_market_data_account=_resolve_primary_mdb_account(),
         )

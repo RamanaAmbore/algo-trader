@@ -466,6 +466,106 @@ def _build_funds_rows(df_margins):
 # Open / Close summary
 # ---------------------------------------------------------------------------
 
+def _summary_holdings_rows(sum_holdings) -> list[tuple]:
+    """Build (Account, Cur Val, P&L, P&L%, Day Loss, Day Loss%) rows."""
+    rows = []
+    for _, row in sum_holdings.iterrows():
+        account = str(row.get('account', ''))
+        cur_val = float(row.get('cur_val', 0) or 0)
+        pnl     = float(row.get('pnl', 0) or 0)
+        pnl_pct = float(row.get('pnl_percentage', 0) or 0)
+        day_val = float(row.get('day_change_val', 0) or 0)
+        day_pct = float(row.get('day_change_percentage', 0) or 0)
+        rows.append((
+            account, _fmt_inr(cur_val), _fmt_inr(pnl),
+            f"{pnl_pct:.2f}%", _fmt_inr(day_val), f"{day_pct:.2f}%",
+        ))
+    return rows
+
+
+def _summary_positions_rows(sum_positions) -> list[tuple]:
+    """Build (Account, P&L) rows from the positions summary dataframe."""
+    rows = []
+    for _, row in sum_positions.iterrows():
+        account = str(row.get('account', ''))
+        pnl     = float(row.get('pnl', 0) or 0)
+        rows.append((account, _fmt_inr(pnl)))
+    return rows
+
+
+def _summary_underlying_rows(df_positions) -> list[dict]:
+    """Build per-underlying breakdown rows (settings-gated, never raises)."""
+    try:
+        from backend.shared.helpers.settings import get_bool, get_int
+        from backend.shared.helpers.summarise import breakdown_positions_by_underlying
+        if df_positions is not None and get_bool(
+                'alerts.summary_show_underlying_breakdown', True):
+            top_n = get_int('alerts.max_underlyings_per_alert', 5)
+            return breakdown_positions_by_underlying(
+                df_positions, account=None, top_n=top_n,
+            )
+    except Exception as e:
+        logger.warning(f"summary underlying breakdown failed: {e}")
+    return []
+
+
+def _build_summary_telegram(
+    segment_label: str,
+    h_rows: list[tuple], p_rows: list[tuple],
+    f_rows: list[tuple], und_rows: list[dict],
+) -> str:
+    """Assemble the Telegram fixed-table body for market summaries."""
+    h_headers = ("Account", "Cur Val", "P&L", "P&L%", "Day Loss", "Day Loss%")
+    p_headers = ("Account", "P&L")
+    f_headers = ("Account", "Cash", "Avail Margin", "Used Margin", "Collateral")
+    h_tg = _fixed_table(h_headers, h_rows) if h_rows else "No holdings data"
+    p_tg = _fixed_table(p_headers, p_rows) if p_rows else "No positions data"
+    body = f"Holdings{segment_label}\n{h_tg}\n\nPositions{segment_label}\n{p_tg}"
+    if f_rows:
+        body += f"\n\nFunds\n{_fixed_table(f_headers, f_rows)}"
+    if und_rows:
+        und_lines = "\n".join(
+            f"  {u['underlying']:<10} {_fmt_rupees(u['pnl'])}" for u in und_rows
+        )
+        body += f"\n\nBy underlying\n{und_lines}"
+    return body
+
+
+def _build_summary_email(
+    segment_label: str,
+    h_rows: list[tuple], p_rows: list[tuple],
+    f_rows: list[tuple], und_rows: list[dict],
+) -> str:
+    """Assemble the HTML email body for market summaries."""
+    h_headers = ("Account", "Cur Val", "P&L", "P&L%", "Day Loss", "Day Loss%")
+    p_headers = ("Account", "P&L")
+    f_headers = ("Account", "Cash", "Avail Margin", "Used Margin", "Collateral")
+    h_email = _html_table(h_headers, h_rows) if h_rows else "<p>No holdings data</p>"
+    p_email = _html_table(p_headers, p_rows) if p_rows else "<p>No positions data</p>"
+    body = (
+        f"<p style='margin-top:16px;font-weight:bold'>Holdings{segment_label}</p>"
+        f"{h_email}"
+        f"<p style='margin-top:16px;font-weight:bold'>Positions{segment_label}</p>"
+        f"{p_email}"
+    )
+    if f_rows:
+        body += (
+            f"<p style='margin-top:16px;font-weight:bold'>Funds</p>"
+            f"{_html_table(f_headers, f_rows)}"
+        )
+    if und_rows:
+        und_html = _html_table(
+            ("Underlying", "P&L", "Positions"),
+            [(u['underlying'], _fmt_rupees(u['pnl']), str(u['count']))
+             for u in und_rows],
+        )
+        body += (
+            f"<p style='margin-top:16px;font-weight:bold'>By underlying</p>"
+            f"{und_html}"
+        )
+    return body
+
+
 def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
                  label: str = "", df_margins=None, df_positions=None):
     """
@@ -478,100 +578,18 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
         same format as the per-alert breakdown so the operator's eye
         moves naturally between the two surfaces.
     """
-    # Holdings table: Account | Cur Val | P&L | P&L% | Day Loss | Day Loss%
-    h_headers = ("Account", "Cur Val", "P&L", "P&L%", "Day Loss", "Day Loss%")
-    h_rows = []
-    for _, row in sum_holdings.iterrows():
-        account  = str(row.get('account', ''))
-        cur_val  = float(row.get('cur_val', 0) or 0)
-        pnl      = float(row.get('pnl', 0) or 0)
-        pnl_pct  = float(row.get('pnl_percentage', 0) or 0)
-        day_val  = float(row.get('day_change_val', 0) or 0)
-        day_pct  = float(row.get('day_change_percentage', 0) or 0)
-        h_rows.append((
-            account,
-            _fmt_inr(cur_val),
-            _fmt_inr(pnl),
-            f"{pnl_pct:.2f}%",
-            _fmt_inr(day_val),
-            f"{day_pct:.2f}%",
-        ))
+    h_rows    = _summary_holdings_rows(sum_holdings)
+    p_rows    = _summary_positions_rows(sum_positions)
+    f_rows    = _build_funds_rows(df_margins)
+    und_rows  = _summary_underlying_rows(df_positions)
 
-    # Positions table: Account | P&L
-    p_headers = ("Account", "P&L")
-    p_rows = []
-    for _, row in sum_positions.iterrows():
-        account = str(row.get('account', ''))
-        pnl     = float(row.get('pnl', 0) or 0)
-        p_rows.append((account, _fmt_inr(pnl)))
-
-    # Funds table: Account | Cash | Avail Margin | Used Margin | Collateral
-    f_headers = ("Account", "Cash", "Avail Margin", "Used Margin", "Collateral")
-    f_rows = _build_funds_rows(df_margins)
-
-    segment_label = f" — {label}" if label else ""
+    segment_label  = f" — {label}" if label else ""
     subject_detail = f"{label + ' — ' if label else ''}{ist_display}"
 
-    # ── Per-underlying breakdown (optional) ──────────────────────────
-    # Settings-gated; defaults to enabled. Reuses the same helper the
-    # per-alert formatter uses so the format stays consistent. Returns
-    # an empty list on any failure (settings cache miss, missing
-    # column, etc.) so the summary always sends.
-    und_rows: list[dict] = []
-    try:
-        from backend.shared.helpers.settings import get_bool, get_int
-        from backend.shared.helpers.summarise import (
-            breakdown_positions_by_underlying,
-        )
-        if df_positions is not None and get_bool(
-                'alerts.summary_show_underlying_breakdown', True):
-            top_n = get_int('alerts.max_underlyings_per_alert', 5)
-            und_rows = breakdown_positions_by_underlying(
-                df_positions, account=None, top_n=top_n,
-            )
-    except Exception as e:
-        logger.warning(f"summary underlying breakdown failed: {e}")
+    tg_table       = _build_summary_telegram(segment_label, h_rows, p_rows, f_rows, und_rows)
+    email_html     = _build_summary_email(segment_label, h_rows, p_rows, f_rows, und_rows)
 
-    # Telegram: fixed-width monospace
-    h_tg = _fixed_table(h_headers, h_rows) if h_rows else "No holdings data"
-    p_tg = _fixed_table(p_headers, p_rows) if p_rows else "No positions data"
-    tg_table = f"Holdings{segment_label}\n{h_tg}\n\nPositions{segment_label}\n{p_tg}"
-    if f_rows:
-        f_tg = _fixed_table(f_headers, f_rows)
-        tg_table += f"\n\nFunds\n{f_tg}"
-    if und_rows:
-        # Compact one-line-per-underlying so the section stays short
-        # on a phone. Sign + ₹ format reads at a glance.
-        und_lines = "\n".join(
-            f"  {u['underlying']:<10} {_fmt_rupees(u['pnl'])}"
-            for u in und_rows
-        )
-        tg_table += f"\n\nBy underlying\n{und_lines}"
-
-    # Email: HTML tables with section headings
-    h_email = _html_table(h_headers, h_rows) if h_rows else "<p>No holdings data</p>"
-    p_email = _html_table(p_headers, p_rows) if p_rows else "<p>No positions data</p>"
-    email_table_html = (
-        f"<p style='margin-top:16px;font-weight:bold'>Holdings{segment_label}</p>"
-        f"{h_email}"
-        f"<p style='margin-top:16px;font-weight:bold'>Positions{segment_label}</p>"
-        f"{p_email}"
-    )
-    if f_rows:
-        f_email = _html_table(f_headers, f_rows)
-        email_table_html += f"<p style='margin-top:16px;font-weight:bold'>Funds</p>{f_email}"
-    if und_rows:
-        und_html = _html_table(
-            ("Underlying", "P&L", "Positions"),
-            [(u['underlying'], _fmt_rupees(u['pnl']), str(u['count']))
-             for u in und_rows],
-        )
-        email_table_html += (
-            f"<p style='margin-top:16px;font-weight:bold'>By underlying</p>"
-            f"{und_html}"
-        )
-
-    _dispatch(msg_type, ist_display, tg_table, email_table_html, subject_detail)
+    _dispatch(msg_type, ist_display, tg_table, email_html, subject_detail)
     logger.info(f"Background: {msg_type} summary sent")
 
 

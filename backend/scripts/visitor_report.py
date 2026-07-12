@@ -451,23 +451,31 @@ def _ua_short(ua: str | None) -> str:
     return ua[:20]
 
 
-def _render_report(
-    target: date,
-    records: dict[str, _IPRecord],
-    geo_map: dict[str, dict],
-) -> str:
-    total_requests = sum(r.count for r in records.values())
-    date_str = target.isoformat()
+_RESIDENTIAL_HINTS = (
+    "JIO", "AIRTEL", "BSNL", "VODAFONE", "BHARTI",
+    "COMCAST", "AT&T", "VERIZON", "SPECTRUM", "CHARTER", "COX", "T-MOBILE",
+    "BT GROUP", "VIRGIN", "SKY UK",
+    "DEUTSCHE TELEKOM", "VODAFONE GMBH", "TELEFONICA", "ORANGE",
+)
 
-    # Country counts
+
+def _is_residential(name: str) -> bool:
+    """Return True if the company name looks like a residential ISP."""
+    up = name.upper()
+    return any(h in up for h in _RESIDENTIAL_HINTS)
+
+
+def _aggregate_counts(
+    records: dict[str, "_IPRecord"], geo_map: dict[str, dict],
+) -> tuple[dict, dict, dict, dict, list[tuple]]:
+    """Aggregate country / city / path / company counts and build detail rows."""
     country_counts: dict[str, int] = defaultdict(int)
     city_counts: dict[str, int] = defaultdict(int)
     path_counts: dict[str, int] = defaultdict(int)
     company_counts: dict[str, int] = defaultdict(int)
-
     rows: list[tuple] = []
     for ip, rec in records.items():
-        geo = geo_map.get(ip, {})
+        geo     = geo_map.get(ip, {})
         country = geo.get("country") or rec.cf_country or "??"
         region  = geo.get("region") or ""
         city    = geo.get("city") or ""
@@ -480,10 +488,6 @@ def _render_report(
             company_counts[company] += rec.count
         if rec.last_path:
             base = rec.last_path.split("?")[0]
-            # Vuln-scan / probe paths shouldn't dominate "Top paths" —
-            # filter them so the operator sees real visitor traffic.
-            # Same paths still show in the per-IP detail rows below so
-            # the forensic trail is preserved.
             if not _BOT_PROBE_RE.search(base):
                 path_counts[base] += rec.count
         rows.append((
@@ -491,42 +495,66 @@ def _render_report(
             country, region, city, asn, company,
             rec.last_path or "-", _ua_short(rec.user_agent),
         ))
-
     rows.sort(key=lambda x: x[3], reverse=True)
+    return country_counts, city_counts, path_counts, company_counts, rows
 
-    top_countries = " · ".join(
-        f"{c} {n}"
-        for c, n in sorted(country_counts.items(), key=lambda kv: -kv[1])[:8]
+
+def _top_line(counter: dict[str, int], k: int, sep: str = " · ") -> str:
+    """Return top-k entries from a count dict as a joined string."""
+    return sep.join(
+        f"{c} {n}" for c, n in sorted(counter.items(), key=lambda kv: -kv[1])[:k]
     )
-    top_cities = " · ".join(
-        f"{c} {n}"
-        for c, n in sorted(city_counts.items(), key=lambda kv: -kv[1])[:6]
-    )
-    top_paths = " · ".join(
-        f"{p} {n}"
-        for p, n in sorted(path_counts.items(), key=lambda kv: -kv[1])[:8]
-    )
-    # Company top-list — surfaces corporate visitors hitting from office
-    # networks at a glance. Residential ISPs (Jio, Comcast, Airtel, BSNL,
-    # AT&T) are filtered out so the list reads as "who's hitting the site
-    # from a known corporate network"; WFH visitors fall through to the
-    # detail table where the ISP name appears in full.
-    _RESIDENTIAL_HINTS = (
-        "JIO", "AIRTEL", "BSNL", "VODAFONE", "BHARTI",
-        "COMCAST", "AT&T", "VERIZON", "SPECTRUM", "CHARTER", "COX", "T-MOBILE",
-        "BT GROUP", "VIRGIN", "SKY UK",
-        "DEUTSCHE TELEKOM", "VODAFONE GMBH", "TELEFONICA", "ORANGE",
-    )
-    def _is_residential(name: str) -> bool:
-        up = name.upper()
-        return any(h in up for h in _RESIDENTIAL_HINTS)
-    _non_residential = [
+
+
+def _non_residential_top(company_counts: dict[str, int], k: int = 8) -> str:
+    """Return top-k non-residential company entries as a joined string."""
+    items = [
         (c, n) for c, n in sorted(company_counts.items(), key=lambda kv: -kv[1])
         if not _is_residential(c)
-    ][:8]
-    top_companies = (
-        " · ".join(f"{c} {n}" for c, n in _non_residential) if _non_residential else "—"
+    ][:k]
+    return " · ".join(f"{c} {n}" for c, n in items) if items else "—"
+
+
+def _detail_row_lines(rows: list[tuple], cap: int = 200) -> list[str]:
+    """Render up to `cap` detail rows as markdown table lines."""
+    lines = []
+    for i, (ip, first_dt, last_dt, count, country, region, city, asn, company, path, ua) in enumerate(rows):
+        if i >= cap:
+            lines.append(f"| … | | | | | | | | | additional {len(rows) - cap} IPs | |")
+            break
+        first_s = _ts_dual(first_dt)
+        last_s  = _ts_dual(last_dt)
+        if not path:
+            short_path = "-"
+        elif len(path) > 60:
+            short_path = f"{path[:30]}…{path[-12:]}"
+        else:
+            short_path = path
+        company_s = (company[:40] + "…") if len(company) > 40 else company
+        lines.append(
+            f"| {ip} | {first_s} | {last_s} | {count} "
+            f"| {country} | {region} | {city} | {asn} | {company_s} "
+            f"| {short_path} | {ua} |"
+        )
+    return lines
+
+
+def _render_report(
+    target: date,
+    records: dict[str, "_IPRecord"],
+    geo_map: dict[str, dict],
+) -> str:
+    total_requests = sum(r.count for r in records.values())
+    date_str = target.isoformat()
+
+    country_counts, city_counts, path_counts, company_counts, rows = _aggregate_counts(
+        records, geo_map,
     )
+
+    top_countries = _top_line(country_counts, 8)
+    top_cities    = _top_line(city_counts, 6)
+    top_paths     = _top_line(path_counts, 8)
+    top_companies = _non_residential_top(company_counts)
 
     lines = [
         f"# Visitors — {date_str} (IST trading day, post-MCX close)",
@@ -542,35 +570,7 @@ def _render_report(
         "## Detail (one row per unique IP)",
         "| IP | First | Last | Reqs | Country | Region | City | ASN | Company | Last path | UA |",
         "|---|---|---|---|---|---|---|---|---|---|---|",
-    ]
-
-    cap = 200
-    for i, (ip, first_dt, last_dt, count, country, region, city, asn, company, path, ua) in enumerate(rows):
-        if i >= cap:
-            remaining = len(rows) - cap
-            lines.append(f"| … | | | | | | | | | additional {remaining} IPs | |")
-            break
-        first_s = _ts_dual(first_dt)
-        last_s  = _ts_dual(last_dt)
-        # Truncate path for table readability
-        # Truncate long paths so a recursive-%25-encoded vuln probe (often
-        # 1-2 kB long) doesn't blow the table row width. Keep the leading
-        # 30 chars + trailing 12 chars + '…' between so the operator still
-        # sees enough to recognise the probe family.
-        if not path:
-            short_path = "-"
-        elif len(path) > 60:
-            short_path = f"{path[:30]}…{path[-12:]}"
-        else:
-            short_path = path
-        # Company can be quite long ("Google LLC", "Amazon.com, Inc."); cap
-        # at 40 chars but keep full text — common corporate names fit cleanly.
-        company_s = (company[:40] + "…") if len(company) > 40 else company
-        lines.append(
-            f"| {ip} | {first_s} | {last_s} | {count} "
-            f"| {country} | {region} | {city} | {asn} | {company_s} "
-            f"| {short_path} | {ua} |"
-        )
+    ] + _detail_row_lines(rows)
 
     return "\n".join(lines) + "\n"
 
@@ -579,71 +579,40 @@ def _render_report(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-async def arun_daily(
-    target_date: Optional[date] = None,
-    report_dir: str = "/opt/ramboq/.log",
-) -> Path:
-    """Async version of run_daily. Use this from inside async code
-    (the background task) so asyncpg's connection pool stays bound
-    to the caller's running event loop.
-
-    Parse nginx logs for `target_date` (default: today IST — the
-    IST trading day that's just closed at MCX, 23:30 IST). Upserts
-    visitor_log, writes markdown report, purges rows older than 30 days.
-    Returns the report Path."""
+async def _arun_load_lines(target_date: date) -> list[str]:
+    """Read nginx log files in a thread and return lines for target_date."""
     import asyncio as _asyncio
-
-    today_ist = datetime.now(_IST).date()
-    if target_date is None:
-        target_date = today_ist
-
-    # Hydrate the in-process settings cache from DB. The cache is normally
-    # populated at app startup; in async invocation we're already on the
-    # right loop so a plain await suffices.
-    try:
-        from backend.shared.helpers.settings import reload_cache
-        await reload_cache()
-    except Exception as e:
-        logger.warning(f"visitor_report: settings cache reload failed: {e}")
-
-    # ramboq.com is configured (via /etc/nginx/conf.d/00-cloudflare-real-ip.conf
-    # + per-server access_log overrides) to write to a dedicated log file in
-    # the ramboq_visitor format. Reading this file directly avoids having to
-    # disambiguate the prod box's other sites (marathakalyanam, ramanaambore,
-    # webhook etc) from the visitor-traffic stream.
-    # Log file reading is sync (gzip + line parse); push to thread so
-    # the event loop stays responsive while large logs are processed.
     log_dir = Path("/var/log/nginx")
+
     def _read_all() -> list[str]:
         lines: list[str] = []
         for fname in ("ramboq-access.log", "ramboq-access.log.1", "ramboq-access.log.1.gz"):
             lines.extend(_read_log_file(log_dir / fname))
         return lines
-    all_lines: list[str] = await _asyncio.to_thread(_read_all)
 
-    logger.info(
-        f"visitor_report: {len(all_lines)} raw lines for {target_date}"
-    )
-
+    all_lines = await _asyncio.to_thread(_read_all)
+    logger.info(f"visitor_report: {len(all_lines)} raw lines for {target_date}")
     records = _parse_lines(all_lines, target_date)
-    logger.info(
-        f"visitor_report: {len(records)} unique IPs after path/date filtering"
-    )
+    logger.info(f"visitor_report: {len(records)} unique IPs after path/date filtering")
+    return records
 
-    # IP-level ignore filter (operator-configurable via /admin/settings).
-    # Skip the server's own outbound IPs + any operator-added laptop /
-    # office IPs before geo lookup so the digest reflects only third-party
-    # visitor traffic.
+
+def _arun_apply_ip_ignore(records: dict) -> dict:
+    """Drop records whose IP matches visitors.ignore_ips patterns."""
     ignore_ips = _parse_ignore_ips_setting()
-    if ignore_ips:
-        before = len(records)
-        records = {ip: r for ip, r in records.items() if not _ip_should_ignore(ip, ignore_ips)}
-        logger.info(
-            f"visitor_report: dropped {before - len(records)} records by "
-            f"visitors.ignore_ips ({len(ignore_ips)} patterns)"
-        )
+    if not ignore_ips:
+        return records
+    before = len(records)
+    records = {ip: r for ip, r in records.items() if not _ip_should_ignore(ip, ignore_ips)}
+    logger.info(
+        f"visitor_report: dropped {before - len(records)} records by "
+        f"visitors.ignore_ips ({len(ignore_ips)} patterns)"
+    )
+    return records
 
-    # MaxMind GeoIP
+
+def _arun_geo_map(records: dict) -> dict[str, dict]:
+    """Build geo_map via MaxMind lookups (graceful when databases absent)."""
     city_db = None
     asn_db  = None
     try:
@@ -662,51 +631,47 @@ async def arun_daily(
         logger.warning("visitor_report: maxminddb not installed — geo lookup skipped")
     except Exception as e:
         logger.warning(f"visitor_report: MaxMind open failed: {e}")
+    geo_map: dict[str, dict] = {ip: _geo_lookup(ip, city_db, asn_db) for ip in records}
+    for db in (city_db, asn_db):
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
+    return geo_map
 
-    geo_map: dict[str, dict] = {}
-    for ip in records:
-        geo_map[ip] = _geo_lookup(ip, city_db, asn_db)
 
-    if city_db is not None:
-        try:
-            city_db.close()
-        except Exception:
-            pass
-    if asn_db is not None:
-        try:
-            asn_db.close()
-        except Exception:
-            pass
-
-    # Company-level ignore filter — drop visitors whose ASN org matches
-    # any substring in visitors.ignore_companies. Applied AFTER geo so
-    # 'Hostinger' (the prod box's own ASN) catches any IP in their range
-    # without having to enumerate every prefix.
+def _arun_apply_company_ignore(
+    records: dict, geo_map: dict[str, dict],
+) -> tuple[dict, dict[str, dict]]:
+    """Drop visitors whose ASN org matches visitors.ignore_companies patterns."""
     ignore_companies = _parse_ignore_companies_setting()
-    if ignore_companies:
-        before = len(records)
-        dropped = {ip for ip, r in records.items()
-                   if _company_should_ignore(geo_map.get(ip, {}).get("company", ""), ignore_companies)}
-        for ip in dropped:
-            records.pop(ip, None)
-            geo_map.pop(ip, None)
-        logger.info(
-            f"visitor_report: dropped {before - len(records)} records by "
-            f"visitors.ignore_companies ({len(ignore_companies)} patterns)"
-        )
+    if not ignore_companies:
+        return records, geo_map
+    before = len(records)
+    dropped = {
+        ip for ip in records
+        if _company_should_ignore(geo_map.get(ip, {}).get("company", ""), ignore_companies)
+    }
+    for ip in dropped:
+        records.pop(ip, None)
+        geo_map.pop(ip, None)
+    logger.info(
+        f"visitor_report: dropped {before - len(records)} records by "
+        f"visitors.ignore_companies ({len(ignore_companies)} patterns)"
+    )
+    return records, geo_map
 
-    # Upsert into DB — re-use the shared `loop` created at function entry
-    # for settings cache hydration so asyncpg's connection pool stays on
-    # one loop.
 
-    # Read retention from settings (default 30); operator can change live
-    # via /admin/settings → visitors.retention_days. 0 disables auto-purge.
+async def _arun_persist(
+    records: dict, target_date: date, geo_map: dict[str, dict],
+) -> None:
+    """Upsert visitor records + purge old rows from DB."""
     try:
         from backend.shared.helpers.settings import get_int as _get_int
         retention_days = _get_int("visitors.retention_days", 30)
     except Exception:
         retention_days = 30
-
     try:
         await _upsert_records(records, target_date, geo_map)
         today_utc = datetime.now(timezone.utc).date()
@@ -719,8 +684,11 @@ async def arun_daily(
     except Exception as e:
         logger.error(f"visitor_report: DB operations failed: {e}")
 
-    # Write markdown report
-    report_md = _render_report(target_date, records, geo_map)
+
+def _arun_write_report(
+    report_md: str, target_date: date, report_dir: str,
+) -> Path:
+    """Write the markdown report file and return its Path."""
     report_path = Path(report_dir) / f"visitors_{target_date.isoformat()}.md"
     try:
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -728,8 +696,38 @@ async def arun_daily(
         logger.info(f"visitor_report: report written → {report_path}")
     except Exception as e:
         logger.error(f"visitor_report: could not write report: {e}")
-
     return report_path
+
+
+async def arun_daily(
+    target_date: Optional[date] = None,
+    report_dir: str = "/opt/ramboq/.log",
+) -> Path:
+    """Async version of run_daily. Use this from inside async code
+    (the background task) so asyncpg's connection pool stays bound
+    to the caller's running event loop.
+
+    Parse nginx logs for `target_date` (default: today IST — the
+    IST trading day that's just closed at MCX, 23:30 IST). Upserts
+    visitor_log, writes markdown report, purges rows older than 30 days.
+    Returns the report Path."""
+    today_ist = datetime.now(_IST).date()
+    if target_date is None:
+        target_date = today_ist
+
+    try:
+        from backend.shared.helpers.settings import reload_cache
+        await reload_cache()
+    except Exception as e:
+        logger.warning(f"visitor_report: settings cache reload failed: {e}")
+
+    records   = await _arun_load_lines(target_date)
+    records   = _arun_apply_ip_ignore(records)
+    geo_map   = _arun_geo_map(records)
+    records, geo_map = _arun_apply_company_ignore(records, geo_map)
+    await _arun_persist(records, target_date, geo_map)
+    report_md = _render_report(target_date, records, geo_map)
+    return _arun_write_report(report_md, target_date, report_dir)
 
 
 def run_daily(

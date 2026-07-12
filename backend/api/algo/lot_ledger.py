@@ -306,6 +306,74 @@ async def list_lots_for_strategy(
     return (await session.execute(q)).scalars().all()
 
 
+def _build_symbol_exchange_map(open_lots) -> dict[str, str]:
+    """Build a unique symbol→exchange dict from a list of open StrategyLot rows."""
+    result: dict[str, str] = {}
+    for lot in open_lots:
+        sym = (lot.symbol or "").upper()
+        if sym and sym not in result:
+            result[sym] = (lot.exchange or "NFO").upper()
+    return result
+
+
+def _fill_ltp_from_ticker(symbol_exchange: dict[str, str]) -> dict[str, float]:
+    """Look up each symbol in KiteTicker (zero broker quota). Returns partial map."""
+    ltp_map: dict[str, float] = {}
+    try:
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+        _ticker = _get_ticker()
+        for sym in symbol_exchange:
+            t = _ticker.get_ltp_by_sym(sym)
+            if t is not None and t > 0:
+                ltp_map[sym] = float(t)
+    except Exception:
+        pass
+    return ltp_map
+
+
+async def _fill_ltp_from_broker(
+    missing: list[str],
+    symbol_exchange: dict[str, str],
+    ltp_map: dict[str, float],
+    strategy_id: int,
+) -> None:
+    """Batch-fetch LTP for symbols missing from the ticker; updates ltp_map in place."""
+    if not missing:
+        return
+    try:
+        from backend.brokers.registry import get_market_data_broker
+        broker = get_market_data_broker()
+        keys = [f"{symbol_exchange[s]}:{s}" for s in missing]
+        quote = await asyncio.to_thread(broker.ltp, keys)
+        for k, v in (quote or {}).items():
+            sym = k.split(":", 1)[1].upper() if ":" in k else k.upper()
+            lp = float(v.get("last_price") or 0.0) if isinstance(v, dict) else 0.0
+            if lp > 0:
+                ltp_map[sym] = lp
+    except Exception as exc:
+        logger.debug(
+            f"compute_unrealised_marked_to_ltp: broker.ltp() failed "
+            f"for strategy={strategy_id}: {exc}"
+        )
+
+
+def _sum_lot_mtm(open_lots, ltp_map: dict[str, float]) -> float:
+    """Compute Σ per-lot mark-to-market unrealised P&L using ltp_map."""
+    total = 0.0
+    for lot in open_lots:
+        sym = (lot.symbol or "").upper()
+        ltp = ltp_map.get(sym)
+        if ltp is None or ltp <= 0:
+            continue
+        open_px = float(lot.open_price or 0.0)
+        qty = int(lot.remaining_qty or 0)
+        if lot.side == "B":
+            total += (ltp - open_px) * qty
+        else:
+            total += (open_px - ltp) * qty
+    return total
+
+
 async def compute_unrealised_marked_to_ltp(
     session, strategy_id: int,
 ) -> Optional[float]:
@@ -338,71 +406,15 @@ async def compute_unrealised_marked_to_ltp(
     if not open_lots:
         return 0.0
 
-    # Build the unique symbol → exchange map. Most strategies hold a
-    # handful of symbols; this is O(open lots).
-    symbol_exchange: dict[str, str] = {}
-    for lot in open_lots:
-        sym = (lot.symbol or "").upper()
-        if not sym:
-            continue
-        if sym not in symbol_exchange:
-            symbol_exchange[sym] = (lot.exchange or "NFO").upper()
-
+    symbol_exchange = _build_symbol_exchange_map(open_lots)
     if not symbol_exchange:
         return 0.0
 
-    # Try the KiteTicker first — zero broker quota for any symbol
-    # the watchdog has subscribed (positions, holdings, watchlist).
-    ltp_map: dict[str, float] = {}
-    try:
-        from backend.brokers.kite_ticker import get_ticker as _get_ticker
-
-        _ticker = _get_ticker()
-        for sym in symbol_exchange:
-            t = _ticker.get_ltp_by_sym(sym)
-            if t is not None and t > 0:
-                ltp_map[sym] = float(t)
-    except Exception:
-        pass
-
-    # Fill the gaps via broker.ltp() — one batched call. Failure
-    # logs at debug + leaves the LTP slot empty; the lot's
-    # contribution to unrealised falls back to (open_price -
-    # open_price) = 0.0, which is the safest under-estimate.
+    ltp_map = _fill_ltp_from_ticker(symbol_exchange)
     missing = [s for s in symbol_exchange if s not in ltp_map]
-    if missing:
-        try:
-            from backend.brokers.registry import get_market_data_broker
-            import asyncio as _asyncio
-            broker = get_market_data_broker()
-            keys = [f"{symbol_exchange[s]}:{s}" for s in missing]
-            quote = await _asyncio.to_thread(broker.ltp, keys)
-            for k, v in (quote or {}).items():
-                # Kite returns "EXCH:SYM" keys; extract SYM.
-                sym = k.split(":", 1)[1].upper() if ":" in k else k.upper()
-                lp = float(v.get("last_price") or 0.0) if isinstance(v, dict) else 0.0
-                if lp > 0:
-                    ltp_map[sym] = lp
-        except Exception as exc:
-            logger.debug(
-                f"compute_unrealised_marked_to_ltp: broker.ltp() failed "
-                f"for strategy={strategy_id}: {exc}"
-            )
+    await _fill_ltp_from_broker(missing, symbol_exchange, ltp_map, strategy_id)
 
-    # Sum the per-lot mark-to-market.
-    total = 0.0
-    for lot in open_lots:
-        sym = (lot.symbol or "").upper()
-        ltp = ltp_map.get(sym)
-        if ltp is None or ltp <= 0:
-            continue
-        open_px = float(lot.open_price or 0.0)
-        qty = int(lot.remaining_qty or 0)
-        if lot.side == "B":
-            total += (ltp - open_px) * qty
-        else:                                # 'S' — short
-            total += (open_px - ltp) * qty
-    return total
+    return _sum_lot_mtm(open_lots, ltp_map)
 
 
 async def compute_strategy_pnl(session, strategy_id: int) -> dict:

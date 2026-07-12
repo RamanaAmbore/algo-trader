@@ -46,6 +46,37 @@ class EvalResult:
     detail: dict
 
 
+def _build_dispatch_email_body(
+    agent_name: str,
+    sim_tag: str,
+    branch: str,
+    branch_tag: str,
+    ist_display: str,
+    condition_text: str,
+    sim_mode: bool,
+) -> str:
+    """Build the HTML email body for an agent dispatch notification."""
+    sim_banner = (
+        "<p style='padding:8px;background:#fde4e4;border:1px solid #dc3545;"
+        "border-radius:4px;color:#721c24'>🚨 <b>SIMULATOR RUN</b> — fabricated "
+        "market data, not a real alert.</p>"
+        if sim_mode else ""
+    )
+    branch_banner = (
+        f"<p style='padding:8px;background:#fef3c7;border:1px solid #f59e0b;"
+        f"border-radius:4px'>⚠ <b>Branch: {branch}</b></p>"
+        if branch != "main" else ""
+    )
+    return (
+        f"<html><body style='font-family:sans-serif'>"
+        f"{sim_banner}{branch_banner}"
+        f"<p><b>{sim_tag}Alert{branch_tag} — {agent_name}</b></p>"
+        f"<p style='color:#666'>{ist_display}</p>"
+        f"<p><b>Condition:</b> {condition_text}</p>"
+        f"</body></html>"
+    )
+
+
 async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False):
     """
     Send alert through all enabled channels for an agent.
@@ -80,17 +111,8 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
     ]
     telegram_body = "\n".join(body_lines)
     email_subject = f"RamboQuant {sim_tag}Agent{branch_tag}: {agent.name}"
-    email_body = (
-        f"<html><body style='font-family:sans-serif'>"
-        + ("<p style='padding:8px;background:#fde4e4;border:1px solid #dc3545;"
-           "border-radius:4px;color:#721c24'>🚨 <b>SIMULATOR RUN</b> — fabricated "
-           "market data, not a real alert.</p>" if sim_mode else "")
-        + (f"<p style='padding:8px;background:#fef3c7;border:1px solid #f59e0b;border-radius:4px'>"
-           f"⚠ <b>Branch: {branch}</b></p>" if branch != "main" else "")
-        + f"<p><b>{sim_tag}Alert{branch_tag} — {agent.name}</b></p>"
-        + f"<p style='color:#666'>{ist_display}</p>"
-        + f"<p><b>Condition:</b> {condition_text}</p>"
-        + f"</body></html>"
+    email_body = _build_dispatch_email_body(
+        agent.name, sim_tag, branch, branch_tag, ist_display, condition_text, sim_mode
     )
 
     # Resolve any `{"$ref": "<notify-fragment>"}` entries against the

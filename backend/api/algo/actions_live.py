@@ -85,6 +85,103 @@ async def _fetch_ltp(
         return None
 
 
+async def _place_order_preflight_block(
+    pf: dict, agent_shim, context: dict,
+    account: str, symbol: str, exchange: str, side: str, qty: int, price,
+) -> None:
+    """Handle a preflight-blocked place_order: write REJECTED row, fire alert."""
+    from backend.api.algo.actions import _write_live_order
+
+    reasons = "; ".join(b["reason"] for b in pf["blocked"])
+    logger.warning(f"[LIVE] place_order BLOCKED for {account} {exchange}/{symbol} "
+                   f"{side} {qty}: {reasons}")
+    fake_order_id = await _write_live_order(
+        agent_shim, "place_order",
+        {"account": account, "symbol": symbol, "exchange": exchange,
+         "side": side, "qty": qty, "price": price},
+        status="REJECTED",
+        detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
+    )
+    try:
+        if fake_order_id:
+            from backend.api.algo.order_events import write_event as _write_ev
+            import asyncio as _aio
+            _aio.create_task(_write_ev(
+                fake_order_id, "preflight_block",
+                f"Preflight blocked: {reasons[:300]}",
+                payload={"blocked": pf["blocked"], "diagnostics": pf["diagnostics"]},
+            ))
+    except Exception:
+        pass
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode="live",
+            source=f"agent:{context.get('agent_slug', 'place_order')}",
+            error=f"preflight blocked: {reasons[:200]}",
+        )
+    except Exception as _e:
+        logger.warning(f"Preflight-block notification failed: {_e}")
+
+
+async def _place_order_write_intent(agent_shim, pf: dict,
+                                    account: str, symbol: str, exchange: str,
+                                    side: str, qty: int, price) -> None:
+    """Write OPEN AlgoOrder row and fire preflight_ok event (best-effort)."""
+    from backend.api.algo.actions import _write_live_order
+
+    try:
+        intent_id = await _write_live_order(
+            agent_shim, "place_order",
+            {"account": account, "symbol": symbol, "exchange": exchange,
+             "side": side, "qty": qty, "price": price},
+            status="OPEN",
+        )
+        if intent_id:
+            from backend.api.algo.order_events import write_event as _write_ev_ok
+            import asyncio as _aio
+            _aio.create_task(_write_ev_ok(
+                intent_id, "preflight_ok",
+                "Preflight passed",
+                payload={"diagnostics": pf["diagnostics"]},
+            ))
+    except Exception:
+        pass
+
+
+async def _place_order_on_failure(
+    e: Exception, context: dict,
+    account: str, symbol: str, exchange: str,
+    side: str, qty: int, price, product: str,
+) -> None:
+    """Diagnose and alert on a place_order chase failure."""
+    from backend.brokers import get_broker
+
+    diag_order = {
+        "exchange": exchange, "symbol": symbol, "side": side, "qty": qty,
+        "order_type": "LIMIT", "product": product,
+        "price": price or 0, "variety": "regular",
+    }
+    try:
+        broker = get_broker(account)
+        diag = await diagnose_live_failure(broker, diag_order, str(e))
+    except Exception:
+        diag = "diagnosis unavailable"
+    logger.error(f"[LIVE] place_order failed for {account} {exchange}/{symbol} "
+                 f"{side} {qty}: {e} | diag: {diag}")
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode="live",
+            source=f"agent:{context.get('agent_slug', 'place_order')}",
+            error=f"{e} | {diag}",
+        )
+    except Exception:
+        pass
+
+
 async def _action_place_order(context: dict, params: dict):
     """
     Place an order using the chase engine (live mode).
@@ -99,9 +196,6 @@ async def _action_place_order(context: dict, params: dict):
     import asyncio
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.brokers import get_broker
-    # Lazy import — _write_live_order lives in actions.py; patch path
-    # "backend.api.algo.actions._write_live_order" must remain valid.
-    from backend.api.algo.actions import _write_live_order
 
     # A sentinel agent object for _write_live_order which expects agent.slug.
     # _action_place_order is called from execute() where `agent` is in scope,
@@ -137,68 +231,13 @@ async def _action_place_order(context: dict, params: dict):
         "price": price or 0, "variety": "regular",
     })
     if not pf["ok"]:
-        reasons = "; ".join(b["reason"] for b in pf["blocked"])
-        logger.warning(f"[LIVE] place_order BLOCKED for {account} {exchange}/{symbol} "
-                       f"{side} {qty}: {reasons}")
-        # Write a synthetic AlgoOrder row so the block is visible in the
-        # Orders log alongside real fires.
-        _fake_order_id = await _write_live_order(
-            _shim, "place_order",
-            {"account": account, "symbol": symbol, "exchange": exchange,
-             "side": side, "qty": qty, "price": price},
-            status="REJECTED",
-            detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
+        await _place_order_preflight_block(
+            pf, _shim, context, account, symbol, exchange, side, qty, price,
         )
-        # Fire-and-forget event + Telegram alert (best-effort).
-        try:
-            if _fake_order_id:
-                from backend.api.algo.order_events import write_event as _write_ev
-                import asyncio as _aio
-                _aio.create_task(_write_ev(
-                    _fake_order_id, "preflight_block",
-                    f"Preflight blocked: {reasons[:300]}",
-                    payload={"blocked": pf["blocked"],
-                             "diagnostics": pf["diagnostics"]},
-                ))
-        except Exception:
-            pass
-        try:
-            # Route through send_order_failure_alert so the preflight-block
-            # notification benefits from the same cooldown dedup + market-hours
-            # gate as real broker failures (fixes cooldown bypass on preflight).
-            from backend.shared.helpers.alert_utils import send_order_failure_alert
-            send_order_failure_alert(
-                account=account,
-                symbol=symbol,
-                exchange=exchange,
-                side=side,
-                qty=qty,
-                mode="live",
-                source=f"agent:{context.get('agent_slug', 'place_order')}",
-                error=f"preflight blocked: {reasons[:200]}",
-            )
-        except Exception as _e:
-            logger.warning(f"Preflight-block notification failed: {_e}")
         return  # abort without placing
 
     # Emit preflight_ok event (fire-and-forget).
-    try:
-        _intent_id = await _write_live_order(
-            _shim, "place_order",
-            {"account": account, "symbol": symbol, "exchange": exchange,
-             "side": side, "qty": qty, "price": price},
-            status="OPEN",
-        )
-        if _intent_id:
-            from backend.api.algo.order_events import write_event as _write_ev_ok
-            import asyncio as _aio
-            _aio.create_task(_write_ev_ok(
-                _intent_id, "preflight_ok",
-                "Preflight passed",
-                payload={"diagnostics": pf["diagnostics"]},
-            ))
-    except Exception:
-        pass
+    await _place_order_write_intent(_shim, pf, account, symbol, exchange, side, qty, price)
 
     cfg = ChaseConfig(exchange=exchange, product=product)
     try:
@@ -208,29 +247,72 @@ async def _action_place_order(context: dict, params: dict):
             cfg=cfg,
         )
     except Exception as e:
-        diag_order = {
-            "exchange": exchange, "symbol": symbol, "side": side, "qty": qty,
-            "order_type": "LIMIT", "product": product,
-            "price": price or 0, "variety": "regular",
-        }
-        try:
-            broker = get_broker(account)
-            diag = await diagnose_live_failure(broker, diag_order, str(e))
-        except Exception:
-            diag = "diagnosis unavailable"
-        logger.error(f"[LIVE] place_order failed for {account} {exchange}/{symbol} "
-                     f"{side} {qty}: {e} | diag: {diag}")
-        try:
-            from backend.shared.helpers.alert_utils import send_order_failure_alert
-            send_order_failure_alert(
-                account=account, symbol=symbol, exchange=exchange,
-                side=side, qty=qty, mode="live",
-                source=f"agent:{context.get('agent_slug', 'place_order')}",
-                error=f"{e} | {diag}",
-            )
-        except Exception:
-            pass
+        await _place_order_on_failure(e, context, account, symbol, exchange, side, qty, price, product)
         raise
+
+
+async def _close_position_preflight_block(
+    pf: dict, agent,
+    account: str, symbol: str, exchange: str, side: str, qty: int, price,
+) -> None:
+    """Handle a preflight-blocked close_position: write REJECTED row, fire alert."""
+    from backend.api.algo.actions import _write_live_order
+
+    reasons = "; ".join(b["reason"] for b in pf["blocked"])
+    codes   = ", ".join(b["code"] for b in pf["blocked"])
+    logger.error(
+        f"[LIVE] close_position BLOCKED for {account} {exchange}/{symbol} "
+        f"{side} {qty}: [{codes}] {reasons}"
+    )
+    await _write_live_order(
+        agent, "close_position",
+        {"account": account, "symbol": symbol, "exchange": exchange,
+         "side": side, "qty": qty, "price": price},
+        status="REJECTED",
+        detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode="live",
+            source=f"agent:{getattr(agent, 'slug', 'close_position')}",
+            error=f"PREFLIGHT BLOCKED [{codes}]: {reasons}",
+        )
+    except Exception:
+        pass
+
+
+async def _close_position_on_failure(
+    e: Exception, agent, broker,
+    account: str, symbol: str, exchange: str,
+    side: str, qty: int, price, product: str,
+) -> None:
+    """Diagnose and alert on a close_position chase failure."""
+    diag_order = {
+        "exchange": exchange, "symbol": symbol, "side": side, "qty": qty,
+        "order_type": "LIMIT", "product": product,
+        "price": price or 0, "variety": "regular",
+    }
+    try:
+        if broker is not None:
+            diag = await diagnose_live_failure(broker, diag_order, str(e))
+        else:
+            diag = "broker resolve failed — no diagnosis available"
+    except Exception:
+        diag = "diagnosis unavailable"
+    logger.error(f"[LIVE] close_position failed for {account} {exchange}/{symbol} "
+                 f"{side} {qty}: {e} | diag: {diag}")
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode="live",
+            source=f"agent:{getattr(agent, 'slug', 'close_position')}",
+            error=f"{e} | {diag}",
+        )
+    except Exception:
+        pass
 
 
 async def _action_live_close_position(agent, context: dict, params: dict):
@@ -248,8 +330,6 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     import asyncio
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.brokers import get_broker
-    # Lazy import — _write_live_order lives in actions.py; patch path
-    # "backend.api.algo.actions._write_live_order" must remain valid.
     from backend.api.algo.actions import _write_live_order
 
     account  = str(params.get("account") or "")
@@ -257,6 +337,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     exchange = str(params.get("exchange") or "NFO")
     qty      = int(params.get("quantity") or params.get("qty") or 0)
     side     = (params.get("side") or params.get("transaction_type") or "SELL").upper()
+    product  = str(params.get("product") or "NRML")
 
     if not account or not symbol or qty <= 0:
         raise ValueError(f"close_position: missing required params (account={account!r}, "
@@ -277,34 +358,14 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     pf = await run_preflight(account, {
         "exchange": exchange, "tradingsymbol": symbol,
         "quantity": qty, "order_type": "LIMIT",
-        "product": str(params.get("product") or "NRML"),
+        "product": product,
         "price": price or 0, "variety": "regular",
         "intent": "close",   # signals G2 bypass inside run_preflight
     })
     if not pf["ok"]:
-        reasons = "; ".join(b["reason"] for b in pf["blocked"])
-        codes   = ", ".join(b["code"] for b in pf["blocked"])
-        logger.error(
-            f"[LIVE] close_position BLOCKED for {account} {exchange}/{symbol} "
-            f"{side} {qty}: [{codes}] {reasons}"
+        await _close_position_preflight_block(
+            pf, agent, account, symbol, exchange, side, qty, price,
         )
-        await _write_live_order(
-            agent, "close_position",
-            {"account": account, "symbol": symbol, "exchange": exchange,
-             "side": side, "qty": qty, "price": price},
-            status="REJECTED",
-            detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
-        )
-        try:
-            from backend.shared.helpers.alert_utils import send_order_failure_alert
-            send_order_failure_alert(
-                account=account, symbol=symbol, exchange=exchange,
-                side=side, qty=qty, mode="live",
-                source=f"agent:{getattr(agent, 'slug', 'close_position')}",
-                error=f"PREFLIGHT BLOCKED [{codes}]: {reasons}",
-            )
-        except Exception:
-            pass
         return  # abort — do not reach chase_order
 
     # Persist the intent row before touching the broker.
@@ -313,7 +374,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
         "side": side, "qty": qty, "price": price,
     }, status="OPEN")
 
-    cfg = ChaseConfig(exchange=exchange, product=str(params.get("product") or "NRML"))
+    cfg = ChaseConfig(exchange=exchange, product=product)
     try:
         await chase_order(
             account=account, symbol=symbol,
@@ -321,33 +382,9 @@ async def _action_live_close_position(agent, context: dict, params: dict):
             cfg=cfg,
         )
     except Exception as e:
-        # Run basket_margin diagnosis so an agent-fired close failure logs
-        # whether the cause was margin or permission, same enrichment the
-        # /ticket route applies on operator-typed orders.
-        diag_order = {
-            "exchange": exchange, "symbol": symbol, "side": side, "qty": qty,
-            "order_type": "LIMIT", "product": str(params.get("product") or "NRML"),
-            "price": price or 0, "variety": "regular",
-        }
-        try:
-            if broker is not None:
-                diag = await diagnose_live_failure(broker, diag_order, str(e))
-            else:
-                diag = "broker resolve failed — no diagnosis available"
-        except Exception:
-            diag = "diagnosis unavailable"
-        logger.error(f"[LIVE] close_position failed for {account} {exchange}/{symbol} "
-                     f"{side} {qty}: {e} | diag: {diag}")
-        try:
-            from backend.shared.helpers.alert_utils import send_order_failure_alert
-            send_order_failure_alert(
-                account=account, symbol=symbol, exchange=exchange,
-                side=side, qty=qty, mode="live",
-                source=f"agent:{getattr(agent, 'slug', 'close_position')}",
-                error=f"{e} | {diag}",
-            )
-        except Exception:
-            pass
+        await _close_position_on_failure(
+            e, agent, broker, account, symbol, exchange, side, qty, price, product,
+        )
         raise
 
 

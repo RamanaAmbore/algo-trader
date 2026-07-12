@@ -85,6 +85,47 @@ class GrammarRegistry:
         return self.actions.get(token)
 
     # ── Loader ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _load_one_token(r, tables: dict) -> bool:
+        """Dispatch a single GrammarToken row into the appropriate table dict.
+
+        Returns True when the token was successfully loaded, False when it
+        should be skipped (no resolver where one is required).  Raises on
+        import errors so the caller can count skipped rows.
+        """
+        gk = r.grammar_kind
+        tk = r.token_kind
+
+        if gk == 'condition':
+            if tk == 'metric':
+                tables['metrics'][r.token] = _import_dotted(r.resolver) if r.resolver else None
+            elif tk == 'scope':
+                tables['scopes'][r.token] = _import_dotted(r.resolver) if r.resolver else None
+            elif tk == 'operator':
+                # Code-level operators are already present; DB resolver wins.
+                if r.resolver:
+                    tables['operators'][r.token] = _import_dotted(r.resolver)
+            else:
+                return False
+        elif gk == 'notify':
+            if tk == 'channel' and r.resolver:
+                tables['channels'][r.token] = _import_dotted(r.resolver)
+            elif tk == 'format' and r.resolver:
+                tables['formats'][r.token] = _import_dotted(r.resolver)
+            elif tk == 'template':
+                tables['templates'][r.token] = r.template_body or ''
+            else:
+                return False
+        elif gk == 'action' and tk == 'action_type':
+            tables['actions'][r.token] = {
+                'fn': _import_dotted(r.resolver) if r.resolver else None,
+                'params_schema': r.params_schema or {},
+            }
+        else:
+            return False
+        return True
+
     async def reload(self) -> None:
         """
         Re-read the full catalog from grammar_tokens and rebuild the dispatch
@@ -98,13 +139,15 @@ class GrammarRegistry:
         # has a comparator set available while seeding completes.
         from backend.api.algo.grammar import OPERATORS
 
-        new_metrics:   dict[str, Callable] = {}
-        new_scopes:    dict[str, Callable] = {}
-        new_operators: dict[str, Callable] = dict(OPERATORS)
-        new_channels:  dict[str, Callable] = {}
-        new_formats:   dict[str, Callable] = {}
-        new_templates: dict[str, str]      = {}
-        new_actions:   dict[str, dict]     = {}
+        tables: dict[str, Any] = {
+            'metrics':   {},
+            'scopes':    {},
+            'operators': dict(OPERATORS),
+            'channels':  {},
+            'formats':   {},
+            'templates': {},
+            'actions':   {},
+        }
 
         async with async_session() as s:
             rows = (await s.execute(
@@ -114,34 +157,7 @@ class GrammarRegistry:
         loaded = skipped = 0
         for r in rows:
             try:
-                if r.grammar_kind == 'condition':
-                    if r.token_kind == 'metric':
-                        new_metrics[r.token] = _import_dotted(r.resolver) if r.resolver else None
-                        loaded += 1
-                    elif r.token_kind == 'scope':
-                        new_scopes[r.token] = _import_dotted(r.resolver) if r.resolver else None
-                        loaded += 1
-                    elif r.token_kind == 'operator':
-                        # Operators are already in new_operators from code; any
-                        # DB override pointing to a custom resolver wins.
-                        if r.resolver:
-                            new_operators[r.token] = _import_dotted(r.resolver)
-                        loaded += 1
-                elif r.grammar_kind == 'notify':
-                    if r.token_kind == 'channel' and r.resolver:
-                        new_channels[r.token] = _import_dotted(r.resolver)
-                        loaded += 1
-                    elif r.token_kind == 'format' and r.resolver:
-                        new_formats[r.token] = _import_dotted(r.resolver)
-                        loaded += 1
-                    elif r.token_kind == 'template':
-                        new_templates[r.token] = r.template_body or ''
-                        loaded += 1
-                elif r.grammar_kind == 'action' and r.token_kind == 'action_type':
-                    new_actions[r.token] = {
-                        'fn': _import_dotted(r.resolver) if r.resolver else None,
-                        'params_schema': r.params_schema or {},
-                    }
+                if self._load_one_token(r, tables):
                     loaded += 1
             except Exception as e:
                 skipped += 1
@@ -152,13 +168,13 @@ class GrammarRegistry:
                 )
 
         with self._lock:
-            self.metrics   = new_metrics
-            self.scopes    = new_scopes
-            self.operators = new_operators
-            self.channels  = new_channels
-            self.formats   = new_formats
-            self.templates = new_templates
-            self.actions   = new_actions
+            self.metrics   = tables['metrics']
+            self.scopes    = tables['scopes']
+            self.operators = tables['operators']
+            self.channels  = tables['channels']
+            self.formats   = tables['formats']
+            self.templates = tables['templates']
+            self.actions   = tables['actions']
 
         logger.info(
             f"Grammar registry reloaded — "

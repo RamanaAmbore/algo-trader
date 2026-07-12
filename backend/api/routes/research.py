@@ -766,6 +766,106 @@ def _user_id(connection) -> int | None:
         return None
 
 
+async def _mcp_modify_paper(
+    oid: str,
+    qty: int,
+    data: "ModifyOrderRequest",
+    acct: str,
+    chunks: str,
+    request_id: str,
+    user_id: int | None,
+    audit_fn: Any,
+) -> "SimpleOrderResponse":
+    """Execute the paper-mode branch of modify_order and return the response."""
+    try:
+        algo_order_id = int(oid)
+    except (TypeError, ValueError):
+        await audit_fn("error", "paper modify: order_id must be an integer AlgoOrder.id")
+        raise HTTPException(status_code=400,
+            detail="For paper modify, order_id must be the integer AlgoOrder.id")
+    try:
+        from backend.api.algo.paper import get_prod_paper_engine
+        engine = get_prod_paper_engine()
+        ok = engine.modify_paper_order(
+            algo_order_id,
+            new_qty=qty if qty else None,
+            new_price=data.price,
+            new_trigger=data.trigger_price,
+            new_order_type=data.order_type if data.order_type != "LIMIT" else None,
+        )
+    except Exception as e:
+        await audit_fn("error", f"paper engine raised: {e}")
+        logger.exception("MCP paper modify raised")
+        raise HTTPException(status_code=500, detail=str(e))
+    if not ok:
+        await audit_fn("error", f"no OPEN paper order matching id={algo_order_id} or no fields changed")
+        raise HTTPException(status_code=404,
+            detail=f"No OPEN paper order with AlgoOrder.id={algo_order_id} (or no fields changed)")
+    await audit_fn("ok", f"paper order_id={algo_order_id} modified")
+    logger.info(f"MCP modify_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
+    try:
+        from backend.shared.helpers.alert_utils import _send_telegram
+        _send_telegram(
+            f"<b>MCP MODIFY [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
+            f"acct={acct} · {chunks}\n"
+            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+        )
+    except Exception as e:
+        logger.warning(f"MCP modify_order (paper) Telegram ping failed: {e}")
+    return SimpleOrderResponse(order_id=oid, detail="modified (paper)")
+
+
+async def _mcp_modify_live(
+    oid: str,
+    qty: int,
+    data: "ModifyOrderRequest",
+    acct: str,
+    chunks: str,
+    request_id: str,
+    user_id: int | None,
+    audit_fn: Any,
+    request: Any,
+) -> "SimpleOrderResponse":
+    """Execute the live-mode branch of modify_order and return the response."""
+    from backend.api.routes.orders import OrdersController
+    from backend.api.schemas import ModifyOrderRequest as TicketModifyRequest
+
+    modify_req = TicketModifyRequest(
+        account=acct,
+        quantity=qty if qty else None,
+        price=data.price,
+        order_type=data.order_type,
+        trigger_price=data.trigger_price,
+        validity=data.validity,
+        variety=data.variety,
+    )
+    try:
+        ctrl = OrdersController(owner=None)
+        res = await OrdersController.modify_order.fn(
+            ctrl, order_id=oid, data=modify_req, request=request,
+        )
+    except HTTPException as e:
+        await audit_fn("error", f"{e.status_code}: {e.detail}")
+        raise
+    except Exception as e:
+        await audit_fn("error", f"unexpected: {e}")
+        logger.exception("MCP modify_order: underlying handler raised")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    await audit_fn("ok", f"order_id={res.order_id}")
+    logger.info(f"MCP modify_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
+    try:
+        from backend.shared.helpers.alert_utils import _send_telegram
+        _send_telegram(
+            f"<b>MCP MODIFY [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
+            f"acct={acct} · {chunks}\n"
+            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+        )
+    except Exception as e:
+        logger.warning(f"MCP modify_order Telegram ping failed: {e}")
+    return SimpleOrderResponse(order_id=res.order_id, detail="modified (live)")
+
+
 # ── Controller ────────────────────────────────────────────────────────
 
 class ResearchController(Controller):
@@ -1375,86 +1475,13 @@ class ResearchController(Controller):
             f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
         ])) or "(no-op)"
 
-        # Dispatch by mode.
         if mode == "paper":
-            try:
-                algo_order_id = int(oid)
-            except (TypeError, ValueError):
-                await _audit("error", "paper modify: order_id must be an integer AlgoOrder.id")
-                raise HTTPException(status_code=400,
-                    detail="For paper modify, order_id must be the integer AlgoOrder.id")
-            try:
-                from backend.api.algo.paper import get_prod_paper_engine
-                engine = get_prod_paper_engine()
-                ok = engine.modify_paper_order(
-                    algo_order_id,
-                    new_qty=qty if qty else None,
-                    new_price=data.price,
-                    new_trigger=data.trigger_price,
-                    new_order_type=otype if otype != "LIMIT" else None,
-                )
-            except Exception as e:
-                await _audit("error", f"paper engine raised: {e}")
-                logger.exception("MCP paper modify raised")
-                raise HTTPException(status_code=500, detail=str(e))
-            if not ok:
-                await _audit("error", f"no OPEN paper order matching id={algo_order_id} or no fields changed")
-                raise HTTPException(status_code=404,
-                    detail=f"No OPEN paper order with AlgoOrder.id={algo_order_id} (or no fields changed)")
-            await _audit("ok", f"paper order_id={algo_order_id} modified")
-            logger.info(f"MCP modify_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
-            try:
-                from backend.shared.helpers.alert_utils import _send_telegram
-                _send_telegram(
-                    f"<b>MCP MODIFY [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
-                    f"acct={acct} · {chunks}\n"
-                    f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
-                )
-            except Exception as e:
-                logger.warning(f"MCP modify_order (paper) Telegram ping failed: {e}")
-            return SimpleOrderResponse(order_id=oid, detail="modified (paper)")
-
-        # Live mode — forward to existing broker modify handler.
-        from backend.api.routes.orders import OrdersController
-        from backend.api.schemas import ModifyOrderRequest as TicketModifyRequest
-
-        modify_req = TicketModifyRequest(
-            account=acct,
-            quantity=qty if qty else None,
-            price=data.price,
-            order_type=otype,
-            trigger_price=data.trigger_price,
-            validity=data.validity,
-            variety=data.variety,
+            return await _mcp_modify_paper(
+                oid, qty, data, acct, chunks, request_id, user_id, _audit,
+            )
+        return await _mcp_modify_live(
+            oid, qty, data, acct, chunks, request_id, user_id, _audit, request,
         )
-        try:
-            ctrl = OrdersController(owner=None)
-            # `.fn(ctrl, ...)` — bypass the @put route-handler wrapper.
-            res = await OrdersController.modify_order.fn(
-                ctrl, order_id=oid, data=modify_req, request=request,
-            )
-        except HTTPException as e:
-            await _audit("error", f"{e.status_code}: {e.detail}")
-            raise
-        except Exception as e:
-            await _audit("error", f"unexpected: {e}")
-            logger.exception("MCP modify_order: underlying handler raised")
-            raise HTTPException(status_code=500, detail=str(e))
-
-        await _audit("ok", f"order_id={res.order_id}")
-        logger.info(f"MCP modify_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
-
-        try:
-            from backend.shared.helpers.alert_utils import _send_telegram
-            _send_telegram(
-                f"<b>MCP MODIFY [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
-                f"acct={acct} · {chunks}\n"
-                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
-            )
-        except Exception as e:
-            logger.warning(f"MCP modify_order Telegram ping failed: {e}")
-
-        return SimpleOrderResponse(order_id=res.order_id, detail="modified (live)")
 
     # ── Phase 12 — gated activate / deactivate ────────────────────────
 

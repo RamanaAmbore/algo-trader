@@ -88,6 +88,51 @@ class StatementData:
 # Math
 # ---------------------------------------------------------------------------
 
+def _resolve_opening_nav(opening, period_rows) -> tuple[float, Optional[date]]:
+    """Return (opening_firm_nav, opening_as_of) from the pre-period snapshot or first period row."""
+    if opening is not None:
+        return float(opening.nav or 0.0), opening.as_of_date
+    if period_rows:
+        return float(period_rows[0].nav or 0.0), period_rows[0].as_of_date
+    return 0.0, None
+
+
+def _resolve_closing_nav(period_rows) -> tuple[Optional[float], Optional[date]]:
+    """Return (closing_firm_nav, closing_as_of) from the last period row, or None when empty."""
+    if not period_rows:
+        return None, None
+    return float(period_rows[-1].nav or 0.0), period_rows[-1].as_of_date
+
+
+def _build_lp_share_math(user_events, all_events, closing_as_of, opening_firm_nav,
+                          opening_as_of, closing_firm_nav, slice_value, _cb, user):
+    """Compute LP cost basis, opening/closing slice values, deltas, and cumulative P&L."""
+    contribution = _cb(user_events, as_of=closing_as_of)
+    opening_share, _ = slice_value(user_events, all_events, opening_firm_nav, as_of=opening_as_of)
+    closing_share, _ = slice_value(user_events, all_events, closing_firm_nav, as_of=closing_as_of)
+    share_delta = closing_share - opening_share
+    share_delta_pct = (share_delta / opening_share) if opening_share else None
+    cumulative_pnl = closing_share - contribution
+    cumulative_pnl_pct = (cumulative_pnl / contribution) if contribution > 0 else None
+    return contribution, opening_share, closing_share, share_delta, share_delta_pct, cumulative_pnl, cumulative_pnl_pct
+
+
+def _build_daily_rows(period_rows, user_events, all_events, opening_share,
+                      opening, slice_value) -> list[_DailyRow]:
+    """Build the per-day NAV table for the statement."""
+    daily: list[_DailyRow] = []
+    prev_share: Optional[float] = opening_share if opening is not None else None
+    for r in period_rows:
+        firm = float(r.nav or 0.0)
+        slice_v, _ = slice_value(user_events, all_events, firm, as_of=r.as_of_date)
+        day_pct: Optional[float] = None
+        if prev_share is not None and prev_share != 0:
+            day_pct = (slice_v - prev_share) / prev_share
+        daily.append(_DailyRow(as_of=r.as_of_date, firm_nav=firm, nav_share=slice_v, day_pct=day_pct))
+        prev_share = slice_v
+    return daily
+
+
 async def compute_statement(user_id: int, year: int, month: int) -> Optional[StatementData]:
     """Build a StatementData for (user, period). Returns None when
     the user doesn't exist or no NavDaily rows fall in the period
@@ -136,65 +181,24 @@ async def compute_statement(user_id: int, year: int, month: int) -> Optional[Sta
         if not period_rows and opening is None:
             return None
 
-    # Resolve opening / closing firm NAVs
-    if opening is not None:
-        opening_firm_nav = float(opening.nav or 0.0)
-        opening_as_of    = opening.as_of_date
-    elif period_rows:
-        opening_firm_nav = float(period_rows[0].nav or 0.0)
-        opening_as_of    = period_rows[0].as_of_date
-    else:
-        opening_firm_nav = 0.0
-        opening_as_of    = None
-
-    if period_rows:
-        closing_firm_nav = float(period_rows[-1].nav or 0.0)
-        closing_as_of    = period_rows[-1].as_of_date
-    else:
+    opening_firm_nav, opening_as_of = _resolve_opening_nav(opening, period_rows)
+    closing_firm_nav, closing_as_of = _resolve_closing_nav(period_rows)
+    if closing_firm_nav is None:
         return None
 
     firm_delta     = closing_firm_nav - opening_firm_nav
     firm_delta_pct = (firm_delta / opening_firm_nav) if opening_firm_nav else None
+    share_pct      = float(user.share_pct or 0.0)
 
-    share_pct    = float(user.share_pct or 0.0)
-    # Units-model: cost basis comes from the LP's events, NOT the
-    # User.contribution column directly. For an LP with only a
-    # bootstrap event, basis == contribution by construction; for
-    # an LP with real subscription / redemption events, basis
-    # reflects every capital movement to date.
-    contribution = _cb(user_events, as_of=closing_as_of)
-
-    opening_share, _ = slice_value(
-        user_events, all_events, opening_firm_nav,
-        as_of=opening_as_of,
+    (contribution, opening_share, closing_share,
+     share_delta, share_delta_pct,
+     cumulative_pnl, cumulative_pnl_pct) = _build_lp_share_math(
+        user_events, all_events, closing_as_of,
+        opening_firm_nav, opening_as_of, closing_firm_nav,
+        slice_value, _cb, user,
     )
-    closing_share, _ = slice_value(
-        user_events, all_events, closing_firm_nav,
-        as_of=closing_as_of,
-    )
-    share_delta   = closing_share - opening_share
-    share_delta_pct = (share_delta / opening_share) if opening_share else None
 
-    cumulative_pnl = closing_share - contribution
-    cumulative_pnl_pct = (cumulative_pnl / contribution) if contribution > 0 else None
-
-    daily: list[_DailyRow] = []
-    prev_share: Optional[float] = opening_share if opening is not None else None
-    for r in period_rows:
-        firm = float(r.nav or 0.0)
-        slice_v, _ = slice_value(
-            user_events, all_events, firm, as_of=r.as_of_date,
-        )
-        day_pct: Optional[float] = None
-        if prev_share is not None and prev_share != 0:
-            day_pct = (slice_v - prev_share) / prev_share
-        daily.append(_DailyRow(
-            as_of=r.as_of_date,
-            firm_nav=firm,
-            nav_share=slice_v,
-            day_pct=day_pct,
-        ))
-        prev_share = slice_v
+    daily = _build_daily_rows(period_rows, user_events, all_events, opening_share, opening, slice_value)
 
     return StatementData(
         year=year, month=month,

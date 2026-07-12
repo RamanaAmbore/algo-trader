@@ -30,6 +30,66 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
+_OUTCOME_TO_STATUS: dict[str, str] = {
+    "chase_fill":      "FILLED",
+    "chase_unfilled":  "UNFILLED",
+    "chase_cancelled": "CANCELLED",
+    "chase_failed":    "REJECTED",
+}
+
+
+def _chase_apply_terminal_mutation(
+    row,
+    new_status: str,
+    attempts: int,
+    final_price: float | None,
+    error: str | None,
+) -> None:
+    """Mutate an AlgoOrder ORM row in-place for a terminal chase outcome.
+
+    Called inside an active SQLAlchemy session before commit. Applies status
+    transition, attempts, fill_price/filled_at (FILLED only), and error detail.
+    """
+    row.status = new_status
+    if attempts:
+        try:
+            row.attempts = int(attempts)
+        except (TypeError, ValueError):
+            pass
+    if new_status == "FILLED":
+        if final_price is not None:
+            try:
+                row.fill_price = float(final_price)
+            except (TypeError, ValueError):
+                pass
+        row.filled_at = datetime.now(timezone.utc)
+    if error:
+        row.detail = (row.detail or "")[:200] + f" · {error[:120]}"
+
+
+def _chase_snapshot_algo_row(row, broker_order_id: str) -> dict:
+    """Snapshot all AlgoOrder fields needed by downstream attach paths.
+
+    Called AFTER the optional mutation + commit so readers see post-commit values.
+    Returns a plain dict — intentionally no ORM references.
+    """
+    return {
+        "id":                int(row.id),
+        "target_pct":        row.target_pct,
+        "target_abs":        row.target_abs,
+        "parent_order_id":   row.parent_order_id,
+        "template_id":       row.template_id,
+        "account":           str(row.account or ""),
+        "symbol":            str(row.symbol or broker_order_id),
+        "exchange":          str(row.exchange or "NFO"),
+        "transaction_type":  str(row.transaction_type or ""),
+        "product":           str(row.product or "NRML"),
+        "mode":              str(row.mode or "live"),
+        "filled_quantity":   int(row.filled_quantity or 0),
+        "quantity":          int(row.quantity or 0),
+    }
+
+
 async def _chase_terminal_update_db(
     algo_order_id: int | None,
     broker_order_id: str,
@@ -49,13 +109,6 @@ async def _chase_terminal_update_db(
     readers see post-commit values. Returns (None, None) when no row
     is found.
     """
-    # Map chase outcome → AlgoOrder.status.
-    _OUTCOME_TO_STATUS = {
-        "chase_fill":      "FILLED",
-        "chase_unfilled":  "UNFILLED",
-        "chase_cancelled": "CANCELLED",
-        "chase_failed":    "REJECTED",
-    }
     _new_status = _OUTCOME_TO_STATUS.get(outcome)
 
     agent_id = None
@@ -75,39 +128,11 @@ async def _chase_terminal_update_db(
         if row is not None:
             agent_id = getattr(row, "agent_id", None)
             if _new_status and row.status != _new_status:
-                row.status = _new_status
-                if attempts:
-                    try:
-                        row.attempts = int(attempts)
-                    except (TypeError, ValueError):
-                        pass
-                if _new_status == "FILLED":
-                    if final_price is not None:
-                        try:
-                            row.fill_price = float(final_price)
-                        except (TypeError, ValueError):
-                            pass
-                    row.filled_at = datetime.now(timezone.utc)
-                if error:
-                    row.detail = (row.detail or "")[:200] + f" · {error[:120]}"
+                _chase_apply_terminal_mutation(row, _new_status, attempts, final_price, error)
                 await _s.commit()
             # Snapshot AFTER the optional mutation + commit so the
             # downstream attach paths read post-commit values.
-            _row_snap = {
-                "id":                int(row.id),
-                "target_pct":        row.target_pct,
-                "target_abs":        row.target_abs,
-                "parent_order_id":   row.parent_order_id,
-                "template_id":       row.template_id,
-                "account":           str(row.account or ""),
-                "symbol":            str(row.symbol or broker_order_id),
-                "exchange":          str(row.exchange or "NFO"),
-                "transaction_type":  str(row.transaction_type or ""),
-                "product":           str(row.product or "NRML"),
-                "mode":              str(row.mode or "live"),
-                "filled_quantity":   int(row.filled_quantity or 0),
-                "quantity":          int(row.quantity or 0),
-            }
+            _row_snap = _chase_snapshot_algo_row(row, broker_order_id)
     return agent_id, _row_snap
 
 
@@ -875,6 +900,78 @@ async def _chase_poll_status(
     return None, remaining_qty
 
 
+def _chase_default_cfg() -> "ChaseConfig":
+    """Build a ChaseConfig from /admin/settings (DB → YAML fallback).
+
+    Extracted from chase_order to keep that function's branch count low.
+    Lazy-imports settings helpers to avoid circular imports at module load.
+    """
+    from backend.shared.helpers.settings import get_float, get_int
+    return ChaseConfig(
+        interval_seconds=get_int("algo.chase_interval_seconds", 20),
+        aggression_step=get_float("algo.aggression_step", 0.10),
+        max_attempts=get_int("algo.max_attempts", 20),
+        rejection_backoff_seconds=get_int(
+            "algo.chase_rejection_backoff_seconds", 0),
+    )
+
+
+async def _chase_abort_on_consecutive_errors(
+    consecutive_errors: int,
+    attempt: int,
+    last_error: Exception,
+    account: str,
+    symbol: str,
+    transaction_type: str,
+    quantity: int,
+    current_order_id: str | None,
+    cfg: "ChaseConfig",
+    result: "ChaseResult",
+    emit: Callable,
+    algo_order_id: int | None,
+) -> "ChaseResult":
+    """Handle consecutive-error abort in the chase loop.
+
+    Fires an alert, cancels the live order (best-effort), schedules the
+    terminal event task, and returns the mutated result ready for `return`.
+    Only called when `consecutive_errors >= _MAX_CHASE_ERRORS`.
+    """
+    abort_msg = (
+        f"Chase abandoned after {consecutive_errors} consecutive errors "
+        f"({attempt} total attempts) — last error: {last_error}"
+    )
+    logger.error(f"Chase {symbol}: {abort_msg}")
+    result.status = ChaseStatus.FAILED
+    result.detail = abort_msg
+    emit("chase_failed", {"attempts": attempt, "error": str(last_error),
+                          "reason": "consecutive_errors"})
+    try:
+        if current_order_id:
+            await _run(_cancel_order, account, current_order_id, cfg.variety,
+                       cfg.exchange)
+    except Exception:
+        pass
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol,
+            exchange=cfg.exchange, side=transaction_type,
+            qty=quantity, mode="live", source="chase",
+            error=abort_msg,
+        )
+    except Exception:
+        pass
+    if current_order_id:
+        import asyncio as _asyncio
+        _asyncio.create_task(_emit_chase_terminal(
+            current_order_id, "chase_failed",
+            symbol, transaction_type, quantity,
+            attempts=attempt, error=abort_msg,
+            algo_order_id=algo_order_id,
+        ))
+    return result
+
+
 async def chase_order(
     account: str,
     symbol: str,
@@ -905,17 +1002,7 @@ async def chase_order(
         ChaseResult with fill details
     """
     if cfg is None:
-        # Pull defaults from /admin/settings → DB (algo.*). YAML
-        # `algo:` block is the boot-time fallback baked into
-        # ChaseConfig's dataclass defaults.
-        from backend.shared.helpers.settings import get_int, get_float
-        cfg = ChaseConfig(
-            interval_seconds=get_int("algo.chase_interval_seconds", 20),
-            aggression_step=get_float("algo.aggression_step", 0.10),
-            max_attempts=get_int("algo.max_attempts", 20),
-            rejection_backoff_seconds=get_int(
-                "algo.chase_rejection_backoff_seconds", 0),
-        )
+        cfg = _chase_default_cfg()
 
     result = ChaseResult(
         account=account, symbol=symbol,
@@ -1044,40 +1131,11 @@ async def chase_order(
                          f"({consecutive_errors}/{_MAX_CHASE_ERRORS} consecutive): {e}")
             emit("error", {"attempt": attempt, "error": str(e)})
             if consecutive_errors >= _MAX_CHASE_ERRORS:
-                abort_msg = (
-                    f"Chase abandoned after {consecutive_errors} consecutive errors "
-                    f"({attempt} total attempts) — last error: {e}"
+                return await _chase_abort_on_consecutive_errors(
+                    consecutive_errors, attempt, e,
+                    account, symbol, transaction_type, quantity,
+                    current_order_id, cfg, result, emit, algo_order_id,
                 )
-                logger.error(f"Chase {symbol}: {abort_msg}")
-                result.status = ChaseStatus.FAILED
-                result.detail = abort_msg
-                emit("chase_failed", {"attempts": attempt, "error": str(e),
-                                      "reason": "consecutive_errors"})
-                try:
-                    if current_order_id:
-                        await _run(_cancel_order, account, current_order_id, cfg.variety,
-                                   cfg.exchange)
-                except Exception:
-                    pass
-                try:
-                    from backend.shared.helpers.alert_utils import send_order_failure_alert
-                    send_order_failure_alert(
-                        account=account, symbol=symbol,
-                        exchange=cfg.exchange, side=transaction_type,
-                        qty=quantity, mode="live", source="chase",
-                        error=abort_msg,
-                    )
-                except Exception:
-                    pass
-                if current_order_id:
-                    import asyncio as _asyncio
-                    _asyncio.create_task(_emit_chase_terminal(
-                        current_order_id, "chase_failed",
-                        symbol, transaction_type, quantity,
-                        attempts=attempt, error=abort_msg,
-                        algo_order_id=algo_order_id,
-                    ))
-                return result
             await asyncio.sleep(cfg.interval_seconds)
 
     # Max attempts exhausted

@@ -799,6 +799,45 @@ class SimDriver:
 
     # ── Control ───────────────────────────────────────────────────────
 
+    def _sd_apply_pct_overrides(self, scen: dict,
+                                pct_overrides: list[float] | None) -> dict:
+        """Bake per-tick pct override values into a (deep-copied) scenario dict."""
+        if not pct_overrides:
+            return scen
+        scen = copy.deepcopy(scen)
+        ticks = scen.get("ticks") or []
+        for i, pct in enumerate(pct_overrides):
+            if pct is None:
+                continue
+            if i >= len(ticks):
+                break
+            for move in (ticks[i].get("moves") or []):
+                if (move.get("type") or "").lower() == "pct":
+                    try:
+                        move["value"] = float(pct)
+                    except (TypeError, ValueError):
+                        pass
+        return scen
+
+    def _sd_apply_walk_overrides(self, scen: dict, walk_drift: float | None,
+                                  walk_vol: float | None,
+                                  walk_seed: int | None) -> dict:
+        """Bake random-walk drift/vol/seed overrides into a (deep-copied) scenario dict."""
+        if walk_drift is None and walk_vol is None and walk_seed is None:
+            return scen
+        scen = copy.deepcopy(scen)
+        if walk_seed is not None:
+            scen["seed"] = int(walk_seed)
+        for tick in (scen.get("ticks") or []):
+            for move in (tick.get("moves") or []):
+                mtype = (move.get("type") or "").lower()
+                if mtype in ("random_walk", "underlying_random_walk"):
+                    if walk_drift is not None:
+                        move["drift"] = float(walk_drift)
+                    if walk_vol is not None:
+                        move["vol"]   = float(walk_vol)
+        return scen
+
     def _start_normalise_scenario(
         self,
         scen: dict,
@@ -812,43 +851,8 @@ class SimDriver:
         and walk-param overrides baked in. The original dict is not mutated
         unless neither override is requested.
         """
-        # Apply pct_overrides into the scenario's ticks before we store
-        # it. The shape we handle cleanly: every override slot [i] replaces
-        # the `value` of every `pct`-typed move in ticks[i].moves. Scenarios
-        # that don't match this shape (random_walk, target_pnl, set_margin)
-        # are unaffected by pct_overrides — those moves are left alone.
-        if pct_overrides:
-            scen = copy.deepcopy(scen)
-            for i, pct in enumerate(pct_overrides):
-                if pct is None:
-                    continue
-                ticks = scen.get("ticks") or []
-                if i >= len(ticks):
-                    break
-                for move in (ticks[i].get("moves") or []):
-                    if (move.get("type") or "").lower() == "pct":
-                        try:
-                            move["value"] = float(pct)
-                        except (TypeError, ValueError):
-                            pass
-
-        # Random-walk overrides — replace drift / vol on every random_walk
-        # and underlying_random_walk move across every tick. Scenarios that
-        # don't contain walk-shaped moves are unaffected. `walk_seed`
-        # overrides the scenario-level seed for reproducibility from the UI.
-        if walk_drift is not None or walk_vol is not None or walk_seed is not None:
-            scen = copy.deepcopy(scen)
-            if walk_seed is not None:
-                scen["seed"] = int(walk_seed)
-            for tick in (scen.get("ticks") or []):
-                for move in (tick.get("moves") or []):
-                    mtype = (move.get("type") or "").lower()
-                    if mtype in ("random_walk", "underlying_random_walk"):
-                        if walk_drift is not None:
-                            move["drift"] = float(walk_drift)
-                        if walk_vol is not None:
-                            move["vol"]   = float(walk_vol)
-
+        scen = self._sd_apply_pct_overrides(scen, pct_overrides)
+        scen = self._sd_apply_walk_overrides(scen, walk_drift, walk_vol, walk_seed)
         return scen
 
     def _start_resolve_run_params(
@@ -977,6 +981,85 @@ class SimDriver:
         if hasattr(self.started_at, 'date'):
             self._sim_alert_state['session_date'] = self.started_at.date()
 
+    def _sd_seed_from_live_if_needed(self, seed_mode: str) -> None:
+        """Populate positions/margins/holdings/watchlist rows from live broker snapshot."""
+        if seed_mode not in ("live", "live+scenario"):
+            return
+        # Re-seed when the account filter changed since the last snapshot OR
+        # no snapshot exists. Otherwise cached rows may include excluded accounts.
+        cached_accts = (self._live_snapshot or {}).get("accounts_filter") or []
+        if not self._live_snapshot or cached_accts != self.accounts:
+            try:
+                self.seed_live(accounts=self.accounts or None)
+            except Exception as e:
+                raise SimGuardError(
+                    f"Auto-seed of live book failed: {e}. "
+                    f"Try POST /api/simulator/seed-live manually to surface "
+                    f"the broker error."
+                )
+        self._positions_rows = copy.deepcopy(self._live_snapshot["positions"])
+        self._margins_rows   = copy.deepcopy(self._live_snapshot["margins"])
+        self._holdings_rows  = copy.deepcopy(self._live_snapshot.get("holdings", []))
+        self._watchlist_rows = copy.deepcopy(self._live_snapshot.get("watchlist", []))
+
+    def _sd_seed_from_scripted(self, seed_mode: str, scen: dict) -> None:
+        """Layer scripted initial rows into positions/margins/holdings state."""
+        if seed_mode not in ("scripted", "live+scenario"):
+            return
+        initial = scen.get("initial") or {}
+        if seed_mode == "scripted":
+            self._positions_rows = copy.deepcopy(initial.get("positions", []))
+            self._margins_rows   = copy.deepcopy(initial.get("margins", []))
+            self._holdings_rows  = copy.deepcopy(initial.get("holdings", []))
+        else:
+            # live+scenario — scripted rows are layered on top of the live snapshot.
+            self._positions_rows.extend(copy.deepcopy(initial.get("positions", [])))
+            self._margins_rows.extend(copy.deepcopy(initial.get("margins", [])))
+            self._holdings_rows.extend(copy.deepcopy(initial.get("holdings", [])))
+
+    def _sd_apply_custom_and_filter(self, custom_positions: list[dict] | None,
+                                     symbol_filter: list[str] | None) -> None:
+        """Append custom positions, recompute derived fields, then apply symbol filter."""
+        if custom_positions:
+            self._positions_rows.extend(_normalise_custom_positions(custom_positions))
+        for r in self._positions_rows:
+            _recompute_position_row(r, self.spread_pct)
+        if symbol_filter:
+            allow = {str(s) for s in symbol_filter if s}
+            if allow:
+                self._positions_rows = [
+                    r for r in self._positions_rows
+                    if str(r.get("tradingsymbol", "")) in allow
+                ]
+
+    def _sd_autoload_or_raise(self, seed_mode: str, scen: dict) -> None:
+        """Auto-upgrade scripted→live when initial block is empty; raise if still empty."""
+        slug = scen.get("slug", "?")
+        if seed_mode == "scripted" and not (self._positions_rows or self._margins_rows):
+            logger.info(f"[SIM] '{slug}' has no scripted initial — auto-loading live book.")
+            try:
+                if not self._live_snapshot:
+                    self.seed_live()
+                self._positions_rows = copy.deepcopy(self._live_snapshot["positions"])
+                self._margins_rows   = copy.deepcopy(self._live_snapshot["margins"])
+                for r in self._positions_rows:
+                    _recompute_position_row(r)
+                self.seed_mode = "live"   # reflect what actually happened
+            except Exception as e:
+                self.scenario = None
+                self.active   = False
+                raise SimGuardError(
+                    f"Scenario '{slug}' has no scripted initial state "
+                    f"and auto-load of live book failed: {e}"
+                )
+        if not (self._positions_rows or self._margins_rows):
+            self.scenario = None
+            self.active   = False
+            raise SimGuardError(
+                f"Scenario '{slug}' has no initial state and the live "
+                f"book returned no positions or margins. Nothing to simulate."
+            )
+
     def _start_seed_state(
         self,
         seed_mode: str,
@@ -991,105 +1074,12 @@ class SimDriver:
         and auto-upgrades scripted→live when the scripted initial is empty.
         Raises SimGuardError if the final state contains no positions or margins.
         """
-        # Seed the running state — either from scenario.initial, the live-book
-        # snapshot, or both stacked. For the live modes, auto-snapshot if the
-        # operator hasn't pressed "Load live book" yet. Holdings is now
-        # simulated alongside positions (was positions-only) so day_pct /
-        # day_rate_abs / day_rate_pct agents become testable too.
         self._holdings_rows = []
         self._watchlist_rows = []
-        if seed_mode in ("live", "live+scenario"):
-            # Re-seed when the account filter changed since the last
-            # snapshot OR no snapshot exists. Otherwise the cached
-            # snapshot may include rows from accounts the operator
-            # has now excluded from this run.
-            cached_accts = (self._live_snapshot or {}).get("accounts_filter") or []
-            if not self._live_snapshot or cached_accts != self.accounts:
-                try:
-                    self.seed_live(accounts=self.accounts or None)
-                except Exception as e:
-                    raise SimGuardError(
-                        f"Auto-seed of live book failed: {e}. "
-                        f"Try POST /api/simulator/seed-live manually to surface "
-                        f"the broker error."
-                    )
-            self._positions_rows = copy.deepcopy(self._live_snapshot["positions"])
-            self._margins_rows   = copy.deepcopy(self._live_snapshot["margins"])
-            self._holdings_rows  = copy.deepcopy(self._live_snapshot.get("holdings", []))
-            self._watchlist_rows = copy.deepcopy(self._live_snapshot.get("watchlist", []))
-
-        if seed_mode in ("scripted", "live+scenario"):
-            initial = scen.get("initial") or {}
-            if seed_mode == "scripted":
-                self._positions_rows = copy.deepcopy(initial.get("positions", []))
-                self._margins_rows   = copy.deepcopy(initial.get("margins", []))
-                self._holdings_rows  = copy.deepcopy(initial.get("holdings", []))
-            else:
-                # live+scenario — scripted initial rows are layered on top of
-                # the live snapshot (useful for injecting a specific symbol).
-                self._positions_rows.extend(copy.deepcopy(initial.get("positions", [])))
-                self._margins_rows.extend(copy.deepcopy(initial.get("margins", [])))
-                self._holdings_rows.extend(copy.deepcopy(initial.get("holdings", [])))
-
-        # Custom positions submitted from the UI's "Custom positions" panel.
-        # These are layered ON TOP of whatever scripted/live seeding produced
-        # so an operator can stress-test a synthetic NIFTY24500CE without
-        # touching their real book. Each row needs at minimum tradingsymbol
-        # + quantity + last_price; account / exchange / multiplier defaults
-        # are inferred so a one-line entry is enough to start.
-        if custom_positions:
-            self._positions_rows.extend(_normalise_custom_positions(custom_positions))
-
-        for r in self._positions_rows:
-            _recompute_position_row(r, self.spread_pct)
-
-        # Symbol filter — drop positions whose tradingsymbol isn't in the
-        # requested allow-list. Operators use this to target a single
-        # instrument (e.g. "simulate only my NIFTY short"). Empty / None
-        # means no filter. Applied AFTER recompute so the filtered set
-        # still has derived fields intact.
-        if symbol_filter:
-            allow = {str(s) for s in symbol_filter if s}
-            if allow:
-                self._positions_rows = [
-                    r for r in self._positions_rows
-                    if str(r.get("tradingsymbol", "")) in allow
-                ]
-
-        # When scripted seeding leaves the state empty (a scenario without
-        # an `initial:` block — all 5 shipped ones + every synthesized
-        # scenario), auto-upgrade to live+scenario and snapshot the real
-        # book. Saves the operator from having to flip seed_mode manually
-        # every time they press Start. Only reachable in `scripted` mode;
-        # live / live+scenario paths already seeded earlier.
-        if seed_mode == "scripted" and not (self._positions_rows or self._margins_rows):
-            logger.info(
-                f"[SIM] '{scen.get('slug', '?')}' has no scripted initial — "
-                f"auto-loading live book."
-            )
-            try:
-                if not self._live_snapshot:
-                    self.seed_live()
-                self._positions_rows = copy.deepcopy(self._live_snapshot["positions"])
-                self._margins_rows   = copy.deepcopy(self._live_snapshot["margins"])
-                for r in self._positions_rows:
-                    _recompute_position_row(r)
-                self.seed_mode = "live"   # reflect what actually happened
-            except Exception as e:
-                self.scenario = None
-                self.active   = False
-                raise SimGuardError(
-                    f"Scenario '{scen.get('slug', '?')}' has no scripted initial state "
-                    f"and auto-load of live book failed: {e}"
-                )
-
-        if not (self._positions_rows or self._margins_rows):
-            self.scenario = None
-            self.active   = False
-            raise SimGuardError(
-                f"Scenario '{scen.get('slug', '?')}' has no initial state and the live "
-                f"book returned no positions or margins. Nothing to simulate."
-            )
+        self._sd_seed_from_live_if_needed(seed_mode)
+        self._sd_seed_from_scripted(seed_mode, scen)
+        self._sd_apply_custom_and_filter(custom_positions, symbol_filter)
+        self._sd_autoload_or_raise(seed_mode, scen)
 
     def start(self, scenario_slug: str, rate_ms: int = 2000,
               *, seed_mode: str = "scripted",
@@ -1874,82 +1864,124 @@ class SimDriver:
             return self._watchlist_rows
         return []
 
+    # Unscoped move types that run every tick regardless of positions cadence.
+    _UNSCOPED_MOVE_TYPES: frozenset = frozenset({
+        "set_margin", "advance_clock", "set_iv", "set_iv_skew",
+        "set_setting", "underlying_pct", "underlying_abs",
+        "underlying_target", "underlying_random_walk",
+    })
+
+    def _sd_apply_unscoped_move(self, mtype: str, scope: str,
+                                 move: dict) -> list[dict] | None:
+        """Dispatch scope-independent move types. Returns None when mtype is not unscoped."""
+        if mtype == "set_margin":
+            return self._apply_set_margin(scope, move)
+        if mtype == "advance_clock":
+            return self._apply_advance_clock(move)
+        if mtype == "set_iv":
+            return self._apply_set_iv(scope, move)
+        if mtype == "set_iv_skew":
+            return self._apply_set_iv_skew(scope, move)
+        if mtype == "set_setting":
+            return self._apply_set_setting(move)
+        if mtype in ("underlying_pct", "underlying_abs", "underlying_target",
+                     "underlying_random_walk"):
+            return self._apply_underlying_move(mtype, scope, move)
+        return None  # not an unscoped type
+
+    def _sd_apply_scoped_move(self, mtype: str, scope: str,
+                               move: dict) -> list[dict]:
+        """Match scope then dispatch pct/abs/random_walk/target_pnl primitives."""
+        matched = self._scope_matches(scope)
+        if not matched:
+            logger.info(f"[SIM] move {mtype} scope='{scope}' matched nothing")
+            return []
+        if mtype == "pct":
+            return self._apply_pct(matched, float(move.get("value") or 0))
+        if mtype == "abs":
+            return self._apply_abs(matched, float(move.get("value") or 0))
+        if mtype == "random_walk":
+            return self._apply_random_walk(
+                matched, float(move.get("drift") or 0.0), float(move.get("vol") or 0.0)
+            )
+        if mtype == "target_pnl":
+            return self._apply_target_pnl(matched, float(move.get("value") or 0))
+        logger.warning(f"[SIM] unknown move type '{mtype}'")
+        return []
+
     def _apply_moves(self, moves: list[dict]) -> list[dict]:
         """Apply a list of price moves and return change diffs for the tick log."""
         changes: list[dict] = []
-        # Positions-only sim: positions refresh every Nth tick per the
-        # cadence setting; holdings scope globs are silently skipped (we
-        # don't carry holdings state). Tick 0 always refreshes so market
-        # open feels right.
+        # Positions refresh every Nth tick per the cadence setting.
+        # Tick 0 always refreshes so market open feels right.
         positions_tick = (self.tick_index % self.positions_every_n_ticks) == 0
         for move in moves:
             mtype = (move.get("type") or "").lower()
             scope = move.get("scope") or ""
-            if mtype == "set_margin":
-                changes.extend(self._apply_set_margin(scope, move))
+            # Unscoped types (margin patch, clock, IV shocks, underlying moves)
+            # run every tick — not gated by the positions cadence.
+            result = self._sd_apply_unscoped_move(mtype, scope, move)
+            if result is not None:
+                changes.extend(result)
                 continue
-            # Time-travel primitive — advances the simulated clock by N
-            # minutes. Affects market_state.minutes_since_nse_open (the
-            # baseline gate for rate agents) AND DTE via ref_now in
-            # subsequent reprice_row calls (theta decay testing).
-            if mtype == "advance_clock":
-                changes.extend(self._apply_advance_clock(move))
-                continue
-            # Implied-vol shock — directly mutates _iv_cache for matched
-            # option positions. Subsequent underlying moves re-price
-            # those options with the new σ (vega shock testing).
-            if mtype == "set_iv":
-                changes.extend(self._apply_set_iv(scope, move))
-                continue
-            # IV skew shift — like set_iv but per-strike: ATM IV moves by
-            # atm_delta; OTM puts get extra `put_skew × (1 − K/S)`; OTM
-            # calls get extra `call_skew × (K/S − 1)`. Models how IV
-            # behaves asymmetrically across strikes during a crash (puts
-            # get bid up MORE than ATM, calls less). Used by the
-            # extreme-gap-down / extreme-gap-up regimes for realistic
-            # tail-hedge P&L.
-            if mtype == "set_iv_skew":
-                changes.extend(self._apply_set_iv_skew(scope, move))
-                continue
-            # Non-market event primitive — overrides a DB-backed setting
-            # for the duration of the sim run (e.g. lower a threshold,
-            # disable a capability). The override is reverted on Stop /
-            # Clear so prod operator-set values aren't touched.
-            if mtype == "set_setting":
-                changes.extend(self._apply_set_setting(move))
-                continue
-            # Underlying moves: shift the spot, then re-price every option /
-            # future on that underlying using the cached IV. Drives coherent
-            # F&O sims off a single "−3% NIFTY" tick.
-            if mtype in ("underlying_pct", "underlying_abs", "underlying_target",
-                         "underlying_random_walk"):
-                changes.extend(self._apply_underlying_move(mtype, scope, move))
-                continue
-            # Holdings + positions both flow through the same scope
-            # matcher and primitive helpers; the section is read from
-            # the row when `_refresh` recomputes derived columns.
+            # Scoped primitives (pct/abs/walk/target_pnl) are gated by
+            # the positions cadence when targeting positions.* scope.
             if scope.startswith("positions.") and not positions_tick:
                 continue
-            matched = self._scope_matches(scope)
-            if not matched:
-                logger.info(f"[SIM] move {mtype} scope='{scope}' matched nothing")
-                continue
-            if mtype == "pct":
-                changes.extend(self._apply_pct(matched, float(move.get("value") or 0)))
-            elif mtype == "abs":
-                changes.extend(self._apply_abs(matched, float(move.get("value") or 0)))
-            elif mtype == "random_walk":
-                drift = float(move.get("drift") or 0.0)
-                vol   = float(move.get("vol")   or 0.0)
-                changes.extend(self._apply_random_walk(matched, drift, vol))
-            elif mtype == "target_pnl":
-                target = float(move.get("value") or 0)
-                changes.extend(self._apply_target_pnl(matched, target))
-            else:
-                logger.warning(f"[SIM] unknown move type '{mtype}'")
+            changes.extend(self._sd_apply_scoped_move(mtype, scope, move))
         return changes
 
     # ── Derivatives ──────────────────────────────────────────────────
+
+    def _sd_group_positions_by_underlying(self, parse_tradingsymbol: Any) -> None:
+        """Parse each position row once and group by underlying root into _positions_by_underlying."""
+        for r in self._positions_rows:
+            sym    = str(r.get("tradingsymbol") or "")
+            parsed = parse_tradingsymbol(sym) if sym else None
+            r["_parsed"] = parsed
+            if not parsed:
+                continue
+            self._positions_by_underlying.setdefault(parsed["root"], []).append(r)
+
+    def _sd_resolve_underlying_spots(self, explicit: dict) -> None:
+        """Fill _underlyings from explicit overrides, futures proxy, or ATM strike median."""
+        for name, spot in explicit.items():
+            self._underlyings[name] = spot
+        for name, rows in self._positions_by_underlying.items():
+            if name in self._underlyings:
+                continue
+            # Futures last_price as spot proxy.
+            fut = next(
+                (r for r in rows
+                 if (r.get("_parsed") or {}).get("kind") == "fut" and r.get("last_price")),
+                None,
+            )
+            if fut:
+                self._underlyings[name] = float(fut["last_price"])
+                continue
+            # Crude ATM proxy: median strike across options on this underlying.
+            strikes = [
+                (r["_parsed"] or {}).get("strike") for r in rows
+                if (r.get("_parsed") or {}).get("kind") == "opt"
+            ]
+            strikes = [s for s in strikes if s is not None]
+            if strikes:
+                strikes.sort()
+                self._underlyings[name] = strikes[len(strikes) // 2]
+
+    def _sd_calibrate_option_ivs(self, calibrate_iv_for_row: Any) -> None:
+        """Calibrate implied volatility for every option position and populate _iv_cache."""
+        ref_now = self._ref_now()
+        for r in self._positions_rows:
+            p = r.get("_parsed")
+            if not p or p.get("kind") != "opt":
+                continue
+            spot = self._underlyings.get(p["root"])
+            if spot is None:
+                continue
+            sigma = calibrate_iv_for_row(r, spot, ref_now=ref_now)
+            if sigma is not None:
+                self._iv_cache[str(r.get("tradingsymbol") or "")] = sigma
 
     def _seed_derivatives(self, scen: dict) -> None:
         """Walk the seeded position book, detect underlyings, resolve each
@@ -1974,57 +2006,9 @@ class SimDriver:
         explicit = (scen.get("initial") or {}).get("underlyings") or {}
         explicit = {str(k).upper(): float(v) for k, v in explicit.items()}
 
-        # 1. Explicit overrides win.
-        for name, spot in explicit.items():
-            self._underlyings[name] = spot
-
-        # Walk positions ONCE — stash the parser result on each row and
-        # group by underlying. Both downstream loops (spot-resolution +
-        # IV calibration) reuse the cached parse, and `_reprice_…` reads
-        # from `_positions_by_underlying` for O(1) underlying lookup
-        # instead of re-walking every position per underlying move.
-        for r in self._positions_rows:
-            sym    = str(r.get("tradingsymbol") or "")
-            parsed = parse_tradingsymbol(sym) if sym else None
-            r["_parsed"] = parsed
-            if not parsed:
-                continue
-            self._positions_by_underlying.setdefault(parsed["root"], []).append(r)
-
-        for name, rows in self._positions_by_underlying.items():
-            if name in self._underlyings:
-                continue
-            # 2. Futures last_price as spot proxy. Reuse the cached parse.
-            fut = next((r for r in rows
-                        if (r.get("_parsed") or {}).get("kind") == "fut"
-                        and r.get("last_price")), None)
-            if fut:
-                self._underlyings[name] = float(fut["last_price"])
-                continue
-            # 3. Crude ATM proxy: among options, find the strike nearest to
-            #    the median strike (assumes the operator's book straddles
-            #    the spot, which is the common case for hedged F&O).
-            strikes = [
-                (r["_parsed"] or {}).get("strike") for r in rows
-                if (r.get("_parsed") or {}).get("kind") == "opt"
-            ]
-            strikes = [s for s in strikes if s is not None]
-            if strikes:
-                strikes.sort()
-                self._underlyings[name] = strikes[len(strikes) // 2]
-
-        # Calibrate IV per option position. Reuses the same cached parse.
-        ref_now = self._ref_now()
-        for r in self._positions_rows:
-            p = r.get("_parsed")
-            if not p or p.get("kind") != "opt":
-                continue
-            spot = self._underlyings.get(p["root"])
-            if spot is None:
-                continue
-            sigma = calibrate_iv_for_row(r, spot, ref_now=ref_now)
-            if sigma is not None:
-                self._iv_cache[str(r.get("tradingsymbol") or "")] = sigma
+        self._sd_group_positions_by_underlying(parse_tradingsymbol)
+        self._sd_resolve_underlying_spots(explicit)
+        self._sd_calibrate_option_ivs(calibrate_iv_for_row)
 
         if self._underlyings:
             spots = ", ".join(f"{n}={v:,.2f}" for n, v in self._underlyings.items())
@@ -2050,6 +2034,65 @@ class SimDriver:
         "FINNIFTY":  [{"to": "NIFTY",     "beta": 0.91}],
     }
 
+    def _sd_match_underlying_names(self, scope: str) -> list[str]:
+        """Resolve scope `underlying.<NAME|glob>` to matching underlying names."""
+        if not scope.startswith("underlying."):
+            logger.warning(f"[SIM] underlying move expects 'underlying.*' scope, got '{scope}'")
+            return []
+        which = scope.split(".", 1)[1].upper()
+        if "*" in which or "?" in which:
+            names = [n for n in self._underlyings if fnmatch.fnmatch(n, which)]
+        else:
+            names = [which] if which in self._underlyings else []
+        if not names:
+            logger.info(f"[SIM] underlying move '{scope}' matched no known underlying "
+                        f"(known: {sorted(self._underlyings)})")
+        return names
+
+    def _sd_compute_new_spot(self, mtype: str, old_spot: float,
+                              value: float, drift: float, vol: float) -> float:
+        """Compute updated spot price for the given move type."""
+        if mtype == "underlying_pct":
+            return old_spot * (1.0 + value)
+        if mtype == "underlying_abs":
+            return old_spot + value
+        if mtype == "underlying_target":
+            return value
+        if mtype == "underlying_random_walk":
+            shock = drift + vol * self._rng.gauss(0.0, 1.0)
+            return old_spot * (1.0 + shock)
+        return old_spot
+
+    def _sd_propagate_underlying_to_peers(self, name: str, old_spot: float,
+                                           new_spot: float, move: dict) -> list[dict]:
+        """Fan out a beta-scaled pct move to correlated peer underlyings (max 1 hop)."""
+        if old_spot <= 0:
+            return []
+        propagate = move.get("propagate")
+        if propagate is None:
+            propagate = self._DEFAULT_BETAS.get(name, [])
+        if not propagate:
+            return []
+        primary_pct = (new_spot - old_spot) / old_spot
+        changes: list[dict] = []
+        for peer in propagate:
+            peer_name = (peer.get("to") or "").upper()
+            if not peer_name or peer_name not in self._underlyings:
+                continue
+            try:
+                beta = float(peer.get("beta") or 0)
+            except (TypeError, ValueError):
+                beta = 0.0
+            if beta == 0.0:
+                continue
+            changes.extend(self._apply_underlying_move(
+                "underlying_pct",
+                f"underlying.{peer_name}",
+                {"value": primary_pct * beta},
+                _propagate_depth=1,
+            ))
+        return changes
+
     def _apply_underlying_move(self, mtype: str, scope: str,
                                move: dict, _propagate_depth: int = 0) -> list[dict]:
         """
@@ -2064,10 +2107,6 @@ class SimDriver:
         underlying matches is re-priced (BS for options using cached σ;
         spot 1:1 for futures).
 
-        `underlying_random_walk` is the realistic-market primitive: walks
-        the SPOT (not each contract), so all options on that underlying
-        re-price coherently via Black-Scholes each tick.
-
         Cross-underlying correlation: after the primary move resolves, if
         the move carries `propagate: [{to: NAME, beta: X}, ...]` OR the
         underlying has an entry in `_DEFAULT_BETAS`, derived
@@ -2075,16 +2114,8 @@ class SimDriver:
         peer. `_propagate_depth` caps at 1 hop so NIFTY→BANKNIFTY
         doesn't recurse back to NIFTY.
         """
-        if not scope.startswith("underlying."):
-            logger.warning(f"[SIM] underlying move expects 'underlying.*' scope, got '{scope}'")
-            return []
-        which = scope.split(".", 1)[1].upper()
-        names = ([n for n in self._underlyings if fnmatch.fnmatch(n, which)]
-                 if "*" in which or "?" in which
-                 else ([which] if which in self._underlyings else []))
+        names = self._sd_match_underlying_names(scope)
         if not names:
-            logger.info(f"[SIM] underlying move '{scope}' matched no known underlying "
-                        f"(known: {sorted(self._underlyings)})")
             return []
 
         value = float(move.get("value") or 0)
@@ -2093,20 +2124,9 @@ class SimDriver:
         changes: list[dict] = []
         for name in names:
             old_spot = float(self._underlyings[name])
-            if   mtype == "underlying_pct":    new_spot = old_spot * (1.0 + value)
-            elif mtype == "underlying_abs":    new_spot = old_spot + value
-            elif mtype == "underlying_target": new_spot = value
-            elif mtype == "underlying_random_walk":
-                # GBM step at the underlying level. drift+vol are per-tick.
-                shock    = drift + vol * self._rng.gauss(0.0, 1.0)
-                new_spot = old_spot * (1.0 + shock)
-            else:                              new_spot = old_spot
+            new_spot = self._sd_compute_new_spot(mtype, old_spot, value, drift, vol)
             self._underlyings[name] = new_spot
-            # Synthetic change row so the tick log shows the underlying move.
-            # `_capture_price_history` (called from the tick loop) picks up
-            # the new spot into `_underlying_history` for chart overlays.
-            # Same shape as `_change` so the LogPanel's Simulator tab renders
-            # it without special-casing.
+            # Synthetic change row for the tick log / chart overlays.
             if mtype == "underlying_random_walk":
                 reason = f"{mtype} drift={drift:+.4f} vol={vol:.4f} → {new_spot - old_spot:+.2f}"
             else:
@@ -2123,45 +2143,11 @@ class SimDriver:
                 "bid":      None,
                 "ask":      None,
             })
-            # Re-price every position on this underlying — produces one
-            # change row per derived contract so the operator sees the chain.
             changes.extend(self._reprice_derivatives_for(name, new_spot))
-
-            # Cross-underlying correlation: propagate this move to
-            # correlated peers via either the move's explicit
-            # `propagate:` list or the default beta table. Bounded to
-            # one hop (`_propagate_depth=1`) so NIFTY → BANKNIFTY can't
-            # bounce back to NIFTY and create an oscillation.
+            # Cross-underlying propagation — skipped at depth >= 1.
             if _propagate_depth >= 1:
                 continue
-            propagate = move.get("propagate")
-            if propagate is None:
-                propagate = self._DEFAULT_BETAS.get(name, [])
-            if not propagate:
-                continue
-            # Compute primary move as a % delta so we can scale per peer.
-            if old_spot <= 0:
-                continue
-            primary_pct = (new_spot - old_spot) / old_spot
-            for peer in propagate:
-                peer_name = (peer.get("to") or "").upper()
-                if not peer_name or peer_name not in self._underlyings:
-                    continue
-                try:
-                    beta = float(peer.get("beta") or 0)
-                except (TypeError, ValueError):
-                    beta = 0.0
-                if beta == 0.0:
-                    continue
-                peer_pct = primary_pct * beta
-                # Recursive call with depth=1 to apply + reprice + log the
-                # peer's move. The recursion guard above prevents further hops.
-                changes.extend(self._apply_underlying_move(
-                    "underlying_pct",
-                    f"underlying.{peer_name}",
-                    {"value": peer_pct},
-                    _propagate_depth=1,
-                ))
+            changes.extend(self._sd_propagate_underlying_to_peers(name, old_spot, new_spot, move))
         return changes
 
     def _reprice_derivatives_for(self, underlying: str, spot: float) -> list[dict]:
@@ -2741,6 +2727,27 @@ class SimDriver:
 
     # ── Live-book seeding ────────────────────────────────────────────
 
+    def _sd_fetch_live_frames(self) -> tuple[list, list, list]:
+        """Fetch holdings/positions/margins from broker and convert to records."""
+        from backend.brokers import broker_apis
+        try:
+            df_h = pd.concat(broker_apis.fetch_holdings(),  ignore_index=True)
+            df_p = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
+            df_m = pd.concat(broker_apis.fetch_margins(),   ignore_index=True)
+        except Exception as e:
+            raise SimGuardError(f"Live-book fetch failed: {e}")
+        holdings  = df_h.fillna(0).to_dict(orient="records") if not df_h.empty else []
+        positions = df_p.fillna(0).to_dict(orient="records") if not df_p.empty else []
+        margins   = df_m.fillna(0).to_dict(orient="records") if not df_m.empty else []
+        return holdings, positions, margins
+
+    @staticmethod
+    def _sd_filter_by_accounts(rows: list[dict],
+                                scoped: set[str]) -> list[dict]:
+        """Return only rows whose `account` field is in the scoped set."""
+        return [r for r in rows
+                if str(r.get("account") or "").strip().upper() in scoped]
+
     def seed_live(self, user_id: int | None = None,
                   accounts: list[str] | None = None) -> dict:
         """
@@ -2768,56 +2775,27 @@ class SimDriver:
         handlers pass user_id and call seed_live_async() instead.
         """
         assert_enabled()
-        from backend.brokers import broker_apis
+        holdings, positions, margins = self._sd_fetch_live_frames()
 
-        try:
-            df_h = pd.concat(broker_apis.fetch_holdings(),  ignore_index=True)
-            df_p = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
-            df_m = pd.concat(broker_apis.fetch_margins(),   ignore_index=True)
-        except Exception as e:
-            raise SimGuardError(f"Live-book fetch failed: {e}")
-
-        # Keep real account codes in the sim book — Telegram + email sim
-        # alerts go to the owner and reading `ZG####` everywhere made it
-        # impossible to tell which account fired. Public sim endpoints
-        # are admin-guarded, so there's no leak path.
-
-        holdings  = df_h.fillna(0).to_dict(orient="records") if not df_h.empty else []
-        positions = df_p.fillna(0).to_dict(orient="records") if not df_p.empty else []
-        margins   = df_m.fillna(0).to_dict(orient="records") if not df_m.empty else []
-
-        # Per-account scope filter — when caller passes a non-empty
-        # list, drop every row whose `account` isn't in it. Applied
-        # uniformly across all three buckets so per-account agents
-        # see a coherent slice of the book.
+        # Per-account scope filter applied uniformly across all three buckets.
         if accounts:
             scoped = {str(a).strip().upper() for a in accounts if a}
-            def _in_scope(r):
-                acct = str(r.get("account") or "").strip().upper()
-                return acct in scoped
-            holdings  = [r for r in holdings  if _in_scope(r)]
-            positions = [r for r in positions if _in_scope(r)]
-            margins   = [r for r in margins   if _in_scope(r)]
+            holdings  = self._sd_filter_by_accounts(holdings,  scoped)
+            positions = self._sd_filter_by_accounts(positions, scoped)
+            margins   = self._sd_filter_by_accounts(margins,   scoped)
 
         for row in positions:
             _recompute_position_row(row)
         for row in holdings:
             _recompute_holding_row(row)
 
-        # Watchlist rows are seeded via the async path
-        # `seed_live_async(user_id)` from the route handler — the sync
-        # path leaves them empty to avoid blocking on the async DB
-        # session inside a sync caller.
-        watchlist_rows: list[dict] = []
-
+        # Watchlist rows are seeded via the async path `seed_live_async`.
         self._live_snapshot = {
-            "holdings":    holdings,
-            "positions":   positions,
-            "margins":     margins,
-            "watchlist":   watchlist_rows,
-            "snapshot_at": datetime.now().isoformat(timespec="seconds"),
-            # Echo the filter back so start() can decide whether the
-            # cached snapshot matches the current run's account scope.
+            "holdings":        holdings,
+            "positions":       positions,
+            "margins":         margins,
+            "watchlist":       [],
+            "snapshot_at":     datetime.now().isoformat(timespec="seconds"),
             "accounts_filter": sorted([str(a).strip().upper()
                                        for a in (accounts or []) if a]),
         }
@@ -2829,10 +2807,9 @@ class SimDriver:
             "snapshot_at":     self._live_snapshot["snapshot_at"],
             "positions_count": len(positions),
             "margins_count":   len(margins),
-            "watchlist_count": len(self._live_snapshot.get("watchlist", []) or []),
-            "accounts":        sorted({str(r.get("account", "")) for r in positions + margins if r.get("account")}),
-            # Distinct tradingsymbols in the snapshot — populates the
-            # Symbol picker on /admin/simulator.
+            "watchlist_count": 0,
+            "accounts":        sorted({str(r.get("account", ""))
+                                       for r in positions + margins if r.get("account")}),
             "symbols":         sorted({str(r.get("tradingsymbol", ""))
                                        for r in positions if r.get("tradingsymbol")}),
         }
@@ -2965,55 +2942,65 @@ class SimDriver:
 
     # ── Convenience ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _sd_extract_tick_pcts(s: dict) -> list[float | None]:
+        """Return the first pct move value per tick (None if no pct move in that tick)."""
+        tick_pcts: list[float | None] = []
+        for t in (s.get("ticks") or []):
+            pct = None
+            for m in (t.get("moves") or []):
+                if (m.get("type") or "").lower() == "pct":
+                    try:
+                        pct = float(m.get("value"))
+                    except (TypeError, ValueError):
+                        pass
+                    break
+            tick_pcts.append(pct)
+        return tick_pcts
+
+    @staticmethod
+    def _sd_detect_walk_shape(s: dict) -> bool:
+        """Return True when any tick in the scenario contains a random_walk move."""
+        return any(
+            (m.get("type") or "").lower() in ("random_walk", "underlying_random_walk")
+            for t in (s.get("ticks") or [])
+            for m in (t.get("moves") or [])
+        )
+
+    @staticmethod
+    def _sd_initial_symbols(initial: dict) -> list[str]:
+        """Return sorted distinct tradingsymbols from the scenario's scripted positions."""
+        return sorted({
+            str(p.get("tradingsymbol", ""))
+            for p in (initial.get("positions") or [])
+            if p.get("tradingsymbol")
+        })
+
+    @staticmethod
+    def _sd_manifest_entry(s: dict) -> dict:
+        """Build a single manifest dict for one scenario."""
+        initial = s.get("initial") or {}
+        has_initial = bool(
+            initial.get("holdings") or initial.get("positions") or initial.get("margins")
+        )
+        ticks_list = s.get("ticks") or []
+        mode = s.get("mode") or (
+            "symbol" if (ticks_list and ticks_list[0].get("moves")) else "aggregate"
+        )
+        return {
+            "slug":            s.get("slug"),
+            "name":            s.get("name") or s.get("slug"),
+            "description":     s.get("description", ""),
+            "mode":            mode,
+            "ticks":           len(ticks_list),
+            "has_initial":     has_initial,
+            "tick_pcts":       SimDriver._sd_extract_tick_pcts(s),
+            "initial_symbols": SimDriver._sd_initial_symbols(initial),
+            "has_walk":        SimDriver._sd_detect_walk_shape(s),
+        }
+
     def scenarios_manifest(self) -> list[dict]:
-        out = []
-        for s in load_scenarios():
-            initial = s.get("initial") or {}
-            has_initial = bool(
-                initial.get("holdings") or initial.get("positions") or initial.get("margins")
-            )
-            # Default tick pct values — same shape as _tick_pcts_for_ui
-            # above. Lets the UI show editable defaults before Start.
-            tick_pcts: list[float | None] = []
-            for t in (s.get("ticks") or []):
-                pct = None
-                for m in (t.get("moves") or []):
-                    if (m.get("type") or "").lower() == "pct":
-                        try:
-                            pct = float(m.get("value"))
-                        except (TypeError, ValueError):
-                            pass
-                        break
-                tick_pcts.append(pct)
-            # Distinct symbols from the scenario's scripted initial
-            # positions — lets the Symbol picker show picker options
-            # even when the operator hasn't loaded the live book yet.
-            init_syms = sorted({
-                str(p.get("tradingsymbol", ""))
-                for p in (initial.get("positions") or [])
-                if p.get("tradingsymbol")
-            })
-            # Walk-shape detection — flag when ANY tick contains a
-            # random_walk or underlying_random_walk move. The UI uses
-            # this to surface drift / vol / seed inputs only for
-            # walk-style scenarios.
-            has_walk = any(
-                (m.get("type") or "").lower() in ("random_walk", "underlying_random_walk")
-                for t in (s.get("ticks") or [])
-                for m in (t.get("moves") or [])
-            )
-            out.append({
-                "slug":            s.get("slug"),
-                "name":            s.get("name") or s.get("slug"),
-                "description":     s.get("description", ""),
-                "mode":            s.get("mode") or ("symbol" if s.get("ticks", [{}])[0].get("moves") else "aggregate"),
-                "ticks":           len(s.get("ticks", []) or []),
-                "has_initial":     has_initial,
-                "tick_pcts":       tick_pcts,
-                "initial_symbols": init_syms,
-                "has_walk":        has_walk,
-            })
-        return out
+        return [self._sd_manifest_entry(s) for s in load_scenarios()]
 
 
 def get_driver() -> SimDriver:

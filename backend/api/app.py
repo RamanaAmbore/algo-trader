@@ -246,6 +246,66 @@ async def _rebuild_broker_connections() -> None:
         logger.warning(f"broker rebuild_from_db failed (sticking with YAML view): {e}")
 
 
+def _start_mmap_reader() -> None:
+    """Start the MmapTickReader when conn_service owns the KiteTicker (slice 4)."""
+    import asyncio as _asyncio
+    from backend.brokers.kite_ticker import get_ticker
+    reader = get_ticker()
+    reader.set_loop(_asyncio.get_event_loop())
+    reader.start()
+    logger.info(
+        "MmapTickReader: poller started — KiteTicker WS lives in "
+        "conn_service (slice 4); ticks read from /dev/shm/ramboq_ticks"
+    )
+
+
+def _resolve_creds_conn_service() -> tuple[str | None, str | None, str]:
+    """Fetch api_key + access_token from conn_service for the first Kite account."""
+    from backend.brokers.client.remote_broker import list_remote_accounts, fetch_access_token
+    for r in list_remote_accounts():
+        if r.get("broker_id") not in ("zerodha_kite", "kite"):
+            continue
+        acct = r["account"]
+        ak, tok = fetch_access_token(acct)
+        if ak and tok:
+            logger.info(
+                f"KiteTicker (conn_svc): using account {acct} "
+                f"(api_key=…{ak[-4:]})"
+            )
+            return ak, tok, acct
+    return None, None, ""
+
+
+def _resolve_creds_local() -> tuple[str | None, str | None, str]:
+    """Walk local sparkline broker adapters to find a live Kite access_token."""
+    from backend.brokers.registry import get_sparkline_broker
+    from backend.brokers.connections import Connections
+    from backend.brokers.adapters.kite import KiteBroker
+    spark_broker = get_sparkline_broker()
+    brokers = getattr(spark_broker, "_brokers", [spark_broker])
+    for broker in brokers:
+        if not isinstance(broker, KiteBroker):
+            continue
+        conn = getattr(broker, "_conn", None)
+        if conn is None:
+            account = broker.account
+            conn = Connections().conn.get(account)
+        if conn is None:
+            continue
+        tok = getattr(conn, "_access_token", None) or (
+            conn.get_access_token() if hasattr(conn, "get_access_token") else None
+        )
+        if tok:
+            api_key = getattr(conn, "api_key", None)
+            acct = getattr(conn, "account", "") or ""
+            logger.info(
+                f"KiteTicker: using account {acct or '?'} "
+                f"(api_key=…{(api_key or '')[-4:]})"
+            )
+            return api_key, tok, acct
+    return None, None, ""
+
+
 async def _start_kite_ticker() -> None:
     """
     Start the KiteTicker WebSocket for the sparkline-broker account.
@@ -272,20 +332,10 @@ async def _start_kite_ticker() -> None:
         background performance tick logs in).
     """
     try:
-        from backend.brokers.registry import get_sparkline_broker
+        import os as _os
         from backend.brokers.kite_ticker import get_ticker
-        from backend.brokers.connections import Connections
-        from backend.brokers.adapters.kite import KiteBroker
         from backend.shared.helpers.utils import is_engine_idle
 
-        # Dev-idle gate — on dev, when execution.dev_active=False AND
-        # no sim/replay running, skip starting the KiteTicker. Saves
-        # the WebSocket subscription budget against Kite for sessions
-        # where no operator is actively trading. Picking PAPER/SIM/
-        # REPLAY in the navbar flips dev_active=True; the operator
-        # needs to restart the service OR hit the future "rehydrate"
-        # endpoint to bring the ticker up. Prod (main) never short-
-        # circuits here — ticker always starts.
         if is_engine_idle():
             logger.info(
                 "KiteTicker: skipped startup — engine idle (dev). "
@@ -293,89 +343,20 @@ async def _start_kite_ticker() -> None:
             )
             return
 
-        # Slice 4 — when conn_service owns the KiteTicker, main API
-        # doesn't open a WebSocket at all. get_ticker() returns an
-        # MmapTickReader whose `start()` boots the mmap poller (which
-        # tails the shared-memory buffer and feeds the local SSE bus).
-        import os as _os
         if _os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
             "1", "true", "yes", "on",
         ):
-            import asyncio as _asyncio
-            reader = get_ticker()
-            reader.set_loop(_asyncio.get_event_loop())
-            reader.start()
-            logger.info(
-                "MmapTickReader: poller started — KiteTicker WS lives in "
-                "conn_service (slice 4); ticks read from /dev/shm/ramboq_ticks"
-            )
+            _start_mmap_reader()
             return
 
-        api_key: str | None = None
-        access_token: str | None = None
-        _ticker_account: str = ""
-
-        # Cutover branch — when conn_service owns the broker sessions,
-        # main API doesn't construct local KiteConnection objects. Fetch
-        # the live access_token from conn_service for the first Kite
-        # account it lists, then open our local KiteTicker WebSocket
-        # with that token. Token doesn't get rotated mid-session, so
-        # one fetch is enough; if conn_service rebuilds and gets a new
-        # token, the next ramboq_api restart picks it up.
-        import os as _os
         _use_conn_svc = _os.environ.get(
             "RAMBOQ_USE_CONN_SERVICE", "",
         ).strip().lower() in ("1", "true", "yes", "on")
 
         if _use_conn_svc:
-            from backend.brokers.client.remote_broker import (
-                list_remote_accounts, fetch_access_token,
-            )
-            for r in list_remote_accounts():
-                # broker_id can be either canonical ("zerodha_kite") or
-                # legacy ("kite") — both map to the Kite adapter.
-                if r.get("broker_id") not in ("zerodha_kite", "kite"):
-                    continue
-                acct = r["account"]
-                ak, tok = fetch_access_token(acct)
-                if ak and tok:
-                    api_key, access_token, _ticker_account = ak, tok, acct
-                    logger.info(
-                        f"KiteTicker (conn_svc): using account {acct} "
-                        f"(api_key=…{ak[-4:]})"
-                    )
-                    break
+            api_key, access_token, _ticker_account = _resolve_creds_conn_service()
         else:
-            spark_broker = get_sparkline_broker()
-            # PriceBroker wraps a list of underlying Broker adapters. Walk
-            # them to find the first KiteBroker whose KiteConnection has a
-            # live access_token. Non-Kite adapters (Dhan, Groww) don't
-            # support KiteTicker and are skipped silently.
-            brokers = getattr(spark_broker, "_brokers", [spark_broker])
-
-            for broker in brokers:
-                if not isinstance(broker, KiteBroker):
-                    continue
-                conn = getattr(broker, "_conn", None)
-                if conn is None:
-                    # KiteBroker stores the connection at construction time;
-                    # fall back to looking it up directly from Connections.
-                    account = broker.account
-                    conn = Connections().conn.get(account)
-                if conn is None:
-                    continue
-                tok = getattr(conn, "_access_token", None) or (
-                    conn.get_access_token() if hasattr(conn, "get_access_token") else None
-                )
-                if tok:
-                    api_key = getattr(conn, "api_key", None)
-                    access_token = tok
-                    _ticker_account = getattr(conn, "account", "") or ""
-                    logger.info(
-                        f"KiteTicker: using account {_ticker_account or '?'} "
-                        f"(api_key=…{(api_key or '')[-4:]})"
-                    )
-                    break
+            api_key, access_token, _ticker_account = _resolve_creds_local()
 
         if not api_key or not access_token:
             logger.warning(
@@ -384,11 +365,6 @@ async def _start_kite_ticker() -> None:
             )
             return
 
-        # Wire the running asyncio event loop into the BroadcastBus before
-        # starting the ticker. This must happen before kws.connect() so that
-        # any early ticks from _on_ticks can be published to SSE clients.
-        # asyncio.get_event_loop() is safe here because _start_kite_ticker
-        # is called from an on_startup coroutine which runs on the main loop.
         import asyncio as _asyncio
         get_ticker().set_loop(_asyncio.get_event_loop())
         get_ticker().start(api_key, access_token, account=_ticker_account)

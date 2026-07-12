@@ -307,28 +307,69 @@ async def _dry_run_context(now) -> dict:
     return base
 
 
+def _check_dry_run_gates(agent, ctx: dict, now) -> "str | None":
+    """Evaluate schedule/cooldown/fire_at_time/blackout gates in engine order.
+
+    Returns the name of the first blocking gate, or None when all pass.
+    Mirrors the gate ordering in agent_engine.run_cycle so dry-run results
+    are consistent with production behaviour.
+    """
+    from backend.api.algo.agent_engine import _fire_at_window_active, _in_blackout_window
+    if agent.schedule == "market_hours" and not ctx.get("any_market_open"):
+        return "schedule"
+    if agent.status == "cooldown":
+        return "cooldown"
+    if getattr(agent, "fire_at_time", None) and not _fire_at_window_active(agent.fire_at_time, now):
+        return "fire_at_time"
+    bw = getattr(agent, "blackout_windows", None) or []
+    if bw and _in_blackout_window(now, bw):
+        return "blackout"
+    return None
+
+
+def _check_debounce_gate(agent, blocked_by: "str | None", matches: list, now) -> "tuple[str | None, bool]":
+    """Apply the debounce gate after condition evaluation.
+
+    Returns (blocked_by, would_fire) — blocked_by is updated to 'debounce'
+    when the latch hasn't been held long enough; would_fire tracks whether
+    the agent would actually trigger right now.
+    """
+    would_fire = bool(matches) and blocked_by is None
+    debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
+    if not (matches and blocked_by is None and debounce_min > 0):
+        return blocked_by, would_fire
+    first_true = getattr(agent, "condition_first_true_at", None)
+    if first_true is None:
+        return "debounce", False
+    elapsed_min = (now - first_true).total_seconds() / 60.0
+    if elapsed_min < debounce_min:
+        return "debounce", False
+    return blocked_by, would_fire
+
+
+def _flatten_dry_run_matches(matches: list) -> list[dict]:
+    """Convert match objects to JSON-safe dicts (capped at 20)."""
+    return [
+        {
+            "metric":    getattr(m, "metric", None),
+            "scope":     getattr(m, "scope", None),
+            "op":        getattr(m, "op", None),
+            "threshold": getattr(m, "threshold", None),
+            "value":     getattr(m, "value", None),
+            "account":   getattr(m, "account", None),
+            "symbol":    getattr(m, "symbol", None),
+        }
+        for m in (matches or [])[:20]
+    ]
+
+
 def _build_dry_run_response(agent, slug, ctx, now) -> dict:
     """Phase 22 — pure gate/eval/response builder. Module-level so the
     route handler can wrap it in a single try/except that logs the
     actual traceback rather than relying on Litestar's silent default."""
-    from backend.api.algo.agent_engine import (
-        _fire_at_window_active, _in_blackout_window,
-    )
     from backend.api.algo.agent_evaluator import evaluate as v2_evaluate, Context
 
-    # Run gates in the SAME order the engine does, but report which
-    # would block rather than continuing past.
-    blocked_by = None
-    if agent.schedule == "market_hours" and not ctx.get("any_market_open"):
-        blocked_by = "schedule"
-    elif agent.status == "cooldown":
-        blocked_by = "cooldown"
-    elif getattr(agent, "fire_at_time", None) and not _fire_at_window_active(agent.fire_at_time, now):
-        blocked_by = "fire_at_time"
-    else:
-        bw = getattr(agent, "blackout_windows", None) or []
-        if bw and _in_blackout_window(now, bw):
-            blocked_by = "blackout"
+    blocked_by = _check_dry_run_gates(agent, ctx, now)
 
     v2_ctx = Context(
         sum_holdings=ctx.get("sum_holdings"),
@@ -353,45 +394,20 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
             matches = v2_evaluate(agent.conditions, v2_ctx) or []
     except Exception as e:
         return {
-            "agent_slug": slug,
-            "matches":    [],
+            "agent_slug":  slug,
+            "matches":     [],
             "match_count": 0,
-            "would_fire": False,
-            "blocked_by": "eval_error",
-            "eval_error": str(e),
+            "would_fire":  False,
+            "blocked_by":  "eval_error",
+            "eval_error":  str(e),
             "evaluated_at": now.isoformat(),
         }
 
-    # Debounce gate: if matches but condition_first_true_at is NULL,
-    # the first true tick would just arm the latch, not fire.
-    debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
-    would_fire = bool(matches) and blocked_by is None
-    if matches and blocked_by is None and debounce_min > 0:
-        first_true = getattr(agent, "condition_first_true_at", None)
-        if first_true is None:
-            blocked_by = "debounce"
-            would_fire = False
-        else:
-            elapsed_min = (now - first_true).total_seconds() / 60.0
-            if elapsed_min < debounce_min:
-                blocked_by = "debounce"
-                would_fire = False
-
-    flat_matches = []
-    for m in (matches or [])[:20]:
-        flat_matches.append({
-            "metric":    getattr(m, "metric", None),
-            "scope":     getattr(m, "scope", None),
-            "op":        getattr(m, "op", None),
-            "threshold": getattr(m, "threshold", None),
-            "value":     getattr(m, "value", None),
-            "account":   getattr(m, "account", None),
-            "symbol":    getattr(m, "symbol", None),
-        })
+    blocked_by, would_fire = _check_debounce_gate(agent, blocked_by, matches, now)
 
     return {
         "agent_slug":   slug,
-        "matches":      flat_matches,
+        "matches":      _flatten_dry_run_matches(matches),
         "match_count":  len(matches),
         "would_fire":   would_fire,
         "blocked_by":   blocked_by,

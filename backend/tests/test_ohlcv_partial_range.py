@@ -611,8 +611,12 @@ def test_stale_code_no_full_range_fallback_on_partial():
         "the missing slices. Without this, partial coverage is never detected."
     )
 
-    assert "_fetch_slice" in src, (
-        "get_or_fetch_daily must use _fetch_slice to fetch each missing range "
+    # Accept either direct use of _fetch_slice or delegation to the extracted
+    # _fetch_and_merge_slices helper (refactored for CC reduction), both of
+    # which call _fetch_slice internally.
+    assert "_fetch_slice" in src or "_fetch_and_merge_slices" in src, (
+        "get_or_fetch_daily must use _fetch_slice (or the extracted "
+        "_fetch_and_merge_slices helper) to fetch each missing range "
         "independently — not a single _broker_fetch call for the full range."
     )
 
@@ -734,22 +738,30 @@ async def test_bel_race_db_bars_preserved_when_broker_raises():
 
 
 def test_stale_code_merge_is_union_not_overwrite():
-    """Source-level guard: the merge loop in get_or_fetch_daily must seed
-    `merged` from `db_bars` (not initialise it empty and then write only
-    broker bars). This guarantees the merge is a UNION even when the
-    broker returns zero bars for every missing slice."""
+    """Source-level guard: the merge logic (either in get_or_fetch_daily or the
+    extracted _fetch_and_merge_slices helper) must seed `merged` from `db_bars`
+    (not initialise it empty and then write only broker bars). This guarantees
+    the merge is a UNION even when the broker returns zero bars for every
+    missing slice."""
     import inspect
     import backend.api.persistence.ohlcv_store as _mod
 
-    src = inspect.getsource(_mod.get_or_fetch_daily)
-
     # The fix: merged is initialised from db_bars. Without this, an empty
     # broker response would yield an empty merged dict.
-    assert 'merged: dict[str, OHLCVBar] = {b["date"]: b for b in db_bars}' in src, (
-        "get_or_fetch_daily must seed `merged` from db_bars to guarantee "
-        "UNION semantics. An empty broker response must not collapse the "
-        "merged result to zero when the DB had partial coverage. "
-        "Operator-caught BEL race."
+    union_seed = 'merged: dict[str, OHLCVBar] = {b["date"]: b for b in db_bars}'
+
+    # Check the public function first; also accept the extracted helper
+    # (_fetch_and_merge_slices) to allow CC-reduction refactors.
+    top_src = inspect.getsource(_mod.get_or_fetch_daily)
+    helper_src = (
+        inspect.getsource(_mod._fetch_and_merge_slices)
+        if hasattr(_mod, "_fetch_and_merge_slices") else ""
+    )
+    assert union_seed in top_src or union_seed in helper_src, (
+        "get_or_fetch_daily (or its _fetch_and_merge_slices helper) must seed "
+        "`merged` from db_bars to guarantee UNION semantics. An empty broker "
+        "response must not collapse the merged result to zero when the DB had "
+        "partial coverage. Operator-caught BEL race."
     )
 
 

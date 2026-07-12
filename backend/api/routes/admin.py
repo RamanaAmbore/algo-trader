@@ -101,6 +101,250 @@ async def _tail_log_response(log_path: Path, n: int) -> "LogsResponse":
 
 
 # ---------------------------------------------------------------------------
+# pnl_range helpers
+# ---------------------------------------------------------------------------
+
+def _pnl_safe_float(v: Any) -> float:
+    """Cast a DB value to float safely, defaulting to 0.0."""
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pnl_build_where(
+    seg_filter: str,
+    kind_filter: str,
+) -> tuple[str, str]:
+    """Build WHERE clause fragments; returns (base_where, pnl_where)."""
+    seg_clause  = " AND segment = :segment"  if seg_filter  != "all" else ""
+    kind_clause = " AND kind = :kind"         if kind_filter != "all" else ""
+    base_where  = f"date BETWEEN :d_from AND :d_to{seg_clause}{kind_clause}"
+    pnl_where   = f"{base_where} AND kind != 'trades'"
+    return base_where, pnl_where
+
+
+async def _pnl_fetch_aggregates(
+    session: Any,
+    pnl_where: str,
+    params: dict,
+) -> tuple[list, list, list]:
+    """Run by_segment / by_account / by_symbol queries; return three row-lists."""
+    f = _pnl_safe_float
+
+    seg_rows = (await session.execute(text(f"""
+        SELECT segment, SUM(total_pnl), SUM(day_pnl), COUNT(*)
+        FROM daily_book WHERE {pnl_where}
+        GROUP BY segment ORDER BY segment
+    """), params)).fetchall()
+    by_segment = [
+        {"segment": r[0], "total_pnl": f(r[1]), "day_pnl": f(r[2]), "n_rows": int(r[3])}
+        for r in seg_rows
+    ]
+
+    acct_rows = (await session.execute(text(f"""
+        SELECT account, segment, kind,
+               SUM(total_pnl), SUM(day_pnl), COUNT(*)
+        FROM daily_book WHERE {pnl_where}
+        GROUP BY account, segment, kind ORDER BY account, segment, kind
+    """), params)).fetchall()
+    by_account = [
+        {"account": r[0], "segment": r[1], "kind": r[2],
+         "total_pnl": f(r[3]), "day_pnl": f(r[4]), "n_rows": int(r[5])}
+        for r in acct_rows
+    ]
+
+    sym_rows = (await session.execute(text(f"""
+        SELECT symbol, segment, SUM(total_pnl), SUM(day_pnl), COUNT(*)
+        FROM daily_book WHERE {pnl_where}
+        GROUP BY symbol, segment
+        ORDER BY ABS(SUM(total_pnl)) DESC LIMIT 50
+    """), params)).fetchall()
+    by_symbol = [
+        {"symbol": r[0], "segment": r[1],
+         "total_pnl": f(r[2]), "day_pnl": f(r[3]), "n_rows": int(r[4])}
+        for r in sym_rows
+    ]
+
+    return by_segment, by_account, by_symbol
+
+
+async def _pnl_fetch_daily_series(
+    session: Any,
+    pnl_where: str,
+    seg_filter: str,
+    kind_filter: str,
+    params: dict,
+) -> tuple[list[dict], float | None]:
+    """Fetch daily rows + start_capital; return (daily_series, start_capital)."""
+    f = _pnl_safe_float
+
+    daily_rows = (await session.execute(text(f"""
+        SELECT date, SUM(total_pnl), SUM(day_pnl)
+        FROM daily_book WHERE {pnl_where}
+        GROUP BY date ORDER BY date
+    """), params)).fetchall()
+
+    cap_seg_clause  = " AND segment = :segment" if seg_filter  != "all" else ""
+    cap_kind_clause = " AND kind = :kind"        if kind_filter != "all" else ""
+    cap_kind_base   = " AND kind IN ('holdings','positions')"
+    cap_row = (await session.execute(text(f"""
+        SELECT SUM(ABS(COALESCE(qty, 0) * COALESCE(avg_cost, 0)))
+        FROM daily_book
+        WHERE date = :d_from {cap_kind_base} {cap_seg_clause} {cap_kind_clause}
+    """), params)).fetchone()
+    raw_cap = cap_row[0] if cap_row else None
+    start_capital: float | None = float(raw_cap) if raw_cap is not None else None
+
+    daily_series: list[dict] = []
+    cum: float = 0.0
+    for r in daily_rows:
+        day_pnl_val = f(r[2])
+        cum += day_pnl_val
+        pct: float | None = (
+            round((cum / start_capital) * 100, 4)
+            if start_capital and start_capital > 0
+            else None
+        )
+        daily_series.append({
+            "date":                  str(r[0]),
+            "total_pnl":             f(r[1]),
+            "day_pnl":               day_pnl_val,
+            "pct_change_from_start": pct,
+        })
+
+    return daily_series, start_capital
+
+
+async def _pnl_fetch_summary(
+    session: Any,
+    pnl_where: str,
+    params: dict,
+) -> dict:
+    """Fetch summary totals row."""
+    f = _pnl_safe_float
+    summ = (await session.execute(text(f"""
+        SELECT SUM(total_pnl), SUM(day_pnl),
+               COUNT(DISTINCT date), COUNT(DISTINCT account)
+        FROM daily_book WHERE {pnl_where}
+    """), params)).fetchone()
+    return {
+        "total_pnl":  f(summ[0]) if summ else 0.0,
+        "day_pnl":    f(summ[1]) if summ else 0.0,
+        "n_dates":    int(summ[2]) if summ and summ[2] else 0,
+        "n_accounts": int(summ[3]) if summ and summ[3] else 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# email_partners helpers
+# ---------------------------------------------------------------------------
+
+async def _email_partners_validate(data: Any) -> tuple[str, str]:
+    """Validate subject + body; return (subject, body) or raise HTTPException."""
+    subject = (data.subject or "").strip()
+    if not subject:
+        raise HTTPException(status_code=422, detail="subject is required")
+    if len(subject) > 200:
+        raise HTTPException(status_code=422, detail="subject exceeds 200 chars")
+    body = (data.body or "").strip()
+    if not body:
+        raise HTTPException(status_code=422, detail="body is required")
+    if len(body) > 50_000:
+        raise HTTPException(status_code=422, detail="body exceeds 50 000 chars")
+    return subject, body
+
+
+async def _email_partners_resolve_recipients(data: Any, session: Any) -> list:
+    """Resolve the recipients field to a list of User rows."""
+    preset = data.recipients if isinstance(data.recipients, str) else None
+
+    if preset == "all-partners":
+        res = await session.execute(
+            select(User).where(
+                User.is_active == True,
+                User.role.in_(("partner", "designated")),
+                User.share_pct > 0,
+                User.email.isnot(None),
+            )
+        )
+        return res.scalars().all()
+
+    if preset == "all-designated":
+        res = await session.execute(
+            select(User).where(
+                User.is_active == True,
+                User.role == "designated",
+                User.email.isnot(None),
+            )
+        )
+        return res.scalars().all()
+
+    if preset == "all":
+        res = await session.execute(
+            select(User).where(User.is_active == True, User.email.isnot(None))
+        )
+        return res.scalars().all()
+
+    if isinstance(data.recipients, list):
+        if not data.recipients:
+            raise HTTPException(status_code=422, detail="recipients list is empty")
+        if any("@" in r for r in data.recipients):
+            res = await session.execute(
+                select(User).where(
+                    User.email.in_(data.recipients), User.is_active == True,
+                )
+            )
+        else:
+            res = await session.execute(
+                select(User).where(
+                    User.username.in_(data.recipients), User.is_active == True,
+                )
+            )
+        return res.scalars().all()
+
+    raise HTTPException(
+        status_code=422,
+        detail="recipients must be a list of usernames or one of: "
+               "'all-partners', 'all-designated', 'all'",
+    )
+
+
+async def _email_partners_send(
+    candidates: list,
+    subject: str,
+    body: str,
+) -> tuple[int, list[dict], list[str]]:
+    """Send to each candidate; return (sent_count, failures, recipient_usernames)."""
+    import asyncio as _asyncio
+    from backend.shared.helpers.mail_utils import send_email
+
+    failures: list[dict] = []
+    sent_count = 0
+    recipient_usernames: list[str] = []
+
+    for user in candidates:
+        if not user.email:
+            failures.append({"recipient": user.username, "error": "no email on file"})
+            continue
+        recipient_usernames.append(user.username)
+        display = user.display_name or user.username
+        html_body = (
+            "<div style='font-family:sans-serif;font-size:14px;line-height:1.6'>"
+            + body.replace("\n", "<br>")
+            + "</div>"
+        )
+        ok, msg = send_email(display, user.email, subject, html_body)
+        if ok:
+            sent_count += 1
+        else:
+            failures.append({"recipient": user.username, "error": str(msg)[:200]})
+        await _asyncio.sleep(0.1)
+
+    return sent_count, failures, recipient_usernames
+
+
+# ---------------------------------------------------------------------------
 # update_user helpers
 # ---------------------------------------------------------------------------
 
@@ -1145,169 +1389,20 @@ class AdminController(Controller):
 
         seg_filter  = segment.strip().lower()
         kind_filter = kind.strip().lower()
-
-        # Build optional WHERE clauses
-        seg_clause  = " AND segment = :segment"  if seg_filter  != "all" else ""
-        kind_clause = " AND kind = :kind"         if kind_filter != "all" else ""
-        base_where  = f"date BETWEEN :d_from AND :d_to{seg_clause}{kind_clause}"
-        # Exclude 'trades' kind from P&L aggregations (no pnl columns)
-        pnl_where   = f"{base_where} AND kind != 'trades'"
+        _, pnl_where = _pnl_build_where(seg_filter, kind_filter)
 
         params: dict[str, Any] = {"d_from": d_from, "d_to": d_to}
         if seg_filter  != "all": params["segment"] = seg_filter
         if kind_filter != "all": params["kind"]    = kind_filter
 
-        # ------------------------------------------------------------------
-        # Helper: cast to float safely
-        # ------------------------------------------------------------------
-        def _f(v: Any) -> float:
-            try:
-                return float(v) if v is not None else 0.0
-            except (TypeError, ValueError):
-                return 0.0
-
         async with async_session() as session:
-
-            # 1 — by_segment
-            seg_sql = text(f"""
-                SELECT segment,
-                       SUM(total_pnl) AS total_pnl,
-                       SUM(day_pnl)   AS day_pnl,
-                       COUNT(*)       AS n_rows
-                FROM daily_book
-                WHERE {pnl_where}
-                GROUP BY segment
-                ORDER BY segment
-            """)
-            seg_rows = (await session.execute(seg_sql, params)).fetchall()
-            by_segment = [
-                {
-                    "segment":   r[0],
-                    "total_pnl": _f(r[1]),
-                    "day_pnl":   _f(r[2]),
-                    "n_rows":    int(r[3]),
-                }
-                for r in seg_rows
-            ]
-
-            # 2 — by_account  (latest-snapshot total_pnl per (account,symbol)
-            #                  + sum of day_pnl across the range)
-            acct_sql = text(f"""
-                SELECT account,
-                       segment,
-                       kind,
-                       SUM(total_pnl) AS total_pnl,
-                       SUM(day_pnl)   AS day_pnl,
-                       COUNT(*)       AS n_rows
-                FROM daily_book
-                WHERE {pnl_where}
-                GROUP BY account, segment, kind
-                ORDER BY account, segment, kind
-            """)
-            acct_rows = (await session.execute(acct_sql, params)).fetchall()
-            by_account = [
-                {
-                    "account":   r[0],
-                    "segment":   r[1],
-                    "kind":      r[2],
-                    "total_pnl": _f(r[3]),
-                    "day_pnl":   _f(r[4]),
-                    "n_rows":    int(r[5]),
-                }
-                for r in acct_rows
-            ]
-
-            # 3 — by_symbol  top-50 by abs(total_pnl)
-            sym_sql = text(f"""
-                SELECT symbol,
-                       segment,
-                       SUM(total_pnl) AS total_pnl,
-                       SUM(day_pnl)   AS day_pnl,
-                       COUNT(*)       AS n_rows
-                FROM daily_book
-                WHERE {pnl_where}
-                GROUP BY symbol, segment
-                ORDER BY ABS(SUM(total_pnl)) DESC
-                LIMIT 50
-            """)
-            sym_rows = (await session.execute(sym_sql, params)).fetchall()
-            by_symbol = [
-                {
-                    "symbol":    r[0],
-                    "segment":   r[1],
-                    "total_pnl": _f(r[2]),
-                    "day_pnl":   _f(r[3]),
-                    "n_rows":    int(r[4]),
-                }
-                for r in sym_rows
-            ]
-
-            # 4 — daily_series  one row per date
-            daily_sql = text(f"""
-                SELECT date,
-                       SUM(total_pnl) AS total_pnl,
-                       SUM(day_pnl)   AS day_pnl
-                FROM daily_book
-                WHERE {pnl_where}
-                GROUP BY date
-                ORDER BY date
-            """)
-            daily_rows = (await session.execute(daily_sql, params)).fetchall()
-
-            # 4b — start_capital: sum of |qty * avg_cost| on from_date for
-            #       holdings + positions rows (trades excluded).  Applied
-            #       after segment/kind filters so it reflects the same slice
-            #       the user is viewing.  Falls back to None when no rows
-            #       exist on from_date (weekend, pre-history, etc.).
-            cap_seg_clause  = " AND segment = :segment" if seg_filter  != "all" else ""
-            cap_kind_clause = " AND kind = :kind"        if kind_filter != "all" else ""
-            cap_kind_base   = f" AND kind IN ('holdings','positions')"
-            cap_sql = text(f"""
-                SELECT SUM(ABS(COALESCE(qty, 0) * COALESCE(avg_cost, 0)))
-                FROM daily_book
-                WHERE date = :d_from
-                  {cap_kind_base}
-                  {cap_seg_clause}
-                  {cap_kind_clause}
-            """)
-            cap_row = (await session.execute(cap_sql, params)).fetchone()
-            raw_cap = cap_row[0] if cap_row else None
-            start_capital: float | None = float(raw_cap) if raw_cap is not None else None
-
-            # 4c — derive pct_change_from_start via cumulative day_pnl / start_capital
-            daily_series: list[dict] = []
-            cum: float = 0.0
-            for r in daily_rows:
-                day_pnl_val = _f(r[2])
-                cum += day_pnl_val
-                if start_capital and start_capital > 0:
-                    pct: float | None = round((cum / start_capital) * 100, 4)
-                else:
-                    pct = None
-                daily_series.append({
-                    "date":                   str(r[0]),
-                    "total_pnl":              _f(r[1]),
-                    "day_pnl":                day_pnl_val,
-                    "pct_change_from_start":  pct,
-                })
-
-            # 5 — summary
-            summ_sql = text(f"""
-                SELECT SUM(total_pnl)           AS total_pnl,
-                       SUM(day_pnl)             AS day_pnl,
-                       COUNT(DISTINCT date)     AS n_dates,
-                       COUNT(DISTINCT account)  AS n_accounts
-                FROM daily_book
-                WHERE {pnl_where}
-            """)
-            summ = (await session.execute(summ_sql, params)).fetchone()
-
-        summary: dict[str, Any] = {
-            "total_pnl":  _f(summ[0]) if summ else 0.0,
-            "day_pnl":    _f(summ[1]) if summ else 0.0,
-            "n_dates":    int(summ[2]) if summ and summ[2] else 0,
-            "n_accounts": int(summ[3]) if summ and summ[3] else 0,
-        }
+            by_segment, by_account, by_symbol = await _pnl_fetch_aggregates(
+                session, pnl_where, params,
+            )
+            daily_series, start_capital = await _pnl_fetch_daily_series(
+                session, pnl_where, seg_filter, kind_filter, params,
+            )
+            summary = await _pnl_fetch_summary(session, pnl_where, params)
 
         return PnlRangeResponse(
             from_date=from_str,
@@ -1584,129 +1679,26 @@ class AdminController(Controller):
         Both admin + designated can fire (admin_guard admits both). Returns
         { sent_count, failed_count, total, event_id, failures: [{recipient, error}] }.
         """
-        import asyncio
+        subject, body = await _email_partners_validate(data)
 
-        from backend.shared.helpers.mail_utils import send_email
-
-        # ── Validation ──────────────────────────────────────────────
-        subject = (data.subject or "").strip()
-        if not subject:
-            raise HTTPException(status_code=422, detail="subject is required")
-        if len(subject) > 200:
-            raise HTTPException(status_code=422, detail="subject exceeds 200 chars")
-
-        body = (data.body or "").strip()
-        if not body:
-            raise HTTPException(status_code=422, detail="body is required")
-        if len(body) > 50_000:
-            raise HTTPException(status_code=422, detail="body exceeds 50 000 chars")
-
-        # ── Recipient resolution ──────────────────────────────────────
         async with async_session() as session:
-            preset = data.recipients if isinstance(data.recipients, str) else None
+            candidates = await _email_partners_resolve_recipients(data, session)
 
-            if preset == "all-partners":
-                res = await session.execute(
-                    select(User).where(
-                        User.is_active == True,
-                        User.role.in_(("partner", "designated")),
-                        User.share_pct > 0,
-                        User.email.isnot(None),
-                    )
-                )
-                candidates = res.scalars().all()
-
-            elif preset == "all-designated":
-                res = await session.execute(
-                    select(User).where(
-                        User.is_active == True,
-                        User.role == "designated",
-                        User.email.isnot(None),
-                    )
-                )
-                candidates = res.scalars().all()
-
-            elif preset == "all":
-                res = await session.execute(
-                    select(User).where(
-                        User.is_active == True,
-                        User.email.isnot(None),
-                    )
-                )
-                candidates = res.scalars().all()
-
-            elif isinstance(data.recipients, list):
-                if not data.recipients:
-                    raise HTTPException(status_code=422, detail="recipients list is empty")
-                if any("@" in r for r in data.recipients):
-                    # Frontend resolved preset → email addresses; look up by email.
-                    res = await session.execute(
-                        select(User).where(
-                            User.email.in_(data.recipients),
-                            User.is_active == True,
-                        )
-                    )
-                else:
-                    res = await session.execute(
-                        select(User).where(
-                            User.username.in_(data.recipients),
-                            User.is_active == True,
-                        )
-                    )
-                candidates = res.scalars().all()
-
-            else:
-                raise HTTPException(
-                    status_code=422,
-                    detail="recipients must be a list of usernames or one of: "
-                           "'all-partners', 'all-designated', 'all'",
-                )
-
-        # ── Cap check ─────────────────────────────────────────────────
         if len(candidates) > 100:
             raise HTTPException(
                 status_code=422,
                 detail=f"Recipient count {len(candidates)} exceeds the 100-recipient cap per call",
             )
 
-        # ── Actor identity ─────────────────────────────────────────────
         payload = getattr(request.state, "token_payload", {}) or {}
         actor_username = payload.get("sub", "unknown")
         actor_role = payload.get("role", "unknown")
 
-        # ── Send loop (sequential — SMTP rate limit) ──────────────────
-        failures: list[dict] = []
-        sent_count = 0
-        recipient_usernames: list[str] = []
-
-        for user in candidates:
-            if not user.email:
-                failures.append({"recipient": user.username, "error": "no email on file"})
-                continue
-
-            recipient_usernames.append(user.username)
-            display = user.display_name or user.username
-
-            # Build a minimal HTML wrapper around the plain-text body so
-            # MIMEText('html') renders it properly in every client.
-            html_body = (
-                "<div style='font-family:sans-serif;font-size:14px;line-height:1.6'>"
-                + body.replace("\n", "<br>")
-                + "</div>"
-            )
-
-            ok, msg = send_email(display, user.email, subject, html_body)
-            if ok:
-                sent_count += 1
-            else:
-                failures.append({"recipient": user.username, "error": str(msg)[:200]})
-
-            # 100ms gap between sends to respect SMTP relay rate limits.
-            await asyncio.sleep(0.1)
-
+        sent_count, failures, recipient_usernames = await _email_partners_send(
+            list(candidates), subject, body,
+        )
         failed_count = len(failures)
 
-        # ── Audit row ──────────────────────────────────────────────────
         failures_summary = "; ".join(
             f"{f['recipient']}: {f['error']}" for f in failures
         )[:200] if failures else ""
