@@ -94,6 +94,46 @@ class SettingPatch(msgspec.Struct):
 # Validation
 # ---------------------------------------------------------------------------
 
+def _validate_bool(raw: str) -> str:
+    if raw.lower() in ("1", "true", "yes", "on"):  return "true"
+    if raw.lower() in ("0", "false", "no", "off"): return "false"
+    raise HTTPException(status_code=400, detail=f"Expected bool; got {raw!r}")
+
+
+def _validate_int(raw: str, schema: dict | None) -> str:
+    try:
+        n = int(float(raw))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"Expected integer; got {raw!r}")
+    if schema:
+        if "min" in schema and n < schema["min"]:
+            raise HTTPException(status_code=400, detail=f"Minimum is {schema['min']}")
+        if "max" in schema and n > schema["max"]:
+            raise HTTPException(status_code=400, detail=f"Maximum is {schema['max']}")
+    return str(n)
+
+
+def _validate_float(raw: str, schema: dict | None) -> str:
+    try:
+        f = float(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"Expected number; got {raw!r}")
+    if schema:
+        if "min" in schema and f < schema["min"]:
+            raise HTTPException(status_code=400, detail=f"Minimum is {schema['min']}")
+        if "max" in schema and f > schema["max"]:
+            raise HTTPException(status_code=400, detail=f"Maximum is {schema['max']}")
+    return str(f)
+
+
+def _validate_enum(raw: str, schema: dict | None) -> str:
+    allowed = (schema or {}).get("enum") or []
+    if raw not in allowed:
+        raise HTTPException(status_code=400,
+                            detail=f"Must be one of {allowed}; got {raw!r}")
+    return raw
+
+
 def _validate(value_type: str, raw: str, schema: dict | None) -> str:
     """
     Validate + normalise an incoming string value against the stored
@@ -101,38 +141,10 @@ def _validate(value_type: str, raw: str, schema: dict | None) -> str:
     raises HTTPException(400) with a helpful message on any failure.
     """
     raw = (raw or "").strip()
-    if value_type == "bool":
-        if raw.lower() in ("1", "true", "yes", "on"):  return "true"
-        if raw.lower() in ("0", "false", "no", "off"): return "false"
-        raise HTTPException(status_code=400, detail=f"Expected bool; got {raw!r}")
-    if value_type == "int":
-        try:
-            n = int(float(raw))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=f"Expected integer; got {raw!r}")
-        if schema:
-            if "min" in schema and n < schema["min"]:
-                raise HTTPException(status_code=400, detail=f"Minimum is {schema['min']}")
-            if "max" in schema and n > schema["max"]:
-                raise HTTPException(status_code=400, detail=f"Maximum is {schema['max']}")
-        return str(n)
-    if value_type == "float":
-        try:
-            f = float(raw)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail=f"Expected number; got {raw!r}")
-        if schema:
-            if "min" in schema and f < schema["min"]:
-                raise HTTPException(status_code=400, detail=f"Minimum is {schema['min']}")
-            if "max" in schema and f > schema["max"]:
-                raise HTTPException(status_code=400, detail=f"Maximum is {schema['max']}")
-        return str(f)
-    if value_type == "enum":
-        allowed = (schema or {}).get("enum") or []
-        if raw not in allowed:
-            raise HTTPException(status_code=400,
-                                detail=f"Must be one of {allowed}; got {raw!r}")
-        return raw
+    if value_type == "bool":  return _validate_bool(raw)
+    if value_type == "int":   return _validate_int(raw, schema)
+    if value_type == "float": return _validate_float(raw, schema)
+    if value_type == "enum":  return _validate_enum(raw, schema)
     # string — free-form
     return raw
 
