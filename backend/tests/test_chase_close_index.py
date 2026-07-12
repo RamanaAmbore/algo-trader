@@ -138,7 +138,7 @@ async def test_chase_close_error_loop_uses_task_rows_not_rows():
     def mock_send_alert(**kwargs):
         alerted_with.append(dict(kwargs))
 
-    with patch("backend.api.algo.actions.run_preflight",
+    with patch("backend.api.algo.actions_live.run_preflight",
                new=mock_preflight), \
          patch("backend.api.algo.chase.chase_order",
                new=mock_chase), \

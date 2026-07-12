@@ -211,16 +211,18 @@ async def test_startup_hook_calls_backfill_with_universe():
 # ── Stale code: backfill imports in background.py are at call time (deferred) ──
 
 def test_stale_backfill_imports_are_deferred():
-    """_task_warm_backfill must import backfill_ohlcv_daily and
-    backfill_intraday_today inside the function body (not at module top-level).
-    Deferred imports prevent circular-import issues and keep the module's
-    import-time cost near-zero.
+    """Backfill helpers must be imported at call time (deferred), not at module top-level.
+    After the _task_warm_backfill decomposition, the imports live in the sub-functions
+    _backfill_run_ohlcv and _backfill_run_intraday — check both.
     """
-    from backend.api.background import _task_warm_backfill
-    src = inspect.getsource(_task_warm_backfill)
+    from backend.api.background import _backfill_run_ohlcv, _backfill_run_intraday
 
-    assert "from backend.api.persistence.backfill import" in src, (
-        "_task_warm_backfill must import backfill helpers (backfill_ohlcv_daily, "
-        "backfill_intraday_today) inside the function body. "
-        "Top-level imports would break if the persistence module isn't ready."
+    src_ohlcv = inspect.getsource(_backfill_run_ohlcv)
+    src_intra = inspect.getsource(_backfill_run_intraday)
+
+    assert "from backend.api.persistence.backfill import" in src_ohlcv, (
+        "_backfill_run_ohlcv must import backfill_ohlcv_daily inside the function body."
+    )
+    assert "from backend.api.persistence.backfill import" in src_intra, (
+        "_backfill_run_intraday must import backfill_intraday_today inside the function body."
     )

@@ -40,7 +40,7 @@ async def test_fetch_ltp_returns_float_on_success():
 async def test_fetch_ltp_returns_none_on_exception():
     """broker.ltp raises → helper returns None and calls logger.warning with context."""
     from backend.api.algo.actions import _fetch_ltp
-    import backend.api.algo.actions as _mod
+    import backend.api.algo.actions_live as _mod
 
     broker = MagicMock()
     broker.ltp.side_effect = RuntimeError("session expired")
@@ -66,7 +66,7 @@ async def test_fetch_ltp_returns_none_on_exception():
 async def test_fetch_ltp_context_appears_in_warn_log():
     """Each caller context ('place_order', 'close_position') shows in warning."""
     from backend.api.algo.actions import _fetch_ltp
-    import backend.api.algo.actions as _mod
+    import backend.api.algo.actions_live as _mod
 
     broker = MagicMock()
     broker.ltp.side_effect = ConnectionError("timeout")
