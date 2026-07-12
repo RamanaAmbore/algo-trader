@@ -250,6 +250,16 @@ Internally: `const resolveSpot = typeof spot === 'function' ? spot : () => spot;
 `resolveSpot(underlying)` per row. Enables per-underlying spot resolution in full-book analysis
 (Exp Close tab) where positions span NIFTY, BANKNIFTY, CRUDEOIL etc. simultaneously.
 
+### Row separation — border-bottom convention
+
+Candidate grid (`.cand-grid`) uses `border-bottom: 1px solid rgba(126,151,184,0.10)` on every `.cand-row`
+for visual separation, **not** `row-gap` (which was causing dark horizontal stripes as the parent background
+bled through the gap). This matches the existing `.byund-row` pattern in the Snapshot grid.
+
+**Why:** `row-gap: 0.2rem` created transparent space where the parent grid background (dark navy) showed through,
+producing unintended visual gaps. Switching to a `border-bottom` on the row element itself uses the row's own
+background, not the parent's. Result: clean row-level separation without visual artifacts.
+
 ### Exp Close full-book spot resolution
 Expiry-close analysis (`frontend/src/routes/(algo)/admin/derivatives/+page.svelte::expiryCloseAnalysis`)
 uses a `spotResolver` closure that resolves spot per-underlying:
@@ -264,14 +274,35 @@ Early gate `if (!spot || !cps.length) return empty` blocked analysis when spot=0
 resolves independently, supporting mixed-underlying baskets. Full-book expiry close works across
 all positions regardless of selectedUnderlying selection.
 
-### TOTAL row decoration — CSS convention
-TOTAL row in Legs/Exp-close grids uses a two-layer CSS structure:
-- **Outer container** (`cand-row-total`): `display:grid; grid-template-columns:subgrid; grid-column:1/-1`
-  for alignment only
-- **Inner `> span` children**: amber background, border-top/bottom, font-size, font-family, text-align
+### TOTAL row decoration — CSS convention (unified amber stratum)
 
-Matches the Snapshot grid's `.byund-row-total > span` pattern. Container alignment delegated to
-subgrid; decoration lives on cells themselves so visual styling doesn't interfere with grid layout.
+**Unified stratum rule** (covers BOTH Legs + Snapshot TOTAL rows):
+```css
+.cand-row.cand-row-total,
+.byund-row-total > span {
+  background: linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)), #1d2a44 !important;
+  border-top: 2px solid rgba(251,191,36,0.70);
+  border-bottom: 1px solid rgba(251,191,36,0.40);
+  color: var(--c-action);
+  font-weight: 700;
+}
+```
+
+**Two-layer architecture** — TOTAL rows use different mechanisms to achieve the same visual:
+
+- **`cand-row-total` (Legs grid)**: Uses `display:grid; grid-template-columns:subgrid; grid-column:1/-1`
+  with `column-gap: 0.6rem`. Amber rule applied to the **container** (not cells) so it covers gap areas.
+  Child `> span` elements contain only: padding, font-size, font-family, font-variant-numeric, overflow,
+  text-align for `.num` (no color / background / border).
+
+- **`byund-row-total` (Snapshot grid)**: Uses `display:contents` with zero column-gap. Amber rule applied
+  to per-span children directly (each gets its own amber background, border-top/bottom, color, font-weight).
+
+**Why different mechanisms?** — `byund-row-total` relies on `display:contents` to eliminate its DOM layer
+entirely, leaving bare `span` children to inherit the parent grid. With zero column-gap, amber-on-span works.
+`cand-row-total` uses subgrid for alignment, which creates a separate grid container; the column-gap means
+amber must be on the container to extend across the gap areas. **Result:** Single unified CSS rule, two different
+implementation paths, identical visual output.
 
 ### Far-OTM options (BS instability)
 - Black-Scholes can oscillate when intrinsic ≈ 0 and theta → 0

@@ -146,7 +146,7 @@ instance (modal, page, card).
 | `gateByMode` | `boolean` | `true` | When true, filter Order/Agent/Terminal/Simulator tabs by `$executionMode` store (hide non-matching rows); Ticks tab is hidden entirely when mode ≠ 'sim' |
 | `accountFilter` | `string[] | undefined` (bindable) | `undefined` | Multi-select account filter; when provided (bound), parent owns state; LogPanel writes back when user changes filter. When undefined, LogPanel uses internal `_internalAccountFilter` |
 | `levelFilter` | `'all'\|'error'\|'warning'\|'info'` (bindable) | `'all'` | Log level threshold; applied per-tab per section §3; when 'all' all rows pass; 'error' shows only ERROR rows, etc. |
-| `multiColumn` | `boolean \| undefined` | `undefined` | Enable 2-column magazine layout (CSS `column-count: 2`) on Agent/Terminal/System/Conn tabs when viewport ≥900px. Explicit value overrides context-derived default |
+| `multiColumn` | `boolean \| undefined` | `undefined` | Enable 2-column grid layout on Agent/Terminal/System/Conn tabs when viewport ≥900px. Explicit value overrides context-derived default. **Note:** always disabled for Orders tab (preserves single-column table layout) |
 | `availableAccounts` | `string[] | undefined` (bindable) | `undefined` | Derived from current order rows and mirrored to parent (ActivityLogModal uses this to populate its header dropdown) |
 | `statusFilter` | `'all'\|'open'\|'complete'\|'rejected'\|'cancelled'` | `'all'` | Order tab status filter (from /orders page counter cards); applied before display |
 | `symbolFilter` | `Set<string> \| null` | `null` | Order tab symbol scope (from /orders strategy filter); when null all symbols pass; empty Set means "show no rows"; non-empty Set filters to symbols in the set (upper case) |
@@ -179,6 +179,16 @@ duplicate order_id. Newest-first sort via `order_timestamp` or `created_at`.
 
 6. **Scroll preservation** — scroll position NOT persisted across mounts (reset per
 ActivityLogSurface instance).
+
+7. **2-column grid layout** (≥900px, non-Orders tabs):
+   - Class: `.lp-multicol` with `display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.5rem; align-content: start`
+   - Column divider via `background-image: linear-gradient(...)` (1px vertical line at center, rgba slate)
+   - Each `.log-row` has `min-width: 0` (allows text wrapping in narrow columns)
+   - Template gate: `{multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}` — Orders tab always single-column
+   - Breakpoint: `@media (max-width: 900px): display: block; background-image: none` (collapses to single-column)
+   - **Why Grid not `column-count`?** — `column-count: 2` breaks inside scrollable containers (`overflow-y: auto`);
+     browser can't compute column heights when the container scrolls. Grid allows dynamic row height + independent
+     scroll axis without layout thrashing.
 
 ---
 
@@ -433,11 +443,12 @@ integration (not global):
 multi-column vs single-column layout.
 
 **LogPanel multi-column** (≥900px):
-- Agent / Terminal / System / Conn tabs use CSS `column-count: 2` magazine layout
-- Each row is a separate DOM node (not joined HTML strings), so text selection isn't wiped
-on poll (audit defect fix)
+- Agent / Terminal / System / Conn tabs use CSS Grid 2-column layout: `display: grid; grid-template-columns: 1fr 1fr; column-gap: 1.5rem; align-content: start`
+- Previously used `column-count: 2` (magazine layout) — **broken inside `overflow-y: auto` containers** because the browser can't determine column heights when scrollable
+- Each row is a separate DOM node (not joined HTML strings), so text selection isn't wiped on poll (audit defect fix)
 - Timestamp, level tag, account code, and message all visible in each row
-- On <900px: falls back to single-column (all fields on one line or wrapping)
+- Column divider via `background-image` gradient (CSS `column-rule` only works with `column-count`, not Grid)
+- On <900px: falls back to single-column (`display: block; background-image: none`)
 
 **ActivityHeaderFilters mobile** (≤520px):
 - Account dropdown: `max-width: 4.4rem` (vs desktop `6rem`)
