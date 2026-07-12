@@ -1159,6 +1159,97 @@ def apply_plan_sim(
 
 # ── Live path application (Kite) ─────────────────────────────────────
 
+def _apply_live_g1_guard(plan: TemplatePlan) -> Optional[str]:
+    """G1 lot-multiple guard — run before any broker call.
+
+    Returns an error string when a GTT leg qty or the wing qty is not a
+    multiple of the plan's lot_size.  Returns None when all quantities
+    are valid (or when lot_size == 1, i.e. non-F&O — no-op).
+    """
+    _g1_ls = int(plan.parent_lot_size or 1)
+    if _g1_ls <= 1:
+        return None
+    for _spec in plan.gtts:
+        for _leg_dict in _spec.orders:
+            _q = int(_leg_dict["quantity"])
+            if _q % _g1_ls != 0:
+                return (
+                    f"G1 lot-multiple guard failed: "
+                    f"{plan.parent_symbol} GTT leg qty={_q} "
+                    f"not a multiple of lot_size={_g1_ls}"
+                )
+    if plan.wing is not None:
+        _wq = int(plan.wing.quantity)
+        if _wq % _g1_ls != 0:
+            return (
+                f"G1 lot-multiple guard failed: "
+                f"{plan.wing.tradingsymbol} wing qty={_wq} "
+                f"not a multiple of lot_size={_g1_ls}"
+            )
+    return None
+
+
+def _translate_gtt_orders(broker, spec: GttSpec, plan: TemplatePlan) -> list[dict]:
+    """Translate each GTT leg's quantity from contracts to lots.
+
+    For non-MCX brokers, translate_qty is a no-op (returns raw_qty
+    unchanged). Raises ValueError on any translation failure so the
+    caller's except block catches it without extra nesting.
+    """
+    translated: list[dict] = []
+    for leg_dict in spec.orders:
+        raw_q = int(leg_dict["quantity"])
+        try:
+            kite_q = broker.translate_qty(
+                plan.parent_exchange, raw_q, plan.parent_lot_size
+            )
+        except (ValueError, AttributeError) as _te:
+            raise ValueError(
+                f"[GTT-QTY-GUARD] translate_qty failed for "
+                f"{plan.parent_exchange}/{plan.parent_symbol} "
+                f"qty={raw_q} lot_size={plan.parent_lot_size}: {_te}"
+            ) from _te
+        translated.append({**leg_dict, "quantity": kite_q})
+    logger.info(
+        "[GTT-QTY] %s/%s: contract legs %s → lot legs %s (lot_size=%s)",
+        plan.parent_exchange, plan.parent_symbol,
+        [int(l["quantity"]) for l in spec.orders],
+        [int(l["quantity"]) for l in translated],
+        plan.parent_lot_size,
+    )
+    return translated
+
+
+def _place_wing_leg(broker, plan: TemplatePlan) -> str:
+    """Translate the wing leg's quantity and place a market order.
+
+    Returns the broker order_id as a string. Raises on any failure so
+    the caller's except block collects the error.
+    """
+    raw_wing_q = int(plan.wing.quantity)
+    try:
+        kite_wing_q = broker.translate_qty(
+            plan.wing.exchange, raw_wing_q, plan.parent_lot_size
+        )
+    except (ValueError, AttributeError) as _te:
+        raise ValueError(
+            f"[WING-QTY-GUARD] translate_qty failed for "
+            f"{plan.wing.exchange}/{plan.wing.tradingsymbol} "
+            f"qty={raw_wing_q} lot_size={plan.parent_lot_size}: {_te}"
+        ) from _te
+    order_id = broker.place_order(
+        tradingsymbol=plan.wing.tradingsymbol,
+        exchange=plan.wing.exchange,
+        transaction_type=plan.wing.transaction_type,
+        quantity=kite_wing_q,
+        order_type=plan.wing.order_type,
+        product=plan.wing.product,
+        variety="regular",
+        tag=f"tpl-{plan.template_id}-wing",  # Kite tag cap: 20 chars
+    )
+    return str(order_id)
+
+
 def apply_plan_live(
     plan: TemplatePlan,
     broker,   # KiteBroker (or any Broker adapter with place_gtt)
@@ -1182,27 +1273,10 @@ def apply_plan_live(
     # plan.parent_lot_size is set by apply_template_to_order via get_lot_size()
     # for MCX/NCO/NFO/BFO/CDS so it is already resolved; this is a synchronous
     # check only.
-    _g1_ls = int(plan.parent_lot_size or 1)
-    if _g1_ls > 1:
-        for _spec in plan.gtts:
-            for _leg in _spec.orders:
-                _q = int(_leg["quantity"])
-                if _q % _g1_ls != 0:
-                    result.errors.append(
-                        f"G1 lot-multiple guard failed: "
-                        f"{plan.parent_symbol} GTT leg qty={_q} "
-                        f"not a multiple of lot_size={_g1_ls}"
-                    )
-                    return result
-        if plan.wing is not None:
-            _wq = int(plan.wing.quantity)
-            if _wq % _g1_ls != 0:
-                result.errors.append(
-                    f"G1 lot-multiple guard failed: "
-                    f"{plan.wing.tradingsymbol} wing qty={_wq} "
-                    f"not a multiple of lot_size={_g1_ls}"
-                )
-                return result
+    _g1_err = _apply_live_g1_guard(plan)
+    if _g1_err is not None:
+        result.errors.append(_g1_err)
+        return result
 
     # Detect Groww-style two-singles split. Same predicate `apply_plan_sim`
     # uses to wire SimGttBook.pair_with — the resolver produces two
@@ -1223,27 +1297,7 @@ def apply_plan_live(
             # an async call here. For non-MCX, translate_qty is a no-op
             # (returns raw_qty unchanged). Hard-fail on translation error
             # (sub-lot or cache miss on MCX) rather than sending raw qty.
-            translated_orders: list[dict] = []
-            for leg in spec.orders:
-                raw_q = int(leg["quantity"])
-                try:
-                    kite_q = broker.translate_qty(
-                        plan.parent_exchange, raw_q, plan.parent_lot_size
-                    )
-                except (ValueError, AttributeError) as _te:
-                    raise ValueError(
-                        f"[GTT-QTY-GUARD] translate_qty failed for "
-                        f"{plan.parent_exchange}/{plan.parent_symbol} "
-                        f"qty={raw_q} lot_size={plan.parent_lot_size}: {_te}"
-                    ) from _te
-                translated_orders.append({**leg, "quantity": kite_q})
-            logger.info(
-                "[GTT-QTY] %s/%s: contract legs %s → lot legs %s (lot_size=%s)",
-                plan.parent_exchange, plan.parent_symbol,
-                [int(l["quantity"]) for l in spec.orders],
-                [int(l["quantity"]) for l in translated_orders],
-                plan.parent_lot_size,
-            )
+            translated_orders = _translate_gtt_orders(broker, spec, plan)
             gtt_id = broker.place_gtt(
                 trigger_type=spec.trigger_type,
                 tradingsymbol=plan.parent_symbol,
@@ -1275,28 +1329,8 @@ def apply_plan_live(
         try:
             # Wing leg: same translate_qty guard. Wing exchange = parent_exchange
             # (options on the same underlying share the same lot convention).
-            raw_wing_q = int(plan.wing.quantity)
-            try:
-                kite_wing_q = broker.translate_qty(
-                    plan.wing.exchange, raw_wing_q, plan.parent_lot_size
-                )
-            except (ValueError, AttributeError) as _te:
-                raise ValueError(
-                    f"[WING-QTY-GUARD] translate_qty failed for "
-                    f"{plan.wing.exchange}/{plan.wing.tradingsymbol} "
-                    f"qty={raw_wing_q} lot_size={plan.parent_lot_size}: {_te}"
-                ) from _te
-            order_id = broker.place_order(
-                tradingsymbol=plan.wing.tradingsymbol,
-                exchange=plan.wing.exchange,
-                transaction_type=plan.wing.transaction_type,
-                quantity=kite_wing_q,
-                order_type=plan.wing.order_type,
-                product=plan.wing.product,
-                variety="regular",
-                tag=f"tpl-{plan.template_id}-wing",  # Kite tag cap: 20 chars
-            )
-            plan.wing.placed_id = str(order_id)
+            order_id = _place_wing_leg(broker, plan)
+            plan.wing.placed_id = order_id
             result.wing_order_id = plan.wing.placed_id
         except Exception as e:
             msg = f"live wing placement failed: {e}"

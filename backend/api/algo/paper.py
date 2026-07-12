@@ -187,10 +187,8 @@ class PaperTradeEngine:
             side  = str(order.get("side") or "SELL").upper()
             limit = float(order.get("limit_price") or 0)
 
-            fillable = (side == "SELL" and bid >= limit) or \
-                       (side == "BUY"  and ask <= limit)
+            fillable, fill_price = _paper_is_fillable(side, bid, ask, limit)
             if fillable:
-                fill_price = bid if side == "SELL" else ask
                 order["status"]     = "FILLED"
                 order["fill_price"] = fill_price
                 order["filled_at"]  = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -209,32 +207,18 @@ class PaperTradeEngine:
                 self._schedule_ledger_write(order, fill_price)
                 continue
 
-            # Not fillable — chase by re-quoting. The new limit
-            # depends on the order's `chase_agg` setting:
-            #   high (default): peg to the marketable side — SELL→
-            #     bid, BUY→ ask — so the next tick fills immediately
-            #     (cross the spread to take liquidity).
-            #   med: peg to the midpoint of bid+ask. Fills only when
-            #     the inside moves halfway in our favour.
-            #   low: peg to the passive side — SELL→ ask, BUY→ bid.
-            #     Order rests on our own side and waits for the
-            #     market to lift it.
-            # Unknown values fall back to 'high' so legacy callers
-            # (existing agents using register_open_order without the
-            # field) keep their current behaviour.
+            # Not fillable — chase by re-quoting.
+            # chase_agg controls how aggressively we peg the new limit
+            # (see _paper_next_limit docstring). Unknown values fall back
+            # to 'low' so legacy callers keep patient behaviour.
             if order.get("attempts", 0) >= max_attempts:
                 order["status"] = "UNFILLED"
                 self._record_event(order, kind="unfilled",
                                    note=f"gave up after {max_attempts} chase attempts")
                 continue
             agg = str(order.get("chase_agg") or "low").lower()
-            if agg == "high":
-                new_limit = bid if side == "SELL" else ask
-            elif agg == "med":
-                new_limit = (bid + ask) / 2.0
-            else:  # 'low' — patient (default): peg to your own side
-                new_limit = ask if side == "SELL" else bid
             prev_limit = limit
+            new_limit = _paper_next_limit(agg, side, bid, ask)
             order["limit_price"] = new_limit
             order["attempts"]    = int(order.get("attempts", 0)) + 1
             self._record_event(
@@ -860,120 +844,171 @@ class PaperTradeEngine:
         """
         from backend.api.algo.order_events import write_event
 
-        _row_account  = row_snap["_row_account"]
-        _row_symbol   = row_snap["_row_symbol"]
-        _row_exchange = row_snap["_row_exchange"]
-        _row_side     = row_snap["_row_side"]
-        _row_qty      = row_snap["_row_qty"]
-
         _attempts = int(order.get("attempts", 0))
 
-        # Write the timeline event AFTER the AlgoOrder update commits so the
-        # event row is never orphaned ahead of the status it describes.
         event_kind = {
             "modify":   "chase_modify",
             "fill":     "fill",
             "unfilled": "unfill",
         }.get(kind, kind)
 
-        payload: dict = {
-            "attempts": _attempts,
-            "limit_price": order.get("limit_price"),
-            "account": order.get("account"),
-            "symbol": symbol,
-        }
-        if kind == "fill":
-            payload["fill_price"] = order.get("fill_price")
-            payload["slippage"] = float(order.get("fill_price", 0)) - float(
-                order.get("initial_price") or order.get("limit_price") or 0
-            )
-
-        # Build the message that mirrors row.detail for easy reading.
-        if kind == "modify":
-            msg = (f"chase #{_attempts} limit=₹{limit:,.2f}"
-                   if limit is not None else f"chase #{_attempts}")
-        elif kind == "fill":
-            fp = order.get("fill_price")
-            msg = (f"FILLED @₹{fp:,.2f} after {_attempts} chase(s)"
-                   if fp is not None else f"FILLED after {_attempts} chase(s)")
-        else:
-            msg = f"UNFILLED — gave up after {_attempts} chase(s)"
-
+        payload, msg = _paper_build_event_payload_and_msg(order, kind, symbol, limit, _attempts)
         await write_event(order["algo_order_id"], event_kind, msg, payload)
 
-        # ── Cache invalidation + WS broadcast (fill / unfilled terminal) ──────
-        # Mirrors the live-order postback fan-out in
-        # `backend.api.routes.orders._postback_broadcast_fanout`.  Both paths
-        # now share the same helper so frontend surfaces (/orders grid,
-        # /positions, NavCard, MarketPulse) update immediately on paper fills
-        # rather than waiting for the next cold poll (5-30 s).
-        #
-        # Status translation (paper internal → Kite canonical):
-        #   kind == "fill"     → "COMPLETE"  (triggers position_filled + full
-        #                                      positions/holdings invalidation)
-        #   kind == "unfilled" → "EXPIRED"   (terminal but NOT COMPLETE, so
-        #                                      position_filled is skipped — correct
-        #                                      because no qty actually moved)
-        #   kind == "modify"   → not terminal; fanout NOT fired (no invalidation
-        #                        needed for an in-flight chase rephrase)
-        #
-        # write_audit_event is called separately below so the audit trail is
-        # consistent with the live path which also fires it outside fanout.
+        # Terminal kinds only: fanout + audit.
+        # Fanout: "fill" → "COMPLETE"; "unfilled" → "EXPIRED".
+        # "modify" is in-flight — no invalidation needed.
         if kind in ("fill", "unfilled"):
-            _fanout_status = "COMPLETE" if kind == "fill" else "EXPIRED"
-            try:
-                from backend.api.routes.orders import _postback_broadcast_fanout
-                from backend.shared.helpers.utils import mask_account
-                _postback_broadcast_fanout(
-                    status=_fanout_status,
-                    order_id=order["algo_order_id"],
-                    account=str(_row_account or ""),
-                    masked=mask_account(str(_row_account or "")),
-                    symbol=str(_row_symbol or symbol),
-                    txn=str(_row_side or order.get("side") or ""),
-                    qty=_row_qty,
-                    price=float(order.get("fill_price") or 0),
-                    exchange=str(_row_exchange or ""),
-                    status_message="",
-                )
-            except Exception as _fe:
-                logger.warning(
-                    f"PaperTradeEngine[{self._label}] fanout failed for "
-                    f"#{order['algo_order_id']}: {_fe}"
-                )
-
-        # Audit log — mirrors live-path audit tag (order.fill / order.expired).
-        # Only on terminal states (fill / unfilled); modify rows don't warrant
-        # an audit entry.
-        if kind in ("fill", "unfilled"):
-            try:
-                from backend.api.audit import write_audit_event
-                from backend.shared.helpers.utils import mask_account
-                _aud_cat = "order.fill" if kind == "fill" else "order.expired"
-                _aud_fp  = order.get("fill_price")
-                write_audit_event(
-                    category=_aud_cat,
-                    action=f"PAPER_{kind.upper()}",
-                    actor_username=f"paper[{self._label}]",
-                    actor_role="system",
-                    target_type="algo_order",
-                    target_id=str(order["algo_order_id"]),
-                    summary=(
-                        f"{kind.upper()} {order.get('side','')} {_row_qty} "
-                        f"{_row_symbol} acct={mask_account(str(_row_account or ''))}"
-                        + (f" @₹{_aud_fp:,.2f}" if _aud_fp is not None else "")
-                    )[:1000],
-                )
-            except Exception as _ae:
-                logger.debug(
-                    f"PaperTradeEngine[{self._label}] audit write skipped "
-                    f"for #{order['algo_order_id']}: {_ae}"
-                )
+            _paper_fanout_terminal(self._label, order, kind, symbol, row_snap)
+            _paper_audit_terminal(self._label, order, kind, row_snap)
 
 
 # ═════════════════════════════════════════════════════════════════════════
 #  Module-level helpers used by PaperTradeEngine internals
 # ═════════════════════════════════════════════════════════════════════════
+
+
+def _paper_build_event_payload_and_msg(
+    order: dict, kind: str, symbol: str, limit, attempts: int
+) -> tuple[dict, str]:
+    """Build the event payload dict and human-readable message for a paper terminal event.
+
+    Returns (payload, msg). Both are used by write_event and then by the
+    fanout/audit helpers.
+    """
+    payload: dict = {
+        "attempts": attempts,
+        "limit_price": order.get("limit_price"),
+        "account": order.get("account"),
+        "symbol": symbol,
+    }
+    if kind == "fill":
+        payload["fill_price"] = order.get("fill_price")
+        payload["slippage"] = float(order.get("fill_price", 0)) - float(
+            order.get("initial_price") or order.get("limit_price") or 0
+        )
+
+    if kind == "modify":
+        msg = (f"chase #{attempts} limit=₹{limit:,.2f}"
+               if limit is not None else f"chase #{attempts}")
+    elif kind == "fill":
+        fp = order.get("fill_price")
+        msg = (f"FILLED @₹{fp:,.2f} after {attempts} chase(s)"
+               if fp is not None else f"FILLED after {attempts} chase(s)")
+    else:
+        msg = f"UNFILLED — gave up after {attempts} chase(s)"
+
+    return payload, msg
+
+
+def _paper_fanout_terminal(
+    label: str,
+    order: dict,
+    kind: str,
+    symbol: str,
+    row_snap: dict,
+) -> None:
+    """Fire _postback_broadcast_fanout for a terminal paper event (fill or unfilled).
+
+    Status mapping:
+      fill     → COMPLETE (triggers position_filled + full positions/holdings invalidation)
+      unfilled → EXPIRED  (terminal but NOT COMPLETE — no qty moved)
+    """
+    _fanout_status = "COMPLETE" if kind == "fill" else "EXPIRED"
+    try:
+        from backend.api.routes.orders import _postback_broadcast_fanout
+        from backend.shared.helpers.utils import mask_account
+        _row_account  = row_snap["_row_account"]
+        _row_symbol   = row_snap["_row_symbol"]
+        _row_exchange = row_snap["_row_exchange"]
+        _row_side     = row_snap["_row_side"]
+        _row_qty      = row_snap["_row_qty"]
+        _postback_broadcast_fanout(
+            status=_fanout_status,
+            order_id=order["algo_order_id"],
+            account=str(_row_account or ""),
+            masked=mask_account(str(_row_account or "")),
+            symbol=str(_row_symbol or symbol),
+            txn=str(_row_side or order.get("side") or ""),
+            qty=_row_qty,
+            price=float(order.get("fill_price") or 0),
+            exchange=str(_row_exchange or ""),
+            status_message="",
+        )
+    except Exception as _fe:
+        logger.warning(
+            f"PaperTradeEngine[{label}] fanout failed for "
+            f"#{order['algo_order_id']}: {_fe}"
+        )
+
+
+def _paper_audit_terminal(
+    label: str,
+    order: dict,
+    kind: str,
+    row_snap: dict,
+) -> None:
+    """Write an audit event for a terminal paper fill or unfilled outcome.
+
+    Only called for kind in ('fill', 'unfilled'); modify events are excluded.
+    Mirrors the audit tag fired by the live-order postback path.
+    """
+    try:
+        from backend.api.audit import write_audit_event
+        from backend.shared.helpers.utils import mask_account
+        _row_account = row_snap["_row_account"]
+        _row_symbol  = row_snap["_row_symbol"]
+        _row_qty     = row_snap["_row_qty"]
+        _aud_cat = "order.fill" if kind == "fill" else "order.expired"
+        _aud_fp  = order.get("fill_price")
+        write_audit_event(
+            category=_aud_cat,
+            action=f"PAPER_{kind.upper()}",
+            actor_username=f"paper[{label}]",
+            actor_role="system",
+            target_type="algo_order",
+            target_id=str(order["algo_order_id"]),
+            summary=(
+                f"{kind.upper()} {order.get('side','')} {_row_qty} "
+                f"{_row_symbol} acct={mask_account(str(_row_account or ''))}"
+                + (f" @₹{_aud_fp:,.2f}" if _aud_fp is not None else "")
+            )[:1000],
+        )
+    except Exception as _ae:
+        logger.debug(
+            f"PaperTradeEngine[{label}] audit write skipped "
+            f"for #{order['algo_order_id']}: {_ae}"
+        )
+
+
+def _paper_is_fillable(side: str, bid: float, ask: float, limit: float) -> tuple[bool, float]:
+    """Return (fillable, fill_price) for a single paper order tick.
+
+    Rules:
+      SELL fills when bid >= limit  → fill at bid
+      BUY  fills when ask <= limit  → fill at ask
+    """
+    if side == "SELL" and bid >= limit:
+        return True, bid
+    if side == "BUY" and ask <= limit:
+        return True, ask
+    return False, 0.0
+
+
+def _paper_next_limit(agg: str, side: str, bid: float, ask: float) -> float:
+    """Compute the next chase limit price from quote and aggression level.
+
+    agg='high' — peg to marketable side (cross the spread, fill next tick)
+    agg='med'  — peg to midpoint
+    agg='low'  — peg to passive side (rest and wait for market to lift)
+    Unknown values fall back to 'low' for safety.
+    """
+    if agg == "high":
+        return bid if side == "SELL" else ask
+    if agg == "med":
+        return (bid + ask) / 2.0
+    # 'low' (default)
+    return ask if side == "SELL" else bid
 
 
 def _paper_update_row_fields(row, kind: str, order: dict, tag: str) -> None:
