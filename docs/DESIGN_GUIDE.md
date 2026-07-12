@@ -3778,7 +3778,7 @@ Three pages were running their own bespoke implementations of patterns the codeb
 
 ### Palette alpha consolidation
 
-The cyan-bg alpha `0.10` was drifting across 5 files (8 callsites) while the canonical `--algo-cyan-bg` is `0.14`. CommandBar / HireMeModal / OrderCard / OrderTicket / SymbolPanel all converged. Same fix on PageHeaderActions amber `0.12` → `0.14`.
+The cyan-bg alpha `0.10` was drifting across 5 files (8 callsites) while the canonical `--algo-cyan-bg` is `0.14`. CommandBar / OrderCard / OrderTicket / SymbolPanel all converged. Same fix on PageHeaderActions amber `0.12` → `0.14`.
 
 Net effect: a chip background on one page now visually matches the same conceptual element on another page. Pre-fix the operator's brain had to disambiguate "is this cyan-12 or cyan-14?" — now both reach `var(--algo-cyan-bg)`.
 
@@ -3793,7 +3793,7 @@ Net effect: a chip background on one page now visually matches the same conceptu
 - `frontend/src/routes/(algo)/admin/history/+page.svelte` — `<AlgoTabs>` adoption
 - `frontend/src/routes/(algo)/admin/statements/+page.svelte` — `<Select>` adoption
 - `frontend/src/lib/PageHeaderActions.svelte` — amber/cyan 0.12→0.14
-- `frontend/src/lib/{CommandBar,HireMeModal,SymbolPanel}.svelte` + `order/{OrderCard,OrderTicket}.svelte` — cyan 0.10→0.14
+- `frontend/src/lib/{CommandBar,SymbolPanel}.svelte` + `order/{OrderCard,OrderTicket}.svelte` — cyan 0.10→0.14
 - `backend/api/algo/paper.py::reset` — `self._lock` acquisition
 - `backend/api/routes/history.py::backfill_funds` — docstring correction
 
@@ -4241,6 +4241,65 @@ A was cooling.
 
 **Files:**
 - `backend/api/algo/agent_engine.py::run_cycle` — survivor-section mutation deferral
+
+---
+
+## 22.25. Demo banner + Showcase page + Nav + Fullscreen + Derivatives Exp Close
+
+**Demo banner moved to layout**
+
+`feat(demo)` commit a6d5e2f0: Demo banner ("Rambo Terminal — live production...") moved from
+Dashboard-only to `frontend/src/routes/(algo)/+layout.svelte` so it appears on every algo page
+(Pulse, Dashboard, Derivatives, Orders, Charts, Performance, Automation).
+
+- Positioned `fixed; top: 3rem; height: 2rem; z-index: 46` — does not displace content
+- `fix(layout)` commit b8a5203b: Added `:has(.demo-banner)` CSS rules to adjust `.page-header`
+  and `.algo-content` vertical spacing (same pattern as existing `:has(.ps-strip)` rules)
+
+**Showcase page — merged About + Tour**
+
+`feat(showcase)` commit 2479ddf1: `/showcase` page replaces separate TourModal + HireMeModal with
+unified recruiter/investor landing.
+
+- Contains: hero (name, credentials, roles, contact CTAs), facts grid, 9 architecture cards,
+  TourModal (60-second auto-tour still available via `/showcase?tour=1`)
+- `chore` commit 417880a2: `HireMeModal.svelte` deleted (was 295 lines); HireMe reference removed
+- `fix(nav)` commit 2f51706f: Nav link "Tour" → "About"; standalone About button removed from
+  desktop + mobile hamburger menus
+
+**Fullscreen button cluster reorder**
+
+`fix(fullscreen)` commit 714f3394: In fullscreen card mode (`.fs-card-on`), button cluster order
+is now Refresh (leftmost) → Download → Search. Changed by adjusting the
+`right: calc(2rem + 0.65rem + 1.7rem * N)` slot assignments in `app.css`.
+
+**Derivatives — Exp Close per-underlying spot resolver + TOTAL row decoration**
+
+`fix(derivatives)` commits 9bb890bd + b8a5203b:
+
+- **Exp Close spot resolution**: `annotateOptionCandidates` in `derivativesMath.js` now accepts
+  `spot` as a number (backward-compatible) OR `(underlying: string) => number` function (v2).
+  Internally: `const resolveSpot = typeof spot === 'function' ? spot : () => spot;`
+  
+- **Full-book expiry analysis**: `expiryCloseAnalysis` uses a `spotResolver` closure that resolves
+  spot per-underlying via SSE snapshot → batchQuote cache → 0 fallback. The `!spot` early-return
+  gate is removed — full-book expiry close now runs across all positions regardless of
+  selectedUnderlying selection. Enables mixed-underlying baskets (NIFTY + BANKNIFTY + CRUDEOIL
+  simultaneously).
+
+- **TOTAL row CSS convention**: Container holds `display:grid + subgrid + grid-column:1/-1` for
+  alignment only. Amber decoration (background, border-top/bottom, font-size, font-family,
+  text-align) lives on `> span` children — matches `.byund-row-total > span` Snapshot pattern.
+  Container alignment is orthogonal to cell styling.
+
+**Files changed:**
+- `frontend/src/routes/(algo)/+layout.svelte` — demo banner markup + styling
+- `app.css` — demo banner + fullscreen button cluster + TOTAL row CSS
+- `frontend/src/routes/(algo)/admin/showcase/+page.svelte` — new page
+- `frontend/src/lib/HireMeModal.svelte` — deleted
+- `frontend/src/routes/(algo)/+layout.svelte` — nav Tour→About rename
+- `frontend/src/lib/data/derivativesMath.js::annotateOptionCandidates` — spot parameter accepts function
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — spotResolver closure in expiryCloseAnalysis
 
 ---
 
@@ -5003,6 +5062,7 @@ Quick-jump index by first significant word — useful when you remember a name b
 | Data layer — implementation detail | §4.5 |
 | Data refresh — PositionStrip + Dashboard | §21 |
 | Database schema overview | §4.6 |
+| Demo banner + Showcase + Nav + Derivatives Exp Close | §22.25 |
 | Demo mode | §22 |
 | Deployment notes | §26 |
 | Docs folder reorganisation + spec files | §22.20 |
