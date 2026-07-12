@@ -3,8 +3,9 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes, openOrderTicketModal, openChartModalTrigger } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes, openOrderTicketModal, chartModal, openChartModal } from '$lib/stores';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import ChartModal from '$lib/ChartModal.svelte';
   import {
     fetchSimStatus, fetchPaperStatus,
     fetchReplayStatus,
@@ -34,6 +35,7 @@
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
 
   const { children } = $props();
+
 
   // ── Navigation loading indicator (user-action precedence) ─────────
   // Show a top-bar progress strip immediately when a navigation starts
@@ -228,7 +230,7 @@
         }));
       } else {
         e.preventDefault();
-        openChartModalTrigger();
+        openChartModal();
       }
       return;
     }
@@ -915,6 +917,11 @@
 {#if $activityModal.open}
   <ActivityLogModal
     onClose={closeActivityModal} />
+{/if}
+{#if $chartModal.open}
+  <ChartModal
+    symbol={$chartModal.symbol}
+    exchange={$chartModal.exchange} />
 {/if}
 
 <!-- Broker auth health modal (modal-only) — opens from the 5/5 chip

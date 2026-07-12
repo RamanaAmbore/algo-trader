@@ -300,10 +300,12 @@
   /** @type {Array<{ts:string,open:number,high:number,low:number,close:number,volume:number}>} */
   let _bars        = $state(/** @type {any[]} */(chartStore.ohlcv ?? []));
   // Sync from store → local (e.g. another surface loaded data).
+  // untrack on the read+write breaks the self-dependency cycle: reading
+  // _bars in the condition tracked it as a dependency, causing infinite
+  // re-runs when chartStore.ohlcv is null (new [] ref each time).
   $effect(() => {
-    const storeOhlcv = chartStore.ohlcv;
-    const next = storeOhlcv ?? [];
-    if (_bars !== next) _bars = next;
+    const next = chartStore.ohlcv ?? [];
+    untrack(() => { if (_bars !== next) _bars = next; });
   });
   // Fire when _bars changes to a non-empty array (new data landed from
   // broker/cache). Skip on symbol-change blanks (length === 0) and on
@@ -486,7 +488,7 @@
   // Sync spotBars from store.
   $effect(() => {
     const next = chartStore.spotBars ?? [];
-    if (_spotBars !== next) _spotBars = next;
+    untrack(() => { if (_spotBars !== next) _spotBars = next; });
   });
 
   // Kite returns the index spot under its quote-key name (e.g.
