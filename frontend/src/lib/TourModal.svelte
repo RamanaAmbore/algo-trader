@@ -171,7 +171,7 @@
   .tour-modal {
     /* Composes .algo-modal chrome. Overrides:
        - background: elevated-dark gradient (intentional splash-mode
-         contrast, matches HireMeModal for onboarding surfaces).
+         contrast for onboarding surfaces).
        - border: full amber (not the halo default) — tour needs to
          demand focus.
        - font-family: sans body for prose readability. */

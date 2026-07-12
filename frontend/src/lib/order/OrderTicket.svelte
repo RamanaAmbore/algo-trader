@@ -3182,8 +3182,7 @@
   /* Demo-mode "you can't submit" modal — fires when an anonymous demo
      visitor clicks the (amber) Submit button. Modal sits ABOVE the
      OrderTicket (z=110 vs ticket z~50). Same visual language as
-     HireMeModal / TourModal so the three modal types feel like one
-     family. */
+     TourModal so modal types feel like one family. */
   .ot-demo-overlay {
     position: fixed; inset: 0;
     background: rgba(8, 12, 20, 0.80);
