@@ -751,11 +751,20 @@
   // refreshing nav strip". Heartbeat is a faint "data just refreshed"
   // signal, distinct from the per-cell directional flash (which still
   // fires when values move).
+  //
+  // Gate: skip the heartbeat when both markets are closed. The book
+  // poller still fires during closed hours (intentionally, to refresh
+  // snapshot / cash / margin data) but no live LTP ticks are arriving.
+  // Pulsing the strip during closed hours misleads the operator into
+  // thinking live prices are updating. _mktTick is a $state that flips
+  // on every session-boundary tick from the visibleInterval above,
+  // so the effect re-evaluates automatically at market open/close.
   let _heartbeatOn = $state(false);
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _heartbeatTimer = null;
   $effect(() => {
     if (_pollCycleStamp === 0) return;  // skip mount paint
+    if (_mktTick === 0) return;         // both markets closed — no heartbeat
     _heartbeatOn = true;
     if (_heartbeatTimer) clearTimeout(_heartbeatTimer);
     // 300ms — unified duration (tick-bus synchrony). Previously 450ms.
