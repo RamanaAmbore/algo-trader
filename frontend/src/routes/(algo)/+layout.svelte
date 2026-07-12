@@ -1134,10 +1134,11 @@
             {/if}
           </span>
           <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
-        {:else if isDemo}
-          <button onclick={() => goto('/signin')} class="algo-nav-btn algo-nav-btn-ghost">Sign In</button>
         {/if}
         <button onclick={() => goto('/about')} class="algo-pub-link">↙ Investor site</button>
+        {#if isDemo && !$authStore.user}
+          <button onclick={() => goto('/signin')} class="algo-nav-btn">Sign In</button>
+        {/if}
       </div>
 
       <!-- Mobile -->
@@ -2028,6 +2029,18 @@
      order status cards are partially hidden" report. */
   :global(.algo-viewport:has(.ps-strip)) .algo-content {
     padding-top: calc(3rem + 1.5rem + 1.8rem);  /* 100.8px */
+  }
+  /* NavStrip pushed down when demo banner is above it */
+  :global(.algo-viewport:has(.demo-banner) .ps-strip) {
+    top: calc(3rem + 2rem);
+  }
+  /* When BOTH demo banner AND NavStrip are present — override the
+     single-banner and single-strip rules above (higher specificity). */
+  :global(.algo-viewport:has(.demo-banner):has(.ps-strip) .page-header) {
+    top: calc(3rem + 2rem + 1.5rem);
+  }
+  :global(.algo-viewport:has(.demo-banner):has(.ps-strip)) .algo-content {
+    padding-top: calc(3rem + 2rem + 1.5rem + 1.8rem);
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)

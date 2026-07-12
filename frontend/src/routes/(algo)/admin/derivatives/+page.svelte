@@ -3938,47 +3938,49 @@
              expectancy; negative = lose money on average. Companion
              to POP for assessing trade quality (POP alone is
              misleading on asymmetric clip sizes). -->
-        <span class="opt-section-tag tf-cell {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'} {flash.classOf('payoff:ev')}"
-              title="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|.">
-          EV {fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}
-        </span>
-        <!-- Greeks chips — full Δ Γ Θ 𝒱 ρ surfaced inline in the payoff
-             header so the operator sees position-level direction /
-             convexity / decay / volatility / rate exposure without
-             scrolling to the Greeks card below. Same `.opt-section-tag`
-             chip chrome; greek-tagged variant uses a sky-cyan tint to
-             read as distinct from the amber Net / Max chips. Sign-tinted
-             variants on theta / vega / rho since those flip sign with
-             credit vs debit structures. -->
-        <!-- Null-safe access — Svelte 5 can evaluate template expressions
-             inside `{#if strategy}` blocks in the same reactive flush as
-             the guard's own update. When `strategy` transitions to null
-             (during loadStrategy underlying-change), the inner `.delta`
-             etc. access threw TypeError, poisoning the scheduler and
-             freezing all downstream $state writes (instrumentsReady,
-             etc.) — causing the page-wide hang. `?.` throughout so the
-             expression returns undefined instead of throwing; pctFmt
-             renders '—' for undefined. -->
-        <span class="opt-section-tag tf-cell tag-greek {flash.classOf('payoff:delta')}"
-          title="Delta — net directional exposure (₹ per ₹1 spot move). Includes +qty for enabled equity-holding legs.">
-          Δ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}
-        </span>
-        <span class="opt-section-tag tf-cell tag-greek {flash.classOf('payoff:gamma')}"
-          title="Gamma — convexity, rate of change of Δ as spot moves">
-          Γ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}
-        </span>
-        <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:theta')}"
-          title="Theta — daily decay (₹/day, positive when net short premium)">
-          Θ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}
-        </span>
-        <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:vega')}"
-          title="Vega — P&L per 1% IV move (positive = long volatility)">
-          𝒱 {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}
-        </span>
-        <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:rho')}"
-          title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
-          ρ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
-        </span>
+        <div class="opt-section-chips">
+          <span class="opt-section-tag tf-cell {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'} {flash.classOf('payoff:ev')}"
+                title="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|.">
+            EV {fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}
+          </span>
+          <!-- Greeks chips — full Δ Γ Θ 𝒱 ρ surfaced inline in the payoff
+               header so the operator sees position-level direction /
+               convexity / decay / volatility / rate exposure without
+               scrolling to the Greeks card below. Same `.opt-section-tag`
+               chip chrome; greek-tagged variant uses a sky-cyan tint to
+               read as distinct from the amber Net / Max chips. Sign-tinted
+               variants on theta / vega / rho since those flip sign with
+               credit vs debit structures. -->
+          <!-- Null-safe access — Svelte 5 can evaluate template expressions
+               inside `{#if strategy}` blocks in the same reactive flush as
+               the guard's own update. When `strategy` transitions to null
+               (during loadStrategy underlying-change), the inner `.delta`
+               etc. access threw TypeError, poisoning the scheduler and
+               freezing all downstream $state writes (instrumentsReady,
+               etc.) — causing the page-wide hang. `?.` throughout so the
+               expression returns undefined instead of throwing; pctFmt
+               renders '—' for undefined. -->
+          <span class="opt-section-tag tf-cell tag-greek {flash.classOf('payoff:delta')}"
+            title="Delta — net directional exposure (₹ per ₹1 spot move). Includes +qty for enabled equity-holding legs.">
+            Δ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}
+          </span>
+          <span class="opt-section-tag tf-cell tag-greek {flash.classOf('payoff:gamma')}"
+            title="Gamma — convexity, rate of change of Δ as spot moves">
+            Γ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}
+          </span>
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:theta')}"
+            title="Theta — daily decay (₹/day, positive when net short premium)">
+            Θ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}
+          </span>
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:vega')}"
+            title="Vega — P&L per 1% IV move (positive = long volatility)">
+            𝒱 {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}
+          </span>
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:rho')}"
+            title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
+            ρ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
+          </span>
+        </div>
         <!-- Card-control trio kept in a tight no-wrap cluster so the
              three icons sit on the same row even on a narrow viewport.
              Without this, the outer `.opt-section-row gap: 0.5rem`
@@ -4941,8 +4943,26 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    min-width: 0;
   }
+  /* Chips scroll container — holds EV + Greek chips in the Payoff
+     header. Takes all remaining space between the title and the
+     button cluster; scrolls horizontally so chips never wrap into
+     the controls area on narrow viewports. Scrollbar hidden on all
+     browsers; touch-momentum scrolling preserved on iOS. */
+  .opt-section-chips {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1 1 0;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .opt-section-chips::-webkit-scrollbar { display: none; }
   /* Larger section anchor for the Strategy Analysis header. Font
      family + weight + spacing + transform + color locked to canonical
      .algo-card-title tokens; only the SIZE is bumped to fs-lg so the
@@ -4982,8 +5002,23 @@
     align-items: center;
     gap: 0.15rem;
     white-space: nowrap;
+    flex-shrink: 0;
     margin-left: auto;
   }
+  /* Snapshot card header — scoped override so the inner .opt-section-h
+     (title + account scope chip + StrategyPicker) scrolls horizontally
+     instead of wrapping into the .payoff-card-controls button cluster.
+     .bucket-header is defined globally in app.css; only the derivative-
+     page child selector is scoped here to avoid side-effects elsewhere. */
+  .bucket-header > .opt-section-h {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+  }
+  .bucket-header > .opt-section-h::-webkit-scrollbar { display: none; }
   .tag-deriv  { color: var(--algo-sky); background: rgba(125,211,252,0.10); }
   .tag-long   { color: var(--c-long); background: var(--algo-green-bg); }
   .tag-short  { color: var(--c-short); background: var(--algo-red-bg); }
@@ -5485,7 +5520,10 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     text-align: left;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    min-width: 0;
+    scrollbar-width: none;
   }
   .legs-header:hover { color: #fde047; }
 
