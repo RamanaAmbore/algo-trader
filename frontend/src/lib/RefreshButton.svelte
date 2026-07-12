@@ -134,16 +134,23 @@
       // see comment above. _refiring is a module-scope $state variable
       // so the closure captures the live value at the time the tick fires.
       if (loading || _refiring) return;
+      // Skip tick-pulse animation when both markets are closed. Background
+      // pollers (sparkline, snapshot refresh, performance) still emit on
+      // symbolTickCount during closed hours and would falsely signal
+      // "live ticks arriving" to the operator. _nseOpen / _mcxOpen are
+      // module-scope $state vars refreshed every 30 s by the visibleInterval
+      // in onMount, so the closure always captures the current session state.
+      if (!_nseOpen && !_mcxOpen) return;
       // Skip class toggle during the post-loading cooldown window (800 ms
       // after spinner stops). The next SSE tick arriving right after a
       // manual refresh would otherwise trigger rf-tick-rotate and the
       // operator would perceive the button as "animating twice".
       if (_loadingExitAt && performance.now() < _loadingExitAt) return;
       _pulseTimer = setTimeout(() => {
-        // Re-check at fire time — loading or _refiring may have flipped
-        // true between subscribe and timer fire. Also re-check the cooldown
-        // in case the 250 ms timer fires inside the 800 ms window.
-        if (!loading && !_refiring && !(_loadingExitAt && performance.now() < _loadingExitAt)) {
+        // Re-check at fire time — loading, _refiring, or market state may
+        // have changed between subscribe and timer fire. Also re-check the
+        // cooldown in case the 250 ms timer fires inside the 800 ms window.
+        if (!loading && !_refiring && (_nseOpen || _mcxOpen) && !(_loadingExitAt && performance.now() < _loadingExitAt)) {
           _tickPulseClass = _tickPulseClass === 'rf-tick-a' ? 'rf-tick-b' : 'rf-tick-a';
         }
         _pulseTimer = null;

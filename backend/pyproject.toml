@@ -13,3 +13,17 @@ build-backend = "setuptools.build_meta"
 where = [".."]
 include = ["backend*"]
 exclude = ["backend.workers*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+markers = [
+  "integration: marks tests as integration tests (use -m 'not integration' to skip)",
+  "unit: marks tests as unit tests",
+  "asyncio: marks tests as async (handled by pytest-asyncio)",
+]
+addopts = "-v --tb=short --strict-markers"
+norecursedirs = [".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"]

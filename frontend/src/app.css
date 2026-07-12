@@ -1872,6 +1872,17 @@
   z-index: 10000 !important;
   margin: 0 !important;
 }
+/* GridDownloadButton — slotted one step left of GridSearchButton so
+   the full cluster reads right-to-left as [Download | Search | Refresh | Default].
+   Without this rule the button stays in normal document flow while the
+   other three are position:fixed, causing the misalignment in fullscreen. */
+.fs-card-on .grid-download-btn {
+  position: fixed !important;
+  top: calc(2rem + 0.55rem) !important;
+  right: calc(2rem + 0.65rem + 1.7rem * 3) !important;
+  z-index: 10000 !important;
+  margin: 0 !important;
+}
 @media (max-width: 600px) {
   .fs-card-on .grid-search-btn {
     top: calc(0.5rem + 0.5rem) !important;
@@ -1881,6 +1892,10 @@
     top: calc(0.5rem + 0.5rem) !important;
     right: calc(0.5rem + 0.55rem + 1.7rem * 2 + 1.4rem + 0.3rem) !important;
     width: 6rem !important;
+  }
+  .fs-card-on .grid-download-btn {
+    top: calc(0.5rem + 0.5rem) !important;
+    right: calc(0.5rem + 0.55rem + 1.7rem * 3) !important;
   }
 }
 

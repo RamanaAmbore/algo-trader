@@ -1136,7 +1136,7 @@
                   title="Built by Ramana Ambore — engineering highlights + contact channels">
             About
           </button>
-          <button onclick={() => goto('/signin')} class="algo-nav-btn">Sign In</button>
+          <button onclick={() => goto('/signin')} class="algo-nav-btn algo-nav-btn-ghost">Sign In</button>
         {/if}
         <button onclick={() => goto('/about')} class="algo-pub-link">↙ Investor site</button>
       </div>
@@ -1577,6 +1577,18 @@
   :global(.algo-mobile-item.algo-hire-btn) {
     color: var(--c-action);
     font-weight: 700;
+  }
+  /* Ghost variant — demo Sign In button. Further reduces the base
+     muted color so the About (amber, animated) button reads as
+     the primary CTA and Sign In recedes as a fallback affordance. */
+  :global(.algo-nav-btn.algo-nav-btn-ghost) {
+    color: rgba(180, 200, 230, 0.40);
+    font-weight: 400;
+  }
+  :global(.algo-nav-btn.algo-nav-btn-ghost:hover) {
+    background: rgba(180, 200, 230, 0.06);
+    color: rgba(180, 200, 230, 0.75);
+    border-left-color: transparent;
   }
   :global(.algo-nav-btn-active) {
     background: rgba(251,191,36,0.15);

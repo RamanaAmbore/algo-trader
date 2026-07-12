@@ -3424,7 +3424,7 @@
     // Left-column buckets (monitoring views — leftColDefs).
     if (gridPinnedEl) {
       const _pinnedEmptyMsg = isDemo
-        ? 'Sign in to add symbols to the watchlist.'
+        ? 'Pinned watchlist — read-only in demo.'
         : 'Pinned watchlist is empty — add a symbol via the + button.';
       gridPinned = makeBucketGrid(gridPinnedEl, leftColDefs, _pinnedEmptyMsg);
       gridPinnedReady = true;

@@ -59,7 +59,9 @@
       const r = await fetchStrategies();
       rows = Array.isArray(r?.rows) ? r.rows : [];
     } catch (e) {
-      error = e?.message || 'Strategies fetch failed';
+      // In demo mode silently show empty state rather than an error banner
+      if (!canEdit) { rows = []; }
+      else { error = e?.message || 'Strategies fetch failed'; }
     } finally {
       loading = false;
     }
@@ -220,7 +222,7 @@
     </thead>
     <tbody>
       {#if rows.length === 0 && !loading}
-        <tr><td colspan="11" class="strat-empty">No strategies yet — create one above to attribute orders.</td></tr>
+        <tr><td colspan="11" class="strat-empty">{canEdit ? 'No strategies yet — create one above to attribute orders.' : 'No strategies configured.'}</td></tr>
       {/if}
       {#each rows as r (r.id)}
         {#if editingId === r.id}

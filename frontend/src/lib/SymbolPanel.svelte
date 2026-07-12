@@ -2271,7 +2271,7 @@
            promise capabilities the visitor doesn't have. -->
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell oes-basket-tpl-row-demo">
         <span class="oes-basket-tpl-label">Template</span>
-        <span class="oes-basket-tpl-demo-note">Sign in to attach exit rules (TP / SL / Wing) on fill.</span>
+        <span class="oes-basket-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
       </div>
     {:else if _templates.length > 0 && action === 'open'
          && ((_localSymbol || '').trim() || basketLegs.length > 0)}

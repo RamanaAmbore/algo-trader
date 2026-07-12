@@ -638,6 +638,6 @@ Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
 | Order ticket prefill | `frontend/src/lib/stores.js` |
 | Update feature spec | `docs/specs/<NAME>_SPEC.md` |
 | Update operator guide | `docs/guides/<NAME>_GUIDE.md` |
-| Update architecture doc | `docs/DESIGN_GUIDE.md` → regenerate with `python3 generate_pdf.py` |
+| Update architecture doc | `docs/DESIGN_GUIDE.md` → regenerate with `python3 docs/generate_pdf.py` |
 | Add audit snapshot | `docs/audits/AUDIT_<TOPIC>.md` |
 | Update ops runbook | `docs/deployment.md` |
