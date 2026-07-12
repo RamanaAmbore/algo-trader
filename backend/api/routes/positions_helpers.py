@@ -235,6 +235,35 @@ def build_snapshot_position_row(
 # 3. Response shaping (get_positions seams)
 # ---------------------------------------------------------------------------
 
+async def _apply_trader_scope(
+    resp: PositionsResponse,
+    request: object,
+) -> PositionsResponse:
+    """Narrow `resp` to only the accounts the trader role is allowed to see."""
+    allowed, _ = await user_scope_for_connection(request)
+    allowed_set = {str(a).upper() for a in (allowed or [])}
+    return msgspec.structs.replace(
+        resp,
+        rows=[r for r in resp.rows
+              if str(getattr(r, "account", "")).upper() in allowed_set],
+        summary=[s for s in resp.summary
+                 if str(getattr(s, "account", "")).upper() in allowed_set
+                 or str(getattr(s, "account", "")).upper() == "TOTAL"],
+    )
+
+
+def _apply_account_mask(resp: PositionsResponse) -> PositionsResponse:
+    """Mask account identifiers for non-admin callers."""
+    def _mask(row: object) -> object:
+        return msgspec.structs.replace(row, account=mask_account(row.account))  # type: ignore[attr-defined]
+
+    return msgspec.structs.replace(
+        resp,
+        rows=[_mask(r) for r in resp.rows],
+        summary=[_mask(s) for s in resp.summary],
+    )
+
+
 async def apply_scope_and_mask(
     resp: PositionsResponse,
     request: object,
@@ -250,26 +279,11 @@ async def apply_scope_and_mask(
     """
     role = normalise_role(resolve_role_from_connection(request))
     if role == "trader":
-        allowed, _ = await user_scope_for_connection(request)
-        allowed_set = {str(a).upper() for a in (allowed or [])}
-        resp = msgspec.structs.replace(
-            resp,
-            rows=[r for r in resp.rows
-                  if str(getattr(r, "account", "")).upper() in allowed_set],
-            summary=[s for s in resp.summary
-                     if str(getattr(s, "account", "")).upper() in allowed_set
-                     or str(getattr(s, "account", "")).upper() == "TOTAL"],
-        )
+        resp = await _apply_trader_scope(resp, request)
 
     if not is_admin_request(request):
-        def _mask(row: object) -> object:
-            return msgspec.structs.replace(row, account=mask_account(row.account))  # type: ignore[attr-defined]
+        resp = _apply_account_mask(resp)
 
-        resp = msgspec.structs.replace(
-            resp,
-            rows=[_mask(r) for r in resp.rows],
-            summary=[_mask(s) for s in resp.summary],
-        )
     return resp
 
 

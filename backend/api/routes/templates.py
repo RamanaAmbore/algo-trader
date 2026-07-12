@@ -90,6 +90,40 @@ def _validate_tp_order_type(value: str | None) -> None:
         )
 
 
+def _validate_tp_scale_entry(entry, idx: int) -> float:
+    """Validate one tp_scales_json entry dict; return its close_pct on success.
+
+    Raises HTTPException(400) for any structural or range violation. The
+    caller accumulates close_pct across entries to enforce the 100% ceiling.
+    """
+    if not isinstance(entry, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=f"tp_scales_json[{idx}] must be a dict with at_pct + close_pct",
+        )
+    at_pct    = entry.get("at_pct")
+    close_pct = entry.get("close_pct")
+    try:
+        at_pct    = float(at_pct)
+        close_pct = float(close_pct)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"tp_scales_json[{idx}] at_pct + close_pct must be numbers",
+        )
+    if at_pct <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"tp_scales_json[{idx}].at_pct must be > 0",
+        )
+    if close_pct <= 0 or close_pct > 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"tp_scales_json[{idx}].close_pct must be in (0, 100]",
+        )
+    return close_pct
+
+
 def _validate_tp_scales_json(value: str | None) -> None:
     """Parse + validate the scale-out JSON. Empty / None means "no
     scale-out, fall back to tp_pct". Otherwise a list of dicts with
@@ -117,32 +151,7 @@ def _validate_tp_scales_json(value: str | None) -> None:
         )
     cumulative_close = 0.0
     for idx, entry in enumerate(parsed):
-        if not isinstance(entry, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=f"tp_scales_json[{idx}] must be a dict with at_pct + close_pct",
-            )
-        at_pct    = entry.get("at_pct")
-        close_pct = entry.get("close_pct")
-        try:
-            at_pct    = float(at_pct)
-            close_pct = float(close_pct)
-        except (TypeError, ValueError):
-            raise HTTPException(
-                status_code=400,
-                detail=f"tp_scales_json[{idx}] at_pct + close_pct must be numbers",
-            )
-        if at_pct <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail=f"tp_scales_json[{idx}].at_pct must be > 0",
-            )
-        if close_pct <= 0 or close_pct > 100:
-            raise HTTPException(
-                status_code=400,
-                detail=f"tp_scales_json[{idx}].close_pct must be in (0, 100]",
-            )
-        cumulative_close += close_pct
+        cumulative_close += _validate_tp_scale_entry(entry, idx)
     if cumulative_close > 100:
         raise HTTPException(
             status_code=400,
@@ -156,6 +165,27 @@ def _validate_applies_to(value: str) -> None:
             status_code=400,
             detail=f"applies_to must be one of {sorted(_APPLIES_TO_CHOICES)}",
         )
+
+
+_PATCH_FIELDS = (
+    "name", "description", "applies_to",
+    "tp_pct", "sl_pct",
+    "wing_premium_pct", "wing_strike_offset",
+    "tp_order_type", "tp_scales_json", "sl_trail_pct",
+    "is_default", "is_active",
+)
+
+
+def _apply_patch_fields(row: OrderTemplate, data: "OrderTemplatePatch") -> None:
+    """Copy non-None fields from `data` onto the ORM row.
+
+    msgspec sentinels are None for unset; we accept None as "leave unchanged"
+    rather than "clear" because the form sends every field every time.
+    """
+    for field in _PATCH_FIELDS:
+        v = getattr(data, field, None)
+        if v is not None:
+            setattr(row, field, v)
 
 
 async def _demote_existing_default(s, applies_to: str, exclude_id: int | None) -> None:
@@ -273,19 +303,7 @@ class OrderTemplateController(Controller):
             target_default = data.is_default if data.is_default is not None else row.is_default
             if target_default:
                 await _demote_existing_default(s, target_scope, exclude_id=row.id)
-            # Apply only set fields. msgspec sentinels are None for
-            # unset; we accept None as "leave unchanged" rather than
-            # "clear" because the form sends every field every time.
-            for field in (
-                "name", "description", "applies_to",
-                "tp_pct", "sl_pct",
-                "wing_premium_pct", "wing_strike_offset",
-                "tp_order_type", "tp_scales_json", "sl_trail_pct",
-                "is_default", "is_active",
-            ):
-                v = getattr(data, field, None)
-                if v is not None:
-                    setattr(row, field, v)
+            _apply_patch_fields(row, data)
             await s.commit()
             await s.refresh(row)
         return _to_out(row)

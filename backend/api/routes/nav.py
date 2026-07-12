@@ -119,6 +119,39 @@ class InvestorHistoryResponse(msgspec.Struct):
     contribution: float
 
 
+async def _resolve_live_firm_nav(rows: list) -> float:
+    """Compute live intraday firm NAV; fall back to the latest EOD snapshot
+    on broker outage so the investor slice never returns zero."""
+    try:
+        from backend.api.algo.nav import compute_firm_nav
+        snap = await compute_firm_nav()
+        return float(snap.get("nav") or 0.0)
+    except Exception:
+        return float(rows[0].nav) if rows else 0.0
+
+
+async def _compute_day_delta_share(
+    rows: list,
+    user,
+    all_events: list,
+    slice_now: dict,
+) -> tuple[Optional[float], Optional[float]]:
+    """Compute the per-investor day-delta and day-delta-pct using the prior
+    NAV snapshot.  Returns (day_delta_share, day_delta_share_pct) — both
+    None when there is no prior snapshot row."""
+    from backend.api.algo.investor_units import slice_value
+    if len(rows) < 2:
+        return None, None
+    user_events = [e for e in all_events if e.user_id == user.id]
+    prior_val, _ = slice_value(
+        user_events, all_events, float(rows[1].nav),
+        as_of=rows[1].as_of_date,
+    )
+    day_delta_share = slice_now["nav_share"] - prior_val
+    day_delta_share_pct = (day_delta_share / prior_val) if prior_val else None
+    return day_delta_share, day_delta_share_pct
+
+
 def _to_row(r: NavDaily) -> NavRow:
     return NavRow(
         as_of_date=r.as_of_date.isoformat() if r.as_of_date else "",
@@ -129,6 +162,37 @@ def _to_row(r: NavDaily) -> NavRow:
         accounts_snapshot=list(r.accounts_snapshot or []),
         note=r.note,
     )
+
+
+async def _load_user_history_data(username: str, cutoff) -> tuple:
+    """Fetch user row, investor events, and NavDaily rows for the history endpoint.
+
+    Returns (user, share_pct, contribution, user_events, nav_rows).
+    Raises HTTPException(401/404) when the user cannot be resolved.
+    """
+    from backend.api.algo.investor_units import (
+        compute_slice_history, ensure_all_bootstrapped, fetch_all_events,
+    )
+    from backend.api.models import NavDaily, User
+    from sqlalchemy import select
+    async with async_session() as s:
+        user = (await s.execute(
+            select(User).where(User.username == username)
+        )).scalar_one_or_none()
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        await ensure_all_bootstrapped(s)
+        all_events = await fetch_all_events(s)
+        user_events = [e for e in all_events if e.user_id == user.id]
+        nav_rows = (await s.execute(
+            select(NavDaily)
+              .where(NavDaily.as_of_date >= cutoff)
+              .order_by(NavDaily.as_of_date.asc())
+        )).scalars().all()
+    share_pct     = float(user.share_pct or 0.0)
+    contribution  = float(user.contribution or 0.0)
+    history       = compute_slice_history(user_events, all_events, nav_rows)
+    return share_pct, contribution, history
 
 
 class NavController(Controller):
@@ -181,8 +245,7 @@ class NavController(Controller):
 
         Demo / anonymous → 401 via jwt_guard."""
         from backend.api.algo.investor_units import (
-            compute_slice, ensure_all_bootstrapped,
-            fetch_all_events, slice_value, cost_basis as _cb,
+            compute_slice, ensure_all_bootstrapped, fetch_all_events,
         )
         payload = getattr(request.state, "token_payload", {}) or {}
         username = str(payload.get("sub") or "")
@@ -199,45 +262,14 @@ class NavController(Controller):
                   .order_by(desc(NavDaily.as_of_date))
                   .limit(2)
             )).scalars().all()
-            # Live intraday NAV — call compute_firm_nav() so the
-            # investor's slice tracks the same number /performance
-            # NAV grid + NavCard show. Previously read rows[0].nav
-            # (EOD snapshot from yesterday's 16:00 IST cron) which
-            # produced a slice that lagged by up to one full day's
-            # P&L. The prior-day rows[1] still seeds the day-delta
-            # math below (intentional — that's the baseline).
-            try:
-                from backend.api.algo.nav import compute_firm_nav
-                _snap = await compute_firm_nav()
-                firm_nav = float(_snap.get("nav") or 0.0)
-            except Exception:
-                # Fallback to EOD snapshot if live compute fails
-                # (broker outage). Better stale than zero.
-                firm_nav = float(rows[0].nav) if rows else 0.0
-            # Fetch events ONCE; compute_slice reuses, day-delta math
-            # reuses. Pre-fix this fetched twice. (Slice M4.)
+            firm_nav = await _resolve_live_firm_nav(rows)
+            # Fetch events ONCE; compute_slice reuses, day-delta math reuses.
             await ensure_all_bootstrapped(s)
             all_events = await fetch_all_events(s)
-            slice_now = await compute_slice(
-                s, user, firm_nav, all_events=all_events
+            slice_now = await compute_slice(s, user, firm_nav, all_events=all_events)
+            day_delta_share, day_delta_share_pct = await _compute_day_delta_share(
+                rows, user, all_events, slice_now
             )
-            # Day delta on the investor's slice — recompute the
-            # prior day's slice through the same units math and
-            # subtract. Uses the same event set so a subscription /
-            # redemption between the two snapshots is reflected as
-            # a capital movement (not P&L) in the difference.
-            day_delta_share: Optional[float] = None
-            day_delta_share_pct: Optional[float] = None
-            if len(rows) >= 2:
-                user_events = [e for e in all_events if e.user_id == user.id]
-                prior_val, _ = slice_value(
-                    user_events, all_events, float(rows[1].nav),
-                    as_of=rows[1].as_of_date,
-                )
-                day_delta_share = slice_now["nav_share"] - prior_val
-                day_delta_share_pct = (
-                    (day_delta_share / prior_val) if prior_val else None
-                )
 
         as_of = rows[0].as_of_date.isoformat() if rows else None
         return InvestorSlice(
@@ -262,32 +294,13 @@ class NavController(Controller):
         the units model. Capital movements (subscriptions /
         redemptions) inside the window show up as step changes in
         the slice / cost basis."""
-        from backend.api.algo.investor_units import (
-            compute_slice_history, ensure_all_bootstrapped, fetch_all_events,
-        )
         days = max(1, min(int(days or 90), 1825))
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
         payload = getattr(request.state, "token_payload", {}) or {}
         username = str(payload.get("sub") or "")
         if not username:
             raise HTTPException(status_code=401, detail="No active session")
-        async with async_session() as s:
-            user = (await s.execute(
-                select(User).where(User.username == username)
-            )).scalar_one_or_none()
-            if user is None:
-                raise HTTPException(status_code=404, detail="User not found")
-            await ensure_all_bootstrapped(s)
-            all_events = await fetch_all_events(s)
-            user_events = [e for e in all_events if e.user_id == user.id]
-            rows = (await s.execute(
-                select(NavDaily)
-                  .where(NavDaily.as_of_date >= cutoff)
-                  .order_by(NavDaily.as_of_date.asc())
-            )).scalars().all()
-        share_pct = float(user.share_pct or 0.0)
-        contribution = float(user.contribution or 0.0)
-        history = compute_slice_history(user_events, all_events, rows)
+        share_pct, contribution, history = await _load_user_history_data(username, cutoff)
         out: list[InvestorHistoryPoint] = [
             InvestorHistoryPoint(
                 as_of_date=h["as_of_date"],

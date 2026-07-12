@@ -140,6 +140,23 @@ def _fetch_exchange_raw(exch: str, kite_accts: list) -> "list | None":
     return None
 
 
+def _mcx_lot_size(inst: dict, itype: str, ls_raw: int, mcx_diag_logged: set) -> int:
+    """Apply MCX lot-size override and emit one diagnostic log per derivative type.
+
+    Returns the resolved lot size (may equal `ls_raw` when no override exists).
+    `mcx_diag_logged` is mutated in-place to prevent duplicate log lines per cycle.
+    """
+    if itype in ("CE", "PE", "FUT") and itype not in mcx_diag_logged:
+        mcx_diag_logged.add(itype)
+        logger.info(
+            f"[MCX-INSTR-DIAG] kind={itype} "
+            f"tradingsymbol={inst.get('tradingsymbol')} "
+            f"name='{inst.get('name')}' "
+            f"lot_size={inst.get('lot_size')}"
+        )
+    return _MCX_LOT_OVERRIDES.get((inst.get("name") or "").upper(), ls_raw)
+
+
 def _build_instrument_row(inst: dict, exch: str, mcx_diag_logged: set) -> Instrument:
     """Construct a single Instrument struct from one raw Kite instrument dict.
 
@@ -151,15 +168,7 @@ def _build_instrument_row(inst: dict, exch: str, mcx_diag_logged: set) -> Instru
     strike  = inst.get("strike")
     ls_raw  = int(inst.get("lot_size") or 1)
     if exch == "MCX":
-        if itype in ("CE", "PE", "FUT") and itype not in mcx_diag_logged:
-            mcx_diag_logged.add(itype)
-            logger.info(
-                f"[MCX-INSTR-DIAG] kind={itype} "
-                f"tradingsymbol={inst.get('tradingsymbol')} "
-                f"name='{inst.get('name')}' "
-                f"lot_size={inst.get('lot_size')}"
-            )
-        ls_raw = _MCX_LOT_OVERRIDES.get((inst.get("name") or "").upper(), ls_raw)
+        ls_raw = _mcx_lot_size(inst, itype, ls_raw, mcx_diag_logged)
     return Instrument(
         s=inst["tradingsymbol"],
         e=inst["exchange"],

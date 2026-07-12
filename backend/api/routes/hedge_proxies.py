@@ -80,53 +80,152 @@ _INSTRUMENTS_CACHE: dict[str, tuple[float, list]] = {}
 _INSTRUMENTS_CACHE_TTL = 3600
 
 
+def _get_instruments_cached(broker, exchange_hint: str) -> list:
+    """Return the instruments list for *exchange_hint*, using the 1-hour
+    in-process cache so regression sweeps don't re-fetch the 90k-row dump
+    on every pair.  Returns [] on broker error."""
+    cache_key = str(exchange_hint or "")
+    cached = _INSTRUMENTS_CACHE.get(cache_key)
+    if cached and cached[0] > _time.time():
+        return cached[1]
+    try:
+        insts = broker.instruments(exchange=exchange_hint) or []
+    except Exception:
+        return []
+    _INSTRUMENTS_CACHE[cache_key] = (_time.time() + _INSTRUMENTS_CACHE_TTL, insts)
+    return insts
+
+
+def _mcx_frontmonth_token(insts: list, root: str) -> Optional[int]:
+    """Return the instrument_token for the nearest-expiry MCX FUT whose
+    root matches *root* exactly (e.g. 'GOLD' doesn't match 'GOLDM').
+
+    The MCX tradingsymbol shape is ``<ROOT><YY><MON>FUT`` (e.g. GOLD26JUNFUT).
+    We parse the alpha prefix before the first digit and compare it to
+    *root* so GOLD vs GOLDM vs GOLDPETAL stay distinct.
+    """
+    import re
+    target = root.upper()
+    candidates = []
+    for inst in insts:
+        ts = str(inst.get("tradingsymbol") or "").upper()
+        if not ts.endswith("FUT"):
+            continue
+        m = re.match(r"^([A-Z]+)\d", ts)
+        if m and m.group(1) == target:
+            candidates.append(inst)
+    candidates.sort(key=lambda i: str(i.get("expiry") or ""))
+    if candidates:
+        tk = candidates[0].get("instrument_token")
+        return int(tk) if tk else None
+    return None
+
+
 def _resolve_token(broker, symbol: str, exchange_hint: str) -> Optional[int]:
     """Resolve `symbol` to a Kite instrument_token via broker.instruments().
     Returns None when the symbol isn't found on the hinted exchange and
     the front-month-future fallback for MCX commodities doesn't match
     either. Best-effort — quiet skip on miss; regression handler logs
     the resolved-pair-count so the operator knows what worked."""
-    import re
-    cache_key = str(exchange_hint or "")
-    cached = _INSTRUMENTS_CACHE.get(cache_key)
-    insts: list = []
-    if cached and cached[0] > _time.time():
-        insts = cached[1]
-    else:
-        try:
-            insts = broker.instruments(exchange=exchange_hint) or []
-        except Exception:
-            return None
-        _INSTRUMENTS_CACHE[cache_key] = (_time.time() + _INSTRUMENTS_CACHE_TTL, insts)
+    insts = _get_instruments_cached(broker, exchange_hint)
+    if not insts:
+        return None
     # Exact match first.
     for inst in insts:
         ts = str(inst.get("tradingsymbol") or "").upper()
         if ts == symbol.upper():
             tk = inst.get("instrument_token")
             return int(tk) if tk else None
-    # MCX commodity fallback — front-month future. The MCX tradingsymbol
-    # shape is `<ROOT><YY><MON>FUT` (e.g. GOLD26JUNFUT). Match the ROOT
-    # EXACTLY by parsing the prefix before the first digit. Operator:
-    # "goldm and gold cannot have same root. as they underlying may
-    # have different prices based weight and liquidity." The prior
-    # `startswith(symbol)` check collapsed GOLD with GOLDM /
-    # GOLDPETAL / GOLDGUINEA and SILVER with SILVERM / SILVERMIC,
-    # silently letting the wrong contract supply spot + history.
+    # MCX commodity fallback — front-month future.
     if exchange_hint == "MCX":
-        target_root = symbol.upper()
-        candidates = []
-        for inst in insts:
-            ts = str(inst.get("tradingsymbol") or "").upper()
-            if not ts.endswith("FUT"):
-                continue
-            m = re.match(r"^([A-Z]+)\d", ts)
-            if m and m.group(1) == target_root:
-                candidates.append(inst)
-        candidates.sort(key=lambda i: str(i.get("expiry") or ""))
-        if candidates:
-            tk = candidates[0].get("instrument_token")
-            return int(tk) if tk else None
+        return _mcx_frontmonth_token(insts, symbol)
     return None
+
+
+def _regression_window_config(target_root: str,
+                               days: int) -> tuple[int, int, int]:
+    """Return (days, min_overlap, min_returns) tuned for the target asset class.
+
+    MCX commodity targets roll monthly — clamp the window + guards so the
+    regression runs even on fresh contracts with only ~30 days of bars.
+    Equity/index targets keep the full window.
+    """
+    if target_root.upper() in _MCX_COMMODITY_ROOTS:
+        return min(days, 30), 12, 8
+    return days, 20, 15
+
+
+def _close_map_from_bars(bars: list) -> dict[str, float]:
+    """Convert a list of OHLCV bar dicts into a {date_str → close_price} map.
+
+    Bars with a missing date or close are silently skipped.
+    """
+    out: dict[str, float] = {}
+    for b in bars:
+        ts    = b.get("date")  if isinstance(b, dict) else None
+        close = b.get("close") if isinstance(b, dict) else None
+        if ts is None or close is None:
+            continue
+        try:
+            out[str(ts)[:10]] = float(close)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _beta_r2_sigmas_from_returns(
+    p_ret, t_ret, proxy_symbol: str, target_root: str,
+) -> tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """Compute (beta, r2, sigma_t, sigma_p) from aligned daily log-return arrays.
+
+    Returns (None, None, None, None) when variance is too low or β is implausible.
+    Caller already validated len(p_ret) >= min_returns.
+    """
+    import numpy as np
+    if float(np.var(t_ret)) <= 0:
+        return None, None, None, None
+    cov   = float(np.cov(p_ret, t_ret, ddof=1)[0][1])
+    var_t = float(np.var(t_ret, ddof=1))
+    beta  = cov / var_t if var_t > 0 else None
+    # Annualised vol — daily σ × √252 (252 trading days/yr is the
+    # convention every options platform uses).
+    sqrt252 = float(np.sqrt(252.0))
+    sigma_t = float(np.std(t_ret, ddof=1)) * sqrt252
+    sigma_p = float(np.std(p_ret, ddof=1)) * sqrt252
+    # Reject pathological β values (|β| > 5): split-day outlier or bad tick.
+    if beta is not None and abs(beta) > 5.0:
+        logger.warning(
+            f"hedge-proxy regression: rejecting implausible β={beta:.3f} for "
+            f"{proxy_symbol}→{target_root} (n={len(p_ret)}). Likely a bad "
+            f"bar in the input series."
+        )
+        return None, None, None, None
+    r  = (float(np.corrcoef(p_ret, t_ret)[0][1])
+          if np.std(p_ret) > 0 and np.std(t_ret) > 0 else 0.0)
+    r2 = max(0.0, min(1.0, r * r))
+    return beta, r2, sigma_t, sigma_p
+
+
+def _fetch_bar_closes(
+    broker, p_token: str, t_token: str, days: int,
+) -> tuple[list[float], list[float], int] | None:
+    """Fetch + align proxy and target daily bar close prices.
+
+    Returns (p_closes, t_closes, n_common) when enough data is available,
+    or None on broker error. Early-returns None when common dates < min_overlap.
+    """
+    to_d   = datetime.now(timezone.utc)
+    from_d = to_d - timedelta(days=days + 30)  # +30 to absorb holidays / weekends
+    try:
+        p_bars = broker.historical_data(p_token, from_d, to_d, "day") or []
+        t_bars = broker.historical_data(t_token, from_d, to_d, "day") or []
+    except Exception as e:
+        logger.warning(f"hedge-proxy regression: historical_data failed: {e}")
+        return None
+    p_map  = _close_map_from_bars(p_bars)
+    t_map  = _close_map_from_bars(t_bars)
+    common = sorted(set(p_map.keys()) & set(t_map.keys()))[-(days + 1):]
+    return [p_map[d] for d in common], [t_map[d] for d in common], len(common)
 
 
 def _compute_regression(broker, proxy_symbol: str, target_root: str,
@@ -144,106 +243,33 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
         σ_t = stdev(target_daily_returns) × √252  (annualised vol)
         σ_p = stdev(proxy_daily_returns)  × √252
     """
-    # numpy is a runtime dep used elsewhere (sim driver, performance
-    # task) — safe to import inline so import_pyc doesn't pull it for
-    # the cold-start path on operators who never trigger Stage 3.
     import numpy as np
 
     p_token = _resolve_token(broker, proxy_symbol, "NSE")
     if not p_token:
-        # Stock proxies live on NSE-equity; commodity proxies (GOLDBEES
-        # etc.) are tracked ETFs that DO list on NSE so the default is
-        # correct for both classes.
         return None, None, 0, None, None
     hint_exchange, hint_symbol = _TARGET_HINTS.get(target_root.upper(), ("NSE", target_root))
     t_token = _resolve_token(broker, hint_symbol, hint_exchange)
     if not t_token:
         return None, None, 0, None, None
 
-    # MCX commodity targets: the front-month FUT we just resolved was
-    # listed at most ~60 days ago (typical contract life is 2-5 months
-    # depending on commodity, but only the last ~30 days of bars are
-    # reliably available pre-expiry). Clamp the window + min-overlap
-    # guard tighter so the regression actually runs on a fresh contract
-    # immediately after monthly rollover. Equity targets keep the
-    # full 60-day window — index instruments are continuous.
-    is_mcx = target_root.upper() in _MCX_COMMODITY_ROOTS
-    if is_mcx:
-        days = min(days, 30)
-        min_overlap = 12     # need ≥ 12 overlapping bars (was 20)
-        min_returns = 8      # need ≥ 8 daily returns (was 15)
-    else:
-        min_overlap = 20
-        min_returns = 15
-
-    # Sprint E (audit) — tz-aware UTC; matches the rest of the codebase.
-    # Daily-bar `historical_data` ignores the time component so this is
-    # behaviourally equivalent today, but a future broker client may
-    # validate tz-awareness and reject naive datetimes.
-    to_d = datetime.now(timezone.utc)
-    from_d = to_d - timedelta(days=days + 30)   # +30 to absorb holidays / weekends
-    try:
-        p_bars = broker.historical_data(p_token, from_d, to_d, "day") or []
-        t_bars = broker.historical_data(t_token, from_d, to_d, "day") or []
-    except Exception as e:
-        logger.warning(f"hedge-proxy regression: historical_data failed: {e}")
+    days, min_overlap, min_returns = _regression_window_config(target_root, days)
+    result = _fetch_bar_closes(broker, p_token, t_token, days)
+    if result is None:
         return None, None, 0, None, None
+    p_closes, t_closes, n_common = result
+    if n_common < min_overlap:
+        return None, None, n_common, None, None
 
-    # Align by date string. Daily candles are unambiguous on calendar.
-    def _by_date(bars):
-        out = {}
-        for b in bars:
-            ts = b.get("date") if isinstance(b, dict) else None
-            close = b.get("close") if isinstance(b, dict) else None
-            if ts is None or close is None:
-                continue
-            try:
-                out[str(ts)[:10]] = float(close)
-            except (TypeError, ValueError):
-                continue
-        return out
-
-    p_map = _by_date(p_bars)
-    t_map = _by_date(t_bars)
-    common = sorted(set(p_map.keys()) & set(t_map.keys()))[-(days + 1):]
-    if len(common) < min_overlap:
-        return None, None, len(common), None, None
-    p_closes = [p_map[d] for d in common]
-    t_closes = [t_map[d] for d in common]
-    # Daily returns.
     p_ret = np.diff(np.log(p_closes))
     t_ret = np.diff(np.log(t_closes))
-    if len(p_ret) < min_returns or float(np.var(t_ret)) <= 0:
+    if len(p_ret) < min_returns:
         return None, None, len(p_ret), None, None
-    cov = float(np.cov(p_ret, t_ret, ddof=1)[0][1])
-    var_t = float(np.var(t_ret, ddof=1))
-    beta = cov / var_t if var_t > 0 else None
-    # Annualised vol — daily σ × √252 (252 trading days/yr is the
-    # convention every options platform uses; matches Bloomberg PRM /
-    # Sensibull / Black-Scholes σ inputs). The operator reads this as
-    # "this underlying typically swings ±X% over a year" — same units
-    # as the IV chip on the derivatives page.
-    sqrt252 = float(np.sqrt(252.0))
-    sigma_t = float(np.std(t_ret, ddof=1)) * sqrt252
-    sigma_p = float(np.std(p_ret, ddof=1)) * sqrt252
-    # Sprint E (audit) — reject pathological β values. |β| > 5 means
-    # one of the bar series has a near-singular outlier (split day, bad
-    # tick, fat-finger trade) that's driving the regression off the
-    # rails. Bloomberg PRM caps β inputs to [−3, 3] for stability;
-    # OptionVue warns on |β| > 2. We're slightly more permissive (5)
-    # because leveraged ETF proxies can legitimately overshoot 3, but
-    # 5 is the operator-meaningful "this is broken" threshold. Log
-    # before rejecting so the operator can see WHY their regression
-    # failed in the UI/API trace.
-    if beta is not None and abs(beta) > 5.0:
-        logger.warning(
-            f"hedge-proxy regression: rejecting implausible β={beta:.3f} for "
-            f"{proxy_symbol}→{target_root} (n={len(p_ret)}). Likely a bad "
-            f"bar in the input series."
-        )
+    beta, r2, sigma_t, sigma_p = _beta_r2_sigmas_from_returns(
+        p_ret, t_ret, proxy_symbol, target_root,
+    )
+    if beta is None:
         return None, None, len(p_ret), None, None
-    r = float(np.corrcoef(p_ret, t_ret)[0][1]) if np.std(p_ret) > 0 and np.std(t_ret) > 0 else 0.0
-    r2 = max(0.0, min(1.0, r * r))
     return beta, r2, len(p_ret), sigma_t, sigma_p
 
 
@@ -322,6 +348,45 @@ _SEED_PAIRS: list[tuple[str, str, str]] = [
 ]
 
 
+async def _run_alter_migrations(conn, cols: set) -> None:
+    """Apply additive ALTER TABLE migrations for columns added after the
+    initial schema. Non-destructive — each ALTER uses IF NOT EXISTS."""
+    if "correlation" not in cols:
+        logger.info("hedge_proxies: adding correlation column")
+        await conn.execute(text(
+            "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+            "correlation DOUBLE PRECISION NOT NULL DEFAULT 1.0"
+        ))
+    if "beta" not in cols:
+        logger.info("hedge_proxies: adding beta column (Stage 3)")
+        await conn.execute(text(
+            "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+            "beta DOUBLE PRECISION"
+        ))
+    if "regression_at" not in cols:
+        logger.info("hedge_proxies: adding regression_at column (Stage 3)")
+        await conn.execute(text(
+            "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+            "regression_at TIMESTAMP WITH TIME ZONE"
+        ))
+    if "regression_error" not in cols:
+        logger.info("hedge_proxies: adding regression_error column (Sprint D)")
+        await conn.execute(text(
+            "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+            "regression_error VARCHAR(255)"
+        ))
+    if "target_sigma" not in cols:
+        logger.info("hedge_proxies: adding target_sigma + proxy_sigma columns")
+        await conn.execute(text(
+            "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+            "target_sigma DOUBLE PRECISION"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+            "proxy_sigma DOUBLE PRECISION"
+        ))
+
+
 async def seed_hedge_proxies() -> int:
     """One-time migration + bootstrap seed.
 
@@ -347,41 +412,7 @@ async def seed_hedge_proxies() -> int:
             logger.info("hedge_proxies: legacy schema detected, dropping for migration")
             await conn.execute(text("DROP TABLE IF EXISTS hedge_proxies CASCADE"))
         elif cols:
-            # Additive ALTERs — non-destructive, row count intact.
-            if "correlation" not in cols:
-                logger.info("hedge_proxies: adding correlation column")
-                await conn.execute(text(
-                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
-                    "correlation DOUBLE PRECISION NOT NULL DEFAULT 1.0"
-                ))
-            if "beta" not in cols:
-                logger.info("hedge_proxies: adding beta column (Stage 3)")
-                await conn.execute(text(
-                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
-                    "beta DOUBLE PRECISION"
-                ))
-            if "regression_at" not in cols:
-                logger.info("hedge_proxies: adding regression_at column (Stage 3)")
-                await conn.execute(text(
-                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
-                    "regression_at TIMESTAMP WITH TIME ZONE"
-                ))
-            if "regression_error" not in cols:
-                logger.info("hedge_proxies: adding regression_error column (Sprint D)")
-                await conn.execute(text(
-                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
-                    "regression_error VARCHAR(255)"
-                ))
-            if "target_sigma" not in cols:
-                logger.info("hedge_proxies: adding target_sigma + proxy_sigma columns")
-                await conn.execute(text(
-                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
-                    "target_sigma DOUBLE PRECISION"
-                ))
-                await conn.execute(text(
-                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
-                    "proxy_sigma DOUBLE PRECISION"
-                ))
+            await _run_alter_migrations(conn, cols)
     # init_db has already created the new shape if the table is gone —
     # if migration just dropped it, SQLAlchemy's metadata.create_all
     # (run from init_db) needs to re-fire. Easiest path: re-run it here

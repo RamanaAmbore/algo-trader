@@ -196,6 +196,53 @@ _UA = (
 _FEED_TIMEOUT = 4  # seconds per feed — slow publishers get dropped from this cycle
 
 
+def _resolve_item_source(src_el, link: str) -> str:
+    """Return the item's source string, falling back to the link domain."""
+    source = ((src_el.text if src_el is not None else "") or "").strip()
+    if not source:
+        try:
+            from urllib.parse import urlparse
+            source = urlparse(link).netloc.removeprefix("www.")
+        except Exception:
+            source = ""
+    return source
+
+
+def _parse_pub_date(pub: str) -> datetime | None:
+    """Parse an RSS pubDate string into a timezone-aware datetime, or None on failure."""
+    try:
+        dt = parsedate_to_datetime(pub)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _parse_feed_item(item) -> tuple[datetime, dict] | None:
+    """Parse one RSS <item> element into a (datetime, row-dict) pair.
+
+    Returns None when the item should be skipped (missing fields, noise, etc.).
+    """
+    title = (item.findtext("title") or "").strip()
+    link = (item.findtext("link") or "").strip()
+    pub = (item.findtext("pubDate") or "").strip()
+    if not title or not link or not pub:
+        return None
+    if _NOISE_RE.search(title):
+        return None
+    if _is_low_info(title):
+        return None
+    dt = _parse_pub_date(pub)
+    if dt is None:
+        return None
+    source = _resolve_item_source(item.find("source"), link)
+    return dt, {
+        "link": link, "title": title, "source": source,
+        "published_at": dt, "timestamp_display": _fmt_stamp(dt),
+    }
+
+
 def _fetch_one_feed(url: str) -> list[tuple[datetime, dict]]:
     r = requests.get(url, headers={
         "User-Agent": _UA,
@@ -205,34 +252,9 @@ def _fetch_one_feed(url: str) -> list[tuple[datetime, dict]]:
     root = ET.fromstring(r.content)
     out: list[tuple[datetime, dict]] = []
     for item in list(root.iterfind(".//item"))[:40]:
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        pub = (item.findtext("pubDate") or "").strip()
-        src_el = item.find("source")
-        # Fall back to the domain as source when the feed doesn't include one
-        source = ((src_el.text if src_el is not None else "") or "").strip()
-        if not source:
-            try:
-                from urllib.parse import urlparse
-                source = urlparse(link).netloc.removeprefix("www.")
-            except Exception:
-                source = ""
-        if not title or not link or not pub:
-            continue
-        if _NOISE_RE.search(title):
-            continue
-        if _is_low_info(title):
-            continue
-        try:
-            dt = parsedate_to_datetime(pub)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            continue
-        out.append((dt, {
-            "link": link, "title": title, "source": source,
-            "published_at": dt, "timestamp_display": _fmt_stamp(dt),
-        }))
+        parsed = _parse_feed_item(item)
+        if parsed is not None:
+            out.append(parsed)
     return out
 
 
@@ -313,6 +335,14 @@ async def _insert_new_headlines(s, fresh: list, stale_links: list[str], seen_fps
     return added
 
 
+def _resolve_refreshed(db_items: list) -> str:
+    """Return the dual-tz string for the most recent headline, or 'now' on cold start."""
+    from backend.shared.helpers.date_time_utils import format_dual_tz
+    if db_items:
+        return format_dual_tz(db_items[0].published_at)
+    return timestamp_display()
+
+
 async def _fetch_and_accumulate() -> NewsResponse:
     """Fetch RSS feeds, insert new links into DB, return the full accumulated list."""
     if not is_enabled('market_feed'):
@@ -352,15 +382,7 @@ async def _fetch_and_accumulate() -> NewsResponse:
         items = []
         db_items = []
 
-    # `refreshed_at` reflects the timestamp of the most recent headline.
-    # Falls back to "now" only on cold-start before the first feed fetch.
-    from backend.shared.helpers.date_time_utils import format_dual_tz
-    if db_items:
-        refreshed = format_dual_tz(db_items[0].published_at)
-    else:
-        refreshed = timestamp_display()
-
-    return NewsResponse(items=items, refreshed_at=refreshed)
+    return NewsResponse(items=items, refreshed_at=_resolve_refreshed(db_items))
 
 
 async def _fetch_and_score() -> NewsResponse:
