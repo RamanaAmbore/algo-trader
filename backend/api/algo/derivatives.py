@@ -1186,6 +1186,30 @@ def intermediate_curves(*, S: float, K: float, T_years: float, r: float,
     return out
 
 
+def _accumulate_leg_slice(legs: list[dict], S_grid, elapsed: float, r: float) -> "np.ndarray":
+    """Compute the combined P&L array for all legs at a given time-elapsed fraction.
+
+    Each option leg's T_years is scaled by (1 - elapsed). Futures contribute
+    spot-linear payoff (theta-flat). Returns a numpy array of length len(S_grid).
+    """
+    import numpy as np
+    slice_arr = np.zeros(len(S_grid), dtype=np.float64)
+    for l in legs:
+        kind  = l.get("kind") or "opt"
+        qty   = int(l["qty"])
+        scale = float(l.get("scale_ratio") or 1.0)
+        s_leg = S_grid * scale
+        if kind == "fut":
+            slice_arr += s_leg * qty
+            continue
+        K     = float(l["strike"])
+        opt   = l["opt_type"]
+        T_yrs = float(l.get("T_years") or 0) * (1.0 - elapsed)
+        sig   = float(l.get("sigma") or DEFAULT_IV)
+        slice_arr += _black_scholes_vec(s_leg, K, T_yrs, r, sig, opt) * qty
+    return slice_arr
+
+
 def multileg_intermediate_curves(legs: list[dict], *, S: float,
                                  r: float = DEFAULT_RISK_FREE,
                                  span_pct: float = 0.10,
@@ -1216,21 +1240,7 @@ def multileg_intermediate_curves(legs: list[dict], *, S: float,
     for p in fractions:
         T_label   = base_T_years * (1.0 - p)
         days_left = max(0.0, T_label * 365.0)
-        slice_arr = np.zeros(len(S_grid), dtype=np.float64)
-        for l in legs:
-            kind  = l.get("kind") or "opt"
-            qty   = int(l["qty"])
-            scale = float(l.get("scale_ratio") or 1.0)
-            s_leg = S_grid * scale
-            if kind == "fut":
-                slice_arr += s_leg * qty
-                continue
-            K     = float(l["strike"])
-            opt   = l["opt_type"]
-            T_yrs = float(l.get("T_years") or 0) * (1.0 - p)
-            sig   = float(l.get("sigma") or DEFAULT_IV)
-            slice_arr += _black_scholes_vec(s_leg, K, T_yrs, r, sig, opt) * qty
-        slice_arr -= total_cost
+        slice_arr = _accumulate_leg_slice(legs, S_grid, p, r) - total_cost
         values = [round(float(slice_arr[i]), 2) for i in range(len(S_grid))]
         out.append({
             "label":       _slice_label(days_left),

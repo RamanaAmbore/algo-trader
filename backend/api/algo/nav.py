@@ -162,6 +162,42 @@ def _positions_from_df(df) -> tuple[float, list[str]]:
     return mtm, accounts
 
 
+def _resolve_qty_col(lf):
+    """Return the Polars expression for the quantity column in a holdings frame."""
+    for c in ("quantity", "opening_qty", "opening_quantity"):
+        if c in lf.columns:
+            return pl.col(c).cast(pl.Float64, strict=False).fill_null(0.0)
+    return pl.lit(0.0)
+
+
+def _ltp_fallback_sum(lf_need_ltp, ticker) -> float:
+    """Sum qty × LTP for holdings rows that lack cur_val.
+
+    Looks up each symbol in the ticker first; falls back to the
+    last_price column when the ticker has no entry. Symbols with no
+    usable price contribute 0 (under-estimate is safer than refusing).
+    """
+    if lf_need_ltp.is_empty() or "tradingsymbol" not in lf_need_ltp.columns:
+        return 0.0
+    total = 0.0
+    for row in lf_need_ltp.select(["tradingsymbol", "_qty"]).to_dicts():
+        sym = str(row.get("tradingsymbol") or "")
+        qty = float(row.get("_qty") or 0.0)
+        if not sym or qty == 0.0:
+            continue
+        lp = ticker.get_ltp_by_sym(sym) or 0.0
+        if lp <= 0 and "last_price" in lf_need_ltp.columns:
+            last_prices = lf_need_ltp.filter(
+                pl.col("tradingsymbol") == sym
+            ).select(
+                pl.col("last_price").cast(pl.Float64, strict=False).fill_null(0.0)
+            ).to_series()
+            lp = float(last_prices[0]) if not last_prices.is_empty() else 0.0
+        if lp > 0:
+            total += qty * lp
+    return total
+
+
 def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
     """Vectorized extraction of (holdings_mtm, accounts) from a holdings DataFrame.
 
@@ -173,12 +209,7 @@ def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
 
     lf = pl.from_pandas(df, nan_to_null=True)
 
-    qty_col = pl.lit(0.0)
-    for c in ("quantity", "opening_qty", "opening_quantity"):
-        if c in lf.columns:
-            qty_col = pl.col(c).cast(pl.Float64, strict=False).fill_null(0.0)
-            break
-
+    qty_col = _resolve_qty_col(lf)
     cv_col = (
         pl.col("cur_val").cast(pl.Float64, strict=False).fill_null(0.0)
         if "cur_val" in lf.columns
@@ -195,33 +226,10 @@ def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
     if lf.is_empty():
         return 0.0, []
 
-    # Rows that already have cur_val — sum them immediately.
-    lf_have_cv = lf.filter(pl.col("_cv") != 0.0)
-    cv_sum = float(lf_have_cv.select(pl.col("_cv").sum()).to_series()[0] or 0.0)
-
-    # Rows that need LTP fallback — resolve per-symbol then sum.
-    lf_need_ltp = lf.filter(pl.col("_cv") == 0.0)
-    ltp_sum = 0.0
-    if not lf_need_ltp.is_empty() and "tradingsymbol" in lf_need_ltp.columns:
-        # Collect to Python for per-symbol ticker lookup (N is small —
-        # these are the adapter-missing-cur_val rows, rarely > handful).
-        for row in lf_need_ltp.select(["tradingsymbol", "_qty"]).to_dicts():
-            sym = str(row.get("tradingsymbol") or "")
-            qty = float(row.get("_qty") or 0.0)
-            if not sym or qty == 0.0:
-                continue
-            lp = ticker.get_ltp_by_sym(sym) or 0.0
-            if lp <= 0 and "last_price" in lf_need_ltp.columns:
-                # Try the last_price column as secondary fallback.
-                last_prices = lf_need_ltp.filter(
-                    pl.col("tradingsymbol") == sym
-                ).select(
-                    pl.col("last_price").cast(pl.Float64, strict=False).fill_null(0.0)
-                ).to_series()
-                lp = float(last_prices[0]) if not last_prices.is_empty() else 0.0
-            if lp > 0:
-                ltp_sum += qty * lp
-
+    cv_sum = float(
+        lf.filter(pl.col("_cv") != 0.0).select(pl.col("_cv").sum()).to_series()[0] or 0.0
+    )
+    ltp_sum = _ltp_fallback_sum(lf.filter(pl.col("_cv") == 0.0), ticker)
     mtm = cv_sum + ltp_sum
 
     accounts: list[str] = []
@@ -237,6 +245,73 @@ def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
         )
 
     return mtm, accounts
+
+
+def _merge_accounts(accounts_in: list[str], new_accts: list[str]) -> None:
+    """Append unique non-empty account codes from new_accts into accounts_in in place."""
+    for a in new_accts:
+        if a and a not in accounts_in:
+            accounts_in.append(a)
+
+
+async def _resolve_conn_keys() -> list[str]:
+    """Return known broker account keys, falling back to conn_service when local is empty."""
+    from backend.brokers.connections import Connections
+    keys = list(Connections().conn.keys())
+    if not keys:
+        from backend.brokers.client import is_cutover_on
+        if is_cutover_on():
+            from backend.brokers.client.remote_broker import list_remote_accounts
+            keys = [r["account"] for r in list_remote_accounts() if r.get("account")]
+    return keys
+
+
+async def _fetch_funds_phase(accounts_in: list[str], errors: list[str]) -> float:
+    """Fetch margin data and return cash_total; mutates accounts_in and errors."""
+    from backend.brokers.broker_apis import fetch_margins
+    try:
+        funds_dfs = await asyncio.to_thread(fetch_margins)
+        total = 0.0
+        for df in funds_dfs or []:
+            chunk, accts = _funds_from_df(df)
+            total += chunk
+            _merge_accounts(accounts_in, accts)
+        return total
+    except Exception as e:
+        errors.append(f"funds: {e}")
+        return 0.0
+
+
+async def _fetch_positions_phase(accounts_in: list[str], errors: list[str]) -> float:
+    """Fetch positions data and return positions_mtm; mutates accounts_in and errors."""
+    from backend.brokers.broker_apis import fetch_positions
+    try:
+        pos_dfs = await asyncio.to_thread(fetch_positions)
+        total = 0.0
+        for df in pos_dfs or []:
+            chunk, accts = _positions_from_df(df)
+            total += chunk
+            _merge_accounts(accounts_in, accts)
+        return total
+    except Exception as e:
+        errors.append(f"positions: {e}")
+        return 0.0
+
+
+async def _fetch_holdings_phase(accounts_in: list[str], errors: list[str], ticker) -> float:
+    """Fetch holdings data and return holdings_mtm; mutates accounts_in and errors."""
+    from backend.brokers.broker_apis import fetch_holdings
+    try:
+        hold_dfs = await asyncio.to_thread(fetch_holdings)
+        total = 0.0
+        for df in hold_dfs or []:
+            chunk, accts = _holdings_from_df(df, ticker)
+            total += chunk
+            _merge_accounts(accounts_in, accts)
+        return total
+    except Exception as e:
+        errors.append(f"holdings: {e}")
+        return 0.0
 
 
 async def compute_firm_nav() -> dict:
@@ -261,64 +336,16 @@ async def compute_firm_nav() -> dict:
     once with pl.from_pandas() and aggregated with .sum() expressions
     instead of .iterrows() (~50-100× faster on typical 5-account frames).
     """
-    from backend.brokers.broker_apis import (
-        fetch_holdings, fetch_positions, fetch_margins,
-    )
-    from backend.brokers.connections import Connections
     from backend.brokers.kite_ticker import get_ticker as _get_ticker
 
     _ticker = _get_ticker()
-
-    cash_total = 0.0
-    positions_mtm = 0.0
-    holdings_mtm = 0.0
     accounts_in: list[str] = []
     errors: list[str] = []
 
-    conn_keys = list(Connections().conn.keys())
-    if not conn_keys:
-        # Cutover branch — local Connections is empty when conn_service
-        # owns the sessions; fall back to the canonical account list.
-        from backend.brokers.client import is_cutover_on
-        if is_cutover_on():
-            from backend.brokers.client.remote_broker import list_remote_accounts
-            conn_keys = [r["account"] for r in list_remote_accounts() if r.get("account")]
-
-    # ── Funds (cash + locked margin per broker) ───────────────────────
-    try:
-        funds_dfs = await asyncio.to_thread(fetch_margins)
-        for df in funds_dfs or []:
-            cash_chunk, accts = _funds_from_df(df)
-            cash_total += cash_chunk
-            for a in accts:
-                if a and a not in accounts_in:
-                    accounts_in.append(a)
-    except Exception as e:
-        errors.append(f"funds: {e}")
-
-    # ── Positions unrealized P&L ─────────────────────────────────────
-    try:
-        pos_dfs = await asyncio.to_thread(fetch_positions)
-        for df in pos_dfs or []:
-            mtm_chunk, accts = _positions_from_df(df)
-            positions_mtm += mtm_chunk
-            for a in accts:
-                if a and a not in accounts_in:
-                    accounts_in.append(a)
-    except Exception as e:
-        errors.append(f"positions: {e}")
-
-    # ── Holdings MTM ──────────────────────────────────────────────────
-    try:
-        hold_dfs = await asyncio.to_thread(fetch_holdings)
-        for df in hold_dfs or []:
-            hold_chunk, accts = _holdings_from_df(df, _ticker)
-            holdings_mtm += hold_chunk
-            for a in accts:
-                if a and a not in accounts_in:
-                    accounts_in.append(a)
-    except Exception as e:
-        errors.append(f"holdings: {e}")
+    await _resolve_conn_keys()   # side-effects: ensures registry populated
+    cash_total     = await _fetch_funds_phase(accounts_in, errors)
+    positions_mtm  = await _fetch_positions_phase(accounts_in, errors)
+    holdings_mtm   = await _fetch_holdings_phase(accounts_in, errors, _ticker)
 
     nav = cash_total + positions_mtm + holdings_mtm
     return {
