@@ -529,6 +529,58 @@ def _visitor_ignored(ip: str, company: str) -> bool:
     return False
 
 
+_SKIP_PATH_PREFIXES = ("/assets/", "/_app/", "/cdn-cgi/")
+_SKIP_PATH_SUFFIXES = (".png", ".jpg", ".svg", ".css", ".js", ".woff", ".woff2", ".map")
+
+
+def _lv_should_skip_path(path: str) -> bool:
+    """Return True for static assets + infra paths the visitor log should ignore."""
+    if path == "/favicon.ico":
+        return True
+    if any(path.startswith(p) for p in _SKIP_PATH_PREFIXES):
+        return True
+    if any(path.endswith(s) for s in _SKIP_PATH_SUFFIXES):
+        return True
+    return False
+
+
+def _lv_extract_client(headers, request) -> tuple[str, str, str, str]:  # type: ignore[no-untyped-def]
+    """Extract (ip, country, colo, ua) from Cloudflare + standard headers."""
+    ip = (
+        headers.get("CF-Connecting-IP")
+        or (headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        or (request.client.host if request.client else "")
+        or "?"
+    )
+    country = headers.get("CF-IPCountry") or "??"
+    cf_ray = headers.get("CF-Ray") or ""
+    colo = cf_ray.rsplit("-", 1)[-1] if "-" in cf_ray else "?"
+    ua = (headers.get("User-Agent") or "")[:80]
+    return ip, country, colo, ua
+
+
+def _lv_touch_cache(key: tuple[str, str], now: float) -> bool:
+    """Evict stale entries and return True if the key was seen recently.
+
+    Returns True  → caller should skip logging (already logged this hour).
+    Returns False → caller should proceed and then mark the key as seen.
+    """
+    for k in [k for k, t in _visitor_log_cache.items()
+              if (now - t) > _VISITOR_LOG_EVICT_SEC]:
+        _visitor_log_cache.pop(k, None)
+    last = _visitor_log_cache.get(key)
+    return last is not None and (now - last) < _VISITOR_LOG_TTL_SEC
+
+
+def _lv_format_log_line(ip: str, country: str, colo: str,
+                         city_region: str, company: str, asn: str,
+                         method: str, path: str, ua: str) -> str:
+    """Build the [visitor] log line digest."""
+    loc_parts = [p for p in (city_region, company, asn) if p]
+    loc_part = (" — " + " · ".join(loc_parts)) if loc_parts else ""
+    return f"[visitor] {ip} ({country}, CF:{colo}){loc_part} {method} {path} UA=\"{ua}\""
+
+
 async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
     """Litestar before_request hook — resets per-request market-data broker
     cache + logs every first-sight-per-hour visitor to the operator-facing
@@ -545,44 +597,20 @@ async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
         pass
     try:
         path = request.scope.get("path") or ""
-        # Skip static + asset + infra traffic — operator wants 'someone
-        # opened the site', not every chunk / heartbeat.
-        if (path.startswith("/assets/")
-                or path.startswith("/_app/")
-                or path.startswith("/cdn-cgi/")
-                or path == "/favicon.ico"
-                or path.endswith(".png") or path.endswith(".jpg")
-                or path.endswith(".svg") or path.endswith(".css")
-                or path.endswith(".js")  or path.endswith(".woff")
-                or path.endswith(".woff2") or path.endswith(".map")):
+        if _lv_should_skip_path(path):
             return
         headers = request.headers
-        ip = (
-            headers.get("CF-Connecting-IP")
-            or (headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-            or (request.client.host if request.client else "")
-            or "?"
-        )
-        country = headers.get("CF-IPCountry") or "??"
-        cf_ray = headers.get("CF-Ray") or ""
-        colo = cf_ray.rsplit("-", 1)[-1] if "-" in cf_ray else "?"
-        ua = (headers.get("User-Agent") or "")[:80]
+        ip, country, colo, ua = _lv_extract_client(headers, request)
 
         now = monotonic()
         key = (ip, country)
-        for k in [k for k, t in _visitor_log_cache.items()
-                  if (now - t) > _VISITOR_LOG_EVICT_SEC]:
-            _visitor_log_cache.pop(k, None)
-        last = _visitor_log_cache.get(key)
-        if last is not None and (now - last) < _VISITOR_LOG_TTL_SEC:
+        if _lv_touch_cache(key, now):
             return
 
         # MaxMind enrichment — fast (~1 ms, memory-mapped). Skip for
         # private IPs since MaxMind would just return None and we'd
         # waste the dict-walk.
-        city_region = ""
-        company = ""
-        asn = ""
+        city_region, company, asn = ("", "", "")
         if not _is_private_ip(ip):
             city_region, company, asn = _mmdb_lookup(ip)
 
@@ -596,13 +624,7 @@ async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
 
         _visitor_log_cache[key] = now
         method = request.scope.get("method") or "GET"
-        # Build a clean inline digest:  [visitor] IP (country,CF:colo) — city, region · Company · ASN GET /path UA="…"
-        loc_parts = []
-        if city_region: loc_parts.append(city_region)
-        if company:     loc_parts.append(company)
-        if asn:         loc_parts.append(asn)
-        loc_part = (" — " + " · ".join(loc_parts)) if loc_parts else ""
-        logger.info(f"[visitor] {ip} ({country}, CF:{colo}){loc_part} {method} {path} UA=\"{ua}\"")
+        logger.info(_lv_format_log_line(ip, country, colo, city_region, company, asn, method, path, ua))
     except Exception:
         # Hook must NEVER break a real request — geolog is best-effort.
         pass
