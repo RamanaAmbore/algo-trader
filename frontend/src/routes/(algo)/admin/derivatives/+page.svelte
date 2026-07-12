@@ -5604,42 +5604,46 @@
      the children would leave the column gutters un-tinted. Sticky
      pin keeps the rollup visible on a tall list. Override the
      pointer-events default so hover doesn't dim the amber. */
+  /* TOTAL row — subgrid container for column alignment; sticky pin
+     keeps rollup visible on a tall list. No background/border on the
+     container — decoration lives on the child spans (matches
+     .byund-row-total > span pattern used by the Snapshot grid). */
   .cand-row.cand-row-total {
     display: grid;
     grid-template-columns: subgrid;
     grid-column: 1 / -1;
-    padding: 0.2rem 0.3rem;
-    align-items: center;
-    font-size: var(--fs-sm);
-    font-family: monospace;
-    font-variant-numeric: tabular-nums;
     font-weight: 700;
-    /* Layered over opaque #1d2a44 base — sticky-pinned TOTAL row
-       is fully opaque so scrolled rows behind it cannot bleed. */
-    background:
-      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
-      #1d2a44 !important;
-    border-top: 2px solid rgba(251,191,36,0.70) !important;
-    border-bottom: 1px solid rgba(251,191,36,0.40) !important;
-    border-radius: 0 !important;
     color: var(--c-action);
-    /* sticky pin so the rollup stays visible on a tall list */
     position: sticky;
     bottom: 0;
     z-index: 2;
     cursor: default;
   }
-  .cand-row.cand-row-total:hover {
+  /* Amber stratum on every child span — identical to byund-row-total. */
+  .cand-row.cand-row-total > span {
+    padding: 0.32rem 0.45rem;
     background:
       linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
       #1d2a44 !important;
+    border-top: 2px solid rgba(251,191,36,0.70);
+    border-bottom: 1px solid rgba(251,191,36,0.40);
+    color: var(--c-action);
+    font-weight: 700;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  /* Direction-tint variants — slightly lighter green/red so they
-     stay readable against the amber stratum, matching the
-     byund-row-total treatment. */
-  .cand-row.cand-row-total .cell-pos { color: #86efac !important; }
-  .cand-row.cand-row-total .cell-neg { color: #fca5a5 !important; }
-  .cand-row.cand-row-total .cell-flat { color: rgba(251,191,36,0.75) !important; }
+  .cand-row.cand-row-total > span.num {
+    text-align: right;
+  }
+  /* Direction-tint variants — lighter green/red readable on amber. */
+  .cand-row.cand-row-total > .cell-pos { color: #86efac !important; }
+  .cand-row.cand-row-total > .cell-neg { color: #fca5a5 !important; }
+  .cand-row.cand-row-total > .cell-flat { color: rgba(251,191,36,0.75) !important; }
   .cand-total-label {
     color: var(--c-action);
     font-weight: 800;
@@ -5647,16 +5651,6 @@
   }
   /* cand-split-tag, cand-eq-tag, cand-proxy-tag, cand-row.cand-eq, and
      all cand-row variant styles moved to CandidateLegRow.svelte. */
-  /* Right-align numeric cells in the TOTAL row — mirrors .cand-row > .num
-     in CandidateLegRow.svelte which is scoped and cannot reach this element. */
-  .cand-row.cand-row-total > .num {
-    text-align: right;
-    justify-self: end;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   /* Cell-level truncation for the header row's numeric cells. The same
      rule for .cand-row > .num lives in CandidateLegRow.svelte. */
   .cand-headrow > .num {

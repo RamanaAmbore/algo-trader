@@ -2006,6 +2006,15 @@
     overflow: visible;
     border-bottom: 1px solid var(--algo-amber-border-soft);
   }
+  /* Demo-banner-aware offset — banner is fixed at top:3rem (2rem tall),
+     so page-header shifts down to clear it, and algo-content clears
+     navbar + banner + page-header. */
+  :global(.algo-viewport:has(.demo-banner) .page-header) {
+    top: calc(3rem + 2rem);
+  }
+  :global(.algo-viewport:has(.demo-banner)) .algo-content {
+    padding-top: calc(3rem + 2rem + 1.8rem);
+  }
   /* Strip-aware vertical offset — only the ps-strip
      (PositionStrip, 1.5rem) can sit between the navbar and
      .algo-content now that the mode banners are gone. */
@@ -2566,17 +2575,23 @@
     --ch-ts-color: #7e97b8;
   }
 
-  /* Demo banner — global across all algo pages when in demo mode */
+  /* Demo banner — fixed just below the navbar, does NOT push content
+     down. Page-header + algo-content are shifted via :has() below. */
   .demo-banner {
+    position: fixed;
+    top: 3rem;
+    left: 0;
+    right: 0;
+    z-index: 46;
+    height: 2rem;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    padding: 0.45rem 0.75rem;
-    margin: 0 var(--page-h-pad, 1rem) 0.75rem;
-    border-radius: 4px;
+    padding: 0 0.75rem;
     background: rgba(168,85,247,0.15);
-    border: 1px solid rgba(168,85,247,0.35);
+    border-bottom: 1px solid rgba(168,85,247,0.35);
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
   }
