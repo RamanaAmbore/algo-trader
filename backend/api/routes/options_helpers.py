@@ -681,6 +681,58 @@ def _chain_snapshot_best_depth(book: list) -> Optional[float]:
     return None
 
 
+def _chain_snapshot_iv_greeks(
+    ltp: float,
+    spot: float,
+    strike: float,
+    T_yrs: float,
+    side: str,
+) -> tuple[Optional[float], Optional[dict]]:
+    """Compute (iv, greeks_dict) from market LTP via bisection + BS.
+    Returns (None, None) when ltp is absent or T_yrs is zero.
+    """
+    if not (ltp and ltp > 0 and T_yrs > 0):
+        return None, None
+    try:
+        iv: Optional[float] = implied_vol(ltp, spot, strike, T_yrs, DEFAULT_RISK_FREE, side)
+    except Exception:
+        iv = None
+    sigma_eff = iv if iv else DEFAULT_IV
+    try:
+        g: Optional[dict] = greeks(spot, strike, T_yrs, DEFAULT_RISK_FREE, sigma_eff, side)
+    except Exception:
+        g = None
+    return iv, g
+
+
+def _chain_snapshot_compute_leg(
+    sym: str,
+    quote_resp: dict,
+    spot: float,
+    strike: float,
+    T_yrs: float,
+    side: str,
+    ChainSnapshotLegCls: type,
+) -> object:
+    """Compute one ChainSnapshotLeg (CE or PE) for a given strike+side."""
+    qk = option_quote_key(sym) if sym else None
+    q = (quote_resp.get(qk) if qk else None) or {}
+    depth = q.get("depth") or {}
+    ltp = q.get("last_price") or None
+    bid = _chain_snapshot_best_depth(depth.get("buy"))
+    ask = _chain_snapshot_best_depth(depth.get("sell"))
+    iv, g = _chain_snapshot_iv_greeks(ltp, spot, strike, T_yrs, side)
+    gd = g or {}
+    return ChainSnapshotLegCls(  # type: ignore[operator]
+        ltp=ltp, bid=bid, ask=ask, iv=iv,
+        delta=gd.get("delta"),
+        gamma=gd.get("gamma"),
+        theta=gd.get("theta"),
+        vega=gd.get("vega"),
+        rho=gd.get("rho"),
+    )
+
+
 def _chain_snapshot_compute_rows(
     sym_by_strike: dict,
     window_strikes: list,
@@ -698,41 +750,13 @@ def _chain_snapshot_compute_rows(
     """
     rows = []
     for strike in window_strikes:
-        sides: dict[str, object] = {}
-        for side in ("CE", "PE"):
-            sym = sym_by_strike[strike].get(side) or ""
-            qk = option_quote_key(sym) if sym else None
-            q = (quote_resp.get(qk) if qk else None) or {}
-            depth = q.get("depth") or {}
-            ltp = q.get("last_price") or None
-            bid = _chain_snapshot_best_depth(depth.get("buy"))
-            ask = _chain_snapshot_best_depth(depth.get("sell"))
-
-            iv: Optional[float] = None
-            g: Optional[dict] = None
-            if ltp and ltp > 0 and T_yrs > 0:
-                try:
-                    iv = implied_vol(
-                        ltp, spot, float(strike), T_yrs, DEFAULT_RISK_FREE, side,
-                    )
-                except Exception:
-                    iv = None
-                sigma_eff = iv if iv else DEFAULT_IV
-                try:
-                    g = greeks(
-                        spot, float(strike), T_yrs, DEFAULT_RISK_FREE, sigma_eff, side,
-                    )
-                except Exception:
-                    g = None
-
-            sides[side] = ChainSnapshotLegCls(  # type: ignore[operator]
-                ltp=ltp, bid=bid, ask=ask, iv=iv,
-                delta=(g or {}).get("delta") if g else None,
-                gamma=(g or {}).get("gamma") if g else None,
-                theta=(g or {}).get("theta") if g else None,
-                vega=(g or {}).get("vega")   if g else None,
-                rho=(g or {}).get("rho")     if g else None,
+        sides: dict[str, object] = {
+            side: _chain_snapshot_compute_leg(
+                sym_by_strike[strike].get(side) or "",
+                quote_resp, spot, float(strike), T_yrs, side, ChainSnapshotLegCls,
             )
+            for side in ("CE", "PE")
+        }
         rows.append(ChainSnapshotRowCls(  # type: ignore[operator]
             k=float(strike),
             atm_distance=float(strike) - spot,
