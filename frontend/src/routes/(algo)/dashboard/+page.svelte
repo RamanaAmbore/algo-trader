@@ -101,10 +101,8 @@
     return new Date(`${y}-${m}-${d}T00:00:00+05:30`);
   }
 
-  // ── Demo banner — sourced from the layout's shared context ─────────
+  // ── Layout shared context (paper status + open orders) ──────────────
   const algoStatus = getContext('algoStatus');
-  const isDemo = $derived(algoStatus.isDemo);
-  let bannerDismissed = $state(false);
 
   // ── Hero row state ─────────────────────────────────────────────────
   // Derived from filtered positions + holdings so the chart stat
@@ -1227,8 +1225,6 @@
   }
 
   onMount(() => {
-    bannerDismissed = localStorage.getItem('ramboq.demo_banner_dismissed') === '1';
-
     // Hydrate tab preferences — chart-card tab + sidebar cap/equity tab.
     const storedChartTab = readChartPref(_CHART_TAB_LS_KEY, _chartTab,
       (v) => typeof v === 'string' && _CHART_TAB_VALID.has(v));
@@ -1708,25 +1704,11 @@
     _winGrid?.destroy();    _losGrid?.destroy();
   });
 
-  function dismissBanner() {
-    bannerDismissed = true;
-    localStorage.setItem('ramboq.demo_banner_dismissed', '1');
-  }
 </script>
 
 <svelte:head>
   <title>Dashboard | RamboQuant Analytics</title>
 </svelte:head>
-
-{#if isDemo && !bannerDismissed}
-  <div class="demo-banner" role="status">
-    <span class="demo-banner-text">
-      <strong>Rambo Terminal — live production</strong> · real broker data · accounts masked · paper-only writes.
-      <a href="/showcase" class="demo-banner-link">Take the tour</a>
-    </span>
-    <button onclick={dismissBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
-  </div>
-{/if}
 
 <!-- Page header -->
 <div class="page-header">
@@ -2901,43 +2883,6 @@
     gap: 0.4rem;
     margin-bottom: 0.3rem;
   }
-
-  /* Demo banner */
-  .demo-banner {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.45rem 0.75rem;
-    margin-bottom: 0.75rem;
-    border-radius: 4px;
-    background: rgba(168,85,247,0.15);
-    border: 1px solid rgba(168,85,247,0.35);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-md);
-  }
-  .demo-banner-text { color: #d8b4fe; flex: 1; }
-  .demo-banner-text strong { color: #e9d5ff; font-weight: 700; }
-  .demo-banner-link {
-    color: #c084fc;
-    text-decoration: underline;
-    text-underline-offset: 2px;
-    font-weight: 600;
-  }
-  .demo-banner-link:hover { color: #e9d5ff; }
-  .demo-banner-sep { color: rgba(168,85,247,0.45); margin: 0 0.35rem; }
-  .demo-banner-close {
-    flex-shrink: 0;
-    background: none;
-    border: none;
-    color: rgba(168,85,247,0.6);
-    cursor: pointer;
-    font-size: 1rem;
-    line-height: 1;
-    padding: 0 0.15rem;
-    transition: color 0.1s;
-  }
-  .demo-banner-close:hover { color: #c084fc; }
 
   /* NAV chip fetch-error strip — rendered above <NavTab> when
      /api/nav/latest returns an error. Red palette matching
