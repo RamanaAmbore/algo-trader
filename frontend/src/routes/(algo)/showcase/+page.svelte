@@ -6,7 +6,7 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import TourModal from '$lib/TourModal.svelte';
 
-  // Tour open-state. Triggered by the "Take the tour" CTA in the hero.
+  // Tour open-state. Triggered by the "Take the tour" CTA in the hero right column.
   // TourModal handles its own teardown (escape, overlay click, finish).
   let _tourOpen = $state(false);
 
@@ -20,13 +20,6 @@
     _refreshing = false;
   }
 
-  // Recruiter-facing narrative page. Single scrollable tour that
-  // explains the platform's novel pieces (5-mode execution ladder,
-  // declarative agent grammar, BS options analytics, multi-broker
-  // abstraction) and links each one to the live surface where the
-  // viewer can poke at it. No data fetches — pure prose + links so
-  // the page loads instantly even on a recruiter's flaky phone.
-
   // FOUC gate. The page lives under (algo)/ which is ssr=false +
   // prerender=false; on a first-paint navigation the HTML shell + JS
   // bundle race the scoped CSS chunk, so visitors momentarily saw the
@@ -36,6 +29,23 @@
   // first frame where decoration is guaranteed.
   let _mounted = $state(false);
   onMount(() => { _mounted = true; });
+
+  // Credential badges — displayed as pill chips below the name.
+  const CREDS = [
+    { label: 'FRM',          color: 'amber'  },
+    { label: 'CFA-L3',       color: 'sky'    },
+    { label: 'M.Sc. CS',     color: 'purple' },
+    { label: 'Six Sigma GB', color: 'green'  },
+  ];
+
+  // Contact channels.
+  const CONTACT = {
+    github:    'https://github.com/RamanaAmbore/algo-trader',
+    linkedin:  'https://www.linkedin.com/in/ambore/',
+    email:     'mailto:ramboquant@gmail.com?subject=RamboQuant%20-%20Engineering%20Conversation',
+    resume:    'https://ramanaambore.me/resume.pdf',
+    portfolio: 'https://ramanaambore.me',
+  };
 
   /** @type {Array<{
    *   title: string,
@@ -220,61 +230,124 @@
   ];
 
   const facts = [
-    { val: '~70k', lbl: 'lines of code' },
+    { val: '~80k', lbl: 'lines of code' },
     { val: '5',    lbl: 'execution modes' },
     { val: '3',    lbl: 'broker adapters' },
     { val: '14+',  lbl: 'loss/risk agents' },
     { val: '24×7', lbl: 'background risk engine' },
-    { val: '0',    lbl: 'chart libraries (all hand-rolled SVG)' },
+    { val: '0',    lbl: 'chart libraries (hand-rolled SVG)' },
     { val: '1',    lbl: 'engineer (start to ship)' },
+    { val: 'NTT',  lbl: 'Global top-40 innovator' },
+    { val: '19 yr', lbl: 'Fidelity Investments' },
   ];
 </script>
 
 <svelte:head>
-  <title>Rambo Terminal — Tour | RamboQuant</title>
-  <meta name="description" content="Rambo Terminal — a walkthrough of RamboQuant's quant trading terminal: 5-mode execution ladder, declarative agent grammar, Black-Scholes derivatives analytics, multi-broker abstraction." />
+  <title>Ramana Ambore · RamboQuant | About</title>
+  <meta name="description" content="Ramana Ambore — Principal System Analyst at Fidelity Investments, Platform Architect & Quant Developer at RamboQuant. FRM · CFA-L3 · M.Sc. CS · Six Sigma GB." />
 </svelte:head>
 
 <div class="show" class:show-ready={_mounted}>
-  <!-- Canonical page-header — Refresh + Order + Chart + Log icons
-       sit alongside the timestamp the same way every other algo
-       page renders them. Recruiters/visitors browsing the tour get
-       the same chrome the live operator pages carry, so the screen
-       above the fold matches what the rest of the platform looks
-       like. -->
+  <!-- Canonical page-header — Refresh + Order + Chart + Log icons -->
   <div class="page-header">
     <span class="algo-title-group">
-      <h1 class="page-title-chip">Tour</h1>
+      <h1 class="page-title-chip">About</h1>
     </span>
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
-      <RefreshButton onClick={_refresh} loading={_refreshing} label="tour" />
+      <RefreshButton onClick={_refresh} loading={_refreshing} label="about" />
       <PageHeaderActions />
     </span>
   </div>
 
-  <!-- Hero -->
+  <!-- Zone 1 — Two-column hero -->
   <header class="show-hero">
-    <h1 class="show-title">Rambo Terminal — Tour</h1>
-    <p class="show-tag">A production quant trading terminal that runs a real strategy: hold high-conviction stocks long, then use them (and cash) as margin for a toolkit of derivative strategies — covered calls, cash-secured puts, vertical / calendar spreads, collars, wheels, futures, hedges — letting the algo pick the right tool for the market and handle execution + risk. Built end-to-end by one engineer for the RamboQuant LLP partnership — you're looking at the live system, accounts masked.</p>
-    <div class="show-cta-row">
-      <button type="button" class="show-cta-tour" onclick={() => _tourOpen = true}>
-        ▶ Take the 60-second tour
-      </button>
-      <span class="show-cta-hint">5 surfaces · auto-advance · keyboard shortcuts: ←/→ Space Esc</span>
-    </div>
-    <div class="show-facts">
-      {#each facts as f}
-        <div class="show-fact">
-          <div class="show-fact-val">{f.val}</div>
-          <div class="show-fact-lbl">{f.lbl}</div>
+    <div class="show-hero-grid">
+
+      <!-- Left column — bio + contact -->
+      <div class="show-hero-left">
+        <h2 class="show-name">Ramana R. Ambore</h2>
+
+        <!-- Credential badges -->
+        <div class="show-creds">
+          {#each CREDS as c}
+            <span class="show-cred show-cred-{c.color}">{c.label}</span>
+          {/each}
         </div>
-      {/each}
+
+        <div class="show-roles">
+          <div class="show-role">Principal System Analyst · Fidelity Investments (19 yrs)</div>
+          <div class="show-role">Platform Architect &amp; Quantitative Developer · RamboQuant LLP</div>
+        </div>
+
+        <p class="show-tag">A production quant trading terminal that runs a real strategy: hold high-conviction stocks long, then use them (and cash) as margin for a toolkit of derivative strategies — covered calls, cash-secured puts, vertical / calendar spreads, collars, wheels, futures, hedges — letting the algo pick the right tool for the market and handle execution + risk. Built end-to-end by one engineer for the RamboQuant LLP partnership — you're looking at the live system, accounts masked.</p>
+
+        <!-- Contact CTA row -->
+        <div class="show-contact-row">
+          <a class="show-contact-btn show-contact-btn-primary" href={CONTACT.email}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" aria-hidden="true">
+              <path d="M4 4h16v16H4z"/><path d="m4 4 8 8 8-8"/>
+            </svg>
+            Email
+          </a>
+          <a class="show-contact-btn" href={CONTACT.github} target="_blank" rel="noopener">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.69 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.17 1.18.92-.26 1.9-.39 2.88-.39.98 0 1.96.13 2.88.39 2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.23 2.75.12 3.04.73.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.05.78 2.12v3.14c0 .3.21.66.8.55 4.56-1.53 7.85-5.83 7.85-10.91C23.5 5.65 18.35.5 12 .5Z"/>
+            </svg>
+            GitHub
+          </a>
+          <a class="show-contact-btn" href={CONTACT.linkedin} target="_blank" rel="noopener">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M19 0H5C2.24 0 0 2.24 0 5v14c0 2.76 2.24 5 5 5h14c2.76 0 5-2.24 5-5V5c0-2.76-2.24-5-5-5ZM8 19H5V8h3v11ZM6.5 6.73c-.97 0-1.75-.79-1.75-1.76 0-.97.78-1.75 1.75-1.75s1.75.79 1.75 1.75-.78 1.76-1.75 1.76ZM20 19h-3v-5.6c0-3.37-4-3.11-4 0V19h-3V8h3v1.77c1.4-2.58 7-2.77 7 2.46V19Z"/>
+            </svg>
+            LinkedIn
+          </a>
+          <a class="show-contact-btn" href={CONTACT.portfolio} target="_blank" rel="noopener">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M2 12h20"/>
+              <path d="M12 2a15 15 0 0 1 0 20"/>
+              <path d="M12 2a15 15 0 0 0 0 20"/>
+            </svg>
+            Portfolio
+          </a>
+          <a class="show-contact-btn" href={CONTACT.resume} target="_blank" rel="noopener">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" aria-hidden="true">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <path d="M14 2v6h6"/>
+            </svg>
+            Resume ↓
+          </a>
+        </div>
+      </div>
+
+      <!-- Right column — facts grid + tour CTA -->
+      <div class="show-hero-right">
+        <div class="show-facts">
+          {#each facts as f}
+            <div class="show-fact">
+              <div class="show-fact-val">{f.val}</div>
+              <div class="show-fact-lbl">{f.lbl}</div>
+            </div>
+          {/each}
+        </div>
+
+        <div class="show-cta-row">
+          <button type="button" class="show-cta-tour" onclick={() => _tourOpen = true}>
+            ▶  Take the 60-second tour
+          </button>
+          <span class="show-cta-hint">←/→ Space Esc</span>
+        </div>
+      </div>
+
     </div>
   </header>
 
-  <!-- Section cards. Each one teaches a concept and links to the live
+  <!-- Zone 2 — Section cards. Each one teaches a concept and links to the live
        surface where the viewer can poke at it. -->
   <section class="show-grid">
     {#each sections as s, i}
@@ -293,8 +366,7 @@
         {#if s.link}
           <!-- Use <a href> instead of <button onclick=goto> so screen
                readers, right-click "open in new tab", and crawlers
-               all work. Aria-label includes the action verb so the
-               trailing "→" glyph isn't read out as text. -->
+               all work. -->
           <a class="show-card-link" href={s.link.href}
              aria-label={`Open ${s.link.label}`}>
             {s.link.label} →
@@ -304,14 +376,11 @@
     {/each}
   </section>
 
-  <!-- Footer-CTA — get the recruiter to take one of the two next
-       actions before they close the tab. -->
+  <!-- Zone 3 — Simplified footer -->
   <footer class="show-footer">
-    <p class="show-footer-line">Want the source story or a deeper conversation?</p>
-    <div class="show-footer-btns">
-      <a href="/about" class="show-footer-btn show-footer-btn-alt">↙ About the founder</a>
-      <a href="/contact" class="show-footer-btn">Get in touch →</a>
-    </div>
+    <p class="show-footer-line">
+      Merrimack, NH · ramboquant@gmail.com · ramboq.com · ramanaambore.me
+    </p>
   </footer>
 </div>
 
@@ -323,16 +392,9 @@
   .show {
     max-width: 1180px;
     margin: 0 auto;
-    /* Top padding tightened (was 1rem) — the algo layout already
-       provides ~0.5rem above the main, plus the hero's own 1.25rem
-       top padding. The double-stack created an unintentional 2.5rem
-       gap above the H1; trimming to 0.25rem here lets the hero
-       breathe at its own natural top-padding. */
     padding: 0.25rem 0.5rem 2rem;
     color: var(--algo-slate);
-    /* FOUC gate — hidden until onMount sets .show-ready. Stops the
-       brief flash of plain-text hero + bullet lists between the
-       JS bundle landing and the scoped CSS chunk applying. */
+    /* FOUC gate — hidden until onMount sets .show-ready. */
     opacity: 0;
     transition: opacity 0.18s ease-out;
   }
@@ -342,39 +404,164 @@
 
   /* ── Hero ─────────────────────────────────────────────────────────── */
   .show-hero {
-    text-align: center;
-    /* Top padding tightened (was 1.5rem) so the H1 sits closer to
-       the navbar / banners. The bottom padding stays generous so
-       the hero feels intentionally separated from the section
-       grid below. */
-    padding: 0.5rem 1rem 1.75rem;
+    padding: 0.5rem 0 1.75rem;
     border-bottom: 1px solid rgba(126, 151, 184, 0.18);
     margin-bottom: 1.5rem;
   }
-  .show-title {
-    font-size: clamp(1.4rem, 4vw, 1.9rem);
-    font-weight: 800;
-    color: var(--c-action);
-    letter-spacing: -0.01em;
-    margin: 0 0 0.6rem;
-    line-height: 1.15;
+
+  /* Two-column hero grid: 58/42 split, stacks to 1fr on mobile */
+  .show-hero-grid {
+    display: grid;
+    grid-template-columns: 58fr 42fr;
+    gap: 1.25rem;
+    align-items: start;
   }
+  @media (max-width: 760px) {
+    .show-hero-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Left column card */
+  .show-hero-left {
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+  }
+
+  /* Name */
+  .show-name {
+    font-size: clamp(1.5rem, 4vw, 2.2rem);
+    font-weight: 900;
+    color: var(--algo-amber, #fbbf24);
+    letter-spacing: -0.01em;
+    margin: 0 0 0.55rem;
+    line-height: 1.1;
+  }
+
+  /* Credential pill badges */
+  .show-creds {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-bottom: 0.8rem;
+  }
+  .show-cred {
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 0.18rem 0.55rem;
+    border-radius: 999px;
+    border-width: 1px;
+    border-style: solid;
+  }
+  .show-cred-amber  { color: #fbbf24; border-color: rgba(251,191,36,0.55);  background: rgba(251,191,36,0.08); }
+  .show-cred-sky    { color: #7dd3fc; border-color: rgba(125,211,252,0.55); background: rgba(125,211,252,0.08); }
+  .show-cred-purple { color: #c084fc; border-color: rgba(192,132,252,0.55); background: rgba(192,132,252,0.08); }
+  .show-cred-green  { color: #4ade80; border-color: rgba(74,222,128,0.55);  background: rgba(74,222,128,0.08); }
+
+  /* Role lines */
+  .show-roles {
+    margin-bottom: 0.85rem;
+  }
+  .show-role {
+    font-size: var(--fs-xl);
+    color: var(--algo-muted);
+    line-height: 1.5;
+  }
+
+  /* Tagline paragraph */
   .show-tag {
     font-size: clamp(0.85rem, 2vw, 1rem);
     color: #9bb0d0;
     line-height: 1.6;
-    max-width: 42rem;
-    margin: 0 auto 1.4rem;
+    margin: 0 0 1.1rem;
   }
 
-  /* Take-the-tour CTA — bridges hero copy and the section grid. Amber
-     button next to a small hint about keyboard shortcuts so the
-     recruiter knows what they're getting before they click. */
+  /* Contact CTA row */
+  .show-contact-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .show-contact-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.8rem;
+    background: var(--algo-cyan-bg, rgba(8,145,178,0.12));
+    border: 1px solid var(--algo-cyan-border-soft, rgba(8,145,178,0.30));
+    border-radius: 4px;
+    color: var(--algo-cyan-text, #7dd3fc);
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-decoration: none;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .show-contact-btn:hover {
+    background: var(--algo-cyan-bg-strong, rgba(8,145,178,0.22));
+    border-color: var(--algo-cyan-border, rgba(8,145,178,0.55));
+    color: var(--algo-sky-text, #38bdf8);
+  }
+  .show-contact-btn-primary {
+    background: var(--algo-amber-bg, rgba(251,191,36,0.12));
+    border-color: var(--algo-amber-border, rgba(251,191,36,0.45));
+    color: var(--algo-amber, #fbbf24);
+  }
+  .show-contact-btn-primary:hover {
+    background: var(--algo-amber-bg-strong, rgba(251,191,36,0.22));
+    border-color: rgba(251,191,36,0.85);
+    color: var(--algo-amber-text, #fcd34d);
+  }
+
+  /* Right column card */
+  .show-hero-right {
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(126, 151, 184, 0.20);
+    border-radius: 0.5rem;
+    padding: 1.25rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  /* Facts grid — 2 columns */
+  .show-facts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem;
+  }
+  .show-fact {
+    background: rgba(126, 151, 184, 0.08);
+    border: 1px solid rgba(126, 151, 184, 0.20);
+    border-radius: 0.3rem;
+    padding: 0.45rem 0.7rem;
+    text-align: center;
+  }
+  .show-fact-val {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: var(--c-action);
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+  .show-fact-lbl {
+    font-size: var(--fs-md);
+    font-weight: 700;
+    color: var(--algo-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-top: 0.2rem;
+  }
+
+  /* Tour CTA row inside right column */
   .show-cta-row {
-    display: flex; align-items: center; justify-content: center;
-    flex-wrap: wrap; gap: 0.7rem;
-    margin: 0 auto 1.6rem;
-    max-width: 42rem;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.7rem;
   }
   .show-cta-tour {
     padding: 0.55rem 1.1rem;
@@ -413,36 +600,6 @@
   @media (max-width: 540px) {
     .show-cta-hint { display: none; }
   }
-  .show-facts {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 0.4rem 0.6rem;
-    margin-top: 0.5rem;
-  }
-  .show-fact {
-    background: rgba(126, 151, 184, 0.08);
-    border: 1px solid rgba(126, 151, 184, 0.20);
-    border-radius: 0.3rem;
-    padding: 0.45rem 0.7rem;
-    text-align: center;
-    min-width: 6.5rem;
-  }
-  .show-fact-val {
-    font-size: 1.05rem;
-    font-weight: 800;
-    color: var(--c-action);
-    line-height: 1.1;
-    font-variant-numeric: tabular-nums;
-  }
-  .show-fact-lbl {
-    font-size: var(--fs-md);
-    font-weight: 700;
-    color: var(--algo-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-top: 0.2rem;
-  }
 
   /* ── Section grid ──────────────────────────────────────────────────── */
   .show-grid {
@@ -472,8 +629,6 @@
     text-transform: uppercase;
     letter-spacing: 0.1em;
     padding: 0.15rem 0.5rem;
-    /* rgba fallback for Safari < 16.2 (color-mix support landed in
-       16.2). Recruiter audience may still be on older iOS. */
     background: rgba(212, 146, 12, 0.12);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     border: 1px solid rgba(212, 146, 12, 0.35);
@@ -512,8 +667,6 @@
     padding: 0.18rem 0 0.18rem 1rem;
     position: relative;
   }
-  /* Mobile bump — keep card body legible without pinch-to-zoom; tag
-     chips also bumped so they don't read as decorative noise. */
   @media (max-width: 600px) {
     .show-card-body     { font-size: var(--fs-xl); }
     .show-card-bullets li { font-size: var(--fs-xl); }
@@ -529,7 +682,6 @@
   }
   .show-card-link {
     background: transparent;
-    /* rgba fallback first, color-mix on top for modern browsers. */
     border: 1px solid rgba(212, 146, 12, 0.45);
     border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
     color: var(--accent);
@@ -550,48 +702,16 @@
     border-color: var(--accent);
   }
 
-  /* ── Footer CTA ───────────────────────────────────────────────────── */
+  /* ── Footer ───────────────────────────────────────────────────────── */
   .show-footer {
     text-align: center;
-    padding: 1.5rem 1rem 0.5rem;
+    padding: 1.25rem 1rem 0.5rem;
     margin-top: 1.5rem;
     border-top: 1px solid rgba(126, 151, 184, 0.18);
   }
   .show-footer-line {
     font-size: var(--fs-xl);
     color: #9bb0d0;
-    margin: 0 0 0.75rem;
-  }
-  .show-footer-btns {
-    display: flex;
-    gap: 0.6rem;
-    justify-content: center;
-    flex-wrap: wrap;
-  }
-  .show-footer-btn {
-    display: inline-block;
-    font-size: var(--fs-lg);
-    font-weight: 700;
-    padding: 0.45rem 1rem;
-    border-radius: 0.3rem;
-    background: rgba(251, 191, 36, 0.10);
-    color: var(--c-action);
-    border: 1px solid rgba(251, 191, 36, 0.40);
-    text-decoration: none;
-    transition: background-color 0.1s, border-color 0.1s;
-  }
-  .show-footer-btn:hover {
-    background: rgba(251, 191, 36, 0.20);
-    border-color: rgba(251, 191, 36, 0.65);
-  }
-  .show-footer-btn-alt {
-    background: transparent;
-    color: #9bb0d0;
-    border-color: rgba(126, 151, 184, 0.35);
-  }
-  .show-footer-btn-alt:hover {
-    background: rgba(126, 151, 184, 0.10);
-    color: var(--algo-slate);
-    border-color: rgba(126, 151, 184, 0.55);
+    margin: 0;
   }
 </style>

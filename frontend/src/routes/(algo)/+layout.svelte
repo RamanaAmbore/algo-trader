@@ -23,7 +23,6 @@
   import AgentToast from '$lib/AgentToast.svelte';
   import ToastContainer from '$lib/ToastContainer.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
-  import HireMeModal from '$lib/HireMeModal.svelte';
   import ShortcutCheatsheet from '$lib/ShortcutCheatsheet.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
@@ -87,11 +86,6 @@
   function _preloadHover(href) {
     preloadCode(href).catch(() => { /* network miss — non-fatal */ });
   }
-
-  // Demo "Hire Me" modal open-state. Triggered by the navbar button
-  // (visible only when isDemo). Closes via overlay click, × button,
-  // or Escape (HireMeModal handles its own teardown).
-  let _hireOpen = $state(false);
 
   // Demo banner dismiss state — persisted across reloads in localStorage.
   let _demoBannerDismissed = $state(false);
@@ -1120,7 +1114,7 @@
 
         <!-- About — first element in demo navbar so recruiters see it immediately -->
         {#if isDemo}
-          <button onclick={() => _hireOpen = true} class="algo-nav-btn algo-hire-btn"
+          <button onclick={() => goto('/showcase')} class="algo-nav-btn algo-hire-btn"
                   title="Built by Ramana Ambore — engineering highlights + contact channels">
             About
           </button>
@@ -1298,17 +1292,13 @@
           {#if $authStore.user}
             <button onclick={() => { signOut(); closeMenu(); }} class="algo-mobile-item">Sign Out</button>
           {:else}
-            <button onclick={() => { _hireOpen = true; closeMenu(); }}
+            <button onclick={() => { goto('/showcase'); closeMenu(); }}
                     class="algo-mobile-item algo-hire-btn">About</button>
             <button onclick={() => { goto('/signin'); closeMenu(); }} class="algo-mobile-item">Sign In</button>
           {/if}
         </nav>
       {/if}
     </header>
-
-{#if _hireOpen}
-  <HireMeModal onClose={() => _hireOpen = false} />
-{/if}
 
     <!-- Mode banners removed entirely. The colored navbar mode pill
          (PAPER sky · LIVE red · SHADOW orange · SIM rose · REPLAY
