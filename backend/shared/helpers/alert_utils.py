@@ -32,9 +32,11 @@ Message type prefixes
 """
 
 import atexit
+import hashlib
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+from typing import TYPE_CHECKING
 
 import requests
 
@@ -44,6 +46,48 @@ import urllib3.util.connection
 urllib3.util.connection.HAS_IPV6 = False  # Server IPv6 outbound hangs
 
 from backend.shared.helpers.utils import secrets, config, is_enabled
+
+if TYPE_CHECKING:
+    import redis as _redis_t
+
+# ---------------------------------------------------------------------------
+# Redis client — lazy singleton for cross-restart cooldown persistence.
+# Falls back gracefully when Redis is unavailable (connection refused, not
+# installed, etc.) so alert delivery is never blocked by a Redis outage.
+# ---------------------------------------------------------------------------
+
+_redis_client: "None | _redis_t.Redis" = None
+_redis_init_lock = Lock()
+_redis_available: bool = True   # pessimistic flip on first failure
+
+
+def _get_redis() -> "None | _redis_t.Redis":
+    """Return the module-level sync Redis client, or None on any error.
+
+    Uses a lazy singleton so import-time (test) environments without a
+    running Redis don't fail.  Connection URL read from secrets.yaml key
+    ``redis_url`` or defaults to ``redis://localhost:6379/0``.
+    """
+    global _redis_client, _redis_available
+    if not _redis_available:
+        return None
+    if _redis_client is not None:
+        return _redis_client
+    with _redis_init_lock:
+        if _redis_client is not None:
+            return _redis_client
+        try:
+            import redis
+            url = secrets.get("redis_url", "redis://localhost:6379/0") or "redis://localhost:6379/0"
+            client = redis.Redis.from_url(url, socket_connect_timeout=1, socket_timeout=1, decode_responses=False)
+            # Ping to verify connectivity at init time.
+            client.ping()
+            _redis_client = client
+            logger.info(f"Redis client connected ({url})")
+        except Exception as _e:
+            logger.warning(f"Redis unavailable — order-alert cooldown falls back to in-process dict: {_e}")
+            _redis_available = False
+    return _redis_client
 
 logger = get_logger(__name__)
 
@@ -604,10 +648,32 @@ def send_order_failure_alert(
     within `_ORDER_ALERT_COOLDOWN_SEC`.  Suppressed fires increment a
     counter that flows into the next dispatched alert as "(+N suppressed)".
 
+    Market-hours gate: suppressed when all market segments are closed
+    (catches misconfigured agents firing at 1am IST).
+
+    Cooldown is persisted to Redis (key TTL = cooldown window) so process
+    restarts don't reset the dedup state.  Falls back to the in-process
+    `_order_alert_state` dict when Redis is unavailable.
+
     All exceptions are swallowed — a broken Telegram connection must never
     interrupt order placement or the chase loop.
     """
     try:
+        # ── Fix 2: market-hours gate ─────────────────────────────────────
+        # Import locally to avoid circular-import at module load time.
+        try:
+            from backend.api.helpers.snapshot_gate import _any_segment_open
+            if not _any_segment_open():
+                logger.debug(
+                    f"order-failure alert suppressed (all markets closed) "
+                    f"for {account} {side} {symbol}"
+                )
+                return
+        except Exception as _mh_e:
+            # fail-open: if the market-hours check errors, proceed with
+            # the alert so the operator doesn't miss a real failure.
+            logger.debug(f"order-failure market-hours check failed (fail-open): {_mh_e}")
+
         from backend.shared.helpers.date_time_utils import timestamp_display
         from backend.shared.helpers.utils import mask_account
 
@@ -616,26 +682,72 @@ def send_order_failure_alert(
         key    = (masked, symbol.upper(), side.upper(), sig)
         now    = datetime.utcnow()
 
-        with _order_alert_lock:
-            entry = _order_alert_state.get(key)
-            if entry is not None:
-                elapsed = (now - entry["last_sent"]).total_seconds()
-                if elapsed < _ORDER_ALERT_COOLDOWN_SEC:
-                    entry["suppressed"] += 1
+        # ── Fix 1: Redis-backed cooldown with in-process dict fallback ───
+        # Derive a short stable string key for Redis from the tuple key.
+        _redis_raw = f"{masked}|{symbol.upper()}|{side.upper()}|{sig}"
+        _redis_key = "ramboq:order_alert:" + hashlib.sha256(_redis_raw.encode()).hexdigest()[:32]
+        _used_redis = False
+        suppressed_count = 0
+
+        try:
+            _rc = _get_redis()
+            if _rc is not None:
+                # Check Redis first — if the key exists, cooldown is active.
+                existing = _rc.get(_redis_key)
+                if existing is not None:
+                    # Cooldown active across restart — suppress silently.
+                    # Increment in-process dict counter for the eventual
+                    # fired alert's suppressed note (best-effort, not
+                    # critical to persist this across restart).
+                    with _order_alert_lock:
+                        _entry = _order_alert_state.get(key)
+                        if _entry is not None:
+                            _entry["suppressed"] += 1
                     logger.debug(
-                        f"order-failure alert suppressed ({entry['suppressed']} total) "
+                        f"order-failure alert suppressed (Redis TTL) "
                         f"for {masked} {side} {symbol}: {sig}"
                     )
                     return
-                # Cooldown elapsed — fire; carry suppressed count
-                suppressed_count = entry["suppressed"]
-                entry["last_sent"]  = now
-                entry["suppressed"] = 0
-            else:
-                suppressed_count = 0
-                _order_alert_state[key] = {
-                    "first_seen": now, "last_sent": now, "suppressed": 0,
-                }
+                # Not in Redis — check in-process dict for suppressed count.
+                with _order_alert_lock:
+                    _entry = _order_alert_state.get(key)
+                    if _entry is not None:
+                        suppressed_count = _entry["suppressed"]
+                        _entry["last_sent"]  = now
+                        _entry["suppressed"] = 0
+                    else:
+                        suppressed_count = 0
+                        _order_alert_state[key] = {
+                            "first_seen": now, "last_sent": now, "suppressed": 0,
+                        }
+                # Arm the Redis cooldown key.
+                _rc.setex(_redis_key, _ORDER_ALERT_COOLDOWN_SEC, b"1")
+                _used_redis = True
+        except Exception as _redis_e:
+            logger.debug(f"Redis cooldown check failed — using in-process dict: {_redis_e}")
+
+        if not _used_redis:
+            # Pure in-process fallback path (Redis unavailable).
+            with _order_alert_lock:
+                entry = _order_alert_state.get(key)
+                if entry is not None:
+                    elapsed = (now - entry["last_sent"]).total_seconds()
+                    if elapsed < _ORDER_ALERT_COOLDOWN_SEC:
+                        entry["suppressed"] += 1
+                        logger.debug(
+                            f"order-failure alert suppressed ({entry['suppressed']} total) "
+                            f"for {masked} {side} {symbol}: {sig}"
+                        )
+                        return
+                    # Cooldown elapsed — fire; carry suppressed count
+                    suppressed_count = entry["suppressed"]
+                    entry["last_sent"]  = now
+                    entry["suppressed"] = 0
+                else:
+                    suppressed_count = 0
+                    _order_alert_state[key] = {
+                        "first_seen": now, "last_sent": now, "suppressed": 0,
+                    }
 
         branch   = config.get("deploy_branch", "main")
         ist_disp = timestamp_display()
