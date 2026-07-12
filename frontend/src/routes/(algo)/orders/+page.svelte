@@ -445,7 +445,7 @@
       onClose={() => { /* inline mode — no close affordance */ }} />
     {#if isDemo}
       <div class="mt-2 text-[0.62rem] text-[var(--c-muted)] font-mono">
-        Demo: read-only — sign in to place orders
+        Demo: read-only view
       </div>
     {/if}
   </div>

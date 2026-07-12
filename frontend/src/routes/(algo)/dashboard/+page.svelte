@@ -1723,8 +1723,6 @@
     <span class="demo-banner-text">
       <strong>Rambo Terminal — live production</strong> · real broker data · accounts masked · paper-only writes.
       <a href="/showcase" class="demo-banner-link">Take the tour</a>
-      <span class="demo-banner-sep">·</span>
-      <a href="/signin" class="demo-banner-link">Sign in</a>
     </span>
     <button onclick={dismissBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
   </div>

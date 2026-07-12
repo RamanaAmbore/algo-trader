@@ -2405,7 +2405,6 @@
         broker accounts.
       </p>
       <div class="ot-demo-cta">
-        <a href="/signin" class="ot-demo-btn ot-demo-btn-secondary">Sign in</a>
         <button type="button" class="ot-demo-btn ot-demo-btn-primary"
                 onclick={() => _demoSubmitOpen = false}>Got it</button>
       </div>
