@@ -5598,6 +5598,9 @@
      pin keeps the rollup visible on a tall list. Override the
      pointer-events default so hover doesn't dim the amber. */
   .cand-row.cand-row-total {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
     font-weight: 700;
     /* Layered over opaque #1d2a44 base — sticky-pinned TOTAL row
        is fully opaque so scrolled rows behind it cannot bleed. */
