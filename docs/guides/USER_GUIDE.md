@@ -63,7 +63,7 @@ the broker.
 **What you'll see**:
 - Positions grid, holdings grid, nav cards — all show the last live market-hours snapshot
 - Charts and sparklines — historical data persists (no live quotes, but the past week is there)
-- P&L breakdown pills (P / M / C / H) — frozen snapshot values
+- P&L breakdown pills (P / M / C / H) — frozen snapshot values. The **P pill** (day P&L) uses the same MCX stale-price rescue as the derivatives legs grid, so NavStrip and the Greeks total match during the MCX overnight window.
 - Live price LTP field — empty or last-known price (no updates)
 - Refresh button — clicking it says "Both NSE and MCX are currently closed" + still fetches
   the snapshot from DB (fast, no broker round-trip)
@@ -241,6 +241,7 @@ You see this in the Order tab as live updates: `chase #2 limit=₹180.00`, then 
 - **Auto-close on loss** (`chase_close_positions` action) — when a loss agent fires, it tries to close positions by chasing. You see exactly how aggressive the chase was before it filled.
 - **Expiry-day cleanup** — every weekly expiry day the platform automatically chase-closes ITM options before the broker takes them to delivery.
 - **Manual orders from Terminal** — when you type `buy NIFTY25APR22000CE 50 @180` on `/console`, the chase engine handles it just like an agent-driven order.
+- **Post-placement chase failures** — if an order is placed but the fill chase later fails (e.g. price moves too far from the limit and attempts are exhausted), a Telegram + email alert fires so you know the position wasn't fully executed. Previously these post-placement failures were silent.
 
 ---
 
@@ -322,7 +323,7 @@ When at least one indicator is selected, a **Signals** chip appears in the chart
 
 `/admin/derivatives` is the dedicated options-research page. Pick an underlying (NIFTY / BANKNIFTY / …) and the page surfaces every option + future you hold on it as **Candidates**. Tick / untick rows to include / exclude legs from the payoff — the chart re-renders on every toggle.
 
-- **Payoff diagram** — your aggregated P&L as a function of where the underlying ends up. Two curves: today's value (Black-Scholes with current IV) and expiry value (intrinsic only). Profit zone shaded green, loss zone red. Vertical markers show current spot, every strike, every breakeven (iron condors draw 2!).
+- **Payoff diagram** — your aggregated P&L as a function of where the underlying ends up. Two curves: today's value (Black-Scholes with current IV) and expiry value (intrinsic only). Profit zone shaded green, loss zone red. Vertical markers show current spot, every strike, every breakeven (iron condors draw 2!). A dashed amber line marks the net strategy cost (negative = debit paid, positive = credit received) so you can see your break-even reference at a glance. The chart loads immediately after login — no blank flash while spot price fetches; if you have no F&O positions it shows a flat y=0 line. The page auto-selects the underlying of your first open position rather than always defaulting to NIFTY.
 - **Stat overlay (top-left of chart)** — at-a-glance numerics: **SPOT** (current spot), **TDAY** (today's P&L at spot), **EXP** (expiry P&L at spot), **MAX P** (max profit), **MAX L** (max loss). Color-coded green/red so you can read position health without looking at the side panel.
 - **Side panel** — Position Greeks (Δ Γ Θ V ρ) summed across all checked legs, plus risk metrics (max profit, max loss, R:R, breakevens, POP, expected value).
 - **Candidates panel** below — checkboxes for every position. Source badge tells you whether each row is live, sim, or draft.
@@ -623,6 +624,8 @@ What changed:
 - **Paper orders skip preflight entirely.** The paper engine already runs basket-margin internally as part of its REJECTED-vs-OPEN gate, so the route-level preflight was duplicate work. Paper placements are ~800ms faster as a result; same correctness — rejections still surface in the order row's detail field within a tick.
 
 Net effect: a LIVE placement is roughly half the latency it used to be; PAPER is even faster. The "snappier feeling" is the difference between a button-click and the order showing up on the Orders page being closer to instant.
+
+**Closing large positions** — close orders are exempt from the 5-lot fat-finger cap (which is an entry-only guard). If you were previously unable to close a position larger than 5 lots from the platform, that preflight blocker has been fixed; closes now go through regardless of size.
 
 ---
 
