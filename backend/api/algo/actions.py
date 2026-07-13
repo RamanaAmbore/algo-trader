@@ -115,6 +115,11 @@ def _action_target_exchanges(action_type: str, params: dict, context: dict) -> l
     return []
 
 
+def _al_sim_replay_bypass(context: dict) -> bool:
+    """Return True when the action should skip the exchange gate (sim/replay)."""
+    return bool(context.get("sim_mode") or context.get("replay_mode"))
+
+
 def _exchange_gate_passes(action_type: str, params: dict, context: dict) -> tuple[bool, str]:
     """Phase 23 — return (allowed, reason).
 
@@ -135,8 +140,7 @@ def _exchange_gate_passes(action_type: str, params: dict, context: dict) -> tupl
     annotates `reason` with the skipped count. The caller separately
     filters params before dispatching to the live/paper handler.
     """
-    mode = context.get("sim_mode") and "sim" or context.get("replay_mode") and "replay" or None
-    if mode in ("sim", "replay"):
+    if _al_sim_replay_bypass(context):
         return True, ""
 
     targets = _action_target_exchanges(action_type, params, context)
@@ -186,6 +190,46 @@ async def _dispatch_live_action(agent, action_type: str, params: dict, context: 
         logger.warning(f"Agent [{agent.slug}]: live action '{action_type}' has no wired handler")
 
 
+async def _al_run_noop_handler(
+    agent, action_type: str, params: dict, context: dict,
+) -> bool:
+    """Execute a single noop (non-broker) action handler.
+
+    Returns True on success, False on failure.  Swallows exceptions and
+    logs them so the outer execute() loop can `continue` on False.
+    """
+    from backend.api.algo.actions_live import (
+        _action_send_summary, _action_chase_close,
+    )
+    # Non-raising handlers
+    if action_type == "send_summary":
+        await _action_send_summary(context, params)
+        return True
+    if action_type == "chase_close":
+        # Safety net — chase_close is in BROKER_ACTIONS; reaching here
+        # means BROKER_ACTIONS is misconfigured.
+        await _action_chase_close(context, params)
+        return True
+
+    # Handlers that may raise — wrap individually
+    _raising: dict[str, object] = {
+        "monitor_order":    monitor_order,
+        "deactivate_agent": deactivate_agent,
+        "set_flag":         set_flag,
+        "emit_log":         emit_log,
+    }
+    handler = _raising.get(action_type)
+    if handler is None:
+        logger.warning(f"Agent [{agent.slug}]: unknown action type '{action_type}'")
+        return False
+    try:
+        await handler(context, params)
+        return True
+    except Exception as e:
+        logger.error(f"Agent [{agent.slug}]: {action_type} failed: {e}")
+        return False
+
+
 async def _dispatch_noop_action(agent, action_type: str, params: dict, context: dict) -> bool:
     """Route a noop-mode (non-broker) action to its handler.
 
@@ -197,43 +241,7 @@ async def _dispatch_noop_action(agent, action_type: str, params: dict, context: 
 
     All imports are lazy to preserve the existing circular-import pattern.
     """
-    from backend.api.algo.actions_live import (
-        _action_send_summary, _action_chase_close,
-    )
-    if action_type == "send_summary":
-        await _action_send_summary(context, params)
-    elif action_type == "chase_close":
-        # chase_close is in BROKER_ACTIONS so we'd only get here if
-        # BROKER_ACTIONS is misconfigured — safety net.
-        await _action_chase_close(context, params)
-    elif action_type == "monitor_order":
-        try:
-            await monitor_order(context, params)
-        except Exception as e:
-            logger.error(f"Agent [{agent.slug}]: monitor_order failed: {e}")
-            return False
-    elif action_type == "deactivate_agent":
-        try:
-            await deactivate_agent(context, params)
-        except Exception as e:
-            logger.error(f"Agent [{agent.slug}]: deactivate_agent failed: {e}")
-            return False
-    elif action_type == "set_flag":
-        try:
-            await set_flag(context, params)
-        except Exception as e:
-            logger.error(f"Agent [{agent.slug}]: set_flag failed: {e}")
-            return False
-    elif action_type == "emit_log":
-        try:
-            await emit_log(context, params)
-        except Exception as e:
-            logger.error(f"Agent [{agent.slug}]: emit_log failed: {e}")
-            return False
-    else:
-        logger.warning(f"Agent [{agent.slug}]: unknown action type '{action_type}'")
-        return False
-    return True
+    return await _al_run_noop_handler(agent, action_type, params, context)
 
 
 async def _log_action_success(
@@ -266,6 +274,65 @@ async def _log_action_success(
             logger.debug(f"agent action audit skipped: {_aud_e}")
 
 
+async def _al_action_failed_audit(
+    agent, action_type: str, params: dict, tag: str, sim_mode: bool, exc: Exception,
+) -> None:
+    """Log action_failed event + optional audit trail (fire-and-forget)."""
+    logger.error(f"{tag}Agent [{agent.slug}]: action '{action_type}' failed: {exc}")
+    from backend.api.algo.events import log_event
+    await log_event(agent, "action_failed",
+                    f"{tag}Action: {action_type} — {exc}",
+                    params, sim_mode=sim_mode)
+    if sim_mode:
+        return
+    try:
+        from backend.api.audit import write_audit_event
+        write_audit_event(
+            category="agent.action",
+            action=f"AGENT_{action_type.upper()}_FAILED",
+            actor_username=f"agent:{agent.slug}",
+            actor_role="system",
+            target_type="agent",
+            target_id=str(agent.id) if getattr(agent, "id", None) else None,
+            summary=f"{tag}{action_type} failed: {exc}"[:1000],
+            status_code=500,
+        )
+    except Exception:
+        pass
+
+
+async def _al_dispatch_by_mode(
+    agent, mode: str, action_type: str, params: dict, context: dict,
+) -> bool:
+    """Dispatch one action to the appropriate mode handler.
+
+    Returns True when the action succeeded and action_success should be
+    logged.  Returns False when a noop handler failed and the loop should
+    `continue` (success NOT logged).  Raises on hard errors so the
+    outer try/except can log action_failed.
+    """
+    from backend.api.algo.actions_sim import (
+        _sim_paper_trade, _replay_paper_trade, _shadow_trade,
+    )
+    from backend.api.algo.actions_paper import _paper_trade
+
+    if mode == "sim":
+        await _sim_paper_trade(agent, action_type, params, context)
+    elif mode == "replay":
+        await _replay_paper_trade(agent, action_type, params, context)
+    elif mode == "shadow":
+        await _shadow_trade(agent, action_type, params, context)
+    elif mode == "paper":
+        await _paper_trade(agent, action_type, params, context)
+    elif mode == "live":
+        # Real broker path. Only reached on main AND with
+        # execution.paper_trading_mode = False (navbar LIVE).
+        await _dispatch_live_action(agent, action_type, params, context)
+    else:  # 'noop' — non-broker action
+        return await _dispatch_noop_action(agent, action_type, params, context)
+    return True
+
+
 async def execute(agent, actions: list, context: dict):
     """
     Execute action chain sequentially. Every broker-hitting action
@@ -279,11 +346,6 @@ async def execute(agent, actions: list, context: dict):
         context: market data context (sim_mode flag routes to sim path;
                  df_positions used by paper-mode chase expansion)
     """
-    from backend.api.algo.actions_sim import (
-        _sim_paper_trade, _replay_paper_trade, _shadow_trade,
-    )
-    from backend.api.algo.actions_paper import _paper_trade
-
     sim_mode = bool(context.get("sim_mode"))
     for action in actions:
         action_type = action.get("type", "")
@@ -317,45 +379,62 @@ async def execute(agent, actions: list, context: dict):
             continue
 
         try:
-            if mode == "sim":
-                await _sim_paper_trade(agent, action_type, params, context)
-            elif mode == "replay":
-                await _replay_paper_trade(agent, action_type, params, context)
-            elif mode == "shadow":
-                await _shadow_trade(agent, action_type, params, context)
-            elif mode == "paper":
-                await _paper_trade(agent, action_type, params, context)
-            elif mode == "live":
-                # Real broker path. Only reached on main AND with
-                # execution.paper_trading_mode = False (navbar LIVE).
-                await _dispatch_live_action(agent, action_type, params, context)
-            else:  # 'noop' — non-broker action
-                if not await _dispatch_noop_action(agent, action_type, params, context):
-                    continue
-
+            ok = await _al_dispatch_by_mode(agent, mode, action_type, params, context)
+            if not ok:
+                continue
             await _log_action_success(agent, action_type, params, tag, sim_mode)
-
         except Exception as e:
-            logger.error(f"{tag}Agent [{agent.slug}]: action '{action_type}' failed: {e}")
-            from backend.api.algo.events import log_event
-            await log_event(agent, "action_failed",
-                            f"{tag}Action: {action_type} — {e}",
-                            params, sim_mode=sim_mode)
-            if not sim_mode:
-                try:
-                    from backend.api.audit import write_audit_event
-                    write_audit_event(
-                        category="agent.action",
-                        action=f"AGENT_{action_type.upper()}_FAILED",
-                        actor_username=f"agent:{agent.slug}",
-                        actor_role="system",
-                        target_type="agent",
-                        target_id=str(agent.id) if getattr(agent, "id", None) else None,
-                        summary=f"{tag}{action_type} failed: {e}"[:1000],
-                        status_code=500,
-                    )
-                except Exception:
-                    pass
+            await _al_action_failed_audit(agent, action_type, params, tag, sim_mode, e)
+
+
+def _build_template_overrides(params: dict) -> dict:
+    """Build the override dict from action params (with legacy target_pct mapping)."""
+    overrides = {
+        "tp_pct":             params.get("tp_pct_override"),
+        "sl_pct":             params.get("sl_pct_override"),
+        "wing_premium_pct":   params.get("wing_premium_pct_override"),
+        "wing_strike_offset": params.get("wing_strike_offset_override"),
+    }
+    # Backward compat: target_pct (legacy v1 fractional) → tp_pct (% units)
+    if overrides["tp_pct"] is None and params.get("target_pct") is not None:
+        try:
+            overrides["tp_pct"] = float(params["target_pct"]) * 100.0
+        except (TypeError, ValueError):
+            pass
+    return overrides
+
+
+async def _al_apply_template(
+    agent, algo_order_id: int, template_id, template_slug,
+    overrides: dict, params: dict,
+    parent_account: str, parent_symbol: str, parent_side: str,
+    parent_qty: int, parent_exchange: str, parent_price: float,
+    apply_path: str,
+) -> "dict | None":
+    """Call apply_template_to_order and return the result dict (or None on error)."""
+    try:
+        from backend.api.algo.template_attach import apply_template_to_order
+        result = await apply_template_to_order(
+            template_id=int(template_id) if template_id is not None else None,
+            template_slug=str(template_slug) if template_slug else None,
+            overrides=overrides,
+            parent_account=parent_account,
+            parent_symbol=parent_symbol,
+            parent_side=parent_side,
+            parent_qty=parent_qty,
+            parent_exchange=parent_exchange,
+            parent_fill_price=parent_price,
+            parent_product=str(params.get("product") or "NRML"),
+            parent_order_id=algo_order_id,
+            apply_path=apply_path,
+        )
+    except Exception as e:
+        logger.error(
+            f"[ACTION-TEMPLATE] attach failed for agent={agent.slug} "
+            f"order=#{algo_order_id}: {e}"
+        )
+        return None
+    return result.to_dict() if result is not None else None
 
 
 async def _maybe_attach_template_from_action(
@@ -386,18 +465,7 @@ async def _maybe_attach_template_from_action(
     if algo_order_id is None:
         return None
 
-    overrides = {
-        "tp_pct":             params.get("tp_pct_override"),
-        "sl_pct":             params.get("sl_pct_override"),
-        "wing_premium_pct":   params.get("wing_premium_pct_override"),
-        "wing_strike_offset": params.get("wing_strike_offset_override"),
-    }
-    if overrides["tp_pct"] is None and params.get("target_pct") is not None:
-        try:
-            overrides["tp_pct"] = float(params["target_pct"]) * 100.0
-        except (TypeError, ValueError):
-            pass
-
+    overrides     = _build_template_overrides(params)
     template_id   = params.get("template_id")
     template_slug = params.get("template_slug")
 
@@ -406,32 +474,11 @@ async def _maybe_attach_template_from_action(
     ):
         return None
 
-    try:
-        from backend.api.algo.template_attach import apply_template_to_order
-        result = await apply_template_to_order(
-            template_id=int(template_id) if template_id is not None else None,
-            template_slug=str(template_slug) if template_slug else None,
-            overrides=overrides,
-            parent_account=parent_account,
-            parent_symbol=parent_symbol,
-            parent_side=parent_side,
-            parent_qty=parent_qty,
-            parent_exchange=parent_exchange,
-            parent_fill_price=parent_price,
-            parent_product=str(params.get("product") or "NRML"),
-            parent_order_id=algo_order_id,
-            apply_path=apply_path,
-        )
-    except Exception as e:
-        logger.error(
-            f"[ACTION-TEMPLATE] attach failed for agent={agent.slug} "
-            f"order=#{algo_order_id}: {e}"
-        )
-        return None
-
-    if result is None:
-        return None
-    return result.to_dict()
+    return await _al_apply_template(
+        agent, algo_order_id, template_id, template_slug, overrides, params,
+        parent_account, parent_symbol, parent_side, parent_qty,
+        parent_exchange, parent_price, apply_path,
+    )
 
 
 async def _write_live_order(agent, action_type: str, resolved: dict,
