@@ -81,6 +81,12 @@ class ExpiryState:
     total_slippage: float = 0.0
 
 
+def _exp_opt_pair_valid(same_type: bool, aq: int, bq: int) -> bool:
+    """Return True if (A, B) form a valid netting pair under rules 1-4."""
+    opp_sign = (aq > 0) != (bq > 0)
+    return (same_type and opp_sign) or ((not same_type) and (not opp_sign))
+
+
 def _best_opt_partner(
     A: "OptionPosition",
     opts_sorted: "list[OptionPosition]",
@@ -102,19 +108,23 @@ def _best_opt_partner(
         bq = remaining_opt.get(id(B), 0)
         if aq == 0 or bq == 0:
             continue
-        same_type = A.instrument_type == B.instrument_type
-        opp_sign  = (aq > 0) != (bq > 0)
-        if same_type and opp_sign:
-            pass   # rules 1, 2
-        elif (not same_type) and (not opp_sign):
-            pass   # rules 3, 4
-        else:
+        if not _exp_opt_pair_valid(A.instrument_type == B.instrument_type, aq, bq):
             continue
         t = abs(B.theta or 0.0)
         if t > best_t:
             best = B
             best_t = t
     return best, best_t
+
+
+def _exp_opt_long_delta(instrument_type: str, oq: int) -> bool:
+    """Return True when the option has a positive delta (long CE or short PE)."""
+    return (instrument_type == "CE" and oq > 0) or (instrument_type == "PE" and oq < 0)
+
+
+def _exp_fut_pair_valid(opt_long_delta: bool, fq: int) -> bool:
+    """Return True if the future is a valid delta-offset partner for the option."""
+    return (opt_long_delta and fq < 0) or ((not opt_long_delta) and fq > 0)
 
 
 def _best_fut_partner(
@@ -130,27 +140,47 @@ def _best_fut_partner(
     Returns (None, 0) when no valid partner exists.
     """
     oq = remaining_opt.get(id(A), 0)
+    opt_long_delta = _exp_opt_long_delta(A.instrument_type, oq)
     best: "Optional[FuturePosition]" = None
     best_fq = 0
     for f in futures:
         fq = remaining_fut.get(id(f), 0)
         if oq == 0 or fq == 0:
             continue
-        opt_long_delta = (
-            (A.instrument_type == "CE" and oq > 0)
-            or (A.instrument_type == "PE" and oq < 0)
-        )
-        if opt_long_delta and fq < 0:
-            pass
-        elif (not opt_long_delta) and fq > 0:
-            pass
-        else:
+        if not _exp_fut_pair_valid(opt_long_delta, fq):
             continue
         afq = abs(fq)
         if afq > best_fq:
             best = f
             best_fq = afq
     return best, best_fq
+
+
+def _exp_net_one_pair(
+    A: "OptionPosition",
+    aq: int,
+    best_opt: "Optional[OptionPosition]",
+    best_fut: "Optional[FuturePosition]",
+    remaining_opt: "dict[int, int]",
+    remaining_fut: "dict[int, int]",
+) -> int:
+    """Net A against its best available partner (opt preferred over fut).
+
+    Mutates remaining_opt / remaining_fut in place.
+    Returns the updated aq (remaining signed qty for A).
+    """
+    if best_opt is not None:
+        bq  = remaining_opt[id(best_opt)]
+        net = min(abs(aq), abs(bq))
+        remaining_opt[id(A)]        = aq - net * (1 if aq > 0 else -1)
+        remaining_opt[id(best_opt)] = bq - net * (1 if bq > 0 else -1)
+    else:
+        # best_fut is guaranteed non-None when best_opt is None (caller checked)
+        fq  = remaining_fut[id(best_fut)]  # type: ignore[index]
+        net = min(abs(aq), abs(fq))
+        remaining_opt[id(A)]       = aq - net * (1 if aq > 0 else -1)
+        remaining_fut[id(best_fut)] = fq - net * (1 if fq > 0 else -1)  # type: ignore[index]
+    return remaining_opt[id(A)]
 
 
 class ExpiryEngine:
@@ -316,25 +346,14 @@ class ExpiryEngine:
         for A in opts_sorted:
             aq = remaining_opt.get(id(A), 0)
             while aq != 0:
-                best_opt, best_t = _best_opt_partner(A, opts_sorted, remaining_opt)
-                best_fut, best_fq = _best_fut_partner(A, futures, remaining_opt, remaining_fut)
+                best_opt, _ = _best_opt_partner(A, opts_sorted, remaining_opt)
+                best_fut, _ = _best_fut_partner(A, futures, remaining_opt, remaining_fut)
                 if not best_opt and not best_fut:
                     break
-                # Prefer option-option pair when both available — option
-                # pairs cancel both legs' settlement obligation; futures
-                # only cancel the delta direction.
-                if best_opt is not None:
-                    bq = remaining_opt[id(best_opt)]
-                    net = min(abs(aq), abs(bq))
-                    remaining_opt[id(A)]        = aq - net * (1 if aq > 0 else -1)
-                    remaining_opt[id(best_opt)] = bq - net * (1 if bq > 0 else -1)
-                else:
-                    assert best_fut is not None
-                    fq = remaining_fut[id(best_fut)]
-                    net = min(abs(aq), abs(fq))
-                    remaining_opt[id(A)]        = aq - net * (1 if aq > 0 else -1)
-                    remaining_fut[id(best_fut)] = fq - net * (1 if fq > 0 else -1)
-                aq = remaining_opt[id(A)]
+                aq = _exp_net_one_pair(
+                    A, aq, best_opt, best_fut,
+                    remaining_opt, remaining_fut,
+                )
 
         for o in options:
             o.residual_qty = remaining_opt.get(id(o), 0)
@@ -432,6 +451,40 @@ class ExpiryEngine:
             logger.error(f"Expiry: LTP fetch failed: {e}")
             return {}
 
+    def _classify_nfo_positions(self, expiring: "list[OptionPosition]") -> None:
+        """Flag NFO ITM/NTM positions for closing (no netting exception)."""
+        for p in expiring:
+            if p.exchange == "NFO" and p.moneyness in ("ITM", "NTM"):
+                p.needs_close = True
+                p.close_reason = f"Equity {p.moneyness} — must close before expiry"
+
+    def _classify_mcx_group(
+        self,
+        acct: str,
+        underlying: str,
+        group: "list[OptionPosition]",
+        all_futs: "list[FuturePosition]",
+    ) -> None:
+        """Net one MCX (account, underlying, expiry) group and flag residual."""
+        futs = [
+            f for f in all_futs
+            if f.account == acct and f.underlying == underlying
+        ]
+        self._net_commodity_group(group, futs)
+        for p in group:
+            if p.residual_qty != 0:
+                p.needs_close = True
+                p.close_reason = (
+                    f"MCX unhedged {p.moneyness} after 4-rule netting "
+                    f"(residual qty {p.residual_qty:+d}; "
+                    f"theta={p.theta:.3f})"
+                )
+            else:
+                logger.info(
+                    f"Expiry: MCX {p.tradingsymbol} ({acct}) fully netted, "
+                    f"no close needed."
+                )
+
     def _classify_expiring_positions(
         self,
         expiring: list[OptionPosition],
@@ -444,11 +497,7 @@ class ExpiryEngine:
              (account, underlying, expiry) group; only non-zero residual qty
              is flagged for closing.  Mutates positions in place.
         """
-        # Equity (NFO) — ALL ITM + NTM closes, no netting exception.
-        for p in expiring:
-            if p.exchange == "NFO" and p.moneyness in ("ITM", "NTM"):
-                p.needs_close = True
-                p.close_reason = f"Equity {p.moneyness} — must close before expiry"
+        self._classify_nfo_positions(expiring)
 
         # Commodity (MCX) — 4-rule + futures greedy theta netting per group.
         mcx_in_money = [
@@ -460,27 +509,7 @@ class ExpiryEngine:
             groups.setdefault((p.account, p.underlying, p.expiry), []).append(p)
 
         for (acct, underlying, _expiry), group in groups.items():
-            # Same-account futures on the same underlying are offset
-            # candidates. Different-account futures can't net (each
-            # account settles independently).
-            futs = [
-                f for f in all_futs
-                if f.account == acct and f.underlying == underlying
-            ]
-            self._net_commodity_group(group, futs)
-            for p in group:
-                if p.residual_qty != 0:
-                    p.needs_close = True
-                    p.close_reason = (
-                        f"MCX unhedged {p.moneyness} after 4-rule netting "
-                        f"(residual qty {p.residual_qty:+d}; "
-                        f"theta={p.theta:.3f})"
-                    )
-                else:
-                    logger.info(
-                        f"Expiry: MCX {p.tradingsymbol} ({acct}) fully netted, "
-                        f"no close needed."
-                    )
+            self._classify_mcx_group(acct, underlying, group, all_futs)
 
     def scan_positions(self) -> list[OptionPosition]:
         """
@@ -623,6 +652,61 @@ class ExpiryEngine:
     # Main run loop (called by background task on expiry days)
     # ------------------------------------------------------------------
 
+    def _parse_segment_close_times(self) -> "tuple[dtime, dtime]":
+        """Read equity_close and mcx_close from config. Returns (equity_close, mcx_close)."""
+        segments = config.get("market_segments", {})
+        equity_close = dtime(15, 30)
+        mcx_close    = dtime(23, 30)
+        for name, seg in segments.items():
+            h, m = map(int, seg.get("hours_end", "15:30").split(":"))
+            if name == "equity":
+                equity_close = dtime(h, m)
+            elif name == "commodity":
+                mcx_close = dtime(h, m)
+        return equity_close, mcx_close
+
+    async def _run_nfo_close(
+        self, today: "date", equity_close: "dtime", nfo_positions: "list[OptionPosition]",
+    ) -> None:
+        """Wait until NFO close window, then chase-close all NFO positions."""
+        nfo_start = (datetime.combine(today, equity_close) -
+                     timedelta(hours=self._start_offset_h)).time()
+        now_t = timestamp_indian().time()
+        if now_t < nfo_start:
+            wait = (datetime.combine(today, nfo_start) -
+                    datetime.combine(today, now_t)).total_seconds()
+            logger.info(
+                f"Expiry: waiting {wait/60:.0f} min until NFO close phase "
+                f"starts at {nfo_start}"
+            )
+            self._emit("waiting", {"exchange": "NFO", "start_time": str(nfo_start)})
+            await asyncio.sleep(max(wait, 0))
+        logger.info(f"Expiry: starting NFO close for {len(nfo_positions)} positions")
+        await self.close_positions(nfo_positions)
+
+    async def _run_mcx_close(
+        self, today: "date", mcx_close: "dtime",
+    ) -> None:
+        """Wait until MCX close window, re-scan, then chase-close MCX positions."""
+        mcx_start = (datetime.combine(today, mcx_close) -
+                     timedelta(hours=self._start_offset_h)).time()
+        now_t = timestamp_indian().time()
+        if now_t < mcx_start:
+            wait = (datetime.combine(today, mcx_start) -
+                    datetime.combine(today, now_t)).total_seconds()
+            logger.info(
+                f"Expiry: waiting {wait/60:.0f} min until MCX close phase "
+                f"starts at {mcx_start}"
+            )
+            self._emit("waiting", {"exchange": "MCX", "start_time": str(mcx_start)})
+            await asyncio.sleep(max(wait, 0))
+        logger.info("Expiry: re-scanning MCX positions before closing")
+        fresh = self.scan_positions()
+        mcx_fresh = [p for p in fresh if p.exchange == "MCX" and p.needs_close]
+        if mcx_fresh:
+            logger.info(f"Expiry: starting MCX close for {len(mcx_fresh)} positions")
+            await self.close_positions(mcx_fresh)
+
     async def run(self):
         """
         Full expiry-day workflow:
@@ -632,19 +716,8 @@ class ExpiryEngine:
         4. Re-scan every 30 min for new ITM positions
         5. Continue until all closed or market close
         """
-        now = timestamp_indian()
-        today = now.date()
-
-        # Determine market close times per exchange
-        segments = config.get("market_segments", {})
-        equity_close = dtime(15, 30)
-        mcx_close = dtime(23, 30)
-        for name, seg in segments.items():
-            h, m = map(int, seg.get("hours_end", "15:30").split(":"))
-            if name == "equity":
-                equity_close = dtime(h, m)
-            elif name == "commodity":
-                mcx_close = dtime(h, m)
+        today = timestamp_indian().date()
+        equity_close, mcx_close = self._parse_segment_close_times()
 
         # Morning scan
         logger.info("Expiry: starting morning scan")
@@ -655,7 +728,6 @@ class ExpiryEngine:
             self._emit("no_positions", {"date": str(today)})
             return
 
-        # Send morning alert
         self._emit("morning_alert", {
             "count": len(to_close),
             "positions": [
@@ -664,49 +736,19 @@ class ExpiryEngine:
             ],
         })
 
-        # Determine when to start closing based on exchange
         nfo_positions = [p for p in to_close if p.exchange == "NFO"]
         mcx_positions = [p for p in to_close if p.exchange == "MCX"]
 
-        # Close NFO positions (start 2h before equity close)
         if nfo_positions:
-            nfo_start = (datetime.combine(today, equity_close) -
-                         timedelta(hours=self._start_offset_h)).time()
-            now_t = timestamp_indian().time()
-            if now_t < nfo_start:
-                wait = (datetime.combine(today, nfo_start) -
-                        datetime.combine(today, now_t)).total_seconds()
-                logger.info(f"Expiry: waiting {wait/60:.0f} min until NFO close phase starts at {nfo_start}")
-                self._emit("waiting", {"exchange": "NFO", "start_time": str(nfo_start)})
-                await asyncio.sleep(max(wait, 0))
-
-            logger.info(f"Expiry: starting NFO close for {len(nfo_positions)} positions")
-            await self.close_positions(nfo_positions)
-
-        # Close MCX positions (start 2h before commodity close)
+            await self._run_nfo_close(today, equity_close, nfo_positions)
         if mcx_positions:
-            mcx_start = (datetime.combine(today, mcx_close) -
-                         timedelta(hours=self._start_offset_h)).time()
-            now_t = timestamp_indian().time()
-            if now_t < mcx_start:
-                wait = (datetime.combine(today, mcx_start) -
-                        datetime.combine(today, now_t)).total_seconds()
-                logger.info(f"Expiry: waiting {wait/60:.0f} min until MCX close phase starts at {mcx_start}")
-                self._emit("waiting", {"exchange": "MCX", "start_time": str(mcx_start)})
-                await asyncio.sleep(max(wait, 0))
+            await self._run_mcx_close(today, mcx_close)
 
-            # Re-scan MCX positions (market may have moved)
-            logger.info("Expiry: re-scanning MCX positions before closing")
-            fresh = self.scan_positions()
-            mcx_fresh = [p for p in fresh if p.exchange == "MCX" and p.needs_close]
-            if mcx_fresh:
-                logger.info(f"Expiry: starting MCX close for {len(mcx_fresh)} positions")
-                await self.close_positions(mcx_fresh)
-
-        # Summary
-        logger.info(f"Expiry: complete — closed {len(self.state.closed)}, "
-                     f"failed {len(self.state.failed)}, "
-                     f"slippage ₹{self.state.total_slippage:.2f}")
+        logger.info(
+            f"Expiry: complete — closed {len(self.state.closed)}, "
+            f"failed {len(self.state.failed)}, "
+            f"slippage ₹{self.state.total_slippage:.2f}"
+        )
         self._emit("expiry_complete", {
             "closed": len(self.state.closed),
             "failed": len(self.state.failed),
