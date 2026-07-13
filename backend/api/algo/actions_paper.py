@@ -16,57 +16,33 @@ from backend.api.algo.actions_preflight import (
 logger = get_logger(__name__)
 
 
-async def _write_paper_order(agent, action_type: str, resolved: dict, context: dict):
-    """
-    Write ONE AlgoOrder(mode='paper') row after a dry-run via Kite's
-    basket_margin. If the dry-run fails, the row is persisted as
-    REJECTED with Kite's error text — so the operator sees exactly the
-    same rejections they'd see from a real place_order.
+# ── helpers ──────────────────────────────────────────────────────────
 
-    On success, the order is registered with the prod PaperTradeEngine
-    so its fill / modify / unfilled lifecycle plays out against real
-    Kite quotes on the 5 s chase tick.
-    """
-    import uuid
-    from backend.api.database        import async_session
-    from backend.api.models          import AlgoOrder
-    from backend.brokers      import get_broker
-    from backend.api.algo.paper      import get_prod_paper_engine
 
-    account  = str(resolved["account"])
-    symbol   = str(resolved["symbol"])
-    side     = str(resolved["side"])
-    qty      = int(resolved["qty"] or 0)
-    price    = resolved.get("price")
-    exchange = resolved.get("exchange") or "NFO"
-
-    # Basket-margin validation — Kite checks instrument / lot / tick /
-    # segment / circuit-limit rules and returns required margin. If it
-    # raises the error flows into the AlgoOrder.detail column so the
-    # operator can see exactly why a real placement would have been
-    # rejected.
-    broker = None
-    ok, reason = True, "paper"
+async def _ap_dry_run_margin(
+    account: str, symbol: str, side: str, qty: int, price, exchange: str
+) -> tuple[bool, str]:
+    """Basket-margin dry-run. Returns (ok, reason)."""
+    from backend.brokers import get_broker
     try:
         broker = get_broker(account)
         if qty > 0 and price is not None and symbol and exchange:
-            ok, reason = await _basket_margin_validate(broker, {
+            return await _basket_margin_validate(broker, {
                 "account": account, "symbol": symbol, "side": side,
                 "qty": qty, "price": price, "exchange": exchange,
             })
+        return True, "paper"
     except Exception as e:
-        ok, reason = False, f"broker lookup failed: {e}"
+        return False, f"broker lookup failed: {e}"
 
-    status = "OPEN" if ok else "REJECTED"
-    fake_order_id = "PAPER-" + uuid.uuid4().hex[:12]
 
-    price_str = f"@₹{price:,.2f}" if price is not None else "@MARKET"
-    pretty = (f"[PAPER] {agent.slug} → {action_type}: {side} {qty} "
-              f"{symbol} {price_str} · acct={account}"
-              + ("" if ok else f" · REJECTED ({reason})"))
-    logger.warning(pretty)
-
-    algo_order_id = None
+async def _ap_persist_algo_order_row(
+    account: str, symbol: str, exchange: str, side: str,
+    qty: int, price, status: str, fake_order_id: str, pretty: str, agent
+) -> int | None:
+    """Insert one AlgoOrder row. Returns the new row id, or None on error."""
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
     try:
         async with async_session() as s:
             row = AlgoOrder(
@@ -80,31 +56,115 @@ async def _write_paper_order(agent, action_type: str, resolved: dict, context: d
             )
             s.add(row)
             await s.commit()
-            algo_order_id = row.id
+            return row.id
     except Exception as e:
         logger.error(f"[PAPER] write failed: {e}")
+        return None
+
+
+async def _ap_write_placement_events(
+    algo_order_id: int, ok: bool, reason: str, agent, action_type: str,
+    side: str, qty: int, symbol: str, price, account: str, exchange: str
+) -> None:
+    """Write placed / reject timeline event for a paper AlgoOrder."""
+    try:
+        from backend.api.algo.order_events import write_event
+        if ok:
+            price_fmt = "@₹" + f"{price:,.2f}" if price is not None else "@MARKET"
+            await write_event(
+                algo_order_id, "placed",
+                f"[PAPER] {agent.slug} → {action_type}: {side} {qty} {symbol} "
+                f"{price_fmt} — preflight OK",
+                payload={"account": account, "price": price, "exchange": exchange,
+                         "margin_check": reason},
+            )
+        else:
+            await write_event(
+                algo_order_id, "reject",
+                f"[PAPER] {agent.slug} → {action_type}: REJECTED ({reason[:200]})",
+                payload={"account": account, "price": price, "broker_response": reason},
+            )
+    except Exception:
+        pass
+
+
+def _ap_dte(expiry: str, exch: str, ref) -> float | None:
+    """Return days-to-expiry for `expiry`, or None if computation fails."""
+    from backend.api.algo.derivatives import days_to_expiry
+    try:
+        close_time = (23, 30) if exch == "MCX" else (15, 30)
+        return float(days_to_expiry(expiry, ref=ref, close_time=close_time))
+    except Exception:
+        return None
+
+
+def _ap_position_expiry_eligible(p: dict, exch: str, ref) -> bool:
+    """True when position `p` is on `exch`, has quantity, and DTE ≤ 1.5."""
+    from backend.api.algo.derivatives import parse_tradingsymbol
+    if (p.get("exchange") or "").upper() != exch:
+        return False
+    if int(p.get("quantity") or 0) == 0:
+        return False
+    parsed = parse_tradingsymbol(p.get("tradingsymbol") or "")
+    if not parsed or not parsed.get("expiry"):
+        return False
+    d = _ap_dte(parsed["expiry"], exch, ref)
+    return d is not None and d <= 1.5
+
+
+async def _ap_pick_expiring_positions(
+    all_positions: list, exch: str, context: dict
+) -> list:
+    """Filter live positions to those on `exch` with DTE ≤ 1.5."""
+    ref = context.get("now")
+    return [p for p in all_positions if _ap_position_expiry_eligible(p, exch, ref)]
+
+
+# ── primary functions ─────────────────────────────────────────────────
+
+
+async def _write_paper_order(agent, action_type: str, resolved: dict, context: dict):
+    """
+    Write ONE AlgoOrder(mode='paper') row after a dry-run via Kite's
+    basket_margin. If the dry-run fails, the row is persisted as
+    REJECTED with Kite's error text — so the operator sees exactly the
+    same rejections they'd see from a real place_order.
+
+    On success, the order is registered with the prod PaperTradeEngine
+    so its fill / modify / unfilled lifecycle plays out against real
+    Kite quotes on the 5 s chase tick.
+    """
+    import uuid
+
+    account  = str(resolved["account"])
+    symbol   = str(resolved["symbol"])
+    side     = str(resolved["side"])
+    qty      = int(resolved["qty"] or 0)
+    price    = resolved.get("price")
+    exchange = resolved.get("exchange") or "NFO"
+
+    ok, reason = await _ap_dry_run_margin(account, symbol, side, qty, price, exchange)
+
+    status = "OPEN" if ok else "REJECTED"
+    fake_order_id = "PAPER-" + uuid.uuid4().hex[:12]
+
+    price_str = f"@₹{price:,.2f}" if price is not None else "@MARKET"
+    pretty = (f"[PAPER] {agent.slug} → {action_type}: {side} {qty} "
+              f"{symbol} {price_str} · acct={account}"
+              + ("" if ok else f" · REJECTED ({reason})"))
+    logger.warning(pretty)
+
+    algo_order_id = await _ap_persist_algo_order_row(
+        account, symbol, exchange, side, qty, price,
+        status, fake_order_id, pretty, agent,
+    )
+    if algo_order_id is None:
         return
 
-    # Timeline events — placed or rejected.
-    if algo_order_id:
-        try:
-            from backend.api.algo.order_events import write_event
-            if ok:
-                await write_event(
-                    algo_order_id, "placed",
-                    f"[PAPER] {agent.slug} → {action_type}: {side} {qty} {symbol} "
-                    f"{'@₹' + f'{price:,.2f}' if price is not None else '@MARKET'} — preflight OK",
-                    payload={"account": account, "price": price, "exchange": exchange,
-                             "margin_check": reason},
-                )
-            else:
-                await write_event(
-                    algo_order_id, "reject",
-                    f"[PAPER] {agent.slug} → {action_type}: REJECTED ({reason[:200]})",
-                    payload={"account": account, "price": price, "broker_response": reason},
-                )
-        except Exception:
-            pass
+    await _ap_write_placement_events(
+        algo_order_id, ok, reason, agent, action_type,
+        side, qty, symbol, price, account, exchange,
+    )
 
     if not ok:
         # Rejected by basket_margin — nothing to chase. The REJECTED
@@ -115,6 +175,7 @@ async def _write_paper_order(agent, action_type: str, resolved: dict, context: d
     # LiveQuoteSource for real bid/ask and run the same fill / modify /
     # unfilled lifecycle the simulator uses.
     if qty > 0 and price is not None:
+        from backend.api.algo.paper import get_prod_paper_engine
         engine = get_prod_paper_engine()
         engine.register_open_order({
             "algo_order_id": algo_order_id,
@@ -175,32 +236,12 @@ async def _paper_expiry_close(
     ITM/NTM expiring leg; the live ExpiryEngine path is where the hedging
     check actually fires.
     """
-    from backend.api.algo.derivatives import parse_tradingsymbol, days_to_expiry
-
     exch = (params.get("exchange") or "").upper()
     if exch not in ("NFO", "MCX"):
         logger.warning(f"[PAPER] expiry_auto_close: invalid exchange {exch!r} for {agent.slug}")
         return
     all_positions = _live_positions_in_scope(context, {"scope": "total"})
-    targets = []
-    for p in all_positions:
-        if (p.get("exchange") or "").upper() != exch:
-            continue
-        qty_held = int(p.get("quantity") or 0)
-        if qty_held == 0:
-            continue
-        parsed = parse_tradingsymbol(p.get("tradingsymbol") or "")
-        if not parsed or not parsed.get("expiry"):
-            continue
-        try:
-            close_time = (23, 30) if exch == "MCX" else (15, 30)
-            d = float(days_to_expiry(parsed["expiry"], ref=context.get("now"),
-                                     close_time=close_time))
-        except Exception:
-            continue
-        if d > 1.5:
-            continue
-        targets.append(p)
+    targets = await _ap_pick_expiring_positions(all_positions, exch, context)
     if not targets:
         logger.info(f"[PAPER] expiry_auto_close: no {exch} expiring positions "
                     f"for {agent.slug}")

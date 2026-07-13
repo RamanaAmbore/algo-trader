@@ -170,6 +170,19 @@ def _resolve_qty_col(lf):
     return pl.lit(0.0)
 
 
+def _row_ltp(sym: str, lf, ticker) -> float:
+    """Resolve LTP for a single symbol: ticker first, last_price column fallback."""
+    lp = ticker.get_ltp_by_sym(sym) or 0.0
+    if lp <= 0 and "last_price" in lf.columns:
+        last_prices = lf.filter(
+            pl.col("tradingsymbol") == sym
+        ).select(
+            pl.col("last_price").cast(pl.Float64, strict=False).fill_null(0.0)
+        ).to_series()
+        lp = float(last_prices[0]) if not last_prices.is_empty() else 0.0
+    return lp
+
+
 def _ltp_fallback_sum(lf_need_ltp, ticker) -> float:
     """Sum qty × LTP for holdings rows that lack cur_val.
 
@@ -185,14 +198,7 @@ def _ltp_fallback_sum(lf_need_ltp, ticker) -> float:
         qty = float(row.get("_qty") or 0.0)
         if not sym or qty == 0.0:
             continue
-        lp = ticker.get_ltp_by_sym(sym) or 0.0
-        if lp <= 0 and "last_price" in lf_need_ltp.columns:
-            last_prices = lf_need_ltp.filter(
-                pl.col("tradingsymbol") == sym
-            ).select(
-                pl.col("last_price").cast(pl.Float64, strict=False).fill_null(0.0)
-            ).to_series()
-            lp = float(last_prices[0]) if not last_prices.is_empty() else 0.0
+        lp = _row_ltp(sym, lf_need_ltp, ticker)
         if lp > 0:
             total += qty * lp
     return total

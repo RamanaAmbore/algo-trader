@@ -258,67 +258,116 @@ def _recompute_holding_row(row: dict) -> None:
 #  Custom-positions input — operators add ad-hoc symbols via the sim UI
 # ═════════════════════════════════════════════════════════════════════════
 
+def _sd_parse_qty(raw: dict) -> int | None:
+    """Return int quantity from a raw row, or None if unparseable."""
+    try:
+        return int(raw.get("quantity"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sd_parse_ltp(raw: dict) -> float | None:
+    """Return float last_price from a raw row, or None if unparseable."""
+    try:
+        return float(raw.get("last_price"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _sd_resolve_avg(raw: dict, ltp: float) -> float:
+    """Return average_price from a raw row, falling back to ltp."""
+    avg = raw.get("average_price")
+    try:
+        return float(avg) if avg is not None and str(avg) != "" else ltp
+    except (TypeError, ValueError):
+        return ltp
+
+
+def _sd_infer_exchange(sym: str, raw: dict, parse_tradingsymbol: Any) -> str:
+    """Infer exchange: explicit raw field → NFO (F&O parse hit) → NSE."""
+    exch = str(raw.get("exchange") or "").strip().upper()
+    if exch:
+        return exch
+    return "NFO" if parse_tradingsymbol(sym) else "NSE"
+
+
+def _sd_parse_custom_row(
+    raw: dict,
+    parse_tradingsymbol: Any,
+) -> dict | None:
+    """Parse and validate a single custom-position row.
+    Returns the normalised dict on success, or None to skip the row."""
+    sym = str((raw or {}).get("tradingsymbol") or "").strip().upper()
+    if not sym:
+        return None
+    qty = _sd_parse_qty(raw)
+    if qty is None:
+        return None
+    ltp = _sd_parse_ltp(raw)
+    if ltp is None:
+        return None
+    avg = _sd_resolve_avg(raw, ltp)
+    exch = _sd_infer_exchange(sym, raw, parse_tradingsymbol)
+    return {
+        "account":       str(raw.get("account") or "ZG####"),
+        "tradingsymbol": sym,
+        "exchange":      exch,
+        "quantity":      qty,
+        "last_price":    ltp,
+        "average_price": avg,
+        "multiplier":    int(raw.get("multiplier") or 1),
+        "product":       str(raw.get("product") or "MIS"),
+    }
+
+
 def _normalise_custom_positions(rows: list[dict]) -> list[dict]:
     """
     Validate + fill defaults for rows posted from the simulator's "Custom
-    positions" UI. Returns a list of position dicts in the same shape
-    `broker.fetch_positions` produces, ready to drop into `_positions_rows`.
-
-    Required fields: `tradingsymbol`, `quantity`, `last_price`.
-    Inferred defaults:
-      - `account`        → "ZG####" (a generic synthetic account; doesn't
-                           need to exist in secrets.yaml — the engine reads
-                           it as a string label only).
-      - `average_price`  → `last_price` (so pnl starts at 0; the operator
-                           can override if they want immediate P&L).
-      - `exchange`       → "NFO" for parseable F&O, "NSE" otherwise.
-      - `multiplier`     → 1 (Kite multiplier; only matters for legacy
-                           pnl computations).
-    Bad rows (missing tradingsymbol or quantity) are silently skipped so a
-    half-filled UI form doesn't blow up the sim.
+    positions" UI. Bad rows are silently skipped.
     """
     from backend.api.algo.derivatives import parse_tradingsymbol
 
     out: list[dict] = []
     for raw in (rows or []):
-        sym = str((raw or {}).get("tradingsymbol") or "").strip().upper()
-        if not sym:
-            continue
-        try:
-            qty = int(raw.get("quantity"))
-        except (TypeError, ValueError):
-            continue
-        try:
-            ltp = float(raw.get("last_price"))
-        except (TypeError, ValueError):
-            continue
-        avg = raw.get("average_price")
-        try:
-            avg = float(avg) if avg is not None and str(avg) != "" else ltp
-        except (TypeError, ValueError):
-            avg = ltp
-        # Exchange inference — F&O symbols (parser hits) default to NFO,
-        # everything else to NSE. Operators can override by typing it
-        # explicitly into the row.
-        exch = str(raw.get("exchange") or "").strip().upper()
-        if not exch:
-            exch = "NFO" if parse_tradingsymbol(sym) else "NSE"
-        out.append({
-            "account":        str(raw.get("account") or "ZG####"),
-            "tradingsymbol":  sym,
-            "exchange":       exch,
-            "quantity":       qty,
-            "last_price":     ltp,
-            "average_price":  avg,
-            "multiplier":     int(raw.get("multiplier") or 1),
-            "product":        str(raw.get("product") or "MIS"),
-        })
+        rec = _sd_parse_custom_row(raw, parse_tradingsymbol)
+        if rec is not None:
+            out.append(rec)
     return out
 
 
 # ═════════════════════════════════════════════════════════════════════════
 #  Glob scope matching — section.account.tradingsymbol
 # ═════════════════════════════════════════════════════════════════════════
+
+def _sd_qf(q: Any | None, attr: str, default: float = 0.0) -> float:
+    """Safe float accessor for a quote field; returns default when q is None or field falsy."""
+    if not q:
+        return default
+    val = getattr(q, attr, None)
+    return float(val) if val else default
+
+
+def _sd_build_watchlist_row(it: Any, q: Any | None, wl_map: dict) -> dict:
+    """Build one watchlist row dict from a WatchlistItem + optional quote."""
+    ltp = _sd_qf(q, "ltp") or 0.0
+    return {
+        "section":               "watchlist",
+        "account":               wl_map.get(it.watchlist_id, "Default"),
+        "tradingsymbol":         (q.quote_symbol if q else it.tradingsymbol),
+        "exchange":              it.exchange,
+        "quantity":              0,
+        "average_price":         0.0,
+        "last_price":            ltp,
+        "close_price":           _sd_qf(q, "close"),
+        "bid":                   _sd_qf(q, "bid"),
+        "ask":                   _sd_qf(q, "ask"),
+        "pnl":                   0.0,
+        "day_change":            _sd_qf(q, "change"),
+        "day_change_percentage": _sd_qf(q, "change_pct") / 100.0,
+        "_watchlist_id":         it.watchlist_id,
+        "_watchlist_item_id":    it.id,
+    }
+
 
 async def _fetch_user_watchlist_rows(user_id: int) -> list[dict]:
     """Fetch every watchlist item the user owns + batch-quote them.
@@ -349,29 +398,7 @@ async def _fetch_user_watchlist_rows(user_id: int) -> list[dict]:
         return []
     quotes = await _fetch_quotes(items)
     qmap = {q.item_id: q for q in quotes}
-
-    rows: list[dict] = []
-    for it in items:
-        q = qmap.get(it.id)
-        ltp = float(q.ltp if q else 0.0) or 0.0
-        rows.append({
-            "section":       "watchlist",
-            "account":       wl_map.get(it.watchlist_id, "Default"),
-            "tradingsymbol": (q.quote_symbol if q else it.tradingsymbol),
-            "exchange":      it.exchange,
-            "quantity":      0,
-            "average_price": 0.0,
-            "last_price":    ltp,
-            "close_price":   float(q.close if (q and q.close) else 0.0),
-            "bid":           float(q.bid)  if (q and q.bid)  else 0.0,
-            "ask":           float(q.ask)  if (q and q.ask)  else 0.0,
-            "pnl":           0.0,
-            "day_change":    float(q.change     if q else 0.0),
-            "day_change_percentage": float(q.change_pct if q else 0.0) / 100.0,
-            "_watchlist_id": it.watchlist_id,
-            "_watchlist_item_id": it.id,
-        })
-    return rows
+    return [_sd_build_watchlist_row(it, qmap.get(it.id), wl_map) for it in items]
 
 
 # Direct-LTP move primitives. Realistic market simulation should use
@@ -429,6 +456,29 @@ def _match_glob(glob: str, section: str, account: str, symbol: str) -> bool:
         else:
             return False
     return all(fnmatch.fnmatchcase(tp, gp) for gp, tp in zip(g_parts, t_parts))
+
+
+def _sd_patch_tick_pct(tick: dict, pct: float) -> None:
+    """Patch all `pct`-type moves in a single tick dict with the given value."""
+    for move in (tick.get("moves") or []):
+        if (move.get("type") or "").lower() == "pct":
+            try:
+                move["value"] = float(pct)
+            except (TypeError, ValueError):
+                pass
+
+
+def _sd_patch_walk_ticks(ticks: list[dict], drift: float | None,
+                          vol: float | None) -> None:
+    """Patch drift/vol on all random-walk moves across all ticks in place."""
+    walk_types = ("random_walk", "underlying_random_walk")
+    for tick in ticks:
+        for move in (tick.get("moves") or []):
+            if (move.get("type") or "").lower() in walk_types:
+                if drift is not None:
+                    move["drift"] = float(drift)
+                if vol is not None:
+                    move["vol"] = float(vol)
 
 
 class SimDriver:
@@ -635,7 +685,37 @@ class SimDriver:
             out.append(pct)
         return out
 
+    def _sd_snapshot_iter_fields(self) -> dict:
+        """Iteration-mode scalar fields for snapshot(). Null-safe."""
+        return {
+            "parent_run_id":         self.parent_run_id,
+            "iteration_index":       self.iteration_index,
+            "iterations_total":      self.iterations_total,
+            "iteration_regime":      self.iteration_regime,
+            "iteration_max_minutes": self.iteration_max_minutes,
+            "iteration_started_at":  (self.iteration_started_at.isoformat()
+                                      if self.iteration_started_at else None),
+            "iteration_end_reason":  self.iteration_end_reason,
+            "current_iteration_id":  self.current_sim_iteration_id,
+        }
+
+    def _sd_positions_pills(self) -> list[dict]:
+        """Compact per-position snapshot list for the Simulator pill strip."""
+        return [
+            {
+                "account":    r.get("account"),
+                "symbol":     r.get("tradingsymbol"),
+                "quantity":   r.get("quantity"),
+                "last_price": r.get("last_price"),
+                "bid":        r.get("bid"),
+                "ask":        r.get("ask"),
+                "pnl":        r.get("pnl"),
+            }
+            for r in self._positions_rows
+        ]
+
     def snapshot(self) -> dict:
+        open_orders = self._paper.open_order_details()
         return {
             "active":           self.active,
             "run_active":       self._run_active,
@@ -646,15 +726,7 @@ class SimDriver:
             "started_at":       self.started_at.isoformat() if self.started_at else None,
             # Iteration-mode fields — zero/null when running a legacy
             # single-shot start() that didn't go through start_run.
-            "parent_run_id":         self.parent_run_id,
-            "iteration_index":       self.iteration_index,
-            "iterations_total":      self.iterations_total,
-            "iteration_regime":      self.iteration_regime,
-            "iteration_max_minutes": self.iteration_max_minutes,
-            "iteration_started_at":  self.iteration_started_at.isoformat()
-                                        if self.iteration_started_at else None,
-            "iteration_end_reason":  self.iteration_end_reason,
-            "current_iteration_id":  self.current_sim_iteration_id,
+            **self._sd_snapshot_iter_fields(),
             "total_ticks":      len(self.scenario.get("ticks", [])) if self.scenario else 0,
             "holdings_count":   len(self._holdings_rows),
             "positions_count":  len(self._positions_rows),
@@ -664,64 +736,44 @@ class SimDriver:
             "positions_every_n_ticks": self.positions_every_n_ticks,
             "market_state_preset":     self.market_state_preset,
             "market_state":            dict(self.market_state),
-            # Tick pct values actually running (after overrides applied) —
-            # lets the UI reflect "what's active" even if the operator
-            # changes the inputs after Start.
             "tick_pcts":               self._tick_pcts_for_ui(),
             "symbol_filter":           [r.get("tradingsymbol") for r in self._positions_rows]
                                         if self.scenario else [],
-            # Distinct tradingsymbols currently loaded. Lets the UI keep the
-            # Symbol picker fresh even when the operator started without
-            # pressing "Load live book" first.
             "symbols":                 sorted({
                                            str(r.get("tradingsymbol", ""))
                                            for r in self._positions_rows
                                            if r.get("tradingsymbol")
                                        }),
-            # Compact per-position snapshot — the Simulator page renders
-            # this as a small pill list so operators see fills actually
-            # remove rows from the book (not just a shrinking counter).
-            "positions":               [
-                {
-                    "account":   r.get("account"),
-                    "symbol":    r.get("tradingsymbol"),
-                    "quantity":  r.get("quantity"),
-                    "last_price": r.get("last_price"),
-                    "bid":       r.get("bid"),
-                    "ask":       r.get("ask"),
-                    "pnl":       r.get("pnl"),
-                }
-                for r in self._positions_rows
-            ],
-            # Open-order snapshots — one per in-flight chase. Mirrors the
-            # chase engine's internal state so the Simulator page can show
-            # "NIFTY BUY 50 @ ₹21,800 · attempt 2/5" live.
-            "open_order_details":      self._paper.open_order_details(),
+            "positions":               self._sd_positions_pills(),
+            "open_order_details":      open_orders,
             "spread_pct":              self.spread_pct,
-            "open_orders":             len(self._paper.open_order_details()),
-            # Per-account aggregates — same shape /dashboard renders, so
-            # the Simulator panel can drop in the same summary grids
-            # without re-computing on the frontend. Computed lazily here
-            # because snapshot() is hot-path (polled every 2 s by the UI).
+            "open_orders":             len(open_orders),
             "summary_positions":       self._summary_rows("positions"),
             "summary_holdings":        self._summary_rows("holdings"),
-            # Per-underlying spot snapshot — drives the per-underlying
-            # chart grid. Keys: NIFTY, BANKNIFTY, FINNIFTY, etc. Values:
-            # current spot. PriceChart fetches /api/charts/price-history
-            # ?symbol=NIFTY&mode=sim for the line data; this field just
-            # tells the UI which underlyings to render charts for.
             "underlyings":             dict(self._underlyings),
-            # What was actually seeded — positions, holdings, watchlist.
-            # The UI uses this to decide whether to render the Holdings
-            # summary panel (hidden when 'holdings' isn't in this list).
             "inputs":                  list(self.inputs),
-            # Account scope for the run. Empty = all loaded accounts.
             "accounts":                list(self.accounts),
-            # GTT book snapshot — counts + per-GTT detail so the
-            # Simulator page can render placed / triggered / cancelled
-            # GTTs as a strip alongside the positions pills.
             "gtt_book":                self._gtt_book.snapshot(),
         }
+
+    @staticmethod
+    def _sd_accumulate_summary(rows: list[dict]) -> dict[str, dict]:
+        """Aggregate rows into per-account pnl/day_pnl/cur_val buckets."""
+        per_acct: dict[str, dict] = {}
+        for r in rows:
+            acct = str(r.get("account") or "—")
+            agg = per_acct.setdefault(acct, {
+                "account": acct, "pnl": 0.0, "day_pnl": 0.0, "cur_val": 0.0,
+            })
+            try:
+                agg["pnl"]     += float(r.get("pnl")     or 0.0)
+                agg["day_pnl"] += float(r.get("day_pnl") or 0.0)
+                qty = float(r.get("quantity") or 0)
+                ltp = float(r.get("last_price") or 0.0)
+                agg["cur_val"] += qty * ltp
+            except (TypeError, ValueError):
+                pass
+        return per_acct
 
     def _summary_rows(self, kind: str) -> list[dict]:
         """
@@ -737,24 +789,8 @@ class SimDriver:
         rows = self._positions_rows if kind == "positions" else self._holdings_rows
         if not rows:
             return []
-        # Per-account aggregate. Pandas-free path so this stays cheap
-        # on every snapshot() call.
-        per_acct: dict[str, dict] = {}
-        for r in rows:
-            acct = str(r.get("account") or "—")
-            agg = per_acct.setdefault(acct, {
-                "account": acct, "pnl": 0.0, "day_pnl": 0.0, "cur_val": 0.0,
-            })
-            try:
-                agg["pnl"]     += float(r.get("pnl")     or 0.0)
-                agg["day_pnl"] += float(r.get("day_pnl") or 0.0)
-                qty = float(r.get("quantity") or 0)
-                ltp = float(r.get("last_price") or 0.0)
-                agg["cur_val"] += qty * ltp
-            except (TypeError, ValueError):
-                pass
+        per_acct = self._sd_accumulate_summary(rows)
         out = sorted(per_acct.values(), key=lambda d: d["account"])
-        # TOTAL row.
         total = {
             "account": "TOTAL",
             "pnl":     sum(r["pnl"]     for r in out),
@@ -811,12 +847,7 @@ class SimDriver:
                 continue
             if i >= len(ticks):
                 break
-            for move in (ticks[i].get("moves") or []):
-                if (move.get("type") or "").lower() == "pct":
-                    try:
-                        move["value"] = float(pct)
-                    except (TypeError, ValueError):
-                        pass
+            _sd_patch_tick_pct(ticks[i], pct)
         return scen
 
     def _sd_apply_walk_overrides(self, scen: dict, walk_drift: float | None,
@@ -828,14 +859,7 @@ class SimDriver:
         scen = copy.deepcopy(scen)
         if walk_seed is not None:
             scen["seed"] = int(walk_seed)
-        for tick in (scen.get("ticks") or []):
-            for move in (tick.get("moves") or []):
-                mtype = (move.get("type") or "").lower()
-                if mtype in ("random_walk", "underlying_random_walk"):
-                    if walk_drift is not None:
-                        move["drift"] = float(walk_drift)
-                    if walk_vol is not None:
-                        move["vol"]   = float(walk_vol)
+        _sd_patch_walk_ticks(scen.get("ticks") or [], walk_drift, walk_vol)
         return scen
 
     def _start_normalise_scenario(
@@ -855,6 +879,55 @@ class SimDriver:
         scen = self._sd_apply_walk_overrides(scen, walk_drift, walk_vol, walk_seed)
         return scen
 
+    @staticmethod
+    def _sd_resolve_inputs(inputs: list[str] | None) -> list[str]:
+        """Normalise inputs list to known values, defaulting to ['positions']."""
+        _known = {"positions", "holdings", "watchlist"}
+        filtered = [s.strip().lower() for s in (inputs or ["positions"]) if s]
+        return [s for s in filtered if s in _known] or ["positions"]
+
+    @staticmethod
+    def _sd_resolve_market_preset(spec: dict | None) -> str:
+        """Return the market_state preset name, falling back to 'mid_session'."""
+        if isinstance(spec, dict) and spec.get("preset") in MARKET_STATE_PRESETS:
+            return (spec or {}).get("preset")
+        return "mid_session"
+
+    @staticmethod
+    def _sd_resolve_spread(scen: dict, spread_pct: float | None) -> float:
+        """Resolve spread: request override > scenario YAML > DB setting."""
+        from backend.shared.helpers.settings import get_float
+        raw = (spread_pct
+               if spread_pct is not None
+               else scen.get("spread_pct",
+                             get_float("simulator.default_spread_pct", 0.10) / 100.0))
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _sd_resolve_positions_cadence(
+        scen: dict, positions_every_n_ticks: int | None,
+    ) -> int:
+        """Resolve positions cadence: request override > scenario YAML > DB default."""
+        raw = (positions_every_n_ticks
+               if positions_every_n_ticks is not None
+               else scen.get("positions_every_n_ticks", _positions_every_default()))
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            return _positions_every_default()
+
+    def _sd_resolve_chase_cap(self, chase_max_attempts: int | None) -> None:
+        """Apply or restore the per-run chase cap override on the paper engine."""
+        if chase_max_attempts is not None:
+            cap = max(1, min(50, int(chase_max_attempts)))
+            self._paper._get_max = lambda c=cap: c
+        else:
+            from backend.api.algo.paper import PaperTradeEngine
+            self._paper._get_max = PaperTradeEngine._default_max_attempts
+
     def _start_resolve_run_params(
         self,
         scen: dict,
@@ -872,69 +945,22 @@ class SimDriver:
         before _start_init_recording because recording setup reads
         self.started_at and self.rate_ms.
         """
-        # Input buckets — normalise to a clean list of known values.
-        # Defaults to ["positions"] (historical behaviour). Unknown
-        # values are silently dropped so a future "options-only" or
-        # "watchlist+positions" UI mode doesn't error here.
-        _known_inputs = {"positions", "holdings", "watchlist"}
-        _req_inputs = [s.strip().lower() for s in (inputs or ["positions"]) if s]
-        self.inputs = [s for s in _req_inputs if s in _known_inputs] or ["positions"]
-        # Account scope — stored for snapshot serialization + passed
-        # to seed_live below. Empty list = all loaded accounts.
+        self.inputs = self._sd_resolve_inputs(inputs)
         self.accounts       = [str(a).strip().upper() for a in (accounts or []) if a]
         self.rate_ms        = max(200, int(rate_ms))
         self.tick_index     = 0
         self.started_at     = datetime.now()
         self.only_agent_ids = list(only_agent_ids) if only_agent_ids else None
-
-        # Spread — request override > scenario YAML > DB setting. Stored as
-        # a decimal fraction internally (0.001 = 0.10%). The UI submits a
-        # percent (0.10) which the route layer converts before calling us.
-        from backend.shared.helpers.settings import get_float
-        raw_sp = (spread_pct
-                  if spread_pct is not None
-                  else scen.get("spread_pct",
-                                get_float("simulator.default_spread_pct", 0.10) / 100.0))
-        try:
-            self.spread_pct = max(0.0, float(raw_sp))
-        except (TypeError, ValueError):
-            self.spread_pct = 0.0
-
-        # Positions cadence — request override > scenario YAML > DB default.
-        # Clamped to >= 1 so nothing ever gets divided by zero or silenced.
-        raw_pos = (positions_every_n_ticks
-                   if positions_every_n_ticks is not None
-                   else scen.get("positions_every_n_ticks", _positions_every_default()))
-        try:
-            self.positions_every_n_ticks = max(1, int(raw_pos))
-        except (TypeError, ValueError):
-            self.positions_every_n_ticks = _positions_every_default()
-
-        # Market-state resolution — request override > scenario YAML > default.
-        # Both accept the same shape: {preset: "…"} or explicit fields.
+        self.spread_pct = self._sd_resolve_spread(scen, spread_pct)
+        self.positions_every_n_ticks = self._sd_resolve_positions_cadence(
+            scen, positions_every_n_ticks,
+        )
         spec = market_state_override if market_state_override else scen.get("market_state")
         self.market_state = _resolve_market_state(spec)
-        # Reset the simulated clock offset on every start so a fresh
-        # run begins at the picked preset's nominal time.
         self._sim_clock_offset_minutes = 0
-        # Reset regime-switch phase tracking so the first tick with a
-        # `phase` field always logs a transition.
         self._last_phase = None
-        # Per-run chase cap override — when set, replaces the paper
-        # engine's default getter for the duration of this run.
-        if chase_max_attempts is not None:
-            cap = max(1, min(50, int(chase_max_attempts)))
-            self._paper._get_max = lambda c=cap: c
-        else:
-            # Restore default when not overridden so a previous run's
-            # override doesn't leak into this one.
-            from backend.api.algo.paper import PaperTradeEngine
-            self._paper._get_max = PaperTradeEngine._default_max_attempts
-        self.market_state_preset = (
-            (spec or {}).get("preset")
-            if isinstance(spec, dict) and spec.get("preset") in MARKET_STATE_PRESETS
-            else "mid_session"
-        )
+        self._sd_resolve_chase_cap(chase_max_attempts)
+        self.market_state_preset = self._sd_resolve_market_preset(spec)
 
     def _start_init_recording(
         self,
@@ -1309,6 +1335,32 @@ class SimDriver:
         self._apply_next_tick()
         return self.snapshot()
 
+    def _sd_check_global_cap(self, auto_stop: Any) -> bool:
+        """Return True (and stop) if the global wall-clock cap has been hit."""
+        if datetime.now() - self.started_at > auto_stop:
+            logger.warning(f"[SIM] Auto-stop after {auto_stop}")
+            if not self.iteration_end_reason:
+                self.iteration_end_reason = "auto_stop"
+            self._internal_stop()
+            return True
+        return False
+
+    async def _sd_check_iteration_cap(self) -> bool:
+        """Return True (and stop) if the per-iteration time cap has been hit."""
+        if not (self.iteration_max_minutes and self.iteration_started_at):
+            return False
+        elapsed = (datetime.now() - self.iteration_started_at).total_seconds() / 60.0
+        if elapsed < self.iteration_max_minutes:
+            return False
+        self.iteration_end_reason = "time_limit"
+        if self.iteration_force_close and self._positions_rows:
+            try:
+                await self._force_close_open_positions("iteration time_limit")
+            except Exception as e:
+                logger.error(f"[SIM] force-close failed: {e}")
+        self._internal_stop()
+        return True
+
     async def _run_loop(self) -> None:
         """Async loop driving the scenario at `rate_ms` cadence.
 
@@ -1319,30 +1371,9 @@ class SimDriver:
         try:
             auto_stop = _auto_stop_after()
             while self.active:
-                # Global wall-clock cap (safety net — sim shouldn't bleed forever)
-                if datetime.now() - self.started_at > auto_stop:
-                    logger.warning(f"[SIM] Auto-stop after {auto_stop}")
-                    if not self.iteration_end_reason:
-                        self.iteration_end_reason = "auto_stop"
-                    self._internal_stop()
+                if self._sd_check_global_cap(auto_stop):
                     return
-                # Per-iteration max_minutes cap. Distinguished from the
-                # global auto_stop: this one triggers force-close when
-                # positions remain (controlled by iteration_force_close).
-                if (self.iteration_max_minutes and self.iteration_started_at
-                        and (datetime.now() - self.iteration_started_at).total_seconds() / 60.0
-                            >= self.iteration_max_minutes):
-                    self.iteration_end_reason = "time_limit"
-                    if self.iteration_force_close and self._positions_rows:
-                        try:
-                            # Await so the AlgoOrder rows land BEFORE the
-                            # scheduler reads them in _compute_iteration_fees.
-                            # Fire-and-forget create_task() left fees=0 in
-                            # the previous smoke run.
-                            await self._force_close_open_positions("iteration time_limit")
-                        except Exception as e:
-                            logger.error(f"[SIM] force-close failed: {e}")
-                    self._internal_stop()
+                if await self._sd_check_iteration_cap():
                     return
                 self._apply_next_tick()
                 await self._run_cycle_once()
@@ -1355,59 +1386,50 @@ class SimDriver:
                 self.iteration_end_reason = "failed"
             self.active = False
 
+    @staticmethod
+    def _sd_build_close_record(row: dict, reason: str) -> dict | None:
+        """Build an AlgoOrder close-record dict for one position row.
+        Returns None when qty == 0 (nothing to close)."""
+        from datetime import datetime as _dt, timezone as _tz
+
+        qty = int(row.get("quantity") or 0)
+        if qty == 0:
+            return None
+        side = "SELL" if qty > 0 else "BUY"
+        fill = float(row.get("last_price") or 0.0)
+        sym  = str(row.get("tradingsymbol") or "")
+        acct = str(row.get("account") or "")
+        return {
+            "account":          acct,
+            "symbol":           sym,
+            "exchange":         row.get("exchange") or "NFO",
+            "transaction_type": side,
+            "quantity":         abs(qty),
+            "initial_price":    fill,
+            "fill_price":       fill,
+            "status":           "FILLED",
+            "mode":             "sim",
+            "engine":           "sim",
+            "detail":           f"[SIM] force-close ({reason}) {side} {abs(qty)} {sym} @ ₹{fill:.2f}",
+            "filled_at":        _dt.now(_tz.utc),
+            "created_at":       _dt.now(_tz.utc),
+        }
+
     async def _force_close_open_positions(self, reason: str) -> int:
         """
         Write synthetic close orders against every remaining open position
         at last_price. Called when an iteration hits its time_limit with
-        positions still open. Side is inverted from the position's signed
-        quantity (long → SELL close, short → BUY close).
-
-        Each close lands as an AlgoOrder(mode='sim', engine='sim',
-        status='FILLED') in the live DB. The position row is removed
-        from `_positions_rows` so the next tick (if any) sees a clean
-        book.
-
-        Column names match the AlgoOrder model exactly:
-          symbol, transaction_type, quantity, initial_price, fill_price,
-          status, mode, engine, detail, filled_at, created_at, account,
-          exchange, agent_id, attempts, slippage, broker_order_id,
-          expiry_date.
-
-        Awaitable so the insert COMPLETES before the iteration's
-        finalize step reads the rows (prior fire-and-forget pattern
-        left fees=0 because the rows hadn't landed yet).
-
-        Returns the number of synthetic closes written.
+        positions still open. Returns the number of synthetic closes written.
         """
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
         from sqlalchemy import insert
-        from datetime import datetime as _dt, timezone as _tz
 
         closes: list[dict] = []
         for row in list(self._positions_rows):
-            qty = int(row.get("quantity") or 0)
-            if qty == 0:
-                continue
-            side = "SELL" if qty > 0 else "BUY"
-            fill = float(row.get("last_price") or 0.0)
-            sym  = str(row.get("tradingsymbol") or "")
-            acct = str(row.get("account") or "")
-            closes.append({
-                "account":          acct,
-                "symbol":           sym,
-                "exchange":         row.get("exchange") or "NFO",
-                "transaction_type": side,
-                "quantity":         abs(qty),
-                "initial_price":    fill,
-                "fill_price":       fill,
-                "status":           "FILLED",
-                "mode":             "sim",
-                "engine":           "sim",
-                "detail":           f"[SIM] force-close ({reason}) {side} {abs(qty)} {sym} @ ₹{fill:.2f}",
-                "filled_at":        _dt.now(_tz.utc),
-                "created_at":       _dt.now(_tz.utc),
-            })
+            rec = self._sd_build_close_record(row, reason)
+            if rec is not None:
+                closes.append(rec)
 
         # Clear the position rows BEFORE the DB insert so a tick crossing
         # the boundary doesn't see them. Re-add on insert failure.
@@ -1430,6 +1452,32 @@ class SimDriver:
         return len(closes)
 
     # ─── Iteration-mode scheduler ──────────────────────────────────────
+    def _sd_validate_run_params(
+        self, iterations: int, regimes: list[str],
+    ) -> None:
+        """Raise SimGuardError if start_run parameters are invalid."""
+        if self.active or self._run_active:
+            raise SimGuardError("Sim is already running — stop it first.")
+        if iterations < 1:
+            raise SimGuardError("iterations must be >= 1")
+        if not regimes:
+            raise SimGuardError("regimes list cannot be empty")
+        for r in regimes:
+            if not get_scenario(r):
+                raise SimGuardError(f"Unknown regime '{r}'")
+
+    @staticmethod
+    def _sd_build_iter_plan(
+        iterations: int, regimes: list[str], seed: int | None,
+    ) -> list[tuple[str, int | None]]:
+        """Build the (regime, iter_seed) plan for all iterations."""
+        plan: list[tuple[str, int | None]] = []
+        for idx in range(iterations):
+            regime = regimes[idx % len(regimes)]
+            iter_seed = (seed + idx) if seed is not None else None
+            plan.append((regime, iter_seed))
+        return plan
+
     async def start_run(self, *, iterations: int, max_minutes: int,
                         regimes: list[str], agent_ids: list[int] | None,
                         seed: int | None, force_close_on_timeout: bool,
@@ -1452,25 +1500,8 @@ class SimDriver:
         play out in a background asyncio task.
         """
         assert_enabled()
-        if self.active or self._run_active:
-            raise SimGuardError("Sim is already running — stop it first.")
-        if iterations < 1:
-            raise SimGuardError("iterations must be >= 1")
-        if not regimes:
-            raise SimGuardError("regimes list cannot be empty")
-        # Validate every regime resolves to a known scenario before we
-        # spend an iteration discovering one isn't real.
-        for r in regimes:
-            if not get_scenario(r):
-                raise SimGuardError(f"Unknown regime '{r}'")
-
-        # Build the (regime, seed) plan — round-robin regimes, derive seeds
-        # from `seed` when provided (seed + idx) so the run is replayable.
-        plan: list[tuple[str, int | None]] = []
-        for idx in range(iterations):
-            regime = regimes[idx % len(regimes)]
-            iter_seed = (seed + idx) if seed is not None else None
-            plan.append((regime, iter_seed))
+        self._sd_validate_run_params(iterations, regimes)
+        plan = self._sd_build_iter_plan(iterations, regimes, seed)
 
         self._run_active = True
         self.parent_run_id = None
@@ -1501,16 +1532,65 @@ class SimDriver:
         )
         return self.snapshot()
 
-    async def _iteration_scheduler(self) -> None:
-        """Outer task that walks `_iter_plan` sequentially."""
+    async def _sd_insert_iteration_row(
+        self, slug: str, regime: str, iter_seed: int | None, idx: int,
+    ) -> Optional[int]:
+        """Insert a SimIteration DB row for a single iteration and return its id."""
         from backend.api.database import async_session
         from backend.api.models import SimIteration
         from datetime import datetime as _dt, timezone as _tz
         import json as _json
 
-        # Track the in-flight iteration's row across the loop so an
-        # outer cancel/crash can finalise it with `end_reason='stopped'`
-        # or `'failed'` rather than leaving an orphan pending row.
+        try:
+            async with async_session() as s:
+                rec = SimIteration(
+                    slug=slug,
+                    parent_run_id=self.parent_run_id,
+                    iteration_index=idx,
+                    iterations_total=self.iterations_total,
+                    regime=regime,
+                    seed=iter_seed,
+                    started_at=_dt.now(_tz.utc),
+                    params_json=_json.dumps({
+                        **self._iter_start_params,
+                        "regime":      regime,
+                        "seed":        iter_seed,
+                        "max_minutes": self.iteration_max_minutes,
+                        "force_close": self.iteration_force_close,
+                    }, default=str),
+                )
+                s.add(rec)
+                await s.commit()
+                await s.refresh(rec)
+                row_id = rec.id
+                if self.parent_run_id is None:
+                    self.parent_run_id = rec.id
+                return row_id
+        except Exception as e:
+            logger.error(f"[SIM] SimIteration insert failed: {e}")
+            return None
+
+    async def _sd_finalize_aborted_iteration(
+        self,
+        row_id: Optional[int],
+        end_reason: str,
+        crash_msg: str = "",
+    ) -> None:
+        """Finalize an in-flight iteration row when scheduler is cancelled or crashes."""
+        if row_id is None:
+            return
+        reason = self.iteration_end_reason or end_reason
+        try:
+            summary = self._compute_iteration_summary()
+        except Exception:
+            err = crash_msg or "summary computation failed during cancel"
+            summary = {"error": err}
+        await self._finalize_iteration_row(row_id, end_reason=reason, summary=summary)
+
+    async def _iteration_scheduler(self) -> None:
+        """Outer task that walks `_iter_plan` sequentially."""
+        from datetime import datetime as _dt
+
         in_flight_row_id: Optional[int] = None
         try:
             for idx, (regime, iter_seed) in enumerate(self._iter_plan, 1):
@@ -1518,50 +1598,14 @@ class SimDriver:
                 self.iteration_regime = regime
                 slug = self._build_iteration_slug(regime, idx)
 
-                # Persist iteration row (started_at)
-                row_id: Optional[int] = None
-                try:
-                    async with async_session() as s:
-                        rec = SimIteration(
-                            slug=slug,
-                            parent_run_id=self.parent_run_id,
-                            iteration_index=idx,
-                            iterations_total=self.iterations_total,
-                            regime=regime,
-                            seed=iter_seed,
-                            started_at=_dt.now(_tz.utc),
-                            params_json=_json.dumps({
-                                **self._iter_start_params,
-                                "regime":       regime,
-                                "seed":         iter_seed,
-                                "max_minutes":  self.iteration_max_minutes,
-                                "force_close":  self.iteration_force_close,
-                            }, default=str),
-                        )
-                        s.add(rec)
-                        await s.commit()
-                        await s.refresh(rec)
-                        row_id = rec.id
-                        if self.parent_run_id is None:
-                            self.parent_run_id = rec.id
-                except Exception as e:
-                    logger.error(f"[SIM] SimIteration insert failed: {e}")
-
+                row_id = await self._sd_insert_iteration_row(slug, regime, iter_seed, idx)
                 in_flight_row_id = row_id
                 self.current_sim_iteration_id = row_id
                 self.iteration_end_reason = None
                 self.iteration_started_at = _dt.now()
-                # Defensive: each iteration resets every per-iter dict
-                # in alert_state so a previous iteration's residue
-                # (suppression, shadow lifespan, exhaustion list) can't
-                # leak. Pre-existing run-level dicts in alert_state
-                # (sim_mode flag, pnl_history) are untouched.
                 self._sim_alert_state['shadow_lifespan'] = {}
                 self._sim_alert_state['lifespan_exhausted_agents'] = []
 
-                # Kick off the per-iteration tick loop via the legacy
-                # start() path. Pass walk_seed so reproducibility flows
-                # through the existing random_walk plumbing.
                 params = dict(self._iter_start_params)
                 try:
                     self.start(
@@ -1579,57 +1623,33 @@ class SimDriver:
                     logger.warning(f"[SIM] iteration {idx} start failed: {e}")
                     self.iteration_end_reason = "failed"
                     await self._finalize_iteration_row(row_id, end_reason="failed",
-                                                        summary={"error": str(e)})
-                    in_flight_row_id = None  # finalized; nothing for the outer handler to do
+                                                       summary={"error": str(e)})
+                    in_flight_row_id = None
                     continue
 
-                # Wait for _run_loop to exit (auto-stop on book empty,
-                # time_limit, or external stop()). Poll lightly.
                 while self.active:
                     await asyncio.sleep(0.3)
 
-                # Resolve end_reason if _run_loop didn't set one (book
-                # auto-stopped on empty positions + no open orders, which
-                # is the normal "scenario completed cleanly" outcome).
                 if not self.iteration_end_reason:
-                    self.iteration_end_reason = "book_empty" if not self._positions_rows else "scenario_complete"
+                    self.iteration_end_reason = (
+                        "book_empty" if not self._positions_rows else "scenario_complete"
+                    )
 
-                # Capture summary stats + persist. Fees are async (DB
-                # walk) so compute them before the sync summary builder.
                 fees = await self._compute_iteration_fees()
                 summary = self._compute_iteration_summary(total_fees=fees)
                 await self._finalize_iteration_row(
                     row_id, end_reason=self.iteration_end_reason, summary=summary,
                 )
-                in_flight_row_id = None  # cleanly finalized
-
-                # Brief inter-iteration pause so observers can see the
-                # boundary in the UI / logs.
+                in_flight_row_id = None
                 await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             logger.warning("[SIM] Iteration scheduler cancelled")
-            # Finalize the in-flight iteration row so the audit trail
-            # isn't half-written. Operator-pressed Stop → 'stopped';
-            # internal cancel without an explicit reason also lands here.
-            if in_flight_row_id is not None:
-                reason = self.iteration_end_reason or "stopped"
-                try:
-                    summary = self._compute_iteration_summary()
-                except Exception:
-                    summary = {"error": "summary computation failed during cancel"}
-                await self._finalize_iteration_row(
-                    in_flight_row_id, end_reason=reason, summary=summary,
-                )
+            await self._sd_finalize_aborted_iteration(in_flight_row_id, "stopped")
         except Exception as e:
             logger.error(f"[SIM] Scheduler crashed: {e}")
-            if in_flight_row_id is not None:
-                try:
-                    summary = self._compute_iteration_summary()
-                except Exception:
-                    summary = {"error": str(e)}
-                await self._finalize_iteration_row(
-                    in_flight_row_id, end_reason="failed", summary=summary,
-                )
+            await self._sd_finalize_aborted_iteration(
+                in_flight_row_id, "failed", crash_msg=str(e),
+            )
         finally:
             self._run_active = False
             self._scheduler_task = None
@@ -1791,6 +1811,21 @@ class SimDriver:
 
     # ── Tick + move application ──────────────────────────────────────
 
+    def _sd_check_phase_change(self, tick: dict) -> None:
+        """Record a phase-change tick entry when the scenario phase transitions."""
+        phase = tick.get("phase")
+        if phase and phase != getattr(self, "_last_phase", None):
+            self._record_tick(kind="phase-change", moves=[], changes=[],
+                              note=f"phase → {phase}")
+            self._last_phase = phase
+
+    def _sd_apply_tick_moves(self, tick: dict) -> tuple[list[dict], list[dict]]:
+        """Apply moves or legacy patch from a tick; returns (moves, changes)."""
+        moves = tick.get("moves") or []
+        if not moves and tick.get("patch"):
+            return moves, self._apply_legacy_patch(tick["patch"])
+        return moves, self._apply_moves(moves)
+
     def _apply_next_tick(self) -> None:
         """Apply the next tick in the scenario (wraps at end)."""
         if not self.scenario:
@@ -1802,32 +1837,15 @@ class SimDriver:
 
         # Regime-switch annotation — log when the phase changes between
         # ticks so the operator can see "calm → crash" in the tick log.
-        phase = tick.get("phase")
-        if phase and phase != getattr(self, "_last_phase", None):
-            self._record_tick(
-                kind="phase-change", moves=[], changes=[],
-                note=f"phase → {phase}",
-            )
-            self._last_phase = phase
+        self._sd_check_phase_change(tick)
 
         # A tick may carry `moves` (Model B, price-level) or `patch` (legacy
         # aggregate). We support both — moves take precedence.
-        moves = tick.get("moves") or []
-        if not moves and tick.get("patch"):
-            # Legacy aggregate patch — apply directly to matching account row.
-            changes = self._apply_legacy_patch(tick["patch"])
-        else:
-            changes = self._apply_moves(moves)
+        moves, changes = self._sd_apply_tick_moves(tick)
 
         self.tick_index += 1
         self._record_tick(kind="tick", moves=moves, changes=changes)
-        # Snapshot the post-move price for every symbol still in the book so
-        # the chart panel can render the trajectory. Capture happens before
-        # the chase step so a fill that removes the row from `_positions_rows`
-        # still leaves its last LTP in the history.
         self._capture_price_history()
-        # Recording — log the tick (relative t auto-derived). Cheap when
-        # recording is off (single bool check inside _record).
         self._record("tick", {
             "tick_index": self.tick_index,
             "moves":      moves,
@@ -1836,20 +1854,8 @@ class SimDriver:
                 for c in (changes or [])
             ],
         })
-        # Check every active GTT for trigger crossing against the
-        # newly-updated LTPs. Crossings fire through _on_gtt_trigger,
-        # which dispatches the matched leg into the same paper engine
-        # the chase step uses below — so a trigger placed THIS tick
-        # rides the very next chase iteration without an extra delay.
         self._check_sim_gtts()
-        # Run the chase engine against the new bid/ask state: fill any
-        # orders whose limit crossed, otherwise re-quote them one step
-        # closer to the opposite side.
         self._paper.step()
-        # If every position has closed out (either via fills or because the
-        # operator scoped the sim to an empty symbol list), there's nothing
-        # left to simulate — halt cleanly with a terminal log entry so the
-        # operator knows why the loop exited.
         self._check_auto_complete()
 
     def _iter_rows(self, section: str):
@@ -1889,13 +1895,10 @@ class SimDriver:
             return self._apply_underlying_move(mtype, scope, move)
         return None  # not an unscoped type
 
-    def _sd_apply_scoped_move(self, mtype: str, scope: str,
-                               move: dict) -> list[dict]:
-        """Match scope then dispatch pct/abs/random_walk/target_pnl primitives."""
-        matched = self._scope_matches(scope)
-        if not matched:
-            logger.info(f"[SIM] move {mtype} scope='{scope}' matched nothing")
-            return []
+    def _sd_dispatch_matched_move(
+        self, mtype: str, move: dict, matched: list[tuple[str, dict]],
+    ) -> list[dict]:
+        """Dispatch a matched scope to the appropriate primitive handler."""
         if mtype == "pct":
             return self._apply_pct(matched, float(move.get("value") or 0))
         if mtype == "abs":
@@ -1908,6 +1911,15 @@ class SimDriver:
             return self._apply_target_pnl(matched, float(move.get("value") or 0))
         logger.warning(f"[SIM] unknown move type '{mtype}'")
         return []
+
+    def _sd_apply_scoped_move(self, mtype: str, scope: str,
+                               move: dict) -> list[dict]:
+        """Match scope then dispatch pct/abs/random_walk/target_pnl primitives."""
+        matched = self._scope_matches(scope)
+        if not matched:
+            logger.info(f"[SIM] move {mtype} scope='{scope}' matched nothing")
+            return []
+        return self._sd_dispatch_matched_move(mtype, move, matched)
 
     def _apply_moves(self, moves: list[dict]) -> list[dict]:
         """Apply a list of price moves and return change diffs for the tick log."""
@@ -1943,6 +1955,32 @@ class SimDriver:
                 continue
             self._positions_by_underlying.setdefault(parsed["root"], []).append(r)
 
+    @staticmethod
+    def _sd_median_option_strike(rows: list[dict]) -> float | None:
+        """Return the median strike from option rows; None if no options present."""
+        strikes = [
+            (r.get("_parsed") or {}).get("strike") for r in rows
+            if (r.get("_parsed") or {}).get("kind") == "opt"
+        ]
+        strikes = [s for s in strikes if s is not None]
+        if not strikes:
+            return None
+        strikes.sort()
+        return strikes[len(strikes) // 2]
+
+    @staticmethod
+    def _sd_infer_spot_from_rows(rows: list[dict]) -> float | None:
+        """Return a spot estimate from position rows: futures price → median option strike.
+        Returns None when neither can be resolved."""
+        fut = next(
+            (r for r in rows
+             if (r.get("_parsed") or {}).get("kind") == "fut" and r.get("last_price")),
+            None,
+        )
+        if fut:
+            return float(fut["last_price"])
+        return SimDriver._sd_median_option_strike(rows)
+
     def _sd_resolve_underlying_spots(self, explicit: dict) -> None:
         """Fill _underlyings from explicit overrides, futures proxy, or ATM strike median."""
         for name, spot in explicit.items():
@@ -1950,24 +1988,9 @@ class SimDriver:
         for name, rows in self._positions_by_underlying.items():
             if name in self._underlyings:
                 continue
-            # Futures last_price as spot proxy.
-            fut = next(
-                (r for r in rows
-                 if (r.get("_parsed") or {}).get("kind") == "fut" and r.get("last_price")),
-                None,
-            )
-            if fut:
-                self._underlyings[name] = float(fut["last_price"])
-                continue
-            # Crude ATM proxy: median strike across options on this underlying.
-            strikes = [
-                (r["_parsed"] or {}).get("strike") for r in rows
-                if (r.get("_parsed") or {}).get("kind") == "opt"
-            ]
-            strikes = [s for s in strikes if s is not None]
-            if strikes:
-                strikes.sort()
-                self._underlyings[name] = strikes[len(strikes) // 2]
+            spot = self._sd_infer_spot_from_rows(rows)
+            if spot is not None:
+                self._underlyings[name] = spot
 
     def _sd_calibrate_option_ivs(self, calibrate_iv_for_row: Any) -> None:
         """Calibrate implied volatility for every option position and populate _iv_cache."""
@@ -2063,6 +2086,26 @@ class SimDriver:
             return old_spot * (1.0 + shock)
         return old_spot
 
+    def _sd_apply_one_peer_propagation(
+        self, peer: dict, primary_pct: float, changes: list[dict],
+    ) -> None:
+        """Apply a beta-scaled underlying_pct move for one propagation peer."""
+        peer_name = (peer.get("to") or "").upper()
+        if not peer_name or peer_name not in self._underlyings:
+            return
+        try:
+            beta = float(peer.get("beta") or 0)
+        except (TypeError, ValueError):
+            beta = 0.0
+        if beta == 0.0:
+            return
+        changes.extend(self._apply_underlying_move(
+            "underlying_pct",
+            f"underlying.{peer_name}",
+            {"value": primary_pct * beta},
+            _propagate_depth=1,
+        ))
+
     def _sd_propagate_underlying_to_peers(self, name: str, old_spot: float,
                                            new_spot: float, move: dict) -> list[dict]:
         """Fan out a beta-scaled pct move to correlated peer underlyings (max 1 hop)."""
@@ -2076,21 +2119,7 @@ class SimDriver:
         primary_pct = (new_spot - old_spot) / old_spot
         changes: list[dict] = []
         for peer in propagate:
-            peer_name = (peer.get("to") or "").upper()
-            if not peer_name or peer_name not in self._underlyings:
-                continue
-            try:
-                beta = float(peer.get("beta") or 0)
-            except (TypeError, ValueError):
-                beta = 0.0
-            if beta == 0.0:
-                continue
-            changes.extend(self._apply_underlying_move(
-                "underlying_pct",
-                f"underlying.{peer_name}",
-                {"value": primary_pct * beta},
-                _propagate_depth=1,
-            ))
+            self._sd_apply_one_peer_propagation(peer, primary_pct, changes)
         return changes
 
     def _apply_underlying_move(self, mtype: str, scope: str,
@@ -2222,6 +2251,22 @@ class SimDriver:
                                         reason=f"walk drift={drift:+.4f} vol={vol:.4f}"))
         return changes
 
+    @staticmethod
+    def _sd_accumulate_qty_pnl(
+        matched: list[tuple[str, dict]],
+    ) -> tuple[float, float, set[int]]:
+        """Accumulate (qty_sum, pnl_sum, direction_signs) across matched rows."""
+        qty_sum = 0.0
+        cur_pnl_sum = 0.0
+        signs: set[int] = set()
+        for _, row in matched:
+            q = float(row.get("quantity") or row.get("opening_quantity") or 0)
+            qty_sum += q
+            cur_pnl_sum += float(row.get("pnl") or 0)
+            if q != 0:
+                signs.add(1 if q > 0 else -1)
+        return qty_sum, cur_pnl_sum, signs
+
     def _apply_target_pnl(self, matched: list[tuple[str, dict]], target: float) -> list[dict]:
         """
         Drive the matched rows' aggregate pnl toward `target` by moving each
@@ -2231,15 +2276,7 @@ class SimDriver:
         """
         if not matched:
             return []
-        qty_sum = 0.0
-        cur_pnl_sum = 0.0
-        signs = set()
-        for _, row in matched:
-            q = float(row.get("quantity") or row.get("opening_quantity") or 0)
-            qty_sum += q
-            cur_pnl_sum += float(row.get("pnl") or 0)
-            if q != 0:
-                signs.add(1 if q > 0 else -1)
+        qty_sum, cur_pnl_sum, signs = self._sd_accumulate_qty_pnl(matched)
         if len(signs) > 1:
             logger.warning("[SIM] target_pnl refused — scope has mixed long/short")
             return []
@@ -2359,27 +2396,51 @@ class SimDriver:
             })
         return changes
 
+    @staticmethod
+    def _sd_compute_skew_extra(
+        strike: float, spot: float, put_skew: float, call_skew: float,
+    ) -> float:
+        """Moneyness-dependent skew adjustment on top of atm_delta.
+        OTM put (K<S): put_skew*(1-K/S); OTM call (K>S): call_skew*(K/S-1); ATM: 0."""
+        if strike <= 0 or spot <= 0:
+            return 0.0
+        m = strike / spot
+        if m < 1.0:
+            return put_skew * (1.0 - m)
+        if m > 1.0:
+            return call_skew * (m - 1.0)
+        return 0.0
+
+    def _sd_apply_iv_skew_row(
+        self, row: dict, sym: str, old_iv: float,
+        atm_delta: float, put_skew: float, call_skew: float,
+        parse_tradingsymbol: object,
+    ) -> dict | None:
+        """Compute updated IV + change record for one option row; None if not an option."""
+        parsed = row.get("_parsed") or parse_tradingsymbol(sym)  # type: ignore[operator]
+        if not parsed or parsed.get("kind") != "opt":
+            return None
+        strike = float(parsed.get("strike") or 0)
+        und    = (parsed.get("root") or "").upper()
+        spot   = float(self._underlyings.get(und) or 0)
+        skew_extra = self._sd_compute_skew_extra(strike, spot, put_skew, call_skew)
+        new = max(0.0001, min(5.0, float(old_iv) + atm_delta + skew_extra))
+        self._iv_cache[sym] = new
+        return {
+            "section": "positions", "account": row.get("account"),
+            "symbol":  sym, "col": "iv",
+            "prev":    old_iv, "next": new,
+            "delta":   new - old_iv,
+            "reason":  f"set_iv_skew (atm{atm_delta:+.2f} extra{skew_extra:+.3f})",
+            "bid":     None, "ask": None,
+        }
+
     def _apply_set_iv_skew(self, scope: str, move: dict) -> list[dict]:
         """
-        Skew-aware IV shift. For each matched option position:
-          new_iv = old_iv + atm_delta + skew_extra
-        where `skew_extra` depends on whether the strike is OTM put or
-        OTM call relative to the underlying's current spot:
-          OTM put  (K < S):  skew_extra = put_skew  × (1 − K/S)
-          OTM call (K > S):  skew_extra = call_skew × (K/S − 1)
-          ATM      (K = S):  skew_extra = 0
-
-        Models the realistic asymmetry where a crash drives OTM put IV
-        UP more than ATM, and OTM call IV less than ATM. The
-        extreme-gap-down regime uses this with `{atm_delta: 0.30,
-        put_skew: 0.50, call_skew: 0.10}` so deep OTM puts see ~80
-        vol-point IV jump while ATM sees 30 and OTM calls see 30-40.
-
-        Accepts:
-          {atm_delta: 0.30, put_skew: 0.50, call_skew: 0.10}
-
-        scope: e.g. "positions.**" or "positions.*.NIFTY*" — same matcher
-        as `set_iv`.
+        Skew-aware IV shift. new_iv = old_iv + atm_delta + skew_extra
+        OTM put  (K<S): put_skew*(1-K/S); OTM call (K>S): call_skew*(K/S-1); ATM: 0.
+        Accepts: {atm_delta: 0.30, put_skew: 0.50, call_skew: 0.10}
+        scope: e.g. "positions.**" or "positions.*.NIFTY*"
         """
         from backend.api.algo.derivatives import parse_tradingsymbol
 
@@ -2394,36 +2455,12 @@ class SimDriver:
             sym = str(row.get("tradingsymbol") or "")
             old = self._iv_cache.get(sym)
             if old is None:
-                continue  # not an option (no calibrated IV) — skip
-            parsed = row.get("_parsed") or parse_tradingsymbol(sym)
-            if not parsed or parsed.get("kind") != "opt":
                 continue
-            strike = float(parsed.get("strike") or 0)
-            und    = (parsed.get("root") or "").upper()
-            spot   = float(self._underlyings.get(und) or 0)
-            if strike <= 0 or spot <= 0:
-                # No moneyness reference — fall back to flat atm_delta.
-                skew_extra = 0.0
-            else:
-                m = strike / spot
-                if m < 1.0:
-                    # OTM put (K below S) — extra IV proportional to depth.
-                    skew_extra = put_skew * (1.0 - m)
-                elif m > 1.0:
-                    # OTM call (K above S) — extra IV proportional to depth.
-                    skew_extra = call_skew * (m - 1.0)
-                else:
-                    skew_extra = 0.0
-            new = max(0.0001, min(5.0, float(old) + atm_delta + skew_extra))
-            self._iv_cache[sym] = new
-            changes.append({
-                "section": "positions", "account": row.get("account"),
-                "symbol":  sym, "col": "iv",
-                "prev":    old, "next": new,
-                "delta":   new - old,
-                "reason":  f"set_iv_skew (atm{atm_delta:+.2f} extra{skew_extra:+.3f})",
-                "bid":     None, "ask": None,
-            })
+            rec = self._sd_apply_iv_skew_row(
+                row, sym, old, atm_delta, put_skew, call_skew, parse_tradingsymbol,
+            )
+            if rec is not None:
+                changes.append(rec)
         return changes
 
     def _apply_set_setting(self, move: dict) -> list[dict]:
@@ -2748,6 +2785,28 @@ class SimDriver:
         return [r for r in rows
                 if str(r.get("account") or "").strip().upper() in scoped]
 
+    @staticmethod
+    def _sd_build_live_manifest(
+        snap_at: str,
+        positions: list[dict],
+        margins: list[dict],
+    ) -> dict:
+        """Build the seed_live() return manifest from seeded frames."""
+        return {
+            "snapshot_at":     snap_at,
+            "positions_count": len(positions),
+            "margins_count":   len(margins),
+            "watchlist_count": 0,
+            "accounts": sorted({
+                str(r.get("account", ""))
+                for r in positions + margins if r.get("account")
+            }),
+            "symbols": sorted({
+                str(r.get("tradingsymbol", ""))
+                for r in positions if r.get("tradingsymbol")
+            }),
+        }
+
     def seed_live(self, user_id: int | None = None,
                   accounts: list[str] | None = None) -> dict:
         """
@@ -2777,7 +2836,6 @@ class SimDriver:
         assert_enabled()
         holdings, positions, margins = self._sd_fetch_live_frames()
 
-        # Per-account scope filter applied uniformly across all three buckets.
         if accounts:
             scoped = {str(a).strip().upper() for a in accounts if a}
             holdings  = self._sd_filter_by_accounts(holdings,  scoped)
@@ -2789,13 +2847,13 @@ class SimDriver:
         for row in holdings:
             _recompute_holding_row(row)
 
-        # Watchlist rows are seeded via the async path `seed_live_async`.
+        snap_at = datetime.now().isoformat(timespec="seconds")
         self._live_snapshot = {
             "holdings":        holdings,
             "positions":       positions,
             "margins":         margins,
             "watchlist":       [],
-            "snapshot_at":     datetime.now().isoformat(timespec="seconds"),
+            "snapshot_at":     snap_at,
             "accounts_filter": sorted([str(a).strip().upper()
                                        for a in (accounts or []) if a]),
         }
@@ -2803,16 +2861,7 @@ class SimDriver:
             f"[SIM] seed-live: {len(positions)} positions · {len(margins)} margins · "
             f"{len(holdings)} holdings"
         )
-        return {
-            "snapshot_at":     self._live_snapshot["snapshot_at"],
-            "positions_count": len(positions),
-            "margins_count":   len(margins),
-            "watchlist_count": 0,
-            "accounts":        sorted({str(r.get("account", ""))
-                                       for r in positions + margins if r.get("account")}),
-            "symbols":         sorted({str(r.get("tradingsymbol", ""))
-                                       for r in positions if r.get("tradingsymbol")}),
-        }
+        return self._sd_build_live_manifest(snap_at, positions, margins)
 
     async def seed_live_async(self, user_id: int | None = None) -> dict:
         """Async wrapper around `seed_live()` that additionally fetches
@@ -2855,32 +2904,13 @@ class SimDriver:
 
     # ── Price history ────────────────────────────────────────────────
 
-    def _capture_price_history(self) -> None:
-        """Append one (ts, ltp, bid, ask) per active symbol to the rolling
-        per-symbol buffer. Called once per tick, after moves are applied.
-        Also captures every known underlying spot into a parallel buffer
-        so the chart UI can render the underlying line alongside its
-        derived options."""
-        # Millisecond precision is critical for the chart: when the sim
-        # tick rate is sub-second (rate_ms < 1000), seconds-rounded
-        # timestamps collapse multiple captures to the same `ts` string.
-        # The frontend xDomain check then sees `hi == lo`, treats the
-        # domain as degenerate, and renders an empty chart even though
-        # ticks are accumulating in the deque. Capturing at ms-precision
-        # gives every tick a unique x and the line draws normally.
-        ts = datetime.now().isoformat(timespec="milliseconds")
+    def _sd_capture_position_prices(self, ts: str) -> None:
+        """Append ltp/bid/ask for every position row to _price_history."""
         for r in self._positions_rows:
             sym = str(r.get("tradingsymbol") or "")
             if not sym:
                 continue
             ltp = r.get("last_price")
-            # Skip ltp = None and 0 / negative — those are placeholder
-            # values from before the broker quote has landed. Capturing
-            # a zero-ltp first-tick used to poison the chart's
-            # %-normalised baseline (base = 0 → series dropped); even
-            # though the frontend now walks past leading zeros, dropping
-            # them at capture time keeps the deque clean of meaningless
-            # entries.
             if ltp is None or float(ltp) <= 0:
                 continue
             buf = self._price_history.get(sym)
@@ -2893,12 +2923,30 @@ class SimDriver:
                 "bid": float(r["bid"]) if r.get("bid") is not None else None,
                 "ask": float(r["ask"]) if r.get("ask") is not None else None,
             })
+
+    def _sd_capture_underlying_prices(self, ts: str) -> None:
+        """Append spot price for every known underlying to _underlying_history."""
         for name, spot in self._underlyings.items():
             buf = self._underlying_history.get(name)
             if buf is None:
                 buf = deque(maxlen=PRICE_HISTORY_LIMIT)
                 self._underlying_history[name] = buf
             buf.append({"ts": ts, "ltp": float(spot), "bid": None, "ask": None})
+
+    def _capture_price_history(self) -> None:
+        """Append one (ts, ltp, bid, ask) per active symbol to the rolling
+        per-symbol buffer. Called once per tick, after moves are applied.
+        Also captures every known underlying spot into a parallel buffer
+        so the chart UI can render the underlying line alongside its
+        derived options.
+
+        Uses millisecond precision so sub-second tick rates produce unique
+        x-values for the chart frontend (seconds-rounded ts collapses ticks
+        and renders an empty chart).
+        """
+        ts = datetime.now().isoformat(timespec="milliseconds")
+        self._sd_capture_position_prices(ts)
+        self._sd_capture_underlying_prices(ts)
 
     def price_history(self, symbol: str, *, since: str | None = None,
                       limit: int = 600) -> list[dict]:

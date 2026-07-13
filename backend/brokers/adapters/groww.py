@@ -248,6 +248,25 @@ _XCHG_TO_GROWW_MARKET_STATUS: dict[str, tuple[str, ...]] = {
 _GROWW_OPEN_STATUS_STRINGS = frozenset({"OPEN", "TRADING", "ACTIVE", "Y", "YES", "TRUE"})
 
 
+def _first(d: dict, *keys: str, default: Any = "") -> Any:
+    """Return the first non-falsy value for `keys` from dict `d`, or `default`."""
+    for k in keys:
+        v = d.get(k)
+        if v:
+            return v
+    return default
+
+
+def _groww_status_row_for_code(data: dict, code: str) -> dict | None:
+    """Build one status row for a segment code from a flat-dict response."""
+    v = data.get(code) or data.get(code.lower())
+    if isinstance(v, dict):
+        return {"segment": code, **v}
+    if isinstance(v, (str, bool)):
+        return {"segment": code, "status": v}
+    return None
+
+
 def _extract_groww_status_rows(resp: Any, target_codes: tuple[str, ...]) -> list[dict] | None:
     """Coerce Groww's market-status response into a flat list of rows.
 
@@ -260,14 +279,8 @@ def _extract_groww_status_rows(resp: Any, target_codes: tuple[str, ...]) -> list
     if isinstance(data, list):
         return [r for r in data if isinstance(r, dict)]
     if isinstance(data, dict):
-        rows: list[dict] = []
-        for code in target_codes:
-            v = data.get(code) or data.get(code.lower())
-            if isinstance(v, dict):
-                rows.append({"segment": code, **v})
-            elif isinstance(v, (str, bool)):
-                rows.append({"segment": code, "status": v})
-        return rows
+        return [row for code in target_codes
+                if (row := _groww_status_row_for_code(data, code)) is not None]
     return None
 
 
@@ -335,6 +348,130 @@ def _groww_exchange_and_segment(kite_exchange: str) -> tuple[str, str]:
     if not ex or not seg:
         raise ValueError(f"No Groww exchange/segment mapping for {kite_exchange!r}")
     return ex, seg
+
+
+def _groww_coerce_date(d: Any) -> str:
+    """Coerce a date/datetime/string to Groww's expected 'YYYY-MM-DD HH:MM:SS' format."""
+    if hasattr(d, "strftime"):
+        return d.strftime("%Y-%m-%d %H:%M:%S")
+    return str(d)
+
+
+def _groww_hist_candle_row(row: Any) -> dict | None:
+    """Convert a Groww OHLCV candle list/tuple to a Kite-shape dict.
+    Returns None when the row is too short to be valid."""
+    if not isinstance(row, (list, tuple)) or len(row) < 6:
+        return None
+    return {
+        "date":   row[0],
+        "open":   float(row[1] or 0),
+        "high":   float(row[2] or 0),
+        "low":    float(row[3] or 0),
+        "close":  float(row[4] or 0),
+        "volume": int(row[5] or 0),
+    }
+
+
+def _groww_instrument_row(r: dict) -> dict:
+    """Map a single Groww instrument record to Kite-shape instrument dict."""
+    return {
+        "instrument_token": _first(r, "exchange_token", "instrument_token"),
+        "tradingsymbol":    _first(r, "trading_symbol", "tradingsymbol"),
+        "name":             r.get("name") or r.get("groww_symbol", ""),
+        "exchange":         r.get("exchange") or "",
+        "segment":          r.get("segment") or "",
+        "instrument_type":  r.get("instrument_type") or "",
+        "expiry":           r.get("expiry") or "",
+        "strike":           float(r.get("strike", 0) or 0),
+        "lot_size":         int(r.get("lot_size", 0) or 0),
+        "tick_size":        float(r.get("tick_size", 0) or 0),
+        "_raw":             r,
+    }
+
+
+def _groww_build_gtt_order_leg(r: dict, order_inner: dict) -> dict:
+    """Build the single-leg orders list entry for a Groww GTT row."""
+    return {
+        "transaction_type": order_inner.get("transaction_type") or "SELL",
+        "quantity":         int(r.get("quantity") or 0),
+        "price":            float(order_inner.get("price") or 0),
+        "order_type":       order_inner.get("order_type") or "LIMIT",
+        "product":          r.get("product_type") or "NRML",
+    }
+
+
+def _groww_margin_available(data: dict) -> dict:
+    """Build the `available` sub-dict from Groww margin data."""
+    return {
+        "adhoc_margin":    float(data.get("adhoc_margin", 0) or 0),
+        "cash":            float(_first(data, "available_balance", "cash", default=0)),
+        "opening_balance": float(data.get("opening_balance", 0) or 0),
+        "live_balance":    float(data.get("available_balance", 0) or 0),
+        "collateral":      float(data.get("collateral", 0) or 0),
+        "intraday_payin":  float(data.get("intraday_payin", 0) or 0),
+    }
+
+
+def _groww_margin_utilised(data: dict) -> dict:
+    """Build the `utilised` sub-dict from Groww margin data."""
+    return {
+        "debits":            float(data.get("utilised", 0) or 0),
+        "exposure":          float(data.get("exposure_margin", 0) or 0),
+        "m2m_realised":      float(data.get("realised_pnl", 0) or 0),
+        "m2m_unrealised":    float(data.get("unrealised_pnl", 0) or 0),
+        "option_premium":    float(data.get("option_premium", 0) or 0),
+        "payout":            float(data.get("payout", 0) or 0),
+        "span":              float(data.get("span_margin", 0) or 0),
+        "holding_sales":     0.0,
+        "turnover":          0.0,
+        "liquid_collateral": 0.0,
+        "stock_collateral":  float(data.get("stock_collateral", 0) or 0),
+    }
+
+
+def _groww_order_row(o: dict) -> dict:
+    """Normalise one Groww order record to Kite-shape."""
+    return {
+        "order_id":           str(_first(o, "groww_order_id", "order_id")),
+        "tradingsymbol":      _first(o, "trading_symbol", "tradingsymbol"),
+        "exchange":           o.get("exchange") or "",
+        "status":             _order_status(o),
+        "transaction_type":   o.get("transaction_type") or "BUY",
+        "order_type":         o.get("order_type") or "MARKET",
+        "product":            o.get("product") or "NRML",
+        "quantity":           _gi(o, "quantity"),
+        "filled_quantity":    _gi(o, "filled_quantity"),
+        "pending_quantity":   _gi(o, "remaining_quantity", "pending_quantity"),
+        "price":              _gf(o, "price"),
+        "trigger_price":      _gf(o, "trigger_price"),
+        "average_price":      _gf(o, "average_price", "filled_avg_price"),
+        "order_timestamp":    _first(o, "created_at", "order_timestamp"),
+        "exchange_timestamp": o.get("exchange_time") or "",
+        "status_message":     _first(o, "remark", "status_message"),
+        "_raw":               o,
+    }
+
+
+def _groww_gtt_unpack_order(
+    orders: list[dict], trigger_values: list[float]
+) -> tuple:
+    """Unpack the first order dict + first trigger value into primitives."""
+    order0  = orders[0] if orders else {}
+    qty0    = int(order0.get("quantity", 0))
+    price0  = float(order0.get("price") or 0)
+    otype0  = _ORDER_TYPE_TO_GROWW.get(order0.get("order_type", "LIMIT"), "LIMIT")
+    txn0    = order0.get("transaction_type", "SELL")
+    product = _PRODUCT_TO_GROWW.get(order0.get("product", "NRML"), "NRML")
+    trig    = float(trigger_values[0]) if trigger_values else 0.0
+    return order0, qty0, price0, otype0, txn0, product, trig
+
+
+def _groww_gtt_order_body(txn: str, otype: str, price: float) -> dict:
+    """Build the Groww Smart Order `order` sub-dict (LIMIT includes price)."""
+    body: dict[str, Any] = {"transaction_type": txn, "order_type": otype}
+    if otype == "LIMIT" and price > 0:
+        body["price"] = price
+    return body
 
 
 class GrowwBroker(Broker):
@@ -452,6 +589,25 @@ class GrowwBroker(Broker):
     # ── Market data ───────────────────────────────────────────────────
 
     @_retry_groww_auth
+    def _ltp_fetch_segment(self, seg: str, keys: list[str], out: dict) -> None:
+        """Fetch LTP for one segment and populate `out` with Kite-shape entries."""
+        try:
+            resp = self.groww.get_ltp(tuple(keys), segment=seg)
+            data = resp.get("data") if isinstance(resp, dict) else {}
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    out[k.replace("_", ":", 1)] = {"last_price": float(v or 0)}
+        except _GROWW_AUTHN_EXC:  # type: ignore[misc]
+            raise
+        except _GROWW_AUTHZ_EXC as e:  # type: ignore[misc]
+            logger.info(
+                f"[GROWW-ENTITLEMENT] GrowwBroker.ltp for {self.account!r}: "
+                f"Access forbidden on segment={seg!r}: {e}"
+            )
+            record_entitlement_denied(self.account, seg)
+        except Exception as e:
+            logger.debug(f"Groww ltp segment={seg}: {e}")
+
     def ltp(self, symbols: list[str]) -> dict:
         """Groww's `get_ltp` wants a Tuple of `"EXCHANGE_TRADINGSYMBOL"` keys
         plus a segment. The codebase passes Kite-style `"NSE:RELIANCE"`
@@ -459,9 +615,6 @@ class GrowwBroker(Broker):
         an instruments-cache lookup."""
         if not symbols:
             return {}
-        # Split each `"NSE:RELIANCE"` into exchange + symbol; Groww
-        # wants them joined back as `"NSE_RELIANCE"`. Mixed-exchange
-        # calls need a per-segment fan-out — group by segment first.
         by_seg: dict[str, list[str]] = {}
         for sym in symbols:
             if ":" not in sym:
@@ -474,32 +627,7 @@ class GrowwBroker(Broker):
             by_seg.setdefault(seg, []).append(f"{exch}_{ts}")
         out: dict[str, dict] = {}
         for seg, keys in by_seg.items():
-            try:
-                resp = self.groww.get_ltp(tuple(keys), segment=seg)
-                data = resp.get("data") if isinstance(resp, dict) else {}
-                if isinstance(data, dict):
-                    # Groww returns {"NSE_RELIANCE": 2435.50, ...}. Rekey
-                    # to Kite-shape `"NSE:RELIANCE": {"last_price": …}`.
-                    for k, v in data.items():
-                        kite_key = k.replace("_", ":", 1)
-                        out[kite_key] = {"last_price": float(v or 0)}
-            except _GROWW_AUTHN_EXC:  # type: ignore[misc]
-                # Authentication (401) after a decorator re-mint — token
-                # is still bad. Re-raise so broker_apis records ok=False.
-                raise
-            except _GROWW_AUTHZ_EXC as e:  # type: ignore[misc]
-                # Authorisation (403) = account lacks segment entitlement.
-                # Log at INFO so operators see partial-entitlement segments.
-                # Record only THIS segment — not the full by_seg set.
-                logger.info(
-                    f"[GROWW-ENTITLEMENT] GrowwBroker.ltp for {self.account!r}: "
-                    f"Access forbidden on segment={seg!r}: {e}"
-                )
-                record_entitlement_denied(self.account, seg)
-            except Exception as e:
-                # Non-auth failures (network, bad response shape, etc.)
-                # are common on dev/prod when Groww is unavailable.
-                logger.debug(f"Groww ltp segment={seg}: {e}")
+            self._ltp_fetch_segment(seg, keys, out)
         return out
 
     @_retry_groww_auth
@@ -552,6 +680,30 @@ class GrowwBroker(Broker):
             logger.debug(f"GrowwBroker._quote_single skipping {sym}: {e}")
         return out
 
+    def _ohlc_fetch_segment(
+        self, seg: str, kite_keys: list[str], groww_keys: tuple, out: dict
+    ) -> None:
+        """Fetch OHLC for one segment and populate `out` with Kite-shape entries."""
+        try:
+            resp = self.groww.get_ohlc(exchange_trading_symbols=groww_keys, segment=seg)
+            data = resp.get("data") if isinstance(resp, dict) else resp
+            if not isinstance(data, dict):
+                return
+            for kite_key, gk in zip(kite_keys, groww_keys):
+                row = data.get(gk) or {}
+                if isinstance(row, dict):
+                    out[kite_key] = _normalise_quote_row(row)
+        except _GROWW_AUTHN_EXC:  # type: ignore[misc]
+            raise
+        except _GROWW_AUTHZ_EXC as e:  # type: ignore[misc]
+            logger.info(
+                f"[GROWW-ENTITLEMENT] GrowwBroker._quote_batch_ohlc "
+                f"for {self.account!r} segment={seg}: Access forbidden: {e}"
+            )
+            record_entitlement_denied(self.account, seg)
+        except Exception as e:
+            logger.debug(f"GrowwBroker._quote_batch_ohlc segment={seg}: {e}")
+
     def _quote_batch_ohlc(self, symbols: list[str]) -> dict:
         """Batch path — one `get_ohlc(exchange_trading_symbols=tuple,
         segment=…)` call per segment. Output preserves Kite's quote-row
@@ -569,37 +721,9 @@ class GrowwBroker(Broker):
             by_seg.setdefault(seg, []).append((sym, f"{exch}_{ts}"))
         out: dict[str, dict] = {}
         for seg, pairs in by_seg.items():
-            kite_keys = [p[0] for p in pairs]
-            groww_keys = tuple(p[1] for p in pairs)
-            try:
-                resp = self.groww.get_ohlc(
-                    exchange_trading_symbols=groww_keys, segment=seg,
-                )
-                data = resp.get("data") if isinstance(resp, dict) else resp
-                if not isinstance(data, dict):
-                    continue
-                # Groww returns {"NSE_RELIANCE": {"open":…, "high":…,
-                # "low":…, "close":…, "ltp":…, "volume":…}, …}.
-                # Translate back to Kite-shape quote rows.
-                for kite_key, gk in zip(kite_keys, groww_keys):
-                    row = data.get(gk) or {}
-                    if isinstance(row, dict):
-                        out[kite_key] = _normalise_quote_row(row)
-            except _GROWW_AUTHN_EXC:  # type: ignore[misc]
-                # Authentication (401) after decorator re-mint — still
-                # failing. Re-raise so broker_apis records ok=False.
-                raise
-            except _GROWW_AUTHZ_EXC as e:  # type: ignore[misc]
-                # Authorisation (403) = this segment not entitled.
-                # Log at INFO and count only this segment.
-                logger.info(
-                    f"[GROWW-ENTITLEMENT] GrowwBroker._quote_batch_ohlc "
-                    f"for {self.account!r} segment={seg}: "
-                    f"Access forbidden: {e}"
-                )
-                record_entitlement_denied(self.account, seg)
-            except Exception as e:
-                logger.debug(f"GrowwBroker._quote_batch_ohlc segment={seg}: {e}")
+            self._ohlc_fetch_segment(
+                seg, [p[0] for p in pairs], tuple(p[1] for p in pairs), out
+            )
         return out
 
     @_retry_groww_auth
@@ -610,24 +734,11 @@ class GrowwBroker(Broker):
         resp = self.groww.get_all_instruments()
         rows = resp if isinstance(resp, list) else resp.get("data", []) \
             if isinstance(resp, dict) else []
-        out: list[dict] = []
-        for r in rows:
-            if exchange and r.get("exchange") != exchange:
-                continue
-            out.append({
-                "instrument_token": r.get("exchange_token") or r.get("instrument_token"),
-                "tradingsymbol":    r.get("trading_symbol")  or r.get("tradingsymbol"),
-                "name":             r.get("name") or r.get("groww_symbol", ""),
-                "exchange":         r.get("exchange") or "",
-                "segment":          r.get("segment") or "",
-                "instrument_type":  r.get("instrument_type") or "",
-                "expiry":           r.get("expiry") or "",
-                "strike":           float(r.get("strike", 0) or 0),
-                "lot_size":         int(r.get("lot_size", 0) or 0),
-                "tick_size":        float(r.get("tick_size", 0) or 0),
-                "_raw":             r,
-            })
-        return out
+        return [
+            _groww_instrument_row(r)
+            for r in rows
+            if not (exchange and r.get("exchange") != exchange)
+        ]
 
     @_retry_groww_auth
     def historical_data(
@@ -674,17 +785,12 @@ class GrowwBroker(Broker):
                 f"Unknown candle interval {interval!r}. Supported: "
                 f"{sorted(set(_INTERVAL_TO_GROWW.values()))}"
             )
-        # Groww accepts either `datetime` or ISO `"YYYY-MM-DD HH:MM:SS"`.
-        def _coerce(d: Any) -> str:
-            if hasattr(d, "strftime"):
-                return d.strftime("%Y-%m-%d %H:%M:%S")
-            return str(d)
         resp = self.groww.get_historical_candles(
             trading_symbol=trading_symbol,
             exchange=ex,
             segment=seg,
-            start_time=_coerce(from_date),
-            end_time=_coerce(to_date),
+            start_time=_groww_coerce_date(from_date),
+            end_time=_groww_coerce_date(to_date),
             interval=groww_interval,
         )
         data = resp.get("data") if isinstance(resp, dict) else resp
@@ -695,19 +801,8 @@ class GrowwBroker(Broker):
             candles = data.get("candles", [])
         elif isinstance(data, list):
             candles = data
-        out: list[dict] = []
-        for row in candles:
-            if not isinstance(row, (list, tuple)) or len(row) < 6:
-                continue
-            out.append({
-                "date":   row[0],
-                "open":   float(row[1] or 0),
-                "high":   float(row[2] or 0),
-                "low":    float(row[3] or 0),
-                "close":  float(row[4] or 0),
-                "volume": int(row[5] or 0),
-            })
-        return out
+        return [row_d for row in candles
+                if (row_d := _groww_hist_candle_row(row)) is not None]
 
     def holidays(self, exchange: str) -> set[str]:
         """Groww doesn't publish a holidays endpoint. Empty set so
@@ -940,26 +1035,10 @@ class GrowwBroker(Broker):
                 tag=tag,
             )
         ex, seg = _groww_exchange_and_segment(exchange)
-        order0   = orders[0] if orders else {}
-        qty0     = int(order0.get("quantity", 0))
-        price0   = float(order0.get("price") or 0)
-        otype0   = _ORDER_TYPE_TO_GROWW.get(order0.get("order_type", "LIMIT"), "LIMIT")
-        txn0     = order0.get("transaction_type", "SELL")
-        product  = _PRODUCT_TO_GROWW.get(order0.get("product", "NRML"), "NRML")
-        trig     = float(trigger_values[0]) if trigger_values else 0.0
-
-        # Trigger direction: UP when trigger is above last_price (e.g.
-        # stop-buy / short target); DOWN otherwise (stop-loss / long target).
-        direction = "UP" if trig > last_price else "DOWN"
-
-        # Groww order sub-dict: transaction_type, order_type, price (optional)
-        order_body: dict[str, Any] = {
-            "transaction_type": txn0,
-            "order_type":       otype0,
-        }
-        if otype0 == "LIMIT" and price0 > 0:
-            order_body["price"] = price0
-
+        order0, qty0, price0, otype0, txn0, product, trig = \
+            _groww_gtt_unpack_order(orders, trigger_values)
+        direction  = "UP" if trig > last_price else "DOWN"
+        order_body = _groww_gtt_order_body(txn0, otype0, price0)
         resp = self.groww.create_smart_order(
             smart_order_type="GTT",
             segment=seg,
@@ -967,7 +1046,7 @@ class GrowwBroker(Broker):
             quantity=qty0,
             product_type=product,
             exchange=ex,
-            duration="GTC",           # GTT is always Good-Till-Cancelled
+            duration="GTC",
             trigger_price=str(trig),
             trigger_direction=direction,
             order=order_body,
@@ -975,8 +1054,7 @@ class GrowwBroker(Broker):
         data = resp.get("data") if isinstance(resp, dict) else resp
         if not isinstance(data, dict):
             raise RuntimeError(f"Groww place_gtt rejected: {resp}")
-        gtt_id = (data.get("smart_order_id") or data.get("reference_id")
-                  or data.get("id") or "")
+        gtt_id = _first(data, "smart_order_id", "reference_id", "id")
         if not gtt_id:
             raise RuntimeError(f"Groww place_gtt: no ID in response: {resp}")
         return str(gtt_id)
@@ -1103,16 +1181,10 @@ class GrowwBroker(Broker):
                 f"a compound 'oco:{{a}}+{{b}}' id; got {gtt_id!r}"
             )
         _, seg = _groww_exchange_and_segment(exchange)
-        order0    = orders[0] if orders else {}
-        qty0      = int(order0.get("quantity", 0))
-        price0    = float(order0.get("price") or 0)
-        otype0    = _ORDER_TYPE_TO_GROWW.get(order0.get("order_type", "LIMIT"), "LIMIT")
-        txn0      = order0.get("transaction_type", "SELL")
-        trig      = float(trigger_values[0]) if trigger_values else 0.0
-        direction = "UP" if trig > last_price else "DOWN"
-        order_body: dict[str, Any] = {"transaction_type": txn0, "order_type": otype0}
-        if otype0 == "LIMIT" and price0 > 0:
-            order_body["price"] = price0
+        _order0, qty0, price0, otype0, txn0, _product, trig = \
+            _groww_gtt_unpack_order(orders, trigger_values)
+        direction  = "UP" if trig > last_price else "DOWN"
+        order_body = _groww_gtt_order_body(txn0, otype0, price0)
         resp = self.groww.modify_smart_order(
             smart_order_id=gtt_id,
             smart_order_type="GTT",
@@ -1122,8 +1194,6 @@ class GrowwBroker(Broker):
             trigger_direction=direction,
             order=order_body,
         )
-        # modify_smart_order raises GrowwAPIException on failure; if it
-        # returns a dict check for an error shape.
         if isinstance(resp, dict) and resp.get("status", "").upper() == "ERROR":
             raise RuntimeError(f"Groww modify_gtt rejected: {resp}")
         return gtt_id
@@ -1457,40 +1527,18 @@ def _normalise_margins(resp: Any, segment: str | None) -> dict:
     payload = _unwrap(resp)
     if not isinstance(payload, dict):
         payload = {}
-    # Groww nests by segment when segment query param is omitted —
-    # tolerate both shapes.
     if "equity" in payload and isinstance(payload["equity"], dict):
         seg = "commodity" if segment == "commodity" else "equity"
         data = payload.get(seg, payload.get("equity", {}))
     else:
         data = payload
+    net = float(_first(data, "net", "available_balance", default=0))
     return {
         "enabled":   True,
-        "net":       float(data.get("net",
-                                    data.get("available_balance", 0)) or 0),
-        "available": {
-            "adhoc_margin":      float(data.get("adhoc_margin", 0) or 0),
-            "cash":              float(data.get("available_balance",
-                                                data.get("cash", 0)) or 0),
-            "opening_balance":   float(data.get("opening_balance", 0) or 0),
-            "live_balance":      float(data.get("available_balance", 0) or 0),
-            "collateral":        float(data.get("collateral", 0) or 0),
-            "intraday_payin":    float(data.get("intraday_payin", 0) or 0),
-        },
-        "utilised": {
-            "debits":            float(data.get("utilised", 0) or 0),
-            "exposure":          float(data.get("exposure_margin", 0) or 0),
-            "m2m_realised":      float(data.get("realised_pnl", 0) or 0),
-            "m2m_unrealised":    float(data.get("unrealised_pnl", 0) or 0),
-            "option_premium":    float(data.get("option_premium", 0) or 0),
-            "payout":            float(data.get("payout", 0) or 0),
-            "span":              float(data.get("span_margin", 0) or 0),
-            "holding_sales":     0.0,
-            "turnover":          0.0,
-            "liquid_collateral": 0.0,
-            "stock_collateral":  float(data.get("stock_collateral", 0) or 0),
-        },
-        "_raw": data,
+        "net":       net,
+        "available": _groww_margin_available(data),
+        "utilised":  _groww_margin_utilised(data),
+        "_raw":      data,
     }
 
 
@@ -1532,28 +1580,7 @@ def _order_status(o: dict) -> str:
 def _normalise_orders(resp: Any) -> list[dict]:
     payload = _unwrap(resp)
     rows = _iter_rows(payload, "order_list", "orders")
-    out: list[dict] = []
-    for o in rows:
-        out.append({
-            "order_id":         str(o.get("groww_order_id") or o.get("order_id") or ""),
-            "tradingsymbol":    o.get("trading_symbol") or o.get("tradingsymbol") or "",
-            "exchange":         o.get("exchange") or "",
-            "status":           _order_status(o),
-            "transaction_type": o.get("transaction_type") or "BUY",
-            "order_type":       o.get("order_type") or "MARKET",
-            "product":          o.get("product") or "NRML",
-            "quantity":         _gi(o, "quantity"),
-            "filled_quantity":  _gi(o, "filled_quantity"),
-            "pending_quantity": _gi(o, "remaining_quantity", "pending_quantity"),
-            "price":            _gf(o, "price"),
-            "trigger_price":    _gf(o, "trigger_price"),
-            "average_price":    _gf(o, "average_price", "filled_avg_price"),
-            "order_timestamp":  o.get("created_at") or o.get("order_timestamp") or "",
-            "exchange_timestamp": o.get("exchange_time") or "",
-            "status_message":   o.get("remark") or o.get("status_message") or "",
-            "_raw":             o,
-        })
-    return out
+    return [_groww_order_row(o) for o in rows]
 
 
 def _extract_groww_gtt_rows(resp: Any) -> list:
@@ -1569,25 +1596,19 @@ def _extract_groww_gtt_rows(resp: Any) -> list:
 
 def _normalise_groww_gtt_row(r: dict) -> dict:
     """Normalise a single Groww Smart Order row to Kite GTT shape."""
-    trig_price = float(r.get("trigger_price") or 0)
+    trig_price  = float(r.get("trigger_price") or 0)
     order_inner = r.get("order") or {}
     return {
-        "gtt_id":       str(r.get("smart_order_id") or r.get("reference_id") or ""),
-        "status":       (r.get("status") or "active").lower(),
-        "trigger_type": "single",
-        "tradingsymbol": r.get("trading_symbol") or "",
-        "exchange":     r.get("exchange") or "",
+        "gtt_id":         str(_first(r, "smart_order_id", "reference_id")),
+        "status":         (r.get("status") or "active").lower(),
+        "trigger_type":   "single",
+        "tradingsymbol":  r.get("trading_symbol") or "",
+        "exchange":       r.get("exchange") or "",
         "trigger_values": [trig_price],
-        "last_price":   float(r.get("last_price") or 0),
-        "orders": [{
-            "transaction_type": order_inner.get("transaction_type") or "SELL",
-            "quantity":         int(r.get("quantity") or 0),
-            "price":            float(order_inner.get("price") or 0),
-            "order_type":       order_inner.get("order_type") or "LIMIT",
-            "product":          r.get("product_type") or "NRML",
-        }],
-        "created_at":   r.get("created_at") or "",
-        "_raw":         r,
+        "last_price":     float(r.get("last_price") or 0),
+        "orders":         [_groww_build_gtt_order_leg(r, order_inner)],
+        "created_at":     r.get("created_at") or "",
+        "_raw":           r,
     }
 
 
@@ -1595,19 +1616,16 @@ def _normalise_quote_row(data: dict) -> dict:
     """Map a Groww quote row to Kite's quote-row shape."""
     depth = data.get("depth") or {}
     return {
-        "instrument_token":  data.get("exchange_token") or data.get("instrument_token"),
-        "last_price":        float(data.get("last_price",
-                                            data.get("ltp", 0)) or 0),
-        "volume":            int(data.get("volume", 0) or 0),
-        "average_price":     float(data.get("average_price",
-                                            data.get("vwap", 0)) or 0),
-        "oi":                int(data.get("open_interest", 0) or 0),
+        "instrument_token": _first(data, "exchange_token", "instrument_token"),
+        "last_price":       float(_first(data, "last_price", "ltp", default=0)),
+        "volume":           int(data.get("volume", 0) or 0),
+        "average_price":    float(_first(data, "average_price", "vwap", default=0)),
+        "oi":               int(data.get("open_interest", 0) or 0),
         "ohlc": {
-            "open":   float(data.get("open",  0) or 0),
-            "high":   float(data.get("high",  0) or 0),
-            "low":    float(data.get("low",   0) or 0),
-            "close":  float(data.get("close",
-                                     data.get("previous_close", 0)) or 0),
+            "open":  float(data.get("open",  0) or 0),
+            "high":  float(data.get("high",  0) or 0),
+            "low":   float(data.get("low",   0) or 0),
+            "close": float(_first(data, "close", "previous_close", default=0)),
         },
         "depth": {
             "buy":  depth.get("buy")  or [],

@@ -28,6 +28,20 @@ _SPARKLINE_EXCHANGES = ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS")
 _MemKey = tuple[str, str]   # (date_str, exchange)
 
 
+def _parse_instruments_payload(
+    payload: "list[dict]", exchange: str
+) -> "dict[tuple[str, str], int]":
+    """Build {(tradingsymbol, exchange): instrument_token} map from a raw payload list."""
+    mapping: dict[tuple[str, str], int] = {}
+    for item in payload:
+        ts   = item.get("tradingsymbol")
+        exch = item.get("exchange", exchange)
+        tok  = item.get("instrument_token")
+        if ts and tok:
+            mapping[(str(ts).upper(), str(exch))] = int(tok)
+    return mapping
+
+
 def _ist_today() -> str:
     """Return today's date in IST as YYYY-MM-DD."""
     try:
@@ -95,13 +109,7 @@ class InstrumentsStore(PersistentStoreBase):
             row_count: int = int(row[1] or 0)
             if row_count == 0 or not payload:
                 return None
-            mapping: dict[tuple[str, str], int] = {}
-            for item in payload:
-                ts   = item.get("tradingsymbol")
-                exch = item.get("exchange", exchange)
-                tok  = item.get("instrument_token")
-                if ts and tok:
-                    mapping[(str(ts).upper(), str(exch))] = int(tok)
+            mapping = _parse_instruments_payload(payload, exchange)
             return mapping if mapping else None
         except Exception as exc:
             logger.warning(f"instruments_store: DB fetch failed for {key}: {exc}")

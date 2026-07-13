@@ -281,6 +281,23 @@ class OHLCVStore(PersistentStoreBase):
         result = await self._db_fetch(key)
         return result if result is not None else []
 
+    def _slice_cache_hit(
+        self, full_key: "_FullKey", from_d: date, to_d: date,
+    ) -> "list[OHLCVBar] | None":
+        """Re-check Tier 1 after acquiring the lock for a slice fetch.
+
+        Returns the filtered bars on a hit, or None when the cache misses
+        so the caller proceeds to Tier 3.
+        """
+        cached = self._mem_get(full_key)
+        if cached is None or not self._is_complete(cached, full_key):
+            return None
+        self._tier1_hits += 1
+        if isinstance(cached, dict):
+            return [v for k, v in cached.items()
+                    if from_d.isoformat() <= k <= to_d.isoformat()]
+        return list(cached)
+
     async def _fetch_slice(self, sym: str, exch: str,
                             from_d: date, to_d: date,
                             today: date) -> list[OHLCVBar]:
@@ -297,13 +314,9 @@ class OHLCVStore(PersistentStoreBase):
         async with lock:
             # Re-check Tier 1 after acquiring (another coroutine may have
             # already populated it for this slice).
-            cached = self._mem_get(full_key)
-            if cached is not None and self._is_complete(cached, full_key):
-                self._tier1_hits += 1
-                if isinstance(cached, dict):
-                    return [v for k, v in cached.items()
-                            if from_d.isoformat() <= k <= to_d.isoformat()]
-                return list(cached)
+            cached_bars = self._slice_cache_hit(full_key, from_d, to_d)
+            if cached_bars is not None:
+                return cached_bars
 
             try:
                 bars = await self._broker_fetch(full_key)
@@ -336,6 +349,55 @@ _MEM_CACHE: "OrderedDict[_MemKey, dict[str, OHLCVBar]]" = _ohlcv_store._mem_cach
 
 # ── Tier 3 sync helper (module-level, called via asyncio.to_thread) ───────────
 
+def _find_ohlcv_token(
+    token_map: dict, symbol: str, exchange: str
+) -> int | None:
+    """Look up instrument token, trying exchange first then standard fallback order."""
+    exch_order = [exchange] + [
+        e for e in ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS") if e != exchange
+    ]
+    for ex in exch_order:
+        tok = token_map.get((symbol, ex))
+        if tok is not None:
+            return tok
+    return None
+
+
+def _raw_date_to_str(raw_date: Any) -> str:
+    """Convert a raw date value (datetime or string) to YYYY-MM-DD."""
+    if hasattr(raw_date, "strftime"):
+        return raw_date.strftime("%Y-%m-%d")
+    return str(raw_date)[:10]
+
+
+def _raw_row_to_ohlcv_bar(r: dict, date_str: str) -> OHLCVBar | None:
+    """Convert a raw broker row to an OHLCVBar, returning None on parse error."""
+    try:
+        return OHLCVBar(
+            date=date_str,
+            open=float(r.get("open", 0)),
+            high=float(r.get("high", 0)),
+            low=float(r.get("low", 0)),
+            close=float(r.get("close", 0)),
+            volume=int(r.get("volume", 0)),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_ohlcv_bars(raw: list[dict]) -> list[OHLCVBar]:
+    """Parse raw broker rows into OHLCVBar list, skipping rows without a date."""
+    bars: list[OHLCVBar] = []
+    for r in raw:
+        raw_date = r.get("date")
+        if raw_date is None:
+            continue
+        bar = _raw_row_to_ohlcv_bar(r, _raw_date_to_str(raw_date))
+        if bar is not None:
+            bars.append(bar)
+    return bars
+
+
 def _broker_fetch_sync(
     symbol: str, exchange: str, from_d: date, to_d: date,
 ) -> list[OHLCVBar]:
@@ -357,13 +419,7 @@ def _broker_fetch_sync(
         return []
 
     token_map = _get_today_token_map(broker)
-
-    exch_order = [exchange] + [e for e in ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS") if e != exchange]
-    token: int | None = None
-    for ex in exch_order:
-        token = token_map.get((symbol, ex))
-        if token is not None:
-            break
+    token = _find_ohlcv_token(token_map, symbol, exchange)
     if token is None:
         return []
 
@@ -374,27 +430,7 @@ def _broker_fetch_sync(
     except Exception:
         return []
 
-    bars: list[OHLCVBar] = []
-    for r in raw:
-        raw_date = r.get("date")
-        if raw_date is None:
-            continue
-        if hasattr(raw_date, "strftime"):
-            date_str = raw_date.strftime("%Y-%m-%d")
-        else:
-            date_str = str(raw_date)[:10]
-        try:
-            bars.append(OHLCVBar(
-                date=date_str,
-                open=float(r.get("open", 0)),
-                high=float(r.get("high", 0)),
-                low=float(r.get("low", 0)),
-                close=float(r.get("close", 0)),
-                volume=int(r.get("volume", 0)),
-            ))
-        except (TypeError, ValueError):
-            continue
-    return bars
+    return _build_ohlcv_bars(raw)
 
 
 def _enqueue_persist_impl(symbol: str, exchange: str, bars: list[OHLCVBar]) -> None:
@@ -447,6 +483,21 @@ def _serve_tier2_complete(
     _ohlcv_store._mem_set(full_key, db_bars)
     _ohlcv_store._tier2_hits += 1
     return sorted(db_bars, key=lambda b: b["date"])
+
+
+def _serve_db_only(
+    full_key: "_FullKey", db_bars: list[OHLCVBar],
+) -> list[OHLCVBar]:
+    """Return whatever DB holds when db_only=True (no Tier 3 fetch).
+
+    Increments _db_only_misses, caches partial results in Tier 1
+    for re-use within the same process lifetime.
+    """
+    _ohlcv_store._db_only_misses += 1
+    if db_bars:
+        _ohlcv_store._mem_set(full_key, db_bars)
+        return sorted(db_bars, key=lambda b: b["date"])
+    return []
 
 
 async def _fetch_and_merge_slices(
@@ -560,11 +611,7 @@ async def get_or_fetch_daily(
 
     # db_only: skip Tier 3, return whatever DB has (partial is OK).
     if db_only:
-        _ohlcv_store._db_only_misses += 1
-        if db_bars:
-            _ohlcv_store._mem_set(full_key, db_bars)
-            return sorted(db_bars, key=lambda b: b["date"])
-        return []
+        return _serve_db_only(full_key, db_bars)
 
     # ── Tier 3: broker fetch for missing slices ───────────────────────────────
     merged, broker_bar_count = await _fetch_and_merge_slices(

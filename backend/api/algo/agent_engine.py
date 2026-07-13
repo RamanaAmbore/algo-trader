@@ -203,6 +203,17 @@ def _build_now_ctx() -> dict:
 _segments_now = _build_now_ctx
 
 
+def _ae_cur_min_in_window(cur_min: int, start: int, end: int) -> bool:
+    """Return True when cur_min falls inside [start, end].
+
+    start <= end  → same-day range.
+    start >  end  → crosses midnight; cur_min >= start OR cur_min <= end.
+    Extracted from _in_blackout_window to remove the two-branch conditional."""
+    if start <= end:
+        return start <= cur_min <= end
+    return cur_min >= start or cur_min <= end
+
+
 def _in_blackout_window(now, windows: list) -> bool:
     """Phase 22 — return True if the current IST wall-clock falls inside
     any blackout window. Each window is `{"start": "HH:MM", "end": "HH:MM"}`
@@ -227,14 +238,8 @@ def _in_blackout_window(now, windows: list) -> bool:
                 end   = int(eh) * 60 + int(em)
             except (TypeError, ValueError, AttributeError):
                 continue
-            if start <= end:
-                # Same-day window: in if start ≤ cur ≤ end.
-                if start <= cur_min <= end:
-                    return True
-            else:
-                # Crossing midnight: in if cur ≥ start OR cur ≤ end.
-                if cur_min >= start or cur_min <= end:
-                    return True
+            if _ae_cur_min_in_window(cur_min, start, end):
+                return True
         return False
     except Exception:
         return False
@@ -345,6 +350,25 @@ def _v2_format_threshold(kind: str, threshold) -> str:
         return str(threshold)
 
 
+def _ae_holdings_pct(row: dict) -> float | None:
+    """Return day_change_percentage for a Holdings alert row, or None.
+
+    Extracted from _v2_extract_pnl_fields to remove the ternary."""
+    val = row.get('day_change_percentage')
+    return float(val or 0) if val is not None else None
+
+
+def _ae_funds_pnl(metric: str, value, row: dict) -> float:
+    """Return the pnl float for a Funds section row.
+
+    Extracted from _v2_extract_pnl_fields to replace the elif chain."""
+    if metric == 'cash':
+        return float(row.get('avail opening_balance', 0) or 0)
+    if metric == 'avail_margin':
+        return float(row.get('net', 0) or 0)
+    return float(value or 0)
+
+
 def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
                            value) -> tuple[float, float | None]:
     """Return (pnl, pct) appropriate for the given section.
@@ -355,20 +379,12 @@ def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
     """
     if section == 'Holdings':
         pnl: float = float(row.get('day_change_val', 0) or 0)
-        pct: float | None = (
-            float(row.get('day_change_percentage', 0) or 0)
-            if row.get('day_change_percentage') is not None else None
-        )
+        pct: float | None = _ae_holdings_pct(row)
     elif section == 'Positions':
         pnl = float(row.get('pnl', 0) or 0)
         pct = None  # computed later only when we have used_margin
     else:  # Funds
-        if metric == 'cash':
-            pnl = float(row.get('avail opening_balance', 0) or 0)
-        elif metric == 'avail_margin':
-            pnl = float(row.get('net', 0) or 0)
-        else:
-            pnl = float(value or 0)
+        pnl = _ae_funds_pnl(metric, value, row)
         pct = None
     return pnl, pct
 
@@ -505,6 +521,37 @@ def _v2_match_to_alertrow(match: dict, *,
     )
 
 
+def _ae_sort_alert_rows(rows: list[dict]) -> None:
+    """Sort alert rows in-place: Holdings → Positions → Funds, TOTAL last.
+
+    Extracted from _v2_send_rich_alert to remove inline sort logic."""
+    order = {'Holdings': 0, 'Positions': 1, 'Funds': 2}
+    rows.sort(key=lambda r: (order.get(r['section'], 9),
+                              0 if r['scope'] != 'TOTAL' else 1,
+                              r['scope']))
+
+
+def _ae_sim_notify_suppressed(agent, sim_mode: bool) -> bool:
+    """Return True when sim_mode is active AND notify_during_run is off.
+
+    When True the caller should return True early — noisy channels are
+    suppressed but the audit trail remains intact.
+    Extracted from _v2_send_rich_alert to reduce CC there."""
+    if not sim_mode:
+        return False
+    try:
+        from backend.shared.helpers.settings import get_bool
+        if not get_bool("simulator.notify_during_run", False):
+            logger.info(
+                f"[SIM] notify_during_run=off — skipped TG/email for "
+                f"agent {agent.slug}; event row + log line still written"
+            )
+            return True
+    except Exception:
+        pass
+    return False
+
+
 async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
                               context: dict | None = None):
     """
@@ -540,32 +587,13 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     if not rows:
         return False
 
-    # Sort Holdings → Positions → Funds, per-account before TOTAL (same as
-    # alert_utils).
-    order = {'Holdings': 0, 'Positions': 1, 'Funds': 2}
-    rows.sort(key=lambda r: (order.get(r['section'], 9),
-                              0 if r['scope'] != 'TOTAL' else 1,
-                              r['scope']))
+    # Sort Holdings → Positions → Funds, per-account before TOTAL.
+    _ae_sort_alert_rows(rows)
 
-    # `simulator.notify_during_run` gate — when off (default), skip the
-    # outbound Telegram + email send for sim_mode fires. The agent_event
-    # row + log line are still written by the caller (_v2_record, log_event)
-    # so the audit trail is complete; only the noisy channels are
-    # suppressed. Operator opts in by toggling the setting per run when
-    # they want the full live-style feedback (e.g. validating dispatch).
-    if sim_mode:
-        try:
-            from backend.shared.helpers.settings import get_bool
-            if not get_bool("simulator.notify_during_run", False):
-                logger.info(
-                    f"[SIM] notify_during_run=off — skipped TG/email for "
-                    f"agent {agent.slug}; event row + log line still written"
-                )
-                # Treat as "rich path attempted" so the caller doesn't fall
-                # through to the bare dispatch() that ignores the setting.
-                return True
-        except Exception:
-            pass  # if the setting lookup itself fails, fall through to send
+    # `simulator.notify_during_run` gate — audit trail is always written;
+    # only the noisy outbound channels are suppressed in sim mode.
+    if _ae_sim_notify_suppressed(agent, sim_mode):
+        return True
 
     tg_body    = _tg_alert_body(rows)
     email_html = _email_alert_body(rows)
@@ -1050,6 +1078,78 @@ MANUAL_AGENT = dict(
 BUILTIN_AGENTS.append(MANUAL_AGENT)
 
 
+def _ae_sync_builtin_status(existing, desired: str | None) -> None:
+    """Bidirectionally sync status on a built-in Agent row.
+
+    Only flips active↔inactive; ignores other states.
+    Extracted from _ae_sync_existing_builtin to reduce CC there."""
+    if not desired or existing.status == desired:
+        return
+    if desired == "active" and existing.status == "inactive":
+        existing.status = "active"
+    elif desired == "inactive" and existing.status == "active":
+        existing.status = "inactive"
+
+
+def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
+    """Force-sync mutable fields on an existing system Agent row.
+
+    Operator-editable fields (conditions, cooldown, actions) are left
+    untouched. Extracted from seed_agents to reduce CC there."""
+    code_long = agent_def.get("long_name")
+    if code_long and existing.long_name != code_long:
+        existing.long_name = code_long
+    if existing.schedule != agent_def.get("schedule", "market_hours"):
+        existing.schedule = agent_def.get("schedule", "market_hours")
+    # Sync tier + topic only when the row is still at schema defaults.
+    _def_tier = agent_def.get("tier", "medium")
+    if existing.tier == "medium" and _def_tier != "medium":
+        existing.tier = _def_tier
+    _def_topic = agent_def.get("topic", "general")
+    if existing.topic == "general" and _def_topic != "general":
+        existing.topic = _def_topic
+    _ae_sync_builtin_status(existing, agent_def.get("status"))
+
+
+def _ae_build_agent_row(agent_def: dict) -> 'Agent':
+    """Construct a new system Agent ORM instance from a BUILTIN_AGENTS entry.
+
+    Extracted from seed_agents to isolate the construction block."""
+    return Agent(
+        slug=agent_def["slug"],
+        name=agent_def["name"],
+        long_name=agent_def.get("long_name"),
+        description=agent_def.get("description", ""),
+        conditions=agent_def["conditions"],
+        events=agent_def["events"],
+        actions=agent_def["actions"],
+        scope=agent_def.get("scope", "total"),
+        schedule=agent_def.get("schedule", "market_hours"),
+        cooldown_minutes=agent_def.get("cooldown_minutes", 30),
+        tier=agent_def.get("tier", "medium"),
+        topic=agent_def.get("topic", "general"),
+        digest_window_sec=agent_def.get("digest_window_sec", 30),
+        status=agent_def.get("status", "active"),
+        is_system=True,
+    )
+
+
+async def _ae_prune_retired_builtins(session, builtin_slugs: set) -> None:
+    """Delete system Agent rows whose slug is no longer in BUILTIN_AGENTS.
+
+    Leaves user-authored (is_system=False) rows untouched. Child
+    agent_events rows cascade via ON DELETE CASCADE.
+    Extracted from seed_agents to reduce CC there."""
+    from sqlalchemy import delete as sa_delete
+    retired = await session.execute(
+        select(Agent).where(Agent.is_system.is_(True))
+    )
+    for row in retired.scalars().all():
+        if row.slug not in builtin_slugs:
+            logger.info(f"Agent engine: pruning retired built-in '{row.slug}'")
+            await session.execute(sa_delete(Agent).where(Agent.id == row.id))
+
+
 async def seed_agents():
     """
     Sync BUILTIN_AGENTS into the `agents` table.
@@ -1061,9 +1161,6 @@ async def seed_agents():
     - Delete orphan system rows whose slug is no longer in BUILTIN_AGENTS
       (retired built-ins after the v1→v2 cutover).
     """
-    from sqlalchemy import delete
-    from backend.api.models import AgentEvent
-
     builtin_slugs = {a["slug"] for a in BUILTIN_AGENTS}
 
     async with async_session() as session:
@@ -1073,74 +1170,56 @@ async def seed_agents():
             )
             existing = result.scalar_one_or_none()
             if existing:
-                # Sync `long_name` from code unconditionally — it's a
-                # structured descriptor owned by the built-in definition,
-                # not an operator-editable field. New built-ins get it
-                # populated on first deploy; renames propagate.
-                code_long = agent_def.get("long_name")
-                if code_long and existing.long_name != code_long:
-                    existing.long_name = code_long
-                if existing.schedule != agent_def.get("schedule", "market_hours"):
-                    existing.schedule = agent_def.get("schedule", "market_hours")
-                # Sync tier + topic from the built-in definition. These
-                # drive topic-scoped suppression in run_cycle; keep the
-                # DB row in sync with code so a deploy that re-tags an
-                # agent takes effect. We only overwrite when the row is
-                # still at the schema default — if the operator has
-                # chosen a non-default value via the UI, leave it.
-                _def_tier = agent_def.get("tier", "medium")
-                if existing.tier == "medium" and _def_tier != "medium":
-                    existing.tier = _def_tier
-                _def_topic = agent_def.get("topic", "general")
-                if existing.topic == "general" and _def_topic != "general":
-                    existing.topic = _def_topic
-                desired_status = agent_def.get("status")
-                # System agents track the code definition bidirectionally:
-                # the built-in list is the source of truth for default on/off
-                # state. Users can still toggle via the UI — the next deploy
-                # will re-sync if the code changes.
-                if desired_status and existing.status != desired_status:
-                    # Only force-sync when the row is still at the opposite
-                    # default; preserves a just-toggled user choice between
-                    # deploys.
-                    if desired_status == "active" and existing.status == "inactive":
-                        existing.status = "active"
-                    elif desired_status == "inactive" and existing.status == "active":
-                        existing.status = "inactive"
+                _ae_sync_existing_builtin(existing, agent_def)
                 continue
-            agent = Agent(
-                slug=agent_def["slug"],
-                name=agent_def["name"],
-                long_name=agent_def.get("long_name"),
-                description=agent_def.get("description", ""),
-                conditions=agent_def["conditions"],
-                events=agent_def["events"],
-                actions=agent_def["actions"],
-                scope=agent_def.get("scope", "total"),
-                schedule=agent_def.get("schedule", "market_hours"),
-                cooldown_minutes=agent_def.get("cooldown_minutes", 30),
-                tier=agent_def.get("tier", "medium"),
-                topic=agent_def.get("topic", "general"),
-                digest_window_sec=agent_def.get("digest_window_sec", 30),
-                status=agent_def.get("status", "active"),
-                is_system=True,
-            )
-            session.add(agent)
+            session.add(_ae_build_agent_row(agent_def))
 
-        # Prune retired system agents (v1 rules that no longer have a code
-        # definition). Leaves user-authored (is_system=False) rows alone.
-        retired = await session.execute(
-            select(Agent).where(Agent.is_system.is_(True))
-        )
-        for row in retired.scalars().all():
-            if row.slug not in builtin_slugs:
-                logger.info(f"Agent engine: pruning retired built-in '{row.slug}'")
-                # agent_events.agent_id is ON DELETE CASCADE (slice G), so
-                # the child rows tear down with the parent.
-                await session.execute(delete(Agent).where(Agent.id == row.id))
-
+        await _ae_prune_retired_builtins(session, builtin_slugs)
         await session.commit()
     logger.info(f"Agent engine: {len(BUILTIN_AGENTS)} built-in agents verified")
+
+
+def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:
+    """Compute open/closed/holiday/minutes_since flags for one market segment.
+
+    Returns a flat dict with the ``{prefix}_*`` keys ready to merge into
+    the top-level context. Extracted from _build_context to reduce CC there."""
+    from backend.brokers.broker_apis import fetch_holidays
+    from backend.shared.helpers.date_time_utils import is_trading_day
+
+    h, m = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
+    open_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    h, m = map(int, seg_cfg.get("hours_end", "15:30").split(":"))
+    close_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+
+    prefix = "nse" if seg_name == "equity" else "mcx"
+    holiday_exchange = seg_cfg.get("holiday_exchange", "NSE")
+
+    try:
+        holidays = fetch_holidays(holiday_exchange)
+    except Exception:
+        holidays = set()
+
+    is_holiday = now.date() in holidays
+    # Passing `now=` lets is_trading_day suppress the live-quote probe
+    # when outside the widest Indian market window (09:00-23:30 IST).
+    is_trading = is_trading_day(now.date(), holidays,
+                                exchange=holiday_exchange,
+                                now=now)
+    in_time_range = open_time <= now <= close_time
+    is_open = in_time_range and is_trading
+
+    mins_open  = (max(0, int((now - open_time).total_seconds() / 60))
+                  if now >= open_time and is_open else 0)
+    mins_close = (max(0, int((now - close_time).total_seconds() / 60))
+                  if now > close_time and is_trading else 0)
+    return {
+        f"{prefix}_open":    is_open,
+        f"{prefix}_closed":  (now > close_time) and is_trading,
+        f"{prefix}_holiday": is_holiday,
+        f"minutes_since_{prefix}_open":  mins_open,
+        f"minutes_since_{prefix}_close": mins_close,
+    }
 
 
 def _build_context(now, sim_overrides: dict | None = None) -> dict:
@@ -1165,62 +1244,17 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
     """
     from backend.shared.helpers.utils import config as app_config
 
-    ctx = {"now": now}
-
-    # Market state per segment (with holiday awareness)
-    from backend.brokers.broker_apis import fetch_holidays
+    ctx: dict = {"now": now}
 
     segments = app_config.get("market_segments", {})
     for seg_name, seg_cfg in segments.items():
-        h, m = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
-        open_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        h, m = map(int, seg_cfg.get("hours_end", "15:30").split(":"))
-        close_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
-
-        prefix = "nse" if seg_name == "equity" else "mcx"
-        holiday_exchange = seg_cfg.get("holiday_exchange", "NSE")
-
-        # Check if today is a holiday or weekend
-        try:
-            holidays = fetch_holidays(holiday_exchange)
-        except Exception:
-            holidays = set()
-
-        # Use the shared trading-day helper so Muhurat / special weekend
-        # sessions configured via `market.extra_trading_days` register
-        # as open. Passing `exchange=` also enables the live-quote probe
-        # — if Kite shows fresh ticks for this exchange's bellwether,
-        # the day is treated as open regardless of what the NSE/Kite
-        # holiday master says. Catches MCX evening sessions on equity
-        # holidays that the COM segment doesn't surface.
-        from backend.shared.helpers.date_time_utils import is_trading_day
-        is_holiday = now.date() in holidays
-        # Passing `now=` lets is_trading_day suppress the probe when
-        # we're outside the widest Indian market window (09:00-23:30
-        # IST), so a 3 AM tick doesn't fire a useless Kite quote call.
-        is_trading = is_trading_day(now.date(), holidays,
-                                    exchange=holiday_exchange,
-                                    now=now)
-        # is_weekend is retained for the legacy `*_closed` semantics
-        # (which want "session ended today" — only meaningful on a
-        # day when the market actually traded). A trading Saturday
-        # therefore correctly emits *_closed once we pass close_time.
-        is_non_trading_weekend = not is_trading and now.weekday() >= 5
-        in_time_range = open_time <= now <= close_time
-        is_open = in_time_range and is_trading
-
-        ctx[f"{prefix}_open"] = is_open
-        ctx[f"{prefix}_closed"] = (now > close_time) and is_trading
-        ctx[f"{prefix}_holiday"] = is_holiday
-        ctx[f"minutes_since_{prefix}_open"] = max(0, int((now - open_time).total_seconds() / 60)) if now >= open_time and is_open else 0
-        ctx[f"minutes_since_{prefix}_close"] = max(0, int((now - close_time).total_seconds() / 60)) if now > close_time and is_trading else 0
+        ctx.update(_ae_segment_flags(seg_name, seg_cfg, now))
 
     # Sim-mode overrides — a scenario's `market_state` block wins over the
     # computed values above. Only keys present in the override dict are
     # replaced, so a partial override (e.g. just `is_expiry_day`) is safe.
     if sim_overrides:
-        for k, v in sim_overrides.items():
-            ctx[k] = v
+        ctx.update(sim_overrides)
 
     return ctx
 
@@ -1543,6 +1577,68 @@ def _cycle_compute_post_fire_status(agent, *, bypass_schedule: bool) -> tuple[st
     return new_status, new_trigger_count
 
 
+def _ae_cycle_pre_gates_pass(agent, now, *, any_market_open: bool,
+                             bypass_schedule: bool) -> bool:
+    """Return True when the agent clears all pre-evaluation timing gates.
+
+    Checks schedule, cooldown, fire_at_time, and blackout windows.
+    Extracted from _cycle_process_agent to reduce CC there."""
+    if _cycle_should_skip_schedule(agent, any_market_open=any_market_open,
+                                   bypass_schedule=bypass_schedule):
+        return False
+    if _cycle_in_cooldown(agent, bypass_schedule=bypass_schedule):
+        return False
+    if _cycle_outside_fire_at(agent, now, bypass_schedule=bypass_schedule):
+        return False
+    if _cycle_in_blackout(agent, now, bypass_schedule=bypass_schedule):
+        return False
+    return True
+
+
+async def _ae_cycle_eval_and_buffer(
+    agent, context: dict, cfg: dict, now,
+    *, alert_state: dict, sim_mode: bool,
+    bypass_schedule: bool, bypass_suppression: bool,
+    broadcast_fn, pending_dispatches: list,
+) -> None:
+    """Evaluate condition tree, apply debounce/lifespan gates, buffer fires.
+
+    Also persists non-triggered state changes. Extracted from
+    _cycle_process_agent to reduce CC there."""
+    matches = _cycle_evaluate_agent(agent, context, cfg, now, alert_state)
+    if not matches:
+        _v2_unlatch(agent)
+
+    matches, debounce_new_first_true_at, debounce_first_true_changed = (
+        _cycle_apply_debounce(agent, matches, now, sim_mode=sim_mode)
+    )
+    debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
+
+    if matches and sim_mode and _cycle_shadow_lifespan_exhausted(agent, alert_state):
+        return
+
+    triggered = _cycle_maybe_buffer_fire(
+        agent, matches,
+        now=now,
+        bypass_suppression=bypass_suppression,
+        bypass_schedule=bypass_schedule,
+        sim_mode=sim_mode,
+        alert_state=alert_state,
+        cfg=cfg,
+        broadcast_fn=broadcast_fn,
+        debounce_min=debounce_min,
+        pending_dispatches=pending_dispatches,
+    )
+
+    if not bypass_schedule and not triggered:
+        await _cycle_persist_untriggered_state(
+            agent,
+            debounce_first_true_changed=debounce_first_true_changed,
+            debounce_new_first_true_at=debounce_new_first_true_at,
+            broadcast_fn=broadcast_fn,
+        )
+
+
 async def _cycle_process_agent(
     agent, *, agents, context: dict, cfg: dict,
     now, any_market_open: bool,
@@ -1560,64 +1656,24 @@ async def _cycle_process_agent(
     ):
         return
 
-    # schedule / cooldown / fire_at_time / blackout gates
-    if _cycle_should_skip_schedule(agent, any_market_open=any_market_open,
-                                   bypass_schedule=bypass_schedule):
-        return
-    if _cycle_in_cooldown(agent, bypass_schedule=bypass_schedule):
-        return
-    if _cycle_outside_fire_at(agent, now, bypass_schedule=bypass_schedule):
-        return
-    if _cycle_in_blackout(agent, now, bypass_schedule=bypass_schedule):
+    if not _ae_cycle_pre_gates_pass(agent, now, any_market_open=any_market_open,
+                                    bypass_schedule=bypass_schedule):
         return
 
     alert_state = context.get("alert_state") or {}
     sim_mode = bool(alert_state.get("sim_mode") or context.get("sim_mode"))
     _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
 
-    # Baseline gate: skip rate-based agents during the opening offset window.
     if _cycle_baseline_not_ready(agent, alert_state, now, cfg,
                                  bypass_schedule=bypass_schedule):
         return
 
-    # Evaluate condition tree; unlatch static agents on no-match.
-    matches = _cycle_evaluate_agent(agent, context, cfg, now, alert_state)
-    if not matches:
-        _v2_unlatch(agent)
-
-    # Phase 21 — debounce gate ("for N minutes" clauses).
-    matches, debounce_new_first_true_at, debounce_first_true_changed = (
-        _cycle_apply_debounce(agent, matches, now, sim_mode=sim_mode)
+    await _ae_cycle_eval_and_buffer(
+        agent, context, cfg, now,
+        alert_state=alert_state, sim_mode=sim_mode,
+        bypass_schedule=bypass_schedule, bypass_suppression=bypass_suppression,
+        broadcast_fn=broadcast_fn, pending_dispatches=pending_dispatches,
     )
-    debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
-
-    # Shadow-lifespan gate (sim mode only).
-    if matches and sim_mode and _cycle_shadow_lifespan_exhausted(agent, alert_state):
-        return
-
-    # Suppression gate + fire buffering.
-    triggered = _cycle_maybe_buffer_fire(
-        agent, matches,
-        now=now,
-        bypass_suppression=bypass_suppression,
-        bypass_schedule=bypass_schedule,
-        sim_mode=sim_mode,
-        alert_state=alert_state,
-        cfg=cfg,
-        broadcast_fn=broadcast_fn,
-        debounce_min=debounce_min,
-        pending_dispatches=pending_dispatches,
-    )
-
-    # Persist non-triggered state changes (cooldown→active recovery,
-    # debounce latch arm/clear). Skipped for sim runs.
-    if not bypass_schedule and not triggered:
-        await _cycle_persist_untriggered_state(
-            agent,
-            debounce_first_true_changed=debounce_first_true_changed,
-            debounce_new_first_true_at=debounce_new_first_true_at,
-            broadcast_fn=broadcast_fn,
-        )
 
 
 async def run_cycle(context: dict, broadcast_fn=None,
@@ -1707,6 +1763,91 @@ async def run_cycle(context: dict, broadcast_fn=None,
         await _cycle_dispatch_survivors(pending_dispatches, now, context, broadcast_fn)
 
 
+async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
+                                       broadcast_fn) -> None:
+    """Emit an audit-log event for a suppressed fire and broadcast state.
+
+    No push notification or action execution. Extracted from
+    _cycle_dispatch_survivors to reduce CC there."""
+    agent      = entry['agent']
+    result     = entry['result']
+    sim_mode_p = entry['sim_mode']
+    supp_by    = suppressed_ids[agent.id]
+    topic      = getattr(agent, 'topic', 'general')
+    detail_text = (
+        f"Suppressed by higher-tier agent '{supp_by}' in topic '{topic}'."
+    )
+    try:
+        await log_event(
+            agent, 'triggered_suppressed',
+            f"{result.condition_text} — {detail_text}",
+            detail={'suppressed_by': supp_by,
+                    'topic': topic,
+                    'tier':  getattr(agent, 'tier', 'medium')},
+            sim_mode=sim_mode_p,
+        )
+    except Exception as _le:
+        logger.debug(f"suppressed-event log failed: {_le}")
+    if broadcast_fn:
+        broadcast_fn('agent_state', {
+            'slug': agent.slug,
+            'status': 'suppressed',
+            'suppressed_by': supp_by,
+        })
+
+
+async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
+                                      broadcast_fn) -> None:
+    """Commit all side-effects for a surviving (non-suppressed) fire.
+
+    Writes DB state, broadcasts WS status, sends rich alert / dispatch,
+    and executes actions. Extracted from _cycle_dispatch_survivors."""
+    agent       = entry['agent']
+    matches_    = entry['matches']
+    result      = entry['result']
+    sim_mode_p  = entry['sim_mode']
+
+    _v2_record(agent, matches_, now)
+    if not entry.get('bypass_schedule', False):
+        new_status_p   = entry['new_status']
+        debounce_min_p = entry.get('debounce_min', 0)
+        async with async_session() as session:
+            db_values: dict = dict(
+                status=new_status_p,
+                last_triggered_at=datetime.now(timezone.utc),
+                trigger_count=Agent.trigger_count + 1,
+            )
+            # Phase 21 — clear the debounce latch after a fire.
+            if debounce_min_p > 0:
+                db_values["condition_first_true_at"] = None
+            await session.execute(
+                update(Agent).where(Agent.id == agent.id).values(**db_values)
+            )
+            await session.commit()
+        if broadcast_fn:
+            broadcast_fn("agent_state", {"slug": agent.slug, "status": new_status_p})
+
+    rich_sent = await _v2_send_rich_alert(
+        agent, matches_, now, sim_mode=sim_mode_p, context=context,
+    )
+    if not rich_sent:
+        await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p)
+    else:
+        await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode_p)
+        if broadcast_fn:
+            broadcast_fn('agent_alert', {
+                'slug': agent.slug,
+                'message': result.condition_text,
+                'timestamp': now.isoformat(),
+                'sim_mode': sim_mode_p,
+            })
+    if agent.actions:
+        action_ctx = dict(context)
+        action_ctx["account"] = "TOTAL"
+        action_ctx["sim_mode"] = sim_mode_p
+        await execute(agent, agent.actions, action_ctx)
+
+
 async def _cycle_dispatch_survivors(
     pending_dispatches: list[dict],
     now,
@@ -1721,88 +1862,44 @@ async def _cycle_dispatch_survivors(
     """
     suppressed_ids = _compute_topic_suppression(pending_dispatches)
     for entry in pending_dispatches:
-        agent       = entry['agent']
-        matches_    = entry['matches']
-        result      = entry['result']
-        sim_mode_p  = entry['sim_mode']
-
+        agent = entry['agent']
         if agent.id in suppressed_ids:
-            # Audit-log only. Channel push + actions skipped.
-            supp_by = suppressed_ids[agent.id]
-            detail_text = (
-                f"Suppressed by higher-tier agent '{supp_by}' in topic "
-                f"'{getattr(agent, 'topic', 'general')}'."
-            )
-            try:
-                await log_event(
-                    agent, 'triggered_suppressed',
-                    f"{result.condition_text} — {detail_text}",
-                    detail={'suppressed_by': supp_by,
-                            'topic': getattr(agent, 'topic', 'general'),
-                            'tier':  getattr(agent, 'tier',  'medium')},
-                    sim_mode=sim_mode_p,
-                )
-            except Exception as _le:
-                logger.debug(f"suppressed-event log failed: {_le}")
-            if broadcast_fn:
-                broadcast_fn('agent_state', {
-                    'slug': agent.slug,
-                    'status': 'suppressed',
-                    'suppressed_by': supp_by,
-                })
+            await _ae_dispatch_suppressed_entry(entry, suppressed_ids, broadcast_fn)
             continue
-
-        # Survivor path — agent passed topic-tier suppression.
-        # Now safe to commit side-effects that must NOT run for
-        # suppressed agents: latch _v2_record (updates _V2_LAST_ALERT
-        # used by cooldown gate), write trigger_count / status / cooldown
-        # to DB, and emit the final WS status broadcast.
-        _v2_record(agent, matches_, now)
-        _bypass_schedule_p = entry.get('bypass_schedule', False)
-        if not _bypass_schedule_p:
-            _new_status_p = entry['new_status']
-            _debounce_min_p = entry.get('debounce_min', 0)
-            async with async_session() as session:
-                _db_values: dict = dict(
-                    status=_new_status_p,
-                    last_triggered_at=datetime.now(timezone.utc),
-                    trigger_count=Agent.trigger_count + 1,
-                )
-                # Phase 21 — clear the debounce latch after a fire so
-                # the next true tick starts a fresh window.
-                if _debounce_min_p > 0:
-                    _db_values["condition_first_true_at"] = None
-                await session.execute(
-                    update(Agent).where(Agent.id == agent.id).values(**_db_values)
-                )
-                await session.commit()
-            if broadcast_fn:
-                broadcast_fn("agent_state", {"slug": agent.slug, "status": _new_status_p})
-
-        # Full dispatch path.
-        rich_sent = await _v2_send_rich_alert(
-            agent, matches_, now, sim_mode=sim_mode_p, context=context,
-        )
-        if not rich_sent:
-            await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p)
-        else:
-            await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode_p)
-            if broadcast_fn:
-                broadcast_fn('agent_alert', {
-                    'slug': agent.slug,
-                    'message': result.condition_text,
-                    'timestamp': now.isoformat(),
-                    'sim_mode': sim_mode_p,
-                })
-        if agent.actions:
-            action_ctx = dict(context)
-            action_ctx["account"] = "TOTAL"
-            action_ctx["sim_mode"] = sim_mode_p
-            await execute(agent, agent.actions, action_ctx)
+        await _ae_dispatch_survivor_entry(entry, now, context, broadcast_fn)
 
 
 # Tier rank for topic-suppression. Lower = higher priority.
 _TIER_RANK = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+
+
+def _ae_topic_winner(group: list[dict]) -> tuple[int, str]:
+    """Return (min_rank, winner_slug) for a topic group.
+
+    min_rank is the lowest (highest-priority) tier rank present;
+    winner_slug is the first agent slug at that rank.
+    Extracted from _compute_topic_suppression to reduce CC there."""
+    min_rank = min(
+        _TIER_RANK.get(getattr(e['agent'], 'tier', 'medium'), 99)
+        for e in group
+    )
+    winner_slug = next(
+        e['agent'].slug for e in group
+        if _TIER_RANK.get(getattr(e['agent'], 'tier', 'medium'), 99) == min_rank
+    )
+    return min_rank, winner_slug
+
+
+def _ae_suppressed_in_group(group: list[dict], suppressed: dict) -> None:
+    """Populate suppressed dict with lower-tier agent ids in this topic group.
+
+    Extracted from _compute_topic_suppression to reduce CC there."""
+    min_rank, winner_slug = _ae_topic_winner(group)
+    for entry in group:
+        agent = entry['agent']
+        rank = _TIER_RANK.get(getattr(agent, 'tier', 'medium'), 99)
+        if rank > min_rank:
+            suppressed[agent.id] = winner_slug
 
 
 def _compute_topic_suppression(pending: list[dict]) -> dict[int, str]:
@@ -1819,7 +1916,6 @@ def _compute_topic_suppression(pending: list[dict]) -> dict[int, str]:
     Returns an empty dict when no suppression applies (single-fire ticks,
     all-equal-tier ticks, all-untagged ticks).
     """
-    # Bucket fires by topic.
     by_topic: dict[str, list[dict]] = {}
     for entry in pending:
         agent = entry['agent']
@@ -1830,23 +1926,8 @@ def _compute_topic_suppression(pending: list[dict]) -> dict[int, str]:
 
     suppressed: dict[int, str] = {}
     for topic, group in by_topic.items():
-        if len(group) <= 1:
-            continue  # nothing to suppress; one fire is the only fire
-        # Find the minimum (highest-priority) tier rank in this topic.
-        min_rank = min(
-            _TIER_RANK.get(getattr(e['agent'], 'tier', 'medium'), 99)
-            for e in group
-        )
-        # Pick a representative winner slug (first entry at that rank).
-        winner_slug = next(
-            e['agent'].slug for e in group
-            if _TIER_RANK.get(getattr(e['agent'], 'tier', 'medium'), 99) == min_rank
-        )
-        for entry in group:
-            agent = entry['agent']
-            rank = _TIER_RANK.get(getattr(agent, 'tier', 'medium'), 99)
-            if rank > min_rank:
-                suppressed[agent.id] = winner_slug
+        if len(group) > 1:
+            _ae_suppressed_in_group(group, suppressed)
     return suppressed
 
 

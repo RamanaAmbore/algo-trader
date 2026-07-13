@@ -216,6 +216,15 @@ _DHAN_FUT_RE = _re.compile(r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{4})-FUT$")
 _DHAN_FUT_RE_NDAY = _re.compile(r"^([A-Z]+)-([A-Z]{3})(\d{4})-FUT$")
 
 
+def _dhan_format_strike(strike: str) -> str:
+    """Normalise a strike string: drop trailing .0, keep halves."""
+    try:
+        f = float(strike)
+        return str(int(f)) if f.is_integer() else str(f)
+    except ValueError:
+        return strike
+
+
 def _dhan_to_kite_symbol(raw: str) -> str:
     """Convert a Dhan F&O tradingsymbol to the Kite-style canonical form.
 
@@ -228,42 +237,22 @@ def _dhan_to_kite_symbol(raw: str) -> str:
     s = (raw or "").upper().strip()
     if not s:
         return ""
-    # Options — old format "ROOT-DDMonYYYY-STRIKE-CE|PE"
     m = _DHAN_OPT_RE.match(s)
     if m:
         root, _dd, mon, yyyy, strike, opt_type = m.groups()
-        # Drop trailing .0 on whole-number strikes; preserve halves.
-        try:
-            strike_f = float(strike)
-            strike_disp = (str(int(strike_f)) if strike_f.is_integer()
-                           else str(strike_f))
-        except ValueError:
-            strike_disp = strike
-        return f"{root}{yyyy[2:]}{mon}{strike_disp}{opt_type}"
-    # Options — new format "ROOT-MonYYYY-STRIKE-CE|PE" (no day prefix)
+        return f"{root}{yyyy[2:]}{mon}{_dhan_format_strike(strike)}{opt_type}"
     m = _DHAN_OPT_RE_NDAY.match(s)
     if m:
         root, mon, yyyy, strike, opt_type = m.groups()
-        try:
-            strike_f = float(strike)
-            strike_disp = (str(int(strike_f)) if strike_f.is_integer()
-                           else str(strike_f))
-        except ValueError:
-            strike_disp = strike
-        return f"{root}{yyyy[2:]}{mon}{strike_disp}{opt_type}"
-    # Futures — with day prefix "ROOT-DDMonYYYY-FUT"
+        return f"{root}{yyyy[2:]}{mon}{_dhan_format_strike(strike)}{opt_type}"
     m = _DHAN_FUT_RE.match(s)
     if m:
         root, _dd, mon, yyyy = m.groups()
         return f"{root}{yyyy[2:]}{mon}FUT"
-    # Futures — without day prefix "ROOT-MonYYYY-FUT" (defensive)
     m = _DHAN_FUT_RE_NDAY.match(s)
     if m:
         root, mon, yyyy = m.groups()
         return f"{root}{yyyy[2:]}{mon}FUT"
-    # Fallback: just strip dashes + spaces. Equity / index symbols
-    # ("RELIANCE", "NIFTY 50") and any Dhan format the regex doesn't
-    # cover yet pass through cleanly.
     return s.replace("-", "").replace(" ", "").strip()
 
 
@@ -345,6 +334,35 @@ def _dhan_instrument_token(sid: str) -> int:
         return 0
 
 
+def _dhan_process_instrument_row(
+    parts: list[str],
+    col: dict[str, int],
+    has_seg_col: bool,
+    by_exchange: dict,
+    by_symbol: dict,
+) -> None:
+    """Parse one CSV row and add it to the exchange + symbol caches."""
+    kite_exch, seg_raw = _resolve_dhan_kite_exchange(parts, col, has_seg_col)
+    if not kite_exch:
+        return
+    ts_raw = parts[col["SEM_TRADING_SYMBOL"]].strip()
+    ts  = _dhan_to_kite_symbol(ts_raw)
+    sid = parts[col["SEM_SMST_SECURITY_ID"]].strip()
+    if not ts or not sid:
+        return
+    row = {
+        "tradingsymbol":    ts,
+        "security_id":      sid,
+        "instrument_token": _dhan_instrument_token(sid),
+        "exchange":         kite_exch,
+        "exchange_segment": seg_raw,
+        "lot_size":         _extract_dhan_lot_size(parts, col),
+        "tick_size":        _extract_dhan_tick_size(parts, col),
+    }
+    by_exchange.setdefault(kite_exch, []).append(row)
+    by_symbol[(kite_exch, ts)] = sid
+
+
 def _load_dhan_instruments() -> None:
     """Fetch Dhan's master CSV and populate the module-level caches.
     Called under _dhan_instruments_lock. Silently no-ops on any failure
@@ -386,33 +404,7 @@ def _load_dhan_instruments() -> None:
             parts = line.split(",")
             if len(parts) <= min_col:
                 continue
-            kite_exch, seg_raw = _resolve_dhan_kite_exchange(parts, col, has_seg_col)
-            if not kite_exch:
-                continue
-            # Translate Dhan's F&O tradingsymbol to the Kite-style canonical
-            # form. Dhan ships symbols as "CRUDEOIL-16JUL2026-8500-CE"
-            # (ROOT-DDmonYYYY-STRIKE-CE|PE); the Kite parser expects
-            # "CRUDEOIL26JUL8500CE" (ROOTYYmmmSTRIKECE). Without this
-            # the security_id lookup misses, and the strategy-analytics
-            # endpoint rejects the leg with "isn't a recognised option
-            # or futures contract" — payoff chart never renders. Equity
-            # / index symbols pass through (just strip dashes + spaces).
-            ts_raw = parts[col["SEM_TRADING_SYMBOL"]].strip()
-            ts = _dhan_to_kite_symbol(ts_raw)
-            sid = parts[col["SEM_SMST_SECURITY_ID"]].strip()
-            if not ts or not sid:
-                continue
-            row = {
-                "tradingsymbol":    ts,
-                "security_id":      sid,
-                "instrument_token": _dhan_instrument_token(sid),
-                "exchange":         kite_exch,
-                "exchange_segment": seg_raw,
-                "lot_size":         _extract_dhan_lot_size(parts, col),
-                "tick_size":        _extract_dhan_tick_size(parts, col),
-            }
-            by_exchange.setdefault(kite_exch, []).append(row)
-            by_symbol[(kite_exch, ts)] = sid
+            _dhan_process_instrument_row(parts, col, has_seg_col, by_exchange, by_symbol)
         _DHAN_BY_EXCHANGE = by_exchange
         _DHAN_BY_SYMBOL = by_symbol
         _DHAN_INSTRUMENTS_DATE = _ist_today()
@@ -1486,6 +1478,41 @@ def _unwrap(resp: Any) -> list[dict]:
     return []
 
 
+# ── Thin coercion helpers (CC-reduction) ─────────────────────────────
+# Every `float(x or 0)` / `int(x or 0)` in a dict-building expression
+# costs +1 CC. These helpers absorb None / "" / invalid gracefully and
+# carry the cost in their own bodies (CC ≤ 3 each) rather than at the
+# call site.
+
+def _dhan_num(v: Any, default: float = 0.0) -> float:
+    """Coerce any value to float; empty/None/invalid → default."""
+    if v is None or v == "":
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _dhan_int(v: Any, default: int = 0) -> int:
+    """Coerce any value to int; empty/None/invalid → default."""
+    if v is None or v == "":
+        return default
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
+def _dhan_first(d: dict, *keys: str, default: str = "") -> str:
+    """Return the first truthy string value for any key in *keys."""
+    for k in keys:
+        v = d.get(k)
+        if v:
+            return str(v)
+    return default
+
+
 def _resolve_dhan_ltp_symbols(
     symbols: list[str],
 ) -> tuple[dict[str, list[str]], dict[tuple[str, str], str]]:
@@ -1596,6 +1623,63 @@ def _normalise_dhan_gtt_row(r: dict) -> dict:
         "orders":         [_dhan_gtt_order_leg(r)],
         "created_at":     r.get("createTime") or "",
         "_raw":           r,
+    }
+
+
+def _dhan_holding_exchange(h: dict) -> str:
+    """Resolve the Kite exchange string for a Dhan holdings row."""
+    seg_h     = str(h.get("exchangeSegment") or "").upper()
+    exch_raw  = str(h.get("exchange") or "").upper()
+    return (
+        _DHAN_SEGMENT_TO_EXCHANGE.get(seg_h)
+        or (_DHAN_SEGMENT_TO_EXCHANGE.get(exch_raw, exch_raw)
+            if exch_raw and exch_raw != "ALL"
+            else "NSE")
+    )
+
+
+def _dhan_holding_pnl(h: dict, last_price: float, avg_price: float, qty: int) -> float:
+    """Compute P&L: use broker value if available, else derive."""
+    pnl_raw = h.get("unrealisedProfit")
+    if pnl_raw in (None, 0, "0", 0.0):
+        return (last_price - avg_price) * qty
+    return float(pnl_raw)
+
+
+def _dhan_holding_day_change_pct(h: dict, last_price: float, close_price: float) -> float:
+    """Compute day-change %: use broker value if available, else derive."""
+    raw = h.get("dayChangePerc")
+    if raw in (None, 0, "0", 0.0):
+        return ((last_price - close_price) / close_price * 100.0) if close_price > 0 else 0.0
+    return float(raw)
+
+
+def _dhan_normalise_one_holding(h: dict) -> dict:
+    """Normalise a single Dhan holdings row to Kite-shape."""
+    qty         = max(_dhan_int(h.get("totalQty")), _dhan_int(h.get("t1Qty")))
+    inst_tok    = _dhan_int(h.get("securityId"))
+    avg_price   = _dhan_num(h.get("avgCostPrice"))
+    last_price  = _dhan_num(h.get("lastTradedPrice"))
+    close_price = _dhan_num(h.get("previousClosePrice") or h.get("closePrice"))
+    day_change  = last_price - close_price
+    pnl         = _dhan_holding_pnl(h, last_price, avg_price, qty)
+    day_chg_pct = _dhan_holding_day_change_pct(h, last_price, close_price)
+    return {
+        "tradingsymbol":         _dhan_to_kite_symbol(_dhan_first(h, "tradingSymbol", "symbol")),
+        "exchange":              _dhan_holding_exchange(h),
+        "instrument_token":      inst_tok,
+        "isin":                  h.get("isin"),
+        "quantity":              qty,
+        "opening_quantity":      qty,
+        "t1_quantity":           _dhan_int(h.get("t1Qty")),
+        "average_price":         avg_price,
+        "last_price":            last_price,
+        "close_price":           close_price,
+        "pnl":                   pnl,
+        "day_change":            day_change,
+        "day_change_percentage": day_chg_pct,
+        "product":               "CNC",
+        "_raw":                  h,
     }
 
 

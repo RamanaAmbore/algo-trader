@@ -109,6 +109,63 @@ async def _resolve_spot_ticker(
     return None
 
 
+async def _commodity_spot_4a(
+    underlying: str,
+    resolved_sym: str,
+    broker: object,
+    spot_cache_put: object,
+    ltp_from_quote: object,
+    prev_close_from_quote: object,
+) -> Optional[tuple]:
+    """Step 4a: quote MCX:{resolved_sym}; return result tuple on success or None."""
+    full_key = f"MCX:{resolved_sym}"
+    try:
+        resp = await asyncio.to_thread(broker.quote, [full_key]) or {}  # type: ignore[attr-defined]
+        quote_dict = resp.get(full_key) or {}
+        px, _src = ltp_from_quote(quote_dict)  # type: ignore[operator]
+        if px is not None:
+            prev = prev_close_from_quote(quote_dict)  # type: ignore[operator]
+            spot_cache_put(underlying, px, "futures", prev, resolved_sym)  # type: ignore[operator]
+            return (px, "futures", prev, resolved_sym, resolved_sym)
+    except Exception as exc:
+        logger.warning("options MCX spot for %s (%s) failed: %s", underlying, full_key, exc)
+    return None
+
+
+async def _commodity_spot_4b(
+    underlying: str,
+    resolved_sym: Optional[str],
+    expiry_hint: date,
+    broker: object,
+    spot_cache_put: object,
+    ltp_from_quote: object,
+    prev_close_from_quote: object,
+) -> Optional[tuple]:
+    """Step 4b: walk forward up to 3 months trying constructed futures symbols."""
+    exchanges = ("MCX", "NFO") if is_mcx_underlying(underlying) else ("NFO", "MCX")
+    cursor = expiry_hint
+    for _step in range(3):
+        fut_sym = futures_symbol_for_expiry(underlying, cursor)
+        for ex in exchanges:
+            full_key = f"{ex}:{fut_sym}"
+            try:
+                resp = await asyncio.to_thread(broker.quote, [full_key]) or {}  # type: ignore[attr-defined]
+                quote_dict = resp.get(full_key) or {}
+                px, _src = ltp_from_quote(quote_dict)  # type: ignore[operator]
+                if px is not None:
+                    prev = prev_close_from_quote(quote_dict)  # type: ignore[operator]
+                    anchor = fut_sym if is_mcx_underlying(underlying) else None
+                    spot_cache_put(underlying, px, "futures", prev, anchor)  # type: ignore[operator]
+                    return (px, "futures", prev, resolved_sym, anchor)
+            except Exception as exc:
+                logger.warning(
+                    "options futures-spot quote for %s (%s) failed: %s",
+                    underlying, full_key, exc,
+                )
+        cursor = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1)
+    return None
+
+
 async def _resolve_commodity_spot(
     underlying: str,
     expiry_hint: Optional[date],
@@ -118,16 +175,9 @@ async def _resolve_commodity_spot(
     ltp_from_quote: object,
     prev_close_from_quote: object,
 ) -> tuple[Optional[float], str, Optional[float], Optional[str], Optional[str]]:
-    """Look up the MCX commodity spot through three sub-steps:
+    """Look up the MCX commodity spot through two sub-steps (4a + 4b).
 
-    4a. Instruments-cache lookup for the matching-month future (or nearest).
-    4b. Walk-forward loop over `expiry_hint` months (up to 3) using the
-        constructed symbol via ``futures_symbol_for_expiry``.
-
-    Returns ``(price_or_None, source, prev_close, resolved_sym, anchor)``
-    where *resolved_sym* is the intended anchor (used as the cache key
-    even when the live quote fails) and *price_or_None* is None on full
-    failure.
+    Returns ``(price_or_None, source, prev_close, resolved_sym, anchor)``.
     """
     resolved_sym: Optional[str] = None
 
@@ -140,44 +190,21 @@ async def _resolve_commodity_spot(
         resolved_sym = await lookup_mcx_front_month_future(underlying)
 
     if resolved_sym:
-        full_key = f"MCX:{resolved_sym}"
-        try:
-            resp = await asyncio.to_thread(broker.quote, [full_key]) or {}  # type: ignore[attr-defined]
-            quote_dict = resp.get(full_key) or {}
-            px, _src = ltp_from_quote(quote_dict)  # type: ignore[operator]
-            if px is not None:
-                prev = prev_close_from_quote(quote_dict)  # type: ignore[operator]
-                spot_cache_put(underlying, px, "futures", prev, resolved_sym)  # type: ignore[operator]
-                return (px, "futures", prev, resolved_sym, resolved_sym)
-        except Exception as exc:
-            logger.warning(
-                "options MCX spot for %s (%s) failed: %s",
-                underlying, full_key, exc,
-            )
+        hit = await _commodity_spot_4a(
+            underlying, resolved_sym, broker, spot_cache_put,
+            ltp_from_quote, prev_close_from_quote,
+        )
+        if hit is not None:
+            return hit  # type: ignore[return-value]
 
-    # 4b. Walk-forward: try the constructed symbol across up to 3 months.
+    # 4b. Walk-forward.
     if expiry_hint is not None:
-        exchanges = ("MCX", "NFO") if is_mcx_underlying(underlying) else ("NFO", "MCX")
-        cursor = expiry_hint
-        for _step in range(3):
-            fut_sym = futures_symbol_for_expiry(underlying, cursor)
-            for ex in exchanges:
-                full_key = f"{ex}:{fut_sym}"
-                try:
-                    resp = await asyncio.to_thread(broker.quote, [full_key]) or {}  # type: ignore[attr-defined]
-                    quote_dict = resp.get(full_key) or {}
-                    px, _src = ltp_from_quote(quote_dict)  # type: ignore[operator]
-                    if px is not None:
-                        prev = prev_close_from_quote(quote_dict)  # type: ignore[operator]
-                        anchor = fut_sym if is_mcx_underlying(underlying) else None
-                        spot_cache_put(underlying, px, "futures", prev, anchor)  # type: ignore[operator]
-                        return (px, "futures", prev, resolved_sym, anchor)
-                except Exception as exc:
-                    logger.warning(
-                        "options futures-spot quote for %s (%s) failed: %s",
-                        underlying, full_key, exc,
-                    )
-            cursor = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1)
+        hit = await _commodity_spot_4b(
+            underlying, resolved_sym, expiry_hint, broker, spot_cache_put,
+            ltp_from_quote, prev_close_from_quote,
+        )
+        if hit is not None:
+            return hit  # type: ignore[return-value]
 
     return (None, "none", None, resolved_sym, None)
 
@@ -185,6 +212,32 @@ async def _resolve_commodity_spot(
 # ---------------------------------------------------------------------------
 # historical sub-helpers
 # ---------------------------------------------------------------------------
+
+async def _ohlcv_self_heal_if_needed(
+    sym: str,
+    resolved_exch: str,
+    from_d: object,
+    to_d: object,
+    store_bars: list,
+    days: int,
+    self_heal_threshold: float,
+    self_heal_log_once: object,
+    get_or_fetch_daily: object,
+) -> tuple[list, bool]:
+    """Run bypass-cache retry when store_bars is below self-heal threshold.
+
+    Returns ``(bars, heal_attempted)`` — unchanged when threshold not exceeded
+    or no historical brokers are available.
+    """
+    if len(store_bars) >= self_heal_threshold * days:  # type: ignore[operator]
+        return store_bars, False
+    from backend.brokers.registry import get_historical_brokers as _ghb
+    if not bool(_ghb()):
+        return store_bars, False
+    self_heal_log_once(sym, resolved_exch, len(store_bars), days)  # type: ignore[operator]
+    healed = await get_or_fetch_daily(sym, resolved_exch, from_d, to_d, bypass_cache=True)
+    return healed, True
+
 
 async def _historical_ohlcv_store(
     sym: str,
@@ -214,16 +267,10 @@ async def _historical_ohlcv_store(
 
     try:
         store_bars = await get_or_fetch_daily(sym, resolved_exch, from_d, to_d)
-
-        _heal_attempted = False
-        if len(store_bars) < self_heal_threshold * days:  # type: ignore[operator]
-            from backend.brokers.registry import get_historical_brokers as _ghb
-            if bool(_ghb()):
-                self_heal_log_once(sym, resolved_exch, len(store_bars), days)  # type: ignore[operator]
-                store_bars = await get_or_fetch_daily(
-                    sym, resolved_exch, from_d, to_d, bypass_cache=True,
-                )
-                _heal_attempted = True
+        store_bars, _heal_attempted = await _ohlcv_self_heal_if_needed(
+            sym, resolved_exch, from_d, to_d, store_bars, days,
+            self_heal_threshold, self_heal_log_once, get_or_fetch_daily,
+        )
 
         if store_bars:
             bars = [
@@ -273,6 +320,40 @@ async def _historical_ohlcv_store(
     return None
 
 
+async def _intraday_day_range(
+    sym: str,
+    resolved_exch: str,
+    from_d: object,
+    to_d: object,
+    interval: str,
+    HistoricalBarCls: type,
+    bypass_cache: bool = False,
+) -> list:
+    """Sweep from_d..to_d (inclusive) collecting intraday bars."""
+    from datetime import timedelta as _td
+    from backend.api.persistence.intraday_store import get_or_fetch_intraday
+
+    def _bar(b: dict) -> object:
+        return HistoricalBarCls(  # type: ignore[operator]
+            ts=str(b["bar_ts"]),
+            open=float(b["open"]),
+            high=float(b["high"]),
+            low=float(b["low"]),
+            close=float(b["close"]),
+            volume=int(b.get("volume", 0)),
+        )
+
+    merged: list = []
+    cur = from_d
+    while cur <= to_d:
+        day_bars = await get_or_fetch_intraday(
+            sym, resolved_exch, cur, interval=interval, bypass_cache=bypass_cache,
+        )
+        merged.extend(_bar(b) for b in (day_bars or []))
+        cur += _td(days=1)
+    return merged
+
+
 async def _historical_intraday_store(
     sym: str,
     exchange: str,
@@ -290,45 +371,23 @@ async def _historical_intraday_store(
     through to the broker loop.
     """
     from datetime import date as _date, timedelta as _td
-    from backend.api.persistence.intraday_store import get_or_fetch_intraday
     resolved_exch = (exchange or "NFO").upper()
     to_d = _date.today()
     from_d = to_d - _td(days=days)
 
-    def _bar_from_row(b: dict) -> object:
-        return HistoricalBarCls(  # type: ignore[operator]
-            ts=str(b["bar_ts"]),
-            open=float(b["open"]),
-            high=float(b["high"]),
-            low=float(b["low"]),
-            close=float(b["close"]),
-            volume=int(b.get("volume", 0)),
-        )
-
     try:
-        merged: list = []
-        cur = from_d
-        while cur <= to_d:
-            day_bars = await get_or_fetch_intraday(
-                sym, resolved_exch, cur, interval=interval,
-            )
-            merged.extend(_bar_from_row(b) for b in (day_bars or []))
-            cur += _td(days=1)
+        merged = await _intraday_day_range(
+            sym, resolved_exch, from_d, to_d, interval, HistoricalBarCls,
+        )
 
         if not merged:
             from backend.brokers.registry import get_historical_brokers as _ghb
             if _ghb():
                 self_heal_log_once(sym, resolved_exch, 0, days)  # type: ignore[operator]
-                merged_retry: list = []
-                cur2 = from_d
-                while cur2 <= to_d:
-                    day_bars2 = await get_or_fetch_intraday(
-                        sym, resolved_exch, cur2, interval=interval,
-                        bypass_cache=True,
-                    )
-                    merged_retry.extend(_bar_from_row(b) for b in (day_bars2 or []))
-                    cur2 += _td(days=1)
-                merged = merged_retry
+                merged = await _intraday_day_range(
+                    sym, resolved_exch, from_d, to_d, interval, HistoricalBarCls,
+                    bypass_cache=True,
+                )
 
         if merged:
             result = HistoricalResponseCls(  # type: ignore[operator]
@@ -410,6 +469,22 @@ async def _resolve_token_for_broker(
     return None
 
 
+def _raw_to_hist_bars(raw: list, HistoricalBarCls: type) -> list:
+    """Convert raw broker dicts to HistoricalBar instances."""
+    return [
+        HistoricalBarCls(  # type: ignore[operator]
+            ts=str(b["date"]) if not isinstance(b.get("date"), datetime)
+                              else b["date"].isoformat(),
+            open=float(b.get("open") or 0),
+            high=float(b.get("high") or 0),
+            low=float(b.get("low") or 0),
+            close=float(b.get("close") or 0),
+            volume=int(b.get("volume") or 0),
+        )
+        for b in raw
+    ]
+
+
 def _build_and_cache_hist_result(
     sym: str,
     interval: str,
@@ -431,18 +506,7 @@ def _build_and_cache_hist_result(
     HistoricalResponse, write it to the cache, and return it.
     Partial=True when no bars came back.
     """
-    bars = [
-        HistoricalBarCls(  # type: ignore[operator]
-            ts=str(b["date"]) if not isinstance(b.get("date"), datetime)
-                              else b["date"].isoformat(),
-            open=float(b.get("open") or 0),
-            high=float(b.get("high") or 0),
-            low=float(b.get("low") or 0),
-            close=float(b.get("close") or 0),
-            volume=int(b.get("volume") or 0),
-        )
-        for b in raw
-    ]
+    bars = _raw_to_hist_bars(raw, HistoricalBarCls)
     result = HistoricalResponseCls(  # type: ignore[operator]
         symbol=sym, instrument_token=token, interval=interval,
         bars=bars, partial=not bool(bars),
@@ -479,6 +543,61 @@ def _make_empty_hist_result(
     hist_cache_put(cache_key, result, cache_ttl_empty)  # type: ignore[operator]
     record_first_cold_empty(sym)  # type: ignore[operator]
     return result
+
+
+async def _try_one_broker(
+    broker: object,
+    sym: str,
+    exchange_arms: tuple,
+    interval: str,
+    from_d: object,
+    to_d: object,
+    cache_key: tuple,
+    cache_ttl_ok: int,
+    cache_ttl_empty: int,
+    hist_cache_put: object,
+    record_first_cold_empty: object,
+    HistoricalBarCls: type,
+    HistoricalResponseCls: type,
+    ohlcv_trace_enabled: object,
+    exchange: str,
+    days: int,
+    instruments_cache_get: object,
+    instruments_cache_put: object,
+    mark_rate_limited: object,
+) -> Optional[object]:
+    """Attempt historical fetch from a single broker; return result or None on failure."""
+    broker_key = f"{broker.broker_id}/{broker.account}"  # type: ignore[attr-defined]
+    try:
+        token = await _resolve_token_for_broker(
+            broker, sym, exchange_arms, instruments_cache_get, instruments_cache_put,
+        )
+        if not token:
+            return None
+        raw = await asyncio.to_thread(
+            broker.historical_data, token, from_d, to_d, interval,  # type: ignore[attr-defined]
+        ) or []
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "too many requests" in msg:
+            mark_rate_limited(broker_key)  # type: ignore[operator]
+            logger.warning(
+                "options historical: %s rate-limited, falling through to next eligible account",
+                broker.account,  # type: ignore[attr-defined]
+            )
+        else:
+            logger.warning(
+                "options historical: %s error for %s: %s",
+                broker.account, sym, str(exc)[:160],  # type: ignore[attr-defined]
+            )
+        return None
+    return _build_and_cache_hist_result(
+        sym, interval, token, raw,
+        cache_key, cache_ttl_ok, cache_ttl_empty,
+        hist_cache_put, record_first_cold_empty,
+        HistoricalBarCls, HistoricalResponseCls,
+        ohlcv_trace_enabled, exchange, days, broker.account,  # type: ignore[attr-defined]
+    )
 
 
 async def _historical_broker_loop(
@@ -529,42 +648,17 @@ async def _historical_broker_loop(
     from_d = to_d - timedelta(days=days)
 
     for broker in brokers:
-        broker_key = f"{broker.broker_id}/{broker.account}"
-        try:
-            token = await _resolve_token_for_broker(
-                broker, sym, exchange_arms,
-                instruments_cache_get, instruments_cache_put,
-            )
-            if not token:
-                continue
-
-            raw = await asyncio.to_thread(
-                broker.historical_data, token, from_d, to_d, interval,
-            ) or []
-
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "too many requests" in msg:
-                _mark_rate_limited(broker_key)
-                logger.warning(
-                    "options historical: %s rate-limited, "
-                    "falling through to next eligible account",
-                    broker.account,
-                )
-            else:
-                logger.warning(
-                    "options historical: %s error for %s: %s",
-                    broker.account, sym, str(exc)[:160],
-                )
-            continue
-
-        return _build_and_cache_hist_result(
-            sym, interval, token, raw,
+        result = await _try_one_broker(
+            broker, sym, exchange_arms, interval, from_d, to_d,
             cache_key, cache_ttl_ok, cache_ttl_empty,
             hist_cache_put, record_first_cold_empty,
             HistoricalBarCls, HistoricalResponseCls,
-            ohlcv_trace_enabled, exchange, days, broker.account,
+            ohlcv_trace_enabled, exchange, days,
+            instruments_cache_get, instruments_cache_put,
+            _mark_rate_limited,
         )
+        if result is not None:
+            return result
 
     # All brokers tried and none succeeded.
     _tried = exchange if exchange else "NFO/BFO/NSE/BSE/MCX/CDS"

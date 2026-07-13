@@ -151,6 +151,196 @@ def _default_range(days: int = 30) -> tuple[_date, _date]:
     return (today - timedelta(days=days), today)
 
 
+def _hist_date_window(
+    from_date: Optional[str],
+    to_date: Optional[str],
+    default_days: int = 30,
+) -> tuple[_date, _date]:
+    """Parse from_date / to_date strings; fall back to the last
+    `default_days` window when either is missing or unparseable."""
+    df = _parse_date(from_date)
+    dt = _parse_date(to_date)
+    if not df or not dt:
+        return _default_range(default_days)
+    return df, dt
+
+
+def _hist_order_row(r: "AlgoOrder") -> "_OrderRow":
+    """Build an _OrderRow from an AlgoOrder ORM row."""
+    return _OrderRow(
+        id=r.id,
+        created_at=r.created_at.isoformat() if r.created_at else "",
+        account=r.account,
+        symbol=r.symbol,
+        exchange=r.exchange,
+        transaction_type=r.transaction_type,
+        quantity=int(r.quantity or 0),
+        filled_quantity=int(r.filled_quantity or 0),
+        initial_price=(float(r.initial_price) if r.initial_price is not None else None),
+        fill_price=(float(r.fill_price) if r.fill_price is not None else None),
+        slippage=(float(r.slippage) if r.slippage is not None else None),
+        status=r.status,
+        mode=r.mode,
+        engine=r.engine,
+        broker_order_id=r.broker_order_id,
+        request_id=r.request_id,
+        detail=r.detail,
+    )
+
+
+def _hist_build_order_conditions(
+    from_dt: datetime,
+    to_dt: datetime,
+    accounts: Optional[str],
+    symbols: Optional[str],
+    status: Optional[str],
+    mode: Optional[str],
+) -> list:
+    """Build the SQLAlchemy WHERE conditions list for list_orders."""
+    conditions = [
+        AlgoOrder.created_at >= from_dt,
+        AlgoOrder.created_at <  to_dt,
+    ]
+    accts = _accounts_filter(accounts)
+    if accts:
+        conditions.append(AlgoOrder.account.in_(accts))
+    syms = _accounts_filter(symbols)
+    if syms:
+        conditions.append(AlgoOrder.symbol.in_([s.upper() for s in syms]))
+    if status:
+        conditions.append(AlgoOrder.status == status.strip().upper())
+    if mode:
+        conditions.append(AlgoOrder.mode == mode.strip().lower())
+    return conditions
+
+
+def _hist_trade_row(r: "DailyBook") -> "_TradeRow":
+    """Build a _TradeRow from a DailyBook ORM row."""
+    return _TradeRow(
+        date=r.date.isoformat() if r.date else "",
+        account=r.account,
+        segment=r.segment,
+        symbol=r.symbol,
+        exchange=r.exchange,
+        qty=int(r.qty or 0),
+        avg_cost=(float(r.avg_cost) if r.avg_cost is not None else None),
+        notional=(float(r.qty) * float(r.avg_cost)
+                  if r.qty is not None and r.avg_cost is not None else None),
+        captured_at=r.captured_at.isoformat() if r.captured_at else "",
+    )
+
+
+def _hist_funds_delta_map(rows: list) -> "dict[int, Optional[float]]":
+    """Compute day-over-day cash_available delta per (account, segment) series.
+
+    Walks rows in ascending date order within each series; returns a
+    mapping of row.id → delta (None for the first row in each series or
+    when the prior row's cash is None).
+    """
+    from collections import defaultdict
+    _series: dict[tuple, list] = defaultdict(list)
+    for r in rows:
+        _series[(r.account, r.segment)].append(r)
+    delta_by_row_id: dict[int, Optional[float]] = {}
+    for (_acct, _seg), series in _series.items():
+        series_asc = sorted(series, key=lambda x: x.date or _date.min)
+        prior_cash: Optional[float] = None
+        for r in series_asc:
+            cur = (float(r.avg_cost) if r.avg_cost is not None else None)
+            if prior_cash is not None and cur is not None:
+                delta_by_row_id[r.id] = cur - prior_cash
+            else:
+                delta_by_row_id[r.id] = None
+            if cur is not None:
+                prior_cash = cur
+    return delta_by_row_id
+
+
+def _hist_funds_row(r: "DailyBook", delta_by_row_id: "dict[int, Optional[float]]") -> "_FundsRow":
+    """Build a _FundsRow from a DailyBook ORM row plus pre-computed delta map."""
+    return _FundsRow(
+        date=r.date.isoformat() if r.date else "",
+        account=r.account,
+        segment=r.segment,
+        cash_available=(float(r.avg_cost) if r.avg_cost is not None else None),
+        opening_balance=(float(r.ltp) if r.ltp is not None else None),
+        debits_today=int(r.qty or 0),
+        realised_m2m=(float(r.day_pnl) if r.day_pnl is not None else None),
+        net=(float(r.total_pnl) if r.total_pnl is not None else None),
+        cash_delta=delta_by_row_id.get(r.id),
+    )
+
+
+def _hist_backfill_validate(data: "FundsBackfillRequest") -> "tuple[_date, _date]":
+    """Validate backfill request dates. Raises HTTPException on bad input.
+
+    Returns (from_date, to_date) as datetime.date objects.
+    """
+    from datetime import date as _d
+    account = (data.account or "").strip()
+    if not account:
+        raise HTTPException(status_code=400, detail="account is required")
+    try:
+        df = _d.fromisoformat(data.from_date)
+        dt = _d.fromisoformat(data.to_date)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="from_date / to_date must be YYYY-MM-DD",
+        )
+    if df > dt:
+        raise HTTPException(
+            status_code=400,
+            detail="from_date must be <= to_date",
+        )
+    return df, dt
+
+
+async def _hist_upsert_entry(s, account: str, e: dict, now_utc: datetime) -> None:
+    """Upsert a single ledger entry dict into daily_book[kind='funds'].
+
+    Raises on insert error (caller should catch + increment skipped counter).
+    """
+    from sqlalchemy import text as _text
+    import json as _json
+    seg = (e.get("segment") or "equity").lower()
+    params = {
+        "date":         e.get("date"),
+        "account":      account,
+        "segment":      seg,
+        "kind":         "funds",
+        "symbol":       "__seg__",
+        "exchange":     seg.upper(),
+        "qty":          int(e.get("debits") or 0),
+        "avg_cost":     e.get("cash_available"),
+        "ltp":          e.get("opening_balance"),
+        "day_pnl":      e.get("realised_m2m"),
+        "total_pnl":    e.get("net"),
+        "payload_json": _json.dumps(e.get("payload") or {}, default=str),
+        "captured_at":  now_utc,
+    }
+    await s.execute(_text("""
+        INSERT INTO daily_book
+            (date, account, segment, kind, symbol, exchange,
+             qty, avg_cost, ltp, day_pnl, total_pnl,
+             payload_json, captured_at)
+        VALUES
+            (:date, :account, :segment, :kind, :symbol, :exchange,
+             :qty, :avg_cost, :ltp, :day_pnl, :total_pnl,
+             :payload_json, :captured_at)
+        ON CONFLICT (date, account, kind, symbol) DO UPDATE SET
+            segment      = EXCLUDED.segment,
+            exchange     = EXCLUDED.exchange,
+            qty          = EXCLUDED.qty,
+            avg_cost     = EXCLUDED.avg_cost,
+            ltp          = EXCLUDED.ltp,
+            day_pnl      = EXCLUDED.day_pnl,
+            total_pnl    = EXCLUDED.total_pnl,
+            payload_json = EXCLUDED.payload_json,
+            captured_at  = EXCLUDED.captured_at
+    """), params)
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -175,30 +365,16 @@ class HistoryController(Controller):
         the ones that filled in the range."""
         limit  = max(1, min(int(limit or 50), 500))
         offset = max(0, int(offset or 0))
-        df = _parse_date(from_date)
-        dt = _parse_date(to_date)
-        if not df or not dt:
-            df, dt = _default_range(30)
+        df, dt = _hist_date_window(from_date, to_date, default_days=30)
         # Convert to UTC datetimes spanning the inclusive IST range.
         # Approximation — date filter doesn't have to be ms-precise.
         from_dt = datetime.combine(df, datetime.min.time(), tzinfo=timezone.utc)
         to_dt   = datetime.combine(dt + timedelta(days=1),
                                    datetime.min.time(), tzinfo=timezone.utc)
 
-        conditions = [
-            AlgoOrder.created_at >= from_dt,
-            AlgoOrder.created_at <  to_dt,
-        ]
-        accts = _accounts_filter(accounts)
-        if accts:
-            conditions.append(AlgoOrder.account.in_(accts))
-        syms = _accounts_filter(symbols)
-        if syms:
-            conditions.append(AlgoOrder.symbol.in_([s.upper() for s in syms]))
-        if status:
-            conditions.append(AlgoOrder.status == status.strip().upper())
-        if mode:
-            conditions.append(AlgoOrder.mode == mode.strip().lower())
+        conditions = _hist_build_order_conditions(
+            from_dt, to_dt, accounts, symbols, status, mode,
+        )
 
         async with async_session() as s:
             # GROUP BY status returns a complete histogram of the filtered
@@ -221,31 +397,7 @@ class HistoryController(Controller):
             )).scalars().all()
 
         return OrderListResponse(
-            rows=[
-                _OrderRow(
-                    id=r.id,
-                    created_at=r.created_at.isoformat() if r.created_at else "",
-                    account=r.account,
-                    symbol=r.symbol,
-                    exchange=r.exchange,
-                    transaction_type=r.transaction_type,
-                    quantity=int(r.quantity or 0),
-                    filled_quantity=int(r.filled_quantity or 0),
-                    initial_price=(float(r.initial_price)
-                                   if r.initial_price is not None else None),
-                    fill_price=(float(r.fill_price)
-                                if r.fill_price is not None else None),
-                    slippage=(float(r.slippage)
-                              if r.slippage is not None else None),
-                    status=r.status,
-                    mode=r.mode,
-                    engine=r.engine,
-                    broker_order_id=r.broker_order_id,
-                    request_id=r.request_id,
-                    detail=r.detail,
-                )
-                for r in rows
-            ],
+            rows=[_hist_order_row(r) for r in rows],
             total=int(total), limit=limit, offset=offset, counts=counts,
         )
 
@@ -263,12 +415,9 @@ class HistoryController(Controller):
         (the trading day, not capture timestamp)."""
         limit  = max(1, min(int(limit or 50), 500))
         offset = max(0, int(offset or 0))
-        df = _parse_date(from_date)
-        dt = _parse_date(to_date)
-        if not df or not dt:
-            df, dt = _default_range(30)
+        df, dt = _hist_date_window(from_date, to_date, default_days=30)
 
-        conditions = [
+        conditions: list = [
             DailyBook.kind == "trades",
             DailyBook.date >= df,
             DailyBook.date <= dt,
@@ -300,23 +449,7 @@ class HistoryController(Controller):
             )).scalars().all()
 
         return TradeListResponse(
-            rows=[
-                _TradeRow(
-                    date=r.date.isoformat() if r.date else "",
-                    account=r.account,
-                    segment=r.segment,
-                    symbol=r.symbol,
-                    exchange=r.exchange,
-                    qty=int(r.qty or 0),
-                    avg_cost=(float(r.avg_cost)
-                              if r.avg_cost is not None else None),
-                    notional=(float(r.qty) * float(r.avg_cost)
-                              if r.qty is not None and r.avg_cost is not None
-                              else None),
-                    captured_at=r.captured_at.isoformat() if r.captured_at else "",
-                )
-                for r in rows
-            ],
+            rows=[_hist_trade_row(r) for r in rows],
             total=int(total), limit=limit, offset=offset,
             summary={"total_notional": total_notional},
         )

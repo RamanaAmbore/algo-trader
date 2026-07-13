@@ -471,6 +471,32 @@ class KiteConnection:
                     pass
         return None
 
+    def _is_kite_conn_expired(self, now) -> bool:
+        """True when the Kite session timestamp is absent or past CONN_RESET_HOURS."""
+        return (
+            self._conn_created_at is None
+            or now - self._conn_created_at > timedelta(hours=CONN_RESET_HOURS)
+        )
+
+    def _validate_or_clear_kite_token(self) -> bool:
+        """Try a lightweight profile() call to validate the cached token.
+
+        Returns True when the token is valid (caller can return self.kite).
+        Clears the token and disk cache when invalid.
+        """
+        if not self._access_token:
+            self._try_restore_token()
+        if not self._access_token:
+            return False
+        try:
+            self.kite.profile()
+            return True
+        except Exception as e:
+            logger.warning(f"Cached token invalid for {self.account}: {e}")
+            self._access_token = None
+            _save_cached_token(self.account, '')
+            return False
+
     @retry_kite_conn(_retry_count)
     def get_kite_conn(self, test_conn=False):
         """Return kite connection, refreshing if older than CONN_RESET_HOURS.
@@ -482,52 +508,19 @@ class KiteConnection:
         until the retry loop cleared.
         """
         now = timestamp_indian()
-        expired = (
-            self._conn_created_at is None
-            or now - self._conn_created_at > timedelta(hours=CONN_RESET_HOURS)
-        )
-
-        if not (expired or test_conn):
+        if not (self._is_kite_conn_expired(now) or test_conn):
             return self.kite
 
-        # Two layers of locking:
-        #   1. self._login_lock — coordinates threads inside this process
-        #   2. _cross_process_login_lock — coordinates with any other
-        #      process holding open the same shared token cache file
-        #      (typically prod ↔ dev on the same server).
-        # The cross-process lock is acquired second so we don't hold an
-        # OS-level fd while every concurrent thread waits in line.
         with self._login_lock, _cross_process_login_lock(self.account):
-            # Double-check under both locks — a peer may have just
-            # refreshed and written a new token to the shared cache
-            # while we were waiting.
             now = timestamp_indian()
-            expired = (
-                self._conn_created_at is None
-                or now - self._conn_created_at > timedelta(hours=CONN_RESET_HOURS)
-            )
-            if not (expired or test_conn):
+            if not (self._is_kite_conn_expired(now) or test_conn):
                 return self.kite
-
-            if expired:
+            if self._is_kite_conn_expired(now):
                 self._conn_created_at = now
-                formatted = self._conn_created_at.strftime('%a, %b %d, %Y, %I:%M %p')
-                logger.info(f'Kite connection refreshed at {formatted}')
-
-            # Try cached token first — avoids full login/2FA
-            if not self._access_token:
-                self._try_restore_token()
-            if self._access_token:
-                # Validate token with a lightweight API call
-                try:
-                    self.kite.profile()
-                    return self.kite
-                except Exception as e:
-                    logger.warning(f"Cached token invalid for {self.account}: {e}")
-                    self._access_token = None
-                    _save_cached_token(self.account, '')  # clear stale cache
-
-            # No cached token — do full login
+                logger.info(f"Kite connection refreshed at "
+                            f"{now.strftime('%a, %b %d, %Y, %I:%M %p')}")
+            if self._validate_or_clear_kite_token():
+                return self.kite
             self.init_kite_conn(test_conn=True)
             return self.kite
 
@@ -1024,6 +1017,31 @@ class DhanConnection:
             f"Dhan login complete for {self.account} (token cached, valid ~24h)"
         )
 
+    def _dhan_conn_under_lock(self, now, test_conn: bool):
+        """Inner body of get_dhan_conn — runs under both login locks.
+
+        Returns the cached client when no re-mint is needed.  Returns
+        None when _mint_and_build() was called (caller must validate
+        self._dhan after releasing the lock).
+        """
+        if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
+            return self._dhan
+        if not self._access_token:
+            self._try_restore_token()
+        if self._access_token and self._dhan is not None and not test_conn:
+            return self._dhan
+        if self._check_recency_guard(now, test_conn):
+            logger.info(
+                f"Dhan {self.account!r}: test_conn=True but token minted "
+                f"<60 s ago — skipping re-mint to avoid invalidation race"
+            )
+            return self._dhan
+        cached = self._check_login_rate_limit(test_conn)
+        if cached is not None:
+            return cached
+        self._mint_and_build()
+        return None  # signal: mint was attempted; validate after lock release
+
     def get_dhan_conn(self, test_conn: bool = False):
         """Return a ready dhanhq client.
 
@@ -1034,52 +1052,14 @@ class DhanConnection:
         same Partner-API app.
         """
         now = timestamp_indian()
-
         if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
             return self._dhan
 
         with self._login_lock, _cross_process_login_lock(self._cache_key()):
-            # Double-check under the lock — a peer may have just minted
-            # a fresh token while we were waiting.
             now = timestamp_indian()
-            if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
-                return self._dhan
-
-            # Try the on-disk cache (peer may have just written a token).
-            if not self._access_token:
-                self._try_restore_token()
-
-            if self._access_token and self._dhan is not None and not test_conn:
-                return self._dhan
-
-            # ── Recency guard for test_conn=True ─────────────────────
-            # When `_safe_call` detects a DH-906 / "Invalid Token" it
-            # calls us with `test_conn=True` to force a re-mint. But
-            # multiple concurrent broker calls routinely fail in lockstep
-            # against the same invalidated token — without this guard
-            # each one mints its own NEW token, each invalidating the
-            # previous. See _check_recency_guard docstring for details.
-            if self._check_recency_guard(now, test_conn):
-                logger.info(
-                    f"Dhan {self.account!r}: test_conn=True but token minted "
-                    f"<60 s ago — skipping re-mint to avoid invalidation race"
-                )
-                return self._dhan
-
-            # ── Login-rate-limit cool-off ─────────────────────────────
-            # Dhan's auth endpoint rejects a second call within 2 minutes.
-            # _check_login_rate_limit returns cached client or raises.
-            # See its docstring for the test_conn vs False distinction.
-            cached = self._check_login_rate_limit(test_conn)
-            if cached is not None:
-                return cached
-
-            # ── Token mint via _do_login ─────────────────────────────
-            # _try_renew() was dropped (it hit the wrong domain).
-            # See prior inline comments for the rationale.
-            # Tokens last 24h-30d; the 60s recency guard + 130s
-            # rate-limit cool-off handle concurrent re-mint races.
-            self._mint_and_build()
+            result = self._dhan_conn_under_lock(now, test_conn)
+            if result is not None:
+                return result
 
         if self._dhan is None:
             raise RuntimeError(
@@ -1212,6 +1192,43 @@ class GrowwConnection:
                 _GROWW_SOURCE_IP_OVERRIDE.reset(token)
         return GrowwAPI.get_access_token(self._api_key, totp=totp_code)
 
+    def _try_mint_and_cache(self, cache_key: str) -> tuple[str | None, Exception | None]:
+        """Attempt TOTP mint; cache on success. Returns (token, error)."""
+        if not (self._api_key and self._totp_seed):
+            return None, None
+        try:
+            token = self._mint_access_token()
+            if token:
+                _save_cached_token(cache_key, token)
+                return token, None
+        except Exception as e:
+            logger.warning(
+                f"GrowwConnection {self.account!r} mint failed: {e}. "
+                f"Trying api_key as Bearer token directly."
+            )
+            return None, e
+        return None, None
+
+    def _resolve_token_error(self, mint_error: Exception | None) -> RuntimeError:
+        """Build the final RuntimeError with credential presence summary."""
+        present = {
+            "api_key":      bool(self._api_key),
+            "totp_seed":    bool(self._totp_seed),
+            "access_token": bool(self._access_token),
+        }
+        present_summary = ", ".join(f"{k}={'✓' if v else '✗'}" for k, v in present.items())
+        if mint_error is not None:
+            return RuntimeError(
+                f"GrowwConnection {self.account!r}: mint failed — {mint_error!r}. "
+                f"Provided: {present_summary}. Fix in /admin/brokers."
+            )
+        return RuntimeError(
+            f"GrowwConnection {self.account!r}: no working token. "
+            f"Provided: {present_summary}. Need api_key + totp_seed "
+            f"or a fresh 24 h access_token. "
+            f"Edit credentials in /admin/brokers."
+        )
+
     def _resolve_token(self) -> str:
         """Pick a working access token, preferring (in order):
           1. cached fresh mint
@@ -1233,29 +1250,9 @@ class GrowwConnection:
         token, _created = _load_cached_token(cache_key)
         if token:
             return token
-        # 2) Mint via api_key + totp_seed. Capture the mint failure
-        #    so we can surface it in the final RuntimeError when no
-        #    fallback works either.
-        mint_error: Exception | None = None
-        if self._api_key and self._totp_seed:
-            try:
-                token = self._mint_access_token()
-                if token:
-                    _save_cached_token(cache_key, token)
-                    return token
-            except Exception as e:
-                mint_error = e
-                logger.warning(
-                    f"GrowwConnection {self.account!r} mint failed: {e}. "
-                    f"Trying api_key as Bearer token directly."
-                )
-        # 3) Use the api_key JWT directly as a Bearer token. Groww's
-        #    SDK puts whatever the operator passes to GrowwAPI(token)
-        #    in the Authorization header verbatim — a vendor JWT
-        #    (eyJ… prefix) authenticates just as well as a minted
-        #    short-lived token, just without the auto-refresh path.
-        #    Cache it under the same key so subsequent rebuilds skip
-        #    re-trying the mint until the rate-limit clears.
+        token, mint_error = self._try_mint_and_cache(cache_key)
+        if token:
+            return token
         if self._api_key and self._api_key.startswith("eyJ"):
             logger.info(
                 f"GrowwConnection {self.account!r}: using api_key JWT as "
@@ -1264,30 +1261,9 @@ class GrowwConnection:
             )
             _save_cached_token(cache_key, self._api_key)
             return self._api_key
-        # 4) Legacy 24 h manual-paste token.
         if self._access_token:
             return self._access_token
-        # Final error — list which inputs we DO have so the operator can
-        # spot the missing piece without exposing any value. If mint
-        # was attempted + failed, include Groww's actual response so
-        # the operator sees "Groww 400: Invalid TOTP" instead of guessing.
-        present = {
-            "api_key":      bool(self._api_key),
-            "totp_seed":    bool(self._totp_seed),
-            "access_token": bool(self._access_token),
-        }
-        present_summary = ", ".join(f"{k}={'✓' if v else '✗'}" for k, v in present.items())
-        if mint_error is not None:
-            raise RuntimeError(
-                f"GrowwConnection {self.account!r}: mint failed — {mint_error!r}. "
-                f"Provided: {present_summary}. Fix in /admin/brokers."
-            )
-        raise RuntimeError(
-            f"GrowwConnection {self.account!r}: no working token. "
-            f"Provided: {present_summary}. Need api_key + totp_seed "
-            f"or a fresh 24 h access_token. "
-            f"Edit credentials in /admin/brokers."
-        )
+        raise self._resolve_token_error(mint_error)
 
     def _build(self) -> None:
         try:
@@ -1357,6 +1333,26 @@ class GrowwConnection:
         return self._access_token
 
 
+def _nudge_restart_ticker(ticker, current: str, new_conn: dict, kite_accounts: list) -> None:
+    """Attempt to restart the ticker on the first eligible Kite account."""
+    for acct in kite_accounts:
+        kc = new_conn[acct].kite
+        api_key = getattr(kc, "api_key", None)
+        access_token = (getattr(kc, "_access_token", None)
+                        or getattr(kc, "access_token", None))
+        if api_key and access_token:
+            ok = ticker.restart_with_account(api_key, access_token, acct)
+            logger.warning(
+                f"Connections: ticker was bound to deleted {current!r}; "
+                f"restarting on {acct!r} (ok={ok})"
+            )
+            return
+    logger.warning(
+        f"Connections: ticker was bound to deleted {current!r}; "
+        "no eligible Kite account to restart on — ticker will idle"
+    )
+
+
 class Connections(SingletonBase):
     # Serialises the one-time init — SingletonBase's own lock protects
     # the _instances dict, not the body of this __init__. Two concurrent
@@ -1414,6 +1410,25 @@ class Connections(SingletonBase):
             account: True for account in accts.keys()
         }
 
+    def _build_conn_map(self, rows, dhan_deferred: set) -> dict:
+        """Build the account→connection map from active DB rows.
+
+        Dhan accounts in ``dhan_deferred`` are skipped (multi-account
+        IP-stabilizer).  Per-row errors are logged and skipped.
+        """
+        new_conn: dict[str, Any] = {}
+        for r in rows:
+            broker_id = (r.broker_id or "zerodha_kite").lower()
+            if broker_id == "dhan" and r.account in dhan_deferred:
+                continue
+            try:
+                conn_obj = self._build_conn_for_row(r, broker_id)
+                if conn_obj is not None:
+                    new_conn[r.account] = conn_obj
+            except Exception as e:
+                logger.error(f"{broker_id} connection init failed for {r.account!r}: {e}")
+        return new_conn
+
     async def rebuild_from_db(self) -> None:
         """
         Switch to the DB-backed view of broker accounts. Behaviour:
@@ -1455,24 +1470,7 @@ class Connections(SingletonBase):
             return
 
         _dhan_deferred = self._compute_dhan_deferred_accounts(rows)
-
-        # Build new credentials dict from DB rows + decrypt in-memory.
-        # The connection type branches on broker_id — Dhan rows build a
-        # DhanConnection (client_id + access_token), everything else
-        # (Kite + Kite-legacy) builds a KiteConnection.
-        new_conn: dict[str, Any] = {}
-        for r in rows:
-            broker_id = (r.broker_id or "zerodha_kite").lower()
-            if broker_id == "dhan" and r.account in _dhan_deferred:
-                continue  # Deferred by the multi-account stabilizer above.
-            try:
-                conn_obj = self._build_conn_for_row(r, broker_id)
-                if conn_obj is not None:
-                    new_conn[r.account] = conn_obj
-            except Exception as e:
-                logger.error(f"{broker_id} connection init failed for "
-                             f"{r.account!r}: {e}")
-                continue
+        new_conn = self._build_conn_map(rows, _dhan_deferred)
 
         if not new_conn:
             logger.warning("rebuild_from_db: every broker_accounts row failed to load; "
@@ -1558,6 +1556,26 @@ class Connections(SingletonBase):
         return rows
 
     @staticmethod
+    def _defer_dhan_ip_group(ip_key: str, group: list) -> set[str]:
+        """For one source-IP group with >1 Dhan row, keep the highest-priority
+        row and return the accounts to defer. Logs a warning."""
+        group.sort(key=lambda x: (int(getattr(x, "priority", 100) or 100), x.account or ""))
+        keep = group[0]
+        deferred = {r.account for r in group[1:]}
+        logger.warning(
+            "Dhan multi-account stabilizer: %d Dhan rows share "
+            "source_ip=%s. Keeping %r (priority=%s); deferring %s. "
+            "Reason: Dhan's per-IP one-session limit + Hostinger "
+            "edge filter on non-primary IPv6 addresses. Edit "
+            "broker_accounts.priority in /admin/brokers to swap "
+            "which account is active.",
+            len(group), ip_key or "<OS default>", keep.account,
+            getattr(keep, "priority", 100),
+            ", ".join(repr(x.account) for x in group[1:]),
+        )
+        return deferred
+
+    @staticmethod
     def _compute_dhan_deferred_accounts(rows) -> set[str]:
         """Dhan multi-account stabilizer — permanent fix for the rotation
         loop discovered 2026-06-15. Background: Dhan enforces "one
@@ -1581,35 +1599,15 @@ class Connections(SingletonBase):
         for the active Dhan account stay stable across every refresh.
         """
         from collections import defaultdict
-        _dhan_by_ip: dict[str, list] = defaultdict(list)
+        dhan_by_ip: dict[str, list] = defaultdict(list)
         for r in rows:
             if (r.broker_id or "").lower() == "dhan":
-                key = (r.source_ip or "").strip().lower()  # "" = OS default
-                _dhan_by_ip[key].append(r)
-        _dhan_deferred: set[str] = set()
-        for ip_key, group in _dhan_by_ip.items():
-            if len(group) <= 1:
-                continue
-            # Lowest priority number wins; ties broken by account code
-            # so the choice is deterministic across rebuilds.
-            group.sort(key=lambda x: (int(getattr(x, "priority", 100) or 100),
-                                       (x.account or "")))
-            keep = group[0]
-            for r in group[1:]:
-                _dhan_deferred.add(r.account)
-            shown_ip = ip_key or "<OS default>"
-            logger.warning(
-                "Dhan multi-account stabilizer: %d Dhan rows share "
-                "source_ip=%s. Keeping %r (priority=%s); deferring %s. "
-                "Reason: Dhan's per-IP one-session limit + Hostinger "
-                "edge filter on non-primary IPv6 addresses. Edit "
-                "broker_accounts.priority in /admin/brokers to swap "
-                "which account is active.",
-                len(group), shown_ip, keep.account,
-                getattr(keep, "priority", 100),
-                ", ".join(repr(x.account) for x in group[1:]),
-            )
-        return _dhan_deferred
+                dhan_by_ip[(r.source_ip or "").strip().lower()].append(r)
+        deferred: set[str] = set()
+        for ip_key, group in dhan_by_ip.items():
+            if len(group) > 1:
+                deferred |= Connections._defer_dhan_ip_group(ip_key, group)
+        return deferred
 
     def _build_conn_for_row(self, r, broker_id: str):
         """Dispatch to the per-broker connection builder. Returns the
@@ -1796,7 +1794,7 @@ class Connections(SingletonBase):
 
     @staticmethod
     def _nudge_ticker_on_rebind(new_conn: dict, new_broker_id_map: dict,
-                                  new_priority_map: dict) -> None:
+                                new_priority_map: dict) -> None:
         """Notify the KiteTicker if the account it's currently bound to
         disappeared from the rebuilt conn map. Without this nudge the
         ticker keeps running against dead credentials, recycle() resolves
@@ -1812,32 +1810,12 @@ class Connections(SingletonBase):
             current = ticker.current_account()
             if not current or current in new_conn:
                 return
-            # Pick the next eligible account: prefer one with lower
-            # priority value (= operator's preferred order). Restrict
-            # to Kite accounts since restart_with_account is Kite-shaped.
-            kite_accounts = [
-                acct for acct, br_id in new_broker_id_map.items()
-                if (br_id or "zerodha_kite") == "zerodha_kite"
-            ]
-            kite_accounts.sort(key=lambda a: new_priority_map.get(a, 100))
-            for acct in kite_accounts:
-                kc = new_conn[acct].kite
-                api_key = getattr(kc, "api_key", None)
-                access_token = (
-                    getattr(kc, "_access_token", None)
-                    or getattr(kc, "access_token", None)
-                )
-                if api_key and access_token:
-                    ok = ticker.restart_with_account(api_key, access_token, acct)
-                    logger.warning(
-                        f"Connections: ticker was bound to deleted {current!r}; "
-                        f"restarting on {acct!r} (ok={ok})"
-                    )
-                    return
-            logger.warning(
-                f"Connections: ticker was bound to deleted {current!r}; "
-                "no eligible Kite account to restart on — ticker will idle"
+            kite_accounts = sorted(
+                [a for a, bid in new_broker_id_map.items()
+                 if (bid or "zerodha_kite") == "zerodha_kite"],
+                key=lambda a: new_priority_map.get(a, 100),
             )
+            _nudge_restart_ticker(ticker, current, new_conn, kite_accounts)
         except Exception as e:
             logger.warning(f"Connections: ticker rebuild-nudge failed: {e}")
 

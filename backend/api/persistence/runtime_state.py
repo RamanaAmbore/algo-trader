@@ -158,6 +158,50 @@ def set_bypass(value: bool) -> None:
 
 # ── Invalidation helpers ─────────────────────────────────────────────────────
 
+def _mem_drop_keys(
+    cache: dict, match_sym: str | None, match_exch: str | None,
+    sym_idx: int = 0, exch_idx: int = 1,
+) -> int:
+    """Drop cache entries matching sym/exch filters. Returns count dropped."""
+    keys_to_drop = []
+    for key in list(cache.keys()):
+        if match_sym and key[sym_idx] != match_sym:
+            continue
+        if match_exch and key[exch_idx] != match_exch:
+            continue
+        keys_to_drop.append(key)
+    for k in keys_to_drop:
+        cache.pop(k, None)
+    return len(keys_to_drop)
+
+
+async def _db_delete_rows(
+    table_name: str, sym: str | None, exch: str | None,
+) -> int:
+    """Delete rows from table_name filtered by sym/exch. Returns rowcount."""
+    from backend.api.database import async_session
+    from sqlalchemy import text
+
+    where: list[str] = []
+    params: dict[str, Any] = {}
+    if sym:
+        where.append("symbol = :sym")
+        params["sym"] = sym
+    if exch:
+        where.append("exchange = :exch")
+        params["exch"] = exch
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql = text(f"DELETE FROM {table_name}{where_sql}")
+    try:
+        async with async_session() as session:
+            result = await session.execute(sql, params)
+            await session.commit()
+            return result.rowcount or 0
+    except Exception as exc:
+        logger.warning(f"_db_delete_rows({table_name}): failed: {exc}")
+        return 0
+
+
 async def invalidate_ohlcv(symbol: str | None = None, exchange: str | None = None) -> int:
     """Wipe in-memory + delete DB rows for ohlcv_daily.
 
@@ -168,46 +212,15 @@ async def invalidate_ohlcv(symbol: str | None = None, exchange: str | None = Non
     Returns the number of DB rows deleted (in-memory drops not counted).
     """
     from backend.api.persistence import ohlcv_store
-    from backend.api.database import async_session
-    from sqlalchemy import text
 
     sym  = symbol.upper().strip() if symbol else None
     exch = exchange.upper().strip() if exchange else None
 
-    # Tier 1 wipe
-    keys_to_drop = []
-    for key in list(ohlcv_store._MEM_CACHE.keys()):
-        k_sym, k_exch = key
-        if sym and k_sym != sym:
-            continue
-        if exch and k_exch != exch:
-            continue
-        keys_to_drop.append(key)
-    for k in keys_to_drop:
-        ohlcv_store._MEM_CACHE.pop(k, None)
-
-    # Tier 2 delete
-    where = []
-    params: dict[str, Any] = {}
-    if sym:
-        where.append("symbol = :sym")
-        params["sym"] = sym
-    if exch:
-        where.append("exchange = :exch")
-        params["exch"] = exch
-    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-    sql = text(f"DELETE FROM ohlcv_daily{where_sql}")
-    try:
-        async with async_session() as session:
-            result = await session.execute(sql, params)
-            await session.commit()
-            n = result.rowcount or 0
-    except Exception as exc:
-        logger.warning(f"invalidate_ohlcv: DB delete failed: {exc}")
-        n = 0
+    dropped = _mem_drop_keys(ohlcv_store._MEM_CACHE, sym, exch)
+    n = await _db_delete_rows("ohlcv_daily", sym, exch)
 
     logger.info(
-        f"invalidate_ohlcv: dropped {len(keys_to_drop)} mem keys, "
+        f"invalidate_ohlcv: dropped {dropped} mem keys, "
         f"deleted {n} DB rows (sym={sym}, exch={exch})"
     )
     return n
@@ -297,46 +310,16 @@ async def invalidate_intraday(symbol: str | None = None, exchange: str | None = 
     Returns the number of DB rows deleted (in-memory drops not counted).
     """
     from backend.api.persistence import intraday_store
-    from backend.api.database import async_session
-    from sqlalchemy import text
 
     sym  = symbol.upper().strip() if symbol else None
     exch = exchange.upper().strip() if exchange else None
 
-    # Tier 1 wipe — key shape: (symbol, exchange, date_str, interval)
-    keys_to_drop = []
-    for key in list(intraday_store._MEM_CACHE.keys()):
-        k_sym, k_exch, _date, _interval = key
-        if sym and k_sym != sym:
-            continue
-        if exch and k_exch != exch:
-            continue
-        keys_to_drop.append(key)
-    for k in keys_to_drop:
-        intraday_store._MEM_CACHE.pop(k, None)
-
-    # Tier 2 delete
-    where = []
-    params: dict[str, Any] = {}
-    if sym:
-        where.append("symbol = :sym")
-        params["sym"] = sym
-    if exch:
-        where.append("exchange = :exch")
-        params["exch"] = exch
-    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-    sql = text(f"DELETE FROM intraday_bars{where_sql}")
-    try:
-        async with async_session() as session:
-            result = await session.execute(sql, params)
-            await session.commit()
-            n = result.rowcount or 0
-    except Exception as exc:
-        logger.warning(f"invalidate_intraday: DB delete failed: {exc}")
-        n = 0
+    # Intraday key shape: (symbol, exchange, date_str, interval) — sym at [0], exch at [1]
+    dropped = _mem_drop_keys(intraday_store._MEM_CACHE, sym, exch, sym_idx=0, exch_idx=1)
+    n = await _db_delete_rows("intraday_bars", sym, exch)
 
     logger.info(
-        f"invalidate_intraday: dropped {len(keys_to_drop)} mem keys, "
+        f"invalidate_intraday: dropped {dropped} mem keys, "
         f"deleted {n} DB rows (sym={sym}, exch={exch})"
     )
     return n

@@ -31,6 +31,46 @@ def _extract_underlying(tradingsymbol):
     return m.group(1) if m else tradingsymbol
 
 
+def _holding_row_line(row) -> "tuple[str, str] | None":
+    """Format one holdings row as a text line. Returns (line, sym) or None to skip."""
+    sym = row.get('tradingsymbol', '')
+    if not sym:
+        return None
+    qty = int(row.get('quantity', 0) or 0)
+    if qty == 0:
+        return None
+    ltp     = float(row.get('close_price', 0) or 0)
+    avg     = float(row.get('average_price', 0) or 0)
+    pnl     = float(row.get('pnl', 0) or 0)
+    day_chg = float(row.get('day_change_val', 0) or 0)
+    day_pct = float(row.get('day_change_percentage', 0) or 0)
+    line = (
+        f"    • {sym} (holding) qty={qty} avg=₹{avg:.2f} ltp=₹{ltp:.2f} "
+        f"pnl=₹{pnl:,.0f} day_change=₹{day_chg:,.0f} ({day_pct:+.1f}%)"
+    )
+    return line, sym
+
+
+def _position_row_line(row) -> "tuple[str, str, str] | None":
+    """Format one positions row as a text line. Returns (line, sym, underlying) or None to skip."""
+    sym = row.get('tradingsymbol', '')
+    if not sym:
+        return None
+    qty = int(row.get('quantity', 0) or 0)
+    if qty == 0:
+        return None
+    ltp       = float(row.get('close_price', 0) or row.get('last_price', 0) or 0)
+    avg       = float(row.get('average_price', 0) or 0)
+    pnl       = float(row.get('pnl', 0) or 0)
+    direction = 'long' if qty > 0 else 'short'
+    underlying = _extract_underlying(sym)
+    line = (
+        f"    • {sym} ({direction} position) qty={qty} avg=₹{avg:.2f} "
+        f"ltp=₹{ltp:.2f} pnl=₹{pnl:,.0f}"
+    )
+    return line, sym, underlying
+
+
 def _portfolio_holdings_lines(fetch_holdings) -> tuple[list[str], set[str]]:
     """Build text lines + underlying set from all holdings dataframes."""
     lines: list[str] = []
@@ -39,21 +79,11 @@ def _portfolio_holdings_lines(fetch_holdings) -> tuple[list[str], set[str]]:
         if df.empty:
             continue
         for _, row in df.iterrows():
-            sym = row.get('tradingsymbol', '')
-            if not sym:
+            result = _holding_row_line(row)
+            if result is None:
                 continue
-            qty = int(row.get('quantity', 0) or 0)
-            if qty == 0:
-                continue
-            ltp     = float(row.get('close_price', 0) or 0)
-            avg     = float(row.get('average_price', 0) or 0)
-            pnl     = float(row.get('pnl', 0) or 0)
-            day_chg = float(row.get('day_change_val', 0) or 0)
-            day_pct = float(row.get('day_change_percentage', 0) or 0)
-            lines.append(
-                f"    • {sym} (holding) qty={qty} avg=₹{avg:.2f} ltp=₹{ltp:.2f} "
-                f"pnl=₹{pnl:,.0f} day_change=₹{day_chg:,.0f} ({day_pct:+.1f}%)"
-            )
+            line, sym = result
+            lines.append(line)
             underlyings.add(sym)
     return lines, underlyings
 
@@ -66,21 +96,11 @@ def _portfolio_positions_lines(fetch_positions) -> tuple[list[str], set[str]]:
         if df.empty:
             continue
         for _, row in df.iterrows():
-            sym = row.get('tradingsymbol', '')
-            if not sym:
+            result = _position_row_line(row)
+            if result is None:
                 continue
-            qty = int(row.get('quantity', 0) or 0)
-            if qty == 0:
-                continue
-            ltp       = float(row.get('close_price', 0) or row.get('last_price', 0) or 0)
-            avg       = float(row.get('average_price', 0) or 0)
-            pnl       = float(row.get('pnl', 0) or 0)
-            direction = 'long' if qty > 0 else 'short'
-            underlying = _extract_underlying(sym)
-            lines.append(
-                f"    • {sym} ({direction} position) qty={qty} avg=₹{avg:.2f} "
-                f"ltp=₹{ltp:.2f} pnl=₹{pnl:,.0f}"
-            )
+            line, sym, underlying = result
+            lines.append(line)
             underlyings.add(underlying)
             underlyings.add(sym)
     return lines, underlyings
