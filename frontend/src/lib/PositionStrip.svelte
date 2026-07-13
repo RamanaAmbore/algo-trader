@@ -688,25 +688,26 @@
     void _mktTick;
     let total = 0;
     for (const p of positions) {
+      const exch = String(p?.exchange || '').toUpperCase();
+      if (!_isDerivativeExch(exch)) continue;
       const sym  = String(p?.tradingsymbol || '').toUpperCase();
       const qty  = Number(p?.quantity) || 0;
       const avg  = Number(p?.average_price) || 0;
-      if (!qty) continue;
-      // Derivative exchanges only (exclude equity CNC holdings in positions)
-      const exch = String(p?.exchange || '').toUpperCase();
-      if (!_isDerivativeExch(exch)) continue;
-
+      if (!qty) {
+        // Closed leg — realized P&L is locked in, no spot needed
+        total += Number(p?.pnl || 0);
+        continue;
+      }
       const isCE  = sym.endsWith('CE');
       const isPE  = sym.endsWith('PE');
       const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
-
       let v = null;
       if (isCE || isPE) {
         v = _optionLegExpiryPnl(p, sym, qty, avg, positions, holdings);
       } else if (isFut) {
         v = _futureLegExpiryPnl(p, sym, qty, avg);
       }
-      if (v != null) total += v;
+      if (v != null) total += v + Number(p?.realised || 0);
     }
     return total;
   });

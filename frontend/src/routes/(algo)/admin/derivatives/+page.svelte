@@ -896,7 +896,12 @@
   const _expPnlByRootMap = $derived.by(() => {
     void _throttledTick;
     const ms = _makeStrategyMatcher();
-    return _perRootReduce((c, spot) => _expiryPnl(c, spot), ms);
+    return _perRootReduce((c, spot) => {
+      const v = _expiryPnl(c, spot);
+      if (v != null) return v + Number(c.realised || 0);
+      if (Number(c.qty || 0) === 0) return Number(c.realised || c.pnl || 0);
+      return null;
+    }, ms);
   });
 
   // Snapshot TOTAL sums — P&L + Exp computed here (they only reference
@@ -1043,7 +1048,7 @@
         const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
         flash.update(`leg:${k}:day`, _dayPnlForLeg(c, spot ?? null));
         flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
-        flash.update(`leg:${k}:exp`, _expiryPnl(c, spot ?? null));
+        flash.update(`leg:${k}:exp`, _legExpPnlDisplay(c, spot ?? null));
       }
     });
   });
@@ -1859,6 +1864,22 @@
     return expiryPnl(c, spot, legAnalyticsBySymbol);
   }
 
+  /**
+   * EXP P&L for one leg to display in the legs grid.
+   * For open legs: intrinsic + partial-close realized.
+   * For closed legs (qty=0, non-equity): locked-in realized P&L.
+   * For equity or no-spot: null (shows '—').
+   * @param {any} c
+   * @param {number|null} spot
+   * @returns {number|null}
+   */
+  function _legExpPnlDisplay(c, spot) {
+    const v = _expiryPnl(c, spot);
+    if (v != null) return v + Number(c.realised || 0);
+    if (Number(c.qty || 0) === 0 && c.kind !== 'eq') return Number(c.realised || c.pnl || 0);
+    return null;
+  }
+
   /** Exp P&L total for the CURRENTLY SELECTED underlying across all
    *  enabled, displayed candidate legs — the single source of truth
    *  shared by the legs grid TOTAL row and the snapshot row whose
@@ -1881,7 +1902,7 @@
       .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
       .reduce((/** @type {number} */ s, c) => {
         const v = _expiryPnl(c, spot);
-        return v == null ? s : s + v;
+        return v == null ? s : s + v + Number(c.realised || 0);
       }, 0);
     // F&O closed legs: realized P&L is locked in regardless of spot.
     // Same component that `chartPnlOffset` adds to the backend curve so stat
@@ -4259,7 +4280,7 @@
               legAnalytics={legAnalyticsBySymbol[c.symbol]}
               enabled={_isLegEnabled(c)}
               dayPnl={_dayPnlForLeg(c, liveSpot ?? null)}
-              expPnl={_expiryPnl(c, liveSpot ?? null)}
+              expPnl={_legExpPnlDisplay(c, liveSpot ?? null)}
               legExpired={_isLegExpired(c)}
               {strategy}
               {flash}
