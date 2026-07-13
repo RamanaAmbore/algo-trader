@@ -592,25 +592,40 @@ Both must stay in sync via a canonical formula.
 
 ```
 _legsExpPnlTotal = 
-  Σ[F&O open legs](intrinsic_at_spot via expiryPnl())
-  + Σ[F&O closed legs](realised P&L, locked in)
+  Σ[F&O open legs](intrinsic_at_spot + realised)
+  + Σ[F&O closed legs](realised or pnl)
   + Σ[equity legs](linear profit via _equityLinearLegs)
 ```
 
 **Three-component breakdown**:
 
-1. **F&O open legs** — remaining contracts still open at expiry. Intrinsic P&L via 
-   `expiryPnl(row, spot)` at current spot price. Example: long 2 CE 2850, spot at 
-   2875 → `2 × (2875 − 2850) = +50` (2-point intrinsic).
+1. **F&O open legs** (qty ≠ 0) — remaining contracts still open at expiry. Formula:
+   `expiryPnl(row, spot) + (row.realised || 0)`
+   - `expiryPnl()` computes intrinsic value at current spot price
+   - `row.realised` is added for partial-close positions (contracts closed earlier 
+     in the same day; locked-in profit)
+   - Example: long 2 CE 2850 spot 2875, 1 contract closed for +30 profit
+     → `2 × (2875 − 2850) = +50` (intrinsic) + `30` (realised) = `+80`
 
-2. **F&O closed legs** — contracts exited today (quantity=0). Realized P&L is locked 
-   in `row.pnl` regardless of spot movement. Example: sold 2 CE 2850 for +100 P&L; 
-   contributes +100 to total.
+2. **F&O closed legs** (qty = 0) — entire position exited today. Formula: 
+   `row.realised || row.pnl`
+   - When qty is 0, the entire position was closed; realized P&L is locked
+   - Value is certain, independent of current spot price
+   - Example: sold 2 CE 2850 short, covered today for +100 profit
+     → contributes +100 to total
+   - Note: closed legs previously skipped (continue statement) — now included
 
 3. **Equity legs** — stocks in the strategy. Linear profit via 
    `(spot − cost_basis) × qty`. Handles exited equity via `opening_qty` fallback 
    (when qty=0 but opening_qty > 0). Proxy legs included via beta-adjusted quantity 
    (e.g. 0.8× hedging qty).
+
+**Per-leg display in Legs grid**:
+
+A helper `_legExpPnlDisplay(leg, spot)` provides the per-cell EXP value:
+- **Open leg** (qty ≠ 0): `expiryPnl(leg, spot) + (leg.realised || 0)`
+- **Closed leg** (qty = 0): `leg.realised || leg.pnl` (not "—", fully realized)
+- Replaces direct `expiryPnl()` calls; ensures closed legs show locked-in values
 
 **Payoff chart sync**:
 
@@ -623,6 +638,12 @@ where `expiry_value_at_spot` is the live P&L curve from the merged payoff
 (combined intrinsic + extrinsic across all legs) and `chartPnlOffset` is any 
 operational adjustments (spreads, closed legs). At `liveSpot`, this sum must 
 equal `_legsExpPnlTotal` for the overlay stat and TOTAL row to be consistent.
+
+**Backend `_expPnlByRootMap` accessor**:
+
+For Snapshot EXP column (MarketPulse Derivatives view):
+- **Open leg** (qty ≠ 0): `expiryPnl(c, spot) + (c.realised || 0)`
+- **Closed leg** (qty = 0): `c.realised || c.pnl` (locked value, not null/empty)
 
 ---
 
@@ -894,3 +915,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-11 | v1.0 initial spec from codebase audit |
 | 2026-07-11 | v1.1 added DB-first policy (§5), snapshot preservation (§6), self-healing cycle (§7); BD1–BD4 + D1–D4 fixed |
 | 2026-07-11 | v1.2 added §11–24 comprehensive component + data-layer expansion (pulseUnified, buckets, columns, context menu, watchlist, account-select, cache, closed-hours, card controls) |
+| 2026-07-13 | §17 EXP formula: documented partial-close `realised` field in open-leg formula; closed-leg (qty=0) now included; per-leg helper `_legExpPnlDisplay` for Legs grid display |

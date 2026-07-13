@@ -36,11 +36,44 @@ Formula: three slots displaying position profit from three perspectives.
 |---|---|---|---|
 | 1 | Today's Day P&L | All positions (NSE/BSE/NFO/MCX/CDS) | `Σ baseDayPnlForPosition(p)` + live-tick delta |
 | 2 | Lifetime P&L | All positions (NSE/BSE/NFO/MCX/CDS) | `Σ p.pnl` + live-tick delta |
-| 3 | F&O expiry profit | Derivatives only (NFO/MCX/CDS/BFO) | `Σ expiryPnl(p, spot)` at current spot |
+| 3 | F&O expiry profit | Derivatives only (NFO/MCX/CDS/BFO) | See EXP Slot spec below |
 
 **New-position override** (slot 1 only): When `overnight_quantity = 0` AND `day_change_val = 0`
 AND `pnl ≠ 0`, the broker omitted intraday decomposition. Fall back to lifetime `pnl` as the
 safest approximation. Applied by `baseDayPnlForPosition()`.
+
+#### EXP Slot Specification (Slot 3)
+
+The expiry profit (EXP) slot shows the profit/loss across all F&O positions if they expired 
+(were settled) at the current spot price, right now. Equity positions are excluded from this 
+slot (but included in the H pill).
+
+**Exchange gate**: Only rows where `exchange` is one of `['NFO', 'MCX', 'CDS', 'BFO']` 
+contribute to EXP. Equity rows (`NSE`, `BSE`) are skipped.
+
+**Formula by leg state**:
+
+1. **Open leg** (qty ≠ 0): `expiryPnl(leg, spot) + (leg.realised || 0)`
+   - `expiryPnl` computes intrinsic profit at current spot
+   - `leg.realised` is added for partial-close positions (contracts closed earlier in the 
+     same position entry; e.g., sold 5 of 10 NIFTY CE contracts today)
+   - Example: long 2 CE 2850, spot 2875, 1 contract closed for +30 today
+     → `2 × (2875 − 2850) = +50` (intrinsic) + `30` (realised) = `+80` total
+
+2. **Closed leg** (qty = 0): `leg.realised || leg.pnl`
+   - When qty is 0, the entire position was exited during the session
+   - Realized P&L is locked in `leg.pnl` (broker snapshot field)
+   - No spot lookup needed — the value is certain, independent of current market price
+   - Example: sold 2 CE 2850 short, covered today for +100 profit → contributes +100 total
+
+**Spot resolution** (for open legs):
+- Backend-stamped `underlying_ltp` (SSOT, via Pass 3 enrichment) takes precedence
+- Fallback chain: `symbolStore` snapshot for resolved tradingsymbol → underlying root → 
+  positions/holdings row-scan for a matching symbol's LTP
+- If no spot can be resolved, the leg contributes 0 (no error thrown)
+
+**Throttling**: Recomputed at 4 Hz max (same `_throttledTick` gate as `_liveDeltaByRow`) 
+to avoid scheduler pressure during high-frequency SSE ticks.
 
 ### M pill: Margin
 
@@ -246,6 +279,23 @@ On real SSE tick arrivals (independent of polls):
 - C pill reflects broker cash only
 - M pill reflects margin capacity (typically all available)
 
+### Derivatives closed legs and partial-close P&L
+
+When an F&O position is partially or fully exited during the day, the closed contracts' 
+realized P&L must appear in the P:3 (EXP) slot immediately.
+
+**Closed leg (qty = 0)**: The entire position is gone; `leg.pnl` or `leg.realised` contains 
+the full locked-in profit. EXP reads this field directly — no spot calculation needed.
+
+**Partially closed leg (qty ≠ 0)**: Some contracts are still open, others closed earlier. 
+EXP adds two components:
+- Current intrinsic of remaining contracts via `expiryPnl(leg, spot)`
+- Locked-in P&L from the closed portion via `leg.realised`
+
+Without the `+ leg.realised` term, partial closes would show only the remaining intrinsic, 
+missing the realized gain/loss from the exited contracts — causing EXP to diverge from 
+the true all-in position profit.
+
 ### Market just opened (0 poll cycles complete)
 
 - Day-delta slots (P:1, H:1) show 0 until the first successful poll lands
@@ -296,11 +346,14 @@ Critical fix for new-position and exited-position P&L correctness.
 - **Slot alignment**: P pill renders slot 1 / slot 2 / slot 3 with correct delimiters
 - **SSOT synchronization**: P:1 matches MarketPulse Positions TOTAL row Day P&L; P:2 matches Positions TOTAL P&L
 - **Holdings slots**: H:1, H:2, H:3 match Holdings grid TOTAL row values
+- **EXP slot (P:3)**: F&O positions only; excludes equity; closed legs show realized P&L; partial-close legs add intrinsic + realised
 - **Freeze behavior**: During closed hours, slots show non-zero as_of values; animations suppressed
 - **Stale indicator**: CSS class `ps-stale` appears after 2 broker errors; disappears on recovery
 - **Color consistency**: Positive/negative values use correct palette across all slots
 - **Heartbeat and tick-border**: Animations fire correctly on poll cycles and SSE ticks
 - **New-position override**: Overnight position bought today (oq=0) shows correct P:1 value (uses `pnl` not `day_change_val`)
+- **Closed-leg EXP**: Fully exited F&O leg (qty=0) contributes `p.pnl` to EXP; not skipped
+- **Partial-close EXP**: Partially exited F&O leg (qty≠0) adds realised + intrinsic to EXP
 
 ### Backend (Python)
 
@@ -317,3 +370,4 @@ Critical fix for new-position and exited-position P&L correctness.
 | Date | Change |
 |---|---|
 | 2026-07-11 | v1.0 initial spec from codebase implementation |
+| 2026-07-13 | EXP Slot spec: documented closed-leg (qty=0) handler; partial-close realized P&L (`leg.realised`) in open-leg formula |
