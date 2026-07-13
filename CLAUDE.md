@@ -61,6 +61,16 @@ After implementing any bug fix:
 2. For any P&L / NavStrip / market-data fix: grep all consumers (derivatives, dashboard, NavStrip, MarketPulse) and verify the fix propagates to every one of them — not just the primary page.
 3. Only commit after the self-audit passes.
 
+## Default Workflow
+
+**Plan before implement** — always enter plan mode for non-trivial tasks. Operator approves, then Claude implements in background agents with foreground commit summaries.
+
+**Operator's role**: requirements, design, defect identification — plan mode only.  
+**Claude's role**: research, implementation, test loops, doc updates, deployment — background.
+
+**Dev deploy** (`/ddev`): pytest + svelte-check green → push dev. Never push dev with failing tests.  
+**Prod deploy** (`/dprod`): operator explicitly requests → docs/spec/DESIGN_GUIDE/PDF/CC updated → merge dev→main → push. Never push to prod without explicit request.
+
 ## Scope Discipline
 
 When a change is tied to a specific entity (role, company, page, file, symbol): confirm scope before editing broadly. Do NOT propagate changes to sibling entities unless explicitly asked.
@@ -266,7 +276,9 @@ Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
 
 Workflow shortcuts in `/.claude/commands/`:
 
+- **`/ddev`** — Run tests (pytest + svelte-check); push to dev only if both pass
+- **`/dprod`** — Update docs/spec/DESIGN_GUIDE/PDF + CC gate; merge dev→main; push prod
 - **`/tlm`** — Run daily TLM audit pipeline, parse P1 findings, fix + commit
 - **`/cc`** — Show cyclomatic complexity grades (C/D/E/F summary + top 10 hotspots)
-- **`/push`** — Commit staged changes and push to both dev + main
+- **`/push`** — Quick push dev+main (no gates — use only for doc/config-only changes)
 - **`/audit-cc`** — Block push if any D/E/F-grade functions exist; unblock if clean
