@@ -448,6 +448,237 @@ def _coerce_date_str(val: object) -> object:
     return _dt_date.fromisoformat(val) if isinstance(val, str) else val
 
 
+def _admin_apply_scalar_coercions(field: str, val: object) -> object:
+    """Apply post-gate scalar coercions: PAN uppercase + date string conversion."""
+    if field == 'pan' and isinstance(val, str):
+        val = val.upper()
+    if field in ('date_of_birth', 'join_date', 'contribution_date'):
+        val = _coerce_date_str(val)
+    return val
+
+
+def _admin_coerce_field_value(
+    field: str,
+    val: object,
+    allowed_role_change: bool,
+    user: "User",
+) -> object:
+    """Apply per-field gate + coercion; returns _SKIP to signal 'skip this field'.
+
+    Extracted from _apply_user_field_updates to keep the loop body simple.
+    """
+    if field == 'role':
+        val = _validate_role_field(val, allowed_role_change)
+    elif field == 'email_verified':
+        val = _validate_email_verified_field(val, allowed_role_change, user)
+    elif field in ('share_pct', 'contribution', 'contribution_date',
+                   'assigned_accounts', 'assigned_strategies',
+                   'compliance_designated'):
+        val = _validate_designated_only_field(val, allowed_role_change)
+        if val is not _SKIP:
+            if field == 'assigned_accounts':
+                val = _coerce_assigned_accounts(val)
+            elif field == 'assigned_strategies':
+                val = _coerce_assigned_strategies(val)
+
+    if val is _SKIP:
+        return _SKIP
+    return _admin_apply_scalar_coercions(field, val)
+
+
+def _admin_resolve_create_role(
+    requested: str,
+    is_designated: bool,
+) -> "tuple[str, float, float]":
+    """Compute (eff_role, eff_contribution, eff_share_pct) for create_user.
+
+    Non-designated actors are silently downgraded to 'partner' for any
+    privileged-role request; capital fields are zeroed.
+    Raises HTTPException(422) when requested role is unknown.
+    """
+    from backend.api.rbac import VALID_ROLES
+    if requested not in VALID_ROLES or requested == 'demo':
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "role must be one of: "
+                + ', '.join(r for r in VALID_ROLES if r != 'demo')
+            ),
+        )
+    _PRIVILEGED = ("designated", "trader", "risk", "admin")
+    eff_role = requested if is_designated else (
+        "partner" if requested in _PRIVILEGED else requested
+    )
+    return eff_role, 0.0, 0.0  # eff_contribution + eff_share_pct set by caller
+
+
+def _admin_build_user_row(
+    data: "CreateUserRequest",
+    eff_role: str,
+    eff_contribution: float,
+    eff_share_pct: float,
+    is_designated: bool,
+    password_hash: str,
+) -> "User":
+    """Construct a User ORM row for create_user.
+
+    admin_vetted: internal roles (trader/risk/admin/designated) are auto-verified;
+    a designated actor creating a partner with an email on file is also auto-verified.
+    """
+    admin_vetted = (
+        eff_role in _INTERNAL_ROLES
+        or (is_designated and eff_role == "partner" and bool(data.email))
+    )
+    return User(
+        username=data.username,
+        password_hash=password_hash,
+        role=eff_role,
+        display_name=data.display_name or data.username,
+        email=data.email or None,
+        phone=data.phone or None,
+        contribution=eff_contribution,
+        share_pct=eff_share_pct,
+        is_approved=data.is_approved,
+        receive_alerts=data.receive_alerts,
+        email_verified=admin_vetted,
+    )
+
+
+def _admin_check_admin_role(
+    designated_only: bool,
+    admin_self_ok: bool,
+    admin_partner_ok: bool,
+    is_self: bool,
+    target: "User",
+) -> None:
+    """Permission gates for role='admin'. Raises HTTPException on denial."""
+    if designated_only:
+        raise HTTPException(status_code=403, detail="Designated-admin access required")
+    if admin_self_ok and is_self:
+        return
+    if admin_partner_ok and target.role == "partner":
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Admin cannot perform this action on this target",
+    )
+
+
+def _admin_pnl_sample_rows(rows_to_upsert: list) -> list:
+    """Build the 3-row sample for the PnlCsvUploadResponse.
+
+    Filters out internal-only keys (payload_json, captured_at) and
+    coerces non-numeric / non-None values to str so msgspec can encode.
+    """
+    return [
+        {k: (str(v) if not isinstance(v, (int, float, type(None))) else v)
+         for k, v in r.items()
+         if k not in ("payload_json", "captured_at")}
+        for r in rows_to_upsert[:3]
+    ]
+
+
+def _admin_build_close_series(raw: list, base_close: float) -> "list[dict]":
+    """Build the normalised close series from raw historical data bars.
+
+    Each entry: {date, close, pct_change_from_start}.
+    """
+    closes: list[dict] = []
+    for bar in raw:
+        c = float(bar.get("close") or bar.get("close_price") or 0)
+        d = bar.get("date")
+        date_str = d.date().isoformat() if hasattr(d, "date") else str(d)[:10]
+        pct = ((c / base_close) - 1.0) * 100.0 if base_close else 0.0
+        closes.append({"date": date_str, "close": c, "pct_change_from_start": round(pct, 4)})
+    return closes
+
+
+def _admin_benchmark_date_strs(
+    from_date: "str | None",
+    to_date: "str | None",
+) -> "tuple[str, str]":
+    """Compute (from_str, to_str) ISO date strings for the benchmark window.
+
+    Defaults: to = today IST, from = 30 days prior.
+    """
+    from datetime import timedelta
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    today_str = timestamp_indian().date().isoformat()
+    to_str    = (to_date   or "").strip() or today_str
+    from_str  = (from_date or "").strip() or (
+        dt_date.fromisoformat(to_str) - timedelta(days=30)
+    ).isoformat()
+    return from_str, to_str
+
+
+def _admin_benchmark_parse_window(
+    from_date: "str | None",
+    to_date: "str | None",
+    symbols: str,
+) -> "tuple[str, str, object, object, list[str]]":
+    """Parse + validate the pnl_benchmarks query params.
+
+    Returns (from_str, to_str, d_from, d_to, requested_symbols).
+    Raises HTTPException(422) on invalid dates or unknown symbols.
+    """
+    from_str, to_str = _admin_benchmark_date_strs(from_date, to_date)
+    try:
+        d_from = dt_date.fromisoformat(from_str)
+        d_to   = dt_date.fromisoformat(to_str)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid date: {exc}")
+    if d_from > d_to:
+        raise HTTPException(
+            status_code=422,
+            detail=f"from ({from_str}) must be <= to ({to_str})",
+        )
+    requested = [s.strip() for s in symbols.split(",") if s.strip()]
+    unknown   = [s for s in requested if s not in BENCHMARK_TOKENS]
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown benchmark(s): {', '.join(unknown)}. "
+                   f"Valid: {', '.join(BENCHMARK_TOKENS)}",
+        )
+    return from_str, to_str, d_from, d_to, requested
+
+
+def _admin_fetch_benchmark_series(
+    symbol: str,
+    from_str: str,
+    to_str: str,
+    d_from: object,
+    d_to: object,
+) -> "PnlBenchmarkSeries":
+    """Sync: fetch one benchmark series from the historical broker.
+
+    Checks _BENCHMARK_CACHE first; populates it on a cache miss.
+    Returns an empty-closes series on any fetch error.
+    """
+    cache_key = _benchmark_cache_key(symbol, from_str, to_str)
+    if cache_key in _BENCHMARK_CACHE:
+        closes = _BENCHMARK_CACHE[cache_key]
+        return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=closes)
+
+    _, token = BENCHMARK_TOKENS[symbol]
+    try:
+        from backend.brokers.registry import get_historical_brokers
+        broker = get_historical_brokers()[0]
+        raw = broker.historical_data(token, d_from, d_to, "day") or []
+    except Exception as exc:
+        from backend.shared.helpers.ramboq_logger import get_logger as _gl
+        _gl(__name__).warning(f"pnl_benchmarks: {symbol} fetch failed: {exc}")
+        return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=[])
+
+    if not raw:
+        return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=[])
+
+    base_close = float(raw[0].get("close") or raw[0].get("close_price") or 0)
+    closes = _admin_build_close_series(raw, base_close)
+    _BENCHMARK_CACHE[cache_key] = closes
+    return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=closes)
+
+
 def _apply_user_field_updates(
     user: "User",
     data: "UpdateUserRequest",
@@ -455,36 +686,16 @@ def _apply_user_field_updates(
 ) -> None:
     """Apply all non-None fields from *data* to *user* in-place.
 
-    Each field passes through its own gate / coercion helper.  A field that
-    returns _SKIP is silently ignored (same as the original ``continue``).
+    Each field passes through _admin_coerce_field_value for gating +
+    coercion. A return of _SKIP means the field is silently ignored.
     """
     for field in _UPDATABLE_FIELDS:
         val = getattr(data, field, None)
         if val is None:
             continue
-
-        if field == 'role':
-            val = _validate_role_field(val, allowed_role_change)
-        elif field == 'email_verified':
-            val = _validate_email_verified_field(val, allowed_role_change, user)
-        elif field in ('share_pct', 'contribution', 'contribution_date'):
-            val = _validate_designated_only_field(val, allowed_role_change)
-        elif field in ('assigned_accounts', 'assigned_strategies', 'compliance_designated'):
-            val = _validate_designated_only_field(val, allowed_role_change)
-            if val is not _SKIP:
-                if field == 'assigned_accounts':
-                    val = _coerce_assigned_accounts(val)
-                elif field == 'assigned_strategies':
-                    val = _coerce_assigned_strategies(val)
-
+        val = _admin_coerce_field_value(field, val, allowed_role_change, user)
         if val is _SKIP:
             continue
-
-        if field == 'pan' and isinstance(val, str):
-            val = val.upper()
-        if field in ('date_of_birth', 'join_date', 'contribution_date'):
-            val = _coerce_date_str(val)
-
         setattr(user, field, val)
 
 
@@ -980,30 +1191,10 @@ class AdminController(Controller):
         ok, msg = validate_password_standard(data.password)
         if not ok:
             raise HTTPException(status_code=422, detail=msg)
-        # Designated-only fields. Silently coerce to safe defaults when
-        # an admin (non-designated) tries to set them — keeps the route
-        # forward-compat for old client builds that still send share_pct.
         actor_role = (getattr(request.state, "token_payload", None) or {}).get("role", "")
         is_designated = (actor_role == "designated")
-        # Validate the requested role against the RBAC catalog.
-        # Designated actors can assign any of the 5 canonical roles
-        # (designated / trader / risk / admin / partner). Non-designated
-        # actors fall through to 'partner' for any privileged choice
-        # (designated / trader / risk / admin) and pass 'partner' verbatim.
-        from backend.api.rbac import VALID_ROLES
         requested = (data.role or "partner").strip().lower()
-        if requested not in VALID_ROLES or requested == 'demo':
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "role must be one of: "
-                    + ', '.join(r for r in VALID_ROLES if r != 'demo')
-                ),
-            )
-        _PRIVILEGED = ("designated", "trader", "risk", "admin")
-        eff_role         = requested if is_designated else (
-            "partner" if requested in _PRIVILEGED else requested
-        )
+        eff_role, _, _ = _admin_resolve_create_role(requested, is_designated)
         eff_contribution = data.contribution if is_designated else 0.0
         eff_share_pct    = data.share_pct    if is_designated else 0.0
         async with async_session() as session:
@@ -1012,36 +1203,14 @@ class AdminController(Controller):
             )
             if existing.scalar_one_or_none():
                 raise HTTPException(status_code=409, detail="Username already exists")
-            # Non-partner users created by an admin/designated actor are
-            # explicitly vetted — skip the email-verification dance so
-            # trader/risk/admin rows can log in immediately.  Partners that
-            # self-register via the public form start with email_verified=False,
-            # but partners created HERE by a designated user with an email on
-            # file are also auto-verified: the operator is vouching for the
-            # address, so requiring a verify link is redundant friction.
-            admin_vetted = (
-                eff_role in _INTERNAL_ROLES
-                or (is_designated and eff_role == "partner" and bool(data.email))
-            )
-            user = User(
-                username=data.username,
-                password_hash=hash_password(data.password),
-                role=eff_role,
-                display_name=data.display_name or data.username,
-                email=data.email or None,
-                phone=data.phone or None,
-                contribution=eff_contribution,
-                share_pct=eff_share_pct,
-                is_approved=data.is_approved,
-                receive_alerts=data.receive_alerts,
-                email_verified=admin_vetted,
+            user = _admin_build_user_row(
+                data, eff_role, eff_contribution, eff_share_pct,
+                is_designated, hash_password(data.password),
             )
             session.add(user)
             await session.commit()
             new_user_id = user.id
         await refresh_alert_recipients()
-        # Seed Default + Markets watchlists eagerly. Idempotent — re-
-        # creating an existing user (CLI --update path) won't double-seed.
         from backend.api.routes.watchlist import seed_default_watchlists_for_user
         try:
             await seed_default_watchlists_for_user(new_user_id)
@@ -1160,16 +1329,10 @@ class AdminController(Controller):
             return  # designated does everything (subject to block_self above)
 
         if role == "admin":
-            if designated_only:
-                raise HTTPException(status_code=403, detail="Designated-admin access required")
-            if admin_self_ok and is_self:
-                return
-            if admin_partner_ok and target.role == "partner":
-                return
-            raise HTTPException(
-                status_code=403,
-                detail="Admin cannot perform this action on this target",
+            _admin_check_admin_role(
+                designated_only, admin_self_ok, admin_partner_ok, is_self, target,
             )
+            return
 
         raise HTTPException(status_code=403, detail="Permission denied")
 
@@ -1440,82 +1603,19 @@ class AdminController(Controller):
         Each series: { symbol, name, closes: [{date, close, pct_change_from_start}] }
         """
         import asyncio
-        from datetime import timedelta
-        from backend.shared.helpers.date_time_utils import timestamp_indian
 
-        today_str  = timestamp_indian().date().isoformat()
-        to_str     = (to_date   or "").strip() or today_str
-        from_str   = (from_date or "").strip() or (
-            dt_date.fromisoformat(to_str) - timedelta(days=30)
-        ).isoformat()
-
-        try:
-            d_from = dt_date.fromisoformat(from_str)
-            d_to   = dt_date.fromisoformat(to_str)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid date: {exc}")
-
-        if d_from > d_to:
-            raise HTTPException(
-                status_code=422,
-                detail=f"from ({from_str}) must be <= to ({to_str})",
-            )
-
-        requested = [s.strip() for s in symbols.split(",") if s.strip()]
-        unknown   = [s for s in requested if s not in BENCHMARK_TOKENS]
-        if unknown:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Unknown benchmark(s): {', '.join(unknown)}. "
-                       f"Valid: {', '.join(BENCHMARK_TOKENS)}",
-            )
-
-        from backend.brokers.registry import get_market_data_broker
-
-        def _fetch_one(symbol: str) -> PnlBenchmarkSeries:
-            cache_key = _benchmark_cache_key(symbol, from_str, to_str)
-            if cache_key in _BENCHMARK_CACHE:
-                closes = _BENCHMARK_CACHE[cache_key]
-                return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=closes)
-
-            _, token = BENCHMARK_TOKENS[symbol]
-            try:
-                # Route through get_market_data_broker() (contextvar-cached,
-                # honours connections.price_account). The earlier code reached
-                # for `broker.kite.historical_data(...)` from when the only
-                # broker was Kite Connect directly — PriceBroker doesn't
-                # expose `.kite` and the call silently 500'd, leaving the
-                # dashboard NIFTY / SENSEX overlay blank.
-                from backend.brokers.registry import get_historical_brokers
-                broker = get_historical_brokers()[0]
-                raw    = broker.historical_data(
-                    token,
-                    d_from,
-                    d_to,
-                    "day",
-                ) or []
-            except Exception as exc:
-                logger.warning(f"pnl_benchmarks: {symbol} fetch failed: {exc}")
-                return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=[])
-
-            if not raw:
-                return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=[])
-
-            base_close = float(raw[0].get("close") or raw[0].get("close_price") or 0)
-            closes: list[dict] = []
-            for bar in raw:
-                c = float(bar.get("close") or bar.get("close_price") or 0)
-                d = bar.get("date")
-                date_str = d.date().isoformat() if hasattr(d, "date") else str(d)[:10]
-                pct = ((c / base_close) - 1.0) * 100.0 if base_close else 0.0
-                closes.append({"date": date_str, "close": c, "pct_change_from_start": round(pct, 4)})
-
-            _BENCHMARK_CACHE[cache_key] = closes
-            return PnlBenchmarkSeries(symbol=symbol, name=symbol, closes=closes)
+        from_str, to_str, d_from, d_to, requested = _admin_benchmark_parse_window(
+            from_date, to_date, symbols,
+        )
 
         # Run each symbol fetch in a thread so sync Kite HTTP doesn't block the loop
         loop = asyncio.get_event_loop()
-        tasks = [loop.run_in_executor(None, _fetch_one, s) for s in requested]
+        tasks = [
+            loop.run_in_executor(
+                None, _admin_fetch_benchmark_series, s, from_str, to_str, d_from, d_to,
+            )
+            for s in requested
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         series: list[PnlBenchmarkSeries] = []
@@ -1581,12 +1681,7 @@ class AdminController(Controller):
 
         inserted, updated = await _execute_pnl_upsert(rows_to_upsert, target, account_val)
 
-        sample = [
-            {k: (str(v) if not isinstance(v, (int, float, type(None))) else v)
-             for k, v in r.items()
-             if k not in ("payload_json", "captured_at")}
-            for r in rows_to_upsert[:3]
-        ]
+        sample = _admin_pnl_sample_rows(rows_to_upsert)
 
         logger.info(
             f"Admin: pnl csv upload account={account_val} date={target} "

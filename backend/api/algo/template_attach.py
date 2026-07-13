@@ -303,6 +303,17 @@ def _wing_symbol(parent_symbol: str, offset: int) -> Optional[str]:
     return f"{root}{expiry_token}{wing_strike}{opt}"
 
 
+def _ta_wing_depth_spread(q: dict, ltp: float) -> float:
+    """Compute bid-ask spread% from broker quote depth. Returns 0.0 when
+    depth is absent or either side is zero (thin books are not penalised)."""
+    depth = q.get("depth") or {}
+    buys  = depth.get("buy") or []
+    sells = depth.get("sell") or []
+    bid = float(buys[0].get("price") if buys else 0) or 0.0
+    ask = float(sells[0].get("price") if sells else 0) or 0.0
+    return (ask - bid) / ltp * 100.0 if (ask > 0 and bid > 0) else 0.0
+
+
 def _wing_score_candidate(
     q: dict,
     target_premium: float,
@@ -320,15 +331,10 @@ def _wing_score_candidate(
     ltp = float(q.get("last_price") or 0)
     if ltp <= 0:
         return None
-    oi = int(q.get("oi") or 0)
-    depth = q.get("depth") or {}
-    buys  = depth.get("buy") or []
-    sells = depth.get("sell") or []
-    bid = float(buys[0].get("price") if buys else 0) or 0
-    ask = float(sells[0].get("price") if sells else 0) or 0
-    spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
-    dist  = abs(ltp - target_premium)
-    score = dist + (spread_pct / 100.0) * target_premium
+    oi         = int(q.get("oi") or 0)
+    spread_pct = _ta_wing_depth_spread(q, ltp)
+    dist       = abs(ltp - target_premium)
+    score      = dist + (spread_pct / 100.0) * target_premium
     return ltp, oi, spread_pct, score
 
 
@@ -390,6 +396,43 @@ def _wing_scan_candidates(
     return best, fallback, scanned, dropped_oi, dropped_spread
 
 
+def _ta_wing_filter_candidates(
+    insts_resp,
+    parent_prefix: str,
+    suffix: str,
+) -> list[dict]:
+    """Filter instruments cache to chain entries matching prefix + suffix."""
+    result: list[dict] = []
+    for inst in (insts_resp.items if insts_resp else []):
+        ts = str(inst.s).upper()
+        if not ts.startswith(parent_prefix):
+            continue
+        if not ts.endswith(suffix):
+            continue
+        if inst.k is None:
+            continue
+        result.append({"ts": ts, "strike": float(inst.k), "exch": inst.e})
+    return result
+
+
+def _ta_wing_slice_radius(
+    candidates: list[dict],
+    parent_strike: int,
+    chain_radius: int,
+) -> list[dict]:
+    """Return the subset of *candidates* within *chain_radius* strikes of
+    *parent_strike*. Candidates must already be sorted by strike ascending."""
+    parent_idx = next(
+        (i for i, c in enumerate(candidates) if c["strike"] == parent_strike),
+        None,
+    )
+    if parent_idx is None:
+        return candidates
+    lo = max(0, parent_idx - chain_radius)
+    hi = min(len(candidates), parent_idx + chain_radius + 1)
+    return candidates[lo:hi]
+
+
 def _wing_build_chain(
     insts_resp,
     root: str,
@@ -409,26 +452,9 @@ def _wing_build_chain(
     The reason strings match the substrings asserted by the test suite
     ("no chain candidates", "chain_radius filter eliminated").
     """
-    # Filter to (root, expiry_token, opt_type) — match exactly the
-    # parent contract's chain. Use the cached `s` (tradingsymbol)
-    # field's prefix as the discriminator so MCX vs NFO doesn't
-    # matter; the parent's exchange flows through unchanged.
     parent_prefix = f"{root}{expiry_token}"
     suffix        = opt   # 'CE' or 'PE'
-    candidates: list[dict] = []
-    for inst in (insts_resp.items if insts_resp else []):
-        ts = str(inst.s).upper()
-        if not ts.startswith(parent_prefix):
-            continue
-        if not ts.endswith(suffix):
-            continue
-        if inst.k is None:
-            continue
-        candidates.append({
-            "ts":     ts,
-            "strike": float(inst.k),
-            "exch":   inst.e,
-        })
+    candidates = _ta_wing_filter_candidates(insts_resp, parent_prefix, suffix)
 
     if not candidates:
         return [], (
@@ -436,17 +462,8 @@ def _wing_build_chain(
             f"for {root}{expiry_token}{suffix}"
         )
 
-    # Slice to within chain_radius strikes of the parent. Sorted by
-    # strike for the slice arithmetic.
     candidates.sort(key=lambda c: c["strike"])
-    parent_idx = next(
-        (i for i, c in enumerate(candidates) if c["strike"] == parent_strike),
-        None,
-    )
-    if parent_idx is not None:
-        lo = max(0, parent_idx - chain_radius)
-        hi = min(len(candidates), parent_idx + chain_radius + 1)
-        candidates = candidates[lo:hi]
+    candidates = _ta_wing_slice_radius(candidates, parent_strike, chain_radius)
 
     if not candidates:
         return [], (
@@ -665,6 +682,29 @@ def _parse_tp_scales(tp_scales_raw) -> list[dict]:
     return tp_scales
 
 
+def _ta_pick_float_override(key: str, ov: dict, template: dict) -> Optional[float]:
+    """Return float value for *key*, preferring *ov* over *template*. None when absent."""
+    v = ov.get(key)
+    if v is None:
+        v = template.get(key)
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ta_validate_pct(
+    name: str, value: Optional[float], notes: list[str]
+) -> Optional[float]:
+    """Return *value* unchanged when positive; None + note when non-positive."""
+    if value is not None and value <= 0:
+        notes.append(f"{name}={value} is not positive — {name.split('_')[0].upper()} not attached")
+        return None
+    return value
+
+
 def _parse_template_overrides(
     template: dict,
     overrides: dict,
@@ -686,33 +726,18 @@ def _parse_template_overrides(
     """
     _ov = overrides or {}
 
-    def _pick(key: str) -> Optional[float]:
-        v = _ov.get(key)
-        if v is None:
-            v = template.get(key)
-        if v is None:
-            return None
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return None
-
-    tp_pct           = _pick("tp_pct")
-    sl_pct           = _pick("sl_pct")
-    wing_premium_pct = _pick("wing_premium_pct")
-    sl_trail_pct     = _pick("sl_trail_pct")
+    tp_pct           = _ta_pick_float_override("tp_pct",           _ov, template)
+    sl_pct           = _ta_pick_float_override("sl_pct",           _ov, template)
+    wing_premium_pct = _ta_pick_float_override("wing_premium_pct", _ov, template)
+    sl_trail_pct     = _ta_pick_float_override("sl_trail_pct",     _ov, template)
 
     # Audit fix — non-positive % values silently produced an invalid GTT
     # (trigger == fill price on a BUY, immediately rejected by Kite or
     # firing instantly on a SELL). Drop to None + surface a note via
     # `_validation_notes` (appended to `plan.notes` once plan exists).
     _validation_notes: list[str] = []
-    if tp_pct is not None and tp_pct <= 0:
-        _validation_notes.append(f"tp_pct={tp_pct} is not positive — TP not attached")
-        tp_pct = None
-    if sl_pct is not None and sl_pct <= 0:
-        _validation_notes.append(f"sl_pct={sl_pct} is not positive — SL not attached")
-        sl_pct = None
+    tp_pct = _ta_validate_pct("tp_pct", tp_pct, _validation_notes)
+    sl_pct = _ta_validate_pct("sl_pct", sl_pct, _validation_notes)
 
     # tp_scales_json — Phase 3A scale-out targets. When set, supersedes
     # tp_pct: a TP ladder of N entries, each placed as a separate
@@ -1070,6 +1095,100 @@ def _leg(side: str, qty: int, price: float, product: str,
 
 # ── Sim path application ─────────────────────────────────────────────
 
+
+def _ta_sim_wire_oco_pair(
+    driver,
+    spec: GttSpec,
+    pair_first_id: str,
+    result: AttachResult,
+) -> None:
+    """Wire OCO sibling back-pointer on the first GTT so either leg fires
+    cancellation in SimGttBook. Updates result.sibling_pairs in-place."""
+    result.sibling_pairs.append((pair_first_id, spec.placed_id))
+    first_gtt = driver._gtt_book.get(pair_first_id)
+    if first_gtt is not None:
+        first_gtt.pair_with = spec.placed_id
+
+
+def _ta_sim_place_one_gtt(
+    driver,
+    plan: TemplatePlan,
+    spec: GttSpec,
+    idx: int,
+    pair_first_id: Optional[str],
+    pair_two_singles: bool,
+    result: AttachResult,
+    parent_order_id: Optional[int],
+) -> Optional[str]:
+    """Place one GTT in the SimGttBook and update *result*.
+
+    Returns the new pair_first_id (set when idx==0 for Groww OCO pairs).
+    Errors are appended to result.errors; never raised.
+    """
+    try:
+        placed = driver.place_sim_gtt(
+            account=plan.parent_account,
+            tradingsymbol=plan.parent_symbol,
+            exchange=plan.parent_exchange,
+            trigger_type=spec.trigger_type,
+            trigger_values=list(spec.trigger_values),
+            orders=list(spec.orders),
+            last_price=plan.parent_fill_price,
+            pair_with=pair_first_id if (pair_two_singles and idx == 1) else None,
+            template_id=plan.template_id,
+            parent_order_id=parent_order_id,
+            tag=spec.label,
+        )
+        spec.placed_id = placed.get("gtt_id")
+        result.gtt_ids.append(spec.placed_id)
+        if pair_two_singles and idx == 0:
+            return spec.placed_id
+        if pair_two_singles and idx == 1 and pair_first_id and spec.placed_id:
+            _ta_sim_wire_oco_pair(driver, spec, pair_first_id, result)
+    except Exception as e:
+        msg = f"sim GTT placement failed for {spec.label}: {e}"
+        logger.error(msg)
+        result.errors.append(msg)
+    return pair_first_id
+
+
+def _ta_sim_place_wing(
+    driver,
+    plan: TemplatePlan,
+    result: AttachResult,
+) -> None:
+    """Register the wing leg with SimDriver's paper engine."""
+    if plan.wing is None:
+        return
+    from datetime import datetime, timezone
+    wing_order = {
+        "account":          plan.parent_account,
+        "symbol":           plan.wing.tradingsymbol,
+        "exchange":         plan.wing.exchange,
+        "transaction_type": plan.wing.transaction_type,
+        "quantity":         plan.wing.quantity,
+        "initial_price":    plan.wing.estimated_price or plan.parent_fill_price,
+        "status":           "OPEN",
+        "mode":             "sim",
+        "engine":           "sim",
+        "detail":           (
+            f"[SIM-WING] template={plan.template_name} → BUY "
+            f"{plan.wing.quantity} {plan.wing.tradingsymbol} "
+            f"(parent {plan.parent_side} {plan.parent_symbol})"
+        ),
+        "created_at":       datetime.now(timezone.utc),
+        "attempts":         0,
+    }
+    try:
+        driver.register_open_order(wing_order)
+        plan.wing.placed_id = f"sim-wing-{plan.wing.tradingsymbol}"
+        result.wing_order_id = plan.wing.placed_id
+    except Exception as e:
+        msg = f"sim wing placement failed: {e}"
+        logger.error(msg)
+        result.errors.append(msg)
+
+
 def apply_plan_sim(
     plan: TemplatePlan,
     driver,    # SimDriver
@@ -1089,71 +1208,12 @@ def apply_plan_sim(
     pair_two_singles = len(plan.gtts) == 2 and all(g.trigger_type == "single" for g in plan.gtts)
 
     for idx, spec in enumerate(plan.gtts):
-        try:
-            placed = driver.place_sim_gtt(
-                account=plan.parent_account,
-                tradingsymbol=plan.parent_symbol,
-                exchange=plan.parent_exchange,
-                trigger_type=spec.trigger_type,
-                trigger_values=list(spec.trigger_values),
-                orders=list(spec.orders),
-                last_price=plan.parent_fill_price,
-                pair_with=pair_first_id if (pair_two_singles and idx == 1) else None,
-                template_id=plan.template_id,
-                parent_order_id=parent_order_id,
-                tag=spec.label,
-            )
-            spec.placed_id = placed.get("gtt_id")
-            result.gtt_ids.append(spec.placed_id)
-            if pair_two_singles and idx == 0:
-                pair_first_id = spec.placed_id
-            elif pair_two_singles and idx == 1 and pair_first_id and spec.placed_id:
-                result.sibling_pairs.append((pair_first_id, spec.placed_id))
-                # Wire the sibling pointer back on the first GTT so EITHER
-                # side fires cancellation. The book reads pair_with on the
-                # firing GTT to find its sibling.
-                first_gtt = driver._gtt_book.get(pair_first_id)
-                if first_gtt is not None:
-                    first_gtt.pair_with = spec.placed_id
-        except Exception as e:
-            msg = f"sim GTT placement failed for {spec.label}: {e}"
-            logger.error(msg)
-            result.errors.append(msg)
+        pair_first_id = _ta_sim_place_one_gtt(
+            driver, plan, spec, idx, pair_first_id,
+            pair_two_singles, result, parent_order_id,
+        )
 
-    # Wing leg — fan into the sim paper engine. Falls through to a
-    # market-order chase at the next LTP of the wing's symbol.
-    if plan.wing is not None:
-        from datetime import datetime, timezone
-        wing_order = {
-            "account":          plan.parent_account,
-            "symbol":           plan.wing.tradingsymbol,
-            "exchange":         plan.wing.exchange,
-            "transaction_type": plan.wing.transaction_type,
-            "quantity":         plan.wing.quantity,
-            "initial_price":    plan.wing.estimated_price or plan.parent_fill_price,
-            "status":           "OPEN",
-            "mode":             "sim",
-            "engine":           "sim",
-            "detail":           (
-                f"[SIM-WING] template={plan.template_name} → BUY "
-                f"{plan.wing.quantity} {plan.wing.tradingsymbol} "
-                f"(parent {plan.parent_side} {plan.parent_symbol})"
-            ),
-            "created_at":       datetime.now(timezone.utc),
-            "attempts":         0,
-        }
-        try:
-            driver.register_open_order(wing_order)
-            # Pre-built wing id surface — the paper engine assigns its
-            # own internal id, but we surface the planned tradingsymbol
-            # for the operator's preview.
-            plan.wing.placed_id = f"sim-wing-{plan.wing.tradingsymbol}"
-            result.wing_order_id = plan.wing.placed_id
-        except Exception as e:
-            msg = f"sim wing placement failed: {e}"
-            logger.error(msg)
-            result.errors.append(msg)
-
+    _ta_sim_place_wing(driver, plan, result)
     return result
 
 
@@ -1250,6 +1310,70 @@ def _place_wing_leg(broker, plan: TemplatePlan) -> str:
     return str(order_id)
 
 
+def _ta_live_place_one_gtt(
+    broker,
+    plan: TemplatePlan,
+    spec: GttSpec,
+    idx: int,
+    pair_first_id: Optional[str],
+    pair_two_singles: bool,
+    result: AttachResult,
+) -> Optional[str]:
+    """Translate quantities and call broker.place_gtt for one GTT spec.
+
+    Returns the updated pair_first_id (set on idx==0 for Groww OCO
+    pairs). Errors are appended to *result.errors*; never raised.
+
+    translate_qty + G1 guard: ``_translate_gtt_orders`` calls
+    ``broker.translate_qty`` for every leg — hard-fail on sub-lot error
+    propagates to the except block here, not to the caller.
+    """
+    try:
+        translated_orders = _translate_gtt_orders(broker, spec, plan)
+        gtt_id = broker.place_gtt(
+            trigger_type=spec.trigger_type,
+            tradingsymbol=plan.parent_symbol,
+            exchange=plan.parent_exchange,
+            last_price=plan.parent_fill_price,
+            orders=translated_orders,
+            trigger_values=list(spec.trigger_values),
+            tag=f"tpl-{plan.template_id}-{spec.label}",
+        )
+        spec.placed_id = str(gtt_id)
+        result.gtt_ids.append(spec.placed_id)
+        if pair_two_singles and idx == 0:
+            return spec.placed_id
+        if pair_two_singles and idx == 1 and pair_first_id and spec.placed_id:
+            result.sibling_pairs.append((pair_first_id, spec.placed_id))
+    except NotImplementedError as e:
+        result.errors.append(
+            f"{broker.broker_id} does not yet support GTT: {e}"
+        )
+    except Exception as e:
+        msg = f"live GTT placement failed for {spec.label}: {e}"
+        logger.error(msg)
+        result.errors.append(msg)
+    return pair_first_id
+
+
+def _ta_live_place_wing(
+    broker,
+    plan: TemplatePlan,
+    result: AttachResult,
+) -> None:
+    """Translate qty and call broker.place_order for the wing leg."""
+    if plan.wing is None:
+        return
+    try:
+        order_id = _place_wing_leg(broker, plan)
+        plan.wing.placed_id = order_id
+        result.wing_order_id = plan.wing.placed_id
+    except Exception as e:
+        msg = f"live wing placement failed: {e}"
+        logger.error(msg)
+        result.errors.append(msg)
+
+
 def apply_plan_live(
     plan: TemplatePlan,
     broker,   # KiteBroker (or any Broker adapter with place_gtt)
@@ -1290,53 +1414,12 @@ def apply_plan_live(
     pair_first_id: Optional[str] = None
 
     for idx, spec in enumerate(plan.gtts):
-        try:
-            # MCX/NCO: translate each leg's quantity from contracts to lots
-            # before sending to the broker. plan.parent_lot_size is set in
-            # apply_template_to_order via get_lot_size() so we never need
-            # an async call here. For non-MCX, translate_qty is a no-op
-            # (returns raw_qty unchanged). Hard-fail on translation error
-            # (sub-lot or cache miss on MCX) rather than sending raw qty.
-            translated_orders = _translate_gtt_orders(broker, spec, plan)
-            gtt_id = broker.place_gtt(
-                trigger_type=spec.trigger_type,
-                tradingsymbol=plan.parent_symbol,
-                exchange=plan.parent_exchange,
-                last_price=plan.parent_fill_price,
-                orders=translated_orders,
-                trigger_values=list(spec.trigger_values),
-                # Kite tag cap: 20 chars. Use template_id (compact int)
-                # instead of slug so the tag fits even for long slugs
-                # like "default-short-vol". Labels are 2-5 chars.
-                tag=f"tpl-{plan.template_id}-{spec.label}",
-            )
-            spec.placed_id = str(gtt_id)
-            result.gtt_ids.append(spec.placed_id)
-            if pair_two_singles and idx == 0:
-                pair_first_id = spec.placed_id
-            elif pair_two_singles and idx == 1 and pair_first_id and spec.placed_id:
-                result.sibling_pairs.append((pair_first_id, spec.placed_id))
-        except NotImplementedError as e:
-            result.errors.append(
-                f"{broker.broker_id} does not yet support GTT: {e}"
-            )
-        except Exception as e:
-            msg = f"live GTT placement failed for {spec.label}: {e}"
-            logger.error(msg)
-            result.errors.append(msg)
+        pair_first_id = _ta_live_place_one_gtt(
+            broker, plan, spec, idx, pair_first_id,
+            pair_two_singles, result,
+        )
 
-    if plan.wing is not None:
-        try:
-            # Wing leg: same translate_qty guard. Wing exchange = parent_exchange
-            # (options on the same underlying share the same lot convention).
-            order_id = _place_wing_leg(broker, plan)
-            plan.wing.placed_id = order_id
-            result.wing_order_id = plan.wing.placed_id
-        except Exception as e:
-            msg = f"live wing placement failed: {e}"
-            logger.error(msg)
-            result.errors.append(msg)
-
+    _ta_live_place_wing(broker, plan, result)
     return result
 
 
@@ -1431,6 +1514,32 @@ def has_any_override(overrides: Optional[dict]) -> bool:
     return any(overrides.get(k) is not None for k in keys)
 
 
+def _ta_guard_detect_mismatch(
+    applies_to: str,
+    parent_side_u: str,
+    is_option: bool,
+    parent_symbol: str,
+) -> Optional[str]:
+    """Return a mismatch reason string, or None when the attach is allowed.
+
+    ``applies_to`` must already be lowercased and stripped. Covers the
+    four directional values: ``buy_any``, ``sell_any``, ``buy_option``,
+    ``sell_option``. ``both`` / ``none`` callers never reach this helper.
+    """
+    wants_buy         = applies_to in ("buy_any", "buy_option")
+    wants_sell        = applies_to in ("sell_any", "sell_option")
+    wants_option_only = applies_to in ("buy_option", "sell_option")
+    if wants_buy and parent_side_u != "BUY":
+        return f"side mismatch — template requires BUY parent but got {parent_side_u}"
+    if wants_sell and parent_side_u != "SELL":
+        return f"side mismatch — template requires SELL parent but got {parent_side_u}"
+    if wants_option_only and not is_option:
+        return (
+            f"kind mismatch — template is option-only but {parent_symbol!r} is not an option"
+        )
+    return None
+
+
 def _check_applies_to_guard(
     template:          dict,
     parent_side:       str,
@@ -1455,26 +1564,9 @@ def _check_applies_to_guard(
 
     parent_side_u = (parent_side or "").upper().strip()
     is_option = bool(_OPT_SYM_RE.match((parent_symbol or "").upper()))
-    # buy_any:    BUY anything
-    # sell_any:   SELL anything
-    # buy_option: BUY of CE/PE only
-    # sell_option:SELL of CE/PE only
-    wants_buy          = applies_to in ("buy_any", "buy_option")
-    wants_sell         = applies_to in ("sell_any", "sell_option")
-    wants_option_only  = applies_to in ("buy_option", "sell_option")
-    mismatch_reason: Optional[str] = None
-    if wants_buy and parent_side_u != "BUY":
-        mismatch_reason = (
-            f"side mismatch — template requires BUY parent but got {parent_side_u}"
-        )
-    elif wants_sell and parent_side_u != "SELL":
-        mismatch_reason = (
-            f"side mismatch — template requires SELL parent but got {parent_side_u}"
-        )
-    elif wants_option_only and not is_option:
-        mismatch_reason = (
-            f"kind mismatch — template is option-only but {parent_symbol!r} is not an option"
-        )
+    mismatch_reason = _ta_guard_detect_mismatch(
+        applies_to, parent_side_u, is_option, parent_symbol
+    )
 
     if mismatch_reason:
         slug = template.get("slug", "?")
@@ -1625,6 +1717,39 @@ def _route_apply_path(
     return AttachResult(plan=plan)
 
 
+def _ta_wing_scan_precondition(
+    template: dict,
+    overrides: dict,
+    parent_side: str,
+    parent_symbol: str,
+    parent_fill_price: float,
+) -> Optional[float]:
+    """Return the resolved wing_premium_pct when the premium-scan should run.
+
+    Returns ``None`` when the scan should be skipped — either because the
+    parent is not a SELL option, the fill price is zero, a manual
+    ``wing_strike_offset`` is already set, or no ``wing_premium_pct`` is
+    configured on the template or overrides.
+    """
+    _ov = overrides or {}
+    wing_offset_pre = _ov.get("wing_strike_offset")
+    if wing_offset_pre is None:
+        wing_offset_pre = template.get("wing_strike_offset")
+    wing_pct_pre = _ov.get("wing_premium_pct")
+    if wing_pct_pre is None:
+        wing_pct_pre = template.get("wing_premium_pct")
+
+    if not (
+        parent_side == "SELL"
+        and bool(_OPT_SYM_RE.match(parent_symbol.upper()))
+        and wing_pct_pre is not None
+        and wing_offset_pre is None
+        and parent_fill_price > 0
+    ):
+        return None
+    return float(wing_pct_pre)
+
+
 async def _maybe_scan_wing_by_premium(
     template:          dict,
     overrides:         dict,
@@ -1642,18 +1767,10 @@ async def _maybe_scan_wing_by_premium(
     returned unchanged — the parent order is never blocked by a scan
     error.
     """
-    wing_offset_pre = (overrides.get("wing_strike_offset") if overrides else None)
-    if wing_offset_pre is None:
-        wing_offset_pre = template.get("wing_strike_offset")
-    wing_pct_pre = (overrides.get("wing_premium_pct") if overrides else None)
-    if wing_pct_pre is None:
-        wing_pct_pre = template.get("wing_premium_pct")
-
-    if not (parent_side == "SELL"
-            and bool(_OPT_SYM_RE.match(parent_symbol.upper()))
-            and wing_pct_pre is not None
-            and wing_offset_pre is None
-            and parent_fill_price > 0):
+    wing_pct = _ta_wing_scan_precondition(
+        template, overrides, parent_side, parent_symbol, parent_fill_price
+    )
+    if wing_pct is None:
         return overrides, None
 
     try:
@@ -1661,7 +1778,7 @@ async def _maybe_scan_wing_by_premium(
             parent_symbol=parent_symbol,
             parent_exchange=parent_exchange,
             parent_fill_price=parent_fill_price,
-            wing_premium_pct=float(wing_pct_pre),
+            wing_premium_pct=wing_pct,
         )
     except Exception as e:
         wsym, wltp, reason = None, None, f"wing_premium_pct scan errored: {e}"

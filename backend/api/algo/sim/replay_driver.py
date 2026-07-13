@@ -198,6 +198,87 @@ class SimReplayDriver:
 
     # ── Run loop ─────────────────────────────────────────────────────
 
+    def _replay_write_terminal_log(self) -> None:
+        """Append the replay-complete sentinel entry to SimDriver's tick_log."""
+        from backend.api.algo.sim.driver import SimDriver
+        sim = SimDriver.instance()
+        sim._tick_log.append({
+            "ts":         datetime.now().isoformat(timespec="seconds"),
+            "tick_index": self.cursor,
+            "scenario":   f"REPLAY:{self.recording_label}",
+            "kind":       "replay-complete",
+            "moves":      [],
+            "changes":    [],
+            "note":       f"replay #{self.recording_id} complete",
+        })
+
+    def _replay_place_gtt(self, sim_gtt_book: object, payload: dict) -> None:
+        """Replay a gtt_placed event into *sim_gtt_book*. Errors are logged."""
+        try:
+            sim_gtt_book.place(  # type: ignore[attr-defined]
+                account=payload["account"],
+                tradingsymbol=payload["tradingsymbol"],
+                exchange=payload["exchange"],
+                trigger_type=payload["trigger_type"],
+                trigger_values=list(payload.get("trigger_values") or []),
+                orders=list(payload.get("orders") or []),
+                last_price=float(payload.get("last_price") or 0.0),
+                pair_with=payload.get("pair_with"),
+                template_id=payload.get("template_id"),
+                parent_order_id=payload.get("parent_order_id"),
+                tag=payload.get("tag"),
+            )
+        except Exception as e:
+            logger.warning(f"[REPLAY] gtt_placed replay failed: {e}")
+
+    def _replay_trigger_gtt(self, sim_gtt_book: object, payload: dict) -> None:
+        """Flip a GTT to triggered state in *sim_gtt_book* for a gtt_triggered event.
+
+        Only updates the in-memory status pill; the actual chase order is
+        handled by the chase_placed event, not re-fired here.
+        """
+        gtt_id = payload.get("gtt_id")
+        gtt = sim_gtt_book.get(gtt_id) if gtt_id else None  # type: ignore[attr-defined]
+        if gtt is not None and gtt.is_active():
+            from backend.api.algo.sim.gtt_book import GTT_STATUS_TRIGGERED
+            gtt.status = GTT_STATUS_TRIGGERED
+            gtt.triggered_at = datetime.now()
+            gtt.triggered_leg_index = payload.get("leg_index")
+
+    def _replay_apply_gtt_event(
+        self,
+        sim_gtt_book: object,
+        kind: str,
+        payload: dict,
+    ) -> None:
+        """Dispatch one GTT lifecycle event to the appropriate handler.
+
+        Handles: ``gtt_placed``, ``gtt_cancelled``, ``gtt_triggered``.
+        Other kinds are ignored (tick_log entry already written by _emit_one).
+        """
+        if kind == "gtt_placed":
+            self._replay_place_gtt(sim_gtt_book, payload)
+        elif kind == "gtt_cancelled":
+            gtt_id = payload.get("gtt_id")
+            if gtt_id:
+                sim_gtt_book.cancel(gtt_id, reason=payload.get("reason", "replay"))  # type: ignore[attr-defined]
+        elif kind == "gtt_triggered":
+            self._replay_trigger_gtt(sim_gtt_book, payload)
+
+    async def _replay_advance_tick(self, prev_t: float) -> float:
+        """Sleep the inter-event delay, emit one event, and return the new prev_t.
+
+        Called for each tick in the run loop. Returns the updated prev_t so the
+        caller can pass it to the next iteration without extra state variables.
+        """
+        next_t = float(self.events[self.cursor].get("t") or 0.0)
+        wait = max(0.0, (next_t - prev_t) / self.speed)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        if not self.paused and self.active:
+            await self._emit_one()
+        return next_t
+
     async def _run_loop(self) -> None:
         try:
             prev_t: float = 0.0
@@ -205,27 +286,10 @@ class SimReplayDriver:
                 if self.paused:
                     await asyncio.sleep(0.1)
                     continue
-                next_t = float(self.events[self.cursor].get("t") or 0.0)
-                wait = max(0.0, (next_t - prev_t) / self.speed)
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                if self.paused or not self.active:
-                    continue
-                await self._emit_one()
-                prev_t = next_t
+                prev_t = await self._replay_advance_tick(prev_t)
             # End of recording — auto-stop with a terminal log entry.
             if self.cursor >= self.total_events:
-                from backend.api.algo.sim.driver import SimDriver
-                sim = SimDriver.instance()
-                sim._tick_log.append({
-                    "ts":         datetime.now().isoformat(timespec="seconds"),
-                    "tick_index": self.cursor,
-                    "scenario":   f"REPLAY:{self.recording_label}",
-                    "kind":       "replay-complete",
-                    "moves":      [],
-                    "changes":    [],
-                    "note":       f"replay #{self.recording_id} complete",
-                })
+                self._replay_write_terminal_log()
                 self.active = False
                 logger.info(f"[REPLAY] completed #{self.recording_id}")
         except asyncio.CancelledError:
@@ -262,38 +326,7 @@ class SimReplayDriver:
 
         # Surface-specific projections — replay the GTT book lifecycle
         # so the GTT strip in the UI shows the same arc as the original.
-        if kind == "gtt_placed":
-            try:
-                sim._gtt_book.place(
-                    account=payload["account"],
-                    tradingsymbol=payload["tradingsymbol"],
-                    exchange=payload["exchange"],
-                    trigger_type=payload["trigger_type"],
-                    trigger_values=list(payload.get("trigger_values") or []),
-                    orders=list(payload.get("orders") or []),
-                    last_price=float(payload.get("last_price") or 0.0),
-                    pair_with=payload.get("pair_with"),
-                    template_id=payload.get("template_id"),
-                    parent_order_id=payload.get("parent_order_id"),
-                    tag=payload.get("tag"),
-                )
-            except Exception as e:
-                logger.warning(f"[REPLAY] gtt_placed replay failed: {e}")
-        elif kind == "gtt_cancelled":
-            gtt_id = payload.get("gtt_id")
-            if gtt_id:
-                sim._gtt_book.cancel(gtt_id, reason=payload.get("reason", "replay"))
-        elif kind == "gtt_triggered":
-            # Mark the GTT triggered in the book so its status pill
-            # flips visually. We don't re-fire the chase order here
-            # (that would double up — the chase_placed event handles it).
-            gtt_id = payload.get("gtt_id")
-            gtt = sim._gtt_book.get(gtt_id) if gtt_id else None
-            if gtt is not None and gtt.is_active():
-                from backend.api.algo.sim.gtt_book import GTT_STATUS_TRIGGERED
-                gtt.status = GTT_STATUS_TRIGGERED
-                gtt.triggered_at = datetime.now()
-                gtt.triggered_leg_index = payload.get("leg_index")
+        self._replay_apply_gtt_event(sim._gtt_book, kind, payload)
 
 
 # ── Module-level singleton accessor ─────────────────────────────────

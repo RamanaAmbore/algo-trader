@@ -243,6 +243,64 @@ class SimGttBook:
 
     # ── Per-tick check ──────────────────────────────────────────────
 
+    def _gtt_expire_missing_symbol(
+        self,
+        gtt: SimGtt,
+        known_symbols: set,
+    ) -> None:
+        """Mark *gtt* expired when its tradingsymbol is absent from all
+        LTP map entries (symbol gone — filled/closed elsewhere in the sim)."""
+        if gtt.tradingsymbol not in known_symbols:
+            gtt.status = GTT_STATUS_EXPIRED
+            gtt.cancelled_at = datetime.now(timezone.utc)
+            self._record("gtt_expired", {
+                "gtt_id": gtt.gtt_id, "reason": "symbol_gone",
+            })
+
+    def _gtt_fire_crossed(
+        self,
+        gtt: SimGtt,
+        triggered_idx: int,
+        ltp: float,
+    ) -> None:
+        """Set triggered status on *gtt*, dispatch on_trigger callback,
+        append to fired list (caller handles this), and cancel any OCO
+        sibling. Errors in on_trigger are logged and swallowed so the
+        GTT status update is never rolled back."""
+        gtt.status = GTT_STATUS_TRIGGERED
+        gtt.triggered_at = datetime.now(timezone.utc)
+        gtt.triggered_leg_index = triggered_idx
+        self._record("gtt_triggered", {
+            "gtt_id":              gtt.gtt_id,
+            "leg_index":           triggered_idx,
+            "trigger_value":       gtt.trigger_values[triggered_idx],
+            "crossed_at":          ltp,
+            "matched_order":       gtt.orders[triggered_idx],
+        })
+        logger.info(
+            f"[SIM-GTT] triggered {gtt.gtt_id} leg={triggered_idx} "
+            f"trigger={gtt.trigger_values[triggered_idx]} crossed_at={ltp}"
+        )
+        try:
+            self._on_trigger(gtt, triggered_idx)
+        except Exception as e:
+            logger.error(f"[SIM-GTT] on_trigger dispatch failed for {gtt.gtt_id}: {e}")
+
+        if gtt.pair_with:
+            sibling = self._book.get(gtt.pair_with)
+            if sibling and sibling.is_active():
+                sibling.status = GTT_STATUS_CANCELLED
+                sibling.cancelled_at = datetime.now(timezone.utc)
+                self._record("gtt_cancelled", {
+                    "gtt_id": sibling.gtt_id,
+                    "reason": "oco_sibling_triggered",
+                    "sibling_triggered": gtt.gtt_id,
+                })
+                logger.info(
+                    f"[SIM-GTT] cancelled sibling {sibling.gtt_id} (OCO pair) "
+                    f"after {gtt.gtt_id} fired"
+                )
+
     def check_triggers(self, ltp_by_symbol: dict[tuple[str, str], float]) -> list[SimGtt]:
         """Iterate every active GTT; fire any that crossed.
 
@@ -259,22 +317,13 @@ class SimGttBook:
         cross. Operator can re-fire from the UI if needed.
         """
         fired: list[SimGtt] = []
+        known_symbols = {k[1] for k in ltp_by_symbol}
         for gtt in list(self._book.values()):
             if not gtt.is_active():
                 continue
             ltp = ltp_by_symbol.get((gtt.account, gtt.tradingsymbol))
             if ltp is None:
-                # Symbol gone (filled / closed elsewhere in the sim)
-                # OR not in our scope. Mark the GTT expired so the
-                # book doesn't keep checking a symbol that won't
-                # reappear. This matches Kite's behaviour where a
-                # GTT against a settled symbol auto-expires.
-                if gtt.tradingsymbol not in {k[1] for k in ltp_by_symbol}:
-                    gtt.status = GTT_STATUS_EXPIRED
-                    gtt.cancelled_at = datetime.now(timezone.utc)
-                    self._record("gtt_expired", {
-                        "gtt_id": gtt.gtt_id, "reason": "symbol_gone",
-                    })
+                self._gtt_expire_missing_symbol(gtt, known_symbols)
                 continue
 
             # Walk every trigger; first to cross fires the matching
@@ -295,44 +344,8 @@ class SimGttBook:
             if triggered_idx is None:
                 continue
 
-            # Fire.
-            gtt.status = GTT_STATUS_TRIGGERED
-            gtt.triggered_at = datetime.now(timezone.utc)
-            gtt.triggered_leg_index = triggered_idx
-            self._record("gtt_triggered", {
-                "gtt_id":              gtt.gtt_id,
-                "leg_index":           triggered_idx,
-                "trigger_value":       gtt.trigger_values[triggered_idx],
-                "crossed_at":          ltp,
-                "matched_order":       gtt.orders[triggered_idx],
-            })
-            logger.info(
-                f"[SIM-GTT] triggered {gtt.gtt_id} leg={triggered_idx} "
-                f"trigger={gtt.trigger_values[triggered_idx]} crossed_at={ltp}"
-            )
-            try:
-                self._on_trigger(gtt, triggered_idx)
-            except Exception as e:
-                logger.error(f"[SIM-GTT] on_trigger dispatch failed for {gtt.gtt_id}: {e}")
+            self._gtt_fire_crossed(gtt, triggered_idx, ltp)
             fired.append(gtt)
-
-            # OCO emulation: cancel the sibling on the operator-paired
-            # leg. Two-leg GTTs are atomic at the broker so they don't
-            # need this — only Groww-emulated singles with pair_with set.
-            if gtt.pair_with:
-                sibling = self._book.get(gtt.pair_with)
-                if sibling and sibling.is_active():
-                    sibling.status = GTT_STATUS_CANCELLED
-                    sibling.cancelled_at = datetime.now(timezone.utc)
-                    self._record("gtt_cancelled", {
-                        "gtt_id": sibling.gtt_id,
-                        "reason": "oco_sibling_triggered",
-                        "sibling_triggered": gtt.gtt_id,
-                    })
-                    logger.info(
-                        f"[SIM-GTT] cancelled sibling {sibling.gtt_id} (OCO pair) "
-                        f"after {gtt.gtt_id} fired"
-                    )
 
         return fired
 

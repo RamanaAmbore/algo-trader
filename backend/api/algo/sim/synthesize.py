@@ -52,6 +52,19 @@ def _is_leaf(node: Any) -> bool:
     return isinstance(node, dict) and "metric" in node and "scope" in node
 
 
+def _synth_pick_from_composite(items: list, mode: str) -> Optional[dict]:
+    """Return the loosest (any) or tightest (all) leaf from a composite list.
+
+    ``mode`` must be ``'all'`` (tightest — max abs-value) or ``'any'``
+    (loosest — min abs-value). Returns None when no usable leaf exists.
+    """
+    leaves: list[dict] = [l for l in (pick_target_leaf(c) for c in items) if l]
+    if not leaves:
+        return None
+    key = lambda l: abs(float(l.get("value") or 0))
+    return max(leaves, key=key) if mode == "all" else min(leaves, key=key)
+
+
 def pick_target_leaf(cond: Any) -> Optional[dict]:
     """
     Walk the condition tree and pick the single leaf we'll aim to fire.
@@ -70,20 +83,12 @@ def pick_target_leaf(cond: Any) -> Optional[dict]:
     if _is_leaf(cond):
         return cond
     if "all" in cond:
-        leaves = [pick_target_leaf(c) for c in (cond.get("all") or [])]
-        leaves = [l for l in leaves if l]
-        if not leaves:
-            return None
         # Tightest threshold — the one hardest to trip; if we trip it, the
         # others (looser) come along for the ride.
-        return max(leaves, key=lambda l: abs(float(l.get("value") or 0)))
+        return _synth_pick_from_composite(cond.get("all") or [], "all")
     if "any" in cond:
-        leaves = [pick_target_leaf(c) for c in (cond.get("any") or [])]
-        leaves = [l for l in leaves if l]
-        if not leaves:
-            return None
         # Loosest threshold — only one leaf needs to fire for ANY.
-        return min(leaves, key=lambda l: abs(float(l.get("value") or 0)))
+        return _synth_pick_from_composite(cond.get("any") or [], "any")
     if "not" in cond:
         logger.warning(
             "synthesize: 'not' composite encountered — targeting inner leaf "
