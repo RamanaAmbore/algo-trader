@@ -31,6 +31,23 @@ _SEV_MAP = {
     "LOW": "P3",
 }
 
+_ACCEPT_FILE = Path(__file__).resolve().parent / "depscan_accept.yaml"
+
+
+def _load_accepted_ids() -> set[str]:
+    """Return set of CVE/advisory IDs listed in depscan_accept.yaml."""
+    if not _ACCEPT_FILE.exists():
+        return set()
+    try:
+        import re
+        text = _ACCEPT_FILE.read_text()
+        return set(re.findall(r"^\s+- id:\s*(\S+)", text, re.MULTILINE))
+    except Exception:
+        return set()
+
+
+_ACCEPTED: set[str] = _load_accepted_ids()
+
 
 def _ensure_pip_audit(dry_run: bool) -> bool:
     """Return True if pip-audit is available (installing if needed)."""
@@ -95,6 +112,9 @@ def _run_pip_audit() -> list[TlmFinding]:
             # Try to get severity from vuln dict directly
             sev_raw = vuln.get("severity", sev_raw).upper()
             sev_p = _SEV_MAP.get(sev_raw, "P3")
+            # Skip IDs accepted in depscan_accept.yaml
+            if vid in _ACCEPTED:
+                continue
             findings.append(
                 TlmFinding(
                     item=f"{name}=={version}",
@@ -133,13 +153,63 @@ def _run_npm_audit() -> list[TlmFinding]:
         return []
 
     # npm audit JSON: {"vulnerabilities": {"pkg": {"severity": ..., "via": [...], "fixAvailable": ...}}}
+    import re as _re
+
     vulns = data.get("vulnerabilities", {})
+
+    # Build transitive closure of accepted packages.
+    # Seed: packages whose direct advisory ID is in _ACCEPTED.
+    # Iterate: if all via-string deps of a package are already accepted, accept it too.
+    accepted_pkgs: set[str] = set()
+    for pkg_name, info in vulns.items():
+        via = info.get("via", [])
+        for v in via:
+            if not isinstance(v, dict):
+                continue
+            ids: set[str] = set()
+            if gid := v.get("ghsaId"):
+                ids.add(gid)
+            for m in _re.findall(r"GHSA-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+", v.get("url", "")):
+                ids.add(m)
+            if ids & _ACCEPTED:
+                accepted_pkgs.add(pkg_name)
+                break
+    # Propagate transitively (iterate until stable)
+    prev_size = -1
+    while prev_size != len(accepted_pkgs):
+        prev_size = len(accepted_pkgs)
+        for pkg_name, info in vulns.items():
+            if pkg_name in accepted_pkgs:
+                continue
+            via = info.get("via", [])
+            via_strings = [v for v in via if isinstance(v, str)]
+            if via_strings and all(p in accepted_pkgs for p in via_strings):
+                accepted_pkgs.add(pkg_name)
+
     for pkg_name, info in vulns.items():
         sev_raw = info.get("severity", "LOW").upper()
         sev_p = _SEV_MAP.get(sev_raw, "P3")
         via = info.get("via", [])
-        # 'via' can be strings (indirect) or dicts (direct). Summarise direct ones.
+        # 'via' can be strings (indirect deps) or dicts (direct advisories).
         direct_cves = [v.get("url", v) if isinstance(v, dict) else v for v in via]
+
+        # Collect advisory IDs for direct acceptance check
+        advisory_ids: set[str] = set()
+        for v in via:
+            if not isinstance(v, dict):
+                continue
+            if gid := v.get("ghsaId"):
+                advisory_ids.add(gid)
+            for m in _re.findall(r"GHSA-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+", v.get("url", "")):
+                advisory_ids.add(m)
+
+        # Suppress if direct advisory is accepted OR all indirect via refs are accepted pkgs
+        if advisory_ids & _ACCEPTED:
+            continue
+        via_strings = [v for v in via if isinstance(v, str)]
+        if via_strings and all(p in accepted_pkgs for p in via_strings):
+            continue
+
         cve_str = ", ".join(str(c) for c in direct_cves[:3])
         findings.append(
             TlmFinding(
