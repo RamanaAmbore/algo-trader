@@ -94,14 +94,16 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
  * function (or a wrapper that calls it) instead of reading `p.day_change_val`
  * directly.
  *
- * @param {{ day_change_val?: number|null, overnight_quantity?: number|null, pnl?: number|null }} p
+ * @param {{ day_change_val?: number|null, overnight_quantity?: number|null, quantity?: number|null, qty?: number|null, pnl?: number|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
   const oq  = Number(p?.overnight_quantity ?? 0);
+  const qty = Number(p?.quantity ?? p?.qty ?? 0);
   const pnl = Number(p?.pnl ?? 0);
   const dcv = Number(p?.day_change_val ?? 0);
-  if (oq === 0 && dcv === 0 && pnl !== 0) return pnl;
+  if (oq === 0 && dcv === 0 && pnl !== 0) return pnl;  // Case 1: new intraday position
+  if (qty === 0 && dcv === 0 && pnl !== 0) return pnl;  // Case 2: exited overnight position
   return dcv;
 }
 

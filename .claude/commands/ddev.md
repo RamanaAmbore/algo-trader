@@ -8,6 +8,31 @@ Run backend tests and frontend type check. Push to dev only if both pass. Report
 
 2. **Frontend** — `cd frontend && npx svelte-check --output machine 2>&1` from repo root. Capture error count.
 
+---
+
+## Step 1.5 — Spec-sync gate
+
+After tests complete (pass or fail), check spec coverage. This step runs regardless of test outcome but does NOT block the push.
+
+1. `git diff origin/dev...HEAD --name-only` — collect changed files in commits ahead of origin/dev.
+
+2. Map changed files against spec ownership:
+
+| Changed path pattern | Spec to check |
+|---|---|
+| `frontend/src/lib/data/nav.js` | `docs/specs/NAVSTRIP_SPEC.md` |
+| `frontend/src/lib/data/expiryPnl.js` | `docs/specs/PULSE_SPEC.md` |
+| `frontend/src/routes/(algo)/admin/derivatives/` | `docs/specs/PULSE_SPEC.md` |
+| `backend/api/routes/orders_place.py` or `orders_basket.py` | `docs/specs/BROKER_SPEC.md` |
+| `backend/brokers/` | `docs/specs/BROKER_SPEC.md` |
+
+3. For each matched pair: check whether the corresponding spec file was also modified in this push (`git diff origin/dev...HEAD --name-only | grep SPEC`). If the code file changed but the spec did NOT appear in the diff, emit a warning:
+   ```
+   ddev: ⚠ spec-sync warning — nav.js:baseDayPnlForPosition changed but NAVSTRIP_SPEC.md not updated in this push
+   ```
+
+4. Proceed to the Decision step regardless. Warnings are informational — the operator decides whether to update the spec before or after pushing.
+
 ## Decision
 
 - Any backend failures OR any svelte-check errors → **do NOT push**. Report failures clearly. Stop.

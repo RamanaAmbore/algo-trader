@@ -252,13 +252,27 @@ On real SSE tick arrivals (independent of polls):
 - Gate via `_openTransitionStamp` snapshot: display suppressed while `_pollCycleStamp <= _openTransitionStamp`
 - Prevents yesterday's stale `day_change_val` (from prior session close) from painting briefly
 
-### Overnight position bought today
+### baseDayPnlForPosition cases
 
-Position row has `overnight_quantity = 0` and `pnl ≠ 0`. Broker omitted `day_change_val`:
+The `baseDayPnlForPosition(p)` helper (in `frontend/src/lib/data/nav.js`) handles two edge cases 
+where Kite omits `day_change_val` but the real intraday profit is in the `pnl` field:
 
-- `baseDayPnlForPosition()` detects this and returns `pnl` instead of `day_change_val`
-- Applied consistently across PositionStrip, MarketPulse, and derivatives surfaces
-- Critical fix for new-position P&L correctness
+**Case 1 — new position:** `overnight_quantity=0 && day_change_val=0 && pnl≠0` → returns `pnl`
+
+When an overnight position is not held but a new position is opened today, Kite clears 
+`day_change_val` and the full intraday profit is in `pnl`. Example: open 100 shares at 
+2800, sell at 2850, close position for +5000 P&L; `pnl=5000, day_change_val=0, overnight_qty=0`.
+
+**Case 2 — exited overnight position:** `quantity=0 && day_change_val=0 && pnl≠0` → returns `pnl`
+
+When an overnight position (`overnight_quantity > 0`) is fully exited today, Kite clears 
+`day_change_val` but the realized P&L is in `pnl`. Example: hold 100 shares from yesterday 
+(avg 2800), sell all 100 today at 2850, realize +5000; `pnl=5000, day_change_val=0, quantity=0`. 
+The `quantity` field (broker raw row) or `qty` field (normalized candidate) is used to detect 
+the exit. Both row shapes are handled via `p?.quantity ?? p?.qty`.
+
+Applied consistently across PositionStrip, MarketPulse, and derivatives surfaces.
+Critical fix for new-position and exited-position P&L correctness.
 
 ### Auth outage or broker connection loss
 

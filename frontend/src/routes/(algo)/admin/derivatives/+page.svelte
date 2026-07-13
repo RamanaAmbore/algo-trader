@@ -1876,12 +1876,25 @@
    *  source the cascade is bounded by the _throttledTick gate. */
   const _legsExpPnlTotal = $derived.by(() => {
     const spot = liveSpot ?? null;
-    return displayedCandidates
-      .filter(c => _isLegEnabled(c))
+    // F&O open legs: intrinsic at expiry (options) or (spot − cost)×qty (futures).
+    const fnoOpen = displayedCandidates
+      .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
       .reduce((/** @type {number} */ s, c) => {
         const v = _expiryPnl(c, spot);
         return v == null ? s : s + v;
       }, 0);
+    // F&O closed legs: realized P&L is locked in regardless of spot.
+    // Same component that `chartPnlOffset` adds to the backend curve so stat
+    // overlay and tooltip stay in sync when legs have been exited today.
+    const fnoClosed = displayedCandidates
+      .filter(c => _isLegEnabled(c) && c.kind !== 'eq' && Number(c.qty || 0) === 0)
+      .reduce((/** @type {number} */ s, c) => s + Number(c.realised || 0), 0);
+    // Equity legs: same linear formula as `_mergedPayoff` — handles exited equity
+    // (opening_qty fallback) and beta-adjusted proxy legs. Empty when !_includeHoldings.
+    const eqTotal = spot != null
+      ? _equityLinearLegs.reduce((s, l) => s + (spot - l.cost) * l.qty, 0)
+      : 0;
+    return fnoOpen + fnoClosed + eqTotal;
   });
 
   // Master "select all" plumbing for the Legs panel header checkbox.
