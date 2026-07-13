@@ -13,6 +13,7 @@
   import { getContext, onMount, onDestroy } from 'svelte';
   import { executionMode, openActivityModal, orderTicketModal, closeOrderTicketModal, openChartModal } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   // Symbol-resolver imports retired — operators pick tradeable
@@ -241,7 +242,21 @@
     accounts={_orderPrefill?.accounts ?? _accountsList}
     account={_orderPrefill?.account || _effectiveAccount}
     onClose={() => { _orderOpen = false; _orderPrefill = null; }}
-    onSubmit={() => { setTimeout(() => { _orderOpen = false; _orderPrefill = null; }, 1500); }}
+    onSubmit={(payload) => {
+      const resp = payload?.broker_response;
+      const err  = payload?.error;
+      if (resp && !err) {
+        // Close immediately — operator gets confirmation via the persistent toast.
+        _orderOpen = false;
+        _orderPrefill = null;
+        const orderId = resp.order_id ? ` #${resp.order_id}` : '';
+        toast.success(`Order${orderId} placed`, { timeoutMs: 5000 });
+      } else if (err) {
+        // Keep modal open so operator can retry; sticky error toast.
+        const msg = String(err).slice(0, 60);
+        toast.error(msg || 'Order failed');
+      }
+    }}
   />
 {/if}
 
