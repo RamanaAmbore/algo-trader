@@ -1814,84 +1814,57 @@
   }
 }
 
-/* In FULLSCREEN mode, a card displays ONLY two buttons —
-   RefreshButton (left) and DefaultSizeButton (right) — clustered at
-   the viewport's top-right corner. The other two card controls
-   (FullscreenButton + CollapseButton) are hidden:
+/* In FULLSCREEN mode the card controls (Refresh, Search, Download,
+   DefaultSize) stay inside their CardHeader / bucket-header bar and
+   remain visible via sticky positioning. CollapseButton is hidden
+   because collapsing a fullscreen card is not meaningful — the
+   DefaultSizeButton already exits fullscreen.
 
-     - FullscreenButton hides itself via {#if !isFullscreen}.
-     - CollapseButton is hidden via the rule below — the operator
-       can't collapse a fullscreen card meaningfully, so the affordance
-       is removed entirely.
+   Header stickiness:
+     .card-header and .bucket-header (both direct children of the
+     scrolling .fs-card-on container) are pinned to the top of the
+     scroll viewport so the control cluster never scrolls out of view.
+     z-index: 1 keeps the sticky header above grid rows that would
+     otherwise bleed under it during scroll.
 
-   Position pinning right-to-left:
-     [Default]  rightmost      → right: base
-     [Refresh]  one slot left  → right: base + (width + gap)
+   CollapseButton:
+     - Hidden unconditionally; the operator can't collapse a card
+       that already fills the viewport. FullscreenButton hides itself
+       via {#if !isFullscreen} — no CSS needed for that one.
 
-   width = 1.4rem, gap = 0.3rem ⇒ step = 1.7rem. */
+   The previous approach (position: fixed on individual buttons) was
+   removed because it required hard-coded top/right offsets that
+   differed across cards with different padding values (.bucket-card
+   canonical 0.55rem, dashboard override 0.65rem, mp-bucket-wrap
+   0rem, orders 0.35rem). The sticky header approach is SSOT and
+   padding-agnostic. */
 .fs-card-on .collapse-btn { display: none !important; }
-.fs-card-on .default-btn {
-  position: fixed !important;
-  top: calc(2rem + 0.55rem) !important;
-  right: calc(2rem + 0.65rem) !important;
-  z-index: 10000 !important;
-}
-.fs-card-on .rf-btn {
-  position: fixed !important;
-  top: calc(2rem + 0.55rem) !important;
-  right: calc(2rem + 0.65rem + 1.7rem * 3) !important;
-  z-index: 10000 !important;
-}
-@media (max-width: 600px) {
-  .fs-card-on .default-btn {
-    top: calc(0.5rem + 0.5rem) !important;
-    right: calc(0.5rem + 0.55rem) !important;
-  }
-  .fs-card-on .rf-btn {
-    top: calc(0.5rem + 0.5rem) !important;
-    right: calc(0.5rem + 0.55rem + 1.7rem * 3) !important;
-  }
-}
 
-/* GridSearchButton — slot 1 (one step left of Default). Cluster reads
-   right-to-left as [Default | Search | Download | Refresh]. The expanded
-   input floats inline to the LEFT of the button at the same fixed top. */
-.fs-card-on .grid-search-btn {
-  position: fixed !important;
-  top: calc(2rem + 0.55rem) !important;
-  right: calc(2rem + 0.65rem + 1.7rem * 1) !important;
-  z-index: 10000 !important;
+/* Sticky header — keeps controls visible when card body scrolls.
+   Background inherits the card's elevated surface so scrolling
+   content doesn't bleed through the transparent header bar.
+
+   Header classes that carry a CardControls bar:
+     .card-header      — CardHeader component (most algo cards)
+     .bucket-header    — hand-rolled bucket headers (dashboard Nav/Cap/Eq,
+                         derivatives Snapshot)
+     .legs-header-row  — derivatives Legs card header row
+
+   The derivatives Payoff card (.opt-section-h-grid) has its own
+   fullscreen background set in the page-scoped rule, so it is made
+   sticky separately without a background override. */
+.fs-card-on .card-header,
+.fs-card-on .bucket-header,
+.fs-card-on .legs-header-row {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 1 !important;
+  background: var(--card-bg-elevated) !important;
 }
-.fs-card-on .grid-search-input {
-  position: fixed !important;
-  top: calc(2rem + 0.55rem) !important;
-  right: calc(2rem + 0.65rem + 1.7rem * 1 + 1.4rem + 0.3rem) !important;
-  z-index: 10000 !important;
-  margin: 0 !important;
-}
-/* GridDownloadButton — slot 2, between Search and Refresh. Cluster reads
-   left-to-right as [Refresh | Download | Search | Default]. */
-.fs-card-on .grid-download-btn {
-  position: fixed !important;
-  top: calc(2rem + 0.55rem) !important;
-  right: calc(2rem + 0.65rem + 1.7rem * 2) !important;
-  z-index: 10000 !important;
-  margin: 0 !important;
-}
-@media (max-width: 600px) {
-  .fs-card-on .grid-search-btn {
-    top: calc(0.5rem + 0.5rem) !important;
-    right: calc(0.5rem + 0.55rem + 1.7rem * 1) !important;
-  }
-  .fs-card-on .grid-search-input {
-    top: calc(0.5rem + 0.5rem) !important;
-    right: calc(0.5rem + 0.55rem + 1.7rem * 1 + 1.4rem + 0.3rem) !important;
-    width: 6rem !important;
-  }
-  .fs-card-on .grid-download-btn {
-    top: calc(0.5rem + 0.5rem) !important;
-    right: calc(0.5rem + 0.55rem + 1.7rem * 2) !important;
-  }
+.fs-card-on .opt-section-h-grid {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 1 !important;
 }
 
 /* PageHeaderActions (.pha-wrap) open modals — they don't need
