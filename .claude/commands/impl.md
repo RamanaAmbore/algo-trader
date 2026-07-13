@@ -131,10 +131,21 @@ After committing, identify which documentation surfaces are affected and update 
    - The spec/guide file content
    - Instruction: update ONLY the sections that describe the changed behaviour; do not remove or falsify existing content
 
-4. If the doc agent makes changes, commit them:
+4. **DESIGN_GUIDE check** — read `docs/DESIGN_GUIDE.md` and assess whether the commit affects any of its documented surfaces:
+   - New or changed routes, API contracts, data models, or background tasks → update architecture section
+   - New shared helpers / SSOT functions added → update component/data-flow diagrams or descriptions
+   - Broker-layer changes, new config knobs, new capabilities → update relevant DESIGN_GUIDE section
+
+   If DESIGN_GUIDE.md needs updating: dispatch a `doc` subagent to edit only the affected sections (do NOT rewrite unaffected sections or alter diagrams unless the diagram is wrong). Then regenerate the PDF:
+   ```
+   python3 docs/generate_pdf.py
+   ```
+   Verify the command exits 0 and report the PDF file size. If it fails, fix DESIGN_GUIDE.md and retry before proceeding.
+
+5. If any doc agent made changes, commit them together in one commit:
    ```
    git add docs/
-   git commit -m "docs: sync specs after $(git log -1 --format='%s' HEAD~1)"
+   git commit -m "docs: sync specs/DESIGN_GUIDE after $(git log -1 --format='%s' HEAD~1)"
    ```
    Skip if no docs were changed.
 
