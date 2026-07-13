@@ -109,6 +109,37 @@ git commit -m "<message from plan>\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply
 
 ---
 
+## Step 5.5 — Spec/doc sync
+
+After committing, identify which documentation surfaces are affected and update them.
+
+1. Run `git diff --name-only HEAD~1..HEAD` to identify changed files.
+
+2. Map changed files to spec/guide ownership:
+
+| Changed path pattern | Spec/Guide to update |
+|---|---|
+| `frontend/src/lib/data/nav.js` | `docs/specs/NAVSTRIP_SPEC.md` |
+| `frontend/src/lib/data/expiryPnl.js` | `docs/specs/PULSE_SPEC.md` |
+| `frontend/src/routes/(algo)/admin/derivatives/` | `docs/specs/PULSE_SPEC.md` |
+| `backend/api/routes/` or `backend/api/background.py` | `docs/specs/BROKER_SPEC.md` or `docs/specs/PULSE_SPEC.md` |
+| `backend/brokers/` | `docs/specs/BROKER_SPEC.md` |
+| Any operator-visible behaviour change | `docs/guides/USER_GUIDE.md` |
+
+3. For each affected spec/guide, dispatch a `doc` subagent with:
+   - Output of `git show HEAD -- <changed_file>` (the diff)
+   - The spec/guide file content
+   - Instruction: update ONLY the sections that describe the changed behaviour; do not remove or falsify existing content
+
+4. If the doc agent makes changes, commit them:
+   ```
+   git add docs/
+   git commit -m "docs: sync specs after $(git log -1 --format='%s' HEAD~1)"
+   ```
+   Skip if no docs were changed.
+
+---
+
 ## Step 6 — Archive plan
 
 Rename `.claude/PLAN.md` → `.claude/PLAN.done.md` (keeps a record; overwrite if one exists).

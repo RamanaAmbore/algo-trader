@@ -63,7 +63,7 @@ the broker.
 **What you'll see**:
 - Positions grid, holdings grid, nav cards — all show the last live market-hours snapshot
 - Charts and sparklines — historical data persists (no live quotes, but the past week is there)
-- P&L breakdown pills (P / M / C / H) — frozen snapshot values. The **P pill** (day P&L) uses the same MCX stale-price rescue as the derivatives legs grid, so NavStrip and the Greeks total match during the MCX overnight window.
+- P&L breakdown pills (P / M / C / H) — frozen snapshot values. The **P pill** (day P&L) uses the same MCX stale-price rescue as the derivatives legs grid, so NavStrip and the Greeks total match during the MCX overnight window. For any position held overnight and then fully exited during the session, the realized P&L now appears correctly in the P pill (and propagates to the per-leg Day P&L column in the derivatives legs grid and the Performance page TOTAL row).
 - Live price LTP field — empty or last-known price (no updates)
 - Refresh button — clicking it says "Both NSE and MCX are currently closed" + still fetches
   the snapshot from DB (fast, no broker round-trip)
@@ -324,7 +324,7 @@ When at least one indicator is selected, a **Signals** chip appears in the chart
 `/admin/derivatives` is the dedicated options-research page. Pick an underlying (NIFTY / BANKNIFTY / …) and the page surfaces every option + future you hold on it as **Candidates**. Tick / untick rows to include / exclude legs from the payoff — the chart re-renders on every toggle.
 
 - **Payoff diagram** — your aggregated P&L as a function of where the underlying ends up. Two curves: today's value (Black-Scholes with current IV) and expiry value (intrinsic only). Profit zone shaded green, loss zone red. Vertical markers show current spot, every strike, every breakeven (iron condors draw 2!). A dashed amber line marks the net strategy cost (negative = debit paid, positive = credit received) so you can see your break-even reference at a glance. The chart loads immediately after login — no blank flash while spot price fetches; if you have no F&O positions it shows a flat y=0 line. The page auto-selects the underlying of your first open position rather than always defaulting to NIFTY.
-- **Stat overlay (top-left of chart)** — at-a-glance numerics: **SPOT** (current spot), **TDAY** (today's P&L at spot), **EXP** (expiry P&L at spot), **MAX P** (max profit), **MAX L** (max loss). Color-coded green/red so you can read position health without looking at the side panel.
+- **Stat overlay (top-left of chart)** — at-a-glance numerics: **SPOT** (current spot), **TDAY** (today's P&L at spot), **EXP** (expiry P&L at spot), **MAX P** (max profit), **MAX L** (max loss). Color-coded green/red so you can read position health without looking at the side panel. The **EXP** stat now consistently matches the payoff chart's expiry curve and the legs grid TOTAL row, even when equity holdings have been sold today, F&O legs have been closed, or proxy hedges are present.
 - **Side panel** — Position Greeks (Δ Γ Θ V ρ) summed across all checked legs, plus risk metrics (max profit, max loss, R:R, breakevens, POP, expected value).
 - **Candidates panel** below — checkboxes for every position. Source badge tells you whether each row is live, sim, or draft.
 

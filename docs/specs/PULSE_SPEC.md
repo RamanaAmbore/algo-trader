@@ -27,14 +27,15 @@ and data sources. Code, tests, and documentation must stay in sync with this fil
 14. [Column Definitions](#14-column-definitions)
 15. [Row Grouping (postSortGroups)](#15-row-grouping-postsortrgroups)
 16. [LTP Tick Flash](#16-ltp-tick-flash)
-17. [Sparklines](#17-sparklines)
-18. [Symbol Context Menu](#18-symbol-context-menu)
-19. [Watchlist Management](#19-watchlist-management)
-20. [Account Multi-Select](#20-account-multi-select)
-21. [Persistent Cache Layer](#21-persistent-cache-layer)
-22. [Closed-Hours Snapshot Behavior](#22-closed-hours-snapshot-behavior)
-23. [CardControls Cluster](#23-cardcontrols-cluster)
-24. [Known Defects](#24-known-defects)
+17. [Derivatives P&L Formula (EXP)](#17-derivatives-pl-formula-exp)
+18. [Sparklines](#18-sparklines)
+19. [Symbol Context Menu](#19-symbol-context-menu)
+20. [Watchlist Management](#20-watchlist-management)
+21. [Account Multi-Select](#21-account-multi-select)
+22. [Persistent Cache Layer](#22-persistent-cache-layer)
+23. [Closed-Hours Snapshot Behavior](#23-closed-hours-snapshot-behavior)
+24. [CardControls Cluster](#24-cardcontrols-cluster)
+25. [Known Defects](#25-known-defects)
 
 ---
 
@@ -581,7 +582,51 @@ base classes (RA + dirCls + mp-pnl-cell)
 
 ---
 
-## 17. Sparklines
+## 17. Derivatives P&L Formula (EXP)
+
+The expected (EXP) P&L stat appears in two surfaces: the **Legs grid TOTAL row** (on 
+`/admin/derivatives` page) and the **payoff overlay stat** (when viewing payoff chart). 
+Both must stay in sync via a canonical formula.
+
+**`_legsExpPnlTotal` contract**:
+
+```
+_legsExpPnlTotal = 
+  Σ[F&O open legs](intrinsic_at_spot via expiryPnl())
+  + Σ[F&O closed legs](realised P&L, locked in)
+  + Σ[equity legs](linear profit via _equityLinearLegs)
+```
+
+**Three-component breakdown**:
+
+1. **F&O open legs** — remaining contracts still open at expiry. Intrinsic P&L via 
+   `expiryPnl(row, spot)` at current spot price. Example: long 2 CE 2850, spot at 
+   2875 → `2 × (2875 − 2850) = +50` (2-point intrinsic).
+
+2. **F&O closed legs** — contracts exited today (quantity=0). Realized P&L is locked 
+   in `row.pnl` regardless of spot movement. Example: sold 2 CE 2850 for +100 P&L; 
+   contributes +100 to total.
+
+3. **Equity legs** — stocks in the strategy. Linear profit via 
+   `(spot − cost_basis) × qty`. Handles exited equity via `opening_qty` fallback 
+   (when qty=0 but opening_qty > 0). Proxy legs included via beta-adjusted quantity 
+   (e.g. 0.8× hedging qty).
+
+**Payoff chart sync**:
+
+The payoff overlay's stat is computed as:
+```
+expiry_value_at_spot + chartPnlOffset = _legsExpPnlTotal
+```
+
+where `expiry_value_at_spot` is the live P&L curve from the merged payoff 
+(combined intrinsic + extrinsic across all legs) and `chartPnlOffset` is any 
+operational adjustments (spreads, closed legs). At `liveSpot`, this sum must 
+equal `_legsExpPnlTotal` for the overlay stat and TOTAL row to be consistent.
+
+---
+
+## 18. Sparklines
 
 5-day sparkline column (present on all six grids) shows intraday price curve as a tiny SVG. 
 Missing data falls back to flat line or blank.
@@ -622,7 +667,7 @@ No gap in sparkline rendering when the connection recovers.
 
 ---
 
-## 18. Symbol Context Menu
+## 19. Symbol Context Menu
 
 Right-click on any grid row (symbol cell or data cell) opens a contextual menu anchored to the 
 click coordinates. Keyboard-dismissible (Esc key) and auto-closes on click-outside.
@@ -647,7 +692,7 @@ click coordinates. Keyboard-dismissible (Esc key) and auto-closes on click-outsi
 
 ---
 
-## 19. Watchlist Management
+## 20. Watchlist Management
 
 Watchlists are operator-created collections of symbols (indices, stocks, commodities, 
 options chains). Each list appears as a separate tab in the left panel. The Pinned list 
@@ -687,7 +732,7 @@ Zero-LTP items rendered with sparkline baseline.
 
 ---
 
-## 20. Account Multi-Select
+## 21. Account Multi-Select
 
 Per-card independent account filters — operator can scope Positions to one account 
 (e.g. ZG####, intraday-only) while Holdings shows a different account (e.g. ZJ####, 
@@ -716,7 +761,7 @@ long-term holds).
 
 ---
 
-## 21. Persistent Cache Layer
+## 22. Persistent Cache Layer
 
 `persistentCache.js` three-tier in-memory + localStorage + fetcher pattern. 
 Survives page reload + deploy; critical for instant paint after hot deploy.
@@ -752,7 +797,7 @@ on first grid mount; latency is visible but not blocking.
 
 ---
 
-## 22. Closed-Hours Snapshot Behavior
+## 23. Closed-Hours Snapshot Behavior
 
 When the market is closed, all grid data sources switch to `daily_book` snapshots 
 from the last market session. The `closed_hours_or_broker()` gate centralizes this decision.
@@ -790,7 +835,7 @@ from the last market session. The `closed_hours_or_broker()` gate centralizes th
 
 ---
 
-## 23. CardControls Cluster
+## 24. CardControls Cluster
 
 Unified toolbar appearing on every grid (Pinned, Positions, Holdings, Movers, etc.). 
 Buttons stack horizontally or wrap on mobile.
@@ -831,7 +876,7 @@ Buttons stack horizontally or wrap on mobile.
 
 ---
 
-## 24. Known Defects
+## 25. Known Defects
 
 See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1–D4 fixed in `b6e52b2a`).
 
