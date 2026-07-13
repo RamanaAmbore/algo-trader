@@ -284,6 +284,41 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     )
 
 
+def _hold_tag_open_row(r, _msc) -> object:
+    """Tag a single holding row when its exchange is open."""
+    live_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+    price, source, animating = resolve_current_price(exchange_open=True, live_ltp=live_ltp)
+    return _msc.structs.replace(
+        r, price_source=source,
+        current_price=price if price is not None else live_ltp,
+        is_animating=animating,
+    )
+
+
+def _hold_tag_closed_row(r, snap_ltp, _msc) -> object:
+    """Tag a single holding row when its exchange is closed."""
+    broker_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+    has_snapshot = snap_ltp is not None and snap_ltp > 0
+    price, source, animating = resolve_current_price(
+        exchange_open=False,
+        live_ltp=broker_ltp,
+        snapshot_close=(float(snap_ltp) if has_snapshot else None),
+        snapshot_last_ltp=broker_ltp,
+        settled=has_snapshot,
+    )
+    replace_kwargs: dict = {
+        "price_source": source,
+        "current_price": price if price is not None else broker_ltp,
+        "is_animating": animating,
+    }
+    # On settled path — overlay last_price + recompute cur_val.
+    if has_snapshot and price is not None:
+        qty = int(getattr(r, "quantity", 0) or getattr(r, "opening_quantity", 0))
+        replace_kwargs["last_price"] = float(price)
+        replace_kwargs["cur_val"] = float(price) * qty
+    return _msc.structs.replace(r, **replace_kwargs)
+
+
 async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
     """Per-exchange close-snapshot overlay for holdings rows under the
     unified animation model (Jul 2026 refactor). Delegates the per-row
@@ -294,12 +329,6 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
     (unlike positions where broker owns pnl). When the snapshot LTP
     wins, we recompute cur_val to match — otherwise the frontend TOTAL
     row rolls up stale broker cur_val against fresh snapshot LTP.
-
-    Holdings are eq-only (NSE/BSE) so the closed-exchange gate almost
-    always resolves to "NSE closed" during 15:30-23:30 IST. MCX holdings
-    don't exist (delivery is by contract expiry). Kept generic so a
-    future BSE-only session (or a corporate-action holiday split) still
-    tags rows correctly.
     """
     if not rows:
         return rows
@@ -312,63 +341,19 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
 
     import msgspec as _msc
 
-    # Fast path — every exchange currently open. Resolver call per row.
+    # Fast path — every exchange currently open.
     if not any(_closed(getattr(r, "exchange", "")) for r in rows):
-        out: list = []
-        for r in rows:
-            live_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
-            price, source, animating = resolve_current_price(
-                exchange_open=True, live_ltp=live_ltp,
-            )
-            out.append(_msc.structs.replace(
-                r, price_source=source,
-                current_price=price if price is not None else live_ltp,
-                is_animating=animating,
-            ))
-        return out
+        return [_hold_tag_open_row(r, _msc) for r in rows]
 
     snap_map = await latest_snapshot_ltp_map("holdings")
     out = []
     for r in rows:
         exch = getattr(r, "exchange", "")
-        broker_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
         if not _closed(exch):
-            price, source, animating = resolve_current_price(
-                exchange_open=True, live_ltp=broker_ltp,
-            )
-            out.append(_msc.structs.replace(
-                r, price_source=source,
-                current_price=price if price is not None else broker_ltp,
-                is_animating=animating,
-            ))
-            continue
-
-        key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
-        snap_ltp = snap_map.get(key)
-        has_snapshot = snap_ltp is not None and snap_ltp > 0
-
-        price, source, animating = resolve_current_price(
-            exchange_open=False,
-            live_ltp=broker_ltp,
-            snapshot_close=(float(snap_ltp) if has_snapshot else None),
-            snapshot_last_ltp=broker_ltp,
-            settled=has_snapshot,
-        )
-        replace_kwargs: dict = {
-            "price_source": source,
-            "current_price": price if price is not None else broker_ltp,
-            "is_animating": animating,
-        }
-        # On settled path — overlay last_price + recompute cur_val.
-        # close_price must remain the broker-supplied previous-session close;
-        # overwriting it with the snapshot LTP causes day_pnl = (ltp - ltp) × qty = 0.
-        if has_snapshot and price is not None:
-            qty = int(
-                getattr(r, "quantity", 0) or getattr(r, "opening_quantity", 0)
-            )
-            replace_kwargs["last_price"] = float(price)
-            replace_kwargs["cur_val"] = float(price) * qty
-        out.append(_msc.structs.replace(r, **replace_kwargs))
+            out.append(_hold_tag_open_row(r, _msc))
+        else:
+            key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
+            out.append(_hold_tag_closed_row(r, snap_map.get(key), _msc))
     return out
 
 
@@ -459,6 +444,23 @@ def _apply_stale_since_map(
     ]
 
 
+def _build_holding_rows(df_rows, stale_since_by_acct: dict) -> list:
+    """Convert a polars row-select DataFrame to HoldingRow list with stale threading."""
+    rows = [
+        HoldingRow(**{k: (v if v is not None else 0) for k, v in r.items()})
+        for r in df_rows.to_dicts()
+    ]
+    return _apply_stale_since_map(rows, stale_since_by_acct)
+
+
+def _build_summary_rows(summary_df) -> list:
+    """Convert a polars summary DataFrame to HoldingsSummaryRow list."""
+    return [
+        HoldingsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
+        for r in summary_df.to_dicts()
+    ]
+
+
 def _fetch() -> HoldingsResponse:
     per_acct = broker_apis.fetch_holdings()
     # Outage detection: fetch_failed flag set on every frame. Empty per_acct
@@ -477,23 +479,25 @@ def _fetch() -> HoldingsResponse:
     df_rows = df.select(row_cols)
     summary_df = _compute_summary_df(df)
 
-    rows = [
-        HoldingRow(**{k: (v if v is not None else 0) for k, v in r.items()})
-        for r in df_rows.to_dicts()
-    ]
-    rows = _apply_stale_since_map(rows, stale_since_by_acct)
-    summary = [
-        HoldingsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
-        for r in summary_df.to_dicts()
-    ]
-    # Response-level stale_accounts — see PositionsResponse.stale_accounts
-    # (breaker-open account rows served from LKG cache).
+    rows = _build_holding_rows(df_rows, stale_since_by_acct)
+    summary = _build_summary_rows(summary_df)
     stale_accts = sorted({r.account for r in rows if r.account_stale})
     return HoldingsResponse(
         rows=rows,
         summary=summary,
         refreshed_at=timestamp_display(),
         stale_accounts=stale_accts,
+    )
+
+
+def _hold_mask_account_in_resp(resp: "HoldingsResponse", _msc) -> "HoldingsResponse":
+    """Replace raw account codes with masked versions (copy-not-mutate)."""
+    def _mask_row(row):
+        return _msc.structs.replace(row, account=mask_account(row.account))
+    return _msc.structs.replace(
+        resp,
+        rows=[_mask_row(r) for r in resp.rows],
+        summary=[_mask_row(s) for s in resp.summary],
     )
 
 
@@ -526,13 +530,7 @@ async def _scope_and_mask_holdings(
                      or str(getattr(s, "account", "")).upper() == "TOTAL"],
         )
     if not is_admin_request(request):
-        def _mask_row(row: "HoldingRow") -> "HoldingRow":
-            return _msc.structs.replace(row, account=mask_account(row.account))
-        resp = _msc.structs.replace(
-            resp,
-            rows=[_mask_row(r) for r in resp.rows],
-            summary=[_mask_row(s) for s in resp.summary],
-        )
+        resp = _hold_mask_account_in_resp(resp, _msc)
     return resp
 
 

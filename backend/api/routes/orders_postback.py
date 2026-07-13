@@ -35,6 +35,41 @@ _BROKER_STATUS_MAP = {
     "EXPIRED":   "UNFILLED",
 }
 
+# Audit category mapping — pre-fix EXPIRED + unknown statuses fell
+# through to "order.fill" which mislabelled them in /admin/audit.
+_STATUS_AUDIT_CATEGORY: dict[str, str] = {
+    "COMPLETE":  "order.fill",
+    "CANCELLED": "order.cancel",
+    "REJECTED":  "order.reject",
+    "EXPIRED":   "order.expired",
+}
+
+
+def _pb_audit_category(status: str) -> str:
+    """Map a broker status string to its audit log category."""
+    return _STATUS_AUDIT_CATEGORY.get(str(status or "").upper(), "order")
+
+
+def _sync_apply_row_status(
+    _r, *, new_status: str, price, broker_id: str, status: str, status_message: str,
+) -> bool:
+    """Update a single AlgoOrder row in-place; return True if the row transitioned to FILLED."""
+    if not new_status or _r.status == new_status:
+        return False
+    _r.status = new_status
+    if new_status == "FILLED":
+        try:
+            _r.fill_price = float(price) if price else _r.fill_price
+        except (TypeError, ValueError):
+            pass
+        _r.filled_at = datetime.now(timezone.utc)
+    _r.detail = (
+        (_r.detail or "")[:200]
+        + f" · {broker_id} postback {status}"
+        + (f": {status_message}" if status_message else "")
+    )
+    return new_status == "FILLED"
+
 
 async def _sync_algo_order_rows(
     *,
@@ -65,20 +100,11 @@ async def _sync_algo_order_rows(
             _sql_select(_AO).where(_AO.broker_order_id == str(order_id))
         )).scalars().all()
         for _r in _rows:
-            if _new_status and _r.status != _new_status:
-                _r.status = _new_status
-                if _new_status == "FILLED":
-                    try:
-                        _r.fill_price = float(price) if price else _r.fill_price
-                    except (TypeError, ValueError):
-                        pass
-                    _r.filled_at = datetime.now(timezone.utc)
-                    _filled_rows.append(_r)
-                _r.detail = (
-                    (_r.detail or "")[:200]
-                    + f" · {broker_id} postback {status}"
-                    + (f": {status_message}" if status_message else "")
-                )
+            if _sync_apply_row_status(
+                _r, new_status=_new_status, price=price,
+                broker_id=broker_id, status=status, status_message=status_message,
+            ):
+                _filled_rows.append(_r)
         await _s.commit()
         for _r in _rows:
             try:
@@ -151,18 +177,8 @@ async def _process_broker_postback(
     # Audit trail
     try:
         from backend.api.audit import write_audit_event
-        # Audit category mapping. Pre-fix EXPIRED + unknown statuses
-        # fell through to "order.fill" which mislabelled them in
-        # /admin/audit's Orders pill. EXPIRED gets its own category;
-        # truly-unknown statuses bucket to "order" (the generic).
-        # (Slice P3.)
-        _cat = ("order.fill"    if status == "COMPLETE"
-                else "order.cancel"  if status == "CANCELLED"
-                else "order.reject"  if status == "REJECTED"
-                else "order.expired" if status == "EXPIRED"
-                else "order")
         write_audit_event(
-            category=_cat,
+            category=_pb_audit_category(status),
             action=f"BROKER_{status}",
             actor_username=broker_id,
             actor_role="system",
@@ -263,30 +279,38 @@ def _pb_apply_status_to_row(_r, *, new_status: str | None, price) -> bool:
     return True
 
 
+def _pb_ledger_fill_args(_r) -> dict:
+    """Extract record_fill kwargs from a filled AlgoOrder row."""
+    return {
+        "strategy_id": _r.strategy_id,
+        "algo_order_id": _r.id,
+        "account": str(_r.account) if _r.account else "",
+        "symbol": str(_r.symbol) if _r.symbol else "",
+        "exchange": str(_r.exchange) if _r.exchange else "NFO",
+        "side_kite": str(_r.transaction_type) if _r.transaction_type else "BUY",
+        "qty": int(_r.quantity) if _r.quantity else 0,
+        "fill_price": float(_r.fill_price) if _r.fill_price else 0.0,
+    }
+
+
+async def _pb_ledger_fill_row(_s, _r, record_fn) -> None:
+    """Record a single FIFO ledger fill for one filled row; skip if guard fails."""
+    if not (_r.strategy_id and _r.fill_price and _r.quantity > 0):
+        return
+    try:
+        await record_fn(_s, **_pb_ledger_fill_args(_r))
+    except Exception as _le:
+        logger.warning(
+            f"postback lot_ledger write failed for "
+            f"order_id={_r.id} strategy={_r.strategy_id}: {_le}"
+        )
+
+
 async def _pb_write_ledger_fills(_s, filled_rows: list) -> None:
     """Record FIFO ledger entries for every FILLED row with a strategy."""
     from backend.api.algo.lot_ledger import record_fill as _record_ledger_fill
-
     for _r in filled_rows:
-        if not (_r.strategy_id and _r.fill_price and _r.quantity > 0):
-            continue
-        try:
-            await _record_ledger_fill(
-                _s,
-                strategy_id=_r.strategy_id,
-                algo_order_id=_r.id,
-                account=str(_r.account or ""),
-                symbol=str(_r.symbol or ""),
-                exchange=str(_r.exchange or "NFO"),
-                side_kite=str(_r.transaction_type or "BUY"),
-                qty=int(_r.quantity or 0),
-                fill_price=float(_r.fill_price or 0),
-            )
-        except Exception as _le:
-            logger.warning(
-                f"postback lot_ledger write failed for "
-                f"order_id={_r.id} strategy={_r.strategy_id}: {_le}"
-            )
+        await _pb_ledger_fill_row(_s, _r, _record_ledger_fill)
 
 
 async def _pb_write_timeline_events(
@@ -450,6 +474,49 @@ async def _pb_event_kite(
         logger.debug(f"postback event write failed: {_pe}")
 
 
+def _pb_ordered_candidates(account: str, kite_candidates: list[str]) -> list[str]:
+    """Return candidates list with the asserted account promoted to front."""
+    if account and account in kite_candidates:
+        return [account] + [a for a in kite_candidates if a != account]
+    return list(kite_candidates)
+
+
+def _pb_verify_via_conn_svc(
+    order_id: str, order_timestamp: str, checksum: str, account: str,
+) -> bool:
+    """Signature verification path when RAMBOQ_USE_CONN_SERVICE=1."""
+    from backend.brokers.client.remote_broker import list_remote_accounts, verify_postback
+    kite_candidates = [
+        r["account"] for r in list_remote_accounts()
+        if r.get("broker_id") in ("zerodha_kite", "kite")
+    ]
+    for acct in _pb_ordered_candidates(account, kite_candidates):
+        if verify_postback(acct, order_id=order_id,
+                           order_timestamp=order_timestamp, checksum=checksum):
+            return True
+    return False
+
+
+def _pb_verify_direct(
+    order_id: str, order_timestamp: str, checksum: str, account: str,
+) -> bool:
+    """Signature verification path for direct-Connections (no conn_service)."""
+    import hashlib
+    import hmac as _hmac
+    from backend.brokers.connections import Connections, KiteConnection
+    conns = Connections()
+    kite_candidates: list[str] = [
+        a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
+    ]
+    for acct in _pb_ordered_candidates(account, kite_candidates):
+        api_secret = conns.conn[acct].api_secret
+        msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
+        expected = hashlib.sha256(msg).hexdigest()
+        if _hmac.compare_digest(expected, str(checksum)):
+            return True
+    return False
+
+
 async def _pb_verify_signature(
     order_id: str,
     order_timestamp: str,
@@ -464,53 +531,14 @@ async def _pb_verify_signature(
     candidate account produces a matching signature, ``False``
     otherwise. Never raises.
     """
-    import hashlib
-    import hmac
     import os as _os
-
     _use_conn_svc = _os.environ.get(
         "RAMBOQ_USE_CONN_SERVICE", "",
     ).strip().lower() in ("1", "true", "yes", "on")
 
     if _use_conn_svc:
-        from backend.brokers.client.remote_broker import (
-            list_remote_accounts, verify_postback,
-        )
-        kite_candidates = [
-            r["account"] for r in list_remote_accounts()
-            if r.get("broker_id") in ("zerodha_kite", "kite")
-        ]
-        candidates = (
-            [account] + [a for a in kite_candidates if a != account]
-            if account and account in kite_candidates
-            else kite_candidates
-        )
-        for acct in candidates:
-            if verify_postback(
-                acct,
-                order_id=order_id,
-                order_timestamp=order_timestamp,
-                checksum=checksum,
-            ):
-                return True
-        return False
-    else:
-        from backend.brokers.connections import Connections, KiteConnection
-        conns = Connections()
-        kite_candidates: list[str] = [
-            a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
-        ]
-        if account and account in kite_candidates:
-            candidates: list[str] = [account] + [a for a in kite_candidates if a != account]
-        else:
-            candidates = kite_candidates
-        for acct in candidates:
-            api_secret = conns.conn[acct].api_secret
-            msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
-            expected = hashlib.sha256(msg).hexdigest()
-            if hmac.compare_digest(expected, str(checksum)):
-                return True
-        return False
+        return _pb_verify_via_conn_svc(order_id, order_timestamp, checksum, account)
+    return _pb_verify_direct(order_id, order_timestamp, checksum, account)
 
 
 def _pb_write_audit(
