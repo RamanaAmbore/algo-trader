@@ -1319,8 +1319,8 @@
     {#if isDemo && !_demoBannerDismissed}
       <div class="demo-banner" role="status">
         <span class="demo-banner-text">
-          <strong>Rambo Terminal — live production</strong> · real broker data · accounts masked · paper-only writes.
-          <a href="/showcase" class="demo-banner-link">About</a>
+          <strong>Demo mode</strong> — live market data with masked accounts · paper-only writes · no real orders
+          <a href="/showcase" class="demo-banner-link">Tour</a>
         </span>
         <button onclick={_dismissDemoBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
       </div>
@@ -2603,7 +2603,8 @@
     justify-content: space-between;
     gap: 0.75rem;
     padding: 0 0.75rem;
-    background: rgba(168,85,247,0.15);
+    background: #1e0a3c;
+    backdrop-filter: none;
     border-bottom: 1px solid rgba(168,85,247,0.35);
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
