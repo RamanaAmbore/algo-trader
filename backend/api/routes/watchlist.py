@@ -509,6 +509,59 @@ async def _get_movers_now_off_hours() -> tuple[list["MoverRow"], str]:
         return [], "snapshot_deserialise_failed"
 
 
+def _mcx_pick_nearest_fut(
+    fut_candidates: dict[str, list[tuple[str, str]]],
+    opt_roots: set[str],
+) -> dict[str, str]:
+    """From a pre-built ``{root: [(expiry, sym), ...]}`` dict, return the
+    mapping ``{root: nearest_expiry_sym}`` restricted to roots that have an
+    active option chain (i.e. are in ``opt_roots``)."""
+    underlying_to_fut: dict[str, str] = {}
+    for root, candidates in fut_candidates.items():
+        if root in opt_roots:
+            candidates.sort(key=lambda t: t[0] or "")
+            underlying_to_fut[root] = candidates[0][1]
+    return underlying_to_fut
+
+
+def _mcx_classify_inst(
+    inst,
+    is_mcx_underlying,
+    opt_roots: set,
+    fut_candidates: dict,
+) -> None:
+    """Classify a single instrument row into ``opt_roots`` or ``fut_candidates``.
+    Mutates both dicts in-place; skips non-MCX and unknown-underlying rows."""
+    if getattr(inst, "e", None) != "MCX":
+        return
+    underlying = (getattr(inst, "u", None) or "").upper()
+    if not underlying or not is_mcx_underlying(underlying):
+        return
+    inst_type = getattr(inst, "t", None)
+    if inst_type in ("CE", "PE"):
+        opt_roots.add(underlying)
+    elif inst_type == "FUT":
+        sym = getattr(inst, "s", None) or ""
+        if sym:
+            expiry = getattr(inst, "x", None) or ""
+            fut_candidates.setdefault(underlying, []).append((expiry, sym))
+
+
+def _mcx_scan_instruments(
+    all_items: list,
+) -> tuple[set[str], dict[str, list[tuple[str, str]]]]:
+    """Single-pass collector: build ``(opt_roots, fut_candidates)`` for all
+    MCX instruments. ``opt_roots`` = roots with a CE/PE chain. ``fut_candidates``
+    = ``{root: [(expiry, sym), ...]}``. Delegates per-instrument branching to
+    ``_mcx_classify_inst``."""
+    from backend.api.algo.derivatives import is_mcx_underlying
+    opt_roots: set[str] = set()
+    fut_candidates: dict[str, list[tuple[str, str]]] = {}
+    for inst in all_items:
+        _mcx_classify_inst(inst, is_mcx_underlying, opt_roots, fut_candidates)
+    return opt_roots, fut_candidates
+
+
 def _build_mcx_universe(
     all_items: list,
 ) -> tuple[set[str], dict[str, str]]:
@@ -525,40 +578,9 @@ def _build_mcx_universe(
     underlying root. This is what Kite wants in the quote key, e.g.
     'MCX:GOLD26JUNFUT'.  When no FUT row exists for a root (cache cold) the
     root is absent from this dict and skipped at quote-key construction time.
-
-    Both structures are built in ONE pass over all_items so no N async
-    look-ups are needed at request time.
     """
-    from backend.api.algo.derivatives import is_mcx_underlying
-
-    # Collect CE/PE roots and FUT rows in one pass.
-    opt_roots: set[str] = set()
-    # fut_candidates[root] = list of (expiry_str, tradingsymbol)
-    fut_candidates: dict[str, list[tuple[str, str]]] = {}
-
-    for inst in all_items:
-        exch = getattr(inst, "e", None)
-        if exch != "MCX":
-            continue
-        underlying = (getattr(inst, "u", None) or "").upper()
-        if not underlying or not is_mcx_underlying(underlying):
-            continue
-        inst_type = getattr(inst, "t", None)
-        if inst_type in ("CE", "PE"):
-            opt_roots.add(underlying)
-        elif inst_type == "FUT":
-            expiry = getattr(inst, "x", None) or ""
-            sym = getattr(inst, "s", None) or ""
-            if sym:
-                fut_candidates.setdefault(underlying, []).append((expiry, sym))
-
-    # Pick earliest-expiry FUT per underlying (near-month = most liquid).
-    underlying_to_fut: dict[str, str] = {}
-    for root, candidates in fut_candidates.items():
-        if root in opt_roots:  # only include roots that actually have options
-            candidates.sort(key=lambda t: t[0] or "")
-            underlying_to_fut[root] = candidates[0][1]
-
+    opt_roots, fut_candidates = _mcx_scan_instruments(all_items)
+    underlying_to_fut = _mcx_pick_nearest_fut(fut_candidates, opt_roots)
     return opt_roots, underlying_to_fut
 
 
@@ -600,6 +622,43 @@ async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
     return fallback[-1] if fallback else None
 
 
+async def _resolve_one_exchange_root(
+    sym_upper: str,
+    root: str,
+    is_next: bool,
+    exch: str,
+) -> Optional[tuple[str, str]]:
+    """Resolve a single virtual root for one exchange (MCX or CDS).
+    Returns ``(broker_key, quote_sym)`` or ``None``."""
+    from backend.api.algo.symbol_resolver import resolve_symbol
+    if is_next:
+        resolved = await resolve_symbol(sym_upper, exch)
+        if resolved and resolved != sym_upper:
+            return f"{exch}:{resolved}", resolved
+    else:
+        resolver = _resolve_mcx_commodity if exch == "MCX" else _resolve_cds_currency
+        resolved = await resolver(root)
+        if resolved:
+            return f"{exch}:{resolved}", resolved
+    return None
+
+
+async def _resolve_virtual_root_key(
+    sym_upper: str,
+    root: str,
+    is_next: bool,
+    exch: str,
+) -> Optional[tuple[str, str]]:
+    """Try to resolve a bare MCX or CDS virtual root (or its _NEXT variant)
+    to a concrete contract broker key. Returns ``(broker_key, quote_sym)``
+    on success or ``None`` when no resolution is available."""
+    if exch == "MCX":
+        return await _resolve_one_exchange_root(sym_upper, root, is_next, "MCX")
+    if exch == "CDS":
+        return await _resolve_one_exchange_root(sym_upper, root, is_next, "CDS")
+    return None
+
+
 async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
     """Returns (broker_key, quote_symbol). MCX bare commodity names get
     resolved to the near-month future; everything else passes through.
@@ -608,7 +667,7 @@ async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
     contain an underscore and fail the isalpha() guard.  The _NEXT suffix is
     stripped for the alpha check; the full symbol (with suffix) is passed to
     resolve_symbol which maps it to the back-month contract."""
-    from backend.api.algo.symbol_resolver import resolve_symbol, _strip_next
+    from backend.api.algo.symbol_resolver import _strip_next
     sym, exch = item.tradingsymbol, item.exchange
     sym_upper = sym.upper()
 
@@ -616,27 +675,32 @@ async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
     root, is_next = _strip_next(sym_upper)
     is_bare_root = root.isalpha() and len(root) <= 12
 
-    # MCX commodity names (bare root or _NEXT back-month variant).
-    if exch == "MCX" and is_bare_root:
-        if is_next:
-            resolved = await resolve_symbol(sym_upper, "MCX")
-            if resolved and resolved != sym_upper:
-                return f"MCX:{resolved}", resolved
-        else:
-            resolved = await _resolve_mcx_commodity(root)
-            if resolved:
-                return f"MCX:{resolved}", resolved
-    # CDS currency pair names (bare root or _NEXT back-month variant).
-    if exch == "CDS" and is_bare_root:
-        if is_next:
-            resolved = await resolve_symbol(sym_upper, "CDS")
-            if resolved and resolved != sym_upper:
-                return f"CDS:{resolved}", resolved
-        else:
-            resolved = await _resolve_cds_currency(root)
-            if resolved:
-                return f"CDS:{resolved}", resolved
+    if is_bare_root and exch in ("MCX", "CDS"):
+        result = await _resolve_virtual_root_key(sym_upper, root, is_next, exch)
+        if result is not None:
+            return result
     return f"{exch}:{sym}", sym
+
+
+def _eod_rows_to_map(
+    rows: list,
+    want: set,
+) -> dict[tuple[str, str], dict]:
+    """Convert raw SQL rows from ohlcv_daily into a ``{(sym, exch): {...}}``
+    dict, filtering to only the ``(sym, exch)`` pairs in ``want``."""
+    out: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (str(r[0]), str(r[1]))
+        if key not in want:
+            continue
+        out[key] = {
+            "open":   float(r[2]) if r[2] is not None else None,
+            "high":   float(r[3]) if r[3] is not None else None,
+            "low":    float(r[4]) if r[4] is not None else None,
+            "close":  float(r[5]) if r[5] is not None else None,
+            "volume": int(r[6])   if r[6] is not None else 0,
+        }
+    return out
 
 
 async def _eod_fallback_map(
@@ -678,18 +742,7 @@ async def _eod_fallback_map(
     except Exception as exc:
         logger.warning(f"watchlist EOD fallback query failed: {exc}")
         return {}
-    out: dict[tuple[str, str], dict] = {}
-    for r in rows:
-        if (str(r[0]), str(r[1])) not in want:
-            continue
-        out[(str(r[0]), str(r[1]))] = {
-            "open":   float(r[2]) if r[2] is not None else None,
-            "high":   float(r[3]) if r[3] is not None else None,
-            "low":    float(r[4]) if r[4] is not None else None,
-            "close":  float(r[5]) if r[5] is not None else None,
-            "volume": int(r[6])   if r[6] is not None else 0,
-        }
-    return out
+    return _eod_rows_to_map(rows, want)
 
 
 async def _build_watchlist_key_map(
@@ -767,6 +820,35 @@ def _apply_watchlist_eod_substitution(
     return ltp, close
 
 
+def _watchlist_quote_ohlc(
+    ohlc: dict,
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Unpack open/high/low from an OHLC dict, returning ``None`` for missing
+    or zero values so the frontend knows to leave the cell blank."""
+    open_ = float(ohlc["open"]) if ohlc.get("open") else None
+    high  = float(ohlc["high"]) if ohlc.get("high") else None
+    low   = float(ohlc["low"])  if ohlc.get("low")  else None
+    return open_, high, low
+
+
+def _resolve_watchlist_quote_prices(
+    quote_sym: str,
+    it_exchange: str,
+    q: dict,
+    eod_map: dict,
+) -> tuple[float, Optional[float], dict, Optional[float], Optional[float], bool]:
+    """Parse broker quote and apply EOD fallback when the broker returned
+    nothing. Returns ``(ltp, close, ohlc, bid, ask, is_stale)``."""
+    ltp   = float(q.get("last_price") or 0.0)
+    ohlc  = q.get("ohlc") or {}
+    close = float(ohlc.get("close") or 0.0) or None
+    bid, ask = _extract_depth_bid_ask(q.get("depth") or {})
+    is_stale = not q or not ltp
+    eod = eod_map.get((quote_sym.upper().strip(), it_exchange.upper().strip())) if is_stale else None
+    ltp, close = _apply_watchlist_eod_substitution(ltp, close, ohlc, eod)
+    return ltp, close, ohlc, bid, ask, is_stale
+
+
 def _build_watchlist_quote_row(
     it: WatchlistItem,
     broker_key: str,
@@ -777,20 +859,12 @@ def _build_watchlist_quote_row(
     """Per-item WatchlistQuote build. Mirrors the row-shape used by the
     frontend grid; EOD data substitutes for a cold-mount / broker miss."""
     q = quote_data.get(broker_key) or {}
-    ltp    = float(q.get("last_price") or 0.0)
-    ohlc   = q.get("ohlc") or {}
-    close  = float(ohlc.get("close") or 0.0) or None
-    bid, ask = _extract_depth_bid_ask(q.get("depth") or {})
-    # EOD substitution — only kicks in when broker gave us nothing.
-    # We set ltp = last close (so the grid paints a number) AND
-    # leave the stale flag TRUE so the frontend can subtly mark
-    # the row as "showing EOD, not live". The next live tick from
-    # SSE / next poll overwrites everything.
-    is_stale = not q or not ltp
-    eod = eod_map.get((quote_sym.upper().strip(), it.exchange.upper().strip())) if is_stale else None
-    ltp, close = _apply_watchlist_eod_substitution(ltp, close, ohlc, eod)
+    ltp, close, ohlc, bid, ask, is_stale = _resolve_watchlist_quote_prices(
+        quote_sym, it.exchange, q, eod_map,
+    )
     change = (ltp - close) if (close and ltp) else 0.0
     chg_pct = (change / close * 100.0) if close else 0.0
+    open_, high, low = _watchlist_quote_ohlc(ohlc)
     return WatchlistQuote(
         item_id=it.id,
         tradingsymbol=it.tradingsymbol,
@@ -798,9 +872,7 @@ def _build_watchlist_quote_row(
         exchange=it.exchange,
         ltp=ltp,
         bid=bid, ask=ask,
-        open=(float(ohlc.get("open"))  if ohlc.get("open")  else None),
-        high=(float(ohlc.get("high"))  if ohlc.get("high")  else None),
-        low =(float(ohlc.get("low"))   if ohlc.get("low")   else None),
+        open=open_, high=high, low=low,
         close=close,
         change=change, change_pct=chg_pct,
         volume=int(q.get("volume") or 0),
@@ -990,6 +1062,22 @@ async def _sgp_wave4_usdinr_bare_root(session, global_row) -> None:
     logger.info("Watchlist: one-shot cleanup wave 4 (USDINR bare root) done")
 
 
+def _sgp_w5_push_extras(
+    all_items: list,
+    canonical_sort: dict,
+    extra_base: int,
+) -> None:
+    """Step A of wave 5: assign sort_orders above ``extra_base`` to any
+    item that is NOT in the canonical list and whose current sort_order is
+    below the canonical ceiling. Mutates items in-place."""
+    extra_seq = extra_base
+    for it in sorted(all_items, key=lambda r: r.sort_order):
+        key = (it.tradingsymbol.upper(), it.exchange.upper())
+        if key not in canonical_sort and it.sort_order < extra_base:
+            it.sort_order = extra_seq
+            extra_seq += 10
+
+
 async def _sgp_wave5_next_adjacency(session, global_row, now: datetime) -> None:
     """Wave 5: enforce canonical sort_order for MARKETS_DEFAULT rows and
     insert missing _NEXT back-month variants adjacent to their roots.
@@ -1015,12 +1103,7 @@ async def _sgp_wave5_next_adjacency(session, global_row, now: datetime) -> None:
 
     # Step A: push operator extras above the canonical range.
     extra_base = canonical_max + 100
-    extra_seq = extra_base
-    for it in sorted(all_items, key=lambda r: r.sort_order):
-        key = (it.tradingsymbol.upper(), it.exchange.upper())
-        if key not in canonical_sort and it.sort_order < extra_base:
-            it.sort_order = extra_seq
-            extra_seq += 10
+    _sgp_w5_push_extras(all_items, canonical_sort, extra_base)
 
     # Step B: stamp canonical sort_orders on existing canonical rows.
     for it in all_items:
@@ -1295,6 +1378,18 @@ async def _movers_offhours_response(ist_today: str) -> "MoversResponse":
     )
 
 
+def _build_nse_universe(all_items: list, is_mcx_underlying) -> set[str]:
+    """Collect NSE equity underlying names that have an active CE/PE chain.
+    Returns a set of bare root symbols (e.g. ``{'NIFTY', 'RELIANCE', ...}``)."""
+    result: set[str] = set()
+    for inst in all_items:
+        if inst.t in ("CE", "PE") and inst.u:
+            name = inst.u.upper()
+            if not is_mcx_underlying(name):
+                result.add(name)
+    return result
+
+
 async def _movers_rebuild_universes_if_needed(ist_today: str) -> None:
     """Once-per-IST-day rebuild of NSE + MCX universe caches. Mutates
     module-level `_underlyings_cache`, `_mcx_underlyings_cache`, and
@@ -1321,12 +1416,7 @@ async def _movers_rebuild_universes_if_needed(ist_today: str) -> None:
         all_items = []
 
     # NSE eq universe.
-    new_nse_set: set[str] = set()
-    for inst in all_items:
-        if inst.t in ("CE", "PE") and inst.u:
-            name = inst.u.upper()
-            if not is_mcx_underlying(name):
-                new_nse_set.add(name)
+    new_nse_set = _build_nse_universe(all_items, is_mcx_underlying)
     if new_nse_set:
         _underlyings_cache = new_nse_set
         _underlyings_cache_date = ist_today
@@ -1401,6 +1491,71 @@ async def _movers_fetch_quotes_cached(
     )
 
 
+def _movers_parse_broker_quote(
+    kite_key: str,
+    exchange: str,
+    q: dict,
+) -> tuple[float, float, Optional[str]]:
+    """Extract ``(broker_ltp, prev_close, row_quote_symbol)`` from a raw
+    Kite quote dict.
+
+    ``row_quote_symbol`` is the resolved contract name for MCX rows (e.g.
+    ``CRUDEOIL26JUNFUT``) so the frontend can key SSE lookups correctly.
+    NSE rows return ``None`` — the bare underlying IS the SSE key."""
+    broker_ltp = float(q.get("last_price") or 0.0)
+    ohlc = q.get("ohlc") or {}
+    prev_close = float(ohlc.get("close") or 0.0)
+    row_quote_symbol: Optional[str] = None
+    if exchange == "MCX" and kite_key.startswith("MCX:"):
+        row_quote_symbol = kite_key[4:]
+    return broker_ltp, prev_close, row_quote_symbol
+
+
+def _movers_update_session_entry(
+    underlying: str,
+    change_pct: float,
+    price: float,
+    prev_close: float,
+    exchange: str,
+    source: str,
+    animating: bool,
+    row_quote_symbol: Optional[str],
+) -> None:
+    """Upsert the module-level ``_session_movers`` dict for *underlying*.
+
+    If the underlying is already tracked, refreshes its last_price /
+    price_source / is_animating and promotes peak_pct when the current
+    move is larger. If it's new AND crosses the threshold, seeds a fresh
+    entry. No-op when neither condition holds."""
+    from datetime import datetime, timezone as _tz
+    global _session_movers
+    if underlying in _session_movers:
+        entry = _session_movers[underlying]
+        entry["last_pct"] = change_pct
+        entry["last_price"] = price
+        entry["current_price"] = price
+        entry["previous_close"] = prev_close
+        entry["price_source"] = source
+        entry["is_animating"] = animating
+        if row_quote_symbol:
+            entry["quote_symbol"] = row_quote_symbol
+        if abs(change_pct) > abs(entry["peak_pct"]):
+            entry["peak_pct"] = change_pct
+    elif abs(change_pct) >= MOVER_THRESHOLD_PCT:
+        _session_movers[underlying] = {
+            "first_seen_at": datetime.now(_tz.utc).isoformat(),
+            "peak_pct": change_pct,
+            "last_pct": change_pct,
+            "last_price": price,
+            "current_price": price,
+            "previous_close": prev_close,
+            "exchange": exchange,
+            "price_source": source,
+            "is_animating": animating,
+            "quote_symbol": row_quote_symbol,
+        }
+
+
 def _movers_process_symbol(
     kite_key: str,
     meta: dict,
@@ -1414,7 +1569,6 @@ def _movers_process_symbol(
     live snapshot, or `None` when no usable price was resolved. Mutates
     the module-level `_session_movers` dict (last_price / price_source /
     is_animating updates) as a side-effect."""
-    from datetime import datetime, timezone
     from backend.api.helpers.price_resolver import resolve_current_price
 
     global _session_movers
@@ -1423,17 +1577,9 @@ def _movers_process_symbol(
     exchange = meta["exchange"]
     exch_is_open = (nse_is_open if exchange == "NSE" else mcx_is_open)
     q = quote_data.get(kite_key) or {}
-    broker_ltp = float(q.get("last_price") or 0.0)
-    ohlc = q.get("ohlc") or {}
-    prev_close = float(ohlc.get("close") or 0.0)
-    # MCX kite_key is "MCX:{fut_sym}". Extract the resolved contract
-    # name so the frontend can key _liveLtpSnap lookups against the
-    # same symbol the SSE ticker uses (CRUDEOIL26JUNFUT, not CRUDEOIL).
-    # NSE kite_key has no prefix — leave quote_symbol None so
-    # tradingsymbol is used as the SSE lookup key unchanged.
-    row_quote_symbol: Optional[str] = None
-    if exchange == "MCX" and kite_key.startswith("MCX:"):
-        row_quote_symbol = kite_key[4:]  # strip "MCX:" prefix
+    broker_ltp, prev_close, row_quote_symbol = _movers_parse_broker_quote(
+        kite_key, exchange, q
+    )
 
     # Resolver dispatch — kept even for the open-exchange branch
     # so tests can verify a single code path for the triad.
@@ -1464,36 +1610,13 @@ def _movers_process_symbol(
         "exchange": exchange,
         "price_source": source,
         "is_animating": animating,
-        # Carry the resolved contract symbol so _combine_movers +
-        # MoverRow construction can propagate it to the frontend.
         "quote_symbol": row_quote_symbol,
     }
 
-    if underlying in _session_movers:
-        entry = _session_movers[underlying]
-        entry["last_pct"] = change_pct
-        entry["last_price"] = price
-        entry["current_price"] = price
-        entry["previous_close"] = prev_close
-        entry["price_source"] = source
-        entry["is_animating"] = animating
-        if row_quote_symbol:
-            entry["quote_symbol"] = row_quote_symbol
-        if abs(change_pct) > abs(entry["peak_pct"]):
-            entry["peak_pct"] = change_pct
-    elif abs(change_pct) >= MOVER_THRESHOLD_PCT:
-        _session_movers[underlying] = {
-            "first_seen_at": datetime.now(timezone.utc).isoformat(),
-            "peak_pct": change_pct,
-            "last_pct": change_pct,
-            "last_price": price,
-            "current_price": price,
-            "previous_close": prev_close,
-            "exchange": exchange,
-            "price_source": source,
-            "is_animating": animating,
-            "quote_symbol": row_quote_symbol,
-        }
+    _movers_update_session_entry(
+        underlying, change_pct, price, prev_close,
+        exchange, source, animating, row_quote_symbol,
+    )
     return underlying, live_entry
 
 
@@ -1523,6 +1646,178 @@ def _movers_build_rows(combined: dict[str, dict]) -> list["MoverRow"]:
         ))
     rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
     return rows
+
+
+def _movers_build_live_rows(
+    key_to_meta: dict,
+    quote_data: dict,
+    nse_is_open: bool,
+    mcx_is_open: bool,
+    ist_today: str,
+) -> tuple[list["MoverRow"], dict]:
+    """Build the unified live snapshot dict, combine with session_movers,
+    assemble sorted MoverRows, and persist NSE rows to the snapshot store.
+
+    Returns ``(rows, live_snapshot)`` so the caller can log empty-reason
+    diagnostics with the live_snapshot size."""
+    import asyncio
+    global _session_movers
+
+    live_snapshot: dict[str, dict] = {}
+    for kite_key, meta in key_to_meta.items():
+        result = _movers_process_symbol(
+            kite_key, meta, quote_data, nse_is_open, mcx_is_open,
+        )
+        if result is not None:
+            underlying, live_entry = result
+            live_snapshot[underlying] = live_entry
+
+    combined: dict[str, dict] = _combine_movers(
+        live_snapshot, _session_movers, MOVER_TOP_N,
+    )
+    rows = _movers_build_rows(combined)
+
+    # Persist NSE-only rows. MCX rows are excluded so the NSE 15:29
+    # close snapshot is never overwritten by evening MCX data.
+    nse_rows = [r for r in rows if r.exchange == "NSE"]
+    if nse_rows:
+        asyncio.create_task(_save_movers_snapshot(nse_rows, ist_today))
+
+    return rows, live_snapshot
+
+
+async def _add_item_authorize_and_insert(
+    wl_id: int,
+    tradingsymbol: str,
+    exchange: str,
+    alias: Optional[str],
+    sort_order_hint: Optional[int],
+    username: str,
+    request,
+) -> "WatchlistItem":
+    """Fetch + authorize the watchlist, run cap + dedupe checks, then
+    INSERT the new item and commit. Returns the persisted ``WatchlistItem``."""
+    async with async_session() as session:
+        user_id = await _resolve_user_id(session, username)
+        wl_row = await session.execute(
+            select(Watchlist).where(
+                Watchlist.id == wl_id,
+                ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
+            )
+        )
+        wl = wl_row.scalar_one_or_none()
+        if not wl:
+            raise HTTPException(status_code=404, detail="Watchlist not found")
+        if wl.is_global and not _is_designated_role(request):
+            raise HTTPException(
+                status_code=403,
+                detail="Pinned watchlist can only be edited by designated partners",
+            )
+        count_r = await session.execute(
+            select(func.count(WatchlistItem.id))
+            .where(WatchlistItem.watchlist_id == wl_id)
+        )
+        if int(count_r.scalar() or 0) >= _MAX_ITEMS_PER_LIST:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Watchlist cap reached ({_MAX_ITEMS_PER_LIST} items)",
+            )
+        dup_r = await session.execute(
+            select(WatchlistItem.id).where(
+                WatchlistItem.watchlist_id == wl_id,
+                WatchlistItem.tradingsymbol == tradingsymbol,
+                WatchlistItem.exchange      == exchange,
+            )
+        )
+        if dup_r.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{exchange}:{tradingsymbol} already in this watchlist",
+            )
+        max_sort_r = await session.execute(
+            select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
+            .where(WatchlistItem.watchlist_id == wl_id)
+        )
+        sort_val = (sort_order_hint if sort_order_hint is not None
+                    else int(max_sort_r.scalar() or -1) + 1)
+        now = datetime.now(timezone.utc)
+        it = WatchlistItem(
+            watchlist_id=wl_id,
+            tradingsymbol=tradingsymbol, exchange=exchange,
+            alias=alias,
+            sort_order=sort_val, added_at=now,
+        )
+        session.add(it)
+        wl.updated_at = now
+        await session.commit()
+    return it
+
+
+async def _add_item_ticker_subscribe(tradingsymbol: str, exchange: str) -> None:
+    """Push the newly added symbol to the KiteTicker for live ticks.
+    Non-fatal: ticker subscription failure never blocks the add response."""
+    try:
+        from backend.api.routes.quote import _resolve_token_for_sym
+        from backend.brokers.kite_ticker import get_ticker
+        tok = await _resolve_token_for_sym(tradingsymbol, exchange)
+        if tok is not None:
+            get_ticker().subscribe_with_sym([(tok, tradingsymbol)])
+            logger.debug(
+                f"Watchlist: subscribed ticker token={tok} for "
+                f"{exchange}:{tradingsymbol}"
+            )
+    except Exception as _te:
+        logger.debug(
+            f"Watchlist: ticker subscribe skipped for "
+            f"{exchange}:{tradingsymbol}: {_te}"
+        )
+
+
+def _apply_reorder_fields(
+    it: "WatchlistItem",
+    data: "ReorderItemRequest",
+) -> None:
+    """Apply sort_order and alias updates from a PATCH item request to
+    ``it`` in-place. Empty alias string clears the alias."""
+    if data.sort_order is not None:
+        it.sort_order = int(data.sort_order)
+    if data.alias is not None:
+        a = data.alias.strip()
+        if a and len(a) > 64:
+            raise HTTPException(status_code=422, detail="Alias too long")
+        it.alias = a or None
+
+
+async def _apply_rename_fields(
+    session,
+    wl: "Watchlist",
+    wl_id: int,
+    user_id: int,
+    data: "RenameWatchlistRequest",
+) -> None:
+    """Apply the mutable fields from a PATCH watchlist request to ``wl``
+    in-place. Validates name length; enforces single-default invariant via
+    a bulk UPDATE when ``is_default=True`` is requested."""
+    if data.name is not None:
+        name = (data.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name required")
+        if len(name) > 64:
+            raise HTTPException(status_code=422, detail="Name too long")
+        wl.name = name
+    if data.sort_order is not None:
+        wl.sort_order = int(data.sort_order)
+    if data.is_default is not None:
+        if data.is_default:
+            from sqlalchemy import update
+            await session.execute(
+                update(Watchlist)
+                .where(Watchlist.user_id == user_id, Watchlist.id != wl_id)
+                .values(is_default=False)
+            )
+        wl.is_default = bool(data.is_default)
+    if data.is_pinned is not None:
+        wl.is_pinned = bool(data.is_pinned)
 
 
 # ---------------------------------------------------------------------------
@@ -1682,31 +1977,7 @@ class WatchlistController(Controller):
                     status_code=403,
                     detail="Pinned watchlist can only be edited by designated partners",
                 )
-            if data.name is not None:
-                name = (data.name or "").strip()
-                if not name:
-                    raise HTTPException(status_code=422, detail="Name required")
-                if len(name) > 64:
-                    raise HTTPException(status_code=422, detail="Name too long")
-                wl.name = name
-            if data.sort_order is not None:
-                wl.sort_order = int(data.sort_order)
-            if data.is_default is not None:
-                # Only one default at a time per user. When marking this
-                # one default, unmark every other.
-                if data.is_default:
-                    from sqlalchemy import update
-                    await session.execute(
-                        update(Watchlist)
-                        .where(Watchlist.user_id == user_id, Watchlist.id != wl_id)
-                        .values(is_default=False)
-                    )
-                wl.is_default = bool(data.is_default)
-            if data.is_pinned is not None:
-                # Unlike is_default, multiple lists can be pinned at the
-                # same time (Default + Markets ship pinned out of the
-                # box). No "unmark others" pass.
-                wl.is_pinned = bool(data.is_pinned)
+            await _apply_rename_fields(session, wl, wl_id, user_id, data)
             wl.updated_at = datetime.now(timezone.utc)
             await session.commit()
             # Recount items for the return payload.
@@ -1845,34 +2116,11 @@ class WatchlistController(Controller):
             )
             # Fall through — session_movers may still yield rows.
 
-        # ── Unified live-snapshot build ───────────────────────────────
-        # Loop the merged universe. Per symbol: pull broker LTP/prev_close,
-        # dispatch through the price resolver (single decision point for
-        # is_animating / price_source), then compute change_pct.
-        live_snapshot: dict[str, dict] = {}
-        for kite_key, meta in key_to_meta.items():
-            result = _movers_process_symbol(
-                kite_key, meta, quote_data, nse_is_open, mcx_is_open,
-            )
-            if result is not None:
-                underlying, live_entry = result
-                live_snapshot[underlying] = live_entry
-
-        # Combine → directional-fair top-N (see _combine_movers docstring
-        # for the invariant). Session-sticky entries overlay live rows.
-        combined: dict[str, dict] = _combine_movers(
-            live_snapshot, _session_movers, MOVER_TOP_N,
+        rows, live_snapshot = _movers_build_live_rows(
+            key_to_meta, quote_data, nse_is_open, mcx_is_open, ist_today,
         )
 
-        rows = _movers_build_rows(combined)
-
-        # Persist NSE-only rows to movers_snapshots. MCX rows are dropped
-        # here (not by a separate write path) so the NSE 15:29 close
-        # snapshot never gets overwritten by evening MCX data.
-        nse_rows = [r for r in rows if r.exchange == "NSE"]
-        if nse_rows:
-            asyncio.create_task(_save_movers_snapshot(nse_rows, ist_today))
-        elif not rows:
+        if not rows:
             logger.info(
                 f"[MOVERS-EMPTY] reason=no_matches "
                 f"universe_size={len(key_to_meta)} "
@@ -1900,80 +2148,11 @@ class WatchlistController(Controller):
         if alias and len(alias) > 64:
             raise HTTPException(status_code=422, detail="Alias too long")
         username = _actor_sub(request)
-        async with async_session() as session:
-            user_id = await _resolve_user_id(session, username)
-            wl_row = await session.execute(
-                select(Watchlist).where(
-                    Watchlist.id == wl_id,
-                    ((Watchlist.user_id == user_id) | (Watchlist.is_global == True)),
-                )
-            )
-            wl = wl_row.scalar_one_or_none()
-            if not wl:
-                raise HTTPException(status_code=404, detail="Watchlist not found")
-            # Only admin / designated can add items to the shared global row.
-            if wl.is_global and not _is_designated_role(request):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Pinned watchlist can only be edited by designated partners",
-                )
-            # Cap + dedupe checks.
-            count_r = await session.execute(
-                select(func.count(WatchlistItem.id))
-                .where(WatchlistItem.watchlist_id == wl_id)
-            )
-            if int(count_r.scalar() or 0) >= _MAX_ITEMS_PER_LIST:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Watchlist cap reached ({_MAX_ITEMS_PER_LIST} items)",
-                )
-            dup_r = await session.execute(
-                select(WatchlistItem.id).where(
-                    WatchlistItem.watchlist_id == wl_id,
-                    WatchlistItem.tradingsymbol == tradingsymbol,
-                    WatchlistItem.exchange      == exchange,
-                )
-            )
-            if dup_r.scalar_one_or_none() is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"{exchange}:{tradingsymbol} already in this watchlist",
-                )
-            max_sort_r = await session.execute(
-                select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
-                .where(WatchlistItem.watchlist_id == wl_id)
-            )
-            sort_val = (data.sort_order if data.sort_order is not None
-                        else int(max_sort_r.scalar() or -1) + 1)
-            now = datetime.now(timezone.utc)
-            it = WatchlistItem(
-                watchlist_id=wl_id,
-                tradingsymbol=tradingsymbol, exchange=exchange,
-                alias=alias,
-                sort_order=sort_val, added_at=now,
-            )
-            session.add(it)
-            wl.updated_at = now
-            await session.commit()
-        # Phase 2 — dynamic subscription: push the new symbol to the
-        # KiteTicker so live ticks start flowing immediately. Never
-        # unsubscribes (Phase 2 simplicity): Kite supports ~3000 tokens
-        # per connection and leftover subs from removed items are cheap.
-        # Revisit if subscribed_count approaches 2500.
-        try:
-            from backend.api.routes.quote import _resolve_token_for_sym
-            from backend.brokers.kite_ticker import get_ticker
-            tok = await _resolve_token_for_sym(tradingsymbol, exchange)
-            if tok is not None:
-                get_ticker().subscribe_with_sym([(tok, tradingsymbol)])
-                logger.debug(
-                    f"Watchlist: subscribed ticker token={tok} for "
-                    f"{exchange}:{tradingsymbol}"
-                )
-        except Exception as _te:
-            # Non-fatal — ticker subscription failing never blocks the add.
-            logger.debug(f"Watchlist: ticker subscribe skipped for "
-                         f"{exchange}:{tradingsymbol}: {_te}")
+        it = await _add_item_authorize_and_insert(
+            wl_id, tradingsymbol, exchange, alias, data.sort_order,
+            username, request,
+        )
+        await _add_item_ticker_subscribe(tradingsymbol, exchange)
         return _item_info(it)
 
     @patch("/{wl_id:int}/items/{item_id:int}", guards=[jwt_guard])
@@ -2009,14 +2188,7 @@ class WatchlistController(Controller):
                     status_code=403,
                     detail="Pinned watchlist can only be edited by designated partners",
                 )
-            if data.sort_order is not None:
-                it.sort_order = int(data.sort_order)
-            if data.alias is not None:
-                # Empty string clears the alias; non-empty sets it.
-                a = data.alias.strip()
-                if a and len(a) > 64:
-                    raise HTTPException(status_code=422, detail="Alias too long")
-                it.alias = a or None
+            _apply_reorder_fields(it, data)
             await session.commit()
         return _item_info(it)
 
