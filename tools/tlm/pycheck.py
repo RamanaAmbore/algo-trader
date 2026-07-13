@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _base import TlmTool, TlmResult, TlmFinding, REPO_ROOT, LOG_DIR  # noqa: E402
+from _base import TlmTool, TlmResult, TlmFinding, REPO_ROOT, LOG_DIR, VENV_PYTHON  # noqa: E402
 
 TEST_DIR = "backend/tests/"
 
@@ -126,7 +126,7 @@ class PyCheck(TlmTool):
                 f"(quick mode) No test files found matching test_{module}*.py",
             )
 
-        cmd = [sys.executable, "-m", "pytest"] + [str(p) for p in matched] + ["-q", "--tb=line"]
+        cmd = [VENV_PYTHON, "-m", "pytest"] + [str(p) for p in matched] + ["-q", "--tb=line"]
         try:
             import pytest_timeout  # noqa: F401
             cmd.append("--timeout=30")
@@ -172,7 +172,7 @@ class PyCheck(TlmTool):
             return TlmResult.skip(self.name, f"Test directory not found: {TEST_DIR}")
 
         # Build pytest command — omit --timeout if pytest-timeout not available
-        cmd = [sys.executable, "-m", "pytest", str(test_path), "-q", "--tb=line"]
+        cmd = [VENV_PYTHON, "-m", "pytest", str(test_path), "-q", "--tb=line"]
         try:
             import pytest_timeout  # noqa: F401
             cmd.append("--timeout=60")

@@ -18,6 +18,17 @@ from typing import Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 LOG_DIR = REPO_ROOT / ".log"
 
+# Prefer the project venv python so tools like pytest/pip-audit/asyncpg resolve
+# from the venv rather than the externally-managed system python.
+def _resolve_venv_python() -> str:
+    for candidate in ("venv/bin/python3", ".venv/bin/python3", "venv/bin/python"):
+        p = REPO_ROOT / candidate
+        if p.exists():
+            return str(p)
+    return sys.executable
+
+VENV_PYTHON: str = _resolve_venv_python()
+
 
 @dataclass
 class TlmFinding:

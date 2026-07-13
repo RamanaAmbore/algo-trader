@@ -1,0 +1,49 @@
+# DEPSCAN accepted-risk register
+# Format: list of {id, package, reason, accepted_by, accepted_on}
+# Entries here suppress P2/P3 findings in DEPSCAN output.
+# Review quarterly or when a new fixed version becomes available.
+
+accepted:
+  # litellm — all 4 CVEs affect the LiteLLM proxy server API endpoints
+  # (/guardrails, /user/update, etc.) that we never expose. Our usage is
+  # library-only (AI routing in mcp/kite_server.py). Newer litellm ≥1.83.8
+  # requires Python <3.14; our venv is Python 3.14.6. Revisit when litellm
+  # adds Python 3.14 support.
+  - id: PYSEC-2026-388
+    package: litellm
+    reason: "Proxy Host-header attack; we use litellm as a library, no proxy endpoints exposed"
+    accepted_by: ramana
+    accepted_on: "2026-07-13"
+    fix_blocker: "litellm >=1.83.8 requires Python <3.14"
+
+  - id: CVE-2026-40217
+    package: litellm
+    reason: "Sandbox escape in POST /guardrails/test_custom_code; endpoint not mounted"
+    accepted_by: ramana
+    accepted_on: "2026-07-13"
+    fix_blocker: "litellm >=1.83.8 requires Python <3.14"
+
+  - id: CVE-2026-47102
+    package: litellm
+    reason: "user_role privilege escalation; we don't use litellm user management"
+    accepted_by: ramana
+    accepted_on: "2026-07-13"
+    fix_blocker: "litellm >=1.83.8 requires Python <3.14"
+
+  - id: CVE-2026-47101
+    package: litellm
+    reason: "API key over-privilege; we don't use litellm user management"
+    accepted_by: ramana
+    accepted_on: "2026-07-13"
+    fix_blocker: "litellm >=1.83.8 requires Python <3.14"
+
+  # SvelteKit / cookie — all SvelteKit ≤2.69.2 ship cookie <0.7.0.
+  # 2.69.2 is the latest release as of 2026-07-13; no upstream fix available.
+  # Attack requires server-side cookie manipulation, which SvelteKit's auth
+  # model doesn't expose to untrusted input in our app.
+  - id: GHSA-pxg6-pf52-xh8x
+    package: npm:cookie
+    reason: "Affects cookie name/path/domain parsing; no user-controlled cookie names in our app"
+    accepted_by: ramana
+    accepted_on: "2026-07-13"
+    fix_blocker: "Unfixable upstream — all @sveltejs/kit ≤2.69.2 affected, no patched release"

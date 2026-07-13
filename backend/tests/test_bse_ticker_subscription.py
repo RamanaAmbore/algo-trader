@@ -62,16 +62,30 @@ def test_no_hard_cap_slice_in_perf_subscribe():
 
 def test_chunked_loop_present_in_perf_subscribe():
     """_perf_subscribe_book_symbols must use a CHUNK variable and a for loop
-    to iterate over all unresolved symbols, not a single gather over a slice."""
+    to iterate over all unresolved symbols, not a single gather over a slice.
+    Accepts C→B delegation: chunking may live in _bg_resolve_tokens_chunked."""
     import backend.api.background as bg
 
-    src = inspect.getsource(bg._perf_subscribe_book_symbols)
-    assert "CHUNK" in src, (
-        "CHUNK constant must be present in _perf_subscribe_book_symbols"
-    )
-    assert "range(0, len(_need_resolve), CHUNK)" in src, (
-        "Chunked range loop over _need_resolve must be present"
-    )
+    parent_src = inspect.getsource(bg._perf_subscribe_book_symbols)
+    helper_in_parent = "_bg_resolve_tokens_chunked" in parent_src
+
+    if helper_in_parent:
+        # Delegation pattern: verify chunking lives in the helper
+        helper_src = inspect.getsource(bg._bg_resolve_tokens_chunked)
+        assert "CHUNK" in helper_src, (
+            "CHUNK constant must be present in _bg_resolve_tokens_chunked helper"
+        )
+        assert "range(0, len(" in helper_src, (
+            "Chunked range loop must be present in _bg_resolve_tokens_chunked"
+        )
+    else:
+        # Original inline pattern
+        assert "CHUNK" in parent_src, (
+            "CHUNK constant must be present in _perf_subscribe_book_symbols"
+        )
+        assert "range(0, len(_need_resolve), CHUNK)" in parent_src, (
+            "Chunked range loop over _need_resolve must be present"
+        )
 
 
 # ---------------------------------------------------------------------------
