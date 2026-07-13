@@ -1088,6 +1088,7 @@ async def _ticket_run_preflight(data, account: str, sym: str, side: str, qty: in
             "product":          (data.product or "NRML"),
             "variety":          (data.variety or "regular"),
             "transaction_type": side,
+            "intent":           getattr(data, "intent", None),
             "price":            data.price or 0,
             "trigger_price":    data.trigger_price or 0,
         })

@@ -1442,11 +1442,23 @@
     void holdings;
     void _rootsWithOptions;
     void _rootsWithFuturesOnly;
+    void _positionsLoaded;
     const opts = underlyingOptionsForPicker;
     const cur  = untrack(() => selectedUnderlying);
-    if (cur) return;
-    const first = opts[0]?.value;
-    if (first) untrack(() => { selectedUnderlying = first; });
+    // Standard case: nothing selected yet — pick the first picker entry.
+    if (!cur) {
+      const first = opts[0]?.value;
+      if (first) untrack(() => { selectedUnderlying = first; });
+      return;
+    }
+    // Promote case: current selection is a 'popular' provisional seed
+    // (set before positions loaded) but a position-tier entry is now
+    // available. Overwrite so the operator's actual open positions drive
+    // the default instead of NIFTY flashing and sticking.
+    const curIsPopular = opts.find(o => o.value === cur)?.hint === 'popular';
+    if (curIsPopular && opts[0]?.hint !== 'popular') {
+      untrack(() => { selectedUnderlying = opts[0].value; });
+    }
   });
 
   // Auto-check the eq leg when the operator picks a hedge-opportunity
@@ -1756,6 +1768,26 @@
       s += day + delta;
     }
     return s;
+  });
+
+  // Net strategy cost — total premium paid (positive = net debit) or
+  // received (negative = net credit) across all ENABLED option legs.
+  // Futures and equity legs are excluded: their "cost" is the purchase
+  // price which tracks spot 1:1 and doesn't have the same semantic as
+  // an option premium. Rendered as a horizontal cost annotation line
+  // in OptionsPayoff so the operator can see where the breakeven lives
+  // relative to the entry cost without switching to the Greeks overlay.
+  const _netStrategyCost = $derived.by(() => {
+    let total = 0;
+    for (const c of candidatePositions) {
+      if (!_isLegEnabled(c)) continue;
+      if (c.kind !== 'opt') continue;
+      const cost = Number(c.avg_cost ?? 0);
+      const qty  = Number(c.qty ?? 0);
+      if (!qty) continue;
+      total += cost * qty;
+    }
+    return total === 0 ? null : total;
   });
 
   // Expiry P&L per leg — what the row would settle to if every contract
@@ -2128,8 +2160,9 @@
    *  Both reads are wrapped in untrack() so this derived stays at the
    *  250 ms _throttledTick gate and doesn't bypass it.
    *
-   *  Returns null only when spot ≤ 0 (no price data at all). Empty-
-   *  legs with a valid spot returns a flat grid rather than null. */
+   *  Returns [] when spot ≤ 0 (no price data at all). Empty legs or
+   *  legs with no computable payoff with a valid spot return a flat
+   *  y=0 grid rather than []. Never returns null. */
   const _clientPayoffStub = $derived.by(() => {
     void _throttledTick;
     // Only the non-eq enabled legs (eq contribution needs _includeHoldings).
@@ -2150,7 +2183,7 @@
       }
       return 0;
     })();
-    if (spot <= 0) return null;
+    if (spot <= 0) return [];
 
     // 41-point grid from 80 % to 120 % of spot.
     const lo = spot * 0.80;
@@ -2178,10 +2211,10 @@
         const v = expiryPnl({ ...l, kind: l.kind ?? 'fut' }, s);
         if (v != null) { sum += v; anyValid = true; }
       }
-      if (!anyValid) return null;
+      if (!anyValid) { out.push({ spot: s, today_value: 0, expiry_value: 0 }); continue; }
       out.push({ spot: s, today_value: null, expiry_value: sum });
     }
-    return out.length > 0 ? out : null;
+    return out;
   });
 
   /** Risk overlay values — recomputed from the merged curve when eq
@@ -3589,14 +3622,17 @@
     // /orders then navigated here). The stale-while-revalidate cache
     // above still provides an instant paint of the previous state.
     loadPositions({ fresh: true });
-    // Cold-start: seed a default so the picker and payoff card mount immediately.
-    // The auto-select $effect overwrites this once real picker data arrives
-    // (positions / watchlist / instruments). Tier 6 of underlyingOptionsForPicker
-    // now emits POPULAR_UNDERLYINGS without requiring instrumentsReady, so this
-    // seed and the $effect's first-pass pick will both resolve to NIFTY on a
-    // clean session with no positions and no sessionStorage.
-    if (!selectedUnderlying) {
-      selectedUnderlying = POPULAR_UNDERLYINGS[0]; // 'NIFTY'
+    // Cold-start: seed NIFTY only when positions are not yet cached.
+    // When positionsStore.value already has entries (e.g. page revisit with
+    // a warm store), skip the NIFTY seed so the auto-select $effect can pick
+    // the operator's actual position-derived underlying instead. After
+    // loadPositions() resolves, the $effect at line 1429 re-fires (it watches
+    // `positions` + `holdings` + `_rootsWithOptions`) and will overwrite the
+    // NIFTY provisional seed with the correct tier-1/tier-2 entry. When the
+    // store is cold, the $effect fires with an empty book and NIFTY is the
+    // correct fallback — same end-state, no flash.
+    if (!selectedUnderlying && !(positionsStore.value?.length)) {
+      selectedUnderlying = POPULAR_UNDERLYINGS[0]; // 'NIFTY' provisional
     }
     // Load the instruments cache so the option-chain picker has data.
     // Already cached in IndexedDB after the first /console autocomplete
@@ -4056,6 +4092,7 @@
           : null}
         includeHoldings={_includeHoldings}
         onToggleHoldings={_flipHoldings}
+        netCost={_netStrategyCost}
         loading={loading}
         height={320} />
     </div>

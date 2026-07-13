@@ -35,6 +35,7 @@
    *   spotAnchor?:  {contract:string, source:string, expiryISO?:string} | null,
    *   includeHoldings?: boolean | null,
    *   onToggleHoldings?: (() => void) | null,
+   *   netCost?:     number|null,
    * }} */
   let {
     payoff = [],
@@ -94,6 +95,12 @@
     // that don't expose holdings).
     includeHoldings = /** @type {boolean | null} */ (null),
     onToggleHoldings = /** @type {(() => void) | null} */ (null),
+    // Net strategy cost (total premium paid/received across all option legs).
+    // Positive = net debit (operator paid premium); negative = net credit
+    // (operator received premium). Rendered as a single horizontal dashed
+    // amber annotation line at the cost level so the operator can read the
+    // breakeven profile without looking at the Greeks overlay. null/0 = hide.
+    netCost = /** @type {number|null} */ (null),
   } = $props();
 
   // Days until the anchor contract expires — used to decide whether
@@ -297,6 +304,21 @@
   }
   // Y position of zero P&L line — the breakeven horizontal.
   const zeroY = $derived(yOf(0));
+
+  // Net strategy cost annotation — Y position of the cost/credit level.
+  // For a net debit (paid premium), the break-even-at-expiry line sits at
+  //   y = −netCost (the P&L when intrinsic = cost, i.e. exactly breaks even).
+  // For a net credit (received premium), it sits at y = +|netCost|.
+  // Only render when netCost is non-zero and the Y level is within the chart.
+  const _netCostY = $derived.by(() => {
+    if (!netCost || netCost === 0 || !payoff.length) return null;
+    const level = -netCost;  // on the payoff P&L axis: debit → negative level, credit → positive
+    const y = yOf(level);
+    // Suppress if outside the visible plot area (e.g. very deep debit strategy
+    // where the cost line is off the bottom of the chart).
+    if (y < PAD_T || y > height - PAD_B) return null;
+    return { y, level, label: netCost > 0 ? `Cost ₹${aggFmt(netCost)}` : `Credit ₹${aggFmt(-netCost)}` };
+  });
 
   // True when every payoff point carries a real today_value (not null/undefined).
   // The client-side intrinsic stub sets today_value: null to signal that BS
@@ -906,6 +928,27 @@
       <!-- Zero line — solid, slightly stronger than the grid -->
       <line x1={PAD_L} x2={W - PAD_R} y1={zeroY} y2={zeroY}
             stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
+
+      <!-- Net strategy cost annotation — thin dashed amber horizontal at the
+           cost/credit level. Debit strategies: line sits below zero (loss zone)
+           at −netCost; the breakeven at expiry is exactly where the expiry
+           curve crosses this line. Credit strategies: line sits above zero
+           (profit zone) at +|netCost| — the max profit if all legs expire OTM.
+           Omitted when netCost is zero or out of the chart Y range. -->
+      {#if _netCostY != null}
+        <line x1={PAD_L} x2={W - PAD_R} y1={_netCostY.y} y2={_netCostY.y}
+              stroke="#fbbf24" stroke-width="0.75"
+              stroke-dasharray="4 3" stroke-opacity="0.55"
+              pointer-events="none"/>
+        <text x={W - PAD_R - 2} y={_netCostY.y - 3}
+              text-anchor="end"
+              fill="#fbbf24" fill-opacity="0.70"
+              font-size="9" font-weight="600"
+              style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums"
+              pointer-events="none">
+          {_netCostY.label}
+        </text>
+      {/if}
 
       <!-- Breakeven markers — full-height amber vertical line + a
            horizontal pill pinned ABOVE the chart top edge so the

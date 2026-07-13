@@ -280,6 +280,26 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
                 fut.set_exception(RuntimeError(
                     detail.get("error") or "chase failed before initial placement"
                 ))
+        else:
+            # Initial placement already succeeded (future resolved). Alert on
+            # terminal chase failures so the operator knows the fill didn't land.
+            if evt in ("error", "chase_failed"):
+                _err = detail.get("error") or f"chase {evt}"
+                logger.warning(
+                    "[CHASE-POST-PLACEMENT] %s algo_order_id=%s %s %s "
+                    "acct=%s qty=%s: %s",
+                    evt, algo_order_id, symbol, transaction_type,
+                    account, quantity, _err,
+                )
+                try:
+                    from backend.shared.helpers.alert_utils import send_order_failure_alert
+                    send_order_failure_alert(
+                        account=account, symbol=symbol, exchange=exchange,
+                        side=transaction_type, qty=quantity, mode="live",
+                        source="chase:post-placement", error=_err,
+                    )
+                except Exception:
+                    pass
 
     asyncio.create_task(chase_order(
         account=account, symbol=symbol,
