@@ -37,7 +37,7 @@ export function dirCls(v) {
  * LTP-cascade / poll-diff tick flash.
  *
  * @param {{
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   getMpFlash: () => ReturnType<typeof import('$lib/data/tickFlash.svelte.js').createTickFlash>,
  *   getLtpFlashUp: () => Set<string>,
  *   getLtpFlashDown: () => Set<string>,
@@ -234,7 +234,7 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
  *   getLtpFlashUp: () => Set<string>,
  *   getLtpFlashDown: () => Set<string>,
  *   numFmt: (p: { value: any }) => string,
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  * }} opts
  */
@@ -253,7 +253,7 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
 
 /**
  * Previous-close column.
- * @param {{ RA: string, numericHdr: string, numFmt: (p: { value: any }) => string }} opts
+ * @param {{ RA: string | ((p: any) => string | string[]), numericHdr: string, numFmt: (p: { value: any }) => string }} opts
  */
 export function mkPrevCol({ RA, numericHdr, numFmt }) {
   return {
@@ -266,7 +266,7 @@ export function mkPrevCol({ RA, numericHdr, numFmt }) {
 
 /**
  * Open price column.
- * @param {{ RA: string, numericHdr: string, numFmt: (p: { value: any }) => string }} opts
+ * @param {{ RA: string | ((p: any) => string | string[]), numericHdr: string, numFmt: (p: { value: any }) => string }} opts
  */
 export function mkOpenCol({ RA, numericHdr, numFmt }) {
   return {
@@ -281,7 +281,7 @@ export function mkOpenCol({ RA, numericHdr, numFmt }) {
 
 /**
  * Volume column.
- * @param {{ RA: string, numericHdr: string, aggCompact: (v: number) => string }} opts
+ * @param {{ RA: string | ((p: any) => string | string[]), numericHdr: string, aggCompact: (v: number) => string }} opts
  */
 export function mkVolCol({ RA, numericHdr, aggCompact }) {
   return {
@@ -297,7 +297,7 @@ export function mkVolCol({ RA, numericHdr, aggCompact }) {
 
 /**
  * Open-interest column.
- * @param {{ RA: string, numericHdr: string, aggCompact: (v: number) => string }} opts
+ * @param {{ RA: string | ((p: any) => string | string[]), numericHdr: string, aggCompact: (v: number) => string }} opts
  */
 export function mkOiCol({ RA, numericHdr, aggCompact }) {
   return {
@@ -318,7 +318,7 @@ export function mkOiCol({ RA, numericHdr, aggCompact }) {
  * Renders a "STALE @ HH:MM" badge when the row came from the broker_apis
  * LKG frame cache (circuit breaker OPEN at fetch time).
  *
- * @param {{ RA: string }} opts
+ * @param {{ RA: string | ((p: any) => string | string[]) }} opts
  */
 export function mkAcctColTrailing({ RA }) {
   return {
@@ -444,7 +444,7 @@ function _qtyNetValueGetter(p) {
  *   volCol: any,
  *   oiCol: any,
  *   acctColTrailing: any,
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  *   pnlCellClass: (p: any, field: string) => string,
  *   dirCellClass: (p: any) => string,
@@ -564,7 +564,7 @@ export function mkPosSummaryCols({ numericHdr, pnlCellClass, aggFmtGrid, pctFmtG
  * Holdings-summary grid columns (Account | Day P&L | Day % | P&L | P&L % | Value | Invested).
  *
  * @param {{
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  *   pnlCellClass: (p: any, field?: string) => string,
  *   aggFmtGrid: (p: { value: any }) => string,
@@ -608,7 +608,7 @@ export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, aggFmtGrid, pc
  * though column definitions are created once at mount.
  *
  * @param {{
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  *   pctFmtGrid: (p: { value: any }) => string,
  *   getTotalCurVal: () => number,
@@ -635,7 +635,7 @@ export function mkWeightPctCol({ RA, numericHdr, pctFmtGrid, getTotalCurVal }) {
  * Non-option rows carry 0; formatter renders 0 as em-dash.
  *
  * @param {{
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  * }} opts
  */
@@ -654,7 +654,7 @@ export function mkDeltaCol({ RA, numericHdr }) {
  * Non-option rows carry 0; formatter renders 0 as em-dash.
  *
  * @param {{
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  *   aggFmtGrid: (p: { value: any }) => string,
  * }} opts
@@ -680,7 +680,7 @@ export function mkThetaCol({ RA, numericHdr, aggFmtGrid }) {
  *   NAV = (cash_sod + option_premium) + Σ pos.unrealised + Σ hold.cur_val
  *
  * @param {{
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  *   aggFmtGrid: (p: { value: any }) => string,
  * }} opts
@@ -752,7 +752,7 @@ export function mkUtilPctCol({ numericHdr }) {
  * payload matches exactly.
  *
  * @param {{
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  *   aggFmtGrid: (p: { value: any }) => string,
  * }} opts
@@ -800,7 +800,7 @@ export function mkFundsDetailCols({ RA, numericHdr, aggFmtGrid }) {
  * Used Margin | Collateral).
  *
  * @param {{
- *   RA: string,
+ *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  *   dirCellClass: (p: any) => string,
  *   aggFmtGrid: (p: { value: any }) => string,

@@ -109,7 +109,7 @@
   // Null when the ticket was opened by clicking the header button
   // directly (no prefill — blank ticket). Cleared on modal close so
   // a subsequent blank-open doesn't inherit a previous surface's values.
-  /** @type {{ symbol?:string|null, exchange?:string|null, side?:'BUY'|'SELL'|null, qty?:number|null, lots?:number|null, price?:number|null, product?:string|null, lotSize?:number|null, currentQty?:number|null, action?:string|null, account?:string|null, accounts?:string[]|null, triggerSource?:string|null } | null} */
+  /** @type {{ symbol?:string|null, exchange?:string|null, side?:'BUY'|'SELL'|null, qty?:number|null, lots?:number|null, price?:number|null, product?:'CNC'|'NRML'|'MIS'|null, lotSize?:number|null, currentQty?:number|null, action?:'open'|'close'|'modify'|'repeat'|'cancel'|null, account?:string|null, accounts?:string[]|null, triggerSource?:string|null } | null} */
   let _orderPrefill = $state(null);
 
   // ── Global keyboard-shortcut bridge ────────────────────────────────
@@ -165,7 +165,7 @@
        actually opens. -->
   {#if !hideOrder}
     <button type="button" class="pha-btn pha-order"
-            onclick={_openOrder}
+            onclick={() => _openOrder()}
             title="Orders{symbol ? ` — ${formatSymbol(symbol)}` : ''}"
             aria-label="Open Orders">
       <!-- Order-slip / receipt glyph — a small rectangle with order

@@ -66,16 +66,16 @@ export function summaryRowId({ data }) {
  *
  * Pure: reads only the `nodes` param — no closure over reactive state.
  *
- * @param {{ nodes: import('ag-grid-community').RowNode[] }} param
+ * @param {{ nodes: import('ag-grid-community').IRowNode[] }} param
  */
 export function postSortGroups({ nodes }) {
   if (!nodes || nodes.length === 0) return;
 
-  /** @type {Map<string, import('ag-grid-community').RowNode[]>} */
+  /** @type {Map<string, import('ag-grid-community').IRowNode[]>} */
   const byKey = new Map();
   /** @type {string[]} */
   const orderedGroupKeys = [];
-  /** @type {import('ag-grid-community').RowNode[]} */
+  /** @type {import('ag-grid-community').IRowNode[]} */
   const standaloneOrder = [];
 
   for (let i = 0; i < nodes.length; i++) {
@@ -103,7 +103,7 @@ export function postSortGroups({ nodes }) {
     firstIdxOf.set(k, nodes.indexOf(byKey.get(k)[0]));
   }
 
-  /** @type {Array<{first:number, kind:'g'|'s', key?:string, node?: import('ag-grid-community').RowNode}>} */
+  /** @type {Array<{first:number, kind:'g'|'s', key?:string, node?: import('ag-grid-community').IRowNode}>} */
   const seq = [];
   for (const k of orderedGroupKeys) {
     seq.push({ first: firstIdxOf.get(k), kind: 'g', key: k });

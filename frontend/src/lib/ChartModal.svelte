@@ -15,6 +15,7 @@
     /** @type {string} */ symbol = '',
     /** @type {string} */ exchange = '',
     /** @type {'live'|'sim'|'paper'} */ mode = 'live',
+    /** @type {(() => void) | null} */ onClose = null,
   } = $props();
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
@@ -37,6 +38,7 @@
       // capture-phase listener from also firing when ChartModal is on top.
       e.stopImmediatePropagation();
       closeChartModal();
+      onClose?.();
       return;
     }
     if (e.key === 'Tab') {
@@ -107,7 +109,7 @@
           </svg>
         </span>
         <button type="button" class="cm-close"
-                onclick={closeChartModal}
+                onclick={() => { closeChartModal(); onClose?.(); }}
                 aria-label="Close chart modal">×</button>
       </span>
     </div>

@@ -31,6 +31,8 @@
 <script>
   import CardControls from '$lib/CardControls.svelte';
 
+  /** @typedef {import('svelte').Snippet} Snippet */
+
   let {
     title = '',
     timestamp = null,
@@ -46,6 +48,9 @@
     refreshAlwaysVisible = false,
     onDownload = null,
     showControls = true,
+    /** @type {Snippet | undefined} */ left = undefined,
+    /** @type {Snippet | undefined} */ middle = undefined,
+    /** @type {Snippet | undefined} */ right = undefined,
   } = $props();
 </script>
 
@@ -53,15 +58,15 @@
   <div class="ch-left">
     {#if title}<span class="ch-title">{title}</span>{/if}
     {#if timestamp}<span class="ch-ts">{timestamp}</span>{/if}
-    <slot name="left" />
+    {@render left?.()}
   </div>
 
   <div class="ch-middle">
-    <slot name="middle" />
+    {@render middle?.()}
   </div>
 
   <div class="ch-right">
-    <slot name="right" />
+    {@render right?.()}
     {#if showControls}
       <CardControls
         bind:isCollapsed
