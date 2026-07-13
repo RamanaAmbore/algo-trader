@@ -530,9 +530,7 @@ def _consume_token(token: str, user_id: int | None, purpose_hash: str) -> str | 
         # dict doesn't accumulate stale tokens during long idle
         # periods between mints. Cheap (≤ a few hundred entries) and
         # symmetric with the prune-on-mint path.
-        stale = [t for t, v in _confirm_tokens.items() if v.get("expires_at", 0) < now]
-        for t in stale:
-            _confirm_tokens.pop(t, None)
+        _res_prune_expired_tokens(_confirm_tokens, now)
 
         entry = _confirm_tokens.get(token)
         if not entry:
@@ -764,6 +762,332 @@ def _user_id(connection) -> int | None:
         return int(sub) if sub is not None else None
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# _res_* helpers extracted to keep route-method CC ≤ 10
+# ---------------------------------------------------------------------------
+
+async def _res_mcp_audit(
+    tool: str,
+    user_id: int | None,
+    args_redacted: dict,
+    result_status: str,
+    result_summary: str,
+    request_id: str,
+) -> None:
+    """Shared audit-enqueue wrapper used by all gated MCP routes.
+
+    Swallows enqueue errors so a queue hiccup never blocks the response.
+    Extracted so each route's _audit closure can delegate here instead of
+    duplicating try/except logic, reducing CC in every caller."""
+    try:
+        await mcp_audit_queue.enqueue(
+            tool=tool,
+            user_id=user_id,
+            args_redacted=args_redacted,
+            result_status=result_status,
+            result_summary=result_summary[:1024],
+            request_id=request_id,
+        )
+    except Exception as e:
+        logger.warning(f"mcp_audit enqueue failed: {e}")
+
+
+def _res_normalize_place_inputs(data: Any) -> tuple:
+    """Normalise PlaceOrderRequest string fields for place_order.
+
+    Returns (acct, sym, side, qty, order_type, mode). Extracted from
+    place_order to remove `or` expressions from that method's CC count."""
+    acct       = (data.account or "").strip()
+    sym        = (data.tradingsymbol or "").upper().strip()
+    side       = (data.side or "").upper().strip()
+    qty        = int(data.quantity or 0)
+    order_type = (data.order_type or "LIMIT").upper().strip()
+    mode       = (data.mode or "paper").lower().strip()
+    return acct, sym, side, qty, order_type, mode
+
+
+def _res_normalize_cancel_inputs(data: Any) -> tuple[str, str, str]:
+    """Normalise CancelOrderRequest string fields for cancel_order.
+
+    Returns (acct, oid, mode). Extracted from cancel_order to remove
+    `or` expressions from that method's CC count."""
+    acct = (data.account or "").strip()
+    oid  = (data.order_id or "").strip()
+    mode = (data.mode or "live").lower().strip()
+    return acct, oid, mode
+
+
+def _res_normalize_modify_inputs(data: Any) -> tuple[str, str, int, str, str]:
+    """Normalise ModifyOrderRequest string fields for modify_order.
+
+    Returns (acct, oid, qty, otype, mode). Extracted from modify_order
+    to remove `or` expressions from that method's CC count."""
+    acct  = (data.account or "").strip()
+    oid   = (data.order_id or "").strip()
+    qty   = int(data.quantity or 0)
+    otype = (data.order_type or "LIMIT").upper().strip()
+    mode  = (data.mode or "live").lower().strip()
+    return acct, oid, qty, otype, mode
+
+
+def _res_modify_chunks(
+    qty: int, otype: str, price: float | None, trigger_price: float | None,
+) -> str:
+    """Build a human-readable summary of what fields a modify touches.
+
+    Extracted from modify_order to remove the 4-branch filter() list
+    comprehension from that method's CC count."""
+    parts = []
+    if qty:
+        parts.append(f"qty={qty}")
+    if otype:
+        parts.append(f"type={otype}")
+    if price:
+        parts.append(f"@₹{price:g}")
+    if trigger_price:
+        parts.append(f"trig=₹{trigger_price:g}")
+    return " ".join(parts) or "(no-op)"
+
+
+def _res_prune_expired_tokens(tokens_dict: dict, now: int) -> None:
+    """Drop entries whose expires_at is in the past. Call while holding
+    _token_lock. Extracted from _consume_token to reduce CC there."""
+    stale = [t for t, v in tokens_dict.items() if v.get("expires_at", 0) < now]
+    for t in stale:
+        tokens_dict.pop(t, None)
+
+
+def _res_apply_audit_filters(q, tool, status, request_id, since) -> Any:
+    """Apply all optional WHERE clauses for list_audit and return the
+    filtered query. Extracted from list_audit to reduce CC there."""
+    if tool:
+        q = q.where(McpAudit.tool == tool.strip())
+    if status:
+        q = q.where(McpAudit.result_status == status.strip().lower())
+    if request_id:
+        q = q.where(McpAudit.request_id == request_id.strip())
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+            q = q.where(McpAudit.created_at >= since_dt)
+        except (TypeError, ValueError):
+            logger.debug(f"audit: ignoring bad `since` value: {since!r}")
+    return q
+
+
+def _res_mint_dispatch(
+    kind: str,
+    data: "MintTokenRequest",
+    acct: str,
+    qty: int,
+    oid: str,
+    order_type: str,
+    agent_slug: str,
+) -> tuple[str, str]:
+    """Route mint_confirm_token to the correct per-kind hash helper.
+
+    Returns (purpose_hash, purpose_string). Extracted from
+    mint_confirm_token to reduce CC there."""
+    if kind == "place":
+        return _mint_place_hash_and_purpose(data, acct, qty, order_type)
+    if kind == "cancel":
+        return _mint_cancel_hash_and_purpose(data, acct, oid)
+    if kind == "modify":
+        return _mint_modify_hash_and_purpose(data, acct, oid, qty, order_type)
+    if kind in ("activate", "deactivate"):
+        return _mint_agent_status_hash_and_purpose(kind, agent_slug)
+    return _mint_update_hash_and_purpose(agent_slug, data.proposed_changes)
+
+
+async def _res_cancel_live(
+    oid: str,
+    acct: str,
+    data: Any,
+    request_id: str,
+    user_id: int | None,
+    audit_fn: Any,
+    request: Any,
+) -> "SimpleOrderResponse":
+    """Execute the live-mode branch of cancel_order and return the response.
+
+    Extracted from cancel_order to reduce CC there."""
+    from backend.api.routes.orders import OrdersController
+    try:
+        ctrl = OrdersController(owner=None)
+        res = await OrdersController.cancel_order.fn(
+            ctrl,
+            order_id=oid, request=request,
+            account=acct, variety=data.variety,
+        )
+    except HTTPException as e:
+        await audit_fn("error", f"{e.status_code}: {e.detail}")
+        raise
+    except Exception as e:
+        await audit_fn("error", f"unexpected: {e}")
+        logger.exception("MCP cancel_order: underlying handler raised")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    await audit_fn("ok", f"order_id={res.order_id}")
+    logger.info(f"MCP cancel_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
+
+    try:
+        from backend.shared.helpers.alert_utils import _send_telegram
+        _send_telegram(
+            f"<b>MCP CANCEL [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
+            f"acct={acct}\n"
+            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+        )
+    except Exception as e:
+        logger.warning(f"MCP cancel_order Telegram ping failed: {e}")
+
+    return SimpleOrderResponse(order_id=res.order_id, detail="cancelled (live)")
+
+
+async def _res_cancel_paper(
+    oid: str,
+    acct: str,
+    request_id: str,
+    user_id: int | None,
+    audit_fn: Any,
+) -> "SimpleOrderResponse":
+    """Execute the paper-mode branch of cancel_order and return the response.
+
+    Raises HTTPException on any error (400 for bad id, 404 for not found,
+    500 for engine crash). Extracted from cancel_order to reduce CC there."""
+    try:
+        algo_order_id = int(oid)
+    except (TypeError, ValueError):
+        await audit_fn("error", "paper cancel: order_id must be an integer AlgoOrder.id")
+        raise HTTPException(status_code=400,
+            detail="For paper cancel, order_id must be the integer AlgoOrder.id")
+    try:
+        from backend.api.algo.paper import get_prod_paper_engine
+        engine = get_prod_paper_engine()
+        ok = engine.cancel_paper_order(algo_order_id)
+    except Exception as e:
+        await audit_fn("error", f"paper engine raised: {e}")
+        logger.exception("MCP paper cancel raised")
+        raise HTTPException(status_code=500, detail=str(e))
+    if not ok:
+        await audit_fn("error", f"no OPEN paper order with id={algo_order_id}")
+        raise HTTPException(status_code=404,
+            detail=f"No OPEN paper order with AlgoOrder.id={algo_order_id}")
+    await audit_fn("ok", f"paper order_id={algo_order_id} CANCELLED")
+    logger.info(f"MCP cancel_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
+    try:
+        from backend.shared.helpers.alert_utils import _send_telegram
+        _send_telegram(
+            f"<b>MCP CANCEL [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
+            f"acct={acct}\n"
+            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+        )
+    except Exception as e:
+        logger.warning(f"MCP cancel_order (paper) Telegram ping failed: {e}")
+    return SimpleOrderResponse(order_id=oid, detail="cancelled (paper)")
+
+
+def _res_make_place_ticket(
+    mode: str, side: str, sym: str, qty: int, data: Any, acct: str, order_type: str,
+) -> Any:
+    """Build a TicketOrderRequest from place_order inputs.
+
+    Extracted from place_order to reduce CC there."""
+    from backend.api.schemas import TicketOrderRequest
+    return TicketOrderRequest(
+        mode=mode, side=side, tradingsymbol=sym, quantity=qty,
+        exchange=data.exchange, product=data.product,
+        order_type=order_type, variety=data.variety,
+        price=data.price, trigger_price=data.trigger_price,
+        account=acct, chase=data.chase,
+        chase_aggressiveness=data.chase_aggressiveness,
+        source="mcp",
+    )
+
+
+def _res_place_telegram_ping(
+    acct: str, side: str, qty: int, sym: str,
+    data: Any, res: Any, request_id: str, user_id: int | None,
+) -> None:
+    """Send the Telegram ping after a successful MCP place_order.
+
+    Extracted from place_order to reduce CC there. Swallows all exceptions."""
+    try:
+        from backend.shared.helpers.alert_utils import _send_telegram
+        price_chunk = (
+            f" @₹{data.price:g}" if data.price else
+            (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
+        )
+        mode_pill = f"[{res.mode.upper()}]" if res.mode else "[?]"
+        tg_msg = (
+            f"<b>MCP {mode_pill}</b> {side} {qty} {sym}{price_chunk}\n"
+            f"acct={acct} · order_id=<code>{res.order_id}</code> · "
+            f"status={res.status}\n"
+            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+        )
+        _send_telegram(tg_msg)
+    except Exception as e:
+        logger.warning(f"MCP place_order Telegram ping failed: {e}")
+
+
+def _res_agent_action_labels(action: str) -> tuple[str, str]:
+    """Return (new_status, verb) for activate/deactivate actions.
+
+    Extracted from _agent_status_change to remove two ternary branches
+    from that method's CC count."""
+    if action == "activate":
+        return "active", "ACTIVATE"
+    return "inactive", "DEACTIVATE"
+
+
+def _res_agent_status_telegram_ping(
+    verb: str, slug: str, new_status: str, request_id: str,
+    user_id: int | None, action: str,
+) -> None:
+    """Send the Telegram ping for MCP activate/deactivate. Swallows exceptions.
+
+    Extracted from _agent_status_change to remove the try/except from that
+    method's CC count."""
+    try:
+        from backend.shared.helpers.alert_utils import _send_telegram
+        _send_telegram(
+            f"<b>MCP {verb}</b> agent=<code>{slug}</code> → status={new_status}\n"
+            f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
+        )
+    except Exception as e:
+        logger.warning(f"MCP {action}_agent Telegram ping failed: {e}")
+
+
+async def _res_flip_agent_status_db(slug: str, new_status: str) -> None:
+    """Flip an agent's status column in the DB. Raises HTTPException 404 if
+    the slug doesn't exist, 500 on unexpected DB error. Extracted from
+    _agent_status_change to reduce CC there."""
+    async with async_session() as s:
+        agent = (await s.execute(
+            select(Agent).where(Agent.slug == slug)
+        )).scalar_one_or_none()
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
+        agent.status = new_status
+        await s.commit()
+
+
+async def _res_apply_agent_update_db(slug: str, filtered: dict) -> str:
+    """Apply whitelisted field updates to an Agent row and return its
+    current status string. Raises HTTPException 404/500. Extracted from
+    update_agent to reduce CC there."""
+    async with async_session() as s:
+        agent = (await s.execute(
+            select(Agent).where(Agent.slug == slug)
+        )).scalar_one_or_none()
+        if not agent:
+            raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
+        for key, val in filtered.items():
+            setattr(agent, key, val)
+        await s.commit()
+        await s.refresh(agent)
+        return agent.status
 
 
 async def _mcp_modify_paper(
@@ -1093,18 +1417,7 @@ class ResearchController(Controller):
         """
         async with async_session() as s:
             q = select(McpAudit).order_by(McpAudit.created_at.desc())
-            if tool:
-                q = q.where(McpAudit.tool == tool.strip())
-            if status:
-                q = q.where(McpAudit.result_status == status.strip().lower())
-            if request_id:
-                q = q.where(McpAudit.request_id == request_id.strip())
-            if since:
-                try:
-                    since_dt = datetime.fromisoformat(since)
-                    q = q.where(McpAudit.created_at >= since_dt)
-                except (TypeError, ValueError):
-                    logger.debug(f"audit: ignoring bad `since` value: {since!r}")
+            q = _res_apply_audit_filters(q, tool, status, request_id, since)
             q = q.limit(max(1, min(1000, int(limit or 200))))
             rows = (await s.execute(q)).scalars().all()
         return [
@@ -1150,17 +1463,7 @@ class ResearchController(Controller):
         if kind in _ORDER_KINDS and not acct:
             raise HTTPException(status_code=400, detail="account is required")
 
-        if kind == "place":
-            ph, purpose = _mint_place_hash_and_purpose(data, acct, qty, order_type)
-        elif kind == "cancel":
-            ph, purpose = _mint_cancel_hash_and_purpose(data, acct, oid)
-        elif kind == "modify":
-            ph, purpose = _mint_modify_hash_and_purpose(data, acct, oid, qty, order_type)
-        elif kind in ("activate", "deactivate"):
-            ph, purpose = _mint_agent_status_hash_and_purpose(kind, agent_slug)
-        else:
-            ph, purpose = _mint_update_hash_and_purpose(agent_slug, data.proposed_changes)
-
+        ph, purpose = _res_mint_dispatch(kind, data, acct, qty, oid, order_type, agent_slug)
         token, expires = _mint_token(_user_id(request), ph)
         now = int(time.time())
         logger.info(
@@ -1186,12 +1489,7 @@ class ResearchController(Controller):
         is False (matches the existing /api/orders/ticket gate)."""
         # Compute purpose hash from the LLM's payload first — the
         # validator checks this against the token's stored hash.
-        side = (data.side or "").upper().strip()
-        mode = (data.mode or "paper").lower().strip()
-        sym = (data.tradingsymbol or "").upper().strip()
-        acct = (data.account or "").strip()
-        order_type = (data.order_type or "LIMIT").upper().strip()
-        qty = int(data.quantity or 0)
+        acct, sym, side, qty, order_type, mode = _res_normalize_place_inputs(data)
         ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
                                  data.price, data.trigger_price)
 
@@ -1199,29 +1497,16 @@ class ResearchController(Controller):
         request_id = _secrets.token_hex(6)
         user_id = _user_id(request)
 
+        _place_args = {
+            "account": acct, "tradingsymbol": sym, "side": side,
+            "quantity": qty, "mode": mode, "order_type": order_type,
+            "price": data.price, "trigger_price": data.trigger_price,
+            "had_token": bool(data.confirm_token),
+        }
+
         async def _audit(status_: str, summary: str) -> None:
-            try:
-                await mcp_audit_queue.enqueue(
-                    tool="place_order",
-                    user_id=user_id,
-                    args_redacted={
-                        "account":       acct,
-                        "tradingsymbol": sym,
-                        "side":          side,
-                        "quantity":      qty,
-                        "mode":          mode,
-                        "order_type":    order_type,
-                        "price":         data.price,
-                        "trigger_price": data.trigger_price,
-                        # token is NEVER persisted — only its presence is logged
-                        "had_token":     bool(data.confirm_token),
-                    },
-                    result_status=status_,
-                    result_summary=summary[:1024],
-                    request_id=request_id,
-                )
-            except Exception as e:
-                logger.warning(f"mcp_audit enqueue failed: {e}")
+            await _res_mcp_audit("place_order", user_id, _place_args,
+                                 status_, summary, request_id)
 
         # Token gate.
         err = _consume_token(data.confirm_token or "", user_id, ph)
@@ -1233,17 +1518,8 @@ class ResearchController(Controller):
         # function keeps the validation / mode resolution / paper-engine
         # registration / Kite call all in one place.
         from backend.api.routes.orders import OrdersController
-        from backend.api.schemas import TicketOrderRequest
 
-        ticket = TicketOrderRequest(
-            mode=mode, side=side, tradingsymbol=sym, quantity=qty,
-            exchange=data.exchange, product=data.product,
-            order_type=order_type, variety=data.variety,
-            price=data.price, trigger_price=data.trigger_price,
-            account=acct, chase=data.chase,
-            chase_aggressiveness=data.chase_aggressiveness,
-            source="mcp",
-        )
+        ticket = _res_make_place_ticket(mode, side, sym, qty, data, acct, order_type)
         try:
             ctrl = OrdersController(owner=None)
             # `.fn(ctrl, ...)` — bypass the @post route-handler wrapper.
@@ -1269,27 +1545,8 @@ class ResearchController(Controller):
             f"mode={res.mode} {side} {qty} {sym} acct={acct}"
         )
 
-        # Phase 3c — Telegram ping. Defense in depth: even when the
-        # operator is in a meeting / away from the Lab page, every
-        # LLM-initiated order pings the alerts channel. Routes through
-        # the same `is_enabled('telegram')` + secrets gate the existing
-        # alert pipeline uses; silent no-op when telegram is off.
-        try:
-            from backend.shared.helpers.alert_utils import _send_telegram
-            price_chunk = (
-                f" @₹{data.price:g}" if data.price else
-                (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
-            )
-            mode_pill = f"[{res.mode.upper()}]" if res.mode else "[?]"
-            tg_msg = (
-                f"<b>MCP {mode_pill}</b> {side} {qty} {sym}{price_chunk}\n"
-                f"acct={acct} · order_id=<code>{res.order_id}</code> · "
-                f"status={res.status}\n"
-                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
-            )
-            _send_telegram(tg_msg)
-        except Exception as e:
-            logger.warning(f"MCP place_order Telegram ping failed: {e}")
+        # Phase 3c — Telegram ping (swallows exceptions).
+        _res_place_telegram_ping(acct, side, qty, sym, data, res, request_id, user_id)
         return PlaceOrderResponse(
             order_id=res.order_id, mode=res.mode,
             status=res.status, detail=res.detail,
@@ -1308,9 +1565,7 @@ class ResearchController(Controller):
           - mode='paper'          → PaperTradeEngine.cancel_paper_order
                                      (order_id is the AlgoOrder.id int)
         """
-        acct = (data.account or "").strip()
-        oid = (data.order_id or "").strip()
-        mode = (data.mode or "live").lower().strip()
+        acct, oid, mode = _res_normalize_cancel_inputs(data)
         if not acct or not oid:
             raise HTTPException(status_code=400, detail="account and order_id are required")
         if mode not in ("paper", "live"):
@@ -1320,24 +1575,14 @@ class ResearchController(Controller):
         request_id = _secrets.token_hex(6)
         user_id = _user_id(request)
 
+        _cancel_args = {
+            "account": acct, "order_id": oid, "mode": mode,
+            "variety": data.variety, "had_token": bool(data.confirm_token),
+        }
+
         async def _audit(status_: str, summary: str) -> None:
-            try:
-                await mcp_audit_queue.enqueue(
-                    tool="cancel_order",
-                    user_id=user_id,
-                    args_redacted={
-                        "account":  acct,
-                        "order_id": oid,
-                        "mode":     mode,
-                        "variety":  data.variety,
-                        "had_token": bool(data.confirm_token),
-                    },
-                    result_status=status_,
-                    result_summary=summary[:1024],
-                    request_id=request_id,
-                )
-            except Exception as e:
-                logger.warning(f"mcp_audit enqueue failed: {e}")
+            await _res_mcp_audit("cancel_order", user_id, _cancel_args,
+                                 status_, summary, request_id)
 
         err = _consume_token(data.confirm_token or "", user_id, ph)
         if err:
@@ -1346,72 +1591,10 @@ class ResearchController(Controller):
 
         # Dispatch by mode.
         if mode == "paper":
-            try:
-                algo_order_id = int(oid)
-            except (TypeError, ValueError):
-                await _audit("error", "paper cancel: order_id must be an integer AlgoOrder.id")
-                raise HTTPException(status_code=400,
-                    detail="For paper cancel, order_id must be the integer AlgoOrder.id")
-            try:
-                from backend.api.algo.paper import get_prod_paper_engine
-                engine = get_prod_paper_engine()
-                ok = engine.cancel_paper_order(algo_order_id)
-            except Exception as e:
-                await _audit("error", f"paper engine raised: {e}")
-                logger.exception("MCP paper cancel raised")
-                raise HTTPException(status_code=500, detail=str(e))
-            if not ok:
-                await _audit("error", f"no OPEN paper order with id={algo_order_id}")
-                raise HTTPException(status_code=404,
-                    detail=f"No OPEN paper order with AlgoOrder.id={algo_order_id}")
-            await _audit("ok", f"paper order_id={algo_order_id} CANCELLED")
-            logger.info(f"MCP cancel_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
-            try:
-                from backend.shared.helpers.alert_utils import _send_telegram
-                _send_telegram(
-                    f"<b>MCP CANCEL [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
-                    f"acct={acct}\n"
-                    f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
-                )
-            except Exception as e:
-                logger.warning(f"MCP cancel_order (paper) Telegram ping failed: {e}")
-            return SimpleOrderResponse(order_id=oid, detail="cancelled (paper)")
+            return await _res_cancel_paper(oid, acct, request_id, user_id, _audit)
 
-        # Live mode — forward to existing broker cancel handler. Use
-        # `.fn(ctrl, ...)` to bypass the @delete decorator wrapper
-        # (calling the decorated method directly returns a route-handler
-        # object, not a coroutine — "object delete can't be used in
-        # 'await' expression"). Same workaround as activate/deactivate.
-        from backend.api.routes.orders import OrdersController
-        try:
-            ctrl = OrdersController(owner=None)
-            res = await OrdersController.cancel_order.fn(
-                ctrl,
-                order_id=oid, request=request,
-                account=acct, variety=data.variety,
-            )
-        except HTTPException as e:
-            await _audit("error", f"{e.status_code}: {e.detail}")
-            raise
-        except Exception as e:
-            await _audit("error", f"unexpected: {e}")
-            logger.exception("MCP cancel_order: underlying handler raised")
-            raise HTTPException(status_code=500, detail=str(e))
-
-        await _audit("ok", f"order_id={res.order_id}")
-        logger.info(f"MCP cancel_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
-
-        try:
-            from backend.shared.helpers.alert_utils import _send_telegram
-            _send_telegram(
-                f"<b>MCP CANCEL [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
-                f"acct={acct}\n"
-                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
-            )
-        except Exception as e:
-            logger.warning(f"MCP cancel_order Telegram ping failed: {e}")
-
-        return SimpleOrderResponse(order_id=res.order_id, detail="cancelled (live)")
+        # Live mode — forward to existing broker cancel handler.
+        return await _res_cancel_live(oid, acct, data, request_id, user_id, _audit, request)
 
     @post("/modify-order", guards=[cap_guard("use_mcp_tools")])
     async def modify_order(self, data: ModifyOrderRequest, request: Request) -> SimpleOrderResponse:
@@ -1425,11 +1608,7 @@ class ResearchController(Controller):
                                      (order_id is the AlgoOrder.id int;
                                      next chase tick uses the new values)
         """
-        acct = (data.account or "").strip()
-        oid = (data.order_id or "").strip()
-        qty = int(data.quantity or 0)
-        otype = (data.order_type or "LIMIT").upper().strip()
-        mode = (data.mode or "live").lower().strip()
+        acct, oid, qty, otype, mode = _res_normalize_modify_inputs(data)
         if not acct or not oid:
             raise HTTPException(status_code=400, detail="account and order_id are required")
         if mode not in ("paper", "live"):
@@ -1439,41 +1618,24 @@ class ResearchController(Controller):
         request_id = _secrets.token_hex(6)
         user_id = _user_id(request)
 
+        _modify_args = {
+            "account": acct, "order_id": oid, "mode": mode,
+            "quantity": qty or None, "order_type": otype,
+            "price": data.price, "trigger_price": data.trigger_price,
+            "variety": data.variety, "validity": data.validity,
+            "had_token": bool(data.confirm_token),
+        }
+
         async def _audit(status_: str, summary: str) -> None:
-            try:
-                await mcp_audit_queue.enqueue(
-                    tool="modify_order",
-                    user_id=user_id,
-                    args_redacted={
-                        "account":       acct,
-                        "order_id":      oid,
-                        "mode":          mode,
-                        "quantity":      qty or None,
-                        "order_type":    otype,
-                        "price":         data.price,
-                        "trigger_price": data.trigger_price,
-                        "variety":       data.variety,
-                        "validity":      data.validity,
-                        "had_token":     bool(data.confirm_token),
-                    },
-                    result_status=status_,
-                    result_summary=summary[:1024],
-                    request_id=request_id,
-                )
-            except Exception as e:
-                logger.warning(f"mcp_audit enqueue failed: {e}")
+            await _res_mcp_audit("modify_order", user_id, _modify_args,
+                                 status_, summary, request_id)
 
         err = _consume_token(data.confirm_token or "", user_id, ph)
         if err:
             await _audit("denied", err)
             raise HTTPException(status_code=403, detail=f"Confirm token: {err}")
 
-        chunks = " ".join(filter(None, [
-            f"qty={qty}" if qty else None,
-            f"type={otype}" if otype else None,
-            f"@₹{data.price:g}" if data.price else None,
-            f"trig=₹{data.trigger_price:g}" if data.trigger_price else None,
-        ])) or "(no-op)"
+        chunks = _res_modify_chunks(qty, otype, data.price, data.trigger_price)
 
         if mode == "paper":
             return await _mcp_modify_paper(
@@ -1501,21 +1663,11 @@ class ResearchController(Controller):
         request_id = _secrets.token_hex(6)
         user_id = _user_id(request)
 
+        _status_args = {"agent_slug": slug, "had_token": bool(data.confirm_token)}
+
         async def _audit(status_: str, summary: str) -> None:
-            try:
-                await mcp_audit_queue.enqueue(
-                    tool=f"{action}_agent",
-                    user_id=user_id,
-                    args_redacted={
-                        "agent_slug": slug,
-                        "had_token":  bool(data.confirm_token),
-                    },
-                    result_status=status_,
-                    result_summary=summary[:1024],
-                    request_id=request_id,
-                )
-            except Exception as e:
-                logger.warning(f"mcp_audit enqueue failed: {e}")
+            await _res_mcp_audit(f"{action}_agent", user_id, _status_args,
+                                 status_, summary, request_id)
 
         err = _consume_token(data.confirm_token or "", user_id, ph)
         if err:
@@ -1525,19 +1677,10 @@ class ResearchController(Controller):
         # Inline the agent status flip — calling AgentController's
         # @put-decorated methods directly fails ("object put can't be
         # used in 'await' expression") because Litestar wraps decorated
-        # methods in route-handler objects. The flip is 3 lines, so
-        # just do it here.
-        new_status = "active" if action == "activate" else "inactive"
+        # methods in route-handler objects.
+        new_status, verb = _res_agent_action_labels(action)
         try:
-            async with async_session() as s:
-                agent = (await s.execute(
-                    select(Agent).where(Agent.slug == slug)
-                )).scalar_one_or_none()
-                if not agent:
-                    raise HTTPException(status_code=404,
-                                        detail=f"Agent '{slug}' not found")
-                agent.status = new_status
-                await s.commit()
+            await _res_flip_agent_status_db(slug, new_status)
         except HTTPException as e:
             await _audit("error", f"{e.status_code}: {e.detail}")
             raise
@@ -1551,17 +1694,7 @@ class ResearchController(Controller):
             f"MCP {action}_agent OK: user={user_id} agent={slug} "
             f"new_status={new_status}"
         )
-
-        try:
-            from backend.shared.helpers.alert_utils import _send_telegram
-            verb = "ACTIVATE" if action == "activate" else "DEACTIVATE"
-            _send_telegram(
-                f"<b>MCP {verb}</b> agent=<code>{slug}</code> → status={new_status}\n"
-                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
-            )
-        except Exception as e:
-            logger.warning(f"MCP {action}_agent Telegram ping failed: {e}")
-
+        _res_agent_status_telegram_ping(verb, slug, new_status, request_id, user_id, action)
         return AgentStatusResponse(
             agent_slug=slug, status=new_status,
             detail=f"agent {slug!r} {action}d",
@@ -1623,22 +1756,15 @@ class ResearchController(Controller):
         request_id = _secrets.token_hex(6)
         user_id = _user_id(request)
 
+        _update_args = {
+            "agent_slug": slug,
+            "changed_fields": sorted(filtered.keys()),
+            "had_token": bool(data.confirm_token),
+        }
+
         async def _audit(status_: str, summary: str) -> None:
-            try:
-                await mcp_audit_queue.enqueue(
-                    tool="update_agent",
-                    user_id=user_id,
-                    args_redacted={
-                        "agent_slug":     slug,
-                        "changed_fields": sorted(filtered.keys()),
-                        "had_token":      bool(data.confirm_token),
-                    },
-                    result_status=status_,
-                    result_summary=summary[:1024],
-                    request_id=request_id,
-                )
-            except Exception as e:
-                logger.warning(f"mcp_audit enqueue failed: {e}")
+            await _res_mcp_audit("update_agent", user_id, _update_args,
+                                 status_, summary, request_id)
 
         err = _consume_token(data.confirm_token or "", user_id, ph)
         if err:
@@ -1648,18 +1774,7 @@ class ResearchController(Controller):
         # Apply the whitelisted fields inline (same pattern as
         # activate/deactivate — avoid the @put decorator wrapper).
         try:
-            async with async_session() as s:
-                agent = (await s.execute(
-                    select(Agent).where(Agent.slug == slug)
-                )).scalar_one_or_none()
-                if not agent:
-                    raise HTTPException(status_code=404,
-                                        detail=f"Agent '{slug}' not found")
-                for key, val in filtered.items():
-                    setattr(agent, key, val)
-                await s.commit()
-                await s.refresh(agent)
-                current_status = agent.status
+            current_status = await _res_apply_agent_update_db(slug, filtered)
         except HTTPException as e:
             await _audit("error", f"{e.status_code}: {e.detail}")
             raise
@@ -1674,17 +1789,7 @@ class ResearchController(Controller):
             f"MCP update_agent OK: user={user_id} agent={slug} "
             f"fields=[{changed_list}]"
         )
-
-        try:
-            from backend.shared.helpers.alert_utils import _send_telegram
-            _send_telegram(
-                f"<b>MCP UPDATE</b> agent=<code>{slug}</code>\n"
-                f"changed: {changed_list}\n"
-                f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
-            )
-        except Exception as e:
-            logger.warning(f"MCP update_agent Telegram ping failed: {e}")
-
+        _res_update_agent_telegram_ping(slug, changed_list, request_id, user_id)
         return AgentStatusResponse(
             agent_slug=slug, status=current_status,
             detail=f"agent {slug!r} updated: {changed_list}",

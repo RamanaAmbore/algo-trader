@@ -279,6 +279,27 @@ async def get_funds_summary(account: str | None = None) -> dict:
     }
 
 
+async def _find_watchlist_match(name: str, wls: list) -> "dict | None":
+    """Return the first watchlist entry matching `name` case-insensitively, or None."""
+    target = name.strip().lower()
+    return next(
+        (w for w in (wls or []) if (w.get("name") or "").strip().lower() == target),
+        None,
+    )
+
+
+async def _build_watchlist_detail(match: dict) -> dict:
+    """Fetch full watchlist detail and return the MCP response dict."""
+    full = await _get(f"/api/watchlist/{int(match['id'])}")
+    items = (full or {}).get("items") or []
+    return {
+        "id":         (full or {}).get("id"),
+        "name":       (full or {}).get("name"),
+        "items":      items,
+        "item_count": len(items),
+    }
+
+
 @app.tool()
 async def get_watchlist(name: str) -> dict:
     """Look up one of the operator's curated watchlists by name and
@@ -296,27 +317,18 @@ async def get_watchlist(name: str) -> dict:
         dict with {id, name, items: [{exchange, tradingsymbol, ...}],
         item_count}. When no match: {error, available_names: [...]}.
     """
-    target = (name or "").strip().lower()
+    target = (name or "").strip()
     if not target:
         return {"error": "name is required", "items": []}
-    # 1. List all → find by name (case-insensitive).
     wls = await _get("/api/watchlist/")
-    match = next((w for w in (wls or []) if (w.get("name") or "").strip().lower() == target), None)
+    match = await _find_watchlist_match(target, wls or [])
     if not match:
         return {
             "error":           f"No watchlist named {name!r}",
             "available_names": [w.get("name") for w in (wls or []) if w.get("name")],
             "items":           [],
         }
-    # 2. Fetch full detail.
-    full = await _get(f"/api/watchlist/{int(match['id'])}")
-    items = (full or {}).get("items") or []
-    return {
-        "id":         full.get("id"),
-        "name":       full.get("name"),
-        "items":      items,
-        "item_count": len(items),
-    }
+    return await _build_watchlist_detail(match)
 
 
 @app.tool()

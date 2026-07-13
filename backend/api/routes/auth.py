@@ -329,6 +329,50 @@ _NAV_CACHE: dict = {"ts": 0.0, "value": None}
 _NAV_TTL_SEC = 30.0
 
 
+def _auth_nav_pnl_from_intraday(intraday_equity: object) -> "tuple[float, float, str]":
+    """Extract (day_pnl, cum_pnl, as_of_iso) from the live intraday-equity deque.
+
+    Caller guarantees the deque is non-empty.
+    """
+    _last = intraday_equity[-1]
+    ts, day_pnl, cum_pnl = _last[0], _last[1], _last[2]
+    return float(day_pnl), float(cum_pnl), ts
+
+
+def _auth_nav_pnl_fallback(
+    total_h: "pd.DataFrame",
+    total_p: "pd.DataFrame",
+    pos_pnl: float,
+) -> "tuple[float, float, str]":
+    """Off-hours fallback P&L: sum holdings + positions day_change_val / pnl.
+
+    Returns (day_pnl, cum_pnl, as_of_iso). as_of_iso is UTC now.
+    """
+    firm_day_pnl = 0.0
+    if not total_h.empty and 'day_change_val' in total_h.columns:
+        firm_day_pnl += float(total_h['day_change_val'].iloc[0] or 0)
+    if not total_p.empty and 'day_change_val' in total_p.columns:
+        firm_day_pnl += float(total_p['day_change_val'].iloc[0] or 0)
+    firm_cum_pnl = pos_pnl
+    if not total_h.empty and 'pnl' in total_h.columns:
+        firm_cum_pnl += float(total_h['pnl'].iloc[0] or 0)
+    return firm_day_pnl, firm_cum_pnl, datetime.now(timezone.utc).isoformat()
+
+
+def _auth_nav_total_row(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Return the TOTAL summary row from a holdings/positions summary DataFrame."""
+    if df.empty:
+        return df
+    return df[df['account'] == 'TOTAL']
+
+
+def _auth_nav_pos_pnl(total_p: "pd.DataFrame") -> float:
+    """Extract the TOTAL-row pnl scalar from a positions summary."""
+    if not total_p.empty and 'pnl' in total_p.columns:
+        return float(total_p['pnl'].iloc[0] or 0)
+    return 0.0
+
+
 async def _compute_firm_nav() -> tuple[float, float, float, str]:
     """Return (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso).
 
@@ -385,21 +429,16 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
             _, sum_h = await df_h_fut
             _, sum_p = await df_p_fut
 
-        total_h = sum_h[sum_h['account'] == 'TOTAL'] if not sum_h.empty else sum_h
-        total_p = sum_p[sum_p['account'] == 'TOTAL'] if not sum_p.empty else sum_p
-
-        pos_pnl = 0.0
-        if not total_p.empty and 'pnl' in total_p.columns:
-            pos_pnl = float(total_p['pnl'].iloc[0] or 0)
+        total_h = _auth_nav_total_row(sum_h)
+        total_p = _auth_nav_total_row(sum_p)
+        pos_pnl = _auth_nav_pos_pnl(total_p)
 
         # Prefer the deque for P&L (already running totals) when alive.
         # Buffer carries (ts, day, cum, ...) per tick.
         if _intraday_equity:
-            _last = _intraday_equity[-1]
-            ts, day_pnl, cum_pnl = _last[0], _last[1], _last[2]
-            as_of_iso    = ts
-            firm_day_pnl = float(day_pnl)
-            firm_cum_pnl = float(cum_pnl)
+            firm_day_pnl, firm_cum_pnl, as_of_iso = _auth_nav_pnl_from_intraday(
+                _intraday_equity
+            )
         else:
             # Off-hours fallback — synthesize from holdings + positions.
             # day_pnl must include BOTH legs: the prior `firm_day_pnl =
@@ -408,14 +447,9 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
             # under-reported by the positions contribution on every off-hours
             # render. SSOT alignment: PerformancePage NAV TOTAL row and the
             # intraday-equity tick both already sum (H + P) day_change_val.
-            firm_day_pnl = 0.0
-            if not total_h.empty and 'day_change_val' in total_h.columns:
-                firm_day_pnl += float(total_h['day_change_val'].iloc[0] or 0)
-            if not total_p.empty and 'day_change_val' in total_p.columns:
-                firm_day_pnl += float(total_p['day_change_val'].iloc[0] or 0)
-            firm_cum_pnl = pos_pnl
-            if not total_h.empty and 'pnl' in total_h.columns:
-                firm_cum_pnl += float(total_h['pnl'].iloc[0] or 0)
+            firm_day_pnl, firm_cum_pnl, as_of_iso = _auth_nav_pnl_fallback(
+                total_h, total_p, pos_pnl
+            )
     except Exception as e:
         logger.warning(f"_compute_firm_nav: broker fetch failed: {e}")
 

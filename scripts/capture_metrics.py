@@ -279,6 +279,24 @@ def _jscpd(target: Path) -> tuple[Optional[int], dict]:
         return None, {"_error": f"jscpd parse failed: {e}"}
 
 
+def _parse_eslint_scores(results: list) -> list[int]:
+    """Extract complexity scores from ESLint JSON results."""
+    scores: list[int] = []
+    for f in results:
+        for msg in f.get("messages", []):
+            if msg.get("ruleId") != "complexity":
+                continue
+            text = msg.get("message", "")
+            for token in text.split():
+                if token.rstrip(".").isdigit():
+                    try:
+                        scores.append(int(token.rstrip(".")))
+                    except ValueError:
+                        continue
+                    break
+    return scores
+
+
 def _eslint_complexity(target: Path) -> tuple[Optional[float], Optional[int], dict]:
     """ESLint complexity via `npx eslint --rule "complexity: [error, 1]"`.
     Best-effort. Returns (avg, max, raw)."""
@@ -298,27 +316,13 @@ def _eslint_complexity(target: Path) -> tuple[Optional[float], Optional[int], di
         ],
         cwd=ROOT, timeout=300,
     )
-    # eslint rc=1 when warnings/errors found — that's the expected path
     if rc not in (0, 1):
         return None, None, {"_error": (err or out)[:500]}
     try:
         results = json.loads(out or "[]")
     except json.JSONDecodeError:
         return None, None, {"_error": "eslint JSON parse failed"}
-    scores: list[int] = []
-    for f in results:
-        for msg in f.get("messages", []):
-            if msg.get("ruleId") != "complexity":
-                continue
-            # Message format: 'Function "foo" has a complexity of N.'
-            text = msg.get("message", "")
-            for token in text.split():
-                if token.rstrip(".").isdigit():
-                    try:
-                        scores.append(int(token.rstrip(".")))
-                    except ValueError:
-                        continue
-                    break
+    scores = _parse_eslint_scores(results)
     if not scores:
         return 0.0, 0, {"_note": "no complexity warnings"}
     return round(mean(scores), 2), max(scores), {"sample_count": len(scores)}
@@ -420,6 +424,73 @@ def _aggregate_durations(durations: list[float], names: list[str]) -> dict:
     }
 
 
+def _pytest_json_report(out_path: Path) -> "tuple[dict, dict] | None":
+    """Run pytest with --json-report and parse durations. Returns (agg, meta) or None on miss."""
+    if out_path.exists():
+        out_path.unlink()
+    rc, out, err = _run(
+        [
+            sys.executable, "-m", "pytest",
+            "--json-report",
+            f"--json-report-file={out_path}",
+            "--json-report-summary",
+            "-q", "--tb=no",
+            str(ROOT / "backend" / "tests"),
+        ],
+        cwd=ROOT, timeout=600,
+    )
+    if not out_path.exists():
+        return None
+    try:
+        report = json.loads(out_path.read_text())
+        durations: list[float] = []
+        names: list[str] = []
+        for t in report.get("tests", []):
+            dur = t.get("call", {}).get("duration", None)
+            if dur is None:
+                dur = t.get("duration", None)
+            if dur is not None:
+                try:
+                    durations.append(float(dur))
+                    names.append(t.get("nodeid", "unknown"))
+                except (TypeError, ValueError):
+                    continue
+        return _aggregate_durations(durations, names), {"source": "pytest-json-report"}
+    except Exception as e:  # noqa: BLE001
+        return {}, {"_error": f"pytest-json-report parse failed: {e}"}
+
+
+def _pytest_text_durations() -> tuple[dict, dict]:
+    """Run pytest --durations=0 and parse text output. Always available."""
+    rc, out, err = _run(
+        [
+            sys.executable, "-m", "pytest",
+            "--durations=0",
+            "-q", "--tb=no",
+            str(ROOT / "backend" / "tests"),
+        ],
+        cwd=ROOT, timeout=600,
+    )
+    durations: list[float] = []
+    names: list[str] = []
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if "s call" not in line and "s setup" not in line and "s teardown" not in line:
+            continue
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            dur = float(parts[0].rstrip("s"))
+            node = parts[-1]
+            if "::" in node:
+                durations.append(dur)
+                names.append(node)
+        except (ValueError, IndexError):
+            continue
+    return _aggregate_durations(durations, names), {"source": "pytest --durations=0 fallback"}
+
+
 def _pytest_durations(json_report_path: Optional[Path] = None) -> tuple[dict, dict]:
     """Run pytest with `--json-report` (via `pytest-json-report`) and parse
     per-test durations.  Returns (agg_dict, meta_dict).
@@ -434,8 +505,6 @@ def _pytest_durations(json_report_path: Optional[Path] = None) -> tuple[dict, di
     """
     out_path = json_report_path or Path("/tmp/ramboq_pytest_durations.json")
 
-    # Prefer JSON report if pytest-json-report is installed.
-    has_json_report = _tool_available("pytest") or True  # pytest itself always exists
     json_report_pkg = False
     try:
         import importlib
@@ -445,76 +514,12 @@ def _pytest_durations(json_report_path: Optional[Path] = None) -> tuple[dict, di
         pass
 
     if json_report_pkg:
-        if out_path.exists():
-            out_path.unlink()
-        rc, out, err = _run(
-            [
-                sys.executable, "-m", "pytest",
-                f"--json-report",
-                f"--json-report-file={out_path}",
-                "--json-report-summary",
-                "-q", "--tb=no",
-                str(ROOT / "backend" / "tests"),
-            ],
-            cwd=ROOT, timeout=600,
-        )
-        # pytest exits non-zero on test failures — we still want durations.
-        if out_path.exists():
-            try:
-                report = json.loads(out_path.read_text())
-                durations: list[float] = []
-                names: list[str] = []
-                for t in report.get("tests", []):
-                    # call stage duration; setupduration / teardown omitted
-                    # because operators care about test-body time.
-                    dur = t.get("call", {}).get("duration", None)
-                    if dur is None:
-                        # fallback: total duration field if no per-stage breakdown
-                        dur = t.get("duration", None)
-                    if dur is not None:
-                        try:
-                            durations.append(float(dur))
-                            names.append(t.get("nodeid", "unknown"))
-                        except (TypeError, ValueError):
-                            continue
-                return _aggregate_durations(durations, names), {"source": "pytest-json-report"}
-            except Exception as e:  # noqa: BLE001
-                return {}, {"_error": f"pytest-json-report parse failed: {e}"}
-        return {}, {"_error": f"pytest-json-report output missing (rc={rc}): {err[-300:]}"}
+        result = _pytest_json_report(out_path)
+        if result is not None:
+            return result
+        return {}, {"_error": "pytest-json-report output missing"}
 
-    # Fallback: parse `--durations=0` text output. Each line looks like:
-    #   0.42s call     backend/tests/test_foo.py::test_bar
-    # This gives us individual test durations without the JSON plugin.
-    rc, out, err = _run(
-        [
-            sys.executable, "-m", "pytest",
-            "--durations=0",
-            "-q", "--tb=no",
-            str(ROOT / "backend" / "tests"),
-        ],
-        cwd=ROOT, timeout=600,
-    )
-    durations = []
-    names = []
-    for line in (out or "").splitlines():
-        line = line.strip()
-        # Format: "0.04s call     backend/tests/test_foo.py::test_bar"
-        if "s call" not in line and "s setup" not in line and "s teardown" not in line:
-            continue
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        try:
-            dur_str = parts[0].rstrip("s")
-            dur = float(dur_str)
-            # nodeid is the last token when using --durations=0 text output
-            node = parts[-1]
-            if "::" in node:
-                durations.append(dur)
-                names.append(node)
-        except (ValueError, IndexError):
-            continue
-    return _aggregate_durations(durations, names), {"source": "pytest --durations=0 fallback"}
+    return _pytest_text_durations()
 
 
 def _playwright_durations(json_report_path: Optional[Path] = None) -> tuple[dict, dict]:

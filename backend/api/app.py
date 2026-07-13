@@ -276,33 +276,45 @@ def _resolve_creds_conn_service() -> tuple[str | None, str | None, str]:
     return None, None, ""
 
 
+def _kite_broker_creds(broker: "Any") -> "tuple[str | None, str | None, str] | None":
+    """Extract (api_key, access_token, account) from one KiteBroker adapter.
+
+    Returns None when the broker has no usable token so the caller can
+    continue to the next broker in the list.
+    """
+    from backend.brokers.connections import Connections
+    conn = getattr(broker, "_conn", None)
+    if conn is None:
+        account = broker.account
+        conn = Connections().conn.get(account)
+    if conn is None:
+        return None
+    tok = getattr(conn, "_access_token", None) or (
+        conn.get_access_token() if hasattr(conn, "get_access_token") else None
+    )
+    if not tok:
+        return None
+    api_key = getattr(conn, "api_key", None)
+    acct = getattr(conn, "account", "") or ""
+    logger.info(
+        f"KiteTicker: using account {acct or '?'} "
+        f"(api_key=…{(api_key or '')[-4:]})"
+    )
+    return api_key, tok, acct
+
+
 def _resolve_creds_local() -> tuple[str | None, str | None, str]:
     """Walk local sparkline broker adapters to find a live Kite access_token."""
     from backend.brokers.registry import get_sparkline_broker
-    from backend.brokers.connections import Connections
     from backend.brokers.adapters.kite import KiteBroker
     spark_broker = get_sparkline_broker()
     brokers = getattr(spark_broker, "_brokers", [spark_broker])
     for broker in brokers:
         if not isinstance(broker, KiteBroker):
             continue
-        conn = getattr(broker, "_conn", None)
-        if conn is None:
-            account = broker.account
-            conn = Connections().conn.get(account)
-        if conn is None:
-            continue
-        tok = getattr(conn, "_access_token", None) or (
-            conn.get_access_token() if hasattr(conn, "get_access_token") else None
-        )
-        if tok:
-            api_key = getattr(conn, "api_key", None)
-            acct = getattr(conn, "account", "") or ""
-            logger.info(
-                f"KiteTicker: using account {acct or '?'} "
-                f"(api_key=…{(api_key or '')[-4:]})"
-            )
-            return api_key, tok, acct
+        result = _kite_broker_creds(broker)
+        if result is not None:
+            return result
     return None, None, ""
 
 
@@ -443,45 +455,76 @@ def _is_private_ip(ip: str) -> bool:
     return False
 
 
+def _mmdb_city_region(rec: dict) -> str:
+    """Extract 'City, Region' from a MaxMind city record dict."""
+    city_obj = (rec.get("city") or {}).get("names") or {}
+    city = city_obj.get("en") or ""
+    subdivisions = rec.get("subdivisions") or [{}]
+    region = subdivisions[0].get("iso_code") or ""
+    if city and region:
+        return f"{city}, {region}"
+    return city
+
+
+def _mmdb_city_lookup(ip: str) -> str:
+    """Return 'City, Region' string from the city MaxMind DB, or '' on miss."""
+    if _mmdb_city is None:
+        return ""
+    try:
+        rec = _mmdb_city.get(ip) or {}
+        return _mmdb_city_region(rec)
+    except Exception:
+        return ""
+
+
+def _mmdb_asn_lookup(ip: str) -> "tuple[str, str]":
+    """Return (asn_string, company_short) from the ASN MaxMind DB, or ('', '') on miss."""
+    if _mmdb_asn is None:
+        return "", ""
+    try:
+        asn_rec = _mmdb_asn.get(ip) or {}
+        asn_num = asn_rec.get("autonomous_system_number")
+        asn_org = asn_rec.get("autonomous_system_organization") or ""
+        asn = f"AS{asn_num}" if asn_num else ""
+        company = ""
+        if asn_org:
+            try:
+                from backend.scripts.visitor_report import _shorten_company
+                company = _shorten_company(asn_org)
+            except Exception:
+                company = asn_org[:40]
+        return asn, company
+    except Exception:
+        return "", ""
+
+
 def _mmdb_lookup(ip: str) -> tuple[str, str, str]:
     """Return (city_region, company_short, asn) via local MaxMind. Empty
     strings on miss — the hook still logs country + colo from CF headers
     so a missing .mmdb file degrades gracefully."""
     _mmdb_open()
-    city_region = ""
-    company = ""
-    asn = ""
-    if _mmdb_city is not None:
-        try:
-            rec = _mmdb_city.get(ip) or {}
-            city_obj = (rec.get("city") or {}).get("names") or {}
-            city = city_obj.get("en") or ""
-            subdivisions = rec.get("subdivisions") or [{}]
-            region = subdivisions[0].get("iso_code") or ""
-            if city and region:
-                city_region = f"{city}, {region}"
-            elif city:
-                city_region = city
-        except Exception:
-            pass
-    if _mmdb_asn is not None:
-        try:
-            asn_rec = _mmdb_asn.get(ip) or {}
-            asn_num = asn_rec.get("autonomous_system_number")
-            asn_org = asn_rec.get("autonomous_system_organization") or ""
-            if asn_num:
-                asn = f"AS{asn_num}"
-            if asn_org:
-                # Reuse the same shortener the daily report uses so
-                # log lines and the digest read the same names.
-                try:
-                    from backend.scripts.visitor_report import _shorten_company
-                    company = _shorten_company(asn_org)
-                except Exception:
-                    company = asn_org[:40]
-        except Exception:
-            pass
+    city_region = _mmdb_city_lookup(ip)
+    asn, company = _mmdb_asn_lookup(ip)
     return city_region, company, asn
+
+
+def _ip_in_ignore_list(ip: str, ips_raw: str) -> bool:
+    """Return True if ip exactly matches or starts with any pattern in the CSV list."""
+    for pat in (p.strip() for p in ips_raw.split(",") if p.strip()):
+        if ip == pat or ip.startswith(pat):
+            return True
+    return False
+
+
+def _company_in_ignore_list(company: str, companies_raw: str) -> bool:
+    """Return True if company (lowercased) contains any pattern in the CSV list."""
+    if not company:
+        return False
+    cl = company.lower()
+    for pat in (p.strip().lower() for p in companies_raw.split(",") if p.strip()):
+        if pat and pat in cl:
+            return True
+    return False
 
 
 def _visitor_ignored(ip: str, company: str) -> bool:
@@ -494,15 +537,7 @@ def _visitor_ignored(ip: str, company: str) -> bool:
         companies_raw = _get_string("visitors.ignore_companies", "")
     except Exception:
         return False
-    for pat in (p.strip() for p in ips_raw.split(",") if p.strip()):
-        if ip == pat or ip.startswith(pat):
-            return True
-    if company:
-        cl = company.lower()
-        for pat in (p.strip().lower() for p in companies_raw.split(",") if p.strip()):
-            if pat and pat in cl:
-                return True
-    return False
+    return _ip_in_ignore_list(ip, ips_raw) or _company_in_ignore_list(company, companies_raw)
 
 
 _SKIP_PATH_PREFIXES = ("/assets/", "/_app/", "/cdn-cgi/")

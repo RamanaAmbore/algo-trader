@@ -182,6 +182,28 @@ async def _place_order_on_failure(
         pass
 
 
+def _al_place_resolve_params(
+    context: dict, params: dict
+) -> "tuple[object, str, str, str, str, int, object, str]":
+    """Resolve _action_place_order params and build the _AgentShim sentinel.
+
+    Returns (shim, account, symbol, exchange, side, qty, price, product).
+    """
+    class _AgentShim:
+        slug = context.get("agent_slug", "place_order")
+
+    return (
+        _AgentShim(),
+        str(params.get("account") or ""),
+        str(params.get("symbol") or ""),
+        str(params.get("exchange") or "NFO"),
+        str(params.get("transaction_type") or params.get("side") or "SELL"),
+        int(params.get("quantity") or 0),
+        params.get("price"),
+        str(params.get("product") or "NRML"),
+    )
+
+
 async def _action_place_order(context: dict, params: dict):
     """
     Place an order using the chase engine (live mode).
@@ -197,21 +219,9 @@ async def _action_place_order(context: dict, params: dict):
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.brokers import get_broker
 
-    # A sentinel agent object for _write_live_order which expects agent.slug.
-    # _action_place_order is called from execute() where `agent` is in scope,
-    # but this function only receives context/params.  Build a minimal shim.
-    class _AgentShim:
-        slug = context.get("agent_slug", "place_order")
-
-    _shim = _AgentShim()
-
-    account  = str(params.get("account") or "")
-    symbol   = str(params.get("symbol") or "")
-    exchange = str(params.get("exchange") or "NFO")
-    side     = str(params.get("transaction_type") or params.get("side") or "SELL")
-    qty      = int(params.get("quantity") or 0)
-    price    = params.get("price")
-    product  = str(params.get("product") or "NRML")
+    _shim, account, symbol, exchange, side, qty, price, product = (
+        _al_place_resolve_params(context, params)
+    )
 
     # Fetch LTP as the initial limit price (best-effort).
     if price is None:
@@ -315,6 +325,53 @@ async def _close_position_on_failure(
         pass
 
 
+def _al_close_resolve_params(
+    params: dict,
+) -> "tuple[str, str, str, int, str, str]":
+    """Extract and validate close_position params from the action dict.
+
+    Returns (account, symbol, exchange, qty, side, product).
+    Raises ValueError when required fields are absent.
+    """
+    account  = str(params.get("account") or "")
+    symbol   = str(params.get("symbol") or params.get("tradingsymbol") or "")
+    exchange = str(params.get("exchange") or "NFO")
+    qty      = int(params.get("quantity") or params.get("qty") or 0)
+    side     = (params.get("side") or params.get("transaction_type") or "SELL").upper()
+    product  = str(params.get("product") or "NRML")
+    if not account or not symbol or qty <= 0:
+        raise ValueError(
+            f"close_position: missing required params (account={account!r}, "
+            f"symbol={symbol!r}, qty={qty})"
+        )
+    return account, symbol, exchange, qty, side, product
+
+
+async def _al_close_fetch_broker_ltp(
+    account: str, exchange: str, symbol: str
+) -> "tuple[object | None, float | None]":
+    """Resolve broker and fetch LTP for a close_position call.
+
+    Returns (broker, price); both may be None on failure — caller proceeds
+    with None price and lets the chase engine re-quote on first attempt.
+    """
+    import asyncio
+    from backend.brokers import get_broker
+
+    broker = None
+    price  = None
+    try:
+        broker = get_broker(account)
+        loop   = asyncio.get_running_loop()
+        price  = await _fetch_ltp(broker, exchange, symbol, loop,
+                                  context="close_position")
+    except Exception as e:
+        logger.warning(
+            f"[LIVE] close_position LTP fetch failed, proceeding with None price: {e}"
+        )
+    return broker, price
+
+
 async def _action_live_close_position(agent, context: dict, params: dict):
     """
     Close a single position via the adaptive chase engine.
@@ -327,32 +384,11 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     The chase engine drives the actual Kite calls; any placement or fill
     event is logged by chase.py itself.
     """
-    import asyncio
     from backend.api.algo.chase import chase_order, ChaseConfig
-    from backend.brokers import get_broker
     from backend.api.algo.actions import _write_live_order
 
-    account  = str(params.get("account") or "")
-    symbol   = str(params.get("symbol") or params.get("tradingsymbol") or "")
-    exchange = str(params.get("exchange") or "NFO")
-    qty      = int(params.get("quantity") or params.get("qty") or 0)
-    side     = (params.get("side") or params.get("transaction_type") or "SELL").upper()
-    product  = str(params.get("product") or "NRML")
-
-    if not account or not symbol or qty <= 0:
-        raise ValueError(f"close_position: missing required params (account={account!r}, "
-                         f"symbol={symbol!r}, qty={qty})")
-
-    # Fetch LTP as the initial limit price — the chase engine re-quotes
-    # on every subsequent attempt so this is just the first bid.
-    price = None
-    broker = None
-    try:
-        broker = get_broker(account)
-        loop = asyncio.get_running_loop()
-        price = await _fetch_ltp(broker, exchange, symbol, loop, context="close_position")
-    except Exception as e:
-        logger.warning(f"[LIVE] close_position LTP fetch failed, proceeding with None price: {e}")
+    account, symbol, exchange, qty, side, product = _al_close_resolve_params(params)
+    broker, price = await _al_close_fetch_broker_ltp(account, exchange, symbol)
 
     # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes) ────
     pf = await run_preflight(account, {
@@ -388,6 +424,56 @@ async def _action_live_close_position(agent, context: dict, params: dict):
         raise
 
 
+def _al_modify_build_kwargs(params: dict) -> dict:
+    """Build the kwargs dict for modify_order from action params.
+
+    Iterates recognised field names and includes only values that are not None.
+    """
+    kwargs: dict = {}
+    for field in ("quantity", "price", "trigger_price", "order_type", "validity"):
+        v = params.get(field)
+        if v is not None:
+            kwargs[field] = v
+    return kwargs
+
+
+async def _al_modify_fetch_exchange(order_id: str) -> "str | None":
+    """Fetch the exchange stored on the AlgoOrder row for a given broker_order_id.
+
+    Returns None when the row does not exist or the DB call fails.
+    """
+    try:
+        from sqlalchemy import select as _select
+        from backend.api.database import async_session as _as
+        from backend.api.models import AlgoOrder as _AO
+        async with _as() as _s:
+            _row = (await _s.execute(
+                _select(_AO).where(_AO.broker_order_id == order_id)
+            )).scalar_one_or_none()
+        if _row and _row.exchange:
+            return _row.exchange
+    except Exception:
+        pass
+    return None
+
+
+async def _al_modify_write_reject(order_id: str, e: Exception) -> None:
+    """Mark an AlgoOrder row REJECTED after a modify_order broker failure."""
+    try:
+        from sqlalchemy import update as sql_update
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+        async with async_session() as s:
+            await s.execute(
+                sql_update(AlgoOrder)
+                .where(AlgoOrder.broker_order_id == order_id)
+                .values(status="REJECTED", detail=str(e)[:240])
+            )
+            await s.commit()
+    except Exception:
+        pass
+
+
 async def _action_live_modify_order(agent, context: dict, params: dict):
     """
     Modify an open broker order.  Wraps kite.modify_order in run_in_executor.
@@ -410,27 +496,14 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
     # modify_order references a live Kite order_id — any quantity in params
     # should already be in Kite's convention (lots for MCX). Agent actions
     # that modify orders are expected to supply the correct Kite qty.
-    kwargs: dict = {}
-    for field in ("quantity", "price", "trigger_price", "order_type", "validity"):
-        v = params.get(field)
-        if v is not None:
-            kwargs[field] = v
+    kwargs = _al_modify_build_kwargs(params)
 
     # Slice Q — pass exchange from persisted AlgoOrder row so Groww's
     # segment resolver doesn't raise ValueError on empty exchange.
     if "exchange" not in kwargs:
-        try:
-            from sqlalchemy import select as _select
-            from backend.api.database import async_session as _as
-            from backend.api.models import AlgoOrder as _AO
-            async with _as() as _s:
-                _row = (await _s.execute(
-                    _select(_AO).where(_AO.broker_order_id == order_id)
-                )).scalar_one_or_none()
-            if _row and _row.exchange:
-                kwargs["exchange"] = _row.exchange
-        except Exception:
-            pass
+        exch = await _al_modify_fetch_exchange(order_id)
+        if exch:
+            kwargs["exchange"] = exch
 
     try:
         await loop.run_in_executor(
@@ -439,19 +512,7 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
         )
     except Exception as e:
         # Update the AlgoOrder row to REJECTED so the operator can see it.
-        try:
-            from sqlalchemy import update as sql_update
-            from backend.api.database import async_session
-            from backend.api.models import AlgoOrder
-            async with async_session() as s:
-                await s.execute(
-                    sql_update(AlgoOrder)
-                    .where(AlgoOrder.broker_order_id == order_id)
-                    .values(status="REJECTED", detail=str(e)[:240])
-                )
-                await s.commit()
-        except Exception:
-            pass
+        await _al_modify_write_reject(order_id, e)
         raise
 
 
@@ -497,6 +558,51 @@ async def _action_live_cancel_order(agent, context: dict, params: dict):
         logger.warning(f"[LIVE] cancel_order DB update failed: {db_e}")
 
 
+async def _al_cancel_broker_orders(
+    broker, scope_account: str, loop
+) -> "tuple[int, int]":
+    """Cancel all open orders for a single broker account.
+
+    Skips the broker entirely when scope_account is set and does not match.
+    Returns (cancelled_count, error_count).
+    """
+    acct = broker.account
+    if scope_account and acct != scope_account:
+        return 0, 0
+
+    cancelled = 0
+    errors    = 0
+    try:
+        orders = await loop.run_in_executor(None, broker.orders)
+        open_orders = [
+            o for o in (orders or [])
+            if str(o.get("status", "")).upper()
+            in ("OPEN", "TRIGGER PENDING", "AMO REQ RECEIVED")
+        ]
+        for o in open_orders:
+            oid     = str(o.get("order_id", ""))
+            variety = str(o.get("variety") or "regular")
+            if not oid:
+                continue
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda _oid=oid, _v=variety:
+                        broker.cancel_order(_oid, variety=_v),
+                )
+                cancelled += 1
+                logger.info(f"[LIVE] cancel_all_orders: cancelled {oid} [{acct}]")
+            except Exception as e:
+                errors += 1
+                logger.warning(
+                    f"[LIVE] cancel_all_orders: failed to cancel {oid} [{acct}]: {e}"
+                )
+    except Exception as e:
+        logger.error(f"[LIVE] cancel_all_orders: order list failed for [{acct}]: {e}")
+
+    return cancelled, errors
+
+
 async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
     """
     Cancel every open order across all accounts (or a scoped account).
@@ -516,35 +622,35 @@ async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
     total_errors = 0
 
     for broker in all_brokers():
-        acct = broker.account
-        if scope_account and acct != scope_account:
-            continue
-        try:
-            orders = await loop.run_in_executor(None, broker.orders)
-            open_orders = [o for o in (orders or [])
-                           if str(o.get("status", "")).upper() in
-                           ("OPEN", "TRIGGER PENDING", "AMO REQ RECEIVED")]
-            for o in open_orders:
-                oid     = str(o.get("order_id", ""))
-                variety = str(o.get("variety") or "regular")
-                if not oid:
-                    continue
-                try:
-                    await loop.run_in_executor(
-                        None,
-                        lambda _oid=oid, _v=variety:
-                            broker.cancel_order(_oid, variety=_v),
-                    )
-                    total_cancelled += 1
-                    logger.info(f"[LIVE] cancel_all_orders: cancelled {oid} [{acct}]")
-                except Exception as e:
-                    total_errors += 1
-                    logger.warning(f"[LIVE] cancel_all_orders: failed to cancel {oid} [{acct}]: {e}")
-        except Exception as e:
-            logger.error(f"[LIVE] cancel_all_orders: order list failed for [{acct}]: {e}")
+        cancelled, errors = await _al_cancel_broker_orders(broker, scope_account, loop)
+        total_cancelled += cancelled
+        total_errors    += errors
 
     logger.info(f"[LIVE] cancel_all_orders complete: {total_cancelled} cancelled, "
                 f"{total_errors} errors (agent={agent.slug})")
+
+
+def _al_positions_to_rows(df) -> "list[dict]":
+    """Convert a DataFrame of positions to a list of dicts.
+
+    Returns an empty list when df is None, empty, or conversion fails.
+    """
+    if df is None or (hasattr(df, "empty") and df.empty):
+        return []
+    try:
+        return df.to_dict(orient="records")
+    except Exception as e:
+        logger.error(
+            f"[LIVE] chase_close_positions: could not read df_positions: {e}"
+        )
+        return []
+
+
+def _al_positions_filter(rows: list, scope_acct: "str | None") -> list:
+    """Apply account scope filter and drop zero-qty rows."""
+    if scope_acct:
+        rows = [r for r in rows if str(r.get("account")) == scope_acct]
+    return [r for r in rows if int(r.get("quantity") or 0) != 0]
 
 
 def _chase_resolve_positions(context: dict, params: dict) -> list[dict]:
@@ -556,22 +662,40 @@ def _chase_resolve_positions(context: dict, params: dict) -> list[dict]:
     scope      = (params.get("scope") or "total").lower()
     scope_acct = str(params.get("account") or "") if scope == "account" else None
 
-    df = context.get("df_positions")
-    if df is None or (hasattr(df, "empty") and df.empty):
-        return []
+    rows = _al_positions_to_rows(context.get("df_positions"))
+    return _al_positions_filter(rows, scope_acct)
 
+
+async def _al_chase_handle_blocked(
+    agent, acct: str, symbol: str, exchange: str,
+    side: str, qty: int, price, pf: dict,
+) -> None:
+    """Write REJECTED AlgoOrder and fire alert for a preflight-blocked chase position."""
+    from backend.api.algo.actions import _write_live_order
+
+    reasons = "; ".join(b["reason"] for b in pf["blocked"])
+    codes   = ", ".join(b["code"] for b in pf["blocked"])
+    logger.error(
+        f"[LIVE] chase_close_positions BLOCKED for {acct} "
+        f"{exchange}/{symbol} {side} {qty}: [{codes}] {reasons}"
+    )
+    await _write_live_order(
+        agent, "chase_close_positions",
+        {"account": acct, "symbol": symbol, "exchange": exchange,
+         "side": side, "qty": qty, "price": price},
+        status="REJECTED",
+        detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
+    )
     try:
-        rows: list[dict] = df.to_dict(orient="records")
-    except Exception as e:
-        logger.error(f"[LIVE] chase_close_positions: could not read df_positions: {e}")
-        return []
-
-    if scope_acct:
-        rows = [r for r in rows if str(r.get("account")) == scope_acct]
-
-    # Filter to non-zero positions only.
-    rows = [r for r in rows if int(r.get("quantity") or 0) != 0]
-    return rows
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=acct, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode="live",
+            source=f"agent:{getattr(agent, 'slug', 'chase_close_positions')}",
+            error=f"PREFLIGHT BLOCKED [{codes}]: {reasons}",
+        )
+    except Exception:
+        pass
 
 
 async def _chase_build_tasks(
@@ -613,29 +737,9 @@ async def _chase_build_tasks(
             "intent": "close",   # signals G2 bypass inside run_preflight
         })
         if not pf["ok"]:
-            reasons = "; ".join(b["reason"] for b in pf["blocked"])
-            codes   = ", ".join(b["code"] for b in pf["blocked"])
-            logger.error(
-                f"[LIVE] chase_close_positions BLOCKED for {acct} "
-                f"{exchange}/{symbol} {side} {qty}: [{codes}] {reasons}"
+            await _al_chase_handle_blocked(
+                agent, acct, symbol, exchange, side, qty, price, pf
             )
-            await _write_live_order(
-                agent, "chase_close_positions",
-                {"account": acct, "symbol": symbol, "exchange": exchange,
-                 "side": side, "qty": qty, "price": price},
-                status="REJECTED",
-                detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
-            )
-            try:
-                from backend.shared.helpers.alert_utils import send_order_failure_alert
-                send_order_failure_alert(
-                    account=acct, symbol=symbol, exchange=exchange,
-                    side=side, qty=qty, mode="live",
-                    source=f"agent:{getattr(agent, 'slug', 'chase_close_positions')}",
-                    error=f"PREFLIGHT BLOCKED [{codes}]: {reasons}",
-                )
-            except Exception:
-                pass
             continue  # skip this position; other positions in the loop proceed
 
         # Persist intent row before broker call.
@@ -657,6 +761,34 @@ async def _chase_build_tasks(
     return chase_tasks, task_rows
 
 
+def _al_parse_failure_row(
+    p: dict,
+) -> "tuple[str, str, str, int, str, float]":
+    """Extract chase-failure fields from a position row dict.
+
+    Returns (acct, symbol, exchange, qty, side, ltp).
+    """
+    acct     = str(p.get("account", ""))
+    symbol   = str(p.get("tradingsymbol", ""))
+    exchange = str(p.get("exchange") or "NFO")
+    qty_raw  = int(p.get("quantity") or 0)
+    qty      = abs(qty_raw)
+    side     = "SELL" if qty_raw > 0 else "BUY"
+    ltp      = float(p.get("last_price") or p.get("close_price") or 0)
+    return acct, symbol, exchange, qty, side, ltp
+
+
+async def _al_diagnose_chase_result(acct: str, diag_order: dict) -> str:
+    """Run diagnose_live_failure for one chase task; returns the diagnosis string."""
+    from backend.brokers import get_broker
+
+    try:
+        broker = get_broker(acct)
+        return await diagnose_live_failure(broker, diag_order, "")
+    except Exception:
+        return "diagnosis unavailable"
+
+
 async def _chase_handle_results(
     results: list, task_rows: list[dict], agent
 ) -> None:
@@ -669,30 +801,17 @@ async def _chase_handle_results(
     task_rows[i] must correspond to chase_tasks[i] (only preflight-passed
     rows are included — blocked positions are excluded from both lists).
     """
-    from backend.brokers import get_broker
-
     for i, res in enumerate(results):
         if not isinstance(res, Exception):
             continue
-        # Diagnose via basket_margin so the log distinguishes
-        # margin-shortfall from segment-permission for this leg.
-        p        = task_rows[i]
-        acct     = str(p.get("account", ""))
-        symbol   = str(p.get("tradingsymbol", ""))
-        exchange = str(p.get("exchange") or "NFO")
-        qty      = abs(int(p.get("quantity") or 0))
-        side     = "SELL" if int(p.get("quantity") or 0) > 0 else "BUY"
-        ltp      = p.get("last_price") or p.get("close_price") or 0
+        p = task_rows[i]
+        acct, symbol, exchange, qty, side, ltp = _al_parse_failure_row(p)
         diag_order = {
             "exchange": exchange, "symbol": symbol, "side": side,
             "qty": qty, "order_type": "LIMIT", "product": "NRML",
-            "price": float(ltp) if ltp else 0, "variety": "regular",
+            "price": ltp, "variety": "regular",
         }
-        try:
-            broker = get_broker(acct)
-            diag = await diagnose_live_failure(broker, diag_order, str(res))
-        except Exception:
-            diag = "diagnosis unavailable"
+        diag = await _al_diagnose_chase_result(acct, diag_order)
         logger.error(f"[LIVE] chase_close_positions task {i} failed for "
                      f"{acct} {exchange}/{symbol} {side} {qty}: "
                      f"{res} | diag: {diag}")

@@ -61,6 +61,11 @@ class SnapCheck(TlmTool):
                 findings=[],
                 exit_code=1,
             )
+        elif r.returncode == 2:
+            return TlmResult.skip(
+                self.name,
+                "asyncpg not installed (local dev) — skipping stale snapshot check",
+            )
         elif r.returncode == 3:
             return TlmResult.skip(
                 self.name,

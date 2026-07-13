@@ -745,6 +745,92 @@ async def seed_special_sessions() -> None:
     logger.info("seed_special_sessions: seed check complete")
 
 
+def _display_order_for_account(acct: str, broker_id: str, kite_n: int, groww_n: int) -> int:
+    """Return the canonical display_order for an account."""
+    bid = (broker_id or "").lower()
+    if acct == "DH6847":
+        return 999
+    if acct == "DH3747":
+        return 100
+    if "kite" in bid or "zerodha" in bid:
+        return kite_n * 10
+    if "groww" in bid:
+        return 200 + (groww_n - 1) * 10
+    return 500
+
+
+async def _seed_circuit_breaker_for_dh6847() -> None:
+    """One-shot migration: set circuit_breaker_enabled=TRUE for DH6847."""
+    from sqlalchemy import text
+    async with _shared_engine.begin() as conn:
+        already_enabled = await conn.scalar(
+            text(
+                "SELECT circuit_breaker_enabled FROM broker_accounts "
+                "WHERE account = 'DH6847' LIMIT 1"
+            )
+        )
+        if already_enabled is False:
+            await conn.execute(
+                text(
+                    "UPDATE broker_accounts "
+                    "SET circuit_breaker_enabled = TRUE "
+                    "WHERE account = 'DH6847'"
+                )
+            )
+            logger.info(
+                "_ensure_shared_broker_schema: circuit_breaker_enabled seeded for DH6847"
+            )
+
+
+def _build_display_order_map(rows: list) -> list[tuple[str, int]]:
+    """Build (account, display_order) pairs for a list of (account, broker_id) rows."""
+    kite_n = groww_n = 0
+    order_map: list[tuple[str, int]] = []
+    for acct, broker_id in rows:
+        bid = (broker_id or "").lower()
+        if "kite" in bid or "zerodha" in bid:
+            kite_n += 1
+        elif "groww" in bid:
+            groww_n += 1
+        order = _display_order_for_account(acct, broker_id, kite_n, groww_n)
+        order_map.append((acct, order))
+    return order_map
+
+
+async def _seed_display_order() -> None:
+    """One-shot migration: assign canonical display_order to all broker accounts."""
+    from sqlalchemy import text
+    async with _shared_engine.begin() as conn:
+        do_already = await conn.scalar(
+            text("SELECT 1 FROM broker_accounts WHERE display_order != 500 LIMIT 1")
+        )
+        if do_already:
+            return
+        rows = (await conn.execute(
+            text("SELECT account, broker_id FROM broker_accounts ORDER BY account")
+        )).fetchall()
+        order_map = _build_display_order_map(rows)
+        if order_map:
+            cases = " ".join(f"WHEN :a{i} THEN :o{i}" for i in range(len(order_map)))
+            params: dict = {}
+            for i, (a, o) in enumerate(order_map):
+                params[f"a{i}"] = a
+                params[f"o{i}"] = o
+            params["accounts"] = tuple(a for a, _ in order_map)
+            await conn.execute(
+                text(
+                    f"UPDATE broker_accounts "
+                    f"SET display_order = CASE account {cases} END "
+                    f"WHERE account IN :accounts"
+                ),
+                params,
+            )
+        logger.info(
+            "_ensure_shared_broker_schema: display_order seeded for %d accounts",
+            len(rows),
+        )
+
+
 async def _ensure_shared_broker_schema() -> None:
     """Create + migrate broker_accounts on the shared engine (ramboq DB).
 
@@ -759,7 +845,6 @@ async def _ensure_shared_broker_schema() -> None:
     from sqlalchemy import text
     from backend.api.models import BrokerAccount  # noqa: F401
     async with _shared_engine.begin() as conn:
-        # Create the table if it doesn't exist (prod: no-op).
         await conn.run_sync(
             lambda sync_conn: Base.metadata.create_all(
                 sync_conn,
@@ -767,9 +852,6 @@ async def _ensure_shared_broker_schema() -> None:
                 checkfirst=True,
             )
         )
-        # Multi-broker extension (May 2026) — broker_accounts gains four
-        # columns so a Dhan / Groww / future-vendor account fits the same
-        # schema as Kite. See historical commit notes in git log.
         for stmt in (
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)",
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS access_token_enc TEXT",
@@ -779,10 +861,6 @@ async def _ensure_shared_broker_schema() -> None:
             "NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
             "historical_data_enabled BOOLEAN NOT NULL DEFAULT TRUE",
-            # Per-account poll priority (Jul 2026 — Dhan background poll
-            # interval gate). poll_priority controls how often the
-            # background poller re-fetches this Dhan account.
-            # auto_downgrade_* columns support the breaker-history watcher.
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
             "poll_priority VARCHAR(8) NOT NULL DEFAULT 'hot'",
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
@@ -791,122 +869,15 @@ async def _ensure_shared_broker_schema() -> None:
             "auto_downgraded_at TIMESTAMPTZ",
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
             "auto_downgrade_reason TEXT",
-            # Per-account circuit-breaker opt-in (Jul 2026). Default FALSE so
-            # the opt-in is explicit; the startup migration below seeds DH6847.
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
             "circuit_breaker_enabled BOOLEAN NOT NULL DEFAULT FALSE",
-            # Display ordering (Jul 2026) — canonical position for UI
-            # dropdowns, health-badge chip popup, performance grids, etc.
-            # Default 500 (mid-tier) so new accounts land in the middle.
-            # Seeded below with a one-shot settings marker.
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
             "display_order INTEGER NOT NULL DEFAULT 500",
         ):
             await conn.execute(text(stmt))
 
-    # One-shot startup migration: seed circuit_breaker_enabled=TRUE for DH6847.
-    # Idempotency: the column defaults to FALSE. We check the current value in
-    # broker_accounts (shared DB) — only update when it is still FALSE (i.e.
-    # the migration has never run or DH6847 doesn't exist yet). This avoids any
-    # cross-DB dependency on the branch-local `settings` table, which does NOT
-    # exist in the shared `ramboq` DB.
-    # NOTE: if the operator manually disables the breaker for DH6847 via PATCH,
-    # this block will re-enable it on the next startup. That is intentional: the
-    # operator should use PATCH /api/admin/brokers/{id} to make permanent changes,
-    # not expect the migration to respect manual toggles.
-    async with _shared_engine.begin() as conn:
-        already_enabled = await conn.scalar(
-            text(
-                "SELECT circuit_breaker_enabled FROM broker_accounts "
-                "WHERE account = 'DH6847' LIMIT 1"
-            )
-        )
-        if already_enabled is False:
-            # Enable the breaker for DH6847 only.
-            await conn.execute(
-                text(
-                    "UPDATE broker_accounts "
-                    "SET circuit_breaker_enabled = TRUE "
-                    "WHERE account = 'DH6847'"
-                )
-            )
-            logger.info(
-                "_ensure_shared_broker_schema: circuit_breaker_enabled seeded for DH6847"
-            )
-    # One-shot startup migration: seed display_order for the canonical account
-    # sequence.  Guarded by a settings marker so operator manual edits via
-    # PATCH /api/admin/brokers/{id} are never overwritten on restart.
-    #
-    # Canonical order (Jul 2026):
-    #   Kite accounts   → display_order 10, 20, … (lexical rank × 10)
-    #   Dhan DH3747     → display_order 100  (primary Dhan)
-    #   Groww accounts  → display_order 200, 210, … (lexical rank × 10)
-    #   Other Dhan      → display_order 500  (mid-tier default)
-    #   Dhan DH6847     → display_order 999  (last — operator-requested)
-    # Idempotency: check whether any account has a non-default display_order in
-    # broker_accounts (shared DB). The column defaults to 500; if all rows are
-    # still 500 the migration hasn't run yet. Using broker_accounts directly
-    # avoids any cross-DB dependency on the branch-local `settings` table.
-    async with _shared_engine.begin() as conn:
-        do_already = await conn.scalar(
-            text(
-                "SELECT 1 FROM broker_accounts "
-                "WHERE display_order != 500 LIMIT 1"
-            )
-        )
-        if not do_already:
-            # Fetch all active accounts ordered by account_id to assign ranks.
-            rows = (await conn.execute(
-                text(
-                    "SELECT account, broker_id FROM broker_accounts "
-                    "ORDER BY account"
-                )
-            )).fetchall()
-            # Build display_order per account, then issue ONE batched UPDATE
-            # using a CASE expression — avoids N round-trips to the DB
-            # (was one UPDATE per account).
-            kite_n = 0
-            groww_n = 0
-            order_map: list[tuple[str, int]] = []
-            for acct, broker_id in rows:
-                bid = (broker_id or "").lower()
-                if acct == "DH6847":
-                    order = 999
-                elif acct == "DH3747":
-                    order = 100
-                elif "kite" in bid or "zerodha" in bid:
-                    kite_n += 1
-                    order = kite_n * 10
-                elif "groww" in bid:
-                    groww_n += 1
-                    order = 200 + (groww_n - 1) * 10
-                elif "dhan" in bid:
-                    # Any other Dhan account not specifically mapped → mid-tier.
-                    order = 500
-                else:
-                    order = 500
-                order_map.append((acct, order))
-            if order_map:
-                cases = " ".join(
-                    f"WHEN :a{i} THEN :o{i}" for i in range(len(order_map))
-                )
-                params: dict = {}
-                for i, (a, o) in enumerate(order_map):
-                    params[f"a{i}"] = a
-                    params[f"o{i}"] = o
-                params["accounts"] = tuple(a for a, _ in order_map)
-                await conn.execute(
-                    text(
-                        f"UPDATE broker_accounts "
-                        f"SET display_order = CASE account {cases} END "
-                        f"WHERE account IN :accounts"
-                    ),
-                    params,
-                )
-            logger.info(
-                "_ensure_shared_broker_schema: display_order seeded for %d accounts",
-                len(rows),
-            )
+    await _seed_circuit_breaker_for_dh6847()
+    await _seed_display_order()
     logger.info("Shared broker schema verified on ramboq")
 
 
