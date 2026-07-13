@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _base import TlmTool, TlmResult, TlmFinding, REPO_ROOT  # noqa: E402
+from _base import TlmTool, TlmResult, TlmFinding, REPO_ROOT, VENV_PYTHON  # noqa: E402
 
 # Map severity strings to P-levels
 _SEV_MAP = {
@@ -36,7 +36,7 @@ def _ensure_pip_audit(dry_run: bool) -> bool:
     """Return True if pip-audit is available (installing if needed)."""
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip_audit", "--version"],
+            [VENV_PYTHON, "-m", "pip_audit", "--version"],
             capture_output=True,
             check=True,
         )
@@ -50,7 +50,7 @@ def _ensure_pip_audit(dry_run: bool) -> bool:
 
     print("[DEPSCAN] Installing pip-audit...", flush=True)
     r = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "pip-audit", "-q"],
+        [VENV_PYTHON, "-m", "pip", "install", "pip-audit", "-q"],
         capture_output=True,
     )
     if r.returncode != 0:
@@ -63,7 +63,7 @@ def _run_pip_audit() -> list[TlmFinding]:
     findings: list[TlmFinding] = []
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pip_audit", "--format=json"],
+            [VENV_PYTHON, "-m", "pip_audit", "--format=json"],
             capture_output=True,
             text=True,
             cwd=str(REPO_ROOT),

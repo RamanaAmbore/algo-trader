@@ -4524,6 +4524,7 @@ Previous fixes are documented in-code via comments. Key milestones:
 | Sprint A–E | Reconcile paths, partial fills, Dhan/Groww OCO, rate limits | grep `Sprint [A-E]` |
 | Gap closure (B–L) | 28 audit fixes across categories | `git log --grep="audit fix" -i` |
 | Jul 2026 | F&O lots convention, Day P&L SSOT, sparkline + BSE ticker, NavStrip SSOT, CSV export, docs/specs reorganisation, spec v2.0 (Orders/Activity/Chart) | See §26.5 + commit bodies |
+| Jul 2026 (CC sprint) | Cyclomatic complexity reduction across full codebase: 0 D/E/F-grade functions, C-grade reduced from 393→216. C→B helper extraction pattern applied to all layers (brokers/, api/routes/, api/algo/, shared/). TLM CCWATCH now gates all merges. | `git log --grep="refactor(cc)"` |
 
 See commit bodies for specific gap IDs (e.g. B-1 = Dhan status map, C-3 = postback fallback window, H-5 = cap warnings). These are documented in code as defensive comments.
 

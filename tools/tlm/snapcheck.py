@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _base import TlmTool, TlmResult, REPO_ROOT  # noqa: E402
+from _base import TlmTool, TlmResult, REPO_ROOT, VENV_PYTHON  # noqa: E402
 
 DELEGATE = REPO_ROOT / "scripts" / "check_stale_snapshots.py"
 
@@ -40,7 +40,7 @@ class SnapCheck(TlmTool):
             extra += ["--since", str(args.since)]
 
         r = subprocess.run(
-            [sys.executable, str(DELEGATE)] + extra,
+            [VENV_PYTHON, str(DELEGATE)] + extra,
             cwd=str(REPO_ROOT),
         )
         if r.returncode == 0:
