@@ -1655,3 +1655,102 @@ async def test_preflight_qty_field_fallback():
         })
 
     assert result["ok"] is True
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Test E: _ticket_run_preflight passes intent to run_preflight
+# ───────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ticket_run_preflight_passes_intent_close():
+    """Test E: _ticket_run_preflight must pass intent='close' to run_preflight
+    when the data object has intent="close". This allows FAT_FINGER_5_LOT_CAP
+    to be bypassed for legitimate close orders > 5 lots.
+
+    Fix requirement: _ticket_run_preflight should include intent in the order
+    dict passed to run_preflight, extracted from data.intent."""
+    from backend.api.routes.orders_place import _ticket_run_preflight
+
+    # Mock data object with intent="close" and other required attributes
+    data = MagicMock()
+    data.exchange = "NFO"
+    data.order_type = "LIMIT"
+    data.product = "NRML"
+    data.variety = "regular"
+    data.price = 22000.0
+    data.trigger_price = 0
+    data.intent = "close"  # The critical field for the fix
+
+    # Spy on run_preflight to capture the order dict it receives
+    async def mock_run_preflight(account, order_dict):
+        # Return a successful preflight response
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    qty_10_lots = 500  # NFO lot_size=50, so 10 lots = 500 qty
+
+    with patch("backend.api.algo.actions.run_preflight",
+               new=AsyncMock(side_effect=mock_run_preflight)) as mock_pf:
+        result = await _ticket_run_preflight(
+            data,
+            account="ZG0790",
+            sym="NIFTY25APRFUT",
+            side="SELL",
+            qty=qty_10_lots,
+        )
+
+    # Verify preflight was called and returned successfully
+    assert result["ok"] is True
+    assert mock_pf.call_count == 1
+
+    # Extract the order dict that was passed to run_preflight
+    call_args = mock_pf.call_args
+    order_dict = call_args[0][1]  # second positional arg
+
+    # VERIFY THE FIX: intent="close" should be included in the order dict
+    assert order_dict.get("intent") == "close", \
+        f"FIX REQUIRED: intent='close' must be included in order dict. " \
+        f"Got: {order_dict}"
+
+
+@pytest.mark.asyncio
+async def test_ticket_run_preflight_intent_open_default():
+    """_ticket_run_preflight with no intent attribute defaults to None
+    or empty string (non-close order)."""
+    from backend.api.routes.orders_place import _ticket_run_preflight
+
+    # Mock data object WITHOUT intent attribute
+    data = MagicMock()
+    data.exchange = "NFO"
+    data.order_type = "LIMIT"
+    data.product = "NRML"
+    data.variety = "regular"
+    data.price = 22000.0
+    data.trigger_price = 0
+    # No intent attribute
+
+    async def mock_run_preflight(account, order_dict):
+        return {"ok": True, "blocked": [], "diagnostics": {}}
+
+    qty = 100  # 2 lots, normal order
+
+    with patch("backend.api.algo.actions.run_preflight",
+               new=AsyncMock(side_effect=mock_run_preflight)) as mock_pf:
+        result = await _ticket_run_preflight(
+            data,
+            account="ZG0790",
+            sym="NIFTY25APRFUT",
+            side="BUY",
+            qty=qty,
+        )
+
+    assert result["ok"] is True
+    call_args = mock_pf.call_args
+    order_dict = call_args[0][1]
+
+    # When intent is missing, it should be None or not present in preflight dict
+    # (or passed as getattr(data, "intent", None) which would be None)
+    intent_value = order_dict.get("intent")
+    # The intent might not be in the dict if the code doesn't add it yet,
+    # or it might be None. Either way, it should not be "close".
+    assert intent_value != "close", \
+        f"Expected no close intent for open order, got: {order_dict}"

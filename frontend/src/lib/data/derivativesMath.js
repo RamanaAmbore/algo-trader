@@ -57,7 +57,7 @@ const BAND_ORDER = { close: 0, netted: 1, otm: 2 };
  *
  * @param {{
  *   candidates: any[],
- *   spot: number,
+ *   spot: number | ((underlying: string) => number | null),
  *   expFilter: string[],
  *   mcxUnderlyings: Set<string>,
  *   legAnalytics: Record<string,any>,

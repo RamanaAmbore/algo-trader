@@ -182,3 +182,44 @@ def test_atm_option_returns_minus_premium():
     """ATM call: intrinsic = 0, P&L = -premium * qty (full loss of premium)."""
     positions = [dict(kind="opt", qty=50, avg=100, spot=22000, strike=22000, opt_type="CE")]
     assert expiry_profit(positions) == round(-100 * 50, 2)  # -5000
+
+
+# ── 6. Test D: Zero avg_cost leg returns valid payoff ────────────────
+
+def test_option_zero_avg_cost_itm():
+    """Test D: Long call with avg_cost=0 (zero-cost leg). Should return intrinsic * qty,
+    not null. Example: ITM call, spot 22500, strike 22000, qty 50, avg 0.
+    intrinsic = 500, P&L = (500 - 0) * 50 = 25000."""
+    positions = [dict(kind="opt", qty=50, avg=0, spot=22500, strike=22000, opt_type="CE")]
+    result = expiry_profit(positions)
+    assert result is not None, "Zero avg_cost leg should not return None"
+    assert result == round((500 - 0) * 50, 2), \
+        f"Zero avg_cost ITM call: expected 25000, got {result}"
+
+
+def test_option_zero_avg_cost_otm():
+    """Test D variant: OTM call with avg_cost=0. intrinsic=0, P&L = (0 - 0) * qty = 0."""
+    positions = [dict(kind="opt", qty=50, avg=0, spot=21800, strike=22000, opt_type="CE")]
+    result = expiry_profit(positions)
+    assert result is not None, "Zero avg_cost leg should not return None"
+    assert result == round((0 - 0) * 50, 2), \
+        f"Zero avg_cost OTM call: expected 0, got {result}"
+
+
+def test_future_zero_avg_cost():
+    """Test D variant: Future with avg_cost=0. (ltp - avg) * qty = (22200 - 0) * 50 = 1110000."""
+    positions = [dict(kind="fut", qty=50, avg=0, ltp=22200)]
+    result = expiry_profit(positions)
+    assert result is not None, "Zero avg_cost future should not return None"
+    assert result == round((22200 - 0) * 50, 2), \
+        f"Zero avg_cost future: expected 1110000, got {result}"
+
+
+def test_put_zero_avg_cost_itm():
+    """Test D variant: ITM put with avg_cost=0. intrinsic = max(strike - spot, 0) = 200,
+    P&L = (200 - 0) * qty."""
+    positions = [dict(kind="opt", qty=50, avg=0, spot=21800, strike=22000, opt_type="PE")]
+    result = expiry_profit(positions)
+    assert result is not None, "Zero avg_cost put should not return None"
+    assert result == round((200 - 0) * 50, 2), \
+        f"Zero avg_cost ITM put: expected 10000, got {result}"

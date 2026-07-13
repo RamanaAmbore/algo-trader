@@ -18,7 +18,7 @@
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
-  import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
@@ -410,19 +410,33 @@
     return pnlTotal;
   });
   const _livePositionsToday = $derived.by(() => {
-    let dayTotal = 0;
-    for (const p of positions) dayTotal += baseDayPnlForPosition(p);
-    // Gate the SSE-tick delta on market-open. During closed hours the
-    // snapshot's day_change_val IS the authoritative last-session
-    // value; adding a delta computed against symbolStore's LTP (which
-    // can carry stale live values, or values from a different session
-    // vs poll_ltp) was inflating the slot vs the operator's expected
-    // reading. Operator 2026-07-01: "slot 1 is inflated. fix it."
+    // Gate: re-run at 4 Hz max via the throttled-tick mirror. getSnapshot
+    // calls below are wrapped in untrack() so they don't register
+    // per-symbol reactive deps that would defeat the throttle — same
+    // pattern as _liveDeltaByRow and candidatesDayPnl on the derivatives
+    // page. The throttle ensures the loop runs at most 4 times/sec even
+    // during a burst of SSE ticks for a large position book.
+    void _throttledTick;
     const _mktOpen = isNseOpen() || isMcxOpen();
-    if (!_mktOpen) return dayTotal;
-    let delta = 0;
-    for (const p of positions) delta += _delta(p, 'P');
-    return dayTotal + delta;
+    let dayTotal = 0;
+    for (const p of positions) {
+      const sym = String(p?.tradingsymbol || '').toUpperCase();
+      // Live tick — use untrack so we don't register per-symbol reactive
+      // deps (the _throttledTick gate above already controls re-derive cadence).
+      const liveLtp = _mktOpen ? untrack(() => getSnapshot(sym)?.ltp) : null;
+      dayTotal += livePositionDayPnl(
+        {
+          closePx: Number(p?.close_price ?? 0),
+          pollLtp: Number(p?.last_price ?? 0),
+          qty:     Number(p?.quantity ?? 0),
+          avg:     Number(p?.average_price ?? 0),
+          dcvRow:  p,
+        },
+        liveLtp ?? null,
+        { marketOpen: _mktOpen },
+      );
+    }
+    return dayTotal;
   });
   const _liveHoldingsToday = $derived.by(() => {
     let s = 0;
@@ -813,7 +827,7 @@
 </script>
 
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
-  <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L / F&O expiry profit at current spot">
+  <span class="ps-agg" title="P — Day P&L / Lifetime P&L / F&amp;O expiry P&L (all accounts, all exchanges)">
     <span class="ps-agg-k">P</span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
       >{fmtMoney(dispPositionsToday)}</span

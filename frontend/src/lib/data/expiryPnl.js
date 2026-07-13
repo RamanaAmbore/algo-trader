@@ -19,8 +19,9 @@
  *     P&L tracks spot 1:1.
  *
  * Returns null when the input is unusable (spot missing / non-positive,
- * qty=0, cost=0, strike/opt_type unparseable). The caller decides how
- * to render "—" for null rows.
+ * qty=0, strike/opt_type unparseable for options). The caller decides how
+ * to render "—" for null rows. avg_cost=0 is valid (Kite returns 0 for
+ * fresh intraday fills) — full intrinsic value is profit when cost=0.
  *
  * @param {{ symbol: string, qty: number|string, avg_cost: number|string, kind: 'opt'|'fut'|'eq'|string }} c
  * @param {number|null|undefined} spot   underlying spot for intrinsic calculation
@@ -34,7 +35,7 @@ export function expiryPnl(c, spot, legAnalyticsBySymbol = {}) {
   if (spot == null || !isFinite(Number(spot)) || Number(spot) <= 0) return null;
   const qty = Number(c?.qty || 0);
   const cost = Number(c?.avg_cost || 0);
-  if (!qty || !cost) return null;
+  if (!qty) return null;
   const S = Number(spot);
   if (c?.kind === 'opt') {
     const sym = String(c?.symbol || '');

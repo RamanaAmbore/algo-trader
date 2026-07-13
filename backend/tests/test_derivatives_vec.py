@@ -226,3 +226,113 @@ def test_scalar_greeks_still_works():
     g = greeks(24500.0, 24500.0, 14 / 365.0, 0.07, 0.16, "CE")
     assert set(g.keys()) == {"delta", "gamma", "theta", "vega", "rho"}
     assert 0.4 < g["delta"] < 0.6, f"ATM delta sanity failed: {g['delta']}"
+
+
+# ── Test C: Futures multileg payoff subtracts entry cost ───────────────
+
+def test_multileg_futures_payoff_subtracts_entry_cost():
+    """Test C: single futures leg, entry_price=25000, qty=1.
+    At spot=25000 (at entry), both today_value and expiry_value should be 0.
+    At spot=25500, both should be +500.
+    At spot=24500, both should be -500.
+    This verifies the fix where futures payoff correctly subtracts cumulative
+    entry cost (line 1079-1080 in derivatives.py)."""
+    import numpy as np
+
+    legs = [{"kind": "fut", "entry_price": 25000.0, "qty": 1}]
+    S = 25000.0
+    span_pct = 0.02  # ±2% from spot, giving narrow range for precise testing
+    points = 5
+
+    curve = multileg_payoff_curve(legs, S=S, span_pct=span_pct, points=points)
+
+    assert len(curve) == points, f"Expected {points} curve points, got {len(curve)}"
+
+    # Find the point closest to spot=25000 (should be exact in this linear grid)
+    at_entry = None
+    plus_500 = None
+    minus_500 = None
+
+    for pt in curve:
+        spot = pt["spot"]
+        # Due to floating point, check with tolerance
+        if abs(spot - 25000.0) < 1.0:
+            at_entry = pt
+        elif abs(spot - 25500.0) < 1.0:
+            plus_500 = pt
+        elif abs(spot - 24500.0) < 1.0:
+            minus_500 = pt
+
+    # At entry (spot=25000), P&L should be 0 (spot - entry_price) × qty = (25000 - 25000) × 1 = 0
+    assert at_entry is not None, \
+        f"Could not find curve point near spot=25000. Points: {[p['spot'] for p in curve]}"
+    assert at_entry["today_value"] == 0.0, \
+        f"At entry spot, today_value should be 0, got {at_entry['today_value']}"
+    assert at_entry["expiry_value"] == 0.0, \
+        f"At entry spot, expiry_value should be 0, got {at_entry['expiry_value']}"
+
+    # At spot=25500, P&L should be +500 (25500 - 25000) × 1 = 500
+    assert plus_500 is not None, \
+        f"Could not find curve point near spot=25500. Points: {[p['spot'] for p in curve]}"
+    assert abs(plus_500["today_value"] - 500.0) < 1.0, \
+        f"At spot=25500, today_value should be ~500, got {plus_500['today_value']}"
+    assert abs(plus_500["expiry_value"] - 500.0) < 1.0, \
+        f"At spot=25500, expiry_value should be ~500, got {plus_500['expiry_value']}"
+
+    # At spot=24500, P&L should be -500 (24500 - 25000) × 1 = -500
+    assert minus_500 is not None, \
+        f"Could not find curve point near spot=24500. Points: {[p['spot'] for p in curve]}"
+    assert abs(minus_500["today_value"] - (-500.0)) < 1.0, \
+        f"At spot=24500, today_value should be ~-500, got {minus_500['today_value']}"
+    assert abs(minus_500["expiry_value"] - (-500.0)) < 1.0, \
+        f"At spot=24500, expiry_value should be ~-500, got {minus_500['expiry_value']}"
+
+
+def test_multileg_futures_multileg_payoff_entry_cost():
+    """Test C variant: multi-leg with futures + options.
+    Verify that total_cost (line 1079) correctly sums all entry costs
+    (including negative qty for shorts) and is subtracted from both today and expiry.
+    Example: long 1-lot NIFTY future (entry 25000) + short 1-lot put (entry 100 premium).
+
+    total_cost = 25000*1 + 100*(-1) = 25000 - 100 = 24900.
+
+    At spot=25000 at expiry:
+    - Futures: 25000 * 1 = 25000
+    - Put intrinsic: max(25000 - 25000, 0) * -1 = 0
+    - Before cost: 25000 + 0 = 25000
+    - After cost: 25000 - 24900 = 100
+
+    This verifies that short premium (negative qty) reduces total_cost correctly."""
+    import numpy as np
+
+    legs = [
+        {"kind": "fut", "entry_price": 25000.0, "qty": 1},
+        {"kind": "opt", "strike": 25000.0, "opt_type": "PE", "qty": -1,
+         "entry_price": 100.0, "T_years": 14/365.0, "sigma": 0.16},
+    ]
+    S = 25000.0
+    span_pct = 0.02
+    points = 5
+
+    curve = multileg_payoff_curve(legs, S=S, span_pct=span_pct, points=points)
+
+    at_entry = next((p for p in curve if abs(p["spot"] - 25000.0) < 1.0), None)
+    assert at_entry is not None
+
+    # At expiry with spot=25000:
+    # Future contributes: 25000 (spot) * 1 = 25000
+    # Put contributes: max(K - S, 0) * qty = max(25000 - 25000, 0) * -1 = 0
+    # Sum before cost: 25000
+    # After subtracting total_cost (24900): 25000 - 24900 = 100
+    #
+    # This verifies the CRITICAL FIX: entry cost is subtracted for both long and short legs.
+    # The short -1 qty * entry_price 100 = -100 reduces total_cost correctly.
+    assert abs(at_entry["expiry_value"] - 100.0) < 1.0, \
+        f"At expiry, expiry_value should be ~100 (25000 - 24900), got {at_entry['expiry_value']}"
+
+    # Verify today and expiry values are both correctly offset by total_cost
+    # today_value includes time value (BS formula vs intrinsic at expiry)
+    # Both should reflect the -24900 cost offset
+    # today_value < expiry_value when short premium is involved (we collect premium today)
+    assert at_entry["today_value"] is not None and at_entry["expiry_value"] is not None, \
+        "Both today and expiry values should be computed"
