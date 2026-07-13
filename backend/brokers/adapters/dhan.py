@@ -606,6 +606,162 @@ def _dhan_exchange(kite_exchange: str) -> str:
     return seg
 
 
+_DHAN_CORR_MAX = 20  # Dhan's correlationId / tag length cap
+
+
+def _dhan_gtt_base_kwargs(
+    security_id: str,
+    ex_seg: str,
+    tradingsymbol: str,
+    order0: dict,
+    trig0: float,
+    corr: str | None,
+) -> dict:
+    """Build the common place_forever kwargs shared by single + OCO legs."""
+    return {
+        "security_id":      security_id,
+        "exchange_segment": ex_seg,
+        "transaction_type": order0.get("transaction_type", "SELL"),
+        "product_type":     _PRODUCT_TO_DHAN.get(order0.get("product", "NRML"), "MARGIN"),
+        "order_type":       _ORDER_TYPE_TO_DHAN.get(order0.get("order_type", "LIMIT"), "LIMIT"),
+        "quantity":         _dhan_int(order0.get("quantity")),
+        "price":            _dhan_num(order0.get("price")),
+        "trigger_Price":    trig0,
+        "tag":              corr,
+        "symbol":           tradingsymbol,
+    }
+
+
+def _dhan_gtt_order_id(resp: dict) -> str:
+    """Extract the order_id string from a Dhan place_forever response."""
+    data = resp.get("data") or {}
+    if isinstance(data, dict):
+        return str(data.get("orderId") or data.get("order_id") or "")
+    return str(data)
+
+
+def _dhan_raise_asymmetric_gtt(gtt_id: str, resp1: Any) -> None:
+    """Log + raise the asymmetric-GTT error (ENTRY_LEG ok, TARGET_LEG failed).
+
+    Audit fix (M-2): ENTRY_LEG already modified — GTT is now asymmetric
+    (entry trigger updated, target stale). Sentinel attributes let the
+    trail-stop task detect partial state without parsing the error string."""
+    logger.warning(
+        f"Dhan modify_gtt {gtt_id}: ENTRY_LEG succeeded but "
+        f"TARGET_LEG rejected ({resp1}). GTT is ASYMMETRIC — "
+        f"entry trigger updated, target stale."
+    )
+    _err = RuntimeError(
+        f"Dhan modify_gtt rejected (target leg, ENTRY already "
+        f"modified — GTT is asymmetric): {resp1}"
+    )
+    _err.dhan_partial_modify = True        # type: ignore[attr-defined]
+    _err.dhan_modified_leg   = "ENTRY_LEG" # type: ignore[attr-defined]
+    raise _err
+
+
+def _dhan_place_forever_kwargs(
+    order0: dict,
+    orders: list[dict],
+    trigger_values: list[float],
+    trigger_type: str,
+    security_id: str,
+    ex_seg: str,
+    tradingsymbol: str,
+    corr: str | None,
+) -> dict:
+    """Build the complete place_forever kwargs dict for single or OCO."""
+    trig0 = _dhan_num(trigger_values[0]) if trigger_values else 0.0
+    base  = _dhan_gtt_base_kwargs(security_id, ex_seg, tradingsymbol, order0, trig0, corr)
+    if trigger_type == "single":
+        return {**base, "order_flag": "SINGLE"}
+    qty0 = _dhan_int(order0.get("quantity"))
+    return {**base, **_dhan_gtt_oco_extra(orders, trigger_values, qty0)}
+
+
+def _dhan_gtt_oco_extra(orders: list[dict], trigger_values: list[float], qty0: int) -> dict:
+    """Build the OCO-only extra kwargs (leg-1 fields) for place_forever."""
+    order1 = orders[1] if len(orders) > 1 else {}
+    return {
+        "order_flag":     "OCO",
+        "price1":         _dhan_num(order1.get("price")),
+        "trigger_Price1": _dhan_num(trigger_values[1] if len(trigger_values) > 1 else 0),
+        "quantity1":      _dhan_int(order1.get("quantity") or qty0),
+    }
+
+
+def _dhan_modify_forever_leg(order: dict, trigger: float, order_flag: str, leg_name: str) -> dict:
+    """Build kwargs for a single modify_forever call."""
+    return {
+        "order_flag":         order_flag,
+        "order_type":         _ORDER_TYPE_TO_DHAN.get(order.get("order_type", "LIMIT"), "LIMIT"),
+        "leg_name":           leg_name,
+        "quantity":           _dhan_int(order.get("quantity")),
+        "price":              _dhan_num(order.get("price")),
+        "trigger_price":      trigger,
+        "disclosed_quantity": 0,
+        "validity":           "DAY",
+    }
+
+
+def _call_dhan_ledger_raw(sdk_handle: Any, method_name: str, from_date: str, to_date: str) -> Any:
+    """Invoke the Dhan ledger SDK method on a live SDK handle.
+
+    Tries kwarg form first (documented v2 signature); falls back to
+    positional if SDK raises TypeError. Returns raw response or None."""
+    fn = getattr(sdk_handle, method_name)
+    try:
+        return fn(from_date=from_date, to_date=to_date)
+    except TypeError:
+        return fn(from_date, to_date)
+
+
+def _dhan_ledger_aggregate(entries: list) -> list:
+    """Group ledger entries by (date, segment) and return summary rows."""
+    from collections import defaultdict
+    from datetime import date as _date  # noqa: F401 — used by _parse_dhan_date return type
+    groups: dict = defaultdict(lambda: {
+        "debits": 0.0, "credits": 0.0,
+        "open_runbal": None, "close_runbal": None, "raw": [],
+    })
+    for e in entries:
+        d = _parse_dhan_date(e.get("voucherdate"))
+        if d is None:
+            continue
+        seg = _dhan_exchange_to_segment(e.get("exchange") or "")
+        try:
+            debit  = _dhan_num(e.get("debit"))
+            credit = _dhan_num(e.get("credit"))
+            runbal = _dhan_num(e.get("runbal"))
+        except (TypeError, ValueError):
+            continue
+        g = groups[(d, seg)]
+        g["debits"]  += debit
+        g["credits"] += credit
+        if g["open_runbal"] is None:
+            g["open_runbal"] = runbal
+        g["close_runbal"] = runbal
+        g["raw"].append(e)
+
+    out: list[dict] = []
+    for (d, seg), g in groups.items():
+        close_bal = g["close_runbal"]
+        net_move  = g["credits"] - g["debits"]
+        out.append({
+            "date":            d,
+            "segment":         seg,
+            "cash_available":  close_bal,
+            "opening_balance": (close_bal - net_move if close_bal is not None
+                                else g["open_runbal"]),
+            "debits":          g["debits"],
+            "realised_m2m":    net_move,
+            "net":             close_bal,
+            "payload":         {"entries": g["raw"]},
+        })
+    out.sort(key=lambda r: r["date"], reverse=True)
+    return out
+
+
 class DhanBroker(Broker):
     """Dhan adapter. See module docstring for the auth + normalisation
     contract."""
@@ -778,140 +934,28 @@ class DhanBroker(Broker):
 
     def funds_ledger(self, from_date: str, to_date: str) -> list[dict]:
         """Pull Dhan's funds-ledger statement for a date range.
-        Returns a list of normalised per-(date, segment) summary rows
-        ready for upsert into `daily_book[kind='funds']`:
 
-            [
-              {
-                "date":            date,
-                "segment":         "equity" | "commodity" | ...,
-                "cash_available":  float,   # EOD running balance
-                "opening_balance": float,   # SOD running balance (best-effort)
-                "debits":          float,   # Σ debit on this day+segment
-                "realised_m2m":    float,   # net daily move (credit − debit)
-                "net":             float,   # same as cash_available
-                "payload":         dict,    # raw Dhan entries for forensics
-              },
-              ...
-            ]
-
-        The Dhan SDK exposes this as `get_ledger_report(from_date,
-        to_date)` returning the standard `{status, data: [entry, …]}`
-        envelope. Each entry is a voucher-level row:
-
-            {
-              "voucherdate": "DD/MM/YYYY" or "YYYY-MM-DD",
-              "exchange":    "NSE_EQ" | "NSE_FNO" | "MCX_COMM" | ...,
-              "debit":       "0.00",      # str — converted to float
-              "credit":      "1234.56",   # str — converted to float
-              "runbal":      "100000.00", # str — EOD running balance
-              "narration":   "Day MTM Settlement Charges",
-              "voucherdesc": "...",
-              "vouchernumber": "..."
-            }
-
-        We aggregate per `(voucherdate, segment)` so the output maps
-        cleanly onto the `daily_book` unique constraint
-        `(date, account, kind, symbol)`. Multiple Dhan exchange codes
-        collapse to two segments here (equity / commodity) to match
-        the existing snapshot pipeline's shape.
-
-        Method-name discovery — `get_ledger_report` is the v2 SDK
-        name. We log at DEBUG when missing so the operator gets a
-        clear diagnostic if a future SDK version renames it.
-        (Slice P5: dropped the vestigial `get_funds_ledger` /
-        `ledger_report` probes — neither name has shipped in any
-        installed dhanhq build; they were defensive probes for a
-        hypothetical fork that doesn't exist.)
+        Returns per-(date, segment) summary rows for daily_book upsert.
+        Delegates aggregation to `_dhan_ledger_aggregate`.
         """
-        from datetime import date as _date
-
-        sdk = self.dhan
         ledger_method_name = "get_ledger_report"
-        if getattr(sdk, ledger_method_name, None) is None:
+        if getattr(self.dhan, ledger_method_name, None) is None:
             logger.warning(
                 "DhanBroker.funds_ledger: SDK is missing "
                 f"`{ledger_method_name}` — returning []"
             )
             return []
-
         try:
             resp = self._safe_call(
-                lambda d: getattr(d, ledger_method_name)(
-                    from_date=from_date, to_date=to_date
-                )
+                lambda d: _call_dhan_ledger_raw(d, ledger_method_name, from_date, to_date)
             )
-        except TypeError:
-            # SDK signature may be positional rather than kwarg.
-            try:
-                resp = self._safe_call(
-                    lambda d: getattr(d, ledger_method_name)(from_date, to_date)
-                )
-            except Exception as e:
-                logger.warning(f"DhanBroker.funds_ledger SDK call failed: {e}")
-                return []
         except Exception as e:
             logger.warning(f"DhanBroker.funds_ledger SDK call failed: {e}")
             return []
-
         entries = _unwrap(resp)
         if not entries:
             return []
-
-        # Group by (voucherdate, segment). Each segment bucket collects
-        # debits / credits + tracks first + last runbal as a proxy for
-        # SOD and EOD cash. Dhan returns entries in chronological order
-        # within a day so first/last == open/close.
-        from collections import defaultdict
-        groups: dict[tuple[_date, str], dict] = defaultdict(lambda: {
-            "debits": 0.0, "credits": 0.0,
-            "open_runbal": None, "close_runbal": None,
-            "raw": [],
-        })
-        for e in entries:
-            d = _parse_dhan_date(e.get("voucherdate"))
-            if d is None:
-                continue
-            seg = _dhan_exchange_to_segment(e.get("exchange") or "")
-            key = (d, seg)
-            try:
-                debit  = float(e.get("debit")  or 0)
-                credit = float(e.get("credit") or 0)
-                runbal = float(e.get("runbal") or 0)
-            except (TypeError, ValueError):
-                continue
-            g = groups[key]
-            g["debits"]  += debit
-            g["credits"] += credit
-            if g["open_runbal"] is None:
-                g["open_runbal"] = runbal
-            g["close_runbal"] = runbal
-            g["raw"].append(e)
-
-        out: list[dict] = []
-        for (d, seg), g in groups.items():
-            close_bal = g["close_runbal"]
-            open_bal  = g["open_runbal"]
-            # M2M proxy: net daily move = credits − debits. NOT just
-            # mark-to-market; includes brokerage / STT / DP charges /
-            # etc. Documented so the operator reads it as 'net daily
-            # cash flow' rather than 'realised P&L'.
-            net_move = g["credits"] - g["debits"]
-            out.append({
-                "date":            d,
-                "segment":         seg,
-                "cash_available":  close_bal,
-                "opening_balance": (close_bal - net_move
-                                    if close_bal is not None else open_bal),
-                "debits":          g["debits"],
-                "realised_m2m":    net_move,
-                "net":             close_bal,
-                "payload":         {"entries": g["raw"]},
-            })
-
-        # Newest first matches the daily_book ordering convention.
-        out.sort(key=lambda r: r["date"], reverse=True)
-        return out
+        return _dhan_ledger_aggregate(entries)
 
     # ── Market data ───────────────────────────────────────────────────
 
@@ -1054,6 +1098,34 @@ class DhanBroker(Broker):
 
     # ── Order entry ───────────────────────────────────────────────────
 
+    def _margin_for_order(self, o: dict) -> dict:
+        """Call Dhan margin_calculator for a single order dict.
+        Returns a Kite-shape margin dict or raises on failure."""
+        sdk = self.dhan
+        if not hasattr(sdk, "margin_calculator"):
+            raise RuntimeError("dhanhq SDK missing margin_calculator method")
+        ex_seg  = _dhan_exchange(o.get("exchange", ""))
+        sid     = (str(o.get("security_id") or "")
+                   or _resolve_security_id(
+                       str(o.get("tradingsymbol", "")),
+                       str(o.get("exchange", ""))))
+        resp = self._safe_call(lambda d: d.margin_calculator(
+            security_id=sid,
+            exchange_segment=ex_seg,
+            transaction_type=o.get("transaction_type", "BUY"),
+            quantity=_dhan_int(o.get("quantity")),
+            product_type=_PRODUCT_TO_DHAN.get(o.get("product", "MIS"), "INTRADAY"),
+            price=_dhan_num(o.get("price")),
+        ))
+        data = resp.get("data") if isinstance(resp, dict) else {}
+        return {
+            "total":     _dhan_num((data or {}).get("totalMargin")),
+            "var":       _dhan_num((data or {}).get("spanMargin")),
+            "exposure":  _dhan_num((data or {}).get("exposureMargin")),
+            "available": {"cash": _dhan_num((data or {}).get("availableBalance"))},
+            "raw":       resp,
+        }
+
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
         """Dhan exposes per-order margin calculation but no batch endpoint.
         Loop over orders calling `margin_calculator()` per order; return
@@ -1062,43 +1134,7 @@ class DhanBroker(Broker):
         out: list[dict] = []
         for o in orders:
             try:
-                ex_seg  = _dhan_exchange(o.get("exchange", ""))
-                txn     = o.get("transaction_type", "BUY")
-                qty     = int(o.get("quantity", 0))
-                price   = float(o.get("price") or 0)
-                product = _PRODUCT_TO_DHAN.get(o.get("product", "MIS"), "INTRADAY")
-                # Dhan's SDK method name has shifted between versions —
-                # try `margin_calculator()` first, fall back to the
-                # raw POST if missing. Either path returns a dict with
-                # a `data.totalMargin` field we map to Kite's `total`.
-                if hasattr(self.dhan, "margin_calculator"):
-                    # Slice Q — resolve security_id from tradingsymbol +
-                    # exchange when the caller didn't supply it, mirroring
-                    # place_order. Pre-fix: always used o.get("security_id",
-                    # "") which was always "" → Dhan returned 0 margin →
-                    # every paper-engine order registered OPEN not REJECTED.
-                    sid = (str(o.get("security_id") or "")
-                           or _resolve_security_id(
-                               str(o.get("tradingsymbol", "")),
-                               str(o.get("exchange", ""))))
-                    resp = self._safe_call(lambda d: d.margin_calculator(
-                        security_id=sid,
-                        exchange_segment=ex_seg,
-                        transaction_type=txn,
-                        quantity=qty,
-                        product_type=product,
-                        price=price,
-                    ))
-                else:
-                    raise RuntimeError("dhanhq SDK missing margin_calculator method")
-                data = resp.get("data") if isinstance(resp, dict) else {}
-                out.append({
-                    "total":     float(data.get("totalMargin", 0) or 0),
-                    "var":       float(data.get("spanMargin", 0) or 0),
-                    "exposure":  float(data.get("exposureMargin", 0) or 0),
-                    "available": {"cash": float(data.get("availableBalance", 0) or 0)},
-                    "raw":       resp,
-                })
+                out.append(self._margin_for_order(o))
             except Exception as e:
                 logger.warning(f"DhanBroker.basket_order_margins failed for "
                                f"{o.get('tradingsymbol')}: {e}")
@@ -1108,24 +1144,8 @@ class DhanBroker(Broker):
     def place_order(self, **kwargs: Any) -> str:
         """Translate Kite kwargs to Dhan and dispatch. Returns Dhan order_id.
 
-        Accepts the same kwargs as KiteBroker.place_order: tradingsymbol,
-        exchange, transaction_type, quantity, product, order_type, price,
-        trigger_price, validity, tag, variety.
-
-        security_id is resolved from tradingsymbol + exchange via the
-        instruments cache (loaded from Dhan's master CSV once per IST
-        day). If the symbol is unknown, raises RuntimeError with a clear
-        message pointing at the cache — operator should check whether the
-        Dhan instruments CSV has loaded successfully."""
-        # Audit fix (M-3) — `variety` is Kite-semantic
-        # ("regular" / "amo" / "bo" / "co"). Pre-fix the value flowed
-        # through **kwargs and was silently dropped at the Dhan SDK
-        # boundary — AMO orders submitted with `variety="amo"` landed
-        # as regular-hours, with no error. Now: AMO needs an explicit
-        # productType on the Dhan side; raise a clear error so the
-        # caller knows the request isn't honored. Other varieties are
-        # absorbed silently (regular is the default; bo/co aren't
-        # supported by the platform's order pipeline today).
+        Accepts the same kwargs as KiteBroker.place_order. security_id is
+        resolved from tradingsymbol + exchange via the instruments cache."""
         _variety = str(kwargs.pop("variety", "regular") or "regular").lower()
         if _variety in ("amo", "after_market", "after-market"):
             raise NotImplementedError(
@@ -1135,9 +1155,6 @@ class DhanBroker(Broker):
         exchange      = kwargs.get("exchange", "")
         tradingsymbol = kwargs.get("tradingsymbol", "")
 
-        # Resolve security_id — prefer explicit kwarg over instruments lookup
-        # so callers that already have security_id (e.g. basket_order_margins)
-        # don't pay the cache lookup cost unnecessarily.
         security_id = str(kwargs.get("security_id") or "")
         if not security_id:
             security_id = _resolve_security_id(tradingsymbol, exchange)
@@ -1151,11 +1168,7 @@ class DhanBroker(Broker):
         ex_seg  = _dhan_exchange(exchange)
         product = _PRODUCT_TO_DHAN.get(kwargs.get("product", "MIS"), "INTRADAY")
         otype   = _ORDER_TYPE_TO_DHAN.get(kwargs.get("order_type", "MARKET"), "MARKET")
-
-        # Truncate correlation_id (tag) to 20 chars — Dhan enforces
-        # a similar cap on correlationId as Kite does on tag.
-        _DHAN_CORR_MAX = 20
-        tag = kwargs.get("tag")
+        tag     = kwargs.get("tag")
         if tag is not None:
             tag = str(tag)[:_DHAN_CORR_MAX]
 
@@ -1163,11 +1176,11 @@ class DhanBroker(Broker):
             security_id=security_id,
             exchange_segment=ex_seg,
             transaction_type=kwargs.get("transaction_type", "BUY"),
-            quantity=int(kwargs.get("quantity", 0)),
+            quantity=_dhan_int(kwargs.get("quantity")),
             order_type=otype,
             product_type=product,
-            price=float(kwargs.get("price") or 0),
-            trigger_price=float(kwargs.get("trigger_price") or 0),
+            price=_dhan_num(kwargs.get("price")),
+            trigger_price=_dhan_num(kwargs.get("trigger_price")),
             validity=kwargs.get("validity", "DAY"),
             **({"tag": tag} if tag else {}),
         ))
@@ -1226,22 +1239,7 @@ class DhanBroker(Broker):
         tag: str | None = None,
     ) -> str:
         """Place a Dhan Forever Order (GTT). Returns the Dhan order_id."""
-        # Sprint C — Dhan Forever covers equity / F&O segments but the
-        # adapter has no MCX/NCO commodity wiring (Dhan's positions
-        # coverage is incomplete on MCX too — see CLAUDE.md
-        # "Multi-Account IPv6 Source Binding" notes on the CRUDEOIL
-        # symbol resolution failure). Raise a clear runtime error here
-        # so the template-attach path surfaces a single readable error
-        # in AttachResult.errors instead of the SDK's opaque rejection
-        # ("security_id not found"). Operators with a Dhan account
-        # placing MCX templates should mirror to their Kite account.
         if exchange in ("MCX", "NCO"):
-            # Audit fix — raise NotImplementedError, not RuntimeError. The
-            # template-attach pipeline + trail-stop background task catch
-            # NotImplementedError as "broker doesn't support this feature"
-            # and surface it through AttachResult.errors. Pre-fix the
-            # RuntimeError bubbled up uncaught, producing a 500 + no exit
-            # GTT for any MCX template attach on Dhan.
             raise NotImplementedError(
                 f"Dhan Forever Order does not cover MCX/NCO — operator "
                 f"should attach the template via the Kite-mirrored "
@@ -1252,62 +1250,30 @@ class DhanBroker(Broker):
             raise RuntimeError(
                 f"Dhan place_gtt: unknown symbol {tradingsymbol!r} on {exchange!r}"
             )
-        ex_seg  = _dhan_exchange(exchange)
         order0  = orders[0] if orders else {}
-        product = _PRODUCT_TO_DHAN.get(order0.get("product", "NRML"), "MARGIN")
-        otype   = _ORDER_TYPE_TO_DHAN.get(order0.get("order_type", "LIMIT"), "LIMIT")
-        qty0    = int(order0.get("quantity", 0))
-        price0  = float(order0.get("price") or 0)
-        trig0   = float(trigger_values[0]) if trigger_values else 0.0
-        txn0    = order0.get("transaction_type", "SELL")
-
-        _DHAN_CORR_MAX = 20
-        corr = str(tag)[:_DHAN_CORR_MAX] if tag else None
-
-        if trigger_type == "single":
-            resp = self._safe_call(lambda d: d.place_forever(
-                security_id=security_id,
-                exchange_segment=ex_seg,
-                transaction_type=txn0,
-                product_type=product,
-                order_type=otype,
-                quantity=qty0,
-                price=price0,
-                trigger_Price=trig0,
-                order_flag="SINGLE",
-                tag=corr,
-                symbol=tradingsymbol,
-            ))
-        else:
-            # OCO — two-leg. Leg 0: entry/stop, Leg 1: target.
-            order1  = orders[1] if len(orders) > 1 else {}
-            otype1  = _ORDER_TYPE_TO_DHAN.get(order1.get("order_type", "LIMIT"), "LIMIT")
-            qty1    = int(order1.get("quantity", qty0))
-            price1  = float(order1.get("price") or 0)
-            trig1   = float(trigger_values[1]) if len(trigger_values) > 1 else 0.0
-            resp = self._safe_call(lambda d: d.place_forever(
-                security_id=security_id,
-                exchange_segment=ex_seg,
-                transaction_type=txn0,
-                product_type=product,
-                order_type=otype,
-                quantity=qty0,
-                price=price0,
-                trigger_Price=trig0,
-                order_flag="OCO",
-                price1=price1,
-                trigger_Price1=trig1,
-                quantity1=qty1,
-                tag=corr,
-                symbol=tradingsymbol,
-            ))
-
+        corr    = str(tag)[:_DHAN_CORR_MAX] if tag else None
+        kw      = _dhan_place_forever_kwargs(
+            order0, orders, trigger_values, trigger_type,
+            security_id, _dhan_exchange(exchange), tradingsymbol, corr,
+        )
+        resp = self._safe_call(lambda d: d.place_forever(**kw))
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan place_gtt rejected: {resp}")
-        data = resp.get("data") or {}
-        if isinstance(data, dict):
-            return str(data.get("orderId") or data.get("order_id") or "")
-        return str(data)
+        return _dhan_gtt_order_id(resp)
+
+    def _modify_gtt_target_leg(
+        self, gtt_id: str, orders: list[dict], trigger_values: list[float]
+    ) -> None:
+        """Update the TARGET_LEG of an OCO Forever Order.
+
+        Called only when trigger_type='two-leg' and both lists have ≥2 entries.
+        Raises on rejection via `_dhan_raise_asymmetric_gtt`."""
+        tgt_kw = _dhan_modify_forever_leg(
+            orders[1], _dhan_num(trigger_values[1]), "OCO", "TARGET_LEG"
+        )
+        resp1 = self._safe_call(lambda d: d.modify_forever(order_id=gtt_id, **tgt_kw))
+        if not isinstance(resp1, dict) or resp1.get("status") != "success":
+            _dhan_raise_asymmetric_gtt(gtt_id, resp1)
 
     def modify_gtt(
         self,
@@ -1322,85 +1288,19 @@ class DhanBroker(Broker):
     ) -> str:
         """Modify an existing Dhan Forever Order. Returns the (same) order_id.
 
-        For OCO (`trigger_type='two-leg'`) Dhan requires TWO modify
-        calls — one per leg — because `modify_forever` only updates the
-        leg named by `leg_name`. Sprint C fix (audit defect): the prior
-        implementation hardcoded `leg_name='ENTRY_LEG'` so the
-        target-side TP update never reached the broker. The Sprint A
-        two-leg trail-stop wired `[tp_trigger, sl_trigger]` through
-        modify_gtt expecting both to land; only the entry leg was
-        actually changing.
+        For OCO (`trigger_type='two-leg'`) Dhan requires TWO modify calls —
+        one per leg — because `modify_forever` only updates the named leg.
+        Sprint C fix: was hardcoded to ENTRY_LEG only; target TP never landed.
         """
         order_flag = "SINGLE" if trigger_type == "single" else "OCO"
-        order0  = orders[0] if orders else {}
-        otype0  = _ORDER_TYPE_TO_DHAN.get(order0.get("order_type", "LIMIT"), "LIMIT")
-        qty0    = int(order0.get("quantity", 0))
-        price0  = float(order0.get("price") or 0)
-        trig0   = float(trigger_values[0]) if trigger_values else 0.0
-        # Single GTT (or first leg of OCO) → ENTRY_LEG.
-        resp = self._safe_call(lambda d: d.modify_forever(
-            order_id=gtt_id,
-            order_flag=order_flag,
-            order_type=otype0,
-            leg_name="ENTRY_LEG",
-            quantity=qty0,
-            price=price0,
-            trigger_price=trig0,
-            disclosed_quantity=0,
-            validity="DAY",
-        ))
+        order0    = orders[0] if orders else {}
+        trig0     = _dhan_num(trigger_values[0]) if trigger_values else 0.0
+        entry_kw  = _dhan_modify_forever_leg(order0, trig0, order_flag, "ENTRY_LEG")
+        resp = self._safe_call(lambda d: d.modify_forever(order_id=gtt_id, **entry_kw))
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan modify_gtt rejected (entry leg): {resp}")
-        # OCO needs a second call for the target leg with leg 1's
-        # qty/price/trigger.
         if trigger_type == "two-leg" and len(orders) > 1 and len(trigger_values) > 1:
-            order1 = orders[1]
-            otype1 = _ORDER_TYPE_TO_DHAN.get(order1.get("order_type", "LIMIT"), "LIMIT")
-            qty1   = int(order1.get("quantity", qty0))
-            price1 = float(order1.get("price") or 0)
-            trig1  = float(trigger_values[1])
-            resp1  = self._safe_call(lambda d: d.modify_forever(
-                order_id=gtt_id,
-                order_flag="OCO",
-                order_type=otype1,
-                leg_name="TARGET_LEG",
-                quantity=qty1,
-                price=price1,
-                trigger_price=trig1,
-                disclosed_quantity=0,
-                validity="DAY",
-            ))
-            if not isinstance(resp1, dict) or resp1.get("status") != "success":
-                # Audit fix (M-2) — asymmetric GTT state. The ENTRY_LEG
-                # modify already succeeded; the GTT now has the NEW
-                # entry trigger paired with the OLD target trigger.
-                # Pre-fix the caller saw a generic RuntimeError + DEBUG
-                # log and the operator's trail-stop poller kept calling
-                # us with stale state, oblivious to the half-modified
-                # GTT. Now: log at WARNING + raise with an explicit
-                # `dhan_partial_modify=True` flag so the trail-stop
-                # task can persist a `partial_modify_error` slot in
-                # attached_gtts_json and the OrderCard tooltip can
-                # surface "⚠ GTT asymmetric — entry updated, target
-                # stale".
-                logger.warning(
-                    f"Dhan modify_gtt {gtt_id}: ENTRY_LEG succeeded but "
-                    f"TARGET_LEG rejected ({resp1}). GTT is now "
-                    f"ASYMMETRIC — entry trigger updated, target stale. "
-                    f"Operator should cancel + recreate or accept the "
-                    f"half-modified state."
-                )
-                _err = RuntimeError(
-                    f"Dhan modify_gtt rejected (target leg, ENTRY already "
-                    f"modified — GTT is asymmetric): {resp1}"
-                )
-                # Sentinel attribute the trail-stop task checks via
-                # `getattr(err, "dhan_partial_modify", False)`. Sticks
-                # to the exception so the caller can branch without
-                # parsing the error message string.
-                _err.dhan_partial_modify = True   # type: ignore[attr-defined]
-                _err.dhan_modified_leg = "ENTRY_LEG"   # type: ignore[attr-defined]
-                raise _err
+            self._modify_gtt_target_leg(gtt_id, orders, trigger_values)
         return gtt_id
 
     def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
@@ -1542,6 +1442,17 @@ def _resolve_dhan_ltp_symbols(
     return seg_to_sids, sid_to_key
 
 
+def _dhan_ohlc_last_price(row: Any) -> float:
+    """Extract last_price from a Dhan ohlc_data row dict."""
+    if not isinstance(row, dict):
+        return 0.0
+    return _dhan_num(
+        row.get("last_price")
+        or _dhan_num((row.get("ohlc") or {}).get("close"))
+        or row.get("close")
+    )
+
+
 def _parse_dhan_ohlc_response(
     resp: Any,
     sid_to_key: dict[tuple[str, str], str],
@@ -1567,16 +1478,7 @@ def _parse_dhan_ohlc_response(
             key = sid_to_key.get((str(seg), str(sid)))
             if not key:
                 continue
-            # Dhan returns last_price for OHLC rows. Fall back to
-            # ohlc.close → close → 0 to be defensive against SDK version drift.
-            lp = 0.0
-            if isinstance(row, dict):
-                lp = float(
-                    row.get("last_price")
-                    or (row.get("ohlc") or {}).get("close")
-                    or row.get("close")
-                    or 0
-                )
+            lp = _dhan_ohlc_last_price(row)
             if lp > 0:
                 out[key] = {"last_price": lp, "instrument_token": sid}
     return out
@@ -1684,142 +1586,16 @@ def _dhan_normalise_one_holding(h: dict) -> dict:
 
 
 def _normalise_holdings(resp: Any) -> list[dict]:
-    """Dhan holdings field map → Kite. Carries through any field we don't
-    explicitly translate, so downstream summarise helpers still find
-    expected keys + adapter authors see the full Dhan payload.
+    """Dhan holdings field map → Kite. Delegates per-row work to
+    `_dhan_normalise_one_holding` to keep CC ≤ 1 here.
 
-    Type-match Kite carefully — pandas+polars conversion downstream is
-    strict about column dtypes when rows from multiple brokers are
-    concatenated. instrument_token MUST be int (Kite shape), not the
-    str Dhan returns; opening_quantity MUST be present (holdings model
-    field) — we use totalQty as the proxy since Dhan doesn't expose a
-    separate start-of-day count.
+    Type-match Kite carefully — pandas+polars downstream is strict about
+    column dtypes. instrument_token MUST be int; opening_quantity MUST be
+    present (uses totalQty as proxy — Dhan doesn't expose an SOD count).
+    qty semantics: max(totalQty, t1Qty) — both fields carry the SAME N
+    shares once T+1 settles, so they're NOT additive.
     """
-    out: list[dict] = []
-    for h in _unwrap(resp):
-        # Dhan splits "settled to demat" (totalQty) and "T+1 pending"
-        # (t1Qty). The contract observed in production:
-        #   • Fresh CNC buy (today):   totalQty=0, t1Qty=N    → qty=N
-        #   • Fully settled (T+3):     totalQty=N, t1Qty=0    → qty=N
-        #   • Both populated:          totalQty=N, t1Qty=N    → qty=N
-        #     (Dhan reports the SAME N shares in both fields — not
-        #     additive. Confirmed by operator who has 2 SIEMENS shares
-        #     but saw qty=4 when v1 of this code summed the fields.)
-        #
-        # Right interpretation: max(totalQty, t1Qty). Equivalent to
-        # "use settled if any, else use pending" — handles all three
-        # cases without double-counting.
-        #
-        # Prior code (qty = _t_settled + t1q) was based on the
-        # assumption that t1Qty was strictly INCREMENTAL to totalQty.
-        # The "both populated" case (operator: 'I have only 2 siemens
-        # shares' but display showed 4) proves Dhan's v2 contract
-        # actually reports T+1 shares in BOTH fields once they appear
-        # in the holdings list.
-        _t_settled = int(h.get("totalQty",  0) or 0)
-        t1q = int(h.get("t1Qty",     0) or 0)
-        qty = max(_t_settled, t1q)
-        # Dhan returns securityId as a numeric string ("21131"); coerce
-        # to int so concat with Kite holdings doesn't trip polars.
-        try:
-            inst_tok = int(h.get("securityId") or 0)
-        except (TypeError, ValueError):
-            inst_tok = 0
-
-        avg_price  = float(h.get("avgCostPrice", 0) or 0)
-        last_price = float(h.get("lastTradedPrice", 0) or 0)
-
-        # Derive close_price + pnl + day_change when Dhan's response
-        # omits them (the holdings endpoint frequently does — only
-        # avgCostPrice + lastTradedPrice + totalQty are reliably
-        # populated). Without the derivation downstream sees:
-        #   close_price = 0 → day_change_pct == 100% (broken display)
-        #   pnl         = 0 → P&L column shows 0 even on big movers
-        # Kite responses ship these computed, so we mirror that here
-        # to keep the cross-broker concat downstream comparable.
-        close_price = float(
-            h.get("previousClosePrice", h.get("closePrice", 0)) or 0
-        )
-        # Leave close_price=0 when truly missing — the broker_apis
-        # `backfill_market_data` helper (called after pd.concat at
-        # the /api/holdings endpoint) batches a PriceBroker.quote()
-        # call across every missing-close row from every account and
-        # patches them in one round-trip. The earlier fallback to
-        # last_price (close=last → day_change=0 → frontend `—`)
-        # masked these rows from the backfill mask and looked like a
-        # silent zero on the Day P&L column. PriceBroker outage
-        # leaves close=0 and the fetch_holdings recompute falls
-        # through to broker-reported day_change_val (also 0) — same
-        # safe end state as the prior fallback.
-
-        pnl_raw = h.get("unrealisedProfit")
-        if pnl_raw in (None, 0, "0", 0.0):
-            pnl = (last_price - avg_price) * qty
-        else:
-            pnl = float(pnl_raw)
-
-        # day_change is per-share ₹ to match Kite's convention (= ltp − close).
-        # Dhan's raw `dayChange` field is the day's TOTAL position change
-        # (qty × per-share); using it directly produces a portfolio-₹
-        # value that downstream consumers misread as per-share. Earlier
-        # path also fell back to `(ltp − close) × qty` which doubled the
-        # qty multiplication when `broker_apis.fetch_holdings` then
-        # multiplied by opening_quantity again — net 500× drift for a
-        # 500-share row in the fallback branch. Derive from price diff
-        # directly so the unit is multiplier-invariant + qty-invariant.
-        day_change = last_price - close_price
-
-        day_change_pct_raw = h.get("dayChangePerc")
-        if day_change_pct_raw in (None, 0, "0", 0.0):
-            day_change_pct = (
-                ((last_price - close_price) / close_price * 100.0)
-                if close_price > 0 else 0.0
-            )
-        else:
-            day_change_pct = float(day_change_pct_raw)
-
-        # Translate Dhan F&O symbol → Kite-style (see _dhan_to_kite_symbol)
-        # so every downstream parser + chart works without per-vendor branches.
-        _raw_ts_h = str(h.get("tradingSymbol") or h.get("symbol") or "")
-        # Dhan reports equity holdings with exchange="ALL" (cross-exchange
-        # marker — the same ISIN is held against both NSE + BSE liquidity).
-        # That literal leaks into the close-price backfill which builds
-        # "ALL:TEJASNET" quote keys that no broker can resolve → close=0 →
-        # day_change_val=0 → /pulse + /performance show '—' for Day P&L
-        # on every Dhan equity row. Resolution order:
-        #   1. exchangeSegment ("NSE_EQ" → "NSE") if Dhan provides it
-        #   2. exchange field mapped through the segment table
-        #   3. "NSE" as the safe equity-default for "ALL" / blank
-        _seg_h = str(h.get("exchangeSegment") or "").upper()
-        _exch_raw_h = str(h.get("exchange") or "").upper()
-        _kite_exch_h = (
-            _DHAN_SEGMENT_TO_EXCHANGE.get(_seg_h)
-            or (_DHAN_SEGMENT_TO_EXCHANGE.get(_exch_raw_h, _exch_raw_h)
-                if _exch_raw_h and _exch_raw_h != "ALL"
-                else "NSE")
-        )
-        out.append({
-            "tradingsymbol":   _dhan_to_kite_symbol(_raw_ts_h),
-            "exchange":        _kite_exch_h,
-            "instrument_token": inst_tok,
-            "isin":             h.get("isin"),
-            "quantity":         qty,
-            # opening_quantity is required by the holdings model + drives
-            # inv_val / cur_val / pnl_percentage derivations downstream.
-            # Dhan doesn't expose a separate "opening" count, so default
-            # to totalQty (same shape as Kite holdings T0 → T+x).
-            "opening_quantity": qty,
-            "t1_quantity":      int(h.get("t1Qty",     0) or 0),
-            "average_price":    avg_price,
-            "last_price":       last_price,
-            "close_price":      close_price,
-            "pnl":              pnl,
-            "day_change":       day_change,
-            "day_change_percentage": day_change_pct,
-            "product":          "CNC",  # Holdings are always delivery on Dhan
-            "_raw":             h,
-        })
-    return out
+    return [_dhan_normalise_one_holding(h) for h in _unwrap(resp)]
 
 
 def _normalise_positions(resp: Any) -> dict:
@@ -1942,54 +1718,38 @@ def _normalise_position_quantities(p: dict) -> tuple[int, int, int, int, int]:
     return _mult, qty_contracts, ovn_contracts, dbq_contracts, dsq_contracts
 
 
+def _dhan_position_avg(p: dict, qty_contracts: int) -> float:
+    """Resolve the net average price for a Dhan position row.
+
+    Priority: costPrice → netAvgPrice (legacy) → sided buyAvg/sellAvg.
+    costPrice is the authoritative v2 field; netAvgPrice was a guess
+    that turned out not to be a real Dhan field (always 0 in prod)."""
+    avg = _dhan_num(p.get("costPrice") or p.get("netAvgPrice"))
+    if avg <= 0:
+        avg = _dhan_num(p.get("buyAvg") if qty_contracts >= 0 else p.get("sellAvg"))
+    return avg
+
+
 def _normalise_position_prices_and_pnl(
     p: dict, qty_contracts: int
 ) -> tuple[float, float, float, float, float, float]:
-    """Compute P&L ourselves — don't trust Dhan's pre-computed
-    unrealisedProfit / realisedProfit fields, which have shown a
-    ~100× off-by-lot-size discrepancy on F&O contracts (Dhan
-    appears to compute these in LOTS while we display CONTRACTS,
-    and there's no way to flip the convention from the API).
-    Operator: "the entry price and current price difference is
-    P&L. from yesterday's closing price and today's price is day
-    P&L."
+    """Compute P&L ourselves — don't trust Dhan's pre-computed fields.
+
     Formulas (signed; long qty>0, short qty<0):
       pnl            = (LTP - avg_price)   × qty   (lifetime / unrealised)
       day_change_val = (LTP - close_price) × qty   (today's change)
 
-    Dhan SDK field names per the v2 positions schema:
-      costPrice         — net average across buy + sell legs
-      buyAvg / sellAvg  — per-side averages
-      lastTradedPrice   — current LTP
-      previousClosePrice / closePrice — yesterday's close
-
-    The earlier shape used `netAvgPrice` which is NOT a Dhan
-    field — every position came back with avg=0, the (ltp>0 AND
-    avg>0) guard kicked in, and pnl_calc was silently set to 0.
-    That's why Dhan P&L looked "wrong" on the legs panel even
-    though qty and ltp were correct. Fall back through three
-    candidate fields so the adapter works across Dhan API
-    revisions: costPrice → netAvgPrice (legacy guess) → side-
-    appropriate buyAvg / sellAvg.
-
     Returns (avg, ltp, close, pnl_calc, dcv_calc, realised)."""
-    avg = float(p.get("costPrice", p.get("netAvgPrice", 0)) or 0)
-    if avg <= 0:
-        # Sided fallback — for a long net position use the buy
-        # average; for a short net position use the sell average.
-        # Neither field is present on a flat (qty=0) row, but we
-        # don't surface P&L for flat rows so the 0 path is safe.
-        avg = float(p.get("buyAvg", 0) or 0) if qty_contracts >= 0 \
-              else float(p.get("sellAvg", 0) or 0)
-    ltp = float(p.get("lastTradedPrice", p.get("ltp", 0)) or 0)
-    close = float(p.get("previousClosePrice",
-                        p.get("previousClose",
-                              p.get("closePrice", 0))) or 0)
+    avg   = _dhan_position_avg(p, qty_contracts)
+    ltp   = _dhan_num(p.get("lastTradedPrice") or p.get("ltp"))
+    close = _dhan_num(
+        p.get("previousClosePrice")
+        or p.get("previousClose")
+        or p.get("closePrice")
+    )
     pnl_calc = (ltp - avg)   * qty_contracts if (ltp > 0 and avg > 0) else 0.0
     dcv_calc = (ltp - close) * qty_contracts if (ltp > 0 and close > 0) else 0.0
-    # Keep Dhan's realisedProfit verbatim — that's a closed-book
-    # figure they're authoritative on.
-    realised = float(p.get("realisedProfit", 0) or 0)
+    realised = _dhan_num(p.get("realisedProfit"))
     return avg, ltp, close, pnl_calc, dcv_calc, realised
 
 
@@ -2017,81 +1777,74 @@ def _normalise_position_exchange(p: dict) -> str:
 _DHAN_MARGINS_LOGGED: set[str] = set()
 
 
+def _dhan_margins_available(data: dict, cash: float) -> dict:
+    """Build the `available` sub-dict for a Dhan margins response."""
+    sod = _dhan_num(data.get("sodLimit"))
+    return {
+        "adhoc_margin":    sod,
+        "cash":            cash,
+        "opening_balance": sod,
+        "live_balance":    cash,
+        "collateral":      _dhan_num(data.get("collateralAmount")),
+        "intraday_payin":  0.0,
+    }
+
+
+def _dhan_margins_utilised(data: dict, realised: float, opt_prem: float) -> dict:
+    """Build the `utilised` sub-dict for a Dhan margins response."""
+    collateral = _dhan_num(data.get("collateralAmount"))
+    return {
+        "debits":            _dhan_num(data.get("utilizedAmount")),
+        "exposure":          0.0,
+        "m2m_realised":      realised,
+        "m2m_unrealised":    0.0,
+        "option_premium":    opt_prem,
+        "payout":            _dhan_num(data.get("withdrawableBalance")),
+        "span":              0.0,
+        "holding_sales":     0.0,
+        "turnover":          0.0,
+        "liquid_collateral": 0.0,
+        "stock_collateral":  collateral,
+    }
+
+
 def _normalise_margins(resp: Any, segment: str | None) -> dict:
     """Dhan margins endpoint returns a single dict (not per-segment).
     Map to Kite's `equity` shape; if the caller passed segment='commodity'
     we still return the same payload (Dhan doesn't slice this way).
 
     Audit cycle 8: realized-P&L + option-premium fields now resolve
-    through a fallback chain across plausible Dhan v2 field names. Each
-    candidate matches a documented Dhan response variant. The one-time
-    INFO log in margins() above surfaces the actual keys so we can
-    confirm or tighten this mapping per account."""
+    through a fallback chain across plausible Dhan v2 field names."""
     data = resp.get("data") if isinstance(resp, dict) else {}
     if not isinstance(data, dict):
         data = {}
 
-    # Available-cash field name chain — Dhan's typo `availabelBalance`
-    # plus the spelled-correctly variant for forward-compat.
-    _cash = float(
-        data.get("availabelBalance",
-                 data.get("availableBalance", 0)) or 0
+    # Available-cash: Dhan's typo `availabelBalance` + spelled-correctly variant.
+    _cash = _dhan_num(data.get("availabelBalance") or data.get("availableBalance"))
+
+    # Realised M2M: four spellings observed across SDK builds.
+    _realised = _dhan_num(
+        data.get("realizedProfit")
+        or data.get("realisedProfit")
+        or data.get("realizedPnl")
+        or data.get("realisedPnl")
     )
 
-    # Realised M2M chain — Dhan v2 has shown all four spellings across
-    # SDK builds. First non-zero wins; falls back to 0.0 only when none
-    # of the candidates are present in the response.
-    _realised = float(
-        data.get("realizedProfit",
-                 data.get("realisedProfit",
-                          data.get("realizedPnl",
-                                   data.get("realisedPnl", 0)))) or 0
-    )
-
-    # Option premium currently parked in long options. Same fallback
-    # pattern; the strip already derives this from positions so the
-    # broker-side field is a cross-check, not load-bearing.
-    _opt_prem = float(
-        data.get("optionPremium",
-                 data.get("optionsPremium",
-                          data.get("optionsTraded", 0))) or 0
+    # Option premium: three observed field names.
+    _opt_prem = _dhan_num(
+        data.get("optionPremium")
+        or data.get("optionsPremium")
+        or data.get("optionsTraded")
     )
 
     payload = {
-        "enabled": True,
-        "net":     _cash,
-        "available": {
-            # adhoc_margin maps to sodLimit (Dhan's credit-limit field).
-            # Documented mismatch: this is a credit facility, not real cash.
-            "adhoc_margin":      float(data.get("sodLimit",        0) or 0),
-            "cash":              _cash,
-            # opening_balance: Dhan's `sodLimit` is the start-of-day credit
-            # limit, not the SOD actual cash balance. The Funds-table
-            # `cash` column reads this and therefore shows credit-limit
-            # for Dhan rows — strip CA is unaffected (reads `live_balance`).
-            "opening_balance":   float(data.get("sodLimit",        0) or 0),
-            "live_balance":      _cash,
-            "collateral":        float(data.get("collateralAmount", 0) or 0),
-            "intraday_payin":    0.0,
-        },
-        "utilised": {
-            "debits":            float(data.get("utilizedAmount",   0) or 0),
-            "exposure":          0.0,
-            "m2m_realised":      _realised,
-            "m2m_unrealised":    0.0,
-            "option_premium":    _opt_prem,
-            "payout":            float(data.get("withdrawableBalance", 0) or 0),
-            "span":              0.0,
-            "holding_sales":     0.0,
-            "turnover":          0.0,
-            "liquid_collateral": 0.0,
-            "stock_collateral":  float(data.get("collateralAmount", 0) or 0),
-        },
-        "_raw": data,
+        "enabled":   True,
+        "net":       _cash,
+        "available": _dhan_margins_available(data, _cash),
+        "utilised":  _dhan_margins_utilised(data, _realised, _opt_prem),
+        "_raw":      data,
     }
-    if segment == "commodity":
-        # No per-segment slice from Dhan today — return same payload.
-        return payload
+    # No per-segment slice from Dhan today — return same payload regardless.
     return payload
 
 
@@ -2125,37 +1878,35 @@ _DHAN_STATUS_TO_KITE = {
 }
 
 
+_DHAN_PRODUCT_TO_KITE = {"INTRADAY": "MIS", "MARGIN": "NRML", "CNC": "CNC"}
+
+
+def _dhan_normalise_one_order(o: dict) -> dict:
+    """Normalise a single Dhan order row to Kite-shape."""
+    raw_status = (o.get("orderStatus") or "").upper()
+    return {
+        "order_id":           _dhan_first(o, "orderId"),
+        "tradingsymbol":      _dhan_to_kite_symbol(_dhan_first(o, "tradingSymbol")),
+        "exchange":           _dhan_first(o, "exchange"),
+        "status":             _DHAN_STATUS_TO_KITE.get(raw_status, raw_status),
+        "transaction_type":   _dhan_first(o, "transactionType", default="BUY"),
+        "order_type":         _dhan_first(o, "orderType", default="MARKET"),
+        "product":            _DHAN_PRODUCT_TO_KITE.get(o.get("productType", ""), "NRML"),
+        "quantity":           _dhan_int(o.get("quantity")),
+        "filled_quantity":    _dhan_int(o.get("filledQty")),
+        "pending_quantity":   _dhan_int(o.get("remainingQty")),
+        "price":              _dhan_num(o.get("price")),
+        "trigger_price":      _dhan_num(o.get("triggerPrice")),
+        "average_price":      _dhan_num(o.get("averageTradedPrice")),
+        "order_timestamp":    _dhan_first(o, "createTime"),
+        "exchange_timestamp": _dhan_first(o, "exchangeTime"),
+        "status_message":     _dhan_first(o, "orderStatusMessage"),
+        "_raw":               o,
+    }
+
+
 def _normalise_orders(resp: Any) -> list[dict]:
-    out: list[dict] = []
-    for o in _unwrap(resp):
-        # Translate Dhan F&O symbol → Kite-style (see _dhan_to_kite_symbol)
-        # so orders + positions display under one canonical tradingsymbol.
-        _raw_ts_o = str(o.get("tradingSymbol") or "")
-        _raw_status = (o.get("orderStatus") or "").upper()
-        _status = _DHAN_STATUS_TO_KITE.get(_raw_status, _raw_status)
-        out.append({
-            "order_id":         str(o.get("orderId") or ""),
-            "tradingsymbol":    _dhan_to_kite_symbol(_raw_ts_o),
-            "exchange":         o.get("exchange") or "",
-            "status":           _status,
-            "transaction_type": o.get("transactionType") or "BUY",
-            "order_type":       o.get("orderType") or "MARKET",
-            "product":          {"INTRADAY": "MIS",
-                                 "MARGIN":   "NRML",
-                                 "CNC":      "CNC"}.get(o.get("productType", ""),
-                                                         "NRML"),
-            "quantity":         int(o.get("quantity",         0) or 0),
-            "filled_quantity":  int(o.get("filledQty",        0) or 0),
-            "pending_quantity": int(o.get("remainingQty",     0) or 0),
-            "price":            float(o.get("price",          0) or 0),
-            "trigger_price":    float(o.get("triggerPrice",   0) or 0),
-            "average_price":    float(o.get("averageTradedPrice", 0) or 0),
-            "order_timestamp":  o.get("createTime")  or "",
-            "exchange_timestamp": o.get("exchangeTime") or "",
-            "status_message":   o.get("orderStatusMessage") or "",
-            "_raw":             o,
-        })
-    return out
+    return [_dhan_normalise_one_order(o) for o in _unwrap(resp)]
 
 
 def _normalise_trades(resp: Any) -> list[dict]:

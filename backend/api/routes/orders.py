@@ -185,6 +185,18 @@ def _chase_process_paper_row(r, _paper_open_ids: set) -> tuple[bool, int]:
     return True, 0
 
 
+def _rco_apply_fill_price(r, bo: dict) -> None:
+    """Stamp fill_price + filled_at on a row that just transitioned to FILLED.
+    Silently skips when average_price is absent or unconvertible.
+    """
+    if bo.get("average_price"):
+        try:
+            r.fill_price = float(bo["average_price"])
+        except (TypeError, ValueError):
+            pass
+    r.filled_at = datetime.now(timezone.utc)
+
+
 def _chase_process_live_row(
     r,
     _broker_status_by_id: dict[str, dict],
@@ -209,12 +221,7 @@ def _chase_process_live_row(
     if r.status != new_status:
         r.status = new_status
         if new_status == "FILLED":
-            if _bo["average_price"]:
-                try:
-                    r.fill_price = float(_bo["average_price"])
-                except (TypeError, ValueError):
-                    pass
-            r.filled_at = datetime.now(timezone.utc)
+            _rco_apply_fill_price(r, _bo)
             _reconciled_filled.append(r)
         r.detail = ((r.detail or "")[:200]
                     + f" · broker says {_bo['status']}")
@@ -380,6 +387,43 @@ def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
     )
 
 
+def _rco_invalidate_terminal_caches() -> None:
+    """Invalidate positions/holdings/margins API + raw-DF caches on terminal order status."""
+    for _key in ("positions", "holdings"):
+        try:
+            invalidate(_key)
+        except Exception:
+            pass
+    try:
+        from backend.brokers.broker_apis import _raw_cache_invalidate
+        _raw_cache_invalidate("positions")
+        _raw_cache_invalidate("holdings")
+        _raw_cache_invalidate("margins")
+    except Exception:
+        pass
+
+
+def _rco_broadcast_position_filled(
+    masked: str, exchange: str, symbol: str, txn: str, qty, price, order_id
+) -> None:
+    """Broadcast position_filled WS event on COMPLETE. No-op when qty is zero."""
+    try:
+        _qty_int = int(qty or 0)
+        if _qty_int > 0:
+            _side_sign = 1 if (txn or "").upper() == "BUY" else -1
+            broadcast(json.dumps({
+                "event": "position_filled",
+                "account": masked, "exchange": exchange,
+                "tradingsymbol": symbol,
+                "qty": _qty_int * _side_sign,
+                "fill_price": float(price or 0),
+                "ts": int(_time.time() * 1000),
+                "order_id": order_id,
+            }))
+    except Exception as _pe:
+        logger.debug(f"position_filled broadcast skipped: {_pe}")
+
+
 def _postback_broadcast_fanout(
     *,
     status: str,
@@ -419,23 +463,7 @@ def _postback_broadcast_fanout(
     try:
         invalidate("orders")
         if _terminal:
-            for _key in ("positions", "holdings"):
-                try:
-                    invalidate(_key)
-                except Exception:
-                    pass
-            # Also drop the raw-DataFrame cache in broker_apis so
-            # compute_firm_nav + investor slice see fresh broker
-            # state on the next call. Without this, NavCard /
-            # /performance NAV row could lag by up to _RAW_TTL_S
-            # (30 s) after a fill.
-            try:
-                from backend.brokers.broker_apis import _raw_cache_invalidate
-                _raw_cache_invalidate("positions")
-                _raw_cache_invalidate("holdings")
-                _raw_cache_invalidate("margins")
-            except Exception:
-                pass
+            _rco_invalidate_terminal_caches()
 
         broadcast(json.dumps({
             "event": "order_update",
@@ -445,21 +473,7 @@ def _postback_broadcast_fanout(
         }))
 
         if str(status).upper() == "COMPLETE":
-            try:
-                _qty_int = int(qty or 0)
-                if _qty_int > 0:
-                    _side_sign = 1 if (txn or "").upper() == "BUY" else -1
-                    broadcast(json.dumps({
-                        "event": "position_filled",
-                        "account": masked, "exchange": exchange,
-                        "tradingsymbol": symbol,
-                        "qty": _qty_int * _side_sign,
-                        "fill_price": float(price or 0),
-                        "ts": int(_time.time() * 1000),
-                        "order_id": order_id,
-                    }))
-            except Exception as _pe:
-                logger.debug(f"position_filled broadcast skipped: {_pe}")
+            _rco_broadcast_position_filled(masked, exchange, symbol, txn, qty, price, order_id)
 
         if _terminal:
             broadcast(json.dumps({
@@ -519,6 +533,266 @@ async def _rco_kill_live_mode(row) -> str:
         return f"broker cancel failed: {e}"
 
 
+def _rco_reconcile_active_rows(
+    rows: list,
+    paper_open_ids: "set | None",
+    broker_status_by_id: dict,
+) -> "tuple[list, list, bool]":
+    """Scan OPEN/CANCEL_FAILED rows and inline-reconcile paper + live modes.
+
+    Returns (kept, reconciled_filled, needs_commit).
+    `reconciled_filled` is the list of rows that just transitioned to FILLED
+    so the caller can fire template-attach after the DB commit.
+    """
+    kept: list = []
+    reconciled_filled: list = []
+    dropped_paper = dropped_live = reconciled_live = 0
+    for r in rows:
+        mode = (r.mode or "").lower()
+        if mode == "paper" and paper_open_ids is not None:
+            drop, d_delta = _chase_process_paper_row(r, paper_open_ids)
+            dropped_paper += d_delta
+            if drop:
+                continue
+        elif mode == "live":
+            drop, d_delta, r_delta = _chase_process_live_row(r, broker_status_by_id, reconciled_filled)
+            dropped_live += d_delta
+            reconciled_live += r_delta
+            if drop:
+                continue
+        kept.append(r)
+    needs_commit = bool(dropped_paper or dropped_live or reconciled_live)
+    return kept, reconciled_filled, needs_commit
+
+
+_PREVIEW_FO_EXCHANGES = frozenset({"NFO", "MCX", "CDS", "BFO", "BCD", "NCO"})
+
+
+async def _rco_preview_resolve_qty(exch: str, sym: str, input_qty: int) -> int:
+    """Convert LOTS to contracts for F&O exchanges in ticket_preview.
+    Returns contracts when lot_size is available, raw input_qty otherwise.
+    """
+    if exch not in _PREVIEW_FO_EXCHANGES or input_qty <= 0:
+        return input_qty
+    from backend.brokers.adapters.kite import get_lot_size as _prev_lot
+    try:
+        _lot = int(await _prev_lot(exch, sym) or 0)
+    except Exception:
+        _lot = 0
+    return input_qty * _lot if _lot > 0 else input_qty
+
+
+def _rco_preview_empty_plan(data) -> dict:
+    """Build a stub plan dict when apply_template_to_order returns None."""
+    return {
+        "template_id":   None,
+        "template_name": "(none)",
+        "template_slug": None,
+        "parent_account":    data.account,
+        "parent_symbol":     (data.tradingsymbol or "").upper(),
+        "parent_side":       (data.side or "").upper(),
+        "parent_qty":        data.quantity,
+        "parent_exchange":   data.exchange,
+        "parent_fill_price": float(data.reference_price or 0.0),
+        "gtts": [],
+        "wing": None,
+        "notes": [],
+    }
+
+
+def _rco_parse_dhan_postback_body(body: dict) -> "tuple[str, str, str, str, str, object, object, str, str]":
+    """Extract canonical (order_id, account, kite_status, kite_symbol, txn,
+    qty, price, kite_exchange, status_message) from a Dhan postback payload.
+    """
+    order_id = str(body.get("orderId") or body.get("order_id") or "")
+    status   = str(body.get("orderStatus") or body.get("status") or "").upper()
+    symbol   = body.get("tradingSymbol") or body.get("tradingsymbol") or ""
+    txn      = str(body.get("transactionType") or body.get("transaction_type") or "")
+    qty      = body.get("filledQuantity") or body.get("quantity") or 0
+    price    = body.get("averageTradedPrice") or body.get("price") or 0
+    account  = str(body.get("dhanClientId") or body.get("account") or "")
+    raw_seg  = str(body.get("exchangeSegment") or "")
+    status_msg = str(body.get("statusMessage") or "")
+    try:
+        from backend.brokers.adapters.dhan import (
+            _DHAN_STATUS_TO_KITE,
+            _DHAN_SEGMENT_TO_EXCHANGE,
+            _dhan_to_kite_symbol,
+        )
+        kite_status   = _DHAN_STATUS_TO_KITE.get(status, status)
+        kite_symbol   = _dhan_to_kite_symbol(str(symbol)) if symbol else str(symbol)
+        kite_exchange = _DHAN_SEGMENT_TO_EXCHANGE.get(raw_seg, raw_seg)
+    except Exception:
+        kite_status   = status
+        kite_symbol   = str(symbol)
+        kite_exchange = raw_seg
+    return order_id, account, kite_status, kite_symbol, txn, qty, price, kite_exchange, status_msg
+
+
+def _rco_parse_groww_postback_body(body: dict) -> "tuple[str, str, str, str, object, object, str, str]":
+    """Extract canonical (order_id, kite_status, symbol, txn, qty, price,
+    exchange, status_message) from a Groww postback payload.
+    """
+    order_id = str(body.get("groww_order_id") or body.get("order_id") or "")
+    status   = str(body.get("order_status") or body.get("status") or "").upper()
+    symbol   = str(body.get("trading_symbol") or body.get("symbol") or "")
+    txn      = str(body.get("transaction_type") or "")
+    qty      = body.get("filled_quantity") or body.get("quantity") or 0
+    price    = body.get("average_price") or body.get("price") or 0
+    exchange = str(body.get("exchange") or body.get("segment") or "")
+    status_msg = str(body.get("status_message") or "")
+    try:
+        from backend.brokers.adapters.groww import _GROWW_STATUS_TO_KITE
+        kite_status = _GROWW_STATUS_TO_KITE.get(status, status)
+    except Exception:
+        kite_status = status
+    return order_id, kite_status, symbol, txn, qty, price, exchange, status_msg
+
+
+async def _rco_run_template_attach(row) -> "tuple | None":
+    """Run apply_template_to_order for *row* and persist attached_gtts_json.
+
+    Returns (result, payload_persisted) where payload_persisted is True
+    when attached_gtts_json was written to the row. Returns None when
+    apply_template_to_order returned no result.
+
+    Must be called within an active SQLAlchemy session context (row is
+    session-attached). The caller must commit after this returns.
+    """
+    from backend.api.algo.template_attach import apply_template_to_order
+
+    apply_path = "sim" if (row.mode or "").lower() == "sim" else "live"
+    _retry_overrides = _retry_parse_overrides(row.template_overrides_json)
+    result = await apply_template_to_order(
+        template_id=row.template_id,
+        template_slug=None,
+        overrides=_retry_overrides,
+        parent_account=row.account or "",
+        parent_symbol=row.symbol or "",
+        parent_side=row.transaction_type or "BUY",
+        parent_qty=_retry_effective_parent_qty(row),
+        parent_exchange=row.exchange or "NFO",
+        parent_fill_price=float(row.fill_price or row.initial_price or 0),
+        parent_product=row.product or "NRML",
+        parent_order_id=row.id,
+        apply_path=apply_path,
+    )
+    return result
+
+
+def _rco_persist_attach_payload(row, result, session) -> bool:
+    """Write the attached_gtts_json payload onto *row* from *result*.
+    Returns True when a payload was written, False when empty.
+    Assumes the session's commit will be called by the caller.
+    """
+    _attached_payload = _retry_build_attached_payload(result, row.product or "NRML")
+    if _attached_payload:
+        import json as _json_retry
+        row.attached_gtts_json = _json_retry.dumps(_attached_payload)
+        if result.errors:
+            row.detail = ((row.detail or "")[:200]
+                          + " · retry attach: "
+                          + "; ".join(result.errors[:2]))[:240]
+        return True
+    return False
+
+
+async def _rco_fetch_broker_order(acct: str, broker_order_id: str) -> "tuple[dict | None, str | None, str | None]":
+    """Fetch broker order book for *acct* and look up *broker_order_id*.
+
+    Returns (bo, kite_status, target) where:
+    - bo is the matching order dict or None when not found
+    - kite_status is the UPPER-cased Kite status string or None
+    - target is the mapped algo status ("FILLED", "CANCELLED", …) or None
+
+    Raises HTTPException on auth / network failure.
+    """
+    from backend.brokers import get_broker
+
+    try:
+        broker = get_broker(acct)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"account {acct} not loaded ({e})")
+    try:
+        broker_orders = await asyncio.to_thread(broker.orders)
+    except Exception as e:
+        logger.warning(f"reconcile {broker_order_id}: broker.orders() failed: {e}")
+        raise HTTPException(status_code=502, detail=f"broker fetch failed: {e}")
+
+    by_id = {str(o.get("order_id")): o for o in (broker_orders or [])}
+    bo = by_id.get(str(broker_order_id))
+    kite_status = str(bo.get("status") or "").upper() if bo else None
+    target = _RECONCILE_KITE_TO_ALGO.get(kite_status) if kite_status else None
+    return bo, kite_status, target
+
+
+async def _rco_dispatch_kill(row) -> str:
+    """Dispatch the mode-appropriate cancel for a chase row.
+    Returns an error string on failure, empty string on success.
+    """
+    mode = (row.mode or "").lower()
+    if mode == "paper":
+        return await _rco_kill_paper_mode(row)
+    if mode == "live":
+        return await _rco_kill_live_mode(row)
+    return ""
+
+
+def _rco_apply_kill_status(row, err_msg: str) -> None:
+    """Stamp CANCELLED or CANCEL_FAILED status + detail onto the row."""
+    if err_msg:
+        row.status = "CANCEL_FAILED"
+        row.detail = ((row.detail or "")[:200] + f" · cancel failed: {err_msg}")
+    else:
+        row.status = "CANCELLED"
+        row.detail = ((row.detail or "")[:200] + " · killed by operator")
+
+
+_RECONCILE_KITE_TO_ALGO = {
+    "COMPLETE":  "FILLED",
+    "CANCELLED": "CANCELLED",
+    "REJECTED":  "REJECTED",
+    "EXPIRED":   "UNFILLED",
+}
+
+
+def _rco_stamp_fill_price(r, bo: dict) -> None:
+    """Write fill_price + filled_at from broker order dict onto AlgoOrder row.
+    Uses average_price, falls back to price; silently skips on bad value.
+    """
+    from datetime import datetime, timezone
+    try:
+        ap = bo.get("average_price") or bo.get("price")
+        if ap is not None:
+            r.fill_price = float(ap)
+        r.filled_at = datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        pass
+
+
+def _rco_reconcile_one_row(r, by_id: dict, _attach_queue: list) -> tuple[int, int]:
+    """Reconcile one AlgoOrder row against the broker snapshot dict.
+    Returns (updated_delta, missing_delta). Appends to _attach_queue on FILLED.
+    """
+    bid = str(r.broker_order_id or "")
+    if not bid:
+        return 0, 0
+    bo = by_id.get(bid)
+    if bo is None:
+        r.status = "UNFILLED"
+        r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
+        return 0, 1
+    kite_status = str(bo.get("status") or "").upper()
+    new_status = _RECONCILE_KITE_TO_ALGO.get(kite_status)
+    if new_status and r.status != new_status:
+        r.status = new_status
+        if new_status == "FILLED":
+            _rco_stamp_fill_price(r, bo)
+            _attach_queue.append(r)
+        return 1, 0
+    return 0, 0
+
+
 async def _rco_reconcile_account(
     acct: str, acct_rows: list, _attach_queue: list,
 ) -> tuple[int, int]:
@@ -526,14 +800,7 @@ async def _rco_reconcile_account(
     Returns (updated, missing) delta counts. Appends FILLED rows to
     _attach_queue for post-commit template-attach dispatch."""
     from backend.brokers import get_broker
-    from datetime import datetime, timezone
 
-    _KITE_TO_ALGO = {
-        "COMPLETE":  "FILLED",
-        "CANCELLED": "CANCELLED",
-        "REJECTED":  "REJECTED",
-        "EXPIRED":   "UNFILLED",
-    }
     try:
         broker = get_broker(acct)
     except Exception as e:
@@ -549,51 +816,45 @@ async def _rco_reconcile_account(
     updated = 0
     missing = 0
     for r in acct_rows:
-        bid = str(r.broker_order_id or "")
-        if not bid:
-            continue
-        bo = by_id.get(bid)
-        if bo is None:
-            r.status = "UNFILLED"
-            r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
-            missing += 1
-            continue
-        kite_status = str(bo.get("status") or "").upper()
-        new_status = _KITE_TO_ALGO.get(kite_status)
-        if new_status and r.status != new_status:
-            r.status = new_status
-            if new_status == "FILLED":
-                try:
-                    ap = bo.get("average_price") or bo.get("price")
-                    if ap is not None:
-                        r.fill_price = float(ap)
-                    r.filled_at = datetime.now(timezone.utc)
-                except (TypeError, ValueError):
-                    pass
-                _attach_queue.append(r)
-            updated += 1
+        upd, mis = _rco_reconcile_one_row(r, by_id, _attach_queue)
+        updated += upd
+        missing += mis
     return updated, missing
 
 
-def _rco_parse_preflight_body(body: dict) -> tuple:
-    """Parse and coerce the raw JSON body for `preflight_order`.
-    Returns (account, exchange, tradingsymbol, quantity, order_type,
-    product, variety, side, price, trigger_price, paired_legs)."""
+def _rco_parse_preflight_identity(body: dict) -> tuple:
+    """Extract account / exchange / symbol / qty / order classification fields."""
     account       = str(body.get("account") or "").strip()
     exchange      = str(body.get("exchange") or "NFO").strip().upper()
     tradingsymbol = str(body.get("tradingsymbol") or "").strip().upper()
     quantity      = int(body.get("quantity") or 0)
     order_type    = str(body.get("order_type") or "LIMIT").strip().upper()
     product       = str(body.get("product") or "NRML").strip().upper()
+    return account, exchange, tradingsymbol, quantity, order_type, product
+
+
+def _rco_parse_preflight_scalars(body: dict) -> tuple:
+    """Extract and coerce scalar order fields from the preflight JSON body.
+    Returns (account, exchange, tradingsymbol, quantity, order_type,
+    product, variety, side, price, trigger_price).
+    """
+    account, exchange, tradingsymbol, quantity, order_type, product = _rco_parse_preflight_identity(body)
     variety       = str(body.get("variety") or "regular").strip().lower()
     side          = str(body.get("side") or body.get("transaction_type") or "BUY").strip().upper()
     price         = float(body.get("price") or 0)
     trigger_price = float(body.get("trigger_price") or 0)
-    paired_legs   = body.get("paired_legs") or []
+    return account, exchange, tradingsymbol, quantity, order_type, product, variety, side, price, trigger_price
+
+
+def _rco_parse_preflight_body(body: dict) -> tuple:
+    """Parse and coerce the raw JSON body for `preflight_order`.
+    Returns (account, exchange, tradingsymbol, quantity, order_type,
+    product, variety, side, price, trigger_price, paired_legs)."""
+    scalars = _rco_parse_preflight_scalars(body)
+    paired_legs = body.get("paired_legs") or []
     if not isinstance(paired_legs, list):
         paired_legs = []
-    return (account, exchange, tradingsymbol, quantity, order_type,
-            product, variety, side, price, trigger_price, paired_legs)
+    return scalars + (paired_legs,)
 
 
 def _rco_validate_preflight_params(
@@ -613,6 +874,26 @@ def _rco_validate_preflight_params(
         raise HTTPException(status_code=400, detail="side must be BUY or SELL")
 
 
+def _rco_reconcile_apply_target(r, bo: Optional[dict], kite_status: Optional[str], target: str) -> tuple[bool, str, bool]:
+    """Apply a known target status onto an AlgoOrder row (both row and broker order present).
+    Returns (updated, note, attach_after_commit).
+    """
+    from datetime import datetime, timezone
+
+    if r.status != target:
+        r.status = target
+        if target == "FILLED" and bo and bo.get("average_price"):
+            try:
+                r.fill_price = float(bo["average_price"])
+                r.filled_at = datetime.now(timezone.utc)
+            except Exception:
+                pass
+            return True, f"broker status={kite_status} → {target}", True
+        r.detail = (r.detail or "") + f" [reconciled → {target}]"
+        return True, f"broker status={kite_status} → {target}", False
+    return False, f"already {target}", False
+
+
 def _rco_apply_reconcile_status(
     r,
     bo: Optional[dict],
@@ -625,44 +906,21 @@ def _rco_apply_reconcile_status(
     `attach_after_commit` is True when the row was just flipped to FILLED
     and has a template that should be fired post-commit.
     """
-    from datetime import datetime, timezone
-
-    updated = False
-    note = ""
-    attach_after_commit = False
-
     if r is None:
         if bo is None:
-            note = f"broker has no order (no algo row to update)"
-        else:
-            note = f"broker status={kite_status} (no algo row to update)"
-    elif bo is None:
+            return False, "broker has no order (no algo row to update)", False
+        return False, f"broker status={kite_status} (no algo row to update)", False
+
+    if bo is None:
         if r.status == "OPEN":
             r.status = "UNFILLED"
             r.detail = (r.detail or "") + " [reconciled — broker no longer carries order_id]"
-            updated = True
-            note = "broker no longer carries order_id"
-        else:
-            note = "broker has no order and algo row already terminal"
-    else:
-        if target and r.status != target:
-            r.status = target
-            if target == "FILLED" and bo.get("average_price"):
-                try:
-                    r.fill_price = float(bo["average_price"])
-                    r.filled_at = datetime.now(timezone.utc)
-                except Exception:
-                    pass
-                attach_after_commit = True
-            r.detail = (r.detail or "") + f" [reconciled → {target}]"
-            updated = True
-            note = f"broker status={kite_status} → {target}"
-        elif target and r.status == target:
-            note = f"already {target}"
-        else:
-            note = f"broker status={kite_status} (no algo mapping)"
+            return True, "broker no longer carries order_id", False
+        return False, "broker has no order and algo row already terminal", False
 
-    return updated, note, attach_after_commit
+    if target:
+        return _rco_reconcile_apply_target(r, bo, kite_status, target)
+    return False, f"broker status={kite_status} (no algo mapping)", False
 
 
 class OrdersController(Controller):
@@ -720,28 +978,7 @@ class OrdersController(Controller):
         # the /performance grids apply — turns ZG0790 into ZG####.
         do_mask = not is_admin_request(request)
         masked_acct = mask_account if do_mask else (lambda a: a)
-        return [
-            AlgoOrderInfo(
-                id=r.id, account=masked_acct(r.account), symbol=r.symbol, exchange=r.exchange,
-                transaction_type=r.transaction_type, quantity=r.quantity,
-                initial_price=(float(r.initial_price) if r.initial_price is not None else None),
-                current_limit=(float(r.current_limit) if r.current_limit is not None else None),
-                fill_price=(float(r.fill_price) if r.fill_price is not None else None),
-                attempts=int(r.attempts or 0),
-                status=r.status, engine=r.engine, mode=r.mode,
-                detail=r.detail,
-                created_at=r.created_at.isoformat() if r.created_at else "",
-                target_pct=(float(r.target_pct) if r.target_pct is not None else None),
-                target_abs=(float(r.target_abs) if r.target_abs is not None else None),
-                parent_order_id=r.parent_order_id,
-                basket_tag=r.basket_tag,
-                template_id=r.template_id,
-                attached_gtts_json=r.attached_gtts_json,
-                filled_quantity=(int(r.filled_quantity) if r.filled_quantity is not None else None),
-                child_order_ids=child_map.get(r.id, []),
-            )
-            for r in rows
-        ]
+        return [_chase_row_to_info(r, masked_acct, child_map) for r in rows]
 
     @get("/chases/active")
     async def list_active_chases(self, request: Request) -> list[AlgoOrderInfo]:
@@ -796,40 +1033,11 @@ class OrdersController(Controller):
                 .limit(500)
             )).scalars().all()
 
-            kept = []
-            dropped_paper = 0
-            dropped_live = 0
-            reconciled_live = 0
-            # Capture rows that flip to FILLED here so we can call
-            # `_maybe_fire_template_attach_for_reconcile` after the
-            # commit — pre-fix the polling reconcile path silently
-            # dropped the template TP/SL attach because the function
-            # was only invoked from `reconcile_algo_orders` /
-            # `reconcile_single_order`, never from this in-line poll.
-            _reconciled_filled: list = []
-            for r in rows:
-                mode = (r.mode or "").lower()
-                if mode == "paper" and _paper_open_ids is not None:
-                    drop, d_delta = _chase_process_paper_row(r, _paper_open_ids)
-                    dropped_paper += d_delta
-                    if drop:
-                        continue
-                elif mode == "live":
-                    drop, d_delta, r_delta = _chase_process_live_row(
-                        r, _broker_status_by_id, _reconciled_filled,
-                    )
-                    dropped_live += d_delta
-                    reconciled_live += r_delta
-                    if drop:
-                        continue
-                kept.append(r)
-            if dropped_paper or dropped_live or reconciled_live:
+            kept, _reconciled_filled, _needs_commit = _rco_reconcile_active_rows(
+                rows, _paper_open_ids, _broker_status_by_id,
+            )
+            if _needs_commit:
                 await s.commit()
-                # After the commit lands, fire template-attach for
-                # every FILLED row that surfaced here. Same hook the
-                # postback handler + chase terminal use; idempotent
-                # via the `attached_gtts_json IS NOT NULL` guard
-                # inside `_fire_template_attach_on_fill`.
                 for _filled_row in _reconciled_filled:
                     _maybe_fire_template_attach_for_reconcile(_filled_row)
             child_map = await _fetch_child_order_ids(s, [r.id for r in kept])
@@ -866,26 +1074,8 @@ class OrdersController(Controller):
             if row.status != "OPEN":
                 return {"ok": True, "already_terminal": True, "status": row.status}
 
-            mode = (row.mode or "").lower()
-            if mode == "paper":
-                err_msg = await _rco_kill_paper_mode(row)
-            elif mode == "live":
-                err_msg = await _rco_kill_live_mode(row)
-            else:
-                err_msg = ""
-
-            # Audit fix: only commit CANCELLED when the broker cancel
-            # actually succeeded. CANCEL_FAILED keeps the row visible in
-            # the chase grid with a clear surface for the operator to retry
-            # or reconcile.
-            if err_msg:
-                row.status = "CANCEL_FAILED"
-                row.detail = ((row.detail or "")[:200]
-                              + f" · cancel failed: {err_msg}")
-            else:
-                row.status = "CANCELLED"
-                row.detail = ((row.detail or "")[:200]
-                              + " · killed by operator")
+            err_msg = await _rco_dispatch_kill(row)
+            _rco_apply_kill_status(row, err_msg)
             await s.commit()
             _row_id = row.id
 
@@ -914,7 +1104,6 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder, OrderTemplate
-        from backend.api.algo.template_attach import apply_template_to_order
 
         async with async_session() as s:
             row = (await s.execute(
@@ -937,56 +1126,10 @@ class OrdersController(Controller):
             if tpl is None:
                 return {"ok": False, "reason": f"template #{row.template_id} no longer exists"}
 
-            # Apply path mirrors the mode the parent was placed in. Paper
-            # mode flows through the live attach path (real GTTs against
-            # the broker — paper just refers to the parent's mode); sim
-            # mode flows through SimDriver.
-            apply_path = "sim" if (row.mode or "").lower() == "sim" else "live"
-            # Re-use the per-submit overrides persisted on the row.
-            _retry_overrides = _retry_parse_overrides(row.template_overrides_json)
-            result = await apply_template_to_order(
-                template_id=row.template_id,
-                template_slug=None,
-                overrides=_retry_overrides,
-                parent_account=row.account or "",
-                parent_symbol=row.symbol or "",
-                # Audit fix: AlgoOrder has no `.side` column; the
-                # field is `transaction_type`. The previous `row.side`
-                # raised AttributeError on every Re-attach click
-                # before any broker call.
-                parent_side=row.transaction_type or "BUY",
-                # Audit fix: prefer filled_quantity over original quantity
-                # when accumulated. Without this, a retry on a row that
-                # had partially filled (e.g. 25 of 50 lots) sizes the exit
-                # GTT at the original 50 — over-hedging on a SELL or
-                # over-flattening on a BUY. Same fix-pattern as the
-                # postback path.
-                parent_qty=_retry_effective_parent_qty(row),
-                parent_exchange=row.exchange or "NFO",
-                parent_fill_price=float(row.fill_price or row.initial_price or 0),
-                parent_product=row.product or "NRML",
-                parent_order_id=row.id,
-                apply_path=apply_path,
-            )
+            result = await _rco_run_template_attach(row)
             if result is None:
                 return {"ok": False, "reason": "apply_template_to_order returned no result (template missing or empty plan)"}
-            # Audit fix (H-7) + redo-audit (Sc.5a / 5b / 5c) — persist
-            # attached_gtts_json on the row mirroring the EXACT shape
-            # `_fire_template_attach_on_fill` writes. Pre-fix retry_template
-            # (a) landed GTTs but reported `attached: false` so the next
-            # retry doubled at broker, and (b) omitted `current_trigger`
-            # + `sl_trail_pct` entries so the trail-stop poller silently
-            # refused to ratchet retry-attached SLs forever.
-            _attached_payload = _retry_build_attached_payload(
-                result, row.product or "NRML",
-            )
-            if _attached_payload:
-                import json as _json_retry
-                row.attached_gtts_json = _json_retry.dumps(_attached_payload)
-                if result.errors:
-                    row.detail = ((row.detail or "")[:200]
-                                  + " · retry attach: "
-                                  + "; ".join(result.errors[:2]))[:240]
+            if _rco_persist_attach_payload(row, result, s):
                 await s.commit()
                 await s.refresh(row)
 
@@ -1080,37 +1223,12 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
-        from backend.brokers import get_broker
-
-        _KITE_TO_ALGO = {
-            "COMPLETE":  "FILLED",
-            "CANCELLED": "CANCELLED",
-            "REJECTED":  "REJECTED",
-            "EXPIRED":   "UNFILLED",
-        }
 
         acct = (data.account or "").strip()
         if not acct:
             raise HTTPException(status_code=400, detail="account required")
 
-        # Route via broker registry (not raw Connections.conn) — same fix
-        # as kill_chase / reconcile_algo_orders.
-        try:
-            broker = get_broker(acct)
-        except Exception as e:
-            raise HTTPException(status_code=404,
-                                detail=f"account {acct} not loaded ({e})")
-
-        try:
-            broker_orders = await asyncio.to_thread(broker.orders)
-        except Exception as e:
-            logger.warning(f"reconcile {broker_order_id}: broker.orders() failed: {e}")
-            raise HTTPException(status_code=502, detail=f"broker fetch failed: {e}")
-
-        by_id = {str(o.get("order_id")): o for o in (broker_orders or [])}
-        bo = by_id.get(str(broker_order_id))
-        kite_status = str(bo.get("status") or "").upper() if bo else None
-        target = _KITE_TO_ALGO.get(kite_status) if kite_status else None
+        bo, kite_status, target = await _rco_fetch_broker_order(acct, broker_order_id)
 
         async with async_session() as s:
             r = (await s.execute(
@@ -1300,25 +1418,9 @@ class OrdersController(Controller):
         # v2 API (2026-07-08): `data.quantity` is LOTS for F&O and shares
         # for equity. Convert to contracts here so the template resolver
         # sizes exit GTTs against the same unit convention it always has.
-        _FO = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
         _sym = (data.tradingsymbol or "").upper()
         _exch = (data.exchange or "NFO")
-        _input_qty = int(data.quantity or 0)
-        if _exch in _FO and _input_qty > 0:
-            from backend.brokers.adapters.kite import get_lot_size as _prev_lot
-            try:
-                _lot = int(await _prev_lot(_exch, _sym) or 0)
-            except Exception:
-                _lot = 0
-            if _lot > 0:
-                _parent_qty = _input_qty * _lot
-            else:
-                # Cache cold — preview is best-effort; carry the raw
-                # input through so the resolver still returns a plan
-                # (numeric fields may be off but structure is correct).
-                _parent_qty = _input_qty
-        else:
-            _parent_qty = _input_qty
+        _parent_qty = await _rco_preview_resolve_qty(_exch, _sym, int(data.quantity or 0))
 
         result = await apply_template_to_order(
             template_id=data.template_id,
@@ -1334,24 +1436,7 @@ class OrdersController(Controller):
             apply_path="preview",
         )
         if result is None:
-            # No template selected + no overrides — return a stub plan
-            # so the UI can still display "no exit attachments planned"
-            # without special-casing None.
-            empty = {
-                "template_id":   None,
-                "template_name": "(none)",
-                "template_slug": None,
-                "parent_account":    data.account,
-                "parent_symbol":     (data.tradingsymbol or "").upper(),
-                "parent_side":       (data.side or "").upper(),
-                "parent_qty":        data.quantity,
-                "parent_exchange":   data.exchange,
-                "parent_fill_price": float(data.reference_price or 0.0),
-                "gtts": [],
-                "wing": None,
-                "notes": [],
-            }
-            return TicketPreviewResponse(plan=empty)
+            return TicketPreviewResponse(plan=_rco_preview_empty_plan(data))
         return TicketPreviewResponse(plan=result.plan.to_dict())
 
     @post("/ticket")
@@ -1418,51 +1503,20 @@ class OrdersController(Controller):
             return {"status": "ok"}
         logger.info(f"dhan postback raw payload: {body!r}")
 
-        # Best-effort field extraction. Dhan v2 ships:
-        #   dhanClientId, orderId, exchangeOrderId, orderStatus,
-        #   transactionType, exchangeSegment, tradingSymbol,
-        #   quantity, filledQuantity, price, triggerPrice,
-        #   averageTradedPrice, postOnly, orderType, …
-        order_id = str(body.get("orderId") or body.get("order_id") or "")
-        status   = str(body.get("orderStatus") or body.get("status") or "").upper()
-        symbol   = body.get("tradingSymbol") or body.get("tradingsymbol") or ""
-        txn      = body.get("transactionType") or body.get("transaction_type") or ""
-        qty      = body.get("filledQuantity") or body.get("quantity") or 0
-        price    = body.get("averageTradedPrice") or body.get("price") or 0
-        account  = body.get("dhanClientId") or body.get("account") or ""
-
-        # Map Dhan status → Kite-canonical via the existing
-        # _DHAN_STATUS_TO_KITE table inside the adapter.
-        # Also translate the raw Dhan symbol (CRUDEOIL-16JUL2026-8500-CE) to
-        # Kite format and map the exchangeSegment (NSE_FNO, MCX_COMM) to the
-        # Kite canonical exchange string (NFO, MCX) so WS broadcasts + DB rows
-        # carry values that frontend consumers and the chase loop can match.
-        raw_seg = str(body.get("exchangeSegment") or "")
-        try:
-            from backend.brokers.adapters.dhan import (
-                _DHAN_STATUS_TO_KITE,
-                _DHAN_SEGMENT_TO_EXCHANGE,
-                _dhan_to_kite_symbol,
-            )
-            kite_status = _DHAN_STATUS_TO_KITE.get(status, status)
-            kite_symbol = _dhan_to_kite_symbol(str(symbol)) if symbol else str(symbol)
-            kite_exchange = _DHAN_SEGMENT_TO_EXCHANGE.get(raw_seg, raw_seg)
-        except Exception:
-            kite_status = status
-            kite_symbol = str(symbol)
-            kite_exchange = raw_seg
-
+        order_id, account, kite_status, kite_symbol, txn, qty, price, kite_exchange, status_msg = (
+            _rco_parse_dhan_postback_body(body)
+        )
         await _process_broker_postback(
             broker_id="dhan",
             order_id=order_id,
             status=kite_status,
-            account=str(account),
+            account=account,
             symbol=kite_symbol,
-            txn=str(txn),
+            txn=txn,
             qty=qty,
             price=price,
             exchange=kite_exchange,
-            status_message=str(body.get("statusMessage") or ""),
+            status_message=status_msg,
         )
         return {"status": "ok"}
 

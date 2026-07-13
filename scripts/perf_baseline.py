@@ -369,6 +369,31 @@ def _radon_stats(relpath: str) -> dict:
     }
 
 
+_SLICE_CAP = 400 * 80   # ~80 chars/line average
+
+
+def _build_svelte_hotspot(
+    i: int, m: "re.Match", decls: list, joined: str,
+) -> "dict | None":
+    """Score one function declaration slice. Returns a hotspot dict or None if below threshold."""
+    name = m.group("fn1") or m.group("fn2") or m.group("fn3") or "<anon>"
+    start = m.start()
+    raw_end = decls[i + 1].start() if i + 1 < len(decls) else len(joined)
+    end = min(raw_end, start + _SLICE_CAP)
+    slice_ = joined[start:end]
+    score = 0
+    for pname, pat in _SVELTE_DECISION_PATTERNS:
+        if pname == "optchain":
+            continue
+        score += len(pat.findall(slice_))
+    score -= len(_SVELTE_DECISION_PATTERNS[-1][1].findall(slice_))
+    score = max(0, score)
+    if score < CYCLO_YELLOW:
+        return None
+    line = joined.count("\n", 0, start) + 1
+    return {"fn_name": name, "cc": score, "line": line}
+
+
 def _svelte_cyclomatic(text: str) -> dict:
     """Heuristic cyclomatic estimate for a Svelte component. Extract every
     `<script>` block, tally decision tokens, and derive the top-5 named
@@ -386,44 +411,17 @@ def _svelte_cyclomatic(text: str) -> dict:
 
     joined = "\n".join(scripts)
     counts = {name: len(pat.findall(joined)) for name, pat in _SVELTE_DECISION_PATTERNS}
-    # Ternary count minus optional-chaining reduces the `?.` false-positive
-    # inflation we'd otherwise see on TypeScript-heavy components.
     ternary = max(0, counts["ternary"] - counts["optchain"])
     est = (counts["if"] + counts["else_if"] + counts["for"] + counts["while"]
            + counts["case"] + counts["catch"] + counts["and"] + counts["or"]
            + ternary)
 
-    # Per-function hotspots — walk the joined script, split at every
-    # function-decl start, tally decision tokens in each slice. Line
-    # numbers refer to the joined script (not the file); good enough
-    # for "where do I start looking" hints. Top 5 by score.
     decls = list(_RE_SVELTE_FN.finditer(joined))
     hotspots: list[dict] = []
-    # Cap slice length so a decl whose next-sibling is far away doesn't
-    # attribute half the file to itself. 400 lines ≈ 20-30 KB — larger
-    # than any sane function; anything above is almost certainly
-    # multi-function noise our naive slicer can't split.
-    _SLICE_CAP = 400 * 80   # ~80 chars/line average
     for i, m in enumerate(decls):
-        name = m.group("fn1") or m.group("fn2") or m.group("fn3") or "<anon>"
-        # Slice from this decl to the next decl (or EOF), capped.
-        start = m.start()
-        raw_end = decls[i + 1].start() if i + 1 < len(decls) else len(joined)
-        end = min(raw_end, start + _SLICE_CAP)
-        slice_ = joined[start:end]
-        score = 0
-        for pname, pat in _SVELTE_DECISION_PATTERNS:
-            if pname == "optchain":
-                continue
-            score += len(pat.findall(slice_))
-        # subtract optional-chain from ternary contribution
-        score -= len(_SVELTE_DECISION_PATTERNS[-1][1].findall(slice_))
-        score = max(0, score)
-        if score >= CYCLO_YELLOW:
-            # `line` is line-in-joined-scripts, not absolute file line —
-            # still useful as a rough locator.
-            line = joined.count("\n", 0, start) + 1
-            hotspots.append({"fn_name": name, "cc": score, "line": line})
+        hs = _build_svelte_hotspot(i, m, decls, joined)
+        if hs is not None:
+            hotspots.append(hs)
 
     hotspots.sort(key=lambda r: (-r["cc"], r["line"]))
     return {

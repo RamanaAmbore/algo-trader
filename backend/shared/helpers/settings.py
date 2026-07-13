@@ -573,6 +573,85 @@ SEEDS: list[tuple] = [
 #  Seeder + cache refresh
 # ═════════════════════════════════════════════════════════════════════════
 
+def _upsert_seeds(session: "Any", existing_by_key: dict) -> "tuple[int, int]":
+    """Insert missing SEEDS rows and sync metadata on existing ones.
+
+    Returns (inserted, updated_defaults).
+    """
+    from backend.api.models import Setting
+    inserted = updated_defaults = 0
+    for category, key, value_type, default, desc, units, schema in SEEDS:
+        default_str = _serialise(default, value_type)
+        row = existing_by_key.get(key)
+        if row is None:
+            session.add(Setting(
+                category=category, key=key, value_type=value_type,
+                value=default_str, default_value=default_str,
+                description=desc, units=units, schema=schema,
+            ))
+            inserted += 1
+        else:
+            changed = False
+            for field, new_val in (
+                ("category", category), ("description", desc),
+                ("units", units), ("schema", schema),
+                ("default_value", default_str), ("value_type", value_type),
+            ):
+                if getattr(row, field) != new_val:
+                    setattr(row, field, new_val)
+                    changed = True
+            if changed:
+                updated_defaults += 1
+    return inserted, updated_defaults
+
+
+def _seed_execution_flags(session: "Any", existing_by_key: dict) -> None:
+    """Ensure execution.paper_trading_mode and execution.shadow_mode exist."""
+    from backend.api.models import Setting
+    if "execution.paper_trading_mode" not in existing_by_key:
+        session.add(Setting(
+            category="execution",
+            key="execution.paper_trading_mode",
+            value_type="bool",
+            value="false",
+            default_value="false",
+            description=("Owned by /api/admin/execution/mode (navbar chip). "
+                         "Seeded false (LIVE) on first boot; toggling to "
+                         "true switches to PAPER."),
+        ))
+    if "execution.shadow_mode" not in existing_by_key:
+        session.add(Setting(
+            category="execution",
+            key="execution.shadow_mode",
+            value_type="bool",
+            value="false",
+            default_value="false",
+            description=("Owned by /api/admin/execution/mode (navbar chip). "
+                         "Seeded false on first boot; flipping to true "
+                         "puts every broker-hitting action into shadow "
+                         "(log + basket_margin validation, no execution)."),
+        ))
+
+
+_OWNED_OUTSIDE_SEEDS_PREFIXES = ("execution.",)
+
+
+async def _prune_retired_keys(session: "Any", existing_by_key: dict, seed_keys: set) -> int:
+    """Delete settings rows whose keys are no longer in SEEDS. Returns count deleted."""
+    from sqlalchemy import delete as sql_delete
+    from backend.api.models import Setting
+
+    retired_keys = [
+        k for k in existing_by_key
+        if k not in seed_keys
+        and not any(k.startswith(p) for p in _OWNED_OUTSIDE_SEEDS_PREFIXES)
+    ]
+    if retired_keys:
+        await session.execute(sql_delete(Setting).where(Setting.key.in_(retired_keys)))
+        return len(retired_keys)
+    return 0
+
+
 async def seed_settings() -> None:
     """
     Insert any missing seeded rows. Updates default_value on existing rows
@@ -583,95 +662,15 @@ async def seed_settings() -> None:
     from backend.api.database import async_session
     from backend.api.models import Setting
 
-    from sqlalchemy import delete as sql_delete
     seed_keys = {s[1] for s in SEEDS}
 
     async with async_session() as session:
         existing = (await session.execute(select(Setting))).scalars().all()
         existing_by_key = {s.key: s for s in existing}
 
-        inserted = updated_defaults = 0
-        for category, key, value_type, default, desc, units, schema in SEEDS:
-            default_str = _serialise(default, value_type)
-            row = existing_by_key.get(key)
-            if row is None:
-                session.add(Setting(
-                    category=category, key=key, value_type=value_type,
-                    value=default_str, default_value=default_str,
-                    description=desc, units=units, schema=schema,
-                ))
-                inserted += 1
-            else:
-                # Seeder owns category / description / schema / units and the
-                # default; operator owns the live value. Sync the former on
-                # every boot so renames and help-text tweaks land.
-                changed = False
-                for field, new_val in (
-                    ("category", category), ("description", desc),
-                    ("units", units), ("schema", schema),
-                    ("default_value", default_str), ("value_type", value_type),
-                ):
-                    if getattr(row, field) != new_val:
-                        setattr(row, field, new_val)
-                        changed = True
-                if changed:
-                    updated_defaults += 1
-
-        # Ensure both execution-mode flags exist with the LIVE-default
-        # values on first boot — paper_trading_mode=false AND
-        # shadow_mode=false. Without seeding shadow_mode, a fresh
-        # install that has its paper_trading_mode row seeded to false
-        # but no shadow_mode row would still resolve to LIVE via the
-        # False fallback — but the moment the operator clicks SHADOW
-        # in the navbar and back to LIVE, both rows persist. Seeding
-        # both up-front means /admin/execution/mode reads two known-
-        # good values from the cache without needing the resolver's
-        # fallback. Operator's later toggles are preserved (insert
-        # only when missing).
-        if "execution.paper_trading_mode" not in existing_by_key:
-            session.add(Setting(
-                category="execution",
-                key="execution.paper_trading_mode",
-                value_type="bool",
-                value="false",
-                default_value="false",
-                description=("Owned by /api/admin/execution/mode (navbar chip). "
-                             "Seeded false (LIVE) on first boot; toggling to "
-                             "true switches to PAPER."),
-            ))
-        if "execution.shadow_mode" not in existing_by_key:
-            session.add(Setting(
-                category="execution",
-                key="execution.shadow_mode",
-                value_type="bool",
-                value="false",
-                default_value="false",
-                description=("Owned by /api/admin/execution/mode (navbar chip). "
-                             "Seeded false on first boot; flipping to true "
-                             "puts every broker-hitting action into shadow "
-                             "(log + basket_margin validation, no execution)."),
-            ))
-
-        # Prune rows whose keys are no longer in the SEEDS list — the code
-        # is the source of truth for what settings exist. Custom tokens on
-        # the Tokens page have their own lifecycle; this is specifically
-        # for retired system-seeded keys.
-        # EXCEPTION: keys owned by route handlers outside SEEDS (e.g.
-        # execution.paper_trading_mode + execution.shadow_mode are upserted
-        # by /api/admin/execution/mode whenever the navbar chip flips
-        # mode). Pruning those would mean every service restart resets
-        # the operator's last-picked execution mode. Match by prefix so
-        # any future "owned-outside-SEEDS" key follows the same pattern.
-        OWNED_OUTSIDE_SEEDS_PREFIXES = ("execution.",)
-        retired_keys = [
-            k for k in existing_by_key
-            if k not in seed_keys
-            and not any(k.startswith(p) for p in OWNED_OUTSIDE_SEEDS_PREFIXES)
-        ]
-        removed = 0
-        if retired_keys:
-            await session.execute(sql_delete(Setting).where(Setting.key.in_(retired_keys)))
-            removed = len(retired_keys)
+        inserted, updated_defaults = _upsert_seeds(session, existing_by_key)
+        _seed_execution_flags(session, existing_by_key)
+        removed = await _prune_retired_keys(session, existing_by_key, seed_keys)
 
         await session.commit()
 
@@ -679,7 +678,6 @@ async def seed_settings() -> None:
         logger.info(
             f"Settings: seeded {inserted} new rows, refreshed "
             f"{updated_defaults} existing, pruned {removed} retired"
-            + (f" ({', '.join(retired_keys)})" if retired_keys else "")
         )
 
     await reload_cache()
@@ -718,6 +716,31 @@ def _serialise(val: Any, value_type: str) -> str:
     return str(val)
 
 
+def _legacy_alias_lookup(key: str) -> "str | None":
+    """Try legacy flat aliases for a dotted key (alert_*, performance_*)."""
+    _, flat = key.split(".", 1)
+    for candidate in (flat, "alert_" + flat, "performance_" + flat):
+        v = yaml_config.get(candidate)
+        if v is not None:
+            return str(v)
+    return None
+
+
+def _nested_yaml_lookup(key: str) -> "str | None":
+    """Walk yaml_config by dotted segments; fall back to legacy flat aliases."""
+    cursor: Any = yaml_config
+    for seg in key.split("."):
+        if isinstance(cursor, dict) and seg in cursor:
+            cursor = cursor[seg]
+        else:
+            # Segment missing — fall through to legacy aliases.
+            return _legacy_alias_lookup(key)
+    # Traversal succeeded but landed on dict or None — try aliases.
+    if cursor is None or isinstance(cursor, dict):
+        return _legacy_alias_lookup(key)
+    return str(cursor)
+
+
 def _lookup_raw(key: str) -> str | None:
     """
     DB cache first, then YAML. YAML fallback tries three shapes:
@@ -734,23 +757,7 @@ def _lookup_raw(key: str) -> str | None:
     if yaml_val is not None:
         return str(yaml_val)
     if "." in key:
-        # Nested traversal — walk the YAML tree by dotted segments.
-        cursor: Any = yaml_config
-        ok = True
-        for seg in key.split("."):
-            if isinstance(cursor, dict) and seg in cursor:
-                cursor = cursor[seg]
-            else:
-                ok = False
-                break
-        if ok and cursor is not None and not isinstance(cursor, dict):
-            return str(cursor)
-        # Legacy flat aliases (alert_*, performance_*).
-        _, flat = key.split(".", 1)
-        for candidate in (flat, "alert_" + flat, "performance_" + flat):
-            v = yaml_config.get(candidate)
-            if v is not None:
-                return str(v)
+        return _nested_yaml_lookup(key)
     return None
 
 

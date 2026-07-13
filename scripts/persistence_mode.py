@@ -99,29 +99,31 @@ def _jwt_expiry_remaining(token: str) -> float | None:
         return None
 
 
-def _get_token(secrets: dict, base_url: str) -> str:
-    """Return an admin JWT, either from secrets or by logging in."""
+def _check_service_token(secrets: dict) -> "str | None":
+    """Return the service_admin_token from secrets if present and valid, else None."""
+    token = (secrets.get("service_admin_token") or "").strip()
+    if not token:
+        return None
+    remaining = _jwt_expiry_remaining(token)
+    if remaining is not None and remaining < 0:
+        _die(
+            "service_admin_token in secrets.yaml has expired.\n"
+            "  Log in on the web UI, copy the access_token from "
+            "localStorage, and update the key."
+        )
+    if remaining is not None and remaining < 7200:
+        _warn(
+            f"service_admin_token expires in {remaining/3600:.1f}h — "
+            "consider refreshing it soon."
+        )
+    return token
+
+
+def _login_with_credentials(secrets: dict, base_url: str) -> str:
+    """POST /api/auth/login and return the access_token. Calls _die on failure."""
     import urllib.request
     import urllib.error
 
-    # ── Preferred: pre-minted service token ────────────────────────────
-    token = (secrets.get("service_admin_token") or "").strip()
-    if token:
-        remaining = _jwt_expiry_remaining(token)
-        if remaining is not None and remaining < 0:
-            _die(
-                "service_admin_token in secrets.yaml has expired.\n"
-                "  Log in on the web UI, copy the access_token from "
-                "localStorage, and update the key."
-            )
-        if remaining is not None and remaining < 7200:
-            _warn(
-                f"service_admin_token expires in {remaining/3600:.1f}h — "
-                "consider refreshing it soon."
-            )
-        return token
-
-    # ── Fallback: username + password login ────────────────────────────
     username = (secrets.get("admin_username") or "").strip()
     password = (secrets.get("admin_password") or "").strip()
     if not username or not password:
@@ -136,14 +138,11 @@ def _get_token(secrets: dict, base_url: str) -> str:
             "  admin_username: <your admin username>\n"
             "  admin_password: <your admin password>"
         )
-
     login_url = f"{base_url}/api/auth/login"
     body = json.dumps({"username": username, "password": password}).encode()
     req = urllib.request.Request(
-        login_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        login_url, data=body,
+        headers={"Content-Type": "application/json"}, method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -157,6 +156,14 @@ def _get_token(secrets: dict, base_url: str) -> str:
         _die(f"Login failed (HTTP {e.code}): {body_text}")
     except Exception as e:
         _die(f"Login request failed: {e}")
+
+
+def _get_token(secrets: dict, base_url: str) -> str:
+    """Return an admin JWT, either from secrets or by logging in."""
+    token = _check_service_token(secrets)
+    if token:
+        return token
+    return _login_with_credentials(secrets, base_url)
 
 
 def _call_api(method: str, url: str, token: str) -> dict:

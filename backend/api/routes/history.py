@@ -296,6 +296,53 @@ def _hist_backfill_validate(data: "FundsBackfillRequest") -> "tuple[_date, _date
     return df, dt
 
 
+def _hist_resolve_loaded_accounts() -> "set[str]":
+    """Return the set of currently-loaded broker account codes.
+
+    When conn_service owns sessions the local Connections map is empty;
+    consult the remote accounts list in that case.
+    """
+    from backend.brokers.connections import Connections
+    from backend.brokers.client import is_cutover_on
+    conns = Connections()
+    loaded = set(conns.conn.keys())
+    if is_cutover_on() and not loaded:
+        from backend.brokers.client.remote_broker import list_remote_accounts
+        loaded = {r["account"] for r in list_remote_accounts() if r.get("account")}
+    return loaded
+
+
+async def _hist_fetch_ledger_entries(
+    broker, df: "_date", dt: "_date", broker_id: str
+) -> list:
+    """Call broker.funds_ledger() in the executor; raises HTTPException on failure.
+
+    Returns a (possibly-empty) list of normalised ledger entry dicts.
+    """
+    if not hasattr(broker, "funds_ledger"):
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"Funds backfill not implemented for broker "
+                f"'{broker_id}'. Kite has no programmatic ledger "
+                f"(Zerodha Console download only). Groww adapter "
+                f"support is pending."
+            ),
+        )
+    loop = asyncio.get_running_loop()
+    try:
+        entries = await loop.run_in_executor(
+            None,
+            lambda: broker.funds_ledger(df.isoformat(), dt.isoformat()),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ledger fetch failed: {e}",
+        )
+    return entries if isinstance(entries, list) else []
+
+
 async def _hist_upsert_entry(s, account: str, e: dict, now_utc: datetime) -> None:
     """Upsert a single ledger entry dict into daily_book[kind='funds'].
 
@@ -465,12 +512,9 @@ class HistoryController(Controller):
         2026 (when the daily_snapshot task gained `_funds_rows`);
         rows before that date don't exist. `earliest_date` hints when
         the tracking began so the UI can show a 'tracking from X' chip."""
-        df = _parse_date(from_date)
-        dt = _parse_date(to_date)
-        if not df or not dt:
-            df, dt = _default_range(90)  # funds tab defaults to 90 days
+        df, dt = _hist_date_window(from_date, to_date, default_days=90)
 
-        conditions = [
+        conditions: list = [
             DailyBook.kind == "funds",
             DailyBook.date >= df,
             DailyBook.date <= dt,
@@ -494,8 +538,7 @@ class HistoryController(Controller):
                       .limit(hard_cap + 1)  # fetch one extra to detect truncation
                 )).scalars().all()
             if len(result) > hard_cap:
-                from backend.shared.helpers.ramboq_logger import get_logger as _gl
-                _gl(__name__).warning(
+                logger.warning(
                     "list_funds: response truncated at %d rows (hard_cap=%d); "
                     "operator should narrow the date range.",
                     hard_cap, hard_cap,
@@ -514,48 +557,11 @@ class HistoryController(Controller):
         rows, earliest = await asyncio.gather(_fetch_rows(), _fetch_earliest())
 
         # Cashbook lens — compute day-over-day Δ on cash_available
-        # within each (account, segment) series. Walk rows sorted by
-        # ascending date per series; the response order is reversed
-        # back to DESC at the end so the UI still reads top-down
-        # newest-first. Single pass; O(N) where N = rows in range.
-        from collections import defaultdict
-        _series: dict[tuple, list] = defaultdict(list)
-        for r in rows:
-            _series[(r.account, r.segment)].append(r)
-        # Per-series order from DB query is DESC; flip to ASC for the
-        # delta walk so prior = previous row's cash.
-        delta_by_row_id: dict[int, Optional[float]] = {}
-        for (_acct, _seg), series in _series.items():
-            series_asc = sorted(series, key=lambda x: x.date or _date.min)
-            prior_cash: Optional[float] = None
-            for r in series_asc:
-                cur = (float(r.avg_cost) if r.avg_cost is not None else None)
-                if prior_cash is not None and cur is not None:
-                    delta_by_row_id[r.id] = cur - prior_cash
-                else:
-                    delta_by_row_id[r.id] = None
-                if cur is not None:
-                    prior_cash = cur
+        # within each (account, segment) series.
+        delta_by_row_id = _hist_funds_delta_map(rows)
 
         return FundsListResponse(
-            rows=[
-                _FundsRow(
-                    date=r.date.isoformat() if r.date else "",
-                    account=r.account,
-                    segment=r.segment,
-                    cash_available=(float(r.avg_cost)
-                                    if r.avg_cost is not None else None),
-                    opening_balance=(float(r.ltp)
-                                     if r.ltp is not None else None),
-                    debits_today=int(r.qty or 0),
-                    realised_m2m=(float(r.day_pnl)
-                                  if r.day_pnl is not None else None),
-                    net=(float(r.total_pnl)
-                         if r.total_pnl is not None else None),
-                    cash_delta=delta_by_row_id.get(r.id),
-                )
-                for r in rows
-            ],
+            rows=[_hist_funds_row(r, delta_by_row_id) for r in rows],
             total=len(rows),
             earliest_date=(earliest.isoformat() if earliest else None),
         )
@@ -594,36 +600,13 @@ class HistoryController(Controller):
            NOTHING.
         3. Funds tab re-fetches → historical data appears.
         """
-        from datetime import date as _d
-        from backend.brokers.connections import Connections
         from backend.brokers.registry import get_broker
         from backend.shared.helpers.utils import mask_account
 
+        df, dt = _hist_backfill_validate(data)
         account = (data.account or "").strip()
-        if not account:
-            raise HTTPException(status_code=400, detail="account is required")
-        try:
-            df = _d.fromisoformat(data.from_date)
-            dt = _d.fromisoformat(data.to_date)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="from_date / to_date must be YYYY-MM-DD",
-            )
-        if df > dt:
-            raise HTTPException(
-                status_code=400,
-                detail="from_date must be <= to_date",
-            )
 
-        conns = Connections()
-        loaded = set(conns.conn.keys())
-        # Cutover branch — local Connections is empty when conn_service
-        # owns sessions; consult /internal/accounts for the canonical list.
-        from backend.brokers.client import is_cutover_on
-        if is_cutover_on() and not loaded:
-            from backend.brokers.client.remote_broker import list_remote_accounts
-            loaded = {r["account"] for r in list_remote_accounts() if r.get("account")}
+        loaded = _hist_resolve_loaded_accounts()
         if account not in loaded:
             raise HTTPException(status_code=404,
                                 detail=f"account {mask_account(account)} not loaded")
@@ -631,38 +614,9 @@ class HistoryController(Controller):
         broker = get_broker(account)
         broker_id = getattr(broker, "broker_id", "unknown")
 
-        # Adapter contract: optional `funds_ledger(from_date, to_date)`
-        # method returning a list of normalised dicts (see
-        # backend/shared/brokers/dhan.py::DhanBroker.funds_ledger
-        # for the canonical shape). Kite has no programmatic ledger;
-        # Groww adapter wiring is still pending. Both 501 here.
-        if not hasattr(broker, "funds_ledger"):
-            raise HTTPException(
-                status_code=501,
-                detail=(
-                    f"Funds backfill not implemented for broker "
-                    f"'{broker_id}'. Kite has no programmatic ledger "
-                    f"(Zerodha Console download only). Groww adapter "
-                    f"support is pending."
-                ),
-            )
-
-        # Pull the ledger via the broker adapter. Sync call; offload
-        # to the executor so the route stays async-clean.
-        import asyncio
-        loop = asyncio.get_running_loop()
-        try:
-            entries = await loop.run_in_executor(
-                None,
-                lambda: broker.funds_ledger(df.isoformat(), dt.isoformat()),
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Ledger fetch failed: {e}",
-            )
-        if not isinstance(entries, list):
-            entries = []
+        # Pull the ledger via the broker adapter. Raises 501 if not implemented,
+        # 502 on fetch failure. Sync call offloaded to the executor.
+        entries = await _hist_fetch_ledger_entries(broker, df, dt, broker_id)
 
         # Idempotent upsert into daily_book[kind='funds']. Re-use the
         # same column mapping as the live snapshot path so the Funds
@@ -677,50 +631,13 @@ class HistoryController(Controller):
         # any prior row for the same (date, account, segment) so an
         # operator re-running with a wider date range gets the
         # canonical Dhan numbers rather than a stale partial.
-        from sqlalchemy import text as _text
-        import json as _json
         added = 0
         skipped = 0
         now_utc = datetime.now(timezone.utc)
         async with async_session() as s:
             for e in entries:
-                seg = (e.get("segment") or "equity").lower()
-                params = {
-                    "date":         e.get("date"),
-                    "account":      account,
-                    "segment":      seg,
-                    "kind":         "funds",
-                    "symbol":       "__seg__",
-                    "exchange":     seg.upper(),
-                    "qty":          int(e.get("debits") or 0),
-                    "avg_cost":     e.get("cash_available"),
-                    "ltp":          e.get("opening_balance"),
-                    "day_pnl":      e.get("realised_m2m"),
-                    "total_pnl":    e.get("net"),
-                    "payload_json": _json.dumps(e.get("payload") or {}, default=str),
-                    "captured_at":  now_utc,
-                }
                 try:
-                    await s.execute(_text("""
-                        INSERT INTO daily_book
-                            (date, account, segment, kind, symbol, exchange,
-                             qty, avg_cost, ltp, day_pnl, total_pnl,
-                             payload_json, captured_at)
-                        VALUES
-                            (:date, :account, :segment, :kind, :symbol, :exchange,
-                             :qty, :avg_cost, :ltp, :day_pnl, :total_pnl,
-                             :payload_json, :captured_at)
-                        ON CONFLICT (date, account, kind, symbol) DO UPDATE SET
-                            segment      = EXCLUDED.segment,
-                            exchange     = EXCLUDED.exchange,
-                            qty          = EXCLUDED.qty,
-                            avg_cost     = EXCLUDED.avg_cost,
-                            ltp          = EXCLUDED.ltp,
-                            day_pnl      = EXCLUDED.day_pnl,
-                            total_pnl    = EXCLUDED.total_pnl,
-                            payload_json = EXCLUDED.payload_json,
-                            captured_at  = EXCLUDED.captured_at
-                    """), params)
+                    await _hist_upsert_entry(s, account, e, now_utc)
                     added += 1
                 except Exception as _row_err:
                     skipped += 1

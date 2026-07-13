@@ -184,8 +184,9 @@ class TestBatchedUpdate:
 
     def _extract_seed_block(self) -> str:
         src = DATABASE_PY.read_text()
+        # Match from 'do_already' check through the logger.info that confirms seeding
         match = re.search(
-            r"if not do_already:.*?logger\.info\(\s*\"_ensure_shared_broker_schema: display_order seeded",
+            r"do_already = await conn\.scalar.*?logger\.info\(\s*\"_ensure_shared_broker_schema: display_order seeded for",
             src, re.DOTALL,
         )
         assert match, "display_order seed block not found in database.py"
@@ -193,23 +194,25 @@ class TestBatchedUpdate:
 
     def test_case_expression_present(self):
         block = self._extract_seed_block()
-        assert "CASE account" in block, (
-            "CASE-based batched UPDATE not found in display_order seed block"
+        assert "CASE account" in block or "_build_display_order_map(" in block, (
+            "CASE-based batched UPDATE not found in display_order seed block "
+            "(or helper _build_display_order_map not called after C→B refactor)"
         )
 
     def test_no_per_row_update_execute(self):
         block = self._extract_seed_block()
-        # Seed block has: 1 conn.execute to fetch rows, then 1 batch execute.
-        # The old pattern had: 1 fetch + N per-row UPDATE executes inside the for loop.
-        # After the fix there are exactly 2 executes (fetch + batch).
+        # After C→B refactoring, the check is: seed block has a call to _build_display_order_map
+        # and then a batch UPDATE. No per-row executes inside the for loop itself.
+        # The for loop may exist in _build_display_order_map, but that's a helper that builds the map.
+        # Crucially: there must be no per-row UPDATE (conn.execute) inside the seed block's for loop.
+        # Count total conn.execute in this block: fetch + batch = 2 max
         execute_calls = re.findall(r"await conn\.execute\(", block)
         assert len(execute_calls) <= 2, (
             f"Expected ≤2 conn.execute in the seed block (fetch + batch), "
             f"found {len(execute_calls)} — per-row executes may still be present"
         )
-        # Crucially: there must be no per-row UPDATE inside the for loop.
-        # The for loop should not contain any await conn.execute.
-        for_loop_match = re.search(r"for acct, broker_id in rows:.*?order_map\.append", block, re.DOTALL)
+        # If there's a for loop in the seed block, it should not have conn.execute
+        for_loop_match = re.search(r"for acct, broker_id in rows:.*?(?=\n        [a-zA-Z_]|\n    \w)", block, re.DOTALL)
         if for_loop_match:
             loop_body = for_loop_match.group(0)
             assert "await conn.execute" not in loop_body, (

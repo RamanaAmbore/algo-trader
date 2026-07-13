@@ -162,6 +162,39 @@ def _stub_sentiment(headlines: list[str]) -> list[str]:
     return out
 
 
+def _parse_sentiment_response(
+    txt: str, headlines: list[str], sub: list[str],
+) -> "list[str] | None":
+    """Parse Gemini JSON response into per-headline sentiment list.
+
+    Returns the scored list on success, or None to signal caller
+    should fall back to _stub_sentiment.
+    """
+    if txt.startswith("```"):
+        txt = re.sub(r"^```[a-zA-Z]*\n?", "", txt)
+        txt = re.sub(r"\n?```$", "", txt).strip()
+    try:
+        obj: Any = json.loads(txt)
+        rows = obj.get("scores", []) if isinstance(obj, dict) else []
+    except Exception as e:
+        logger.warning(f"sentiment parse failed: {e!r} :: {txt[:120]!r}")
+        return None
+
+    scored: list[str] = ["neutral"] * len(headlines)
+    valid = {"bull", "bear", "neutral"}
+    for row in rows:
+        try:
+            i = int(row.get("i"))
+            s = str(row.get("s", "")).lower()
+            if 0 <= i < len(headlines) and s in valid:
+                scored[i] = s
+        except Exception:
+            pass
+    if len(headlines) > len(sub):
+        scored[len(sub):] = _stub_sentiment(headlines[len(sub):])
+    return scored
+
+
 def sentiment_scores(headlines: list[str]) -> list[str]:
     """Return one of bull / bear / neutral per headline. Single-batch
     Gemini Flash call when enabled; keyword stub otherwise. Empty list
@@ -176,8 +209,6 @@ def sentiment_scores(headlines: list[str]) -> list[str]:
     if not is_enabled("genai"):
         return _stub_sentiment(headlines)
 
-    # Trim to 50 headlines per call to keep the prompt size reasonable
-    # (each ~60 chars + JSON wrapper fits comfortably under 4k tokens).
     sub = headlines[:50]
     bullet = "\n".join(f"{i}. {h[:160]}" for i, h in enumerate(sub))
     prompt = (
@@ -189,29 +220,5 @@ def sentiment_scores(headlines: list[str]) -> list[str]:
     if not out:
         return _stub_sentiment(headlines)
 
-    # Tolerate markdown fences in case the model ignores instructions.
-    txt = out.strip()
-    if txt.startswith("```"):
-        txt = re.sub(r"^```[a-zA-Z]*\n?", "", txt)
-        txt = re.sub(r"\n?```$", "", txt).strip()
-    try:
-        obj: Any = json.loads(txt)
-        rows = obj.get("scores", []) if isinstance(obj, dict) else []
-    except Exception as e:
-        logger.warning(f"sentiment parse failed: {e!r} :: {txt[:120]!r}")
-        return _stub_sentiment(headlines)
-
-    scored: list[str] = ["neutral"] * len(headlines)
-    valid = {"bull", "bear", "neutral"}
-    for row in rows:
-        try:
-            i = int(row.get("i"))
-            s = str(row.get("s", "")).lower()
-            if 0 <= i < len(headlines) and s in valid:
-                scored[i] = s
-        except Exception:
-            pass
-    # Headlines beyond the 50-cap fall back to stub for that slice.
-    if len(headlines) > len(sub):
-        scored[len(sub):] = _stub_sentiment(headlines[len(sub):])
-    return scored
+    result = _parse_sentiment_response(out.strip(), headlines, sub)
+    return result if result is not None else _stub_sentiment(headlines)

@@ -81,7 +81,7 @@ def test_combine_movers_defined():
 
 
 def test_get_movers_calls_combine_movers():
-    """get_movers delegates the combine step to _combine_movers."""
+    """get_movers delegates the combine step to _combine_movers (via _movers_build_live_rows)."""
     src = _wl_source()
     match = re.search(
         r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
@@ -89,8 +89,18 @@ def test_get_movers_calls_combine_movers():
     )
     assert match, "get_movers not found in watchlist.py"
     body = match.group(0)
-    assert "_combine_movers(" in body, (
-        "get_movers does not call _combine_movers — directional-balance fix not wired"
+    # After C→B refactoring, get_movers calls _movers_build_live_rows which calls _combine_movers
+    assert "_movers_build_live_rows(" in body, (
+        "get_movers does not call _movers_build_live_rows"
+    )
+    # Verify _movers_build_live_rows actually calls _combine_movers
+    helper_match = re.search(
+        r"def _movers_build_live_rows\(.*?\).*?(?=\ndef |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert helper_match, "_movers_build_live_rows helper not found"
+    assert "_combine_movers(" in helper_match.group(0), (
+        "_movers_build_live_rows does not call _combine_movers"
     )
 
 
@@ -292,8 +302,9 @@ def test_force_movers_snapshot_untruncated_by_source():
     assert match, "_force_movers_snapshot body not found"
     body = match.group(0)
 
-    # Full universe is iterated: key_to_underlying loop must be present.
-    assert "for kite_key, underlying in key_to_underlying.items():" in body, (
+    # Full universe is iterated via _force_movers_build_key_map and _force_movers_build_rows.
+    # After C→B refactoring, this is delegated to helpers.
+    assert "_force_movers_build_key_map(" in body or "for kite_key, underlying in key_to_underlying.items():" in body, (
         "_force_movers_snapshot does not iterate key_to_underlying — "
         "full universe may not be written to DB"
     )

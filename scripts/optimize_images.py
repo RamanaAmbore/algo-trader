@@ -137,34 +137,25 @@ def _optimize_favicon_ico(path: Path) -> tuple[int, int]:
     return before, path.stat().st_size
 
 
-def main() -> int:
-    if not STATIC.is_dir():
-        print(f"error: {STATIC} not found", file=sys.stderr)
-        return 1
+def _process_asset(path: Path) -> "tuple[int, int] | None":
+    """Optimize one asset file. Returns (before, after) byte counts or None to skip."""
+    suffix = path.suffix.lower()
+    if suffix == ".png":
+        return _optimize_png(path)
+    if suffix == ".webp":
+        return _optimize_webp(path)
+    if suffix == ".svg":
+        return _optimize_svg(path)
+    if path.name == "favicon.ico":
+        return _optimize_favicon_ico(path)
+    return None
 
-    total_before = 0
-    total_after = 0
-    rows: list[tuple[str, int, int]] = []
 
-    for path in sorted(STATIC.iterdir()):
-        if path.is_dir():
-            continue
-        suffix = path.suffix.lower()
-        if suffix == ".png":
-            before, after = _optimize_png(path)
-        elif suffix == ".webp":
-            before, after = _optimize_webp(path)
-        elif suffix == ".svg":
-            before, after = _optimize_svg(path)
-        elif path.name == "favicon.ico":
-            before, after = _optimize_favicon_ico(path)
-        else:
-            continue
-        rows.append((path.name, before, after))
-        total_before += before
-        total_after += after
-
+def _print_report(rows: list[tuple[str, int, int]]) -> None:
+    """Print the before/after size table to stdout."""
     width = max(len(n) for n, _, _ in rows) if rows else 20
+    total_before = sum(b for _, b, _ in rows)
+    total_after  = sum(a for _, _, a in rows)
     print(f"{'asset':<{width}}  {'before':>10}  {'after':>10}  delta")
     print("-" * (width + 38))
     for name, before, after in rows:
@@ -174,6 +165,24 @@ def main() -> int:
     total_pct = 0.0 if total_before == 0 else 100 * (total_before - total_after) / total_before
     print("-" * (width + 38))
     print(f"{'TOTAL':<{width}}  {total_before:>10,}  {total_after:>10,}  {total_pct:>5.1f}%")
+
+
+def main() -> int:
+    if not STATIC.is_dir():
+        print(f"error: {STATIC} not found", file=sys.stderr)
+        return 1
+
+    rows: list[tuple[str, int, int]] = []
+    for path in sorted(STATIC.iterdir()):
+        if path.is_dir():
+            continue
+        result = _process_asset(path)
+        if result is None:
+            continue
+        before, after = result
+        rows.append((path.name, before, after))
+
+    _print_report(rows)
     return 0
 
 

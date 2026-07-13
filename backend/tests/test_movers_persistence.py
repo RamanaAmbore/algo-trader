@@ -112,7 +112,7 @@ def test_force_snapshot_helper_defined_in_watchlist():
 
 
 def test_route_calls_save_on_live_result():
-    """get_movers calls _save_movers_snapshot when rows is non-empty."""
+    """get_movers calls _save_movers_snapshot when rows is non-empty (via _movers_build_live_rows)."""
     src = _wl_source()
     match = re.search(
         r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
@@ -120,8 +120,18 @@ def test_route_calls_save_on_live_result():
     )
     assert match, "Could not find get_movers in watchlist.py"
     body = match.group(0)
-    assert "_save_movers_snapshot(" in body, (
-        "get_movers does not call _save_movers_snapshot"
+    # After C→B refactoring, get_movers calls _movers_build_live_rows which calls _save_movers_snapshot
+    assert "_movers_build_live_rows(" in body, (
+        "get_movers does not call _movers_build_live_rows"
+    )
+    # Verify _movers_build_live_rows actually calls _save_movers_snapshot
+    helper_match = re.search(
+        r"def _movers_build_live_rows\(.*?\).*?(?=\ndef |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert helper_match, "_movers_build_live_rows helper not found"
+    assert "_save_movers_snapshot(" in helper_match.group(0), (
+        "_movers_build_live_rows does not call _save_movers_snapshot"
     )
 
 
@@ -457,7 +467,7 @@ def test_off_hours_path_reads_db_and_returns_captured_at():
 
 
 def test_live_path_fires_save_as_task():
-    """get_movers: live path fires _save_movers_snapshot via asyncio.create_task."""
+    """get_movers: live path fires _save_movers_snapshot via asyncio.create_task (via _movers_build_live_rows)."""
     src = _wl_source()
     match = re.search(
         r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
@@ -465,8 +475,18 @@ def test_live_path_fires_save_as_task():
     )
     assert match
     body = match.group(0)
-    assert "asyncio.create_task(_save_movers_snapshot(" in body, (
-        "get_movers does not fire _save_movers_snapshot via asyncio.create_task"
+    # After C→B refactoring, get_movers calls _movers_build_live_rows which fires the task
+    assert "_movers_build_live_rows(" in body, (
+        "get_movers does not call _movers_build_live_rows"
+    )
+    # Verify _movers_build_live_rows fires the task
+    helper_match = re.search(
+        r"def _movers_build_live_rows\(.*?\).*?(?=\ndef |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert helper_match, "_movers_build_live_rows helper not found"
+    assert "asyncio.create_task(_save_movers_snapshot(" in helper_match.group(0), (
+        "_movers_build_live_rows does not fire _save_movers_snapshot via asyncio.create_task"
     )
 
 
@@ -485,7 +505,7 @@ def test_force_snapshot_calls_save_movers_snapshot():
 
 
 def test_force_snapshot_excludes_mcx():
-    """_force_movers_snapshot skips MCX underlyings (NSE-only universe)."""
+    """_force_movers_snapshot skips MCX underlyings (NSE-only universe) via _force_movers_build_key_map."""
     src = _wl_source()
     match = re.search(
         r"async def _force_movers_snapshot\(.*?\).*?(?=\nasync def |\Z)",
@@ -493,10 +513,21 @@ def test_force_snapshot_excludes_mcx():
     )
     assert match, "_force_movers_snapshot body not found"
     body = match.group(0)
-    assert "is_mcx_underlying" in body, (
+    # After C→B refactoring, _force_movers_snapshot calls _force_movers_build_key_map
+    assert "_force_movers_build_key_map(" in body or "is_mcx_underlying" in body, (
         "_force_movers_snapshot does not filter out MCX underlyings — "
-        "movers universe must be NSE-only"
+        "movers universe must be NSE-only (check _force_movers_build_key_map)"
     )
+    # Verify the helper filters MCX
+    if "_force_movers_build_key_map(" in body:
+        helper_match = re.search(
+            r"def _force_movers_build_key_map\(.*?\).*?(?=\ndef |\nasync def |\Z)",
+            src, re.DOTALL,
+        )
+        assert helper_match, "_force_movers_build_key_map helper not found"
+        assert "is_mcx_underlying" in helper_match.group(0), (
+            "_force_movers_build_key_map does not filter MCX underlyings"
+        )
 
 
 def test_lifecycle_handlers_log_message_mentions_movers():

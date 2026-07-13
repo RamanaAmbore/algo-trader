@@ -112,6 +112,14 @@ def _fetch_margins_direct() -> pd.DataFrame:
     return pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
 
 
+def _bg_holdings_add_pct(frame: "pd.DataFrame") -> None:
+    """Mutate *frame* in-place: add pnl_percentage and day_change_percentage columns."""
+    if 'pnl' in frame.columns and 'inv_val' in frame.columns:
+        frame['pnl_percentage'] = frame['pnl'] / frame['inv_val'] * 100
+    if 'day_change_val' in frame.columns and 'cur_val' in frame.columns:
+        frame['day_change_percentage'] = frame['day_change_val'] / frame['cur_val'] * 100
+
+
 def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Returns (row_df, summary_df) with real account codes (see _fetch_margins_direct)."""
     from backend.brokers import broker_apis
@@ -124,17 +132,11 @@ def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     sum_cols = [c for c in ['inv_val', 'cur_val', 'pnl', 'day_change_val'] if c in raw.columns]
     grouped = raw.groupby('account')[sum_cols].sum().reset_index()
-    if 'pnl' in grouped and 'inv_val' in grouped:
-        grouped['pnl_percentage']        = grouped['pnl'] / grouped['inv_val'] * 100
-    if 'day_change_val' in grouped and 'cur_val' in grouped:
-        grouped['day_change_percentage'] = grouped['day_change_val'] / grouped['cur_val'] * 100
+    _bg_holdings_add_pct(grouped)
 
     totals = grouped[sum_cols].sum().to_frame().T
     totals['account'] = 'TOTAL'
-    if 'pnl' in totals and 'inv_val' in totals:
-        totals['pnl_percentage']        = totals['pnl'] / totals['inv_val'] * 100
-    if 'day_change_val' in totals and 'cur_val' in totals:
-        totals['day_change_percentage'] = totals['day_change_val'] / totals['cur_val'] * 100
+    _bg_holdings_add_pct(totals)
 
     summary = pd.concat([grouped, totals], ignore_index=True).fillna(0)
     return raw, summary
@@ -170,21 +172,13 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     return raw, summary
 
 
-def _resolve_spot_prices(df_positions: pd.DataFrame) -> dict[str, float]:
-    """Fetch underlying spot LTPs for every distinct option/future
-    underlying in the open position book. One broker.ltp call covers
-    every flavour (NSE index, stock options, MCX commodity futures).
-
-    Returns {underlying_name: ltp}. Empty dict on broker failure or
-    empty book. Consumed by ctx.spot_prices for the expiry-aware
-    grammar resolvers (is_itm / is_ntm).
-    """
-    if df_positions is None or df_positions.empty or 'tradingsymbol' not in df_positions.columns:
-        return {}
-    from backend.api.algo.derivatives import (
-        parse_tradingsymbol, option_underlying_quote_key,
-    )
-    underlyings: dict[str, str] = {}   # name → kite_key
+def _bg_build_underlying_keys(
+    df_positions: "pd.DataFrame",
+) -> "dict[str, str]":
+    """Return {underlying_name: kite_ltp_key} for every distinct F&O symbol
+    in df_positions.  Pure computation; no IO."""
+    from backend.api.algo.derivatives import parse_tradingsymbol, option_underlying_quote_key
+    out: dict[str, str] = {}
     for sym in df_positions['tradingsymbol'].dropna().astype(str).unique():
         parsed = parse_tradingsymbol(sym)
         if not parsed:
@@ -192,16 +186,15 @@ def _resolve_spot_prices(df_positions: pd.DataFrame) -> dict[str, float]:
         name = parsed.get('root')
         ltp_key = option_underlying_quote_key(sym)
         if name and ltp_key:
-            underlyings.setdefault(name, ltp_key)
-    if not underlyings:
-        return {}
-    try:
-        from backend.brokers.registry import get_market_data_broker
-        broker = get_market_data_broker()
-        resp = broker.ltp(list(underlyings.values())) or {}
-    except Exception as e:
-        logger.debug(f"_resolve_spot_prices: broker.ltp failed: {e}")
-        return {}
+            out.setdefault(name, ltp_key)
+    return out
+
+
+def _bg_extract_ltp_from_resp(
+    underlyings: "dict[str, str]",
+    resp: dict,
+) -> "dict[str, float]":
+    """Map broker.ltp() response back to {underlying_name: float}."""
     out: dict[str, float] = {}
     for name, key in underlyings.items():
         quote = resp.get(key) or {}
@@ -213,6 +206,30 @@ def _resolve_spot_prices(df_positions: pd.DataFrame) -> dict[str, float]:
         except (TypeError, ValueError):
             continue
     return out
+
+
+def _resolve_spot_prices(df_positions: pd.DataFrame) -> dict[str, float]:
+    """Fetch underlying spot LTPs for every distinct option/future
+    underlying in the open position book. One broker.ltp call covers
+    every flavour (NSE index, stock options, MCX commodity futures).
+
+    Returns {underlying_name: ltp}. Empty dict on broker failure or
+    empty book. Consumed by ctx.spot_prices for the expiry-aware
+    grammar resolvers (is_itm / is_ntm).
+    """
+    if df_positions is None or df_positions.empty or 'tradingsymbol' not in df_positions.columns:
+        return {}
+    underlyings = _bg_build_underlying_keys(df_positions)
+    if not underlyings:
+        return {}
+    try:
+        from backend.brokers.registry import get_market_data_broker
+        broker = get_market_data_broker()
+        resp = broker.ltp(list(underlyings.values())) or {}
+    except Exception as e:
+        logger.debug(f"_resolve_spot_prices: broker.ltp failed: {e}")
+        return {}
+    return _bg_extract_ltp_from_resp(underlyings, resp)
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +439,14 @@ async def _perf_fetch_all_broker_data() -> tuple:
     return df_holdings, sum_holdings, df_positions, sum_positions, df_margins
 
 
+def _bg_total_field(frame: "pd.DataFrame", col: str, default: float = 0.0) -> float:
+    """Safe float accessor for a named column in a TOTAL-row frame."""
+    if frame.empty or col not in frame.columns:
+        return default
+    val = frame[col].iloc[0]
+    return float(val) if pd.notna(val) else default
+
+
 def _perf_extract_total_pnl_fields(
     all_sum_h: pd.DataFrame,
     all_sum_p: pd.DataFrame,
@@ -432,22 +457,11 @@ def _perf_extract_total_pnl_fields(
     h_total = all_sum_h.loc[all_sum_h['account'] == 'TOTAL']
     p_total = all_sum_p.loc[all_sum_p['account'] == 'TOTAL']
 
-    h_day  = float(h_total['day_change_val'].iloc[0]) if (
-        not h_total.empty and 'day_change_val' in h_total.columns
-        and pd.notna(h_total['day_change_val'].iloc[0])
-    ) else 0.0
-    h_pnl  = float(h_total['pnl'].iloc[0]) if (
-        not h_total.empty and 'pnl' in h_total.columns
-        and pd.notna(h_total['pnl'].iloc[0])
-    ) else 0.0
-    p_pnl  = float(p_total['pnl'].iloc[0]) if (
-        not p_total.empty and 'pnl' in p_total.columns
-        and pd.notna(p_total['pnl'].iloc[0])
-    ) else 0.0
-    p_day  = float(p_total['day_change_val'].iloc[0]) if (
-        not p_total.empty and 'day_change_val' in p_total.columns
-        and pd.notna(p_total['day_change_val'].iloc[0])
-    ) else p_pnl
+    h_day = _bg_total_field(h_total, 'day_change_val')
+    h_pnl = _bg_total_field(h_total, 'pnl')
+    p_pnl = _bg_total_field(p_total, 'pnl')
+    # p_day falls back to p_pnl for pure-MIS books
+    p_day = _bg_total_field(p_total, 'day_change_val', default=p_pnl)
     return h_day, h_pnl, p_pnl, p_day
 
 
@@ -616,6 +630,31 @@ def _perf_collect_book_pairs(
     return book_pairs, book_seen
 
 
+async def _bg_resolve_tokens_chunked(
+    need_resolve: list[tuple[str, str]],
+    rts_fn,
+) -> list[tuple[int, str]]:
+    """Resolve ticker tokens for *need_resolve* (sym, exch) pairs in chunks
+    of 50, returning a flat list of (token, sym) ready for subscribe_with_sym."""
+    CHUNK = 50
+    all_batch: list[tuple[int, str]] = []
+    for i in range(0, len(need_resolve), CHUNK):
+        chunk = need_resolve[i: i + CHUNK]
+        try:
+            toks = await asyncio.gather(
+                *(rts_fn(s, e) for s, e in chunk),
+                return_exceptions=True,
+            )
+            all_batch.extend(
+                (tok, sym)
+                for (sym, _exch), tok in zip(chunk, toks)
+                if tok is not None and not isinstance(tok, BaseException)
+            )
+        except Exception:
+            pass
+    return all_batch
+
+
 async def _perf_subscribe_book_symbols(
     df_holdings: pd.DataFrame,
     df_positions: pd.DataFrame,
@@ -640,42 +679,42 @@ async def _perf_subscribe_book_symbols(
         except Exception as _se:
             logger.debug(f"Background: snapshot book symbols skipped in perf: {_se}")
         # Resolve tokens for symbols not yet in the ticker.
-        # Batch into one exchange→instruments call per unique exchange.
+        # O(1) check via has_sym() — avoids rebuilding the full set each cycle.
         _need_resolve = [
             (sym, exch) for sym, exch in _book_pairs
-            # O(1) check via has_sym() — avoids rebuilding the full
-            # {v for v in _token_to_sym.values()} set on every cycle.
             if not _ticker.has_sym(sym)
         ]
         if _need_resolve:
-            # Parallelize the token lookups in chunks of 50 so the
-            # gather concurrency stays bounded, but process ALL
-            # unresolved symbols — no hard total cap.  Previously a
-            # [:50] slice caused BSE-only symbols that appeared after
-            # the 50th unresolved NSE/NFO entry to be silently dropped
-            # every cycle and never subscribed until the ticker's
-            # _sym_to_token map was cleared (e.g. conn_service restart).
-            CHUNK = 50
-            _all_batch: list[tuple[int, str]] = []
-            for _i in range(0, len(_need_resolve), CHUNK):
-                _chunk = _need_resolve[_i : _i + CHUNK]
-                try:
-                    toks = await asyncio.gather(
-                        *(_rts(_s, _e) for _s, _e in _chunk),
-                        return_exceptions=True,
-                    )
-                    _all_batch.extend(
-                        (_tok, _sym)
-                        for (_sym, _exch), _tok in zip(_chunk, toks)
-                        if _tok is not None
-                        and not isinstance(_tok, BaseException)
-                    )
-                except Exception:
-                    pass
+            _all_batch = await _bg_resolve_tokens_chunked(_need_resolve, _rts)
             if _all_batch:
                 _ticker.subscribe_with_sym(_all_batch)
     except Exception as _tke:
         logger.debug(f"Background: ticker book-subscribe skipped: {_tke}")
+
+
+async def _bg_warm_holiday_cache(
+    holiday_cache: dict,
+    segments: list[dict],
+    fetch_holidays,
+) -> None:
+    """Fill *holiday_cache* for any exchange not yet loaded this year."""
+    for seg in segments:
+        exch = seg['holiday_exchange']
+        if exch not in holiday_cache:
+            try:
+                holiday_cache[exch] = await _run(fetch_holidays, exch)
+            except Exception as e:
+                logger.debug(f"Background: holiday load skipped for {exch}: {e}")
+                holiday_cache[exch] = set()
+
+
+def _bg_is_sim_active() -> bool:
+    """Return True when a SimDriver is currently active (non-raising)."""
+    try:
+        from backend.api.algo.sim.driver import get_driver
+        return bool(get_driver().active)
+    except Exception:
+        return False
 
 
 async def _task_performance(state: dict) -> None:
@@ -742,15 +781,7 @@ async def _task_performance(state: dict) -> None:
             state['_hol_year'] = today.year
 
         segments = _build_segments()
-
-        for seg in segments:
-            exch = seg['holiday_exchange']
-            if exch not in holiday_cache:
-                try:
-                    holiday_cache[exch] = await _run(fetch_holidays, exch)
-                except Exception as e:
-                    logger.debug(f"Background: holiday load skipped for {exch}: {e}")
-                    holiday_cache[exch] = set()
+        await _bg_warm_holiday_cache(holiday_cache, segments, fetch_holidays)
 
         # Pass `exchange=` to is_market_open so the live-quote probe
         # can override the calendar verdict. Catches MCX evening
@@ -768,17 +799,7 @@ async def _task_performance(state: dict) -> None:
         if not open_segments:
             continue
 
-        # If the simulator is running we still want the performance cache
-        # (and the /performance page that reads from it) to stay fresh with
-        # real Kite data — only the live run_cycle is gated off, so the
-        # fabricated sim state doesn't race with real agent fires on the
-        # same alert_state dict.
-        sim_active = False
-        try:
-            from backend.api.algo.sim.driver import get_driver
-            sim_active = bool(get_driver().active)
-        except Exception:
-            pass
+        sim_active = _bg_is_sim_active()
 
         try:
             (df_holdings, sum_holdings, df_positions, sum_positions,
@@ -948,6 +969,19 @@ async def _task_close(state: dict) -> None:
 # Litestar lifecycle hooks
 # ---------------------------------------------------------------------------
 
+def _bg_parse_expiry_check_time(cfg_time: str) -> tuple[int, int]:
+    """Parse 'HH:MM' string → (hh, mm). Falls back to (9, 20) on bad input."""
+    try:
+        hh_s, mm_s = cfg_time.split(":", 1)
+        hh, mm = int(hh_s), int(mm_s)
+        if not (0 <= hh < 24 and 0 <= mm < 60):
+            raise ValueError("out of range")
+        return hh, mm
+    except Exception:
+        logger.warning(f"Background: algo.expiry_check_time={cfg_time!r} invalid, defaulting to 09:20")
+        return 9, 20
+
+
 async def _task_expiry_check() -> None:
     """Check once daily at 09:20 IST if today is an expiry day and auto-start the engine.
 
@@ -975,14 +1009,7 @@ async def _task_expiry_check() -> None:
         # EOD-only close window) — re-read each loop so changes apply
         # on the next cycle without a service restart.
         cfg_time = get_string("algo.expiry_check_time", "09:20") or "09:20"
-        try:
-            hh, mm = cfg_time.split(":", 1)
-            hh, mm = int(hh), int(mm)
-            if not (0 <= hh < 24 and 0 <= mm < 60):
-                raise ValueError("out of range")
-        except Exception:
-            logger.warning(f"Background: algo.expiry_check_time={cfg_time!r} invalid, defaulting to 09:20")
-            hh, mm = 9, 20
+        hh, mm = _bg_parse_expiry_check_time(cfg_time)
         check_time = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if now >= check_time:
             check_time += timedelta(days=1)
@@ -1193,25 +1220,21 @@ async def _task_monthly_statement() -> None:
             logger.warning(f"_task_monthly_statement: cycle failed: {exc}")
 
 
-async def _send_one_monthly_statement(user, period_year: int, period_month: int) -> None:
-    """Helper: compute → render → email → audit for one LP. Each
-    failure surface inserts a `monthly_statements` row with `error`
-    set so the operator can see what went wrong; deleting the row
-    requeues the LP for the next bg wake."""
-    import asyncio as _asyncio
-    from datetime import datetime as _datetime, timezone as _tz
-    from sqlalchemy.exc import IntegrityError as _IntegrityError
-    from backend.api.algo.investor_statement import (
-        compute_statement, render_statement_pdf,
-    )
-    from backend.api.database import async_session
-    from backend.api.models import MonthlyStatement
-    from backend.shared.helpers.mail_utils import send_email
+async def _bg_compute_and_send_statement(
+    user,
+    period_year: int,
+    period_month: int,
+    compute_statement,
+    render_statement_pdf,
+    send_email,
+) -> tuple[Optional[str], bytes, list[str]]:
+    """Compute, render, and email one LP's monthly statement.
 
+    Returns (error_str_or_None, pdf_bytes, recipients)."""
+    import asyncio as _asyncio
     error: Optional[str] = None
     pdf_bytes: bytes = b""
     recipients: list[str] = []
-
     try:
         data = await compute_statement(user.id, period_year, period_month)
         if data is None:
@@ -1219,9 +1242,7 @@ async def _send_one_monthly_statement(user, period_year: int, period_month: int)
         else:
             pdf_bytes = await _asyncio.to_thread(render_statement_pdf, data)
             recipients = [user.email]
-            subject = (
-                f"RamboQuant statement — {data.period_start.strftime('%b %Y')}"
-            )
+            subject = f"RamboQuant statement — {data.period_start.strftime('%b %Y')}"
             html_body = _monthly_statement_html(user, data)
             ok, msg = await _asyncio.to_thread(
                 send_email,
@@ -1239,6 +1260,56 @@ async def _send_one_monthly_statement(user, period_year: int, period_month: int)
                 error = f"SMTP: {msg}"
     except Exception as exc:
         error = f"render/send: {exc}"
+    return error, pdf_bytes, recipients
+
+
+def _bg_statement_audit(
+    user,
+    period_year: int,
+    period_month: int,
+    error: Optional[str],
+    pdf_bytes: bytes,
+    recipients: list[str],
+) -> None:
+    """Write the monthly-statement audit row (non-raising)."""
+    try:
+        from backend.api.audit import write_audit_event
+        write_audit_event(
+            category="system.statement",
+            action=("STATEMENT_SENT" if not error else "STATEMENT_FAILED"),
+            actor_username="system",
+            actor_role="system",
+            target_type="user",
+            target_id=str(user.id),
+            summary=(f"{period_year}-{period_month:02d} → "
+                     f"{', '.join(recipients) or '?'}"
+                     + (f" · ERROR: {error}" if error else
+                        f" · {len(pdf_bytes)} bytes"))[:1000],
+            status_code=(200 if not error else 500),
+        )
+    except Exception as _aud_e:
+        logger.debug(f"statement audit skipped: {_aud_e}")
+
+
+async def _send_one_monthly_statement(user, period_year: int, period_month: int) -> None:
+    """Helper: compute → render → email → audit for one LP. Each
+    failure surface inserts a `monthly_statements` row with `error`
+    set so the operator can see what went wrong; deleting the row
+    requeues the LP for the next bg wake."""
+    import asyncio as _asyncio
+    from datetime import datetime as _datetime, timezone as _tz
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+    from backend.api.algo.investor_statement import (
+        compute_statement, render_statement_pdf,
+    )
+    from backend.api.database import async_session
+    from backend.api.models import MonthlyStatement
+    from backend.shared.helpers.mail_utils import send_email
+
+    error, pdf_bytes, recipients = await _bg_compute_and_send_statement(
+        user, period_year, period_month,
+        compute_statement, render_statement_pdf, send_email,
+    )
 
     try:
         async with async_session() as s:
@@ -1280,26 +1351,7 @@ async def _send_one_monthly_statement(user, period_year: int, period_month: int)
             f"_send_one_monthly_statement: u={user.id} "
             f"{period_year}-{period_month:02d}: sent ({len(pdf_bytes)} bytes)"
         )
-    # Audit trail — both success and failure write a row so the
-    # operator can verify "did LP X get their May statement?"
-    # without leaving /admin/audit.
-    try:
-        from backend.api.audit import write_audit_event
-        write_audit_event(
-            category="system.statement",
-            action=("STATEMENT_SENT" if not error else "STATEMENT_FAILED"),
-            actor_username="system",
-            actor_role="system",
-            target_type="user",
-            target_id=str(user.id),
-            summary=(f"{period_year}-{period_month:02d} → "
-                     f"{', '.join(recipients) or '?'}"
-                     + (f" · ERROR: {error}" if error else
-                        f" · {len(pdf_bytes)} bytes"))[:1000],
-            status_code=(200 if not error else 500),
-        )
-    except Exception as _aud_e:
-        logger.debug(f"statement audit skipped: {_aud_e}")
+    _bg_statement_audit(user, period_year, period_month, error, pdf_bytes, recipients)
 
 
 def _monthly_statement_html(user, data) -> str:
@@ -2009,6 +2061,20 @@ async def _task_hedge_proxy_regression() -> None:
         await _run_once()
 
 
+def _bg_trail_entry_key(entry: dict) -> Optional[tuple[str, str]]:
+    """Return (account, 'EXCH:SYM') for a trailing-eligible GTT entry, or None."""
+    if not (isinstance(entry, dict)
+            and entry.get("kind") == "gtt"
+            and entry.get("sl_trail_pct") not in (None, "")):
+        return None
+    account = str(entry.get("parent_account") or "")
+    sym     = str(entry.get("parent_symbol") or "")
+    exch    = str(entry.get("parent_exchange") or "NFO")
+    if not (account and sym):
+        return None
+    return account, f"{exch}:{sym}"
+
+
 def _collect_trail_keys_by_account(rows) -> dict[str, set[str]]:
     """Pass 1 — walk trailing-eligible entries and bucket the distinct
     (exchange:symbol) keys we need broker.ltp for per account."""
@@ -2022,15 +2088,10 @@ def _collect_trail_keys_by_account(rows) -> dict[str, set[str]]:
         if not isinstance(attached, list):
             continue
         for entry in attached:
-            if not (isinstance(entry, dict)
-                    and entry.get("kind") == "gtt"
-                    and entry.get("sl_trail_pct") not in (None, "")):
-                continue
-            account = str(entry.get("parent_account") or "")
-            sym     = str(entry.get("parent_symbol") or "")
-            exch    = str(entry.get("parent_exchange") or "NFO")
-            if account and sym:
-                keys_by_account.setdefault(account, set()).add(f"{exch}:{sym}")
+            result = _bg_trail_entry_key(entry)
+            if result:
+                account, key = result
+                keys_by_account.setdefault(account, set()).add(key)
     return keys_by_account
 
 
@@ -2170,16 +2231,20 @@ async def _send_trail_partial_modify_alert(
         pass
 
 
-def _extract_trail_entry_fields(entry: dict) -> Optional[dict]:
-    """Pull the operator-configured fields from a trailing entry. Returns
-    `None` when the entry is not a valid trailing-eligible GTT dict."""
-    if not isinstance(entry, dict):
-        return None
-    if entry.get("kind") != "gtt":
-        return None
-    if entry.get("sl_trail_pct") in (None, ""):
-        return None
-    fields = {
+def _bg_trail_entry_is_valid(fields: dict) -> bool:
+    """True when the required trail-entry fields are present and non-zero."""
+    return bool(
+        fields["gtt_id"]
+        and fields["parent_symbol"]
+        and fields["account"]
+        and fields["trail_pct"] > 0
+        and fields["parent_qty"] > 0
+    )
+
+
+def _bg_trail_entry_build_fields(entry: dict) -> dict:
+    """Construct the field dict from a trailing-eligible GTT entry (no validation)."""
+    return {
         "gtt_id":          entry.get("id"),
         "trail_pct":       float(entry["sl_trail_pct"]),
         "current_trigger": float(entry.get("current_trigger") or 0),
@@ -2191,8 +2256,19 @@ def _extract_trail_entry_fields(entry: dict) -> Optional[dict]:
         "parent_product":  str(entry.get("parent_product") or "NRML"),
         "trigger_type":    str(entry.get("trigger_type") or "single"),
     }
-    if not (fields["gtt_id"] and fields["parent_symbol"] and fields["account"]
-            and fields["trail_pct"] > 0 and fields["parent_qty"] > 0):
+
+
+def _extract_trail_entry_fields(entry: dict) -> Optional[dict]:
+    """Pull the operator-configured fields from a trailing entry. Returns
+    `None` when the entry is not a valid trailing-eligible GTT dict."""
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("kind") != "gtt":
+        return None
+    if entry.get("sl_trail_pct") in (None, ""):
+        return None
+    fields = _bg_trail_entry_build_fields(entry)
+    if not _bg_trail_entry_is_valid(fields):
         return None
     return fields
 
@@ -2432,6 +2508,16 @@ async def _task_trail_stop() -> None:
             logger.debug(f"[TRAIL] poll iteration failed: {e}")
 
 
+def _bg_oco_first_sibling_account(attached: list) -> Optional[str]:
+    """Return the first parent_account from any sibling entry, or None."""
+    for e in attached:
+        if isinstance(e, dict) and e.get("sibling_id"):
+            acct = e.get("parent_account")
+            if acct:
+                return acct
+    return None
+
+
 def _oco_parse_entries(
     rows: list,
     json_loads: object,
@@ -2451,18 +2537,7 @@ def _oco_parse_entries(
             continue
         if not isinstance(attached, list):
             continue
-        has_sibling = any(
-            isinstance(e, dict) and e.get("sibling_id")
-            for e in attached
-        )
-        if not has_sibling:
-            continue
-        acct = None
-        for e in attached:
-            if isinstance(e, dict) and e.get("sibling_id"):
-                acct = e.get("parent_account")
-                if acct:
-                    break
+        acct = _bg_oco_first_sibling_account(attached)
         if not acct:
             continue
         rows_by_account.setdefault(acct, []).append(row)
@@ -3297,6 +3372,32 @@ def _watchdog_select_failover(
     return None
 
 
+def _bg_build_degraded_msg(
+    ticker: object,
+    eligible: list,
+    current: Optional[str],
+    is_refire: bool,
+) -> str:
+    """Build the Telegram message for a ticker-degraded incident."""
+    branch = config.get("deploy_branch", "main")
+    branch_tag = f" [{branch}]" if branch != "main" else ""
+    ts = timestamp_display()
+    disconnected_s = ticker.seconds_since_disconnect()  # type: ignore[union-attr]
+    acct_list = ", ".join(
+        b_acct for b in eligible
+        if (b_acct := getattr(b, "account", "") or "")
+    ) or "?"
+    refire_note = " (re-alert)" if is_refire else ""
+    return (
+        f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
+        f"Both Kite accounts in failover cool-off.\n"
+        f"Disconnect: {current or '?'} → {acct_list} (all blocked)\n"
+        f"Sparkline degrading to broker.ltp() polling.\n"
+        f"Disconnected for: {disconnected_s:.0f}s\n"
+        f"Time: {ts}"
+    )
+
+
 async def _watchdog_alert_degraded(
     ticker: object,
     eligible: list,
@@ -3317,24 +3418,9 @@ async def _watchdog_alert_degraded(
         _ticker_alert_state["alert_active"] = True
         _ticker_alert_state["incident_start"] = now_ts
     _ticker_alert_state["last_alerted_at"] = now_ts
-    branch = config.get("deploy_branch", "main")
-    branch_tag = f" [{branch}]" if branch != "main" else ""
-    ts = timestamp_display()
-    disconnected_s = ticker.seconds_since_disconnect()  # type: ignore[union-attr]
-    acct_list = ", ".join(
-        b_acct for b in eligible
-        if (b_acct := getattr(b, "account", "") or "")
-    ) or "?"
     is_refire = _ticker_alert_state["last_alerted_at"] != _ticker_alert_state["incident_start"]
-    refire_note = " (re-alert)" if is_refire else ""
-    msg = (
-        f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
-        f"Both Kite accounts in failover cool-off.\n"
-        f"Disconnect: {current or '?'} → {acct_list} (all blocked)\n"
-        f"Sparkline degrading to broker.ltp() polling.\n"
-        f"Disconnected for: {disconnected_s:.0f}s\n"
-        f"Time: {ts}"
-    )
+    msg = _bg_build_degraded_msg(ticker, eligible, current, is_refire)
+    disconnected_s = ticker.seconds_since_disconnect()  # type: ignore[union-attr]
     logger.warning(
         f"ticker watchdog: no eligible failover account "
         f"(current={current or '?'}, disconnected_s={disconnected_s:.0f}) — "
@@ -3342,6 +3428,66 @@ async def _watchdog_alert_degraded(
     )
     if is_enabled("telegram"):
         await asyncio.to_thread(_send_telegram, msg)
+
+
+def _bg_watchdog_reset_alert_state() -> None:
+    """Clear the ticker-alert incident state when markets are closed."""
+    if _ticker_alert_state["alert_active"]:
+        _ticker_alert_state["alert_active"] = False
+        _ticker_alert_state["incident_start"] = 0.0
+        _ticker_alert_state["last_alerted_at"] = 0.0
+
+
+async def _bg_watchdog_failover_or_alert(
+    ticker: object,
+    get_brokers,
+    failover_cooloff_s: float,
+    alert_refire_s: float,
+) -> None:
+    """Attempt ticker failover; fall back to degraded alert if no account available."""
+    try:
+        eligible = get_brokers()
+    except Exception as e:
+        logger.warning(f"ticker watchdog: eligible-broker lookup failed: {e}")
+        return
+    current = ticker.current_account()  # type: ignore[union-attr]
+    next_kc = _watchdog_select_failover(eligible, current, ticker, failover_cooloff_s)
+    if not next_kc:
+        await _watchdog_alert_degraded(ticker, eligible, current, alert_refire_s)
+        return
+    acct, api_key, access_token = next_kc
+    ok = ticker.restart_with_account(api_key, access_token, acct)  # type: ignore[union-attr]
+    if ok:
+        logger.info(f"ticker watchdog: failover OK → {acct}")
+    else:
+        logger.warning(f"ticker watchdog: failover to {acct} did not start")
+
+
+async def _bg_watchdog_one_cycle(
+    get_ticker,
+    get_historical_brokers,
+    failover_threshold_s: float,
+    failover_cooloff_s: float,
+    alert_refire_s: float,
+) -> None:
+    """Single watchdog poll: check ticker health and act if disconnected too long."""
+    ticker = get_ticker()
+    status = ticker.status()
+    # Watchdog applies only to a ticker that's STARTED but has
+    # been disconnected longer than the threshold. A ticker that
+    # never started is the warm task's job to recover.
+    if not status.get("started"):
+        return
+    if status.get("connected"):
+        if _ticker_alert_state["alert_active"]:
+            await _watchdog_handle_recovery(ticker, status)
+        return  # healthy
+    if ticker.seconds_since_disconnect() < failover_threshold_s:
+        return  # within KiteTicker's own retry window
+    await _bg_watchdog_failover_or_alert(
+        ticker, get_historical_brokers,
+        failover_cooloff_s, alert_refire_s,
+    )
 
 
 async def _task_ticker_watchdog(state: dict) -> None:
@@ -3392,47 +3538,13 @@ async def _task_ticker_watchdog(state: dict) -> None:
                 _wd_holiday_cache, _wd_holiday_year_ref, fetch_holidays
             )
             if not any_open:
-                if _ticker_alert_state["alert_active"]:
-                    _ticker_alert_state["alert_active"] = False
-                    _ticker_alert_state["incident_start"] = 0.0
-                    _ticker_alert_state["last_alerted_at"] = 0.0
+                _bg_watchdog_reset_alert_state()
                 continue
 
-            ticker = get_ticker()
-            status = ticker.status()
-            # Watchdog applies only to a ticker that's STARTED but has
-            # been disconnected longer than the threshold. A ticker that
-            # never started is the warm task's job to recover.
-            if not status.get("started"):
-                continue
-            if status.get("connected"):
-                if _ticker_alert_state["alert_active"]:
-                    await _watchdog_handle_recovery(ticker, status)
-                continue  # healthy
-            if ticker.seconds_since_disconnect() < FAILOVER_THRESHOLD_S:
-                continue  # within KiteTicker's own retry window
-
-            # Disconnected for too long — find the next eligible account.
-            try:
-                eligible = get_historical_brokers()
-            except Exception as e:
-                logger.warning(f"ticker watchdog: eligible-broker lookup failed: {e}")
-                continue
-            current = ticker.current_account()
-            next_kc = _watchdog_select_failover(
-                eligible, current, ticker, FAILOVER_COOLOFF_S
+            await _bg_watchdog_one_cycle(
+                get_ticker, get_historical_brokers,
+                FAILOVER_THRESHOLD_S, FAILOVER_COOLOFF_S, ALERT_REFIRE_S,
             )
-
-            if not next_kc:
-                await _watchdog_alert_degraded(ticker, eligible, current, ALERT_REFIRE_S)
-                continue
-
-            acct, api_key, access_token = next_kc
-            ok = ticker.restart_with_account(api_key, access_token, acct)
-            if ok:
-                logger.info(f"ticker watchdog: failover OK → {acct}")
-            else:
-                logger.warning(f"ticker watchdog: failover to {acct} did not start")
 
         except asyncio.CancelledError:
             break
@@ -3950,6 +4062,24 @@ async def _task_funds_offhours() -> None:
         await asyncio.sleep(30 * 60)
 
 
+async def _bg_resolve_watchlist_sym(
+    sym: str,
+    exch: str,
+    resolve_mcx,
+    resolve_cds,
+) -> str:
+    """Resolve a virtual MCX/CDS root to its front-month contract symbol."""
+    if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
+        resolved = await resolve_mcx(sym)
+        if resolved:
+            return resolved.upper().strip()
+    elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
+        resolved = await resolve_cds(sym)
+        if resolved:
+            return resolved.upper().strip()
+    return sym
+
+
 async def _backfill_collect_watchlist(
     symbols: list[tuple[str, str]],
     seen: set[tuple[str, str]],
@@ -3970,20 +4100,36 @@ async def _backfill_collect_watchlist(
             exch = (row.exchange or "NSE").upper().strip()
             if not sym:
                 continue
-            if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
-                resolved = await _resolve_mcx_commodity(sym)
-                if resolved:
-                    sym = resolved.upper().strip()
-            elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
-                resolved = await _resolve_cds_currency(sym)
-                if resolved:
-                    sym = resolved.upper().strip()
+            sym = await _bg_resolve_watchlist_sym(sym, exch, _resolve_mcx_commodity, _resolve_cds_currency)
             key = (sym, exch)
             if key not in seen:
                 seen.add(key)
                 symbols.append(key)
     except Exception as exc:
         logger.warning(f"backfill warm: watchlist collect failed: {exc}")
+
+
+def _bg_append_book_symbols(
+    df: "pd.DataFrame",
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+    default_exch: str,
+) -> None:
+    """Drain a broker DataFrame into symbols/seen in place (no IO)."""
+    if df.empty or "tradingsymbol" not in df.columns:
+        return
+    exchanges = (
+        df["exchange"] if "exchange" in df.columns
+        else pd.Series([default_exch] * len(df))
+    )
+    for sym_raw, exch_raw in zip(df["tradingsymbol"], exchanges):
+        sym  = str(sym_raw or "").upper().strip()
+        exch = str(exch_raw or default_exch).upper().strip()
+        if sym:
+            key = (sym, exch)
+            if key not in seen:
+                seen.add(key)
+                symbols.append(key)
 
 
 async def _backfill_collect_holdings(
@@ -3994,19 +4140,9 @@ async def _backfill_collect_holdings(
     try:
         import pandas as pd
         from backend.brokers import broker_apis
-
         dfs = await asyncio.to_thread(broker_apis.fetch_holdings)
         df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-        if not df_h.empty and "tradingsymbol" in df_h.columns:
-            _h_exch = df_h["exchange"] if "exchange" in df_h.columns else pd.Series(["NSE"] * len(df_h))
-            for sym_raw, exch_raw in zip(df_h["tradingsymbol"], _h_exch):
-                sym  = str(sym_raw or "").upper().strip()
-                exch = str(exch_raw or "NSE").upper().strip()
-                if sym:
-                    key = (sym, exch)
-                    if key not in seen:
-                        seen.add(key)
-                        symbols.append(key)
+        _bg_append_book_symbols(df_h, symbols, seen, "NSE")
     except Exception as exc:
         logger.warning(f"backfill warm: holdings collect failed: {exc}")
 
@@ -4019,19 +4155,9 @@ async def _backfill_collect_positions(
     try:
         import pandas as pd
         from backend.brokers import broker_apis
-
         dfs = await asyncio.to_thread(broker_apis.fetch_positions)
         df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-        if not df_p.empty and "tradingsymbol" in df_p.columns:
-            _p_exch = df_p["exchange"] if "exchange" in df_p.columns else pd.Series(["NFO"] * len(df_p))
-            for sym_raw, exch_raw in zip(df_p["tradingsymbol"], _p_exch):
-                sym  = str(sym_raw or "").upper().strip()
-                exch = str(exch_raw or "NFO").upper().strip()
-                if sym:
-                    key = (sym, exch)
-                    if key not in seen:
-                        seen.add(key)
-                        symbols.append(key)
+        _bg_append_book_symbols(df_p, symbols, seen, "NFO")
     except Exception as exc:
         logger.warning(f"backfill warm: positions collect failed: {exc}")
 

@@ -95,6 +95,30 @@ def _email_attach_files(
         msg.attach(part)
 
 
+def _resolve_smtp_config() -> "tuple[str, int, str, str, str, str]":
+    """Read SMTP credentials + brand sender address from secrets. Returns
+    (smtp_server, smtp_port, smtp_user, smtp_pass, mail_from, mail_from_name)."""
+    smtp_server    = secrets['smtp_server']
+    smtp_port      = secrets['smtp_port']
+    smtp_user      = secrets['smtp_user']
+    smtp_pass      = secrets['smtp_pass']
+    smtp_user_name = secrets.get('smtp_user_name', '')
+    mail_from      = secrets.get('mail_from') or DEFAULT_MAIL_FROM
+    mail_from_name = (
+        secrets.get('mail_from_name') or smtp_user_name or DEFAULT_MAIL_FROM_NAME
+    )
+    return smtp_server, smtp_port, smtp_user, smtp_pass, mail_from, mail_from_name
+
+
+def _resolve_bcc_brand(mail_from: str, to_addrs: list[str]) -> str:
+    """Return the brand BCC address, or '' when suppressed or already in To."""
+    if bool(secrets.get('mail_skip_bcc_brand', False)):
+        return ""
+    if mail_from.lower() in {a.lower() for a in to_addrs}:
+        return ""
+    return mail_from
+
+
 def _smtp_send(
     smtp_server: str, smtp_port: int, smtp_user: str, smtp_pass: str,
     envelope_to: list[str], msg: "MIMEMultipart",
@@ -158,24 +182,15 @@ def send_email(name, email_id, subject, html_body, attachments=None):
     except Exception:
         pass
 
-    smtp_server    = secrets['smtp_server']
-    smtp_port      = secrets['smtp_port']
-    smtp_user      = secrets['smtp_user']
-    smtp_pass      = secrets['smtp_pass']
-    smtp_user_name = secrets.get('smtp_user_name', '')
-
-    mail_from      = secrets.get('mail_from') or DEFAULT_MAIL_FROM
-    mail_from_name = secrets.get('mail_from_name') or smtp_user_name or DEFAULT_MAIL_FROM_NAME
+    smtp_server, smtp_port, smtp_user, smtp_pass, mail_from, mail_from_name = (
+        _resolve_smtp_config()
+    )
 
     to_addrs = _normalise_recipients(email_id)
     if not to_addrs:
         return False, "Email send error: no recipient address"
 
-    skip_bcc_brand = bool(secrets.get('mail_skip_bcc_brand', False))
-    bcc_brand = "" if skip_bcc_brand else mail_from
-    if bcc_brand and bcc_brand.lower() in {a.lower() for a in to_addrs}:
-        bcc_brand = ""
-
+    bcc_brand = _resolve_bcc_brand(mail_from, to_addrs)
     msg = _email_build_message(name, to_addrs, subject, html_body, mail_from, mail_from_name)
     _email_attach_files(msg, attachments)
 
