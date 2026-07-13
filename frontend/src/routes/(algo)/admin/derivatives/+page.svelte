@@ -5634,7 +5634,7 @@
       linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
       #1d2a44 !important;
     border-top: 2px solid rgba(251,191,36,0.70);
-    border-bottom: 1px solid rgba(251,191,36,0.40);
+    border-bottom: 1px solid rgba(251,191,36,0.55);
     color: var(--c-action);
     font-weight: 700;
   }
