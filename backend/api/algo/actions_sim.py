@@ -72,38 +72,17 @@ def _sim_positions_in_scope(params: dict) -> list[dict]:
         return []
 
 
-async def _write_sim_order(agent, action_type: str, resolved: dict):
-    """
-    Write ONE AlgoOrder row (mode='sim'), push a 'kind=order' entry to
-    the sim driver's tick log, AND register the order with the sim
-    driver's chase engine. The driver's chase loop (`_chase_open_orders`)
-    then adjusts the limit price on each subsequent tick and marks the
-    order FILLED once the bid/ask crosses.
+# ───────────────────────────────────────────────────────────────────────────
+#  _write_sim_order helpers (extracted to reduce CC)
+# ───────────────────────────────────────────────────────────────────────────
 
-    `resolved` must contain real account / symbol / side / qty / price
-    — callers resolve these from either the action params
-    (close_position, place_order) or from the sim's per-symbol state
-    (chase_close_positions expands per-position).
-    """
+async def _sim_write_algo_order_row(
+    agent, account: str, symbol: str, exchange: str,
+    side: str, qty: int, price: "float | None", pretty: str,
+) -> "int | None":
+    """INSERT AlgoOrder(mode='sim') and return its id. Returns None on failure."""
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-
-    account = resolved["account"]
-    symbol  = resolved["symbol"]
-    side    = resolved["side"]
-    qty     = int(resolved["qty"] or 0)
-    price   = resolved.get("price")
-    exchange = resolved.get("exchange") or "NFO"
-
-    # Human-readable print-style line — shows up as logger.warning AND as
-    # the AlgoOrder.detail column AND inside the tick_log entry so the
-    # operator sees the same sentence in all three places.
-    price_str = f"@₹{price:,.2f}" if price is not None else "@MARKET"
-    pretty = (f"[SIM] {agent.slug} → {action_type}: {side} {qty} "
-              f"{symbol} {price_str} · acct={account}")
-    logger.warning(pretty)
-
-    algo_order_id = None
     try:
         async with async_session() as s:
             row = AlgoOrder(
@@ -116,24 +95,36 @@ async def _write_sim_order(agent, action_type: str, resolved: dict):
             )
             s.add(row)
             await s.commit()
-            algo_order_id = row.id
+            return row.id
     except Exception as e:
         logger.error(f"[SIM] paper-trade write failed: {e}")
-        return
+        return None
 
-    # Timeline: placed event (fire-and-forget — never raises).
-    if algo_order_id:
-        try:
-            from backend.api.algo.order_events import write_event
-            await write_event(
-                algo_order_id, "placed",
-                f"[SIM] {agent.slug} → {action_type}: {side} {qty} {symbol} "
-                f"{'@₹' + f'{price:,.2f}' if price is not None else '@MARKET'}",
-                payload={"account": account, "price": price, "exchange": exchange},
-            )
-        except Exception:
-            pass
 
+async def _sim_write_placed_event(
+    algo_order_id: int, agent, action_type: str,
+    side: str, qty: int, symbol: str, price: "float | None",
+    account: str, exchange: str,
+) -> None:
+    """Write 'placed' timeline event for a sim order (fire-and-forget)."""
+    try:
+        from backend.api.algo.order_events import write_event
+        price_tag = "@₹" + f"{price:,.2f}" if price is not None else "@MARKET"
+        await write_event(
+            algo_order_id, "placed",
+            f"[SIM] {agent.slug} → {action_type}: {side} {qty} {symbol} {price_tag}",
+            payload={"account": account, "price": price, "exchange": exchange},
+        )
+    except Exception:
+        pass
+
+
+def _sim_register_with_driver(
+    algo_order_id: "int | None", agent, action_type: str,
+    account: str, symbol: str, side: str, qty: int,
+    price: "float | None", exchange: str, pretty: str,
+) -> None:
+    """Append tick_log entry and register the order with the sim chase engine."""
     try:
         from backend.api.algo.sim.driver import get_driver
         drv = get_driver()
@@ -171,6 +162,47 @@ async def _write_sim_order(agent, action_type: str, resolved: dict):
     except Exception as e:
         logger.debug(f"[SIM] could not record order in tick_log: {e}")
 
+
+async def _write_sim_order(agent, action_type: str, resolved: dict):
+    """
+    Write ONE AlgoOrder row (mode='sim'), push a 'kind=order' entry to
+    the sim driver's tick log, AND register the order with the sim
+    driver's chase engine. The driver's chase loop (`_chase_open_orders`)
+    then adjusts the limit price on each subsequent tick and marks the
+    order FILLED once the bid/ask crosses.
+
+    `resolved` must contain real account / symbol / side / qty / price
+    — callers resolve these from either the action params
+    (close_position, place_order) or from the sim's per-symbol state
+    (chase_close_positions expands per-position).
+    """
+    account  = resolved["account"]
+    symbol   = resolved["symbol"]
+    side     = resolved["side"]
+    qty      = int(resolved["qty"] or 0)
+    price    = resolved.get("price")
+    exchange = resolved.get("exchange") or "NFO"
+
+    # Human-readable print-style line — shows up as logger.warning AND as
+    # the AlgoOrder.detail column AND inside the tick_log entry so the
+    # operator sees the same sentence in all three places.
+    price_str = f"@₹{price:,.2f}" if price is not None else "@MARKET"
+    pretty = (f"[SIM] {agent.slug} → {action_type}: {side} {qty} "
+              f"{symbol} {price_str} · acct={account}")
+    logger.warning(pretty)
+
+    algo_order_id = await _sim_write_algo_order_row(
+        agent, account, symbol, exchange, side, qty, price, pretty,
+    )
+    if algo_order_id is None:
+        return None
+
+    await _sim_write_placed_event(
+        algo_order_id, agent, action_type, side, qty, symbol, price, account, exchange,
+    )
+    _sim_register_with_driver(
+        algo_order_id, agent, action_type, account, symbol, side, qty, price, exchange, pretty,
+    )
     return algo_order_id
 
 
@@ -206,6 +238,30 @@ async def _sim_chase_close(agent, action_type: str, params: dict) -> None:
         })
 
 
+# ───────────────────────────────────────────────────────────────────────────
+#  _sim_expiry_close helpers (extracted to reduce CC)
+# ───────────────────────────────────────────────────────────────────────────
+
+async def _sim_expiry_close_position(
+    agent, action_type: str, p: dict, exch: str,
+) -> None:
+    """Write one sim order for a single expiry-close position row."""
+    qty_held = int(p.get("quantity") or 0)
+    if qty_held == 0:
+        return
+    side = "SELL" if qty_held > 0 else "BUY"
+    price = (p.get("bid") if side == "SELL" else p.get("ask")) \
+            or p.get("last_price")
+    await _write_sim_order(agent, action_type, {
+        "account":  str(p.get("account", "SIM")),
+        "symbol":   str(p.get("tradingsymbol", "")),
+        "side":     side,
+        "qty":      abs(qty_held),
+        "price":    price,
+        "exchange": exch,
+    })
+
+
 async def _sim_expiry_close(agent, action_type: str, params: dict) -> None:
     """Sim-mode dry-run for the expiry_auto_close action.
 
@@ -229,20 +285,47 @@ async def _sim_expiry_close(agent, action_type: str, params: dict) -> None:
         })
         return
     for p in targets:
-        qty_held = int(p.get("quantity") or 0)
-        if qty_held == 0:
-            continue
-        side = "SELL" if qty_held > 0 else "BUY"
-        price = (p.get("bid") if side == "SELL" else p.get("ask")) \
-                or p.get("last_price")
-        await _write_sim_order(agent, action_type, {
-            "account":  str(p.get("account", "SIM")),
-            "symbol":   str(p.get("tradingsymbol", "")),
-            "side":     side,
-            "qty":      abs(qty_held),
-            "price":    price,
-            "exchange": exch,
-        })
+        await _sim_expiry_close_position(agent, action_type, p, exch)
+
+
+# ───────────────────────────────────────────────────────────────────────────
+#  _sim_place_or_close helpers (extracted to reduce CC)
+# ───────────────────────────────────────────────────────────────────────────
+
+def _sim_resolve_side(params: dict, qty_held: "int | None") -> str:
+    """Determine transaction side from params or current held quantity."""
+    if params.get("side") in ("BUY", "SELL"):
+        return params["side"]
+    if params.get("transaction_type") in ("BUY", "SELL"):
+        return params["transaction_type"]
+    if qty_held is not None:
+        return "SELL" if qty_held > 0 else "BUY"
+    return "SELL"
+
+
+def _sim_resolve_qty(params: dict, qty_held: "int | None") -> int:
+    """Determine order quantity from params or current held quantity."""
+    if params.get("quantity") is not None:
+        return int(params.get("quantity") or 0)
+    if qty_held is not None:
+        return abs(int(qty_held))
+    return 0
+
+
+def _sim_resolve_price(
+    side: str,
+    bid: "float | None",
+    ask: "float | None",
+    ltp: "float | None",
+    params: dict,
+) -> "float | None":
+    """Pick the best available price: book side → LTP → param fallback."""
+    side_price = bid if side == "SELL" else ask
+    if side_price is not None:
+        return side_price
+    if ltp is not None:
+        return ltp
+    return params.get("price")
 
 
 async def _sim_place_or_close(agent, action_type: str, params: dict) -> None:
@@ -250,24 +333,9 @@ async def _sim_place_or_close(agent, action_type: str, params: dict) -> None:
     account = str(params.get("account") or "SIM")
     symbol  = str(params.get("symbol")  or f"{agent.slug}-{action_type}")
     ltp, bid, ask, qty_held = _sim_prices_for(account, symbol)
-    if params.get("side") in ("BUY", "SELL"):
-        side = params.get("side")
-    elif params.get("transaction_type") in ("BUY", "SELL"):
-        side = params.get("transaction_type")
-    elif qty_held is not None:
-        side = "SELL" if qty_held > 0 else "BUY"
-    else:
-        side = "SELL"
-    if params.get("quantity") is not None:
-        qty = int(params.get("quantity") or 0)
-    elif qty_held is not None:
-        qty = abs(int(qty_held))
-    else:
-        qty = 0
-    side_price = bid if side == "SELL" else ask
-    price = side_price if side_price is not None else (
-        ltp if ltp is not None else params.get("price")
-    )
+    side  = _sim_resolve_side(params, qty_held)
+    qty   = _sim_resolve_qty(params, qty_held)
+    price = _sim_resolve_price(side, bid, ask, ltp, params)
     algo_order_id = await _write_sim_order(agent, action_type, {
         "account":  account,
         "symbol":   symbol,

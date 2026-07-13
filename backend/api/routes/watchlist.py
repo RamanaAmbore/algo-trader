@@ -365,6 +365,48 @@ def _combine_movers(
     return combined
 
 
+def _force_movers_build_key_map(all_items: list) -> dict[str, str]:
+    """Build the NSE-only ``{broker_key: underlying}`` map for the
+    force-snapshot quote batch. Skips MCX underlyings (commodity roots
+    have no spot index key on NSE)."""
+    from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
+    key_to_underlying: dict[str, str] = {}
+    for inst in all_items:
+        if inst.t in ("CE", "PE") and inst.u:
+            name = inst.u.upper()
+            if not is_mcx_underlying(name):
+                key_to_underlying[underlying_ltp_key(name)] = name
+    return key_to_underlying
+
+
+def _force_movers_build_rows(
+    key_to_underlying: dict[str, str],
+    quote_data: dict,
+) -> list["MoverRow"]:
+    """Convert a quote batch into sorted ``MoverRow`` list for NSE close
+    snapshot. Skips any symbol where LTP or prev_close is 0."""
+    rows: list[MoverRow] = []
+    for kite_key, underlying in key_to_underlying.items():
+        q = quote_data.get(kite_key) or {}
+        ltp = float(q.get("last_price") or 0.0)
+        ohlc = q.get("ohlc") or {}
+        prev_close = float(ohlc.get("close") or 0.0)
+        if ltp == 0.0 or prev_close == 0.0:
+            continue
+        change_pct = (ltp - prev_close) / prev_close * 100.0
+        rows.append(MoverRow(
+            tradingsymbol=underlying,
+            exchange="NSE",
+            last_price=ltp,
+            previous_close=prev_close,
+            change_pct=change_pct,
+            peak_pct=change_pct,
+            sticky=False,
+        ))
+    rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
+    return rows
+
+
 async def _force_movers_snapshot() -> int:
     """Fetch a fresh movers quote batch and persist it to ``movers_snapshots``.
 
@@ -376,14 +418,11 @@ async def _force_movers_snapshot() -> int:
     Returns the number of rows written (0 if no data or on error).
     """
     import asyncio as _asyncio
-    import json as _json
     from datetime import date as _date, timezone as _tz
-    from zoneinfo import ZoneInfo
 
     try:
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
-        from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
         from backend.brokers.registry import get_market_data_broker
         from backend.shared.helpers.date_time_utils import timestamp_indian
 
@@ -397,14 +436,7 @@ async def _force_movers_snapshot() -> int:
         except Exception:
             all_items = []
 
-        key_to_underlying: dict[str, str] = {}
-        for inst in all_items:
-            if inst.t in ("CE", "PE") and inst.u:
-                name = inst.u.upper()
-                if not is_mcx_underlying(name):
-                    key = underlying_ltp_key(name)
-                    key_to_underlying[key] = name
-
+        key_to_underlying = _force_movers_build_key_map(all_items)
         if not key_to_underlying:
             logger.warning("_force_movers_snapshot: empty universe — instruments cache cold?")
             return 0
@@ -418,27 +450,7 @@ async def _force_movers_snapshot() -> int:
             logger.warning(f"_force_movers_snapshot: quote fetch failed: {exc}")
             return 0
 
-        rows: list[MoverRow] = []
-        for kite_key, underlying in key_to_underlying.items():
-            q = quote_data.get(kite_key) or {}
-            ltp = float(q.get("last_price") or 0.0)
-            ohlc = q.get("ohlc") or {}
-            prev_close = float(ohlc.get("close") or 0.0)
-            if ltp == 0.0 or prev_close == 0.0:
-                continue
-            change_pct = (ltp - prev_close) / prev_close * 100.0
-            rows.append(MoverRow(
-                tradingsymbol=underlying,
-                exchange="NSE",
-                last_price=ltp,
-                previous_close=prev_close,
-                change_pct=change_pct,
-                peak_pct=change_pct,
-                sticky=False,
-            ))
-
-        rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
-
+        rows = _force_movers_build_rows(key_to_underlying, quote_data)
         if not rows:
             logger.warning("_force_movers_snapshot: zero rows from live quotes at close")
             return 0

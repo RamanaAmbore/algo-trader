@@ -114,6 +114,23 @@ class PersistentStoreBase(ABC):
 
     # ── Public API ───────────────────────────────────────────────────────────────
 
+    async def _try_cached_tiers(self, key: Any) -> Any:
+        """Check Tier 1 then Tier 2, returning the first hit or None on miss.
+
+        Increments the appropriate counter on a hit and promotes Tier 2 values
+        to Tier 1. Returns None when both tiers miss (caller proceeds to Tier 3).
+        """
+        cached = self._mem_get(key)
+        if cached is not None and self._is_complete(cached, key):
+            self._tier1_hits += 1
+            return cached
+        db_value = await self._db_fetch(key)
+        if db_value is not None and self._is_complete(db_value, key):
+            self._mem_set(key, db_value)
+            self._tier2_hits += 1
+            return db_value
+        return None
+
     async def get(
         self, key: Any, *, bypass_cache: bool | None = None, db_only: bool = False,
     ) -> Any:
@@ -134,18 +151,9 @@ class PersistentStoreBase(ABC):
             self._bypass_reads += 1
 
         if not bypass_cache:
-            # Tier 1
-            cached = self._mem_get(key)
-            if cached is not None and self._is_complete(cached, key):
-                self._tier1_hits += 1
-                return cached
-
-            # Tier 2
-            db_value = await self._db_fetch(key)
-            if db_value is not None and self._is_complete(db_value, key):
-                self._mem_set(key, db_value)
-                self._tier2_hits += 1
-                return db_value
+            hit = await self._try_cached_tiers(key)
+            if hit is not None:
+                return hit
 
         # db_only: skip Tier 3, return None immediately.
         if db_only:
@@ -157,15 +165,9 @@ class PersistentStoreBase(ABC):
         async with lock:
             if not bypass_cache:
                 # Re-check after acquiring — another coroutine may have filled it.
-                cached = self._mem_get(key)
-                if cached is not None and self._is_complete(cached, key):
-                    self._tier1_hits += 1
-                    return cached
-                db_value2 = await self._db_fetch(key)
-                if db_value2 is not None and self._is_complete(db_value2, key):
-                    self._mem_set(key, db_value2)
-                    self._tier2_hits += 1
-                    return db_value2
+                hit = await self._try_cached_tiers(key)
+                if hit is not None:
+                    return hit
 
             try:
                 value = await self._broker_fetch(key)

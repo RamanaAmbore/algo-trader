@@ -29,6 +29,23 @@ class ContactResponse(msgspec.Struct):
     detail: str
 
 
+def _send_to_recipients(sender_name: str, subject: str, html_body: str, recipients: list[str]) -> int:
+    """Send `html_body` to every address in `recipients`.
+
+    Returns the count of successful deliveries. Any per-address failure is
+    logged but does not abort subsequent sends (partial-success path).
+    """
+    from backend.shared.helpers.mail_utils import send_email
+    sent = 0
+    for to_email in recipients:
+        success, msg = send_email(sender_name, to_email, subject, html_body)
+        if success:
+            sent += 1
+        else:
+            logger.error(f"Contact form email failed for {to_email}: {msg}")
+    return sent
+
+
 class ContactController(Controller):
     path = "/api/contact"
 
@@ -44,7 +61,6 @@ class ContactController(Controller):
 
         try:
             from backend.shared.helpers.alert_utils import get_market_recipients
-            from backend.shared.helpers.mail_utils import send_email
 
             # Public-website inbound mail routes to `market_emails` in
             # secrets.yaml (e.g. website.ramboquant@gmail.com,
@@ -63,19 +79,7 @@ class ContactController(Controller):
                 f"<p><strong>Message:</strong></p>"
                 f"<p>{data.message.replace(chr(10), '<br>')}</p>"
             )
-            # send_email takes one recipient at a time; loop so every
-            # configured market address gets a copy. Any individual
-            # failure is logged but doesn't block the rest from going
-            # through (partial-success path beats all-or-nothing).
-            sent = 0
-            last_err = ''
-            for to_email in recipients:
-                success, msg = send_email(data.name, to_email, subject, html_body)
-                if success:
-                    sent += 1
-                else:
-                    last_err = msg
-                    logger.error(f"Contact form email failed for {to_email}: {msg}")
+            sent = _send_to_recipients(data.name, subject, html_body, recipients)
             if sent == 0:
                 raise HTTPException(status_code=500, detail="Failed to send message")
 

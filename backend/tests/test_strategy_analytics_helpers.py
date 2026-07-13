@@ -284,11 +284,15 @@ def test_helpers_use_fromisoformat_not_strptime():
     """The Jul 2026 helpers all parse ISO dates via date.fromisoformat.
     strptime with an explicit format string is legacy — grep-guarding
     against a regression that mixes in the strptime path.
+
+    _strategy_pick_spot_anchor delegates date parsing to
+    _strategy_anchor_from_modal_expiry, so fromisoformat now lives in
+    the sub-helper. Both helpers are checked.
     """
     for fn_name in (
         "_strategy_option_T_range",
         "_strategy_mcx_scale_ratios",
-        "_strategy_pick_spot_anchor",
+        "_strategy_anchor_from_modal_expiry",
     ):
         src = inspect.getsource(getattr(_options_mod, fn_name))
         assert "fromisoformat" in src, (
@@ -316,11 +320,12 @@ def test_impl_delegates_metadata_to_helper():
 
 def test_impl_delegates_anchor_pick_to_helper():
     """`_strategy_pick_spot_anchor` is the SSOT for the modal-expiry rule.
-    Impl must not re-implement the Counter-based tie-break."""
+    The impl delegates to _strategy_resolve_spot_impl which calls
+    _strategy_pick_spot_anchor — Counter tie-break must not appear inline."""
     impl_src = inspect.getsource(
         _options_mod.OptionsController.__dict__["_strategy_analytics_impl"]
     )
-    assert "_strategy_pick_spot_anchor" in impl_src
+    assert "_strategy_resolve_spot_impl" in impl_src
     # The Counter-based tie-break must not appear inline.
     assert "expiry_counts" not in impl_src
 

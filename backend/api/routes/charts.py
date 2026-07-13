@@ -126,6 +126,64 @@ def _engine_for_mode(mode: str):
     return get_prod_paper_engine()
 
 
+def _placed_marker(r: AlgoOrder, side: str, qty: int | None) -> OrderEvent | None:
+    """Return a 'placed' lifecycle marker for *r*, or None when created_at is missing."""
+    if not r.created_at:
+        return None
+    return OrderEvent(
+        ts=r.created_at.isoformat(),
+        kind="placed",
+        side=side,
+        price=(float(r.initial_price) if r.initial_price is not None else None),
+        status=r.status or "?",
+        order_id=r.id,
+        attempts=int(r.attempts or 0),
+        detail=r.detail,
+        qty=qty,
+        # Slippage only known at terminal — placed marker leaves None.
+    )
+
+
+def _terminal_marker(r: AlgoOrder, side: str, qty: int | None,
+                     slip: float | None) -> OrderEvent | None:
+    """Return a terminal lifecycle marker ('filled' or 'unfilled') for *r*.
+
+    Returns None when the status is OPEN/CHASED (no terminal event yet) or
+    when the fallback timestamp is also absent.
+    """
+    if r.status == "FILLED" and r.filled_at:
+        return OrderEvent(
+            ts=r.filled_at.isoformat(),
+            kind="filled",
+            side=side,
+            price=(float(r.fill_price) if r.fill_price is not None else None),
+            status=r.status,
+            order_id=r.id,
+            attempts=int(r.attempts or 0),
+            detail=r.detail,
+            qty=qty,
+            slippage=slip,
+        )
+    if r.status == "UNFILLED":
+        # No dedicated unfilled timestamp on the model — use filled_at if
+        # present (chase engine sets it on terminal), else created_at as
+        # a fallback so the marker still lands somewhere meaningful.
+        ts = r.filled_at or r.created_at
+        if ts:
+            return OrderEvent(
+                ts=ts.isoformat(),
+                kind="unfilled",
+                side=side,
+                price=(float(r.initial_price) if r.initial_price is not None else None),
+                status=r.status,
+                order_id=r.id,
+                attempts=int(r.attempts or 0),
+                detail=r.detail,
+                qty=qty,
+            )
+    return None
+
+
 def _algo_order_events(rows: list[AlgoOrder]) -> list[OrderEvent]:
     """Derive lifecycle markers from a list of AlgoOrder rows. Each row
     yields up to two events: a 'placed' at created_at, and a terminal
@@ -136,53 +194,58 @@ def _algo_order_events(rows: list[AlgoOrder]) -> list[OrderEvent]:
         side = r.transaction_type or "?"
         qty  = int(r.quantity) if r.quantity is not None else None
         slip = float(r.slippage) if r.slippage is not None else None
-        # Placed marker — every order has a created_at and an initial_price.
-        if r.created_at:
-            out.append(OrderEvent(
-                ts=r.created_at.isoformat(),
-                kind="placed",
-                side=side,
-                price=(float(r.initial_price) if r.initial_price is not None else None),
-                status=r.status or "?",
-                order_id=r.id,
-                attempts=int(r.attempts or 0),
-                detail=r.detail,
-                qty=qty,
-                # Slippage only known at terminal — placed marker leaves None.
-            ))
-        # Terminal marker — choose by status.
-        if r.status == "FILLED" and r.filled_at:
-            out.append(OrderEvent(
-                ts=r.filled_at.isoformat(),
-                kind="filled",
-                side=side,
-                price=(float(r.fill_price) if r.fill_price is not None else None),
-                status=r.status,
-                order_id=r.id,
-                attempts=int(r.attempts or 0),
-                detail=r.detail,
-                qty=qty,
-                slippage=slip,
-            ))
-        elif r.status == "UNFILLED":
-            # No dedicated unfilled timestamp on the model — use filled_at if
-            # present (chase engine sets it on terminal), else created_at as
-            # a fallback so the marker still lands somewhere meaningful.
-            ts = r.filled_at or r.created_at
-            if ts:
-                out.append(OrderEvent(
-                    ts=ts.isoformat(),
-                    kind="unfilled",
-                    side=side,
-                    price=(float(r.initial_price) if r.initial_price is not None else None),
-                    status=r.status,
-                    order_id=r.id,
-                    attempts=int(r.attempts or 0),
-                    detail=r.detail,
-                    qty=qty,
-                ))
+        placed = _placed_marker(r, side, qty)
+        if placed:
+            out.append(placed)
+        terminal = _terminal_marker(r, side, qty, slip)
+        if terminal:
+            out.append(terminal)
     out.sort(key=lambda e: e.ts)
     return out
+
+
+async def _batch_orders_by_symbol(mode: str,
+                                   names: list[str]) -> dict[str, list[AlgoOrder]]:
+    """ONE algo_orders query for a whole batch of symbols.
+
+    Returns a dict keyed by symbol so callers do O(1) lookups instead of
+    N round-trips. 50-rows-per-symbol cap keeps memory bounded even when
+    a symbol has thousands of rows.
+    """
+    async with async_session() as s:
+        rows = (await s.execute(
+            select(AlgoOrder)
+            .where(AlgoOrder.mode == mode)
+            .where(AlgoOrder.symbol.in_(names))
+            .order_by(desc(AlgoOrder.created_at))
+            .limit(50 * len(names))
+        )).scalars().all()
+    rows_by_symbol: dict[str, list[AlgoOrder]] = {}
+    for r in rows:
+        rows_by_symbol.setdefault(r.symbol, []).append(r)
+    return rows_by_symbol
+
+
+def _build_chart_response(
+    mode: str,
+    sym: str,
+    eng,
+    rows_by_symbol: dict,
+    since: Optional[str],
+    cap: int,
+) -> "ChartResponse":
+    """Build one ChartResponse for `sym` from engine data and order rows."""
+    kind, underlying = _classify_symbol(eng, sym)
+    raw_ticks = eng.price_history(sym, since=since, limit=cap)
+    ticks = [PriceTick(ts=t["ts"], ltp=t["ltp"],
+                       bid=t.get("bid"), ask=t.get("ask"))
+             for t in raw_ticks]
+    events = ([] if kind == "underlying"
+              else _algo_order_events(rows_by_symbol.get(sym, [])))
+    return ChartResponse(
+        mode=mode, symbol=sym, kind=kind,
+        underlying=underlying, ticks=ticks, events=events,
+    )
 
 
 class ChartsController(Controller):
@@ -281,35 +344,14 @@ class ChartsController(Controller):
             # shouldn't pin a worker on AlgoOrder lookups.
             names = names[:50]
 
-        eng       = _engine_for_mode(mode)
-        cap       = max(1, min(int(limit or 600), 600))
+        eng = _engine_for_mode(mode)
+        cap = max(1, min(int(limit or 600), 600))
+        rows_by_symbol = await _batch_orders_by_symbol(mode, names)
 
-        # ONE algo_orders query for the whole batch — IN-clause vs N
-        # round-trips. Group results by symbol client-side.
-        async with async_session() as s:
-            rows = (await s.execute(
-                select(AlgoOrder)
-                .where(AlgoOrder.mode == mode)
-                .where(AlgoOrder.symbol.in_(names))
-                .order_by(desc(AlgoOrder.created_at))
-                .limit(50 * len(names))   # 50 rows per symbol cap
-            )).scalars().all()
-        rows_by_symbol: dict[str, list[AlgoOrder]] = {}
-        for r in rows:
-            rows_by_symbol.setdefault(r.symbol, []).append(r)
-
-        charts: list[ChartResponse] = []
-        for sym in names:
-            kind, underlying = _classify_symbol(eng, sym)
-            raw_ticks = eng.price_history(sym, since=since, limit=cap)
-            ticks = [PriceTick(ts=t["ts"], ltp=t["ltp"],
-                               bid=t.get("bid"), ask=t.get("ask"))
-                     for t in raw_ticks]
-            events = ([] if kind == "underlying"
-                      else _algo_order_events(rows_by_symbol.get(sym, [])))
-            charts.append(ChartResponse(
-                mode=mode, symbol=sym, kind=kind,
-                underlying=underlying, ticks=ticks, events=events))
+        charts = [
+            _build_chart_response(mode, sym, eng, rows_by_symbol, since, cap)
+            for sym in names
+        ]
         return {"mode": mode, "charts": charts}
 
     @get("/price-history")

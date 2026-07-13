@@ -415,6 +415,14 @@ def _build_dry_run_response(agent, slug, ctx, now) -> dict:
     }
 
 
+def _age_lifespan_expires_at_iso(a: Agent) -> str | None:
+    """Return lifespan_expires_at as ISO string or None.
+
+    Extracted from _agent_to_info to remove nested ternary."""
+    val = getattr(a, "lifespan_expires_at", None)
+    return val.isoformat() if val else None
+
+
 def _agent_to_info(a: Agent) -> AgentInfo:
     return AgentInfo(
         id=a.id, slug=a.slug, name=a.name,
@@ -425,15 +433,13 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         schedule=a.schedule, cooldown_minutes=a.cooldown_minutes,
         fire_at_time=getattr(a, "fire_at_time", None),
         status=a.status,
-        last_triggered_at=a.last_triggered_at.isoformat() if a.last_triggered_at else None,
+        last_triggered_at=(a.last_triggered_at.isoformat()
+                           if a.last_triggered_at else None),
         trigger_count=a.trigger_count, last_error=a.last_error,
         is_system=a.is_system,
         lifespan_type=getattr(a, "lifespan_type", "persistent") or "persistent",
         lifespan_max_fires=getattr(a, "lifespan_max_fires", None),
-        lifespan_expires_at=(
-            a.lifespan_expires_at.isoformat()
-            if getattr(a, "lifespan_expires_at", None) else None
-        ),
+        lifespan_expires_at=_age_lifespan_expires_at_iso(a),
         trade_mode=getattr(a, "trade_mode", "paper") or "paper",
         debounce_minutes=int(getattr(a, "debounce_minutes", 0) or 0),
         tags=list(getattr(a, "tags", None) or []),
@@ -461,6 +467,74 @@ def _extract_ai_prompt(raw: str, prefix_pattern: str) -> str:
     ):
         prompt = prompt[1:-1].strip()
     return prompt
+
+
+def _age_coerce_val(val: str):
+    """Coerce a string kv-value to int, float, or leave as str.
+
+    Extracted from _cmd_config to remove duplicate try/except blocks."""
+    try:
+        return float(val) if "." in val else int(val)
+    except ValueError:
+        return val
+
+
+def _age_apply_kv_to_conditions(conditions: dict, key: str, val: str) -> None:
+    """Apply a key=value pair to a conditions dict in-place.
+
+    Handles both rule-list (v1) and flat (v0) condition shapes.
+    Extracted from _cmd_config to reduce CC there."""
+    coerced = _age_coerce_val(val)
+    if "rules" in conditions:
+        for rule in conditions.get("rules", []):
+            if rule.get("field") == key:
+                rule["value"] = coerced
+    elif conditions.get("field") == key:
+        conditions["value"] = coerced
+
+
+def _age_build_ai_agent_row(
+    slug: str, prompt: str, draft: dict, why_summary: str,
+) -> "Agent":
+    """Build an Agent ORM row from an AI-generated draft dict.
+
+    All `draft.get(key) or default` defaulting lives here so that
+    _cmd_ai_create doesn't accumulate one CC point per `or` expression.
+    Extracted from _cmd_ai_create to reduce CC there."""
+    return Agent(
+        slug=slug,
+        name=draft.get("name") or "AI agent",
+        description=_compose_ai_description(
+            prompt, why_summary, draft.get("description")
+        ),
+        conditions=draft.get("conditions") or {},
+        events=draft.get("events") or ["telegram", "email"],
+        actions=draft.get("actions") or [],
+        scope=draft.get("scope") or "total",
+        schedule=draft.get("schedule") or "market_hours",
+        cooldown_minutes=int(draft.get("cooldown_minutes") or 30),
+        lifespan_type=draft.get("lifespan_type") or "one_shot",
+        trade_mode="paper",
+        status="inactive",
+    )
+
+
+def _age_resolve_trade_mode(raw: str | None) -> str:
+    """Resolve trade_mode for a new agent.
+
+    null/empty → inherit from execution.default_agent_trade_mode setting
+    (fallback 'paper'). Explicit value must be in _VALID_TRADE_MODES or
+    400 is raised. Extracted from create_agent to reduce CC there."""
+    tm = (raw or "").lower() or None
+    if tm is not None and tm not in _VALID_TRADE_MODES:
+        raise HTTPException(status_code=400,
+            detail=f"trade_mode must be one of {sorted(_VALID_TRADE_MODES)}")
+    if tm is None:
+        from backend.shared.helpers.settings import get_string
+        tm = get_string("execution.default_agent_trade_mode", "paper")
+        if tm not in _VALID_TRADE_MODES:
+            tm = "paper"
+    return tm
 
 
 # ---------------------------------------------------------------------------
@@ -552,17 +626,7 @@ class AgentController(Controller):
             if lifespan_type not in _LIFESPAN_TYPES:
                 raise HTTPException(status_code=400,
                     detail=f"lifespan_type must be one of {sorted(_LIFESPAN_TYPES)}")
-            # trade_mode: null in payload → inherit from setting; explicit
-            # value must be paper/live or 400.
-            tm = (data.trade_mode or "").lower() or None
-            if tm is not None and tm not in _VALID_TRADE_MODES:
-                raise HTTPException(status_code=400,
-                    detail=f"trade_mode must be one of {sorted(_VALID_TRADE_MODES)}")
-            if tm is None:
-                from backend.shared.helpers.settings import get_string
-                tm = get_string("execution.default_agent_trade_mode", "paper")
-                if tm not in _VALID_TRADE_MODES:
-                    tm = "paper"
+            tm = _age_resolve_trade_mode(data.trade_mode)
             agent = Agent(
                 slug=data.slug, name=data.name,
                 long_name=getattr(data, "long_name", None),
@@ -584,6 +648,24 @@ class AgentController(Controller):
         logger.info(f"Agent created: {data.slug} [lifespan={lifespan_type}]")
         return {"detail": f"Agent '{data.slug}' created"}
 
+    def _age_apply_lifespan_fields(self, agent, data: 'AgentUpdateRequest') -> None:
+        """Apply lifespan_type, lifespan_max_fires, lifespan_expires_at updates.
+
+        Extracted from update_agent to reduce CC there."""
+        new_lt = (data.lifespan_type or '').lower() if data.lifespan_type else None
+        if new_lt is not None and new_lt != 'n_fires':
+            agent.lifespan_max_fires = data.lifespan_max_fires
+        elif data.lifespan_max_fires is not None:
+            agent.lifespan_max_fires = data.lifespan_max_fires
+        if data.lifespan_type is not None:
+            lt = data.lifespan_type.lower()
+            if lt not in _LIFESPAN_TYPES:
+                raise HTTPException(status_code=400,
+                    detail=f"lifespan_type must be one of {sorted(_LIFESPAN_TYPES)}")
+            agent.lifespan_type = lt
+        if data.lifespan_expires_at is not None:
+            agent.lifespan_expires_at = _parse_iso_dt(data.lifespan_expires_at)
+
     @put("/{slug:str}", guards=[cap_guard("manage_own_agents")])
     async def update_agent(self, slug: str, data: AgentUpdateRequest) -> dict:
         async with async_session() as session:
@@ -598,8 +680,6 @@ class AgentController(Controller):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
-            # fire_at_time — empty string clears the gate, valid
-            # "HH:MM" sets it, None means "field omitted, leave alone".
             if data.fire_at_time is not None:
                 agent.fire_at_time = _normalize_fire_at(data.fire_at_time)
             if data.trade_mode is not None:
@@ -608,28 +688,7 @@ class AgentController(Controller):
                     raise HTTPException(status_code=400,
                         detail=f"trade_mode must be one of {sorted(_VALID_TRADE_MODES)}")
                 agent.trade_mode = tm
-            # lifespan_max_fires can legitimately be cleared back to NULL
-            # (e.g. switching off n_fires). The msgspec.Struct default is
-            # None and we can't distinguish "omitted" from "explicit null",
-            # so the convention is: when lifespan_type is being changed
-            # AWAY from n_fires, clear max_fires unless the payload also
-            # supplied a fresh value. When lifespan_type is unchanged, an
-            # explicit null in the payload is honoured.
-            new_lt = (data.lifespan_type or '').lower() if data.lifespan_type else None
-            if new_lt is not None and new_lt != 'n_fires':
-                agent.lifespan_max_fires = data.lifespan_max_fires  # may be None
-            elif data.lifespan_max_fires is not None:
-                agent.lifespan_max_fires = data.lifespan_max_fires
-            # Validate + normalise lifespan_type when supplied.
-            if data.lifespan_type is not None:
-                lt = data.lifespan_type.lower()
-                if lt not in _LIFESPAN_TYPES:
-                    raise HTTPException(status_code=400,
-                        detail=f"lifespan_type must be one of {sorted(_LIFESPAN_TYPES)}")
-                agent.lifespan_type = lt
-            # ISO datetime parse for lifespan_expires_at.
-            if data.lifespan_expires_at is not None:
-                agent.lifespan_expires_at = _parse_iso_dt(data.lifespan_expires_at)
+            self._age_apply_lifespan_fields(agent, data)
             await session.commit()
         logger.info(f"Agent updated: {slug}")
         return {"detail": f"Agent '{slug}' updated"}
@@ -786,6 +845,48 @@ class AgentController(Controller):
             for e in events
         ]
 
+    async def _age_dispatch_slug_cmd(
+        self, action: str, parts: list[str],
+    ) -> InterpretResponse | None:
+        """Handle the five slug-argument sub-commands: status, activate,
+        deactivate, events, config, fire.  Caller guarantees len(parts) > 2.
+        Returns None when action doesn't match any slug command."""
+        slug = parts[2]
+        if action == "status":
+            return await self._cmd_status(slug)
+        if action == "activate":
+            await self.activate_agent(slug)
+            return InterpretResponse(output=f"Agent '{slug}' activated")
+        if action == "deactivate":
+            await self.deactivate_agent(slug)
+            return InterpretResponse(output=f"Agent '{slug}' deactivated")
+        if action == "events":
+            return await self._cmd_events(slug)
+        if action == "config":
+            return await self._cmd_config(parts[2:])
+        if action == "fire":
+            return await self._cmd_fire(slug)
+        return None
+
+    async def _age_interpret_dispatch(
+        self, action: str, parts: list[str], raw: str,
+    ) -> InterpretResponse | None:
+        """Route a parsed agent command to its handler.
+
+        Returns the response when a handler matches, or None when the
+        action is unknown. Extracted from interpret to reduce CC there."""
+        if action == "list":
+            return await self._cmd_list()
+        if action == "ai":
+            return await self._dispatch_ai_command(parts, raw)
+        if action == "help":
+            return InterpretResponse(output=self._help_text())
+        if len(parts) > 2:
+            result = await self._age_dispatch_slug_cmd(action, parts)
+            if result is not None:
+                return result
+        return None
+
     @post("/interpret")
     async def interpret(self, data: InterpretRequest) -> InterpretResponse:
         """Parse and execute a terminal agent command."""
@@ -794,29 +895,12 @@ class AgentController(Controller):
             return InterpretResponse(
                 output="Usage: agent <command> [args]", success=False,
             )
-
         action = parts[1].lower() if len(parts) > 1 else "help"
-
-        if action == "list":
-            return await self._cmd_list()
-        if action == "status" and len(parts) > 2:
-            return await self._cmd_status(parts[2])
-        if action == "activate" and len(parts) > 2:
-            await self.activate_agent(parts[2])
-            return InterpretResponse(output=f"Agent '{parts[2]}' activated")
-        if action == "deactivate" and len(parts) > 2:
-            await self.deactivate_agent(parts[2])
-            return InterpretResponse(output=f"Agent '{parts[2]}' deactivated")
-        if action == "events" and len(parts) > 2:
-            return await self._cmd_events(parts[2])
-        if action == "config" and len(parts) > 2:
-            return await self._cmd_config(parts[2:])
-        if action == "fire" and len(parts) > 2:
-            return await self._cmd_fire(parts[2])
-        if action == "ai":
-            return await self._dispatch_ai_command(parts, data.command.strip())
-        if action == "help":
-            return InterpretResponse(output=self._help_text())
+        result = await self._age_interpret_dispatch(
+            action, parts, data.command.strip()
+        )
+        if result is not None:
+            return result
         return InterpretResponse(
             output=f"Unknown command: agent {action}\n\n{self._help_text()}",
             success=False,
@@ -925,24 +1009,28 @@ class AgentController(Controller):
                 if "=" not in kv:
                     continue
                 key, val = kv.split("=", 1)
-                # Update leaf condition value
-                if "rules" in conditions:
-                    for rule in conditions.get("rules", []):
-                        if rule.get("field") == key:
-                            try:
-                                rule["value"] = float(val) if "." in val else int(val)
-                            except ValueError:
-                                rule["value"] = val
-                elif conditions.get("field") == key:
-                    try:
-                        conditions["value"] = float(val) if "." in val else int(val)
-                    except ValueError:
-                        conditions["value"] = val
+                _age_apply_kv_to_conditions(conditions, key, val)
 
             agent.conditions = conditions
             await session.commit()
 
         return InterpretResponse(output=f"Agent '{slug}' config updated")
+
+    async def _age_uniquify_ai_slug(self, session, base: str) -> str:
+        """Find the first available slug for a new AI agent.
+
+        Tries base, then base-2, base-3, … until an unused slug is found.
+        Extracted from _cmd_ai_create to reduce CC there."""
+        slug = base
+        n = 1
+        while True:
+            existing = await session.execute(
+                select(Agent).where(Agent.slug == slug)
+            )
+            if not existing.scalar_one_or_none():
+                return slug
+            n += 1
+            slug = f"{base}-{n}"
 
     async def _cmd_ai_create(self, prompt: str) -> InterpretResponse:
         """Build an agent draft from an NL prompt and persist it (inactive,
@@ -955,39 +1043,13 @@ class AgentController(Controller):
                 output=f"AI draft failed:\n  {err_block}", success=False,
             )
         draft = d.draft
-        # Slug — kebab-case the LLM-given name; uniquify with a counter.
         base = re.sub(r"[^a-z0-9]+", "-",
                       (draft.get("name") or "ai-agent").lower()).strip("-") or "ai-agent"
-        slug = base
         async with async_session() as session:
-            n = 1
-            while True:
-                existing = await session.execute(select(Agent).where(Agent.slug == slug))
-                if not existing.scalar_one_or_none():
-                    break
-                n += 1
-                slug = f"{base}-{n}"
-            agent = Agent(
-                slug=slug,
-                name=draft.get("name") or "AI agent",
-                # Description carries the original NL prompt + LLM why_summary
-                # in a structured prefix so /agents can detect AI provenance.
-                description=_compose_ai_description(
-                    prompt, d.why_summary, draft.get("description")
-                ),
-                conditions=draft.get("conditions") or {},
-                events=draft.get("events") or ["telegram", "email"],
-                actions=draft.get("actions") or [],
-                scope=draft.get("scope") or "total",
-                schedule=draft.get("schedule") or "market_hours",
-                cooldown_minutes=int(draft.get("cooldown_minutes") or 30),
-                lifespan_type=draft.get("lifespan_type") or "one_shot",
-                trade_mode="paper",            # AI agents always paper
-                status="inactive",             # AI agents always inactive
-            )
+            slug = await self._age_uniquify_ai_slug(session, base)
+            agent = _age_build_ai_agent_row(slug, prompt, draft, d.why_summary)
             session.add(agent)
             await session.commit()
-        # Format the response with the verdict.
         warn_block = ("\n  ⚠ ".join(d.warnings)) if d.warnings else "(none)"
         out = (
             f"✓ Agent '{slug}' created (inactive · paper · {agent.lifespan_type})\n"

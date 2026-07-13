@@ -383,7 +383,17 @@ class TestOverrideStaleCloseFromSnapshot:
 
 class TestFetchOrderingAndCoexistence:
     """Source-level ordering guards and coexistence of close-override with
-    the Case 1/3 day_change_val backstop inside _fetch()."""
+    the Case 1/3 day_change_val backstop.
+
+    After the CC-reduction refactor, the patch pipeline moved from inline
+    inside _fetch() into _patch_raw_positions().  The ordering invariant is
+    still enforced — we verify it in the helper that owns the sequence.
+    """
+
+    @staticmethod
+    def _patch_src() -> str:
+        import backend.api.routes.positions as _mod
+        return inspect.getsource(_mod._patch_raw_positions)
 
     @staticmethod
     def _fetch_src() -> str:
@@ -391,42 +401,45 @@ class TestFetchOrderingAndCoexistence:
         return inspect.getsource(_mod._fetch)
 
     def test_close_override_before_polars_summary(self):
-        """_override_stale_close_from_snapshot appears before _build_polars_summary
-        in _fetch() — ensures the summary's day_change_percentage denominator
-        (close_price * qty) uses the patched close, not Kite's stale value."""
-        src = self._fetch_src()
-        idx_override = src.find("_override_stale_close_from_snapshot")
-        idx_summary = src.find("_build_polars_summary")
+        """_override_stale_close_from_snapshot runs (inside _patch_raw_positions)
+        before _build_polars_summary is called in _fetch() — so the summary's
+        day_change_percentage denominator uses the patched close price."""
+        patch_src = self._patch_src()
+        fetch_src = self._fetch_src()
 
+        # Ordering within the patch helper
+        idx_override = patch_src.find("_override_stale_close_from_snapshot")
         assert idx_override != -1, (
-            "_override_stale_close_from_snapshot must be called inside _fetch()"
+            "_override_stale_close_from_snapshot must appear in _patch_raw_positions()"
         )
-        assert idx_summary != -1, (
-            "_build_polars_summary must be called inside _fetch()"
-        )
-        assert idx_override < idx_summary, (
-            "_override_stale_close_from_snapshot (char %d) must appear BEFORE "
-            "_build_polars_summary (char %d) in _fetch()" % (idx_override, idx_summary)
+
+        # _patch_raw_positions is called before _build_polars_summary in _fetch
+        idx_patch_call = fetch_src.find("_patch_raw_positions")
+        idx_summary = fetch_src.find("_build_polars_summary")
+        assert idx_patch_call != -1, "_patch_raw_positions must be called inside _fetch()"
+        assert idx_summary != -1, "_build_polars_summary must be called inside _fetch()"
+        assert idx_patch_call < idx_summary, (
+            "_patch_raw_positions (char %d) must appear BEFORE "
+            "_build_polars_summary (char %d) in _fetch()" % (idx_patch_call, idx_summary)
         )
 
     def test_close_override_before_case1_backstop(self):
-        """_override_stale_close_from_snapshot runs before apply_day_change_backstop.
-        If reversed, a new MCX position with corrected close would have its
-        day_change_val recomputed to non-zero (correct), then the backstop would
-        see dcv != 0 and correctly skip it — but if close-override ran AFTER the
-        backstop, the backstop would fire on zero-dcv rows that would have been
-        non-zero after correction, incorrectly rescuing them via pnl instead of
-        the decomposed formula."""
-        src = self._fetch_src()
+        """_override_stale_close_from_snapshot runs before apply_day_change_backstop
+        inside _patch_raw_positions() — the ordering invariant is unchanged."""
+        src = self._patch_src()
         idx_override = src.find("_override_stale_close_from_snapshot")
         idx_backstop = src.find("apply_day_change_backstop")
 
         assert idx_backstop != -1, (
-            "apply_day_change_backstop not found in _fetch() — did the structure change?"
+            "apply_day_change_backstop not found in _patch_raw_positions() — "
+            "did the structure change?"
+        )
+        assert idx_override != -1, (
+            "_override_stale_close_from_snapshot not found in _patch_raw_positions()"
         )
         assert idx_override < idx_backstop, (
             "_override_stale_close_from_snapshot must appear before "
-            "apply_day_change_backstop in _fetch()"
+            "apply_day_change_backstop in _patch_raw_positions()"
         )
 
     def test_case1_backstop_and_close_override_independent(self):

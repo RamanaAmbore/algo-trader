@@ -138,6 +138,50 @@ class PaperTradeEngine:
             except RuntimeError:
                 pass  # no event loop (sync context) — skip
 
+    def _paper_step_single_order(
+        self, order: dict, max_attempts: int
+    ) -> None:
+        """Process one OPEN order for the current chase tick.
+
+        Fills, gives-up (UNFILLED), or re-quotes (modify) in place.
+        Callers must only pass orders whose status == 'OPEN'.
+        """
+        bid, ask = self._quote.bid_ask_for_order(order)
+        if bid is None or ask is None:
+            order["status"] = "UNFILLED"
+            self._record_event(order, kind="unfilled",
+                               note="quote unavailable — paper engine could not fill")
+            return
+
+        side  = str(order.get("side") or "SELL").upper()
+        limit = float(order.get("limit_price") or 0)
+        fillable, fill_price = _paper_is_fillable(side, bid, ask, limit)
+        if fillable:
+            order["status"]     = "FILLED"
+            order["fill_price"] = fill_price
+            order["filled_at"]  = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._record_event(order, kind="fill", note=f"filled @₹{fill_price:,.2f}")
+            self._quote.on_fill(order)
+            self._schedule_ledger_write(order, fill_price)
+            return
+
+        # Not fillable — chase or give up.
+        if order.get("attempts", 0) >= max_attempts:
+            order["status"] = "UNFILLED"
+            self._record_event(order, kind="unfilled",
+                               note=f"gave up after {max_attempts} chase attempts")
+            return
+        agg = str(order.get("chase_agg") or "low").lower()
+        prev_limit = limit
+        new_limit = _paper_next_limit(agg, side, bid, ask)
+        order["limit_price"] = new_limit
+        order["attempts"]    = int(order.get("attempts", 0)) + 1
+        self._record_event(
+            order, kind="modify",
+            note=(f"chase #{order['attempts']} [{agg}] {side} "
+                  f"₹{prev_limit:,.2f} → ₹{new_limit:,.2f}"),
+        )
+
     def step(self) -> None:
         """
         One chase iteration. Walks every OPEN order, asks the quote
@@ -170,62 +214,10 @@ class PaperTradeEngine:
             # the snapshot reflects the same quote the engine evaluated against.
             self._capture_price_history(open_now)
         max_attempts = max(0, int(self._get_max() or 0))
-
         for order in snapshot:
             if order.get("status") != "OPEN":
                 continue
-            bid, ask = self._quote.bid_ask_for_order(order)
-            if bid is None or ask is None:
-                # Quote unavailable — mark UNFILLED so operators can
-                # distinguish a real fill from a quote-timeout in the
-                # order log. FILLED is reserved for actual bid/ask crosses.
-                order["status"] = "UNFILLED"
-                self._record_event(order, kind="unfilled",
-                                   note="quote unavailable — paper engine could not fill")
-                continue
-
-            side  = str(order.get("side") or "SELL").upper()
-            limit = float(order.get("limit_price") or 0)
-
-            fillable, fill_price = _paper_is_fillable(side, bid, ask, limit)
-            if fillable:
-                order["status"]     = "FILLED"
-                order["fill_price"] = fill_price
-                order["filled_at"]  = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                self._record_event(order, kind="fill",
-                                   note=f"filled @₹{fill_price:,.2f}")
-                # Hand off to the quote source — sim removes the
-                # filled position from its book; live is a no-op.
-                self._quote.on_fill(order)
-                # Slice 7a — write to the per-strategy FIFO lot
-                # ledger. open_lot for a fresh entry, close_lot_fifo
-                # for an exit. Determined by the order's
-                # `is_close_intent` flag (set by the chase-close
-                # action) — when present + true, the fill closes
-                # rather than opens. Best-effort; legacy orders
-                # without strategy_id skip.
-                self._schedule_ledger_write(order, fill_price)
-                continue
-
-            # Not fillable — chase by re-quoting.
-            # chase_agg controls how aggressively we peg the new limit
-            # (see _paper_next_limit docstring). Unknown values fall back
-            # to 'low' so legacy callers keep patient behaviour.
-            if order.get("attempts", 0) >= max_attempts:
-                order["status"] = "UNFILLED"
-                self._record_event(order, kind="unfilled",
-                                   note=f"gave up after {max_attempts} chase attempts")
-                continue
-            agg = str(order.get("chase_agg") or "low").lower()
-            prev_limit = limit
-            new_limit = _paper_next_limit(agg, side, bid, ask)
-            order["limit_price"] = new_limit
-            order["attempts"]    = int(order.get("attempts", 0)) + 1
-            self._record_event(
-                order, kind="modify",
-                note=(f"chase #{order['attempts']} [{agg}] {side} "
-                      f"₹{prev_limit:,.2f} → ₹{new_limit:,.2f}"),
-            )
+            self._paper_step_single_order(order, max_attempts)
 
     async def tick_loop(self, interval_seconds: int = 5) -> None:
         """
@@ -328,6 +320,30 @@ class PaperTradeEngine:
             pass
         return True
 
+    @staticmethod
+    def _paper_apply_modify_fields(
+        target: dict,
+        new_qty: int | None,
+        new_price: float | None,
+        new_trigger: float | None,
+        new_order_type: str | None,
+    ) -> list[str]:
+        """Apply modify fields to an in-flight order dict. Returns list of change descriptions."""
+        changed: list[str] = []
+        if new_qty is not None and int(new_qty) > 0:
+            target["qty"] = int(new_qty)
+            changed.append(f"qty={new_qty}")
+        if new_price is not None:
+            target["limit_price"] = float(new_price)
+            changed.append(f"limit=₹{float(new_price):,.2f}")
+        if new_trigger is not None:
+            target["trigger_price"] = float(new_trigger)
+            changed.append(f"trig=₹{float(new_trigger):,.2f}")
+        if new_order_type:
+            target["order_type"] = new_order_type
+            changed.append(f"type={new_order_type}")
+        return changed
+
     def modify_paper_order(
         self,
         algo_order_id: int,
@@ -342,27 +358,17 @@ class PaperTradeEngine:
         values automatically (it reads the dict each tick). Returns
         True if the order was found + at least one field changed."""
         with self._lock:
-            target = None
-            for o in self._open_orders:
-                if int(o.get("algo_order_id") or 0) == int(algo_order_id) \
-                   and o.get("status") == "OPEN":
-                    target = o
-                    break
+            target = next(
+                (o for o in self._open_orders
+                 if int(o.get("algo_order_id") or 0) == int(algo_order_id)
+                 and o.get("status") == "OPEN"),
+                None,
+            )
             if not target:
                 return False
-            changed_parts = []
-            if new_qty is not None and int(new_qty) > 0:
-                target["qty"] = int(new_qty)
-                changed_parts.append(f"qty={new_qty}")
-            if new_price is not None:
-                target["limit_price"] = float(new_price)
-                changed_parts.append(f"limit=₹{float(new_price):,.2f}")
-            if new_trigger is not None:
-                target["trigger_price"] = float(new_trigger)
-                changed_parts.append(f"trig=₹{float(new_trigger):,.2f}")
-            if new_order_type:
-                target["order_type"] = new_order_type
-                changed_parts.append(f"type={new_order_type}")
+            changed_parts = self._paper_apply_modify_fields(
+                target, new_qty, new_price, new_trigger, new_order_type
+            )
             if not changed_parts:
                 return False
         # Re-quote on the next tick will keep going; the modify event
@@ -371,6 +377,30 @@ class PaperTradeEngine:
         self._record_event(target, kind="modify",
                            note=f"operator override: {' '.join(changed_parts)}")
         return True
+
+    def _paper_cancel_fanout(self, order: dict) -> None:
+        """Broadcast CANCELLED status via _postback_broadcast_fanout."""
+        try:
+            from backend.api.routes.orders import _postback_broadcast_fanout
+            from backend.shared.helpers.utils import mask_account
+            _acct = str(order.get("account") or "")
+            _postback_broadcast_fanout(
+                status="CANCELLED",
+                order_id=order["algo_order_id"],
+                account=_acct,
+                masked=mask_account(_acct),
+                symbol=str(order.get("symbol") or ""),
+                txn=str(order.get("side") or ""),
+                qty=int(order.get("qty") or 0),
+                price=0.0,
+                exchange=str(order.get("exchange") or ""),
+                status_message="operator cancel via MCP",
+            )
+        except Exception as _fe:
+            logger.warning(
+                f"[{self._label.upper()}] _safe_update_algo_order_cancel "
+                f"fanout failed (id={order.get('algo_order_id')}): {_fe}"
+            )
 
     async def _safe_update_algo_order_cancel(self, order: dict) -> None:
         """DB update for an operator-cancelled paper order. Sets
@@ -387,7 +417,7 @@ class PaperTradeEngine:
                 )).scalar_one_or_none()
                 if not row:
                     return
-                row.status = "CANCELLED"
+                row.status   = "CANCELLED"
                 row.attempts = int(order.get("attempts", 0))
                 tag    = self._label.upper()
                 side   = order.get("side") or "?"
@@ -401,32 +431,7 @@ class PaperTradeEngine:
                 payload={"source": "mcp"},
             )
             # Cache invalidation + WS broadcast for CANCELLED terminal state.
-            # Same fanout helper used by fill / unfilled paths above.
-            try:
-                from backend.api.routes.orders import _postback_broadcast_fanout
-                from backend.shared.helpers.utils import mask_account
-                _acct = str(order.get("account") or "")
-                _sym  = str(order.get("symbol") or "")
-                _exch = str(order.get("exchange") or "")
-                _side = str(order.get("side") or "")
-                _qty  = int(order.get("qty") or 0)
-                _postback_broadcast_fanout(
-                    status="CANCELLED",
-                    order_id=order["algo_order_id"],
-                    account=_acct,
-                    masked=mask_account(_acct),
-                    symbol=_sym,
-                    txn=_side,
-                    qty=_qty,
-                    price=0.0,
-                    exchange=_exch,
-                    status_message="operator cancel via MCP",
-                )
-            except Exception as _fe:
-                logger.warning(
-                    f"[{self._label.upper()}] _safe_update_algo_order_cancel "
-                    f"fanout failed (id={order.get('algo_order_id')}): {_fe}"
-                )
+            self._paper_cancel_fanout(order)
         except Exception as e:
             logger.warning(
                 f"[{self._label.upper()}] _safe_update_algo_order_cancel "
@@ -435,6 +440,49 @@ class PaperTradeEngine:
 
     # ── Price history ────────────────────────────────────────────────
 
+    @staticmethod
+    def _paper_register_underlying(sym: str, underlyings: dict) -> None:
+        """If `sym` is a derivative, seed the underlyings map for later batch LTP fetch."""
+        from backend.api.algo.derivatives import (
+            parse_tradingsymbol, option_underlying_quote_key,
+        )
+        parsed = parse_tradingsymbol(sym)
+        if not parsed:
+            return
+        name = parsed.get("root")
+        ltp_key = option_underlying_quote_key(sym)
+        if name and ltp_key:
+            underlyings.setdefault(name, ltp_key)
+
+    def _paper_record_symbol_tick(
+        self,
+        sym: str,
+        order: dict,
+        ts: str,
+        underlyings: dict,
+    ) -> None:
+        """Append one (ts, ltp, bid, ask) tick for `sym` into _price_history.
+
+        Also records underlying mapping in `underlyings` for derivative symbols
+        so _capture_underlyings can batch-fetch spot prices afterwards.
+        """
+        bid, ask = self._quote.bid_ask_for_order(order)
+        if bid is None and ask is None:
+            return
+        ltp = ((bid + ask) / 2.0) if (bid is not None and ask is not None) \
+              else (bid if bid is not None else ask)
+        buf = self._price_history.get(sym)
+        if buf is None:
+            buf = deque(maxlen=PRICE_HISTORY_LIMIT)
+            self._price_history[sym] = buf
+        buf.append({
+            "ts":  ts,
+            "ltp": float(ltp),
+            "bid": float(bid) if bid is not None else None,
+            "ask": float(ask) if ask is not None else None,
+        })
+        self._paper_register_underlying(sym, underlyings)
+
     def _capture_price_history(self, open_orders: list[dict]) -> None:
         """One (ts, ltp, bid, ask) entry per active-order symbol. Called
         after prefetch_for, so the QuoteSource cache is warm and reads are
@@ -442,10 +490,6 @@ class PaperTradeEngine:
         symbol only produce one tick in the history. Also fetches the
         underlying spot for any derivative symbol so the chart panel can
         render underlying lines next to options."""
-        from backend.api.algo.derivatives import (
-            parse_tradingsymbol, option_underlying_quote_key,
-        )
-
         ts   = datetime.now(timezone.utc).isoformat(timespec="seconds")
         seen: set[str] = set()
         underlyings: dict[str, str] = {}   # name → ltp_key
@@ -454,28 +498,7 @@ class PaperTradeEngine:
             if not sym or sym in seen:
                 continue
             seen.add(sym)
-            bid, ask = self._quote.bid_ask_for_order(o)
-            if bid is None and ask is None:
-                continue
-            ltp = (bid + ask) / 2.0 if (bid is not None and ask is not None) \
-                  else (bid if bid is not None else ask)
-            buf = self._price_history.get(sym)
-            if buf is None:
-                buf = deque(maxlen=PRICE_HISTORY_LIMIT)
-                self._price_history[sym] = buf
-            buf.append({"ts": ts, "ltp": float(ltp),
-                        "bid": float(bid) if bid is not None else None,
-                        "ask": float(ask) if ask is not None else None})
-            parsed = parse_tradingsymbol(sym)
-            if parsed:
-                name = parsed.get("root")
-                # One call handles every flavour — index option →
-                # NSE:NIFTY 50, stock option → NSE:RELIANCE, MCX
-                # commodity option → MCX:<matching-month>FUT. None
-                # means "no chartable underlying for this symbol".
-                ltp_key = option_underlying_quote_key(sym)
-                if name and ltp_key:
-                    underlyings.setdefault(name, ltp_key)
+            self._paper_record_symbol_tick(sym, o, ts, underlyings)
 
         # Best-effort underlying spot fetch — ONE broker.ltp call covers
         # every distinct underlying. Routes through the first open order's
@@ -752,6 +775,47 @@ class PaperTradeEngine:
                 f"(kind={kind}, id={order.get('algo_order_id')}): {e}"
             )
 
+    def _paper_maybe_fire_template_attach(
+        self,
+        order: dict,
+        template_id: int | None,
+        parent_order_id: int | None,
+        account: str,
+        symbol: str,
+        exchange: str,
+        side: str,
+        qty: int,
+        product: str | None,
+    ) -> None:
+        """Schedule template-attach task on a paper fill, if applicable.
+
+        Fires only when: kind==fill, template_id set, parent_order_id is None
+        (i.e. this is a parent row, not a child), and fill_price is present.
+        """
+        if not template_id or parent_order_id is not None:
+            return
+        fill_price = order.get("fill_price")
+        if fill_price is None:
+            return
+        try:
+            from backend.api.routes.orders import _fire_template_attach_on_fill
+            asyncio.create_task(_fire_template_attach_on_fill(
+                parent_row_id=order["algo_order_id"],
+                parent_account=str(account),
+                parent_symbol=str(symbol),
+                parent_exchange=str(exchange or "NFO"),
+                parent_side=str(side),
+                parent_qty=qty,
+                fill_price=float(fill_price),
+                template_id=int(template_id),
+                parent_product=str(product or "NRML"),
+            ))
+        except Exception as _e:
+            logger.warning(
+                f"PaperTradeEngine[{self._label}] template attach failed for "
+                f"#{order['algo_order_id']}: {_e}"
+            )
+
     async def _update_algo_order(self, order: dict, kind: str) -> None:
         from backend.api.database import async_session
         from backend.api.models  import AlgoOrder
@@ -774,7 +838,6 @@ class PaperTradeEngine:
             # fire — captured BEFORE leaving the session so SQLAlchemy
             # doesn't lazy-load post-commit.
             _row_template_id     = row.template_id
-            _row_mode            = row.mode
             _row_parent_order_id = row.parent_order_id
             _row_product         = row.product
             _row_account         = row.account
@@ -785,39 +848,15 @@ class PaperTradeEngine:
             await s.commit()
 
         # Sprint A fix — paper-engine fills must fire the template attach
-        # just like live-mode postbacks do. Pre-fix, an operator who
-        # placed a paper ticket with a template selected got the parent
-        # order filled but ZERO bracket legs ever attached because this
-        # path didn't have the hook. Live mode goes through the postback
-        # handler / chase terminal which both call _fire_template_attach_
-        # on_fill; paper has no postback so the engine has to fire it.
-        # Only fire on terminal-fill (not modify / unfilled), only when
-        # a template is set, and only for parent rows (parent_order_id
-        # IS NULL — children don't get their own brackets).
-        if (
-            kind == "fill"
-            and _row_template_id
-            and _row_parent_order_id is None
-            and order.get("fill_price") is not None
-        ):
-            try:
-                from backend.api.routes.orders import _fire_template_attach_on_fill
-                asyncio.create_task(_fire_template_attach_on_fill(
-                    parent_row_id=order["algo_order_id"],
-                    parent_account=str(_row_account),
-                    parent_symbol=str(_row_symbol),
-                    parent_exchange=str(_row_exchange or "NFO"),
-                    parent_side=str(_row_side),
-                    parent_qty=_row_qty,
-                    fill_price=float(order["fill_price"]),
-                    template_id=int(_row_template_id),
-                    parent_product=str(_row_product or "NRML"),
-                ))
-            except Exception as _e:
-                logger.warning(
-                    f"PaperTradeEngine[{self._label}] template attach failed for "
-                    f"#{order['algo_order_id']}: {_e}"
-                )
+        # just like live-mode postbacks do.
+        if kind == "fill":
+            self._paper_maybe_fire_template_attach(
+                order,
+                _row_template_id, _row_parent_order_id,
+                str(_row_account), str(_row_symbol),
+                str(_row_exchange or "NFO"), str(_row_side),
+                _row_qty, _row_product,
+            )
 
         row_snap = {
             "_row_account":  _row_account,
@@ -1011,6 +1050,34 @@ def _paper_next_limit(agg: str, side: str, bid: float, ask: float) -> float:
     return ask if side == "SELL" else bid
 
 
+def _paper_apply_fill_fields(row, order: dict) -> None:
+    """Apply fill_price / slippage / filled_at to `row` on a fill event."""
+    fp = order.get("fill_price")
+    if fp is None:
+        return
+    row.fill_price = float(fp)
+    initial = row.initial_price or 0
+    if initial:
+        row.slippage = float(fp) - float(initial)
+    row.filled_at = datetime.now(timezone.utc)
+
+
+def _paper_detail_for_kind(
+    kind: str, tag: str, agent: str, side: str, qty, symbol: str,
+    attempts: int, limit, fill_price
+) -> str:
+    """Build the detail string for an AlgoOrder row based on chase outcome."""
+    prefix = f"[{tag}] {agent} {side} {qty} {symbol} · "
+    if kind == "modify":
+        suffix = f"chase #{attempts} limit=₹{limit:,.2f}" if limit is not None \
+                 else f"chase #{attempts}"
+    elif kind == "fill" and fill_price is not None:
+        suffix = f"FILLED @₹{float(fill_price):,.2f} after {attempts} chase(s)"
+    else:
+        suffix = f"UNFILLED — gave up after {attempts} chase(s)"
+    return prefix + suffix
+
+
 def _paper_update_row_fields(row, kind: str, order: dict, tag: str) -> None:
     """Mutate an AlgoOrder row in-place based on the chase outcome kind.
 
@@ -1023,51 +1090,56 @@ def _paper_update_row_fields(row, kind: str, order: dict, tag: str) -> None:
       fill     → FILLED, fill_price + slippage + filled_at
       unfilled → UNFILLED, attempts frozen at the cap
     """
-    # Status transitions:
     if kind == "fill":
         row.status = "FILLED"
+        _paper_apply_fill_fields(row, order)
     elif kind == "unfilled":
         row.status = "UNFILLED"
     row.attempts = int(order.get("attempts", 0))
-
-    agent  = order.get("agent_slug", "?")
-    side   = order.get("side") or "?"
-    qty    = order.get("qty") or 0
-    symbol = order.get("symbol") or "?"
-    limit  = order.get("limit_price")
-
-    if kind == "modify":
-        if limit is not None:
-            row.detail = (
-                f"[{tag}] {agent} {side} {qty} {symbol} · "
-                f"chase #{row.attempts} limit=₹{limit:,.2f}"
-            )
-        else:
-            row.detail = (
-                f"[{tag}] {agent} {side} {qty} {symbol} · "
-                f"chase #{row.attempts}"
-            )
-    elif kind == "fill" and order.get("fill_price") is not None:
-        row.fill_price = float(order["fill_price"])
-        initial = row.initial_price or 0
-        if initial:
-            row.slippage = float(order["fill_price"]) - float(initial)
-        row.filled_at = datetime.now(timezone.utc)
-        row.detail = (
-            f"[{tag}] {agent} {side} {qty} {symbol} · "
-            f"FILLED @₹{row.fill_price:,.2f} after {row.attempts} chase(s)"
-        )
-    elif kind == "unfilled":
-        row.detail = (
-            f"[{tag}] {agent} {side} {qty} {symbol} · "
-            f"UNFILLED — gave up after {row.attempts} chase(s)"
-        )
+    row.detail = _paper_detail_for_kind(
+        kind, tag,
+        agent=order.get("agent_slug", "?"),
+        side=order.get("side") or "?",
+        qty=order.get("qty") or 0,
+        symbol=order.get("symbol") or "?",
+        attempts=row.attempts,
+        limit=order.get("limit_price"),
+        fill_price=order.get("fill_price"),
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════
 #  Paper position synthesis — aggregate open AlgoOrder rows into
 #  position-like dicts that the /api/positions route can surface.
 # ═════════════════════════════════════════════════════════════════════════
+
+
+def _paper_accumulate_one_row(g: dict, r) -> None:
+    """Accumulate one FILLED AlgoOrder `r` into group dict `g`."""
+    qty_filled = int(r.filled_quantity or r.quantity or 0)
+    fill_px = float(r.fill_price or r.initial_price or 0.0)
+    sign = 1 if str(r.transaction_type or "BUY").upper() == "BUY" else -1
+    g["net_qty"]  += sign * qty_filled
+    g["notional"] += sign * qty_filled * fill_px
+    if not g["exchange"]:
+        g["exchange"] = str(r.exchange or "NFO")
+    if r.product:
+        g["product"] = str(r.product)
+
+
+def _paper_accumulate_groups(rows) -> dict:
+    """Group FILLED AlgoOrder rows by (account, symbol), accumulating net qty + notional.
+
+    BUY = +qty, SELL = -qty. Used by synthesize_paper_positions to compute
+    the weighted-average fill price per net position.
+    """
+    from collections import defaultdict
+    groups: dict[tuple[str, str], dict] = defaultdict(lambda: {
+        "net_qty": 0, "notional": 0.0, "exchange": "", "product": "NRML",
+    })
+    for r in rows:
+        _paper_accumulate_one_row(groups[(str(r.account), str(r.symbol))], r)
+    return groups
 
 
 async def synthesize_paper_positions() -> list[dict]:
@@ -1107,43 +1179,14 @@ async def synthesize_paper_positions() -> list[dict]:
     if not rows:
         return []
 
-    # Group by (account, symbol).  Accumulate signed qty + notional for
-    # weighted-average fill price.  BUY = +qty, SELL = -qty.
-    from collections import defaultdict
-    groups: dict[tuple[str, str], dict] = defaultdict(lambda: {
-        "net_qty": 0,
-        "notional": 0.0,
-        "exchange": "",
-        "product": "NRML",
-    })
-
-    for r in rows:
-        key = (str(r.account), str(r.symbol))
-        g = groups[key]
-        qty_filled = int(r.filled_quantity or r.quantity or 0)
-        fill_px = float(r.fill_price or r.initial_price or 0.0)
-        side = str(r.transaction_type or "BUY").upper()
-        if side == "BUY":
-            g["net_qty"] += qty_filled
-            g["notional"] += qty_filled * fill_px
-        else:
-            g["net_qty"] -= qty_filled
-            g["notional"] -= qty_filled * fill_px
-        if not g["exchange"]:
-            g["exchange"] = str(r.exchange or "NFO")
-        if r.product:
-            g["product"] = str(r.product)
-
+    groups = _paper_accumulate_groups(rows)
     result: list[dict] = []
     for (account, symbol), g in groups.items():
         net_qty = g["net_qty"]
         if net_qty == 0:
             continue  # position is flat — don't surface as a row
-        # Weighted-average fill price (absolute notional / absolute qty).
-        # Sign of net_qty determines long (+) vs short (-).
         abs_qty = abs(net_qty)
-        abs_notional = abs(g["notional"])
-        avg_cost = abs_notional / abs_qty if abs_qty else 0.0
+        avg_cost = abs(g["notional"]) / abs_qty if abs_qty else 0.0
         result.append({
             "account": account,
             "tradingsymbol": symbol,

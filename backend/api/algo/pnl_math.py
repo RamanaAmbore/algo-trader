@@ -32,6 +32,50 @@ from __future__ import annotations
 import pandas as pd
 
 
+def _recompute_day_change_pct(
+    df: pd.DataFrame, sel_mask: "pd.Index", qty: "pd.Series"
+) -> None:
+    """Recompute day_change_percentage in-place. Primary denom: |close × qty|;
+    fallback: |avg × qty| for opened-today rows where close_price == 0."""
+    if "day_change_percentage" not in df.columns or "day_change_val" not in df.columns:
+        return
+    _dcv = pd.to_numeric(df.loc[sel_mask, "day_change_val"], errors="coerce").fillna(0)
+    _cls = (
+        pd.to_numeric(df.loc[sel_mask, "close_price"], errors="coerce").fillna(0)
+        if "close_price" in df.columns
+        else pd.Series(0.0, index=sel_mask)
+    )
+    _avg = (
+        pd.to_numeric(df.loc[sel_mask, "average_price"], errors="coerce").fillna(0)
+        if "average_price" in df.columns
+        else pd.Series(0.0, index=sel_mask)
+    )
+    _close_denom = (_cls * qty).abs()
+    _avg_denom = (_avg * qty).abs()
+    _denom = _close_denom.where(_close_denom > 0, _avg_denom)
+    df.loc[sel_mask, "day_change_percentage"] = (
+        _dcv / _denom.replace(0, pd.NA) * 100
+    ).fillna(0)
+
+
+def _recompute_pnl_pct(
+    df: pd.DataFrame, sel_mask: "pd.Index", qty: "pd.Series"
+) -> None:
+    """Recompute pnl_percentage in-place: pnl / |avg × qty| × 100."""
+    if "pnl_percentage" not in df.columns or "pnl" not in df.columns:
+        return
+    _pnl = pd.to_numeric(df.loc[sel_mask, "pnl"], errors="coerce").fillna(0)
+    _avg = (
+        pd.to_numeric(df.loc[sel_mask, "average_price"], errors="coerce").fillna(0)
+        if "average_price" in df.columns
+        else pd.Series(0.0, index=sel_mask)
+    )
+    _cost_basis = (_avg * qty).abs()
+    df.loc[sel_mask, "pnl_percentage"] = (
+        _pnl / _cost_basis.replace(0, pd.NA) * 100
+    ).fillna(0)
+
+
 def recompute_row_percentages(df: pd.DataFrame, sel_mask: "pd.Index") -> None:
     """Recompute day_change_percentage + pnl_percentage in-place on selected rows.
 
@@ -63,36 +107,8 @@ def recompute_row_percentages(df: pd.DataFrame, sel_mask: "pd.Index") -> None:
         return
 
     _qty = pd.to_numeric(df.loc[sel_mask, _qty_col], errors="coerce").fillna(0)
-
-    if "day_change_percentage" in df.columns and "day_change_val" in df.columns:
-        _dcv = pd.to_numeric(df.loc[sel_mask, "day_change_val"], errors="coerce").fillna(0)
-        _cls = (
-            pd.to_numeric(df.loc[sel_mask, "close_price"], errors="coerce").fillna(0)
-            if "close_price" in df.columns
-            else pd.Series(0.0, index=sel_mask)
-        )
-        _avg = (
-            pd.to_numeric(df.loc[sel_mask, "average_price"], errors="coerce").fillna(0)
-            if "average_price" in df.columns
-            else pd.Series(0.0, index=sel_mask)
-        )
-        _close_denom = (_cls * _qty).abs()
-        _avg_denom = (_avg * _qty).abs()
-        # Primary denominator: |close × qty|; fallback: |avg × qty| for opened-today
-        _denom = _close_denom.where(_close_denom > 0, _avg_denom)
-        _dcp = (_dcv / _denom.replace(0, pd.NA) * 100).fillna(0)
-        df.loc[sel_mask, "day_change_percentage"] = _dcp
-
-    if "pnl_percentage" in df.columns and "pnl" in df.columns:
-        _pnl = pd.to_numeric(df.loc[sel_mask, "pnl"], errors="coerce").fillna(0)
-        _avg = (
-            pd.to_numeric(df.loc[sel_mask, "average_price"], errors="coerce").fillna(0)
-            if "average_price" in df.columns
-            else pd.Series(0.0, index=sel_mask)
-        )
-        _cost_basis = (_avg * _qty).abs()
-        _pct = (_pnl / _cost_basis.replace(0, pd.NA) * 100).fillna(0)
-        df.loc[sel_mask, "pnl_percentage"] = _pct
+    _recompute_day_change_pct(df, sel_mask, _qty)
+    _recompute_pnl_pct(df, sel_mask, _qty)
 
 
 def decomposed_intraday_pnl(

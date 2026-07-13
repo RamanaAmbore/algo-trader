@@ -133,26 +133,15 @@ def _build_daily_rows(period_rows, user_events, all_events, opening_share,
     return daily
 
 
-async def compute_statement(user_id: int, year: int, month: int) -> Optional[StatementData]:
-    """Build a StatementData for (user, period). Returns None when
-    the user doesn't exist or no NavDaily rows fall in the period
-    (i.e. the period predates the fund's first snapshot).
+async def _fetch_statement_db_data(user_id: int, period_start: date, period_end: date):
+    """Fetch all DB data needed for a statement.
 
-    Uses the units-based fund-accounting model: each LP's slice =
-    units_held × nav_per_unit. Capital movements in the period
-    (subscriptions / redemptions) show up as step changes in the
-    daily slice; the closing P&L is closing_slice − cost_basis
-    (Σ subscriptions − Σ redemptions across the LP's history)."""
+    Returns (user, opening, period_rows, all_events, user_events) or None
+    when the user doesn't exist or no data covers the period.
+    """
     from backend.api.algo.investor_units import (
-        cost_basis as _cb,
-        ensure_all_bootstrapped, fetch_all_events, slice_value,
+        ensure_all_bootstrapped, fetch_all_events,
     )
-    if month < 1 or month > 12:
-        return None
-    period_start = date(year, month, 1)
-    last_day = calendar.monthrange(year, month)[1]
-    period_end = date(year, month, last_day)
-
     async with async_session() as s:
         user = (await s.execute(
             select(User).where(User.id == user_id)
@@ -180,6 +169,33 @@ async def compute_statement(user_id: int, year: int, month: int) -> Optional[Sta
 
         if not period_rows and opening is None:
             return None
+
+    return user, opening, list(period_rows), all_events, user_events
+
+
+async def compute_statement(user_id: int, year: int, month: int) -> Optional[StatementData]:
+    """Build a StatementData for (user, period). Returns None when
+    the user doesn't exist or no NavDaily rows fall in the period
+    (i.e. the period predates the fund's first snapshot).
+
+    Uses the units-based fund-accounting model: each LP's slice =
+    units_held × nav_per_unit. Capital movements in the period
+    (subscriptions / redemptions) show up as step changes in the
+    daily slice; the closing P&L is closing_slice − cost_basis
+    (Σ subscriptions − Σ redemptions across the LP's history)."""
+    from backend.api.algo.investor_units import (
+        cost_basis as _cb, slice_value,
+    )
+    if month < 1 or month > 12:
+        return None
+    period_start = date(year, month, 1)
+    last_day = calendar.monthrange(year, month)[1]
+    period_end = date(year, month, last_day)
+
+    db_data = await _fetch_statement_db_data(user_id, period_start, period_end)
+    if db_data is None:
+        return None
+    user, opening, period_rows, all_events, user_events = db_data
 
     opening_firm_nav, opening_as_of = _resolve_opening_nav(opening, period_rows)
     closing_firm_nav, closing_as_of = _resolve_closing_nav(period_rows)

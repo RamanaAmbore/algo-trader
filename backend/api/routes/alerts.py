@@ -104,6 +104,33 @@ def _truncate(text: Optional[str], limit: int = 240) -> str:
     return text
 
 
+def _build_history_stmt(
+    sim_mode: bool,
+    effective_limit: int,
+    since_dt: Optional[datetime],
+    agent_id: Optional[int],
+    agent_slug: Optional[str],
+    event_type: Optional[str],
+):
+    """Construct the SQLAlchemy select statement for alert_history queries."""
+    stmt = (
+        select(AgentEvent, Agent)
+        .join(Agent, AgentEvent.agent_id == Agent.id)
+        .where(AgentEvent.sim_mode == sim_mode)
+        .order_by(AgentEvent.timestamp.desc())
+        .limit(effective_limit)
+    )
+    if since_dt is not None:
+        stmt = stmt.where(AgentEvent.timestamp >= since_dt)
+    if agent_id is not None:
+        stmt = stmt.where(AgentEvent.agent_id == agent_id)
+    elif agent_slug:
+        stmt = stmt.where(Agent.slug == agent_slug)
+    if event_type:
+        stmt = stmt.where(AgentEvent.event_type == event_type)
+    return stmt
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -156,22 +183,10 @@ class AlertsController(Controller):
 
         try:
             async with async_session() as session:
-                stmt = (
-                    select(AgentEvent, Agent)
-                    .join(Agent, AgentEvent.agent_id == Agent.id)
-                    .where(AgentEvent.sim_mode == sim_mode)
-                    .order_by(AgentEvent.timestamp.desc())
-                    .limit(effective_limit)
+                stmt = _build_history_stmt(
+                    sim_mode, effective_limit, since_dt,
+                    agent_id, agent_slug, event_type,
                 )
-                if since_dt is not None:
-                    stmt = stmt.where(AgentEvent.timestamp >= since_dt)
-                if agent_id is not None:
-                    stmt = stmt.where(AgentEvent.agent_id == agent_id)
-                elif agent_slug:
-                    stmt = stmt.where(Agent.slug == agent_slug)
-                if event_type:
-                    stmt = stmt.where(AgentEvent.event_type == event_type)
-
                 rows = (await session.execute(stmt)).all()
         except Exception as exc:
             logger.error(f"AlertsController.alert_history DB error: {exc}")

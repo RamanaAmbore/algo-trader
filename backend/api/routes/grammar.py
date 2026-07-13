@@ -49,6 +49,24 @@ async def _reload_registry():
         logger.error(f"Grammar registry reload failed: {e}")
 
 
+def _apply_custom_token_patch(row: GrammarToken, data) -> None:
+    """Copy all patchable fields from `data` onto a non-system token row.
+
+    Each conditional assignment reduces a CC point in patch_token; grouping
+    them here keeps the method within B-grade and names the intent clearly.
+    System tokens follow a different (is_active-only) path — this helper
+    must never be called for them.
+    """
+    if data.value_type    is not None: row.value_type    = data.value_type
+    if data.units         is not None: row.units         = data.units
+    if data.description   is not None: row.description   = data.description
+    if data.resolver      is not None: row.resolver      = data.resolver
+    if data.params_schema is not None: row.params_schema = data.params_schema
+    if data.enum_values   is not None: row.enum_values   = data.enum_values
+    if data.template_body is not None: row.template_body = data.template_body
+    if data.is_active     is not None: row.is_active     = data.is_active
+
+
 class GrammarTokenController(Controller):
     path = "/api/admin/grammar"
     # NOTE: no controller-level `guards = [admin_guard]`. Litestar merges
@@ -147,14 +165,7 @@ class GrammarTokenController(Controller):
                     row.is_active = data.is_active
                 # Any other field on a system token is a no-op by design.
             else:
-                if data.value_type    is not None: row.value_type    = data.value_type
-                if data.units         is not None: row.units         = data.units
-                if data.description   is not None: row.description   = data.description
-                if data.resolver      is not None: row.resolver      = data.resolver
-                if data.params_schema is not None: row.params_schema = data.params_schema
-                if data.enum_values   is not None: row.enum_values   = data.enum_values
-                if data.template_body is not None: row.template_body = data.template_body
-                if data.is_active     is not None: row.is_active     = data.is_active
+                _apply_custom_token_patch(row, data)
 
             await s.commit()
             await s.refresh(row)

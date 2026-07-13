@@ -186,6 +186,34 @@ def is_trading_day(d, holiday_set: set | None = None,
     return False
 
 
+def _check_special_sessions(special_sessions, today, t) -> "bool | None":
+    """Check special-session override for today. Returns True/False if an override
+    applies, or None when no override exists for today (caller falls through)."""
+    if not special_sessions:
+        return None
+    today_overrides = [s for s in special_sessions if s.get("date") == today]
+    if not today_overrides:
+        return None
+    return any(s["start"] <= t < s["end"] for s in today_overrides)
+
+
+def _parse_session_windows(
+    sessions, market_start: dtime, market_end: dtime
+) -> "list[tuple[dtime, dtime]]":
+    """Resolve session windows from config list or legacy start/end pair."""
+    if not sessions:
+        return [(market_start, market_end)]
+    windows: list[tuple[dtime, dtime]] = []
+    for s in sessions:
+        try:
+            sh, sm = (int(x) for x in str(s.get("start", "09:15")).split(":", 1))
+            eh, em = (int(x) for x in str(s.get("end",   "15:30")).split(":", 1))
+            windows.append((dtime(sh, sm), dtime(eh, em)))
+        except Exception:
+            continue
+    return windows if windows else [(market_start, market_end)]
+
+
 def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
                    market_end: dtime = dtime(15, 30),
                    exchange: str | None = None,
@@ -237,40 +265,16 @@ def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
     - special_sessions (optional): list of override rows; pass None if
       the caller doesn't fetch them (normal path remains unchanged).
     """
-    from datetime import date as _date, time as _time  # local import avoids circular
-
     t = now.time().replace(second=0, microsecond=0)
     today = now.date()
 
-    # ① SPECIAL-SESSION OVERRIDE — highest precedence.  If any row matches
-    #    today's date, skip ALL other rules and apply the override window.
-    #    Half-open interval: start <= t < end  (matches task spec).
-    if special_sessions:
-        today_overrides = [
-            s for s in special_sessions
-            if s.get("date") == today
-        ]
-        if today_overrides:
-            return any(
-                s["start"] <= t < s["end"]
-                for s in today_overrides
-            )
-        # No override for today — fall through to normal logic.
+    # ① SPECIAL-SESSION OVERRIDE — highest precedence.
+    special_result = _check_special_sessions(special_sessions, today, t)
+    if special_result is not None:
+        return special_result
 
     # Resolve session windows — sessions list wins when provided.
-    if sessions:
-        windows: list[tuple[dtime, dtime]] = []
-        for s in sessions:
-            try:
-                sh, sm = (int(x) for x in str(s.get("start", "09:15")).split(":", 1))
-                eh, em = (int(x) for x in str(s.get("end",   "15:30")).split(":", 1))
-                windows.append((dtime(sh, sm), dtime(eh, em)))
-            except Exception:
-                continue
-        if not windows:
-            windows = [(market_start, market_end)]
-    else:
-        windows = [(market_start, market_end)]
+    windows = _parse_session_windows(sessions, market_start, market_end)
 
     # ② Clock — must be inside AT LEAST ONE window. If not, definitely closed.
     in_window = any(w_start <= t <= w_end for (w_start, w_end) in windows)
@@ -290,6 +294,37 @@ def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
     # ④ Non-holiday, in-window — standard calendar + probe check.
     return is_trading_day(today, holiday_set,
                           exchange=exchange, now=now)
+
+
+def _segment_is_open(seg_cfg: dict, now) -> bool:
+    """Return True if the given segment config is open right now.
+
+    Fetches holidays and special sessions for the segment's exchange,
+    then delegates to is_market_open. Returns False on any error so the
+    caller's loop can continue to the next segment.
+    """
+    from backend.brokers.broker_apis import fetch_holidays
+    sessions = (seg_cfg or {}).get("sessions") or None
+    evening  = bool((seg_cfg or {}).get("evening_open_on_holidays", False))
+    exch     = (seg_cfg or {}).get("holiday_exchange", "NSE")
+    h_s, m_s = map(int, (seg_cfg or {}).get("hours_start", "09:15").split(":"))
+    h_e, m_e = map(int, (seg_cfg or {}).get("hours_end",   "15:30").split(":"))
+    seg_start = dtime(h_s, m_s)
+    seg_end   = dtime(h_e, m_e)
+    try:
+        holidays = fetch_holidays(exch)
+    except Exception:
+        holidays = set()
+    try:
+        from backend.brokers.broker_apis import fetch_special_sessions
+        special = fetch_special_sessions(exch)
+    except Exception:
+        special = []
+    return is_market_open(
+        now, holidays, seg_start, seg_end, exchange=exch,
+        sessions=sessions, evening_open_on_holidays=evening,
+        special_sessions=special,
+    )
 
 
 def is_any_segment_open(now) -> bool:
@@ -316,34 +351,11 @@ def is_any_segment_open(now) -> bool:
         True when at least one segment's session is active right now.
     """
     from backend.shared.helpers.utils import config as _cfg
-    from backend.brokers.broker_apis import fetch_holidays
 
     segments = _cfg.get("market_segments", {}) or {}
-    for seg_name, seg_cfg in segments.items():
+    for _seg_name, seg_cfg in segments.items():
         try:
-            sessions = (seg_cfg or {}).get("sessions") or None
-            evening  = bool((seg_cfg or {}).get("evening_open_on_holidays", False))
-            exch     = (seg_cfg or {}).get("holiday_exchange", "NSE")
-            # Legacy shape fallback — sessions is optional; existing
-            # `hours_start`/`hours_end` keys still work when absent.
-            h_s, m_s = map(int, (seg_cfg or {}).get("hours_start", "09:15").split(":"))
-            h_e, m_e = map(int, (seg_cfg or {}).get("hours_end",   "15:30").split(":"))
-            seg_start = dtime(h_s, m_s)
-            seg_end   = dtime(h_e, m_e)
-            try:
-                holidays = fetch_holidays(exch)
-            except Exception:
-                holidays = set()
-            try:
-                from backend.brokers.broker_apis import fetch_special_sessions
-                special = fetch_special_sessions(exch)
-            except Exception:
-                special = []
-            if is_market_open(
-                now, holidays, seg_start, seg_end, exchange=exch,
-                sessions=sessions, evening_open_on_holidays=evening,
-                special_sessions=special,
-            ):
+            if _segment_is_open(seg_cfg or {}, now):
                 return True
         except Exception:
             continue

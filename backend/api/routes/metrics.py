@@ -155,6 +155,56 @@ def _row_to_summary(r: CodeMetricsSnapshot) -> MetricsSnapshotRow:
     )
 
 
+# Mapping: virtual trend key → (side, sub_key) in test_response_times JSONB.
+_TEST_KEY_MAP: dict[str, tuple[str, str]] = {
+    "test_backend_max_s":              ("backend",  "max_s"),
+    "test_backend_total_wall_time_s":  ("backend",  "total_wall_time_s"),
+    "test_backend_slow_count":         ("backend",  "slow_count"),
+    "test_frontend_max_s":             ("frontend", "max_s"),
+    "test_frontend_total_wall_time_s": ("frontend", "total_wall_time_s"),
+}
+
+
+async def _trend_from_test_response_times(metric: str, limit: int) -> TrendResponse:
+    """Fetch trend data for a virtual `test_response_times` sub-key.
+
+    Reads the JSONB `test_response_times` column and extracts the nested
+    value in Python rather than via SQL (keeps the query simple and avoids
+    JSONB operator injection risks).
+    """
+    side, sub = _TEST_KEY_MAP[metric]
+    async with async_session() as session:
+        recent = (await session.execute(
+            select(
+                CodeMetricsSnapshot.release_tag,
+                CodeMetricsSnapshot.captured_at,
+                CodeMetricsSnapshot.test_response_times,
+            )
+            .order_by(desc(CodeMetricsSnapshot.captured_at))
+            .limit(limit)
+        )).all()
+
+    points = []
+    for r in reversed(recent):
+        trt = r[2]  # test_response_times dict or None
+        value: Optional[float] = None
+        if isinstance(trt, dict):
+            side_data = trt.get(side)
+            if isinstance(side_data, dict):
+                raw_val = side_data.get(sub)
+                if raw_val is not None:
+                    try:
+                        value = float(raw_val)
+                    except (TypeError, ValueError):
+                        value = None
+        points.append(TrendPoint(
+            release_tag=r[0],
+            captured_at=r[1].isoformat() if r[1] else "",
+            value=value,
+        ))
+    return TrendResponse(metric=metric, points=points)
+
+
 class MetricsController(Controller):
     """`/api/admin/code-metrics/*` — read-only snapshot store.
 
@@ -213,50 +263,10 @@ class MetricsController(Controller):
             )
         limit = max(1, min(int(limit or 50), 200))
 
-        # Virtual test-time sub-keys: read `test_response_times` JSONB and
-        # extract the nested value in Python rather than via SQL (keeps the
-        # query simple and avoids JSONB operator injection risks).
+        # Virtual test-time sub-keys: delegate to module-level helper that
+        # reads the JSONB column and extracts the nested sub-key in Python.
         if metric in _TEST_TREND_KEYS:
-            # Mapping: test_backend_max_s → ("backend", "max_s")
-            # test_frontend_total_wall_time_s → ("frontend", "total_wall_time_s")
-            _key_map = {
-                "test_backend_max_s":              ("backend",  "max_s"),
-                "test_backend_total_wall_time_s":  ("backend",  "total_wall_time_s"),
-                "test_backend_slow_count":         ("backend",  "slow_count"),
-                "test_frontend_max_s":             ("frontend", "max_s"),
-                "test_frontend_total_wall_time_s": ("frontend", "total_wall_time_s"),
-            }
-            side, sub = _key_map[metric]
-            async with async_session() as session:
-                recent = (await session.execute(
-                    select(
-                        CodeMetricsSnapshot.release_tag,
-                        CodeMetricsSnapshot.captured_at,
-                        CodeMetricsSnapshot.test_response_times,
-                    )
-                    .order_by(desc(CodeMetricsSnapshot.captured_at))
-                    .limit(limit)
-                )).all()
-
-            points = []
-            for r in reversed(recent):
-                trt = r[2]  # test_response_times dict or None
-                value: Optional[float] = None
-                if isinstance(trt, dict):
-                    side_data = trt.get(side)
-                    if isinstance(side_data, dict):
-                        raw_val = side_data.get(sub)
-                        if raw_val is not None:
-                            try:
-                                value = float(raw_val)
-                            except (TypeError, ValueError):
-                                value = None
-                points.append(TrendPoint(
-                    release_tag=r[0],
-                    captured_at=r[1].isoformat() if r[1] else "",
-                    value=value,
-                ))
-            return TrendResponse(metric=metric, points=points)
+            return await _trend_from_test_response_times(metric, limit)
 
         # Real DB column path.
         # `getattr(model_class, allowlisted_name)` is safe — `metric`

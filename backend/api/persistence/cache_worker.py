@@ -186,59 +186,38 @@ def _coalesce_intraday(batch: list[dict]) -> dict[str, dict[str, list]]:
     return merged
 
 
-def _flush_batch(batch: list[dict]) -> None:
-    ohlcv_inc    = _coalesce_ohlcv(batch)
-    instru_inc   = _coalesce_instruments(batch)
-    holidays_inc = _coalesce_holidays(batch)
-    intraday_inc = _coalesce_intraday(batch)
+def _load_existing_cache() -> dict:
+    """Read the current cache file from disk. Returns {} on miss or parse error."""
+    if not _CACHE_PATH.exists():
+        return {}
+    try:
+        with open(_CACHE_PATH) as f:
+            return json.load(f)
+    except Exception as exc:
+        logger.warning(f"cache_worker: could not read existing cache: {exc}")
+        return {}
 
-    if not ohlcv_inc and not instru_inc and not holidays_inc and not intraday_inc:
-        return
 
-    # Load existing file (support v1, v2, and v3 on disk).
-    existing: dict = {}
-    if _CACHE_PATH.exists():
-        try:
-            with open(_CACHE_PATH) as f:
-                existing = json.load(f)
-        except Exception as exc:
-            logger.warning(f"cache_worker: could not read existing cache: {exc}")
-            existing = {}
+def _merge_ohlcv(existing_ohlcv: dict, inc: dict) -> dict:
+    """Merge ohlcv incremental into existing dict (date-keyed per symbol|exch key)."""
+    for key, dates in inc.items():
+        if key not in existing_ohlcv:
+            existing_ohlcv[key] = {}
+        existing_ohlcv[key].update(dates)
+    return existing_ohlcv
 
-    # ── OHLCV ──
-    ohlcv = existing.get("ohlcv_daily") or {}
-    for key, dates in ohlcv_inc.items():
-        if key not in ohlcv:
-            ohlcv[key] = {}
-        ohlcv[key].update(dates)
 
-    # ── Instruments (last-write-wins per exchange) ──
-    instruments = existing.get("instruments_snapshot") or {}
-    instruments.update(instru_inc)
+def _merge_nested(existing: dict, inc: dict) -> dict:
+    """Merge nested dicts (holidays, intraday) — outer key creates if missing."""
+    for outer_key, inner_map in inc.items():
+        if outer_key not in existing:
+            existing[outer_key] = {}
+        existing[outer_key].update(inner_map)
+    return existing
 
-    # ── Holidays (merge per exchange/year, last-write-wins per year) ──
-    holidays = existing.get("holidays_snapshot") or {}
-    for exch, year_map in holidays_inc.items():
-        if exch not in holidays:
-            holidays[exch] = {}
-        holidays[exch].update(year_map)
 
-    # ── Intraday bars (merge per bucket/bar_ts, last-write-wins) ──
-    intraday = existing.get("intraday_bars") or {}
-    for bucket_key, bar_map in intraday_inc.items():
-        if bucket_key not in intraday:
-            intraday[bucket_key] = {}
-        intraday[bucket_key].update(bar_map)
-
-    payload: dict[str, Any] = {
-        "version":              3,
-        "saved_at":             datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "ohlcv_daily":          ohlcv,
-        "instruments_snapshot": instruments,
-        "holidays_snapshot":    holidays,
-        "intraday_bars":        intraday,
-    }
-
+def _atomic_write_cache(payload: dict) -> None:
+    """Write payload to disk atomically via tmp-then-replace."""
     _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = _CACHE_PATH.with_suffix(".ohlcv.tmp")
     try:
@@ -254,3 +233,30 @@ def _flush_batch(batch: list[dict]) -> None:
         except Exception:
             pass
         raise
+
+
+def _flush_batch(batch: list[dict]) -> None:
+    ohlcv_inc    = _coalesce_ohlcv(batch)
+    instru_inc   = _coalesce_instruments(batch)
+    holidays_inc = _coalesce_holidays(batch)
+    intraday_inc = _coalesce_intraday(batch)
+
+    if not ohlcv_inc and not instru_inc and not holidays_inc and not intraday_inc:
+        return
+
+    existing = _load_existing_cache()
+
+    ohlcv       = _merge_ohlcv(existing.get("ohlcv_daily") or {}, ohlcv_inc)
+    instruments = existing.get("instruments_snapshot") or {}
+    instruments.update(instru_inc)
+    holidays    = _merge_nested(existing.get("holidays_snapshot") or {}, holidays_inc)
+    intraday    = _merge_nested(existing.get("intraday_bars") or {}, intraday_inc)
+
+    _atomic_write_cache({
+        "version":              3,
+        "saved_at":             datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ohlcv_daily":          ohlcv,
+        "instruments_snapshot": instruments,
+        "holidays_snapshot":    holidays,
+        "intraday_bars":        intraday,
+    })

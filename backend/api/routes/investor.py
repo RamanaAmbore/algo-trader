@@ -252,6 +252,16 @@ def _build_extra_rows(
     return out, sent, failed
 
 
+def _aggregate_event_totals(rows) -> dict:
+    """Return total_units / total_in / total_out aggregates from a list of InvestorEvent rows."""
+    total_units = sum(float(r.units_delta or 0.0) for r in rows)
+    total_in    = sum(float(r.amount or 0.0) for r in rows
+                      if r.event_type in ("subscription", "bootstrap"))
+    total_out   = sum(float(r.amount or 0.0) for r in rows
+                      if r.event_type == "redemption")
+    return {"total_units": total_units, "total_in": total_in, "total_out": total_out}
+
+
 async def _resolve_token(token: str) -> tuple[InvestorToken, User]:
     """Look up the token, validate it's active, return (row, user).
     Raises 401 for missing / revoked / expired tokens."""
@@ -283,6 +293,38 @@ async def _resolve_token(token: str) -> tuple[InvestorToken, User]:
         except Exception:
             await s.rollback()
         return tok_row, user
+
+
+async def _live_firm_nav_with_fallback(rows) -> float:
+    """Compute live firm NAV via compute_firm_nav, falling back to the latest snapshot.
+
+    Used by the portal /slice endpoint so the LP sees real-time intraday NAV
+    rather than the prior-day EOD snapshot.
+    """
+    try:
+        from backend.api.algo.nav import compute_firm_nav
+        snap = await compute_firm_nav()
+        return float(snap.get("nav") or 0.0)
+    except Exception:
+        return float(rows[0].nav) if rows else 0.0
+
+
+async def _compute_portal_day_delta(
+    s, user, all_events, slice_now: dict, prior_row,
+) -> tuple[Optional[float], Optional[float]]:
+    """Return (day_delta_share, day_delta_share_pct) vs prior NAV snapshot.
+
+    Returns (None, None) when the prior row is unavailable.
+    """
+    from backend.api.algo.investor_units import slice_value as _slice_value
+    user_events = [e for e in all_events if e.user_id == user.id]
+    prior_val, _ = _slice_value(
+        user_events, all_events, float(prior_row.nav),
+        as_of=prior_row.as_of_date,
+    )
+    day_delta = slice_now["nav_share"] - prior_val
+    day_delta_pct = (day_delta / prior_val) if prior_val else None
+    return day_delta, day_delta_pct
 
 
 def _portal_url(token: str) -> str:
@@ -406,11 +448,7 @@ class InvestorAdminController(Controller):
                   .order_by(InvestorEvent.event_date.asc(),
                             InvestorEvent.id.asc())
             )).scalars().all()
-        total_units = sum(float(r.units_delta or 0.0) for r in rows)
-        total_in    = sum(float(r.amount or 0.0) for r in rows
-                          if r.event_type in ("subscription", "bootstrap"))
-        total_out   = sum(float(r.amount or 0.0) for r in rows
-                          if r.event_type == "redemption")
+        totals = _aggregate_event_totals(rows)
         return EventListResponse(
             user_id=user.id,
             username=user.username,
@@ -427,9 +465,7 @@ class InvestorAdminController(Controller):
                 )
                 for r in rows
             ],
-            total_units=total_units,
-            total_in=total_in,
-            total_out=total_out,
+            **totals,
         )
 
     @post("/{user_id:int}/investor-events",
@@ -726,7 +762,7 @@ class InvestorPortalController(Controller):
     @get("/{token:str}/slice")
     async def slice(self, token: str) -> InvestorSliceResponse:
         from backend.api.algo.investor_units import (
-            compute_slice, fetch_all_events, slice_value,
+            compute_slice, fetch_all_events,
         )
         tok_row, user = await _resolve_token(token)
         async with async_session() as s:
@@ -740,31 +776,16 @@ class InvestorPortalController(Controller):
             # grid + NavCard show. Previously read the EOD snapshot,
             # making the LP slice lag by up to one day's P&L. Fall
             # back to the snapshot on broker outage — stale beats zero.
-            try:
-                from backend.api.algo.nav import compute_firm_nav
-                _snap = await compute_firm_nav()
-                firm_nav = float(_snap.get("nav") or 0.0)
-            except Exception:
-                firm_nav = float(rows[0].nav) if rows else 0.0
-            # Fetch events ONCE; reuse for compute_slice + day-delta.
-            # (Slice M4.)
+            firm_nav = await _live_firm_nav_with_fallback(rows)
             from backend.api.algo.investor_units import ensure_all_bootstrapped as _eab
             await _eab(s)
             all_events = await fetch_all_events(s)
-            slice_now = await compute_slice(
-                s, user, firm_nav, all_events=all_events
-            )
+            slice_now = await compute_slice(s, user, firm_nav, all_events=all_events)
             day_delta_share: Optional[float] = None
             day_delta_share_pct: Optional[float] = None
             if len(rows) >= 2:
-                user_events = [e for e in all_events if e.user_id == user.id]
-                prior_val, _ = slice_value(
-                    user_events, all_events, float(rows[1].nav),
-                    as_of=rows[1].as_of_date,
-                )
-                day_delta_share = slice_now["nav_share"] - prior_val
-                day_delta_share_pct = (
-                    (day_delta_share / prior_val) if prior_val else None
+                day_delta_share, day_delta_share_pct = await _compute_portal_day_delta(
+                    s, user, all_events, slice_now, rows[1],
                 )
         as_of = rows[0].as_of_date.isoformat() if rows else None
         return InvestorSliceResponse(

@@ -67,6 +67,41 @@ async def _opp_load_strategy_cap(
     return cap, float(open_notional)
 
 
+def _opl_price_from_ticker(tradingsymbol: str) -> Optional[float]:
+    """Try to resolve LTP for tradingsymbol from the in-process ticker cache.
+
+    Returns the float price when found and positive, else None.
+    Extracted from _opp_resolve_notional_price to reduce CC there."""
+    try:
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+        t = _get_ticker().get_ltp_by_sym(tradingsymbol.upper())
+        if t is not None and t > 0:
+            return float(t)
+    except Exception:
+        pass
+    return None
+
+
+async def _opl_price_from_broker(tradingsymbol: str) -> Optional[float]:
+    """Try to resolve LTP via a one-shot broker.ltp() call.
+
+    Returns the float price when found and positive, else None.
+    Extracted from _opp_resolve_notional_price to reduce CC there."""
+    try:
+        from backend.brokers.registry import get_market_data_broker
+        broker = get_market_data_broker()
+        key = f"NFO:{tradingsymbol.upper()}"
+        quote = await asyncio.to_thread(broker.ltp, [key])
+        v = (quote or {}).get(key)
+        if isinstance(v, dict):
+            lp = float(v.get("last_price") or 0.0)
+            if lp > 0:
+                return lp
+    except Exception:
+        pass
+    return None
+
+
 async def _opp_resolve_notional_price(
     tradingsymbol: str,
     price_hint: Optional[float],
@@ -76,27 +111,9 @@ async def _opp_resolve_notional_price(
     px: Optional[float] = (float(price_hint) if price_hint and price_hint > 0
                            else None)
     if px is None:
-        try:
-            from backend.brokers.kite_ticker import get_ticker as _get_ticker
-            _ticker = _get_ticker()
-            t = _ticker.get_ltp_by_sym(tradingsymbol.upper())
-            if t is not None and t > 0:
-                px = float(t)
-        except Exception:
-            pass
+        px = _opl_price_from_ticker(tradingsymbol)
     if px is None:
-        try:
-            from backend.brokers.registry import get_market_data_broker
-            broker = get_market_data_broker()
-            key = f"NFO:{tradingsymbol.upper()}"
-            quote = await asyncio.to_thread(broker.ltp, [key])
-            v = (quote or {}).get(key)
-            if isinstance(v, dict):
-                lp = float(v.get("last_price") or 0.0)
-                if lp > 0:
-                    px = lp
-        except Exception:
-            px = None
+        px = await _opl_price_from_broker(tradingsymbol)
     if px is None or px <= 0:
         raise HTTPException(
             status_code=503,
@@ -238,6 +255,19 @@ async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
         return entry[0]
 
 
+def _opl_reconcile_attach_eligible(row) -> bool:
+    """Return True when a reconciled row should trigger template attach.
+
+    Guards: must be live mode, must be a parent with a template_id,
+    and must have a fill_price. Extracted from
+    _maybe_fire_template_attach_for_reconcile to reduce CC there."""
+    if (row.mode or "").lower() != "live":
+        return False
+    if not (row.template_id and row.parent_order_id is None):
+        return False
+    return bool(row.fill_price)
+
+
 def _maybe_fire_template_attach_for_reconcile(row) -> None:
     """Sprint A helper — when the reconcile path flips an AlgoOrder to
     FILLED, fire the template attach if the row carries a template_id
@@ -245,19 +275,7 @@ def _maybe_fire_template_attach_for_reconcile(row) -> None:
     inside `_fire_template_attach_on_fill` ensures duplicate firings
     (postback arriving after reconcile) are safe."""
     try:
-        # Audit fix — mode safety. Reconcile must only fire template
-        # attach for LIVE rows. The single-order reconcile endpoint
-        # (`/{broker_order_id}/reconcile`) is operator-driven and could
-        # accept a paper-mode row by mistake; without this guard the
-        # attach would route through `apply_path="live"` and place real
-        # Kite GTTs for a position that doesn't exist at the broker.
-        # Bulk `/algo/reconcile` already filters mode='live' upstream, so
-        # the guard is a no-op there.
-        if (row.mode or "").lower() != "live":
-            return
-        if not (row.template_id and row.parent_order_id is None):
-            return
-        if not row.fill_price:
+        if not _opl_reconcile_attach_eligible(row):
             return
         # Sprint B (#4) — partial fills get their actual filled qty.
         _attach_qty = (
@@ -320,17 +338,25 @@ async def _opp_load_row_for_attach(
     return {"overrides": _row_overrides}
 
 
+def _opl_build_sibling_map(sibling_pairs) -> dict[str, str]:
+    """Build a bidirectional sibling-id map from sibling_pairs.
+
+    Extracted from _opp_build_attach_entries to reduce CC there."""
+    sibling_by_id: dict[str, str] = {}
+    for a, b in (sibling_pairs or []):
+        if a and b:
+            sibling_by_id[str(a)] = str(b)
+            sibling_by_id[str(b)] = str(a)
+    return sibling_by_id
+
+
 def _opp_build_attach_entries(
     result,
     fill_price: float,
     parent_side: str,
 ) -> list:
     """Build the attached-GTTs list from an apply_template_to_order result."""
-    _sibling_by_id: dict[str, str] = {}
-    for a, b in (result.sibling_pairs or []):
-        if a and b:
-            _sibling_by_id[a] = b
-            _sibling_by_id[b] = a
+    sibling_by_id = _opl_build_sibling_map(result.sibling_pairs)
     attached = []
     for spec in (result.plan.gtts or []):
         if not spec.placed_id:
@@ -340,17 +366,17 @@ def _opp_build_attach_entries(
             "label": spec.label,
             "id":    spec.placed_id,
         }
-        _sib = _sibling_by_id.get(str(spec.placed_id))
+        _sib = sibling_by_id.get(str(spec.placed_id))
         if _sib:
-            entry["sibling_id"] = _sib
+            entry["sibling_id"]      = _sib
             entry["parent_account"]  = str(result.plan.parent_account)
             entry["parent_exchange"] = str(result.plan.parent_exchange)
         if spec.sl_trail_pct is not None and spec.trigger_values:
-            entry["sl_trail_pct"]    = float(spec.sl_trail_pct)
-            entry["trigger_values"]  = list(spec.trigger_values)
-            entry["highest_ltp"]     = float(fill_price)
-            entry["low_ltp"]         = float(fill_price)
-            entry["parent_side"]     = parent_side
+            entry["sl_trail_pct"]   = float(spec.sl_trail_pct)
+            entry["trigger_values"] = list(spec.trigger_values)
+            entry["highest_ltp"]    = float(fill_price)
+            entry["low_ltp"]        = float(fill_price)
+            entry["parent_side"]    = parent_side
         attached.append(entry)
     return attached
 
@@ -695,6 +721,35 @@ async def _opp_arm_tp_live_place(
         logger.error(f"[TP] live TP placement failed for parent #{parent_row_id}: {_le}")
 
 
+async def _opl_arm_tp_dispatch(
+    tp_id: int, parent_row_id: int, parent_account: str,
+    parent_symbol: str, parent_exchange: str, tp_side: str,
+    tp_price: float, parent_mode: str, parent_product: str,
+) -> None:
+    """Resolve qty from the TP row and dispatch paper/live branch.
+
+    Extracted from _arm_take_profit to reduce CC there."""
+    from sqlalchemy import select as _sel
+    from backend.api.database import async_session as _async_session
+    from backend.api.models import AlgoOrder as _AlgoOrder
+    async with _async_session() as _qs:
+        _tp = (await _qs.execute(
+            _sel(_AlgoOrder).where(_AlgoOrder.id == tp_id)
+        )).scalar_one_or_none()
+        qty = int(_tp.quantity or 0) if _tp else 0
+
+    if parent_mode == "paper":
+        await _opp_arm_tp_paper_register(
+            tp_id, parent_row_id, parent_account, parent_symbol,
+            parent_exchange, tp_side, qty, tp_price,
+        )
+    elif parent_mode == "live":
+        await _opp_arm_tp_live_place(
+            tp_id, parent_row_id, parent_account, parent_symbol,
+            parent_exchange, tp_side, qty, tp_price, parent_product,
+        )
+
+
 async def _arm_take_profit(
     parent_row_id: int,
     parent_account: str,
@@ -743,28 +798,10 @@ async def _arm_take_profit(
         if result is None:
             return
         tp_id, tp_side, tp_price = result
-
-        # Resolve qty from the just-persisted row for mode-specific dispatch.
-        from sqlalchemy import select as _sel
-        from backend.api.database import async_session as _async_session
-        from backend.api.models import AlgoOrder as _AlgoOrder
-        async with _async_session() as _qs:
-            _tp = (await _qs.execute(
-                _sel(_AlgoOrder).where(_AlgoOrder.id == tp_id)
-            )).scalar_one_or_none()
-            qty = int(_tp.quantity or 0) if _tp else 0
-
-        if parent_mode == "paper":
-            await _opp_arm_tp_paper_register(
-                tp_id, parent_row_id, parent_account, parent_symbol,
-                parent_exchange, tp_side, qty, tp_price,
-            )
-        elif parent_mode == "live":
-            await _opp_arm_tp_live_place(
-                tp_id, parent_row_id, parent_account, parent_symbol,
-                parent_exchange, tp_side, qty, tp_price, parent_product,
-            )
-
+        await _opl_arm_tp_dispatch(
+            tp_id, parent_row_id, parent_account, parent_symbol,
+            parent_exchange, tp_side, tp_price, parent_mode, parent_product,
+        )
         logger.info(f"[TP] armed: tp_id={tp_id} parent={parent_row_id} "
                     f"side={tp_side} limit=₹{tp_price:.2f} mode={parent_mode}")
 
@@ -812,6 +849,26 @@ async def _validate_ticket_strategy_scope(data, request) -> None:
             )
 
 
+def _opl_check_enum_field(value, allowed: set, field_name: str) -> None:
+    """Raise 400 when value is set but not in the allowed set.
+
+    Extracted from _validate_ticket_enums to collapse the repetitive
+    if-field-not-in-set → raise pattern."""
+    if value and value not in allowed:
+        raise HTTPException(status_code=400,
+            detail=f"{field_name} must be one of {sorted(allowed)}")
+
+
+def _opl_check_price_requirements(data) -> None:
+    """Raise 400 when LIMIT/SL orders lack a price or trigger_price.
+
+    Extracted from _validate_ticket_enums to separate concerns."""
+    if data.order_type in ("LIMIT", "SL") and not data.price:
+        raise HTTPException(status_code=400, detail="price is required for LIMIT/SL")
+    if data.order_type in ("SL", "SL-M") and not data.trigger_price:
+        raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
+
+
 def _validate_ticket_enums(data) -> None:
     """Validate side, symbol, quantity, and all enum fields in the ticket."""
     from backend.api.routes.orders_helpers import (
@@ -825,22 +882,11 @@ def _validate_ticket_enums(data) -> None:
     if not sym or input_qty <= 0:
         raise HTTPException(status_code=400,
             detail="tradingsymbol and quantity > 0 are required")
-    if data.exchange   and data.exchange   not in _EXCHANGES:
-        raise HTTPException(status_code=400,
-            detail=f"exchange must be one of {sorted(_EXCHANGES)}")
-    if data.product    and data.product    not in _PRODUCTS:
-        raise HTTPException(status_code=400,
-            detail=f"product must be one of {sorted(_PRODUCTS)}")
-    if data.order_type and data.order_type not in _ORDER_TYPES:
-        raise HTTPException(status_code=400,
-            detail=f"order_type must be one of {sorted(_ORDER_TYPES)}")
-    if data.variety    and data.variety    not in _VARIETIES:
-        raise HTTPException(status_code=400,
-            detail=f"variety must be one of {sorted(_VARIETIES)}")
-    if data.order_type in ("LIMIT", "SL") and not data.price:
-        raise HTTPException(status_code=400, detail="price is required for LIMIT/SL")
-    if data.order_type in ("SL", "SL-M") and not data.trigger_price:
-        raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
+    _opl_check_enum_field(data.exchange,   _EXCHANGES,  "exchange")
+    _opl_check_enum_field(data.product,    _PRODUCTS,   "product")
+    _opl_check_enum_field(data.order_type, _ORDER_TYPES,"order_type")
+    _opl_check_enum_field(data.variety,    _VARIETIES,  "variety")
+    _opl_check_price_requirements(data)
 
 
 async def _resolve_fno_qty(data, exch: str, sym: str, input_qty: int) -> tuple[int, int]:
@@ -1018,6 +1064,17 @@ async def _ticket_check_mcx_lot_cache(
     return lot_size
 
 
+def _opl_preflight_log_suffix(pf: dict) -> str:
+    """Return the blocked-codes suffix for the preflight log line.
+
+    Returns '' when ok, else ' — N blocker(s): CODE1, CODE2'.
+    Extracted from _ticket_run_preflight to remove inline ternary."""
+    if pf.get("ok"):
+        return ""
+    codes = ', '.join(b.get('code', '?') for b in pf.get('blocked', []))
+    return f" — {len(pf['blocked'])} blocker(s): {codes}"
+
+
 async def _ticket_run_preflight(data, account: str, sym: str, side: str, qty: int) -> dict:
     """Preflight the LIVE order via the actions engine. Raises 503 on
     broker-side failure. Returns the preflight verdict dict."""
@@ -1042,12 +1099,11 @@ async def _ticket_run_preflight(data, account: str, sym: str, side: str, qty: in
             detail=f"Preflight check failed: {str(_pf_err)[:240]} — "
                    "broker may be unreachable. Try again.",
         ) from _pf_err
+    label = 'ok' if _pf['ok'] else 'BLOCKED'
     logger.info(
-        f"[LIVE-TICKET] preflight {('ok' if _pf['ok'] else 'BLOCKED')} "
+        f"[LIVE-TICKET] preflight {label} "
         f"acct={account} {sym} {side} qty={qty}"
-        + ("" if _pf["ok"]
-           else f" — {len(_pf['blocked'])} blocker(s): "
-                f"{', '.join(b.get('code','?') for b in _pf['blocked'])}")
+        + _opl_preflight_log_suffix(_pf)
     )
     return _pf
 
@@ -1171,6 +1227,19 @@ async def _ticket_persist_live_algo_order(
         return None
 
 
+def _opl_chase_eligible(data, order_type: str) -> bool:
+    """Return True when the ticket qualifies for the live chase loop.
+
+    Requires chase=True, LIMIT order type, and a positive price.
+    Extracted from _ticket_place_or_chase_live to reduce CC there."""
+    return bool(
+        data.chase
+        and order_type == "LIMIT"
+        and data.price is not None
+        and data.price > 0
+    )
+
+
 async def _ticket_place_or_chase_live(
     data, account: str, sym: str, side: str, qty: int,
     live_algo_id: Optional[int], ls_for_translate: int,
@@ -1180,10 +1249,7 @@ async def _ticket_place_or_chase_live(
     from backend.api.routes.orders_helpers import _start_live_chase, _broker_for
 
     order_type = (data.order_type or "LIMIT")
-    chase_eligible = (data.chase
-                      and order_type == "LIMIT"
-                      and data.price is not None
-                      and data.price > 0)
+    chase_eligible = _opl_chase_eligible(data, order_type)
     if chase_eligible:
         order_id = await _start_live_chase(
             account=account,
@@ -1235,6 +1301,40 @@ async def _ticket_seed_broker_order_id(live_algo_id: int, order_id) -> None:
         )
 
 
+def _opl_send_failure_alert(account: str, sym: str, data, side: str,
+                            qty: int, kite_msg: str) -> None:
+    """Best-effort Telegram/email alert for a live ticket failure.
+
+    Extracted from _ticket_handle_live_place_error to reduce CC there."""
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=sym,
+            exchange=(data.exchange or "NFO"), side=side,
+            qty=qty, mode="live", source="agent:manual:ticket",
+            error=kite_msg,
+        )
+    except Exception:
+        pass
+
+
+def _opl_record_manual_failure(account: str, sym: str, data, side: str,
+                                qty: int, kite_msg: str) -> None:
+    """Best-effort agent_events write for a live ticket failure.
+
+    Extracted from _ticket_handle_live_place_error to reduce CC there."""
+    try:
+        from backend.api.algo.agent_engine import record_manual_event
+        asyncio.create_task(record_manual_event(
+            outcome="action_failure", source=data.source or "ticket",
+            account=account, symbol=sym,
+            exchange=(data.exchange or "NFO"), side=side,
+            qty=qty, mode="live", error=kite_msg,
+        ))
+    except Exception:
+        pass
+
+
 async def _ticket_handle_live_place_error(
     data, account: str, sym: str, side: str, qty: int, order_type: str,
     e: Exception, bk_key: str,
@@ -1272,26 +1372,8 @@ async def _ticket_handle_live_place_error(
         f"{f' @{data.price}' if data.price else ''}: "
         f"{kite_msg} | diag: {diag}"
     )
-    try:
-        from backend.shared.helpers.alert_utils import send_order_failure_alert
-        send_order_failure_alert(
-            account=account, symbol=sym,
-            exchange=(data.exchange or "NFO"), side=side,
-            qty=qty, mode="live", source="agent:manual:ticket",
-            error=kite_msg,
-        )
-    except Exception:
-        pass
-    try:
-        from backend.api.algo.agent_engine import record_manual_event
-        asyncio.create_task(record_manual_event(
-            outcome="action_failure", source=data.source or "ticket",
-            account=account, symbol=sym,
-            exchange=(data.exchange or "NFO"), side=side,
-            qty=qty, mode="live", error=kite_msg,
-        ))
-    except Exception:
-        pass
+    _opl_send_failure_alert(account, sym, data, side, qty, kite_msg)
+    _opl_record_manual_failure(account, sym, data, side, qty, kite_msg)
     _new_count = _record_rejection(bk_key)
     if _new_count >= _REJECTION_THRESHOLD:
         _maybe_send_breaker_alert(bk_key, account, sym, side, qty,

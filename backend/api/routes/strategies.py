@@ -157,6 +157,57 @@ class StrategyUpdate(msgspec.Struct):
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 
+def _build_strategy_info_from_row(
+    row: "Strategy",
+    owner_username: Optional[str],
+    open_count: int,
+    closed_count: int,
+    realised: float,
+    unrealised: float,
+) -> "StrategyInfo":
+    """Assemble StrategyInfo from a Strategy ORM row + pre-computed P&L fields."""
+    return StrategyInfo(
+        id=row.id,
+        slug=row.slug,
+        name=row.name,
+        description=row.description,
+        owner_user_id=row.owner_user_id,
+        owner_username=owner_username,
+        capacity_cap_inr=(
+            float(row.capacity_cap_inr) if row.capacity_cap_inr is not None else None
+        ),
+        target_volatility=(
+            float(row.target_volatility) if row.target_volatility is not None else None
+        ),
+        is_active=bool(row.is_active),
+        open_order_count=open_count,
+        closed_order_count=closed_count,
+        realised_pnl=realised,
+        unrealised_pnl=unrealised,
+        created_at=row.created_at.isoformat() if row.created_at else "",
+        updated_at=row.updated_at.isoformat() if row.updated_at else "",
+    )
+
+
+async def _strat_open_order_pnl_sum(session, strategy_id: int) -> float:
+    """AlgoOrder.pnl SUM for open orders — fallback when LTP unavailable."""
+    _open_states = ("OPEN", "CHASING", "PENDING")
+    return float((await session.execute(
+        select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
+        .where(AlgoOrder.strategy_id == strategy_id,
+               AlgoOrder.status.in_(_open_states))
+    )).scalar_one() or 0.0)
+
+
+async def _strat_unrealised(session, strategy_id: int, ledger_view: dict, compute_fn) -> float:
+    """Compute unrealised P&L — LTP-marked when available, else AlgoOrder SUM."""
+    if ledger_view["open_lots_count"] > 0:
+        mtm = await compute_fn(session, strategy_id)
+        if mtm is not None:
+            return mtm
+    return await _strat_open_order_pnl_sum(session, strategy_id)
+
+
 async def _enrich_with_pnl(session, row: Strategy,
                            owner_username: Optional[str]) -> StrategyInfo:
     """Build a StrategyInfo with the live order-count + P&L rollup.
@@ -207,47 +258,12 @@ async def _enrich_with_pnl(session, row: Strategy,
                    AlgoOrder.status.notin_(_open_states))
         )).scalar_one() or 0.0
 
-    # Unrealised — slice 7d wires the LTP-marked path. When open lots
-    # exist in the ledger, compute (LTP - open_price) × remaining_qty
-    # per lot. Falls back to AlgoOrder.pnl SUM proxy when:
-    #   - LTP path returns None (no LTP feed available right now), OR
-    #   - ledger has no open lots for this strategy (legacy /
-    #     unattributed orders still hold open exposure tracked only
-    #     via the broker's MTM number).
-    unrealised: float
-    if ledger_view["open_lots_count"] > 0:
-        mtm = await compute_unrealised_marked_to_ltp(session, row.id)
-        if mtm is not None:
-            unrealised = mtm
-        else:
-            unrealised = (await session.execute(
-                select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
-                .where(AlgoOrder.strategy_id == row.id,
-                       AlgoOrder.status.in_(_open_states))
-            )).scalar_one() or 0.0
-    else:
-        unrealised = (await session.execute(
-            select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
-            .where(AlgoOrder.strategy_id == row.id,
-                   AlgoOrder.status.in_(_open_states))
-        )).scalar_one() or 0.0
+    unrealised = await _strat_unrealised(session, row.id, ledger_view, compute_unrealised_marked_to_ltp)
 
-    return StrategyInfo(
-        id=row.id,
-        slug=row.slug,
-        name=row.name,
-        description=row.description,
-        owner_user_id=row.owner_user_id,
-        owner_username=owner_username,
-        capacity_cap_inr=float(row.capacity_cap_inr) if row.capacity_cap_inr is not None else None,
-        target_volatility=float(row.target_volatility) if row.target_volatility is not None else None,
-        is_active=bool(row.is_active),
-        open_order_count=int(open_count),
-        closed_order_count=int(closed_count),
-        realised_pnl=float(realised or 0.0),
-        unrealised_pnl=float(unrealised or 0.0),
-        created_at=row.created_at.isoformat() if row.created_at else "",
-        updated_at=row.updated_at.isoformat() if row.updated_at else "",
+    return _build_strategy_info_from_row(
+        row=row, owner_username=owner_username,
+        open_count=int(open_count), closed_count=int(closed_count),
+        realised=float(realised or 0.0), unrealised=float(unrealised or 0.0),
     )
 
 
@@ -346,17 +362,8 @@ async def _fetch_open_lots_by_strategy(
     return open_lots_by_strategy, symbol_exchange
 
 
-async def _fetch_ltp_map_for_symbols(
-    symbol_exchange: dict[str, str],
-) -> dict[str, float]:
-    """Single batched LTP call: KiteTicker first (zero broker quota),
-    then broker.ltp() for gaps.
-    """
-    ltp_map: dict[str, float] = {}
-    if not symbol_exchange:
-        return ltp_map
-
-    # Try the KiteTicker first (zero broker quota).
+def _strat_fill_from_ticker(symbol_exchange: dict[str, str], ltp_map: dict[str, float]) -> None:
+    """Populate ltp_map from KiteTicker (zero broker quota). In-place."""
     try:
         from backend.brokers.kite_ticker import get_ticker as _get_ticker
         _ticker = _get_ticker()
@@ -367,11 +374,11 @@ async def _fetch_ltp_map_for_symbols(
     except Exception:
         pass
 
-    # Fill gaps via broker.ltp() in one batched call.
-    missing = [s for s in symbol_exchange if s not in ltp_map]
-    if not missing:
-        return ltp_map
 
+async def _strat_fill_from_broker(
+    missing: list[str], symbol_exchange: dict[str, str], ltp_map: dict[str, float],
+) -> None:
+    """Fill ltp_map gaps via batched broker.ltp(). In-place."""
     try:
         from backend.brokers.registry import get_market_data_broker
         import asyncio as _asyncio
@@ -386,6 +393,21 @@ async def _fetch_ltp_map_for_symbols(
     except Exception as exc:
         logger.debug(f"_enrich_many_with_pnl: broker.ltp() failed: {exc}")
 
+
+async def _fetch_ltp_map_for_symbols(
+    symbol_exchange: dict[str, str],
+) -> dict[str, float]:
+    """Single batched LTP call: KiteTicker first (zero broker quota),
+    then broker.ltp() for gaps.
+    """
+    ltp_map: dict[str, float] = {}
+    if not symbol_exchange:
+        return ltp_map
+
+    _strat_fill_from_ticker(symbol_exchange, ltp_map)
+    missing = [s for s in symbol_exchange if s not in ltp_map]
+    if missing:
+        await _strat_fill_from_broker(missing, symbol_exchange, ltp_map)
     return ltp_map
 
 
@@ -566,6 +588,97 @@ def _metrics_max_drawdown(cum: list[float]) -> tuple[float, Optional[float]]:
     return max_dd, max_dd_pct
 
 
+def _compute_strategy_metrics(cum: list[float], days: int) -> "StrategyMetrics":
+    """Compute StrategyMetrics from a cumulative P&L series.
+
+    Extracted from get_metrics to keep the controller method under CC 10.
+    Called only when len(cum) >= 2 (caller handles the n < 2 early-return).
+    """
+    n_snap = len(cum)
+    deltas = [cum[i] - cum[i - 1] for i in range(1, n_snap)]
+    n = len(deltas)
+    mean = sum(deltas) / n
+    stdev   = _metrics_stdev(deltas, mean)
+    d_stdev = _metrics_downside_vol(deltas)
+    sqrt252 = _math.sqrt(252.0)
+    sharpe  = (mean / stdev)   * sqrt252 if stdev   > 0 else None
+    sortino = (mean / d_stdev) * sqrt252 if d_stdev > 0 else None
+    max_dd, max_dd_pct = _metrics_max_drawdown(cum)
+    win_rate = sum(1 for d in deltas if d > 0) / n
+    return StrategyMetrics(
+        n_samples=n, days=days,
+        mean_daily_pnl=float(mean),
+        daily_vol=float(stdev) if stdev > 0 else None,
+        downside_vol=float(d_stdev) if d_stdev > 0 else None,
+        sharpe=sharpe,
+        sortino=sortino,
+        max_drawdown=float(max_dd) if max_dd > 0 else 0.0,
+        max_drawdown_pct=max_dd_pct,
+        win_rate=float(win_rate),
+        cumulative_pnl=float(cum[-1]),
+    )
+
+
+async def _strat_check_update_auth(s, request, row: "Strategy", data: "StrategyUpdate") -> None:
+    """Enforce trader-ownership gate and reassignment-cap guard.
+
+    Raises HTTPException(403) when:
+    - A trader tries to update a strategy they don't own, or
+    - A non-admin tries to reassign owner_user_id.
+    """
+    from backend.api.rbac import normalise_role, resolve_role_from_connection, has_cap
+    role = normalise_role(resolve_role_from_connection(request))
+    if role == "trader" and row.owner_user_id is not None:
+        payload = getattr(request.state, "token_payload", {}) or {}
+        actor_username = str(payload.get("sub") or "")
+        actor_id = None
+        if actor_username:
+            actor_id = (await s.execute(
+                select(User.id).where(User.username == actor_username)
+            )).scalar_one_or_none()
+        if actor_id != row.owner_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You can only edit strategies you own. "
+                    "Ask an admin to reassign ownership or "
+                    "use a strategy you own."
+                ),
+            )
+    if data.owner_user_id is not None and not has_cap(role, "reassign_strategies"):
+        raise HTTPException(
+            status_code=403,
+            detail="Reassigning a strategy's owner requires admin role.",
+        )
+
+
+async def _strat_apply_update_fields(s, row: "Strategy", data: "StrategyUpdate") -> None:
+    """Apply validated patch fields to the Strategy ORM row and commit."""
+    if data.slug is not None:
+        row.slug = _validate_slug(data.slug)
+    if data.name is not None:
+        name = data.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name cannot be blank")
+        row.name = name
+    if data.description is not None:
+        row.description = data.description
+    if data.owner_user_id is not None:
+        row.owner_user_id = data.owner_user_id
+    if data.capacity_cap_inr is not None:
+        row.capacity_cap_inr = data.capacity_cap_inr
+    if data.target_volatility is not None:
+        row.target_volatility = data.target_volatility
+    if data.is_active is not None:
+        row.is_active = bool(data.is_active)
+    row.updated_at = datetime.now(timezone.utc)
+    try:
+        await s.commit()
+    except Exception as exc:
+        await s.rollback()
+        raise HTTPException(status_code=409, detail=f"Conflict: {exc}") from exc
+
+
 # ── Controller ────────────────────────────────────────────────────────────
 
 
@@ -642,63 +755,8 @@ class StrategiesController(Controller):
             if not row:
                 raise HTTPException(status_code=404,
                                     detail=f"Strategy {strategy_id} not found")
-            # Slice 7e — trader can only mutate strategies they own.
-            # Admin (reassign_strategies cap) can touch any. Owner
-            # match is by user_id; resolve from the actor's JWT.
-            from backend.api.rbac import (
-                normalise_role, resolve_role_from_connection, has_cap,
-            )
-            role = normalise_role(resolve_role_from_connection(request))
-            if role == "trader" and row.owner_user_id is not None:
-                payload = getattr(request.state, "token_payload", {}) or {}
-                actor_username = str(payload.get("sub") or "")
-                # Look up actor's user_id to compare with row.owner_user_id.
-                actor_id = None
-                if actor_username:
-                    actor_row = (await s.execute(
-                        select(User.id).where(User.username == actor_username)
-                    )).scalar_one_or_none()
-                    actor_id = actor_row
-                if actor_id != row.owner_user_id:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=(
-                            "You can only edit strategies you own. "
-                            "Ask an admin to reassign ownership or "
-                            "use a strategy you own."
-                        ),
-                    )
-            # owner_user_id reassignment is admin-only (reassign_strategies cap).
-            if data.owner_user_id is not None and not has_cap(role, "reassign_strategies"):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Reassigning a strategy's owner requires admin role.",
-                )
-            if data.slug is not None:
-                row.slug = _validate_slug(data.slug)
-            if data.name is not None:
-                name = data.name.strip()
-                if not name:
-                    raise HTTPException(status_code=400,
-                                        detail="name cannot be blank")
-                row.name = name
-            if data.description is not None:
-                row.description = data.description
-            if data.owner_user_id is not None:
-                row.owner_user_id = data.owner_user_id
-            if data.capacity_cap_inr is not None:
-                row.capacity_cap_inr = data.capacity_cap_inr
-            if data.target_volatility is not None:
-                row.target_volatility = data.target_volatility
-            if data.is_active is not None:
-                row.is_active = bool(data.is_active)
-            row.updated_at = datetime.now(timezone.utc)
-            try:
-                await s.commit()
-            except Exception as exc:
-                await s.rollback()
-                raise HTTPException(status_code=409,
-                                    detail=f"Conflict: {exc}") from exc
+            await _strat_check_update_auth(s, request, row, data)
+            await _strat_apply_update_fields(s, row, data)
             await s.refresh(row)
             owner = None
             if row.owner_user_id is not None:
@@ -775,8 +833,7 @@ class StrategiesController(Controller):
             )).scalars().all()
         cum = [float((r.realised_pnl or 0.0)) + float((r.unrealised_pnl or 0.0))
                for r in rows]
-        n_snap = len(cum)
-        if n_snap < 2:
+        if len(cum) < 2:
             return StrategyMetrics(
                 n_samples=0, days=days,
                 mean_daily_pnl=None, daily_vol=None, downside_vol=None,
@@ -785,28 +842,7 @@ class StrategiesController(Controller):
                 win_rate=None,
                 cumulative_pnl=(cum[-1] if cum else None),
             )
-        deltas = [cum[i] - cum[i - 1] for i in range(1, n_snap)]
-        n = len(deltas)
-        mean = sum(deltas) / n
-        stdev   = _metrics_stdev(deltas, mean)
-        d_stdev = _metrics_downside_vol(deltas)
-        sqrt252 = _math.sqrt(252.0)
-        sharpe  = (mean / stdev)   * sqrt252 if stdev   > 0 else None
-        sortino = (mean / d_stdev) * sqrt252 if d_stdev > 0 else None
-        max_dd, max_dd_pct = _metrics_max_drawdown(cum)
-        win_rate = sum(1 for d in deltas if d > 0) / n
-        return StrategyMetrics(
-            n_samples=n, days=days,
-            mean_daily_pnl=float(mean),
-            daily_vol=float(stdev) if stdev > 0 else None,
-            downside_vol=float(d_stdev) if d_stdev > 0 else None,
-            sharpe=sharpe,
-            sortino=sortino,
-            max_drawdown=float(max_dd) if max_dd > 0 else 0.0,
-            max_drawdown_pct=max_dd_pct,
-            win_rate=float(win_rate),
-            cumulative_pnl=float(cum[-1]),
-        )
+        return _compute_strategy_metrics(cum, days)
 
     @get("/{strategy_id:int}/snapshots",
          guards=[cap_guard("view_strategies")])

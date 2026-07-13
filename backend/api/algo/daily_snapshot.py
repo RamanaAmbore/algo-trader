@@ -193,20 +193,39 @@ def _backfill_patch_prices(rows: list[dict], df, qty_col: str) -> int:
     """
     patched = 0
     for i, r in enumerate(rows):
-        try:
-            _new_ltp = float(df.iloc[i]["last_price"] or 0)
-            _new_cls = float(df.iloc[i]["close_price"] or 0)
-        except (KeyError, IndexError, ValueError, TypeError):
-            continue
-        _old_ltp = float(r.get("last_price") or 0)
-        _old_cls = float(r.get("close_price") or 0)
-        if _new_ltp > 0 and _new_ltp != _old_ltp:
-            r["last_price"] = _new_ltp
-            patched += 1
-        if _new_cls > 0 and _new_cls != _old_cls:
-            r["close_price"] = _new_cls
-        _backfill_recompute_derived(r, qty_col)
+        patched += _snap_patch_single_price_row(r, df, i, qty_col)
     return patched
+
+
+def _snap_patch_single_price_row(r: dict, df, i: int, qty_col: str) -> int:
+    """Patch last_price/close_price on one dict from the df row at index i.
+    Returns 1 if last_price was updated, 0 otherwise.
+    """
+    try:
+        _new_ltp = float(df.iloc[i]["last_price"] or 0)
+        _new_cls = float(df.iloc[i]["close_price"] or 0)
+    except (KeyError, IndexError, ValueError, TypeError):
+        return 0
+    changed = 0
+    _old_ltp = float(r.get("last_price") or 0)
+    _old_cls = float(r.get("close_price") or 0)
+    if _new_ltp > 0 and _new_ltp != _old_ltp:
+        r["last_price"] = _new_ltp
+        changed = 1
+    if _new_cls > 0 and _new_cls != _old_cls:
+        r["close_price"] = _new_cls
+    _backfill_recompute_derived(r, qty_col)
+    return changed
+
+
+def _snap_safe_avg_qty(r: dict, qty_col: str) -> tuple[float, int]:
+    """Return (avg_price, qty) from `r`, defaulting to 0 on parse error."""
+    try:
+        avg = float(r.get("average_price") or 0)
+        qty = int(r.get(qty_col) or r.get("quantity") or r.get("opening_quantity") or 0)
+        return avg, qty
+    except (ValueError, TypeError):
+        return 0.0, 0
 
 
 def _backfill_recompute_derived(r: dict, qty_col: str) -> None:
@@ -216,13 +235,7 @@ def _backfill_recompute_derived(r: dict, qty_col: str) -> None:
     ``(ltp - close)`` when both were zero at snapshot time.  Mutates
     *r* in-place; does not affect the caller's ``patched`` count.
     """
-    try:
-        _avg = float(r.get("average_price") or 0)
-        _qty = int(r.get(qty_col) or r.get("quantity")
-                    or r.get("opening_quantity") or 0)
-    except (ValueError, TypeError):
-        _avg = 0.0
-        _qty = 0
+    _avg, _qty = _snap_safe_avg_qty(r, qty_col)
     _cur_ltp = float(r.get("last_price") or 0)
     _cur_cls = float(r.get("close_price") or 0)
     if _cur_ltp > 0 and _avg > 0 and _qty and not r.get("pnl"):
@@ -267,6 +280,28 @@ def _backfill_market_data_dicts(rows: list[dict], *, qty_col: str = "opening_qua
         logger.debug(f"snapshot backfill_market_data failed: {e}")
         return 0
     return _backfill_patch_prices(rows, df, qty_col)
+
+
+def _snap_fetch_funds(broker, account: str, out_funds: list) -> None:
+    """Fetch per-segment margin balances and append rows to `out_funds`.
+
+    Kite-shape: { equity: {available: {...}, utilised: {...}, net: X}, commodity: {...} }.
+    Dhan / Groww broker adapters synthesise the same envelope.
+    """
+    try:
+        m = broker.margins() or {}
+        if isinstance(m, dict):
+            for seg_key in ("equity", "commodity"):
+                seg = m.get(seg_key)
+                if isinstance(seg, dict):
+                    out_funds.append({
+                        "segment_label": seg_key,
+                        "available":     (seg.get("available") or {}),
+                        "utilised":      (seg.get("utilised")  or {}),
+                        "net":           seg.get("net", 0),
+                    })
+    except Exception as e:
+        logger.warning(f"Snapshot [{account}] margins fetch failed: {e}")
 
 
 def _fetch_account_data(broker, account: str, target_date: date) -> dict:
@@ -319,28 +354,7 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
 
     if is_today:
         out["trades"] = _safe_fetch(f"[{account}] trades", broker.trades) or []
-        # Funds snapshot — capture today's per-segment margin
-        # balances so the History → Funds tab can show a per-
-        # account ledger over time. Stored as one row per segment
-        # (equity / commodity); past dates are skipped because the
-        # broker's margins() endpoint only returns CURRENT state.
-        try:
-            m = broker.margins() or {}
-            if isinstance(m, dict):
-                # Kite-shape: { equity: {available: {...}, utilised: {...}, net: X},
-                #               commodity: {...} }. Dhan / Groww broker
-                # adapters synthesise the same envelope.
-                for seg_key in ("equity", "commodity"):
-                    seg = m.get(seg_key)
-                    if isinstance(seg, dict):
-                        out["funds"].append({
-                            "segment_label": seg_key,
-                            "available":     (seg.get("available") or {}),
-                            "utilised":      (seg.get("utilised")  or {}),
-                            "net":           seg.get("net", 0),
-                        })
-        except Exception as e:
-            logger.warning(f"Snapshot [{account}] margins fetch failed: {e}")
+        _snap_fetch_funds(broker, account, out["funds"])
     else:
         logger.debug(f"Snapshot [{account}] skipping trades for past date {target_date}")
 
@@ -370,6 +384,23 @@ def _is_zero_payload_row(row: dict, ltp: Optional[float], day_pnl: Optional[floa
     return ltp_f == 0.0 and day_pnl_f == 0.0 and total_pnl_f == 0.0
 
 
+def _snap_holding_eod_vals(
+    r: dict, mid_session: bool
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Compute (ltp_val, day_pnl_v, total_pnl_v) for one holdings row.
+
+    Returns None for ltp/day_pnl when mid-session to prevent partial-day
+    values from polluting the EOD snapshot.
+    """
+    last_price = r.get("last_price")
+    day_change = r.get("day_change")
+    total_pnl_raw = r.get("pnl")
+    ltp_val   = None if mid_session else (float(last_price) if last_price is not None else None)
+    day_pnl_v = None if mid_session else (float(day_change) if day_change is not None else None)
+    total_pnl_v = float(total_pnl_raw) if total_pnl_raw is not None else None
+    return ltp_val, day_pnl_v, total_pnl_v
+
+
 def _holdings_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
     *, settled: bool = False,
@@ -382,13 +413,7 @@ def _holdings_rows(
             continue
         exchange = r.get("exchange", "NSE")
         mid_session = _is_exchange_open_at(exchange, now_ist)
-        last_price = r.get("last_price")
-        day_change = r.get("day_change")
-        total_pnl_raw = r.get("pnl")
-
-        ltp_val   = None if mid_session else (float(last_price) if last_price is not None else None)
-        day_pnl_v = None if mid_session else (float(day_change) if day_change is not None else None)
-        total_pnl_v = float(total_pnl_raw) if total_pnl_raw is not None else None
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session)
 
         # Bad-payload guard: broker returned all zeros for a real holding.
         # This is the fingerprint of an invalid/expired token (e.g. ZG0790
@@ -426,19 +451,64 @@ def _holdings_rows(
     return rows
 
 
+_INTRADAY_FIELDS = frozenset({
+    "overnight_quantity", "day_buy_quantity", "day_sell_quantity",
+    "day_buy_value", "day_sell_value",
+})
+
+
+def _snap_compute_day_pnl(r: dict, ltp_val: float, close_price, qty) -> Optional[float]:
+    """Compute day P&L for one position row using decomposed formula when available.
+
+    Uses decomposed_intraday_pnl when all intraday split fields are present
+    (Kite / Dhan / Groww adapters); falls back to naive_day_pnl otherwise.
+    Returns None when ltp_val is None or close_price is unavailable.
+    """
+    from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
+    if ltp_val is None or close_price is None:
+        return None
+    cls = float(close_price)
+    qty_f = float(qty)
+    if _INTRADAY_FIELDS.issubset(r.keys()):
+        try:
+            return float(decomposed_intraday_pnl(
+                oq=float(r.get("overnight_quantity") or 0),
+                ltp=ltp_val,
+                cls=cls,
+                bq=float(r.get("day_buy_quantity")  or 0),
+                bv=float(r.get("day_buy_value")     or 0),
+                sv=float(r.get("day_sell_value")    or 0),
+                sq=float(r.get("day_sell_quantity") or 0),
+            ))
+        except Exception:
+            pass
+    return float(naive_day_pnl(ltp_val, cls, qty_f))
+
+
+def _snap_position_eod_vals(
+    r: dict, mid_session: bool, qty
+) -> tuple[Optional[float], Optional[float], Optional[float], bool]:
+    """Return (ltp_val, day_pnl, total_pnl_v, skip) for one position row.
+
+    `skip=True` when the bad-payload guard fires (all-zero fingerprint).
+    ltp_val and day_pnl are None when mid-session to prevent partial-day
+    values from polluting the EOD snapshot.
+    """
+    if mid_session:
+        return None, None, None, False
+    ltp_val = r.get("last_price")
+    ltp_val = float(ltp_val) if ltp_val is not None else None
+    day_pnl = _snap_compute_day_pnl(r, ltp_val, r.get("close_price"), qty)
+    total_pnl_raw = r.get("pnl")
+    total_pnl_v   = float(total_pnl_raw) if total_pnl_raw is not None else None
+    skip = _is_zero_payload_row(r, ltp_val, day_pnl, total_pnl_v)
+    return ltp_val, day_pnl, total_pnl_v, skip
+
+
 def _positions_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
     *, settled: bool = False,
 ) -> list[dict]:
-    from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
-
-    # Fields the decomposed formula needs — all returned by Kite /positions;
-    # present in Dhan + Groww adapters too (see broker_apis._enrich_positions).
-    _INTRADAY_FIELDS = {
-        "overnight_quantity", "day_buy_quantity", "day_sell_quantity",
-        "day_buy_value", "day_sell_value",
-    }
-
     rows = []
     skipped = 0
     for r in raw:
@@ -446,62 +516,16 @@ def _positions_rows(
         if not symbol:
             continue
         exchange = r.get("exchange", "NFO")
-        last_price  = r.get("last_price")
-        close_price = r.get("close_price")
-        qty         = r.get("quantity") or 0
+        qty = r.get("quantity") or 0
         mid_session = _is_exchange_open_at(exchange, now_ist)
         # Captured AT EOD (after the exchange closes) this is the correct
-        # day_pnl. Captured MID-SESSION it's a partial-day value — and
-        # positions.py's close-override consumes daily_book.ltp as
-        # "yesterday's close" the next session, which would silently
-        # displace the real prior-session EOD by hours. Skip both fields
-        # when the row's exchange is mid-session; rely on the 23:35 IST
-        # follow-up pass (added in BE) to capture MCX EOD post-close.
-        if mid_session:
-            day_pnl = None
-            ltp_val = None
-        else:
-            ltp_val = float(last_price) if last_price is not None else None
-            day_pnl = None
-            if ltp_val is not None and close_price is not None:
-                # Use the decomposed intraday formula when all intraday
-                # split fields are present in the broker row (Kite returns
-                # them on /positions; Dhan + Groww adapters synthesise them).
-                # This formula captures the realised leg on partially-closed
-                # positions (e.g. overnight 10, sold 4 today, current 6):
-                #
-                #   day_pnl = overnight_qty × (LTP − close)   # carried carry
-                #           + day_buy_qty   × LTP − day_buy_value   # opened
-                #           + day_sell_value − day_sell_qty × LTP   # realised
-                #
-                # Naive fallback (LTP − close) × qty is used for brokers that
-                # don't populate the split fields — the result collapses
-                # correctly when oq == qty and no intraday trades occurred.
-                if _INTRADAY_FIELDS.issubset(r.keys()):
-                    try:
-                        day_pnl = float(decomposed_intraday_pnl(
-                            oq=float(r.get("overnight_quantity") or 0),
-                            ltp=ltp_val,
-                            cls=float(close_price),
-                            bq=float(r.get("day_buy_quantity")  or 0),
-                            bv=float(r.get("day_buy_value")     or 0),
-                            sv=float(r.get("day_sell_value")    or 0),
-                            sq=float(r.get("day_sell_quantity") or 0),
-                        ))
-                    except Exception:
-                        day_pnl = float(naive_day_pnl(ltp_val, float(close_price), float(qty)))
-                else:
-                    day_pnl = float(naive_day_pnl(ltp_val, float(close_price), float(qty)))
-
-            # Bad-payload guard: broker returned all zeros for a real position.
-            # Same token-failure fingerprint as holdings — ltp=0, day_pnl=0,
-            # total_pnl=0 when avg_cost > 0. Skip to preserve the prior snapshot.
-            total_pnl_raw = r.get("pnl")
-            total_pnl_v   = float(total_pnl_raw) if total_pnl_raw is not None else None
-            if _is_zero_payload_row(r, ltp_val, day_pnl, total_pnl_v):
-                skipped += 1
-                continue
-
+        # day_pnl. Captured MID-SESSION it's a partial-day value — skip.
+        ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
+            r, mid_session, qty
+        )
+        if skip:
+            skipped += 1
+            continue
         rows.append({
             "date":         target_date,
             "account":      account,
@@ -513,7 +537,7 @@ def _positions_rows(
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
             "ltp":          ltp_val,
             "day_pnl":      day_pnl,
-            "total_pnl":    float(r["pnl"])           if r.get("pnl")           is not None else None,
+            "total_pnl":    float(r["pnl"]) if r.get("pnl") is not None else None,
             "payload_json": _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:
@@ -634,6 +658,27 @@ def _get_connections():
     return Connections()
 
 
+def _snap_all_filtered(
+    account: str, target_date: date, raw: dict, h_rows: list, p_rows: list
+) -> bool:
+    """Return True when the broker returned data but every row was filtered.
+
+    Emits a warning and returns True (caller skips upsert) — the prior snapshot
+    is preserved automatically because _upsert_rows([]) is a no-op.
+    """
+    raw_h_count = len(raw["holdings"])
+    raw_p_count = len(raw["positions"])
+    if raw_h_count > 0 and len(h_rows) == 0 and raw_p_count > 0 and len(p_rows) == 0:
+        logger.warning(
+            f"Snapshot [{account}] date={target_date} — ALL "
+            f"{raw_h_count} holdings + {raw_p_count} positions rows "
+            f"filtered (bad payload / invalid token). "
+            f"Prior snapshot preserved. No upsert performed."
+        )
+        return True
+    return False
+
+
 async def snapshot_daily_book(target_date: Optional[date] = None,
                               *, settled: bool = False) -> dict:
     """
@@ -697,25 +742,7 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
             t_rows = _trades_rows(account,    target_date, raw["trades"])
             f_rows = _funds_rows(account,     target_date, raw["funds"])
 
-            # Account-level bad-payload guard: if the broker returned non-empty
-            # holdings/positions but every row was filtered out (all zeros),
-            # don't upsert the empty set — the prior snapshot is automatically
-            # preserved because _upsert_rows([]) is a no-op. Emit a clear warning
-            # so operators know the snapshot was skipped rather than confused by
-            # silent zero totals.
-            raw_h_count = len(raw["holdings"])
-            raw_p_count = len(raw["positions"])
-            all_filtered = (
-                raw_h_count > 0 and len(h_rows) == 0 and
-                raw_p_count > 0 and len(p_rows) == 0
-            )
-            if all_filtered:
-                logger.warning(
-                    f"Snapshot [{account}] date={target_date} — ALL "
-                    f"{raw_h_count} holdings + {raw_p_count} positions rows "
-                    f"filtered (bad payload / invalid token). "
-                    f"Prior snapshot preserved. No upsert performed."
-                )
+            if _snap_all_filtered(account, target_date, raw, h_rows, p_rows):
                 processed.append(account)
                 continue
 
@@ -748,6 +775,26 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
 # ---------------------------------------------------------------------------
 # Sparkline snapshot — per-symbol closing-bar series for closed-hours reads
 # ---------------------------------------------------------------------------
+
+
+def _snap_bars_to_points(bars: list) -> list[dict]:
+    """Convert raw OHLCV bar dicts to ``[{"t": date_str, "ltp": float}]``.
+
+    Skips bars that are not dicts or that lack ``date`` / ``close`` fields.
+    Returns an empty list when ``bars`` is empty or fully malformed.
+    """
+    points: list[dict] = []
+    for b in bars:
+        try:
+            d = b.get("date") if isinstance(b, dict) else None
+            c = b.get("close") if isinstance(b, dict) else None
+            if d is None or c is None:
+                continue
+            points.append({"t": str(d), "ltp": float(c)})
+        except Exception:
+            continue
+    return points
+
 
 async def snapshot_sparkline(*, settled: bool = False) -> dict:
     """Persist the last-N-day close-bar series for the sparkline universe
@@ -825,18 +872,7 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
 
     rows: list[dict] = []
     for sym, exch, bars in results:
-        if not bars:
-            continue
-        points = []
-        for b in bars:
-            try:
-                d = b.get("date") if isinstance(b, dict) else None
-                c = b.get("close") if isinstance(b, dict) else None
-                if d is None or c is None:
-                    continue
-                points.append({"t": str(d), "ltp": float(c)})
-            except Exception:
-                continue
+        points = _snap_bars_to_points(bars)
         if not points:
             continue
         rows.append({

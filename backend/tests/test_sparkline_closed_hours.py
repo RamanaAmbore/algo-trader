@@ -586,24 +586,35 @@ def test_fill_from_daily_book_sparkline_exists_in_quote():
 
 
 def test_tier4_fallback_called_only_in_db_only_mode():
-    """batch_sparkline source must gate the Tier 4 call inside `if db_only:`."""
+    """batch_sparkline must reach Tier 4 only via a db_only gate (direct or via helper)."""
     import backend.api.routes.quote as quote_mod
     src = inspect.getsource(quote_mod)
-    # The Tier 4 call must appear AFTER `if db_only:` not unconditionally
     batch_body = src.split("async def batch_sparkline")[-1]
-    # Find the db_only block containing _fill_from_daily_book_sparkline
-    assert "_fill_from_daily_book_sparkline" in batch_body, (
-        "_fill_from_daily_book_sparkline not called in batch_sparkline"
-    )
-    # The call must be indented inside a db_only block
     lines = batch_body.splitlines()
-    tier4_lines = [l for l in lines if "_fill_from_daily_book_sparkline" in l]
-    assert tier4_lines, "Tier 4 call not found in batch_sparkline body"
-    # Check that "if db_only" appears before the tier4 line (basic ordering guard)
-    db_only_lines = [i for i, l in enumerate(lines) if "if db_only" in l]
-    tier4_line_indices = [i for i, l in enumerate(lines) if "_fill_from_daily_book_sparkline" in l]
-    assert db_only_lines and tier4_line_indices, "Missing if db_only or tier4 line"
-    assert min(db_only_lines) < min(tier4_line_indices), (
+
+    helper_in_batch = "_qt_batch_spark_db_fallback" in batch_body
+    direct_in_batch = "_fill_from_daily_book_sparkline" in batch_body
+    assert helper_in_batch or direct_in_batch, (
+        "Tier 4 fallback (_fill_from_daily_book_sparkline or _qt_batch_spark_db_fallback) "
+        "not reachable from batch_sparkline"
+    )
+
+    # When delegated to a helper, verify the helper itself contains the db_only guard
+    if helper_in_batch and not direct_in_batch:
+        helper_src = inspect.getsource(quote_mod._qt_batch_spark_db_fallback)
+        assert "_fill_from_daily_book_sparkline" in helper_src, (
+            "_qt_batch_spark_db_fallback must call _fill_from_daily_book_sparkline"
+        )
+        assert "if not db_only" in helper_src or "if db_only" in helper_src, (
+            "_qt_batch_spark_db_fallback must gate on db_only"
+        )
+        return  # guard is inside the helper — invariant satisfied
+
+    # Direct call path: db_only gate must precede the Tier 4 call in batch_sparkline
+    db_only_indices = [i for i, l in enumerate(lines) if "if db_only" in l]
+    tier4_indices = [i for i, l in enumerate(lines) if "_fill_from_daily_book_sparkline" in l]
+    assert db_only_indices and tier4_indices, "Missing db_only guard or Tier 4 call"
+    assert min(db_only_indices) < min(tier4_indices), (
         "Tier 4 call appears before the db_only gate — open-session protection broken"
     )
 

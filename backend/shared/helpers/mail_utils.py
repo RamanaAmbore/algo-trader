@@ -95,6 +95,33 @@ def _email_attach_files(
         msg.attach(part)
 
 
+def _smtp_send(
+    smtp_server: str, smtp_port: int, smtp_user: str, smtp_pass: str,
+    envelope_to: list[str], msg: "MIMEMultipart",
+) -> "tuple[bool, str]":
+    """Open SMTP connection and send. Returns (success, message)."""
+    try:
+        if is_enabled('mail'):
+            with _IPv4SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_pass)
+                server.sendmail(smtp_user, envelope_to, msg.as_string())
+            return True, '✅ Your message has been sent successfully!'
+        else:
+            logger.info(
+                f"Email suppressed (mail capability off): "
+                f"to={envelope_to} subject={msg.get('Subject')!r}"
+            )
+            return True, "Non-prod mode only"
+    except smtplib.SMTPRecipientsRefused as e:
+        refused = list(getattr(e, 'recipients', {}).keys()) or envelope_to
+        err_msg = f"Email send error: recipients refused {refused}"
+        logger.warning(err_msg)
+        return False, err_msg
+    except Exception as e:
+        return False, f"Email send error: {e}"
+
+
 def send_email(name, email_id, subject, html_body, attachments=None):
     """
     Email one or more recipients with the operator's brand address
@@ -156,29 +183,7 @@ def send_email(name, email_id, subject, html_body, attachments=None):
     if bcc_brand:
         envelope_to.append(bcc_brand)
 
-    try:
-        if is_enabled('mail'):
-            with _IPv4SMTP(smtp_server, smtp_port) as server:
-                server.starttls()
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(smtp_user, envelope_to, msg.as_string())
-            return True, '✅ Your message has been sent successfully!'
-        else:
-            # Capability disabled — never log the body (contains live one-time links).
-            logger.info(
-                f"Email suppressed (mail capability off): "
-                f"to={to_addrs} subject={subject!r}"
-            )
-            return True, "Non-prod mode only"
-
-    except smtplib.SMTPRecipientsRefused as e:
-        refused = list(getattr(e, 'recipients', {}).keys()) or envelope_to
-        err_msg = f"Email send error: recipients refused {refused}"
-        logger.warning(err_msg)
-        return False, err_msg
-    except Exception as e:
-        err_msg = f"Email send error: {e}"
-        return False, err_msg
+    return _smtp_send(smtp_server, smtp_port, smtp_user, smtp_pass, envelope_to, msg)
 
 
 if __name__ == "__main__":

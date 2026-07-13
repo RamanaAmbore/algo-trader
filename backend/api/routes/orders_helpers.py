@@ -129,6 +129,33 @@ def _rebuild_tick_index(items) -> None:
     _TICK_INDEX = new_index
 
 
+def _snap_to_tick(price: float, tick: float) -> float:
+    """Round *price* half-up to the nearest valid tick grid value.
+
+    Uses integer-scaled arithmetic to avoid binary float artefacts
+    (0.05-tick grids misbehave with naive floating-point division).
+    """
+    scale = round(1.0 / tick) if tick < 1 else 1
+    if scale > 1:
+        aligned = round(float(price) * scale) / scale
+    else:
+        aligned = round(float(price) / tick) * tick
+    return round(aligned, 4)
+
+
+async def _ensure_tick_index() -> None:
+    """Refresh `_TICK_INDEX` from the instruments cache when the cache version stamp changes."""
+    global _TICK_INDEX_STAMP
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    resp = await get_or_fetch("instruments", _fetch_instruments, ttl_seconds=_TTL_SECONDS)
+    # Identity comparison is enough — get_or_fetch returns the SAME instance
+    # while the cache entry is valid, then a new instance on refresh.
+    if resp is not _TICK_INDEX_STAMP or not _TICK_INDEX:
+        _rebuild_tick_index(resp.items if resp else [])
+        _TICK_INDEX_STAMP = resp
+
+
 async def _align_price_to_tick(exchange: str, symbol: str,
                                 price: float | None) -> float | None:
     """Snap *price* to the nearest valid tick for the instrument.
@@ -150,36 +177,16 @@ async def _align_price_to_tick(exchange: str, symbol: str,
     same tick grid. For options with tick=0.05, 12.37 → 12.35;
     for commodities with tick=1, 9961.50 → 9962.
     """
-    global _TICK_INDEX_STAMP
     if price is None or price == 0:
         return price
     try:
-        from backend.api.cache import get_or_fetch
-        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-        resp = await get_or_fetch("instruments", _fetch_instruments,
-                                  ttl_seconds=_TTL_SECONDS)
-        # `resp` is the cached InstrumentsResponse object. Identity
-        # comparison is enough — get_or_fetch returns the SAME instance
-        # while the cache entry is valid, then a new instance on refresh.
-        # When the identity flips we rebuild the index.
-        if resp is not _TICK_INDEX_STAMP or not _TICK_INDEX:
-            _rebuild_tick_index(resp.items if resp else [])
-            _TICK_INDEX_STAMP = resp
+        await _ensure_tick_index()
     except Exception:
         return price
     tick = _TICK_INDEX.get(((exchange or "").upper(), (symbol or "").upper()))
     if not tick or tick <= 0:
         return price
-    # Round half-up to the nearest tick. Using integer division on a
-    # scaled-up price avoids float-rounding artefacts (0.05 ticks in
-    # binary float misbehave).
-    scale = round(1.0 / tick) if tick < 1 else 1
-    if scale > 1:
-        scaled = round(float(price) * scale)
-        aligned = scaled / scale
-    else:
-        aligned = round(float(price) / tick) * tick
-    aligned = round(aligned, 4)
+    aligned = _snap_to_tick(price, tick)
     if aligned != price:
         logger.info(f"[TICK] aligned {symbol} price {price} → {aligned} (tick={tick})")
     return aligned

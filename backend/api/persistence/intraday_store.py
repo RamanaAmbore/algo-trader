@@ -267,60 +267,91 @@ _MEM_CACHE: "OrderedDict[_MemKey, _Entry]" = _intraday_store._mem_cache  # type:
 
 # ── Tier 3 sync helper (module-level) ────────────────────────────────────────
 
-def _broker_fetch_sync(
-    symbol: str, exchange: str, on_date: date, interval: str,
-) -> list[IntradayBar]:
-    from backend.brokers.registry import get_historical_brokers
-    from backend.api.routes.quote import _get_today_token_map
-
-    try:
-        brokers = get_historical_brokers() or []
-    except Exception:
-        brokers = []
-
-    broker = brokers[0] if brokers else None
-    if broker is None:
-        return []
-
-    token_map = _get_today_token_map(broker)
-
-    exch_order = [exchange] + [e for e in ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS") if e != exchange]
-    token: int | None = None
+def _find_intraday_token(token_map: dict, symbol: str, exchange: str) -> "int | None":
+    """Look up instrument token, trying exchange first then standard fallback order."""
+    exch_order = [exchange] + [
+        e for e in ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS") if e != exchange
+    ]
     for ex in exch_order:
-        token = token_map.get((symbol, ex))
-        if token is not None:
-            break
-    if token is None:
-        return []
+        tok = token_map.get((symbol, ex))
+        if tok is not None:
+            return tok
+    return None
 
-    from_dt = datetime(on_date.year, on_date.month, on_date.day, 0, 0, 0)
-    to_dt   = datetime(on_date.year, on_date.month, on_date.day, 23, 59, 59)
+
+def _raw_ts_to_bar_ts(raw_ts: Any) -> str:
+    """Convert a raw timestamp (datetime or string) to ISO-8601 UTC string."""
+    if hasattr(raw_ts, "isoformat"):
+        return raw_ts.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return str(raw_ts)
+
+
+def _raw_row_to_intraday_bar(r: dict, bar_ts: str) -> "IntradayBar | None":
+    """Convert a raw broker row to an IntradayBar, returning None on parse error."""
     try:
-        raw = broker.historical_data(token, from_dt, to_dt, interval) or []
-    except Exception:
-        return []
+        return IntradayBar(
+            bar_ts=bar_ts,
+            open=float(r.get("open", 0)),
+            high=float(r.get("high", 0)),
+            low=float(r.get("low", 0)),
+            close=float(r.get("close", 0)),
+            volume=int(r.get("volume", 0)),
+        )
+    except (TypeError, ValueError):
+        return None
 
+
+def _build_intraday_bars(raw: list[dict]) -> list["IntradayBar"]:
+    """Parse raw broker rows into IntradayBar list, skipping rows without a date."""
     bars: list[IntradayBar] = []
     for r in raw:
         raw_ts = r.get("date")
         if raw_ts is None:
             continue
-        if hasattr(raw_ts, "isoformat"):
-            bar_ts = raw_ts.astimezone(timezone.utc).isoformat(timespec="seconds")
-        else:
-            bar_ts = str(raw_ts)
-        try:
-            bars.append(IntradayBar(
-                bar_ts=bar_ts,
-                open=float(r.get("open", 0)),
-                high=float(r.get("high", 0)),
-                low=float(r.get("low", 0)),
-                close=float(r.get("close", 0)),
-                volume=int(r.get("volume", 0)),
-            ))
-        except (TypeError, ValueError):
-            continue
+        bar = _raw_row_to_intraday_bar(r, _raw_ts_to_bar_ts(raw_ts))
+        if bar is not None:
+            bars.append(bar)
     return bars
+
+
+def _get_historical_broker() -> "Any | None":
+    """Return the first available historical broker or None."""
+    from backend.brokers.registry import get_historical_brokers
+    try:
+        brokers = get_historical_brokers() or []
+    except Exception:
+        brokers = []
+    return brokers[0] if brokers else None
+
+
+def _fetch_raw_intraday(
+    token: int, on_date: date, interval: str, broker: Any,
+) -> list[dict]:
+    """Call broker.historical_data for one intraday day. Returns [] on error."""
+    from_dt = datetime(on_date.year, on_date.month, on_date.day, 0, 0, 0)
+    to_dt   = datetime(on_date.year, on_date.month, on_date.day, 23, 59, 59)
+    try:
+        return broker.historical_data(token, from_dt, to_dt, interval) or []
+    except Exception:
+        return []
+
+
+def _broker_fetch_sync(
+    symbol: str, exchange: str, on_date: date, interval: str,
+) -> list[IntradayBar]:
+    from backend.api.routes.quote import _get_today_token_map
+
+    broker = _get_historical_broker()
+    if broker is None:
+        return []
+
+    token_map = _get_today_token_map(broker)
+    token = _find_intraday_token(token_map, symbol, exchange)
+    if token is None:
+        return []
+
+    raw = _fetch_raw_intraday(token, on_date, interval, broker)
+    return _build_intraday_bars(raw)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

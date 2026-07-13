@@ -2732,6 +2732,19 @@
   }
   .dash-mini-grid + .bucket-subheader { margin-top: 0.55rem; }
 
+  /* Column borders — match Pulse's clean borderless look. Pulse
+     suppresses via .mp-bucket-wrap in MarketPulse.svelte, but that
+     :global() rule is scoped to routes that load MarketPulse. Dashboard
+     uses .dash-mini-grid as the theme root (ag-theme-algo on the same
+     element), so we target ag-cell children directly from that root.
+     The meaningful LTP-heat inset stripes are painted via box-shadow,
+     not border, so they are unaffected. */
+  :global(.dash-mini-grid.ag-theme-algo .ag-cell),
+  :global(.dash-mini-grid.ag-theme-algo .ag-header-cell) {
+    border-right: 0 !important;
+    border-left: 0 !important;
+  }
+
   /* (Dead .dash-card-empty rule retired — every dashboard empty
      state now uses the global <EmptyState> component which carries
      its own styling.) */

@@ -121,6 +121,17 @@ _alert_recipients_cache: list[str] = []
 _alert_recipients_lock = Lock()
 
 
+def _dedup_emails(emails: list[str]) -> list[str]:
+    """Return a deduplicated, order-preserving list of non-empty email strings."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for e in emails:
+        if e and e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
+
+
 def get_alert_recipients() -> list[str]:
     """Sync — returns the current merged recipient list (designated +
     opted-in admins + secrets fallback), deduped. Used by every alert
@@ -134,26 +145,14 @@ def get_alert_recipients() -> list[str]:
     if not is_prod_branch():
         dev_emails = secrets.get('dev_alert_emails', []) or []
         if dev_emails:
-            seen: set[str] = set()
-            out: list[str] = []
-            for e in dev_emails:
-                if e and e not in seen:
-                    seen.add(e)
-                    out.append(e)
-            return out
+            return _dedup_emails(dev_emails)
         # No dev override configured — fall through to prod list so
         # alerts still go somewhere visible during dev testing.
 
     with _alert_recipients_lock:
         db_part = list(_alert_recipients_cache)
     static_part = secrets.get('alert_emails', []) or []
-    seen: set[str] = set()
-    out: list[str] = []
-    for e in db_part + static_part:
-        if e and e not in seen:
-            seen.add(e)
-            out.append(e)
-    return out
+    return _dedup_emails(db_part + static_part)
 
 
 def get_market_recipients() -> list[str]:
@@ -355,6 +354,66 @@ def _sim_banner_html() -> str:
     )
 
 
+def _dispatch_email(
+    *, email_prefix_full: str, branch_tag: str, mode_tag: str,
+    subject_detail: str, sim_mode: bool, branch: str,
+    tg_prefix_full: str, ist_display: str, email_table_html: str,
+    sim_prefix: str, tg_prefix: str,
+) -> None:
+    """Build and queue email dispatch for _dispatch. Offloads SMTP to the pool."""
+    alert_emails = get_alert_recipients()
+    if not alert_emails:
+        return
+    subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
+    subject = (
+        f"{subj_pfx}{subject_detail}"
+        if (branch_tag or mode_tag)
+        else f"{email_prefix_full}{subject_detail}"
+    )
+    banners = _build_email_banners(sim_mode, branch)
+    html_body = (
+        f"<html><body style='font-family:sans-serif;background-color:{_EMAIL_BG};"
+        f"color:{_EMAIL_TEXT};margin:0;padding:18px'>"
+        f"<div style='max-width:760px;margin:0 auto'>"
+        f"{banners}"
+        f"<p style='font-size:14px;color:{_EMAIL_AMBER};letter-spacing:0.04em;"
+        f"margin:0 0 14px 0'>"
+        f"<b>{tg_prefix_full}{branch_tag} — {ist_display}</b></p>"
+        f"{email_table_html}"
+        f"</div>"
+        f"</body></html>"
+    )
+    for email in alert_emails:
+        def _send_one(addr=email, subj=subject, body=html_body,
+                      pfx=f"{sim_prefix}{tg_prefix}"):
+            try:
+                send_email("", addr, subj, body)
+                logger.info(f"{pfx} email sent to {addr}")
+            except Exception as _e:
+                logger.error(f"Failed to send {pfx} email to {addr}: {_e}")
+        _SMTP_EXECUTOR.submit(_send_one)
+
+
+def _build_tg_warning_block(sim_mode: bool, branch: str) -> str:
+    """Build the Telegram warning block for simulator and non-main-branch runs."""
+    lines = []
+    if sim_mode:
+        lines.append("&#128680; <b>SIMULATOR RUN</b> — fabricated market data")
+    if branch != 'main':
+        lines.append(f"⚠ <b>Branch: {branch}</b>")
+    return ("\n" + "\n".join(lines)) if lines else ''
+
+
+def _build_email_banners(sim_mode: bool, branch: str) -> str:
+    """Build HTML banners for the email body (simulator and non-main-branch)."""
+    banners = ''
+    if sim_mode:
+        banners += _sim_banner_html()
+    if branch != 'main':
+        banners += _branch_banner_html(branch)
+    return banners
+
+
 def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
               subject_detail: str, sim_mode: bool = False, mode_tag: str = ''):
     """
@@ -379,18 +438,9 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
 
     branch = config.get('deploy_branch', 'main')
     branch_tag = f" [{branch}]" if branch != 'main' else ''
-    # mode_tag goes immediately after the message-type prefix so it's
-    # readable on Telegram + at the start of the email subject.
     mode_pfx = f"{mode_tag} " if mode_tag else ''
 
-    # Telegram: fixed-width monospace table; branch + simulator warning lines
-    warning_lines = []
-    if sim_mode:
-        warning_lines.append("&#128680; <b>SIMULATOR RUN</b> — fabricated market data")
-    if branch != 'main':
-        warning_lines.append(f"⚠ <b>Branch: {branch}</b>")
-    warning_block = ("\n" + "\n".join(warning_lines)) if warning_lines else ''
-
+    warning_block = _build_tg_warning_block(sim_mode, branch)
     telegram_msg = (
         f"<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}\n\n"
         f"<code>{tg_table}</code>"
@@ -406,40 +456,19 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
     if msg_type in ('open', 'close'):
         return
 
-    alert_emails = get_alert_recipients()
-    if alert_emails:
-        subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
-        subject = f"{subj_pfx}{subject_detail}" if (branch_tag or mode_tag) else f"{email_prefix_full}{subject_detail}"
-        banners = ''
-        if sim_mode:
-            banners += _sim_banner_html()
-        if branch != 'main':
-            banners += _branch_banner_html(branch)
-        html_body = (
-            f"<html><body style='font-family:sans-serif;background-color:{_EMAIL_BG};"
-            f"color:{_EMAIL_TEXT};margin:0;padding:18px'>"
-            f"<div style='max-width:760px;margin:0 auto'>"
-            f"{banners}"
-            f"<p style='font-size:14px;color:{_EMAIL_AMBER};letter-spacing:0.04em;"
-            f"margin:0 0 14px 0'>"
-            f"<b>{tg_prefix_full}{branch_tag} — {ist_display}</b></p>"
-            f"{email_table_html}"
-            f"</div>"
-            f"</body></html>"
-        )
-        # Offload SMTP to the bounded _SMTP_EXECUTOR pool so a Hostinger
-        # connection-timeout (up to 30s) never stalls the event loop and
-        # concurrent fires can't spawn unbounded daemon threads.
-        # Fire-and-forget: failures are logged inside the wrapper.
-        for email in alert_emails:
-            def _send_one(addr=email, subj=subject, body=html_body,
-                          pfx=f"{sim_prefix}{tg_prefix}"):
-                try:
-                    send_email("", addr, subj, body)
-                    logger.info(f"{pfx} email sent to {addr}")
-                except Exception as _e:
-                    logger.error(f"Failed to send {pfx} email to {addr}: {_e}")
-            _SMTP_EXECUTOR.submit(_send_one)
+    _dispatch_email(
+        email_prefix_full=email_prefix_full,
+        branch_tag=branch_tag,
+        mode_tag=mode_tag,
+        subject_detail=subject_detail,
+        sim_mode=sim_mode,
+        branch=branch,
+        tg_prefix_full=tg_prefix_full,
+        ist_display=ist_display,
+        email_table_html=email_table_html,
+        sim_prefix=sim_prefix,
+        tg_prefix=tg_prefix,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +676,148 @@ def _error_sig(error: str) -> str:
     return error.lower().strip()[:80]
 
 
+def _redis_cooldown_check(
+    redis_key: str, key: tuple, now: "datetime",
+) -> "tuple[bool, int, bool]":
+    """Check Redis cooldown for an order failure alert.
+
+    Returns (should_suppress, suppressed_count, used_redis).
+    should_suppress=True means caller must return early (don't fire the alert).
+    used_redis=True means Redis was successfully consulted (skip in-process path).
+    """
+    try:
+        _rc = _get_redis()
+        if _rc is None:
+            return False, 0, False
+        existing = _rc.get(redis_key)
+        if existing is not None:
+            with _order_alert_lock:
+                _entry = _order_alert_state.get(key)
+                if _entry is not None:
+                    _entry["suppressed"] += 1
+            return True, 0, True
+        with _order_alert_lock:
+            _entry = _order_alert_state.get(key)
+            if _entry is not None:
+                suppressed_count = _entry["suppressed"]
+                _entry["last_sent"]  = now
+                _entry["suppressed"] = 0
+            else:
+                suppressed_count = 0
+                _order_alert_state[key] = {
+                    "first_seen": now, "last_sent": now, "suppressed": 0,
+                }
+        _rc.setex(redis_key, _ORDER_ALERT_COOLDOWN_SEC, b"1")
+        return False, suppressed_count, True
+    except Exception as _redis_e:
+        logger.debug(f"Redis cooldown check failed — using in-process dict: {_redis_e}")
+        return False, 0, False
+
+
+def _inprocess_cooldown_check(
+    key: tuple, now: "datetime", masked: str, side: str, symbol: str, sig: str,
+) -> "tuple[bool, int]":
+    """Check in-process cooldown dict for an order failure alert.
+
+    Returns (should_suppress, suppressed_count).
+    should_suppress=True means caller must return early.
+    """
+    with _order_alert_lock:
+        entry = _order_alert_state.get(key)
+        if entry is not None:
+            elapsed = (now - entry["last_sent"]).total_seconds()
+            if elapsed < _ORDER_ALERT_COOLDOWN_SEC:
+                entry["suppressed"] += 1
+                logger.debug(
+                    f"order-failure alert suppressed ({entry['suppressed']} total) "
+                    f"for {masked} {side} {symbol}: {sig}"
+                )
+                return True, 0
+            suppressed_count = entry["suppressed"]
+            entry["last_sent"]  = now
+            entry["suppressed"] = 0
+        else:
+            suppressed_count = 0
+            _order_alert_state[key] = {
+                "first_seen": now, "last_sent": now, "suppressed": 0,
+            }
+    return False, suppressed_count
+
+
+def _send_order_failure_messages(
+    *,
+    masked: str,
+    symbol: str,
+    exchange: str,
+    side: str,
+    qty: int,
+    mode: str,
+    source: str,
+    error: str,
+    suppressed_count: int,
+    ist_disp: str,
+) -> None:
+    """Build and deliver Telegram + email alerts for an order rejection.
+
+    Separated from `send_order_failure_alert` so the cooldown logic and the
+    message-construction/dispatch logic each have CC ≤ 10.
+    """
+    branch      = config.get("deploy_branch", "main")
+    mode_tag    = f"[{mode.upper()}]" if mode else ""
+    sup_note    = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
+    error_short = error[:160].strip()
+
+    tg_body = (
+        f"<b>&#10060; Order rejected</b>  {mode_tag}{sup_note}\n"
+        f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
+        f"source: {source}\n"
+        f"<code>{error_short}</code>"
+    )
+
+    rows_html = _html_table(
+        ("Field", "Value"),
+        [
+            ("Account",   masked),
+            ("Symbol",    symbol),
+            ("Exchange",  exchange),
+            ("Side",      side),
+            ("Qty",       str(qty)),
+            ("Mode",      mode),
+            ("Source",    source),
+            ("Error",     error_short + sup_note),
+            ("Timestamp", ist_disp),
+        ],
+    )
+    email_body = (
+        f"<html><body style='font-family:sans-serif'>"
+        + (_branch_banner_html(branch) if branch != "main" else "")
+        + f"<p style='font-size:14px;color:#c0392b'><b>&#10060; Order rejected</b>"
+          f"{' ' + mode_tag if mode_tag else ''}</p>"
+        + rows_html
+        + f"</body></html>"
+    )
+    subject = (
+        f"RamboQuant Order Rejected: {symbol} {side}"
+        + (f" [{branch}]" if branch != "main" else "")
+        + (f" ({mode})" if mode else "")
+    )
+
+    _send_telegram(tg_body)
+    alert_emails = get_alert_recipients()
+    for email in alert_emails:
+        def _send_failure_email(addr=email, subj=subject, body=email_body):
+            try:
+                send_email("", addr, subj, body)
+            except Exception as _mail_e:
+                logger.error(f"order-failure email to {addr} failed: {_mail_e}")
+        _SMTP_EXECUTOR.submit(_send_failure_email)
+
+    logger.warning(
+        f"order-failure alert sent: {masked} {side} {qty} {symbol} "
+        f"mode={mode} source={source}{sup_note}"
+    )
+
+
 def send_order_failure_alert(
     *,
     account: str,
@@ -677,8 +848,6 @@ def send_order_failure_alert(
     interrupt order placement or the chase loop.
     """
     try:
-        # ── Fix 2: market-hours gate ─────────────────────────────────────
-        # Import locally to avoid circular-import at module load time.
         try:
             from backend.api.helpers.snapshot_gate import _any_segment_open
             if not _any_segment_open():
@@ -688,8 +857,6 @@ def send_order_failure_alert(
                 )
                 return
         except Exception as _mh_e:
-            # fail-open: if the market-hours check errors, proceed with
-            # the alert so the operator doesn't miss a real failure.
             logger.debug(f"order-failure market-hours check failed (fail-open): {_mh_e}")
 
         from backend.shared.helpers.date_time_utils import timestamp_display
@@ -700,133 +867,31 @@ def send_order_failure_alert(
         key    = (masked, symbol.upper(), side.upper(), sig)
         now    = datetime.utcnow()
 
-        # ── Fix 1: Redis-backed cooldown with in-process dict fallback ───
-        # Derive a short stable string key for Redis from the tuple key.
         _redis_raw = f"{masked}|{symbol.upper()}|{side.upper()}|{sig}"
         _redis_key = "ramboq:order_alert:" + hashlib.sha256(_redis_raw.encode()).hexdigest()[:32]
-        _used_redis = False
-        suppressed_count = 0
 
-        try:
-            _rc = _get_redis()
-            if _rc is not None:
-                # Check Redis first — if the key exists, cooldown is active.
-                existing = _rc.get(_redis_key)
-                if existing is not None:
-                    # Cooldown active across restart — suppress silently.
-                    # Increment in-process dict counter for the eventual
-                    # fired alert's suppressed note (best-effort, not
-                    # critical to persist this across restart).
-                    with _order_alert_lock:
-                        _entry = _order_alert_state.get(key)
-                        if _entry is not None:
-                            _entry["suppressed"] += 1
-                    logger.debug(
-                        f"order-failure alert suppressed (Redis TTL) "
-                        f"for {masked} {side} {symbol}: {sig}"
-                    )
-                    return
-                # Not in Redis — check in-process dict for suppressed count.
-                with _order_alert_lock:
-                    _entry = _order_alert_state.get(key)
-                    if _entry is not None:
-                        suppressed_count = _entry["suppressed"]
-                        _entry["last_sent"]  = now
-                        _entry["suppressed"] = 0
-                    else:
-                        suppressed_count = 0
-                        _order_alert_state[key] = {
-                            "first_seen": now, "last_sent": now, "suppressed": 0,
-                        }
-                # Arm the Redis cooldown key.
-                _rc.setex(_redis_key, _ORDER_ALERT_COOLDOWN_SEC, b"1")
-                _used_redis = True
-        except Exception as _redis_e:
-            logger.debug(f"Redis cooldown check failed — using in-process dict: {_redis_e}")
+        should_suppress, suppressed_count, _used_redis = _redis_cooldown_check(
+            _redis_key, key, now
+        )
+        if should_suppress:
+            logger.debug(
+                f"order-failure alert suppressed (Redis TTL) "
+                f"for {masked} {side} {symbol}: {sig}"
+            )
+            return
 
         if not _used_redis:
-            # Pure in-process fallback path (Redis unavailable).
-            with _order_alert_lock:
-                entry = _order_alert_state.get(key)
-                if entry is not None:
-                    elapsed = (now - entry["last_sent"]).total_seconds()
-                    if elapsed < _ORDER_ALERT_COOLDOWN_SEC:
-                        entry["suppressed"] += 1
-                        logger.debug(
-                            f"order-failure alert suppressed ({entry['suppressed']} total) "
-                            f"for {masked} {side} {symbol}: {sig}"
-                        )
-                        return
-                    # Cooldown elapsed — fire; carry suppressed count
-                    suppressed_count = entry["suppressed"]
-                    entry["last_sent"]  = now
-                    entry["suppressed"] = 0
-                else:
-                    suppressed_count = 0
-                    _order_alert_state[key] = {
-                        "first_seen": now, "last_sent": now, "suppressed": 0,
-                    }
+            should_suppress, suppressed_count = _inprocess_cooldown_check(
+                key, now, masked, side, symbol, sig
+            )
+            if should_suppress:
+                return
 
-        branch   = config.get("deploy_branch", "main")
-        ist_disp = timestamp_display()
-        mode_tag = f"[{mode.upper()}]" if mode else ""
-        sup_note = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
-        error_short = error[:160].strip()
-
-        # Telegram — compact monospace block
-        tg_body = (
-            f"<b>&#10060; Order rejected</b>  {mode_tag}{sup_note}\n"
-            f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
-            f"source: {source}\n"
-            f"<code>{error_short}</code>"
-        )
-
-        # Email — HTML table
-        rows_html = _html_table(
-            ("Field", "Value"),
-            [
-                ("Account",   masked),
-                ("Symbol",    symbol),
-                ("Exchange",  exchange),
-                ("Side",      side),
-                ("Qty",       str(qty)),
-                ("Mode",      mode),
-                ("Source",    source),
-                ("Error",     error_short + sup_note),
-                ("Timestamp", ist_disp),
-            ],
-        )
-        email_body = (
-            f"<html><body style='font-family:sans-serif'>"
-            + (_branch_banner_html(branch) if branch != "main" else "")
-            + f"<p style='font-size:14px;color:#c0392b'><b>&#10060; Order rejected</b>"
-              f"{' ' + mode_tag if mode_tag else ''}</p>"
-            + rows_html
-            + f"</body></html>"
-        )
-
-        subject = (
-            f"RamboQuant Order Rejected: {symbol} {side}"
-            + (f" [{branch}]" if branch != "main" else "")
-            + (f" ({mode})" if mode else "")
-        )
-
-        # Deliver — best-effort; never raises out of this function.
-        # Offload SMTP to the bounded _SMTP_EXECUTOR pool so a timeout never
-        # stalls the chase loop or agent run_cycle event-loop iteration.
-        _send_telegram(tg_body)
-        alert_emails = get_alert_recipients()
-        for email in alert_emails:
-            def _send_failure_email(addr=email, subj=subject, body=email_body):
-                try:
-                    send_email("", addr, subj, body)
-                except Exception as _mail_e:
-                    logger.error(f"order-failure email to {addr} failed: {_mail_e}")
-            _SMTP_EXECUTOR.submit(_send_failure_email)
-
-        logger.warning(
-            f"order-failure alert sent: {masked} {side} {qty} {symbol} "
-            f"mode={mode} source={source}{sup_note}"
+        _send_order_failure_messages(
+            masked=masked, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode=mode, source=source,
+            error=error, suppressed_count=suppressed_count,
+            ist_disp=timestamp_display(),
         )
     except Exception as _top_e:
         logger.error(f"send_order_failure_alert internal error: {_top_e}")
@@ -901,6 +966,35 @@ def _fmt_pct(n: float) -> str:
     return f"{n:.2f}%"
 
 
+def _tg_rule_line(a: dict) -> str:
+    """Build the second Telegram line for an alert (rule kind + threshold/rate)."""
+    k = a['kind']
+    label = _KIND_LABEL[k]
+    if k in ('static_pct', 'static_abs'):
+        return f"  {label}  floor {a['threshold']}"
+    if k == 'rate_abs':
+        return (f"  {label}  now {_fmt_rupees(a['rate_val'])}/min  "
+                f"floor {a['threshold']}")
+    if k == 'rate_pct':
+        return (f"  {label}  now {_fmt_pct(a['rate_val'])}/min  "
+                f"floor {a['threshold']}")
+    return f"  {label}  {a['threshold']}"
+
+
+def _tg_position_enrichment_lines(a: dict) -> list[str]:
+    """Return optional enrichment lines for a Position alert (underlying breakdown + rate)."""
+    result: list[str] = []
+    ub = a.get('underlyings_breakdown') or []
+    if ub:
+        pieces = [f"{u['underlying']} {_fmt_rupees_compact(u['pnl'])}" for u in ub]
+        result.append("  by und: " + " · ".join(pieces))
+    k = a['kind']
+    rv = a.get('rate_val')
+    if rv is not None and k not in ('rate_abs', 'rate_pct'):
+        result.append(f"  rate:   {_fmt_rupees(rv)}/min")
+    return result
+
+
 def _tg_alert_body(alerts: list) -> str:
     """
     Build the narrow 2-line-per-row Telegram body. Each alert gets:
@@ -925,42 +1019,34 @@ def _tg_alert_body(alerts: list) -> str:
         if a.get('pct') is not None and a['pct'] != 0:
             head_right += f" ({_fmt_pct(a['pct'])})"
         lines.append(f"▸ {short} {a['scope']}  {head_right}")
-
-        # Second line varies slightly by rule so the "why" is obvious at a glance.
-        k = a['kind']
-        label = _KIND_LABEL[k]
-        if k == 'static_pct':
-            lines.append(f"  {label}  floor {a['threshold']}")
-        elif k == 'static_abs':
-            lines.append(f"  {label}  floor {a['threshold']}")
-        elif k == 'rate_abs':
-            lines.append(f"  {label}  now {_fmt_rupees(a['rate_val'])}/min  "
-                         f"floor {a['threshold']}")
-        elif k == 'rate_pct':
-            lines.append(f"  {label}  now {_fmt_pct(a['rate_val'])}/min  "
-                         f"floor {a['threshold']}")
-        else:
-            lines.append(f"  {label}  {a['threshold']}")
-
-        # Optional enrichment for position alerts. Compact ₹ formatting
-        # keeps the line under the 32-char rule of thumb.
+        lines.append(_tg_rule_line(a))
         if a['section'] == 'Positions':
-            ub = a.get('underlyings_breakdown') or []
-            if ub:
-                pieces = [f"{u['underlying']} {_fmt_rupees_compact(u['pnl'])}"
-                          for u in ub]
-                lines.append("  by und: " + " · ".join(pieces))
-            # Static-alert rate enrichment — rate alerts already showed
-            # `now <rate>/min` on line 2 so we suppress to avoid the
-            # dupe.
-            rv = a.get('rate_val')
-            if rv is not None and k not in ('rate_abs', 'rate_pct'):
-                lines.append(f"  rate:   {_fmt_rupees(rv)}/min")
-
+            lines.extend(_tg_position_enrichment_lines(a))
         lines.append("")  # blank line between alerts for easy scanning
     if lines and lines[-1] == "":
         lines.pop()
     return "\n".join(lines)
+
+
+def _email_underlying_subrow(ub: list, bg: str) -> str:
+    """Render an HTML sub-row for the per-underlying breakdown in an email alert."""
+    sub_cells = ''.join(
+        f"<td style='padding:3px 8px;font-size:11px;color:{_EMAIL_TEXT};"
+        f"border-right:1px solid {_EMAIL_BORDER}'>"
+        f"<b style='color:{_EMAIL_AMBER}'>{u['underlying']}</b> "
+        f"<span style='color:{_EMAIL_TEXT_MUTED}'>{_fmt_rupees(u['pnl'])}</span>"
+        f"</td>"
+        for u in ub
+    )
+    return (
+        f"<tr><td colspan='6' style='padding:0 12px 8px;"
+        f"background-color:{bg or _EMAIL_PANEL_BG}'>"
+        f"<div style='font-size:11px;color:{_EMAIL_TEXT_MUTED};padding:4px 0 2px'>"
+        f"By underlying:</div>"
+        f"<table style='border-collapse:collapse'>"
+        f"<tr>{sub_cells}</tr></table>"
+        f"</td></tr>"
+    )
 
 
 def _email_alert_body(alerts: list) -> str:
@@ -1026,28 +1112,10 @@ def _email_alert_body(alerts: list) -> str:
             + "</tr>"
         )
         # Per-underlying breakdown sub-row — only for Position alerts
-        # that carry the breakdown payload. Renders as a nested table
-        # spanning all 6 columns so the operator sees the contributing
-        # underlyings without leaving the alert.
+        # that carry the breakdown payload.
         ub = a.get('underlyings_breakdown') or []
         if a['section'] == 'Positions' and ub:
-            sub_cells = ''.join(
-                f"<td style='padding:3px 8px;font-size:11px;color:{_EMAIL_TEXT};"
-                f"border-right:1px solid {_EMAIL_BORDER}'>"
-                f"<b style='color:{_EMAIL_AMBER}'>{u['underlying']}</b> "
-                f"<span style='color:{_EMAIL_TEXT_MUTED}'>{_fmt_rupees(u['pnl'])}</span>"
-                f"</td>"
-                for u in ub
-            )
-            row_html += (
-                f"<tr><td colspan='6' style='padding:0 12px 8px;"
-                f"background-color:{bg or _EMAIL_PANEL_BG}'>"
-                f"<div style='font-size:11px;color:{_EMAIL_TEXT_MUTED};padding:4px 0 2px'>"
-                f"By underlying:</div>"
-                f"<table style='border-collapse:collapse'>"
-                f"<tr>{sub_cells}</tr></table>"
-                f"</td></tr>"
-            )
+            row_html += _email_underlying_subrow(ub, bg)
     return (
         f"<table style='border-collapse:collapse;width:100%;"
         f"background-color:{_EMAIL_PANEL_BG};border:1px solid {_EMAIL_BORDER};"

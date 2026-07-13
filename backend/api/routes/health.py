@@ -140,6 +140,32 @@ def _git_subject() -> str:
         return "unknown"
 
 
+def _hlth_account_status(row, loaded_accounts: set) -> str:
+    """Compute status string (DISABLED / LOADED / PENDING) for one broker row."""
+    if not row.is_active:
+        return "DISABLED"
+    if row.account in loaded_accounts:
+        return "LOADED"
+    return "PENDING"
+
+
+def _hlth_merge_conn_svc_accounts(loaded_accounts: set) -> None:
+    """Merge conn_service loaded accounts into *loaded_accounts* in-place."""
+    import os as _os
+    if _os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return
+    try:
+        from backend.brokers.client.remote_broker import list_remote_accounts
+        for r in list_remote_accounts():
+            acct = r.get("account")
+            if acct:
+                loaded_accounts.add(acct)
+    except Exception:
+        pass
+
+
 async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
     try:
         from backend.brokers.connections import Connections
@@ -150,18 +176,7 @@ async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
     # Cutover branch — when conn_service owns sessions, the canonical
     # loaded-account list lives there. Merge to keep the navbar pill
     # honest (PENDING → LOADED for everything conn_service reports).
-    import os as _os
-    if _os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
-        try:
-            from backend.brokers.client.remote_broker import list_remote_accounts
-            for r in list_remote_accounts():
-                acct = r.get("account")
-                if acct:
-                    loaded_accounts.add(acct)
-        except Exception:
-            pass
+    _hlth_merge_conn_svc_accounts(loaded_accounts)
 
     statuses: list[BrokerStatus] = []
     ipv6_list: list[str] = []
@@ -173,23 +188,13 @@ async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
             )).scalars().all()
 
         for row in rows:
-            if not row.is_active:
-                status = "DISABLED"
-            elif row.account in loaded_accounts:
-                status = "LOADED"
-            else:
-                status = "PENDING"
-
-            api_key_last4 = (row.api_key or "")[-4:] or "????"
             source_ip = row.source_ip or ""
-
             statuses.append(BrokerStatus(
                 account=row.account,
-                status=status,
-                api_key_last4=api_key_last4,
+                status=_hlth_account_status(row, loaded_accounts),
+                api_key_last4=(row.api_key or "")[-4:] or "????",
                 source_ip=source_ip,
             ))
-
             if source_ip:
                 ipv6_list.append(source_ip)
 
@@ -421,6 +426,28 @@ class _InvalidateResponse(msgspec.Struct):
 # ── Backfill helpers (extracted from PersistenceAdminController.backfill._run_backfill) ──
 
 
+async def _hlth_resolve_virtual_sym(sym: str, exch: str) -> str:
+    """Resolve MCX/CDS virtual root symbols to their concrete contract names.
+
+    Returns the resolved symbol (upper-stripped) or the original sym on
+    any failure / non-virtual exchange.
+    """
+    if not (sym.isalpha() and len(sym) <= 12):
+        return sym
+    try:
+        if exch == "MCX":
+            from backend.api.routes.watchlist import _resolve_mcx_commodity
+            resolved = await _resolve_mcx_commodity(sym)
+            return resolved.upper().strip() if resolved else sym
+        if exch == "CDS":
+            from backend.api.routes.watchlist import _resolve_cds_currency
+            resolved = await _resolve_cds_currency(sym)
+            return resolved.upper().strip() if resolved else sym
+    except Exception:
+        pass
+    return sym
+
+
 async def _backfill_collect_watchlist_symbols(
     symbols: list[tuple[str, str]],
     seen: set[tuple[str, str]],
@@ -433,9 +460,6 @@ async def _backfill_collect_watchlist_symbols(
         from backend.api.database import async_session as _as
         from backend.api.models import WatchlistItem
         from sqlalchemy import select as _sa_select
-        from backend.api.routes.watchlist import (
-            _resolve_mcx_commodity, _resolve_cds_currency,
-        )
         async with _as() as sess:
             rows = (await sess.execute(
                 _sa_select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
@@ -445,20 +469,35 @@ async def _backfill_collect_watchlist_symbols(
             exch = (row.exchange or "NSE").upper().strip()
             if not sym:
                 continue
-            if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
-                resolved = await _resolve_mcx_commodity(sym)
-                if resolved:
-                    sym = resolved.upper().strip()
-            elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
-                resolved = await _resolve_cds_currency(sym)
-                if resolved:
-                    sym = resolved.upper().strip()
+            sym = await _hlth_resolve_virtual_sym(sym, exch)
             key = (sym, exch)
             if key not in seen:
                 seen.add(key)
                 symbols.append(key)
     except Exception as exc:
         logger.warning(f"backfill/route: watchlist collect failed: {exc}")
+
+
+def _hlth_collect_df_symbols(
+    df, default_exch: str, symbols: list, seen: set,
+) -> None:
+    """Append (tradingsymbol, exchange) from a DataFrame into symbols/seen."""
+    import pandas as _pd
+    if df.empty or "tradingsymbol" not in df.columns:
+        return
+    exch_col = (
+        df["exchange"] if "exchange" in df.columns
+        else _pd.Series([default_exch] * len(df))
+    )
+    for s, e in zip(df["tradingsymbol"], exch_col):
+        sym  = str(s or "").upper().strip()
+        exch = str(e or default_exch).upper().strip()
+        if not sym:
+            continue
+        k = (sym, exch)
+        if k not in seen:
+            seen.add(k)
+            symbols.append(k)
 
 
 def _backfill_collect_book_symbols(
@@ -478,21 +517,7 @@ def _backfill_collect_book_symbols(
         ):
             dfs = fetch_fn()
             df  = _pd.concat(dfs, ignore_index=True) if dfs else _pd.DataFrame()
-            if df.empty or "tradingsymbol" not in df.columns:
-                continue
-            _exch_col = (
-                df["exchange"] if "exchange" in df.columns
-                else _pd.Series([default_exch] * len(df))
-            )
-            for s, e in zip(df["tradingsymbol"], _exch_col):
-                sym  = str(s or "").upper().strip()
-                exch = str(e or default_exch).upper().strip()
-                if not sym:
-                    continue
-                k = (sym, exch)
-                if k not in seen:
-                    seen.add(k)
-                    symbols.append(k)
+            _hlth_collect_df_symbols(df, default_exch, symbols, seen)
     except Exception as exc:
         logger.warning(f"backfill/route: holdings/positions collect failed: {exc}")
 
@@ -801,25 +826,18 @@ def _derive_healthy_reason(last_ok: float, now: float) -> tuple[str, str]:
     return "amber", (f"stale — last good {mins} min ago at {label}" if label else f"stale — {mins} min ago")
 
 
-def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int, Optional[str]]:
-    """Return ``(state, reason, circuit_state, consecutive_fail_count, circuit_open_until_iso)``
-    for one _FETCH_HEALTH entry.
-
-    State rules:
-      green  — last_ok_at is present AND within the last 5 min
-               (circuit must be CLOSED)
-      amber  — last_ok_at present but > 5 min ago (stale), OR never tried
-      red    — last_fail_at > last_ok_at (most-recent call failed)
-               OR circuit breaker is OPEN (overrides auth-ok state)
-    """
-    last_ok   = entry.get("last_ok_at",   0.0) or 0.0
-    last_fail = entry.get("last_fail_at", 0.0) or 0.0
-    last_msg  = entry.get("last_fail_msg", "") or ""
-
-    cb_until  = entry.get("circuit_open_until") or None
-    cb_count  = int(entry.get("consecutive_fail_count", 0) or 0)
-    cb_state  = _cb_classify(cb_until, now)
-    cb_until_iso: Optional[str] = _ts_to_iso(cb_until) if cb_until else None
+def _hlth_resolve_state(
+    entry: dict,
+    now: float,
+    cb_state: str,
+    cb_count: int,
+    cb_until_iso: Optional[str],
+    cb_until,
+) -> tuple[str, str, str, int, Optional[str]]:
+    """Resolve the health (state, reason) given pre-computed circuit-breaker fields."""
+    last_ok   = entry.get("last_ok_at")   or 0.0
+    last_fail = entry.get("last_fail_at") or 0.0
+    last_msg  = entry.get("last_fail_msg") or ""
 
     if cb_state == "open":
         label = _ts_to_ist_label(cb_until)
@@ -834,6 +852,25 @@ def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int,
 
     state, reason = _derive_healthy_reason(last_ok, now)
     return state, reason, cb_state, cb_count, cb_until_iso
+
+
+def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int, Optional[str]]:
+    """Return ``(state, reason, circuit_state, consecutive_fail_count, circuit_open_until_iso)``
+    for one _FETCH_HEALTH entry.
+
+    State rules:
+      green  — last_ok_at is present AND within the last 5 min
+               (circuit must be CLOSED)
+      amber  — last_ok_at present but > 5 min ago (stale), OR never tried
+      red    — last_fail_at > last_ok_at (most-recent call failed)
+               OR circuit breaker is OPEN (overrides auth-ok state)
+    """
+    cb_until     = entry.get("circuit_open_until") or None
+    cb_count     = int(entry.get("consecutive_fail_count") or 0)
+    cb_state     = _cb_classify(cb_until, now)
+    cb_until_iso: Optional[str] = _ts_to_iso(cb_until) if cb_until else None
+
+    return _hlth_resolve_state(entry, now, cb_state, cb_count, cb_until_iso, cb_until)
 
 
 async def _load_broker_label_and_priority_maps() -> tuple[dict[str, str], dict[str, dict]]:
