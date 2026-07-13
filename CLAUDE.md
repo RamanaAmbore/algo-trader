@@ -63,13 +63,53 @@ After implementing any bug fix:
 
 ## Default Workflow
 
-**Plan before implement** — always enter plan mode for non-trivial tasks. Operator approves, then Claude implements in background agents with foreground commit summaries.
+Three-step pipeline for any non-trivial change:
+
+```
+plan mode  →  /impl  →  /ddev  →  /dprod (on request)
+(agree)       (build)    (gate)    (ship)
+```
+
+**Plan before implement** — always enter plan mode for non-trivial tasks. During plan mode, write `.claude/PLAN.md` using the format below, then call ExitPlanMode for operator approval.
 
 **Operator's role**: requirements, design, defect identification — plan mode only.  
 **Claude's role**: research, implementation, test loops, doc updates, deployment — background.
 
+**Implement** (`/impl`): reads `.claude/PLAN.md` → dispatches agents → loops tests to green → commits. Never pushes.  
 **Dev deploy** (`/ddev`): pytest + svelte-check green → push dev. Never push dev with failing tests.  
 **Prod deploy** (`/dprod`): operator explicitly requests → docs/spec/DESIGN_GUIDE/PDF/CC updated → merge dev→main → push. Never push to prod without explicit request.
+
+### Plan file format (`.claude/PLAN.md`)
+
+Write this file during plan mode before calling ExitPlanMode:
+
+```markdown
+# Plan: <short title>
+
+## Task
+<what needs to be done — 2-5 sentences>
+
+## Agents
+- backend: <task for backend agent, or "skip">
+- frontend: <task for frontend agent, or "skip">
+- broker: <task for broker agent, or "skip">
+- doc: <task for doc agent, or "skip">
+- backend-test: <task for test agent, or "skip">
+- playwright: <task for playwright agent, or "skip">
+
+## Tests
+- pytest: yes/no
+- svelte-check: yes/no
+- playwright: yes/no
+
+## Commit message
+<draft commit message>
+
+## Done when
+<human-readable done criteria>
+```
+
+Keep agent tasks self-contained — each agent gets its section text as its full brief.
 
 ## Scope Discipline
 
@@ -276,6 +316,7 @@ Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
 
 Workflow shortcuts in `/.claude/commands/`:
 
+- **`/impl`** — Read `.claude/PLAN.md`, dispatch agents, loop tests to green, commit — ready for `/ddev`
 - **`/ddev`** — Run tests (pytest + svelte-check); push to dev only if both pass
 - **`/dprod`** — Update docs/spec/DESIGN_GUIDE/PDF + CC gate; merge dev→main; push prod
 - **`/tlm`** — Run daily TLM audit pipeline, parse P1 findings, fix + commit
