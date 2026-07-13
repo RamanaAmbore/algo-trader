@@ -87,7 +87,18 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     if not raw_rows:
         return None
 
-    snap_captured_at: str = raw_rows[0][9].isoformat() if raw_rows[0][9] else ""
+    snap_captured_at_dt = raw_rows[0][9]
+    snap_captured_at: str = snap_captured_at_dt.isoformat() if snap_captured_at_dt else ""
+
+    # Log when the snapshot is from a prior session (no today rows yet —
+    # normal during the window between market close and scheduled snapshot run).
+    from backend.shared.helpers.date_time_utils import timestamp_indian as _ts_indian
+    _today_ist = _ts_indian().date()
+    if snap_captured_at_dt and snap_captured_at_dt.date() != _today_ist:
+        logger.info(
+            f"positions snapshot: no rows for today, serving prior snapshot "
+            f"from {snap_captured_at_dt.date()}"
+        )
 
     rows: list[PositionRow] = []
     for (account, symbol, exchange, qty, avg_cost, ltp,
