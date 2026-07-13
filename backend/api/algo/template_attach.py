@@ -1347,6 +1347,23 @@ def apply_plan_live(
 # in lockstep. The resolver dispatches to sim vs live based on whether
 # SimDriver is active.
 
+def _ta_template_row_to_dict(row) -> dict:
+    """Convert one OrderTemplate ORM row to a plain dict for the resolver."""
+    return {
+        "id":                 row.id,
+        "slug":               row.slug,
+        "name":               row.name,
+        "applies_to":         row.applies_to,
+        "tp_pct":             float(row.tp_pct)           if row.tp_pct is not None else None,
+        "sl_pct":             float(row.sl_pct)           if row.sl_pct is not None else None,
+        "wing_premium_pct":   float(row.wing_premium_pct) if row.wing_premium_pct is not None else None,
+        "wing_strike_offset": int(row.wing_strike_offset) if row.wing_strike_offset is not None else None,
+        "tp_order_type":      (row.tp_order_type or "LIMIT"),
+        "tp_scales_json":     row.tp_scales_json,
+        "sl_trail_pct":       float(row.sl_trail_pct)     if row.sl_trail_pct is not None else None,
+    }
+
+
 async def load_template_for_slug_or_id(
     *,
     template_id:   Optional[int],
@@ -1372,19 +1389,7 @@ async def load_template_for_slug_or_id(
         row = (await s.execute(stmt)).scalars().first()
     if row is None:
         return None
-    return {
-        "id":                 row.id,
-        "slug":               row.slug,
-        "name":               row.name,
-        "applies_to":         row.applies_to,
-        "tp_pct":             float(row.tp_pct)            if row.tp_pct is not None else None,
-        "sl_pct":             float(row.sl_pct)            if row.sl_pct is not None else None,
-        "wing_premium_pct":   float(row.wing_premium_pct)  if row.wing_premium_pct is not None else None,
-        "wing_strike_offset": int(row.wing_strike_offset)  if row.wing_strike_offset is not None else None,
-        "tp_order_type":      (row.tp_order_type or "LIMIT"),
-        "tp_scales_json":     row.tp_scales_json,
-        "sl_trail_pct":       float(row.sl_trail_pct)      if row.sl_trail_pct is not None else None,
-    }
+    return _ta_template_row_to_dict(row)
 
 
 def build_adhoc_template(overrides: dict) -> dict:
@@ -1567,6 +1572,19 @@ async def _resolve_lot_size_for_order(
         return 1, result_err
 
 
+def _ta_resolve_sim_active(apply_path: str) -> bool:
+    """Return True when SimDriver is active and apply_path is 'auto' or 'sim'."""
+    if apply_path == "sim":
+        return True
+    if apply_path != "auto":
+        return False
+    try:
+        from backend.api.algo.sim.driver import SimDriver
+        return bool(SimDriver.instance().active)
+    except Exception:
+        return False
+
+
 def _route_apply_path(
     plan:            TemplatePlan,
     apply_path:      str,
@@ -1585,20 +1603,14 @@ def _route_apply_path(
         return AttachResult(plan=plan)
 
     # Resolve sim vs live.
-    sim_active = False
-    if apply_path == "auto":
-        try:
-            from backend.api.algo.sim.driver import SimDriver
-            sim_active = SimDriver.instance().active
-        except Exception:
-            sim_active = False
+    sim_active = _ta_resolve_sim_active(apply_path)
 
-    if apply_path == "sim" or (apply_path == "auto" and sim_active):
+    if sim_active:
         from backend.api.algo.sim.driver import SimDriver
         return apply_plan_sim(plan, SimDriver.instance(),
                               parent_order_id=parent_order_id)
 
-    if apply_path == "live" or (apply_path == "auto" and not sim_active):
+    if apply_path in ("live", "auto"):
         try:
             from backend.brokers.registry import get_broker
             broker = get_broker(parent_account)

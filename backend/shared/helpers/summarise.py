@@ -44,6 +44,21 @@ def summarise_positions(seg_positions):
     return pd.concat([grouped, total], ignore_index=True)
 
 
+def _build_und_buckets(rows, parse_tradingsymbol) -> dict[str, dict]:
+    """Aggregate rows into {underlying: {pnl, count}} buckets."""
+    buckets: dict[str, dict] = {}
+    for _, r in rows.iterrows():
+        sym = str(r.get('tradingsymbol', '') or '').upper()
+        if not sym:
+            continue
+        parsed = parse_tradingsymbol(sym)
+        und = (parsed.get('root') if parsed else None) or sym
+        b = buckets.setdefault(und, {'pnl': 0.0, 'count': 0})
+        b['pnl']   += float(r.get('pnl', 0) or 0)
+        b['count'] += 1
+    return buckets
+
+
 def breakdown_positions_by_underlying(df, *, account=None, top_n=5):
     """
     Group raw position rows by parsed underlying (NIFTY, BANKNIFTY, GOLDM, …)
@@ -75,17 +90,7 @@ def breakdown_positions_by_underlying(df, *, account=None, top_n=5):
     if rows.empty:
         return []
 
-    buckets: dict[str, dict] = {}
-    for _, r in rows.iterrows():
-        sym = str(r.get('tradingsymbol', '') or '').upper()
-        if not sym:
-            continue
-        parsed = parse_tradingsymbol(sym)
-        und = (parsed.get('root') if parsed else None) or sym
-        b = buckets.setdefault(und, {'pnl': 0.0, 'count': 0})
-        b['pnl']   += float(r.get('pnl', 0) or 0)
-        b['count'] += 1
-
+    buckets = _build_und_buckets(rows, parse_tradingsymbol)
     out = [{'underlying': u, 'pnl': v['pnl'], 'count': v['count']}
            for u, v in buckets.items()]
     out.sort(key=lambda r: abs(r['pnl']), reverse=True)

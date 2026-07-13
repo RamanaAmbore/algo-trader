@@ -973,6 +973,42 @@ async def _chase_abort_on_consecutive_errors(
 
 # ── chase_order inner-loop helpers (extracted to reduce CC) ─────────────
 
+async def _ch_handle_attempt_error(
+    exc: Exception,
+    consecutive_errors: int,
+    attempt: int,
+    symbol: str,
+    account: str,
+    transaction_type: str,
+    quantity: int,
+    current_order_id: "str | None",
+    cfg: "ChaseConfig",
+    result: "ChaseResult",
+    emit: Callable,
+    algo_order_id: "int | None",
+) -> "tuple[ChaseResult | None, int]":
+    """Handle a broker exception in the chase loop.
+
+    Returns (abort_result, new_consecutive_errors).
+    abort_result is non-None when the caller should immediately return it.
+    """
+    consecutive_errors += 1
+    logger.error(
+        f"Chase {symbol}: attempt {attempt} error "
+        f"({consecutive_errors}/{_MAX_CHASE_ERRORS} consecutive): {exc}"
+    )
+    emit("error", {"attempt": attempt, "error": str(exc)})
+    if consecutive_errors >= _MAX_CHASE_ERRORS:
+        abort = await _chase_abort_on_consecutive_errors(
+            consecutive_errors, attempt, exc,
+            account, symbol, transaction_type, quantity,
+            current_order_id, cfg, result, emit, algo_order_id,
+        )
+        return abort, consecutive_errors
+    await asyncio.sleep(cfg.interval_seconds)
+    return None, consecutive_errors
+
+
 async def _ch_exhaust_max_attempts(
     result: "ChaseResult",
     current_order_id: "str | None",
