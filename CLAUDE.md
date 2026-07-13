@@ -32,6 +32,11 @@ Layer 2: see `~/.claude/agents/backend.md` · Layer 3: see `~/.claude/agents/fro
 
 ---
 
+## Model Usage
+
+- **Default**: Sonnet for all agents (frontend, backend, broker, audit). Haiku only per the table below. Opus ONLY when operator explicitly says "use opus".
+- Local Qwen proxy (`qwen on|off|status`) routes haiku model IDs to LM Studio when enabled — prefer it for cheap orchestration to save cost.
+
 ## Multi-agent coordination (read first)
 
 Specialized subagents in `~/.claude/agents/` dispatched in parallel by default:
@@ -48,6 +53,23 @@ Specialized subagents in `~/.claude/agents/` dispatched in parallel by default:
 
 **Parallel by default** — independent sub-tasks fire together. Sequence only when 
 one output feeds another or when audit finds defects.
+
+## Bug Fix Workflow (Self-Audit Required)
+
+After implementing any bug fix:
+1. Run a self-audit pass — check for structurally unreachable code, overwritten state, SSOT consistency.
+2. For any P&L / NavStrip / market-data fix: grep all consumers (derivatives, dashboard, NavStrip, MarketPulse) and verify the fix propagates to every one of them — not just the primary page.
+3. Only commit after the self-audit passes.
+
+## Scope Discipline
+
+When a change is tied to a specific entity (role, company, page, file, symbol): confirm scope before editing broadly. Do NOT propagate changes to sibling entities unless explicitly asked.
+
+## Long-Running Agents
+
+- Cap background agents at ~30 min wall-clock. If a task hasn't returned by then, surface status and ask before continuing.
+- Verify any "broken import" claim by actually running the import before reporting — past runs surfaced false positives.
+- When dispatching parallel agents for the same logical task, bundle related files into one agent rather than spawning duplicates that touch the same modules.
 
 ---
 

@@ -973,6 +973,27 @@ async def _chase_abort_on_consecutive_errors(
 
 # ── chase_order inner-loop helpers (extracted to reduce CC) ─────────────
 
+async def _ch_handle_poll_signal(
+    signal: "str | None",
+    current_order_id: "str | None",
+    cfg: "ChaseConfig",
+    symbol: str,
+) -> "tuple[bool, str | None]":
+    """Interpret the poll signal and apply the cancelled_continue backoff if needed.
+
+    Returns (done, new_current_order_id).
+    done=True means the caller should immediately return result (terminal outcome).
+    """
+    if signal in ("filled", "killed", "rejected"):
+        return True, current_order_id
+    if signal == "cancelled_continue":
+        backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
+        logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
+        await asyncio.sleep(backoff)
+        return False, None   # reset current_order_id
+    return False, current_order_id
+
+
 async def _ch_handle_attempt_error(
     exc: Exception,
     consecutive_errors: int,
@@ -1201,16 +1222,11 @@ async def chase_order(
                 account, current_order_id, cfg, symbol, transaction_type,
                 quantity, result, attempt, remaining_qty, algo_order_id, emit,
             )
-            if signal in ("filled", "killed", "rejected"):
+            done, current_order_id = await _ch_handle_poll_signal(
+                signal, current_order_id, cfg, symbol,
+            )
+            if done:
                 return result
-            if signal == "cancelled_continue":
-                # Non-operator cancel (broker auto-cancel, circuit, session-end).
-                # Reset current_order_id and sleep backoff so the next attempt
-                # places a fresh order rather than trying to cancel a vanished one.
-                current_order_id = None
-                backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
-                logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
-                await asyncio.sleep(backoff)
 
         except Exception as e:
             abort, consecutive_errors = await _ch_handle_attempt_error(
