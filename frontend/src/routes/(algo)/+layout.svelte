@@ -1133,11 +1133,13 @@
               <span class="algo-user-role algo-user-role-partner">partner</span>
             {/if}
           </span>
-          <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
         {/if}
         <button onclick={() => goto('/about')} class="algo-pub-link">↙ Investor site</button>
         {#if isDemo && !$authStore.user}
           <button onclick={() => goto('/signin')} class="algo-nav-btn">Sign In</button>
+        {/if}
+        {#if $authStore.user}
+          <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
         {/if}
       </div>
 
