@@ -1543,94 +1543,208 @@ async def _task_strategy_snapshot() -> None:
 
 async def _task_daily_snapshot() -> None:
     """
-    Capture a daily book snapshot once at startup (so a fresh deploy immediately
-    has today's data) and then every day at 15:35 IST (5 min after equity close)
-    plus a 23:35 IST follow-up so MCX positions get an EOD capture too.
+    Event-driven 4-pass daily snapshot.
 
-    Why two passes:
-      - 15:35 IST: NSE/derivatives closed → ltp/day_pnl captured as EOD.
-        MCX still in session (09:00–23:30) → row builders emit ltp=None,
-        day_pnl=None for MCX rows to avoid poisoning the close-override
-        path in positions.py (which reads the most recent pre-today
-        daily_book row as "yesterday's EOD" the next session).
-      - 23:35 IST: MCX closed (23:30 + 5 min buffer). Re-run snapshot;
-        upsert overwrites the placeholder MCX rows from 15:35 with EOD
-        ltp/day_pnl. NSE/derivatives values are recomputed identically
-        (Kite doesn't roll close_price until next-day session open per
-        the CLAUDE.md critical-math-guard) so no regression.
+    Replaces the fixed-time schedule (15:35 / 23:35 IST) with a 30-second
+    polling loop that detects segment open→closed transitions and fires
+    snapshot passes as those transitions occur:
+
+    Pass 1 — NSE segment transitions open→closed (~15:30 IST)
+        NSE/NFO/BFO EOD captured immediately.  MCX is still in session so
+        the snapshot writer emits ltp=None placeholder rows for MCX — safe
+        because the close-override reader in positions.py filters by
+        `ltp IS NOT NULL` and falls back to prior-session MCX values.
+
+    Pass 2 — 16:15 IST fixed
+        NSE OCP/closing-session settlement prices are typically settled by
+        16:15.  Upsert overwrites Pass 1 rows with fully-settled values.
+
+    Pass 3 — MCX segment transitions open→closed (~23:30 IST)
+        MCX EOD captured immediately.  Upsert overwrites the ltp=None MCX
+        placeholders written in Pass 1 with real EOD ltp/day_pnl values.
+
+    Pass 4 — 00:15 IST fixed (i.e. 45 min after MCX close)
+        MCX settlement prices settled.  Upsert overwrites Pass 3 rows.
+        Note: MCX closes at 23:30 on trade-date D; Pass 4 fires at 00:15
+        IST on calendar-date D+1.  The deduplication flag is keyed on
+        trade-date D (yesterday when the 00:15 tick fires).
+
+    Startup snapshot logic is unchanged — fires ONLY when both segments
+    are closed so a mid-session deploy never pollutes daily_book with
+    live mid-session LTPs (observed incident 2026-06-22).
+
+    Segment probing uses ``_build_segments()`` + ``is_market_open()`` with
+    the full holiday-calendar pipeline so Muhurat / special-session
+    overrides are respected automatically.
     """
     from backend.api.algo.daily_snapshot import snapshot_daily_book
     from backend.shared.helpers.date_time_utils import (
         timestamp_indian, is_market_open,
     )
+    from backend.brokers.broker_apis import fetch_holidays
 
-    # Fire one snapshot immediately at startup so the table is populated
-    # without waiting until 15:35 — but ONLY when both NSE and MCX are
-    # closed. A mid-session deploy that captures live LTPs as "today's
-    # snapshot" pollutes daily_book — the close-override in positions.py
-    # reads the most recent row as the prior-session EOD, which then
-    # collapses day_change_val to zero (observed on 2026-06-22 ~09:38
-    # IST after a mid-session deploy: CRUDEOIL options' true EOD of
-    # 220 got overridden to 264.5, the deploy-moment mid-session LTP,
-    # making Day P&L read zero across every MCX position).
-    #
-    # Skipping the startup snapshot during market hours is safe: the
-    # 15:35 IST scheduled run still fires, and any operator who needs
-    # a fresh snapshot mid-session can trigger it via /admin/exec.
-    from datetime import time as _dt_time
+    # ------------------------------------------------------------------
+    # Helper: probe whether NSE or MCX segments are open right now.
+    # Filters _build_segments() by holiday_exchange label so we can
+    # test each market independently.  Returns (nse_open, mcx_open).
+    # ------------------------------------------------------------------
+    async def _probe_nse_mcx(now) -> tuple[bool, bool]:
+        segs = _build_segments()
+        holiday_cache: dict[str, set] = {}
+        for seg in segs:
+            exch = seg['holiday_exchange']
+            if exch not in holiday_cache:
+                try:
+                    holiday_cache[exch] = await _run(fetch_holidays, exch)
+                except Exception:
+                    holiday_cache[exch] = set()
+
+        def _is_open(seg) -> bool:
+            return is_market_open(
+                now,
+                holiday_cache.get(seg['holiday_exchange'], set()),
+                seg['hours_start'],
+                seg['hours_end'],
+                exchange=seg['holiday_exchange'],
+            )
+
+        nse_segs = [s for s in segs if s['holiday_exchange'] == 'NSE']
+        mcx_segs = [s for s in segs if s['holiday_exchange'] == 'MCX']
+
+        nse_open = any(
+            ok for ok in await asyncio.gather(
+                *(asyncio.to_thread(_is_open, s) for s in nse_segs)
+            )
+        ) if nse_segs else False
+        mcx_open = any(
+            ok for ok in await asyncio.gather(
+                *(asyncio.to_thread(_is_open, s) for s in mcx_segs)
+            )
+        ) if mcx_segs else False
+
+        return nse_open, mcx_open
+
+    # ------------------------------------------------------------------
+    # Helper: fire one snapshot pass and log the result.
+    # ------------------------------------------------------------------
+    async def _fire_snapshot(label: str) -> None:
+        try:
+            result = await snapshot_daily_book()
+            logger.info(
+                f"Background: daily snapshot [{label}] — "
+                f"accounts={result['accounts']} "
+                f"h={result['holdings_rows']} p={result['positions_rows']} "
+                f"t={result['trades_rows']} errors={result['errors']}"
+            )
+        except Exception as e:
+            logger.error(f"Background: daily snapshot [{label}] failed: {e}")
+
+    # ------------------------------------------------------------------
+    # Startup snapshot — ONLY when both segments are closed.
+    # ------------------------------------------------------------------
     _now_ist = timestamp_indian()
-    _nse_open = is_market_open(_now_ist, set(),
-                               _dt_time(9, 15), _dt_time(15, 30))
-    _mcx_open = is_market_open(_now_ist, set(),
-                               _dt_time(9, 0), _dt_time(23, 30))
+    _nse_open, _mcx_open = await _probe_nse_mcx(_now_ist)
     if _nse_open or _mcx_open:
         logger.info(
             f"Background: skipping startup daily snapshot — markets open "
-            f"(NSE={_nse_open}, MCX={_mcx_open}). Scheduled 15:35 IST run still fires."
+            f"(NSE={_nse_open}, MCX={_mcx_open}). Event-driven passes still fire."
         )
     else:
-        try:
-            result = await snapshot_daily_book()
-            logger.info(
-                f"Background: startup daily snapshot — "
-                f"accounts={result['accounts']} "
-                f"h={result['holdings_rows']} p={result['positions_rows']} t={result['trades_rows']} "
-                f"errors={result['errors']}"
-            )
-        except Exception as e:
-            logger.error(f"Background: startup daily snapshot failed: {e}")
+        await _fire_snapshot("startup")
 
-    # Two scheduled passes per day: 15:35 IST (NSE EOD) and 23:35 IST
-    # (MCX EOD). Pick the next one from the pair on each loop iteration.
-    _SCHEDULED_TIMES = ((15, 35), (23, 35))
+    # ------------------------------------------------------------------
+    # Per-pass deduplication: keyed on the TRADE DATE relevant to that
+    # pass so a service restart between passes doesn't re-fire a pass
+    # that already completed.
+    #
+    #   _nse_eod_done        — Pass 1 fired for this NSE trade date
+    #   _nse_settlement_done — Pass 2 fired for this NSE trade date
+    #   _mcx_eod_done        — Pass 3 fired for this MCX trade date
+    #   _mcx_settlement_done — Pass 4 fired; keyed on MCX trade date D
+    #                          (yesterday when 00:15 fires on D+1)
+    #
+    # Value is `date | None`; None means not-yet-fired.
+    # ------------------------------------------------------------------
+    _nse_eod_done:        Optional[date] = None
+    _nse_settlement_done: Optional[date] = None
+    _mcx_eod_done:        Optional[date] = None
+    _mcx_settlement_done: Optional[date] = None
+
+    # Track previous open state — initialised from a real probe so we
+    # don't fire a spurious pass 1 / pass 3 on the first tick when the
+    # segment is already closed at startup.
+    _prev_nse_open: bool = _nse_open
+    _prev_mcx_open: bool = _mcx_open
+
+    # ------------------------------------------------------------------
+    # Main polling loop — 30-second cadence.
+    # ------------------------------------------------------------------
+    _POLL_INTERVAL_S = 30
+
+    # Settlement fire times (IST) and their associated MCX trade-date
+    # offset.  Pass 2 fires at 16:15 on the same date as NSE close.
+    # Pass 4 fires at 00:15 on calendar D+1; trade date is D (yesterday).
+    _NSE_SETTLEMENT_H, _NSE_SETTLEMENT_M = 16, 15
+    _MCX_SETTLEMENT_H, _MCX_SETTLEMENT_M =  0, 15
 
     while True:
-        now = timestamp_indian()
-        candidates = []
-        for hh, mm in _SCHEDULED_TIMES:
-            slot = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-            if slot <= now:
-                slot += timedelta(days=1)
-            candidates.append(slot)
-        snap_time = min(candidates)
-        sleep_s = (snap_time - now).total_seconds()
-        logger.info(
-            f"Background: daily snapshot sleeping {sleep_s/3600:.1f}h until "
-            f"{snap_time.strftime('%H:%M')} IST"
-        )
-        await asyncio.sleep(sleep_s)
+        await asyncio.sleep(_POLL_INTERVAL_S)
+        now   = timestamp_indian()
+        today = now.date()
 
-        try:
-            result = await snapshot_daily_book()
-            logger.info(
-                f"Background: daily snapshot complete "
-                f"({snap_time.strftime('%H:%M')} IST) — "
-                f"accounts={result['accounts']} "
-                f"h={result['holdings_rows']} p={result['positions_rows']} t={result['trades_rows']} "
-                f"errors={result['errors']}"
-            )
-        except Exception as e:
-            logger.error(f"Background: daily snapshot failed: {e}")
+        nse_open, mcx_open = await _probe_nse_mcx(now)
+
+        # ---- Pass 1: NSE transition open → closed ----------------------
+        if _prev_nse_open and not nse_open:
+            if _nse_eod_done != today:
+                logger.info("Background: NSE segment closed — firing Pass 1 (NSE EOD snapshot)")
+                await _fire_snapshot("pass-1-nse-eod")
+                _nse_eod_done = today
+            else:
+                logger.debug("Background: NSE close transition detected but Pass 1 already done today")
+
+        # ---- Pass 3: MCX transition open → closed ----------------------
+        if _prev_mcx_open and not mcx_open:
+            # MCX close at 23:30; today's date is still the trade date D.
+            if _mcx_eod_done != today:
+                logger.info("Background: MCX segment closed — firing Pass 3 (MCX EOD snapshot)")
+                await _fire_snapshot("pass-3-mcx-eod")
+                _mcx_eod_done = today
+            else:
+                logger.debug("Background: MCX close transition detected but Pass 3 already done today")
+
+        # Update open-state tracking for next tick.
+        _prev_nse_open = nse_open
+        _prev_mcx_open = mcx_open
+
+        # ---- Pass 2: NSE settlement prices at 16:15 IST ---------------
+        _nse_settle_time = dtime(_NSE_SETTLEMENT_H, _NSE_SETTLEMENT_M)
+        if (now.time() >= _nse_settle_time
+                and _nse_settlement_done != today):
+            logger.info("Background: 16:15 IST reached — firing Pass 2 (NSE settlement snapshot)")
+            await _fire_snapshot("pass-2-nse-settlement")
+            _nse_settlement_done = today
+
+        # ---- Pass 4: MCX settlement prices at 00:15 IST ---------------
+        # MCX closes at 23:30 on trade-date D; 00:15 IST is calendar D+1.
+        # Key this pass on trade-date D (yesterday) so it fires once per
+        # MCX trade date regardless of which calendar date 00:15 lands on.
+        # Guard: only fire in the overnight window [00:15, 02:00) IST so a
+        # daytime service restart (e.g. 10:00 AM) doesn't trigger a spurious
+        # mid-session snapshot.  02:00 IST is safely before MCX pre-open
+        # (09:00 IST) so the window is wide enough for any expected delay.
+        _mcx_settle_time  = dtime(_MCX_SETTLEMENT_H, _MCX_SETTLEMENT_M)
+        _mcx_settle_limit = dtime(2, 0)
+        if _mcx_settle_time <= now.time() < _mcx_settle_limit:
+            # 00:15–02:00 IST on D+1 → trade date is yesterday (D).
+            _mcx_trade_date = today - timedelta(days=1)
+            if _mcx_settlement_done != _mcx_trade_date:
+                logger.info(
+                    f"Background: 00:15 IST reached — firing Pass 4 "
+                    f"(MCX settlement snapshot for trade-date {_mcx_trade_date})"
+                )
+                await _fire_snapshot("pass-4-mcx-settlement")
+                _mcx_settlement_done = _mcx_trade_date
 
 
 async def _task_instruments() -> None:

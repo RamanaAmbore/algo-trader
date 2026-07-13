@@ -1316,17 +1316,15 @@
 
     <ImpersonationBanner />
 
-    {#if isDemo && !_demoBannerDismissed}
-      <div class="demo-banner" role="status">
-        <span class="demo-banner-text">
-          <strong>Demo mode</strong> — live market data with masked accounts · paper-only writes · no real orders
-          <a href="/showcase" class="demo-banner-link">Tour</a>
-        </span>
-        <button onclick={_dismissDemoBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
-      </div>
-    {/if}
-
     <main class="algo-content">
+      {#if isDemo && !_demoBannerDismissed}
+        <div class="demo-banner" role="status">
+          <span class="demo-banner-text">
+            <strong>Demo mode</strong> — live market data · paper trades only · no real orders
+          </span>
+          <button onclick={_dismissDemoBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
+        </div>
+      {/if}
       {@render children()}
     </main>
 
@@ -2007,15 +2005,6 @@
     overflow: visible;
     border-bottom: 1px solid var(--algo-amber-border-soft);
   }
-  /* Demo-banner-aware offset — banner is fixed at top:3rem (2rem tall),
-     so page-header shifts down to clear it, and algo-content clears
-     navbar + banner + page-header. */
-  :global(.algo-viewport:has(.demo-banner) .page-header) {
-    top: calc(3rem + 2rem);
-  }
-  :global(.algo-viewport:has(.demo-banner)) .algo-content {
-    padding-top: calc(3rem + 2rem + 1.8rem);
-  }
   /* Strip-aware vertical offset — only the ps-strip
      (PositionStrip, 1.5rem) can sit between the navbar and
      .algo-content now that the mode banners are gone. */
@@ -2029,18 +2018,6 @@
      order status cards are partially hidden" report. */
   :global(.algo-viewport:has(.ps-strip)) .algo-content {
     padding-top: calc(3rem + 1.5rem + 1.8rem);  /* 100.8px */
-  }
-  /* NavStrip pushed down when demo banner is above it */
-  :global(.algo-viewport:has(.demo-banner) .ps-strip) {
-    top: calc(3rem + 2rem);
-  }
-  /* When BOTH demo banner AND NavStrip are present — override the
-     single-banner and single-strip rules above (higher specificity). */
-  :global(.algo-viewport:has(.demo-banner):has(.ps-strip) .page-header) {
-    top: calc(3rem + 2rem + 1.5rem);
-  }
-  :global(.algo-viewport:has(.demo-banner):has(.ps-strip)) .algo-content {
-    padding-top: calc(3rem + 2rem + 1.5rem + 1.8rem);
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
@@ -2588,14 +2565,10 @@
     --ch-ts-color: #7e97b8;
   }
 
-  /* Demo banner — fixed just below the navbar, does NOT push content
-     down. Page-header + algo-content are shifted via :has() below. */
+  /* Demo banner — in normal document flow, first child of .algo-content.
+     Scrolls with content; no fixed positioning needed. */
   .demo-banner {
-    position: fixed;
-    top: 3rem;
-    left: 0;
-    right: 0;
-    z-index: 46;
+    z-index: 10;
     height: 2rem;
     box-sizing: border-box;
     display: flex;
@@ -2604,20 +2577,12 @@
     gap: 0.75rem;
     padding: 0 0.75rem;
     background: #1e0a3c;
-    backdrop-filter: none;
     border-bottom: 1px solid rgba(168,85,247,0.35);
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
   }
   .demo-banner-text { color: #d8b4fe; flex: 1; }
   .demo-banner-text strong { color: #e9d5ff; font-weight: 700; }
-  .demo-banner-link {
-    color: #c084fc;
-    text-decoration: underline;
-    text-underline-offset: 2px;
-    font-weight: 600;
-  }
-  .demo-banner-link:hover { color: #e9d5ff; }
   .demo-banner-close {
     flex-shrink: 0;
     background: none;

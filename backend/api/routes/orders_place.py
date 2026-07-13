@@ -1275,7 +1275,7 @@ async def _ticket_place_or_chase_live(
             price=data.price,
             trigger_price=data.trigger_price,
             validity="DAY",
-            tag="ramboq-ticket",
+            tag=f"rq-{live_algo_id}" if live_algo_id else "ramboq-ticket",
         )
     return order_id, chase_eligible
 

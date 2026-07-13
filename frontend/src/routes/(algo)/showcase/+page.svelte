@@ -266,63 +266,62 @@
   <header class="show-hero">
     <div class="show-hero-grid">
 
-      <!-- Left column — bio + contact -->
+      <!-- Left column — product pitch leads; personal attribution muted at bottom -->
       <div class="show-hero-left">
-        <h2 class="show-name">Ramana R. Ambore</h2>
-
-        <!-- Credential badges -->
-        <div class="show-creds">
-          {#each CREDS as c}
-            <span class="show-cred show-cred-{c.color}">{c.label}</span>
-          {/each}
-        </div>
-
-        <div class="show-roles">
-          <div class="show-role">Principal System Analyst · Fidelity Investments (19 yrs)</div>
-          <div class="show-role">Platform Architect &amp; Quantitative Developer · RamboQuant LLP</div>
-        </div>
-
+        <!-- Product pitch — leads the card -->
         <p class="show-tag">A production quant trading terminal that runs a real strategy: hold high-conviction stocks long, then use them (and cash) as margin for a toolkit of derivative strategies — covered calls, cash-secured puts, vertical / calendar spreads, collars, wheels, futures, hedges — letting the algo pick the right tool for the market and handle execution + risk. Built end-to-end by one engineer for the RamboQuant LLP partnership — you're looking at the live system, accounts masked.</p>
 
-        <!-- Contact CTA row -->
-        <div class="show-contact-row">
-          <a class="show-contact-btn show-contact-btn-primary" href={CONTACT.email}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" aria-hidden="true">
-              <path d="M4 4h16v16H4z"/><path d="m4 4 8 8 8-8"/>
-            </svg>
-            Email
-          </a>
-          <a class="show-contact-btn" href={CONTACT.github} target="_blank" rel="noopener">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.69 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.17 1.18.92-.26 1.9-.39 2.88-.39.98 0 1.96.13 2.88.39 2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.23 2.75.12 3.04.73.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.05.78 2.12v3.14c0 .3.21.66.8.55 4.56-1.53 7.85-5.83 7.85-10.91C23.5 5.65 18.35.5 12 .5Z"/>
-            </svg>
-            GitHub
-          </a>
-          <a class="show-contact-btn" href={CONTACT.linkedin} target="_blank" rel="noopener">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-              <path d="M19 0H5C2.24 0 0 2.24 0 5v14c0 2.76 2.24 5 5 5h14c2.76 0 5-2.24 5-5V5c0-2.76-2.24-5-5-5ZM8 19H5V8h3v11ZM6.5 6.73c-.97 0-1.75-.79-1.75-1.76 0-.97.78-1.75 1.75-1.75s1.75.79 1.75 1.75-.78 1.76-1.75 1.76ZM20 19h-3v-5.6c0-3.37-4-3.11-4 0V19h-3V8h3v1.77c1.4-2.58 7-2.77 7 2.46V19Z"/>
-            </svg>
-            LinkedIn
-          </a>
-          <a class="show-contact-btn" href={CONTACT.portfolio} target="_blank" rel="noopener">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" aria-hidden="true">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M2 12h20"/>
-              <path d="M12 2a15 15 0 0 1 0 20"/>
-              <path d="M12 2a15 15 0 0 0 0 20"/>
-            </svg>
-            Portfolio
-          </a>
-          <a class="show-contact-btn" href={CONTACT.resume} target="_blank" rel="noopener">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" aria-hidden="true">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <path d="M14 2v6h6"/>
-            </svg>
-            Resume ↓
-          </a>
+        <!-- Attribution — visually muted "built by" block -->
+        <div class="show-attribution">
+          <span class="show-attr-name">Ramana R. Ambore</span>
+          <span class="show-attr-sep">·</span>
+          <span class="show-attr-creds">FRM · CFA-L3 · M.Sc. CS · Six Sigma GB</span>
+          <div class="show-attr-roles">
+            <span>Principal System Analyst · Fidelity Investments (19 yrs)</span>
+            <span class="show-attr-sep">·</span>
+            <span>Platform Architect &amp; Quantitative Developer · RamboQuant LLP</span>
+          </div>
+
+          <!-- Contact buttons — compact, muted, icon+label -->
+          <div class="show-contact-row">
+            <a class="show-contact-btn" href={CONTACT.email}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" aria-hidden="true">
+                <path d="M4 4h16v16H4z"/><path d="m4 4 8 8 8-8"/>
+              </svg>
+              Email
+            </a>
+            <a class="show-contact-btn" href={CONTACT.github} target="_blank" rel="noopener">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.1.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.27-1.69-1.27-1.69-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.69 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.18-3.1-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.17 1.18.92-.26 1.9-.39 2.88-.39.98 0 1.96.13 2.88.39 2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.23 2.75.12 3.04.73.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.05.78 2.12v3.14c0 .3.21.66.8.55 4.56-1.53 7.85-5.83 7.85-10.91C23.5 5.65 18.35.5 12 .5Z"/>
+              </svg>
+              GitHub
+            </a>
+            <a class="show-contact-btn" href={CONTACT.linkedin} target="_blank" rel="noopener">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path d="M19 0H5C2.24 0 0 2.24 0 5v14c0 2.76 2.24 5 5 5h14c2.76 0 5-2.24 5-5V5c0-2.76-2.24-5-5-5ZM8 19H5V8h3v11ZM6.5 6.73c-.97 0-1.75-.79-1.75-1.76 0-.97.78-1.75 1.75-1.75s1.75.79 1.75 1.75-.78 1.76-1.75 1.76ZM20 19h-3v-5.6c0-3.37-4-3.11-4 0V19h-3V8h3v1.77c1.4-2.58 7-2.77 7 2.46V19Z"/>
+              </svg>
+              LinkedIn
+            </a>
+            <a class="show-contact-btn" href={CONTACT.portfolio} target="_blank" rel="noopener">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M2 12h20"/>
+                <path d="M12 2a15 15 0 0 1 0 20"/>
+                <path d="M12 2a15 15 0 0 0 0 20"/>
+              </svg>
+              Portfolio
+            </a>
+            <a class="show-contact-btn" href={CONTACT.resume} target="_blank" rel="noopener">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <path d="M14 2v6h6"/>
+              </svg>
+              Resume ↓
+            </a>
+          </div>
         </div>
       </div>
 
@@ -423,56 +422,17 @@
     }
   }
 
-  /* Left column card */
+  /* Left column card — neutral border; product pitch leads */
   .show-hero-left {
     background: rgba(15, 23, 42, 0.7);
-    border: 1px solid rgba(251, 191, 36, 0.25);
+    border: 1px solid rgba(126, 151, 184, 0.20);
     border-radius: 0.5rem;
     padding: 1.5rem;
-  }
-
-  /* Name */
-  .show-name {
-    font-size: clamp(1.5rem, 4vw, 2.2rem);
-    font-weight: 900;
-    color: var(--algo-amber, #fbbf24);
-    letter-spacing: -0.01em;
-    margin: 0 0 0.55rem;
-    line-height: 1.1;
-  }
-
-  /* Credential pill badges */
-  .show-creds {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin-bottom: 0.8rem;
-  }
-  .show-cred {
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    padding: 0.18rem 0.55rem;
-    border-radius: 999px;
-    border-width: 1px;
-    border-style: solid;
-  }
-  .show-cred-amber  { color: #fbbf24; border-color: rgba(251,191,36,0.55);  background: rgba(251,191,36,0.08); }
-  .show-cred-sky    { color: #7dd3fc; border-color: rgba(125,211,252,0.55); background: rgba(125,211,252,0.08); }
-  .show-cred-purple { color: #c084fc; border-color: rgba(192,132,252,0.55); background: rgba(192,132,252,0.08); }
-  .show-cred-green  { color: #4ade80; border-color: rgba(74,222,128,0.55);  background: rgba(74,222,128,0.08); }
-
-  /* Role lines */
-  .show-roles {
-    margin-bottom: 0.85rem;
-  }
-  .show-role {
-    font-size: var(--fs-xl);
-    color: var(--algo-muted);
-    line-height: 1.5;
+    flex-direction: column;
   }
 
-  /* Tagline paragraph */
+  /* Product pitch — leads the card */
   .show-tag {
     font-size: clamp(0.85rem, 2vw, 1rem);
     color: #9bb0d0;
@@ -480,41 +440,63 @@
     margin: 0 0 1.1rem;
   }
 
-  /* Contact CTA row */
+  /* Attribution block — muted "built by" section at bottom of left card */
+  .show-attribution {
+    margin-top: auto;
+    padding-top: 0.85rem;
+    border-top: 1px solid rgba(126, 151, 184, 0.12);
+    font-size: 0.75rem;
+    color: rgba(148, 163, 184, 0.7);
+    line-height: 1.5;
+  }
+  .show-attr-name {
+    font-weight: 600;
+    color: rgba(148, 163, 184, 0.8);
+  }
+  .show-attr-sep {
+    margin: 0 0.25rem;
+    opacity: 0.5;
+  }
+  .show-attr-creds {
+    letter-spacing: 0.03em;
+  }
+  .show-attr-roles {
+    margin-top: 0.2rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 0.1rem;
+    font-size: 0.75rem;
+    color: rgba(148, 163, 184, 0.6);
+  }
+
+  /* Contact row — compact, muted, no filled backgrounds */
   .show-contact-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.3rem;
+    margin-top: 0.55rem;
   }
   .show-contact-btn {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    padding: 0.4rem 0.8rem;
-    background: var(--algo-cyan-bg, rgba(8,145,178,0.12));
-    border: 1px solid var(--algo-cyan-border-soft, rgba(8,145,178,0.30));
+    gap: 0.25rem;
+    padding: 0.3rem 0.55rem;
+    background: transparent;
+    border: 1px solid rgba(126, 151, 184, 0.20);
     border-radius: 4px;
-    color: var(--algo-cyan-text, #7dd3fc);
-    font-size: var(--fs-lg);
-    font-weight: 700;
-    letter-spacing: 0.03em;
+    color: rgba(148, 163, 184, 0.65);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
     text-decoration: none;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    opacity: 0.6;
+    transition: opacity 0.12s, border-color 0.12s, color 0.12s;
   }
   .show-contact-btn:hover {
-    background: var(--algo-cyan-bg-strong, rgba(8,145,178,0.22));
-    border-color: var(--algo-cyan-border, rgba(8,145,178,0.55));
-    color: var(--algo-sky-text, #38bdf8);
-  }
-  .show-contact-btn-primary {
-    background: var(--algo-amber-bg, rgba(251,191,36,0.12));
-    border-color: var(--algo-amber-border, rgba(251,191,36,0.45));
-    color: var(--algo-amber, #fbbf24);
-  }
-  .show-contact-btn-primary:hover {
-    background: var(--algo-amber-bg-strong, rgba(251,191,36,0.22));
-    border-color: rgba(251,191,36,0.85);
-    color: var(--algo-amber-text, #fcd34d);
+    opacity: 1;
+    border-color: rgba(126, 151, 184, 0.45);
+    color: rgba(148, 163, 184, 0.9);
   }
 
   /* Right column card */

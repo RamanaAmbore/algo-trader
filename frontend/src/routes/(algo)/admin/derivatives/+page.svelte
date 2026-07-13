@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
@@ -105,6 +105,8 @@
   // re-derives whenever fetchBrokerOrder() resolves after cold load.
   let _derivOrderMap = $state(/** @type {Record<string,number>} */ ({}));
   const _unsubDerivsOrder = accountDisplayOrder.subscribe(m => { _derivOrderMap = m; });
+  let _brokerWorstState = $state(/** @type {'green'|'amber'|'red'} */ ('amber'));
+  const _unsubBrokerHealth = brokerHealthStore.subscribe(v => { _brokerWorstState = v?.worstState || 'amber'; });
   let loading       = $state(false);
   // `loading` is toggled by loadStrategy() and short-circuits on
   // its leg-cache shortcut, so RefreshButton wired to `loading`
@@ -3224,6 +3226,16 @@
   // escalate after 2+ consecutive failures.
   let positionsLoadErr = $state('');
   let _posLoadFails = 0;
+  // When broker health is confirmed green, the poll error is a snapshot lag
+  // (not a genuine outage) — reset the failure counter and clear the error.
+  // Only fires on green transitions; no else-branch so the poll loop that
+  // also writes positionsLoadErr isn't fought by this effect.
+  $effect(() => {
+    if (_brokerWorstState === 'green') {
+      _posLoadFails = 0;
+      positionsLoadErr = '';
+    }
+  });
   // Latches to true after the first successful positions+holdings load.
   // Gates `_hedgeOpportunities` so it only appears in the underlying
   // picker AFTER we know which underlyings have actual derivative
@@ -3679,7 +3691,7 @@
   });
   onDestroy(() => {
     teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.();
-    flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.();
+    flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.(); _unsubBrokerHealth?.();
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
   });
 
@@ -3764,6 +3776,9 @@
     {#if simActive}
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
+    {#if positionsLoadErr}
+      <span class="pos-delayed-pill" title={positionsLoadErr}>Positions delayed</span>
+    {/if}
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
@@ -3815,8 +3830,10 @@
   </div>
 </div>
 
-{#if positionsLoadErr}
-  <!-- Short banner per ops convention (≤35 chars). Full error detail
+{#if positionsLoadErr && _brokerWorstState !== 'green'}
+  <!-- Full banner only on a genuine outage (broker health is not green).
+       When broker is green, snapshot lag shows the inline chip instead.
+       Short banner per ops convention (≤35 chars). Full error detail
        logged to console by api.js. -->
   <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40"
        title={positionsLoadErr}>
@@ -4866,6 +4883,24 @@
     background: rgba(236, 72, 153, 0.18);
     border: 1px solid rgba(236, 72, 153, 0.55);
   }
+  /* Inline amber chip shown in the page header when positions data is
+     delayed (snapshot lag). Distinct from the full-width red error banner
+     which only appears on genuine outages (broker health not green). */
+  .pos-delayed-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    line-height: 1.4;
+    flex-shrink: 0;
+    color: rgba(251, 191, 36, 0.85);
+    background: rgba(251, 191, 36, 0.15);
+    border: 1px solid rgba(251, 191, 36, 0.40);
+  }
   .opt-field {
     display: flex;
     flex-direction: column;
@@ -5634,7 +5669,7 @@
       linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
       #1d2a44 !important;
     border-top: 2px solid rgba(251,191,36,0.70);
-    border-bottom: 1px solid rgba(251,191,36,0.40);
+    border-bottom: 1px solid rgba(251,191,36,0.55);
     color: var(--c-action);
     font-weight: 700;
   }
