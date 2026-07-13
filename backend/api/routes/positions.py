@@ -364,6 +364,36 @@ def _apply_flat_row_hygiene(raw: "pd.DataFrame") -> None:
         raw.loc[_flat_mask, 'day_change_percentage'] = 0.0
 
 
+async def _patch_raw_positions(raw: "pd.DataFrame") -> "pd.DataFrame":
+    """Apply the close-price override and day P&L backstop to the raw
+    positions DataFrame, in that order.
+
+    Ordering invariant (tested):
+      1. _override_stale_close_from_snapshot — patches close_price so
+         day_change_val is computed against yesterday's real close rather
+         than Kite's stale overnight price.
+      2. apply_day_change_backstop — rescues Case 1 (new position,
+         overnight_quantity=0) and Case 3 (flat intraday, quantity=0)
+         where Kite omits day_change_val.
+
+    Extracted from _fetch() as part of the CC-reduction refactor so the
+    sequence can be tested independently without running a full broker call.
+    """
+    # Override stale close_price with yesterday's daily_book snapshot.
+    # See CLAUDE.md §"Kite close_price stale overnight" and the
+    # 2026-06-19 +1.33L phantom gain incident.
+    await _override_stale_close_from_snapshot(raw)
+
+    # Unified Case 1 + Case 3 Day P&L backstop — restores day_change_val
+    # for new positions (oq=0, ltp=0 pre-first-tick) and fully-closed
+    # intraday rows (qty=0) where the polars enrichment gate zeroed it.
+    # SSOT: backend.api.algo.pnl_math.apply_day_change_backstop. The
+    # background performance task calls the same helper so NavStrip P
+    # "today" slot agrees with the /api/positions route.
+    raw = apply_day_change_backstop(raw)
+    return raw
+
+
 async def _fetch() -> PositionsResponse:
     # Three sync broker_apis calls below — each holds the event loop
     # (~50ms each typical, up to 500-1000ms on cold UDS hits). Wrap
@@ -410,18 +440,7 @@ async def _fetch() -> PositionsResponse:
     # yesterday's EOD) even though MCX had been open 30 min.
     _override_stale_ltp_from_ticker(raw)
 
-    # Override stale close_price with yesterday's daily_book snapshot.
-    # See CLAUDE.md §"Kite close_price stale overnight" and the
-    # 2026-06-19 +1.33L phantom gain incident.
-    await _override_stale_close_from_snapshot(raw)
-
-    # Unified Case 1 + Case 3 Day P&L backstop — restores day_change_val
-    # for new positions (oq=0, ltp=0 pre-first-tick) and fully-closed
-    # intraday rows (qty=0) where the polars enrichment gate zeroed it.
-    # SSOT: backend.api.algo.pnl_math.apply_day_change_backstop. The
-    # background performance task calls the same helper so NavStrip P
-    # "today" slot agrees with the /api/positions route.
-    raw = apply_day_change_backstop(raw)
+    raw = await _patch_raw_positions(raw)
 
     # Flat-row hygiene (route-only): rows with quantity == 0 should not
     # report a per-share day_change delta (LTP is meaningless for a closed

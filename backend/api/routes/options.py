@@ -823,36 +823,24 @@ class StrategyResponse(msgspec.Struct):
 
 # ── Resolvers ─────────────────────────────────────────────────────────
 
-def _resolve_position(mode: str, symbol: str, qty: Optional[int],
-                     account: Optional[str], avg_cost: Optional[float]
-                     ) -> tuple[int, str | None, float]:
-    """
-    Resolve (qty, account, avg_cost) for the requested mode. Hypothetical
-    mode lets the operator pre-trade-analyze any symbol with a default qty
-    of 1 lot (or the lot size if we can derive it).
-    """
-    if mode == "hypothetical":
-        # Default qty = 1 share long; operator can override via query.
-        return (int(qty) if qty is not None else 1,
-                account, float(avg_cost) if avg_cost is not None else 0.0)
+def _resolve_position_sim(symbol: str) -> tuple[int, str, float]:
+    """Return (qty, account, avg_cost) from the active SimDriver for symbol."""
+    from backend.api.algo.sim.driver import get_driver
+    drv = get_driver()
+    for r in drv._positions_rows:
+        if str(r.get("tradingsymbol", "")).upper() == symbol.upper():
+            return (
+                int(r.get("quantity") or 0),
+                str(r.get("account") or "—"),
+                float(r.get("average_price") or 0),
+            )
+    raise HTTPException(status_code=404, detail=f"sim has no position '{symbol}'")
 
-    if mode == "sim":
-        from backend.api.algo.sim.driver import get_driver
-        drv = get_driver()
-        for r in drv._positions_rows:
-            if str(r.get("tradingsymbol", "")).upper() == symbol.upper():
-                return (
-                    int(r.get("quantity") or 0),
-                    str(r.get("account") or "—"),
-                    float(r.get("average_price") or 0),
-                )
-        raise HTTPException(status_code=404,
-                            detail=f"sim has no position '{symbol}'")
 
-    # mode == "live"
+def _resolve_position_live(symbol: str, account: Optional[str]) -> tuple[int, str, float]:
+    """Return (qty, account, avg_cost) from a live broker position lookup."""
     if not account:
-        raise HTTPException(status_code=400,
-                            detail="live mode requires `account`.")
+        raise HTTPException(status_code=400, detail="live mode requires `account`.")
     from backend.brokers.registry import get_broker
     try:
         positions = get_broker(account).positions() or {}
@@ -868,6 +856,24 @@ def _resolve_position(mode: str, symbol: str, qty: Optional[int],
             )
     raise HTTPException(status_code=404,
                         detail=f"account {account!r} has no position '{symbol}'")
+
+
+def _resolve_position(mode: str, symbol: str, qty: Optional[int],
+                     account: Optional[str], avg_cost: Optional[float]
+                     ) -> tuple[int, str | None, float]:
+    """
+    Resolve (qty, account, avg_cost) for the requested mode. Hypothetical
+    mode lets the operator pre-trade-analyze any symbol with a default qty
+    of 1 lot (or the lot size if we can derive it).
+    """
+    if mode == "hypothetical":
+        # Default qty = 1 share long; operator can override via query.
+        return (int(qty) if qty is not None else 1,
+                account, float(avg_cost) if avg_cost is not None else 0.0)
+
+    if mode == "sim":
+        return _resolve_position_sim(symbol)
+    return _resolve_position_live(symbol, account)
 
 
 def _resolve_span_pct(*, sigma: float, T_years: float,
@@ -928,6 +934,17 @@ def _resolve_iv_for_analytics(
     return calibrated, "calibrated"
 
 
+def _depth_mid(depth: dict) -> "Optional[float]":
+    """Return bid+ask midpoint from a Kite depth dict, or None when unavailable."""
+    buy  = (depth.get("buy")  or [{}])[0]
+    sell = (depth.get("sell") or [{}])[0]
+    bid  = buy.get("price")
+    ask  = sell.get("price")
+    if bid and ask and bid > 0 and ask > 0:
+        return (float(bid) + float(ask)) / 2.0
+    return None
+
+
 def _ltp_from_quote(q: dict) -> tuple[Optional[float], str]:
     """
     Pick the best price out of a Kite quote dict. Order:
@@ -945,13 +962,9 @@ def _ltp_from_quote(q: dict) -> tuple[Optional[float], str]:
     close = ohlc.get("close")
     if close not in (None, 0, 0.0):
         return (float(close), "close")
-    depth = q.get("depth") or {}
-    buy   = (depth.get("buy")  or [{}])[0]
-    sell  = (depth.get("sell") or [{}])[0]
-    bid   = buy.get("price")
-    ask   = sell.get("price")
-    if bid and ask and bid > 0 and ask > 0:
-        return ((float(bid) + float(ask)) / 2.0, "depth")
+    mid = _depth_mid(q.get("depth") or {})
+    if mid is not None:
+        return (mid, "depth")
     return (None, "none")
 
 
@@ -968,6 +981,21 @@ def _prev_close_from_quote(q: dict) -> float | None:
         return float(close)
     except (TypeError, ValueError):
         return None
+
+
+def _mcx_fut_candidates(items: list, underlying: str) -> list:
+    """Filter instruments list to MCX FUT contracts for the given underlying."""
+    target_u = underlying.upper()
+    return sorted(
+        [
+            inst for inst in items
+            if (inst.e == "MCX"
+                and inst.t == "FUT"
+                and (inst.u or "").upper() == target_u
+                and inst.x)
+        ],
+        key=lambda i: i.x or "",
+    )
 
 
 async def _lookup_mcx_future(underlying: str,
@@ -990,18 +1018,18 @@ async def _lookup_mcx_future(underlying: str,
         items = []
     if not items:
         return None
-    target_u = underlying.upper()
-    candidates = [
-        inst for inst in items
-        if (inst.e == "MCX"
-            and inst.t == "FUT"
-            and (inst.u or "").upper() == target_u
-            and inst.x)
-    ]
+    candidates = _mcx_fut_candidates(items, underlying)
     if not candidates:
         return None
-    candidates.sort(key=lambda i: i.x or "")
     # Prefer same-month/year; else earliest expiry (near-month fallback).
+    same_month = _lookup_mcx_same_month(candidates, expiry_hint)
+    return same_month if same_month is not None else candidates[0].s
+
+
+def _lookup_mcx_same_month(candidates: list, expiry_hint: date) -> Optional[str]:
+    """Iterate instrument candidates and return the tradingsymbol of the first
+    whose expiry year+month matches expiry_hint. Returns None when no match
+    is found (caller falls back to candidates[0])."""
     for inst in candidates:
         try:
             exp = date.fromisoformat(inst.x[:10])
@@ -1009,7 +1037,7 @@ async def _lookup_mcx_future(underlying: str,
                 return inst.s
         except (TypeError, ValueError):
             pass
-    return candidates[0].s
+    return None
 
 
 # `_lookup_mcx_near_month_future` moved to
@@ -1162,6 +1190,34 @@ async def _close_from_db(underlying: str) -> Optional[float]:
     return None
 
 
+async def _spot_last_resort(
+    underlying: str,
+    cache_anchor: "Optional[str]",
+    fallback: "Optional[float]",
+) -> tuple[float, str, "Optional[float]", "Optional[str]"]:
+    """Last-resort spot chain: last-known-spot cache → DB close → caller fallback → 502."""
+    cached = _spot_cache_get(underlying, cache_anchor)
+    if cached is not None:
+        return cached  # (px, "cached", prev_close, anchor)
+
+    db_close = await _close_from_db(underlying)
+    if db_close is not None:
+        logger.info("options spot for %s resolved via close-db: %.4f", underlying, db_close)
+        return (db_close, "close-db", db_close, None)
+
+    if fallback is not None and fallback > 0:
+        logger.warning(
+            "strategy spot for %s fell through to source='fallback' "
+            "(spot=%.2f, anchor=None). Live + futures lookups failed; "
+            "UI will suppress the spot marker.",
+            underlying, float(fallback),
+        )
+        return (float(fallback), "fallback", None, None)
+
+    raise HTTPException(status_code=502,
+                        detail=f"spot for {underlying} unavailable from any source")
+
+
 async def _resolve_spot(underlying: str, override: Optional[float],
                         *, fallback: Optional[float] = None,
                         expiry_hint: Optional[date] = None,
@@ -1230,32 +1286,9 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     if px is not None:
         return (px, src, prev, anchor)
 
-    # Last-known-spot cache — keyed by (underlying, anchor) so per-month
-    # MCX entries don't collide.
+    # Last-known-spot cache / DB / caller fallback / error.
     cache_anchor = resolved_sym if is_commodity else None
-    cached = _spot_cache_get(underlying, cache_anchor)
-    if cached is not None:
-        return cached  # (px, "cached", prev_close, anchor)
-
-    # DB-backed close fallback — daily_book.holdings.ltp then ohlcv_daily.close.
-    db_close = await _close_from_db(underlying)
-    if db_close is not None:
-        logger.info(
-            "options spot for %s resolved via close-db: %.4f", underlying, db_close
-        )
-        return (db_close, "close-db", db_close, None)
-
-    if fallback is not None and fallback > 0:
-        logger.warning(
-            "strategy spot for %s fell through to source='fallback' "
-            "(spot=%.2f, anchor=None). Live + futures lookups failed; "
-            "UI will suppress the spot marker.",
-            underlying, float(fallback),
-        )
-        return (float(fallback), "fallback", None, None)
-
-    raise HTTPException(status_code=502,
-                        detail=f"spot for {underlying} unavailable from any source")
+    return await _spot_last_resort(underlying, cache_anchor, fallback)
 
 
 # Option-quote-key helper moved to `derivatives.option_quote_key`.
@@ -1449,6 +1482,34 @@ def _strategy_collect_leg_metadata(
     return roots, expiries, need_quote
 
 
+def _strategy_anchor_from_modal_expiry(
+    leg_expiries: list[tuple[str, str, str]],
+) -> tuple[Optional[str], Optional[date]]:
+    """Counter-based modal-expiry picker with option-preferred anchor.
+
+    leg_expiries: list of (expiry_iso, kind, symbol) tuples.
+    Returns (anchor_symbol, expiry_hint) where expiry_hint uses
+    date.fromisoformat (stdlib canonical).
+    Tie-break: front-month (earliest expiry) wins when two months
+    have equal leg counts.
+    """
+    from collections import Counter
+    expiry_counts = Counter(e for (e, _k, _s) in leg_expiries)
+    modal_expiry = min(
+        expiry_counts.keys(),
+        key=lambda e: (-expiry_counts[e], e),
+    )
+    modal_legs = [(k, s) for (e, k, s) in leg_expiries if e == modal_expiry]
+    option_modal = next((s for (k, s) in modal_legs if k == "opt"), None)
+    futures_modal = next((s for (k, s) in modal_legs if k == "fut"), None)
+    anchor_symbol = option_modal or futures_modal
+    try:
+        expiry_hint: Optional[date] = date.fromisoformat(modal_expiry)
+    except Exception:
+        expiry_hint = None
+    return anchor_symbol, expiry_hint
+
+
 def _strategy_pick_spot_anchor(
     data: "StrategyRequest",
     parsed_by_sym: dict,
@@ -1471,20 +1532,7 @@ def _strategy_pick_spot_anchor(
     anchor_symbol: Optional[str] = None
     expiry_hint: Optional[date] = None
     if leg_expiries:
-        from collections import Counter
-        expiry_counts = Counter(e for (e, _k, _s) in leg_expiries)
-        modal_expiry = min(
-            expiry_counts.keys(),
-            key=lambda e: (-expiry_counts[e], e)
-        )
-        modal_legs = [(k, s) for (e, k, s) in leg_expiries if e == modal_expiry]
-        option_modal = next((s for (k, s) in modal_legs if k == "opt"), None)
-        futures_modal = next((s for (k, s) in modal_legs if k == "fut"), None)
-        anchor_symbol = option_modal or futures_modal
-        try:
-            expiry_hint = date.fromisoformat(modal_expiry)
-        except Exception:
-            expiry_hint = None
+        anchor_symbol, expiry_hint = _strategy_anchor_from_modal_expiry(leg_expiries)
     if anchor_symbol is None and data.legs:
         anchor_symbol = data.legs[0].symbol
     return anchor_symbol, expiry_hint
@@ -1568,6 +1616,17 @@ async def _mcx_batch_quote_futures(
                 f"MCX per-leg futures batch quote failed: {_e}; "
                 "falling back to scale_ratio=1 for all legs"
             )
+    _mcx_populate_from_quote_resp(underlying, month_to_fut_sym, month_to_cached, _fut_quote_resp)
+
+
+def _mcx_populate_from_quote_resp(
+    underlying: str,
+    month_to_fut_sym: dict,
+    month_to_cached: dict,
+    _fut_quote_resp: dict,
+) -> None:
+    """Iterate month_to_fut_sym, call _ltp_from_quote on each futures symbol,
+    and populate month_to_cached in-place. Skips months with no resolved symbol."""
     for _mk, _fut_sym in month_to_fut_sym.items():
         if not _fut_sym:
             continue
@@ -1661,26 +1720,32 @@ def _strategy_build_futures_leg(
     return resolved, detail
 
 
-def _strategy_resolve_option_ltp(
+def _strategy_ltp_from_leg_or_quote(
     leg,
     sym: str,
-    parsed: dict,
     quote_resp: dict,
+) -> tuple[Optional[float], str]:
+    """First two steps of the option LTP chain: operator override → broker quote.
+    Returns (ltp_val, ltp_source) where ltp_val may be None when both miss."""
+    if leg.ltp is not None and leg.ltp > 0:
+        return float(leg.ltp), "override"
+    q = quote_resp.get(option_quote_key(sym)) or {}
+    return _ltp_from_quote(q)
+
+
+def _strategy_ltp_apply_fallbacks(
+    sym: str,
+    ltp_val: Optional[float],
+    ltp_source: str,
+    avg_cost: Optional[float],
     S_leg: float,
+    parsed: dict,
     T_yrs: float,
 ) -> tuple[float, str]:
-    """Option-leg LTP chain: override → broker → avg_cost → BS estimate → fail.
-    Raises HTTPException(400) if all fallbacks are exhausted.
-    """
-    ltp_val: Optional[float]
-    ltp_source: str
-    if leg.ltp is not None and leg.ltp > 0:
-        ltp_val, ltp_source = float(leg.ltp), "override"
-    else:
-        q = quote_resp.get(option_quote_key(sym)) or {}
-        ltp_val, ltp_source = _ltp_from_quote(q)
-    if ltp_val is None and leg.avg_cost is not None and leg.avg_cost > 0:
-        ltp_val, ltp_source = float(leg.avg_cost), "avg_cost"
+    """avg_cost → BS estimate fallbacks for the option LTP chain.
+    Raises HTTPException(400) when all fallbacks are exhausted."""
+    if ltp_val is None and avg_cost is not None and avg_cost > 0:
+        ltp_val, ltp_source = float(avg_cost), "avg_cost"
     if ltp_val is None or ltp_val <= 0:
         est = black_scholes(S_leg, parsed["strike"], T_yrs,
                             DEFAULT_RISK_FREE, DEFAULT_IV,
@@ -1695,6 +1760,23 @@ def _strategy_resolve_option_ltp(
                     f"and illiquid contracts often need this).")
         )
     return ltp_val, ltp_source
+
+
+def _strategy_resolve_option_ltp(
+    leg,
+    sym: str,
+    parsed: dict,
+    quote_resp: dict,
+    S_leg: float,
+    T_yrs: float,
+) -> tuple[float, str]:
+    """Option-leg LTP chain: override → broker → avg_cost → BS estimate → fail.
+    Raises HTTPException(400) if all fallbacks are exhausted.
+    """
+    ltp_val, ltp_source = _strategy_ltp_from_leg_or_quote(leg, sym, quote_resp)
+    return _strategy_ltp_apply_fallbacks(
+        sym, ltp_val, ltp_source, leg.avg_cost, S_leg, parsed, T_yrs
+    )
 
 
 def _strategy_calibrate_iv(
@@ -1884,6 +1966,41 @@ def _strategy_build_legs(
     return resolved_legs, leg_details, sigma_weight_num, sigma_weight_den
 
 
+def _strategy_option_expiry_set(
+    data: "StrategyRequest",
+    parsed_by_sym: dict,
+) -> tuple[set, str, date]:
+    """Return (option_expiries, shared_expiry_iso, shared_expiry).
+    Prefers min(option leg expiries); falls back to min of all expiries
+    when there are no option legs (futures-only basket)."""
+    all_expiries = {
+        _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
+        for leg in data.legs
+    }
+    option_expiries = {
+        _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
+        for leg in data.legs
+        if (p := parsed_by_sym.get(leg.symbol.upper().strip())) and p.get("kind") == "opt"
+    }
+    shared_expiry_iso = min(option_expiries) if option_expiries else min(all_expiries)
+    shared_expiry = date.fromisoformat(shared_expiry_iso)
+    return option_expiries, shared_expiry_iso, shared_expiry
+
+
+def _build_leg_details_list(leg_details: list) -> list:
+    """Convert leg_details dicts to LegDetail instances."""
+    return [
+        LegDetail(
+            symbol=l["symbol"], opt_type=l["opt_type"], strike=l["strike"],
+            qty=l["qty"], avg_cost=l["avg_cost"], ltp=l["ltp"], iv=l["iv"],
+            theoretical=l["theoretical"], discrepancy=l["discrepancy"],
+            greeks=OptionGreeks(**l["greeks"]),
+            ltp_source=l["ltp_source"], iv_source=l["iv_source"],
+        )
+        for l in leg_details
+    ]
+
+
 def _strategy_aggregate(
     data: "StrategyRequest",
     resolved_legs: list[dict],
@@ -1924,13 +2041,9 @@ def _strategy_aggregate(
                   if abs(net_cost) > 0 else None)
 
     # Prefer min(option expiries) — options drive "time to expiry".
-    option_expiries = {
-        _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
-        for leg in data.legs
-        if (p := parsed_by_sym.get(leg.symbol.upper().strip())) and p.get("kind") == "opt"
-    }
-    shared_expiry_iso = min(option_expiries) if option_expiries else min(expiries)
-    shared_expiry     = date.fromisoformat(shared_expiry_iso)
+    option_expiries, shared_expiry_iso, shared_expiry = _strategy_option_expiry_set(
+        data, parsed_by_sym
+    )
     return StrategyResponse(
         underlying=underlying,
         expiry=shared_expiry_iso,
@@ -1947,13 +2060,7 @@ def _strategy_aggregate(
         ),
         payoff=[PayoffPoint(**p) for p in curve],
         intermediate_curves=[IntermediateCurve(**s) for s in slices],
-        legs=[LegDetail(
-            symbol=l["symbol"], opt_type=l["opt_type"], strike=l["strike"],
-            qty=l["qty"], avg_cost=l["avg_cost"], ltp=l["ltp"], iv=l["iv"],
-            theoretical=l["theoretical"], discrepancy=l["discrepancy"],
-            greeks=OptionGreeks(**l["greeks"]),
-            ltp_source=l["ltp_source"], iv_source=l["iv_source"],
-        ) for l in leg_details],
+        legs=_build_leg_details_list(leg_details),
         spot_prev_close=spot_prev_close,
         span_pct=span_pct_resolved,
         span_sigmas=float(data.span_sigmas) if data.span_pct is None else 0.0,
@@ -2020,6 +2127,24 @@ async def _chain_quotes_batch_quote(
     return quote_resp, key_meta
 
 
+def _chain_quotes_bid_ask_from_q(q: dict) -> tuple["float | None", "float | None"]:
+    """Return (bid, ask) from a Kite quote dict.
+    Falls back to last_price for both sides when the depth array is empty
+    (illiquid PE strikes outside the front 5 strikes often have no depth).
+    last_price > 0 is the gate — a true no-quote still returns (None, None)."""
+    depth = q.get("depth") or {}
+    bid = _best_depth_price(depth.get("buy"))
+    ask = _best_depth_price(depth.get("sell"))
+    if bid is None or ask is None:
+        lp = float(q.get("last_price") or 0.0)
+        if lp > 0:
+            if bid is None:
+                bid = lp
+            if ask is None:
+                ask = lp
+    return bid, ask
+
+
 def _chain_quotes_build_book(
     sym_by_strike: dict[float, dict[str, str]],
     quote_resp: dict,
@@ -2033,25 +2158,171 @@ def _chain_quotes_build_book(
     }
     for qk, (strike, side) in key_meta.items():
         q = quote_resp.get(qk) or {}
-        depth = q.get("depth") or {}
-        bid = _best_depth_price(depth.get("buy"))
-        ask = _best_depth_price(depth.get("sell"))
-        # LTP fallback — when the depth array is empty (illiquid PE
-        # strikes especially have this on RELIANCE / index options
-        # outside the front 5 strikes), surface last_price as a
-        # single-value approximation for both bid and ask instead
-        # of leaving the cell as "—". last_price > 0 is the gate so
-        # a true no-quote still shows "—".
-        if bid is None or ask is None:
-            lp = float(q.get("last_price") or 0.0)
-            if lp > 0:
-                if bid is None:
-                    bid = lp
-                if ask is None:
-                    ask = lp
+        bid, ask = _chain_quotes_bid_ask_from_q(q)
         book_by_strike[strike][side]["bid"] = bid
         book_by_strike[strike][side]["ask"] = ask
     return book_by_strike
+
+
+async def _strategy_fetch_bulk_quote(
+    need_quote: dict,
+    _price_broker,
+) -> dict:
+    """Fire a bulk broker.quote() for all symbols in need_quote.
+    Returns an empty dict when need_quote is empty or the call fails."""
+    quote_resp: dict = {}
+    if need_quote:
+        try:
+            quote_resp = await asyncio.to_thread(
+                _price_broker.quote, list(need_quote.keys()),
+            ) or {}
+        except Exception as e:
+            logger.warning(f"Strategy quote() failed: {e}")
+    return quote_resp
+
+
+async def _strategy_resolve_spot_impl(
+    data: "StrategyRequest",
+    parsed_by_sym: dict,
+    underlying: str,
+) -> tuple[float, str, "Optional[float]", "Optional[str]"]:
+    """Compute sorted_strikes + median, pick anchor, then delegate to _resolve_spot.
+    Logs a warning when the source is 'fallback' or 'cached'.
+    Returns (S, spot_src, spot_prev_close, spot_anchor)."""
+    sorted_strikes = sorted({
+        p["strike"]
+        for l in data.legs
+        if (p := parsed_by_sym.get((l.symbol or "").upper().strip())) and "strike" in p
+    })
+    median_strike = sorted_strikes[len(sorted_strikes) // 2] if sorted_strikes else None
+    anchor_symbol, expiry_hint = _strategy_pick_spot_anchor(data, parsed_by_sym)
+    S, _spot_src, spot_prev_close, _spot_anchor = await _resolve_spot(
+        underlying, data.spot,
+        fallback=median_strike,
+        expiry_hint=expiry_hint,
+        option_symbol=anchor_symbol,
+    )
+    if _spot_src in ("fallback", "cached"):
+        logger.warning(
+            f"strategy spot for {underlying} fell through to "
+            f"source={_spot_src!r} (spot={S}, anchor={_spot_anchor}). "
+            f"Live + futures lookups failed; UI will suppress the spot marker."
+        )
+    return S, _spot_src, spot_prev_close, _spot_anchor
+
+
+def _chain_snapshot_parse_expiry(exp: str) -> date:
+    """Parse exp as an ISO date string. Raises HTTPException(400) on bad format."""
+    try:
+        return date.fromisoformat(exp)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail=f"expiry must be ISO format YYYY-MM-DD, got {exp!r}")
+
+
+async def _chain_snapshot_resolve_spot(
+    und: str, expiry_d: "Optional[date]"
+) -> tuple[float, str, "Optional[float]"]:
+    """Resolve spot for the chain-snapshot endpoint.
+    Returns (spot, src, prev_close). Raises 502 when spot cannot be resolved
+    or is non-positive."""
+    try:
+        spot, src, prev, _anc2 = await _resolve_spot(und, None, expiry_hint=expiry_d)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"chain-snapshot spot resolution failed: {e}")
+        raise HTTPException(status_code=502,
+                            detail=f"could not resolve spot for {und}")
+    if not spot or spot <= 0:
+        raise HTTPException(status_code=502,
+                            detail=f"resolved spot is non-positive: {spot}")
+    return spot, src, prev
+
+
+def _analytics_validate_request(mode: str, request: Any, symbol: str) -> str:
+    """Validate mode, demo guard, and symbol for the /analytics endpoint.
+    Returns the uppercased+stripped symbol on success; raises HTTPException
+    for invalid mode (400), demo+live (403), missing symbol (400), or
+    non-option symbol (400)."""
+    if mode not in _VALID_MODES:
+        raise HTTPException(status_code=400,
+                            detail=f"mode must be one of {_VALID_MODES}")
+    if getattr(request.state, "is_demo", False) and mode == "live":
+        raise HTTPException(status_code=403, detail="Demo: read-only.")
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    sym = symbol.upper().strip()
+    parsed = parse_tradingsymbol(sym)
+    if not parsed or parsed.get("kind") != "opt":
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{sym}' isn't a recognised option contract. "
+                   f"Futures and equities aren't supported by this endpoint."
+        )
+    return sym
+
+
+def _analytics_compute_metrics(
+    S: float,
+    parsed: dict,
+    T_yrs: float,
+    sigma: float,
+    ltp_val: float,
+    qty_resolved: int,
+    avg_resolved: float,
+    span_pct: "Optional[float]",
+    span_sigmas: float,
+    points: int,
+    time_slices: int,
+) -> tuple:
+    """Compute BS price, greeks, risk metrics, payoff curves, and EV for one option.
+
+    Returns a 13-tuple:
+      (theo, disc, disc_pct, g_per, g_pos, entry, risk,
+       span_pct_resolved, curve, slices, ev, ev_pct, rr)
+    """
+    theo = black_scholes(S, parsed["strike"], T_yrs,
+                         DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
+    disc = ltp_val - theo
+    disc_pct = (disc / theo * 100.0) if theo else 0.0
+
+    g_per = greeks(S, parsed["strike"], T_yrs,
+                   DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
+    g_pos = {k: v * qty_resolved for k, v in g_per.items()}
+
+    entry = avg_resolved if avg_resolved > 0 else ltp_val
+    risk = risk_metrics(
+        S=S, K=parsed["strike"], T_years=T_yrs,
+        r=DEFAULT_RISK_FREE, sigma=sigma,
+        opt_type=parsed["opt_type"], qty=qty_resolved,
+        entry_price=entry,
+    )
+    span_pct_resolved = _resolve_span_pct(
+        sigma=sigma, T_years=T_yrs,
+        span_pct=span_pct, span_sigmas=span_sigmas,
+    )
+    pts = max(11, min(points, 101))
+    curve = payoff_curve(
+        S=S, K=parsed["strike"], T_years=T_yrs,
+        r=DEFAULT_RISK_FREE, sigma=sigma,
+        opt_type=parsed["opt_type"], qty=qty_resolved,
+        entry_price=entry, span_pct=span_pct_resolved, points=pts,
+    )
+    slices = intermediate_curves(
+        S=S, K=parsed["strike"], T_years=T_yrs,
+        r=DEFAULT_RISK_FREE, sigma=sigma,
+        opt_type=parsed["opt_type"], qty=qty_resolved,
+        entry_price=entry, span_pct=span_pct_resolved, points=pts,
+        time_slices=max(0, min(time_slices, 5)),
+    )
+    ev = expected_value(curve, S=S, T_years=T_yrs, sigma=sigma)
+    cost_basis = abs(entry * qty_resolved)
+    ev_pct = round(ev / cost_basis * 100.0, 2) if cost_basis > 0 else None
+    rr = risk_reward_ratio(_finite_or_null(risk["max_profit"]),
+                           _finite_or_null(risk["max_loss"]))
+    return (theo, disc, disc_pct, g_per, g_pos, entry, risk,
+            span_pct_resolved, curve, slices, ev, ev_pct, rr)
 
 
 # ── Controller ────────────────────────────────────────────────────────
@@ -2084,24 +2355,8 @@ class OptionsController(Controller):
         curve all computed in-process. The frontend renders this as the
         side panel + payoff chart on /admin/options.
         """
-        if mode not in _VALID_MODES:
-            raise HTTPException(status_code=400,
-                                detail=f"mode must be one of {_VALID_MODES}")
-        # Demo sessions may only use sim or hypothetical mode; probing
-        # live broker positions leaks account data.
-        if getattr(request.state, "is_demo", False) and mode == "live":
-            raise HTTPException(status_code=403, detail="Demo: read-only.")
-        if not symbol:
-            raise HTTPException(status_code=400, detail="symbol is required")
-
-        sym    = symbol.upper().strip()
+        sym    = _analytics_validate_request(mode, request, symbol)
         parsed = parse_tradingsymbol(sym)
-        if not parsed or parsed.get("kind") != "opt":
-            raise HTTPException(
-                status_code=400,
-                detail=f"'{sym}' isn't a recognised option contract. "
-                       f"Futures and equities aren't supported by this endpoint."
-            )
 
         qty_resolved, acct_resolved, avg_resolved = _resolve_position(
             mode, sym, qty, account, avg_cost)
@@ -2144,67 +2399,11 @@ class OptionsController(Controller):
             S, parsed["strike"], T_yrs, parsed["opt_type"],
         )
 
-        theo = black_scholes(S, parsed["strike"], T_yrs,
-                             DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
-        disc = ltp_val - theo
-        disc_pct = (disc / theo * 100.0) if theo else 0.0
-
-        g_per = greeks(S, parsed["strike"], T_yrs,
-                       DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
-        # Position-scaled Greeks: multiply by signed qty so a short put's
-        # delta reads negative correctly.
-        g_pos = {k: v * qty_resolved for k, v in g_per.items()}
-
-        # Use avg_cost if non-zero (real position); fall back to current
-        # LTP as the cost basis for hypothetical analysis ("what would
-        # buying this RIGHT NOW look like?").
-        entry = avg_resolved if avg_resolved > 0 else ltp_val
-        risk = risk_metrics(
-            S=S, K=parsed["strike"], T_years=T_yrs,
-            r=DEFAULT_RISK_FREE, sigma=sigma,
-            opt_type=parsed["opt_type"], qty=qty_resolved,
-            entry_price=entry,
+        (theo, disc, disc_pct, g_per, g_pos, entry, risk,
+         span_pct_resolved, curve, slices, ev, ev_pct, rr) = _analytics_compute_metrics(
+            S, parsed, T_yrs, sigma, ltp_val, qty_resolved, avg_resolved,
+            span_pct, span_sigmas, int(points), int(time_slices),
         )
-        # Span auto-derived from σ × √T so short-DTE charts don't show
-        # an absurd ±10% range and long-DTE charts aren't squashed.
-        # Operator can override by passing span_pct explicitly.
-        span_pct_resolved = _resolve_span_pct(
-            sigma=sigma, T_years=T_yrs,
-            span_pct=span_pct, span_sigmas=span_sigmas,
-        )
-        pts = max(11, min(int(points), 101))
-        curve = payoff_curve(
-            S=S, K=parsed["strike"], T_years=T_yrs,
-            r=DEFAULT_RISK_FREE, sigma=sigma,
-            opt_type=parsed["opt_type"], qty=qty_resolved,
-            entry_price=entry,
-            span_pct=span_pct_resolved,
-            points=pts,
-        )
-        # Time-slice intermediate curves — empty list when time_slices=0
-        # (default). Operator's frontend opts in via the query param.
-        # Cap at 5 slices so a typo doesn't request a 30-curve chart.
-        slices = intermediate_curves(
-            S=S, K=parsed["strike"], T_years=T_yrs,
-            r=DEFAULT_RISK_FREE, sigma=sigma,
-            opt_type=parsed["opt_type"], qty=qty_resolved,
-            entry_price=entry,
-            span_pct=span_pct_resolved,
-            points=pts,
-            time_slices=max(0, min(int(time_slices), 5)),
-        )
-
-        # Position-level expected value via lognormal integration over
-        # the payoff curve. Tells the operator "weighted by win/loss
-        # magnitudes, what's this trade worth on average?" — POP alone
-        # only answers "how often I win" without sizing.
-        ev = expected_value(curve, S=S, T_years=T_yrs, sigma=sigma)
-        # ev_pct: return on what it cost to enter, as a percentage. Null
-        # when entry is zero (operator typed a hypothetical with no cost).
-        cost_basis = abs(entry * qty_resolved)
-        ev_pct = round(ev / cost_basis * 100.0, 2) if cost_basis > 0 else None
-        rr = risk_reward_ratio(_finite_or_null(risk["max_profit"]),
-                               _finite_or_null(risk["max_loss"]))
 
         return OptionAnalyticsResponse(
             mode=mode,
@@ -2366,23 +2565,8 @@ class OptionsController(Controller):
             raise HTTPException(status_code=400, detail="expiry is required")
 
         # 1. Resolve spot (no fallback — we need it for Greeks).
-        expiry_d: Optional[date] = None
-        try:
-            expiry_d = date.fromisoformat(exp)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400,
-                detail=f"expiry must be ISO format YYYY-MM-DD, got {exp!r}")
-        try:
-            spot, src, prev, _anc2 = await _resolve_spot(und, None, expiry_hint=expiry_d)
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.warning(f"chain-snapshot spot resolution failed: {e}")
-            raise HTTPException(status_code=502,
-                detail=f"could not resolve spot for {und}")
-        if not spot or spot <= 0:
-            raise HTTPException(status_code=502,
-                detail=f"resolved spot is non-positive: {spot}")
+        expiry_d = _chain_snapshot_parse_expiry(exp)
+        spot, src, prev = await _chain_snapshot_resolve_spot(und, expiry_d)
 
         from backend.api.routes.options_helpers import (
             _chain_snapshot_instruments,
@@ -2588,35 +2772,12 @@ class OptionsController(Controller):
         _price_broker = get_market_data_broker()
 
         # Bulk quote — richer than ltp(); includes ohlc.close for off-hours.
-        quote_resp: dict = {}
-        if need_quote:
-            try:
-                quote_resp = await asyncio.to_thread(
-                    _price_broker.quote, list(need_quote.keys()),
-                ) or {}
-            except Exception as e:
-                logger.warning(f"Strategy quote() failed: {e}")
+        quote_resp = await _strategy_fetch_bulk_quote(need_quote, _price_broker)
 
         # ── 2. Resolve spot ───────────────────────────────────────────
-        sorted_strikes = sorted({
-            p["strike"]
-            for l in data.legs
-            if (p := parsed_by_sym.get((l.symbol or "").upper().strip())) and "strike" in p
-        })
-        median_strike = sorted_strikes[len(sorted_strikes) // 2] if sorted_strikes else None
-        anchor_symbol, expiry_hint = _strategy_pick_spot_anchor(data, parsed_by_sym)
-        S, _spot_src, spot_prev_close, _spot_anchor = await _resolve_spot(
-            underlying, data.spot,
-            fallback=median_strike,
-            expiry_hint=expiry_hint,
-            option_symbol=anchor_symbol,
+        S, _spot_src, spot_prev_close, _spot_anchor = await _strategy_resolve_spot_impl(
+            data, parsed_by_sym, underlying,
         )
-        if _spot_src in ('fallback', 'cached'):
-            logger.warning(
-                f"strategy spot for {underlying} fell through to "
-                f"source={_spot_src!r} (spot={S}, anchor={_spot_anchor}). "
-                f"Live + futures lookups failed; UI will suppress the spot marker."
-            )
 
         # ── 3. Build resolved-leg list with σ calibrated per leg ──────
         _is_commodity = is_mcx_underlying(underlying)
