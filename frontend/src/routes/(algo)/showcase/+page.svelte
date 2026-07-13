@@ -238,8 +238,6 @@
     { val: '24×7', lbl: 'background risk engine' },
     { val: '0',    lbl: 'chart libraries (hand-rolled SVG)' },
     { val: '1',    lbl: 'engineer (start to ship)' },
-    { val: 'NTT',  lbl: 'Global top-40 innovator' },
-    { val: '19 yr', lbl: 'Fidelity Investments' },
   ];
 </script>
 
@@ -275,7 +273,7 @@
         <div class="show-attribution">
           <span class="show-attr-name">Ramana R. Ambore</span>
           <span class="show-attr-sep">·</span>
-          <span class="show-attr-creds">FRM · CFA-L3 · M.Sc. CS · Six Sigma GB</span>
+          <span class="show-attr-creds">FRM · CFA-L3 · M.Sc. CS · Six Sigma GB · NTT Global top-40 innovator</span>
           <div class="show-attr-roles">
             <span>Principal System Analyst · Fidelity Investments (19 yrs)</span>
             <span class="show-attr-sep">·</span>
