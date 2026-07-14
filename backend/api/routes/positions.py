@@ -51,6 +51,9 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     """
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
+    from backend.shared.helpers.date_time_utils import timestamp_indian as _ts_indian
+
+    _today_ist = _ts_indian().date()
 
     try:
         async with async_session() as session:
@@ -80,6 +83,33 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 ORDER BY db.account, db.symbol
             """))
             raw_rows = result.all()
+
+            # Fetch yesterday's total_pnl per (account, symbol) — used by the
+            # frontend's baseDayPnlForPosition to compute day-P&L as:
+            #   day_pnl = total_pnl - prev_settlement_pnl  (Branch A)
+            # This mirrors what _override_stale_close_from_snapshot builds for
+            # the live path via prev_pnl_map / _backfill_prev_settlement_pnl.
+            prev_day_sql = _sql_text("""
+                SELECT DISTINCT ON (account, symbol)
+                    account, symbol,
+                    ltp          AS prev_ltp,
+                    total_pnl    AS prev_settlement_pnl
+                FROM daily_book
+                WHERE kind = 'positions'
+                  AND total_pnl IS NOT NULL
+                  AND date < :today_date
+                ORDER BY account, symbol, captured_at DESC
+            """)
+            prev_rows = (
+                await session.execute(prev_day_sql, {"today_date": _today_ist})
+            ).mappings().all()
+            prev_map: dict[tuple[str, str], dict] = {
+                (str(r.account), str(r.symbol)): {
+                    "prev_ltp": float(r.prev_ltp) if r.prev_ltp else None,
+                    "prev_settlement_pnl": float(r.prev_settlement_pnl),
+                }
+                for r in prev_rows
+            }
     except Exception as exc:
         logger.warning(f"positions snapshot query failed: {exc}")
         return None
@@ -92,8 +122,6 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
 
     # Log when the snapshot is from a prior session (no today rows yet —
     # normal during the window between market close and scheduled snapshot run).
-    from backend.shared.helpers.date_time_utils import timestamp_indian as _ts_indian
-    _today_ist = _ts_indian().date()
     if snap_captured_at_dt and snap_captured_at_dt.date() != _today_ist:
         logger.info(
             f"positions snapshot: no rows for today, serving prior snapshot "
@@ -124,10 +152,20 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         # and live paths are consistent (qty=100 contracts for 1-lot MCX).
         multiplier = extract_snapshot_multiplier(payload_json)
         effective_qty = (qty or 0) * multiplier
+        # prev_map lookup — fall back to prev_ltp for previous_close when the
+        # column is absent/zero (mirrors _override_stale_close_from_snapshot).
+        prev_entry = prev_map.get((str(account), str(symbol)), {})
+        prev_close_val = (
+            float(previous_close)
+            if previous_close and float(previous_close) > 0
+            else prev_entry.get("prev_ltp")
+        )
+        prev_pnl_val = prev_entry.get("prev_settlement_pnl")
         rows.append(build_snapshot_position_row(
             account, symbol, exchange, effective_qty, avg_cost, ltp,
             day_pnl, total_pnl, extras,
-            previous_close=previous_close,
+            previous_close=prev_close_val,
+            prev_settlement_pnl=prev_pnl_val,
         ))
 
     summary = build_summary_from_rows(rows)

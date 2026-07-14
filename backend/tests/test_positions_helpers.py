@@ -302,3 +302,230 @@ def test_snapshot_mcx_qty_contracts_after_multiplier():
     assert row.overnight_quantity == 100
     # pnl and day_change_val are from DB (absolute ₹) — not scaled by qty
     assert math.isclose(row.pnl, -24630.0, rel_tol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 7. prev_settlement_pnl — new kwarg for the day-P&L Branch A fix
+# ---------------------------------------------------------------------------
+
+def test_prev_settlement_pnl_set_when_provided():
+    """prev_settlement_pnl kwarg lands on returned PositionRow."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="CRUDEOIL26JUL7500CE",
+        exchange="MCX",
+        qty=1,
+        avg_cost=Decimal("423.1"),
+        ltp=Decimal("205.0"),
+        day_pnl=None,
+        total_pnl=Decimal("-218.1"),
+        extras={},
+        previous_close=Decimal("165.3"),
+        prev_settlement_pnl=100.0,
+    )
+    assert row.prev_settlement_pnl == 100.0, \
+        f"Expected prev_settlement_pnl=100.0, got {row.prev_settlement_pnl}"
+
+
+def test_prev_settlement_pnl_none_when_not_provided():
+    """Default None — Branch B fires in baseDayPnlForPosition."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="CRUDEOIL26JUL7500CE",
+        exchange="MCX",
+        qty=1,
+        avg_cost=Decimal("423.1"),
+        ltp=Decimal("205.0"),
+        day_pnl=None,
+        total_pnl=Decimal("-218.1"),
+        extras={},
+    )
+    assert row.prev_settlement_pnl is None, \
+        f"Expected prev_settlement_pnl=None, got {row.prev_settlement_pnl}"
+
+
+def test_branch_a_fires_with_prev_settlement_pnl():
+    """When prev_settlement_pnl set, day P&L = total_pnl - prev_settlement_pnl."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    total_pnl = 2500.0
+    prev_pnl = 1000.0
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="BHEL26JUL390CE",
+        exchange="NFO",
+        qty=100,
+        avg_cost=Decimal("310.0"),
+        ltp=Decimal("335.0"),
+        day_pnl=None,
+        total_pnl=Decimal(str(total_pnl)),
+        extras={},
+        previous_close=Decimal("320.0"),
+        prev_settlement_pnl=prev_pnl,
+    )
+    assert row.prev_settlement_pnl == prev_pnl, \
+        f"Expected prev_settlement_pnl={prev_pnl}, got {row.prev_settlement_pnl}"
+    # Simulate baseDayPnlForPosition Branch A
+    day_pnl_branch_a = row.pnl - row.prev_settlement_pnl
+    assert math.isclose(day_pnl_branch_a, 1500.0, rel_tol=1e-6), \
+        f"Expected day_pnl=1500.0 (2500-1000), got {day_pnl_branch_a}"
+
+
+def test_branch_b_uses_previous_close_not_ltp():
+    """Without prev_settlement_pnl, Branch B: day = pnl - oq*(close-avg)."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="BHEL",
+        exchange="NSE",
+        qty=100,
+        avg_cost=Decimal("310.0"),
+        ltp=Decimal("335.0"),
+        day_pnl=None,
+        total_pnl=Decimal("2500.0"),
+        extras={},
+        previous_close=Decimal("320.0"),
+    )
+    assert row.prev_settlement_pnl is None, \
+        f"Expected prev_settlement_pnl=None, got {row.prev_settlement_pnl}"
+    # Branch B: close_price must be previous_close (320), not ltp (335)
+    assert math.isclose(row.close_price, 320.0, rel_tol=1e-6), \
+        f"Expected close_price=320.0 (previous_close), got {row.close_price}"
+    oq = row.overnight_quantity
+    # day-P&L = pnl - oq × (close_price - avg_price)
+    # = 2500 - 100 × (320 - 310) = 2500 - 1000 = 1500
+    expected_day = row.pnl - oq * (row.close_price - row.average_price)
+    assert math.isclose(expected_day, 1500.0, rel_tol=1e-6), \
+        f"Expected day_pnl=1500.0, got {expected_day}"
+
+
+def test_previous_close_used_when_provided_and_positive():
+    """previous_close > 0 → close_price = previous_close (not ltp)."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="BEL",
+        exchange="NSE",
+        qty=50,
+        avg_cost=Decimal("200.0"),
+        ltp=Decimal("215.0"),
+        day_pnl=None,
+        total_pnl=Decimal("750.0"),
+        extras={},
+        previous_close=Decimal("210.0"),
+    )
+    assert math.isclose(row.close_price, 210.0, rel_tol=1e-6), \
+        f"Expected close_price=210.0 (previous_close), got {row.close_price}"
+
+
+def test_previous_close_falls_back_to_ltp_when_zero():
+    """previous_close=0 → close_price falls back to ltp (old behaviour)."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="NEWPOS",
+        exchange="NFO",
+        qty=10,
+        avg_cost=Decimal("100.0"),
+        ltp=Decimal("105.0"),
+        day_pnl=None,
+        total_pnl=Decimal("50.0"),
+        extras={},
+        previous_close=Decimal("0.0"),  # New position, no prior close
+    )
+    assert math.isclose(row.close_price, 105.0, rel_tol=1e-6), \
+        f"Expected close_price=105.0 (ltp fallback), got {row.close_price}"
+
+
+def test_prev_settlement_pnl_negative_value():
+    """prev_settlement_pnl can be negative (a loss from yesterday)."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="CRUDEOIL26JUL6900PE",
+        exchange="MCX",
+        qty=10,
+        avg_cost=Decimal("200.0"),
+        ltp=Decimal("264.5"),
+        day_pnl=None,
+        total_pnl=Decimal("645.0"),
+        extras={},
+        previous_close=Decimal("220.0"),
+        prev_settlement_pnl=-500.0,
+    )
+    assert row.prev_settlement_pnl == -500.0, \
+        f"Expected prev_settlement_pnl=-500.0, got {row.prev_settlement_pnl}"
+    # Branch A: day_pnl = 645 - (-500) = 1145
+    day_pnl_branch_a = row.pnl - row.prev_settlement_pnl
+    assert math.isclose(day_pnl_branch_a, 1145.0, rel_tol=1e-6), \
+        f"Expected day_pnl=1145.0, got {day_pnl_branch_a}"
+
+
+def test_prev_settlement_pnl_zero_value():
+    """prev_settlement_pnl can be 0.0 (break-even yesterday)."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="CRUDEOIL26JUL6900PE",
+        exchange="MCX",
+        qty=10,
+        avg_cost=Decimal("200.0"),
+        ltp=Decimal("264.5"),
+        day_pnl=None,
+        total_pnl=Decimal("645.0"),
+        extras={},
+        previous_close=Decimal("220.0"),
+        prev_settlement_pnl=0.0,
+    )
+    assert row.prev_settlement_pnl == 0.0, \
+        f"Expected prev_settlement_pnl=0.0, got {row.prev_settlement_pnl}"
+    # Branch A: day_pnl = 645 - 0 = 645
+    day_pnl_branch_a = row.pnl - row.prev_settlement_pnl
+    assert math.isclose(day_pnl_branch_a, 645.0, rel_tol=1e-6), \
+        f"Expected day_pnl=645.0, got {day_pnl_branch_a}"
+
+
+def test_prev_settlement_pnl_coexists_with_close_override():
+    """prev_settlement_pnl and previous_close both set → both apply."""
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+    row = build_snapshot_position_row(
+        account="ZJ6294",
+        symbol="CRUDEOIL26JUL6900PE",
+        exchange="MCX",
+        qty=10,
+        avg_cost=Decimal("200.0"),
+        ltp=Decimal("264.5"),
+        day_pnl=None,
+        total_pnl=Decimal("645.0"),
+        extras={},
+        previous_close=Decimal("220.0"),
+        prev_settlement_pnl=100.0,
+    )
+    # Both patches should apply
+    assert math.isclose(row.close_price, 220.0, rel_tol=1e-6), \
+        f"Expected close_price=220.0 (previous_close), got {row.close_price}"
+    assert row.prev_settlement_pnl == 100.0, \
+        f"Expected prev_settlement_pnl=100.0, got {row.prev_settlement_pnl}"
+    # day_pnl = 645 - 100 = 545
+    day_pnl_branch_a = row.pnl - row.prev_settlement_pnl
+    assert math.isclose(day_pnl_branch_a, 545.0, rel_tol=1e-6), \
+        f"Expected day_pnl=545.0, got {day_pnl_branch_a}"

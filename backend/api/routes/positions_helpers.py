@@ -193,6 +193,7 @@ def build_snapshot_position_row(
     extras: dict,
     *,
     previous_close: float | None = None,
+    prev_settlement_pnl: float | None = None,
 ) -> PositionRow:
     """Construct a PositionRow from raw daily_book snapshot columns.
 
@@ -205,6 +206,12 @@ def build_snapshot_position_row(
     at the first snapshot of the day and frozen via COALESCE in the UPSERT.
     The frontend's ``baseDayPnlForPosition`` reads ``close_price`` to
     compute day-P&L; without this fix overnight positions always show 0.
+
+    ``prev_settlement_pnl`` — yesterday's total_pnl from the most-recent
+    daily_book snapshot captured before today's midnight IST. When set,
+    the frontend's ``baseDayPnlForPosition`` Branch A fires: day-P&L =
+    total_pnl - prev_settlement_pnl (authoritative). When None, Branch B
+    (fallback) computes: day-P&L = total_pnl - oq×(close_price - avg_price).
     """
     avg_cost_f  = float(avg_cost)  if avg_cost  is not None else 0.0
     ltp_f       = float(ltp)       if ltp       is not None else 0.0
@@ -246,6 +253,7 @@ def build_snapshot_position_row(
         price_source="snapshot_settled",
         current_price=ltp_f,
         is_animating=False,
+        prev_settlement_pnl=prev_settlement_pnl,
     )
 
 
