@@ -225,6 +225,16 @@ multi-server setups where the worker runs on a different machine.
 
 ---
 
+## Database schema changes
+
+Recent migrations (idempotent `ALTER TABLE ... IF NOT EXISTS` pattern):
+
+| Date | Table | Column | Type | Purpose |
+|---|---|---|---|---|
+| 2026-07-13 | `daily_book` | `previous_close` | DOUBLE PRECISION | Freeze yesterday's official settlement close price at first intraday snapshot per trading day. Addresses Kite overwriting `positions.close_price` to today's settlement after EOD, which broke `baseDayPnlForPosition` fallback math during closed-hours snapshot reads. Written once via COALESCE on UPSERT to prevent overwrite. |
+
+---
+
 ## Branch strategy
 
 - `new` — active migration work

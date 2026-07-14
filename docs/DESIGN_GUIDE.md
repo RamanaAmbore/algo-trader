@@ -885,7 +885,7 @@ All tables live in the branch-local DB except `broker_accounts`, which is shared
 
 | Table | Purpose | Key columns |
 |---|---|---|
-| `daily_book` | Intraday snapshot of positions, holdings, or funds per account per symbol. Captured at market close, useful when markets closed. | id (PK), kind (positions\|holdings\|funds), account, symbol, exchange, qty, avg_price, ltp, pnl, pnl_pct, date, captured_at, segment (NSE\|MCX\|...) |
+| `daily_book` | Intraday snapshot of positions, holdings, or funds per account per symbol. Captured at market close, useful when markets closed. Schema includes `previous_close` (frozen yesterday's settlement price) to stabilize day P&L math during closed-hours reads. | id (PK), kind (positions\|holdings\|funds), account, symbol, exchange, qty, avg_price, ltp, pnl, pnl_pct, date, captured_at, segment (NSE\|MCX\|...), **previous_close** |
 | `ohlcv_daily` | 5-year OHLCV history. Persistence tier 2 fallback for chart data. | symbol, exchange (PK), date (PK), open, high, low, close, volume |
 | `instruments_snapshot` | Per-exchange symbol→token map. Refreshed daily. | id (PK), exchange, date, payload (JSONB full instruments dict), row_count |
 | `holidays_snapshot` | Exchange holiday sets per year. Immutable once year closes. | id (PK), exchange, year, dates_json (JSONB list) |
@@ -2996,6 +2996,52 @@ day_delta = pnl − overnight_quantity × (close_price − average_price)
   - NavStrip P pill slot 1 (intraday P&L)
   - MarketPulse position card
   - Snapshot rows + Legs grid + Payoff overlay
+
+---
+
+## 21.5.6 previous_close column in daily_book — stable reference price
+
+Kite overwrites `positions.close_price` to today's settlement price after market close,
+breaking the day P&L fallback formula during closed-hours snapshot reads. The `daily_book`
+table now includes a `previous_close` column that freezes yesterday's official settlement
+price at the first intraday snapshot of each trading day, providing a stable reference.
+
+**Problem it solves:**
+- Between MCX close (23:30 IST) and next market open (09:00 IST), Kite's `positions.close_price`
+  has already been overwritten to today's settlement (known at 00:00 IST approx).
+- The closed-hours snapshot reader calls `baseDayPnlForPosition` fallback: `pnl − overnight_qty × (close_price − avg_price)`
+- Using today's settlement price here → fallback computes wrong, collapses to 0 for overnight positions
+- Result: NavStrip P pill + Dashboard + Performance page show zero day P&L during overnight window
+
+**Solution:**
+- `DailyBook.previous_close: Optional[float]` column (DOUBLE PRECISION)
+- Written once per (date, account, kind, symbol) at first snapshot via COALESCE UPSERT
+- COALESCE ensures subsequent snapshots don't overwrite the frozen value
+- `_positions_snapshot` reads and passes this to `build_snapshot_position_row`, which uses it
+  as PositionRow `close_price` when available (> 0)
+
+**Implementation details:**
+- **Capture point:** `backend/api/algo/daily_snapshot.py::_positions_rows()` writes
+  `previous_close = position.close_price` at first snapshot of each IST date
+- **Persistence:** `backend/api/database.py::init_db()` creates column via idempotent
+  `ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS previous_close DOUBLE PRECISION`
+- **Read point:** `backend/api/routes/positions.py::_positions_snapshot()` SELECTs
+  `db.previous_close` and passes to builder
+- **Use:** `backend/api/routes/positions_helpers.py::build_snapshot_position_row()` uses
+  `previous_close` as `close_price` in the PositionRow response when `previous_close > 0`
+
+**Frontend visibility:**
+- Closed-hours positions now show the stable overnight `close_price`
+- `baseDayPnlForPosition` fallback uses the correct price, preserving overnight P&L during MCX window
+- NavStrip P pill, Dashboard hero, Performance TOTAL all stay in sync during overnight hours
+
+**Files:**
+- `backend/api/models.py::DailyBook` — new column definition
+- `backend/api/database.py::init_db` — migration via ALTER TABLE
+- `backend/api/algo/daily_snapshot.py::_positions_rows` — write at first snapshot
+- `backend/api/routes/positions.py::_positions_snapshot` — read + pass to builder
+- `backend/api/routes/positions_helpers.py::build_snapshot_position_row` — use as close_price
+- Frontend: no changes (uses existing PositionRow.close_price)
 
 **Key rule:** never read `day_change_val` directly; always use `baseDayPnlForPosition(r)`.
 
