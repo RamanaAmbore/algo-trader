@@ -988,7 +988,7 @@ async def test_positions_snapshot_pnl_percentage_populated():
     captured_ts = datetime.now(timezone.utc) - timedelta(hours=2)
 
     # account, symbol, exchange, qty, avg_cost, ltp,
-    # day_pnl, total_pnl, payload_json, captured_at
+    # day_pnl, total_pnl, payload_json, captured_at, previous_close
     fake_row = (
         "ZG0790",     # account
         "NIFTY25JUNFUT",  # symbol
@@ -1000,6 +1000,7 @@ async def test_positions_snapshot_pnl_percentage_populated():
         10000.0,       # total_pnl
         "{}",          # payload_json
         captured_ts,   # captured_at
+        None,          # previous_close (new column)
     )
 
     mock_result = MagicMock()
@@ -1132,6 +1133,7 @@ async def test_positions_snapshot_prefers_good_over_bad():
         10000.0,    # total_pnl
         "{}",       # payload_json
         good_ts,    # captured_at
+        None,       # previous_close (new column)
     )
 
     mock_result = MagicMock()

@@ -70,7 +70,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 )
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
                        db.ltp, db.day_pnl, db.total_pnl, db.payload_json,
-                       db.captured_at
+                       db.captured_at, db.previous_close
                 FROM daily_book db
                 JOIN latest_batch lb
                   ON db.account = lb.account AND db.captured_at = lb.max_at
@@ -87,7 +87,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     if not raw_rows:
         return None
 
-    snap_captured_at_dt = raw_rows[0][9]
+    snap_captured_at_dt = raw_rows[0][9]  # index 9 = captured_at (previous_close is index 10)
     snap_captured_at: str = snap_captured_at_dt.isoformat() if snap_captured_at_dt else ""
 
     # Log when the snapshot is from a prior session (no today rows yet —
@@ -102,7 +102,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
 
     rows: list[PositionRow] = []
     for (account, symbol, exchange, qty, avg_cost, ltp,
-         day_pnl, total_pnl, payload_json, captured_at) in raw_rows:
+         day_pnl, total_pnl, payload_json, captured_at, previous_close) in raw_rows:
         # ------------------------------------------------------------------
         # `snapshot_extras` fallback — the top-level `day_pnl` column is set
         # to NULL by daily_snapshot._positions_rows when the row was captured
@@ -127,6 +127,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         rows.append(build_snapshot_position_row(
             account, symbol, exchange, effective_qty, avg_cost, ltp,
             day_pnl, total_pnl, extras,
+            previous_close=previous_close,
         ))
 
     summary = build_summary_from_rows(rows)

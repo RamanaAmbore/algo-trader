@@ -191,12 +191,20 @@ def build_snapshot_position_row(
     day_pnl: object,
     total_pnl: object,
     extras: dict,
+    *,
+    previous_close: float | None = None,
 ) -> PositionRow:
     """Construct a PositionRow from raw daily_book snapshot columns.
 
     All financial calculations here mirror the writer logic in
     ``daily_snapshot.py`` so closed-hours readers are always consistent
     with what was persisted.
+
+    ``previous_close`` — when provided and > 0, used as ``close_price``
+    instead of LTP. This is the prior-session official settlement captured
+    at the first snapshot of the day and frozen via COALESCE in the UPSERT.
+    The frontend's ``baseDayPnlForPosition`` reads ``close_price`` to
+    compute day-P&L; without this fix overnight positions always show 0.
     """
     avg_cost_f  = float(avg_cost)  if avg_cost  is not None else 0.0
     ltp_f       = float(ltp)       if ltp       is not None else 0.0
@@ -210,6 +218,16 @@ def build_snapshot_position_row(
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
     day_pct = resolve_snapshot_day_pct(day_pnl, day_pnl_f, ltp_f, qty_i, inv_val, extras)
 
+    # Use the frozen prior-session settlement as close_price when available.
+    # Without this, close_price = LTP and baseDayPnlForPosition computes
+    # total_pnl - oq×(ltp-ltp) = total_pnl - 0 which collapses correctly
+    # only for new positions; for overnight positions the day-P&L becomes 0.
+    close_price_f = (
+        float(previous_close)
+        if previous_close is not None and float(previous_close) > 0
+        else ltp_f
+    )
+
     return PositionRow(
         account=str(account),
         tradingsymbol=str(symbol),
@@ -217,7 +235,7 @@ def build_snapshot_position_row(
         product="NRML",
         quantity=qty_i,
         average_price=avg_cost_f,
-        close_price=ltp_f,
+        close_price=close_price_f,
         last_price=ltp_f,
         pnl=total_pnl_f,
         pnl_percentage=pnl_pct,
