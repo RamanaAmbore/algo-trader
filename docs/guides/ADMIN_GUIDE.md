@@ -1178,6 +1178,40 @@ Adapter coverage today:
 
 **Operator override**: bellwether symbols are configurable via the `market.bellwether_symbols` setting (CSV of `EXCHANGE:SYMBOL` entries). Only matters if the broker market-status path returns `None` for all loaded accounts.
 
+### Order size limits + close-position intent
+
+All broker adapters (`backend/brokers/base.py` + implementations: kite.py, dhan.py,
+groww.py, remote_broker.py) implement quantity guards on `place_order()`. When the
+platform needs to bypass these guards (e.g., force-closing a large position), a
+keyword-only `intent: str | None = None` parameter instructs the adapter how to
+proceed.
+
+**Quantity ceilings** — Kite adapter:
+- **Equity (EQ/BSE)**: no enforced ceiling (broker-validated).
+- **F&O (NFO)**: **50-lot ceiling** for open orders. MCX (CRUDEOIL, GOLDM, etc.) and
+  BFO / CDS (F&O indices, currency) have **50,000-contract ceiling**.
+- **Close orders** (`intent="close"`): both the 50-lot and 50,000-contract ceilings
+  are **bypassed**. Any quantity is forwarded to the broker. An INFO log is emitted
+  whenever an MCX close bypasses the ceiling (e.g., "MCX order qty 51+ lots").
+- Dhan / Groww adapters: accept but ignore the `intent` parameter (no behavioural change;
+  passed as a kwarg to prevent SDK interference).
+- RemoteBroker (conn-service RPC layer): forwards `intent` via the RPC call so the
+  real adapter at the conn endpoint receives it.
+
+**Supervisor responsibility** — the order-placement routes and agent engine pass
+`intent="close"` for close-position actions (hedge legs, ladder scale-outs, agent
+auto-close). The adapter layer is the last line of defense; a 51-lot open order on
+MCX will still hard-block at the adapter ceiling even if the route passed `intent=None`.
+
+**Troubleshooting close-position size rejections**:
+- Check the activity log (`/admin/activity` → Orders tab) — the AlgoOrder row `.detail`
+  should show either the broker's error message or a backend guard rejection (e.g.,
+  "QTY_MULTIPLE", "FAT_FINGER", "MARGIN_SHORTFALL").
+- If the row is absent, the order never reached `place_order()` — check the route's
+  preflight guards (`backend/api/algo/actions.py`).
+- A close order hitting the 50,000-contract MCX ceiling despite `intent="close"` suggests
+  the intent wasn't propagated; inspect the logs for "quantity bypass invoked" INFO lines.
+
 ### Broker postback webhooks
 
 | Broker | Webhook URL | Status |
