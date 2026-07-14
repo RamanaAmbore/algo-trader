@@ -69,22 +69,16 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
 /**
  * Canonical base Day P&L for a single position row.
  *
- * Applies the missing-decomposition override: when `overnight_quantity === 0`
- * AND `day_change_val === 0` AND `pnl !== 0`, the broker didn't ship the
- * decomposed intraday fields (Dhan/Groww) AND `day_change_val` came back as
- * zero, so we can't distinguish "actually flat today" from "field missing".
- * Fall back to lifetime `pnl` as the safest approximation.
+ * Authoritative path (overnight positions already in daily_book):
+ *   When `prev_settlement_pnl` is present and finite, Day P&L =
+ *   `pnl − prev_settlement_pnl`. This is the delta since yesterday's
+ *   settlement snapshot and is independent of `day_change_val` or
+ *   `close_price` instability.
  *
- * The `dcv === 0` guard is critical: the closed-hours snapshot path in
- * `backend/api/routes/positions.py:_positions_snapshot` used to emit rows
- * with `overnight_quantity = 0` (msgspec default) and non-zero settled
- * `day_change_val` (e.g. ₹0.6 for a ₹14670 lifetime pnl row). Without the
- * `dcv === 0` clause, the override fired on every snapshot row and inflated
- * Day P&L to lifetime pnl by ~24000× — cascading through NavStrip P slot 1,
- * /admin/derivatives Snapshot per-row + TOTAL, Legs grid, MarketPulse
- * Positions grid, and the public investor site. Fixed 2026-07-03 with a
- * paired backend fix that now populates `overnight_quantity` on snapshot
- * rows; this frontend guard is defence-in-depth against a future regression.
+ * Fallback path (new position opened today, not yet in daily_book):
+ *   `prev_settlement_pnl` is null/absent. Compute cost-basis delta:
+ *   `pnl − overnight_quantity × (close_price − average_price)`.
+ *   This isolates the intraday component from the overnight unrealised carry.
  *
  * Mirrors the same guard used in:
  *   - derivatives/+page.svelte `_dayPnlForLeg` (non-expired branch)
@@ -94,17 +88,21 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
  * function (or a wrapper that calls it) instead of reading `p.day_change_val`
  * directly.
  *
- * @param {{ day_change_val?: number|null, overnight_quantity?: number|null, quantity?: number|null, qty?: number|null, pnl?: number|null }} p
+ * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
-  const oq  = Number(p?.overnight_quantity ?? 0);
-  const qty = Number(p?.quantity ?? p?.qty ?? 0);
-  const pnl = Number(p?.pnl ?? 0);
-  const dcv = Number(p?.day_change_val ?? 0);
-  if (oq === 0 && dcv === 0 && pnl !== 0) return pnl;  // Case 1: new intraday position
-  if (qty === 0 && dcv === 0 && pnl !== 0) return pnl;  // Case 2: exited overnight position
-  return dcv;
+  const pnl     = Number(p?.pnl ?? 0);
+  const prevPnl = p?.prev_settlement_pnl;
+  if (prevPnl != null && isFinite(prevPnl)) {
+    // Authoritative: current P&L − yesterday's settlement P&L (from daily_book)
+    return pnl - prevPnl;
+  }
+  // Fallback for positions opened today (not yet in daily_book)
+  const oq    = Number(p?.overnight_quantity ?? 0);
+  const close = Number(p?.close_price ?? p?.prev_close ?? 0);
+  const avg   = Number(p?.average_price ?? p?.avg_cost ?? 0);
+  return pnl - oq * (close - avg);
 }
 
 /** Aggregate Day P&L for a positions array, applying the new-position override. SSOT for all TOTAL row day_pnl calculations. */
