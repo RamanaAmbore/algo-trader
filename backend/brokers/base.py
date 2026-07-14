@@ -170,8 +170,17 @@ class Broker(ABC):
         response list, one entry per order."""
 
     @abstractmethod
-    def place_order(self, **kwargs: Any) -> str:
-        """Returns the broker order id."""
+    def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:
+        """Place a single order. Returns the broker order id.
+
+        `intent` is a RamboQuant-level hint — ``"close"`` signals that this
+        order is reducing an existing position. Adapter-layer safety ceilings
+        (e.g. the 50-lot MCX absurd-value guard in KiteBroker) are bypassed
+        when ``intent == "close"`` because a legitimate full-position unwind
+        may exceed the ceiling that guards against typo-driven new opens.
+        The kwarg is consumed by the adapter and never forwarded to the
+        broker SDK.
+        """
 
     @abstractmethod
     def modify_order(self, order_id: str, **kwargs: Any) -> str: ...

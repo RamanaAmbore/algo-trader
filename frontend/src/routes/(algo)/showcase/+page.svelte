@@ -479,22 +479,21 @@
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
-    padding: 0.3rem 0.55rem;
-    background: transparent;
-    border: 1px solid rgba(126, 151, 184, 0.20);
+    padding: 0.3rem 0.6rem;
+    background: rgba(71, 100, 140, 0.12);
+    border: 1px solid rgba(126, 151, 184, 0.42);
     border-radius: 4px;
-    color: rgba(148, 163, 184, 0.65);
+    color: rgba(148, 163, 184, 0.95);
     font-size: 0.72rem;
     font-weight: 500;
     letter-spacing: 0.02em;
     text-decoration: none;
-    opacity: 0.6;
-    transition: opacity 0.12s, border-color 0.12s, color 0.12s;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   .show-contact-btn:hover {
-    opacity: 1;
-    border-color: rgba(126, 151, 184, 0.45);
-    color: rgba(148, 163, 184, 0.9);
+    background: rgba(71, 100, 140, 0.22);
+    border-color: rgba(126, 151, 184, 0.65);
+    color: #e2e8f0;
   }
 
   /* Right column card */

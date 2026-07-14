@@ -262,25 +262,26 @@ class KiteBroker(Broker):
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
         return self.kite.basket_order_margins(orders)
 
-    def place_order(self, **kwargs: Any) -> str:
+    def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:
         _truncate_tag(kwargs)
         # LAST-LINE DEFENSE — absurd-qty ceiling at the adapter layer.
         # Every upstream path (ticket, basket, agent preflight, chase,
         # trail-stop, OCO pair-watcher) runs its own guards before reaching
         # here. This final ceiling catches 4-5 digit numeric-typo disasters
         # that slip past all upstream checks.
-        # NOTE: there is NO intent-based bypass at this layer. A close order
-        # for >50 MCX lots is hard-blocked here unconditionally. If a genuine
-        # close of that size is ever needed, it must be split into ≤50-lot
-        # legs upstream before reaching this adapter. A 51-lot close reaching
-        # this point almost certainly means a qty corruption bug elsewhere —
-        # blocking here is the safer outcome.
+        #
+        # Close orders bypass BOTH ceilings: a legitimate full-position unwind
+        # may exceed 50 MCX lots or 50 000 NFO contracts. The `intent="close"`
+        # signal is set by the ticket handler and propagated here so position
+        # closes of any size can go through without being hard-blocked.
+        _is_close = (intent or "").lower() == "close"
         _exch = str(kwargs.get("exchange") or "").upper()
         _kqty = int(kwargs.get("quantity") or 0)
         _sym  = str(kwargs.get("tradingsymbol") or "")
         # MCX/NCO qty is LOTS. 50 lots ≈ 5000 barrels CRUDEOIL — an
-        # exceptional but plausible institutional close. > 50 = typo.
-        if _exch in ("MCX", "NCO") and _kqty > 50:
+        # exceptional but plausible institutional close. > 50 = typo for
+        # new open orders; bypassed for closes.
+        if not _is_close and _exch in ("MCX", "NCO") and _kqty > 50:
             logger.error(
                 "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s (MCX/NCO lots) "
                 "> 50-lot absurd-value ceiling.", _exch, _sym, _kqty,
@@ -290,8 +291,8 @@ class KiteBroker(Broker):
                 f"absurd-value ceiling for {_sym}. Refusing at adapter layer."
             )
         # NFO/CDS/BFO qty is CONTRACTS. 50000 catches 5-digit typo but
-        # allows massive index option books.
-        if _exch in ("NFO", "CDS", "BFO") and _kqty > 50000:
+        # allows massive index option books. Bypassed for closes.
+        if not _is_close and _exch in ("NFO", "CDS", "BFO") and _kqty > 50000:
             logger.error(
                 "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s > 50000-contract "
                 "absurd-value ceiling.", _exch, _sym, _kqty,
@@ -299,6 +300,11 @@ class KiteBroker(Broker):
             raise ValueError(
                 f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 50000-"
                 f"contract absurd-value ceiling for {_sym}. Refusing at adapter layer."
+            )
+        if _is_close and _kqty > 50 and _exch in ("MCX", "NCO"):
+            logger.info(
+                "[ADAPTER-QTY-CEILING] close-intent bypass: %s %s qty=%s lots "
+                "(ceiling skipped for position unwind).", _exch, _sym, _kqty,
             )
         return self.kite.place_order(**kwargs)
 

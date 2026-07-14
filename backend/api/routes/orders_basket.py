@@ -303,7 +303,7 @@ async def basket_order_handler(
                     continue
                 qty = input_qty * _lot   # contracts
                 # G2 fat-finger cap — 5-lot cap for F&O (MCX exempt;
-                # its own 20-lot cap fires in the live path below).
+                # its own 20-lot cap fires just below).
                 _lots = input_qty
                 _leg_close = (getattr(leg, "intent", None) or "").lower() == "close"
                 _is_mcx = exch in ("MCX", "NCO")
@@ -319,10 +319,117 @@ async def basket_order_handler(
                                f"(lot_size={_lot})"),
                     ))
                     continue
+                # MCX 20-lot cap — close orders are exempt (operator must
+                # be able to close any open position regardless of size).
+                if _is_mcx and not _leg_close and _lots > 20:
+                    logger.error(
+                        "[MCX-SIZE-GUARD] basket leg rejected: "
+                        "acct=%s sym=%s lots=%s lot_size=%s "
+                        "— exceeds 20-lot safety cap.",
+                        account, sym, _lots, _lot,
+                    )
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="error",
+                        error=(f"Order size {_lots} lots for {sym} exceeds "
+                               f"the 20-lot MCX safety limit. Contact support "
+                               f"to increase the limit."),
+                    ))
+                    continue
             else:
                 qty = input_qty   # equity: raw shares
 
             if eff_mode == "live":
+                # ── LIVE safety checks ────────────────────────────────────
+                # 1. Market-hours gate — skip for AMO legs (placed when
+                #    exchange is closed by design).
+                _leg_variety = (leg.variety or "regular").lower()
+                if _leg_variety != "amo":
+                    from backend.api.algo.agent_engine import (
+                        _symbol_exchange_open as _bk_seg_open,
+                        _build_now_ctx as _bk_now_ctx,
+                    )
+                    if not _bk_seg_open(exch, _bk_now_ctx()):
+                        logger.warning(
+                            "[BASKET-LIVE] leg %d rejected: exchange %s closed "
+                            "(not AMO). acct=%s sym=%s",
+                            i, exch, account, sym,
+                        )
+                        leg_results.append(BasketLegResult(
+                            leg_index=i, order_id=None, status="error",
+                            error=f"Exchange {exch} is closed — use variety=amo or retry during market hours",
+                        ))
+                        continue
+
+                # 2. MCX 20-lot cap — `_lot` is always set here because MCX/NCO
+                #    is in _FO; the F&O block above resolved it before we reach
+                #    this LIVE branch. `qty` is contracts = input_qty × _lot.
+                if exch in ("MCX", "NCO"):
+                    _bk_lots_for_cap = int(qty // _lot) if _lot > 0 else 0
+                    _MCX_CAP = 20
+                    if _bk_lots_for_cap > _MCX_CAP:
+                        logger.error(
+                            "[BASKET-LIVE] leg %d rejected: MCX size cap. "
+                            "acct=%s sym=%s lots=%d > %d",
+                            i, account, sym, _bk_lots_for_cap, _MCX_CAP,
+                        )
+                        leg_results.append(BasketLegResult(
+                            leg_index=i, order_id=None, status="error",
+                            error=f"MCX lot cap: {_bk_lots_for_cap} > {_MCX_CAP}",
+                        ))
+                        continue
+
+                # 3. Preflight (margin shortfall + segment inactive).
+                #    intent="close" bypasses G2 inside run_preflight.
+                _leg_intent = getattr(leg, "intent", None)
+                try:
+                    from backend.api.algo.actions import run_preflight as _bk_run_preflight
+                    _bk_pf = await _bk_run_preflight(account, {
+                        "exchange":         exch,
+                        "tradingsymbol":    sym,
+                        "quantity":         qty,
+                        "order_type":       (leg.order_type or "LIMIT"),
+                        "product":          (leg.product or "NRML"),
+                        "variety":          _leg_variety,
+                        "transaction_type": side,
+                        "intent":           _leg_intent,
+                        "price":            float(leg.price or 0),
+                        "trigger_price":    float(leg.trigger_price or 0),
+                    })
+                except Exception as _bk_pf_err:
+                    logger.error(
+                        "[BASKET-LIVE] preflight raised for acct=%s leg %d %s: %s",
+                        account, i, sym, _bk_pf_err,
+                    )
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="error",
+                        error=f"Preflight check failed: {str(_bk_pf_err)[:240]}",
+                    ))
+                    continue
+                if not _bk_pf.get("ok"):
+                    _bk_blocked_codes = [b.get("code", "?") for b in _bk_pf.get("blocked", [])]
+                    _bk_first_block = (_bk_pf.get("blocked") or [{}])[0]
+                    if any(c in ("MARGIN_SHORTFALL", "SEGMENT_INACTIVE") for c in _bk_blocked_codes):
+                        _bk_reason = _bk_first_block.get("reason", f"preflight blocked: {', '.join(_bk_blocked_codes)}")
+                        logger.warning(
+                            "[BASKET-LIVE] leg %d blocked by preflight: "
+                            "acct=%s sym=%s codes=%s",
+                            i, account, sym, _bk_blocked_codes,
+                        )
+                        leg_results.append(BasketLegResult(
+                            leg_index=i, order_id=None, status="error",
+                            error=_bk_reason[:500],
+                        ))
+                        continue
+                    # Other preflight blockers (LOT_MULTIPLE, FAT_FINGER etc.)
+                    # were already caught by the guards above; log and continue
+                    # placing so only margin/segment issues gate here.
+                    logger.warning(
+                        "[BASKET-LIVE] leg %d preflight non-critical blocker(s): "
+                        "acct=%s sym=%s codes=%s — proceeding to place",
+                        i, account, sym, _bk_blocked_codes,
+                    )
+                # ── end LIVE safety checks ────────────────────────────────
+
                 try:
                     broker = _broker_for(account)
                     from backend.brokers.adapters.kite import get_lot_size

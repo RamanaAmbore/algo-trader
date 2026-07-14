@@ -40,6 +40,7 @@
     buildOnSubmitPayload,
     buildPlacePayload,
     formatPlacementOk,
+    classifyIntent,
   } from './orderTicketSubmit.js';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
@@ -1255,7 +1256,9 @@
     // when lot_size > 1 (F&O). Backend enforces the same limit as a
     // defense-in-depth layer; front here shows a clear message before
     // Submit is attempted.
-    if (lotSize > 1 && lots > 5) {
+    // Close orders are exempt — the operator must be able to exit a
+    // position larger than 5 lots without the safety cap blocking them.
+    if (lotSize > 1 && lots > 5 && classifyIntent(currentQty, _side) !== 'close') {
       return `Refusing ${lots} lots — the 5-lot safety cap prevents fat-finger errors. Reduce lots to ≤5.`;
     }
     return null;
@@ -1536,6 +1539,7 @@
           validity: _validity,
           price: showLimit ? Number(_price) || 0 : 0,
           trigger_price: showTrigger ? Number(_trigger) || 0 : 0,
+          intent: classifyIntent(currentQty, _side),
           paired_legs,
         };
         _marginPreview = await previewOrderMargin(payload);
