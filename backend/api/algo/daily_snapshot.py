@@ -438,10 +438,11 @@ def _holdings_rows(
             "exchange":     exchange,
             "qty":          int(r.get("opening_quantity") or r.get("quantity") or 0),
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
-            "ltp":          ltp_val,
-            "day_pnl":      day_pnl_v,
-            "total_pnl":    total_pnl_v,
-            "payload_json": _row_payload_with_extras(r, ltp_val, settled),
+            "ltp":            ltp_val,
+            "day_pnl":        day_pnl_v,
+            "total_pnl":      total_pnl_v,
+            "previous_close": None,
+            "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:
         logger.warning(
@@ -569,10 +570,11 @@ def _trades_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]
             "exchange":     exchange,
             "qty":          int(r.get("filled_quantity") or r.get("quantity") or 0),
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
-            "ltp":          None,
-            "day_pnl":      None,
-            "total_pnl":    None,
-            "payload_json": json.dumps(r, default=str),
+            "ltp":            None,
+            "day_pnl":        None,
+            "total_pnl":      None,
+            "previous_close": None,
+            "payload_json":   json.dumps(r, default=str),
         })
     return rows
 
@@ -609,9 +611,10 @@ def _funds_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
                              if avail.get("opening_balance") is not None else None),
             "day_pnl":      (float(util.get("realised_m2m"))
                              if util.get("realised_m2m") is not None else None),
-            "total_pnl":    (float(r["net"])
-                             if r.get("net") is not None else None),
-            "payload_json": json.dumps(r, default=str),
+            "total_pnl":      (float(r["net"])
+                               if r.get("net") is not None else None),
+            "previous_close": None,
+            "payload_json":   json.dumps(r, default=str),
         })
     return rows
 
