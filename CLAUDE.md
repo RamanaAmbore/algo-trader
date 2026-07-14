@@ -233,8 +233,9 @@ boundary. Remaining G1 defenses: (1) `_arm_take_profit` live path has an inline 
 guard before `broker.place_order` (no `run_preflight` — G2 skipped); (2) `apply_plan_live` 
 GTT layer has a synchronous G1 check at the top before any broker call. G2 
 (FAT_FINGER_5_LOT_CAP) bypassed via `intent="close"`. Blocked close writes REJECTED 
-AlgoOrder + alert; chase loop uses `continue` so other positions proceed. 50-lot adapter 
-ceiling in `kite.py:place_order` has NO intent bypass — 51-lot closes hard-blocked.
+AlgoOrder + alert; chase loop uses `continue` so other positions proceed. 50-lot adapter
+ceiling in `kite.py:place_order` is bypassed when `intent="close"` — close orders of any
+size are allowed through; the ceiling only guards new open orders.
 
 **G1 also fires in `apply_plan_live` (GTT template layer)** — synchronous G1 check at 
 top of `apply_plan_live` verifies every GTT leg qty + wing qty against `plan.parent_lot_size` 

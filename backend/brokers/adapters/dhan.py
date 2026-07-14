@@ -1141,11 +1141,13 @@ class DhanBroker(Broker):
                 out.append({"total": 0.0, "error": str(e), "raw": None})
         return out
 
-    def place_order(self, **kwargs: Any) -> str:
+    def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:
         """Translate Kite kwargs to Dhan and dispatch. Returns Dhan order_id.
 
         Accepts the same kwargs as KiteBroker.place_order. security_id is
-        resolved from tradingsymbol + exchange via the instruments cache."""
+        resolved from tradingsymbol + exchange via the instruments cache.
+        `intent` is consumed here and not forwarded to the Dhan SDK."""
+        del intent  # RamboQuant-level hint; not a Dhan SDK parameter
         _variety = str(kwargs.pop("variety", "regular") or "regular").lower()
         if _variety in ("amo", "after_market", "after-market"):
             raise NotImplementedError(

@@ -669,7 +669,7 @@ What changed:
 
 Net effect: a LIVE placement is roughly half the latency it used to be; PAPER is even faster. The "snappier feeling" is the difference between a button-click and the order showing up on the Orders page being closer to instant.
 
-**Closing large positions** — close orders are exempt from the 5-lot fat-finger cap (which is an entry-only guard). If you were previously unable to close a position larger than 5 lots from the platform, that preflight blocker has been fixed; closes now go through regardless of size.
+**Closing large positions** — close orders bypass all lot-size caps. Whether you're closing a 1-lot position or a 50+ lot position, there's no longer a "Quantity too large" error or a false red margin banner. F&O close orders disregard the 5-lot entry-size guard, the MCX 20-lot cap, and any other position-size limits — you can close any size from the ticket and the order will submit.
 
 ---
 
@@ -798,6 +798,14 @@ If you're not logged in and you visit `ramboq.com`, the algo console opens in **
 To exit demo mode → click **Sign In** (top right). The link goes to the operator login.
 
 For an operator who's logged in, demo mode is invisible. Anonymous + prod = demo; everything else = your normal session.
+
+---
+
+## Principal profile showcase — your contact surface
+
+If you've enabled the **About** page (`/about`), the principal profile section displays your name, role, and a set of contact / portfolio chips. These chips link to your email, GitHub, LinkedIn, Portfolio, and Resume — all fully visible and highlighted so visitors can easily reach you. Each chip carries a subtle background fill and is keyboard-navigable.
+
+Use this surface to show your credentials and work to anyone visiting the platform (investors, partners, LPs, or just curious traders).
 
 ---
 

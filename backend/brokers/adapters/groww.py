@@ -889,11 +889,13 @@ class GrowwBroker(Broker):
         return out
 
     @_retry_groww_auth
-    def place_order(self, **kwargs: Any) -> str:
+    def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:
         # Audit fix (M-3) — `variety` is Kite-semantic. AMO needs
         # explicit Groww-side handling that isn't wired today; raise
         # so the operator knows the request isn't honored instead of
         # silently landing AMO orders as regular-hours.
+        # `intent` is a RamboQuant-level hint; not forwarded to Groww SDK.
+        del intent
         _variety = str(kwargs.pop("variety", "regular") or "regular").lower()
         if _variety in ("amo", "after_market", "after-market"):
             raise NotImplementedError(

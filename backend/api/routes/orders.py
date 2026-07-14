@@ -836,20 +836,21 @@ def _rco_parse_preflight_identity(body: dict) -> tuple:
 def _rco_parse_preflight_scalars(body: dict) -> tuple:
     """Extract and coerce scalar order fields from the preflight JSON body.
     Returns (account, exchange, tradingsymbol, quantity, order_type,
-    product, variety, side, price, trigger_price).
+    product, variety, side, price, trigger_price, intent).
     """
     account, exchange, tradingsymbol, quantity, order_type, product = _rco_parse_preflight_identity(body)
     variety       = str(body.get("variety") or "regular").strip().lower()
     side          = str(body.get("side") or body.get("transaction_type") or "BUY").strip().upper()
     price         = float(body.get("price") or 0)
     trigger_price = float(body.get("trigger_price") or 0)
-    return account, exchange, tradingsymbol, quantity, order_type, product, variety, side, price, trigger_price
+    intent        = body.get("intent") or None
+    return account, exchange, tradingsymbol, quantity, order_type, product, variety, side, price, trigger_price, intent
 
 
 def _rco_parse_preflight_body(body: dict) -> tuple:
     """Parse and coerce the raw JSON body for `preflight_order`.
     Returns (account, exchange, tradingsymbol, quantity, order_type,
-    product, variety, side, price, trigger_price, paired_legs)."""
+    product, variety, side, price, trigger_price, intent, paired_legs)."""
     scalars = _rco_parse_preflight_scalars(body)
     paired_legs = body.get("paired_legs") or []
     if not isinstance(paired_legs, list):
@@ -1382,7 +1383,7 @@ class OrdersController(Controller):
             raise HTTPException(status_code=400, detail="Invalid JSON body")
 
         (account, exchange, tradingsymbol, quantity, order_type,
-         product, variety, side, price, trigger_price,
+         product, variety, side, price, trigger_price, intent,
          paired_legs) = _rco_parse_preflight_body(body)
 
         _rco_validate_preflight_params(account, tradingsymbol, quantity, exchange, side)
@@ -1395,6 +1396,7 @@ class OrdersController(Controller):
             "product":          product,
             "variety":          variety,
             "transaction_type": side,
+            "intent":           intent,
             "price":            price,
             "trigger_price":    trigger_price,
         }, paired_orders=paired_legs)

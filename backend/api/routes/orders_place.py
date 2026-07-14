@@ -1156,9 +1156,15 @@ def _ticket_check_mcx_size_cap(
     data, sym: str, contracts: int, lot_size: int,
 ) -> None:
     """Hard 20-lot cap for MCX/NCO. Input `contracts = lots × lot_size`
-    (already validated) so lots = contracts // lot_size is exact."""
+    (already validated) so lots = contracts // lot_size is exact.
+
+    Close orders are exempt — the operator must be able to close any
+    open position regardless of size, so no cap is enforced when
+    intent == 'close'."""
     _ticket_exch = (data.exchange or "NFO")
     if _ticket_exch not in ("MCX", "NCO"):
+        return
+    if (getattr(data, "intent", None) or "").lower() == "close":
         return
     _MCX_MAX_LOTS = 20
     _lots = max(1, contracts // lot_size) if lot_size > 0 else contracts
@@ -1266,6 +1272,7 @@ async def _ticket_place_or_chase_live(
         _kq_ticket = broker.translate_qty(
             data.exchange or "NFO", qty, ls_for_translate)
         order_id = broker.place_order(
+            intent=getattr(data, "intent", None),
             variety=(data.variety or "regular"),
             exchange=(data.exchange or "NFO"),
             tradingsymbol=sym,

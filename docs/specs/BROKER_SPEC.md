@@ -19,6 +19,7 @@ Code, tests, and documentation must stay in sync with this file.
 6. [Circuit Breaker & Health](#6-circuit-breaker--health)
 7. [KiteTicker & Mmap Pipeline](#7-kiteticker--mmap-pipeline)
 8. [Adapter Implementations](#8-adapter-implementations)
+8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 9. [Remote Broker & Conn Service](#9-remote-broker--conn-service)
 10. [Virtual Root Resolution](#10-virtual-root-resolution)
 11. [Key Invariants](#11-key-invariants)
@@ -171,6 +172,7 @@ BroadcastBus → SSE → frontend ltpMap
 ### KiteBroker
 - `translate_qty(exchange, raw_qty, lot_size)` — MCX: `contracts = lots × lot_size`; raises `ValueError` on `lot_size≤1` (cache miss guard)
 - Every GTT leg AND wing MUST call `translate_qty` before `place_gtt()` — `place_gtt` does NOT auto-translate (incident 2026-07-02)
+- `place_order(qty, ...)` has a 50-lot adapter ceiling; bypassed for `intent="close"`
 - `_truncate_tag(kwargs)` — defensive 20-char tag truncation before every `place_order`
 
 ### DhanBroker
@@ -181,6 +183,26 @@ BroadcastBus → SSE → frontend ltpMap
 ### GrowwBroker
 - `_retry_groww_auth` wraps every SDK call: `401/403` → re-mint + retry once; `429` → exponential backoff (1→2→4→8s, cap 30s, 3 retries); `504` → refresh session + retry; `400/404` → re-raise immediately
 - Entitlement counter in `GET /api/admin/broker-health extra` field
+
+---
+
+## 8.1. Order Placement Guards & Intent Bypass
+
+**Close intent semantics**: When `intent="close"` is passed through the order flow:
+- **G2 fat-finger cap** (5-lot max per trade) — bypassed for close
+- **MCX 20-lot cap** — bypassed for close
+- **Kite adapter 50-lot ceiling** — bypassed for close
+
+Close orders may exceed all lot caps without triggering validation errors. Non-close orders remain subject to all guards.
+
+**Preflight endpoint**: `POST /api/orders/preflight` now parses and forwards `intent` to guard evaluation. Previously ignored intent, causing G2 to fire on close orders > 5 lots. Preflight now correctly models close semantics and returns margin/segment checks with proper guard bypass.
+
+**Basket LIVE safety checks**: Basket order dispatch now runs per-leg guards before placement:
+- **Market-hours gate**: Leg skipped if exchange closed, unless `variety=amo` (after-market order exemption)
+- **MCX 20-lot cap**: Per-leg check, bypassed for `intent="close"`
+- **Preflight**: Margin and segment validation per leg
+
+Previously, basket placement lacked these guards and sent all legs unconditionally.
 
 ---
 
@@ -251,6 +273,12 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I9 — DB-first for sparklines**: `daily_book kind='sparkline'` (Tier 4) checked BEFORE broker fallback. Yesterday's snapshot is valid sparkline data.
 
+**I10 — Close intent bypasses ALL lot caps**: Single-leg and basket orders with `intent="close"` bypass G2 (5-lot FAT_FINGER), MCX 20-lot cap, and Kite 50-lot adapter ceiling. Non-close orders remain subject to all guards.
+
+**I11 — Preflight honours intent**: `POST /api/orders/preflight` parses `intent` parameter and applies guard bypass consistently with order placement. Previously ignored intent.
+
+**I12 — Basket per-leg guards**: Basket LIVE dispatch validates each leg independently: market-hours gate (skip if closed unless `variety=amo`), MCX 20-lot cap (bypass for close), preflight (margin/segment checks). No leg placement without passing its guards.
+
 ---
 
 ## 12. Test Coverage Map
@@ -298,3 +326,4 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 |---|---|
 | 2026-07-11 | v1.0 initial spec from Explore audit of broker layer |
 | 2026-07-11 | Added §10 Virtual Root Resolution; I8, I9 invariants; broker audit findings pending |
+| 2026-07-13 | Added §8.1 Order Placement Guards & Intent Bypass; I10, I11, I12 invariants; close intent now bypasses G2/MCX/Kite ceilings; preflight honours intent; basket adds per-leg guards |

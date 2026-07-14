@@ -200,8 +200,10 @@ class RemoteBroker(Broker):
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
         return self._call("basket_order_margins", list(orders))
 
-    def place_order(self, **kwargs: Any) -> str:
-        return self._call("place_order", **kwargs)
+    def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:
+        # `intent` is forwarded to conn_service so the real adapter receives
+        # it and can bypass adapter-layer ceilings for close orders.
+        return self._call("place_order", intent=intent, **kwargs)
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
         return self._call("modify_order", order_id, **kwargs)
