@@ -154,6 +154,8 @@ _ROW_COLS = [
     # from broker_apis' LKG frame cache because the account's circuit
     # breaker was OPEN. Preserves DH6847 rows across breaker-open cycles.
     'account_stale',
+    # Yesterday's total_pnl from daily_book — None for positions opened today.
+    'prev_settlement_pnl',
 ]
 
 _TTL = 30
@@ -466,8 +468,11 @@ async def _fetch() -> PositionsResponse:
     df_rows = df.select(row_cols)
     summary_df = _build_polars_summary(df)
 
+    # _NULLABLE_COLS are Optional fields that must stay None when absent —
+    # they must NOT be coerced to 0 by the general None-guard below.
+    _NULLABLE_COLS = {'prev_settlement_pnl'}
     rows = [
-        PositionRow(**{k: (v if v is not None else 0) for k, v in r.items()})
+        PositionRow(**{k: (v if (v is not None or k in _NULLABLE_COLS) else 0) for k, v in r.items()})
         for r in df_rows.to_dicts()
     ]
     # Thread account_stale_since into stale rows so the frontend can
@@ -647,17 +652,21 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     )
 
     snapshot_map: dict[tuple[str, str], float] = {}
+    prev_pnl_map: dict[tuple[str, str], float] = {}
     try:
         async with async_session() as session:
             result = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol) account, symbol, ltp
+                SELECT DISTINCT ON (account, symbol) account, symbol, ltp, total_pnl
                 FROM daily_book
                 WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
                   AND captured_at < :today_open
                 ORDER BY account, symbol, captured_at DESC
             """), {"today_open": today_ist_midnight})
-            for account, symbol, ltp in result.all():
-                snapshot_map[(str(account), str(symbol))] = float(ltp)
+            for account, symbol, ltp, total_pnl in result.all():
+                key = (str(account), str(symbol))
+                snapshot_map[key] = float(ltp)
+                if total_pnl is not None:
+                    prev_pnl_map[key] = float(total_pnl)
     except Exception as e:
         logger.warning(f"daily_book close-override query failed: {e}")
         return
@@ -682,6 +691,19 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
             continue
         raw.at[idx, 'close_price'] = snap_ltp
         patched_idx.append(idx)
+
+    # Backfill prev_settlement_pnl — yesterday's total_pnl for each position
+    # that exists in the daily_book snapshot.  Rows opened today have no entry
+    # and remain None (the PositionRow default).  Must run before the
+    # `if not patched_idx: return` guard so it fires even on days when Kite's
+    # close_price already matches the snapshot (no close-override needed).
+    if prev_pnl_map:
+        if 'prev_settlement_pnl' not in raw.columns:
+            raw['prev_settlement_pnl'] = None
+        for idx in raw.index:
+            key = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
+            if key in prev_pnl_map:
+                raw.at[idx, 'prev_settlement_pnl'] = prev_pnl_map[key]
 
     if not patched_idx:
         return

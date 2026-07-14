@@ -114,6 +114,10 @@ class PositionRow(msgspec.Struct):
     pnl: float
     last_price: float = 0.0
     pnl_percentage: float = 0.0
+    # Yesterday's total_pnl from the most-recent daily_book snapshot
+    # captured before today's midnight IST.  None means the position was
+    # opened today (no prior-session book entry exists).
+    prev_settlement_pnl: Optional[float] = None
     unrealised: float = 0.0
     realised: float = 0.0
     day_change: float = 0.0

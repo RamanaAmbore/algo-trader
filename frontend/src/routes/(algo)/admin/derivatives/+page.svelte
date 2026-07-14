@@ -1125,8 +1125,7 @@
     if (!/FUT$|(CE|PE)$/i.test(sym)) return false;
     const qty = Number(p.quantity ?? p.qty) || 0;
     const pnl = Number(p.pnl) || 0;
-    // baseDayPnlForPosition: new-position override (oq=0 + dcv=0 + pnl≠0).
-    // PositionStrip P1 uses the same helper — keeps TOTAL in sync with strip.
+    // SSOT: baseDayPnlForPosition uses daily_book settlement as base; keeps TOTAL in sync with NavStrip P1.
     const day = baseDayPnlForPosition(p);
     t.qty_fno      += qty;
     t.legs_with++;

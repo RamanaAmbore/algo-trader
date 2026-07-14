@@ -30,8 +30,9 @@
     "description": "Quantitative investment analytics — long-term stock portfolio with algo-executed options overlay. 25+ years active investing, 22%+ XIRR.",
     "founder": {
       "@type": "Person",
-      "name": "Ramana Ambore",
-      "hasCredential": ["FRM", "CFA Level II", "PGCBM XLRI"]
+      "name": "Ramana R Ambore",
+      "jobTitle": "Principal Analyst",
+      "hasCredential": ["FRM", "CFA Level III", "PGCBM XLRI"]
     },
     "identifier": "ACU-5195",
     "foundingDate": "1998",
@@ -57,8 +58,8 @@
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
-      <div class="stat-creds">FRM · CFA II · XLRI</div>
-      <div class="stat-label">Founder Credentials</div>
+      <div class="stat-creds">FRM · CFA L3 · XLRI</div>
+      <div class="stat-label">Principal Credentials</div>
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
@@ -67,19 +68,37 @@
     </div>
   </div>
 
+  <!-- Principal profile block -->
+  <div class="principal-block">
+    <div class="principal-name">Ramana R Ambore</div>
+    <div class="principal-title">Principal Analyst &amp; Platform Architect</div>
+    <a
+      href="https://github.com/RamanaAmbore"
+      target="_blank"
+      rel="noopener"
+      class="principal-chip"
+    >GitHub · RamanaAmbore</a>
+  </div>
+
   <!-- Prose -->
   <div class="about-prose">
-    <p>RamboQuant Analytics LLP is helmed by a seasoned FinTech professional with 25+ years of proven success in active investing and trading across both U.S. and Indian markets. What started in 1998 as a deep, hands-on exploration of equities and derivatives has evolved into a precision-driven investment powerhouse built on data, discipline, and performance.</p>
 
-    <p>The founder's credentials speak for themselves — FRM Certified, CFA Level II, PGCBM from XLRI, and a Master's in Computer Science — matched with decades of cutting-edge innovation in financial technology for capital markets.</p>
+    <div class="prose-section-label">Platform</div>
 
-    <p>With a long-term portfolio XIRR exceeding 22%, Rambo's approach blends high-conviction stock picks with strategic covered calls and intelligent derivatives positioning. Every move is grounded in deep analytics, rigorous risk management, and an unwavering commitment to the power of compounding.</p>
+    <p>RamboQuant Analytics LLP is an algorithmically driven investment analytics platform built on production-grade infrastructure. Broker connectivity is isolated as a dedicated UDS service, with shared-memory tick distribution between processes and three-tier persistence caching (memory → PostgreSQL → broker) with self-healing data backfill on under-coverage, closed-hours snapshot continuity (no blank grids), and a responsive activity log surface that shifts to a magazine-style two-column layout on wide viewports.</p>
 
-    <p>The trading platform itself runs on production-grade infrastructure: broker connectivity isolated as a dedicated UDS service, shared-memory tick distribution between processes, three-tier persistence caching (memory → PostgreSQL → broker) with self-healing data backfill on under-coverage, closed-hours snapshot continuity (no blank grids), and a responsive activity log surface that shifts to a magazine-style two-column layout on wide viewports so the operator scans more events per scroll. The same patterns institutional trading floors use, executed at one-operator scale — so what you see on the dashboard is what's actually happening on the broker.</p>
+    <p>With a long-term portfolio XIRR exceeding 22%, the platform's strategy blends high-conviction stock picks with strategic covered calls and intelligent derivatives positioning. Every move is grounded in deep analytics, rigorous risk management, and an unwavering commitment to the power of compounding.</p>
 
     <div class="closing-statement pub-callout">
       RamboQuant Analytics is not for those content with average, index-like returns. It's built for partners who demand more — smarter strategies, sharper execution, and sustainable wealth creation.
     </div>
+
+    <div class="prose-section-label" style="margin-top: 1.5rem;">Principal</div>
+
+    <p>Ramana R Ambore brings 25+ years of proven success in active investing and quantitative research across both U.S. and Indian markets. What started in 1998 as a deep, hands-on exploration of equities and derivatives has evolved into a precision-driven investment powerhouse built on data, discipline, and performance.</p>
+
+    <p>His credentials speak for themselves — FRM Certified, CFA Level III, PGCBM from XLRI, and a Master's in Computer Science — matched with decades of cutting-edge innovation in financial technology for capital markets. The same patterns institutional analytics floors use, executed at one-operator scale — so what you see on the dashboard is what's actually happening on the broker.</p>
+
   </div>
 
   <div class="cta-row">
@@ -180,6 +199,50 @@
     .stat-item { padding: 1rem 0; }
   }
 
+  /* ── Principal profile block ───────────────────────────────────────────── */
+  .principal-block {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    padding: 1rem 1.5rem;
+    background: #fffdf8;
+    border-bottom: 1px solid #e7e0cf;
+  }
+  .principal-name {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #1a2744;
+    letter-spacing: -0.01em;
+  }
+  .principal-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #5a7090;
+    letter-spacing: 0.02em;
+  }
+  .principal-chip {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #7a5c10;
+    background: #f5f2eb;
+    border: 1px solid #c8a84b;
+    border-radius: 9999px;
+    padding: 0.2rem 0.75rem;
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    transition: background 0.15s, color 0.15s;
+    margin-left: auto;
+  }
+  .principal-chip:hover {
+    background: #f4ead4;
+    color: #5a4010;
+  }
+  @media (max-width: 480px) {
+    .principal-chip { margin-left: 0; }
+  }
+
   /* ── Prose ─────────────────────────────────────────────────────────────── */
   .about-prose {
     padding: 1.5rem 1.5rem 1.75rem;
@@ -197,6 +260,19 @@
        row filled edge-to-edge while the prose was centred at half-
        width. Looked visually broken. */
   }
+
+  /* ── Prose section labels ──────────────────────────────────────────────── */
+  .prose-section-label {
+    font-size: 0.6rem;
+    font-weight: 700;
+    color: #5a7090;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid #e7e0cf;
+  }
+
   /* ── CTA row ───────────────────────────────────────────────────────────── */
   .cta-row {
     display: flex;

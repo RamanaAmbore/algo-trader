@@ -244,6 +244,7 @@ class TestOverrideStaleCloseFromSnapshot:
         SNAPSHOT_LTP = 220.0
         LAST_PRICE = 264.5
         QTY = 10
+        PREV_PNL = 400.0
 
         df = _make_mcx_df(
             last_price=LAST_PRICE,
@@ -251,7 +252,8 @@ class TestOverrideStaleCloseFromSnapshot:
             quantity=QTY,
             overnight_quantity=QTY,
         )
-        snapshot_rows = [("ZG0790", "CRUDEOIL26JUL6900PE", SNAPSHOT_LTP)]
+        # Snapshot rows now include (account, symbol, ltp, total_pnl)
+        snapshot_rows = [("ZG0790", "CRUDEOIL26JUL6900PE", SNAPSHOT_LTP, PREV_PNL)]
         df = _run_close_override(df, snapshot_rows)
 
         assert abs(df.at[0, 'close_price'] - SNAPSHOT_LTP) < 0.005, (
@@ -298,7 +300,7 @@ class TestOverrideStaleCloseFromSnapshot:
 
         df = _run_close_override(
             df,
-            snapshot_rows=[("ZG0790", "CRUDEOIL26JUL6900PE", SNAP)],
+            snapshot_rows=[("ZG0790", "CRUDEOIL26JUL6900PE", SNAP, 500.0)],
         )
 
         assert abs(df.at[0, 'close_price'] - CLOSE) < 0.005, (
@@ -315,7 +317,7 @@ class TestOverrideStaleCloseFromSnapshot:
             _make_mcx_df(account="ZJ6294", last_price=264.5, close_price=180.0),
         ], ignore_index=True)
 
-        snapshot_rows = [("ZG0790", "CRUDEOIL26JUL6900PE", 220.0)]
+        snapshot_rows = [("ZG0790", "CRUDEOIL26JUL6900PE", 220.0, 500.0)]
         df = _run_close_override(df, snapshot_rows)
 
         zg = df[df['account'] == 'ZG0790'].iloc[0]
@@ -482,7 +484,7 @@ class TestFetchOrderingAndCoexistence:
         midnight = datetime(2026, 7, 8, 0, 0, 0, tzinfo=ist)
 
         mock_result = MagicMock()
-        mock_result.all.return_value = [("ZG0790", "CRUDEOIL26JUL6900PE", SNAPSHOT_LTP)]
+        mock_result.all.return_value = [("ZG0790", "CRUDEOIL26JUL6900PE", SNAPSHOT_LTP, 500.0)]
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)

@@ -302,27 +302,32 @@ the true all-in position profit.
 - Gate via `_openTransitionStamp` snapshot: display suppressed while `_pollCycleStamp <= _openTransitionStamp`
 - Prevents yesterday's stale `day_change_val` (from prior session close) from painting briefly
 
-### baseDayPnlForPosition cases
+### baseDayPnlForPosition formula
 
-The `baseDayPnlForPosition(p)` helper (in `frontend/src/lib/data/nav.js`) handles two edge cases 
-where Kite omits `day_change_val` but the real intraday profit is in the `pnl` field:
+The `baseDayPnlForPosition(p)` helper (in `frontend/src/lib/data/nav.js`) computes the intraday 
+profit/loss delta for a position using two-tier resolution:
 
-**Case 1 — new position:** `overnight_quantity=0 && day_change_val=0 && pnl≠0` → returns `pnl`
+**Primary path** (when `prev_settlement_pnl` is available):
 
-When an overnight position is not held but a new position is opened today, Kite clears 
-`day_change_val` and the full intraday profit is in `pnl`. Example: open 100 shares at 
-2800, sell at 2850, close position for +5000 P&L; `pnl=5000, day_change_val=0, overnight_qty=0`.
+```
+day_delta = pnl − prev_settlement_pnl
+```
 
-**Case 2 — exited overnight position:** `quantity=0 && day_change_val=0 && pnl≠0` → returns `pnl`
+where `prev_settlement_pnl` is yesterday's cumulative P&L for that `(account, symbol)` 
+pair, sourced from the `daily_book` table (the `total_pnl` snapshot from the prior session close).
 
-When an overnight position (`overnight_quantity > 0`) is fully exited today, Kite clears 
-`day_change_val` but the realized P&L is in `pnl`. Example: hold 100 shares from yesterday 
-(avg 2800), sell all 100 today at 2850, realize +5000; `pnl=5000, day_change_val=0, quantity=0`. 
-The `quantity` field (broker raw row) or `qty` field (normalized candidate) is used to detect 
-the exit. Both row shapes are handled via `p?.quantity ?? p?.qty`.
+**Fallback** (for positions opened today, not yet in `daily_book`):
 
-Applied consistently across PositionStrip, MarketPulse, and derivatives surfaces.
-Critical fix for new-position and exited-position P&L correctness.
+```
+day_delta = pnl − overnight_quantity × (close_price − average_price)
+```
+
+This fallback handles new intraday positions by subtracting the opening-session unrealized 
+P&L from the current total, leaving only today's delta. When `overnight_quantity = 0`, 
+this reduces to `pnl` itself (the full intraday gain/loss for a new position).
+
+Applied consistently across PositionStrip, MarketPulse, and derivatives surfaces for 
+accurate session-relative P&L reporting.
 
 ### Auth outage or broker connection loss
 
@@ -351,14 +356,14 @@ Critical fix for new-position and exited-position P&L correctness.
 - **Stale indicator**: CSS class `ps-stale` appears after 2 broker errors; disappears on recovery
 - **Color consistency**: Positive/negative values use correct palette across all slots
 - **Heartbeat and tick-border**: Animations fire correctly on poll cycles and SSE ticks
-- **New-position override**: Overnight position bought today (oq=0) shows correct P:1 value (uses `pnl` not `day_change_val`)
+- **New-position day P&L**: New intraday position (oq=0) shows correct P:1 value via fallback formula
 - **Closed-leg EXP**: Fully exited F&O leg (qty=0) contributes `p.pnl` to EXP; not skipped
 - **Partial-close EXP**: Partially exited F&O leg (qty≠0) adds realised + intrinsic to EXP
 
 ### Backend (Python)
 
-- **baseDayPnlForPosition()**: Applies new-position override when oq=0 && dcv=0 && pnl≠0
-- **Daily book snapshots**: Idempotent UPSERT; survive across restarts; correct as_of stamp
+- **baseDayPnlForPosition()**: Computes day delta from `prev_settlement_pnl` (primary) or fallback `oq × (close − avg)` formula
+- **Daily book snapshots**: Idempotent UPSERT; survive across restarts; correct as_of stamp; supplies `prev_settlement_pnl` lookup
 - **Closed-hours routes**: `/api/positions`, `/api/holdings` return snapshot with `as_of` when market closed
 - **Margin aggregation**: `/api/funds` sums avail_margin and used_margin correctly across accounts
 - **Long options cash**: Premium tied up in current holdings computed correctly (avg × lot_size × num_lots)
