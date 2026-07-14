@@ -63,7 +63,18 @@ the broker.
 **What you'll see**:
 - Positions grid, holdings grid, nav cards — all show the last live market-hours snapshot
 - Charts and sparklines — historical data persists (no live quotes, but the past week is there)
-- P&L breakdown pills (P / M / C / H) — frozen snapshot values. The **P pill** (day P&L) uses the same MCX stale-price rescue as the derivatives legs grid, so NavStrip and the Greeks total match during the MCX overnight window. For any position held overnight and then fully exited during the session, the realized P&L now appears correctly in the P pill (and propagates to the per-leg Day P&L column in the derivatives legs grid and the Performance page TOTAL row).
+- P&L breakdown pills (P / M / C / H) — frozen snapshot values. The **P pill** (day P&L)
+  now uses the authoritative daily settlement (`daily_book.total_pnl`) to compute the day's
+  change: `current_pnl − yesterday's_settlement_pnl`. For positions opened today that aren't
+  yet in the daily book, the fallback is `pnl − overnight_qty × (prev_close − avg_price)`.
+  This replaces the unreliable broker `day_change_val` field and correctly handles:
+  - Positions held overnight and fully exited during the session (realized P&L now appears)
+  - New positions opened today (uses fallback math)
+  - Closed positions are naturally excluded from the base
+  
+  The same computation propagates to the per-leg Day P&L column in the derivatives legs
+  grid and the Performance page TOTAL row, so NavStrip P and the Greeks total match during
+  the MCX overnight window.
 - Live price LTP field — empty or last-known price (no updates)
 - Refresh button — clicking it says "Both NSE and MCX are currently closed" + still fetches
   the snapshot from DB (fast, no broker round-trip)
@@ -412,7 +423,11 @@ Use `/admin/settings` to change the default, or override per-order inline on the
 - **ON (default)** — see the full picture: option legs + your held equity positions (DIXON stock + NIFTY puts, for example). P&L reflects the net of all.
 - **OFF** — isolate the derivatives only. P&L shows pure option P&L without the stock's cost basis. Useful when you want to analyse the hedge separately from the spot position.
 
-Positions you've **partially sold intra-day now freeze correctly**. The day P&L stops drifting once you've sold your shares — if you sold IFCI at 3 PM and it drops 2% after hours, your day P&L stays locked at the 3 PM fill price. Same for any symbol: once qty=0, the day-change number doesn't move even if the LTP keeps falling.
+Positions you've **partially sold intra-day now freeze correctly**. The day P&L stops
+drifting once you've sold your shares — if you sold IFCI at 3 PM and it drops 2% after
+hours, your day P&L stays locked at the 3 PM fill price (the realized portion is recorded
+in daily settlement). Same for any symbol: once qty=0 the day P&L uses the realized amount
+from the close, and the intraday metric doesn't move even if the LTP keeps falling.
 
 ## Derivatives page — 3-band Close layout
 

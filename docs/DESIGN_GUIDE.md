@@ -2953,28 +2953,42 @@ sequenceDiagram
 
 ---
 
-## 21.5.5 Day P&L backstop — SSOT
+## 21.5.5 Day P&L SSOT — settlement-based delta
 
-Intraday P&L is complex because Kite sometimes omits `day_change_val` for new positions or fully-flat intraday legs. The **canonical SSOT** is `backend/api/algo/pnl_math.py::apply_day_change_backstop()`.
+Intraday P&L requires distinguishing overnight changes from same-session ones.
+The **canonical SSOT** is `baseDayPnlForPosition(r)` in `frontend/src/lib/data/nav.js`,
+which now uses yesterday's settled P&L (`prev_settlement_pnl`) as the baseline.
 
-**Two edge cases this fixes:**
+**Two-tier formula:**
 
-**Case 1** (new position): `overnight_quantity=0, day_change_val=0, pnl≠0`
-- Kite returns the real PnL in the `pnl` field but zeroes `day_change_val`.
-- **Fix:** override `day_change_val = pnl`
+**Primary path** (when `prev_settlement_pnl` available on position row):
+```
+day_delta = pnl − prev_settlement_pnl
+```
+- `prev_settlement_pnl` is yesterday's `daily_book.total_pnl` for that (account, symbol)
+- Backend fetches via `_backfill_prev_settlement_pnl` in `backend/api/routes/positions.py`
+- Query guards `captured_at < today_midnight` to exclude today's snapshots
+- Works for all cases: new intraday (delta=pnl), exited overnight (delta=realized−yesterday),
+  continuing open (delta=(ltp−yesterday_close)×qty)
 
-**Case 3** (flat intraday): `quantity=0, day_change_val=0, pnl≠0`
-- Position fully closed within session; Kite again omits the day value.
-- **Fix:** same override.
+**Fallback path** (for positions opened today, not yet in daily_book):
+```
+day_delta = pnl − overnight_quantity × (close_price − average_price)
+```
+- When `prev_settlement_pnl` is null, compute yesterday's unrealized P&L synthetically
+- Gives `pnl − 0 = pnl` for new intraday positions ✓
 
-**Backend SSOT:**
-- `backend/api/algo/pnl_math.py::apply_day_change_backstop(raw: pd.DataFrame)` — checks for both cases, applies override
-- `backend/api/background.py::_fetch_positions_direct` — now sums **both** `day_change_val` AND `pnl` in `sum_cols`, then applies the backstop before groupby
-- Called by `/api/positions` → `background.py` → aggregation routes
+**Backend:**
+- `backend/api/routes/positions.py::_override_stale_close_from_snapshot` — calls
+  `_backfill_prev_settlement_pnl(rows)` to populate `PositionRow.prev_settlement_pnl`
+  from `daily_book.total_pnl` (same timing guard as close_price override)
+- `backend/api/models.py::PositionRow` — added `prev_settlement_pnl: Optional[float]`
 
 **Frontend SSOT:**
-- `baseDayPnlForPosition(r)` in `frontend/src/lib/data/nav.js` — canonical override for new positions
-- Returns: `r.overnight_quantity === 0 && r.pnl !== 0 ? r.pnl : r.day_change_val`
+- `baseDayPnlForPosition(r)` in `frontend/src/lib/data/nav.js` — applies two-tier
+  formula above
+- `livePositionDayPnl(r, liveLtp, pollLtp)` wraps `baseDayPnlForPosition` + adds
+  live SSE tick adjustment `(liveLtp − pollLtp) × qty`
 - Used by:
   - PerformancePage TOTAL row (sum of daily P&L)
   - Derivatives page `_byUnderlyingTotal` loop (F&O aggregate)
@@ -2983,11 +2997,11 @@ Intraday P&L is complex because Kite sometimes omits `day_change_val` for new po
   - MarketPulse position card
   - Snapshot rows + Legs grid + Payoff overlay
 
-**Key rule:** never read `day_change_val` directly without checking `baseDayPnlForPosition(r)` first.
+**Key rule:** never read `day_change_val` directly; always use `baseDayPnlForPosition(r)`.
 
 **Files:**
-- `backend/api/algo/pnl_math.py::apply_day_change_backstop`
-- `backend/api/background.py::_fetch_positions_direct`
+- `backend/api/routes/positions.py::_backfill_prev_settlement_pnl`
+- `backend/api/models.py::PositionRow.prev_settlement_pnl`
 - `frontend/src/lib/data/nav.js::baseDayPnlForPosition`
 - All callers listed above
 
@@ -4500,7 +4514,7 @@ chmod +x .git/hooks/pre-commit
 | **Auth: `email_verified` silent drop** | Non-designated actors could attempt to change `email_verified` field on `PUT /admin/users/:username` without error | `backend/api/routes/admin.py::update_user_details` — added 403 check before PATCH |
 | **Startup: PerfSnapshot NameError** | `_backfill_from_disk` fired before `PerfSnapshot` imported | `backend/api/background.py::_backfill_from_disk` — added import inside function |
 | **F&O orders: lots-first API (P0)** | API now accepts LOTS for `lot_size > 1` instruments; converts to contracts at boundary | §5.1; `backend/api/routes/orders_place.py`, `orders_basket.py`, `template_attach.py` |
-| **Day P&L: edge-case backstop** | Kite omits `day_change_val` for new positions + flat-intraday legs | §21.5.5; `backend/api/algo/pnl_math.py::apply_day_change_backstop` + frontend `baseDayPnlForPosition` |
+| **Day P&L SSOT → settlement delta** | Compute day P&L as `pnl − prev_settlement_pnl` (yesterday's daily_book total); fallback to synthetic unrealized for new positions | §21.5.5; `backend/api/routes/positions.py::_backfill_prev_settlement_pnl` + `frontend/src/lib/data/nav.js::baseDayPnlForPosition` |
 | **Sparkline: MCX/CDS watchlist exchange** | MCX/CDS symbols lost correct exchange during universe warmup | §20.1; `_sparkline_universe_symbols` now queries `(tradingsymbol, exchange)` pair |
 | **Sparkline: virtual root resolution** | MCX/CDS watchlist items not resolved to active contract before OHLCV fetch | §20.1; `snapshot_sparkline` calls `symbol_resolver.resolve_symbol()` |
 | **Sparkline: Tier 4 fallback** | OHLCV store cold-starts had no fallback during db_only mode | §20.1; `batch_sparkline` added `_fill_from_daily_book_sparkline` path |
