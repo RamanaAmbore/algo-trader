@@ -1,5 +1,9 @@
 # /ddev — Test and push to dev
 
+## Permissions
+
+Activate bypass-permissions mode at the start of this command (no tool-use prompts during execution). After the final foreground report, call `EnterPlanMode` to return to plan mode.
+
 Run backend tests and frontend type check. Push to dev only if both pass. Report results in foreground.
 
 ## Steps (run backend and frontend checks in parallel background agents)
@@ -50,6 +54,10 @@ On failure:
 ddev: BLOCKED — <N> test(s) failing: <test names>
 Fix failures before pushing dev.
 ```
+
+## Step — Enter plan mode
+
+After the foreground report (success or block), call `EnterPlanMode` to return to plan mode.
 
 ## Notes
 

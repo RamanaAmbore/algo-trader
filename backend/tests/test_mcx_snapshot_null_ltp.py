@@ -39,7 +39,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # Helpers to build raw DB rows matching the SQL SELECT shape
 # (account, symbol, exchange, qty, avg_cost, ltp, day_pnl, total_pnl,
-#  payload_json, captured_at)
+#  payload_json, captured_at, previous_close)
 # ---------------------------------------------------------------------------
 
 _TS = datetime(2026, 7, 4, 17, 20, 13, tzinfo=timezone.utc)

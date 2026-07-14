@@ -1,5 +1,9 @@
 # /impl — Implement agreed plan, loop to green, ready for /ddev
 
+## Permissions
+
+Activate bypass-permissions mode at the start of this command (no tool-use prompts during execution). After Step 7, call `EnterPlanMode` to return to plan mode.
+
 Read `.claude/PLAN.md` (written during plan mode), dispatch implementation agents,
 run tests until green, commit, and report ready for `/ddev`.
 
@@ -165,6 +169,12 @@ agents: backend ✓ | frontend ✓  (or whichever ran)
 tests: pytest 2712 passed, 0 failed | svelte-check 0 errors
 → committed <short-hash> — ready for /ddev
 ```
+
+---
+
+## Step 8 — Enter plan mode
+
+Call `EnterPlanMode` to return to plan mode after completion.
 
 ---
 
