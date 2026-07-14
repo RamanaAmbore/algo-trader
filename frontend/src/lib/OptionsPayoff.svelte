@@ -25,6 +25,7 @@
    *   ivProxy?:     number|null,
    *   legCount?:    number|null,
    *   realizedPnl?: number,
+   *   expiryPnlOffset?: number,
    *   dayPnl?:      number|null,
    *   legsExpPnlAtSpot?: number|null,
    *   onRefresh?:   (() => void) | null,
@@ -62,6 +63,13 @@
     //   ≈ dashboard ₹ for this underlying
     // 0 (default) → REAL + TOTAL rows hide; chart reads as before.
     realizedPnl = 0,
+    // Realised P&L offset applied only to the expiry curve — locked-in
+    // gains from partially/fully closed F&O legs. Unlike `realizedPnl`
+    // (which is the full BS-vs-broker MTM drift used for the today
+    // curve), this carries only the closed-leg component so the expiry
+    // curve shifts by exactly the realised gain without incorporating
+    // any mark-to-market noise that has no meaning at settlement.
+    expiryPnlOffset = /** @type {number} */ (0),
     // Sum of day_change_val (today's mark-to-market move) for the
     // enabled candidates. Rendered as the DAY row in the stat overlay
     // so the operator can compare it against the PositionStrip's P∆
@@ -143,11 +151,13 @@
   // by reference is not safe under Svelte 5; we rebuild defensively).
   const adjustedPayoff = $derived.by(() => {
     if (!payoff.length) return payoff;
-    if (!realizedPnl || realizedPnl === 0) return payoff;
+    const todayOff  = realizedPnl || 0;
+    const expiryOff = expiryPnlOffset || 0;
+    if (!todayOff && !expiryOff) return payoff;
     return payoff.map(p => ({
       spot:         p.spot,
-      today_value:  p.today_value != null ? p.today_value + realizedPnl : null,
-      expiry_value: p.expiry_value + realizedPnl,
+      today_value:  p.today_value != null ? p.today_value + todayOff : null,
+      expiry_value: p.expiry_value + expiryOff,
     }));
   });
 
@@ -156,7 +166,9 @@
   // backend curve, so its zero-crossings are off by `realizedPnl`
   // worth of vertical space when we plot the shifted curve.
   const adjustedBreakevens = $derived.by(() => {
-    if (!realizedPnl || realizedPnl === 0) return null;
+    const todayOff  = realizedPnl || 0;
+    const expiryOff = expiryPnlOffset || 0;
+    if (!todayOff && !expiryOff) return null;
     if (!adjustedPayoff || adjustedPayoff.length < 2) return null;
     /** @type {number[]} */
     const bes = [];

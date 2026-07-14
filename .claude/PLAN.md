@@ -1,229 +1,173 @@
-# Plan: Day P&L Breakup Modal + prev_close Fix
+# Plan: Expiry P&L SSOT + Closed-Hours Broker Refresh
 
 ## Task
-Two connected changes:
 
-**1. Day P&L Breakup Modal** — clicking NavStrip P slot 1 opens a modal showing per-account,
-per-symbol day P&L breakdown with all formula inputs (prev close, LTP, overnight qty,
-buy/sell qty+value, lifetime PnL, settlement PnL, computed day P&L). Zero-day-PnL rows
-show ⚠ with tooltip explaining why.
+Two connected issues:
 
-**2. `previous_close` in `daily_book`** — root-cause fix for day P&L = 0 in the
-closed-hours snapshot path. Currently `build_snapshot_position_row` sets `close_price = ltp`
-(snapshot LTP, same as `last_price`), so `baseDayPnlForPosition` fallback
-`pnl − oq × (close − avg)` collapses to 0 for overnight unrealised positions. Fix: store
-`previous_close` (yesterday's official settlement price) in `daily_book`, written from
-`position.close_price` at the **first snapshot of each trading day** (when Kite's
-`close_price` field is still yesterday's settlement, before Kite overwrites it at EOD).
-The snapshot reader uses this stored `previous_close` as the PositionRow's `close_price`
-so the formula is correct regardless of when the snapshot was captured.
+**1. CRUDEOIL overlay EXP ≠ payoff/tooltip EXP (wrong SSOT)**
 
-## Agents
-- backend: Add `previous_close` column to `daily_book`; write it at first-snapshot-of-day; use it in snapshot reader
-- frontend: Build DayPnlBreakup.svelte modal; wire click handler into PositionStrip.svelte
-- broker: skip
-- doc: skip
-- backend-test: Tests for snapshot path fix (previous_close written, used, and day P&L correct)
-- playwright: New spec `frontend/tests/day_pnl_breakup.spec.js`
+Root cause: `chartPnlOffset` (= `candidatesActualPnl − chartTheoreticalAtSpot`) is applied to BOTH
+`today_value` AND `expiry_value` inside `OptionsPayoff.adjustedPayoff`. The offset is designed to
+align the TODAY (TDAY) curve with broker MTM P&L — but it leaks into the EXPIRY curve. Since
+`chartPnlOffset` includes the BS-vs-broker drift (not just realised P&L), the EXPIRY value shown
+in the tooltip (`adjustedPayoff.expiry_value`) can diverge dramatically from the stat overlay EXP
+(`_legsExpPnlTotal` = `expiryPnl()` sum). User sees two different "EXP at current spot" numbers.
+SSOT for expiry P&L is `expiryPnl()` in `frontend/src/lib/data/expiryPnl.js`.
 
-## Tests
-- pytest: yes
-- svelte-check: yes
-- playwright: yes
+Fix: split the offset. Apply `chartPnlOffset` only to `today_value`; apply only the REALISED P&L
+component (`Σ c.realised for enabled F&O candidates`) to `expiry_value`. After the fix:
+- Overlay EXP = `Σ (expiryPnl(c, spot) + c.realised)` = pure theoretical expiry + locked-in gains
+- Tooltip EXP at current spot = backend theoretical expiry + `Σ c.realised` ≈ same ✓
+- Legs grid EXP column already uses `expiryPnl()` ✓
+
+**2. Positions/holdings/funds not refreshed when market is closed**
+
+Currently the `closed_hours_or_broker()` gate in `snapshot_gate.py` blocks ALL broker calls during
+closed hours and returns the last intraday snapshot. Post-settlement, broker systems update position
+close prices, realised P&L, and fund values — but the snapshot is never re-fetched.
+
+Fix: add a low-frequency background poller (every 30 min during closed hours) that fetches
+positions/holdings/funds/margins from broker and updates `daily_book`. The route gate already
+returns the snapshot when closed; we just need the snapshot to be refreshed post-settlement.
 
 ---
 
-## Backend agent brief
+## Root Cause Detail
 
-### Context / root cause
+### Expiry P&L divergence (primary)
 
-`build_snapshot_position_row` in `backend/api/routes/positions_helpers.py` (line 213-231):
-```python
-return PositionRow(
-    close_price=ltp_f,   # ← snapshot LTP — WRONG, same as last_price
-    last_price=ltp_f,
-    pnl=total_pnl_f,
-    overnight_quantity=qty_i,
-    # prev_settlement_pnl never set → None
-)
-```
-`baseDayPnlForPosition` fallback: `total_pnl − qty × (ltp − avg) = 0` (overnight unrealised).
-
-The post-settlement close_price update makes this worse: after Kite overwrites `close_price`
-→ today's settlement, any snapshot written at that point also stores `day_pnl = 0`.
-
-**Industry-standard fix**: store `previous_close` (yesterday's official settlement) as a
-separate field. It is written **once per trading day** — from `position.close_price` captured
-at the first intra-session snapshot, when Kite's field still reflects yesterday's settlement.
-It is **frozen** for the rest of the day. Tomorrow's first snapshot writes a new value.
-
-### Step 1 — DB migration
-
-Add column to `daily_book` table:
-```sql
-ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS previous_close DOUBLE PRECISION;
+`OptionsPayoff.svelte` lines ~144-151:
+```js
+const adjustedPayoff = $derived.by(() => {
+  // ...
+  return payoff.map(p => ({
+    spot:         p.spot,
+    today_value:  p.today_value + realizedPnl,    // ← correct: aligns TDAY to broker P&L
+    expiry_value: p.expiry_value + realizedPnl,   // ← BUG: chartPnlOffset ≠ just realised P&L
+  }));
+});
 ```
 
-File: add a new migration in `backend/alembic/versions/` (or inline SQL migration per
-project pattern — check `docs/MIGRATION.md` and existing migration files to match style).
+`realizedPnl` here = `chartPnlOffset` = `candidatesActualPnl − chartTheoreticalAtSpot`.
 
-### Step 2 — Writer (`daily_snapshot.py`)
+`chartPnlOffset` = realised P&L (closed legs) + BS-vs-broker drift (open legs).
 
-Find where position rows are written to `daily_book`. Locate the `_positions_rows` function
-or equivalent writer.
+Adding the BS-vs-broker drift to the EXPIRY curve makes no sense: expiry P&L is intrinsic only,
+independent of time-value or BS pricing.
 
-Add logic: for each (account, symbol) being written, if no `previous_close` has been stored
-for **today** yet (i.e., no row with `kind='positions'` and `date(captured_at) = today IST`
-exists for this key), write `previous_close = position.close_price` (from the broker row).
+### Closed-hours data staleness (secondary)
 
-If a `previous_close` already exists for today for this key, do NOT overwrite it — preserve
-the first-snapshot value.
+`background.py` background poller runs `_fetch_positions_direct()` only when `_any_segment_open()`.
+During closed hours, the poller sleeps. After settlement (5-15 min after MCX close, 30-45 min
+after NSE/BSE close), broker data updates with final settled values. No task re-fetches them.
 
-Check `docs/MIGRATION.md` and the snapshot writer to understand the exact UPSERT pattern
-used. Match it exactly.
+---
 
-### Step 3 — Reader (`positions_helpers.py` + `positions.py`)
+## Agents
 
-In `build_snapshot_position_row` (`positions_helpers.py`):
-- Accept an optional `previous_close: float | None = None` kwarg
-- If `previous_close` is not None and > 0, use it as `close_price` in the PositionRow
-- Otherwise fall back to `ltp_f` (current behaviour — safe for rows without the column yet)
+- frontend: Fix `adjustedPayoff` in `OptionsPayoff.svelte`: accept new `expiryPnlOffset` prop; apply `realizedPnl` only to `today_value`, `expiryPnlOffset` to `expiry_value`. In `derivatives/+page.svelte`: compute `_expiryPnlOffset = Σ c.realised for enabled F&O displayedCandidates` and pass as `expiryPnlOffset` to OptionsPayoff (keep existing `chartPnlOffset` as `realizedPnl` for today-curve unchanged).
+- backend: Add a closed-hours refresh task in `background.py`: after market close, poll broker for positions/holdings/funds every 30 min and write to `daily_book` (call the existing snapshot-write path). Use `_any_segment_open()` to guard — only runs when closed. Stop on next open. Wire into the existing background task start/stop machinery.
+- broker: skip
+- doc: skip
+- backend-test: skip
+- playwright: skip
 
-In `_positions_snapshot()` (`positions.py`):
-- The SQL query already reads `db.ltp, db.day_pnl, db.total_pnl` — extend it to also
-  select `db.previous_close`
-- Pass `previous_close` through to `build_snapshot_position_row`
+## Tests
+- pytest: no
+- svelte-check: yes
+- playwright: no
 
-This ensures the closed-hours PositionRow has `close_price = yesterday_settlement` (not
-snapshot LTP), so `baseDayPnlForPosition` fallback gives the correct non-zero day P&L.
+## Commit message
+fix(derivatives): expiry P&L SSOT — chartPnlOffset applied to today-curve only; expiryPnlOffset for realised; closed-hours broker refresh every 30 min
 
-### Step 4 — Verify `_override_stale_close_from_snapshot` still works
-
-`_override_stale_close_from_snapshot` in `positions.py` already overrides `close_price` from
-daily_book during LIVE polling. Confirm it is unaffected by this change (it reads `ltp`, not
-`previous_close`). No change needed there.
+## Done when
+- CRUDEOIL overlay EXP matches tooltip EXP at the same spot (within rounding).
+- Changing the chartPnlOffset (by toggling a leg) changes TDAY but NOT EXP in the tooltip.
+- After market close, positions/holdings/funds are re-fetched from broker every 30 min.
+- svelte-check 0 errors.
 
 ---
 
 ## Frontend agent brief
 
-### New file: `frontend/src/lib/DayPnlBreakup.svelte`
+### File 1: `frontend/src/lib/OptionsPayoff.svelte`
 
-**Props**: `{ open: boolean, positions: object[], onClose: () => void }`
+Read the file around line 75-155 (props + `adjustedPayoff` derived).
 
-**Behaviour:**
-- Full-screen backdrop overlay; click backdrop or press Esc to close.
-- Header: "Day P&L Breakup" left; total `aggregateDayPnlForPositions(positions)` right,
-  coloured pos/neg/flat. Use `fmtMoney` from `$lib/format.js`.
-- Import `baseDayPnlForPosition`, `aggregateDayPnlForPositions` from `$lib/data/nav.js`.
-
-**Table (one row per position, sorted by |day_pnl| desc):**
-
-| Column | Value | Source field |
-|---|---|---|
-| Symbol | `tradingsymbol` | p.tradingsymbol |
-| Account | `account` | p.account |
-| Prev Close | `close_price` | p.close_price |
-| LTP | `last_price` | p.last_price |
-| Overnight Qty | `overnight_quantity` | p.overnight_quantity |
-| Buy Qty / Val | `day_buy_quantity` @ `day_buy_value` | two sub-values |
-| Sell Qty / Val | `day_sell_quantity` @ `day_sell_value` | two sub-values |
-| PnL (lifetime) | `pnl` | p.pnl |
-| Settle PnL | `prev_settlement_pnl` | p.prev_settlement_pnl (show "—" if null) |
-| Day P&L | `baseDayPnlForPosition(p)` | computed |
-
-**Expandable formula row** (click ▸ to toggle per row):
-- If `prev_settlement_pnl != null`: `Day P&L = PnL − Settlement = {pnl} − {prevPnl} = {result}`
-- Else: `Day P&L = PnL − (oq × (close − avg)) = {pnl} − ({oq} × ({close} − {avg})) = {result}`
-
-**Zero-value warning** (⚠ inline in Day P&L cell when `|baseDayPnlForPosition(p)| < 0.5`):
+**Step 1** — Add new prop `expiryPnlOffset`:
 ```js
-function _zeroReason(p) {
-  const qty   = Number(p?.quantity ?? 0);
-  const ltp   = Number(p?.last_price ?? 0);
-  const close = Number(p?.close_price ?? 0);
-  const oq    = Number(p?.overnight_quantity ?? 0);
-  const pnl   = Number(p?.pnl ?? 0);
-  const prev  = p?.prev_settlement_pnl;
-  if (qty === 0) return 'Flat — closed intraday';
-  if (ltp > 0 && close > 0 && Math.abs(ltp - close) < 0.005) return 'LTP equals prev close (stale price)';
-  if (prev != null && Math.abs(pnl - Number(prev)) < 0.5) return 'No move from yesterday settlement';
-  if (oq === 0 && Math.abs(pnl) < 0.5) return 'Opened today, at cost — no movement yet';
-  return 'Day P&L is zero';
-}
+expiryPnlOffset = /** @type {number} */ (0),
+```
+(Add next to the existing `legsExpPnlAtSpot` prop.)
+
+**Step 2** — Change `adjustedPayoff` to use separate offsets:
+```js
+const adjustedPayoff = $derived.by(() => {
+  if (!payoff.length) return payoff;
+  const todayOff  = realizedPnl || 0;
+  const expiryOff = expiryPnlOffset || 0;
+  if (!todayOff && !expiryOff) return payoff;
+  return payoff.map(p => ({
+    spot:         p.spot,
+    today_value:  p.today_value != null ? p.today_value + todayOff : null,
+    expiry_value: p.expiry_value + expiryOff,   // only realised P&L, not BS drift
+  }));
+});
 ```
 
-**Account subtotals**: group rows by `account`, show subtotal row between groups.
+Make sure `adjustedBreakevens` (if it exists) also uses `adjustedPayoff` (it should already — check).
 
-**Style**: follow `ConfirmModal.svelte` pattern — dark overlay `rgba(0,0,0,0.6)`, `dpb-`
-CSS prefix. Tight density. Numeric columns right-aligned. Scrollable tbody, fixed thead.
+### File 2: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
 
-### Edit: `frontend/src/lib/PositionStrip.svelte`
+**Step 1** — Add `_expiryPnlOffset` derived (near `_legsExpPnlTotal`, around line 1897):
+```js
+/** Realised P&L offset for the expiry curve — locked-in gains from
+ *  partially/fully closed F&O legs. Adds to backend expiry_value so
+ *  tooltip matches overlay EXP (which adds c.realised via _legExpPnlDisplay). */
+const _expiryPnlOffset = $derived.by(() =>
+  displayedCandidates
+    .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
+    .reduce((s, c) => s + Number(c.realised || 0), 0)
+);
+```
 
-1. `import DayPnlBreakup from './DayPnlBreakup.svelte';`
-2. `let _dayPnlBreakupOpen = $state(false);` (near other `let` declarations)
-3. Add `onclick={() => _dayPnlBreakupOpen = true}` + `style="cursor:pointer"` to the
-   P slot 1 value span (line ~833: the `dispPositionsToday` span). Keep all existing classes.
-4. Render just before closing `</div>` of `.ps-strip`:
-   ```svelte
-   <DayPnlBreakup
-     open={_dayPnlBreakupOpen}
-     {positions}
-     onClose={() => _dayPnlBreakupOpen = false}
-   />
-   ```
+**Step 2** — Pass `expiryPnlOffset` to `<OptionsPayoff>` (around line 4117 where `realizedPnl` is passed):
+```svelte
+expiryPnlOffset={_expiryPnlOffset}
+```
 
----
-
-## backend-test agent brief
-
-File: `backend/tests/test_positions_snapshot.py` (new or extend existing snapshot tests)
-
-Tests to add:
-1. `previous_close` is written to `daily_book` on first snapshot of the day from
-   `position.close_price` (not from `ltp`).
-2. Subsequent snapshot writes for the same (account, symbol) today do NOT overwrite
-   `previous_close`.
-3. `_positions_snapshot()` reads `previous_close` and passes it to `build_snapshot_position_row`.
-4. `build_snapshot_position_row` with `previous_close` set: `close_price` in returned
-   PositionRow equals the `previous_close` value (not `ltp`).
-5. `baseDayPnlForPosition` on that PositionRow returns correct non-zero day P&L for an
-   overnight position where `ltp ≠ previous_close`.
-6. Post-settlement simulation: `ltp = settlement_price, day_pnl = 0, previous_close = 5400` →
-   after fix, `baseDayPnlForPosition` returns `(settlement − 5400) × qty`.
-7. Backward-compat: rows without `previous_close` (None) fall back to `ltp_f` as `close_price`
-   (no regression for old snapshot rows).
+After changes, run:
+```
+cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1 | tail -10
+```
+to verify 0 new errors.
 
 ---
 
-## Playwright agent brief
+## Backend agent brief
 
-File: `frontend/tests/day_pnl_breakup.spec.js`
+### File: `backend/api/background.py`
 
-Tests (target dev.ramboq.com or localhost):
-1. P slot 1 value span is clickable — click opens modal with heading "Day P&L Breakup".
-2. Modal table has at least one row with Symbol and Account columns populated.
-3. Total value in modal header is a money string (₹ / negative with minus).
-4. Any position with Day P&L = 0 has ⚠ icon in that row.
-5. Esc key closes modal.
-6. Click on backdrop closes modal.
-7. Day P&L column cells are right-aligned numerics.
-8. Formula expand: clicking ▸ on a row shows the formula breakdown text.
+**Goal**: After market close, refresh positions/holdings/funds from broker every 30 min and
+write to the `daily_book` snapshot so the closed-hours route returns fresh data.
 
----
+**Step 1** — Read the file to understand the background task structure. Find:
+- `_fetch_positions_direct()` or equivalent live-data fetch
+- How `_any_segment_open()` / market-open check is used
+- Where the daily_snapshot writer is called (look for `daily_snapshot.write_positions` or similar)
+- The asyncio task lifecycle
 
-## Commit message
-feat(pnl): day P&L breakup modal on P slot 1 + previous_close in daily_book fixes snapshot day P&L = 0
+**Step 2** — Add a `_closed_hours_refresh_loop()` async coroutine that:
+- Checks `not _any_segment_open()` (only run when market is closed)
+- Calls `daily_snapshot.write_positions_snapshot()` (or equivalent) to fetch from broker and persist
+- Does the same for holdings and funds
+- Sleeps 1800 seconds (30 min)
+- Loops until market re-opens (when open: exits so the regular poller takes over)
 
-## Done when
-- `daily_book` has `previous_close` column; writer stores it from `position.close_price` at
-  first snapshot of each trading day; subsequent writes freeze it.
-- Closed-hours snapshot PositionRows have `close_price = previous_close` (yesterday's
-  settlement), making `baseDayPnlForPosition` return correct non-zero day P&L.
-- Clicking P slot 1 in NavStrip opens breakup modal.
-- Modal shows per-account, per-symbol table: prev close, LTP, overnight qty, buy/sell,
-  lifetime PnL, settlement PnL, computed day P&L.
-- Zero-day-PnL rows show ⚠ with reason tooltip.
-- pytest passes (including new snapshot tests).
-- svelte-check 0 errors.
-- Playwright spec green on dev.
+**Step 3** — Wire into the existing task start/stop machinery so it starts when the market closes
+and stops when it opens. Mirror the pattern used for other background tasks.
+
+**Important**: Do NOT call broker APIs synchronously. Use the existing async broker wrappers.
+Do NOT re-implement the snapshot write logic — reuse the existing `daily_snapshot` module functions.
+If the existing snapshot write functions don't accept a "force" param, use `_raw_cache_invalidate()`
+before calling them so the broker is actually polled (not served from the 30s raw cache).
