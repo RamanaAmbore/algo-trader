@@ -2755,6 +2755,11 @@ gantt
 - `_task_trail_stop` (30s) — Dhan + Kite trail SL ratchet
 - `_task_ticker_watchdog` (30s) — KiteTicker reconnect on disconnect
 
+**Tasks that update closed-hours snapshots:**
+- `_task_closed_hours_refresh` (30min, post-market-close) — persists fresh broker data 
+  to `daily_book` after settlement window; invalidates live-data caches so closed-hours 
+  routes serve updated snapshots (positions, holdings, funds, trades)
+
 ⚙ **TECH — Why poll-based + not event-based** — `WHY` Vendor postbacks are unreliable (Dhan + Groww have no inbound webhook; Kite drops 0.5-2% in our experience). Polling is the conservative floor. `WHAT` Each task runs on its own asyncio cadence; no scheduler library. `HOW` Pick interval based on operator latency tolerance: trail-stop = 30s (slow ratchet OK), OCO watcher = 15s (faster because both legs settling within window means double-fire). `WHERE` `backend/api/background.py`.
 
 ### 20.1 Sparkline refresh pipeline
@@ -2811,6 +2816,42 @@ dangling reference to a potentially stale ID.
 
 **Files:**
 - `backend/api/background.py::_task_oco_pair_watcher` — mutual pointer cleanup
+
+### 20.4 Closed-hours snapshot refresh — post-settlement data persistence
+
+`backend/api/background.py::_task_closed_hours_refresh` runs every 30 minutes after market 
+close to persist fresh broker data (`positions`, `holdings`, `funds`, `trades`) into `daily_book`, 
+then invalidates the live-data cache layer so closed-hours routes serve updated snapshots.
+
+**Why this task exists**: Between segment close (~15:30 IST for NSE, 23:30 IST for MCX) and 
+settlement completion (30–60 min later), broker systems update position close prices and 
+realised P&L. Without this task, closed-hours API routes serve stale pre-settlement snapshots 
+until the next market open. The operator checks NAV or positions during overnight hours and sees 
+yesterday's settlement prices + P&L, not today's reconciled values.
+
+**Guard condition**: Only runs when `is_any_segment_open()` is False. Skips the write when 
+any segment is open (avoids polluting `daily_book` with mid-session LTPs that change every 
+second).
+
+**Execution steps**:
+1. Check market open state; if any segment open, sleep and retry
+2. Call `snapshot_daily_book(settled=False)` to fetch current broker state (positions, 
+   holdings, funds, trades)
+3. Write/upsert to `daily_book` table via idempotent UPSERT (`ON CONFLICT ... DO UPDATE`)
+4. Call `cache.invalidate_batch(['positions', 'holdings', 'funds'])` to clear the live-data 
+   route cache
+5. SSE broadcast `book_changed` event so frontend re-fetches fresh data
+
+**Complementary tasks**:
+- `_task_funds_offhours` (30 min, post-market-close) — funds-only snapshot; subset of this task
+- `_task_daily_snapshot` (16:15 IST / 00:15 IST) — settlement pass; marks rows with `settled=True`
+- `_task_sparkline_warm` (startup + 00:30 IST) — refreshes ticker universe from `daily_book` 
+  past 7 days
+
+**Files:**
+- `backend/api/background.py::_task_closed_hours_refresh`
+- `backend/api/algo/daily_snapshot.py::snapshot_daily_book` — broker data collection
+- `backend/api/cache.py::invalidate_batch` — cache clear
 
 ---
 

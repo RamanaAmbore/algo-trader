@@ -113,6 +113,7 @@ async def test_nse_closed_ohlcv_store_hit():
 
     with (
         patch("backend.api.routes.quote._any_segment_open", return_value=False),
+        patch("backend.api.routes.quote._all_exchanges_closed", return_value=True),
         patch("backend.api.persistence.ohlcv_store.get_or_fetch_daily", side_effect=mock_daily),
         patch("backend.api.persistence.intraday_store.get_or_fetch_intraday", side_effect=mock_intraday),
         patch("backend.api.routes.quote._get_today_token_map", return_value={}),

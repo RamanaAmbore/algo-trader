@@ -4089,6 +4089,76 @@ async def _task_funds_offhours() -> None:
         await asyncio.sleep(30 * 60)
 
 
+async def _task_closed_hours_refresh() -> None:
+    """Low-cadence positions/holdings/funds snapshot during closed-market hours.
+
+    Post-settlement, brokers update position close prices and realised P&L
+    values that are only available after the exchange publishes them (up to
+    ~30–60 min after segment close). This task refreshes daily_book every
+    30 min when NO segment is open so snapshot routes always serve fresh
+    post-settlement data rather than the last live-session write.
+
+    Complements ``_task_funds_offhours`` (funds-only, 30 min) and
+    ``_task_daily_snapshot`` (settlement pass at 16:15 / 00:15) — this is
+    a rolling backstop for the in-between windows.
+
+    When any segment opens, the iteration is skipped (the live
+    ``_task_performance`` poller runs at the standard 5-min cadence and
+    ``snapshot_daily_book`` would pollute daily_book with mid-session LTPs).
+    """
+    from backend.shared.helpers.date_time_utils import is_any_segment_open
+    from backend.api.algo.daily_snapshot import snapshot_daily_book
+    from backend.api.cache import invalidate
+    from backend.brokers.broker_apis import _raw_cache_invalidate
+
+    logger.info("Background: closed-hours refresh loop started")
+
+    # Startup settle — let the daily-snapshot startup pass fire first so
+    # we don't duplicate the immediate post-boot write.
+    await asyncio.sleep(120)
+
+    while True:
+        try:
+            now_ist = timestamp_indian()
+            if not is_any_segment_open(now_ist):
+                # Bust the 30s broker raw cache so snapshot_daily_book
+                # polls the broker, not the in-memory memoisation tier.
+                # (snapshot_daily_book calls broker.holdings/positions
+                # directly, but raw cache busting keeps API routes coherent
+                # for the next inbound request after the snapshot lands.)
+                try:
+                    _raw_cache_invalidate("positions")
+                    _raw_cache_invalidate("holdings")
+                    _raw_cache_invalidate("margins")
+                except Exception as _ce:
+                    logger.debug(f"Background: closed-hours cache invalidate warning: {_ce}")
+
+                try:
+                    result = await snapshot_daily_book()
+                    # Invalidate the API-side TTL cache so routes serve the
+                    # freshly-written daily_book rows on the next request.
+                    invalidate("positions")
+                    invalidate("holdings")
+                    invalidate("funds")
+                    logger.info(
+                        f"Background: closed-hours refresh complete "
+                        f"at {now_ist.isoformat()} — "
+                        f"accounts={result['accounts']} "
+                        f"h={result['holdings_rows']} "
+                        f"p={result['positions_rows']} "
+                        f"errors={result['errors']}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Background: closed-hours refresh snapshot failed: {e}")
+        except asyncio.CancelledError:
+            logger.info("Background: closed-hours refresh loop exiting (cancelled)")
+            raise
+        except Exception as e:
+            logger.warning(f"Background: _task_closed_hours_refresh iteration failed: {e}")
+
+        await asyncio.sleep(30 * 60)
+
+
 async def _bg_resolve_watchlist_sym(
     sym: str,
     exch: str,
@@ -4791,6 +4861,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_purge_admin_email_events(),   name="bg-purge-admin-email-events"),
         asyncio.create_task(_task_market_lifecycle(),    name="bg-market-lifecycle"),
         asyncio.create_task(_task_funds_offhours(),      name="bg-funds-offhours"),
+        asyncio.create_task(_task_closed_hours_refresh(), name="bg-closed-hours-refresh"),
         asyncio.create_task(_task_warm_backfill(),       name="bg-warm-backfill"),
         asyncio.create_task(_task_perf_snapshot(),       name="bg-perf-snapshot"),
         asyncio.create_task(_task_purge_perf_snapshots(), name="bg-purge-perf-snapshots"),

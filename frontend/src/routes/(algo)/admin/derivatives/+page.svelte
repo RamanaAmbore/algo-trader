@@ -1917,6 +1917,21 @@
     return fnoOpen + fnoClosed + eqTotal;
   });
 
+  /** Realised P&L offset for the expiry curve — locked-in gains from
+   *  partially/fully closed F&O legs. Unlike `chartPnlOffset` (which
+   *  carries full BS-vs-broker MTM drift to align the today curve),
+   *  this carries only the closed-leg realised component. BS drift has
+   *  no meaning at expiry — intrinsic value is path-independent — so
+   *  the expiry curve should shift only by locked-in gains, not by
+   *  any mark-to-market noise from open legs. This ensures the tooltip
+   *  EXP value and the overlay EXP stat (_legsExpPnlTotal) remain in
+   *  sync: both include c.realised and neither includes BS drift. */
+  const _expiryPnlOffset = $derived.by(() =>
+    displayedCandidates
+      .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
+      .reduce((s, c) => s + Number(c.realised || 0), 0)
+  );
+
   // Master "select all" plumbing for the Legs panel header checkbox.
   // allCandidatesOn = true when every candidate is enabled in the
   // map; false when some are off. The DOM element ref drives the
@@ -4115,6 +4130,7 @@
         legCount={(strategy?.legs?.length ?? 0) + _equityLegs.length}
         multiExpiry={strategy?.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
+        expiryPnlOffset={_expiryPnlOffset}
         dayPnl={candidatesDayPnl}
         legsExpPnlAtSpot={_legsExpPnlTotal}
         legSymbols={(strategy?.legs ?? []).map(/** @param {{symbol:string}} l */ l => l.symbol)}

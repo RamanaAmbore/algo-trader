@@ -627,17 +627,27 @@ A helper `_legExpPnlDisplay(leg, spot)` provides the per-cell EXP value:
 - **Closed leg** (qty = 0): `leg.realised || leg.pnl` (not "—", fully realized)
 - Replaces direct `expiryPnl()` calls; ensures closed legs show locked-in values
 
-**Payoff chart sync**:
+**Payoff chart sync — dual-offset behaviour**:
 
-The payoff overlay's stat is computed as:
-```
-expiry_value_at_spot + chartPnlOffset = _legsExpPnlTotal
-```
+The payoff overlay now applies **two distinct offsets** to keep chart curves and tooltip 
+stats in sync:
 
-where `expiry_value_at_spot` is the live P&L curve from the merged payoff 
-(combined intrinsic + extrinsic across all legs) and `chartPnlOffset` is any 
-operational adjustments (spreads, closed legs). At `liveSpot`, this sum must 
-equal `_legsExpPnlTotal` for the overlay stat and TOTAL row to be consistent.
+- **`chartPnlOffset` (= `realizedPnl` = full BS-vs-broker drift)** — applied ONLY to 
+  `today_value` in the `adjustedPayoff` curve. This is the cumulative difference between 
+  Black-Scholes Greeks calculations and the broker's actual position snapshots (e.g., 
+  rounding on MCX lot fills, slippage on partial closes).
+
+- **`expiryPnlOffset` (= Σ `c.realised` for enabled non-equity candidates = locked-in 
+  closed-leg gains only)** — applied ONLY to `expiry_value` (expiry P&L at current spot). 
+  This captures the sum of all closed-leg realised gains that are already locked in.
+
+**Effect on tooltip EXP stat**: At the current spot price, tooltip EXP now equals 
+`expiry_value_at_spot + expiryPnlOffset = _legsExpPnlTotal`. The full `chartPnlOffset` 
+(which includes broker MTM noise with no meaning at settlement) is excluded from the 
+settlement-time EXP calculation, preventing tooltip drift.
+
+Before this fix, both curves shifted by the full `chartPnlOffset`, causing tooltip EXP 
+to include BS-vs-broker MTM noise that has no settlement meaning.
 
 **Backend `_expPnlByRootMap` accessor**:
 
