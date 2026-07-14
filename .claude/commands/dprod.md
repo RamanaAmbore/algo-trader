@@ -1,5 +1,9 @@
 # /dprod — Update docs and deploy to prod
 
+## Permissions
+
+Activate bypass-permissions mode at the start of this command (no tool-use prompts during execution). After Step 6, call `EnterPlanMode` to return to plan mode.
+
 Update specs, guides, DESIGN_GUIDE, PDF, and complexity — then merge dev→main and push. All steps run in background; report each result in foreground as it completes.
 
 ## Prerequisite check
@@ -46,6 +50,10 @@ On block:
 dprod: BLOCKED — CC gate: <function> (grade D, CC=<N>) in <file>
 Fix complexity before deploying to prod.
 ```
+
+### 7. Enter plan mode
+
+Call `EnterPlanMode` to return to plan mode after the foreground report.
 
 ## Notes
 

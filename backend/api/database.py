@@ -609,6 +609,23 @@ async def _migrate_code_metrics_perf_snapshots(conn) -> None:
             )
 
 
+async def _migrate_daily_book_previous_close(conn) -> None:
+    """Add previous_close column to daily_book (idempotent).
+
+    Frozen first-write per (date, account, kind, symbol): captures
+    Kite's close_price at the first snapshot of each trading day —
+    the prior-session official settlement. COALESCE in the UPSERT
+    ensures subsequent intraday writes never overwrite a non-NULL value.
+    Used by _positions_snapshot() to supply a correct close_price during
+    closed-hours reads instead of LTP.
+    """
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE daily_book "
+        "ADD COLUMN IF NOT EXISTS previous_close DOUBLE PRECISION"
+    ))
+
+
 async def init_db() -> None:
     """Create all tables (idempotent).
 
@@ -639,6 +656,7 @@ async def init_db() -> None:
         await _migrate_persistence_tables(conn)
         await _migrate_audit_stability_indexes(conn)
         await _migrate_code_metrics_perf_snapshots(conn)
+        await _migrate_daily_book_previous_close(conn)
     logger.info("Database: tables verified")
 
     # broker_accounts schema lives on the SHARED engine (ramboq DB) — always

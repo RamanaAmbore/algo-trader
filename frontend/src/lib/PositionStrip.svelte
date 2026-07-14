@@ -19,6 +19,7 @@
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
   import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
+  import DayPnlBreakup from './DayPnlBreakup.svelte';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
@@ -30,6 +31,7 @@
   // reads this to re-run on the boundary even when no other state has
   // changed (otherwise we'd wait up to 30s for the next loadOnce poll
   // before clearing the stale-tick delta after market close).
+  let _dayPnlBreakupOpen = $state(false);
   let _mktTick = $state(0);
   /** @type {(() => void) | null} */
   let _mktTimer = null;
@@ -831,6 +833,12 @@
   <span class="ps-agg" title="P — Day P&L / Lifetime P&L / F&amp;O expiry P&L (all accounts, all exchanges)">
     <span class="ps-agg-k">P</span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
+      style="cursor:pointer"
+      role="button"
+      tabindex="0"
+      title="Click for Day P&L breakup"
+      onclick={() => _dayPnlBreakupOpen = true}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_dayPnlBreakupOpen = true)}
       >{fmtMoney(dispPositionsToday)}</span
     ><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
@@ -876,6 +884,11 @@
     ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
       >{fmtMoney(_liveHoldingsTotal)}</span>
   </span>
+  <DayPnlBreakup
+    open={_dayPnlBreakupOpen}
+    {positions}
+    onClose={() => (_dayPnlBreakupOpen = false)}
+  />
 </div>
 
 <style>

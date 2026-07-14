@@ -34,13 +34,32 @@ Formula: three slots displaying position profit from three perspectives.
 
 | Slot | Value | Scope | Formula |
 |---|---|---|---|
-| 1 | Today's Day P&L | All positions (NSE/BSE/NFO/MCX/CDS) | `Σ baseDayPnlForPosition(p)` + live-tick delta |
+| 1 | Today's Day P&L (clickable) | All positions (NSE/BSE/NFO/MCX/CDS) | `Σ baseDayPnlForPosition(p)` + live-tick delta |
 | 2 | Lifetime P&L | All positions (NSE/BSE/NFO/MCX/CDS) | `Σ p.pnl` + live-tick delta |
 | 3 | F&O expiry profit | Derivatives only (NFO/MCX/CDS/BFO) | See EXP Slot spec below |
 
 **New-position override** (slot 1 only): When `overnight_quantity = 0` AND `day_change_val = 0`
 AND `pnl ≠ 0`, the broker omitted intraday decomposition. Fall back to lifetime `pnl` as the
 safest approximation. Applied by `baseDayPnlForPosition()`.
+
+#### Slot 1 Day P&L Breakup modal
+
+Clicking the **Day P&L value in slot 1** opens a `DayPnlBreakup` modal displaying the detailed
+composition of today's intraday profit/loss:
+
+- **Header**: per-account subtotal and grand total across all accounts
+- **Table rows**: one row per (account, symbol) pair with non-zero day P&L contribution
+- **Columns**: 
+  - prev_close (frozen at first intraday snapshot, from `daily_book.previous_close`)
+  - ltp (current last-traded price)
+  - overnight_qty (qty held from prior close)
+  - buy/sell volumes (intraday buy and sell leg quantities + values)
+  - lifetime_pnl (cumulative P&L on the position)
+  - settlement_pnl (yesterday's closed-out settled value, from daily_book)
+  - computed_day_pnl (derived per the baseDayPnlForPosition formula)
+- **Zero-row treatment**: rows with zero day P&L show a ⚠ icon with a tooltip explaining why
+  (e.g., "Position held overnight, no settlement differential")
+- **Close**: Esc key or backdrop click closes the modal
 
 #### EXP Slot Specification (Slot 3)
 

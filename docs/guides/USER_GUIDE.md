@@ -79,6 +79,35 @@ the broker.
 - Refresh button — clicking it says "Both NSE and MCX are currently closed" + still fetches
   the snapshot from DB (fast, no broker round-trip)
 
+## Day P&L Breakup — drill into today's intraday profit/loss
+
+The NavStrip's **P pill (Day P&L)** slot is now clickable. Clicking it opens the **Day P&L Breakup**
+modal — a detailed per-account, per-symbol table showing exactly how today's intraday profit
+or loss accumulated:
+
+**What the modal shows**:
+- Per-account subtotal at the top (sum of all symbols for that account)
+- Grand total across all accounts (should match the P pill value)
+- One row per symbol with non-zero day P&L, showing:
+  - **prev_close**: yesterday's official settlement price (frozen at the first snapshot of
+    each trading day, immune to Kite's EOD overwrite)
+  - **LTP**: current last-traded price
+  - **overnight qty**: how many contracts you held from prior close
+  - **buy/sell volumes**: intraday quantities and rupee values for any buys or sells today
+  - **lifetime P&L**: cumulative profit/loss on the position since it opened
+  - **settlement P&L**: the realized value from yesterday's close (for positions you held
+    overnight)
+  - **day P&L**: the intraday component — how much you've gained or lost *today*
+
+**Zero-value rows**: symbols with zero day P&L show a ⚠ icon with a tooltip explaining why
+(e.g., "Position opened today but flat again" or "Held overnight, no session moves").
+
+**Close the modal**: Press Esc or click the backdrop.
+
+This modal is useful when: you want to understand *which symbols* contributed to your day's
+profit or loss, see the settlement vs intraday split, or verify that the platform's day P&L
+math matches your expectations.
+
 **Behind the scenes**:
 When each market closes (via `nse:close`, `mcx:close`, `cds:close` events), the platform
 takes a full snapshot of positions / holdings / cash / margin and writes it to PostgreSQL.

@@ -527,18 +527,23 @@ def _positions_rows(
             skipped += 1
             continue
         rows.append({
-            "date":         target_date,
-            "account":      account,
-            "segment":      kite_seg_from_exchange(exchange),
-            "kind":         "positions",
-            "symbol":       symbol,
-            "exchange":     exchange,
-            "qty":          int(qty),
-            "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
-            "ltp":          ltp_val,
-            "day_pnl":      day_pnl,
-            "total_pnl":    float(r["pnl"]) if r.get("pnl") is not None else None,
-            "payload_json": _row_payload_with_extras(r, ltp_val, settled),
+            "date":           target_date,
+            "account":        account,
+            "segment":        kite_seg_from_exchange(exchange),
+            "kind":           "positions",
+            "symbol":         symbol,
+            "exchange":       exchange,
+            "qty":            int(qty),
+            "avg_cost":       float(r["average_price"]) if r.get("average_price") is not None else None,
+            "ltp":            ltp_val,
+            "day_pnl":        day_pnl,
+            "total_pnl":      float(r["pnl"]) if r.get("pnl") is not None else None,
+            # Kite's close_price = prior-session official settlement.
+            # Stored with a COALESCE freeze in the UPSERT so only the
+            # first write of the day lands here; subsequent intraday
+            # refreshes never overwrite a non-NULL value.
+            "previous_close": float(r["close_price"]) if r.get("close_price") else None,
+            "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:
         logger.warning(
@@ -618,20 +623,23 @@ def _funds_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
 _UPSERT_SQL = text("""
     INSERT INTO daily_book
         (date, account, segment, kind, symbol, exchange,
-         qty, avg_cost, ltp, day_pnl, total_pnl, payload_json, captured_at)
+         qty, avg_cost, ltp, day_pnl, total_pnl, previous_close,
+         payload_json, captured_at)
     VALUES
         (:date, :account, :segment, :kind, :symbol, :exchange,
-         :qty, :avg_cost, :ltp, :day_pnl, :total_pnl, :payload_json, :captured_at)
+         :qty, :avg_cost, :ltp, :day_pnl, :total_pnl, :previous_close,
+         :payload_json, :captured_at)
     ON CONFLICT (date, account, kind, symbol) DO UPDATE SET
-        segment      = EXCLUDED.segment,
-        exchange     = EXCLUDED.exchange,
-        qty          = EXCLUDED.qty,
-        avg_cost     = EXCLUDED.avg_cost,
-        ltp          = EXCLUDED.ltp,
-        day_pnl      = EXCLUDED.day_pnl,
-        total_pnl    = EXCLUDED.total_pnl,
-        payload_json = EXCLUDED.payload_json,
-        captured_at  = EXCLUDED.captured_at
+        segment        = EXCLUDED.segment,
+        exchange       = EXCLUDED.exchange,
+        qty            = EXCLUDED.qty,
+        avg_cost       = EXCLUDED.avg_cost,
+        ltp            = EXCLUDED.ltp,
+        day_pnl        = EXCLUDED.day_pnl,
+        total_pnl      = EXCLUDED.total_pnl,
+        previous_close = COALESCE(daily_book.previous_close, EXCLUDED.previous_close),
+        payload_json   = EXCLUDED.payload_json,
+        captured_at    = EXCLUDED.captured_at
 """)
 
 
