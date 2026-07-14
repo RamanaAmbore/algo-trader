@@ -208,9 +208,9 @@ def test_positions_snapshot_select_includes_previous_close():
     assert "db.previous_close" in src, (
         "_positions_snapshot SELECT must include db.previous_close"
     )
-    assert "previous_close=previous_close" in src, (
-        "_positions_snapshot must pass previous_close=previous_close "
-        "to build_snapshot_position_row"
+    assert "previous_close=prev_close_val" in src, (
+        "_positions_snapshot must pass previous_close=prev_close_val "
+        "(with yesterday-ltp fallback) to build_snapshot_position_row"
     )
 
 
