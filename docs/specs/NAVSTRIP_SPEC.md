@@ -348,6 +348,14 @@ this reduces to `pnl` itself (the full intraday gain/loss for a new position).
 Applied consistently across PositionStrip, MarketPulse, and derivatives surfaces for 
 accurate session-relative P&L reporting.
 
+**Snapshot path parity (closed hours)** — As of July 2026, `_positions_snapshot` (the 
+closed-hours read path) now populates `prev_settlement_pnl` from a second SQL query that 
+fetches yesterday's `daily_book` entry per `(account, symbol)`. This enables Branch A 
+(the primary `pnl − prev_settlement_pnl` formula) for overnight positions viewed during 
+closed hours (e.g. MCX overnight window, weekend). Day P&L is now identical whether the 
+position is read during market open (live path via `_backfill_prev_settlement_pnl`) or 
+after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for technical details.
+
 ### Auth outage or broker connection loss
 
 - Strip retains last-good values from successful poll

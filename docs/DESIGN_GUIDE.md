@@ -3086,10 +3086,20 @@ price at the first intraday snapshot of each trading day, providing a stable ref
 
 **Key rule:** never read `day_change_val` directly; always use `baseDayPnlForPosition(r)`.
 
+**Snapshot path parity fix** — `_positions_snapshot` in `backend/api/routes/positions.py`
+now runs a second SQL query to fetch prior-day `daily_book` entries: `ltp AS prev_ltp,
+total_pnl AS prev_settlement_pnl` for each `(account, symbol)`. Builds `prev_map` and passes
+`prev_settlement_pnl` to `build_snapshot_position_row`, enabling Branch A (`pnl − prev_settlement_pnl`)
+for overnight positions viewed during closed hours (MCX overnight, weekends). Without this,
+the snapshot path fell back to Branch B (the formula), which could use stale intraday prices.
+Day P&L is now identical at market open (live path) and after close (snapshot path).
+
 **Files:**
-- `backend/api/routes/positions.py::_backfill_prev_settlement_pnl`
-- `backend/api/models.py::PositionRow.prev_settlement_pnl`
-- `frontend/src/lib/data/nav.js::baseDayPnlForPosition`
+- `backend/api/routes/positions.py::_positions_snapshot` — fetches prior-day `daily_book` + passes `prev_settlement_pnl`
+- `backend/api/routes/positions.py::_backfill_prev_settlement_pnl` — live path (unchanged)
+- `backend/api/routes/positions_helpers.py::build_snapshot_position_row` — accepts + sets `prev_settlement_pnl` kwarg
+- `backend/api/models.py::PositionRow.prev_settlement_pnl` — schema field
+- `frontend/src/lib/data/nav.js::baseDayPnlForPosition` — uses Branch A when available
 - All callers listed above
 
 ### 21.5.6 MCX snapshot multiplier fix — closed-hours position undercount
