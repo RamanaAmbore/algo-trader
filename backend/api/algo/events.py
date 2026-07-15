@@ -128,47 +128,54 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
         channel = ch.get("channel", "")
 
         try:
-            if channel == "telegram" and is_enabled("telegram"):
-                await _send_telegram(telegram_body)
-            elif channel == "email" and is_enabled("mail"):
-                await _send_email_raw(email_subject, email_body)
-            elif channel == "websocket" and broadcast_fn:
-                broadcast_fn("agent_alert", {
-                    "slug": agent.slug,
-                    "message": telegram_body,
-                    "condition": condition_text,
-                    "sim_mode": sim_mode,
-                })
-            elif channel == "inapp" and broadcast_fn:
-                # In-app rich popup. Separate WS event from `agent_alert`
-                # so the frontend can subscribe specifically to fires
-                # the operator opted into surfacing (some agents may
-                # ship telegram-only without the popup interrupt).
-                broadcast_fn("agent_inapp_notify", {
-                    "slug":      agent.slug,
-                    "name":      agent.name,
-                    "tier":      getattr(agent, "tier", "info"),
-                    "topic":     getattr(agent, "topic", None),
-                    "condition": condition_text,
-                    "detail":    eval_result.detail or {},
-                    "when":      ist_display,
-                    "sim_mode":  sim_mode,
-                    "branch":    branch,
-                })
-            elif channel == "ntfy" and is_enabled("ntfy"):
-                from backend.shared.helpers.alert_utils import send_ntfy_alert
-                send_ntfy_alert(title=agent.name, message=telegram_body)
-            elif channel == "log":
-                # Log lines use [SIM] for brevity; user-facing Telegram /
-                # email keep the longer "SIMULATOR " prefix above.
-                log_sim_tag = "[SIM] " if sim_mode else ""
-                logger.warning(f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}")
+            await _dispatch_channel(
+                channel, agent, telegram_body, email_subject, email_body,
+                condition_text, ist_display, eval_result, broadcast_fn,
+                sim_mode, branch, branch_tag,
+            )
         except Exception as e:
             logger.error(f"Agent event dispatch failed ({channel}): {e}")
 
     # Persist to agent_events table (sim_mode flag flows through)
     await _log_event(agent, "triggered", condition_text, eval_result.detail,
                      sim_mode=sim_mode)
+
+
+async def _dispatch_channel(
+    channel: str, agent, telegram_body: str, email_subject: str,
+    email_body: str, condition_text: str, ist_display: str,
+    eval_result, broadcast_fn, sim_mode: bool, branch: str, branch_tag: str,
+) -> None:
+    """Route one channel event. Raises on error — caller wraps in try/except."""
+    if channel == "telegram" and is_enabled("telegram"):
+        await _send_telegram(telegram_body)
+    elif channel == "email" and is_enabled("mail"):
+        await _send_email_raw(email_subject, email_body)
+    elif channel == "websocket" and broadcast_fn:
+        broadcast_fn("agent_alert", {
+            "slug": agent.slug,
+            "message": telegram_body,
+            "condition": condition_text,
+            "sim_mode": sim_mode,
+        })
+    elif channel == "inapp" and broadcast_fn:
+        broadcast_fn("agent_inapp_notify", {
+            "slug":      agent.slug,
+            "name":      agent.name,
+            "tier":      getattr(agent, "tier", "info"),
+            "topic":     getattr(agent, "topic", None),
+            "condition": condition_text,
+            "detail":    eval_result.detail or {},
+            "when":      ist_display,
+            "sim_mode":  sim_mode,
+            "branch":    branch,
+        })
+    elif channel == "ntfy" and is_enabled("ntfy"):
+        from backend.shared.helpers.alert_utils import send_ntfy_alert
+        send_ntfy_alert(title=agent.name, message=telegram_body)
+    elif channel == "log":
+        log_sim_tag = "[SIM] " if sim_mode else ""
+        logger.warning(f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}")
 
 
 async def log_event(agent, event_type: str, condition_text: str = "",
