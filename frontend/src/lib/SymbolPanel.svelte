@@ -1947,7 +1947,7 @@
          CardHeader theme tokens. -->
     <div style="--ch-padding: 0.35rem 0.65rem">
       <CardHeader showControls={false}>
-        <svelte:fragment slot="left">
+        {#snippet left()}
           <span class="oes-modal-name">
             <!-- Order-slip / receipt glyph — matches the page-header Order
                  button (PageHeaderActions). Rectangle with order lines
@@ -1967,8 +1967,8 @@
               {_wlToast?.msg}
             </span>
           {/if}
-        </svelte:fragment>
-        <svelte:fragment slot="right">
+        {/snippet}
+        {#snippet right()}
           <!-- Operator: "mode and chase should be left aligned. chase value
                should be selectable." Cluster sits immediately AFTER the
                title chip (left-aligned). The close X stays anchored right. -->
@@ -1995,7 +1995,7 @@
             <button type="button" class="oes-close" title="Close" aria-label="Close"
                     onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
           {/if}
-        </svelte:fragment>
+        {/snippet}
       </CardHeader>
     </div>
     {/if}
