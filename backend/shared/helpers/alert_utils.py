@@ -920,15 +920,22 @@ def send_ntfy_alert(title: str, message: str) -> None:
     priority = "urgent" if is_night else "high"
 
     try:
-        import httpx
+        import urllib.request as _urlreq
+        url = f"{base_url.rstrip('/')}/{topic}"
         send_count = 3 if priority == "urgent" else 1
         for _ in range(send_count):
-            httpx.post(
-                f"{base_url.rstrip('/')}/{topic}",
-                content=message.encode(),
-                headers={"Title": title, "Priority": priority, "Tags": "rotating_light"},
-                timeout=5,
+            req = _urlreq.Request(
+                url,
+                data=message.encode(),
+                headers={
+                    "Title": title,
+                    "Priority": priority,
+                    "Tags": "rotating_light",
+                    "Content-Type": "text/plain",
+                },
+                method="POST",
             )
+            _urlreq.urlopen(req, timeout=5)
     except Exception:
         pass
 
