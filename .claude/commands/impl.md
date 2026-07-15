@@ -99,11 +99,17 @@ If audit finds a defect, dispatch one more targeted fix, re-run affected tests, 
 
 ---
 
-## Step 5 — Commit
+## Step 5 — Archive plan + Commit
 
-Stage all modified tracked files:
+First, archive the plan (so the rename is included in the same commit):
+```
+mv .claude/PLAN.md .claude/PLAN.done.md
+```
+
+Then stage implementation files AND all `.claude/` changes (archived plan, any new command/skill files):
 ```
 git add -u
+git add .claude/
 ```
 
 Commit using the message from `## Commit message` in PLAN.md:
@@ -155,13 +161,7 @@ After committing, identify which documentation surfaces are affected and update 
 
 ---
 
-## Step 6 — Archive plan
-
-Rename `.claude/PLAN.md` → `.claude/PLAN.done.md` (keeps a record; overwrite if one exists).
-
----
-
-## Step 7 — Foreground report
+## Step 6 — Foreground report
 
 ```
 impl: <plan title>
