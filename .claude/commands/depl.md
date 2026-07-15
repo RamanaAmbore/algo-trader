@@ -15,7 +15,7 @@ Activate bypass-permissions mode immediately. Maintain it for the entire command
 
 Follow all steps from `/impl` exactly:
 
-1. Guard: check `.claude/PLAN.md` exists. If missing, auto-copy from `~/.claude/plans/` (most recently modified `.md`): `cp "$(ls -t ~/.claude/plans/*.md | head -1)" .claude/PLAN.md`. If no plan anywhere, stop and call `EnterPlanMode`.
+1. Guard: check `.claude/PLAN.md` exists. If missing, auto-copy from `~/.claude/plans/` (most recently modified `.md`) **and delete the source**: `_src=$(ls -t ~/.claude/plans/*.md | head -1) && cp "$_src" .claude/PLAN.md && rm "$_src"`. If no plan anywhere, stop and call `EnterPlanMode`.
 2. Read plan (title, agents, tests, commit message, done criteria).
 3. Dispatch agents in parallel (backend, frontend, doc, backend-test as specified in plan).
 4. Run test loop (pytest + svelte-check + playwright per plan flags). Max 3 fix iterations.

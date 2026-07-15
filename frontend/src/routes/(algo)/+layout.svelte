@@ -2578,23 +2578,23 @@
     justify-content: space-between;
     gap: 0.75rem;
     padding: 0 0.75rem;
-    background: rgba(30, 18, 0, 0.97);
-    border-bottom: 1px solid rgba(251, 191, 36, 0.40);
+    background: rgba(15, 23, 42, 0.97);
+    border-bottom: 1px solid rgba(126, 151, 184, 0.30);
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
   }
-  .demo-banner-text { color: #fbbf24; flex: 1; }
-  .demo-banner-text strong { color: #fcd34d; font-weight: 700; }
+  .demo-banner-text { color: rgba(148, 163, 184, 0.85); flex: 1; }
+  .demo-banner-text strong { color: #fbbf24; font-weight: 700; }
   .demo-banner-close {
     flex-shrink: 0;
     background: none;
     border: none;
-    color: rgba(251, 191, 36, 0.55);
+    color: rgba(148, 163, 184, 0.50);
     cursor: pointer;
     font-size: 1rem;
     line-height: 1;
     padding: 0 0.15rem;
     transition: color 0.1s;
   }
-  .demo-banner-close:hover { color: #fbbf24; }
+  .demo-banner-close:hover { color: rgba(148, 163, 184, 0.90); }
 </style>
