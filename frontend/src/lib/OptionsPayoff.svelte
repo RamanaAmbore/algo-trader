@@ -742,14 +742,14 @@
         </div>
       {/if}
       {#if dayPnl != null && dayPnl !== 0}
-        <!-- DAY row — sum of today's mark-to-market change across
+        <!-- DAY P&L row — sum of today's mark-to-market change across
              enabled candidates. Reconciles with the PositionStrip's
              P∆ chip when the basket covers every position in the
-             book. Operator can scan TDAY (lifetime) vs DAY (today's
-             delta) at a glance. -->
+             book. Operator can scan TODAY (lifetime P&L at spot) vs DAY P&L (today's
+             intraday move) at a glance. -->
         <div class="ps-row"
              title="Today's mark-to-market change on enabled basket positions (sum of day_change_val). Compare to the PositionStrip's P∆ chip — they match exactly when the basket covers every open position.">
-          <span class="ps-k">DAY Δ</span>
+          <span class="ps-k">DAY P&amp;L</span>
           <span class={'ps-v ' + (dayPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(dayPnl)}
           </span>
@@ -760,8 +760,8 @@
         <div class="ps-row"
              title={realizedPnl !== 0
                ? `Position lifetime P&L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
-               : "Position lifetime P&L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's delta — use the DAY Δ row above for that."}>
-          <span class="ps-k">TDAY</span>
+               : "Position lifetime P&L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's intraday move — use the DAY P&L row above for that."}>
+          <span class="ps-k">TODAY</span>
           <span class={'ps-v ' + ((curveAtSpot?.today_value ?? 0) >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(curveAtSpot?.today_value)}
           </span>
@@ -775,7 +775,7 @@
                    pricing drifts from market LTP for illiquid
                    contracts) -->
           <div class="ps-row"
-               title="Adjustment folded into TDAY so chart matches dashboard exactly. Includes realised P&L from today's closed positions + theoretical-vs-LTP gap on open legs.">
+               title="Adjustment folded into TODAY so chart matches dashboard exactly. Includes realised P&L from today's closed positions + theoretical-vs-LTP gap on open legs.">
             <span class="ps-k">ADJ</span>
             <span class={'ps-v ' + (realizedPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
               {fmtMoney(realizedPnl)}
@@ -789,7 +789,7 @@
         <div class="ps-row"
              title={legsExpPnlAtSpot != null
                ? 'Strategy P&L if every open leg expired RIGHT NOW at the current spot — intrinsic value minus cost basis, summed across the enabled legs. SSOT shared with the legs grid TOTAL and snapshot Exp P&L column.'
-               : 'Strategy P&L at expiry (intrinsic only) for the current spot — same vertical offset as TDAY.'}>
+               : 'Strategy P&L at expiry (intrinsic only) for the current spot — same vertical offset as TODAY.'}>
           <span class="ps-k">EXP</span>
           <span class={'ps-v ' + (_expDisplayVal >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(_expDisplayVal)}
@@ -1218,7 +1218,7 @@
         </div>
         {#if hover?.today != null}
         <div class="chart-tooltip-row">
-          <span class="chart-tooltip-label">TDAY</span>
+          <span class="chart-tooltip-label">TODAY</span>
           <span class="chart-tooltip-value" class:up={(hover?.today ?? 0) >= 0} class:down={(hover?.today ?? 0) < 0}>
             {fmtMoney(hover?.today)}
           </span>
@@ -1241,7 +1241,7 @@
            below are the only legend pieces the chart needs. -->
       <span class="legend-item">
         <span class="legend-line legend-today"></span>
-        Today (BS)
+        Today
       </span>
       {#each intermediatePaths as ip (ip.elapsed)}
         <!-- Intermediate-DTE legend chips render in temporal order
