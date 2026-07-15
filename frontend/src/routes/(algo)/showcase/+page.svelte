@@ -539,9 +539,9 @@
   /* Tour CTA row inside right column */
   .show-cta-row {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    flex-wrap: wrap;
-    gap: 0.7rem;
+    gap: 0.5rem;
   }
   .show-cta-tour {
     width: 100%;
