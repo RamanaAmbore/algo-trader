@@ -3919,7 +3919,7 @@
                  string-encoded as `wl:<id>` since AlgoTabs uses string
                  ids; onChange decodes back to the number/'pinned'
                  union the rest of MarketPulse expects. -->
-            <svelte:fragment slot="left">
+            {#snippet left()}
               <AlgoTabs
                 tabs={[
                   { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
@@ -3958,7 +3958,7 @@
                   </svg>
                 </button>
               {/if}
-            </svelte:fragment>
+            {/snippet}
           </CardHeader>
           <!-- Sub-tab strip retired — each user watchlist now lives
                as its own top-tab next to Pinned. -->
@@ -3990,13 +3990,13 @@
               refreshLoading={_refreshing}
               onDownload={() => gridWin?.exportDataAsCsv({ fileName: 'winners.csv' })}
             >
-              <svelte:fragment slot="left">
+              {#snippet left()}
                 <span class="mp-bucket-label mp-bucket-label-winners">Gainers</span>
                 {#if _moversAsOf}
                   <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
                 {/if}
-              </svelte:fragment>
-              <svelte:fragment slot="middle">
+              {/snippet}
+              {#snippet middle()}
                 <div class="mp-head-tabs">
                   <AlgoTabs
                     tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: winnerCounts[t] || undefined }))}
@@ -4005,7 +4005,7 @@
                     compact={true}
                   />
                 </div>
-              </svelte:fragment>
+              {/snippet}
             </CardHeader>
             <div bind:this={gridWinEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
@@ -4026,13 +4026,13 @@
               refreshLoading={_refreshing}
               onDownload={() => gridLose?.exportDataAsCsv({ fileName: 'losers.csv' })}
             >
-              <svelte:fragment slot="left">
+              {#snippet left()}
                 <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
                 {#if _moversAsOf}
                   <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
                 {/if}
-              </svelte:fragment>
-              <svelte:fragment slot="middle">
+              {/snippet}
+              {#snippet middle()}
                 <div class="mp-head-tabs">
                   <AlgoTabs
                     tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: loserCounts[t] || undefined }))}
@@ -4041,7 +4041,7 @@
                     compact={true}
                   />
                 </div>
-              </svelte:fragment>
+              {/snippet}
             </CardHeader>
             <div bind:this={gridLoseEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
@@ -4063,7 +4063,7 @@
             refreshLoading={_refreshing}
             onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
           >
-            <svelte:fragment slot="left">
+            {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
               {#if accountPicker && availableAccounts.length > 0}
                 <!-- Per-card Account picker. Positions and Holdings each
@@ -4078,7 +4078,7 @@
                     ariaLabel="Filter Positions by broker account" />
                 </div>
               {/if}
-            </svelte:fragment>
+            {/snippet}
           </CardHeader>
           <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
@@ -4096,7 +4096,7 @@
             refreshLoading={_refreshing}
             onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
           >
-            <svelte:fragment slot="left">
+            {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
               {#if accountPicker && availableAccounts.length > 0}
                 <div class="mp-head-acct">
@@ -4105,7 +4105,7 @@
                     ariaLabel="Filter Holdings by broker account" />
                 </div>
               {/if}
-            </svelte:fragment>
+            {/snippet}
           </CardHeader>
           <div bind:this={gridHoldingsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
