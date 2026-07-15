@@ -1,54 +1,37 @@
-# Plan: fix(alerts): ntfy IPv6 — switch send_ntfy_alert from httpx to urllib
+# Plan: refactor(events): extract _dispatch_channel to reduce dispatch() CC from D→B
 
 ## Context
-`send_ntfy_alert()` uses httpx which does happy-eyeballs and picks IPv6 on the prod server.
-ntfy.sh returns HTTP 200 over IPv6 but FCM push never reaches the phone. curl uses IPv4
-(confirmed: 159.203.148.75) and works. urllib.request uses OS getaddrinfo which returns
-AF_INET first on this server, so it connects over IPv4. urllib3 already has HAS_IPV6=False
-at line 46 of alert_utils.py but that doesn't affect httpx. Fix: replace httpx with urllib
-in send_ntfy_alert only.
+`dispatch()` in `backend/api/algo/events.py` is CC=21 (grade D) after the ntfy channel
+was wired in. The CC gate in dprod blocks the merge to main. The fix is a pure structural
+refactor: extract the per-channel if/elif chain into a `_dispatch_channel()` helper so
+`dispatch()` is a thin loop (CC ≈ 4) and the channel logic sits in a focused helper (CC ≈ 8).
+No behaviour changes — same channels, same guards, same order.
 
 ## Task
-In `backend/shared/helpers/alert_utils.py:send_ntfy_alert()`, replace the `httpx.post`
-call with `urllib.request.Request` + `urlopen`. Use `Content-Type: text/plain` header.
-Update `backend/tests/test_ntfy_alert.py` to mock `urllib.request.urlopen` instead of
-`httpx.post`. The mock response needs `.status` attribute returning 200.
+In `backend/api/algo/events.py` (lines 80–171):
+
+1. Extract a new `async def _dispatch_channel(channel, agent, telegram_body, email_subject,
+   email_body, condition_text, ist_display, eval_result, broadcast_fn, sim_mode, branch)`
+   that contains exactly the current if/elif block (lines 131–165). The function has no
+   return value and raises on error (caller wraps in try/except).
+
+2. Replace the if/elif block inside `dispatch()` with a single call:
+   `await _dispatch_channel(channel, agent, telegram_body, email_subject, email_body,
+   condition_text, ist_display, eval_result, broadcast_fn, sim_mode, branch)`
+
+3. No other changes — do NOT touch _send_telegram, _send_email_raw, _log_event, or any
+   other function. Do NOT rename any variables. Do NOT reorder channels.
 
 ## Agents
-- backend: In `backend/shared/helpers/alert_utils.py`, replace the httpx block in
-  `send_ntfy_alert()` (lines 922-933) with urllib.request. New block:
-  ```python
-  import urllib.request as _urlreq
-  url = f"{base_url.rstrip('/')}/{topic}"
-  send_count = 3 if priority == "urgent" else 1
-  for _ in range(send_count):
-      req = _urlreq.Request(
-          url,
-          data=message.encode(),
-          headers={
-              "Title": title,
-              "Priority": priority,
-              "Tags": "rotating_light",
-              "Content-Type": "text/plain",
-          },
-          method="POST",
-      )
-      _urlreq.urlopen(req, timeout=5)
-  ```
-  Remove the `import httpx` line. Keep all other logic unchanged.
+- backend: Apply the refactor described above to
+  `backend/api/algo/events.py`. Extract `_dispatch_channel` from the body of `dispatch()`.
+  Place `_dispatch_channel` immediately after the closing brace of `dispatch()` (before
+  `log_event`). Verify with `venv/bin/python -m radon cc backend/api/algo/events.py -s`
+  that `dispatch` drops to grade B or better. Patch must be purely structural.
 - frontend: skip
 - broker: skip
 - doc: skip
-- backend-test: Update `backend/tests/test_ntfy_alert.py`:
-  - Remove `import httpx` (line 21) and the docstring reference to httpx (line 14).
-  - Replace ALL `patch("httpx.post")` with `patch("urllib.request.urlopen")`.
-  - The mock return value needs `.status = 200` (use `mock_post.return_value.status = 200`).
-  - Urgent tests: assert `mock_post.call_count == 3` (unchanged).
-  - High tests: assert `mock_post.call_count == 1` (unchanged).
-  - No-op tests (missing topic): assert `mock_post.call_count == 0` (unchanged).
-  - Exception test: change `mock_post.side_effect = httpx.ConnectError(...)` to
-    `mock_post.side_effect = OSError("Connection failed")`.
-  - Run `venv/bin/pytest backend/tests/test_ntfy_alert.py -v` to confirm green.
+- backend-test: skip (no new behaviour; existing agent dispatch tests cover this)
 - playwright: skip
 
 ## Tests
@@ -57,8 +40,7 @@ Update `backend/tests/test_ntfy_alert.py` to mock `urllib.request.urlopen` inste
 - playwright: no
 
 ## Commit message
-fix(alerts): ntfy IPv6 — use urllib instead of httpx to force IPv4 on prod server
+refactor(events): extract _dispatch_channel to reduce dispatch() CC from D (21) to B
 
 ## Done when
-All test_ntfy_alert.py tests pass. From prod server, Python urllib call delivers
-push to Android phone.
+`venv/bin/python -m radon cc backend/ -s -n D` produces no output (no D/E/F grades).

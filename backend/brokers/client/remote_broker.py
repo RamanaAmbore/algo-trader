@@ -195,6 +195,15 @@ class RemoteBroker(Broker):
     def market_status(self, exchange: str) -> bool | None:
         return self._call("market_status", exchange)
 
+    # ── Qty translation ───────────────────────────────────────────────
+
+    def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
+        # Forward to conn_service so the real Kite adapter applies the
+        # contracts→lots translation for MCX/NCO. Without this override
+        # the base-class no-op returns raw_qty unchanged, which then
+        # triggers the adapter-layer 50-lot ceiling on the conn side.
+        return self._call("translate_qty", exchange, raw_qty, lot_size)
+
     # ── Order entry ───────────────────────────────────────────────────
 
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
