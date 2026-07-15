@@ -1,46 +1,63 @@
-# Plan: refactor(events): extract _dispatch_channel to reduce dispatch() CC from D→B
+# Plan: docs(CLAUDE.md): add ntfy/broker arch notes + post-plan /impl /depl prompt
 
 ## Context
-`dispatch()` in `backend/api/algo/events.py` is CC=21 (grade D) after the ntfy channel
-was wired in. The CC gate in dprod blocks the merge to main. The fix is a pure structural
-refactor: extract the per-channel if/elif chain into a `_dispatch_channel()` helper so
-`dispatch()` is a thin loop (CC ≈ 4) and the channel logic sits in a focused helper (CC ≈ 8).
-No behaviour changes — same channels, same guards, same order.
+Two architectural findings from this session need to survive context compression by
+living in CLAUDE.md (always loaded). Also, the plan workflow should prompt the operator
+with `/impl` or `/depl` options after plan approval, so they don't need to remember
+to type the next command.
 
-## Task
-In `backend/api/algo/events.py` (lines 80–171):
+## Changes
 
-1. Extract a new `async def _dispatch_channel(channel, agent, telegram_body, email_subject,
-   email_body, condition_text, ist_display, eval_result, broadcast_fn, sim_mode, branch)`
-   that contains exactly the current if/elif block (lines 131–165). The function has no
-   return value and raises on error (caller wraps in try/except).
+### 1. CLAUDE.md — Key Patterns section (after "Singleton Connections")
+Add a new pattern entry:
 
-2. Replace the if/elif block inside `dispatch()` with a single call:
-   `await _dispatch_channel(channel, agent, telegram_body, email_subject, email_body,
-   condition_text, ist_display, eval_result, broadcast_fn, sim_mode, branch)`
+**RemoteBroker.translate_qty** — `RemoteBroker` (used when `RAMBOQ_USE_CONN_SERVICE=1`)
+inherits a no-op `translate_qty` from the base class; it MUST override to forward to the
+conn service so MCX/NCO contracts→lots translation happens correctly. Fixed 2026-07-15:
+`backend/brokers/client/remote_broker.py` now delegates `translate_qty` via `self._call`.
+Any new broker proxy layer must do the same — failing to do so causes raw contract qty
+(e.g. 100) to hit the 50-lot adapter ceiling and be refused.
 
-3. No other changes — do NOT touch _send_telegram, _send_email_raw, _log_event, or any
-   other function. Do NOT rename any variables. Do NOT reorder channels.
+### 2. CLAUDE.md — Things to Avoid section
+Add one bullet:
+
+- Don't use `httpx` for outbound ntfy.sh calls from the prod server — server resolves
+  ntfy.sh to IPv6 first (happy-eyeballs) and FCM push delivery silently fails. Use
+  `urllib.request` which picks IPv4 (first in `getaddrinfo`). See `send_ntfy_alert()`
+  in `backend/shared/helpers/alert_utils.py`.
+
+### 3. CLAUDE.md — Default Workflow section (around line 69-80)
+Add a line after the ExitPlanMode description to document the expected prompt:
+
+After calling `ExitPlanMode`, always append to the response:
+> Plan ready — run `/impl` to build only, or `/depl` to build + deploy to prod.
+
+Update the Default Workflow block to include this, and update the Custom slash
+commands table to add `/depl`.
+
+### 4. CLAUDE.md — Custom slash commands section
+Add missing `/depl` entry:
+- **`/depl`** — Full pipeline: impl → ddev → dprod in one command (bypass-permissions)
 
 ## Agents
-- backend: Apply the refactor described above to
-  `backend/api/algo/events.py`. Extract `_dispatch_channel` from the body of `dispatch()`.
-  Place `_dispatch_channel` immediately after the closing brace of `dispatch()` (before
-  `log_event`). Verify with `venv/bin/python -m radon cc backend/api/algo/events.py -s`
-  that `dispatch` drops to grade B or better. Patch must be purely structural.
+- doc: Update `CLAUDE.md` with all four changes above. Use exact text from this plan.
+  Do NOT rewrite unrelated sections. Edit only the three sections identified:
+  Key Patterns (add RemoteBroker.translate_qty entry after Singleton Connections),
+  Things to Avoid (add ntfy/httpx bullet), Default Workflow (add post-ExitPlanMode note),
+  Custom slash commands (add /depl line).
+- backend: skip
 - frontend: skip
 - broker: skip
-- doc: skip
-- backend-test: skip (no new behaviour; existing agent dispatch tests cover this)
+- backend-test: skip
 - playwright: skip
 
 ## Tests
-- pytest: yes
+- pytest: no
 - svelte-check: no
 - playwright: no
 
 ## Commit message
-refactor(events): extract _dispatch_channel to reduce dispatch() CC from D (21) to B
+docs(CLAUDE.md): add ntfy IPv6 guard, broker translate_qty note, /depl command, post-plan prompt
 
 ## Done when
-`venv/bin/python -m radon cc backend/ -s -n D` produces no output (no D/E/F grades).
+CLAUDE.md contains all four additions. No existing content removed.

@@ -69,15 +69,17 @@ Three-step pipeline for any non-trivial change:
 plan mode  →  /impl  →  /ddev  →  /dprod (on request)
 (agree)       (build)    (gate)    (ship)
 ```
+Or use **`/depl`** to run all three phases in one command.
 
-**Plan before implement** — always enter plan mode for non-trivial tasks. During plan mode, write `.claude/PLAN.md` using the format below, then call ExitPlanMode for operator approval.
+**Plan before implement** — always enter plan mode for non-trivial tasks. During plan mode, write `.claude/PLAN.md` using the format below, then call ExitPlanMode for operator approval. After ExitPlanMode, always append: *"Plan ready — run `/impl` to build only, or `/depl` to build + deploy to prod."*
 
 **Operator's role**: requirements, design, defect identification — plan mode only.  
 **Claude's role**: research, implementation, test loops, doc updates, deployment — background.
 
 **Implement** (`/impl`): reads `.claude/PLAN.md` → dispatches agents → loops tests to green → commits. Never pushes.  
 **Dev deploy** (`/ddev`): pytest + svelte-check green → push dev. Never push dev with failing tests.  
-**Prod deploy** (`/dprod`): operator explicitly requests → docs/spec/DESIGN_GUIDE/PDF/CC updated → merge dev→main → push. Never push to prod without explicit request.
+**Prod deploy** (`/dprod`): operator explicitly requests → docs/spec/DESIGN_GUIDE/PDF/CC updated → merge dev→main → push. Never push to prod without explicit request.  
+**Full pipeline** (`/depl`): impl → ddev → dprod in one command, bypass-permissions throughout.
 
 ### Plan file format (`.claude/PLAN.md`)
 
@@ -183,6 +185,13 @@ Empty sets cached; buster = date rollover Tiers 1+2, UPSERT Tier 3.
 **Singleton Connections** — thread-safe startup init. On `RAMBOQ_USE_CONN_SERVICE=1` populates 
 registry with RemoteBroker stubs.
 
+**RemoteBroker.translate_qty** — `RemoteBroker` (active when `RAMBOQ_USE_CONN_SERVICE=1`)
+inherits a no-op `translate_qty` from the base class; it MUST override to forward to the
+conn service so MCX/NCO contracts→lots translation happens correctly. Fixed 2026-07-15:
+`backend/brokers/client/remote_broker.py` delegates via `self._call("translate_qty", ...)`.
+Any new broker proxy layer must do the same — failing to do so sends raw contract qty
+(e.g. 100 contracts) as 100 lots to the Kite adapter, hitting the 50-lot ceiling.
+
 **Closed-hours route gate** — `closed_hours_or_broker()` in `snapshot_gate.py` CANONICAL gate. 
 Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` / `'snapshot'` / 
 `'snapshot-fallback'`. Every new data route MUST use. Tests patch `_any_segment_open()`.
@@ -204,6 +213,10 @@ Worst state drives color. Click opens per-account modal.
 - Weekends hardcoded closed — use `market_special_sessions` table for exceptions
 - Don't try to run main API without conn-service when `RAMBOQ_USE_CONN_SERVICE=1` — 
   service startup will fail with socket errors
+- Don't use `httpx` for outbound ntfy.sh calls from the prod server — server resolves
+  ntfy.sh to IPv6 first (happy-eyeballs) and FCM push delivery silently fails despite
+  HTTP 200. Use `urllib.request` which picks IPv4 (first in `getaddrinfo`). See
+  `send_ntfy_alert()` in `backend/shared/helpers/alert_utils.py`.
 
 ---
 
@@ -320,6 +333,7 @@ Workflow shortcuts in `/.claude/commands/`:
 - **`/impl`** — Read `.claude/PLAN.md`, dispatch agents, loop tests to green, commit — ready for `/ddev`
 - **`/ddev`** — Run tests (pytest + svelte-check); push to dev only if both pass
 - **`/dprod`** — Update docs/spec/DESIGN_GUIDE/PDF + CC gate; merge dev→main; push prod
+- **`/depl`** — Full pipeline: impl → ddev → dprod in one command (bypass-permissions)
 - **`/tlm`** — Run daily TLM audit pipeline, parse P1 findings, fix + commit
 - **`/cc`** — Show cyclomatic complexity grades (C/D/E/F summary + top 10 hotspots)
 - **`/push`** — Quick push dev+main (no gates — use only for doc/config-only changes)
