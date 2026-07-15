@@ -4863,7 +4863,7 @@
        pinned tab. this is specific to pulse". Top padding zeroed
        so the pinned/watchlist tab strip sits flush below the
        page-header. Side + bottom padding kept. */
-    padding: 0 0.4rem 0.4rem;
+    padding: 0 0 0.4rem;
     display: flex;
     flex-direction: column;
     /* Fill the algo-content flex column so the grids claim all
