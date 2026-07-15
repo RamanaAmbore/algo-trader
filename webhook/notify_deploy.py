@@ -62,18 +62,7 @@ def main():
     status = args.status
     reason = args.reason
 
-    caps = cfg.get("cap_in_dev") or {}
-    if not isinstance(caps, dict):
-        caps = {}
-
-    # Per-channel enable logic — prod (main) always on, dev gated by cap_in_dev.
-    def _cap(name: str) -> bool:
-        if not is_non_main:
-            return True
-        return bool(caps.get(name, False))
-
-    # Skip entirely on dev when notify_on_deploy is off — but always fire on
-    # failure so operators know the deploy broke even on a gated dev branch.
+    # Skip entirely on dev — prod (main) always fires.
     if is_non_main:
         print("notify_deploy: skipped — dev branch deploys suppressed")
         sys.exit(0)
@@ -128,7 +117,7 @@ def main():
     token   = sec.get("telegram_bot_token_deploy") or sec.get("telegram_bot_token", "")
     chat_id = sec.get("telegram_chat_id_deploy")   or sec.get("telegram_chat_id", "")
     if token and chat_id:
-        branch_line = f"\n⚠ <b>Branch: {branch}</b>" if is_non_main else ""
+        branch_line = ""  # is_non_main is always False here (dev exits above)
         try:
             resp = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",

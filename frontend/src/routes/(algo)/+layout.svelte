@@ -1617,7 +1617,7 @@
     box-shadow: 0 0 6px currentColor;
     animation: algo-mode-dot 2s ease-in-out infinite;
   }
-  .algo-mode-demo   { color: #c084fc; background: rgba(192,132,252,0.10); }
+  .algo-mode-demo   { color: var(--algo-violet); background: rgba(192,132,252,0.10); }
   @keyframes algo-mode-dot {
     0%, 100% { opacity: 1;   transform: scale(1); }
     50%      { opacity: 0.4; transform: scale(0.8); }
@@ -2584,7 +2584,7 @@
     font-size: var(--fs-md);
   }
   .demo-banner-text { color: rgba(148, 163, 184, 0.85); flex: 1; }
-  .demo-banner-text strong { color: #fbbf24; font-weight: 700; }
+  .demo-banner-text strong { color: var(--c-action); font-weight: 700; }
   .demo-banner-close {
     flex-shrink: 0;
     background: none;

@@ -781,6 +781,7 @@ classDiagram
     class EventQueue {
         +name: str
         +on_full: "drop|sync"
+        +session_factory: async_session (injectable for tests)
         +put(row)
         +_flush_bulk_insert()
     }
@@ -4559,7 +4560,7 @@ GitHub push → webhook.ramboq.com → /etc/webhook/dispatch.sh
 2. `pip install` (production deps)
 3. `npm run build` (vite)
 4. `systemctl restart ramboq_api.service` / `ramboq_dev_api.service`
-5. `notify_deploy.py` (Telegram-only since May 2026)
+5. `notify_deploy.py` (Telegram + ntfy since July 2026)
 
 **Per-environment serialisation:** a host-wide `/tmp/ramboq_deploy.lock` prevents concurrent prod + dev builds from race-condition npm conflicts. `nice -n 19 ionice -c 3` on npm so background builds never starve API responsiveness.
 

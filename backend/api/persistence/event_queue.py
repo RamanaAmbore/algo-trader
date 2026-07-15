@@ -156,15 +156,19 @@ class EventQueue:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        # Drain all remaining items — bounded to 3 attempts to avoid hanging on DB down
-        _drain_attempts = 0
-        while self._queue and _drain_attempts < 3:
+        # Drain all remaining items — bounded to 3 consecutive failures to avoid
+        # hanging on DB down, but does not penalise successful partial flushes.
+        _drain_failures = 0
+        while self._queue and _drain_failures < 3:
+            prev_size = len(self._queue)
             await self._flush()
-            if self._queue:
-                _drain_attempts += 1
+            if len(self._queue) >= prev_size:
+                _drain_failures += 1
+            else:
+                _drain_failures = 0
         if self._queue:
             logger.warning(
-                f"event_queue[{self.name}]: gave up draining after 3 attempts "
+                f"event_queue[{self.name}]: gave up draining after 3 consecutive failures "
                 f"({len(self._queue)} items lost)"
             )
         logger.info(f"event_queue[{self.name}]: stopped, flushed remaining")

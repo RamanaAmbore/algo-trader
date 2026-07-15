@@ -926,3 +926,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-11 | v1.1 added DB-first policy (§5), snapshot preservation (§6), self-healing cycle (§7); BD1–BD4 + D1–D4 fixed |
 | 2026-07-11 | v1.2 added §11–24 comprehensive component + data-layer expansion (pulseUnified, buckets, columns, context menu, watchlist, account-select, cache, closed-hours, card controls) |
 | 2026-07-13 | §17 EXP formula: documented partial-close `realised` field in open-leg formula; closed-leg (qty=0) now included; per-leg helper `_legExpPnlDisplay` for Legs grid display |
+| 2026-07-14 | Bucket labels and order-modal close button restored after Svelte 4→5 snippet migration (behavioral parity) |

@@ -23,6 +23,12 @@
     return 'Day P&L is zero';
   }
 
+  let _panel = $state(null);
+
+  $effect(() => {
+    if (open) _panel?.focus();
+  });
+
   let _expanded = $state(new Set());
 
   function _toggleRow(key) {
@@ -73,6 +79,8 @@
        onkeydown={(e) => { if (e.key === 'Escape') onClose(); }}>
     <div class="dpb-panel"
          role="presentation"
+         bind:this={_panel}
+         tabindex="-1"
          onclick={(e) => e.stopPropagation()}>
 
       <div class="dpb-header">
@@ -80,7 +88,7 @@
         <span class={'dpb-total ' + (_total > 0 ? 'dpb-pos' : _total < 0 ? 'dpb-neg' : 'dpb-flat')}>
           {fmtMoney(_total)}
         </span>
-        <button class="dpb-close" type="button" onclick={onClose} aria-label="Close" autofocus>✕</button>
+        <button class="dpb-close" type="button" onclick={onClose} aria-label="Close">✕</button>
       </div>
 
       <div class="dpb-scroll">
