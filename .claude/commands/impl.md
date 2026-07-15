@@ -11,10 +11,18 @@ run tests until green, commit, and report ready for `/ddev`.
 
 ## Step 0 — Guard
 
-Check `.claude/PLAN.md` exists. If missing:
+Check `.claude/PLAN.md` exists. If missing, auto-discover from the Claude plans folder:
+```bash
+ls -t ~/.claude/plans/*.md 2>/dev/null | head -1
+```
+If a plan file is found there, copy it:
+```bash
+cp "$(ls -t ~/.claude/plans/*.md | head -1)" .claude/PLAN.md
+```
+Then proceed. If no plan file exists anywhere:
 ```
 impl: BLOCKED — no plan found.
-Enter plan mode, agree on an approach, and write .claude/PLAN.md before running /impl.
+Enter plan mode, agree on an approach, then run /impl.
 ```
 Stop.
 
