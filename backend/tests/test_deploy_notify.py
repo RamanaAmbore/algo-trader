@@ -91,10 +91,10 @@ class TestCapGating:
     """notify_on_deploy capability gate."""
 
     def test_fires_when_cap_enabled_on_dev(self):
-        """dev + notify_on_deploy=True → Telegram called."""
+        """dev branch always suppressed regardless of cap — dev deploys don't notify."""
         cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
         mock_post = _run_main(cfg, branch="dev")
-        mock_post.assert_called_once()
+        mock_post.assert_not_called()
 
     def test_skipped_when_cap_disabled_on_dev(self):
         """dev + notify_on_deploy=False → Telegram NOT called."""
@@ -111,10 +111,10 @@ class TestCapGating:
         assert "api.telegram.org" in url
 
     def test_fail_status_fires_even_when_cap_disabled(self):
-        """fail status always fires so operators know when a deploy breaks."""
+        """dev branch failure is also suppressed — use ntfy for failure awareness."""
         cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": False}}
         mock_post = _run_main(cfg, branch="dev", status="fail")
-        mock_post.assert_called_once()
+        mock_post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -125,23 +125,23 @@ class TestPayload:
     """Telegram message content."""
 
     def test_branch_tag_in_dev_message(self):
-        """Dev deploy message includes [branch-name] tag."""
-        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
-        mock_post = _run_main(cfg, branch="dev")
+        """Main branch deploy message has no [main] tag (it's always main)."""
+        cfg = {"deploy_branch": "main"}
+        mock_post = _run_main(cfg, branch="main")
         text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
-        assert "[dev]" in text, f"Expected [dev] in Telegram body: {text!r}"
+        assert "[main]" not in text, f"Expected no [main] tag in Telegram body: {text!r}"
 
     def test_commit_hash_in_message(self):
-        """Commit hash appears in Telegram body."""
-        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
-        mock_post = _run_main(cfg, branch="dev", commit="deadbeef")
+        """Commit hash appears in Telegram body (prod branch)."""
+        cfg = {"deploy_branch": "main"}
+        mock_post = _run_main(cfg, branch="main", commit="deadbeef")
         text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
         assert "deadbeef" in text, f"Expected commit hash in Telegram body: {text!r}"
 
     def test_fe_only_suffix_for_fe_deploy(self):
-        """FE-only deploy appends '· FE-only' suffix in the OK message."""
-        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
-        mock_post = _run_main(cfg, branch="dev", deploy_type="fe-only")
+        """FE-only deploy appends '· FE-only' suffix in the OK message (prod)."""
+        cfg = {"deploy_branch": "main"}
+        mock_post = _run_main(cfg, branch="main", deploy_type="fe-only")
         text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
         assert "FE-only" in text, f"Expected FE-only label: {text!r}"
 

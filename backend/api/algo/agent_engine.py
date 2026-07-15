@@ -832,42 +832,6 @@ _LOSS_AGENTS = [
          scope="total",
          ),
 
-    # ── Holdings: per-account guardrail (high tier) ─────────────────────
-    dict(slug="loss-holdings-acct",
-         long_name="when:holdings.any_acct.day<=acct-thresholds   alert:high/tg+email+log   do:notify-only",
-         tier="high",
-         topic="holdings_loss",
-         name="Holdings per-account loss guardrail",
-         description=(
-             "Fires when ANY account's holdings trip per-account loss "
-             "thresholds: -3% day OR -₹2k/min OR -0.15 %/min."
-         ),
-         conditions={"any": [
-             {"metric": "day_pct",      "scope": "holdings.any_acct", "op": "<=", "value": -3.0},
-             {"metric": "day_rate_abs", "scope": "holdings.any_acct", "op": "<=", "value": -2000},
-             {"metric": "day_rate_pct", "scope": "holdings.any_acct", "op": "<=", "value": -0.15},
-         ]},
-         scope="total",
-         ),
-
-    # ── Holdings: total guardrail (critical tier) ───────────────────────
-    dict(slug="loss-holdings-total",
-         long_name="when:holdings.total.day<=total-thresholds   alert:critical/tg+email+log   do:notify-only",
-         tier="critical",
-         topic="holdings_loss",
-         name="Holdings total loss guardrail",
-         description=(
-             "Fires when book-wide holdings trip total loss thresholds: "
-             "-5% day OR -₹4k/min OR -0.15 %/min."
-         ),
-         conditions={"any": [
-             {"metric": "day_pct",      "scope": "holdings.total", "op": "<=", "value": -5.0},
-             {"metric": "day_rate_abs", "scope": "holdings.total", "op": "<=", "value": -4000},
-             {"metric": "day_rate_pct", "scope": "holdings.total", "op": "<=", "value": -0.15},
-         ]},
-         scope="total",
-         ),
-
     # ── Funds: operational negatives (one agent — both are critical) ────
     dict(slug="loss-funds-negative",
          long_name="when:funds.any_acct.cash<0 OR margin<0   alert:critical/tg+email+log   do:notify-only",
@@ -923,6 +887,7 @@ _LOSS_AGENT_DEFAULTS = dict(
         {"channel": "telegram", "enabled": True},
         {"channel": "email",    "enabled": True},
         {"channel": "log",      "enabled": True},
+        {"channel": "ntfy",     "enabled": True},
     ],
     actions=[],                 # notify-only. Attach actions via admin UI later.
     schedule="market_hours",

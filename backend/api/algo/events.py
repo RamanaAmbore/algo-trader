@@ -155,6 +155,9 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
                     "sim_mode":  sim_mode,
                     "branch":    branch,
                 })
+            elif channel == "ntfy" and is_enabled("ntfy"):
+                from backend.shared.helpers.alert_utils import send_ntfy_alert
+                send_ntfy_alert(title=agent.name, message=telegram_body)
             elif channel == "log":
                 # Log lines use [SIM] for brevity; user-facing Telegram /
                 # email keep the longer "SIMULATOR " prefix above.
