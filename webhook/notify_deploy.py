@@ -141,16 +141,17 @@ def main():
                 print("notify_deploy: Telegram sent")
                 # ntfy — prod only, default priority (informational deploy ping)
                 ntfy_topic = sec.get("ntfy_topic")
-                if ntfy_topic and not is_non_main:
+                if ntfy_topic:
                     ntfy_url = sec.get("ntfy_url", "https://ntfy.sh")
                     try:
-                        import httpx
-                        httpx.post(
+                        import urllib.request as _urlreq
+                        req = _urlreq.Request(
                             f"{ntfy_url.rstrip('/')}/{ntfy_topic}",
-                            content=detail_line.encode(),
-                            headers={"Title": event_label, "Tags": "rocket"},
-                            timeout=5,
+                            data=detail_line.encode(),
+                            headers={"Title": event_label, "Tags": "rocket", "Content-Type": "text/plain"},
+                            method="POST",
                         )
+                        _urlreq.urlopen(req, timeout=5)
                         print("notify_deploy: ntfy sent")
                     except Exception as e:
                         errors.append(f"ntfy: {e}")

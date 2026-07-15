@@ -80,10 +80,13 @@
         <span class={'dpb-total ' + (_total > 0 ? 'dpb-pos' : _total < 0 ? 'dpb-neg' : 'dpb-flat')}>
           {fmtMoney(_total)}
         </span>
-        <button class="dpb-close" type="button" onclick={onClose} aria-label="Close">✕</button>
+        <button class="dpb-close" type="button" onclick={onClose} aria-label="Close" autofocus>✕</button>
       </div>
 
       <div class="dpb-scroll">
+        {#if !positions?.length}
+          <p style="text-align:center;color:rgba(200,216,240,0.5);padding:1.5rem 0;font-size:0.8rem;">No positions</p>
+        {:else}
         <table class="dpb-table">
           <thead>
             <tr>
@@ -160,6 +163,7 @@
             {/each}
           </tbody>
         </table>
+        {/if}
       </div>
 
     </div>

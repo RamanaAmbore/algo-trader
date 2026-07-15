@@ -27,6 +27,7 @@
   import {
     fetchBrokerAccounts, createBrokerAccount, updateBrokerAccount,
     deleteBrokerAccount, testBrokerAccount, restoreBrokerPriority,
+    fetchBrokerConnectionEvents,
   } from '$lib/api';
   import StaleBanner    from '$lib/StaleBanner.svelte';
   import Select         from '$lib/Select.svelte';
@@ -481,7 +482,82 @@
     }
   }
 
-  // Canonical $effect-gated auth. manage_brokers admits designated + admin.
+  // ── Connection Log ─────────────────────────────────────────────────
+  /** @type {Array<{id:number,account:string,broker_id:string,event_type:string,detail:string|null,event_ts:string}>} */
+  let connEvents = $state([]);
+  let connLoading = $state(false);
+  let connError   = $state('');
+  let _loadingConnEvents = $state(false);
+
+  // Filter state
+  let connFilterAccount   = $state('');
+  let connFilterEventType = $state('');
+
+  // Default "since" = 7 days ago as YYYY-MM-DD
+  function _sevenDaysAgo() {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return d.toISOString().slice(0, 10);
+  }
+  let connFilterSince = $state(_sevenDaysAgo());
+
+  const CONN_EVENT_TYPES = [
+    { value: '',                    label: 'All events' },
+    { value: 'login_ok',            label: 'login_ok' },
+    { value: 'auth_fail',           label: 'auth_fail' },
+    { value: 'login_fail',          label: 'login_fail' },
+    { value: 'rotation_detected',   label: 'rotation_detected' },
+    { value: 'circuit_open',        label: 'circuit_open' },
+    { value: 'circuit_close',       label: 'circuit_close' },
+    { value: 'rate_limited',        label: 'rate_limited' },
+    { value: 'token_expiry',        label: 'token_expiry' },
+    { value: 'fetch_ok_recovery',   label: 'fetch_ok_recovery' },
+    { value: 'token_ok',            label: 'token_ok' },
+  ];
+
+  /** Map event_type to a CSS class suffix for coloring the Event cell. */
+  function _connEventCls(/** @type {string} */ evType) {
+    if (['login_ok', 'token_ok', 'fetch_ok_recovery', 'circuit_close'].includes(evType)) return 'conn-ev-green';
+    if (['login_fail', 'auth_fail', 'circuit_open', 'rotation_detected'].includes(evType)) return 'conn-ev-red';
+    if (['rate_limited', 'token_expiry'].includes(evType)) return 'conn-ev-amber';
+    return 'conn-ev-muted';
+  }
+
+  /** Format ISO timestamp to HH:MM:SS IST. */
+  function _fmtConnTime(/** @type {string} */ iso) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      }) + ' IST';
+    } catch (_) { return iso; }
+  }
+
+  async function loadConnEvents() {
+    if (_loadingConnEvents) return;
+    _loadingConnEvents = true;
+    connLoading = true;
+    connError = '';
+    try {
+      const data = await fetchBrokerConnectionEvents({
+        account:    connFilterAccount   || undefined,
+        event_type: connFilterEventType || undefined,
+        since:      connFilterSince     || undefined,
+        limit:      200,
+      });
+      connEvents = data?.events ?? (Array.isArray(data) ? data : []);
+    } catch (e) {
+      connError = String(e?.message ?? e ?? 'Failed to load connection events');
+    } finally {
+      connLoading = false;
+      _loadingConnEvents = false;
+    }
+  }
+
+  let _connRefreshTeardown = /** @type {(() => void) | undefined} */ (undefined);
+
+  // ── Canonical $effect-gated auth. manage_brokers admits designated + admin.
   // Bridge legacy stores into Svelte-5 $state so $derived doesn't
   // stale-cache the initial [] / 'partner' boot values (feedback note:
   // "$derived reading $store.x can stale-cache; bridge via $effect + $state").
@@ -495,12 +571,14 @@
     if (_canView && !_loadedOnce) {
       _loadedOnce = true;
       load();
+      loadConnEvents();
       // Throttle to 60 s on hidden — broker LOADED/PENDING status is
       // critical for operator awareness; keep a slow heartbeat alive.
       refreshTeardown = visibleInterval(load, 15000, 'throttle:60000');
+      _connRefreshTeardown = visibleInterval(loadConnEvents, 30000);
     }
   });
-  onDestroy(() => { refreshTeardown?.(); });
+  onDestroy(() => { refreshTeardown?.(); _connRefreshTeardown?.(); });
 </script>
 
 <ConfirmModal bind:this={_confirmRef} />
@@ -800,6 +878,84 @@
   </div>
 {/if}
 
+<!-- Connection Log -->
+<div class="algo-card mb-3">
+  <div class="brokers-list-header">
+    <h2 class="brokers-h">Connection Log</h2>
+    <button type="button" class="btn-secondary text-[0.55rem] py-0.5 px-2"
+            disabled={connLoading}
+            onclick={loadConnEvents}>
+      {connLoading ? '…' : 'Refresh'}
+    </button>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="conn-filter-bar">
+    <div class="conn-filter-field">
+      <label class="field-label" for="conn-acct">Account</label>
+      <select id="conn-acct" class="field-input conn-select"
+              bind:value={connFilterAccount}
+              onchange={loadConnEvents}>
+        <option value="">All accounts</option>
+        {#each accounts as a}
+          <option value={a.account}>{a.account}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="conn-filter-field">
+      <label class="field-label" for="conn-evtype">Event type</label>
+      <select id="conn-evtype" class="field-input conn-select"
+              bind:value={connFilterEventType}
+              onchange={loadConnEvents}>
+        {#each CONN_EVENT_TYPES as et}
+          <option value={et.value}>{et.label}</option>
+        {/each}
+      </select>
+    </div>
+    <div class="conn-filter-field">
+      <label class="field-label" for="conn-since">Since</label>
+      <input id="conn-since" type="date" class="field-input conn-date"
+             bind:value={connFilterSince}
+             onchange={loadConnEvents} />
+    </div>
+  </div>
+
+  {#if connError}
+    <div class="text-[0.6rem] text-[var(--c-short)] mb-2">{connError}</div>
+  {/if}
+
+  <div class="brokers-scroll algo-grid-chrome">
+    {#if connLoading && connEvents.length === 0}
+      <div class="conn-empty">Loading…</div>
+    {:else if !connLoading && connEvents.length === 0}
+      <div class="conn-empty">No events found for the selected filters.</div>
+    {:else}
+      <table class="conn-table">
+        <thead>
+          <tr>
+            <th>Time (IST)</th>
+            <th>Account</th>
+            <th>Broker</th>
+            <th>Event</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each connEvents as ev (ev.id ?? ev.event_ts + ev.account + ev.event_type)}
+            <tr>
+              <td class="conn-td-time">{_fmtConnTime(ev.event_ts)}</td>
+              <td class="font-mono">{ev.account}</td>
+              <td>{ev.broker_id || '—'}</td>
+              <td class="font-mono {_connEventCls(ev.event_type)}">{ev.event_type}</td>
+              <td class="conn-td-detail" title={ev.detail ?? ''}>{ev.detail || '—'}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </div>
+</div>
+
 {/if}
 
 <style>
@@ -1082,5 +1238,93 @@
     display: flex;
     gap: 0.4rem;
     margin-top: 0.6rem;
+  }
+
+  /* ── Connection Log ─────────────────────────────────────────────── */
+  .conn-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.6rem;
+    margin-bottom: 0.5rem;
+  }
+  .conn-filter-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+  }
+  .conn-select,
+  .conn-date {
+    font-family: monospace;
+    font-size: var(--fs-sm);
+    padding: 0.15rem 0.35rem;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 3px;
+    color: var(--algo-slate);
+    cursor: pointer;
+    outline: none;
+    height: 1.6rem;
+  }
+  .conn-select:focus,
+  .conn-date:focus { border-color: rgba(251, 191, 36, 0.45); }
+
+  .conn-table {
+    width: 100%;
+    min-width: 600px;
+    border-collapse: collapse;
+    font-family: monospace;
+    font-size: var(--fs-sm);
+    table-layout: auto;
+  }
+  .conn-table th {
+    text-align: left;
+    color: var(--algo-muted);
+    font-weight: 700;
+    padding: 0.2rem 0.4rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: var(--fs-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .conn-table td {
+    padding: 0.25rem 0.4rem;
+    color: var(--algo-slate);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    vertical-align: top;
+  }
+  .conn-table tr:nth-child(odd) td { background: rgba(13, 22, 42, 0.20); }
+
+  .conn-td-time {
+    white-space: nowrap;
+    color: var(--text-lo);
+    font-size: var(--fs-xs);
+  }
+  .conn-td-detail {
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--algo-muted);
+    font-size: var(--fs-xs);
+  }
+
+  /* Event type color coding */
+  .conn-ev-green { color: var(--c-long); }
+  .conn-ev-red   { color: var(--c-short); }
+  .conn-ev-amber { color: var(--c-action); }
+  .conn-ev-muted { color: var(--algo-muted); }
+
+  .conn-empty {
+    padding: 1rem;
+    text-align: center;
+    font-size: var(--fs-sm);
+    color: var(--algo-muted);
+    font-family: monospace;
+  }
+
+  @media (max-width: 600px) {
+    .conn-filter-bar { flex-direction: column; }
+    .conn-select, .conn-date { width: 100%; }
   }
 </style>
