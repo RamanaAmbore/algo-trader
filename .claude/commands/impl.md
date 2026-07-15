@@ -15,9 +15,9 @@ Check `.claude/PLAN.md` exists. If missing, auto-discover from the Claude plans 
 ```bash
 ls -t ~/.claude/plans/*.md 2>/dev/null | head -1
 ```
-If a plan file is found there, copy it:
+If a plan file is found there, copy it **and delete the source** so it cannot be re-selected on a future run:
 ```bash
-cp "$(ls -t ~/.claude/plans/*.md | head -1)" .claude/PLAN.md
+_src=$(ls -t ~/.claude/plans/*.md | head -1) && cp "$_src" .claude/PLAN.md && rm "$_src"
 ```
 Then proceed. If no plan file exists anywhere:
 ```
