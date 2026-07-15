@@ -73,13 +73,12 @@ async def test_enqueue_100_items_all_committed(sqlite_factory):
     factory, Model = sqlite_factory
     from backend.api.persistence.event_queue import EventQueue
 
-    q = EventQueue(Model, name="t", flush_interval_s=0.05, max_queue=200)
-    with _patch_session(factory):
-        await q.start()
-        for i in range(100):
-            await q.enqueue(kind="placed", message=f"msg-{i}")
-        await asyncio.sleep(0.15)   # two flush cycles
-        await q.stop()
+    q = EventQueue(Model, name="t", flush_interval_s=0.05, max_queue=200, session_factory=factory)
+    await q.start()
+    for i in range(100):
+        await q.enqueue(kind="placed", message=f"msg-{i}")
+    await asyncio.sleep(0.15)   # two flush cycles
+    await q.stop()
 
     async with factory() as s:
         rows = (await s.execute(select(Model))).scalars().all()
@@ -94,13 +93,12 @@ async def test_batch_size_drives_flush_count(sqlite_factory):
     from backend.api.persistence.event_queue import EventQueue
 
     q = EventQueue(Model, name="t", batch_size=500, flush_interval_s=0.05,
-                   max_queue=2000)
-    with _patch_session(factory):
-        await q.start()
-        for i in range(1500):
-            await q.enqueue(kind="chase_modify", message=f"m-{i}")
-        await asyncio.sleep(0.40)   # enough for ≥3 cycles
-        await q.stop()
+                   max_queue=2000, session_factory=factory)
+    await q.start()
+    for i in range(1500):
+        await q.enqueue(kind="chase_modify", message=f"m-{i}")
+    await asyncio.sleep(0.40)   # enough for ≥3 cycles
+    await q.stop()
 
     async with factory() as s:
         count = len((await s.execute(select(Model))).scalars().all())
@@ -115,12 +113,11 @@ async def test_graceful_stop_flushes_remaining(sqlite_factory):
     from backend.api.persistence.event_queue import EventQueue
 
     q = EventQueue(Model, name="t", flush_interval_s=60.0,   # won't fire on its own
-                   max_queue=200)
-    with _patch_session(factory):
-        await q.start()
-        for i in range(10):
-            await q.enqueue(kind="fill", message=f"fill-{i}")
-        await q.stop()   # must flush the 10 items synchronously
+                   max_queue=200, session_factory=factory)
+    await q.start()
+    for i in range(10):
+        await q.enqueue(kind="fill", message=f"fill-{i}")
+    await q.stop()   # must flush the 10 items synchronously
 
     async with factory() as s:
         rows = (await s.execute(select(Model))).scalars().all()
@@ -144,17 +141,16 @@ async def test_stop_drains_multiple_batches(sqlite_factory):
 
     q = EventQueue(Model, name="t", batch_size=BATCH,
                    flush_interval_s=60.0,   # background task won't fire
-                   max_queue=200)
-    with _patch_session(factory):
-        await q.start()
-        for i in range(TOTAL):
-            await q.enqueue(kind="placed", message=f"m-{i}")
-        # Confirm nothing has been flushed yet (interval=60 s)
-        async with factory() as s:
-            pre_count = len((await s.execute(select(Model))).scalars().all())
-        assert pre_count == 0, "nothing should flush before stop()"
+                   max_queue=200, session_factory=factory)
+    await q.start()
+    for i in range(TOTAL):
+        await q.enqueue(kind="placed", message=f"m-{i}")
+    # Confirm nothing has been flushed yet (interval=60 s)
+    async with factory() as s:
+        pre_count = len((await s.execute(select(Model))).scalars().all())
+    assert pre_count == 0, "nothing should flush before stop()"
 
-        await q.stop()
+    await q.stop()
 
     async with factory() as s:
         rows = (await s.execute(select(Model))).scalars().all()
@@ -173,14 +169,13 @@ async def test_enqueue_nowait_commits_items(sqlite_factory):
     factory, Model = sqlite_factory
     from backend.api.persistence.event_queue import EventQueue
 
-    q = EventQueue(Model, name="t", flush_interval_s=60.0, max_queue=50)
+    q = EventQueue(Model, name="t", flush_interval_s=60.0, max_queue=50, session_factory=factory)
     # enqueue_nowait is a plain sync call — no await needed
     for i in range(5):
         q.enqueue_nowait(kind="placed", message=f"sync-{i}")
     assert len(q._queue) == 5
 
-    with _patch_session(factory):
-        await q.stop()   # drains the queue
+    await q.stop()   # drains the queue
 
     async with factory() as s:
         rows = (await s.execute(select(Model))).scalars().all()
@@ -215,14 +210,13 @@ async def test_queue_full_drop_increments_counter(sqlite_factory):
     from backend.api.persistence.event_queue import EventQueue
 
     q = EventQueue(Model, name="t", max_queue=5, on_full="drop",
-                   flush_interval_s=60.0)
-    with _patch_session(factory):
-        # Fill the queue
-        for i in range(5):
-            await q.enqueue(kind="placed", message="ok")
-        # These three overflow
-        for i in range(3):
-            await q.enqueue(kind="placed", message="overflow")
+                   flush_interval_s=60.0, session_factory=factory)
+    # Fill the queue
+    for i in range(5):
+        await q.enqueue(kind="placed", message="ok")
+    # These three overflow
+    for i in range(3):
+        await q.enqueue(kind="placed", message="overflow")
 
     assert q._dropped == 3
     assert len(q._queue) == 5   # nothing extra got in
@@ -236,12 +230,11 @@ async def test_queue_full_sync_inserts_overflow_row(sqlite_factory):
     from backend.api.persistence.event_queue import EventQueue
 
     q = EventQueue(Model, name="t", max_queue=2, on_full="sync",
-                   flush_interval_s=60.0)
-    with _patch_session(factory):
-        await q.enqueue(kind="placed", message="a")
-        await q.enqueue(kind="placed", message="b")
-        # Third item overflows → sync insert
-        await q.enqueue(kind="placed", message="overflow-sync")
+                   flush_interval_s=60.0, session_factory=factory)
+    await q.enqueue(kind="placed", message="a")
+    await q.enqueue(kind="placed", message="b")
+    # Third item overflows → sync insert
+    await q.enqueue(kind="placed", message="overflow-sync")
 
     # Sync path inserted the overflow row directly; queue still has 2
     assert q._dropped == 1
@@ -292,17 +285,16 @@ async def test_concurrent_producers_no_race(sqlite_factory):
     from backend.api.persistence.event_queue import EventQueue
 
     q = EventQueue(Model, name="t", flush_interval_s=0.05,
-                   batch_size=200, max_queue=500)
+                   batch_size=200, max_queue=500, session_factory=factory)
 
     async def _produce(n: int) -> None:
         for i in range(10):
             await q.enqueue(kind="error", message=f"p{n}-{i}")
 
-    with _patch_session(factory):
-        await q.start()
-        await asyncio.gather(*[_produce(n) for n in range(10)])
-        await asyncio.sleep(0.20)
-        await q.stop()
+    await q.start()
+    await asyncio.gather(*[_produce(n) for n in range(10)])
+    await asyncio.sleep(0.20)
+    await q.stop()
 
     async with factory() as s:
         rows = (await s.execute(select(Model))).scalars().all()

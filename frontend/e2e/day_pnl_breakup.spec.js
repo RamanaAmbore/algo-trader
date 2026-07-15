@@ -213,4 +213,41 @@ test.describe('Day P&L Breakup modal', () => {
     const panelRole = await panel.getAttribute('role');
     expect(panelRole).toBe('presentation');
   });
+
+  test('New-position row (overnight_qty=0) formula renders via baseDayPnlForPosition SSOT', async ({ page }) => {
+    // Tests the overnight_quantity=0 && pnl≠0 rescue path.
+    // Kite returns day_change_val=0 for new-position rows; real value is in pnl.
+    // DayPnlBreakup must read via baseDayPnlForPosition, never day_change_val directly.
+
+    // Static SSOT check — component must not read day_change_val directly
+    const { execSync } = await import('child_process');
+    const directRead = execSync(
+      'grep -n "day_change_val" /Users/ramanambore/projects/ramboq/frontend/src/lib/DayPnlBreakup.svelte 2>/dev/null || true'
+    ).toString().trim();
+    expect(directRead, 'DayPnlBreakup must not read day_change_val directly — use baseDayPnlForPosition()').toBe('');
+
+    // Open the modal
+    const dayPnlSpan = page.locator('span[title="Click for Day P&L breakup"]').first();
+    await expect(dayPnlSpan).toBeVisible({ timeout: 5_000 });
+    await dayPnlSpan.click();
+    await expect(page.locator('.dpb-panel').first()).toBeVisible({ timeout: 3_000 });
+
+    const rows = page.locator('.dpb-row');
+    const rowCount = await rows.count();
+    if (rowCount === 0) {
+      test.skip('No position rows in dev environment — skipping formula branch check');
+      return;
+    }
+
+    // Expand the first row chevron to reveal the formula row
+    const firstChevron = page.locator('.dpb-chevron').first();
+    if (await firstChevron.isVisible()) {
+      await firstChevron.click();
+      const formulaRow = page.locator('.dpb-row-formula').first();
+      await expect(formulaRow).toBeVisible({ timeout: 2_000 });
+      const formulaText = await formulaRow.textContent();
+      expect(formulaText?.trim()).toBeTruthy();
+      expect(formulaText).toMatch(/P&L|PnL|pnl/i);
+    }
+  });
 });

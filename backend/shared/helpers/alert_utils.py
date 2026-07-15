@@ -42,9 +42,6 @@ import requests
 
 from backend.shared.helpers.mail_utils import send_email
 from backend.shared.helpers.ramboq_logger import get_logger
-import urllib3.util.connection
-urllib3.util.connection.HAS_IPV6 = False  # Server IPv6 outbound hangs
-
 from backend.shared.helpers.utils import secrets, config, is_enabled
 
 if TYPE_CHECKING:
@@ -936,8 +933,8 @@ def send_ntfy_alert(title: str, message: str) -> None:
                 method="POST",
             )
             _urlreq.urlopen(req, timeout=5)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("ntfy alert failed: %s", e)
 
 
 _KIND_LABEL = {

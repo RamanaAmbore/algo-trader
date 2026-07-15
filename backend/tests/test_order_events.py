@@ -127,18 +127,22 @@ async def test_write_event_inserts_rows(sqlite_session_factory, sample_order_id)
     """
     from backend.api.algo.order_events import order_event_queue, write_event
     from backend.api.models import AlgoOrderEvent
+    from backend.api.persistence.event_queue import async_session
     from sqlalchemy import select
 
     # Reset queue state between tests
     order_event_queue._queue.clear()
 
-    with patch("backend.api.persistence.event_queue.async_session", sqlite_session_factory):
+    try:
+        order_event_queue._session_factory = sqlite_session_factory
         await order_event_queue.start()
         await write_event(sample_order_id, "placed",       "order placed @₹22000")
         await write_event(sample_order_id, "chase_modify", "chase #1 limit=₹21990")
         await write_event(sample_order_id, "fill",         "FILLED @₹21985.50",
                           payload={"fill_price": 21985.50, "slippage": -14.50})
         await order_event_queue.stop()
+    finally:
+        order_event_queue._session_factory = async_session
 
     async with sqlite_session_factory() as s:
         rows = (await s.execute(
@@ -178,16 +182,20 @@ async def test_get_order_events_returns_rows_in_order(
 ):
     """GET /api/orders/{id}/events returns 3 rows in ts-ASC order."""
     from backend.api.algo.order_events import order_event_queue, write_event
+    from backend.api.persistence.event_queue import async_session
 
     order_event_queue._queue.clear()
 
-    with patch("backend.api.persistence.event_queue.async_session", sqlite_session_factory):
+    try:
+        order_event_queue._session_factory = sqlite_session_factory
         await order_event_queue.start()
         await write_event(sample_order_id, "placed",       "placed")
         await write_event(sample_order_id, "chase_modify", "chase #1")
         await write_event(sample_order_id, "fill",         "filled",
                           payload={"account": "ZG0790", "fill_price": 100.0})
         await order_event_queue.stop()
+    finally:
+        order_event_queue._session_factory = async_session
 
     # Patch both the route's local import and the auth helper.
     with patch("backend.api.database.async_session", sqlite_session_factory), \
@@ -210,16 +218,20 @@ async def test_get_order_events_demo_masks_account(
 ):
     """Demo callers (is_admin_request=False) get ZG0790 → ZG#### in payload_json."""
     from backend.api.algo.order_events import order_event_queue, write_event
+    from backend.api.persistence.event_queue import async_session
 
     order_event_queue._queue.clear()
 
-    with patch("backend.api.persistence.event_queue.async_session", sqlite_session_factory):
+    try:
+        order_event_queue._session_factory = sqlite_session_factory
         await order_event_queue.start()
         await write_event(
             sample_order_id, "placed", "placed",
             payload={"account": "ZG0790", "price": 22000.0},
         )
         await order_event_queue.stop()
+    finally:
+        order_event_queue._session_factory = async_session
 
     with patch("backend.api.database.async_session", sqlite_session_factory), \
          patch("backend.api.routes.orders.is_admin_request", return_value=False):

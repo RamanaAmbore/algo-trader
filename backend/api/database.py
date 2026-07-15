@@ -894,6 +894,14 @@ async def _ensure_shared_broker_schema() -> None:
         ):
             await conn.execute(text(stmt))
 
+    # broker_connection_events lives in the shared DB (ramboq) — same as broker_accounts
+    try:
+        from backend.api.persistence.migrations import create_broker_connection_events_table
+        async with _shared_engine.begin() as _bce_conn:
+            await create_broker_connection_events_table(_bce_conn)
+    except Exception as _bce_err:
+        logger.warning("shared schema: broker_connection_events migration skipped — %s", _bce_err)
+
     await _seed_circuit_breaker_for_dh6847()
     await _seed_display_order()
     logger.info("Shared broker schema verified on ramboq")

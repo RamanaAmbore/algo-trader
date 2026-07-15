@@ -172,7 +172,9 @@ async def _dispatch_channel(
         })
     elif channel == "ntfy" and is_enabled("ntfy"):
         from backend.shared.helpers.alert_utils import send_ntfy_alert
-        send_ntfy_alert(title=agent.name, message=telegram_body)
+        import asyncio
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=telegram_body))
     elif channel == "log":
         log_sim_tag = "[SIM] " if sim_mode else ""
         logger.warning(f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}")

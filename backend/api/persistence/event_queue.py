@@ -80,6 +80,7 @@ class EventQueue:
         flush_interval_s: float = 1.0,
         max_queue: int = 10_000,
         on_full: Literal["drop", "sync"] = "drop",
+        session_factory=None,
     ) -> None:
         self.table_model    = table_model
         self.name           = name or table_model.__tablename__
@@ -87,6 +88,7 @@ class EventQueue:
         self.flush_interval = flush_interval_s
         self.max_queue      = max_queue
         self.on_full        = on_full
+        self._session_factory = session_factory or async_session
 
         self._queue: deque[dict] = deque()
         self._task:  asyncio.Task | None = None
@@ -154,9 +156,17 @@ class EventQueue:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        # Drain all remaining items — may take >1 flush if queue > batch_size
-        while self._queue:
+        # Drain all remaining items — bounded to 3 attempts to avoid hanging on DB down
+        _drain_attempts = 0
+        while self._queue and _drain_attempts < 3:
             await self._flush()
+            if self._queue:
+                _drain_attempts += 1
+        if self._queue:
+            logger.warning(
+                f"event_queue[{self.name}]: gave up draining after 3 attempts "
+                f"({len(self._queue)} items lost)"
+            )
         logger.info(f"event_queue[{self.name}]: stopped, flushed remaining")
 
     # ── Health surface ────────────────────────────────────────────────────────
@@ -195,7 +205,7 @@ class EventQueue:
             return
 
         try:
-            async with async_session() as session:
+            async with self._session_factory() as session:
                 await session.execute(insert(self.table_model), batch)
                 await session.commit()
             self._last_flush = time.time()
@@ -212,7 +222,7 @@ class EventQueue:
     async def _sync_insert(self, kwargs: dict) -> None:
         """Insert one row directly (queue-full sync fallback)."""
         try:
-            async with async_session() as session:
+            async with self._session_factory() as session:
                 session.add(self.table_model(**kwargs))
                 await session.commit()
         except Exception as exc:
