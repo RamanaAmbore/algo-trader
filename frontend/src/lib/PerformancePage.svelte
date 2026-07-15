@@ -525,6 +525,9 @@
       valueGetter: (p) => lotsForRow(p.data),
       valueFormatter: ({ value }) => fmtLots(value),
       headerTooltip: 'Qty in F&O lot units. 0 when the symbol is not an option underlying.' },
+    { field: 'inv_val', headerName: 'Invested', width: 88,
+      valueGetter: (p) => (p.data?.average_price ?? 0) * Math.abs(p.data?.quantity ?? 0),
+      valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     // Weight % = this row's cur_val / total cur_val across the visible
     // holdings filter. Computed in valueGetter so it tracks the AG Grid
     // row-filter live (per-account view stays meaningful).

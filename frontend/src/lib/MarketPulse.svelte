@@ -428,7 +428,7 @@
     // so the Show filter mirrors that split — operator can show one
     // direction or both. Both toggles roll up to the same upstream
     // `enableMovers` prop because the data source (loadMovers) is one.
-    { value: 'winners',   label: 'Winners'   },
+    { value: 'winners',   label: 'Gainers'   },
     { value: 'losers',    label: 'Losers'    },
   ];
   const _availableSourceValues = $derived(new Set([
@@ -3985,13 +3985,13 @@
               bind:isFullscreen={_fsWinners}
               bind:filter={_filterWinners}
               cardId="pulse-winners"
-              label="Winners"
+              label="Gainers"
               onRefresh={refreshAllNow}
               refreshLoading={_refreshing}
               onDownload={() => gridWin?.exportDataAsCsv({ fileName: 'winners.csv' })}
             >
               <svelte:fragment slot="left">
-                <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+                <span class="mp-bucket-label mp-bucket-label-winners">Gainers</span>
                 {#if _moversAsOf}
                   <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
                 {/if}
@@ -4760,6 +4760,11 @@
   :global(.mp-bucket-wrap .ag-theme-algo .ag-header-cell) {
     border-right: 0 !important;
     border-left: 0 !important;
+  }
+  /* Sparkline cell exception — restore right border as visual separator
+     between the 5d chart column and LTP. */
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-cell.spark-cell) {
+    border-right: 1px solid var(--algo-amber-border-soft) !important;
   }
   /* Header underline retired — `.ag-theme-algo .ag-header` (app.css)
      already applies `border-bottom: 1px solid var(--algo-amber-border-soft)`
