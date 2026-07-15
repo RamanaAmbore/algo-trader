@@ -32,6 +32,7 @@ cap_in_dev:
   genai:            False  # GenAI market update (Gemini)
   telegram:         False  # Telegram alert notifications
   mail:             False  # Email notifications (SMTP)
+  ntfy:             False  # ntfy.sh push notifications
   notify_on_deploy: False  # Dev branch alerts off per operator request.
   market_feed:      False  # Market news feed (Google News RSS)
   simulator:        True   # /api/simulator market simulator (dev default: on)

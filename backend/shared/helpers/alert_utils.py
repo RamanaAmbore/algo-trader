@@ -897,6 +897,42 @@ def send_order_failure_alert(
         logger.error(f"send_order_failure_alert internal error: {_top_e}")
 
 
+def send_ntfy_alert(title: str, message: str) -> None:
+    """Deliver via ntfy.sh (or self-hosted ntfy). Priority is ET clock-based:
+      22:00–07:00 ET → urgent  (operator night / Indian market hours)
+      07:00–22:00 ET → high    (operator day)
+    Configurable via ntfy_night_start / ntfy_night_end in secrets (24h hours ET).
+    """
+    import zoneinfo
+    from datetime import datetime
+
+    topic = secrets.get("ntfy_topic")
+    if not topic:
+        return
+
+    base_url = secrets.get("ntfy_url", "https://ntfy.sh")
+    night_start = int(secrets.get("ntfy_night_start", 22))
+    night_end   = int(secrets.get("ntfy_night_end",   7))
+
+    et_hour = datetime.now(zoneinfo.ZoneInfo("America/New_York")).hour
+    is_night = (et_hour >= night_start or et_hour < night_end) if night_start > night_end \
+               else (night_start <= et_hour < night_end)
+    priority = "urgent" if is_night else "high"
+
+    try:
+        import httpx
+        send_count = 3 if priority == "urgent" else 1
+        for _ in range(send_count):
+            httpx.post(
+                f"{base_url.rstrip('/')}/{topic}",
+                content=message.encode(),
+                headers={"Title": title, "Priority": priority, "Tags": "rotating_light"},
+                timeout=5,
+            )
+    except Exception:
+        pass
+
+
 _KIND_LABEL = {
     'static_pct':      'Static %',
     'static_abs':      'Static ₹',

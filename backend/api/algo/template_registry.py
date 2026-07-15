@@ -91,6 +91,16 @@ SYSTEM_AGENT_TEMPLATES: list[dict] = [
             {"channel": "telegram", "enabled": True},
         ],
     },
+    {
+        "kind": "notify",
+        "name": "notify-ntfy-critical",
+        "description": "Telegram + ntfy + log. For critical alerts that must wake the operator.",
+        "body": [
+            {"channel": "telegram", "enabled": True},
+            {"channel": "ntfy",     "enabled": True},
+            {"channel": "log",      "enabled": True},
+        ],
+    },
 
     # ── Condition fragments (Stage 2) ────────────────────────────────────
     # These mirror the building blocks the loss-* and expiry-* agents
