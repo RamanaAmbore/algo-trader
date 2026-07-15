@@ -59,11 +59,6 @@ async def sqlite_factory():
     await engine.dispose()
 
 
-# helper — patch async_session inside the event_queue module
-def _patch_session(factory):
-    return patch("backend.api.persistence.event_queue.async_session", factory)
-
-
 # ── SSOT: basic enqueue → flush ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -157,6 +152,30 @@ async def test_stop_drains_multiple_batches(sqlite_factory):
     assert len(rows) == TOTAL, (
         f"stop() must drain all {TOTAL} items across multiple batches; "
         f"only {len(rows)} committed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_drains_large_queue_db_healthy(sqlite_factory):
+    """Drain loop must not abort after 3 batches when DB is healthy (progress-tracking fix)."""
+    from sqlalchemy import select
+    factory, Model = sqlite_factory
+    from backend.api.persistence.event_queue import EventQueue
+
+    BATCH = 200
+    TOTAL = 700  # requires 4 flushes — previously lost last batch under the buggy counter
+    q = EventQueue(Model, name="t", batch_size=BATCH, flush_interval_s=60.0,
+                   max_queue=1000, session_factory=factory)
+    await q.start()
+    for i in range(TOTAL):
+        await q.enqueue(val=i, label=f"x{i}")
+    await q.stop()
+
+    async with factory() as session:
+        rows = (await session.execute(select(Model))).scalars().all()
+    assert len(rows) == TOTAL, (
+        f"drain must commit all {TOTAL} items across {TOTAL // BATCH + 1} batches; "
+        f"only {len(rows)} committed — counter likely increments on progress, not failure"
     )
 
 

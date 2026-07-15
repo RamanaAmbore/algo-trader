@@ -1297,6 +1297,7 @@ def _place_wing_leg(broker, plan: TemplatePlan) -> str:
             f"{plan.wing.exchange}/{plan.wing.tradingsymbol} "
             f"qty={raw_wing_q} lot_size={plan.parent_lot_size}: {_te}"
         ) from _te
+    # intent omitted intentionally — wing legs are new opens, 50-lot ceiling applies
     order_id = broker.place_order(
         tradingsymbol=plan.wing.tradingsymbol,
         exchange=plan.wing.exchange,

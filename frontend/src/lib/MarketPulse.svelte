@@ -5165,13 +5165,7 @@
     line-height: 1.4;
   }
 
-  /* B1 — LTP flash: keyframes + class rules promoted to app.css so every
-     page (PerformancePage, derivatives, etc.) gets the animation even when
-     MarketPulse is not mounted. The :global wrappers are kept here as
-     documentation anchors and to force Svelte to leave the selector names
-     untouched for ag-Grid's externally-applied class strings. */
-  :global(.ltp-flash-up)   { /* animation defined in app.css */ }
-  :global(.ltp-flash-down) { /* animation defined in app.css */ }
+  /* ltp-flash-up / ltp-flash-down keyframes defined in app.css */
 
   /* B2 — visually-hidden a11y helper */
   :global(.sr-only) {

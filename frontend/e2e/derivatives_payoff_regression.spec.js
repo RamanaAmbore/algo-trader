@@ -645,48 +645,54 @@ test.describe('Performance — DEFECT-1 qty=0 path never blanks strategy permane
   });
 });
 
-// ── Suite 5: DAY Δ label rename — stat overlay ────────────────────────────────
+// ── Suite 5: DAY P&L label rename — stat overlay ─────────────────────────────
 // Guards that the intraday P&L row in OptionsPayoff's stat overlay is labelled
-// "DAY Δ" and NOT the legacy bare "DAY". Also confirms the TDAY tooltip no longer
-// references the old label text.
+// "DAY P&L" and NOT the legacy bare "DAY". Also confirms the TDAY tooltip no
+// longer references the old label text.
 
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
-test.describe('DAY Δ label: stat overlay rename', () => {
+test.describe('DAY P&L label: stat overlay rename', () => {
   const readPayoffSrc = () =>
     readFileSync(
       resolve(process.cwd(), 'src/lib/OptionsPayoff.svelte'),
       'utf8',
     );
 
-  test('OptionsPayoff renders "DAY Δ" not bare "DAY" in the stat overlay', () => {
+  test('OptionsPayoff renders "DAY P&L" not bare "DAY" in the stat overlay', () => {
     const src = readPayoffSrc();
 
     // The renamed label must be present.
-    expect(src, 'Missing "DAY Δ" label in OptionsPayoff stat overlay').toContain(
-      '<span class="ps-k">DAY Δ</span>',
+    expect(src, 'Missing "DAY P&L" label in OptionsPayoff stat overlay').toContain(
+      '<span class="ps-k">DAY P&amp;L</span>',
     );
 
     // The old bare "DAY" span must not survive (grep for exact ps-k markup).
-    expect(src, 'Found legacy bare "DAY" ps-k span — should be "DAY Δ"').not.toContain(
+    expect(src, 'Found legacy bare "DAY" ps-k span — should be "DAY P&L"').not.toContain(
       '<span class="ps-k">DAY</span>',
     );
   });
 
-  test('TDAY tooltip references "DAY Δ" row, not legacy "DAY"', () => {
+  test('TDAY tooltip references "DAY P&L" row, not legacy "DAY"', () => {
     const src = readPayoffSrc();
 
-    // The TDAY row tooltip redirects the operator to "DAY Δ row".
+    // The TDAY row tooltip redirects the operator to "DAY P&L row".
     expect(
       src,
-      'TDAY tooltip must say "DAY Δ row" after rename',
-    ).toContain('use the DAY Δ row above for that');
+      'TDAY tooltip must say "DAY P&L row" after rename',
+    ).toContain('use the DAY P&L row above for that');
 
     // The old "DAY row" phrasing must not remain in the TDAY tooltip.
     expect(
       src,
-      'Found legacy "DAY row" in TDAY tooltip — must be "DAY Δ row"',
+      'Found legacy "DAY row" in TDAY tooltip — must be "DAY P&L row"',
     ).not.toContain('use the DAY row above for that');
+
+    // The old delta label must not remain anywhere in the TDAY tooltip.
+    expect(
+      src,
+      'Found legacy "DAY Δ row" in TDAY tooltip — must be "DAY P&L row"',
+    ).not.toContain('use the DAY Δ row above for that');
   });
 });
