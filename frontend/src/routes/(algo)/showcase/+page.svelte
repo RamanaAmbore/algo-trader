@@ -412,7 +412,7 @@
     display: grid;
     grid-template-columns: 58fr 42fr;
     gap: 1.25rem;
-    align-items: start;
+    align-items: stretch;
   }
   @media (max-width: 760px) {
     .show-hero-grid {
@@ -544,6 +544,7 @@
     gap: 0.7rem;
   }
   .show-cta-tour {
+    width: 100%;
     padding: 0.55rem 1.1rem;
     background: rgba(251, 191, 36, 0.20);
     border: 1px solid rgba(251, 191, 36, 0.65);
