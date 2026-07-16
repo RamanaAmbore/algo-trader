@@ -67,13 +67,13 @@ class TestEventQueueCustomSessionFactory:
         await queue.enqueue(
             account="ZG0001",
             broker_id="kite",
-            event_type="connected",
+            event_type="auth_fail",
             detail={"msg": "test"},
         )
         await queue.enqueue(
             account="ZG0001",
             broker_id="kite",
-            event_type="disconnected",
+            event_type="fetch_ok_recovery",
             detail={"msg": "test2"},
         )
 
@@ -210,99 +210,121 @@ class TestHlthResolveState:
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
-async def test_events_in_db():
-    """Insert test broker connection events into the test database."""
+async def sqlite_events_factory():
+    """In-memory SQLite for broker_connection_events table (test isolation)."""
+    from sqlalchemy import Column, Integer, String, DateTime, JSON
+    from sqlalchemy.orm import DeclarativeBase
+    from sqlalchemy.ext.asyncio import (
+        create_async_engine, async_sessionmaker, AsyncSession,
+    )
+
+    class _Base(DeclarativeBase):
+        pass
+
+    class _BrokerConnectionEvent(_Base):
+        __tablename__ = "broker_connection_events"
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        account = Column(String(32), nullable=False)
+        broker_id = Column(String(32), nullable=False)
+        event_type = Column(String(32), nullable=False)
+        event_ts = Column(DateTime, nullable=False,
+                          default=lambda: datetime.now(timezone.utc))
+        detail = Column(JSON)
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(_Base.metadata.create_all)
+
+    factory = async_sessionmaker(engine, class_=AsyncSession,
+                                 expire_on_commit=False)
+
+    yield factory, _BrokerConnectionEvent
+
+    async with engine.begin() as conn:
+        await conn.run_sync(_Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def test_events_in_db(sqlite_events_factory):
+    """Insert test broker connection events into the SQLite test database."""
+    factory, Model = sqlite_events_factory
     now_utc = datetime.now(timezone.utc)
     events_to_insert = [
         {
             "account": "ZG0001",
             "broker_id": "kite",
-            "event_type": "connected",
+            "event_type": "token_ok",
             "event_ts": now_utc - timedelta(minutes=30),
             "detail": {"status": "ok"},
         },
         {
             "account": "ZG0001",
             "broker_id": "kite",
-            "event_type": "disconnected",
+            "event_type": "auth_fail",
             "event_ts": now_utc - timedelta(minutes=20),
             "detail": {"reason": "timeout"},
         },
         {
             "account": "ZG0002",
             "broker_id": "dhan",
-            "event_type": "connected",
+            "event_type": "token_ok",
             "event_ts": now_utc - timedelta(minutes=10),
             "detail": {"status": "ok"},
         },
         {
             "account": "ZG0001",
             "broker_id": "kite",
-            "event_type": "heartbeat",
+            "event_type": "fetch_ok_recovery",
             "event_ts": now_utc - timedelta(minutes=5),
             "detail": {"sequence": 1},
         },
         {
             "account": "ZG0001",
             "broker_id": "kite",
-            "event_type": "reconnecting",
+            "event_type": "circuit_close",
             "event_ts": now_utc - timedelta(minutes=1),
             "detail": {"attempt": 1},
         },
     ]
 
-    async with shared_async_session() as session:
+    async with factory() as session:
         for event_data in events_to_insert:
-            evt = BrokerConnectionEvent(**event_data)
+            evt = Model(**event_data)
             session.add(evt)
         await session.commit()
 
-    yield
+    yield factory, Model
 
-    # Cleanup
-    async with shared_async_session() as session:
-        await session.execute(
-            sa_delete(BrokerConnectionEvent).where(
-                BrokerConnectionEvent.account.in_(["ZG0001", "ZG0002"])
-            )
-        )
-        await session.commit()
+    # Cleanup (SQLite in-memory DB auto-cleans)
 
 
-@pytest.mark.skip(reason="Integration test — requires live ramboq_dev PostgreSQL database")
 class TestBrokerConnectionEventsRoute:
-    """GET /api/admin/broker-connection-events route."""
+    """GET /api/admin/broker-connection-events route.
 
-    @pytest.mark.asyncio
-    async def test_get_events_all(self, async_client, test_events_in_db):
-        """GET /api/admin/broker-connection-events returns all events in DESC order."""
-        response = await async_client.get(
-            "/api/admin/broker-connection-events",
-            headers={"Authorization": "Bearer test_admin_token"},
-        )
-
-        # Note: The route is admin-only; conftest mocking may need to be configured
-        # for this to work. For now, we test the query logic in isolation below.
-        # The async_client is set up in conftest.py and patched auth is expected.
+    Tests focus on the query/filtering logic directly (not full route integration
+    since admin auth requires DB mocking beyond this scope).
+    """
 
     @pytest.mark.asyncio
     async def test_get_events_by_account_filter(self, test_events_in_db):
         """GET /api/admin/broker-connection-events filters by account param."""
+        factory, Model = test_events_in_db
         account_filter = "ZG0001"
         now_utc = datetime.now(timezone.utc)
         since_dt = now_utc - timedelta(days=7)
 
-        async with shared_async_session() as session:
-            stmt = select(BrokerConnectionEvent)
+        async with factory() as session:
+            stmt = select(Model)
             filters = [
-                BrokerConnectionEvent.event_ts >= since_dt,
-                BrokerConnectionEvent.account == account_filter,
+                Model.event_ts >= since_dt,
+                Model.account == account_filter,
             ]
             from sqlalchemy import and_
             stmt = (
                 stmt
                 .where(and_(*filters))
-                .order_by(BrokerConnectionEvent.event_ts.desc())
+                .order_by(Model.event_ts.desc())
                 .limit(200)
             )
             rows = (await session.execute(stmt)).scalars().all()
@@ -320,45 +342,47 @@ class TestBrokerConnectionEventsRoute:
     @pytest.mark.asyncio
     async def test_get_events_by_event_type_filter(self, test_events_in_db):
         """GET filters by event_type param."""
-        event_type_filter = "connected"
+        factory, Model = test_events_in_db
+        event_type_filter = "token_ok"
         now_utc = datetime.now(timezone.utc)
         since_dt = now_utc - timedelta(days=7)
 
-        async with shared_async_session() as session:
-            stmt = select(BrokerConnectionEvent)
+        async with factory() as session:
+            stmt = select(Model)
             filters = [
-                BrokerConnectionEvent.event_ts >= since_dt,
-                BrokerConnectionEvent.event_type == event_type_filter,
+                Model.event_ts >= since_dt,
+                Model.event_type == event_type_filter,
             ]
             from sqlalchemy import and_
             stmt = (
                 stmt
                 .where(and_(*filters))
-                .order_by(BrokerConnectionEvent.event_ts.desc())
+                .order_by(Model.event_ts.desc())
                 .limit(200)
             )
             rows = (await session.execute(stmt)).scalars().all()
 
-        # Should return only "connected" events
-        assert len(rows) == 2, f"Expected 2 'connected' events, got {len(rows)}"
-        assert all(row.event_type == "connected" for row in rows), \
-            "All returned rows should have event_type='connected'"
+        # Should return only "token_ok" events
+        assert len(rows) == 2, f"Expected 2 'token_ok' events, got {len(rows)}"
+        assert all(row.event_type == "token_ok" for row in rows), \
+            "All returned rows should have event_type='token_ok'"
 
     @pytest.mark.asyncio
     async def test_get_events_respects_limit(self, test_events_in_db):
         """GET respects limit parameter, capped at 1000."""
+        factory, Model = test_events_in_db
         limit = 2
         now_utc = datetime.now(timezone.utc)
         since_dt = now_utc - timedelta(days=7)
 
-        async with shared_async_session() as session:
-            stmt = select(BrokerConnectionEvent)
-            filters = [BrokerConnectionEvent.event_ts >= since_dt]
+        async with factory() as session:
+            stmt = select(Model)
+            filters = [Model.event_ts >= since_dt]
             from sqlalchemy import and_
             stmt = (
                 stmt
                 .where(and_(*filters))
-                .order_by(BrokerConnectionEvent.event_ts.desc())
+                .order_by(Model.event_ts.desc())
                 .limit(limit)
             )
             rows = (await session.execute(stmt)).scalars().all()
@@ -371,17 +395,18 @@ class TestBrokerConnectionEventsRoute:
     @pytest.mark.asyncio
     async def test_get_events_default_since_7_days(self, test_events_in_db):
         """When no since param, defaults to 7 days ago."""
+        factory, Model = test_events_in_db
         now_utc = datetime.now(timezone.utc)
         since_dt_default = now_utc - timedelta(days=7)
 
-        async with shared_async_session() as session:
-            stmt = select(BrokerConnectionEvent)
-            filters = [BrokerConnectionEvent.event_ts >= since_dt_default]
+        async with factory() as session:
+            stmt = select(Model)
+            filters = [Model.event_ts >= since_dt_default]
             from sqlalchemy import and_
             stmt = (
                 stmt
                 .where(and_(*filters))
-                .order_by(BrokerConnectionEvent.event_ts.desc())
+                .order_by(Model.event_ts.desc())
                 .limit(200)
             )
             rows = (await session.execute(stmt)).scalars().all()
@@ -394,51 +419,53 @@ class TestBrokerConnectionEventsRoute:
     @pytest.mark.asyncio
     async def test_get_events_combined_filters(self, test_events_in_db):
         """GET filters by account AND event_type together."""
+        factory, Model = test_events_in_db
         account_filter = "ZG0001"
-        event_type_filter = "connected"
+        event_type_filter = "token_ok"
         now_utc = datetime.now(timezone.utc)
         since_dt = now_utc - timedelta(days=7)
 
-        async with shared_async_session() as session:
-            stmt = select(BrokerConnectionEvent)
+        async with factory() as session:
+            stmt = select(Model)
             filters = [
-                BrokerConnectionEvent.event_ts >= since_dt,
-                BrokerConnectionEvent.account == account_filter,
-                BrokerConnectionEvent.event_type == event_type_filter,
+                Model.event_ts >= since_dt,
+                Model.account == account_filter,
+                Model.event_type == event_type_filter,
             ]
             from sqlalchemy import and_
             stmt = (
                 stmt
                 .where(and_(*filters))
-                .order_by(BrokerConnectionEvent.event_ts.desc())
+                .order_by(Model.event_ts.desc())
                 .limit(200)
             )
             rows = (await session.execute(stmt)).scalars().all()
 
-        # Should return only the "connected" event for ZG0001
+        # Should return only the "token_ok" event for ZG0001
         assert len(rows) == 1, \
             f"Expected 1 event matching both filters, got {len(rows)}"
         assert rows[0].account == "ZG0001", "Expected account ZG0001"
-        assert rows[0].event_type == "connected", "Expected event_type 'connected'"
+        assert rows[0].event_type == "token_ok", "Expected event_type 'token_ok'"
 
     @pytest.mark.asyncio
     async def test_get_events_empty_result_when_no_matches(self, test_events_in_db):
         """GET returns empty list when filters match nothing."""
+        factory, Model = test_events_in_db
         account_filter = "ZG9999"  # Non-existent account
         now_utc = datetime.now(timezone.utc)
         since_dt = now_utc - timedelta(days=7)
 
-        async with shared_async_session() as session:
-            stmt = select(BrokerConnectionEvent)
+        async with factory() as session:
+            stmt = select(Model)
             filters = [
-                BrokerConnectionEvent.event_ts >= since_dt,
-                BrokerConnectionEvent.account == account_filter,
+                Model.event_ts >= since_dt,
+                Model.account == account_filter,
             ]
             from sqlalchemy import and_
             stmt = (
                 stmt
                 .where(and_(*filters))
-                .order_by(BrokerConnectionEvent.event_ts.desc())
+                .order_by(Model.event_ts.desc())
                 .limit(200)
             )
             rows = (await session.execute(stmt)).scalars().all()
