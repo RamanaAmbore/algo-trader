@@ -918,7 +918,10 @@
     }
   });
 
-  const _dataXMin = $derived(_barXs.length ? Math.min(..._barXs) : 0);
+  const _rangeStartMs = $derived(Date.now() - _chartDays * 86400 * 1000);
+  const _dataXMin     = $derived(_barXs.length
+      ? Math.min(Math.min(..._barXs), _rangeStartMs)
+      : _rangeStartMs);
   const _dataXMax = $derived(_barXs.length ? Math.max(..._barXs) : 1);
   const _xMin     = $derived(zoom ? zoom.xMin : _dataXMin);
   const _xMax     = $derived(zoom ? zoom.xMax : _dataXMax);
