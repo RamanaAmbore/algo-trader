@@ -846,6 +846,7 @@ All tables live in the branch-local DB except `broker_accounts`, which is shared
 | Table | Purpose | Key columns |
 |---|---|---|
 | `broker_accounts` | Shared table (ramboq DB only) storing encrypted broker credentials for all branches. | id (PK), account (unique, e.g. ZG0790), broker_id (kite\|dhan\|groww), user_id (FK), api_key_enc, access_token_enc, source_ip, priority, poll_priority, circuit_breaker_enabled, display_order |
+| `broker_connection_events` | Shared table — audit log of connection lifecycle (auth_fail, fetch_fail, token_ok, circuit_open/close, ticker_error, etc.). Enables operator forensics on credential/network issues. | id (PK), account, event_type (VARCHAR 32), event_ts (TIMESTAMP TZ, indexed), detail (JSONB) |
 | `market_holidays` | Exchange holiday calendar (NSE/MCX/CDS). Seeded from broker API, cached. | id (PK), exchange, holiday_date (unique per exchange) |
 | `market_special_sessions` | Special trading sessions (e.g. Muhurat trading). Operator-editable overrides. | id (PK), exchange, date, start_time, end_time, reason |
 
@@ -2037,7 +2038,13 @@ sequenceDiagram
 
 **Full broker layer architecture** — file map, singleton lifecycle, token caching, source-IP binding, and capability matrix — **lives in [CLAUDE.md §14.5](CLAUDE.md#145-broker-abstraction--implementation-detail) for brevity**. This section is a quick read list only.
 
-**Files** — `backend/brokers/{base.py, kite.py, dhan.py, groww.py, capabilities.py, registry.py}` + `backend/shared/helpers/{connections.py, broker_creds.py, kite_ticker.py}`.
+**Files** — `backend/brokers/{base.py, kite.py, dhan.py, groww.py, capabilities.py, registry.py}` + `backend/shared/helpers/{connections.py, broker_creds.py, kite_ticker.py}` + `backend/brokers/service/conn_events.py`.
+
+**Connection audit log** — every auth attempt, token rotation, fetch failure, and
+circuit-breaker transition is recorded in `broker_connection_events` table via
+`_emit_conn_event()` in `conn_events.py`. Operator diagnostic endpoint:
+`GET /api/admin/health/broker-connection-events` — filters by account/event_type/since/limit.
+See [BROKER_SPEC.md §14](docs/specs/BROKER_SPEC.md#14-broker-connection-events-audit-log) for event types.
 
 **Key rules:**
 1. **Kite-shape contract** — every return value must match Kite Connect shape. Dhan/Groww adapters have `_normalise_*` helpers. The `_DHAN_STATUS_TO_KITE` status map is critical (audit B-1).

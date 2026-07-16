@@ -1227,6 +1227,55 @@ All three routes:
 
 Without postback configuration, the chase loop's 20-second poll catches the fill — operator-visible lag of up to 20s. With postback configured, fills land in roughly a second.
 
+### Connection Audit Log
+
+Every broker lifecycle event (auth failures, token rotations, fetch errors, circuit-breaker transitions, ticker reconnects) is logged to `broker_connection_events` table. Use the audit log to diagnose credential issues, network timeouts, and account health without digging through logs.
+
+**Where to find it:**
+
+```
+GET /api/admin/health/broker-connection-events?
+  account=ZG0790&
+  event_type=auth_fail&
+  limit=50
+```
+
+Or open the navbar Health chip → Per-account modal → click a row to see recent events.
+
+**Event types and meaning:**
+
+| Type | Meaning | Action |
+|---|---|---|
+| `auth_fail` | OAuth/TOTP rejected or connection failed | Check broker dashboard (API key active? IP whitelisted?). TOTP may be stale on server — sync time. |
+| `fetch_fail` | Market data call (positions/holdings/margins) raised exception (429, 401, 500) | Check broker status page. If rate-limited (429), wait 30s cooloff. If auth (401), re-mint credentials. |
+| `token_ok` | Token refresh succeeded | Informational — no action needed. |
+| `rotation_detected` | New token differs from prior token (2FA re-mint, or broker key rotation) | Informational. New token persisted successfully. |
+| `fetch_ok_recovery` | First successful fetch after consecutive failures | Circuit breaker transitioned to HALF-OPEN → CLOSED. Account health recovered. |
+| `circuit_open` | Account skipped for 5-30 min due to ≥3 consecutive failures | Check `fetch_fail` events in same time window. Enable circuit-breaker opt-in if not already. |
+| `circuit_close` | Circuit breaker re-armed after cooloff period | Normal. Account resuming normal polling. |
+| `ticker_close` | KiteTicker WebSocket disconnected | Informational. TickerManager watchdog will auto-reconnect. |
+| `ticker_error` | KiteTicker on_error callback fired | Check network + broker status. WebSocket likely corrupted; watchdog will swap to backup. |
+| `ticker_reconnect` | TickerManager.swap() executed (cycled WebSocket) | Informational. Caused by upstream ticker error or stale connection. |
+
+**Filter by time range:**
+
+```
+GET /api/admin/health/broker-connection-events?
+  since=2026-07-15T00:00:00Z&
+  account=ZG0790&
+  limit=100
+```
+
+`since` accepts ISO 8601 timestamps. Default: last 24 hours if omitted.
+
+**Diagnostic workflow:**
+
+1. **"Account not refreshing"** → filter by account + `event_type=fetch_fail` → check the most recent error message in `detail` field → decide if transient (retry) or persistent (re-auth).
+2. **"Orders stuck in OPEN"** → filter `event_type=ticker_error|ticker_close` in the last hour → ticker health matters for chase loops (status polling falls back if ticks stale).
+3. **"Circuit breaker tripped"** → filter by account + `event_type=circuit_open` → look back 30s for the preceding `fetch_fail` events → understand what caused the trip.
+
+**Retention:** Log entries are kept indefinitely. No automatic purge.
+
 ---
 
 ## Investor portal — mint URL for an LP

@@ -47,7 +47,7 @@ def _emit_conn_event(
             account=account,
             broker_id=broker_id,
             event_type=event_type,
-            detail=detail or {},
+            detail=detail,
         )
     except Exception:
         pass

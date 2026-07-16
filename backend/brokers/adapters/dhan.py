@@ -56,6 +56,7 @@ def _emit_conn_event(
     a hard dependency on conn_events (which owns the DB session factory
     and must only be imported inside the conn_service process)."""
     try:
+        # lazy import to avoid circular dependency — conn_events → event_queue → database
         from backend.brokers.service.conn_events import _emit_conn_event as _fire
         _fire(account, broker_id, event_type, detail)
     except Exception:

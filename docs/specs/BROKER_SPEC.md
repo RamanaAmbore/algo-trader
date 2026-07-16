@@ -322,6 +322,74 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 ---
 
+## 14. Broker Connection Events Audit Log
+
+**Table**: `broker_connection_events` (shared ramboq DB)
+
+Chronological log of broker connection lifecycle events. Every auth attempt, token
+rotation, fetch failure, and circuit-breaker transition is recorded with precise
+timestamps for operator forensics and alert tuning.
+
+### Event types
+
+| Type | When | Source |
+|---|---|---|
+| `auth_fail` | OAuth/TOTP failure or connection rejected | `connections.py` (KiteBroker, DhanBroker) |
+| `fetch_fail` | Broker API call raised exception (429, 401, 500, etc) | `broker_apis.py` (for positions/holdings/margins) or adapter |
+| `token_ok` | Token refresh succeeded | `connections.py` |
+| `rotation_detected` | New token differs from prior token | `connections.py` |
+| `fetch_ok_recovery` | First successful fetch after consecutive failures | `broker_apis.py` |
+| `circuit_open` | Health state machine → OPEN (skip account) | `broker_apis.py` |
+| `circuit_close` | Health state machine → HALF-OPEN (probe) | `broker_apis.py` |
+| `ticker_close` | KiteTicker WebSocket closed | `kite_ticker.py` |
+| `ticker_error` | KiteTicker on_error callback fired | `kite_ticker.py` |
+| `ticker_reconnect` | TickerManager.swap() executed | `kite_ticker.py` |
+
+### Schema
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | BIGSERIAL PK | |
+| `account` | VARCHAR(32) | Broker account (e.g. ZG0790) |
+| `event_type` | VARCHAR(32) | One of the 10 types above |
+| `event_ts` | TIMESTAMP TZ | Event timestamp (UTC, indexed) |
+| `detail` | JSONB | Error message, token digest, or context |
+
+Index: `(account, event_ts DESC)` for operator drill-downs.
+
+### API endpoint
+
+**GET /api/admin/health/broker-connection-events** (admin-guarded)
+
+| Param | Default | Purpose |
+|---|---|---|
+| `account` | (optional) | Filter by account; blank = all |
+| `event_type` | (optional) | Filter by event type; blank = all |
+| `since` | (optional, ISO 8601) | Start of time range; blank = last 24 hours |
+| `limit` | 100 | Max rows returned |
+
+Response: `{events: [{id, account, event_type, event_ts, detail}, ...], total_count}`
+
+### Retention
+
+No automatic purge. Operator may delete rows manually via SQL or via a
+retention-tuning setting if added in the future. Current default: indefinite.
+
+### Diagnostic example
+
+```
+GET /api/admin/health/broker-connection-events?
+  account=ZG0790&
+  event_type=auth_fail&
+  since=2026-07-15T00:00:00Z&
+  limit=50
+```
+
+Returns the last 50 auth failures for account ZG0790 since midnight UTC — useful
+for debugging recurring 2FA timeouts or credential rotation issues.
+
+---
+
 ## Change log
 
 | Date | Change |
