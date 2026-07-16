@@ -12,6 +12,31 @@ from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _emit_conn_event(
+    account: str,
+    broker_id: str,
+    event_type: str,
+    detail: dict | None = None,
+) -> None:
+    """Lazy-import shim so broker_apis can emit connection events without
+    a hard import on conn_events (which owns the DB session factory and
+    must only be imported inside the conn_service process)."""
+    try:
+        from backend.brokers.service.conn_events import _emit_conn_event as _fire
+        _fire(account, broker_id, event_type, detail)
+    except Exception:
+        pass
+
+
+def _broker_id_safe(account: str) -> str:
+    """Best-effort broker_id resolution — never raises."""
+    try:
+        from backend.brokers.registry import _broker_id_for
+        return _broker_id_for(account)
+    except Exception:
+        return "unknown"
+
 # ---------------------------------------------------------------------------
 # Last-known-good LTP cache
 # ---------------------------------------------------------------------------
@@ -724,13 +749,25 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
     if not get_breaker_optin_cache(account):
         e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
         if ok:
+            _was_recovering = e.get("last_fail_at", 0.0) > e.get("last_ok_at", 0.0)
             e["last_ok_at"] = now
+            if _was_recovering:
+                _emit_conn_event(
+                    account, _broker_id_safe(account), "fetch_ok_recovery",
+                    {"after_fail_msg": e.get("last_fail_msg", "")[:200]},
+                )
         else:
             e["last_fail_at"] = now
             e["last_fail_msg"] = str(error)[:200]
+            _emit_conn_event(
+                account, _broker_id_safe(account), "auth_fail",
+                {"error": str(error)[:200]},
+            )
         return
 
     _new_breaker_open = False   # flag set inside lock, hook fired outside
+    _was_halfopen     = False   # HALF-OPEN → CLOSED recovery
+    _was_recovering   = False   # had a prior failure (emit fetch_ok_recovery)
     with _BREAKER_LOCK:
         e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
         # Ensure legacy entries (without breaker fields) are back-filled.
@@ -740,6 +777,11 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
         e.setdefault("open_cycle_count", 0)
 
         if ok:
+            _was_recovering = e.get("last_fail_at", 0.0) > e.get("last_ok_at", 0.0)
+            # HALF-OPEN → CLOSED: circuit_open_until was set but has now expired
+            # (caller checked is_circuit_open → False, proceeded with the probe).
+            prev_until = e.get("circuit_open_until")
+            _was_halfopen = (prev_until is not None) and (prev_until <= now)
             e["last_ok_at"] = now
             # Success from HALF-OPEN (or normal CLOSED): reset everything.
             e["consecutive_fail_count"] = 0
@@ -785,12 +827,29 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
                     f"open_until={_ts_label(now + cooloff)} "
                     f"cycle={e['open_cycle_count']}"
                 )
+
+    # Emit conn events OUTSIDE the lock so the enqueue_nowait call
+    # never holds _BREAKER_LOCK while touching the event queue.
+    _bid = _broker_id_safe(account)
+    if ok:
+        if _was_recovering:
+            _emit_conn_event(account, _bid, "fetch_ok_recovery")
+        if _was_halfopen:
+            _emit_conn_event(account, _bid, "circuit_close")
+    else:
+        _emit_conn_event(account, _bid, "auth_fail", {"error": str(error)[:200]})
+
     # Auto-downgrade hook — called OUTSIDE the lock to avoid deadlock
     # (the hook acquires shared_async_session which can block).
     # Only fires on a genuine new OPEN transition, not on re-opens of
     # an already-open circuit, so each open event is counted exactly once
     # for the 15-min history window.
     if _new_breaker_open:
+        _emit_conn_event(account, _bid, "circuit_open", {
+            "cycle": e.get("open_cycle_count", 0),
+            "consecutive_fails": e.get("consecutive_fail_count", 0),
+            "error": str(error)[:200],
+        })
         try:
             _maybe_auto_downgrade(account)
         except Exception as _adg_err:

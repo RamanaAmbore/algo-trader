@@ -861,6 +861,17 @@ export async function fetchChartBatch(mode, symbols, since = null, limit = 600) 
  *  derived from _FETCH_HEALTH / fetch_health_snapshot() tracking. */
 export const fetchBrokerHealth = () => _get('/admin/broker-health', { auth: true });
 
+/** GET /api/admin/broker-connection-events — paginated broker connection audit log.
+ *  @param {{ account?: string, event_type?: string, since?: string, limit?: number }} params */
+export const fetchBrokerConnectionEvents = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.account)    qs.set('account',    params.account);
+  if (params.event_type) qs.set('event_type', params.event_type);
+  if (params.since)      qs.set('since',      params.since);
+  qs.set('limit', String(params.limit ?? 200));
+  return _get(`/admin/broker-connection-events?${qs}`, { auth: true });
+};
+
 /** GET /api/admin/brokers/order — {account_id: display_order} map for
  *  canonical UI ordering (accountSort.js / accountDisplayOrder store). */
 export const fetchBrokerOrder = () => _get('/admin/brokers/order', { auth: true });

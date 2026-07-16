@@ -46,6 +46,22 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
+def _emit_conn_event(
+    account: str,
+    broker_id: str,
+    event_type: str,
+    detail: dict | None = None,
+) -> None:
+    """Lazy-import shim so dhan.py can emit connection events without
+    a hard dependency on conn_events (which owns the DB session factory
+    and must only be imported inside the conn_service process)."""
+    try:
+        from backend.brokers.service.conn_events import _emit_conn_event as _fire
+        _fire(account, broker_id, event_type, detail)
+    except Exception:
+        pass
+
+
 # ── Instruments cache ──────────────────────────────────────────────────
 #
 # Dhan publishes a master CSV at the URL below. We fetch it once per IST
@@ -565,6 +581,10 @@ def _check_dhan_rotation_pattern(
             f"IPv6 (set source_ip in /admin/brokers — same pattern as "
             f"Kite multi-account) OR verify both records aren't the "
             f"same physical Dhan account."
+        )
+        _emit_conn_event(
+            failing_account, "dhan", "rotation_detected",
+            {"suspects": details},
         )
 
 

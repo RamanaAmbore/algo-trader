@@ -118,3 +118,36 @@ async def create_intraday_bars_table(conn) -> None:  # type: ignore[no-untyped-d
     await conn.execute(text(
         "DROP INDEX IF EXISTS ix_intraday_bars_sym_date_interval"
     ))
+
+
+async def create_broker_connection_events_table(conn) -> None:  # type: ignore[no-untyped-def]
+    """broker_connection_events — per-account broker session lifecycle events.
+
+    Records connect / disconnect / auth-fail / failover events from the
+    conn_service ticker manager + broker health watchdog. Indexed by
+    (account, event_ts DESC) and (event_type, event_ts DESC) for the
+    admin /broker-connection-events endpoint.
+
+    No retention purge defined — operator manages manually or via a
+    future cleanup task.
+    """
+    from sqlalchemy import text
+
+    await conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS broker_connection_events (
+            id          SERIAL PRIMARY KEY,
+            account     VARCHAR(32)  NOT NULL,
+            broker_id   VARCHAR(32)  NOT NULL,
+            event_type  VARCHAR(32)  NOT NULL,
+            event_ts    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+            detail      JSONB
+        )
+    """))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_bce_account_ts "
+        "ON broker_connection_events (account, event_ts DESC)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_bce_event_type_ts "
+        "ON broker_connection_events (event_type, event_ts DESC)"
+    ))

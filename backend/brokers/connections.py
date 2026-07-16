@@ -533,6 +533,10 @@ class KiteConnection:
             logger.info(f"Login successful, Request ID: {request_id}")
         except Exception as e:
             logger.error(f"Login failed: {e}")
+            _emit_conn_event(
+                self.account, "zerodha_kite", "auth_fail",
+                {"error": str(e)[:200], "stage": "login"},
+            )
             raise
         return request_id
 
@@ -546,6 +550,10 @@ class KiteConnection:
             logger.info("2FA authentication successful")
         except Exception as e:
             logger.error(f"2FA authentication failed: {e}")
+            _emit_conn_event(
+                self.account, "zerodha_kite", "auth_fail",
+                {"error": str(e)[:200], "stage": "totp_authenticate"},
+            )
             raise
 
     @retry_kite_conn(_retry_count)
@@ -557,8 +565,13 @@ class KiteConnection:
             self.kite.set_access_token(self._access_token)
             _save_cached_token(self.account, self._access_token)
             logger.info(f"Token cached for {self.account}")
+            _emit_conn_event(self.account, "zerodha_kite", "token_ok")
         except Exception as e:
             logger.error(f"Failed to generate access token for account {self.account}: {e}")
+            _emit_conn_event(
+                self.account, "zerodha_kite", "auth_fail",
+                {"error": str(e)[:200], "stage": "setup_access_token"},
+            )
             raise
 
     def get_access_token(self):
@@ -996,6 +1009,10 @@ class DhanConnection:
                 f"Dhan _do_login failed for {self.account!r}: {e!s:.200} — "
                 f"blocking re-login attempts for 130 s"
             )
+            _emit_conn_event(
+                self.account, "dhan", "auth_fail",
+                {"error": str(e)[:200], "stage": "_do_login"},
+            )
             raise
         # Success — clear any prior cool-off.
         self._login_blocked_until = 0.0
@@ -1016,6 +1033,7 @@ class DhanConnection:
         logger.info(
             f"Dhan login complete for {self.account} (token cached, valid ~24h)"
         )
+        _emit_conn_event(self.account, "dhan", "token_ok")
 
     def _dhan_conn_under_lock(self, now, test_conn: bool):
         """Inner body of get_dhan_conn — runs under both login locks.
@@ -1282,11 +1300,16 @@ class GrowwConnection:
         except Exception as e:
             logger.error(f"GrowwConnection {self.account!r} token resolve "
                          f"failed: {e}")
+            _emit_conn_event(
+                self.account, "groww", "auth_fail",
+                {"error": str(e)[:200], "stage": "_resolve_token"},
+            )
             self._groww = None
             self._import_error = e
             return
         self._access_token = token
         self._groww = GrowwAPI(token)
+        _emit_conn_event(self.account, "groww", "token_ok")
 
     def refresh(self) -> None:
         """Force-evict the cached token + re-mint. Call when an SDK
@@ -1857,6 +1880,27 @@ class Connections(SingletonBase):
             f"the YAML rows remain as a recovery backup."
         )
         return n
+
+
+def _emit_conn_event(
+    account: str,
+    broker_id: str,
+    event_type: str,
+    detail: dict | None = None,
+) -> None:
+    """Lazy-import shim that forwards to the conn_events module.
+
+    Lazy import avoids a circular dependency at module load time —
+    conn_events imports from backend.api which in turn imports from
+    backend.brokers.connections.  The try/except swallows any import
+    error so a missing conn_service environment (main API process)
+    never breaks the login flow.
+    """
+    try:
+        from backend.brokers.service.conn_events import _emit_conn_event as _fire
+        _fire(account, broker_id, event_type, detail)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

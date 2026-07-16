@@ -51,6 +51,26 @@ from backend.brokers.service.routes import (
 logger = logging.getLogger(__name__)
 
 
+async def _start_conn_event_queue(app: Litestar) -> None:
+    """Start the broker-connection event queue on conn_service boot.
+
+    Must run before _init_connections_on_startup so any login events
+    emitted during rebuild_from_db are captured rather than silently
+    dropped (the queue's _task guard in _emit_conn_event rejects
+    writes before the task is live).
+    """
+    from backend.brokers.service.conn_events import broker_conn_event_queue
+    await broker_conn_event_queue.start()
+    logger.info("conn_service: broker_conn_event_queue started")
+
+
+async def _stop_conn_event_queue(app: Litestar) -> None:
+    """Flush and stop the broker-connection event queue on shutdown."""
+    from backend.brokers.service.conn_events import broker_conn_event_queue
+    await broker_conn_event_queue.stop()
+    logger.info("conn_service: broker_conn_event_queue stopped")
+
+
 def create_app() -> Litestar:
     """Construct the conn_service Litestar app.
 
@@ -63,7 +83,8 @@ def create_app() -> Litestar:
             InternalBrokerController,
             BrokerDispatchController,
         ],
-        on_startup=[_init_connections_on_startup, _start_kite_ticker],
+        on_startup=[_start_conn_event_queue, _init_connections_on_startup, _start_kite_ticker],
+        on_shutdown=[_stop_conn_event_queue],
         debug=False,
     )
     return app

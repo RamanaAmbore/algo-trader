@@ -3860,9 +3860,6 @@
     {#if simActive}
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
-    {#if positionsLoadErr}
-      <span class="pos-delayed-pill" title={positionsLoadErr}>Positions delayed</span>
-    {/if}
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
@@ -3872,6 +3869,13 @@
     <PageHeaderActions symbol={selectedUnderlying} />
   </span>
 </div>
+
+{#if positionsLoadErr}
+  <div class="pos-stale-bar" title={positionsLoadErr}>
+    <span class="pos-stale-dot" aria-hidden="true"></span>
+    <span class="pos-stale-text">Positions delayed</span>
+  </div>
+{/if}
 
 <!-- Picker bar — two dropdowns + a "+" toggle for the option-chain
      picker. Strategy auto-recomputes whenever the leg set changes;
@@ -3925,12 +3929,9 @@
   </div>
 {/if}
 {#if strategyErr}
-  <!-- Audit fix — match positionsLoadErr's short-banner + title= pattern.
-       Strategy errors can carry long Python exception strings forwarded
-       from api.js; rendering verbatim wraps the layout. -->
-  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40"
-       title={strategyErr}>
-    Strategy analytics unavailable — retry shortly.
+  <div class="pos-stale-bar" title={strategyErr}>
+    <span class="pos-stale-dot pos-stale-dot-red" aria-hidden="true"></span>
+    <span class="pos-stale-text">Strategy analytics unavailable — retry shortly.</span>
   </div>
 {/if}
 
@@ -4969,23 +4970,36 @@
     background: rgba(236, 72, 153, 0.18);
     border: 1px solid rgba(236, 72, 153, 0.55);
   }
-  /* Inline amber chip shown in the page header when positions data is
-     delayed (snapshot lag). Distinct from the full-width red error banner
-     which only appears on genuine outages (broker health not green). */
-  .pos-delayed-pill {
-    display: inline-flex;
+  /* Slim stale-status bars — shown below the page header for positions
+     lag (amber) and strategy errors (red). Replaces the old inline chip. */
+  .pos-stale-bar {
+    display: flex;
     align-items: center;
-    padding: 0.1rem 0.5rem;
-    border-radius: 9999px;
-    font-size: 0.65rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    line-height: 1.4;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+  }
+  .pos-stale-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: rgba(251, 191, 36, 0.9);
     flex-shrink: 0;
-    color: rgba(251, 191, 36, 0.85);
-    background: rgba(251, 191, 36, 0.15);
-    border: 1px solid rgba(251, 191, 36, 0.40);
+    animation: pos-dot-blink 2s ease-in-out infinite;
+  }
+  .pos-stale-dot-red {
+    background: rgba(248, 113, 113, 0.9);
+  }
+  .pos-stale-text {
+    font-size: var(--fs-sm, 0.6rem);
+    color: var(--c-muted);
+    letter-spacing: 0.03em;
+  }
+  @keyframes pos-dot-blink {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.3; transform: scale(0.7); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pos-stale-dot { animation: none; }
   }
   .opt-field {
     display: flex;
