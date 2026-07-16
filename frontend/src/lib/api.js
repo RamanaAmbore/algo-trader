@@ -986,18 +986,20 @@ export async function fetchChainQuotes(underlying, expiry) {
  *  cache miss / broker unreachable; never 5xx. */
 /**
  * @param {string} symbol
- * @param {{days?: number, interval?: string, exchange?: string}} [opts]
+ * @param {{days?: number, interval?: string, exchange?: string, fresh?: boolean}} [opts]
  */
 export async function fetchOptionsHistorical(symbol,
                                               { days = 30,
                                                 interval = 'day',
-                                                exchange = undefined } = {}) {
+                                                exchange = undefined,
+                                                fresh = false } = {}) {
   const p = new URLSearchParams({
     symbol:   String(symbol),
     days:     String(days),
     interval: String(interval),
   });
   if (exchange) p.set('exchange', String(exchange));
+  if (fresh)    p.set('fresh', '1');
   return _get(`/options/historical?${p}`, { auth: true });
 }
 

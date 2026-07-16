@@ -61,6 +61,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+_DEMAND_FILL_ACTIVE: set[tuple[str, str]] = set()
+
 
 # ---------------------------------------------------------------------------
 # _resolve_spot sub-helpers
@@ -209,6 +211,27 @@ async def _resolve_commodity_spot(
     return (None, "none", None, resolved_sym, None)
 
 
+async def _ohlcv_demand_fill(sym: str, exch: str, days: int) -> None:
+    """Background demand backfill — integrates partial-chart signal into broker refresh cycle.
+
+    Fires as an asyncio task when the chart route returns partial data.
+    Uses backfill_ohlcv_daily (same pipeline as scheduled refresh) so the
+    DB is updated for the next frontend retry.  Debounced per (sym, exch).
+    """
+    key = (sym, exch)
+    if key in _DEMAND_FILL_ACTIVE:
+        return
+    _DEMAND_FILL_ACTIVE.add(key)
+    try:
+        from backend.api.persistence.backfill import backfill_ohlcv_daily
+        await backfill_ohlcv_daily([(sym, exch)], target_days=days + 5, max_concurrent=1)
+        logger.info("ohlcv demand fill complete: %s/%s target=%d", sym, exch, days + 5)
+    except Exception as exc:
+        logger.warning("ohlcv demand fill %s/%s: %s", sym, exch, exc)
+    finally:
+        _DEMAND_FILL_ACTIVE.discard(key)
+
+
 # ---------------------------------------------------------------------------
 # historical sub-helpers
 # ---------------------------------------------------------------------------
@@ -297,6 +320,8 @@ async def _historical_ohlcv_store(
                 cache_key_local, result,
                 cache_ttl_empty if _still_partial else cache_ttl_ok,
             )
+            if _still_partial:
+                asyncio.create_task(_ohlcv_demand_fill(sym, resolved_exch, days))
             if ohlcv_trace_enabled():  # type: ignore[operator]
                 logger.info(
                     "[ohlcv-route] symbol=%s exch=%s from=%s to=%s bars=%d "
