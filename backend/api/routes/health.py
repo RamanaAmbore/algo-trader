@@ -10,7 +10,7 @@ Admin-only. No demo access.
 
 import subprocess
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import msgspec
@@ -26,6 +26,7 @@ from backend.api.models import (
     AgentEvent,
     AlgoOrder,
     BrokerAccount,
+    BrokerConnectionEvent,
     NewsHeadline,
     User,
 )
@@ -847,6 +848,9 @@ def _hlth_resolve_state(
     if last_ok == 0.0 and last_fail == 0.0:
         return "amber", "no fetch attempt recorded yet", cb_state, cb_count, cb_until_iso
 
+    if last_ok == 0.0 and last_fail > 0.0:
+        return "inactive", "no session established", cb_state, cb_count, cb_until_iso
+
     if last_fail > last_ok:
         return "red", _derive_fail_reason(last_fail, last_msg), cb_state, cb_count, cb_until_iso
 
@@ -1019,3 +1023,79 @@ class BrokerHealthController(Controller):
             groww_entitlement_denied=_resolve_entitlement_denied(),
             primary_market_data_account=_resolve_primary_mdb_account(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Broker connection events endpoint
+# ---------------------------------------------------------------------------
+
+class BrokerConnectionEventsController(Controller):
+    """GET /api/admin/broker-connection-events — paginated broker lifecycle log.
+
+    Returns raw rows from broker_connection_events filtered by account,
+    event_type, and/or a since timestamp.  Admin-only.  No demo access.
+    """
+    path = "/api/admin/broker-connection-events"
+    guards = [admin_guard]
+
+    @get("")
+    async def get_events(
+        self,
+        account:    Optional[str] = None,
+        event_type: Optional[str] = None,
+        since:      Optional[str] = None,
+        limit:      int           = 200,
+    ) -> dict:
+        """Return broker connection events, newest first.
+
+        Query params:
+          account    — filter by broker account (exact match)
+          event_type — filter by event type (exact match)
+          since      — ISO date string; default 7 days ago
+          limit      — max rows returned; capped at 1000
+        """
+        limit = min(max(1, limit), 1000)
+
+        if since is not None:
+            try:
+                since_dt = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"invalid since value: {since!r}")
+        else:
+            since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+
+        try:
+            from sqlalchemy import and_
+            stmt = select(BrokerConnectionEvent)
+            filters = [BrokerConnectionEvent.event_ts >= since_dt]
+            if account is not None:
+                filters.append(BrokerConnectionEvent.account == account)
+            if event_type is not None:
+                filters.append(BrokerConnectionEvent.event_type == event_type)
+            stmt = (
+                stmt
+                .where(and_(*filters))
+                .order_by(BrokerConnectionEvent.event_ts.desc())
+                .limit(limit)
+            )
+            async with shared_async_session() as session:
+                rows = (await session.execute(stmt)).scalars().all()
+
+            events = [
+                {
+                    "id":         row.id,
+                    "account":    row.account,
+                    "broker_id":  row.broker_id,
+                    "event_type": row.event_type,
+                    "event_ts":   row.event_ts.isoformat() if row.event_ts else None,
+                    "detail":     row.detail,
+                }
+                for row in rows
+            ]
+            return {"events": events}
+
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error(f"broker-connection-events: query failed: {exc}")
+            raise HTTPException(status_code=500, detail="broker connection events query failed")

@@ -61,7 +61,7 @@ from backend.api.routes.economic import EconomicController
 from backend.api.routes.charts import ChartsController
 from backend.api.routes.options import OptionsController
 from backend.api.routes.alerts import AlertsController
-from backend.api.routes.health import HealthController, PersistenceAdminController, BrokerHealthController
+from backend.api.routes.health import HealthController, PersistenceAdminController, BrokerHealthController, BrokerConnectionEventsController
 from backend.api.routes.pnl import PnLController
 from backend.api.routes.simulator import SimulatorController
 from backend.api.routes.replay import ReplayController
@@ -212,6 +212,7 @@ _route_handlers = [
     HealthController,
     PersistenceAdminController,
     BrokerHealthController,
+    BrokerConnectionEventsController,
     PnLController,
     SimulatorController,
     ReplayController,

@@ -87,9 +87,10 @@
           </div>
         {/if}
       {#each accounts as acct (acct.account)}
-        {@const _accCls = acct.state === 'red'   ? 'bh-row-account-red'
-                        : acct.state === 'amber' ? 'bh-row-account-amber'
-                        : acct.is_active_ticker  ? 'bh-row-account-active'
+        {@const _accCls = acct.state === 'red'      ? 'bh-row-account-red'
+                        : acct.state === 'amber'    ? 'bh-row-account-amber'
+                        : acct.state === 'inactive' ? 'bh-row-account-inactive'
+                        : acct.is_active_ticker     ? 'bh-row-account-active'
                         : 'bh-row-account-spare'}
         {@const _cbOptIn = !!acct.circuit_breaker_enabled}
         {@const _circuitTitle = (_cbOptIn && acct.circuit_state === 'open')
@@ -308,9 +309,10 @@
     height: 0.45rem;
     border-radius: 50%;
   }
-  .bh-row-dot-green  { background: var(--c-long); }
-  .bh-row-dot-amber  { background: var(--c-action); }
-  .bh-row-dot-red    { background: var(--c-short); }
+  .bh-row-dot-green    { background: var(--c-long); }
+  .bh-row-dot-amber    { background: var(--c-action); }
+  .bh-row-dot-red      { background: var(--c-short); }
+  .bh-row-dot-inactive { background: #94a3b8; }
 
   .bh-row-account {
     color: #c8d8f0;
@@ -329,10 +331,11 @@
      - slate → warm spare (healthy, not active)
      No separate "active" chip needed. Operator: "color code the account
      which is active or having problems in connection etc." */
-  .bh-row-account-red    { color: var(--c-short); font-weight: 700; }
-  .bh-row-account-amber  { color: var(--c-action); font-weight: 700; }
-  .bh-row-account-active { color: var(--c-info); font-weight: 700; }
-  .bh-row-account-spare  { color: #c8d8f0; font-weight: 600; }
+  .bh-row-account-red      { color: var(--c-short); font-weight: 700; }
+  .bh-row-account-amber    { color: var(--c-action); font-weight: 700; }
+  .bh-row-account-inactive { color: #94a3b8; font-weight: 600; }
+  .bh-row-account-active   { color: var(--c-info); font-weight: 700; }
+  .bh-row-account-spare    { color: #c8d8f0; font-weight: 600; }
   /* Circuit-breaker state chips inside the account cell */
   .bh-circuit-chip {
     font-size: 0.6rem;
@@ -365,9 +368,10 @@
     padding: 0.05rem 0.4rem;
     text-align: center;
   }
-  .bh-row-state-green { color: var(--c-long); background: var(--c-long-10); }
-  .bh-row-state-amber { color: var(--c-action); background: rgba(251,191,36,0.10); }
-  .bh-row-state-red   { color: var(--c-short); background: var(--c-short-10); }
+  .bh-row-state-green    { color: var(--c-long); background: var(--c-long-10); }
+  .bh-row-state-amber    { color: var(--c-action); background: rgba(251,191,36,0.10); }
+  .bh-row-state-red      { color: var(--c-short); background: var(--c-short-10); }
+  .bh-row-state-inactive { color: #94a3b8; }
 
   .bh-row-reason {
     /* Was #64748b (WCAG 3.01:1 on --card-bg-gradient — borderline/fail).

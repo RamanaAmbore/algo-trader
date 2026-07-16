@@ -1083,6 +1083,20 @@ class AgentEvent(Base):
     )
 
 
+class BrokerConnectionEvent(Base):
+    __tablename__ = "broker_connection_events"
+
+    id:         Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    account:    Mapped[str]            = mapped_column(String(32), nullable=False, index=True)
+    broker_id:  Mapped[str]            = mapped_column(String(32), nullable=False)
+    event_type: Mapped[str]            = mapped_column(String(32), nullable=False, index=True)
+    event_ts:   Mapped[datetime]       = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    detail:     Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # Sim iteration — one row per simulator iteration. A single `/start` call
 # with `iterations: N` creates N rows, all sharing the same `parent_run_id`
