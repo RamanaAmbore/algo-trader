@@ -2648,7 +2648,7 @@ class OptionsController(Controller):
                                 detail=f"interval must be one of {valid_intervals}")
 
         # ── Cache lookup ───────────────────────────────────────────────
-        cache_key = (sym, (exchange or "").upper(), days, interval)
+        cache_key = (sym, (exchange or "NFO").upper(), days, interval)
         _cached = _hist_cache_get(cache_key)
         if _cached is not None:
             return _cached

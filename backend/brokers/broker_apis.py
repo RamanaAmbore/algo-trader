@@ -23,6 +23,7 @@ def _emit_conn_event(
     a hard import on conn_events (which owns the DB session factory and
     must only be imported inside the conn_service process)."""
     try:
+        # lazy import to avoid circular dependency — conn_events → event_queue → database
         from backend.brokers.service.conn_events import _emit_conn_event as _fire
         _fire(account, broker_id, event_type, detail)
     except Exception:
@@ -36,6 +37,32 @@ def _broker_id_safe(account: str) -> str:
         return _broker_id_for(account)
     except Exception:
         return "unknown"
+
+
+# Auth-error signal strings shared across Kite + Dhan error messages.
+# Kept here (not imported from dhan.py) to avoid a cross-adapter import.
+_AUTH_ERROR_HINTS_LOWER: tuple[str, ...] = (
+    "invalid access token",
+    "invalid token",
+    "token expired",
+    "unauthorized",
+    "unauthorised",
+    "auth failed",
+    "invalid api key",
+    "403",
+    "401",
+    "dh-901",
+    "dh-906",
+)
+
+
+def _is_auth_error_str(error: str) -> bool:
+    """Return True when the stringified error message looks like an auth / token
+    failure (401 / 403 class). Used to select event_type="auth_fail" vs
+    "fetch_fail" in _record_fetch without requiring the original exception object.
+    """
+    low = error.lower()
+    return any(hint in low for hint in _AUTH_ERROR_HINTS_LOWER)
 
 # ---------------------------------------------------------------------------
 # Last-known-good LTP cache
@@ -759,8 +786,9 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
         else:
             e["last_fail_at"] = now
             e["last_fail_msg"] = str(error)[:200]
+            _etype = "auth_fail" if _is_auth_error_str(str(error)) else "fetch_fail"
             _emit_conn_event(
-                account, _broker_id_safe(account), "auth_fail",
+                account, _broker_id_safe(account), _etype,
                 {"error": str(error)[:200]},
             )
         return
@@ -837,7 +865,8 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
         if _was_halfopen:
             _emit_conn_event(account, _bid, "circuit_close")
     else:
-        _emit_conn_event(account, _bid, "auth_fail", {"error": str(error)[:200]})
+        _etype = "auth_fail" if _is_auth_error_str(str(error)) else "fetch_fail"
+        _emit_conn_event(account, _bid, _etype, {"error": str(error)[:200]})
 
     # Auto-downgrade hook — called OUTSIDE the lock to avoid deadlock
     # (the hook acquires shared_async_session which can block).

@@ -123,13 +123,14 @@ async def create_intraday_bars_table(conn) -> None:  # type: ignore[no-untyped-d
 async def create_broker_connection_events_table(conn) -> None:  # type: ignore[no-untyped-def]
     """broker_connection_events — per-account broker session lifecycle events.
 
-    Records connect / disconnect / auth-fail / failover events from the
-    conn_service ticker manager + broker health watchdog. Indexed by
-    (account, event_ts DESC) and (event_type, event_ts DESC) for the
-    admin /broker-connection-events endpoint.
+    Records auth_fail, fetch_fail, token_ok, rotation_detected,
+    fetch_ok_recovery, circuit_open, circuit_close, ticker_close,
+    ticker_error, ticker_reconnect events from connections.py,
+    broker_apis.py, dhan.py, and kite_ticker.py. Indexed by
+    (account, event_ts DESC), (event_type, event_ts DESC), and
+    event_ts DESC for the admin /broker-connection-events endpoint.
 
-    No retention purge defined — operator manages manually or via a
-    future cleanup task.
+    No retention purge defined — operator manages manually.
     """
     from sqlalchemy import text
 
@@ -150,4 +151,8 @@ async def create_broker_connection_events_table(conn) -> None:  # type: ignore[n
     await conn.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_bce_event_type_ts "
         "ON broker_connection_events (event_type, event_ts DESC)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_bce_ts "
+        "ON broker_connection_events (event_ts DESC)"
     ))

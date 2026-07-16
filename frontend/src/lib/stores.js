@@ -1319,11 +1319,10 @@ function stopMarketStatusPoller() {
  */
 function _brokerHealthWorstState(accounts) {
   if (!accounts || accounts.length === 0) return 'amber';
-  const active = accounts.filter(a => a.state !== 'inactive');
-  if (!active.length) return 'amber';
-  if (active.some(a => a.state === 'red'))   return 'red';
-  if (active.some(a => a.state === 'amber')) return 'amber';
-  if (active.every(a => a.state === 'green')) return 'green';
+  if (accounts.some(a => a.state === 'red'))      return 'red';
+  if (accounts.some(a => a.state === 'amber'))    return 'amber';
+  if (accounts.some(a => a.state === 'inactive')) return 'amber';
+  if (accounts.every(a => a.state === 'green'))   return 'green';
   return 'amber';
 }
 
@@ -1354,12 +1353,4 @@ export function startBrokerHealthPoller() {
   // 30 s cadence; throttle to 60 s on hidden so we keep monitoring
   // auth breaks in the background without burning unnecessary quota.
   _bhPollerTeardown = visibleInterval(poll, 30_000, 'throttle:60000');
-}
-
-function stopBrokerHealthPoller() {
-  if (_bhPollerTeardown) {
-    _bhPollerTeardown();
-    _bhPollerTeardown = null;
-  }
-  _bhPollerStarted = false;
 }

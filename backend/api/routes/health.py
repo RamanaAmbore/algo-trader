@@ -17,7 +17,7 @@ import msgspec
 from litestar import Controller, get, post, delete
 from litestar.params import Parameter as _LP
 from litestar.exceptions import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from backend.api.auth_guard import admin_guard
 from backend.api.database import async_session, shared_async_session
@@ -31,7 +31,7 @@ from backend.api.models import (
     User,
 )
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import config
+from backend.shared.helpers.utils import config, mask_account
 
 
 logger = get_logger(__name__)
@@ -111,6 +111,19 @@ class HealthResponse(msgspec.Struct):
     ticker: TickerStatus
     ipv6: list[str]     # source_ip values configured across all accounts
     persistence: dict   # write_queue health surface (disk + db workers)
+
+
+class BrokerConnectionEventItem(msgspec.Struct):
+    id:         int
+    account:    str
+    broker_id:  str
+    event_type: str
+    event_ts:   Optional[str]
+    detail:     Optional[dict]
+
+
+class BrokerConnectionEventsResponse(msgspec.Struct):
+    events: list[BrokerConnectionEventItem]
 
 
 # ---------------------------------------------------------------------------
@@ -1045,7 +1058,7 @@ class BrokerConnectionEventsController(Controller):
         event_type: Optional[str] = None,
         since:      Optional[str] = None,
         limit:      int           = 200,
-    ) -> dict:
+    ) -> BrokerConnectionEventsResponse:
         """Return broker connection events, newest first.
 
         Query params:
@@ -1058,14 +1071,15 @@ class BrokerConnectionEventsController(Controller):
 
         if since is not None:
             try:
-                since_dt = datetime.fromisoformat(since).replace(tzinfo=timezone.utc)
+                _dt = datetime.fromisoformat(since)
+                since_dt = _dt if _dt.tzinfo else _dt.replace(tzinfo=timezone.utc)
+                since_dt = since_dt.astimezone(timezone.utc)
             except ValueError:
                 raise HTTPException(status_code=400, detail=f"invalid since value: {since!r}")
         else:
             since_dt = datetime.now(timezone.utc) - timedelta(days=7)
 
         try:
-            from sqlalchemy import and_
             stmt = select(BrokerConnectionEvent)
             filters = [BrokerConnectionEvent.event_ts >= since_dt]
             if account is not None:
@@ -1082,17 +1096,17 @@ class BrokerConnectionEventsController(Controller):
                 rows = (await session.execute(stmt)).scalars().all()
 
             events = [
-                {
-                    "id":         row.id,
-                    "account":    row.account,
-                    "broker_id":  row.broker_id,
-                    "event_type": row.event_type,
-                    "event_ts":   row.event_ts.isoformat() if row.event_ts else None,
-                    "detail":     row.detail,
-                }
+                BrokerConnectionEventItem(
+                    id=row.id,
+                    account=mask_account(row.account),
+                    broker_id=row.broker_id,
+                    event_type=row.event_type,
+                    event_ts=row.event_ts.isoformat() if row.event_ts else None,
+                    detail=row.detail,
+                )
                 for row in rows
             ]
-            return {"events": events}
+            return BrokerConnectionEventsResponse(events=events)
 
         except HTTPException:
             raise

@@ -1897,6 +1897,7 @@ def _emit_conn_event(
     never breaks the login flow.
     """
     try:
+        # lazy import to avoid circular dependency — conn_events → event_queue → database
         from backend.brokers.service.conn_events import _emit_conn_event as _fire
         _fire(account, broker_id, event_type, detail)
     except Exception:

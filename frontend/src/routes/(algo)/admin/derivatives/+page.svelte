@@ -3870,7 +3870,7 @@
   </span>
 </div>
 
-{#if positionsLoadErr}
+{#if positionsLoadErr && _brokerWorstState === 'green'}
   <div class="pos-stale-bar" title={positionsLoadErr}>
     <span class="pos-stale-dot" aria-hidden="true"></span>
     <span class="pos-stale-text">Positions delayed</span>

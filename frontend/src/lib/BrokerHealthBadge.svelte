@@ -312,7 +312,7 @@
   .bh-row-dot-green    { background: var(--c-long); }
   .bh-row-dot-amber    { background: var(--c-action); }
   .bh-row-dot-red      { background: var(--c-short); }
-  .bh-row-dot-inactive { background: #94a3b8; }
+  .bh-row-dot-inactive { background: var(--text-faint); }
 
   .bh-row-account {
     color: #c8d8f0;
@@ -333,7 +333,7 @@
      which is active or having problems in connection etc." */
   .bh-row-account-red      { color: var(--c-short); font-weight: 700; }
   .bh-row-account-amber    { color: var(--c-action); font-weight: 700; }
-  .bh-row-account-inactive { color: #94a3b8; font-weight: 600; }
+  .bh-row-account-inactive { color: var(--text-faint); font-weight: 600; }
   .bh-row-account-active   { color: var(--c-info); font-weight: 700; }
   .bh-row-account-spare    { color: #c8d8f0; font-weight: 600; }
   /* Circuit-breaker state chips inside the account cell */
@@ -371,7 +371,7 @@
   .bh-row-state-green    { color: var(--c-long); background: var(--c-long-10); }
   .bh-row-state-amber    { color: var(--c-action); background: rgba(251,191,36,0.10); }
   .bh-row-state-red      { color: var(--c-short); background: var(--c-short-10); }
-  .bh-row-state-inactive { color: #94a3b8; }
+  .bh-row-state-inactive { color: var(--text-faint); }
 
   .bh-row-reason {
     /* Was #64748b (WCAG 3.01:1 on --card-bg-gradient — borderline/fail).

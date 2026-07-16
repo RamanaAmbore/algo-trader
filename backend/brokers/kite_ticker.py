@@ -137,6 +137,23 @@ class BroadcastBus:
             pass  # slow consumer — drop tick, stream will catch up
 
 
+def _emit_conn_event(
+    account: str,
+    broker_id: str,
+    event_type: str,
+    detail: dict | None = None,
+) -> None:
+    """Lazy-import shim so kite_ticker.py can emit connection events without
+    a hard import on conn_events (which owns the DB session factory and
+    must only be imported inside the conn_service process)."""
+    try:
+        # lazy import to avoid circular dependency — conn_events → event_queue → database
+        from backend.brokers.service.conn_events import _emit_conn_event as _fire
+        _fire(account, broker_id, event_type, detail)
+    except Exception:
+        pass
+
+
 class TickerManager:
     """
     Singleton-safe wrapper around KiteTicker. Owns the WebSocket
@@ -963,12 +980,23 @@ class TickerManager:
             f"KiteTicker: closed — code={code} reason={reason!r} "
             f"account={self._current_account or '?'}"
         )
+        _emit_conn_event(
+            self._current_account or "", "kite", "ticker_close", {"code": code}
+        )
 
     def _on_error(self, _ws, code, reason) -> None:
         logger.error(f"KiteTicker: error — code={code} reason={reason!r}")
+        _emit_conn_event(
+            self._current_account or "", "kite", "ticker_error",
+            {"error": str(reason)},
+        )
 
     def _on_reconnect(self, _ws, attempts_count) -> None:
         logger.warning(f"KiteTicker: reconnecting — attempt {attempts_count}")
+        _emit_conn_event(
+            self._current_account or "", "kite", "ticker_reconnect",
+            {"attempt": attempts_count},
+        )
 
 
 # ── Module-level singleton ────────────────────────────────────────────────────
