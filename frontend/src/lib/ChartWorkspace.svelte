@@ -613,6 +613,10 @@
   /** @type {Set<string>} */
   const _emptyRetryFired = new Set();
   let _emptyRetryTimer = null;
+  const _partialRetryFired = new Set();
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _partialRetryTimer = null;
+  let _histPartial = $state(false);
 
   /**
    * Build a dedup key for the empty-response retry latch.
@@ -689,7 +693,7 @@
     return false;
   }
 
-  async function _loadHistorical(/** @type {boolean} */ force = false) {
+  async function _loadHistorical(/** @type {boolean} */ force = false, /** @type {boolean} */ fresh = false) {
     if (!symbol) {
       _histLoading = false;
       chartStore.setLoading(false);
@@ -733,7 +737,7 @@
       const retryKey = _buildRetryKey(fetchSym, fetchExch, _chartDays);
 
       const promises = [
-        fetchOptionsHistorical(fetchSym, { days: _chartDays, exchange: fetchExch }),
+        fetchOptionsHistorical(fetchSym, { days: _chartDays, exchange: fetchExch, fresh }),
       ];
       if (_isDerivative && _underlying) {
         promises.push(
@@ -759,13 +763,25 @@
         _bars     = _nextBars;
         _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
         chartStore.setOhlcv(_bars, _spotBars);
-        _histRetrying = false;
+        if (hist?.partial && !_partialRetryFired.has(retryKey)) {
+          _partialRetryFired.add(retryKey);
+          _histPartial = true;
+          if (_partialRetryTimer) clearTimeout(_partialRetryTimer);
+          _partialRetryTimer = setTimeout(() => {
+            _histPartial = false;
+            _loadHistorical(true, true);
+          }, 5000);
+        } else {
+          _histRetrying = false;
+          _histPartial  = false;
+        }
       }
       _chartLoaded = true;
     } catch (e) {
       if (token !== _loadToken) return; // newer call in flight — its result is canonical
       _histError = /** @type {any} */ (e)?.message || 'Load failed';
       _histRetrying = false;
+      _histPartial = false;
       _bars = [];
       chartStore.setOhlcv(null);
     } finally {
@@ -1548,8 +1564,10 @@
     _mounted = false;
     if (_statusTimer) { try { _statusTimer(); } catch (_) { clearInterval(_statusTimer); } }
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
+    if (_partialRetryTimer) { clearTimeout(_partialRetryTimer); _partialRetryTimer = null; }
     if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
     _histRetrying = false;
+    _histPartial = false;
     _stopTickPoll();
   });
 
@@ -1588,9 +1606,12 @@
     // Cancel any pending empty-response retry from a previous symbol so
     // it doesn't fire AFTER the new symbol's fetch has already landed.
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
+    if (_partialRetryTimer) { clearTimeout(_partialRetryTimer); _partialRetryTimer = null; }
+    _histPartial = false;
     // Clear per-symbol retry latch so the new symbol gets a fresh retry
     // budget (no stale keys from previous symbols bleed through).
     _emptyRetryFired.clear();
+    _partialRetryFired.clear();
     // 3-second gate: re-arm the suppression gate for the new symbol.
     // Cancel the previous timer, flip the gate active, then schedule
     // 3000 ms to open it. The template reads _emptyGateSuppressed ($state)
@@ -1739,6 +1760,10 @@
         </button>
       {/each}
     </div>
+
+    {#if _histPartial}
+      <span class="chart-partial-hint">Loading more history…</span>
+    {/if}
 
     <!-- Volume chip retired (operator: "remove volume chip from
          chart and always keep volume on for chart in the modal
@@ -2986,4 +3011,11 @@
   .cw-intraday-short { display: none; }
   .cw-signals-full   { display: inline; }
   .cw-signals-short  { display: none; }
+
+  .chart-partial-hint {
+    font-size: 11px;
+    color: var(--text-faint);
+    opacity: 0.8;
+    white-space: nowrap;
+  }
 </style>
