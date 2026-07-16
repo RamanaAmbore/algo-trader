@@ -941,7 +941,7 @@
       <div class="algo-nav-inner hidden lg:flex items-center gap-1 h-12">
         <!-- Vertical ALGO label, flush at the left edge. Bare text —
              no chip, no background, no border. -->
-        <div class="flex items-center h-full">
+        <div class="flex items-center">
           <span class="algo-vert" aria-hidden="true">ALGO</span>
           <!-- Site label — bull + name link to the main landing page
                at ramboq.com. Operator: "when I click on bull hero logo,
