@@ -307,10 +307,7 @@ async def _historical_ohlcv_store(
                 )
                 for b in store_bars
             ]
-            _still_partial = (
-                _heal_attempted
-                and len(store_bars) < self_heal_threshold * days  # type: ignore[operator]
-            )
+            _still_partial = len(store_bars) < int(self_heal_threshold * days)  # type: ignore[operator]
             result = HistoricalResponseCls(  # type: ignore[operator]
                 symbol=sym, instrument_token=None, interval="day",
                 bars=bars, partial=_still_partial,

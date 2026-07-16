@@ -1,61 +1,92 @@
-# Plan: NavStrip P-slot Day P&L zero after MCX close + desktop ALGO/bull alignment
+# Plan: Fix chart range selector — x-axis anchored to requested range, not first bar
 
-## Task
-Two fixes:
-1. **NavStrip P-slot 1 (Day P&L) shows 0 after MCX close** — the closed-hours snapshot path
-   in `_positions_snapshot()` uses the wrong `close_price`. After MCX close, the broker sets
-   `previous_close = today_settlement` and `ltp = today_settlement`, so the formula
-   `pnl - oq*(close_price - avg)` collapses to 0. The fix is to use yesterday's LTP from
-   `daily_book` as `close_price` instead of the snapshot's stale `previous_close` column,
-   and to anchor the "previous batch" lookup on `captured_at` (not the `date` column, which
-   has UTC/IST edge cases).
-2. **Desktop ALGO text not vertically centred with bull** — `.algo-vert` in the desktop
-   navbar has `align-self: stretch` making it full navbar height (48px), but relies on
-   `align-items: center` inside a `writing-mode: vertical-lr` element, which centres
-   horizontally (cross-axis in vertical writing mode), not vertically. The mobile version
-   works because a wrapping `<div class="flex items-center">` gives correct centering.
+## Context
+
+Chart range buttons (1M, 3M, 6M, 1Y) appear to do nothing for symbols with limited history
+(e.g. BHEL). Root cause: `_dataXMin` in `ChartWorkspace.svelte` auto-fits the x-axis start
+to the first bar's actual timestamp. When DB only has BHEL bars from Jun 9 onward, all range
+requests return bars starting Jun 9 → chart x-axis starts at Jun 9 for 1M, 3M, 6M, and 1Y →
+user sees no visual change when clicking range buttons.
+
+Secondary/defensive issue: `_still_partial` in `options_helpers.py` only fires when
+`_heal_attempted=True`. When all Kite accounts are rate-limited, `get_historical_brokers()`
+returns [] → self-heal skipped → `_heal_attempted=False` → partial DB data returned as
+"complete" with 60s TTL → no retry, no demand_fill. This prevents backfill from catching up.
 
 ## Agents
-- backend: Fix `backend/api/routes/positions.py:_positions_snapshot()`:
-  Merge the two separate SQL queries into one combined CTE query that includes a `prev_batch`
-  CTE anchored on `captured_at < lb.max_at AND captured_at >= lb.max_at - INTERVAL '2 days'`
-  (replacing the `date < :today_date` filter), and LEFT JOINs `prev_batch` into the main
-  SELECT so `prev_ltp` and `prev_settlement_pnl` come back with each row directly.
-  Then in the Python loop, swap the preference order at lines 158-162: use `prev_ltp`
-  (yesterday's settlement from daily_book) FIRST; fall back to snapshot's `previous_close`
-  only when `prev_ltp` is None. This fixes both the date-filter bug and the wrong-value bug.
 
-- frontend: Fix `frontend/src/routes/(algo)/+layout.svelte` desktop navbar:
-  In the desktop section (line 941 block, `hidden lg:flex items-center gap-1 h-12`), wrap
-  `<span class="algo-vert">ALGO</span>` and `<button class="algo-brand">` together in
-  `<div class="flex items-center h-full">`. This mirrors the mobile structure (line 1148
-  wrapper div) which already works correctly. No CSS changes needed — the wrapper gives
-  `algo-vert`'s `align-self: stretch` a same-height parent to stretch to, then both
-  elements align by the parent's `items-center`.
+- backend: In `backend/api/routes/options_helpers.py` (line ~315), change `_still_partial` to
+  NOT depend on `_heal_attempted`. Replace:
+  ```python
+  _still_partial = (
+      _heal_attempted
+      and len(store_bars) < self_heal_threshold * days
+  )
+  ```
+  with:
+  ```python
+  _still_partial = len(store_bars) < int(self_heal_threshold * days)
+  ```
+  This ensures demand_fill is triggered when data is genuinely sparse, regardless of whether
+  a heal was attempted (i.e., even when brokers were rate-limited). No other changes to
+  options_helpers.py.
+
+- frontend: In `frontend/src/lib/ChartWorkspace.svelte` (lines 921-924), change `_dataXMin`
+  to anchor to the requested range start:
+  
+  Current:
+  ```javascript
+  const _dataXMin = $derived(_barXs.length ? Math.min(..._barXs) : 0);
+  ```
+  
+  Replace with:
+  ```javascript
+  const _rangeStartMs = $derived(Date.now() - _chartDays * 86400 * 1000);
+  const _dataXMin     = $derived(_barXs.length
+      ? Math.min(Math.min(..._barXs), _rangeStartMs)
+      : _rangeStartMs);
+  ```
+  
+  This anchors the x-axis left edge to `now - chartDays` regardless of where actual bars
+  start. Works for both daily and intraday (same component, `_chartDays` is set by
+  `_setRange` for daily and by `_loadHistorical` calls for intraday).
+  
+  `_dataXMax` and zoom logic are unchanged.
 
 - broker: skip
+
 - doc: skip
-- backend-test: Update `backend/tests/test_broker_connection_events.py` — no. Update
-  `backend/tests/` — check if `test_snapshot_*` tests cover the `prev_ltp` preference path.
-  If `test_snapshot_day_change_extras_fallback.py` exists, add a test case for the
-  `prev_ltp > 0` branch to confirm `close_price = prev_ltp` (not snapshot `previous_close`)
-  when both are present. Otherwise add it to the nearest positions-snapshot test file.
-- playwright: skip
+
+- backend-test: Add test in `backend/tests/` for `_still_partial` logic:
+  - Test that `_still_partial` is True when bar count < threshold × days, even when
+    `_heal_attempted=False` (rate-limited scenario). Use `inspect.getsource` approach
+    (static analysis of the condition) OR a unit test that patches `get_historical_brokers`
+    to return [] and confirms `_ohlcv_demand_fill` is still scheduled.
+  - File: `backend/tests/test_chart_range_partial.py`
+
+- playwright: skip (x-axis position is not accessible text/attribute; visual change would
+  require pixel comparison which is brittle — the fix is verified via code inspection and
+  confirmed correct by design)
 
 ## Tests
+
 - pytest: yes
 - svelte-check: yes
 - playwright: no
 
 ## Commit message
-fix(snapshot): use prev_ltp as close_price after MCX close; fix desktop ALGO/bull alignment
+
+fix(chart): anchor x-axis to requested range start; fix _still_partial when brokers rate-limited
+
+Chart range buttons now correctly expand/contract the x-axis window even when symbol has
+sparse historical data. Backend defensive fix ensures partial-data state is detected even
+when all historical brokers are in rate-limit cool-off.
 
 ## Done when
-1. `_positions_snapshot()` LEFT JOINs `prev_batch` CTE; `prev_close_val` prefers `prev_ltp`
-2. Desktop navbar wraps ALGO + bull brand in `<div class="flex items-center h-full">`
-3. pytest green (snapshot prev_ltp test passes)
-4. svelte-check 0 errors
 
-## Critical files
-- `backend/api/routes/positions.py` lines 56–178 (full `_positions_snapshot` function)
-- `frontend/src/routes/(algo)/+layout.svelte` lines 941–951 (desktop nav inner block)
+1. BHEL 1M chart shows x-axis from ~Jun 15; 3M from ~Apr 15; 6M from ~Jan 15; 1Y from ~Jul '25.
+   (Exact start = today − chartDays. Empty space shown before first available bar.)
+2. Switching range buttons produces visually distinct x-axis spans immediately.
+3. `_still_partial` logic does not reference `_heal_attempted` in `options_helpers.py`.
+4. `test_chart_range_partial.py` passes.
+5. `svelte-check` reports 0 errors.
