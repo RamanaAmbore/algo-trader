@@ -941,14 +941,16 @@
       <div class="algo-nav-inner hidden lg:flex items-center gap-1 h-12">
         <!-- Vertical ALGO label, flush at the left edge. Bare text —
              no chip, no background, no border. -->
-        <span class="algo-vert" aria-hidden="true">ALGO</span>
-        <!-- Site label — bull + name link to the main landing page
-             at ramboq.com. Operator: "when I click on bull hero logo,
-             it should show main landing page of ramboq.com." -->
-        <button onclick={() => goto('/pulse')} class="algo-brand">
-          <img src={bullSrc} alt="" class="algo-brand-bull" />
-          <span class="algo-brand-name">RamboQuant</span>
-        </button>
+        <div class="flex items-center h-full">
+          <span class="algo-vert" aria-hidden="true">ALGO</span>
+          <!-- Site label — bull + name link to the main landing page
+               at ramboq.com. Operator: "when I click on bull hero logo,
+               it should show main landing page of ramboq.com." -->
+          <button onclick={() => goto('/pulse')} class="algo-brand">
+            <img src={bullSrc} alt="" class="algo-brand-bull" />
+            <span class="algo-brand-name">RamboQuant</span>
+          </button>
+        </div>
 
         <nav class="flex items-center justify-center gap-0.5 flex-1">
           <!-- Inline section — Monitor + Analyze + Modes groups always
