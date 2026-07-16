@@ -57,59 +57,48 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
 
     try:
         async with async_session() as session:
-            # Latest snapshot BATCH per account — pull every (account, symbol)
-            # row written in the most-recent captured_at for that account.
-            # Previous `DISTINCT ON (account, symbol) ORDER BY captured_at DESC`
-            # carried over months-old rows for symbols closed long ago (e.g.
-            # May CRUDEOIL positions resurfacing in today's NavStrip sum).
-            # Batch-anchoring guarantees we only surface the broker's CURRENT
-            # book. Zero-payload guard still applies inside the batch.
+            # Single combined query — latest_batch anchors the current
+            # snapshot, prev_batch finds the most-recent prior row per
+            # (account, symbol) using captured_at < max_at (not date < today)
+            # so UTC/IST date-column edge cases can't drop yesterday's rows.
+            # prev_batch lookback window is 2 days to cover MCX's 23:30 IST
+            # close (captures labelled with next calendar day in UTC).
             result = await session.execute(_sql_text("""
                 WITH latest_batch AS (
                     SELECT account, MAX(captured_at) AS max_at
                     FROM daily_book
                     WHERE kind = 'positions' AND ltp IS NOT NULL
                     GROUP BY account
+                ),
+                prev_batch AS (
+                    SELECT DISTINCT ON (db.account, db.symbol)
+                        db.account,
+                        db.symbol,
+                        db.ltp       AS prev_ltp,
+                        db.total_pnl AS prev_settlement_pnl
+                    FROM daily_book db
+                    JOIN latest_batch lb ON db.account = lb.account
+                    WHERE db.kind = 'positions'
+                      AND db.total_pnl IS NOT NULL
+                      AND db.captured_at < lb.max_at
+                      AND db.captured_at >= lb.max_at - INTERVAL '2 days'
+                    ORDER BY db.account, db.symbol, db.captured_at DESC
                 )
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
                        db.ltp, db.day_pnl, db.total_pnl, db.payload_json,
-                       db.captured_at, db.previous_close
+                       db.captured_at, db.previous_close,
+                       pb.prev_ltp, pb.prev_settlement_pnl
                 FROM daily_book db
                 JOIN latest_batch lb
                   ON db.account = lb.account AND db.captured_at = lb.max_at
+                LEFT JOIN prev_batch pb
+                  ON pb.account = db.account AND pb.symbol = db.symbol
                 WHERE db.kind = 'positions'
                   AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
                            AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
                 ORDER BY db.account, db.symbol
             """))
             raw_rows = result.all()
-
-            # Fetch yesterday's total_pnl per (account, symbol) — used by the
-            # frontend's baseDayPnlForPosition to compute day-P&L as:
-            #   day_pnl = total_pnl - prev_settlement_pnl  (Branch A)
-            # This mirrors what _override_stale_close_from_snapshot builds for
-            # the live path via prev_pnl_map / _backfill_prev_settlement_pnl.
-            prev_day_sql = _sql_text("""
-                SELECT DISTINCT ON (account, symbol)
-                    account, symbol,
-                    ltp          AS prev_ltp,
-                    total_pnl    AS prev_settlement_pnl
-                FROM daily_book
-                WHERE kind = 'positions'
-                  AND total_pnl IS NOT NULL
-                  AND date < :today_date
-                ORDER BY account, symbol, captured_at DESC
-            """)
-            prev_rows = (
-                await session.execute(prev_day_sql, {"today_date": _today_ist})
-            ).mappings().all()
-            prev_map: dict[tuple[str, str], dict] = {
-                (str(r.account), str(r.symbol)): {
-                    "prev_ltp": float(r.prev_ltp) if r.prev_ltp else None,
-                    "prev_settlement_pnl": float(r.prev_settlement_pnl),
-                }
-                for r in prev_rows
-            }
     except Exception as exc:
         logger.warning(f"positions snapshot query failed: {exc}")
         return None
@@ -117,7 +106,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     if not raw_rows:
         return None
 
-    snap_captured_at_dt = raw_rows[0][9]  # index 9 = captured_at (previous_close is index 10)
+    snap_captured_at_dt = raw_rows[0][9]  # index 9 = captured_at (previous_close=10, prev_ltp=11, prev_settlement_pnl=12)
     snap_captured_at: str = snap_captured_at_dt.isoformat() if snap_captured_at_dt else ""
 
     # Log when the snapshot is from a prior session (no today rows yet —
@@ -130,7 +119,8 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
 
     rows: list[PositionRow] = []
     for (account, symbol, exchange, qty, avg_cost, ltp,
-         day_pnl, total_pnl, payload_json, captured_at, previous_close) in raw_rows:
+         day_pnl, total_pnl, payload_json, captured_at, previous_close,
+         prev_ltp, prev_settlement_pnl) in raw_rows:
         # ------------------------------------------------------------------
         # `snapshot_extras` fallback — the top-level `day_pnl` column is set
         # to NULL by daily_snapshot._positions_rows when the row was captured
@@ -152,15 +142,15 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         # and live paths are consistent (qty=100 contracts for 1-lot MCX).
         multiplier = extract_snapshot_multiplier(payload_json)
         effective_qty = (qty or 0) * multiplier
-        # prev_map lookup — fall back to prev_ltp for previous_close when the
-        # column is absent/zero (mirrors _override_stale_close_from_snapshot).
-        prev_entry = prev_map.get((str(account), str(symbol)), {})
+        # Prefer yesterday's LTP (from daily_book prev_batch) as close_price —
+        # using snapshot's previous_close is wrong after MCX close when the
+        # broker sets it to today's settlement price, collapsing day P&L to 0.
+        # Fallback to previous_close only when prev_ltp is absent/zero.
         prev_close_val = (
-            float(previous_close)
-            if previous_close and float(previous_close) > 0
-            else prev_entry.get("prev_ltp")
+            float(prev_ltp) if prev_ltp and float(prev_ltp) > 0
+            else (float(previous_close) if previous_close and float(previous_close) > 0 else None)
         )
-        prev_pnl_val = prev_entry.get("prev_settlement_pnl")
+        prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
         rows.append(build_snapshot_position_row(
             account, symbol, exchange, effective_qty, avg_cost, ltp,
             day_pnl, total_pnl, extras,

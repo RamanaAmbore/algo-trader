@@ -72,7 +72,9 @@ def _make_row(
         Decimal(str(total_pnl)) if total_pnl is not None else None,
         payload,
         captured_at,
-        None,  # previous_close — new column (index 10)
+        None,  # previous_close (index 10)
+        None,  # prev_ltp (index 11) — no prior batch in test DB
+        None,  # prev_settlement_pnl (index 12)
     )
 
 

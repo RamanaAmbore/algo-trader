@@ -336,9 +336,11 @@ def test_snapshot_day_pnl_nonzero_with_previous_close():
 @pytest.mark.asyncio
 async def test_positions_snapshot_passes_previous_close_to_builder():
     """Integration: _positions_snapshot() threads previous_close from DB to
-    build_snapshot_position_row and the resulting close_price uses it.
+    build_snapshot_position_row. After the prev_ltp preference fix, previous_close
+    is now a fallback when prev_ltp is absent.
 
-    Mocked DB returns an 11-tuple with previous_close=22800.0.
+    Mocked DB returns a 13-tuple. When prev_ltp is None (new position),
+    previous_close=22800.0 is used as close_price.
     Expected: row.close_price == 22800.0 (not the LTP of 23200.0).
     """
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -346,8 +348,9 @@ async def test_positions_snapshot_passes_previous_close_to_builder():
 
     captured_ts = datetime(2026, 7, 13, 10, 30, tzinfo=timezone.utc)
 
-    # 11-tuple: account, symbol, exchange, qty, avg_cost, ltp,
-    #           day_pnl, total_pnl, payload_json, captured_at, previous_close
+    # 13-tuple: account, symbol, exchange, qty, avg_cost, ltp,
+    #           day_pnl, total_pnl, payload_json, captured_at, previous_close,
+    #           prev_ltp, prev_settlement_pnl
     snapshot_row = (
         "ZG0790",
         "NIFTY26JULFUT",
@@ -359,7 +362,9 @@ async def test_positions_snapshot_passes_previous_close_to_builder():
         Decimal("10000.00"),   # total_pnl
         "{}",                  # payload_json
         captured_ts,           # captured_at
-        22800.0,               # previous_close (prior settlement) ← key
+        22800.0,               # previous_close (from snapshot) ← fallback
+        None,                  # prev_ltp (new position, no yesterday snapshot)
+        None,                  # prev_settlement_pnl (new position)
     )
 
     mock_result = MagicMock()
@@ -379,8 +384,8 @@ async def test_positions_snapshot_passes_previous_close_to_builder():
 
     assert row.close_price == pytest.approx(22800.0, rel=1e-6), (
         f"close_price={row.close_price} must equal previous_close=22800.0 "
-        "not LTP=23200.0 — this is the fix for day P&L = 0 overnight positions"
+        "(fallback when prev_ltp is absent) — not LTP=23200.0"
     )
     assert row.last_price == pytest.approx(23200.0, rel=1e-6), (
-        "last_price must remain LTP=23200.0 (unchanged by previous_close)"
+        "last_price must remain LTP=23200.0 (unchanged by close_price logic)"
     )

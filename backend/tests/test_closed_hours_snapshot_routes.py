@@ -1000,7 +1000,9 @@ async def test_positions_snapshot_pnl_percentage_populated():
         10000.0,       # total_pnl
         "{}",          # payload_json
         captured_ts,   # captured_at
-        None,          # previous_close (new column)
+        None,          # previous_close (index 10)
+        None,          # prev_ltp (index 11)
+        None,          # prev_settlement_pnl (index 12)
     )
 
     mock_result = MagicMock()
@@ -1133,7 +1135,9 @@ async def test_positions_snapshot_prefers_good_over_bad():
         10000.0,    # total_pnl
         "{}",       # payload_json
         good_ts,    # captured_at
-        None,       # previous_close (new column)
+        None,       # previous_close (index 10)
+        None,       # prev_ltp (index 11)
+        None,       # prev_settlement_pnl (index 12)
     )
 
     mock_result = MagicMock()

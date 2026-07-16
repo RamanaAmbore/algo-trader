@@ -473,7 +473,9 @@ class TestClosedHoursRouteReturnsSnapshot:
             Decimal("14670.00"),          # total_pnl (lifetime)
             "{}",                         # payload_json
             fake_captured,                # captured_at
-            None,                         # previous_close (new column)
+            None,                         # previous_close (index 10)
+            None,                         # prev_ltp (index 11)
+            None,                         # prev_settlement_pnl (index 12)
         )]
 
         mock_result = _MM()
@@ -558,7 +560,9 @@ class TestClosedHoursRouteReturnsSnapshot:
             Decimal("14670.00"),            # total_pnl (lifetime)
             _json.dumps(payload),           # payload_json
             fake_captured,                  # captured_at
-            None,                           # previous_close (new column)
+            None,                           # previous_close (index 10)
+            None,                           # prev_ltp (index 11)
+            None,                           # prev_settlement_pnl (index 12)
         )]
 
         mock_result = _MM()
@@ -642,7 +646,9 @@ class TestClosedHoursRouteReturnsSnapshot:
             Decimal("7500.00"),             # total_pnl
             _json.dumps(payload),           # payload_json
             fake_captured,                  # captured_at
-            None,                           # previous_close (new column)
+            None,                           # previous_close (index 10)
+            None,                           # prev_ltp (index 11)
+            None,                           # prev_settlement_pnl (index 12)
         )]
 
         mock_result = _MM()
@@ -684,11 +690,11 @@ class TestClosedHoursRouteReturnsSnapshot:
         # gracefully leave day_change_val at 0.0 (no extras available).
         fake_rows = [
             ("ZG0790", "SYM1", "MCX", -1, Decimal("100"), Decimal("50"),
-             None, Decimal("500"), "not-valid-json{{",       fake_captured, None),
+             None, Decimal("500"), "not-valid-json{{",       fake_captured, None, None, None),
             ("ZG0790", "SYM2", "MCX", -1, Decimal("100"), Decimal("50"),
-             None, Decimal("500"), "[1, 2, 3]",              fake_captured, None),
+             None, Decimal("500"), "[1, 2, 3]",              fake_captured, None, None, None),
             ("ZG0790", "SYM3", "MCX", -1, Decimal("100"), Decimal("50"),
-             None, Decimal("500"), None,                     fake_captured, None),
+             None, Decimal("500"), None,                     fake_captured, None, None, None),
         ]
 
         mock_result = _MM()
