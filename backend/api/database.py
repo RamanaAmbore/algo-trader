@@ -626,6 +626,31 @@ async def _migrate_daily_book_previous_close(conn) -> None:
     ))
 
 
+async def _migrate_algo_orders_chase_timing(conn) -> None:
+    """Add chase timing + interval columns to algo_orders (idempotent).
+
+    last_attempt_at / next_attempt_at (Unix epoch seconds, DOUBLE
+    PRECISION) — written by the chase loop on every cancel-and-replace
+    so the chase panel can show a live countdown to the next re-quote.
+
+    interval_seconds (INTEGER) — persisted chase cadence; eliminates
+    the need for the UI to re-derive from /admin/settings per-row.
+
+    All three columns are nullable — existing rows keep NULL, which
+    the API serialises as None and the frontend treats as "unknown".
+    """
+    from sqlalchemy import text
+    for stmt in (
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS "
+        "last_attempt_at DOUBLE PRECISION",
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS "
+        "next_attempt_at DOUBLE PRECISION",
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS "
+        "interval_seconds INTEGER",
+    ):
+        await conn.execute(text(stmt))
+
+
 async def init_db() -> None:
     """Create all tables (idempotent).
 
@@ -657,6 +682,7 @@ async def init_db() -> None:
         await _migrate_audit_stability_indexes(conn)
         await _migrate_code_metrics_perf_snapshots(conn)
         await _migrate_daily_book_previous_close(conn)
+        await _migrate_algo_orders_chase_timing(conn)
     logger.info("Database: tables verified")
 
     # broker_accounts schema lives on the SHARED engine (ramboq DB) — always

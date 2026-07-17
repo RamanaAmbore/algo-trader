@@ -433,6 +433,15 @@ class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     # standalone orders; one or more ids when a template's wing
     # (or any future child mechanism) attached on fill.
     child_order_ids: list[int] = []
+    # Chase timing fields — populated from the DB columns written by
+    # _sync_algo_order_id on every cancel-and-replace. None on legacy
+    # rows, non-chased orders, or rows predating the migration.
+    # interval_seconds: the configured cadence between re-quotes.
+    # last_attempt_at / next_attempt_at: Unix epoch seconds; the UI
+    # can compute a countdown as (next_attempt_at - Date.now()/1000).
+    interval_seconds: Optional[int] = None
+    next_attempt_at: Optional[float] = None
+    last_attempt_at: Optional[float] = None
 
 
 async def _fetch_child_order_ids(session, parent_ids: list[int]) -> dict[int, list[int]]:

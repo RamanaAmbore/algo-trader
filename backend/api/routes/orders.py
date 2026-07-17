@@ -384,12 +384,15 @@ def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
         attached_gtts_json=r.attached_gtts_json,
         filled_quantity=(int(r.filled_quantity) if r.filled_quantity is not None else None),
         child_order_ids=child_map.get(r.id, []),
+        interval_seconds=(int(r.interval_seconds) if getattr(r, "interval_seconds", None) is not None else None),
+        last_attempt_at=(float(r.last_attempt_at) if getattr(r, "last_attempt_at", None) is not None else None),
+        next_attempt_at=(float(r.next_attempt_at) if getattr(r, "next_attempt_at", None) is not None else None),
     )
 
 
 def _rco_invalidate_terminal_caches() -> None:
-    """Invalidate positions/holdings/margins API + raw-DF caches on terminal order status."""
-    for _key in ("positions", "holdings"):
+    """Invalidate positions/holdings/margins/funds API + raw-DF caches on terminal order status."""
+    for _key in ("positions", "holdings", "funds"):
         try:
             invalidate(_key)
         except Exception:

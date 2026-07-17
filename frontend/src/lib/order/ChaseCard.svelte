@@ -198,12 +198,20 @@
     return 'cc-mode';
   }
 
+  // Per-second clock for next_attempt_at countdown. Updates every 1s
+  // so the "next re-quote in Xs" display ticks down live between 3s polls.
+  let _nowSec = $state(Math.floor(Date.now() / 1000));
+  /** @type {ReturnType<typeof setInterval>|null} */
+  let _clockTimer = null;
+
   onMount(() => {
     _load();
     _rescheduleTimer();
+    _clockTimer = setInterval(() => { _nowSec = Math.floor(Date.now() / 1000); }, 1000);
   });
   onDestroy(() => {
     if (_timer) { _timer(); _timer = null; }
+    if (_clockTimer) { clearInterval(_clockTimer); _clockTimer = null; }
   });
 </script>
 
@@ -281,9 +289,15 @@
             <span class="cc-limit-moved">·{row.attempts || 0}</span>
           {/if}
         </span>
-        <span class="cc-col cc-col-att">{row.attempts || 0}</span>
+        <span class="cc-col cc-col-att">{row.attempts || 0}{#if row.next_attempt_at != null && row.status === 'active'}
+            {#if _nowSec < row.next_attempt_at}
+              <span class="cc-countdown" title="Seconds until next re-quote"> · {Math.max(0, Math.ceil(row.next_attempt_at - _nowSec))}s</span>
+            {:else}
+              <span class="cc-countdown cc-requoting" title="Re-quoting now"> · re-quoting…</span>
+            {/if}
+          {/if}</span>
         {#if !compact}
-          <span class="cc-col cc-col-age">{_age(row.created_at)}</span>
+          <span class="cc-col cc-col-age">{_age(row.last_attempt_at || row.created_at)}</span>
           <span class="cc-col {_modeCls(row.mode)}">{(row.mode || '?').toUpperCase()}</span>
         {/if}
         <span class="cc-col cc-col-actions">
@@ -480,4 +494,12 @@
     color: var(--c-short);
   }
   .cc-kill:disabled { opacity: 0.45; cursor: progress; }
+  .cc-countdown {
+    font-size: var(--fs-2xs);
+    color: rgba(180, 200, 230, 0.6);
+    font-variant-numeric: tabular-nums;
+  }
+  .cc-countdown.cc-requoting {
+    color: var(--c-action);
+  }
 </style>

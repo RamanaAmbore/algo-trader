@@ -821,6 +821,16 @@ class AlgoOrder(Base):
     )
     filled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Chase timing fields — written by _sync_algo_order_id on every
+    # cancel-and-replace so the chase panel can display a live countdown
+    # to the next re-quote. Both are Unix epoch seconds (float). NULL
+    # on rows created before this migration and on non-chased orders.
+    last_attempt_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    next_attempt_at: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Configured interval between re-quotes (seconds). Persisted so the
+    # UI countdown doesn't need to re-derive it from /admin/settings.
+    interval_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # Slice 6 — attribution v1. Optional foreign key to strategies.id.
     # Nullable so existing rows (created before the slice 6 deploy)
     # keep validating without a backfill, and so the order-place path

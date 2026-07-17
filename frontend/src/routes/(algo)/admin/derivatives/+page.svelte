@@ -3342,7 +3342,7 @@
     // caused symbolStore to be written twice per poll (once by positionsStore
     // parse, once by publishPulseQuotes here), which oscillated liveLtp for
     // MCX futures that appear as both a position and an underlying anchor.
-    await positionsStore.load(undefined, { force: fresh });
+    await positionsStore.load({ fresh });
     // Stale-while-error: always process positionsStore.value even when
     // an error is set — the store retains the last-good broker snapshot,
     // so the dropdown and legs populate from cached data while a retry
@@ -3759,7 +3759,21 @@
     // algo-engine path the operator didn't manually place here).
     // Refreshes loadPositions too so the Candidates panel reflects
     // the new fill within one ws round-trip, not on the 30 s poll.
+    // Debounce handle for order_update bursts (basket fills, rapid postbacks).
+    /** @type {ReturnType<typeof setTimeout>|null} */
+    let _orderUpdateTimer = null;
     wsTeardown = createPerformanceSocket((msg) => {
+      if (msg?.event === 'order_update') {
+        // Non-terminal postback (OPEN, TRIGGER PENDING, etc.) — refresh
+        // positions with a 200ms debounce so rapid fills from a basket
+        // coalesce into one re-fetch rather than hammering the broker API.
+        if (_orderUpdateTimer) clearTimeout(_orderUpdateTimer);
+        _orderUpdateTimer = setTimeout(() => {
+          _orderUpdateTimer = null;
+          loadPositions({ fresh: true });
+        }, 200);
+        return;
+      }
       if (msg?.event !== 'position_filled') return;
       const orderId = String(msg.order_id || '');
       const matched = orderId ? _markToastFilled(orderId, Number(msg.fill_price || 0)) : false;

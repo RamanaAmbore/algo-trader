@@ -1353,6 +1353,7 @@
   let _lastBasketTrigger = $state(/** @type {number} */ (-1));
   $effect(() => {
     if (triggerSubmit !== _lastSubmitTrigger && _lastSubmitTrigger >= 0) {
+      if (submitting) return;
       submit();
     }
     _lastSubmitTrigger = triggerSubmit;
@@ -1739,7 +1740,10 @@
     // embedded inside a panel that has its own window keydown handler.
     if (!hostManagesEsc) {
       const onKey = (/** @type {KeyboardEvent} */ e) => {
-        if (e.key === 'Escape') onClose();
+        if (e.key === 'Escape') {
+          if (submitting) return;
+          onClose();
+        }
       };
       window.addEventListener('keydown', onKey);
       _escCleanup = () => window.removeEventListener('keydown', onKey);
@@ -1940,7 +1944,7 @@
           {action !== 'open' ? ' · ' + action.toUpperCase() : ''}
         </span>
       </div>
-      <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose}>×</button>
+      <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose} disabled={submitting}>×</button>
     </div>
 
     <!-- Combined top row: Account · Symbol · Qty (and Side toggle).

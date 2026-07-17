@@ -541,6 +541,45 @@ async def _preflight_check_margin(
     return new_blockers, diag
 
 
+async def _fetch_account_margins(broker, loop, segment: str) -> "tuple[dict, str | None]":
+    """Fetch account margin from the broker and normalise to a flat dict.
+
+    Returns (margin_dict, error_str_or_None).
+
+    Broker shape detection:
+      Kite returns nested: {"equity": {"net": ..., ...}, "commodity": {...}}
+      Dhan returns flat:   {"net": ..., "available": ..., "utilised": ...}
+
+    For Kite we slice by segment; for Dhan the flat dict is returned
+    directly so downstream margin checks can read "available" / "net"
+    without getting an empty dict.
+
+    Raised as the inner try/except so `TypeError` on the no-arg call
+    (some adapters accept an optional segment arg) falls back to the
+    segmented call transparently.
+    """
+    try:
+        # Un-segmented call first (returns both wallets; some
+        # accounts report enabled=True there but False on the
+        # segmented call due to a Kite scope quirk).
+        try:
+            m_all = await loop.run_in_executor(None, broker.margins)
+            m = m_all or {}
+            # Kite returns nested: {"equity": {...}, "commodity": {...}}
+            # Dhan returns flat:   {"net": ..., "available": ..., ...}
+            # Detect flat shape by presence of top-level numeric keys so
+            # Dhan preflight margin gate doesn't silently return {} and
+            # pass every order regardless of available margin.
+            if "net" in m or "available" in m:
+                return m, None
+            return m.get(segment, {}), None
+        except TypeError:
+            return await loop.run_in_executor(
+                None, broker.margins, segment), None
+    except Exception as e:
+        return None, str(e)
+
+
 async def run_preflight(
     account: str,
     order: dict,
@@ -649,7 +688,12 @@ async def run_preflight(
     # Now they're gathered; total time = max(individual call), typically
     # ~300ms. Operator's reported "order placement deteriorated" pain
     # tracks back to this section accumulating across recent slices.
-    segment = "commodity" if exchange in ("MCX", "NCO") else "equity"
+    if exchange in ("MCX", "NCO"):
+        segment = "commodity"
+    elif exchange in ("CDS", "BCD"):
+        segment = "currency"
+    else:
+        segment = "equity"
 
     async def _fetch_profile():
         if broker.broker_id != "zerodha_kite":
@@ -681,25 +725,11 @@ async def run_preflight(
         except Exception as e:
             return e
 
-    async def _fetch_account_margins():
-        try:
-            # Un-segmented call first (returns both wallets; some
-            # accounts report enabled=True there but False on the
-            # segmented call due to a Kite scope quirk).
-            try:
-                m_all = await loop.run_in_executor(None, broker.margins)
-                return (m_all or {}).get(segment, {}), None
-            except TypeError:
-                return await loop.run_in_executor(
-                    None, broker.margins, segment), None
-        except Exception as e:
-            return None, str(e)
-
     profile_res, instruments_res, bm_res, margins_res = await asyncio.gather(
         _fetch_profile(),
         _fetch_instruments(),
         _fetch_basket_margin(),
-        _fetch_account_margins(),
+        _fetch_account_margins(broker, loop, segment),
     )
 
     # ── Apply segment-inactive gate from profile result ──────────────────
