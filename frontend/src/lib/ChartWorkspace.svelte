@@ -802,6 +802,27 @@
     _chartLoaded = false;
     _chartHover = null;
     zoom = null;
+    // Full state reset — mirrors the symbol-change $effect so stale bars /
+    // retry timers from the previous range don't bleed into the new fetch.
+    // Excludes symbol-specific parts (chartStore.clearData, _greeks) because
+    // the symbol hasn't changed — only the range window has.
+    _histLoading = true;
+    _histError = '';
+    _histRetrying = false;
+    _bars = [];
+    _spotBars = [];
+    _intradayOn = false;
+    if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
+    if (_partialRetryTimer) { clearTimeout(_partialRetryTimer); _partialRetryTimer = null; }
+    _histPartial = false;
+    _emptyRetryFired.clear();
+    _partialRetryFired.clear();
+    _emptyGateSuppressed = true;
+    if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
+    _suppressTimer = setTimeout(() => {
+      _suppressTimer = null;
+      if (_mounted) _emptyGateSuppressed = false;
+    }, 3000);
     _loadHistorical(true);
   }
 

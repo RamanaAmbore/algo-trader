@@ -88,7 +88,7 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
  * function (or a wrapper that calls it) instead of reading `p.day_change_val`
  * directly.
  *
- * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null }} p
+ * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null, last_price?: number|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
@@ -102,10 +102,19 @@ export function baseDayPnlForPosition(p) {
   const oq  = Number(p?.overnight_quantity ?? 0);
   // Overnight hold with no prevPnl: use frozen day_change_val directly.
   // Avoids the close_price=0 trap post-MCX session when Kite returns stale zero.
-  const dcv = Number(p?.day_change_val ?? 0);
-  if (oq > 0 && dcv !== 0) return dcv;
+  const dcv   = Number(p?.day_change_val ?? 0);
   const close = Number(p?.close_price ?? p?.prev_close ?? 0);
   const avg   = Number(p?.average_price ?? p?.avg_cost ?? 0);
+  if (oq > 0 && dcv !== 0) return dcv;
+  if (oq > 0 && dcv === 0) {
+    // Stale-snapshot guard: when close_price === last_price (Kite hasn't
+    // settled yet — common during the overnight gap), the formula
+    // pnl − oq×(close−avg) would be correct, but if close is genuinely
+    // stale (zero or equal to LTP), return 0 to avoid a distorted value.
+    const ltp = Number(p?.last_price ?? 0);
+    if (close > 0 && close !== ltp) return pnl - oq * (close - avg);
+    return 0;
+  }
   return pnl - oq * (close - avg);
 }
 

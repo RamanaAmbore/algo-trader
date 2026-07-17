@@ -113,11 +113,16 @@ class TemplatePlan:
 
 @dataclass
 class AttachResult:
-    plan:           TemplatePlan
-    gtt_ids:        list[str] = field(default_factory=list)
-    wing_order_id:  Optional[str] = None
-    sibling_pairs:  list[tuple[str, str]] = field(default_factory=list)
-    errors:         list[str] = field(default_factory=list)
+    plan:              TemplatePlan
+    gtt_ids:           list[str] = field(default_factory=list)
+    wing_order_id:     Optional[str] = None
+    sibling_pairs:     list[tuple[str, str]] = field(default_factory=list)
+    errors:            list[str] = field(default_factory=list)
+    # Set when _fire_guard_alert fired (applies_to mismatch path).
+    # Structural note: apply_template_to_order returns None on guard
+    # fire — so errors and guard_alert_fired are mutually exclusive in
+    # practice. The flag is defensive documentation only.
+    guard_alert_fired: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -276,6 +281,67 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
         _do_email()
 
     logger.info(f"guard alert dispatched: {summary}")
+
+
+def _fire_attach_fail_alert(
+    *,
+    order_id: Optional[int],
+    symbol: str,
+    account: str,
+    errors: list,
+) -> None:
+    """Fire a Telegram-only alert when template attach fails due to an
+    operational error (G1 guard, lot_size cache miss, broker placement
+    failure, etc.) AFTER the parent order has filled.
+
+    Telegram-only (not email) — these are operational failures, not
+    security incidents. The operator needs an immediate ping so they
+    can manually arm exits. Email reserved for the security-pattern
+    applies_to guard alerts.
+
+    Mutually exclusive with _fire_guard_alert: the applies_to guard
+    returns None from apply_template_to_order (no AttachResult), so
+    this alert only fires when an AttachResult with errors exists and
+    guard_alert_fired is False.
+    """
+    import asyncio as _asyncio
+    from datetime import datetime, timezone, timedelta
+
+    now_utc = datetime.now(timezone.utc)
+    ist = now_utc + timedelta(hours=5, minutes=30)
+    ist_label = ist.strftime("%a, %b %d %Y, %H:%M IST")
+
+    err_summary = "; ".join((str(e) for e in errors[:2]))
+
+    def _do_telegram() -> None:
+        try:
+            from backend.shared.helpers.alert_utils import _send_telegram
+            msg = (
+                f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
+                f"<code>"
+                f"order #{order_id}\n"
+                f"symbol:   {symbol}\n"
+                f"account:  {account}\n\n"
+                f"errors:   {err_summary}\n\n"
+                f"Parent order FILLED. Exits NOT attached.\n"
+                f"Arm exits manually if needed.</code>"
+            )
+            _send_telegram(msg)
+        except Exception as _e:
+            logger.warning(f"attach fail alert: Telegram failed: {_e}")
+
+    async def _task():
+        _do_telegram()
+
+    try:
+        _asyncio.get_running_loop().create_task(_task())
+    except RuntimeError:
+        _do_telegram()
+
+    logger.warning(
+        "attach fail alert dispatched: order #%s %s %s errors=[%s]",
+        order_id, symbol, account, err_summary,
+    )
 
 
 def _is_sell_option(side: str, symbol: str) -> bool:
@@ -1878,6 +1944,15 @@ async def apply_template_to_order(
         parent_account, parent_side, parent_qty, parent_fill_price,
     )
     if _lot_err is not None:
+        # lot_size lookup failure is a silent operational error — alert
+        # the operator so they can arm exits manually. Parent already filled.
+        if _lot_err.errors:
+            _fire_attach_fail_alert(
+                order_id=parent_order_id,
+                symbol=parent_symbol,
+                account=parent_account,
+                errors=_lot_err.errors,
+            )
         return _lot_err
 
     # Phase 1B — when the template says "pick wing by premium %" AND
@@ -1906,4 +1981,17 @@ async def apply_template_to_order(
     if wing_scan_note:
         plan.notes.append(wing_scan_note)
 
-    return _route_apply_path(plan, apply_path, parent_account, parent_order_id)
+    result = _route_apply_path(plan, apply_path, parent_account, parent_order_id)
+    # Fire operational-failure alert on any error that silently
+    # prevented exits from attaching. Only fires when the applies_to
+    # guard did NOT already send a notification (guard_alert_fired=False,
+    # which is always the case here — the guard path returns None, not
+    # an AttachResult with errors).
+    if result.errors and not result.guard_alert_fired:
+        _fire_attach_fail_alert(
+            order_id=parent_order_id,
+            symbol=parent_symbol,
+            account=parent_account,
+            errors=result.errors,
+        )
+    return result

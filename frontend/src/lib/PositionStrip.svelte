@@ -509,7 +509,13 @@
     // writer logged zeros (auth outage) and never recovered — operator
     // saw 0.0 instead of the real ₹84k positions P∆. The snapshot is
     // now the SSOT so we read from it directly.
-    dispPositionsToday = _livePositionsToday;
+    // Guard: only overwrite dispPositionsToday when the live derived is
+    // meaningful — prevents a zero flash during the brief live→snapshot
+    // gap at market close when positions briefly clear before the snapshot
+    // arrives. The last non-zero value from the in-session poll is retained.
+    if (positions.length > 0 || _livePositionsToday !== 0) {
+      dispPositionsToday = _livePositionsToday;
+    }
     dispHoldingsToday  = _liveHoldingsToday;
     if (!open) return;
   });

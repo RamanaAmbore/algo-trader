@@ -260,7 +260,7 @@ async def _emit_chase_terminal(
     except Exception as _e:
         logger.debug(f"_emit_chase_terminal: {_e}")
 
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="chase")
+_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chase")
 
 # Maximum consecutive broker errors before a chase loop is aborted and an
 # alert is fired.  Distinct from `max_attempts` (the unfilled cap): this
@@ -599,7 +599,8 @@ async def _run(fn, *args):
 
 async def _sync_algo_order_id(algo_order_id: int | None,
                               new_broker_order_id: str,
-                              current_limit: float | None = None) -> None:
+                              current_limit: float | None = None,
+                              interval_seconds: int | None = None) -> None:
     """Update AlgoOrder.broker_order_id to the latest one the chase
     just placed. Best-effort — never raises. Phase 0.5 — without this
     every chase cancel-and-replace orphaned the row from its broker
@@ -612,6 +613,14 @@ async def _sync_algo_order_id(algo_order_id: int | None,
     on every chase row regardless of how many cancel-and-replaces
     had moved the broker order's limit; after 3+ iterations the
     operator saw a stale entry price.
+
+    Chase timing fix — writes `last_attempt_at` (epoch seconds, now())
+    and `next_attempt_at` (last_attempt_at + interval_seconds) on
+    every cancel-and-replace so the chase panel can display a live
+    countdown to the next re-quote. Without these columns the UI had
+    no way to distinguish "active" from "stalled" chases mid-flight.
+    `interval_seconds` is forwarded from ChaseConfig so the next-attempt
+    display matches the actual configured cadence.
     """
     if algo_order_id is None or not new_broker_order_id:
         return
@@ -629,6 +638,19 @@ async def _sync_algo_order_id(algo_order_id: int | None,
                     if row.current_limit != float(current_limit):
                         row.current_limit = float(current_limit)
                         _dirty = True
+                # Write timing fields so the chase panel shows a live
+                # countdown. Both columns are nullable; skip on models
+                # that predate the migration (hasattr guard).
+                _now = _time.time()
+                if hasattr(row, "last_attempt_at"):
+                    row.last_attempt_at = _now
+                    _dirty = True
+                if hasattr(row, "next_attempt_at") and interval_seconds:
+                    row.next_attempt_at = _now + float(interval_seconds)
+                    _dirty = True
+                if hasattr(row, "interval_seconds") and interval_seconds is not None:
+                    row.interval_seconds = int(interval_seconds)
+                    _dirty = True
                 if _dirty:
                     await _s.commit()
     except Exception as _e:
@@ -1204,7 +1226,11 @@ async def chase_order(
             # lockstep with the chase loop's current order so the
             # terminal handler + postback handler + chase panel all
             # see the LATEST broker id, not the FIRST one.
-            await _sync_algo_order_id(algo_order_id, current_order_id, current_limit=price)
+            await _sync_algo_order_id(
+                algo_order_id, current_order_id,
+                current_limit=price,
+                interval_seconds=cfg.interval_seconds,
+            )
 
             # Audit fix (C-2) — operator-kill race: re-check the NEW id
             # immediately after place_order so a kill in the replace window
