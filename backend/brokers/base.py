@@ -22,6 +22,12 @@ class Broker(ABC):
     """
     Broker-agnostic interface.
 
+    Diagnostics — every adapter populates _last_req / _last_resp before /
+    after each HTTP call so operator debugging doesn't require log-diving:
+      broker.last_request_debug() → {"request": {...}, "response": {...}}
+    Adapters update these dicts in their HTTP dispatch path (_safe_call,
+    _retry_groww_auth, etc.). Base initialises them to empty dicts.
+
     Conventions shared by every adapter:
       - `account` is the RamboQuant-internal account code (e.g. "ZG0790").
       - `broker_id` is the canonical vendor identifier stored in
@@ -45,6 +51,22 @@ class Broker(ABC):
     interface yet. Any new use of that handle is a smell — prefer to
     add the operation to this ABC.
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+
+    # Populated by adapters in their HTTP dispatch path (_safe_call, etc.)
+    _last_req: dict
+    _last_resp: dict
+
+    def __init__(self) -> None:
+        self._last_req: dict = {}
+        self._last_resp: dict = {}
+
+    def last_request_debug(self) -> dict:
+        """Return the most recent request + response metadata for debugging.
+        Adapters populate _last_req / _last_resp; base returns both."""
+        return {"request": dict(self._last_req), "response": dict(self._last_resp)}
 
     @property
     @abstractmethod
