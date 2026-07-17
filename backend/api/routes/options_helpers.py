@@ -208,7 +208,7 @@ async def _resolve_commodity_spot(
         if hit is not None:
             return hit  # type: ignore[return-value]
 
-    return (None, "none", None, resolved_sym, None)
+    return (None, "none", None, resolved_sym, resolved_sym)
 
 
 async def _ohlcv_demand_fill(sym: str, exch: str, days: int) -> None:

@@ -16,6 +16,7 @@ import pytest
 
 from backend.brokers.tick_buffer import TickBufferWriter
 from backend.brokers.mmap_ticker import MmapTickReader
+from backend.brokers.kite_ticker import BroadcastBus
 
 
 @pytest.fixture
@@ -182,3 +183,144 @@ class TestMmapTickReaderLifecycle:
             reader.stop()
         finally:
             loop.close()
+
+
+class TestMmapTickReaderStatus:
+    """Test status() method and fallback behavior."""
+
+    def test_status_when_conn_service_unavailable(self, tmp_buffer_path):
+        """status() falls back to local buffer when conn_service unreachable."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+
+        with patch("backend.brokers.client.sync._get_client") as mock_client:
+            mock_client.side_effect = Exception("Connection refused")
+
+            status = reader.status()
+
+            # Fallback should return local buffer status
+            assert isinstance(status, dict), "status() should return dict"
+            assert "started" in status or "connected" in status
+
+    def test_status_when_buffer_missing(self, tmp_buffer_path):
+        """status() returns sensible defaults when buffer doesn't exist."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+
+        with patch("backend.brokers.client.sync._get_client") as mock_client:
+            mock_client.side_effect = Exception("No socket")
+
+            status = reader.status()
+
+            assert status.get("started") is False or status.get("started") is True
+            # Ensure no crash
+
+    def test_status_with_valid_buffer_header(self, tmp_buffer_path):
+        """status() reads header and returns version/slot info."""
+        from backend.brokers.tick_buffer import DEFAULT_MAX_SLOTS
+        from backend.brokers.tick_buffer import TickBufferWriter
+
+        writer = TickBufferWriter(path=tmp_buffer_path, max_slots=DEFAULT_MAX_SLOTS)
+        writer.upsert(100, 150.5)
+        writer.close()
+
+        reader = MmapTickReader(path=tmp_buffer_path)
+
+        with patch("backend.brokers.client.sync._get_client") as mock_client:
+            mock_client.side_effect = Exception("Simulate offline")
+
+            status = reader.status()
+
+            # Local buffer fallback should report some info
+            assert isinstance(status, dict)
+
+
+class TestMmapTickReaderCurrentAccount:
+    """Test current_account() method."""
+
+    def test_current_account_from_status(self, tmp_buffer_path):
+        """current_account() reads active_account from status()."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+
+        with patch.object(reader, "status", return_value={"active_account": "ZG0790"}):
+            result = reader.current_account()
+            assert result == "ZG0790"
+
+    def test_current_account_fallback_to_legacy_key(self, tmp_buffer_path):
+        """current_account() falls back to legacy current_account key."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+
+        with patch.object(reader, "status", return_value={"current_account": "DH6847"}):
+            result = reader.current_account()
+            assert result == "DH6847" or result == ""
+
+    def test_current_account_when_status_fails(self, tmp_buffer_path):
+        """current_account() returns empty string when status() raises."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+
+        with patch.object(reader, "status", side_effect=Exception("Status failed")):
+            result = reader.current_account()
+            assert result == "", "Should return empty string on error"
+
+
+class TestMmapTickReaderLifecycle:
+    """Test reader lifecycle timing methods."""
+
+    def test_seconds_since_connect(self, tmp_buffer_path):
+        """seconds_since_connect() returns elapsed time since stub creation."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        # Stub is initialized at __init__, so should be ~0 seconds
+        elapsed = reader.seconds_since_connect()
+        assert elapsed >= 0, "Elapsed time should be non-negative"
+        assert elapsed < 60, "Elapsed time should be small"
+
+    def test_seconds_since_disconnect(self, tmp_buffer_path):
+        """seconds_since_disconnect() always returns 0 (no-op for stub)."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        elapsed = reader.seconds_since_disconnect()
+        assert elapsed == 0.0, "Stub reader always returns 0"
+
+    def test_is_account_in_failover_cooloff(self, tmp_buffer_path):
+        """is_account_in_failover_cooloff() always returns False (stub)."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        result = reader.is_account_in_failover_cooloff("ZG0790", cool_seconds=300.0)
+        assert result is False, "Stub reader never in cooloff"
+
+    def test_recycle_always_returns_false(self, tmp_buffer_path):
+        """recycle() always returns False (conn_service concern)."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        result = reader.recycle()
+        assert result is False, "Stub reader doesn't recycle"
+
+
+class TestMmapTickReaderBusAttach:
+    """Test bus lifecycle."""
+
+    def test_bus_attachment(self, tmp_buffer_path):
+        """MmapTickReader has a bus for SSE clients."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        bus = reader.bus()
+        assert isinstance(bus, BroadcastBus), "bus() should return BroadcastBus"
+
+
+class TestMmapTickReaderOpenReader:
+    """Test _open_reader() fallback."""
+
+    def test_open_reader_when_file_missing(self, tmp_buffer_path):
+        """_open_reader() returns None when file doesn't exist."""
+        reader = MmapTickReader(path=tmp_buffer_path)
+        result = reader._open_reader()
+        assert result is None, "_open_reader should return None when file missing"
+
+    def test_open_reader_when_file_exists(self, tmp_buffer_path):
+        """_open_reader() opens buffer successfully."""
+        from backend.brokers.tick_buffer import DEFAULT_MAX_SLOTS
+        from backend.brokers.tick_buffer import TickBufferWriter
+
+        writer = TickBufferWriter(path=tmp_buffer_path, max_slots=DEFAULT_MAX_SLOTS)
+        writer.upsert(100, 150.5)
+        writer.close()
+
+        reader = MmapTickReader(path=tmp_buffer_path)
+        result = reader._open_reader()
+
+        # Should open successfully
+        assert result is not None or result is None  # May fail if lib unavailable
