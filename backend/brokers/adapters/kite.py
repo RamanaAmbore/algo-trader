@@ -14,9 +14,30 @@ from typing import Any
 
 from backend.brokers.base import Broker
 from backend.brokers.connections import KiteConnection
+from backend.brokers.errors import (
+    BrokerAuthError, BrokerNetworkError, BrokerOrderError,
+    BrokerInputError, BrokerError,
+)
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# Maps kiteconnect SDK exception class names → typed BrokerError subclass.
+# Used by _kite_exc() to convert SDK exceptions at the adapter boundary.
+_KITE_ERROR_MAP: dict[str, type[BrokerError]] = {
+    "TokenException":    BrokerAuthError,
+    "NetworkException":  BrokerNetworkError,
+    "OrderException":    BrokerOrderError,
+    "InputException":    BrokerInputError,
+    "DataException":     BrokerInputError,
+    "GeneralException":  BrokerError,
+}
+
+
+def _kite_exc(e: Exception) -> BrokerError:
+    """Wrap a kiteconnect SDK exception in the typed BrokerError hierarchy."""
+    cls = _KITE_ERROR_MAP.get(type(e).__name__, BrokerError)
+    return cls(str(e), broker="zerodha_kite", code=type(e).__name__)
 
 
 def to_kite_qty(exchange: str, raw_qty: int, lot_size: int) -> int:
@@ -174,6 +195,7 @@ def _truncate_tag(kwargs: dict[str, Any]) -> None:
 class KiteBroker(Broker):
 
     def __init__(self, conn: KiteConnection) -> None:
+        super().__init__()
         self._conn = conn
 
     # ── Identity + escape hatch ───────────────────────────────────────

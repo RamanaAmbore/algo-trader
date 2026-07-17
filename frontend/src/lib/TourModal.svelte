@@ -40,7 +40,7 @@
     {
       tag:   'Operator DSL',
       title: 'Declarative agent grammar',
-      body:  'Risk + automation rules are condition trees compiled from DB-backed tokens (metric / scope / operator / action). Operators add a new rule from the UI without a code deploy. Engine walks the tree every 5s cycle and dispatches matching agents.',
+      body:  'Risk + automation rules are condition trees compiled from DB-backed tokens (metric / scope / operator / action). Operators add a new rule from the UI without a code deploy. Engine walks the tree every 5s cycle and dispatches matching agents. Alerts route to Telegram, ntfy push, email, WebSocket, or log — per-agent opt-in.',
       link:  { label: 'Browse agent library', href: '/automation' },
     },
     {

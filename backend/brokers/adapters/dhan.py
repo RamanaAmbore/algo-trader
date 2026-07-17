@@ -41,9 +41,41 @@ from typing import Any, Callable
 from urllib.request import urlopen
 
 from backend.brokers.base import Broker
+from backend.brokers.errors import (
+    BrokerAuthError, BrokerRateLimitError, BrokerNetworkError,
+    BrokerOrderError, BrokerError,
+)
+from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# Maps Dhan error codes → typed BrokerError subclass.
+_DHAN_ERROR_MAP: dict[str, type[BrokerError]] = {
+    "DH-901": BrokerAuthError,    # Invalid token / session expired
+    "DH-902": BrokerAuthError,    # Unauthorised
+    "DH-904": BrokerRateLimitError,  # Rate limit exceeded
+    "DH-906": BrokerOrderError,   # Order not found / rejected
+}
+
+
+def _dhan_exc(e: Exception, code: str | None = None,
+              status: int | None = None) -> BrokerError:
+    """Wrap a Dhan error in the typed BrokerError hierarchy."""
+    cls = _DHAN_ERROR_MAP.get(code or "", BrokerError)
+    return cls(str(e), broker="dhan", code=code, status=status)
+
+
+# Per-endpoint rate limiter — proactively prevents Dhan 429s rather than
+# discovering them after the fact (which would open the circuit breaker).
+# Toggle via _DHAN_RATE_LIMIT_ENABLED at module level; no deploy needed.
+_DHAN_RATE_LIMIT_ENABLED: bool = True
+_DHAN_RATE_LIMITER = TokenBucketLimiter({
+    "orders":  (10, 1.0),   # 10 calls/s for order operations
+    "history": (3, 1.0),    # 3 calls/s for historical data
+    "margins": (5, 1.0),    # 5 calls/s for margin checks
+    "auth":    (0.5, 120.0),  # 1 call per 2 min for token generation
+})
 
 
 def _emit_conn_event(
@@ -788,6 +820,7 @@ class DhanBroker(Broker):
     contract."""
 
     def __init__(self, conn: "DhanConnection") -> None:  # type: ignore[name-defined]
+        super().__init__()
         self._conn = conn
 
     # ── Identity + escape hatch ───────────────────────────────────────
@@ -807,7 +840,8 @@ class DhanBroker(Broker):
         hatch for SDK features not lifted into the Broker ABC."""
         return self._conn.get_dhan_conn()
 
-    def _safe_call(self, sdk_call: Callable[[Any], Any]) -> Any:
+    def _safe_call(self, sdk_call: Callable[[Any], Any],
+                   *, endpoint_group: str = "") -> Any:
         """Invoke an SDK call with auto re-login on auth failure.
 
         `sdk_call` is a one-arg lambda receiving the live SDK handle —
@@ -815,8 +849,18 @@ class DhanBroker(Broker):
         an auth-failure shape, we evict the cached token (via
         get_dhan_conn(test_conn=True)) and retry once with the freshly
         minted SDK handle. Network / 5xx / param exceptions propagate
-        immediately — only auth-shaped failures trigger the retry."""
+        immediately — only auth-shaped failures trigger the retry.
+
+        `endpoint_group` — optional rate-limit bucket name ("orders",
+        "history", "margins", "auth"). When provided and
+        _DHAN_RATE_LIMIT_ENABLED is True, throttles before the call."""
+        if _DHAN_RATE_LIMIT_ENABLED and endpoint_group:
+            _DHAN_RATE_LIMITER.throttle(endpoint_group)
+        self._last_req = {"broker": "dhan", "account": self.account,
+                          "endpoint_group": endpoint_group}
         resp = sdk_call(self.dhan)
+        self._last_resp = {"shape": type(resp).__name__,
+                           "status_hint": "auth_fail" if _looks_like_auth_failure(resp) else "ok"}
         if _looks_like_auth_failure(resp):
             # Capture token age at invalidation time — critical signal
             # for "why are these tokens dying so fast?" investigations.
@@ -870,7 +914,7 @@ class DhanBroker(Broker):
         Synthesise a Kite-shape dict so the /admin/brokers test button
         gets a recognisable success message."""
         try:
-            funds = self._safe_call(lambda d: d.get_fund_limits())
+            funds = self._safe_call(lambda d: d.get_fund_limits(), endpoint_group="margins")
             data = funds.get("data") if isinstance(funds, dict) else None
             return {
                 "user_id":   self._conn.client_id,
@@ -890,7 +934,7 @@ class DhanBroker(Broker):
         return _normalise_positions(resp)
 
     def margins(self, segment: str | None = None) -> dict:
-        resp = self._safe_call(lambda d: d.get_fund_limits())
+        resp = self._safe_call(lambda d: d.get_fund_limits(), endpoint_group="margins")
         # Audit cycle 8 — log the raw Dhan fund_limits response ONCE per
         # account so we can confirm which fields actually arrive in prod
         # (Dhan v2 documentation is incomplete on the realized-P&L +
@@ -1013,7 +1057,7 @@ class DhanBroker(Broker):
             return {}
         # Single SDK call covers every segment in one batch.
         try:
-            resp = self._safe_call(lambda d: d.ohlc_data(securities=seg_to_sids))
+            resp = self._safe_call(lambda d: d.ohlc_data(securities=seg_to_sids), endpoint_group="history")
         except Exception as e:
             logger.debug(f"DhanBroker.ltp ohlc_data failed: {e}")
             return {}
@@ -1206,7 +1250,7 @@ class DhanBroker(Broker):
             trigger_price=_dhan_num(kwargs.get("trigger_price")),
             validity=kwargs.get("validity", "DAY"),
             **({"tag": tag} if tag else {}),
-        ))
+        ), endpoint_group="orders")
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan place_order rejected: {resp}")
         return str(resp.get("data", {}).get("orderId", ""))

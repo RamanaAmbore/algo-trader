@@ -1,196 +1,292 @@
-# Plan: 6d-audit punch list — P1/P2/P3 fixes
+# Plan: Broker layer hardening — inspired by fenix patterns
 
-## Task
-Fix all findings from the 6-dimension audit of commits c729b1d3, aecd1282, 139062cf, 8474a17e.
-3 P1 correctness/doc bugs, 8 P2 behavioral/doc issues, 10 P3 cleanup items.
-No production behavior changes beyond targeted fixes; no new features.
+## Context
+
+Researched TheHardeep/fenix to evaluate whether it could replace our broker layer (it
+cannot — GPLv3, no WebSocket, no multi-account coordination, different response shape).
+However the deep-dive into fenix's internals surfaced three patterns that are genuinely
+better than our current approach and are worth adopting: typed exception hierarchy,
+per-endpoint rate-limit token buckets, and structured error-code mapping tables.
+
+**Connection/recovery verdict:** fenix is actually LESS robust than us — no retry, no
+circuit breaker, no stale-data substitution, no cross-process coordination. Our layer
+wins on every resilience dimension. But fenix's error classification and rate-limiting
+are more precise.
+
+---
+
+---
+
+## Resilience comparison (direct)
+
+| Dimension | fenix | RamboQuant | Winner |
+|---|---|---|---|
+| Automatic retry on 429/503 | None — raises immediately | `@retry_kite_conn`, `@_retry_groww_auth`, exponential backoff | **Ours** |
+| Circuit breaker | None | CLOSED→OPEN→HALF-OPEN, 5m→30m backoff, jitter | **Ours** |
+| Stale-data on outage | None | LKG frame returned with `stale=True` | **Ours** |
+| WebSocket auto-failover | None | KiteTicker watchdog, account swap, reactor-dead exit | **Ours** |
+| Cross-process token cache | None (single-process) | fcntl-locked `kite_tokens.json`, prod+dev share safely | **Ours** |
+| IPv6 source binding | None | ContextVar per-account adapter mount | **Ours** |
+| Multi-account coordination | Instantiate separately | Deferred-account stabilizer, priority column, poll gating | **Ours** |
+| Per-endpoint rate limiting | Token bucket, 1.1× padding, multi-bucket per call | Poll-priority (hot/warm/cold) interval gate | **fenix** (more precise) |
+| Typed exception hierarchy | Full tree: Auth/RateLimit/Network/Order/Input | Ad-hoc strings, SDK exceptions bubble through | **fenix** |
+| Error code mapping table | `_DIRECT_ERROR_CLASSES` dict per adapter | String matching (`"DH-901" in str(e)`) | **fenix** |
+| Request diagnostics capture | `last_request_url/body/response` per instance | `_FETCH_HEALTH` stamps, no per-request metadata | **fenix** |
+| Empty-result detection | `_is_empty_response_error()` distinct from real errors | `_quote_has_data` predicate (Dhan-specific) | Tied |
+
+---
+
+## What fenix provides (for reference)
+
+**15 Indian brokers** — Kite, Dhan, Groww, AngelOne, Upstox, Fyers, and 9 others — behind
+one `place_order / cancel_order / positions / holdings / margins / orders` API.
+
+**Auth flow (relevant brokers):**
+- Kite: POST login → POST TOTP → handshake → request_token → access_token exchange.
+  Saves `_headers` dict; `use_headers()` restores saved state.
+- Dhan: Pre-minted `client_id + access_token` from portal (no headless refresh).
+- Groww: SHA-256 HMAC on `api_key + api_secret + timestamp` → Bearer token OR TOTP path.
+
+**Instrument masters:** `load_fno_tokens()`, `load_mcx_tokens()` etc. cache per-instance;
+lot_size embedded in token dict. Caller must multiply manually: `qty = lots × lot_size`.
+
+**GTT:** Dhan `place_forever_order()` + OCO. Groww: NOT abstracted (not in public API).
+Zerodha bracket orders deprecated/removed.
+
+**License:** GPLv3. Viral copyleft — any derivative work must also be GPL.
+
+---
+
+## Hard blockers against adoption
+
+### 1. GPLv3 license (hard stop)
+RamboQuant is a proprietary, closed codebase. Linking against a GPLv3 library in a
+distributed or SaaS product requires the whole product to become GPL. This alone rules
+out fenix as a dependency.
+
+### 2. No WebSocket / real-time ticks
+fenix has zero KiteTicker support. Real-time ticks are behind a paid "Fenix-Pro" add-on
+with no open-source release. Our entire trading engine — tick distribution to agents,
+fill detection in the chase loop, SSE streaming to the UI — depends on the KiteTicker →
+mmap → BroadcastBus pipeline. We would need to build this ourselves regardless.
+
+### 3. No IPv6 per-account source binding
+Kite whitelists specific IPs; Dhan enforces "one active session per partner-app per
+source IP". Our ContextVar-based binding (separate IPv4/IPv6 per account on the same
+VPS) is the core workaround. fenix has no concept of source IP binding.
+
+### 4. No multi-account coordination or cross-process token cache
+fenix = one instance per account, single process. Our conn_service keeps broker
+sessions alive across backend code pushes. Shared fcntl-locked `kite_tokens.json`
+ensures prod + dev never race on re-auth. None of this exists in fenix.
+
+### 5. Different response shape
+fenix uses its own ExchangeCode enums + unified position/order dict keys. Our entire
+downstream — `nav.js`, `positions.py`, `pnl_math.py`, derivatives analytics, the
+NavStrip — expects Kite-shape dicts. Migrating would touch hundreds of callsites.
+
+### 6. Gaps in what we actually need
+- No basket_order_margins (critical for pre-trade margin validation in our chase loop)
+- No historical OHLCV candles
+- No market_status per exchange (our closed-hours gate depends on this)
+- No translate_qty for MCX lots→contracts (callers would have to handle lot math)
+- No circuit breaker / stale-data substitution / auto-downgrade
+- No Groww OCO emulation (pair-watcher background task)
+- No conn_service (broker sessions die on every backend restart)
+
+---
+
+## What fenix does better / could inspire
+
+| Concept | fenix approach | Our status | Worth adopting? |
+|---|---|---|---|
+| Typed exception hierarchy | `AuthenticationError`, `RateLimitExceededError`, etc. | Ad-hoc broker-specific exceptions | Nice-to-have; low priority |
+| Capability matrix per broker | `has` dict per class | `capabilities.py` matrix | Already done |
+| `use_headers()` session restore | Serialise auth headers to dict | Token JSON cache | Functionally equivalent |
+| 15-broker support | One class per broker | 3 brokers (Kite/Dhan/Groww) | Relevant only if we add brokers |
+| Rate-limit token buckets | Per-endpoint buckets | Circuit breaker + poll gating | Covers our cases |
+
+If we ever want to add Angel One / Upstox / Fyers: wrapping a fenix adapter behind our
+`Broker` abstract class is possible — but only if we mirror the code (not import the
+GPLv3 lib) or obtain a commercial license from the author.
+
+---
+
+---
+
+## Three patterns worth adopting from fenix
+
+### Pattern 1 — Typed broker exception hierarchy
+
+**Why:** Our adapters currently let SDK exceptions (`kiteconnect.exceptions.TokenException`,
+`dhanhq.DhanApiException`, raw `httpx.HTTPStatusError`) bubble up. Upstream callers
+(`broker_apis.py`) match on string fragments. A typed tree lets you catch
+`BrokerAuthError` specifically in the retry decorator without string-scanning.
+
+**What fenix does:**
+```python
+BrokerError
+├── NetworkError → RequestTimeoutError, RateLimitExceededError
+├── AuthenticationError
+├── PermissionDeniedError
+├── InsufficientFundsError
+├── InvalidOrderError → OrderNotFoundError
+└── InputError
+```
+Each carries: `message, broker, error_code, status_code, payload, url, method`.
+
+**What to build:**  
+New file `backend/brokers/errors.py`:
+```python
+class BrokerError(Exception):
+    def __init__(self, msg, *, broker=None, code=None, status=None): ...
+
+class BrokerAuthError(BrokerError): ...      # 401, token expired, DH-901
+class BrokerRateLimitError(BrokerError): ... # 429, DH-904
+class BrokerNetworkError(BrokerError): ...   # timeout, connection reset
+class BrokerOrderError(BrokerError): ...     # invalid order, order not found
+class BrokerInputError(BrokerError): ...     # bad qty, bad symbol
+```
+
+Per-adapter mapping dicts in each adapter file:
+```python
+# adapters/dhan.py
+_DHAN_ERROR_MAP = {
+    "DH-901": BrokerAuthError,
+    "DH-904": BrokerRateLimitError,
+    "DH-906": BrokerOrderError,
+}
+```
+
+Retry decorators (`@retry_kite_conn`, `@_retry_groww_auth`) catch `BrokerAuthError`
+instead of string-matching `"TokenException"`.
+
+**Files:** `backend/brokers/errors.py` (new), `backend/brokers/adapters/kite.py`,
+`backend/brokers/adapters/dhan.py`, `backend/brokers/adapters/groww.py`,
+`backend/brokers/broker_apis.py`
+
+---
+
+### Pattern 2 — Per-endpoint rate-limit token bucket for Dhan
+
+**Why:** Dhan has known per-endpoint rate limits that differ from each other:
+- Auth/generate-token: 1 per 2 min (we already track `_login_blocked_until`)
+- Order placement: ~10/s
+- Historical data: 3/s (same as Kite)
+- Margins: unknown but throttled
+
+Our current poll-priority (hot/warm/cold) gates the *poll interval* per account but
+doesn't prevent a burst of N API calls in one cycle from hitting Dhan's per-endpoint
+ceiling and triggering a 429 that opens the circuit breaker unnecessarily.
+
+**What fenix does:**
+```python
+_token_buckets[endpoint_group] = {
+    'tokens': capacity, 'refill_rate': capacity/period,
+    'capacity': capacity, 'last_refill_time': monotonic()
+}
+# throttle() holds per-bucket locks DURING sleep; 1.1× padding
+```
+
+**What to build:**  
+`backend/brokers/rate_limiter.py` — a `TokenBucketLimiter` class:
+```python
+class TokenBucketLimiter:
+    def __init__(self, limits: dict[str, tuple[float, float]]):
+        # limits = {"orders": (10, 1.0), "history": (3, 1.0), "auth": (0.5, 120.0)}
+    def throttle(self, endpoint_group: str) -> None: ...  # blocks until token available
+```
+
+Wire into `DhanConnection._safe_call()` before each Dhan HTTP call, keyed on endpoint
+group. Zero change to Kite/Groww adapters.
+
+**Files:** `backend/brokers/rate_limiter.py` (new), `backend/brokers/adapters/dhan.py`
+
+---
+
+### Pattern 3 — Per-call request diagnostics on broker instances
+
+**Why:** When a Dhan 429 or a Groww 403 fires, we log it but don't store the request
+metadata (URL, method, body) on the broker instance. Debugging requires grepping logs.
+fenix stores `last_request_url`, `last_request_method`, `last_request_body`,
+`last_response_headers`, `last_json_response` per instance.
+
+**What to build:**  
+Add to `backend/brokers/base.py` `Broker` abstract class:
+```python
+self._last_req: dict = {}   # url, method, body (truncated 2k)
+self._last_resp: dict = {}  # status, headers, body (truncated 2k)
+```
+
+Update in `_safe_call()` / `_fetch()` wrappers in each adapter before the HTTP call
+and after the response. Expose via a `last_request_debug()` method.
+Wire the debug dict into `_FETCH_HEALTH[account]['last_request']` so
+`/admin/broker-health` can surface it without log-diving.
+
+**Files:** `backend/brokers/base.py`, `backend/brokers/adapters/dhan.py`,
+`backend/brokers/adapters/groww.py`, `backend/brokers/routes/health.py`
+
+---
+
+## Scoping decision
+
+All three patterns are **independent** and can ship as one broker agent pass. Patterns 1
+and 3 are low-risk refactors (additive). Pattern 2 (token bucket) is the only behaviour
+change and should have a feature-flag (`DHAN_RATE_LIMIT_ENABLED` in
+`backend_config.yaml`) so it can be toggled without a code push during the soak period.
+
+## Recommendation
+
+**Do not adopt fenix.** Our broker layer is more sophisticated in every dimension that
+matters for production live trading:
+
+- KiteTicker (real-time ticks) — fenix has nothing
+- Multi-account IP coordination — fenix has nothing
+- conn_service (session persistence across restarts) — fenix has nothing
+- Circuit breaker + stale data — fenix has nothing
+- Kite-shape normalisation (downstream compatibility) — fenix uses its own shape
+- GPLv3 licence — incompatible with proprietary codebase
+
+fenix is a good starting point for a *new* project that doesn't need real-time ticks
+and runs a single account. For RamboQuant, adopting it would mean:
+- Rewriting or wrapping our entire conn_service
+- Migrating hundreds of Kite-shape callsites
+- Building WebSocket support ourselves anyway
+- Potentially contaminating the codebase with GPL obligations
+
+The only realistic partial use case — re-exporting auth logic for a new broker like
+Angel One or Upstox — would need the author's explicit commercial licence or a clean
+re-implementation inspired by (not copied from) fenix.
 
 ## Agents
 
-- backend: Fix P1 test false-positive + missing import, P2 chase.py interval guard, P3 test cleanup (timezone import, hardcoded paths, filename, _fetch_account_margins rename, template_attach.py ntfy channel)
-- frontend: Fix P2 derivatives timer cleanup + double-call, orders in-flight guard, PositionStrip holdings guard, OrderTicket close-button CSS, P3 NavBreakdown legacy load sig + dead CSS
-- doc: Fix P1 DESIGN_GUIDE Dhan false claim, P2 DESIGN_GUIDE closure syntax + _sync_algo_order_id prose + interval_seconds, P2 NAVSTRIP_SPEC + CLAUDE.md stale-snapshot guard, P3 DESIGN_GUIDE actions.py refs
-- backend-test: skip
+- broker: Implement Pattern 1 (typed exception hierarchy in `backend/brokers/errors.py`
+  + per-adapter error maps + update retry decorators to catch `BrokerAuthError`),
+  Pattern 2 (`TokenBucketLimiter` in `backend/brokers/rate_limiter.py` + wire into
+  DhanConnection with `DHAN_RATE_LIMIT_ENABLED` flag),
+  Pattern 3 (add `_last_req/_last_resp` to `Broker` base + expose in health route)
+- backend: skip
+- frontend: skip
+- doc: skip
+- backend-test: Add `backend/tests/test_broker_rate_limiter.py` — token bucket
+  behaviour tests (throttle blocks, refill works, multi-bucket ordering)
 - playwright: skip
 
-## Detailed Fix Specs
-
-### BACKEND (backend agent)
-
-**P1 — test_11_defect_patch.py false positive (lines 80-85)**
-File: `backend/tests/test_11_defect_patch.py`
-Current: asserts `"_fire_guard_alert" in src or "result.errors" in src` — both true pre-fix; tautological.
-Fix: replace with assertions for the specific NEW function added in 8474a17e:
-```python
-assert "_fire_attach_fail_alert" in src, (
-    "template_attach must call _fire_attach_fail_alert when result.errors is non-empty"
-)
-assert "fire_attach_fail_alert" in src and "result.errors" in src, (
-    "alert must be called after errors are collected, not unconditionally"
-)
-```
-
-**P1 — test_11_defect_patch.py missing import (line 133)**
-File: `backend/tests/test_11_defect_patch.py`
-Fix: add `import pytest` at top of file (already has `import inspect`, `from pathlib import Path` etc).
-
-**P2 — chase.py interval_seconds=0 inconsistency (line 649)**
-File: `backend/api/algo/chase.py`
-Current: `if hasattr(row, "next_attempt_at") and interval_seconds:` — falsy for 0
-Fix: `if hasattr(row, "next_attempt_at") and interval_seconds is not None:`
-(matches the guard on line 651: `and interval_seconds is not None`)
-
-**P3 — test_agents_routes.py unused import (line 10)**
-File: `backend/tests/test_agents_routes.py`
-Fix: Remove `, timezone` from `from datetime import datetime, timezone`
-
-**P3 — hardcoded absolute paths in backend tests**
-Files: `backend/tests/test_11_defect_patch.py` (lines 26, 41) and all 20 new test files that use `Path("backend/...")`.
-The 20 new test files already use relative `Path("backend/api/...")` which works when pytest runs from repo root — no change needed.
-`test_11_defect_patch.py` uses `Path(__file__).parent.parent` — verify these are already repo-relative; if not, fix to use `Path(__file__).parent.parent / "api/..."` pattern.
-
-**P3 — test_11_defect_patch.py filename mismatch**
-The file is named `test_11_defect_patch.py` but the content/commit says "12-defect patch".
-Fix: Rename file to `test_12_defect_patch.py` and update any `pytest.main([__file__])` reference.
-
-**P3 — actions_preflight.py naming convention**
-File: `backend/api/algo/actions_preflight.py`
-Current: `async def _fetch_account_margins(` at line 544 — breaks `_preflight_fetch_*` convention.
-Fix: Rename to `_preflight_fetch_account_margins` and update the single call site in `run_preflight` (asyncio.gather block, same file).
-
-**P3 — template_attach.py ntfy channel missing**
-Files: `backend/api/algo/template_attach.py` lines 180-205 (`_fire_guard_alert._do_telegram`) and 310-330 (`_fire_attach_fail_alert._do_telegram`)
-Fix: Add ntfy delivery alongside telegram in both alert helpers. Pattern to follow: `send_ntfy_alert` from `backend.shared.helpers.alert_utils`. Use `priority="urgent"` (critical exit failure). Keep telegram as primary, ntfy as secondary. Wrap each in its own try/except so one failure doesn't suppress the other.
-
-### FRONTEND (frontend agent)
-
-**P2 — derivatives/+page.svelte: timer not cleared in onDestroy (line 3791)**
-File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-Current onDestroy: clears `_urlSyncTimer` but not `_orderUpdateTimer`.
-Fix: add `if (_orderUpdateTimer) { clearTimeout(_orderUpdateTimer); _orderUpdateTimer = null; }` inside `onDestroy`.
-
-**P2 — derivatives/+page.svelte: double broker call per fill**
-Same file, lines 3771-3784.
-The `order_update` path debounces 200ms then calls `loadPositions({fresh:true})`.
-The `position_filled` path immediately calls `loadPositions({fresh:true})`.
-Both fire on a terminal fill (COMPLETE) because `_postback_broadcast_fanout` emits both events.
-Fix: In the `order_update` handler, skip the debounced reload when `msg.status` indicates a terminal state (COMPLETE/REJECTED/CANCELLED) — those will be handled by `position_filled`. Only debounce non-terminal postbacks (OPEN, TRIGGER PENDING, etc.).
-```javascript
-if (msg?.event === 'order_update') {
-  const terminal = ['COMPLETE','REJECTED','CANCELLED'].includes(msg.status || '');
-  if (!terminal) {
-    if (_orderUpdateTimer) clearTimeout(_orderUpdateTimer);
-    _orderUpdateTimer = setTimeout(() => {
-      _orderUpdateTimer = null;
-      loadPositions({ fresh: true });
-    }, 200);
-  }
-  return;
-}
-```
-
-**P2 — orders/+page.svelte: no in-flight guard on order_update (line 260)**
-File: `frontend/src/routes/(algo)/orders/+page.svelte`
-Current: `loadOrders()` called directly with no guard — N concurrent calls for N basket legs.
-Fix: add a debounce (50ms is sufficient since this doesn't need 200ms) or an in-flight flag. Use the existing `_debouncedLoadOrders` already defined in the file instead of calling `loadOrders()` directly:
-```javascript
-if (msg.event === 'order_update' || msg.event === 'performance_updated') {
-  _debouncedLoadOrders();
-}
-```
-
-**P2 — PositionStrip.svelte: holdings missing zero-flash guard (line 519)**
-File: `frontend/src/lib/PositionStrip.svelte`
-Current:
-```javascript
-if (positions.length > 0 || _livePositionsToday !== 0) {
-  dispPositionsToday = _livePositionsToday;
-}
-dispHoldingsToday = _liveHoldingsToday;  // ← no guard
-```
-Fix: add symmetric guard for holdings. Use `holdings` array length (same pattern):
-```javascript
-if (holdings.length > 0 || _liveHoldingsToday !== 0) {
-  dispHoldingsToday = _liveHoldingsToday;
-}
-```
-Need to verify `holdings` is in scope at this point in the `$effect` block.
-
-**P2 — OrderTicket.svelte: close button disabled has no CSS feedback (line 1947)**
-File: `frontend/src/lib/order/OrderTicket.svelte`
-Current: `<button class="ot-close" ... disabled={submitting}>` — no CSS for `:disabled` state.
-Fix: add CSS rule near the existing `.ot-submit:disabled` at line ~3071:
-```css
-.ot-close:disabled { opacity: 0.35; cursor: not-allowed; }
-```
-
-**P3 — NavBreakdown.svelte: legacy load signature (line 132)**
-File: `frontend/src/lib/NavBreakdown.svelte`
-Current: `positionsStore.load(undefined, { force: true })` (2-arg legacy)
-Fix: `positionsStore.load({ fresh: true })` — matches updated signature used in derivatives page.
-Same for `holdingsStore` and `fundsStore` on lines 133-134.
-
-**P3 — OrderTicket.svelte: dead CSS selectors**
-File: `frontend/src/lib/order/OrderTicket.svelte`
-Lines 2713-2714: `.ot-pill[disabled]` and `.ot-pill[disabled]:hover` — never applied (class is `.ot-pill-disabled`, not attribute).
-Line 2812: `.ot-side-toggle-compact .ot-side-btn[disabled]` — `ot-side-btn` never rendered with `disabled` attr.
-Fix: remove all 3 dead selectors (svelte-check will confirm 0 warnings after).
-
-### DOC (doc agent)
-
-**P1 — DESIGN_GUIDE.md:3760 false Dhan claim**
-File: `docs/DESIGN_GUIDE.md`
-Current: "correctly routes CDS/BCD currencies to the currency segment key"
-Reality: Dhan flat-dict is returned whole (early return when `"net" in m`); no segment-key routing for Dhan.
-Fix: Replace with accurate description: "detects Dhan's flat margin dict (presence of 'net' or 'available' key) and returns it unchanged, bypassing Kite's nested segment-key lookup."
-
-**P2 — DESIGN_GUIDE.md:3730,3750-3753: stale closure syntax**
-File: `docs/DESIGN_GUIDE.md`
-Current code snippet shows `_fetch_profile()`, `_fetch_instruments()`, `_fetch_basket_margin()`, `_fetch_account_margins()` as no-arg closure calls.
-After c729b1d3 these are module-level helpers: `_preflight_fetch_profile(broker, loop, account)` etc.
-Fix: update the snippet to show the current explicit-arg call form. Also update the WHERE reference from `actions.py::run_preflight` to `actions_preflight.py::run_preflight`.
-
-**P2 — DESIGN_GUIDE.md:1666,1668-1671: _sync_algo_order_id prose**
-File: `docs/DESIGN_GUIDE.md`
-Current: mentions `broker_order_id + current_limit`; timing columns note lists only `next_attempt_at` + `last_attempt_at`.
-Fix: add `interval_seconds` to both the prose and the columns note.
-
-**P2 — NAVSTRIP_SPEC.md: missing stale-snapshot guard**
-File: `docs/specs/NAVSTRIP_SPEC.md` lines 324-349 (`baseDayPnlForPosition` formula section)
-Fix: add the `close === ltp → return 0` guard as a case in the formula table. Describe when it fires: "when the broker hasn't refreshed close_price since last session (close === ltp), the formula would produce 0 anyway; return 0 early to avoid stale subtraction."
-
-**P2 — CLAUDE.md: missing stale-snapshot guard in Day P&L section**
-File: `CLAUDE.md` (project root) — Day P&L formula section
-Current: documents Cases 1 and 3 of `apply_day_change_backstop`; frontend SSOT section mentions `baseDayPnlForPosition` and lists consumers.
-Fix: add note: "Case 4 (stale close guard): when `close === ltp`, `baseDayPnlForPosition` returns 0 — formula `oq*(ltp-close)` would be 0 anyway; avoids stale subtraction during overnight window."
-
-**P3 — DESIGN_GUIDE.md: four stale actions.py refs**
-File: `docs/DESIGN_GUIDE.md` at lines 3730, 3799, 3888, 4330
-Current: `backend/api/algo/actions.py::run_preflight`
-Fix: `backend/api/algo/actions_preflight.py::run_preflight` (re-export still works at runtime but doc navigation is wrong)
-
-**P3 — DESIGN_GUIDE.md: fees constants undocumented**
-Low priority; add a brief mention of `_BROKERAGE_PER_ORDER=₹20`, STT/ancillary/GST rates in the sim fees section. One paragraph max.
-
 ## Tests
-- pytest: yes (backend changes + rename/import fixes)
-- svelte-check: yes (CSS dead selector removal + disabled CSS addition)
+
+- pytest: yes (test_broker_rate_limiter.py + ensure no existing broker tests regress)
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(audit): 6d-audit punch list — P1 test false-positive + import, P2 frontend timer/guard/CSS, P3 cleanup
+
+feat(broker): typed exceptions + per-endpoint Dhan rate-limiter + request diagnostics (fenix-inspired)
 
 ## Done when
-- `test_11_defect_patch.py` (or `test_12_defect_patch.py` after rename) assertions target `_fire_attach_fail_alert` specifically; `import pytest` present
-- `derivatives/+page.svelte` onDestroy clears `_orderUpdateTimer`; terminal fills don't double-load
-- `orders/+page.svelte` `order_update` uses `_debouncedLoadOrders`
-- `PositionStrip.svelte` holdings guard matches positions guard
-- `OrderTicket.svelte` `.ot-close:disabled` rule added; 3 dead CSS selectors removed (svelte-check 0 warnings)
-- `NavBreakdown.svelte` uses `load({ fresh: true })` form for all 3 stores
-- `chase.py` line 649 uses `is not None` guard
-- `_fetch_account_margins` renamed to `_preflight_fetch_account_margins`
-- `template_attach.py` both alert helpers call ntfy + telegram
-- DESIGN_GUIDE Dhan claim corrected, closure syntax updated, `interval_seconds` added, 4 stale refs fixed
-- NAVSTRIP_SPEC + CLAUDE.md document the stale-snapshot guard
-- pytest green (1 pre-existing failure: test_options_spot MCX CRUDEOIL 502 — unrelated)
-- svelte-check 0 errors, warnings reduced by ≥3 (dead CSS removed)
+
+- `backend/brokers/errors.py` exists with 5-class typed hierarchy
+- Each adapter has `_<BROKER>_ERROR_MAP` dict and raises typed exceptions
+- `backend/brokers/rate_limiter.py` with `TokenBucketLimiter` passes unit tests
+- `DHAN_RATE_LIMIT_ENABLED` flag in `backend_config.yaml` controls token bucket
+- `/admin/broker-health` response includes `last_request` debug dict
+- pytest green, no existing broker test regressions

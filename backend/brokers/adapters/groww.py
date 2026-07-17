@@ -38,9 +38,23 @@ from collections import defaultdict
 from typing import Any, Callable
 
 from backend.brokers.base import Broker
+from backend.brokers.errors import (
+    BrokerAuthError, BrokerRateLimitError, BrokerNetworkError, BrokerError,
+)
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _groww_exc(e: Exception, status: int | None = None) -> BrokerError:
+    """Wrap a Groww exception in the typed BrokerError hierarchy."""
+    if status == 401:
+        return BrokerAuthError(str(e), broker="groww", status=status)
+    if status == 429:
+        return BrokerRateLimitError(str(e), broker="groww", status=status)
+    if status in (502, 503, 504):
+        return BrokerNetworkError(str(e), broker="groww", status=status)
+    return BrokerError(str(e), broker="groww", status=status)
 
 
 # ── Auth-retry decorator ──────────────────────────────────────────────
@@ -479,6 +493,7 @@ class GrowwBroker(Broker):
     contract."""
 
     def __init__(self, conn: "GrowwConnection") -> None:  # type: ignore[name-defined]
+        super().__init__()
         self._conn = conn
 
     # ── Identity + escape hatch ───────────────────────────────────────
