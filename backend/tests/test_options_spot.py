@@ -166,16 +166,23 @@ async def test_mcx_uses_matching_tenor_when_expiry_hint_set():
 @pytest.mark.asyncio
 async def test_mcx_falls_back_to_front_month_when_no_matching_far_future():
     """When the option's expiry is after all listed futures, use the last listed."""
-    jun_inst = _inst("CRUDEOIL26JUNFUT", "CRUDEOIL", "2026-06-18")
-    jul_inst = _inst("CRUDEOIL26JULFUT", "CRUDEOIL", "2026-07-18")
-    items = [jun_inst, jul_inst]
+    # Use future-relative dates so the test stays green as wall-clock advances.
+    yy_n, mon_n, exp_n = _future_month(1)   # front (nearest)
+    yy_f, mon_f, exp_f = _future_month(2)   # second-nearest (the "last listed")
+    near_sym = f"CRUDEOIL{yy_n}{mon_n}FUT"
+    far_sym  = f"CRUDEOIL{yy_f}{mon_f}FUT"
+    near_inst = _inst(near_sym, "CRUDEOIL", exp_n)
+    far_inst  = _inst(far_sym,  "CRUDEOIL", exp_f)
+    items = [near_inst, far_inst]
 
-    # Dec 2026 option — no listed future yet; lookup_mcx_future_for_expiry
-    # returns the last available (JUL). Front-month fallback would also give
-    # JUN. The calendar-aware helper wins (JUL is closer to Dec than JUN).
+    # Far-out expiry_hint (8 months) — no listed future covers it yet;
+    # lookup_mcx_future_for_expiry returns the last available (far_sym).
+    _, _, exp_hint = _future_month(8)
+    hint_date = date.fromisoformat(exp_hint)
+
     ltp_map = {
-        "MCX:CRUDEOIL26JUNFUT": 6800.0,
-        "MCX:CRUDEOIL26JULFUT": 6860.0,
+        f"MCX:{near_sym}": 6800.0,
+        f"MCX:{far_sym}":  6860.0,
     }
 
     from backend.api.routes.options import _resolve_spot
@@ -185,12 +192,12 @@ async def test_mcx_falls_back_to_front_month_when_no_matching_far_future():
          _patch_broker_quote(ltp_map):
         spot, src, prev_close, anchor = await _resolve_spot(
             "CRUDEOIL", None,
-            expiry_hint=date(2026, 12, 18),  # Far-out option, no listed future
+            expiry_hint=hint_date,  # Far-out option, no listed future
         )
 
     assert src == "futures"
-    # lookup_mcx_future_for_expiry returns candidates[-1] = JULFUT (last listed)
-    assert anchor == "CRUDEOIL26JULFUT", f"Expected CRUDEOIL26JULFUT, got {anchor}"
+    # lookup_mcx_future_for_expiry returns candidates[-1] = far_sym (last listed)
+    assert anchor == far_sym, f"Expected {far_sym}, got {anchor}"
     assert abs(spot - 6860.0) < 0.01
 
 
