@@ -129,9 +129,9 @@
   function _retry() {
     _timedOut = false;
     if (_timeoutHandle) { clearTimeout(_timeoutHandle); _timeoutHandle = null; }
-    positionsStore.load(undefined, { force: true });
-    holdingsStore.load(undefined,  { force: true });
-    fundsStore.load(undefined,     { force: true });
+    positionsStore.load({ fresh: true });
+    holdingsStore.load({ fresh: true });
+    fundsStore.load({ fresh: true });
   }
 
   // Canonical account display order map — $state so _allAccounts re-derives

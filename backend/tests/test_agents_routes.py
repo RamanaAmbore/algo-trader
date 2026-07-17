@@ -7,7 +7,7 @@ Reuse: _normalize_fire_at and _parse_iso_dt shared across create/update paths.
 UX: 422 returned for malformed condition/grammar fields.
 """
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime
 
 _SRC = Path("backend/api/routes/agents.py").read_text()
 

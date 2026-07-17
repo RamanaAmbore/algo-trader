@@ -2710,14 +2710,12 @@
   /* Disabled-pill — visible but unreachable. Used for Variety BO + ICE
      where backend wiring isn't done yet; operator sees them on the
      roadmap without being able to click. Tooltip explains why. */
-  .ot-pill-disabled,
-  .ot-pill[disabled] {
+  .ot-pill-disabled {
     opacity: 0.35;
     cursor: not-allowed;
     pointer-events: auto; /* keep title tooltip reachable */
   }
-  .ot-pill-disabled:hover,
-  .ot-pill[disabled]:hover {
+  .ot-pill-disabled:hover {
     background: rgba(255,255,255,0.04);
     color: var(--text-muted);
     border-color: rgba(255,255,255,0.12);
@@ -2809,7 +2807,6 @@
     color: #cbd5e1;
   }
   /* .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on / .ot-side-sell.on moved to SideToggle.svelte */
-  .ot-side-toggle-compact .ot-side-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
   /* Mode row */
   .ot-mode-row {
@@ -3069,6 +3066,7 @@
     border-color: rgba(74,222,128,0.85);
   }
   .ot-submit:disabled { opacity: 0.45; cursor: not-allowed; }
+  .ot-close:disabled { opacity: 0.35; cursor: not-allowed; }
   .ot-submit-basket-mode:disabled { opacity: 0.45; cursor: not-allowed; }
 
   /* `.ot-label-sub` kept — used by the Template card "(exit rules)"

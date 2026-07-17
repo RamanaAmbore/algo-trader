@@ -645,7 +645,7 @@ async def _sync_algo_order_id(algo_order_id: int | None,
                 if hasattr(row, "last_attempt_at"):
                     row.last_attempt_at = _now
                     _dirty = True
-                if hasattr(row, "next_attempt_at") and interval_seconds:
+                if hasattr(row, "next_attempt_at") and interval_seconds is not None:
                     row.next_attempt_at = _now + float(interval_seconds)
                     _dirty = True
                 if hasattr(row, "interval_seconds") and interval_seconds is not None:

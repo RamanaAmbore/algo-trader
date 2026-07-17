@@ -11,6 +11,7 @@ Six tests covering SSOT, correctness, stale-state, and UX fixes:
 """
 
 import inspect
+import pytest
 from pathlib import Path
 
 
@@ -77,14 +78,12 @@ def test_template_attach_errors_trigger_alert():
 
     # The fix adds an alert call when result.errors is non-empty
     # Look for alert pattern when errors are collected
-    assert "_fire_guard_alert" in src or "result.errors" in src, (
-        "template_attach must have an alert path for non-empty result.errors. "
-        "Currently G1/GTT/wing failures are silent, causing operators to miss unattached exits."
+    assert "_fire_attach_fail_alert" in src, (
+        "template_attach must call _fire_attach_fail_alert when result.errors is non-empty — "
+        "not the pre-existing _fire_guard_alert which fires on applies_to guard, not on attach errors"
     )
-    # Verify it's called somewhere after errors are collected (not just on applies_to)
-    assert "attach failed" in src or "guard_alert" in src, (
-        "Template failure alert function must exist in template_attach.py "
-        "and be called when result.errors is non-empty."
+    assert "result.errors" in src, (
+        "alert must be conditional on result.errors being non-empty"
     )
 
 
@@ -129,5 +128,5 @@ def test_navstrip_pslot_formula_guard_stale_snapshot():
 
 
 if __name__ == "__main__":
-    # Allow running via: python backend/tests/test_11_defect_patch.py
+    # Allow running via: python backend/tests/test_12_defect_patch.py
     pytest.main([__file__, "-v"])
