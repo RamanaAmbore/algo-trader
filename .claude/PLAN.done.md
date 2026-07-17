@@ -1,248 +1,476 @@
-# Plan: 12-defect patch — chart, order ticket, chase, payoff, margin, callbacks, template alerts, NavStrip P-slot
+# Plan: Coverage uplift — 80% target, 20 backend files + 5 Playwright specs
 
 ## Context
 
-Comprehensive audit of chart range selector, order ticket, chase, payoff expiry curve,
-margin/cash calculations, order callback UI freshness, template reject alerts, and NavStrip
-P-slot. Twelve defects found across P1–P2; all addressed in one batch. Chase uses
-cancel+replace (not modify) — correct behaviour, but executor pool (max_workers=4) can
-saturate and delay first attempt beyond 1 minute. Template reject alerts only fire on
-`applies_to` mismatch; G1/GTT/wing failures are silent — root cause of missed exit-arm
-alerts. Dhan margin gate silently passes every order (flat dict `.get("equity")` → `{}`).
-NavStrip P-slot collapses to zero at market close because `PositionStrip.svelte` overwrites
-`dispPositionsToday` with 0 during the live→snapshot transition window (positions array
-briefly empty); `baseDayPnlForPosition` also falls through to the formula when
-`day_change_val = 0` for overnight snapshot rows whose `close_price` may equal `ltp`.
+Current coverage: **68%** (42,474 / 62,811 stmts). Target: **≥80%** = need ~7,775 more
+statements covered. Plan has three phases: (1) 10 files already planned → ~72%, (2) 10 more
+files → ~76%, (3) background + sim source-scan + Playwright E2E specs → ~80%.
+
+Priority matrix (by missing stmts × testability):
+
+| Module | Current | Missing | Type |
+|---|---|---|---|
+| `api/background.py` | 17% | 1,870 | Async tasks — source-scan + helper extraction |
+| `api/algo/sim/driver.py` | 17% | 1,180 | Simulator — scenario parse, tick math |
+| `api/algo/chase.py` | 21% | 369 | Critical, just patched |
+| `api/routes/orders_basket.py` | 0% | 260 | Critical trading path |
+| `api/routes/orders_place.py` | 34% | 411 | Critical trading path |
+| `api/routes/orders.py` | 35% | 464 | Postback + invalidation |
+| `api/algo/investor_statement.py` | 0% | 232 | Pure computation |
+| `api/algo/sim/synthesize.py` | 12% | 229 | Tick synthesis math |
+| `api/database.py` | 23% | 239 | Migration DDL checks |
+| `api/algo/expiry.py` | 0% | 349 | Pair/partner logic |
+| `api/routes/agents.py` | 23% | 423 | ISO parse, lifespan logic |
+| `shared/helpers/fees.py` | 0% | 41 | Pure math, 100% testable |
+| `api/algo/lot_ledger.py` | 0% | 145 | FIFO math, unit testable |
+| `api/algo/shadow.py` | 0% | 62 | Small, deterministic |
+| `api/algo/grammar.py` | 54% | 115 | Grammar parsing helpers |
+| `api/algo/grammar_registry.py` | 36% | 56 | Registry lookup |
+| `api/algo/events.py` | 26% | 60 | Event dispatch |
+| `api/auth_guard.py` | 39% | 65 | JWT token helpers |
+| `api/algo/investor_units.py` | 41% | 66 | Unit nav math |
+| `api/algo/nav.py` | 51% | 77 | NAV computation |
+| `api/algo/agent_evaluator.py` | 65% | 86 | Condition evaluation |
+| `api/routes/research.py` | 30% | 568 | Hash/token, serialization |
 
 ---
 
 ## Agents
 
-### frontend
-
-Fix 6 issues in `frontend/`:
-
-**1 — `_setRange()` missing state reset (`frontend/src/lib/ChartWorkspace.svelte`)**
-`_setRange(d)` at line ~799 does NOT clear `_bars`, `_spotBars`, `_histLoading`,
-`_histError`, `_histRetrying`, retry timers, `_emptyRetryFired`, `_partialRetryFired`,
-`_emptyGateSuppressed` before calling `_loadHistorical(true)`. Symbol-change effect at
-line ~1586 does all of this. Copy the full state reset from the symbol-change effect into
-`_setRange()` before the `_loadHistorical(true)` call. Also add `_intradayOn = false`
-(to avoid stale tick stream data from prior intraday session leaking into a new range).
-Do NOT clear `zoom` or `_chartHover` (already done) and do NOT clear `_chartDays`
-(that's what we're changing to).
-
-**2 — Order ticket duplicate-submit guard (`frontend/src/lib/order/OrderTicket.svelte`)**
-The `$effect` that watches `triggerSubmit` (line ~1354) calls `submit()` with no
-`submitting` guard. If `triggerSubmit` is incremented twice rapidly, two live orders fire.
-Add `if (submitting) return;` as the first line of the `triggerSubmit` effect body.
-
-**3 — `positionsStore.load` args bug (`frontend/src/routes/(algo)/admin/derivatives/+page.svelte`)**
-Line ~3345: `positionsStore.load(undefined, { force: fresh })` passes `fresh` as `opts`
-(second arg), not as `args` (first arg). `createDataStore` forwards `args` to the fetcher
-as query params; `opts` is a dedup flag only. So `?fresh=1` never reaches the backend.
-Change to `positionsStore.load({ fresh: true })` (single arg). Search for all other
-`positionsStore.load` call sites in the derivatives page and fix the same pattern if found.
-
-**4 — Order callback UI freshness (`frontend/src/routes/(algo)/orders/+page.svelte` +
-`frontend/src/routes/(algo)/admin/derivatives/+page.svelte`)**
-
-Orders page (orders/+page.svelte):
-- The `order_update` WS event triggers `_debouncedLoadOrders()` (250ms debounce). Remove
-  the debounce — call `loadOrders()` directly on `order_update` (same as the button does).
-- Ensure `loadOrders()` passes `fresh: true` so the 30s backend orders cache is bypassed.
-
-Derivatives page (derivatives/+page.svelte):
-- Non-terminal postbacks (TRIGGER_PENDING → OPEN transitions) do NOT fire `book_changed`,
-  so the payoff/strategy grid misses intermediate state changes. Wire `order_update` WS
-  event in the derivatives page to also call `loadPositions({ fresh: true })` (with a
-  200ms debounce to batch rapid fills).
-
-**5 — Chase countdown display (`frontend/src/lib/order/ChaseCard.svelte`)**
-
-Backend will add `interval_seconds` and `next_attempt_at` to the chase API row (see
-backend agent). In ChaseCard.svelte:
-- Add a reactive countdown: compute `_secsLeft = Math.max(0, Math.round((row.next_attempt_at - Date.now()/1000)))`.
-  Display as "next re-quote in {_secsLeft}s" next to the attempts count.
-- Change the "Age" column from `_age(row.created_at)` to `_age(row.last_attempt_at || row.created_at)`
-  so it shows time since last re-quote, not total chase lifetime.
-- If `_secsLeft === 0` and `row.status === 'active'`, show "re-quoting…" instead of the
-  countdown.
-
-**6 — Order modal close guard while submitting (`frontend/src/lib/order/OrderTicket.svelte`)**
-The `×` close button (line ~1742) and Escape handler (line ~1943) don't check `submitting`.
-Disable the close button (`disabled={submitting}`) and add `if (submitting) return;` guard
-at the top of the Escape key handler.
-
----
-
-### backend
-
-Fix 5 issues in `backend/`:
-
-**1 — Chase: expose `next_attempt_at` and `last_attempt_at` in API row (`backend/api/algo/chase.py` + `backend/api/routes/orders_helpers.py`)**
-
-In `chase.py`, after each cancel+place cycle, record `result.last_attempt_at = now` and
-compute `result.next_attempt_at = now + cfg.interval_seconds`. Write both to the AlgoOrder
-DB record (or to the in-memory result object that the status poller reads).
-
-In `orders_helpers.py`, add `interval_seconds: int`, `next_attempt_at: Optional[float]`,
-and `last_attempt_at: Optional[float]` to `AlgoOrderInfo` (with `None` defaults for
-back-compat). Populate from the chase state when serializing.
-
-Also: increase `_executor` `max_workers` from 4 to 8 in `chase.py` to reduce thread-pool
-saturation risk that delays first attempt.
-
-**2 — Dhan preflight margin gate fix (`backend/api/algo/actions_preflight.py`)**
-
-Line ~684: `_fetch_account_margins` does `margins_data.get(segment, {})` where
-`margins_data` for Dhan is a flat dict (no segment nesting). This returns `{}` for every
-Dhan order — margin check silently passes. Fix: detect Dhan flat dict vs Kite nested dict.
-If `"net"` is a top-level key (Dhan shape), use the dict directly without `.get(segment)`.
-If `"equity"` / `"commodity"` are top-level keys (Kite shape), slice by segment as now.
-
-**3 — CDS/BCD segment misrouting (`backend/api/algo/actions_preflight.py`)**
-
-Line ~652: `segment = "commodity" if exchange in ("MCX", "NCO") else "equity"`. CDS and
-BCD currency derivatives belong to `"currency"`, not `"equity"`. Change to:
-```python
-if exchange in ("MCX", "NCO"):
-    segment = "commodity"
-elif exchange in ("CDS", "BCD"):
-    segment = "currency"
-else:
-    segment = "equity"
-```
-
-**4 — Funds cache invalidation after fill (`backend/api/routes/orders.py`)**
-
-`_rco_invalidate_terminal_caches()` (line ~390) does not call `invalidate("funds")`.
-After a fill, the `/api/funds` response stays stale for up to 30s. Add `invalidate("funds")`
-to the terminal-status cache-clearing block. Check `backend/api/persistence/runtime_state.py`
-or wherever `invalidate()` is defined for funds to find the correct key.
-
-**5 — Template attachment: alert on ALL failures, not just `applies_to` (`backend/api/algo/template_attach.py`)**
-
-Currently `_fire_guard_alert` only fires on `applies_to` mismatch (line ~1544). G1 guard
-failures (line ~1401), translate_qty errors (line ~1353), GTT/wing placement failures (line
-~1360-1375) append to `result.errors` silently. Operator can miss unattached exits.
-
-Add a consolidated alert at the point where `apply_plan_live` or `apply_template_to_order`
-returns with non-empty `result.errors` (i.e., exits were not attached despite parent filling).
-Use the existing `_fire_guard_alert` infrastructure but with a different `reason` prefix
-("attach failed — {errors[0]}"). Send Telegram only (not email) for these — they're
-operational failures, not security events. Do NOT duplicate the existing `applies_to` alert.
-
----
+### backend: skip
+### frontend: skip
+### broker: skip
+### doc: skip
 
 ### backend-test
 
-Write `backend/tests/test_11_defect_patch.py`. Five test dimensions:
+Write **20 backend test files** (one per module) and confirm all pass.
+Read the target module before writing each test.
+Use project patterns: `inspect.getsource` / `Path.read_text()` for structural assertions;
+`pytest.mark.asyncio` + `AsyncMock` for async paths; minimal mocking. 5-dimension docstring
+per file (SSOT, Perf, Stale, Reuse, UX). Do NOT weaken assertions if production code is
+missing a feature — report it as a finding.
 
-1. **SSOT — Dhan margin gate**: import `_fetch_account_margins` (or inspect source); assert the
-   flat-dict path (Dhan shape `{"net": 100000, "available": 80000}`) is not passed through
-   `.get("equity", {})` — confirm "net" key is accessible directly.
-
-2. **SSOT — CDS/BCD segment**: call the segment-resolution logic with `exchange="CDS"` and
-   `exchange="BCD"`; assert result is `"currency"` not `"equity"`.
-
-3. **Stale — Funds invalidation**: inspect source of `_rco_invalidate_terminal_caches` in
-   `orders.py`; assert `"funds"` appears in the invalidation calls.
-
-4. **Stale — Template silent failures**: inspect `template_attach.py` source; assert that a
-   call path with non-empty `result.errors` (post-G1-failure or GTT-failure) also fires an
-   alert (not just `applies_to` path).
-
-5. **Correctness — `positionsStore.load` args**: source-scan `derivatives/+page.svelte`;
-   assert `positionsStore.load(undefined,` does NOT appear (confirming the args fix).
-
-6. **UX — NavStrip P-slot formula guard**: import (or source-scan) `baseDayPnlForPosition`
-   from `nav.js`; assert that when `overnight_quantity > 0`, `day_change_val = 0`, and
-   `close_price === last_price` (stale snapshot), the function returns `0` not a large
-   formula result. Also assert that when `close_price > 0` and `close_price !== last_price`,
-   it returns `pnl - oq * (close - avg)` (correct formula).
-
-After writing, run:
-```
-cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/test_11_defect_patch.py -v
-```
+Run all 20 files at the end and report pass/fail per file, then full coverage.
 
 ---
 
-**7 — NavStrip P-slot zero at market close (`frontend/src/lib/PositionStrip.svelte` + `frontend/src/lib/data/nav.js`)**
+### Phase 1 — 10 files (target: 72%+)
 
-Two-part fix:
+**File 1 — `backend/tests/test_orders_basket.py`** (0% → 15%+)
 
-*Part A — Transition window guard (PositionStrip.svelte):*
-At market close the live broker positions array goes empty before the snapshot arrives.
-Line ~512 unconditionally does `dispPositionsToday = _livePositionsToday`, which writes 0
-when `_livePositionsToday === 0` (empty array sum). Fix: only overwrite `dispPositionsToday`
-when the new value is non-zero OR when the positions array is genuinely non-empty (so a
-real zero is still recorded). Pattern:
-```javascript
-if (_positions.length > 0 || _livePositionsToday !== 0) {
-    dispPositionsToday = _livePositionsToday;
-}
-```
-This retains the last known non-zero day P&L during the snapshot loading gap.
+Module: `backend/api/routes/orders_basket.py`
 
-*Part B — `baseDayPnlForPosition` formula fallback (nav.js):*
-Line ~106: `if (oq > 0 && dcv !== 0) return dcv;` — when snapshot rows have
-`day_change_val = 0` (day_pnl stored as NULL/0 in DB for overnight positions), this
-condition fails and falls through to `pnl - oq * (close - avg)`. This formula is only
-correct when `close_price = previous_close` (the fix from commit 910740f0). However if
-`previous_close` was NULL and `close_price` fell back to `ltp`, the formula produces
-`pnl - oq * (ltp - avg)` = total unrealized P&L, not day P&L.
-
-Guard: when `oq > 0 && dcv === 0`, check if `close_price` is available and > 0 before
-applying the formula. If `close_price === 0` or `close_price === ltp` (stale snapshot
-with no prior settlement), return `dcv` (0) rather than a wrong formula result — it's
-better to show 0 than a distorted multi-lakh number. The condition becomes:
-```javascript
-if (oq > 0 && dcv !== 0) return dcv;
-if (oq > 0 && dcv === 0) {
-    const close = Number(p?.close_price ?? 0);
-    const ltp   = Number(p?.last_price ?? 0);
-    if (close > 0 && close !== ltp) return pnl - oq * (close - avg);
-    return 0;  // no reliable close_price — don't distort
-}
-```
+Tests (6):
+1. **SSOT**: Source-scan — `translate_qty` or `broker.translate_qty` appears per leg.
+2. **SSOT**: Source-scan — `basket_order_margins` called in preflight path.
+3. **SSOT**: Source-scan — G2 fat-finger cap (`FAT_FINGER_5_LOT_CAP` or equivalent) present.
+4. **Perf**: Source-scan — lots→contracts multiplication appears exactly once per leg path.
+5. **Correctness**: Unit — leg `lots=2, lot_size=50` → broker-captured qty == 100. Mock `broker.basket_order`.
+6. **UX**: Source-scan — HTTP 400/422 raised when a leg has `qty=0` or `lots=0`.
 
 ---
 
-### doc: skip
-### broker: skip
-### playwright: skip
+**File 2 — `backend/tests/test_chase_extended.py`** (21% → 32%+)
+
+Module: `backend/api/algo/chase.py`
+
+Tests (6):
+1. **SSOT**: Source-scan — `cancel_order` and `place_order` both appear; `modify_order` does NOT.
+2. **SSOT**: Source-scan — `max_workers=8` present.
+3. **SSOT**: Source-scan — `next_attempt_at` and `last_attempt_at` assigned inside the loop body.
+4. **Perf**: Source-scan — `cfg.interval_seconds` drives `asyncio.sleep` (no literal `20`).
+5. **Correctness**: Source-scan — `result.attempts` incremented BEFORE the broker cancel/place block.
+6. **Stale**: Source-scan — `_KILLED_LOCK` and a TTL expiry appear together (killed-set bounded).
+
+---
+
+**File 3 — `backend/tests/test_orders_place_lots.py`** (34% → 45%+)
+
+Module: `backend/api/routes/orders_place.py`
+
+Tests (6):
+1. **SSOT**: Source-scan — `_resolve_fno_qty` or `lots * lot_size` in `_ticket_validate_input`.
+2. **SSOT**: Source-scan — G1 (LOT_MULTIPLE) NOT in `_ticket_enforce_lot_and_fat_finger`.
+3. **SSOT**: Source-scan — G2 bypassed when `intent == "close"`.
+4. **Perf**: Source-scan — lots→contracts multiplication appears once (no double-multiply).
+5. **Correctness**: Unit — `_resolve_fno_qty(lots=1, lot_size=25)` == 25; `(lots=3, lot_size=50)` == 150.
+6. **UX**: Source-scan — 400/422 raised when `lots <= 0`.
+
+---
+
+**File 4 — `backend/tests/test_orders_postback.py`** (35% → 45%+)
+
+Module: `backend/api/routes/orders.py`
+
+Tests (6):
+1. **SSOT**: Source-scan `_rco_invalidate_terminal_caches` — `"positions"`, `"holdings"`, `"funds"` all present.
+2. **SSOT**: Source-scan `_postback_broadcast_fanout` — `order_update` emitted on EVERY postback.
+3. **SSOT**: Source-scan — `book_changed` / `position_filled` emitted only on terminal status.
+4. **Stale**: Source-scan — `_postback_broadcast_fanout` is `async def`.
+5. **Correctness**: Source-scan — HTTP 200 returned from postback handler for all statuses.
+6. **Reuse**: Source-scan — `_raw_cache_invalidate` called alongside `invalidate()` in terminal path.
+
+---
+
+**File 5 — `backend/tests/test_fees.py`** (0% → 90%+)
+
+Module: `backend/shared/helpers/fees.py`
+
+Tests (6):
+1. **SSOT**: Import `compute_order_fees`; assert result has keys `brokerage`, `stt`, `total`.
+2. **Correctness**: `qty=50, price=100, symbol="NIFTY26JUL24000CE", side="SELL"` → STT = 3.125.
+3. **Correctness**: Same, `side="BUY"` → STT = 0.
+4. **Correctness**: `FUT` symbol, `side="SELL"` → STT = 0.0125% of turnover.
+5. **Correctness**: Large-turnover order → brokerage capped at ₹20.
+6. **Correctness**: Total fees include 18% GST on brokerage + exchange fees.
+
+---
+
+**File 6 — `backend/tests/test_lot_ledger.py`** (0% → 70%+)
+
+Module: `backend/api/algo/lot_ledger.py`
+
+Tests (6):
+1. **SSOT**: Import `LotLedger`; assert `open_lot` and `close_lot_fifo` methods exist.
+2. **Correctness**: Open 3@100, 2@120; close 4@150 → realized P&L = (3×50) + (1×30) = ₹180.
+3. **Correctness**: Open 2@200, close 2@180 long → realized P&L = −₹40.
+4. **Correctness**: Short 1@100, close @80 → realized P&L = +₹20.
+5. **Stale**: `open_lot(qty=0)` raises or returns error.
+6. **Perf**: FIFO order correct — oldest lots closed first (not LIFO).
+
+---
+
+**File 7 — `backend/tests/test_shadow.py`** (0% → 80%+)
+
+Module: `backend/api/algo/shadow.py`
+
+Tests (5):
+1. **SSOT**: Source-scan — `basket_margin` or `basket_order_margins` called.
+2. **SSOT**: Source-scan — `AlgoOrder` with `mode='shadow'` written to DB.
+3. **SSOT**: Source-scan — NO `place_order` / `broker.place_order` call.
+4. **Correctness**: Source-scan — `capture_order` stores the Kite-formatted payload as JSON.
+5. **UX**: Source-scan — shadow returns structured result indicating captured, not executed.
+
+---
+
+**File 8 — `backend/tests/test_expiry_logic.py`** (0% → 20%+)
+
+Module: `backend/api/algo/expiry.py`
+
+Tests (6):
+1. **SSOT**: Source-scan — pair validation function exists (`_exp_opt_pair_valid` or similar).
+2. **Correctness**: CE+PE same underlying/expiry, opposite sign → valid pair. Unit test directly.
+3. **Correctness**: Two CE same sign → NOT valid pair.
+4. **Correctness**: `_best_opt_partner` prefers partner with highest absolute theta.
+5. **Stale**: Source-scan — `ExpiryEngine` has `_state` machine (idle/scanning/closing).
+6. **Perf**: Source-scan — interval guard exists before scanning (not on every tick).
+
+---
+
+**File 9 — `backend/tests/test_dhan_adapter.py`** (37% → 50%+)
+
+Module: `backend/brokers/adapters/dhan.py`
+
+Tests (6):
+1. **SSOT**: Source-scan — symbol conversion function exists.
+2. **Correctness**: `"CRUDEOIL-16JUL2026-8500-CE"` → `"CRUDEOIL26JUL8500CE"`.
+3. **Correctness**: `"NIFTY-31JUL2026-FUT"` → Kite futures format.
+4. **Correctness**: NSE equity passthrough unchanged.
+5. **SSOT**: Source-scan `_normalise_dhan_gtt_row` — `trigger_price`, `limit_price`, leg qtys mapped.
+6. **Stale**: Source-scan — instruments cache has a date-roll expiry.
+
+---
+
+**File 10 — `backend/tests/test_agents_routes.py`** (23% → 35%+)
+
+Module: `backend/api/routes/agents.py`
+
+Tests (6):
+1. **SSOT**: Source-scan — `_parse_iso_dt` exists and handles null/TZ-naive inputs.
+2. **Correctness**: `_parse_iso_dt("2026-07-17T09:15:00+05:30")` returns TZ-aware datetime.
+3. **Correctness**: `_parse_iso_dt(None)` returns None.
+4. **Correctness**: Agent with `lifespan="one_shot"` → `n_fires=1`, `until_date=None`.
+5. **Correctness**: Source-scan `_check_debounce_gate` — last_fired < debounce_seconds ago → BLOCKED.
+6. **UX**: Source-scan — 422 when grammar/condition field is empty or malformed.
+
+---
+
+### Phase 2 — 10 more files (target: 76%+)
+
+After Phase 1 passes, continue with these 10 files in the same agent run.
+
+**File 11 — `backend/tests/test_grammar_parsing.py`** (54% → 72%+)
+
+Module: `backend/api/algo/grammar.py`
+
+Tests (6):
+1. **SSOT**: Import `GrammarParser` or equivalent; assert `parse()` method exists.
+2. **Correctness**: Parse a simple `"BUY 1 NIFTY FUT"` → returns dict with side, qty, symbol, product.
+3. **Correctness**: Parse `"SELL 2 NIFTY26AUG25000CE LIMIT 24000"` → limit price extracted.
+4. **Correctness**: Invalid grammar string raises `GrammarError` or returns error result.
+5. **Stale**: Source-scan — no hardcoded expiry month strings (uses a computed month map).
+6. **Perf**: Source-scan — `functools.lru_cache` or equivalent caching on the parse path.
+
+---
+
+**File 12 — `backend/tests/test_grammar_registry.py`** (36% → 60%+)
+
+Module: `backend/api/algo/grammar_registry.py`
+
+Tests (5):
+1. **SSOT**: Import `GrammarRegistry`; assert `register` and `lookup` methods exist.
+2. **Correctness**: Registered grammar can be looked up by name.
+3. **Correctness**: Looking up unknown grammar raises `KeyError` or returns None.
+4. **Stale**: Source-scan — default grammars (`orders`, `agents`, etc.) registered at import time.
+5. **Reuse**: Source-scan — registry is a singleton (module-level instance, not class-per-call).
+
+---
+
+**File 13 — `backend/tests/test_events_dispatch.py`** (26% → 55%+)
+
+Module: `backend/api/algo/events.py`
+
+Tests (5):
+1. **SSOT**: Import `dispatch`; assert `subscribe` and `unsubscribe` also exist.
+2. **Correctness**: Subscribed handler called once on matching event type.
+3. **Correctness**: Unsubscribed handler NOT called after unsubscribe.
+4. **Correctness**: `dispatch` with no subscribers does not raise.
+5. **Perf**: Source-scan — dispatch loop does NOT block on slow handlers (async or thread-safe).
+
+---
+
+**File 14 — `backend/tests/test_auth_guard_helpers.py`** (39% → 65%+)
+
+Module: `backend/api/auth_guard.py`
+
+Tests (5):
+1. **SSOT**: Source-scan — `decode_token` (or `_decode_jwt`) function exists.
+2. **Correctness**: Valid HS256 JWT signed with correct secret → decode returns payload.
+3. **Correctness**: Expired JWT (exp in past) → raises `401` or `TokenExpiredError`.
+4. **Correctness**: JWT with wrong secret → raises `401` or `InvalidSignatureError`.
+5. **Stale**: Source-scan — PBKDF2-SHA256 algorithm name present in password hash/verify path.
+
+---
+
+**File 15 — `backend/tests/test_investor_units.py`** (41% → 70%+)
+
+Module: `backend/api/algo/investor_units.py`
+
+Tests (5):
+1. **SSOT**: Import `compute_unit_nav` or equivalent; assert return type is float/Decimal.
+2. **Correctness**: NAV = total_value / total_units — assert with known inputs.
+3. **Correctness**: Zero units guard — raises or returns None when total_units == 0.
+4. **Correctness**: NAV computed consistently whether total_value positive or negative.
+5. **Stale**: Source-scan — no magic constant for initial NAV (reads from DB or config).
+
+---
+
+**File 16 — `backend/tests/test_sim_synthesize.py`** (12% → 45%+)
+
+Module: `backend/api/algo/sim/synthesize.py`
+
+Focus on deterministic tick synthesis functions.
+
+Tests (6):
+1. **SSOT**: Source-scan — `synthesize_tick` or equivalent function exists.
+2. **Correctness**: Given OHLCV bar `(O=100, H=110, L=90, C=105, V=1000)`, synthesized ticks must stay within [L, H] range.
+3. **Correctness**: First tick of a bar must equal the bar's Open price.
+4. **Correctness**: Last tick of a bar must approximately equal the bar's Close price.
+5. **Correctness**: Total volume of synthesized ticks for a bar must equal bar volume (within rounding).
+6. **Perf**: Source-scan — no external I/O calls inside tick synthesis (pure in-memory computation).
+
+---
+
+**File 17 — `backend/tests/test_investor_statement.py`** (0% → 30%+)
+
+Module: `backend/api/algo/investor_statement.py`
+
+Tests (6):
+1. **SSOT**: Source-scan — `generate_statement` or `InvestorStatement` class exists.
+2. **SSOT**: Source-scan — statement includes `subscriptions`, `redemptions`, `nav_series`.
+3. **Correctness**: Source-scan — `net_flows` = subscriptions − redemptions formula present.
+4. **Correctness**: Source-scan — `annualized_return` / `xirr` calculation present.
+5. **Stale**: Source-scan — date range filtering uses `>=` start and `<=` end (inclusive bounds).
+6. **Reuse**: Source-scan — uses `investor_units.py` functions (not reimplements NAV math).
+
+---
+
+**File 18 — `backend/tests/test_nav_helpers.py`** (51% → 72%+)
+
+Module: `backend/api/algo/nav.py`
+
+Tests (5):
+1. **SSOT**: Import `compute_firm_nav`; assert it returns a dict with `nav`, `equity`, `cash`.
+2. **Correctness**: Holdings value + cash = total NAV — unit test with mocked positions.
+3. **Correctness**: NAV excludes cash in `non_cash_invested` field.
+4. **Stale**: Source-scan — `apply_day_change_backstop` imported/called (not reimplemented).
+5. **Perf**: Source-scan — result is cached (LRU or TTL) to avoid N broker calls per page load.
+
+---
+
+**File 19 — `backend/tests/test_agent_evaluator.py`** (65% → 80%+)
+
+Module: `backend/api/algo/agent_evaluator.py`
+
+Tests (5):
+1. **SSOT**: Import `AgentEvaluator`; assert `evaluate` method exists.
+2. **Correctness**: Condition `"pnl > 1000"` evaluates True when context has `pnl=1500`.
+3. **Correctness**: Condition `"pnl > 1000"` evaluates False when `pnl=800`.
+4. **Correctness**: Malformed condition string raises `GrammarError` (not unhandled exception).
+5. **Stale**: Source-scan — conditions reference `grammar_registry` (not inline parser).
+
+---
+
+**File 20 — `backend/tests/test_background_helpers.py`** (17% → 25%+)
+
+Module: `backend/api/background.py`
+
+Source-scan + helper extraction only (async task orchestration not unit-testable in isolation).
+
+Tests (6):
+1. **SSOT**: Source-scan — `_fetch_positions_direct` exists and calls `apply_day_change_backstop`.
+2. **SSOT**: Source-scan — `_task_perf_snapshot` exists and calls `scripts/perf_baseline.py` or `radon`.
+3. **SSOT**: Source-scan — `_fetch_holdings_direct` present and calls `_raw_cache_invalidate` on `?fresh`.
+4. **SSOT**: Source-scan — `_task_daily_snapshot` calls `daily_snapshot` module (not reimplements).
+5. **Stale**: Source-scan — all scheduled tasks have explicit interval constants (no magic seconds).
+6. **Perf**: Source-scan — `asyncio.gather` or `asyncio.create_task` used for concurrent fetches (not sequential await).
+
+---
+
+After writing all 20 files, run:
+```
+cd /Users/ramanambore/projects/ramboq && \
+venv/bin/pytest backend/tests/test_orders_basket.py \
+               backend/tests/test_chase_extended.py \
+               backend/tests/test_orders_place_lots.py \
+               backend/tests/test_orders_postback.py \
+               backend/tests/test_fees.py \
+               backend/tests/test_lot_ledger.py \
+               backend/tests/test_shadow.py \
+               backend/tests/test_expiry_logic.py \
+               backend/tests/test_dhan_adapter.py \
+               backend/tests/test_agents_routes.py \
+               backend/tests/test_grammar_parsing.py \
+               backend/tests/test_grammar_registry.py \
+               backend/tests/test_events_dispatch.py \
+               backend/tests/test_auth_guard_helpers.py \
+               backend/tests/test_investor_units.py \
+               backend/tests/test_sim_synthesize.py \
+               backend/tests/test_investor_statement.py \
+               backend/tests/test_nav_helpers.py \
+               backend/tests/test_agent_evaluator.py \
+               backend/tests/test_background_helpers.py \
+               -v 2>&1 | tail -60
+```
+
+For any test that fails because the function/symbol doesn't exist at the expected path,
+read the module to find the correct name/path and update the test. Do NOT weaken
+assertions — if production code is missing a feature, note it as a finding.
+
+After all pass, run full coverage:
+```
+venv/bin/pytest backend/tests/ --cov=backend -q 2>&1 | tail -5
+```
+Report overall coverage % before and after.
+
+---
+
+### playwright
+
+Write **5 Playwright specs** for critical functionality introduced in the 12-defect patch.
+These cover frontend behaviors that cannot be verified by pytest source-scan alone.
+
+Target file: `frontend/e2e/` directory (same convention as existing specs).
+
+**Spec 1 — `order_ticket_duplicate_submit_guard.spec.js`**
+
+Verify the order ticket cannot be double-submitted.
+
+Tests (3):
+1. Open order ticket, click Submit → button transitions to "Submitting..." within 200ms.
+2. Click Submit a second time while "Submitting..." → no second request sent (intercept network, assert call count == 1).
+3. Press Escape while submitting → modal does NOT close (form locked during submission).
+
+**Spec 2 — `chase_countdown_display.spec.js`**
+
+Verify the chase countdown UI shows `next_attempt_at` properly.
+
+Tests (3):
+1. Open chase card for an open order → `data-testid="chase-countdown"` element visible.
+2. When `next_attempt_at` is in the future → countdown shows seconds remaining (e.g., "12s").
+3. When `next_attempt_at` is past → element shows "re-quoting…".
+
+**Spec 3 — `derivatives_positions_ws_refresh.spec.js`**
+
+Verify that a WS `order_update` event triggers a fresh positions reload on the derivatives page.
+
+Tests (3):
+1. Navigate to /admin/derivatives → positions grid loads with `as-of` label.
+2. Simulate WS `order_update` message → positions grid shows loading state within 300ms.
+3. After reload — network request contains `?fresh=1` query param (intercept and assert).
+
+**Spec 4 — `navstrip_pslot_after_market_close.spec.js`**
+
+Verify the NavStrip P-slot shows non-zero day P&L after market close with snapshot data.
+
+Tests (3):
+1. Navigate to any page after market close → NavStrip P-slot rendered (not blank/zero).
+2. P-slot value matches the value shown on the derivatives page day P&L total.
+3. P-slot tooltip shows "snapshot as of HH:MM" (not "live").
+
+**Spec 5 — `funds_cache_freshness.spec.js`**
+
+Verify that funds data refreshes after a fill postback.
+
+Tests (3):
+1. Navigate to funds section → available cash shown.
+2. Simulate a COMPLETE postback via `/api/postback` → funds endpoint called within 2s.
+3. Network request to `/api/funds` does NOT have a stale `Cache-Control: max-age` header.
+
+---
+
+After all playwright specs pass on dev.ramboq.com:
+```
+cd /Users/ramanambore/projects/ramboq/frontend && \
+npx playwright test order_ticket_duplicate_submit_guard chase_countdown_display \
+    derivatives_positions_ws_refresh navstrip_pslot_after_market_close \
+    funds_cache_freshness --reporter=list 2>&1 | tail -20
+```
 
 ---
 
 ## Tests
 - pytest: yes
-- svelte-check: yes
-- playwright: no
+- svelte-check: no
+- playwright: yes (5 new specs only)
 
 ## Commit message
 
-fix(multi): 12-defect patch — chart range, order ticket, chase, payoff, margin, callbacks, template alerts, NavStrip P-slot
+test(coverage): 80% target — 20 backend files + 5 Playwright specs
 
-Patches chart range selector state reset, duplicate submit guard, positionsStore fresh
-arg, order callback debounce, chase countdown UI, close-while-submitting guard, Dhan
-margin gate, CDS/BCD segment, funds cache invalidation, chase executor size, and template
-silent-failure alerts.
+Adds 107 tests across 20 low-coverage backend modules (0–54%) and 5 Playwright specs
+for critical 12-defect patch behaviors. Targets lifting backend coverage from 68% toward
+76%+. Playwright specs verify duplicate-submit guard, chase countdown UI, WS-driven
+positions refresh, NavStrip P-slot at market close, and funds cache invalidation.
 
 ## Done when
 
-1. Switching chart range (1M→3M→6M→1Y) immediately clears old bars and shows correct x-axis span.
-2. Order ticket triggerSubmit effect has `if (submitting) return` guard; close button disabled while submitting.
-3. `positionsStore.load({ fresh: true })` (single-arg form) in derivatives page.
-4. Orders page WS `order_update` calls `loadOrders()` directly (no 250ms debounce).
-5. Derivatives page wires `order_update` → `loadPositions({ fresh: true })`.
-6. ChaseCard shows "next re-quote in Xs" countdown and "time since last re-quote" age.
-7. Dhan preflight reads `net` from flat margin dict, not `.get("equity", {})`.
-8. CDS/BCD exchange maps to `"currency"` segment.
-9. `_rco_invalidate_terminal_caches` calls `invalidate("funds")`.
-10. Template attach failures with non-empty `result.errors` send Telegram alert.
-11. `venv/bin/pytest backend/tests/test_11_defect_patch.py` — 5 tests pass.
-12. `svelte-check` — 0 errors.
-13. NavStrip P-slot retains last non-zero day P&L during live→snapshot transition (no zero flash at market close).
-14. `baseDayPnlForPosition` with stale snapshot (`close_price = ltp`) returns 0, not a distorted formula value.
+1. All 107 backend tests pass (20 files × 5-6 tests each).
+2. All 5 Playwright specs pass on dev.ramboq.com.
+3. `venv/bin/pytest backend/tests/ -q` — only pre-existing MCX spot failure, no new failures.
+4. Overall pytest coverage ≥ 75% (from 68%). Note: reaching 80% additionally requires
+   background.py and sim/driver.py integration tests — noted as Phase 4 follow-up.
+5. `fees.py` > 85%, `lot_ledger.py` > 65%, `shadow.py` > 75%, `sim/synthesize.py` > 40%.
+
+## Phase 4 follow-up (not in this sprint — needed to close 76%→80% gap)
+
+The remaining 4% gap is concentrated in two modules:
+- `background.py` (1,870 missing stmts, 17%) — async task orchestration; requires
+  integration test harness with a live DB connection and mocked broker layer.
+- `sim/driver.py` (1,180 missing stmts, 17%) — simulator engine; requires loading
+  actual scenario YAML files and running the tick loop under pytest-asyncio.
+
+Phase 4 plan (separate sprint): write `test_background_integration.py` and
+`test_sim_driver_scenario.py` using the existing sim fixture infrastructure in
+`backend/tests/fixtures/`. Estimated +4% coverage.
