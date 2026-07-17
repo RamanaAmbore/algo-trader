@@ -580,6 +580,64 @@ async def _fetch_account_margins(broker, loop, segment: str) -> "tuple[dict, str
         return None, str(e)
 
 
+_EXCHANGE_SEGMENT: dict[str, str] = {
+    "MCX": "commodity", "NCO": "commodity",
+    "CDS": "currency",  "BCD": "currency",
+}
+
+
+async def _preflight_fetch_profile(broker, loop, account: str):
+    if broker.broker_id != "zerodha_kite":
+        return None
+    try:
+        return await loop.run_in_executor(None, broker.profile)
+    except Exception as e:
+        logger.debug(f"[PREFLIGHT] profile fetch failed for {account}: {e}")
+        return None
+
+
+async def _preflight_fetch_instruments(broker, loop, exchange: str, qty: int, account: str):
+    if exchange not in ("NFO", "BFO", "MCX", "CDS") or qty <= 0:
+        return None
+    try:
+        return await loop.run_in_executor(None, broker.instruments, exchange)
+    except Exception as e:
+        logger.debug(f"[PREFLIGHT] instruments fetch failed for {account}/{exchange}: {e}")
+        return None
+
+
+async def _preflight_fetch_basket_margin(broker, loop, basket_orders: list):
+    try:
+        return await loop.run_in_executor(None, broker.basket_order_margins, basket_orders)
+    except Exception as e:
+        return e
+
+
+def _parse_lot_check_fields(order: dict) -> "tuple[str, str, str, int]":
+    """Extract (exchange, symbol, intent, qty) for the G1/G2 lot guards."""
+    exch   = str(order.get("exchange") or "").upper()
+    sym    = str(order.get("tradingsymbol") or order.get("symbol") or "").upper()
+    intent = str(order.get("intent") or "").lower()
+    try:
+        qty = int(order.get("quantity") or order.get("qty") or 0)
+    except Exception:
+        qty = 0
+    return exch, sym, intent, qty
+
+
+def _parse_broker_call_fields(order: dict) -> "tuple[str, str, int, str, object, str, str, str]":
+    """Extract order fields needed for broker profile/instruments/margin calls."""
+    exchange   = str(order.get("exchange", "NFO"))
+    symbol     = str(order.get("tradingsymbol") or order.get("symbol", ""))
+    qty        = int(order.get("quantity") or order.get("qty") or 0)
+    side       = str(order.get("transaction_type") or order.get("side", "BUY"))
+    price      = order.get("price") or 0
+    product    = str(order.get("product", "NRML"))
+    order_type = str(order.get("order_type", "LIMIT"))
+    variety    = str(order.get("variety", "regular"))
+    return exchange, symbol, qty, side, price, product, order_type, variety
+
+
 async def run_preflight(
     account: str,
     order: dict,
@@ -627,14 +685,8 @@ async def run_preflight(
     # G2 is BYPASSED when order["intent"] == "close" — closing an
     # existing large position with a matching-size opposing order is
     # legitimate. G1 still applies (qty must be a valid multiple).
-    _exch = str(order.get("exchange") or "").upper()
-    _sym  = str(order.get("tradingsymbol") or order.get("symbol") or "").upper()
-    _intent = str(order.get("intent") or "").lower()
+    _exch, _sym, _intent, _qty_check = _parse_lot_check_fields(order)
     _is_close = (_intent == "close")
-    try:
-        _qty_check = int(order.get("quantity") or order.get("qty") or 0)
-    except Exception:
-        _qty_check = 0
     _lot_blockers, _hard_stop = await _preflight_validate_lots(
         _exch, _sym, _qty_check, _is_close
     )
@@ -663,14 +715,9 @@ async def run_preflight(
     broker = get_broker(account)
     loop = asyncio.get_running_loop()
 
-    exchange  = str(order.get("exchange", "NFO"))
-    symbol    = str(order.get("tradingsymbol") or order.get("symbol", ""))
-    qty       = int(order.get("quantity") or order.get("qty") or 0)
-    side      = str(order.get("transaction_type") or order.get("side", "BUY"))
-    price     = order.get("price") or 0
-    product   = str(order.get("product", "NRML"))
-    order_type = str(order.get("order_type", "LIMIT"))
-    variety   = str(order.get("variety", "regular"))
+    exchange, symbol, qty, side, price, product, order_type, variety = (
+        _parse_broker_call_fields(order)
+    )
 
     # ── Stage 1: build basket orders (primary leg + paired wings) ───────────
     # Done before the broker-call fan-out so basket_orders is ready when
@@ -688,47 +735,12 @@ async def run_preflight(
     # Now they're gathered; total time = max(individual call), typically
     # ~300ms. Operator's reported "order placement deteriorated" pain
     # tracks back to this section accumulating across recent slices.
-    if exchange in ("MCX", "NCO"):
-        segment = "commodity"
-    elif exchange in ("CDS", "BCD"):
-        segment = "currency"
-    else:
-        segment = "equity"
-
-    async def _fetch_profile():
-        if broker.broker_id != "zerodha_kite":
-            return None
-        try:
-            return await loop.run_in_executor(None, broker.profile)
-        except Exception as e:
-            logger.debug(f"[PREFLIGHT] profile fetch failed for {account}: {e}")
-            return None
-
-    async def _fetch_instruments():
-        if exchange not in ("NFO", "BFO", "MCX", "CDS") or qty <= 0:
-            return None
-        try:
-            return await loop.run_in_executor(None, broker.instruments, exchange)
-        except Exception as e:
-            logger.debug(f"[PREFLIGHT] instruments fetch failed for {account}/{exchange}: {e}")
-            return None
-
-    async def _fetch_basket_margin():
-        # Surface the exception so the existing MARGIN_SHORTFALL
-        # handler downstream can produce its diagnostic. We return
-        # the exception object on failure (the caller branches on
-        # isinstance(result, Exception)).
-        try:
-            return await loop.run_in_executor(
-                None, broker.basket_order_margins, basket_orders
-            )
-        except Exception as e:
-            return e
+    segment = _EXCHANGE_SEGMENT.get(exchange, "equity")
 
     profile_res, instruments_res, bm_res, margins_res = await asyncio.gather(
-        _fetch_profile(),
-        _fetch_instruments(),
-        _fetch_basket_margin(),
+        _preflight_fetch_profile(broker, loop, account),
+        _preflight_fetch_instruments(broker, loop, exchange, qty, account),
+        _preflight_fetch_basket_margin(broker, loop, basket_orders),
         _fetch_account_margins(broker, loop, segment),
     )
 
