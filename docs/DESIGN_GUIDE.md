@@ -1665,6 +1665,11 @@ stateDiagram-v2
 - `backend/api/algo/chase.py::_emit_chase_terminal` — snapshot + downstream attach
 - `backend/api/algo/chase.py::_sync_algo_order_id` — writes `broker_order_id` + `current_limit`
 
+**Timing columns in AlgoOrderInfo** — `next_attempt_at` and `last_attempt_at`
+are now exposed in the API response. Used by `ChaseCard.svelte` to display
+countdown timer and last-attempt age (e.g., "Next attempt in 12s" · "Last
+attempt 3m ago").
+
 ⚙ **TECH — sync polling vs WebSocket order updates** — `WHY` Postback delivery is unreliable for non-Kite brokers (Dhan + Groww are poll-only). Sync polling is the lowest-common-denominator that works everywhere. `WHAT` `chase_order` calls `_order_status` every 20s (configurable per chase). `HOW` Each iteration: depth quote → adjusted limit → cancel old + place new → sync ID → wait → poll status. `WHERE` `backend/api/algo/chase.py`.
 
 **Partial-fill math (post C-1 fix):**
@@ -3094,6 +3099,12 @@ price at the first intraday snapshot of each trading day, providing a stable ref
 
 **Key rule:** never read `day_change_val` directly; always use `baseDayPnlForPosition(r)`.
 
+**Stale-snapshot guard** — during closed hours, when both `close_price` and
+`ltp` come from the same snapshot, `baseDayPnlForPosition` detects `close_price
+=== ltp` and returns `0` to prevent distortion (zero-flash during live→snapshot
+transition). This guard maintains intraday P&L continuity across market state
+changes.
+
 **Snapshot path parity fix** — `_positions_snapshot` in `backend/api/routes/positions.py`
 now runs a second SQL query to fetch prior-day `daily_book` entries: `ltp AS prev_ltp,
 total_pnl AS prev_settlement_pnl` for each `(account, symbol)`. Builds `prev_map` and passes
@@ -3745,6 +3756,11 @@ profile_res, instruments_res, bm_res, margins_res = await asyncio.gather(
 ```
 
 Each helper handles its own exceptions so a single broker failure surfaces as a logged warning + None result rather than tearing down the gather. `_fetch_basket_margin` returns the exception object (not raising) so the consumer can re-raise into the existing MARGIN_SHORTFALL block's try/except — minimal change to the downstream handler.
+
+**Dhan flat-dict margin fix** — `_fetch_account_margins` now detects when Dhan
+returns a flat dictionary (pre-v2.0 legacy format) and correctly routes
+CDS/BCD currencies to the currency segment key instead of treating them as
+equity.
 
 ### Fix 2 — tick-size index
 

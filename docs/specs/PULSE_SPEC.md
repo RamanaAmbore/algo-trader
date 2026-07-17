@@ -126,6 +126,8 @@ See Section 5 for DB-first policy and fallback ladder.
 - Closed: from `daily_book` snapshot → `'snapshot'` with `as_of` timestamp
 - Day P&L: always via `baseDayPnlForPosition(p)` — NEVER read `day_change_val` directly
 - Do NOT use `positions.close_price` (stale overnight); use `daily_book.ltp`
+- NavStrip P-slot is guarded against zero-flash during live→snapshot transitions
+  (when `close_price === ltp`, the guard returns 0 to prevent distortion)
 
 ### 4.5 Card Controls — CSV Export Button
 
