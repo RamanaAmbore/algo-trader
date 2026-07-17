@@ -1663,12 +1663,12 @@ stateDiagram-v2
 - `backend/api/algo/chase.py` — partial-fill branch (search `_record_partial_fill`)
 - `backend/api/algo/chase.py` — kill-race post-replace check (search `is_killed(current_order_id)` after `_sync_algo_order_id`)
 - `backend/api/algo/chase.py::_emit_chase_terminal` — snapshot + downstream attach
-- `backend/api/algo/chase.py::_sync_algo_order_id` — writes `broker_order_id` + `current_limit`
+- `backend/api/algo/chase.py::_sync_algo_order_id` — writes `broker_order_id`, `current_limit`, `last_attempt_at`, `next_attempt_at`, and `interval_seconds`
 
-**Timing columns in AlgoOrderInfo** — `next_attempt_at` and `last_attempt_at`
-are now exposed in the API response. Used by `ChaseCard.svelte` to display
-countdown timer and last-attempt age (e.g., "Next attempt in 12s" · "Last
-attempt 3m ago").
+**Timing columns in AlgoOrderInfo** — `next_attempt_at`, `last_attempt_at`,
+and `interval_seconds` are now exposed in the API response. Used by `ChaseCard.svelte`
+to display countdown timer, last-attempt age (e.g., "Next attempt in 12s" · "Last
+attempt 3m ago"), and the current chase interval.
 
 ⚙ **TECH — sync polling vs WebSocket order updates** — `WHY` Postback delivery is unreliable for non-Kite brokers (Dhan + Groww are poll-only). Sync polling is the lowest-common-denominator that works everywhere. `WHAT` `chase_order` calls `_order_status` every 20s (configurable per chase). `HOW` Each iteration: depth quote → adjusted limit → cancel old + place new → sync ID → wait → poll status. `WHERE` `backend/api/algo/chase.py`.
 
@@ -3727,7 +3727,7 @@ Per-row try/except + single bulk commit at the end: a single bad voucher entry d
 
 Closes the order-placement deterioration the operator flagged ("placement feels slow now"). Three orthogonal fixes ship together because they target the same hot path:
 
-⚙ **TECH — Sequential awaits vs asyncio.gather** — `WHY` `await` on a `run_in_executor` blocks the route until the broker SDK returns; four sequential awaits = ~800-1200ms on Kite's typical 200-300ms round-trip. Even though each call is itself async-scheduled, the await chain serializes them. `WHAT` Wrap each independent broker call in its own helper coroutine with self-contained exception handling, then fire all four with `asyncio.gather`. Total wall-time becomes `max(individual call)` instead of `sum(individual calls)`. `HOW` Each helper returns a plain Python value on success or a sentinel (None / tuple-with-error) on failure, so the consumer can branch on result type rather than handle exceptions across the gather boundary. `WHERE` `backend/api/algo/actions.py::run_preflight` — fan-out helpers `_fetch_profile / _fetch_instruments / _fetch_basket_margin / _fetch_account_margins`.
+⚙ **TECH — Sequential awaits vs asyncio.gather** — `WHY` `await` on a `run_in_executor` blocks the route until the broker SDK returns; four sequential awaits = ~800-1200ms on Kite's typical 200-300ms round-trip. Even though each call is itself async-scheduled, the await chain serializes them. `WHAT` Wrap each independent broker call in its own helper coroutine with self-contained exception handling, then fire all four with `asyncio.gather`. Total wall-time becomes `max(individual call)` instead of `sum(individual calls)`. `HOW` Each helper returns a plain Python value on success or a sentinel (None / tuple-with-error) on failure, so the consumer can branch on result type rather than handle exceptions across the gather boundary. `WHERE` `backend/api/algo/actions_preflight.py::run_preflight` — fan-out helpers now take explicit args: `_preflight_fetch_profile(broker, loop, account)`, `_preflight_fetch_instruments(broker, loop, exchange, qty, account)`, `_preflight_fetch_basket_margin(broker, loop, basket_orders)`, `_preflight_fetch_account_margins(broker, loop, segment)`.
 
 ### Fix 1 — preflight parallelization
 
@@ -3747,10 +3747,10 @@ The new structure:
 # Stage 1 (synchronous) — build basket_orders (uses cached get_lot_size).
 # Stage 2 (parallel) — gather the 4 independent broker calls:
 profile_res, instruments_res, bm_res, margins_res = await asyncio.gather(
-    _fetch_profile(),         # None for non-Kite brokers
-    _fetch_instruments(),     # None when exchange not in F&O / qty<=0
-    _fetch_basket_margin(),   # Exception on failure (handled below)
-    _fetch_account_margins(), # (seg_dict, error_str) tuple
+    _preflight_fetch_profile(broker, loop, account),
+    _preflight_fetch_instruments(broker, loop, exchange, qty, account),
+    _preflight_fetch_basket_margin(broker, loop, basket_orders),
+    _preflight_fetch_account_margins(broker, loop, segment),
 )
 # Total: ~max(300ms) parallel
 ```
@@ -3758,9 +3758,10 @@ profile_res, instruments_res, bm_res, margins_res = await asyncio.gather(
 Each helper handles its own exceptions so a single broker failure surfaces as a logged warning + None result rather than tearing down the gather. `_fetch_basket_margin` returns the exception object (not raising) so the consumer can re-raise into the existing MARGIN_SHORTFALL block's try/except — minimal change to the downstream handler.
 
 **Dhan flat-dict margin fix** — `_fetch_account_margins` now detects when Dhan
-returns a flat dictionary (pre-v2.0 legacy format) and correctly routes
-CDS/BCD currencies to the currency segment key instead of treating them as
-equity.
+returns a flat margin dict (presence of 'net' or 'available' key) and returns
+it unchanged, bypassing Kite's nested segment-key lookup. The `_EXCHANGE_SEGMENT`
+dict routing (MCX/NCO→commodity, CDS/BCD→currency) applies only to the Kite
+nested-dict path.
 
 ### Fix 2 — tick-size index
 
@@ -3796,7 +3797,7 @@ PAPER is the bigger win because the entire preflight goes away; LIVE saves rough
 
 ### Source files
 
-- `backend/api/algo/actions.py::run_preflight` — parallel gather
+- `backend/api/algo/actions_preflight.py::run_preflight` — parallel gather
 - `backend/api/routes/orders.py::_align_price_to_tick` + `_TICK_INDEX` — O(1) tick lookup
 - `backend/api/routes/orders.py::ticket_order` — PAPER preflight skip block
 
@@ -3885,7 +3886,7 @@ Status normalization uses `_DHAN_STATUS_TO_KITE` and `_GROWW_STATUS_TO_KITE` tab
 
 ### Source files
 
-- `backend/api/algo/actions.py::run_preflight` — parallel gather (slice 22.10)
+- `backend/api/algo/actions_preflight.py::run_preflight` — parallel gather (slice 22.10)
 - `backend/api/background.py::_task_{performance,trail_stop,oco_pair_watcher}` — slice B parallel gathers
 - `backend/brokers/adapters/kite.py::get_lot_size` + `_LOT_INDEX` — slice B O(1) lookup
 - `backend/api/database.py::init_db` — slice B index migrations
@@ -4327,7 +4328,7 @@ calling diagnose. Pre-fix: exceptions swallowed silently in Python < 3.11, or ma
 NameError in 3.11+.
 
 **Files:**
-- `backend/api/algo/actions.py::run_preflight` — NCO added to exchange guard
+- `backend/api/algo/actions_preflight.py::run_preflight` — NCO added to exchange guard
 - `backend/api/algo/actions.py::_action_live_close_position` — broker initialization + guard
 
 ---

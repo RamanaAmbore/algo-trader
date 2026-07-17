@@ -516,7 +516,9 @@
     if (positions.length > 0 || _livePositionsToday !== 0) {
       dispPositionsToday = _livePositionsToday;
     }
-    dispHoldingsToday  = _liveHoldingsToday;
+    if (holdings.length > 0 || _liveHoldingsToday !== 0) {
+      dispHoldingsToday = _liveHoldingsToday;
+    }
     if (!open) return;
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across

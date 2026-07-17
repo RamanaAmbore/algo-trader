@@ -304,6 +304,8 @@
   // racing the navigation.
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _urlSyncTimer = null;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _orderUpdateTimer = null;
   $effect(() => {
     // Track both pieces of state.
     const u = selectedUnderlying;
@@ -3760,18 +3762,19 @@
     // Refreshes loadPositions too so the Candidates panel reflects
     // the new fill within one ws round-trip, not on the 30 s poll.
     // Debounce handle for order_update bursts (basket fills, rapid postbacks).
-    /** @type {ReturnType<typeof setTimeout>|null} */
-    let _orderUpdateTimer = null;
     wsTeardown = createPerformanceSocket((msg) => {
       if (msg?.event === 'order_update') {
-        // Non-terminal postback (OPEN, TRIGGER PENDING, etc.) — refresh
-        // positions with a 200ms debounce so rapid fills from a basket
-        // coalesce into one re-fetch rather than hammering the broker API.
-        if (_orderUpdateTimer) clearTimeout(_orderUpdateTimer);
-        _orderUpdateTimer = setTimeout(() => {
-          _orderUpdateTimer = null;
-          loadPositions({ fresh: true });
-        }, 200);
+        // Only debounce non-terminal statuses — terminal fills (COMPLETE/
+        // REJECTED/CANCELLED) will trigger loadPositions via position_filled,
+        // so debouncing them here would cause a redundant second broker call.
+        const terminal = ['COMPLETE', 'REJECTED', 'CANCELLED'].includes(String(msg.status || '').toUpperCase());
+        if (!terminal) {
+          if (_orderUpdateTimer) clearTimeout(_orderUpdateTimer);
+          _orderUpdateTimer = setTimeout(() => {
+            _orderUpdateTimer = null;
+            loadPositions({ fresh: true });
+          }, 200);
+        }
         return;
       }
       if (msg?.event !== 'position_filled') return;
@@ -3790,6 +3793,7 @@
   onDestroy(() => {
     teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.();
     flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.(); _unsubBrokerHealth?.();
+    if (_orderUpdateTimer) { clearTimeout(_orderUpdateTimer); _orderUpdateTimer = null; }
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
   });
 

@@ -202,6 +202,16 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
         except Exception as e:
             logger.warning(f"guard alert: Telegram failed: {e}")
 
+    def _do_ntfy() -> None:
+        try:
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert(
+                title="Template guard fired",
+                message=f"order #{parent_order_id} {parent_side} {parent_qty} {parent_symbol} — {reason}. Exits NOT attached.",
+            )
+        except Exception as e:
+            logger.warning(f"guard alert: ntfy failed: {e}")
+
     def _do_email() -> None:
         try:
             from backend.shared.helpers.alert_utils import get_alert_recipients
@@ -266,10 +276,11 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
             logger.warning(f"guard alert: email path failed: {e}")
 
     async def _both():
-        # Run both synchronously inside one task so they share the
+        # Run all synchronously inside one task so they share the
         # same wall-clock budget and the email never blocks Telegram.
         # Each helper is sync-on-the-network so they don't await.
         _do_telegram()
+        _do_ntfy()
         _do_email()
 
     try:
@@ -278,6 +289,7 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
         # Not in an asyncio context (test harness / sync caller).
         # Run the sync helpers directly so the alert still goes out.
         _do_telegram()
+        _do_ntfy()
         _do_email()
 
     logger.info(f"guard alert dispatched: {summary}")
@@ -330,13 +342,25 @@ def _fire_attach_fail_alert(
         except Exception as _e:
             logger.warning(f"attach fail alert: Telegram failed: {_e}")
 
+    def _do_ntfy() -> None:
+        try:
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert(
+                title="Template attach failed",
+                message=f"order #{order_id} {symbol} — {err_summary}. Exits NOT attached.",
+            )
+        except Exception as e:
+            logger.warning(f"attach fail alert: ntfy failed: {e}")
+
     async def _task():
         _do_telegram()
+        _do_ntfy()
 
     try:
         _asyncio.get_running_loop().create_task(_task())
     except RuntimeError:
         _do_telegram()
+        _do_ntfy()
 
     logger.warning(
         "attach fail alert dispatched: order #%s %s %s errors=[%s]",

@@ -274,6 +274,10 @@ is canonical new-position override: when `overnight_quantity=0 && pnl≠0`, Kite
 derivatives `_byUnderlyingTotal` F&O loop + `bumpExcluded` equity branch, dashboard 
 `_todayPnl` hero + `_positionsSummary`, NavStrip P slot 1, MarketPulse position card, 
 Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
+**Case 4 (stale close guard)**: when `close === ltp` (broker hasn't refreshed 
+close_price since prior session), `baseDayPnlForPosition` returns 0 — formula 
+`oq*(ltp-close)` would produce 0 anyway; avoids stale subtraction during the overnight 
+window. See `frontend/src/lib/data/nav.js:109`.
 
 ---
 

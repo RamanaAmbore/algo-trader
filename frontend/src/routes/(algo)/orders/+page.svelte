@@ -255,9 +255,7 @@
       // mean "re-fetch the order book." The card grid auto-updates from
       // the new `orders` state.
       if (msg.event === 'order_update' || msg.event === 'performance_updated') {
-        // order_update: postback landed — refresh immediately so the order
-        // status reflects the broker's ACK without the 250ms debounce delay.
-        loadOrders();
+        _debouncedLoadOrders();
       }
     });
   });

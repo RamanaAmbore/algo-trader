@@ -330,7 +330,7 @@ def _preflight_resolve_available_margin(
     account: str,
 ) -> tuple[bool | None, float | None]:
     """
-    Parse the (segment_dict, err_str_or_None) tuple from _fetch_account_margins
+    Parse the (segment_dict, err_str_or_None) tuple from _preflight_fetch_account_margins
     into ``(m_enabled, available)``.
 
     Returns (None, None) on error or when the margin call failed.
@@ -541,7 +541,7 @@ async def _preflight_check_margin(
     return new_blockers, diag
 
 
-async def _fetch_account_margins(broker, loop, segment: str) -> "tuple[dict, str | None]":
+async def _preflight_fetch_account_margins(broker, loop, segment: str) -> "tuple[dict, str | None]":
     """Fetch account margin from the broker and normalise to a flat dict.
 
     Returns (margin_dict, error_str_or_None).
@@ -741,7 +741,7 @@ async def run_preflight(
         _preflight_fetch_profile(broker, loop, account),
         _preflight_fetch_instruments(broker, loop, exchange, qty, account),
         _preflight_fetch_basket_margin(broker, loop, basket_orders),
-        _fetch_account_margins(broker, loop, segment),
+        _preflight_fetch_account_margins(broker, loop, segment),
     )
 
     # ── Apply segment-inactive gate from profile result ──────────────────
