@@ -40,6 +40,8 @@
    *   availableAccounts?: string[],
    *   multiColumn?: boolean,
    *   levelFilter?: 'all'|'error'|'warning'|'info',
+   *   activeTab?: string,
+   *   context?: 'page'|'card'|'card-wide'|'modal',
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -110,6 +112,20 @@
      * Agent rows by their event_type mapping; Order rows by status.
      */
     levelFilter = /** @type {'all'|'error'|'warning'|'info'} */ ('all'),
+    /**
+     * Bindable — mirrors the internally-active tab id so parents
+     * (ActivityLogSurface, ActivityLogModal, /activity page) can
+     * derive filter visibility without duplicating tab logic.
+     * One-way: LogPanel writes logTab → activeTab. Parents must NOT
+     * write back or they'll fight with internal tab-click state.
+     */
+    activeTab = $bindable(/** @type {string} */ ('')),
+    /**
+     * Surface context — passed through from ActivityLogSurface.
+     * Used to suppress the Fullscreen button when already in modal context.
+     * @type {'page'|'card'|'card-wide'|'modal'}
+     */
+    context = /** @type {'page'|'card'|'card-wide'|'modal'} */ ('page'),
   } = $props();
 
   // Line-level helpers shared by every text-log tab (System, Conn).
@@ -165,6 +181,15 @@
   $effect(() => {
     if (defaultTab && defaultTab !== untrack(() => logTab)) logTab = defaultTab;
   });
+  // Mirror logTab → activeTab (one-way only). Parents read this to derive
+  // filter visibility; they MUST NOT write back or they'd fight with
+  // internal tab-click state.
+  $effect(() => { activeTab = logTab; });
+
+  // ── Card button group state ───────────────────────────────────────────
+  let _searchOpen  = $state(false);
+  let _searchQuery = $state('');
+  let _expanded    = $state(false);
 
   // Mode → tab + filter mapping. When the parent passes `mode`, we
   // auto-switch the Order-tab filter chip AND (for sim) flip to the
@@ -225,6 +250,18 @@
     if (t.includes('cool') || t.includes('warn') || t.includes('skip'))    return 'warning';
     return 'info';
   }
+  // ── Search helper ────────────────────────────────────────────────────
+  // Text-match predicate for the card button group search. Strips HTML tags
+  // from the row's `.html` string so the search works on visible text, not
+  // on class names or SVG attribute noise.
+  function _rowMatchesSearch(/** @type {string} */ html) {
+    if (!_searchQuery) return true;
+    const q = _searchQuery.toLowerCase();
+    // Strip HTML so "AGENT" doesn't match a class name like "log-agent-success".
+    const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+    return text.includes(q);
+  }
+
   const _agentRows = $derived.by(() => {
     return agentLog.slice()
       .filter(e => {
@@ -244,8 +281,10 @@
         return {
           key: e.id != null ? `a${e.id}` : `a${e.timestamp || ''}-${i}`,
           html: _logRow(e.timestamp, cond, tag, cls),
+          _raw: e,
         };
-      });
+      })
+      .filter(r => _rowMatchesSearch(r.html));
   });
   const _simRows = $derived.by(() => {
     return simLog.slice()
@@ -253,7 +292,9 @@
       .map((entry, i) => ({
         key: `s${entry.ts || ''}-${entry.kind || ''}-${i}`,
         html: _renderSimLine(entry),
-      }));
+        _raw: entry,
+      }))
+      .filter(r => _rowMatchesSearch(r.html));
   });
   const _sysRows = $derived.by(() => {
     // Filter BEFORE the sort+map so the level + account checks run
@@ -276,8 +317,10 @@
           // INFO lines in one second from the same logger.
           key: `y${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
           html: _logRow(d || null, rest, tag, sysClass(l)),
+          _rawLine: l,
         };
-      });
+      })
+      .filter(r => _rowMatchesSearch(r.html));
   });
   // Same shape as _sysRows but sourced from connLog. Keeps the
   // rendering loop simple — one #each per tab, no shared list with
@@ -304,8 +347,10 @@
           // timestamp; nothing depends on stable cross-poll identity.
           key: `c${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
           html: _logRow(d || null, rest, tag, sysClass(l)),
+          _rawLine: l,
         };
-      });
+      })
+      .filter(r => _rowMatchesSearch(r.html));
   });
 
   /** @type {Array<() => void>} */
@@ -734,6 +779,20 @@
     rows = _applyStatusFilter(rows, statusFilter);
     // Used by /orders to thread the global strategy filter through.
     rows = _applySymbolFilter(rows, symbolFilter);
+    // Card button group search filter — text match on symbol, account, status
+    if (_searchQuery) {
+      const q = _searchQuery.toLowerCase();
+      rows = rows.filter(o => {
+        const text = [
+          o.symbol || o.tradingsymbol || '',
+          o.account || '',
+          o.status || '',
+          o.transaction_type || '',
+          o.order_id || o.id || '',
+        ].join(' ').toLowerCase();
+        return text.includes(q);
+      });
+    }
     return rows;
   });
 
@@ -1153,14 +1212,130 @@
     // Each source contributes a row in the unified News-style grid
     // (time · message · tag). Rows are kept as {ts, html} pairs so the
     // merged stream can be sorted latest-first across all three sources.
-    const all = [
+    let all = [
       ..._terminalCmdLines(),
       ..._terminalOrderLines(),
       ..._terminalAgentLines(),
     ].sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts));
+    // Apply search filter on terminal rows
+    if (_searchQuery) {
+      all = all.filter(x => _rowMatchesSearch(x.html));
+    }
     return all.length
       ? all.map(x => x.html).join('')
       : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
+  }
+
+  // ── Download CSV helper ───────────────────────────────────────────────
+  /**
+   * Escape a CSV field: wrap in quotes and escape internal quotes.
+   * @param {any} v
+   */
+  function _csvEscape(v) {
+    const s = String(v ?? '');
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  }
+  /** Build and trigger a CSV download for the current visible rows. */
+  function _downloadCsv() {
+    const date = new Date().toISOString().slice(0, 10);
+    let rows = /** @type {string[][]} */ ([]);
+    let header = /** @type {string[]} */ ([]);
+    let filename = `activity-${logTab}-${date}.csv`;
+
+    if (logTab === 'order') {
+      header = ['time', 'ref', 'symbol', 'side', 'qty', 'price', 'status', 'account'];
+      rows = filteredOrderRows.map(o => [
+        o.created_at || o.order_timestamp || '',
+        o.order_id || o.id || '',
+        o.symbol || o.tradingsymbol || '',
+        o.transaction_type || '',
+        o.quantity ?? '',
+        o.fill_price ?? o.initial_price ?? '',
+        o.status || '',
+        o.account || '',
+      ]);
+    } else if (logTab === 'agent') {
+      header = ['time', 'event_type', 'agent_id', 'account', 'message'];
+      rows = _agentRows.map(r => {
+        const e = r._raw || {};
+        const cond = chipsFromJson(e.trigger_condition) || (e.trigger_condition || '');
+        // Strip HTML chips from cond for clean CSV output
+        const msg = cond.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+        return [
+          e.timestamp || '',
+          e.event_type || '',
+          e.agent_id ?? '',
+          e.account || '',
+          msg,
+        ];
+      });
+    } else if (logTab === 'system') {
+      header = ['time', 'level', 'message'];
+      rows = _sysRows.map(r => {
+        const l = r._rawLine || '';
+        const d = parseLogLineDate(l);
+        const rest = d ? stripTs(l) : l;
+        const lm = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
+        return [d ? d.toISOString() : '', lm ? lm[1].toUpperCase() : '', rest];
+      });
+    } else if (logTab === 'conn') {
+      header = ['time', 'level', 'message'];
+      rows = _connRows.map(r => {
+        const l = r._rawLine || '';
+        const d = parseLogLineDate(l);
+        const rest = d ? stripTs(l) : l;
+        const lm = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
+        return [d ? d.toISOString() : '', lm ? lm[1].toUpperCase() : '', rest];
+      });
+    } else if (logTab === 'terminal') {
+      header = ['time', 'source', 'message'];
+      const all = [
+        ..._terminalCmdLines().map(x => ({ ...x, src: 'CMD' })),
+        ..._terminalOrderLines().map(x => ({ ...x, src: 'ORDER' })),
+        ..._terminalAgentLines().map(x => ({ ...x, src: 'AGENT' })),
+      ].sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts));
+      rows = all.map(x => {
+        const msg = x.html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+        return [x.ts || '', x.src || '', msg];
+      });
+    } else if (logTab === 'simulator') {
+      // Operator decision: columns time, kind, scenario, tick_index, symbol, detail
+      // No flattening of changes[].
+      header = ['time', 'kind', 'scenario', 'tick_index', 'symbol', 'detail'];
+      rows = _simRows.map(r => {
+        const e = r._raw || {};
+        const detail = e.kind === 'started' || e.kind === 'stopped'
+          ? (e.note || '')
+          : e.kind === 'order'
+            ? `${(e.order?.side || '')} ${e.order?.qty ?? ''} ${e.order?.symbol || ''}`
+            : `tick ${e.tick_index ?? ''} · ${e.scenario || ''}`;
+        const sym = e.kind === 'order' ? (e.order?.symbol || '') : '';
+        return [
+          e.ts || '',
+          e.kind || '',
+          e.scenario || '',
+          e.tick_index ?? '',
+          sym,
+          detail,
+        ];
+      });
+    } else {
+      return; // news tab: download is disabled (handled in the button)
+    }
+
+    const csvLines = [header, ...rows]
+      .map(row => row.map(_csvEscape).join(','))
+      .join('\r\n');
+    const blob = new Blob([csvLines], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
 </script>
@@ -1191,8 +1366,87 @@
         placeholder="All acc." />
     </span>
   {/if}
+  <!-- Card button group: Search · Expand/Contract · Fullscreen · Download
+       Lives at the right end of the tab row so it doesn't eat tab space.
+       Fullscreen is suppressed when already in modal context (context==='modal').
+       Download is disabled on the News tab with an explanatory tooltip. -->
+  <span class="lp-card-btns" role="group" aria-label="Activity panel controls">
+    <!-- Search -->
+    <button type="button"
+      class="lp-card-btn {_searchOpen ? 'lp-card-btn-on' : ''}"
+      title={_searchOpen ? 'Close search' : 'Search rows'}
+      aria-label="Search rows"
+      aria-pressed={_searchOpen}
+      onclick={() => { _searchOpen = !_searchOpen; if (!_searchOpen) _searchQuery = ''; }}>
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+    </button>
+    <!-- Expand / Contract -->
+    <button type="button"
+      class="lp-card-btn {_expanded ? 'lp-card-btn-on' : ''}"
+      title={_expanded ? 'Contract panel' : 'Expand panel'}
+      aria-label={_expanded ? 'Contract panel' : 'Expand panel'}
+      aria-pressed={_expanded}
+      onclick={() => { _expanded = !_expanded; }}>
+      {#if _expanded}
+        <!-- Contract: two arrows pointing inward -->
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      {:else}
+        <!-- Expand: four arrows pointing outward -->
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      {/if}
+    </button>
+    <!-- Fullscreen — hidden when already in modal context -->
+    {#if context !== 'modal'}
+      <button type="button"
+        class="lp-card-btn"
+        title="Open in fullscreen modal"
+        aria-label="Open in fullscreen modal"
+        onclick={() => { openActivityModal(); }}>
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+    {/if}
+    <!-- Download — disabled on News tab -->
+    <button type="button"
+      class="lp-card-btn"
+      title={logTab === 'news' ? 'Download not available for News tab' : 'Download visible rows as CSV'}
+      aria-label={logTab === 'news' ? 'Download not available for News tab' : 'Download CSV'}
+      disabled={logTab === 'news'}
+      onclick={_downloadCsv}>
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+    </button>
+  </span>
 </div>
+<!-- Search input row — visible when _searchOpen is true -->
+{#if _searchOpen}
+  <div class="lp-search-row">
+    <input
+      type="search"
+      class="lp-search-input"
+      placeholder="Filter rows…"
+      bind:value={_searchQuery}
+      aria-label="Filter log rows"
+      autocomplete="off"
+    />
+    {#if _searchQuery}
+      <button type="button" class="lp-search-clear" aria-label="Clear search"
+        onclick={() => { _searchQuery = ''; }}>×</button>
+    {/if}
+  </div>
+{/if}
 
+<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}">
 {#if logTab === 'news'}
   <!-- News tab — rendered via shared NewsList component in algo palette.
        Activity surface flavour: 2-column magazine flow (same as dashboard
@@ -1339,6 +1593,7 @@
   {/if}
 </div>
 {/if}
+</div><!-- /.lp-body-wrap -->
 
 {#if _chartModalSym}
   <ChartModal
@@ -1838,6 +2093,111 @@
     background: rgba(125,211,252,0.18);
     border-color: rgba(186,230,253,0.85);
     color: #bae6fd;
+  }
+
+  /* ── Card button group (Search · Expand · Fullscreen · Download) ──── */
+  /* Right-aligned set of icon buttons at the end of the tab row.
+     flex-shrink:0 so they don't compress behind the tab strip.
+     gap: 0.2rem keeps buttons tight but not overlapping. */
+  .lp-card-btns {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    margin-left: auto;
+    flex-shrink: 0;
+    padding: 0 0.15rem;
+    align-self: center;
+  }
+  .lp-card-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.35rem;
+    height: 1.35rem;
+    padding: 0;
+    background: none;
+    border: 1px solid rgba(148, 163, 184, 0.20);
+    border-radius: 3px;
+    color: rgba(148, 163, 184, 0.65);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.08s, border-color 0.08s, color 0.08s;
+  }
+  .lp-card-btn svg { pointer-events: none; }
+  .lp-card-btn:hover:not(:disabled) {
+    background: rgba(148, 163, 184, 0.10);
+    border-color: rgba(148, 163, 184, 0.45);
+    color: var(--algo-slate);
+  }
+  /* Active state (search open, expanded) — amber tint matching the tab row accent. */
+  .lp-card-btn.lp-card-btn-on {
+    background: var(--c-action-14);
+    border-color: rgba(251, 191, 36, 0.45);
+    color: var(--c-action);
+  }
+  .lp-card-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  /* Search input row below the tab strip */
+  .lp-search-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.3rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(0, 0, 0, 0.12);
+  }
+  .lp-search-input {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 1.5rem;
+    padding: 0.2rem 0.5rem;
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    border-radius: 3px;
+    color: var(--algo-slate);
+    font-size: var(--fs-sm);
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.08s;
+  }
+  .lp-search-input:focus { border-color: var(--c-action); }
+  .lp-search-input::placeholder { color: var(--algo-muted); opacity: 0.7; }
+  .lp-search-clear {
+    flex-shrink: 0;
+    width: 1.2rem;
+    height: 1.2rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid rgba(248, 113, 113, 0.30);
+    border-radius: 3px;
+    color: var(--c-short);
+    font-size: var(--fs-base);
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    font-family: monospace;
+    transition: background 0.08s;
+  }
+  .lp-search-clear:hover { background: rgba(248, 113, 113, 0.12); }
+
+  /* Expand / contract: the body wrapper is normally flex-1 (inherits
+     from the heightClass on the child panels). When expanded, we grow
+     the wrapper beyond its default flex allocation — add min-height so
+     the panel is visually taller in its flex context. */
+  .lp-body-wrap {
+    display: contents; /* transparent wrapper — no layout change by default */
+  }
+  .lp-body-wrap.lp-body-expanded {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 0;
+    min-height: min(600px, 70vh);
+    min-height: min(600px, 70svh);
   }
 
 </style>

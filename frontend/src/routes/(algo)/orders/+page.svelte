@@ -155,6 +155,9 @@
   let _actLevelFilter = $state('all');
   /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
   let _statusFilter = $state('all');
+  let _actActiveTab = $state('order');
+  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(_actActiveTab));
+  const _showLevelFilter   = $derived(['agent', 'system', 'conn'].includes(_actActiveTab));
 
   // Activity-card tab state. Order Book (card grid) is the default —
   // matches the LogPanel Orders tab format shown in every other
@@ -513,7 +516,9 @@
       <ActivityHeaderFilters
         bind:accountFilter={_actAccountFilter}
         bind:levelFilter={_actLevelFilter}
-        availableAccounts={_actAvailableAccounts} />
+        availableAccounts={_actAvailableAccounts}
+        showAccountFilter={_showAccountFilter}
+        showLevelFilter={_showLevelFilter} />
     {/snippet}
   </CardHeader>
   <div class="card-body oc-act-body" hidden={_colActivity}>
@@ -527,7 +532,8 @@
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={_actAccountFilter}
       bind:availableAccounts={_actAvailableAccounts}
-      bind:levelFilter={_actLevelFilter} />
+      bind:levelFilter={_actLevelFilter}
+      bind:activeTab={_actActiveTab} />
   </div>
 </section>
 

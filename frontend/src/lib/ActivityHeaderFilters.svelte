@@ -33,6 +33,19 @@
     levelFilter       = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
     /** Account codes present in the currently-loaded rows. */
     availableAccounts = /** @type {string[]} */ ([]),
+    /**
+     * Whether to render the account multiselect.
+     * True for Orders, Agents, System, Conn. False for Terminal, Ticks, News.
+     * Default true for backward compatibility.
+     */
+    showAccountFilter = true,
+    /**
+     * Whether to render the log-level selector.
+     * True for Agents, System, Conn only. False for Orders (has own status filter),
+     * Terminal, Ticks, News.
+     * Default true for backward compatibility.
+     */
+    showLevelFilter   = true,
   } = $props();
 
   // Stable label list — operator-visible. 'All' first so the operator
@@ -46,21 +59,25 @@
 </script>
 
 <span class="act-filters">
-  <ActivityAccountSelect
-    bind:value={accountFilter}
-    {availableAccounts} />
+  {#if showAccountFilter}
+    <ActivityAccountSelect
+      bind:value={accountFilter}
+      {availableAccounts} />
+  {/if}
   <!-- Level filter — chrome matches MultiSelect (amber-on-slate gradient,
        same border/radius/font/height) so the two controls in the header
        read as a single visual pair. Operator: "the two dropdowns in
        activity header are not aligned, dont have consistent colour
        scheme." -->
-  <select bind:value={levelFilter} class="act-level-sel"
-          aria-label="Log level filter"
-          title="Filter rows by log level (applies to the active tab)">
-    {#each _LEVELS as L}
-      <option value={L.value}>{L.label}</option>
-    {/each}
-  </select>
+  {#if showLevelFilter}
+    <select bind:value={levelFilter} class="act-level-sel"
+            aria-label="Log level filter"
+            title="Filter rows by log level (applies to the active tab)">
+      {#each _LEVELS as L}
+        <option value={L.value}>{L.label}</option>
+      {/each}
+    </select>
+  {/if}
 </span>
 
 <style>

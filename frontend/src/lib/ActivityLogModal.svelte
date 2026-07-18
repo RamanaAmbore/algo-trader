@@ -35,6 +35,15 @@
   /** @type {string[]} */
   let _availableAccounts = $state([]);
 
+  // Active tab mirrored from LogPanel via ActivityLogSurface's bindable.
+  // Used to derive per-tab filter visibility in the modal header.
+  let _activeTab = $state('');
+
+  // Account filter: Orders, Agents, System, Conn tabs only.
+  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(_activeTab));
+  // Level filter: Agents, System, Conn only (Orders has its own status filter).
+  const _showLevelFilter   = $derived(['agent', 'system', 'conn'].includes(_activeTab));
+
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
 
@@ -107,7 +116,9 @@
       <ActivityHeaderFilters
         bind:accountFilter={activityStore.accountFilter}
         bind:levelFilter={activityStore.levelFilter}
-        availableAccounts={_availableAccounts} />
+        availableAccounts={_availableAccounts}
+        showAccountFilter={_showAccountFilter}
+        showLevelFilter={_showLevelFilter} />
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
               aria-label="Close activity log">×</button>
     </div>
@@ -134,6 +145,7 @@
         bind:accountFilter={activityStore.accountFilter}
         bind:availableAccounts={_availableAccounts}
         bind:levelFilter={activityStore.levelFilter}
+        bind:activeTab={_activeTab}
         onTabChange={(id) => { activityStore.activeTab = id; }} />
     </div>
   </div>
