@@ -277,9 +277,11 @@ On real SSE tick arrivals (independent of polls):
 
 ### Non-directional values
 
-- **Margin / Cash amounts**: cyan (`ps-cash`, `#7dd3fc`) when positive; red when negative
+- **Margin amounts** (M:1, M:2): cyan-400 (`ps-margin`, `var(--algo-cyan)` = `#22d3ee`) when positive; red when negative — credit capacity signal
+- **Cash amounts** (C:1, C:2) + Holdings value (H:2): sky-300 (`ps-cash`, `#7dd3fc`) when positive; red when negative — liquid balance signal
 - **Expiry profit** (P:3): amber action palette (`ps-exp`, `--c-action`), neutral/time-bound signal
-- **Holdings value** (H:2): always cyan (balance-sheet figure, not directional)
+
+Note: margin (M pill) and cash (C pill) use distinct colors intentionally — cyan-400 vs sky-300 — so the two categories read differently at a glance on the dense strip.
 
 ### Stale state
 
