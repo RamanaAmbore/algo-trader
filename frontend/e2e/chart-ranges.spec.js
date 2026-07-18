@@ -74,20 +74,21 @@ test.describe('chart-ranges: range button smoke', () => {
     const btn3M = rangeGroup.locator('.cw-range-btn', { hasText: '3M' });
     await expect(btn3M).toBeEnabled({ timeout: 30_000 });
 
-    // Click 3M — should not crash, spinner should eventually resolve
+    // Click 3M — should not crash, loading state should resolve within 15s
     await btn3M.click();
 
     // Assert no JS errors thrown (Playwright surfaces uncaught exceptions)
     // by asserting page is still responsive after click
     await expect(rangeGroup).toBeVisible({ timeout: 5_000 });
 
-    // Wait for spinner to clear (regression: would spin indefinitely with 0.70 threshold)
-    // Spinner = .cw-fetch-spinner; it should disappear within 20s
+    // Wait for loading state to clear (spinner disappears or chart becomes visible).
+    // Regression: would spin indefinitely with 0.70 threshold.
+    // Wait up to 15s for spinner to disappear.
     const spinner = page.locator('.cw-fetch-spinner');
-    await expect(spinner).toHaveCount(0, { timeout: 20_000 });
+    await expect(spinner).toHaveCount(0, { timeout: 15_000 });
   });
 
-  test('clicking 6M then 1Y both clear spinner within 20s', async ({ page }) => {
+  test('clicking 6M then 1Y both clear loading state within 15s', async ({ page }) => {
     test.setTimeout(90_000);
 
     await page.goto('/charts?symbol=NIFTY+50', { waitUntil: 'domcontentloaded' });
@@ -104,10 +105,10 @@ test.describe('chart-ranges: range button smoke', () => {
       await expect(btn).toBeEnabled({ timeout: 5_000 });
       await btn.click();
 
-      // Key regression check: spinner clears within 20s (infinite spin = bug)
+      // Key regression check: loading state clears within 15s (infinite spin = bug)
       const spinner = page.locator('.cw-fetch-spinner');
-      await expect(spinner).toHaveCount(0, { timeout: 20_000 });
-      console.log(`[${label}] spinner cleared`);
+      await expect(spinner).toHaveCount(0, { timeout: 15_000 });
+      console.log(`[${label}] loading cleared`);
 
       // Small gap between clicks
       await page.waitForTimeout(300);

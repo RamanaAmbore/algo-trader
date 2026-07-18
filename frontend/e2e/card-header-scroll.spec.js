@@ -154,4 +154,40 @@ test.describe('Mobile viewport overflow — card headers and NavStrip', () => {
       );
     }
   });
+
+  test('derivatives legs card header and controls align vertically (±4px)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+
+    // Wait for legs-underlying-chip to become visible; skip if not present after 10s
+    const chip = page.locator('.legs-underlying-chip').first();
+    const chipExists = await chip.count();
+    if (chipExists === 0) {
+      const chipWait = await chip.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => null);
+      if (!chipWait) {
+        test.skip(true, 'no positions');
+      }
+    }
+
+    // Get the last .payoff-card-controls in the legs card area
+    const controls = page.locator('.payoff-card-controls').last();
+
+    // Get bounding boxes for both elements
+    const chipBox = await chip.boundingBox();
+    const controlsBox = await controls.boundingBox();
+
+    expect(chipBox, '.legs-underlying-chip bounding box not found').toBeTruthy();
+    expect(controlsBox, '.payoff-card-controls bounding box not found').toBeTruthy();
+
+    // Calculate vertical midpoints
+    const chipMidpoint = chipBox.top + chipBox.height / 2;
+    const controlsMidpoint = controlsBox.top + controlsBox.height / 2;
+
+    // Assert they are within ±4px of each other
+    const diff = Math.abs(chipMidpoint - controlsMidpoint);
+    expect(diff).toBeLessThanOrEqual(
+      4,
+      `Vertical midpoints should align within ±4px, but differ by ${diff.toFixed(2)}px`
+    );
+  });
 });

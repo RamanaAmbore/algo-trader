@@ -5076,7 +5076,7 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--c-action);
-    padding: 0 0.25rem 0.25rem;
+    padding: 0 0.25rem 0;
     /* Match .opt-block-h (Greeks heading) — the amber underline
        anchors the label and makes it read as bright as the Greeks
        card title on the same page. Operator: "GREEKS is brighter." */
@@ -5664,7 +5664,7 @@
     width: 100%;
     background: none;
     border: 0;
-    padding: 0 0.25rem 0.5rem;
+    padding: 0 0.25rem 0;
     cursor: pointer;
     color: var(--c-action);
     font-family: monospace;

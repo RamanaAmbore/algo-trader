@@ -1,120 +1,110 @@
-# Plan: Card header scroll + alignment + NavStrip fixes
+# Plan: Fix card header vertical misalignment + 3M/6M/1Y chart load
 
 ## Context
 
-Two problems to fix:
+Two independent bugs bundled into one deploy:
 
-**A — Card header overflow (mobile):** Tabs, chips, and filter rows in card headers wrap to a second row on narrow screens instead of scrolling. Wastes vertical space, can push the card button group off-screen.
+**Bug A — Card header vertical misalignment:** The Legs card (and 3 other surfaces) show visible vertical misalignment between the left content (chip + tabs), middle content (chips/filter rows), and the right card-controls button group.
 
-**B — NavStrip: scroll safety + cash/margin contrast:**
-1. `.ps-strip` has `overflow-x: auto` only inside `@media (max-width: 640px)`. Landscape phones (667px+) and small tablets outside that breakpoint have no scroll safety — pills shrink/overlap. Base rule needs `overflow-x: auto` too.
-2. Both M (margin) and C (cash) pills currently use `ps-cash` = `#7dd3fc` (sky-300). Need visual contrast — margin and cash are different things and should read differently at a glance.
+**Bug B — 3M/6M/1Y charts never load data:** Charts show spinner indefinitely for longer ranges even after the `_SELF_HEAL_COVERAGE_THRESHOLD` fix (0.70→0.60). Root cause: the backend `historical()` route is missing the `fresh: bool` query parameter, so the frontend's `?fresh=1` cache-bypass retry is silently ignored — the backend returns the same cached `partial: true` result on every retry, creating an infinite loop where the chart never resolves.
 
-**Rules being enforced:**
-- Tabs/chips/info in card headers = scrollable on overflow (never wrap to second row)
-- Card title + info = left-aligned; card button group = right-aligned (CardHeader.svelte already enforces structurally)
-- Cash vs margin contrast in NavStrip (same principle as positions vs holdings contrast)
+---
 
-**Already correct (no change):** AlgoTabs.svelte ✅ · Gainers/losers (use AlgoTabs) ✅ · Payoff card `.opt-section-chips` ✅ · ChartWorkspace range buttons ✅
+## Bug A — Card header misalignment
+
+**Root cause:** Header containers with asymmetric `padding-bottom` inflate their own box height. `align-items: center` on the outer row then centers the padded box rather than the visible content, shifting chip/tabs upward relative to the right-side card controls.
+
+### Fix A1 — Legs card (`derivatives/+page.svelte` ~line 5660)
+`.legs-header { padding: 0 0.25rem 0.5rem }` — 0.5rem bottom padding shifts the chip+tabs upward.  
+**Fix:** `padding: 0 0.25rem 0`
+
+### Fix A2 — Payoff / Snapshot / all `.opt-section-h` (`derivatives/+page.svelte` ~line 5079)
+`.opt-section-h { padding: 0 0.25rem 0.25rem }` — same issue. `margin-bottom: 0.4rem` already handles spacing below.  
+**Fix:** `padding: 0 0.25rem 0`
+
+### Fix A3 — PnlPanel filter bar (`frontend/src/lib/PnlPanel.svelte` ~line 234)
+`.filter-bar { align-items: flex-end }` — labels and pills sit at the bottom instead of center.  
+**Fix:** `align-items: center`
+
+### Fix A4 — Templates middle slot (`automation/templates/+page.svelte` ~line 350)
+`<div class="flex items-center gap-1 flex-wrap">` — chips wrap to a second row on overflow, making `ch-middle` taller than `ch-left` (title) and `ch-right` (buttons).  
+**Fix:** `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none` — same horizontal-scroll pattern as all other chip rows.
+
+---
+
+## Bug B — 3M/6M/1Y chart load loop
+
+**Root cause:** `backend/api/routes/options.py` — the `historical()` route signature:
+
+```python
+async def historical(self, symbol: str = "", days: int = 30,
+                     interval: str = "day", exchange: str = "") -> HistoricalResponse:
+```
+
+is missing `fresh: bool = False`. Litestar silently ignores `?fresh=1` from the frontend. The cache lookup always fires, returning the same cached `partial: true` response. The frontend retries every 5s with `fresh=true` expecting a cache bypass, but the backend never bypasses — infinite loop.
+
+**Call chain:**
+1. User clicks 3M → `_loadHistorical(true, true)` → `fetchOptionsHistorical(sym, { days: 90, fresh: true })`
+2. `api.js` appends `?fresh=1` to the request URL
+3. Backend receives request, `fresh` param is dropped → cache hit → same `partial: true` returned
+4. Frontend schedules another retry in 5s → loop
+
+### Fix B — `backend/api/routes/options.py` (~line 2613)
+
+Add `fresh: bool = False` to the route signature and gate the cache lookup on it:
+
+```python
+async def historical(self, symbol: str = "", days: int = 30,
+                     interval: str = "day", exchange: str = "",
+                     fresh: bool = False) -> HistoricalResponse:
+    ...
+    cache_key = (sym, (exchange or "NFO").upper(), days, interval)
+    if not fresh:
+        _cached = _hist_cache_get(cache_key)
+        if _cached is not None:
+            return _cached
+    # rest of the function unchanged
+```
 
 ---
 
 ## Agents
 
-- frontend: Apply ALL fixes below (CSS-only except the NavStrip class addition — one agent, all files).
-
-  ### Fix A — Card headers
-
-  **A1. `frontend/src/lib/CardHeader.svelte` — `.ch-middle` (lines 117-122)**
-  Single-point fix covering all CardHeader users:
-  ```css
-  .ch-middle {
-    flex: 1 1 0;
-    display: flex;
-    align-items: center;
-    min-width: 0;
-    overflow-x: auto;
-    overflow-y: visible;
-    scrollbar-width: none;
-  }
-  .ch-middle::-webkit-scrollbar { display: none; }
-  ```
-
-  **A2. `frontend/src/lib/MarketPulse.svelte` — `.mp-head-tabs`**
-  Find around line 5034. Change `flex-wrap: wrap` → `flex-wrap: nowrap`. Add `overflow-x: auto; scrollbar-width: none`. Add `.mp-head-tabs::-webkit-scrollbar { display: none; }`. Ensure child tab items have `flex-shrink: 0` (check if already set).
-
-  **A3. `frontend/src/lib/PnlPanel.svelte` — `.filter-bar` / `.pill-group`**
-  `.filter-bar` (line ~230): add `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none`. Add `.filter-bar::-webkit-scrollbar { display: none; }`.
-  `.pill-group` (line ~255): change `flex-wrap: wrap` → `flex-wrap: nowrap; flex-shrink: 0`.
-
-  **A4. `frontend/src/lib/PnlAnalysis.svelte` — `.filter-bar` + legend chips container**
-  `.filter-bar` (line ~890): `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none`. Add webkit scrollbar hide.
-  Find the wrapper element around the `.legend-chip` spans in the template (line ~670) — check what class it uses, then add `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none` to that class. Add webkit scrollbar hide.
-
-  **A5. `frontend/src/routes/(algo)/dashboard/+page.svelte` — `.eq-legend`**
-  Find around line 2342. Change `flex-wrap: wrap` → `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none`. Add `flex-shrink: 0` to child legend items if not present. Add `.eq-legend::-webkit-scrollbar { display: none; }`.
-
-  ### Fix B — NavStrip
-
-  **B1. `frontend/src/lib/PositionStrip.svelte` — base `.ps-strip` scroll safety**
-  In the base `.ps-strip` rule (line ~903), add:
-  ```css
-  overflow-x: auto;
-  overflow-y: visible;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  ```
-  Also add `.ps-strip::-webkit-scrollbar { display: none; }` in the base styles (NOT inside the media query — already present there).
-  Also move `flex-shrink: 0` from the `@media (max-width: 640px)` block to the base `.ps-agg` rule so pills never shrink at any viewport width.
-
-  **B2. `frontend/src/lib/PositionStrip.svelte` — cash vs margin contrast**
-  Currently both M and C pill values use `ps-cash` = `#7dd3fc` (sky-300). Add a new `.ps-margin` class and apply it to M pill values:
-  ```css
-  .ps-margin { color: var(--algo-cyan); }  /* #22d3ee — cyan-400, margin/credit */
-  /* .ps-cash stays as sky-300 #7dd3fc — liquid deployable cash */
-  ```
-  In the template: find M pill values (lines ~862-866, `marginAvail` and `marginTotal`) and replace `ps-cash` class with `ps-margin` class on those two spans. Leave C pill unchanged.
-
-  ### Alignment verification
-  For cards with inline headers (not using CardHeader): verify left content has `flex: 1; min-width: 0` and right card-group has `flex-shrink: 0`. Change only if wrong.
-
-- backend: skip
+- frontend: Fix A1–A4 (CSS + one template attribute change, no logic)
+- backend: Fix B — add `fresh: bool = False` param + cache-skip gate in `historical()` in `backend/api/routes/options.py`
 - broker: skip
-- backend-test: skip
 - doc: skip
-- playwright: Add spec `frontend/e2e/card-header-scroll.spec.js`:
-  - Login
-  - Set viewport to 375px × 812px (iPhone 12)
-  - Dashboard: assert `.ps-strip` does NOT exceed viewport width (no horizontal page overflow)
-  - Dashboard: assert gainers/losers card header stays single-row height (no wrap) at 375px
-  - Dashboard: assert `.eq-legend` is single-row (scrollWidth check or height check)
-  - Derivatives page: assert payoff chip row is single-row height at 375px
-  - NavStrip: navigate to dashboard, at 375px assert `.ps-agg.M` (margin pill) has a different computed color than `.ps-agg.C` (cash pill) — contrast check
+- backend-test: Add test asserting that `GET /historical?fresh=1` bypasses the cache and does not return a cached partial result
+- playwright: Add/update `frontend/e2e/card-header-scroll.spec.js` — assert Legs card chip + CardControls share the same vertical midpoint (±2px). Update `frontend/e2e/chart-ranges.spec.js` — assert 3M/6M/1Y range buttons eventually clear the spinner and render chart bars (non-empty)
+
+---
 
 ## Tests
-- pytest: no
+
+- pytest: yes (backend-test covers the fresh param)
 - svelte-check: yes
 - playwright: yes
 
+---
+
 ## Commit message
-```
-fix(ui): card headers scroll on overflow + NavStrip scroll safety + cash/margin contrast
 
-Card headers: CardHeader.svelte ch-middle gets overflow-x:auto (single-point
-fix for all CardHeader users). Per-surface fixes: mp-head-tabs, PnlPanel
-filter-bar, PnlAnalysis filter-bar/legend, dashboard eq-legend — all changed
-from flex-wrap:wrap to nowrap+scroll.
+fix(cards+chart): card header alignment + 3M/6M/1Y chart fresh-param
 
-NavStrip: overflow-x:auto promoted to base .ps-strip rule (was only in
-@media ≤640px — landscape phones outside breakpoint had no scroll safety).
-.ps-agg flex-shrink:0 also promoted to base. New .ps-margin class (cyan-400
-#22d3ee) on M pill values; C pill keeps sky-300 #7dd3fc — cash and margin
-now visually distinct.
-```
+Bug A: remove padding-bottom from .legs-header + .opt-section-h (asymmetric
+padding shifted chip/tabs up vs card controls). PnlPanel filter-bar flex-end → center.
+Templates middle slot: flex-wrap → nowrap + overflow-x scroll.
+
+Bug B: add fresh:bool param to historical() route — frontend ?fresh=1 retry was
+silently ignored, causing infinite partial-result loop for 3M/6M/1Y chart ranges.
+
+---
 
 ## Done when
-- 375px viewport: all card header chip/tab/filter rows stay single-row (scroll, not wrap)
-- 375px viewport: NavStrip pills don't overflow the page
-- M pill values render in cyan-400, C pill values in sky-300 — visually distinct
-- svelte-check 0 errors
-- Playwright spec green
+
+- Legs card: chip + AlgoTabs + CardControls on the same horizontal axis
+- Payoff/Snapshot headers: title + chips + controls on same axis
+- PnlPanel filter bar: labels and pills centered on same axis
+- Templates header: chips scroll horizontally, no second-row wrapping
+- 3M/6M/1Y chart ranges: data loads and chart renders (no infinite spinner)
+- pytest green | svelte-check 0 errors

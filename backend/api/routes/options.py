@@ -2612,7 +2612,7 @@ class OptionsController(Controller):
     @get("/historical")
     async def historical(self, symbol: str = "", days: int = 30,
                          interval: str = "day",
-                         exchange: str = "") -> HistoricalResponse:
+                         exchange: str = "", fresh: bool = False) -> HistoricalResponse:
         # Default exchange "" (not "NFO") so when the caller doesn't
         # pass an explicit hint the loop walks every supported arm
         # (NFO → BFO → NSE → BSE → MCX → CDS). MCX commodities (GOLD,
@@ -2649,9 +2649,10 @@ class OptionsController(Controller):
 
         # ── Cache lookup ───────────────────────────────────────────────
         cache_key = (sym, (exchange or "NFO").upper(), days, interval)
-        _cached = _hist_cache_get(cache_key)
-        if _cached is not None:
-            return _cached
+        if not fresh:
+            _cached = _hist_cache_get(cache_key)
+            if _cached is not None:
+                return _cached
 
         from backend.api.routes.options_helpers import (
             _historical_ohlcv_store,
