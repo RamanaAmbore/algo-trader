@@ -128,26 +128,27 @@ def main():
             )
             if resp.ok:
                 print("notify_deploy: Telegram sent")
-                # ntfy — prod only, default priority (informational deploy ping)
-                ntfy_topic = sec.get("ntfy_topic")
-                if ntfy_topic:
-                    ntfy_url = sec.get("ntfy_url", "https://ntfy.sh")
-                    try:
-                        import urllib.request as _urlreq
-                        req = _urlreq.Request(
-                            f"{ntfy_url.rstrip('/')}/{ntfy_topic}",
-                            data=detail_line.encode(),
-                            headers={"Title": event_label, "Tags": "rocket", "Content-Type": "text/plain"},
-                            method="POST",
-                        )
-                        _urlreq.urlopen(req, timeout=5)
-                        print("notify_deploy: ntfy sent")
-                    except Exception as e:
-                        errors.append(f"ntfy: {e}")
             else:
                 errors.append(f"Telegram failed {resp.status_code}: {resp.text[:100]}")
         except Exception as e:
             errors.append(f"Telegram error: {e}")
+
+    # ntfy — runs independently of Telegram success/failure
+    ntfy_topic = sec.get("ntfy_topic")
+    if ntfy_topic:
+        ntfy_url = sec.get("ntfy_url", "https://ntfy.sh")
+        try:
+            import urllib.request as _urlreq
+            req = _urlreq.Request(
+                f"{ntfy_url.rstrip('/')}/{ntfy_topic}",
+                data=detail_line.encode(),
+                headers={"Title": event_label, "Tags": "rocket", "Content-Type": "text/plain"},
+                method="POST",
+            )
+            _urlreq.urlopen(req, timeout=5)
+            print("notify_deploy: ntfy sent")
+        except Exception as e:
+            errors.append(f"ntfy: {e}")
 
     # Email path retired. Deploy noise was cluttering the inbox; the
     # Telegram ping above carries the same information and lands

@@ -138,6 +138,8 @@
   let _firesToday   = $state(0);
   let _paperOpen    = $state(0);
   let _heroLoadedAt = $state(/** @type {string|null} */ (null));
+  let _moversAsOf   = $state(/** @type {string|null} */ (null));
+  let _showLiveTs   = $state(false);
   let _heroTeardown;
 
   // Operator-facing log declutter: default to agent_fire ONLY so the
@@ -1714,7 +1716,28 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Dashboard</h1>
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    {#if _moversAsOf}
+      <span class="algo-ts algo-ts-data"
+            class:algo-ts-hidden={_showLiveTs}
+            onclick={() => { _showLiveTs = !_showLiveTs; }}
+            title="Data as-of — tap to switch"
+            role="button" tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+        {_moversAsOf}
+      </span>
+      <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    {/if}
+    <span class="algo-ts"
+          class:algo-ts-hidden={!!_moversAsOf && !_showLiveTs}
+          onclick={() => { if (_moversAsOf) _showLiveTs = !_showLiveTs; }}
+          onkeydown={(e) => { if (_moversAsOf && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}
+          role="button"
+          tabindex="0"
+          title={_moversAsOf ? 'Live clock — tap to switch' : undefined}>
+      {$nowStamp}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <!-- Slice 7h — strategy filter chip. Same shared store as Pulse,
@@ -2918,5 +2941,12 @@
     background: var(--algo-cyan-bg-strong);
     border-color: rgba(34, 211, 238, 0.80);
     color: #67e8f9;
+  }
+
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) {
+    .algo-ts-hidden { display: none !important; }
   }
 </style>

@@ -88,7 +88,6 @@
     display: inline-flex;
     align-items: stretch;
     gap: 0.4rem;
-    margin-left: auto;
   }
   /* Level dropdown chrome — exact match to MultiSelect's trigger
      (frontend/src/lib/MultiSelect.svelte .rbq-multi-trigger). Same
