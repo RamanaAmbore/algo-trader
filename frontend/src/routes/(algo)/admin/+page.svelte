@@ -600,7 +600,7 @@
   <!-- Create User Form -->
   {#if showCreate}
     <div class="algo-status-card p-3 mb-3" data-status="running">
-      <h3 class="section-heading mb-2">New User</h3>
+      <h3 class="section-heading">New User</h3>
       <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
         <div><span class="field-label">Username</span><input bind:value={createForm.username} class="field-input" placeholder="login username" /></div>
         <div><span class="field-label">Password</span><input type="password" bind:value={createForm.password} class="field-input" placeholder="min 8 chars" /></div>
@@ -786,7 +786,7 @@
             <!-- Edit form -->
             <div class="mt-3 space-y-4">
               <div>
-                <h3 class="section-heading mb-2">Personal</h3>
+                <h3 class="section-heading">Personal</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                   <div><span class="field-label">Display Name</span><input bind:value={editForm.display_name} class="field-input" /></div>
                   <div><span class="field-label">Email</span><input type="email" bind:value={editForm.email} class="field-input" /></div>
@@ -849,7 +849,7 @@
                    assigned (fail-safe for new trader users). -->
               {#if iAmDesignated}
                 <div>
-                  <h3 class="section-heading mb-2"
+                  <h3 class="section-heading"
                       title="Horizontal scope — only applied to trader role; firm-wide roles see all accounts regardless.">
                     RBAC Scope
                     {#if user.role !== 'trader'}<span class="text-[0.55rem] opacity-60 font-normal">(advisory for non-trader)</span>{/if}
@@ -877,7 +877,7 @@
                 </div>
               {/if}
               <div>
-                <h3 class="section-heading mb-2">Address</h3>
+                <h3 class="section-heading">Address</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                   <div class="col-span-2 md:col-span-3"><span class="field-label">Address Line 1</span><input bind:value={editForm.address_line1} class="field-input" /></div>
                   <div class="col-span-2 md:col-span-3"><span class="field-label">Address Line 2</span><input bind:value={editForm.address_line2} class="field-input" /></div>
@@ -887,7 +887,7 @@
                 </div>
               </div>
               <div>
-                <h3 class="section-heading mb-2">Investment</h3>
+                <h3 class="section-heading">Investment</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                   <div><span class="field-label">Role</span>
                     {#if iAmDesignated}
@@ -922,7 +922,7 @@
                 </div>
               </div>
               <div>
-                <h3 class="section-heading mb-2">Bank Details</h3>
+                <h3 class="section-heading">Bank Details</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                   <div><span class="field-label">Bank Name</span><input bind:value={editForm.bank_name} class="field-input" /></div>
                   <div><span class="field-label">Account Number</span><input bind:value={editForm.bank_account} class="field-input" /></div>
@@ -930,7 +930,7 @@
                 </div>
               </div>
               <div>
-                <h3 class="section-heading mb-2">Nominee</h3>
+                <h3 class="section-heading">Nominee</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                   <div><span class="field-label">Name</span><input bind:value={editForm.nominee_name} class="field-input" /></div>
                   <div><span class="field-label">Relation</span><input bind:value={editForm.nominee_relation} class="field-input" placeholder="Spouse, Child, etc." /></div>
@@ -938,7 +938,7 @@
                 </div>
               </div>
               <div>
-                <h3 class="section-heading mb-2">Notes</h3>
+                <h3 class="section-heading">Notes</h3>
                 <textarea bind:value={editForm.notes} class="field-input" rows="2" placeholder="Admin notes…"></textarea>
               </div>
               <div class="flex gap-2 pt-1">
@@ -1512,4 +1512,6 @@
   .ip-pill-active  { background: rgba(74, 222, 128, 0.15); color: var(--c-long); border: 1px solid rgba(74,222,128,0.4); }
   .ip-pill-revoked { background: rgba(248, 113, 113, 0.12); color: #fca5a5; border: 1px solid rgba(248,113,113,0.35); }
   .ip-pill-expired { background: rgba(126, 151, 184, 0.12); color: #c8d8f0; border: 1px solid rgba(126,151,184,0.3); }
+
+  .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }
 </style>

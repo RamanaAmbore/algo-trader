@@ -766,9 +766,9 @@
 <!-- Create / Edit form -->
 {#if editing !== '' || !accounts.length}
   <div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
-    <h2 class="brokers-h" style="border-bottom:1px solid rgba(255,255,255,0.10); padding-bottom:0.3rem; margin-bottom:0.5rem;">
+    <h3 class="section-heading">
       {isEditing ? `Edit ${editing}` : 'New account'}
-    </h2>
+    </h3>
     <div class="brokers-form">
       <div class="bf-field">
         <label class="field-label" for="bf-acct">Account code</label>
@@ -983,6 +983,7 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     margin: 0;
   }
+  .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }
 
   /* Horizontal scroll wrapper — narrow viewports otherwise push the
      status pill (and the action buttons) out past the card edge.

@@ -6,6 +6,8 @@
 </script>
 
 <script>
+  import ModalShell from '$lib/ModalShell.svelte';
+
   /**
    * Confirm modal. Promise-returning `ask()` resolves true on confirm,
    * false on cancel/Esc/overlay-click.
@@ -101,6 +103,8 @@
     }
   }
 
+  function _cancel() { _resolve_and_close(false); }
+
   function onKey(/** @type {KeyboardEvent} */ e) {
     if (!_open) return;
     if (e.key === 'Escape') { e.preventDefault(); _resolve_and_close(false); }
@@ -110,11 +114,7 @@
 
 <svelte:window onkeydown={onKey} />
 
-{#if _open}
-  <div class="cm-overlay" role="dialog" aria-modal="true" aria-label={_title}
-       tabindex="-1"
-       onclick={() => _resolve_and_close(false)}
-       onkeydown={(e) => { if (e.key === 'Escape') _resolve_and_close(false); }}>
+<ModalShell open={_open} onClose={_cancel} ariaLabel="Confirm action" zIndex={400}>
     <div class="cm-modal algo-modal" role="presentation"
          onclick={(e) => e.stopPropagation()}>
       <div class="cm-title">{_title}</div>
@@ -139,22 +139,9 @@
                 onclick={() => _resolve_and_close(true)}>{_confirmLabel}</button>
       </div>
     </div>
-  </div>
-{/if}
+</ModalShell>
 
 <style>
-  .cm-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0,0,0,0.55);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    /* Above OrderTicket (z=300) so a confirm raised from within a
-       ticket flow always renders on top. */
-    z-index: 400;
-    padding: 1rem;
-  }
   .cm-modal {
     /* Composes .algo-modal chrome (amber halo + radius + shadow + flex
        column + overflow hidden). Overrides:

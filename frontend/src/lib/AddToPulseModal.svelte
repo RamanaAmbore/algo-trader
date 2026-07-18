@@ -1,6 +1,7 @@
 <script>
   import { tick } from 'svelte';
   import Select from '$lib/Select.svelte';
+  import ModalShell from '$lib/ModalShell.svelte';
   import { displaySymbol } from '$lib/data/displaySymbol.js';
 
   /**
@@ -50,11 +51,7 @@
   });
 </script>
 
-{#if open}
-  <div class="search-overlay" role="dialog" aria-modal="true"
-       aria-label="Add to Pulse" tabindex="-1"
-       onclick={onClose}
-       onkeydown={(e) => { if (e.key === 'Escape') onClose(); }}>
+<ModalShell open={!!open} {onClose} ariaLabel="Add to Pulse">
     <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
         <span class="search-title">Manage watchlists</span>
@@ -259,5 +256,4 @@
         {/if}
       </div>
     </div>
-  </div>
-{/if}
+</ModalShell>

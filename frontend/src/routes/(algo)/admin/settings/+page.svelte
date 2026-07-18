@@ -317,9 +317,9 @@
   {/if}
   {#each grouped as [category, rows]}
     <section class="algo-card mb-2" data-status="inactive">
-      <h2 class="algo-card-title mb-1 pb-1 border-b border-white/10">
+      <h3 class="section-heading">
         {category} <span class="opacity-60 font-normal ml-1">({rows.length})</span>
-      </h2>
+      </h3>
       <div>
         {#each rows as s}
           <div class="settings-row">
@@ -509,4 +509,5 @@
     border-bottom: 1px solid rgba(255,255,255,0.05);
   }
   .settings-row:last-child { border-bottom: 0; }
+  .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }
 </style>

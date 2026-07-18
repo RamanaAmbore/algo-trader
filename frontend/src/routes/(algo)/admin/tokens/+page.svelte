@@ -259,7 +259,7 @@
 {#if showForm}
   <div class="algo-status-card p-3 mb-3" data-status="running">
     <div class="flex items-center justify-between mb-2">
-      <h3 class="algo-card-title mb-0">
+      <h3 class="section-heading">
         {editingId == null ? 'New token' : `Edit token #${editingId}`}
       </h3>
       <button onclick={closeForm} class="text-xs text-[var(--c-muted)] hover:text-[var(--c-action)]">Cancel</button>
@@ -483,3 +483,7 @@
     </table>
   </div>
 {/if}
+
+<style>
+  .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }
+</style>
