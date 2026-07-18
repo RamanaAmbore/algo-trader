@@ -42,10 +42,16 @@ import pytest
 # ── 1. SSOT: single canonical constant ─────────────────────────────────────
 
 def test_coverage_threshold_is_module_constant() -> None:
-    """_SELF_HEAL_COVERAGE_THRESHOLD must be 0.70 and defined once."""
+    """_SELF_HEAL_COVERAGE_THRESHOLD must be 0.60 and defined once.
+
+    Was 0.70 (regression 910740f0) which caused NSE equity 3M/6M/1Y ranges to always
+    be flagged partial (NSE has ~252 trading days/year = 69% of calendar days < 70%).
+    Fixed to 0.60 to give correct headroom below actual trading day density.
+    """
     from backend.api.routes.options import _SELF_HEAL_COVERAGE_THRESHOLD
-    assert _SELF_HEAL_COVERAGE_THRESHOLD == pytest.approx(0.70), (
-        "threshold changed — update tests and operator docs"
+    assert _SELF_HEAL_COVERAGE_THRESHOLD == pytest.approx(0.60), (
+        "threshold changed from 0.60 — NSE equity 3M/6M/1Y charts will break again. "
+        "Must stay at 0.60 (NSE has ~69% trading/calendar day ratio, below 0.70 always triggered)."
     )
 
 
