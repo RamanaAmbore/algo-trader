@@ -345,10 +345,11 @@ This fallback handles new intraday positions by subtracting the opening-session 
 P&L from the current total, leaving only today's delta. When `overnight_quantity = 0`, 
 this reduces to `pnl` itself (the full intraday gain/loss for a new position).
 
-**Case 4 (stale close guard)** — When `close_price === ltp` (broker hasn't refreshed 
-`close_price` since prior session), `baseDayPnlForPosition` returns 0. The formula 
-`overnight_qty * (ltp − close)` would produce 0 anyway; returning early avoids stale 
-subtraction during the overnight window. Source: `frontend/src/lib/data/nav.js:109`.
+**Case 4 (stale close guard)** — When `close_price <= 0` (broker returned zero or missing
+prev_close), `baseDayPnlForPosition` returns 0. When `close > 0` and `dcv === 0`, returns
+`pnl − oq×(close−avg)` regardless of whether `close === ltp`. The earlier `close === ltp`
+guard was a regression (removed 8474a17e) — it incorrectly zeroed realized P&L when the
+broker hadn't refreshed `close_price`. Source: `frontend/src/lib/data/nav.js:109`.
 
 Applied consistently across PositionStrip, MarketPulse, and derivatives surfaces for 
 accurate session-relative P&L reporting.
