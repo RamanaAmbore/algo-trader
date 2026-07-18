@@ -119,7 +119,11 @@
     display: flex;
     align-items: center;
     min-width: 0;
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: none;
   }
+  .ch-middle::-webkit-scrollbar { display: none; }
   .ch-right {
     display: flex;
     align-items: center;

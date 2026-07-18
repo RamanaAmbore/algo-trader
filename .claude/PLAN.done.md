@@ -1,140 +1,120 @@
-# Plan: Fix NavStrip P-slot regression + 3M/6M/1Y chart threshold
+# Plan: Card header scroll + alignment + NavStrip fixes
 
 ## Context
 
-Two pre-existing UI bugs surfaced after the broker-coverage deploy (commit `aecd1282`).
-Neither was introduced by that commit — both trace to `8474a17e` (Jul 17) and `910740f0` (Jul 15).
-No Playwright tests ran for either because the coverage plan had `playwright: no`.
+Two problems to fix:
 
-**Bug 1 — P slot 1 shows 0** (`8474a17e` regression)
-`baseDayPnlForPosition` Case 4 guard added `close !== ltp` as a short-circuit:
-```js
-if (close > 0 && close !== ltp) return pnl - oq * (close - avg);
-return 0;   // <-- fires when close === ltp, wiping realized P&L
-```
-When `close_price` hasn't been refreshed (equals LTP from broker), realized intraday P&L
-in `pnl` is silently zeroed. The fix: keep only `close <= 0 → return 0`.
+**A — Card header overflow (mobile):** Tabs, chips, and filter rows in card headers wrap to a second row on narrow screens instead of scrolling. Wastes vertical space, can push the card button group off-screen.
 
-**Bug 2 — 3M/6M/1Y charts never load** (`910740f0` regression)
-`_SELF_HEAL_COVERAGE_THRESHOLD = 0.70` fires `_still_partial` unconditionally when
-`len(store_bars) < int(0.70 × days)`. NSE equity has ≈252 trading days/year = 69% of
-calendar days — always below 70%. Result: every NSE 3M/6M/1Y request is flagged partial,
-triggers `_ohlcv_demand_fill`, and the frontend spins indefinitely. Fix: lower to 0.60
-(gives 219/365 = 60% threshold, comfortably below 252/365 = 69%).
+**B — NavStrip: scroll safety + cash/margin contrast:**
+1. `.ps-strip` has `overflow-x: auto` only inside `@media (max-width: 640px)`. Landscape phones (667px+) and small tablets outside that breakpoint have no scroll safety — pills shrink/overlap. Base rule needs `overflow-x: auto` too.
+2. Both M (margin) and C (cash) pills currently use `ps-cash` = `#7dd3fc` (sky-300). Need visual contrast — margin and cash are different things and should read differently at a glance.
 
-Per standing rule — one issue at a time, separate commits.
+**Rules being enforced:**
+- Tabs/chips/info in card headers = scrollable on overflow (never wrap to second row)
+- Card title + info = left-aligned; card button group = right-aligned (CardHeader.svelte already enforces structurally)
+- Cash vs margin contrast in NavStrip (same principle as positions vs holdings contrast)
+
+**Already correct (no change):** AlgoTabs.svelte ✅ · Gainers/losers (use AlgoTabs) ✅ · Payoff card `.opt-section-chips` ✅ · ChartWorkspace range buttons ✅
 
 ---
 
-## Fix 1 — NavStrip P-slot regression
+## Agents
 
-### Agents
-- frontend: In `frontend/src/lib/data/nav.js` lines 108-115, replace the Case 4 block:
-  ```js
-  // BEFORE
-  if (oq > 0 && dcv === 0) {
-    const ltp = Number(p?.last_price ?? 0);
-    if (close > 0 && close !== ltp) return pnl - oq * (close - avg);
-    return 0;
+- frontend: Apply ALL fixes below (CSS-only except the NavStrip class addition — one agent, all files).
+
+  ### Fix A — Card headers
+
+  **A1. `frontend/src/lib/CardHeader.svelte` — `.ch-middle` (lines 117-122)**
+  Single-point fix covering all CardHeader users:
+  ```css
+  .ch-middle {
+    flex: 1 1 0;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: none;
   }
-  // AFTER
-  if (oq > 0 && dcv === 0) {
-    if (close <= 0) return 0;
-    return pnl - oq * (close - avg);
-  }
+  .ch-middle::-webkit-scrollbar { display: none; }
   ```
-  Also update `docs/specs/NAVSTRIP_SPEC.md`: correct the Case 4 description — it was
-  documented in `9dfc9e8b` as "returns 0 when close===ltp"; that guard is now removed,
-  Case 4 only guards `close <= 0`.
-  Also update `CLAUDE.md` "Case 4 stale close guard" entry to match.
-- playwright: Add spec `frontend/tests/navstrip-p-slot.spec.ts` — login, wait for
-  positions strip, assert P pill slot 1 (`[data-testid="p-day"]` or equivalent locator)
-  shows a non-zero value when positions exist (mock or assert `!== "₹0"`). Also assert
-  no zero-flash on page load.
+
+  **A2. `frontend/src/lib/MarketPulse.svelte` — `.mp-head-tabs`**
+  Find around line 5034. Change `flex-wrap: wrap` → `flex-wrap: nowrap`. Add `overflow-x: auto; scrollbar-width: none`. Add `.mp-head-tabs::-webkit-scrollbar { display: none; }`. Ensure child tab items have `flex-shrink: 0` (check if already set).
+
+  **A3. `frontend/src/lib/PnlPanel.svelte` — `.filter-bar` / `.pill-group`**
+  `.filter-bar` (line ~230): add `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none`. Add `.filter-bar::-webkit-scrollbar { display: none; }`.
+  `.pill-group` (line ~255): change `flex-wrap: wrap` → `flex-wrap: nowrap; flex-shrink: 0`.
+
+  **A4. `frontend/src/lib/PnlAnalysis.svelte` — `.filter-bar` + legend chips container**
+  `.filter-bar` (line ~890): `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none`. Add webkit scrollbar hide.
+  Find the wrapper element around the `.legend-chip` spans in the template (line ~670) — check what class it uses, then add `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none` to that class. Add webkit scrollbar hide.
+
+  **A5. `frontend/src/routes/(algo)/dashboard/+page.svelte` — `.eq-legend`**
+  Find around line 2342. Change `flex-wrap: wrap` → `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none`. Add `flex-shrink: 0` to child legend items if not present. Add `.eq-legend::-webkit-scrollbar { display: none; }`.
+
+  ### Fix B — NavStrip
+
+  **B1. `frontend/src/lib/PositionStrip.svelte` — base `.ps-strip` scroll safety**
+  In the base `.ps-strip` rule (line ~903), add:
+  ```css
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  ```
+  Also add `.ps-strip::-webkit-scrollbar { display: none; }` in the base styles (NOT inside the media query — already present there).
+  Also move `flex-shrink: 0` from the `@media (max-width: 640px)` block to the base `.ps-agg` rule so pills never shrink at any viewport width.
+
+  **B2. `frontend/src/lib/PositionStrip.svelte` — cash vs margin contrast**
+  Currently both M and C pill values use `ps-cash` = `#7dd3fc` (sky-300). Add a new `.ps-margin` class and apply it to M pill values:
+  ```css
+  .ps-margin { color: var(--algo-cyan); }  /* #22d3ee — cyan-400, margin/credit */
+  /* .ps-cash stays as sky-300 #7dd3fc — liquid deployable cash */
+  ```
+  In the template: find M pill values (lines ~862-866, `marginAvail` and `marginTotal`) and replace `ps-cash` class with `ps-margin` class on those two spans. Leave C pill unchanged.
+
+  ### Alignment verification
+  For cards with inline headers (not using CardHeader): verify left content has `flex: 1; min-width: 0` and right card-group has `flex-shrink: 0`. Change only if wrong.
+
 - backend: skip
 - broker: skip
 - backend-test: skip
-- doc: skip (handled inline by frontend agent)
+- doc: skip
+- playwright: Add spec `frontend/e2e/card-header-scroll.spec.js`:
+  - Login
+  - Set viewport to 375px × 812px (iPhone 12)
+  - Dashboard: assert `.ps-strip` does NOT exceed viewport width (no horizontal page overflow)
+  - Dashboard: assert gainers/losers card header stays single-row height (no wrap) at 375px
+  - Dashboard: assert `.eq-legend` is single-row (scrollWidth check or height check)
+  - Derivatives page: assert payoff chip row is single-row height at 375px
+  - NavStrip: navigate to dashboard, at 375px assert `.ps-agg.M` (margin pill) has a different computed color than `.ps-agg.C` (cash pill) — contrast check
 
-### Tests
+## Tests
 - pytest: no
 - svelte-check: yes
 - playwright: yes
 
-### Commit message
+## Commit message
 ```
-fix(navstrip): remove close===ltp guard from baseDayPnlForPosition Case 4
+fix(ui): card headers scroll on overflow + NavStrip scroll safety + cash/margin contrast
 
-Realized intraday P&L was zeroed when broker hasn't refreshed close_price
-(close === ltp). Only guard close <= 0 now — avoids spurious zero when
-broker's prev-close field lags during the overnight window.
+Card headers: CardHeader.svelte ch-middle gets overflow-x:auto (single-point
+fix for all CardHeader users). Per-surface fixes: mp-head-tabs, PnlPanel
+filter-bar, PnlAnalysis filter-bar/legend, dashboard eq-legend — all changed
+from flex-wrap:wrap to nowrap+scroll.
 
-Regression introduced in 8474a17e; traced via _livePositionsToday → baseDayPnlForPosition.
-```
-
-### Done when
-P pill slot 1 shows correct non-zero day P&L for positions with realized intraday activity.
-svelte-check 0 errors. Playwright spec green.
-
----
-
-## Fix 2 — 3M/6M/1Y chart threshold
-
-### Agents
-- backend: In `backend/api/routes/options.py` line 367, change:
-  ```python
-  # BEFORE
-  _SELF_HEAL_COVERAGE_THRESHOLD: float = 0.70
-  # AFTER
-  _SELF_HEAL_COVERAGE_THRESHOLD: float = 0.60
-  ```
-  No other changes needed — `_historical_ohlcv_store` in `options_helpers.py` already
-  reads `self_heal_threshold` passed from this constant.
-- playwright: Add spec `frontend/tests/chart-ranges.spec.ts` — navigate to a chart page,
-  select 3M / 6M / 1Y range buttons in sequence, assert that within 8s the chart canvas
-  renders data (spinner gone, bar count > 0 via JS handle or canvas non-blank check).
-  Also assert no "partial data" infinite retry visible.
-- frontend: skip
-- broker: skip
-- backend-test: skip
-- doc: skip
-
-### Tests
-- pytest: no (threshold change is config-level; no unit test needed)
-- svelte-check: no
-- playwright: yes
-
-### Commit message
-```
-fix(charts): lower SELF_HEAL_COVERAGE_THRESHOLD 0.70→0.60 for NSE equity
-
-NSE equity has ~252 trading days/year = 69% of calendar days, always below
-the 0.70 threshold — causing 3M/6M/1Y requests to be permanently flagged
-partial and trigger infinite _ohlcv_demand_fill retries. 0.60 gives 219/365
-threshold, comfortably below actual trading day density.
-
-Regression introduced in 910740f0.
+NavStrip: overflow-x:auto promoted to base .ps-strip rule (was only in
+@media ≤640px — landscape phones outside breakpoint had no scroll safety).
+.ps-agg flex-shrink:0 also promoted to base. New .ps-margin class (cyan-400
+#22d3ee) on M pill values; C pill keeps sky-300 #7dd3fc — cash and margin
+now visually distinct.
 ```
 
-### Done when
-3M, 6M, 1Y range buttons load NSE equity chart data without persistent spinner.
-Playwright spec green. MCX F&O beyond front-month is intrinsically partial — not addressed.
-
----
-
-## Critical files
-
-| File | Change |
-|---|---|
-| `frontend/src/lib/data/nav.js` lines 108-115 | Remove `close !== ltp` guard from Case 4 |
-| `docs/specs/NAVSTRIP_SPEC.md` | Correct Case 4 description |
-| `CLAUDE.md` | Correct "Case 4 stale close guard" entry |
-| `backend/api/routes/options.py` line 367 | `0.70 → 0.60` |
-| `frontend/tests/navstrip-p-slot.spec.ts` | New Playwright spec |
-| `frontend/tests/chart-ranges.spec.ts` | New Playwright spec |
-
-## Verification
-
-1. Fix 1: After deploy, open positions page → NavStrip P pill → slot 1 shows non-zero day P&L for positions with intraday activity. No zero-flash on load.
-2. Fix 2: Select 3M / 6M / 1Y range on any NSE equity chart → data loads within a few seconds, no persistent spinner.
-3. MCX front-month futures charts: partial data for 6M/1Y is expected (intrinsic limitation, not a bug).
+## Done when
+- 375px viewport: all card header chip/tab/filter rows stay single-row (scroll, not wrap)
+- 375px viewport: NavStrip pills don't overflow the page
+- M pill values render in cyan-400, C pill values in sky-300 — visually distinct
+- svelte-check 0 errors
+- Playwright spec green

@@ -5031,9 +5031,12 @@
   .mp-head-tabs {
     flex: 0 1 auto;
     min-width: 0;
-    flex-wrap: wrap;
-    row-gap: 0.18rem;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
+  .mp-head-tabs::-webkit-scrollbar { display: none; }
 
   /* Manage-watchlists button — single chip at the end of the chrome
      row. Pencil-edits-list glyph reads as "manage list" rather than

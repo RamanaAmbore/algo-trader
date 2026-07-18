@@ -2341,11 +2341,16 @@
      Wraps onto a second row on mobile so 6 chips fit. */
   .eq-legend {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.35rem;
     padding: 0.25rem 0.1rem 0.5rem;
     align-items: center;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
+  .eq-legend::-webkit-scrollbar { display: none; }
+  .eq-legend > * { flex-shrink: 0; }
   .eq-chip {
     display: inline-flex;
     align-items: center;

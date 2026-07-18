@@ -229,7 +229,7 @@
   /* ── Filter bar ─────────────────────────────────────────────────── */
   .filter-bar {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.75rem;
     align-items: flex-end;
     margin-bottom: 0.75rem;
@@ -237,7 +237,11 @@
     background: var(--card-bg-gradient);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
+  .filter-bar::-webkit-scrollbar { display: none; }
   .filter-item {
     display: flex;
     flex-direction: row;
@@ -255,7 +259,8 @@
   .pill-group {
     display: flex;
     gap: 0.2rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
   }
   .mode-pill {
     font-size: var(--fs-sm);
