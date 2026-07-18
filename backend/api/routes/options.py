@@ -364,7 +364,7 @@ def get_first_cold_empty_counts() -> dict[str, int]:
 # The log is rate-limited via the shared _self_heal_log_once helper
 # (one INFO per symbol per 60 s) so a hot chart page does not flood the log.
 
-_SELF_HEAL_COVERAGE_THRESHOLD: float = 0.70   # below this fraction → force broker fetch
+_SELF_HEAL_COVERAGE_THRESHOLD: float = 0.60   # below this fraction → force broker fetch
 
 # Shared throttled logger — imported from canonical SSOT in helpers/.
 # Both quote.py (sparkline self-heal) and options.py use the SAME symbol
