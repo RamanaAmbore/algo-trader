@@ -369,7 +369,9 @@
   $effect(() => {
     const d = chartStore.days;
     if (!_rangeHydrated) return;
-    if (d !== _chartDays) _chartDays = d;
+    untrack(() => {
+      if (d !== _chartDays) _chartDays = d;
+    });
   });
   // Bridge: local → store + LS (operator clicks a range pill).
   $effect(() => {
