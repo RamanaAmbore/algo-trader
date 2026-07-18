@@ -1,101 +1,123 @@
-# Plan: Fix chart range selector, 3M/6M/1Y loading, and indicator multi-select
+# Plan: Vitest unit tests — frontend utility layer
 
 ## Context
-Three bugs all in `frontend/src/lib/ChartWorkspace.svelte`:
-
-**Bug 1 — Range selector race condition:**
-Two bidirectional `$effect` hooks sync `_chartDays` ↔ `chartStore.days`. Effect 1 (store→local,
-declared first) reads `_chartDays` in `if (d !== _chartDays)` without `untrack()`, making it a
-Svelte 5 reactive dependency. Clicking "3M" → `_setRange(90)` → `_chartDays = 90`. Both effects
-schedule. Effect 1 fires first: reads `chartStore.days` (still 30), sees `30 !== 90`, resets
-`_chartDays = 30`. Effect 2 then reads 30 and persists 30. Range reverts to 1M every time.
-Fix: wrap `_chartDays` comparison in `untrack()` in Effect 1.
-
-**Bug 2 — Empty retry timing too short:**
-`_ohlcv_demand_fill` fires async after HTTP response — Kite + DB write for 90–365 days takes
-2–10s. `_handleEmptyBars` retries once at 2300ms via `_emptyRetryFired` Set latch. Retry fires
-too early, sees empty bars, latch prevents further retries → "No data available" permanently.
-Fix: replace Set latch with count Map, allow 3 retries at 4s/8s/15s.
-
-**Bug 3 — Indicator multi-select race condition:**
-Same bidirectional `$effect` race as Bug 1, but for overlays. Effect 1 (store→local overlay sync,
-~lines 421-428) reads `_overlays` in `JSON.stringify(_overlays)` without `untrack()`. When user
-picks an indicator → `bind:value` writes `_overlays` → Effect 1 fires first, sees `chartStore.overlays`
-unchanged, resets `_overlays` to old store value. Selection is lost before Effect 2 can persist it.
-Fix: same `untrack()` pattern.
+The frontend has Playwright e2e tests (against dev.ramboq.com) but no unit test runner.
+Pure/near-pure utility modules — `nav.js`, `format.js`, `rootOf.js`, `chartPrefs.js` — contain
+the logic most likely to cause incidents (Day P&L formula, NAV aggregation, virtual symbol
+mapping, number formatters). These have no DOM/Svelte dependency and are ideal for Vitest.
+Scope is intentionally narrow: utility modules only, no Svelte component testing.
+`chartStore.svelte.js` excluded for now — runes at module scope require Svelte plugin
+in Vitest; can be added in a follow-up once the scaffold is proven.
 
 ## Agents
 - backend: skip
-- frontend: Apply all three fixes in `frontend/src/lib/ChartWorkspace.svelte`:
+- frontend: Two tasks — scaffold first, then tests.
 
-  **Fix 1 — `untrack()` in days Effect 1 (~lines 369-373):**
+  **Task A — Vitest scaffold (commit separately):**
+
+  1. Install vitest: `cd frontend && npm install --save-dev vitest`
+
+  2. Create `frontend/vitest.config.js`:
   ```javascript
-  $effect(() => {
-      const d = chartStore.days;
-      if (!_rangeHydrated) return;
-      untrack(() => {
-          if (d !== _chartDays) _chartDays = d;
-      });
+  import { defineConfig } from 'vitest/config';
+  import path from 'path';
+
+  export default defineConfig({
+    test: {
+      environment: 'node',
+      include: ['src/lib/__tests__/**/*.test.js'],
+    },
+    resolve: {
+      alias: {
+        $lib: path.resolve('./src/lib'),
+      },
+    },
   });
   ```
 
-  **Fix 2 — Multi-retry in `_handleEmptyBars`:**
-  - Replace `const _emptyRetryFired = new Set()` (~line 614) with `const _emptyRetryCount = new Map()`
-  - Rewrite gate: `(_emptyRetryCount.get(retryKey) ?? 0) >= 3` (max 3 retries)
-  - On each retry: increment counter, use delay `[4000, 8000, 15000][count - 1]` (count after increment)
-  - Range-change clear (~line 818): replace `_emptyRetryFired.clear()` with `_emptyRetryCount.clear()`
-  - Update docblock comment (~lines 602-612) to reflect 3-retry/4s–15s timing
-
-  **Fix 3 — `untrack()` in overlays Effect 1 (~lines 421-428):**
-  ```javascript
-  $effect(() => {
-      const storeOverlays = chartStore.overlays;
-      if (!_overlaysHydrated) return;
-      untrack(() => {
-          if (JSON.stringify(_overlays) !== JSON.stringify(storeOverlays)) {
-              _overlays = storeOverlays.slice();
-          }
-      });
-  });
+  3. Add scripts to `frontend/package.json`:
+  ```json
+  "test:unit": "vitest run",
+  "test:unit:watch": "vitest"
   ```
 
-  Commit as **three separate commits** (one defect per commit, per memory rule).
-  `untrack` is already imported at line 44 — no new imports needed.
+  Commit: `chore(test): add Vitest + config — frontend unit test scaffold`
+
+  **Task B — Write test files (single commit):**
+
+  Create `frontend/src/lib/__tests__/data/nav.test.js` — test `baseDayPnlForPosition` (ALL cases),
+  `aggregateDayPnlForPositions`, `livePositionDayPnl`, `navTotalRow`:
+
+  - `baseDayPnlForPosition`:
+    - `prev_settlement_pnl` finite → returns `pnl - prev_settlement_pnl` (authoritative path)
+    - `prev_settlement_pnl` null/NaN, `oq > 0, dcv !== 0` → returns `dcv` (Case 1)
+    - `oq > 0, dcv === 0, close > 0` → returns `pnl - oq*(close - avg)` (Case 3)
+    - `oq > 0, dcv === 0, close <= 0` → returns `0` (Case 4 — MCX zero-close guard)
+    - `oq === 0, pnl !== 0` → returns `pnl` (new intraday position)
+    - All zeros → returns `0`
+  - `aggregateDayPnlForPositions`: sums correctly, empty array → 0
+  - `livePositionDayPnl`: market closed → returns base, market open + liveLtp > 0 → `(liveLtp - close) * qty`,
+    new position (`closePx=0, avg>0`) → `(liveLtp - avg) * qty`, liveLtp absent → falls back
+  - `navTotalRow`: sums cash/pos_m2m/holdings_mtm/nav, empty array → null
+
+  Create `frontend/src/lib/__tests__/format.test.js` — test all exports from `format.js`:
+  - `aggCompact`: `< 1K` (plain), `1000` → `"1.00K"`, `100000` → `"1.00L"`, `10000000` → `"1.00C"`,
+    negative values, zero, null/NaN → `"—"`
+  - `priceFmt`: 2 decimals, null/NaN/Infinity → `"—"`, negative prices
+  - `qtyFmt`: integer grouping, zero, negative
+  - `directional`: long (`netQty > 0`) → pass-through, short (`netQty < 0`) → negate
+  - `fmtPctScaled`: `5.0 → "5.00%"`, signed=true adds `+`, decimals override
+  - `fmtPctFraction`: `0.05 → "5.00%"`, `0 → "0.00%"`
+
+  Create `frontend/src/lib/__tests__/data/rootOf.test.js` — test `rootOf`, `resolveVirtual`,
+  `rootOfLabel` using `seedRootMapFromInstruments` to prime the maps:
+  - `rootOf`: front-month contract → bare root `"CRUDEOIL"`, back-month → `"CRUDEOIL_NEXT"`,
+    far-month → pass-through, equity/options (non-FUT) → pass-through, unknown exchange → pass-through
+  - `resolveVirtual`: `"CRUDEOIL"` → front-month tradingsymbol, `"CRUDEOIL_NEXT"` → back-month,
+    unknown virtual → undefined
+  - `rootOfLabel`: `"_NEXT"` internal → `".NEXT"` display suffix
+  - `seedRootMapFromInstruments`: filters by FUT, skips settling-today contracts,
+    keeps at most 2 per root ordered by expiry
+
+  Create `frontend/src/lib/__tests__/data/chartPrefs.test.js` — test `readChartPref`
+  and `writeChartPref` with a localStorage mock set up via `beforeEach`:
+  ```javascript
+  // Mock localStorage (Node environment has no window.localStorage)
+  const _store = {};
+  global.localStorage = {
+    getItem: (k) => _store[k] ?? null,
+    setItem: (k, v) => { _store[k] = String(v); },
+    removeItem: (k) => { delete _store[k]; },
+    clear: () => { Object.keys(_store).forEach(k => delete _store[k]); },
+  };
+  ```
+  - `readChartPref`: absent key → default, invalid JSON → default, validation fails → default,
+    valid stored value → parsed, null default → null on miss
+  - `writeChartPref`: round-trips correctly, quota error (mock setItem throw) → silent no-op
+
+  All four test files in a single commit: `test(frontend): unit tests for nav, format, rootOf, chartPrefs`
 
 - broker: skip
 - doc: skip
-- backend-test: In `backend/tests/test_ohlcv_partial_range.py`:
-  - Update `test_frontend_retry_delay_is_at_least_2300ms` — first retry is now 4000ms;
-    update assertion + comment to validate ≥ 4000ms
-  - Update `test_frontend_retry_delay_exceeds_backend_empty_cache_ttl` to validate
-    first delay (4000ms) > empty cache TTL (2000ms)
-  - Commit with Fix 2.
-- playwright: Add `frontend/tests/chart-range-and-indicators.spec.ts` covering:
-  1. **Range selector persistence** — navigate to /charts, click "3M" button, assert it stays
-     active (not reverted to 1M), assert URL/store reflects 90 days, wait for chart to render
-  2. **3M chart loads** — after clicking 3M, wait up to 20s for chart canvas/bars to appear
-     (demand fill may need multiple retries); assert no "No data available" error message shown
-  3. **Indicator multi-select persistence** — open indicators dropdown, select "SMA 20",
-     then select "RSI", assert both remain checked in the dropdown; close and reopen dropdown,
-     assert both are still checked (persisted to localStorage); assert only one selection is
-     NOT lost after picking a second indicator
+- backend-test: skip
+- playwright: skip
 
 ## Tests
-- pytest: yes
-- svelte-check: yes
-- playwright: yes
+- pytest: no
+- svelte-check: yes (confirms no import errors from new config)
+- playwright: no
+- vitest: yes — run `cd frontend && npm run test:unit` after each commit; must be 0 failures
 
 ## Commit message
-Three commits:
+Two commits:
 
-1. `fix(chart): untrack _chartDays in store→local effect — range selector race`
-2. `fix(chart): multi-retry backoff (4s/8s/15s) for 3M/6M/1Y demand-fill`
-3. `fix(chart): untrack _overlays in store→local effect — indicator multi-select race`
+1. `chore(test): add Vitest + config — frontend unit test scaffold`
+2. `test(frontend): unit tests for nav, format, rootOf, chartPrefs`
 
 ## Done when
-- Clicking 3M/6M/1Y range button stays selected (does not revert to 1M)
-- 3M/6M/1Y charts load after demand fill completes (retried up to 3× at 4/8/15s)
-- Selecting multiple indicators in the dropdown persists (no selection reset)
-- All three Playwright specs pass
-- `test_ohlcv_partial_range.py` passes with 4000ms floor assertion
-- `svelte-check` reports 0 errors
+- `npm run test:unit` exits 0 with all tests passing
+- `nav.test.js` covers all `baseDayPnlForPosition` cases (including MCX zero-close guard)
+- `format.test.js` covers null/Infinity/edge-magnitude paths
+- `rootOf.test.js` covers front/back/far-month + reverse lookup
+- `chartPrefs.test.js` covers read/write + localStorage mock
+- `svelte-check` 0 errors
