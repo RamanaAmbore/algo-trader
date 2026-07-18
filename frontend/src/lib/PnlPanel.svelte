@@ -231,7 +231,7 @@
     display: flex;
     flex-wrap: nowrap;
     gap: 0.75rem;
-    align-items: flex-end;
+    align-items: center;
     margin-bottom: 0.75rem;
     padding: 0.5rem 0.65rem;
     background: var(--card-bg-gradient);

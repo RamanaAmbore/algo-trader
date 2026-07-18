@@ -347,7 +347,7 @@
     showSearch={false}
   >
     {#snippet middle()}
-      <div class="flex items-center gap-1 flex-wrap" style="min-width:0">
+      <div style="min-width:0; display:flex; align-items:center; gap:0.25rem; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none;">
         <span class="mp-section-label">Filter:</span>
         <button class="tpl-chip {filterScope === 'all' ? 'tpl-chip-on' : ''}"
                 onclick={() => { filterScope = 'all'; }} type="button">All</button>
