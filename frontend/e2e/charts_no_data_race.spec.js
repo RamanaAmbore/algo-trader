@@ -387,6 +387,47 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
       'setting _emptyGateSuppressed=false after the component has been destroyed.',
     ).toBe(true);
   });
+
+  // ── Retry backoff constant — must use named constant, first delay ≥ 4000 ms ──
+
+  test('Stale code: _RETRY_DELAYS_MS declared with first element ≥ 4000 ms', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte at ${_CW_SRC}: ${e.message}`);
+    }
+
+    // The retry delays must use a named constant so tests can parse it
+    // reliably rather than matching a literal setTimeout argument.
+    // Strategy: [4000, 8000, 15000] ms backoff —
+    //   4000 ms: guarantees the 2s empty-cache TTL has expired AND gives
+    //            demand fill time to complete (Kite fills take 2–10s for
+    //            90–365 day ranges).
+    //   8000 ms: covers slow Kite API responses for large date ranges.
+    //  15000 ms: final attempt for very slow responses.
+    expect(
+      src.includes('_RETRY_DELAYS_MS'),
+      'ChartWorkspace must declare a named constant _RETRY_DELAYS_MS ' +
+      'so retry timing is auditable and tests do not need to parse literal ' +
+      'setTimeout arguments.',
+    ).toBe(true);
+
+    // Extract the first element from the constant declaration.
+    const match = src.match(/_RETRY_DELAYS_MS\s*=\s*\[(\d+)/);
+    expect(
+      match,
+      'Could not parse _RETRY_DELAYS_MS = [<first_ms>, ...] in ChartWorkspace.svelte. ' +
+      'Ensure the declaration is a literal array (not a computed expression).',
+    ).toBeTruthy();
+
+    const firstMs = parseInt(match[1], 10);
+    expect(
+      firstMs,
+      `_RETRY_DELAYS_MS[0] is ${firstMs} ms — must be ≥ 4000 ms to clear ` +
+      'the server empty-cache TTL (2000 ms) and give demand fill time to complete.',
+    ).toBeGreaterThanOrEqual(4000);
+  });
 });
 
 // ── Live browser tests — require auth against dev.ramboq.com ─────────────────
@@ -653,11 +694,13 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
 
-    // Wait long enough for the 2300 ms retry timer to fire + second resp.
+    // Wait long enough for the 4000 ms first retry to fire + second resp.
     // The retry delay must exceed the server's _HIST_CACHE_TTL_EMPTY (2000 ms)
     // so the server makes a fresh broker attempt rather than returning the
-    // cached empty+partial response. 2300 ms (retry) + ~200 ms response = 2500 ms.
-    await page.waitForTimeout(4_000);
+    // cached empty+partial response. 4000 ms (retry) + ~200 ms response = 4200 ms.
+    // _RETRY_DELAYS_MS = [4000, 8000, 15000]: first retry at 4s guarantees the
+    // 2s empty-cache TTL has expired AND gives demand fill time to complete.
+    await page.waitForTimeout(6_000);
 
     // The retry must have fired — backend call count ≥ 2.
     expect(
@@ -716,7 +759,7 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
 
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
-    await page.waitForTimeout(4_000);
+    await page.waitForTimeout(6_000);
 
     expect(histCallCount).toBeGreaterThanOrEqual(2);
     const errVisible = await page.locator('text=No data available').isVisible();
@@ -752,8 +795,8 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
       }
       // Second response: delay 800 ms so the retry window is wide
       // enough to catch any "No data available" flash if the guard fails.
-      // The retry fires at 2300 ms; with 800 ms response time the total
-      // wait is ~3100 ms. Polling below covers the full window.
+      // The retry fires at 4000 ms; with 800 ms response time the total
+      // wait is ~4800 ms. Polling below covers the full window.
       await new Promise((res) => setTimeout(res, 800));
       return route.fulfill({
         status: 200,
@@ -769,8 +812,8 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     await waitForRangeGroup(page);
 
     // Sample the empty-state visibility during the full retry window:
-    // retry fires at 2300 ms + 800 ms response = 3100 ms total.
-    // Poll every 200 ms for 4000 ms to catch any single-frame flash.
+    // retry fires at 4000 ms + 800 ms response = 4800 ms total.
+    // Poll every 200 ms for 6000 ms to catch any single-frame flash.
     // Root-cause note: the prior 800 ms retry delay was < the server's
     // _HIST_CACHE_TTL_EMPTY (2000 ms), so the retry returned the same
     // cached empty+partial. Since _emptyRetryFired was already set,
@@ -778,9 +821,10 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     // after the retry (at t≈800ms). The guard _histRetrying=true only
     // helped for that 800ms window — after that it was false again and
     // the template hit the {:else if !_bars.length} branch. Fixed by
-    // changing the retry delay to 2300 ms (safely past the 2000 ms TTL).
+    // changing to _RETRY_DELAYS_MS = [4000, 8000, 15000]: first retry at
+    // 4s safely past the 2s empty-cache TTL AND covers demand fill time.
     let flashedNoData = false;
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 30; i++) {
       const visible = await page.locator('.cw-state', { hasText: 'No data available' }).isVisible();
       if (visible) {
         flashedNoData = true;
@@ -795,7 +839,10 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
       'Root cause: prior retry delay (800 ms) < server empty-cache TTL (2000 ms). ' +
       'Retry returned same cached empty+partial; _emptyRetryFired latch prevented ' +
       'a second retry, so "No data available" rendered immediately. ' +
-      'Fix: retry delay set to 2300 ms (past the 2000 ms TTL).',
+      'Fix: _RETRY_DELAYS_MS = [4000, 8000, 15000] — first retry at 4s safely ' +
+      'past the 2s empty-cache TTL AND covers demand fill time (2–10s for ' +
+      '90–365 day ranges). Subsequent retries at 8s and 15s cover slow Kite ' +
+      'API responses for large date ranges.',
     ).toBe(false);
 
     // Confirm both calls happened and final state is the chart.
@@ -865,9 +912,10 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
   // the server's empty-cache TTL expires (2000 ms). Prior retry delay
   // was 800 ms — retry hit the cached empty+partial again, and since
   // _emptyRetryFired was already set, canRetry=false → "No data
-  // available" rendered. Fix: retry delay = 2300 ms > 2000 ms TTL.
+  // available" rendered. Fix: _RETRY_DELAYS_MS = [4000, 8000, 15000] —
+  // first retry at 4000 ms > 2000 ms TTL (and gives demand fill time).
 
-  test('BEL race: retry fires AFTER server empty-cache TTL (2300 ms > 2000 ms TTL)', async ({ page }) => {
+  test('BEL race: retry fires AFTER server empty-cache TTL (4000 ms > 2000 ms TTL)', async ({ page }) => {
     test.setTimeout(60_000);
     await injectSession(page);
     await page.setViewportSize({ width: 1400, height: 900 });
@@ -902,8 +950,9 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
 
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
-    // Wait beyond retry (2300 ms) + response time (~200 ms) + margin.
-    await page.waitForTimeout(4_000);
+    // Wait beyond retry (4000 ms) + response time (~200 ms) + margin.
+    // _RETRY_DELAYS_MS[0] = 4000; give 6s total for the retry to land.
+    await page.waitForTimeout(6_000);
 
     expect(
       callTimestamps.length,
@@ -922,7 +971,8 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
         'A shorter gap means the retry arrives while the cached empty response ' +
         'is still live; the server returns the same empty+partial, and since ' +
         '_emptyRetryFired is already set, "No data available" renders. ' +
-        'Fix: _emptyRetryTimer set to 2300 ms in ChartWorkspace.svelte.',
+        'Fix: _RETRY_DELAYS_MS[0] = 4000 ms in ChartWorkspace.svelte ' +
+        '(safely past the 2s TTL and covers demand fill time).',
       ).toBeGreaterThan(2000);
     }
 
@@ -930,7 +980,7 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     const errVisible = await page.locator('text=No data available').isVisible();
     expect(
       errVisible,
-      'After the 2300 ms retry, chart must render — not "No data available".',
+      'After the 4000 ms first retry, chart must render — not "No data available".',
     ).toBe(false);
   });
 });
@@ -1002,10 +1052,10 @@ test.describe('3-second gate: never-show-empty window — desktop + mobile', () 
           }),
         });
       }
-      // Subsequent calls (the 2300 ms retry) return bars — but here we
+      // Subsequent calls (the 4000 ms first retry) return bars — but here we
       // also simulate a call that arrives after `delayMs` by using a
       // `page.waitForTimeout` equivalent (delay on the route side).
-      await new Promise((res) => setTimeout(res, Math.max(0, delayMs - 2300)));
+      await new Promise((res) => setTimeout(res, Math.max(0, delayMs - 4000)));
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -1079,9 +1129,9 @@ test.describe('3-second gate: never-show-empty window — desktop + mobile', () 
       test.setTimeout(90_000);
       await injectSession(page);
       await page.setViewportSize(viewport);
-      // First call returns empty+partial; the 2300 ms retry returns bars.
-      // Bars land well within the 3 s gate window.
-      await routeEmptyThenBars(page, 2300);
+      // First call returns empty+partial; the 4000 ms first retry returns bars.
+      // _RETRY_DELAYS_MS[0] = 4000 — bars land just past the 3s gate window.
+      await routeEmptyThenBars(page, 4000);
 
       await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
       await waitForRangeGroup(page);

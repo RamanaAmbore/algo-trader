@@ -327,12 +327,12 @@
   // _histRetrying flips true when the first fetch returned partial-empty
   // (backend signal `partial=true`) AND we have a delayed retry queued.
   // While true, the empty-state branch is suppressed — the chart shows
-  // the loading affordance until the retry completes (or the latch
-  // _emptyRetryFired guards against an infinite loop and finally lets
+  // the loading affordance until the retry completes (or the count cap
+  // _emptyRetryCount guards against an infinite loop and finally lets
   // "No data available" render). Operator-caught BEL race fix: the prior
   // path cleared _histLoading=false BEFORE the retry fired, so the
   // catchall {:else if !_bars.length} branch rendered "No data available"
-  // for the entire 2.5s retry window.
+  // for the entire retry window.
   let _histRetrying = $state(false);
   // ── 3-second empty-state suppression gate ────────────────────────
   // Operator-approved race fix (option B): never render "No data
@@ -369,7 +369,9 @@
   $effect(() => {
     const d = chartStore.days;
     if (!_rangeHydrated) return;
-    if (d !== _chartDays) _chartDays = d;
+    untrack(() => {
+      if (d !== _chartDays) _chartDays = d;
+    });
   });
   // Bridge: local → store + LS (operator clicks a range pill).
   $effect(() => {
@@ -421,10 +423,12 @@
   $effect(() => {
     const storeOverlays = chartStore.overlays;
     if (!_overlaysHydrated) return;
-    // Only update local if the reference differs (avoids loop).
-    if (JSON.stringify(_overlays) !== JSON.stringify(storeOverlays)) {
-      _overlays = storeOverlays.slice();
-    }
+    untrack(() => {
+      // Only update local if the reference differs (avoids loop).
+      if (JSON.stringify(_overlays) !== JSON.stringify(storeOverlays)) {
+        _overlays = storeOverlays.slice();
+      }
+    });
   });
   // Bridge: write back to store when operator toggles overlays via the
   // local MultiSelect.  LS persistence happens inside setOverlays().
@@ -599,19 +603,24 @@
   // errors are silently dropped when the token is no longer current.
   let _loadToken = 0;
 
-  // Empty-response retry latch — operator-caught BEL race: when the
-  // BACKEND ohlcv hierarchy returns zero bars because the instruments
-  // map hasn't warmed yet (process just booted, or post-deploy cold
-  // call lands before the 08:30 IST warm), the response is cached for
-  // _HIST_CACHE_TTL_EMPTY (2 s post-fix, was 10 s) on the server. Every
-  // reload within that window saw empty bars and rendered "No data
-  // available." Frontend now silently re-attempts ONCE 2.5 s after a
-  // first-cold-empty so the server's empty-cache window has elapsed.
-  // Only fires when _bars is still empty AND we haven't already
-  // re-tried for this (symbol, exch, days) key — prevents an infinite
-  // retry loop on symbols that genuinely have no historical data.
-  /** @type {Set<string>} */
-  const _emptyRetryFired = new Set();
+  // Empty-response retry — operator-caught BEL race: when the BACKEND
+  // ohlcv hierarchy returns zero bars because the instruments map hasn't
+  // warmed yet (process just booted, or post-deploy cold call lands before
+  // the 08:30 IST warm), the response is cached for _HIST_CACHE_TTL_EMPTY
+  // (2 s) on the server. Every reload within that window saw empty bars
+  // and rendered "No data available."
+  //
+  // Frontend now silently re-attempts up to 3× with increasing back-off
+  // delays so the server's empty-cache window and any broker warm-up have
+  // elapsed before giving up. The delays are intentionally larger than the
+  // 2 s backend TTL — the first delay (4 s) provides 2 s of headroom;
+  // subsequent delays allow for broker cold-start (ohlcv_demand_fill
+  // takes 2–10 s for a 90–365 day range). Only fires when _bars is still
+  // empty AND the retry count is below 3 for this (symbol, exch, days)
+  // key — prevents an infinite loop on symbols with genuinely no data.
+  const _RETRY_DELAYS_MS = [4000, 8000, 15000];
+  /** @type {Map<string, number>} */
+  const _emptyRetryCount = new Map();
   let _emptyRetryTimer = null;
   const _partialRetryFired = new Set();
   /** @type {ReturnType<typeof setTimeout> | null} */
@@ -662,32 +671,35 @@
     }
     // Empty response. Two cases:
     //   1. partial=true → backend says "transient, retry soon".
-    //      Retry after the server empty-cache TTL has expired.
+    //      Retry with back-off up to _RETRY_DELAYS_MS.length times.
     //   2. partial=false → backend confirmed no data — show error.
     //
-    // The latch _emptyRetryFired ensures at most ONE retry per key.
+    // _emptyRetryCount tracks how many retries have fired per key so
+    // symbols that genuinely have no data don't loop forever.
     const isPartial = !!hist?.partial;
-    const canRetry  = isPartial && !_emptyRetryFired.has(retryKey);
+    const count     = _emptyRetryCount.get(retryKey) ?? 0;
+    const canRetry  = isPartial && count < _RETRY_DELAYS_MS.length;
     if (canRetry) {
-      _emptyRetryFired.add(retryKey);
+      _emptyRetryCount.set(retryKey, count + 1);
       _histError = '';
       // _histRetrying keeps the loading branch active so the
       // {:else if !_bars.length} "No data available" branch is NOT
-      // rendered during the 2300ms retry window (operator-reported
-      // BEL bug). 2300ms > backend _HIST_CACHE_TTL_EMPTY (2000ms)
-      // so the server's empty-cache entry is guaranteed expired.
+      // rendered during the retry window. Each delay exceeds the
+      // backend _HIST_CACHE_TTL_EMPTY (2000ms) and grows to allow
+      // for the ohlcv_demand_fill async write to complete.
       _histRetrying = true;
+      const delayMs = _RETRY_DELAYS_MS[count]; // count before increment
       if (_emptyRetryTimer) clearTimeout(_emptyRetryTimer);
       _emptyRetryTimer = setTimeout(() => {
         _emptyRetryTimer = null;
         if (!_mounted) return;
         if (!_bars.length) _loadHistorical(true);
         else _histRetrying = false;
-      }, 2300);
+      }, delayMs);
       _chartLoaded = true;
       return true; // caller should return early
     }
-    // Confirmed-no-data or retry exhausted.
+    // Confirmed-no-data or all retries exhausted.
     _histRetrying = false;
     _histError = 'No data available.';
     return false;
@@ -731,9 +743,9 @@
       const fetchSym  = _resolved.sym;
       const fetchExch = _resolved.exch || _resolvedExchange || exchange || undefined;
 
-      // Dedup key — used only by the empty-response retry latch
-      // (_emptyRetryFired) to prevent an infinite retry loop on
-      // symbols that genuinely have no historical data.
+      // Dedup key — used by the empty-response retry counter
+      // (_emptyRetryCount) to cap retries for symbols that genuinely
+      // have no historical data.
       const retryKey = _buildRetryKey(fetchSym, fetchExch, _chartDays);
 
       const promises = [
@@ -815,7 +827,7 @@
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
     if (_partialRetryTimer) { clearTimeout(_partialRetryTimer); _partialRetryTimer = null; }
     _histPartial = false;
-    _emptyRetryFired.clear();
+    _emptyRetryCount.clear();
     _partialRetryFired.clear();
     _emptyGateSuppressed = true;
     if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
@@ -1632,9 +1644,9 @@
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
     if (_partialRetryTimer) { clearTimeout(_partialRetryTimer); _partialRetryTimer = null; }
     _histPartial = false;
-    // Clear per-symbol retry latch so the new symbol gets a fresh retry
+    // Clear per-symbol retry count so the new symbol gets a fresh retry
     // budget (no stale keys from previous symbols bleed through).
-    _emptyRetryFired.clear();
+    _emptyRetryCount.clear();
     _partialRetryFired.clear();
     // 3-second gate: re-arm the suppression gate for the new symbol.
     // Cancel the previous timer, flip the gate active, then schedule

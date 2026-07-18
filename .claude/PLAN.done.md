@@ -1,110 +1,101 @@
-# Plan: Fix card header vertical misalignment + 3M/6M/1Y chart load
+# Plan: Fix chart range selector, 3M/6M/1Y loading, and indicator multi-select
 
 ## Context
+Three bugs all in `frontend/src/lib/ChartWorkspace.svelte`:
 
-Two independent bugs bundled into one deploy:
+**Bug 1 — Range selector race condition:**
+Two bidirectional `$effect` hooks sync `_chartDays` ↔ `chartStore.days`. Effect 1 (store→local,
+declared first) reads `_chartDays` in `if (d !== _chartDays)` without `untrack()`, making it a
+Svelte 5 reactive dependency. Clicking "3M" → `_setRange(90)` → `_chartDays = 90`. Both effects
+schedule. Effect 1 fires first: reads `chartStore.days` (still 30), sees `30 !== 90`, resets
+`_chartDays = 30`. Effect 2 then reads 30 and persists 30. Range reverts to 1M every time.
+Fix: wrap `_chartDays` comparison in `untrack()` in Effect 1.
 
-**Bug A — Card header vertical misalignment:** The Legs card (and 3 other surfaces) show visible vertical misalignment between the left content (chip + tabs), middle content (chips/filter rows), and the right card-controls button group.
+**Bug 2 — Empty retry timing too short:**
+`_ohlcv_demand_fill` fires async after HTTP response — Kite + DB write for 90–365 days takes
+2–10s. `_handleEmptyBars` retries once at 2300ms via `_emptyRetryFired` Set latch. Retry fires
+too early, sees empty bars, latch prevents further retries → "No data available" permanently.
+Fix: replace Set latch with count Map, allow 3 retries at 4s/8s/15s.
 
-**Bug B — 3M/6M/1Y charts never load data:** Charts show spinner indefinitely for longer ranges even after the `_SELF_HEAL_COVERAGE_THRESHOLD` fix (0.70→0.60). Root cause: the backend `historical()` route is missing the `fresh: bool` query parameter, so the frontend's `?fresh=1` cache-bypass retry is silently ignored — the backend returns the same cached `partial: true` result on every retry, creating an infinite loop where the chart never resolves.
-
----
-
-## Bug A — Card header misalignment
-
-**Root cause:** Header containers with asymmetric `padding-bottom` inflate their own box height. `align-items: center` on the outer row then centers the padded box rather than the visible content, shifting chip/tabs upward relative to the right-side card controls.
-
-### Fix A1 — Legs card (`derivatives/+page.svelte` ~line 5660)
-`.legs-header { padding: 0 0.25rem 0.5rem }` — 0.5rem bottom padding shifts the chip+tabs upward.  
-**Fix:** `padding: 0 0.25rem 0`
-
-### Fix A2 — Payoff / Snapshot / all `.opt-section-h` (`derivatives/+page.svelte` ~line 5079)
-`.opt-section-h { padding: 0 0.25rem 0.25rem }` — same issue. `margin-bottom: 0.4rem` already handles spacing below.  
-**Fix:** `padding: 0 0.25rem 0`
-
-### Fix A3 — PnlPanel filter bar (`frontend/src/lib/PnlPanel.svelte` ~line 234)
-`.filter-bar { align-items: flex-end }` — labels and pills sit at the bottom instead of center.  
-**Fix:** `align-items: center`
-
-### Fix A4 — Templates middle slot (`automation/templates/+page.svelte` ~line 350)
-`<div class="flex items-center gap-1 flex-wrap">` — chips wrap to a second row on overflow, making `ch-middle` taller than `ch-left` (title) and `ch-right` (buttons).  
-**Fix:** `flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none` — same horizontal-scroll pattern as all other chip rows.
-
----
-
-## Bug B — 3M/6M/1Y chart load loop
-
-**Root cause:** `backend/api/routes/options.py` — the `historical()` route signature:
-
-```python
-async def historical(self, symbol: str = "", days: int = 30,
-                     interval: str = "day", exchange: str = "") -> HistoricalResponse:
-```
-
-is missing `fresh: bool = False`. Litestar silently ignores `?fresh=1` from the frontend. The cache lookup always fires, returning the same cached `partial: true` response. The frontend retries every 5s with `fresh=true` expecting a cache bypass, but the backend never bypasses — infinite loop.
-
-**Call chain:**
-1. User clicks 3M → `_loadHistorical(true, true)` → `fetchOptionsHistorical(sym, { days: 90, fresh: true })`
-2. `api.js` appends `?fresh=1` to the request URL
-3. Backend receives request, `fresh` param is dropped → cache hit → same `partial: true` returned
-4. Frontend schedules another retry in 5s → loop
-
-### Fix B — `backend/api/routes/options.py` (~line 2613)
-
-Add `fresh: bool = False` to the route signature and gate the cache lookup on it:
-
-```python
-async def historical(self, symbol: str = "", days: int = 30,
-                     interval: str = "day", exchange: str = "",
-                     fresh: bool = False) -> HistoricalResponse:
-    ...
-    cache_key = (sym, (exchange or "NFO").upper(), days, interval)
-    if not fresh:
-        _cached = _hist_cache_get(cache_key)
-        if _cached is not None:
-            return _cached
-    # rest of the function unchanged
-```
-
----
+**Bug 3 — Indicator multi-select race condition:**
+Same bidirectional `$effect` race as Bug 1, but for overlays. Effect 1 (store→local overlay sync,
+~lines 421-428) reads `_overlays` in `JSON.stringify(_overlays)` without `untrack()`. When user
+picks an indicator → `bind:value` writes `_overlays` → Effect 1 fires first, sees `chartStore.overlays`
+unchanged, resets `_overlays` to old store value. Selection is lost before Effect 2 can persist it.
+Fix: same `untrack()` pattern.
 
 ## Agents
+- backend: skip
+- frontend: Apply all three fixes in `frontend/src/lib/ChartWorkspace.svelte`:
 
-- frontend: Fix A1–A4 (CSS + one template attribute change, no logic)
-- backend: Fix B — add `fresh: bool = False` param + cache-skip gate in `historical()` in `backend/api/routes/options.py`
+  **Fix 1 — `untrack()` in days Effect 1 (~lines 369-373):**
+  ```javascript
+  $effect(() => {
+      const d = chartStore.days;
+      if (!_rangeHydrated) return;
+      untrack(() => {
+          if (d !== _chartDays) _chartDays = d;
+      });
+  });
+  ```
+
+  **Fix 2 — Multi-retry in `_handleEmptyBars`:**
+  - Replace `const _emptyRetryFired = new Set()` (~line 614) with `const _emptyRetryCount = new Map()`
+  - Rewrite gate: `(_emptyRetryCount.get(retryKey) ?? 0) >= 3` (max 3 retries)
+  - On each retry: increment counter, use delay `[4000, 8000, 15000][count - 1]` (count after increment)
+  - Range-change clear (~line 818): replace `_emptyRetryFired.clear()` with `_emptyRetryCount.clear()`
+  - Update docblock comment (~lines 602-612) to reflect 3-retry/4s–15s timing
+
+  **Fix 3 — `untrack()` in overlays Effect 1 (~lines 421-428):**
+  ```javascript
+  $effect(() => {
+      const storeOverlays = chartStore.overlays;
+      if (!_overlaysHydrated) return;
+      untrack(() => {
+          if (JSON.stringify(_overlays) !== JSON.stringify(storeOverlays)) {
+              _overlays = storeOverlays.slice();
+          }
+      });
+  });
+  ```
+
+  Commit as **three separate commits** (one defect per commit, per memory rule).
+  `untrack` is already imported at line 44 — no new imports needed.
+
 - broker: skip
 - doc: skip
-- backend-test: Add test asserting that `GET /historical?fresh=1` bypasses the cache and does not return a cached partial result
-- playwright: Add/update `frontend/e2e/card-header-scroll.spec.js` — assert Legs card chip + CardControls share the same vertical midpoint (±2px). Update `frontend/e2e/chart-ranges.spec.js` — assert 3M/6M/1Y range buttons eventually clear the spinner and render chart bars (non-empty)
-
----
+- backend-test: In `backend/tests/test_ohlcv_partial_range.py`:
+  - Update `test_frontend_retry_delay_is_at_least_2300ms` — first retry is now 4000ms;
+    update assertion + comment to validate ≥ 4000ms
+  - Update `test_frontend_retry_delay_exceeds_backend_empty_cache_ttl` to validate
+    first delay (4000ms) > empty cache TTL (2000ms)
+  - Commit with Fix 2.
+- playwright: Add `frontend/tests/chart-range-and-indicators.spec.ts` covering:
+  1. **Range selector persistence** — navigate to /charts, click "3M" button, assert it stays
+     active (not reverted to 1M), assert URL/store reflects 90 days, wait for chart to render
+  2. **3M chart loads** — after clicking 3M, wait up to 20s for chart canvas/bars to appear
+     (demand fill may need multiple retries); assert no "No data available" error message shown
+  3. **Indicator multi-select persistence** — open indicators dropdown, select "SMA 20",
+     then select "RSI", assert both remain checked in the dropdown; close and reopen dropdown,
+     assert both are still checked (persisted to localStorage); assert only one selection is
+     NOT lost after picking a second indicator
 
 ## Tests
-
-- pytest: yes (backend-test covers the fresh param)
+- pytest: yes
 - svelte-check: yes
 - playwright: yes
 
----
-
 ## Commit message
+Three commits:
 
-fix(cards+chart): card header alignment + 3M/6M/1Y chart fresh-param
-
-Bug A: remove padding-bottom from .legs-header + .opt-section-h (asymmetric
-padding shifted chip/tabs up vs card controls). PnlPanel filter-bar flex-end → center.
-Templates middle slot: flex-wrap → nowrap + overflow-x scroll.
-
-Bug B: add fresh:bool param to historical() route — frontend ?fresh=1 retry was
-silently ignored, causing infinite partial-result loop for 3M/6M/1Y chart ranges.
-
----
+1. `fix(chart): untrack _chartDays in store→local effect — range selector race`
+2. `fix(chart): multi-retry backoff (4s/8s/15s) for 3M/6M/1Y demand-fill`
+3. `fix(chart): untrack _overlays in store→local effect — indicator multi-select race`
 
 ## Done when
-
-- Legs card: chip + AlgoTabs + CardControls on the same horizontal axis
-- Payoff/Snapshot headers: title + chips + controls on same axis
-- PnlPanel filter bar: labels and pills centered on same axis
-- Templates header: chips scroll horizontally, no second-row wrapping
-- 3M/6M/1Y chart ranges: data loads and chart renders (no infinite spinner)
-- pytest green | svelte-check 0 errors
+- Clicking 3M/6M/1Y range button stays selected (does not revert to 1M)
+- 3M/6M/1Y charts load after demand fill completes (retried up to 3× at 4/8/15s)
+- Selecting multiple indicators in the dropdown persists (no selection reset)
+- All three Playwright specs pass
+- `test_ohlcv_partial_range.py` passes with 4000ms floor assertion
+- `svelte-check` reports 0 errors

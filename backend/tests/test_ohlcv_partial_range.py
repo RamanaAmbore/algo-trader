@@ -926,14 +926,15 @@ def test_stale_code_health_exposes_cold_empty_counts():
 # change to either constant cannot silently re-introduce the race.
 
 def test_frontend_retry_delay_exceeds_backend_empty_cache_ttl():
-    """Source-level contract: the frontend's _emptyRetryTimer delay
-    (in ChartWorkspace.svelte) must be strictly greater than the backend's
-    _HIST_CACHE_TTL_EMPTY (in options.py).
+    """Source-level contract: the first element of the frontend's
+    _RETRY_DELAYS_MS constant (in ChartWorkspace.svelte) must be strictly
+    greater than the backend's _HIST_CACHE_TTL_EMPTY (in options.py).
 
-    If the retry fires before the empty-cache entry expires, the server
-    returns the same cached empty+partial response. Since _emptyRetryFired
-    is already set, canRetry=false and the frontend shows "No data
-    available" immediately after the retry — identical to no retry at all.
+    If the first retry fires before the empty-cache entry expires, the server
+    returns the same cached empty+partial response. The retry count is already
+    incremented so the next window moves to a longer delay, but the first hit
+    still races the cache. Every delay in the array must exceed the TTL to
+    guarantee the retry arrives after the cache has expired.
 
     This is the root cause of the BEL race that survived all prior fixes.
     """
@@ -950,44 +951,37 @@ def test_frontend_retry_delay_exceeds_backend_empty_cache_ttl():
     )
     backend_ttl_ms = int(m_ttl.group(1)) * 1000   # convert seconds → ms
 
-    # ── Frontend: read the setTimeout delay from ChartWorkspace.svelte ────
+    # ── Frontend: read _RETRY_DELAYS_MS from ChartWorkspace.svelte ────────
     cw_path = Path(__file__).parent.parent.parent / "frontend" / "src" / "lib" / "ChartWorkspace.svelte"
     cw_src = cw_path.read_text()
-    # The timer block: `}, <N>);` where N is the ms value for _emptyRetryTimer.
-    # Look for the pattern right after _emptyRetryTimer assignment.
-    idx = cw_src.find("_emptyRetryTimer = setTimeout(")
-    assert idx >= 0, (
-        "Could not find _emptyRetryTimer = setTimeout( in ChartWorkspace.svelte. "
-        "Has the retry timer been renamed or removed?"
+    # Match: `const _RETRY_DELAYS_MS = [4000, 8000, 15000];`
+    m_delays = re.search(r"_RETRY_DELAYS_MS\s*=\s*\[([^\]]+)\]", cw_src)
+    assert m_delays is not None, (
+        "Could not find _RETRY_DELAYS_MS = [ in ChartWorkspace.svelte. "
+        "Has the retry-delay constant been renamed or removed?"
     )
-    # Grab the block from the setTimeout to its closing };
-    block = cw_src[idx : idx + 600]
-    m_delay = re.search(r"}\s*,\s*(\d+)\s*\)", block)
-    assert m_delay is not None, (
-        "Could not parse the setTimeout delay value from ChartWorkspace.svelte. "
-        "Expected pattern: `}, <N>)` at the end of the _emptyRetryTimer block."
-    )
-    frontend_retry_ms = int(m_delay.group(1))
+    delay_values = [int(v.strip()) for v in m_delays.group(1).split(",")]
+    first_retry_ms = delay_values[0]
 
     # ── The timing contract ────────────────────────────────────────────────
-    assert frontend_retry_ms > backend_ttl_ms, (
-        f"BEL race final fix: frontend retry delay ({frontend_retry_ms} ms) "
+    assert first_retry_ms > backend_ttl_ms, (
+        f"BEL race final fix: first frontend retry delay ({first_retry_ms} ms) "
         f"must be strictly greater than backend empty-cache TTL ({backend_ttl_ms} ms). "
         f"When the retry fires before the TTL expires, the server returns the "
-        f"same cached empty+partial, _emptyRetryFired is already set, canRetry=false, "
-        f"and 'No data available' renders immediately — the race re-occurs. "
-        f"Fix: set _emptyRetryTimer to {backend_ttl_ms + 300} ms or higher."
+        f"same cached empty+partial response and 'No data available' renders "
+        f"immediately — the race re-occurs. "
+        f"Fix: set _RETRY_DELAYS_MS[0] to {backend_ttl_ms + 300} ms or higher."
     )
 
 
-def test_frontend_retry_delay_is_at_least_2300ms():
-    """Specific bound: the retry delay must be ≥ 2300 ms.
+def test_frontend_retry_delay_is_at_least_4000ms():
+    """Specific bound: the first retry delay in _RETRY_DELAYS_MS must be ≥ 4000 ms.
 
-    The backend TTL is 2000 ms. 2300 ms provides 300 ms of headroom for
-    network RTT variance (server processing time on the retry call). Values
-    below 2000 ms are guaranteed to hit the cache. Values 2001–2299 ms are
-    theoretically past the TTL but dangerously close — a 100 ms NTP drift
-    or slow async path could tip the balance.
+    The backend TTL is 2000 ms. 4000 ms provides 2000 ms of headroom — enough
+    for both the empty-cache TTL to expire AND for the ohlcv_demand_fill async
+    write (triggered by the first cold request) to complete. The demand fill
+    for a 90–365 day range takes 2–10 s; a 4 s floor ensures the second
+    request usually arrives after both the TTL and the fill have finished.
     """
     import re
     from pathlib import Path
@@ -995,17 +989,19 @@ def test_frontend_retry_delay_is_at_least_2300ms():
     cw_path = Path(__file__).parent.parent.parent / "frontend" / "src" / "lib" / "ChartWorkspace.svelte"
     cw_src = cw_path.read_text()
 
-    idx = cw_src.find("_emptyRetryTimer = setTimeout(")
-    assert idx >= 0, "Could not find _emptyRetryTimer = setTimeout( in ChartWorkspace.svelte."
-    block = cw_src[idx : idx + 600]
-    m = re.search(r"}\s*,\s*(\d+)\s*\)", block)
-    assert m is not None, "Could not parse setTimeout delay from ChartWorkspace.svelte."
-    delay_ms = int(m.group(1))
+    m_delays = re.search(r"_RETRY_DELAYS_MS\s*=\s*\[([^\]]+)\]", cw_src)
+    assert m_delays is not None, (
+        "Could not find _RETRY_DELAYS_MS = [ in ChartWorkspace.svelte. "
+        "Has the retry-delay constant been renamed?"
+    )
+    delay_values = [int(v.strip()) for v in m_delays.group(1).split(",")]
+    first_delay_ms = delay_values[0]
 
-    assert delay_ms >= 2300, (
-        f"_emptyRetryTimer delay ({delay_ms} ms) is below the 2300 ms minimum. "
-        "The backend empty-cache TTL is 2000 ms; 300 ms headroom is required to "
-        "ensure the retry always arrives after the TTL has expired. "
-        "Values below 2000 ms are guaranteed to re-hit the cache and re-trigger "
-        "the BEL race. Values 2001–2299 ms risk a race on slow servers."
+    assert first_delay_ms >= 4000, (
+        f"_RETRY_DELAYS_MS[0] ({first_delay_ms} ms) is below the 4000 ms minimum. "
+        "The backend empty-cache TTL is 2000 ms and the ohlcv_demand_fill async "
+        "write takes 2–10 s for a 90–365 day range. A 4000 ms floor provides "
+        "headroom for both the TTL expiry and the demand fill to complete before "
+        "the first retry arrives. Values below 2000 ms are guaranteed to re-hit "
+        "the cache; values 2001–3999 ms may arrive before the demand fill finishes."
     )
