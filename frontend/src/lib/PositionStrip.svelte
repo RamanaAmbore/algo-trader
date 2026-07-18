@@ -859,10 +859,10 @@
        "room I have / full capacity" framing rather than util %. -->
   <span class="ps-agg" title="Margin: available / total (used + avail)">
     <span class="ps-agg-k">M</span>
-    <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-cash' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
+    <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
       >{fmtMoney(marginAvail)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
+    ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
       >{fmtMoney(marginTotal)}</span>
   </span>
   <!-- Cash pill: available (CA, deployable now) / total (incl. premium
@@ -931,7 +931,12 @@
     text-decoration: none;
     user-select: none;
     transition: background 0.08s, border-bottom-color 0.18s;
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
+  .ps-strip::-webkit-scrollbar { display: none; }
   /* Heartbeat — fires on every successful 30s poll completion via a
      class toggle that resolves after 300ms (unified tick-bus duration).
      Subtle amber-bordered glow that reads as "data refreshed" without
@@ -993,6 +998,7 @@
     display: inline-flex;
     align-items: baseline;
     gap: 0.2rem;
+    flex-shrink: 0;
   }
   .ps-agg-k {
     color: var(--algo-muted);
@@ -1022,6 +1028,8 @@
   .ps-flat { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash { color: #7dd3fc; }
+  /* Margin capacity — cyan-400, distinct from cash sky-blue. */
+  .ps-margin { color: var(--algo-cyan); }
   /* Expiry profit — amber action palette; signals a time-bound outcome. */
   .ps-exp  { color: var(--c-action); }
   @media (max-width: 640px) {

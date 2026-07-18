@@ -890,10 +890,14 @@
   .filter-bar {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.4rem;
     margin-bottom: 0.6rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
+  .filter-bar::-webkit-scrollbar { display: none; }
   .preset-strip {
     display: inline-flex;
     gap: 0;
@@ -1151,10 +1155,13 @@
 
   .legend-row {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.35rem;
     margin-top: 0.35rem;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
+  .legend-row::-webkit-scrollbar { display: none; }
   .legend-chip {
     display: inline-flex;
     align-items: center;

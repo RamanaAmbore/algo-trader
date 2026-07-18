@@ -203,6 +203,20 @@ Worst state drives color. Click opens per-account modal.
 
 ---
 
+## UI Card Button Group
+
+Every card that exposes operator actions uses a **button group** for these five actions (show only the subset that applies to that card — omit the rest):
+
+- **Search** — filter/search within card content
+- **Expand / Contract** — toggle card height
+- **Full screen** — maximise card to viewport
+- **Default size** — reset card to default dimensions
+- **Download** — export card data (CSV / JSON)
+
+Rule: these buttons must always live inside the shared card button-group slot. Never place them outside the group or inline them ad-hoc. When building a new card, decide at design time which of the five apply.
+
+---
+
 ## Things to Avoid
 
 - Don't mock broker API calls — `@for_all_accounts` and singleton behave differently
