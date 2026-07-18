@@ -839,7 +839,7 @@
 
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
   <span class="ps-agg" title="P — Day P&L / Lifetime P&L / F&amp;O expiry P&L (all accounts, all exchanges)">
-    <span class="ps-agg-k">P</span>
+    <span class="ps-agg-k ps-k-p">P</span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
       style="cursor:pointer"
       role="button"
@@ -858,11 +858,11 @@
   <!-- Margin pill: available / total (used + avail). Operator wants the
        "room I have / full capacity" framing rather than util %. -->
   <span class="ps-agg" title="Margin: available / total (used + avail)">
-    <span class="ps-agg-k">M</span>
+    <span class="ps-agg-k ps-k-m">M</span>
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
       >{fmtMoney(marginAvail)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
+    ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin-dim' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
       >{fmtMoney(marginTotal)}</span>
   </span>
   <!-- Cash pill: available (CA, deployable now) / total (incl. premium
@@ -875,21 +875,21 @@
        is documented in the audit memo; if the sum diverges from broker
        apps, the Dhan/Groww adapter math is the first place to look. -->
   <span class="ps-agg" title="Cash: available (CA, deployable now) / total (C, incl. premium tied up in long options)">
-    <span class="ps-agg-k">C</span>
+    <span class="ps-agg-k ps-k-c">C</span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
       >{fmtMoney(liveCashTotal)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
+    ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash-dim' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
       >{fmtMoney(cashTotal)}</span>
   </span>
   <span class="ps-agg" title="Holdings: today's MTM move / current value / lifetime P&L">
-    <span class="ps-agg-k">H</span>
+    <span class="ps-agg-k ps-k-h">H</span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
       >{fmtMoney(dispHoldingsToday)}</span
     ><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
+    ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos-dim' : _liveHoldingsTotal < 0 ? 'ps-neg-dim' : 'ps-flat') + ' ' + flash.classOf('Hd')}
       >{fmtMoney(_liveHoldingsTotal)}</span>
   </span>
   <DayPnlBreakup
@@ -918,7 +918,7 @@
     gap: 0.6rem;
     height: 1.5rem;
     box-sizing: border-box;
-    padding: 0 0.5rem;
+    padding: 0 0.75rem 0 0.5rem;
     /* Slice AT audit fix — was `#0a1020 → #131c33`, an off-token
        second stop. Anchor both stops on the chrome elevation tokens
        so the band reads as a sibling of navbar + footer. */
@@ -1001,12 +1001,16 @@
     flex-shrink: 0;
   }
   .ps-agg-k {
-    color: var(--algo-muted);
     font-size: var(--fs-xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.02em;
   }
+  /* Per-pill label accent — each pill identifier gets its own hue */
+  .ps-k-p { color: var(--c-action); }           /* P — amber  */
+  .ps-k-m { color: var(--algo-violet); }        /* M — violet */
+  .ps-k-c { color: var(--algo-sky); }           /* C — sky    */
+  .ps-k-h { color: var(--algo-cyan); }          /* H — cyan   */
   .ps-agg-v {
     font-size: var(--fs-lg);
     font-weight: 700;
@@ -1023,13 +1027,17 @@
     font-weight: 400;
   }
 
-  .ps-pos  { color: var(--c-long); }
-  .ps-neg  { color: var(--c-short); }
-  .ps-flat { color: var(--algo-slate); }
+  .ps-pos     { color: var(--c-long); }
+  .ps-neg     { color: var(--c-short); }
+  .ps-pos-dim { color: var(--algo-green-text); }   /* slot 2 of paired P&L — pastel green */
+  .ps-neg-dim { color: var(--algo-red-text); }     /* slot 2 of paired P&L — pastel red   */
+  .ps-flat    { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
-  .ps-cash { color: #7dd3fc; }
+  .ps-cash     { color: #7dd3fc; }                        /* slot 1: available (bright sky) */
+  .ps-cash-dim { color: var(--algo-sky-text); }           /* slot 2: total incl. premiums (pastel sky) */
   /* Margin capacity — violet, clearly distinct from cash sky-blue. */
-  .ps-margin { color: var(--algo-violet); }
+  .ps-margin     { color: var(--algo-violet); }           /* slot 1: available (bright violet) */
+  .ps-margin-dim { color: var(--algo-violet-text); }      /* slot 2: total capacity (pastel violet) */
   /* Expiry profit — amber action palette; signals a time-bound outcome. */
   .ps-exp  { color: var(--c-action); }
   @media (max-width: 640px) {

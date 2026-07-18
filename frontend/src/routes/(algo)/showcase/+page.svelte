@@ -441,11 +441,13 @@
     margin: 0 0 1.1rem;
   }
 
-  /* Attribution block — muted "built by" section at bottom of left card */
+  /* Attribution block — amber panel at bottom of left card, matches tour CTA palette */
   .show-attribution {
     margin-top: auto;
-    padding-top: 0.85rem;
-    border-top: 1px solid rgba(126, 151, 184, 0.12);
+    padding: 0.75rem 0.85rem;
+    border-radius: 0.375rem;
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.40);
     font-size: 0.75rem;
     color: rgba(148, 163, 184, 0.7);
     line-height: 1.5;
