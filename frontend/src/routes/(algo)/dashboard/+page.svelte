@@ -13,7 +13,6 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
-  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import { bookChanged } from '$lib/data/bookChanged';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
@@ -2190,25 +2189,18 @@
 <section class="bucket-card dash-activity"
   class:fs-card-on={_fsActivity}
   class:is-collapsed={_colActivity}>
-  <div class="row3-header">
-    <span class="mp-section-label mp-section-label--bar">ACTIVITY</span>
-    <ActivityHeaderFilters
-      bind:accountFilter={_actAccountFilter}
-      bind:levelFilter={_actLevelFilter}
-      availableAccounts={_actAvailableAccounts} />
-    <CardControls
-      bind:isCollapsed={_colActivity}
-      bind:isFullscreen={_fsActivity}
-      label="Activity"
-      onRefresh={_refreshAll}
-      bind:refreshLoading={_refreshing}
-      showSearch={false}
-    />
-  </div>
   <div class="card-body" hidden={_colActivity}>
+    <!-- ActivityLogSurface with label="ACTIVITY" so LogPanel renders
+         its own tab-row header (label chip, filters, card buttons).
+         The row3-header div is removed — LogPanel owns its chrome. -->
     <ActivityLogSurface
       defaultTab="news"
       context="card-wide"
+      label="ACTIVITY"
+      cardId="dash-activity"
+      onRefresh={_refreshAll}
+      bind:isCollapsed={_colActivity}
+      bind:isFullscreen={_fsActivity}
       bind:accountFilter={_actAccountFilter}
       bind:availableAccounts={_actAvailableAccounts}
       bind:levelFilter={_actLevelFilter} />
@@ -2891,17 +2883,6 @@
     min-height: 8rem;
     max-height: 15rem;
   }
-  .row3-header {
-    /* align-items: center (not baseline) to match the canonical
-       card-header convention — keeps the title + filter chips +
-       collapse + fullscreen cluster vertically aligned with the icon
-       midline like every other algo card. */
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-bottom: 0.3rem;
-  }
-
   /* NAV chip fetch-error strip — rendered above <NavTab> when
      /api/nav/latest returns an error. Red palette matching
      PerformancePage .perf-banner-error. Compact (padding-light)

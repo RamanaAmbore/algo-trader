@@ -8,8 +8,6 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
-  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
-  import BellIcon from '$lib/icons/BellIcon.svelte';
   import { fetchOrders } from '$lib/api';
   import { bookChanged } from '$lib/data/bookChanged';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -155,9 +153,6 @@
   let _actLevelFilter = $state('all');
   /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
   let _statusFilter = $state('all');
-  let _actActiveTab = $state('order');
-  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(_actActiveTab));
-  const _showLevelFilter   = $derived(['agent', 'system', 'conn'].includes(_actActiveTab));
 
   // Activity-card tab state. Order Book (card grid) is the default —
   // matches the LogPanel Orders tab format shown in every other
@@ -495,45 +490,23 @@
   class:fs-card-on={_fsActivity}
   class:is-collapsed={_colActivity}
   use:listenModifyOrder>
-  <CardHeader
-    bind:isCollapsed={_colActivity}
-    bind:isFullscreen={_fsActivity}
-    label="Activity"
-    onRefresh={loadOrders}
-    bind:refreshLoading={loading}
-    showSearch={false}
-  >
-    {#snippet left()}
-      <span class="mp-section-label oc-act-title">
-        <BellIcon width="12" height="12" class="oc-act-title-icon" />
-        Activity
-      </span>
-    {/snippet}
-    {#snippet right()}
-      <!-- Account + level filters — shared component with the modal.
-           Operator: "activity should use the same reusable code across
-           all the pages and modals." -->
-      <ActivityHeaderFilters
-        bind:accountFilter={_actAccountFilter}
-        bind:levelFilter={_actLevelFilter}
-        availableAccounts={_actAvailableAccounts}
-        showAccountFilter={_showAccountFilter}
-        showLevelFilter={_showLevelFilter} />
-    {/snippet}
-  </CardHeader>
   <div class="card-body oc-act-body" hidden={_colActivity}>
-    <!-- Canonical config wrapper — bindable state stays here so the
-         header's ActivityAccountSelect sees the same selection +
-         account list. Modal renders this same component. -->
+    <!-- ActivityLogSurface with label="ACTIVITY" so LogPanel renders
+         its own tab-row header (label chip, filters, card buttons).
+         The external CardHeader is removed — LogPanel owns its chrome. -->
     <ActivityLogSurface
       defaultTab="order"
       context="card-wide"
+      label="ACTIVITY"
+      cardId="orders-activity"
+      onRefresh={loadOrders}
+      bind:isCollapsed={_colActivity}
+      bind:isFullscreen={_fsActivity}
       statusFilter={_statusFilter}
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={_actAccountFilter}
       bind:availableAccounts={_actAvailableAccounts}
-      bind:levelFilter={_actLevelFilter}
-      bind:activeTab={_actActiveTab} />
+      bind:levelFilter={_actLevelFilter} />
   </div>
 </section>
 
@@ -672,9 +645,7 @@
     min-height: 0;
     max-height: none;
   }
-  /* Activity card title — bell icon + label match the ActivityLogModal's
-     header so heading reads identically on both surfaces. */
-  .oc-act-title { display: inline-flex; align-items: center; gap: 0.35rem; }
+  /* Activity card title styles moved into LogPanel's .lp-label chrome. */
   :global(.oc-act-title-icon) { color: var(--c-action); flex-shrink: 0; transform: translateY(-0.5px); }
   /* .oc-act-acct CSS lifted into ActivityAccountSelect.svelte (the
      shared component). Operator: "activity should use the same
