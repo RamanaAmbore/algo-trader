@@ -33,6 +33,15 @@
   /** @type {string[]} */
   let _availableAccounts = $state([]);
 
+  // Active tab mirrored from LogPanel via ActivityLogSurface bindable.
+  // Drives per-tab filter visibility in the page header.
+  let _activeTab = $state('');
+
+  // Account filter: Orders, Agents, System, Conn only.
+  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(_activeTab));
+  // Level filter: Agents, System, Conn only.
+  const _showLevelFilter   = $derived(['agent', 'system', 'conn'].includes(_activeTab));
+
   // URL ?tab=... seeding: runs once on mount so deep-links (navbar broker
   // chip, bookmarks) land on the right tab. If no param is present, the
   // store's last-used tab is preserved — do NOT derive this reactively or
@@ -78,7 +87,9 @@
   <ActivityHeaderFilters
     bind:accountFilter={activityStore.accountFilter}
     bind:levelFilter={activityStore.levelFilter}
-    availableAccounts={_availableAccounts} />
+    availableAccounts={_availableAccounts}
+    showAccountFilter={_showAccountFilter}
+    showLevelFilter={_showLevelFilter} />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={_refresh} loading={_refreshing} label="activity" />
@@ -99,6 +110,7 @@
       bind:accountFilter={activityStore.accountFilter}
       bind:availableAccounts={_availableAccounts}
       bind:levelFilter={activityStore.levelFilter}
+      bind:activeTab={_activeTab}
       onTabChange={(id) => { activityStore.activeTab = id; }} />
   {/key}
 </section>

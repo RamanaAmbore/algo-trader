@@ -56,10 +56,16 @@
      *  drives it. Default 'all' keeps pre-filter behaviour; surfaces that
      *  want loud-rows-only pass 'error'. */
     levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
+    /**
+     * Bindable — mirrors the active tab from LogPanel so parent surfaces
+     * (ActivityLogModal, /activity page) can derive filter visibility.
+     * One-way (LogPanel → parent). Parents must NOT write back.
+     */
+    activeTab           = $bindable(/** @type {string} */ ('')),
     /** Surface context — gates the context-derived 2-column magazine flow.
      *  Overridden entirely when `multiColumn` is provided explicitly.
      *  @type {'page'|'card'|'card-wide'|'modal'} */
-    context             = 'page',
+    context             = /** @type {'page'|'card'|'card-wide'|'modal'} */ ('page'),
     /**
      * Explicit multiColumn override. When provided (true or false), this
      * value is used directly and ignores the context-derived default.
@@ -148,4 +154,6 @@
   {mode}
   {gateByMode}
   {cmdHistory}
-  {tabs} />
+  {tabs}
+  {context}
+  bind:activeTab />
