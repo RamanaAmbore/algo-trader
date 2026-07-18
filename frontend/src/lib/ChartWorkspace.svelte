@@ -114,9 +114,9 @@
 
   /** @type {Array<{value:string,label:string}>} */
   const _CHART_TYPE_OPTS = [
+    { value: 'candle', label: 'Candle' },
     { value: 'line',   label: 'Line' },
     { value: 'area',   label: 'Area' },
-    { value: 'candle', label: 'Candle' },
     { value: 'plot',   label: 'Plot' },
   ];
 
