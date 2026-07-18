@@ -889,7 +889,7 @@
     ><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
+    ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos-dim' : _liveHoldingsTotal < 0 ? 'ps-neg-dim' : 'ps-flat') + ' ' + flash.classOf('Hd')}
       >{fmtMoney(_liveHoldingsTotal)}</span>
   </span>
   <DayPnlBreakup
@@ -1023,9 +1023,11 @@
     font-weight: 400;
   }
 
-  .ps-pos  { color: var(--c-long); }
-  .ps-neg  { color: var(--c-short); }
-  .ps-flat { color: var(--algo-slate); }
+  .ps-pos     { color: var(--c-long); }
+  .ps-neg     { color: var(--c-short); }
+  .ps-pos-dim { color: var(--algo-green-text); }   /* slot 2 of paired P&L — pastel green */
+  .ps-neg-dim { color: var(--algo-red-text); }     /* slot 2 of paired P&L — pastel red   */
+  .ps-flat    { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash     { color: #7dd3fc; }                        /* slot 1: available (bright sky) */
   .ps-cash-dim { color: var(--algo-sky-text); }           /* slot 2: total incl. premiums (pastel sky) */
