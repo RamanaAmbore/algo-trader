@@ -423,10 +423,12 @@
   $effect(() => {
     const storeOverlays = chartStore.overlays;
     if (!_overlaysHydrated) return;
-    // Only update local if the reference differs (avoids loop).
-    if (JSON.stringify(_overlays) !== JSON.stringify(storeOverlays)) {
-      _overlays = storeOverlays.slice();
-    }
+    untrack(() => {
+      // Only update local if the reference differs (avoids loop).
+      if (JSON.stringify(_overlays) !== JSON.stringify(storeOverlays)) {
+        _overlays = storeOverlays.slice();
+      }
+    });
   });
   // Bridge: write back to store when operator toggles overlays via the
   // local MultiSelect.  LS persistence happens inside setOverlays().
