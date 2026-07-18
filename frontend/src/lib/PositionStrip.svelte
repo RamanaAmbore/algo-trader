@@ -1028,8 +1028,8 @@
   .ps-flat { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash { color: #7dd3fc; }
-  /* Margin capacity — cyan-400, distinct from cash sky-blue. */
-  .ps-margin { color: var(--algo-cyan); }
+  /* Margin capacity — violet, clearly distinct from cash sky-blue. */
+  .ps-margin { color: var(--algo-violet); }
   /* Expiry profit — amber action palette; signals a time-bound outcome. */
   .ps-exp  { color: var(--c-action); }
   @media (max-width: 640px) {
