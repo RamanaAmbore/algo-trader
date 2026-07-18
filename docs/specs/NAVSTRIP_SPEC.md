@@ -269,25 +269,69 @@ On real SSE tick arrivals (independent of polls):
 
 ## 6. Color Coding
 
+### Pill label accent colors
+
+Each pill identifier (P / M / C / H) carries its own fixed accent hue so pills are
+distinguishable without reading the letter:
+
+| Pill | Label class | Color | Token |
+|---|---|---|---|
+| P | `.ps-k-p` | Amber | `var(--c-action)` `#fbbf24` |
+| M | `.ps-k-m` | Violet | `var(--algo-violet)` `#c084fc` |
+| C | `.ps-k-c` | Sky | `var(--algo-sky)` `#7dd3fc` |
+| H | `.ps-k-h` | Cyan | `var(--algo-cyan)` `#22d3ee` |
+
+### Slot differentiation within pills
+
+Within each pill, slot 1 (primary / available) uses the **bright** variant of the accent
+and slot 2+ (secondary / total) uses the **pastel** (dim) variant — so the more actionable
+figure reads louder:
+
+**M pill (Margin)**
+
+| Slot | Class | Color | Notes |
+|---|---|---|---|
+| M:1 available | `.ps-margin` | Bright violet `#c084fc` | Deployable capacity |
+| M:2 total | `.ps-margin-dim` | Pastel violet `var(--algo-violet-text)` `#d8b4fe` | Full capacity |
+
+**C pill (Cash)**
+
+| Slot | Class | Color | Notes |
+|---|---|---|---|
+| C:1 available | `.ps-cash` | Bright sky `#7dd3fc` | Deployable cash |
+| C:2 total | `.ps-cash-dim` | Pastel sky `var(--algo-sky-text)` `#bae6fd` | Incl. tied-up option premium |
+
+**H pill (Holdings)**
+
+| Slot | Class | Notes |
+|---|---|---|
+| H:1 today MTM | `.ps-pos` / `.ps-neg` / `.ps-flat` | Bright green/red — same P&L palette as P pill |
+| H:2 current value | `.ps-cash` | Sky blue — non-directional market value |
+| H:3 lifetime P&L | `.ps-pos-dim` / `.ps-neg-dim` / `.ps-flat` | Pastel green `var(--algo-green-text)` / pastel red `var(--algo-red-text)` |
+
 ### Directional P&L
 
-- **Positive** (P:1 > 0, P:2 > 0, H:1 > 0, H:3 > 0): green (`ps-pos`, `--c-long`)
-- **Negative**: red (`ps-neg`, `--c-short`)
+- **Positive** (P:1, P:2, H:1, H:3 > 0): bright green (`ps-pos`, `var(--c-long)` `#4ade80`)
+- **Negative**: bright red (`ps-neg`, `var(--c-short)` `#f87171`)
 - **Flat** (= 0): muted slate (`ps-flat`)
+- **Lifetime dim** (H:3): pastel green `#6ee7b7` / pastel red `#fecaca` via `ps-pos-dim` / `ps-neg-dim`
 
 ### Non-directional values
 
-- **Margin amounts** (M:1, M:2): cyan-400 (`ps-margin`, `var(--algo-cyan)` = `#22d3ee`) when positive; red when negative — credit capacity signal
-- **Cash amounts** (C:1, C:2) + Holdings value (H:2): sky-300 (`ps-cash`, `#7dd3fc`) when positive; red when negative — liquid balance signal
-- **Expiry profit** (P:3): amber action palette (`ps-exp`, `--c-action`), neutral/time-bound signal
-
-Note: margin (M pill) and cash (C pill) use distinct colors intentionally — cyan-400 vs sky-300 — so the two categories read differently at a glance on the dense strip.
+- **Expiry profit** (P:3): amber action palette (`ps-exp`, `var(--c-action)`), neutral/time-bound signal
+- When a normally-positive slot (M:1, M:2, C:1, C:2) goes negative: flips to `ps-neg` (red)
 
 ### Stale state
 
 - Background darkens to brown when `_staleFailCount >= 2`
 - Border softens to orange-tinted amber
 - Text colors unchanged; visual hint only
+
+### Mobile trailing clip
+
+`.ps-strip` uses `padding: 0 0.75rem 0 0.5rem` — the 0.75rem right padding ensures
+H pill's last slot does not clip against the viewport edge when the strip overflows
+horizontally on narrow screens.
 
 ---
 
@@ -411,3 +455,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 |---|---|
 | 2026-07-11 | v1.0 initial spec from codebase implementation |
 | 2026-07-13 | EXP Slot spec: documented closed-leg (qty=0) handler; partial-close realized P&L (`leg.realised`) in open-leg formula |
+| 2026-07-18 | Color coding: per-pill label accents (P=amber, M=violet, C=sky, H=cyan); slot bright/dim differentiation for M, C, H pills; mobile trailing-clip padding note |
