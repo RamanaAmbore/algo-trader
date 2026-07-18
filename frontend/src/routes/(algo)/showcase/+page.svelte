@@ -449,12 +449,12 @@
     background: rgba(251, 191, 36, 0.10);
     border: 1px solid rgba(251, 191, 36, 0.40);
     font-size: 0.75rem;
-    color: rgba(148, 163, 184, 0.7);
+    color: rgba(226, 232, 240, 0.88);
     line-height: 1.5;
   }
   .show-attr-name {
     font-weight: 600;
-    color: rgba(148, 163, 184, 0.8);
+    color: #f1f5f9;
   }
   .show-attr-sep {
     margin: 0 0.25rem;
@@ -470,7 +470,7 @@
     align-items: baseline;
     gap: 0 0.1rem;
     font-size: 0.75rem;
-    color: rgba(148, 163, 184, 0.6);
+    color: rgba(203, 213, 225, 0.80);
   }
 
   /* Contact row — compact, muted, no filled backgrounds */
