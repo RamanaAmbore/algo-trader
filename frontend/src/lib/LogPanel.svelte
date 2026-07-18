@@ -1422,6 +1422,17 @@
     showLevelFilter={_showLevelFilter} />
   {#if label}
     <div class="lp-card-btns">
+      <button type="button"
+        class="lp-card-btn {_searchOpen ? 'lp-card-btn-on' : ''}"
+        title={_searchOpen ? 'Close search' : 'Search rows'}
+        aria-label="Search rows"
+        aria-pressed={_searchOpen}
+        onclick={() => { _searchOpen = !_searchOpen; if (!_searchOpen) _searchQuery = ''; }}>
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
       {#if context !== 'page'}
         {#if context === 'modal'}
           <button type="button" class="alm-close-btn"
@@ -1772,7 +1783,7 @@
     align-self: stretch;
     background: rgba(255,255,255,0.10);
     flex-shrink: 0;
-    margin: 0.15rem 0.25rem 0.15rem 0.5rem;
+    margin: 0.15rem 0.35rem;
   }
 
   /* Close button rendered in modal context */

@@ -136,6 +136,8 @@
     // behaviour) becomes the page's primary surface instead of being
     // boxed inside a non-scrolling navy card.
     flat               = false,
+    /** Bindable — parent page can bind to receive the movers snapshot timestamp. */
+    moversAsOf = $bindable(/** @type {string|null} */ (null)),
   } = $props();
 
   // AG Grid valueFormatter wrappers — imported from $lib/format (shared SSOT).
@@ -2035,6 +2037,7 @@
       return `${datePart} ${timePart} IST`;
     } catch (_) { return null; }
   });
+  $effect(() => { moversAsOf = _moversAsOf; });
 
   // One effect per grid — Svelte 5 reactivity tracks the closed-over
   // derivation so any source change automatically pushes fresh row
@@ -3992,9 +3995,6 @@
             >
               {#snippet left()}
                 <span class="mp-bucket-label mp-bucket-label-winners">Gainers</span>
-                {#if _moversAsOf}
-                  <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
-                {/if}
               {/snippet}
               {#snippet middle()}
                 <div class="mp-head-tabs">
@@ -4028,9 +4028,6 @@
             >
               {#snippet left()}
                 <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
-                {#if _moversAsOf}
-                  <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
-                {/if}
               {/snippet}
               {#snippet middle()}
                 <div class="mp-head-tabs">
@@ -4698,18 +4695,6 @@
   /* Label lives inside CardHeader's .ch-left flex row —
      neutralise the base margin-bottom so it centres correctly. */
   .mp-bucket-label { margin-bottom: 0; }
-  /* Closed-hours snapshot age — shown only when moversSnapshotAt is
-     non-null (off-hours persisted snapshot). Sits inline after the
-     Winners / Losers label; kept small + muted so it doesn't compete
-     with the label hierarchy. */
-  .mp-movers-as-of {
-    font-size: 0.65rem;
-    color: rgba(156, 163, 175, 0.75); /* text-gray-400 muted */
-    white-space: nowrap;
-    margin-left: 0.35rem;
-    align-self: center;
-    font-variant-numeric: tabular-nums;
-  }
   /* Hidden grid container (inactive tab) — display:none keeps it
      in the DOM so bind:this lands at mount, but ag-Grid won't
      render anything until the operator flips back. ag-Grid's

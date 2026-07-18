@@ -30,6 +30,7 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
   import CardControls from '$lib/CardControls.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
@@ -4050,15 +4051,23 @@
          greeks. remove other chips"); the same numbers are still available
          in the Aggregate / Risk kv-block below the chart. SPOT / TDAY /
          EXP / DTE / σ / LEGS live in the on-chart stat overlay. -->
-    <div class="opt-section-h opt-section-h-grid">
-      <div class="opt-section-row">
-        <span class="opt-section-title">Payoff</span>
-        <!-- Expected value chip — probability-weighted average payoff
-             under the lognormal distribution. Positive = positive
-             expectancy; negative = lose money on average. Companion
-             to POP for assessing trade quality (POP alone is
-             misleading on asymmetric clip sizes). -->
+    <CardHeader
+      title="Payoff"
+      bind:isCollapsed={_colPayoff}
+      bind:isFullscreen={_fsPayoff}
+      cardId="optPayoff"
+      label="Payoff"
+      onRefresh={_refreshAll}
+      bind:refreshLoading={_refreshing}
+      showSearch={false}
+    >
+      {#snippet middle()}
         <div class="opt-section-chips">
+          <!-- Expected value chip — probability-weighted average payoff
+               under the lognormal distribution. Positive = positive
+               expectancy; negative = lose money on average. Companion
+               to POP for assessing trade quality (POP alone is
+               misleading on asymmetric clip sizes). -->
           <span class="opt-section-tag tf-cell {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'} {flash.classOf('payoff:ev')}"
                 title="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|.">
             EV {fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}
@@ -4101,28 +4110,8 @@
             ρ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
           </span>
         </div>
-        <!-- Card-control trio kept in a tight no-wrap cluster so the
-             three icons sit on the same row even on a narrow viewport.
-             Without this, the outer `.opt-section-row gap: 0.5rem`
-             between each child applied to the trio too, eating ~1rem
-             of horizontal space and forcing the FullscreenButton to
-             spill to a second row on mobile. Now the trio reads as
-             one flex item; the outer 0.5rem gap separates the cluster
-             from the previous greek chip, but inside the cluster the
-             buttons sit at the inter-button 0.15rem gap. -->
-        <span class="payoff-card-controls">
-          <CardControls
-            bind:isCollapsed={_colPayoff}
-            bind:isFullscreen={_fsPayoff}
-            cardId="optPayoff"
-            label="Payoff"
-            onRefresh={_refreshAll}
-            bind:refreshLoading={_refreshing}
-            showSearch={false}
-          />
-        </span>
-      </div>
-    </div>
+      {/snippet}
+    </CardHeader>
     <!-- Body wrapped in [hidden] (not {#if}) so the SVG chart stays
          mounted across collapse cycles — same pattern as dashboard
          cards (avoids re-mounting + state loss). -->
@@ -4443,79 +4432,78 @@
   data-status="inactive"
   class:fs-card-on={_fsByund}
   class:is-collapsed={_colByund}>
-  <div class="bucket-header">
-    <span class="opt-section-h" style="padding-bottom:0">
-      <span class="algo-card-title" style="margin-bottom:0">Snapshot</span>
-      <AccountMultiSelect
-        bind:value={selectedAccounts}
-        options={accountChoices.map(a => ({ value: a, label: a }))}
-        placeholder="All accounts"
-        ariaLabel="Filter Snapshot by broker account" />
+  <CardHeader
+    title="Snapshot"
+    bind:isCollapsed={_colByund}
+    bind:isFullscreen={_fsByund}
+    bind:filter={_filterByund}
+    cardId="optByund"
+    label="Snapshot"
+    onRefresh={_refreshAll}
+    bind:refreshLoading={_refreshing}
+    onDownload={() => {
+      const rows = _byUnderlyingTotals.map(g => {
+        const _q      = _underlyingQuotes[g.underlying];
+        const dayVal  = _dayPnlByRootMap[g.underlying] ?? 0;
+        const pnlVal  = _pnlByRootMap[g.underlying] ?? 0;
+        const expVal  = _expPnlByRootMap[g.underlying] ?? 0;
+        const hDay    = _hDayByRoot[g.underlying] || 0;
+        const hPnl    = _hPnlByRoot[g.underlying] || 0;
+        return {
+          underlying:  g.underlying,
+          spot:        _q ? _q.ltp        : '',
+          day_pct:     _q && _q.day_pct != null ? _q.day_pct : '',
+          prev_close:  _q ? _q.prev_close : '',
+          day_pnl:     dayVal,
+          h_day_pnl:   hDay,
+          pnl:         pnlVal,
+          exp_pnl:     expVal,
+          day_pnl_net: dayVal + hDay,
+          pnl_net:     pnlVal + hPnl,
+          exp_pnl_net: expVal + hPnl,
+          legs:        g.legs_with,
+          qty_fno:     g.qty_fno || '',
+          qty_eq:      g.qty_eq  || '',
+        };
+      });
+      exportRowsToCsv(
+        rows,
+        [
+          { header: 'Underlying',   key: 'underlying' },
+          { header: 'Spot',         key: 'spot',        format: (v) => v == null ? '' : String(v) },
+          { header: 'Day %',        key: 'day_pct',     format: (v) => v === '' ? '' : Number(v).toFixed(2) },
+          { header: 'Close',        key: 'prev_close',  format: (v) => v == null ? '' : String(v) },
+          { header: 'Day P&L',      key: 'day_pnl',     format: (v) => String(v) },
+          { header: 'H Day P&L',    key: 'h_day_pnl',   format: (v) => String(v) },
+          { header: 'P&L',          key: 'pnl',         format: (v) => String(v) },
+          { header: 'Exp P&L',      key: 'exp_pnl',     format: (v) => String(v) },
+          { header: 'Day P&L Net',  key: 'day_pnl_net', format: (v) => String(v) },
+          { header: 'P&L Net',      key: 'pnl_net',     format: (v) => String(v) },
+          { header: 'Exp P&L Net',  key: 'exp_pnl_net', format: (v) => String(v) },
+          { header: 'Legs',         key: 'legs',        format: (v) => String(v) },
+          { header: 'F&O Qty',      key: 'qty_fno',     format: (v) => v == null ? '' : String(v) },
+          { header: 'Eq Qty',       key: 'qty_eq',      format: (v) => v == null ? '' : String(v) },
+        ],
+        'snapshot.csv'
+      );
+    }}
+  >
+    {#snippet middle()}
+      {#key accountChoices.length}
+        <AccountMultiSelect
+          bind:value={selectedAccounts}
+          options={accountChoices.map(a => ({ value: a, label: a }))}
+          placeholder="All accounts"
+          ariaLabel="Filter Snapshot by broker account" />
+      {/key}
       <!-- Slice 7f — strategy filter chip. When the operator picks a
            strategy, the snapshot's _byUnderlyingTotals derivation
            below narrows `positions` to rows whose strategy_id matches.
            Mounted here (not in the card-control trio) so it lives
            with the OTHER scope chip (account list). -->
       <StrategyPicker label="Strategy" />
-    </span>
-    <span class="payoff-card-controls">
-      <CardControls
-        bind:isCollapsed={_colByund}
-        bind:isFullscreen={_fsByund}
-        bind:filter={_filterByund}
-        cardId="optByund"
-        label="Snapshot"
-        onRefresh={_refreshAll}
-        bind:refreshLoading={_refreshing}
-        onDownload={() => {
-          const rows = _byUnderlyingTotals.map(g => {
-            const _q      = _underlyingQuotes[g.underlying];
-            const dayVal  = _dayPnlByRootMap[g.underlying] ?? 0;
-            const pnlVal  = _pnlByRootMap[g.underlying] ?? 0;
-            const expVal  = _expPnlByRootMap[g.underlying] ?? 0;
-            const hDay    = _hDayByRoot[g.underlying] || 0;
-            const hPnl    = _hPnlByRoot[g.underlying] || 0;
-            return {
-              underlying:  g.underlying,
-              spot:        _q ? _q.ltp        : '',
-              day_pct:     _q && _q.day_pct != null ? _q.day_pct : '',
-              prev_close:  _q ? _q.prev_close : '',
-              day_pnl:     dayVal,
-              h_day_pnl:   hDay,
-              pnl:         pnlVal,
-              exp_pnl:     expVal,
-              day_pnl_net: dayVal + hDay,
-              pnl_net:     pnlVal + hPnl,
-              exp_pnl_net: expVal + hPnl,
-              legs:        g.legs_with,
-              qty_fno:     g.qty_fno || '',
-              qty_eq:      g.qty_eq  || '',
-            };
-          });
-          exportRowsToCsv(
-            rows,
-            [
-              { header: 'Underlying',   key: 'underlying' },
-              { header: 'Spot',         key: 'spot',        format: (v) => v == null ? '' : String(v) },
-              { header: 'Day %',        key: 'day_pct',     format: (v) => v === '' ? '' : Number(v).toFixed(2) },
-              { header: 'Close',        key: 'prev_close',  format: (v) => v == null ? '' : String(v) },
-              { header: 'Day P&L',      key: 'day_pnl',     format: (v) => String(v) },
-              { header: 'H Day P&L',    key: 'h_day_pnl',   format: (v) => String(v) },
-              { header: 'P&L',          key: 'pnl',         format: (v) => String(v) },
-              { header: 'Exp P&L',      key: 'exp_pnl',     format: (v) => String(v) },
-              { header: 'Day P&L Net',  key: 'day_pnl_net', format: (v) => String(v) },
-              { header: 'P&L Net',      key: 'pnl_net',     format: (v) => String(v) },
-              { header: 'Exp P&L Net',  key: 'exp_pnl_net', format: (v) => String(v) },
-              { header: 'Legs',         key: 'legs',        format: (v) => String(v) },
-              { header: 'F&O Qty',      key: 'qty_fno',     format: (v) => v == null ? '' : String(v) },
-              { header: 'Eq Qty',       key: 'qty_eq',      format: (v) => v == null ? '' : String(v) },
-            ],
-            'snapshot.csv'
-          );
-        }}
-      />
-    </span>
-  </div>
+    {/snippet}
+  </CardHeader>
   {#if !_colByund}
     <div class="byund-scroll algo-grid-chrome">
       <div class="byund-grid">
@@ -5082,21 +5070,6 @@
     margin-bottom: 0.4rem;
     flex-wrap: wrap;
   }
-  /* Two-row variant — title + chips on row 1, meta line on row 2.
-     Each row independently flex-wraps so chips squeeze together
-     before pushing the meta line down. */
-  .opt-section-h-grid {
-    display: grid;
-    grid-template-rows: auto auto;
-    row-gap: 0.3rem;
-  }
-  .opt-section-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: nowrap;
-    min-width: 0;
-  }
   /* Chips scroll container — holds EV + Greek chips in the Payoff
      header. Takes all remaining space between the title and the
      button cluster; scrolls horizontally so chips never wrap into
@@ -5114,18 +5087,6 @@
     -webkit-overflow-scrolling: touch;
   }
   .opt-section-chips::-webkit-scrollbar { display: none; }
-  /* Larger section anchor for the Strategy Analysis header. Font
-     family + weight + spacing + transform + color locked to canonical
-     .algo-card-title tokens; only the SIZE is bumped to fs-lg so the
-     header out-ranks the smaller sub-titles beneath it. */
-  .opt-section-title {
-    color: var(--c-action);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-weight: 700;
-    font-size: var(--fs-lg);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
   .opt-section-tag {
     font-size: var(--fs-md);
     padding: 1px 5px;
@@ -5156,20 +5117,6 @@
     flex-shrink: 0;
     margin-left: auto;
   }
-  /* Snapshot card header — scoped override so the inner .opt-section-h
-     (title + account scope chip + StrategyPicker) scrolls horizontally
-     instead of wrapping into the .payoff-card-controls button cluster.
-     .bucket-header is defined globally in app.css; only the derivative-
-     page child selector is scoped here to avoid side-effects elsewhere. */
-  .bucket-header > .opt-section-h {
-    flex: 1 1 0;
-    min-width: 0;
-    overflow-x: auto;
-    overflow-y: visible;
-    scrollbar-width: none;
-    flex-wrap: nowrap;
-  }
-  .bucket-header > .opt-section-h::-webkit-scrollbar { display: none; }
   .tag-deriv  { color: var(--algo-sky); background: rgba(125,211,252,0.10); }
   .tag-long   { color: var(--c-long); background: var(--algo-green-bg); }
   .tag-short  { color: var(--c-short); background: var(--algo-red-bg); }

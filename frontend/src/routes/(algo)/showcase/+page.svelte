@@ -446,8 +446,8 @@
     margin-top: auto;
     padding: 0.75rem 0.85rem;
     border-radius: 0.375rem;
-    background: color-mix(in srgb, var(--c-action, #fbbf24) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--c-action, #fbbf24) 35%, transparent);
+    background: color-mix(in srgb, #7dd3fc 14%, transparent);
+    border: 1px solid color-mix(in srgb, #7dd3fc 45%, transparent);
     font-size: 0.75rem;
     color: rgba(226, 232, 240, 0.88);
     line-height: 1.5;
