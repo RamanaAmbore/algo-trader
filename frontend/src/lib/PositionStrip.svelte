@@ -862,7 +862,7 @@
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
       >{fmtMoney(marginAvail)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
+    ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin-dim' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
       >{fmtMoney(marginTotal)}</span>
   </span>
   <!-- Cash pill: available (CA, deployable now) / total (incl. premium
@@ -879,7 +879,7 @@
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
       >{fmtMoney(liveCashTotal)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
+    ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash-dim' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
       >{fmtMoney(cashTotal)}</span>
   </span>
   <span class="ps-agg" title="Holdings: today's MTM move / current value / lifetime P&L">
@@ -1027,9 +1027,11 @@
   .ps-neg  { color: var(--c-short); }
   .ps-flat { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
-  .ps-cash { color: #7dd3fc; }
+  .ps-cash     { color: #7dd3fc; }                        /* slot 1: available (bright sky) */
+  .ps-cash-dim { color: var(--algo-sky-text); }           /* slot 2: total incl. premiums (pastel sky) */
   /* Margin capacity — violet, clearly distinct from cash sky-blue. */
-  .ps-margin { color: var(--algo-violet); }
+  .ps-margin     { color: var(--algo-violet); }           /* slot 1: available (bright violet) */
+  .ps-margin-dim { color: var(--algo-violet-text); }      /* slot 2: total capacity (pastel violet) */
   /* Expiry profit — amber action palette; signals a time-bound outcome. */
   .ps-exp  { color: var(--c-action); }
   @media (max-width: 640px) {
