@@ -4446,13 +4446,11 @@
   <div class="bucket-header">
     <span class="opt-section-h" style="padding-bottom:0">
       <span class="algo-card-title" style="margin-bottom:0">Snapshot</span>
-      <span class="byund-scope" title="Snapshot rows include only positions / holdings in this account scope. Empty = all accounts.">
-        {#if selectedAccounts.length === 0}
-          all accounts
-        {:else}
-          {selectedAccounts.join(' · ')}
-        {/if}
-      </span>
+      <AccountMultiSelect
+        bind:value={selectedAccounts}
+        options={accountChoices.map(a => ({ value: a, label: a }))}
+        placeholder="All accounts"
+        ariaLabel="Filter Snapshot by broker account" />
       <!-- Slice 7f — strategy filter chip. When the operator picks a
            strategy, the snapshot's _byUnderlyingTotals derivation
            below narrows `positions` to rows whose strategy_id matches.
@@ -5579,24 +5577,6 @@
     .tf-cell.tf-up,
     .tf-cell.tf-down { animation: none; }
   }
-  /* Scope chip — small slate-grey tag inline with the Snapshot title
-     that names the active account filter. Empty filter reads "all
-     accounts" so the operator can confirm the snapshot is unscoped
-     at a glance. */
-  .byund-scope {
-    margin-left: 0.5rem;
-    padding: 0.1rem 0.45rem;
-    border-radius: 3px;
-    background: rgba(126, 151, 184, 0.18);
-    border: 1px solid rgba(126, 151, 184, 0.35);
-    color: #c8d8f0;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: none;
-  }
-
   /* byund TOTAL > span: amber background/border/color/font-weight from shared
      .cand-row.cand-row-total, .byund-row-total > span rule above.
      Padding inherited from .byund-row > span. Direction tints below. */
@@ -5692,17 +5672,13 @@
      Solid amber pill with a darker background; the separator
      below pushes the tabs visually apart. */
   .legs-underlying-chip {
-    padding: 0.15rem 0.5rem;
-    border-radius: 3px;
-    background: var(--algo-amber-bg-strong);
-    border: 1px solid var(--algo-amber-border);
-    color: var(--c-action);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-lg);
-    font-weight: 800;
+    color: var(--c-action, #fbbf24);
+    font-size: var(--fs-sm, 0.6rem);
+    font-weight: 700;
     letter-spacing: 0.04em;
-    text-transform: none;
-    line-height: 1;
+    text-transform: uppercase;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .legs-header-sep {
     display: inline-block;
@@ -5741,6 +5717,12 @@
      `min-width: max-content` removed: the grid's intrinsic minimum
      is now driven by Symbol + Account alone, not the sum of every
      column's max-content. */
+  /* Alternating row backgrounds for legs grid — even children (data rows)
+     get a subtle dark tint; headrow at child 1 (odd) is unaffected. */
+  .cand-grid > :nth-child(even) :global(.cand-row):not(:global(.cand-row-total)) {
+    background-color: rgba(13,22,42,0.30);
+  }
+
   .cand-grid {
     display: grid;
     /* Operator: "lots of white space as columns are getting more

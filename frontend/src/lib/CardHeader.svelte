@@ -61,6 +61,7 @@
     {@render left?.()}
   </div>
 
+  {#if middle}<span class="ch-sep" aria-hidden="true"></span>{/if}
   <div class="ch-middle">
     {@render middle?.()}
   </div>
@@ -113,6 +114,13 @@
     font-size: var(--ch-ts-size, var(--fs-md, 0.65rem));
     color: var(--ch-ts-color, var(--c-muted, #7e97b8));
     white-space: nowrap;
+  }
+  .ch-sep {
+    width: 1px;
+    align-self: stretch;
+    background: rgba(255,255,255,0.10);
+    flex-shrink: 0;
+    margin: 0.15rem 0;
   }
   .ch-middle {
     flex: 1 1 0;

@@ -20,27 +20,10 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
-  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import { activityStore, ACTIVITY_TABS } from '$lib/data/activityStore.svelte.js';
 
   const isDemo = $derived(!$authStore.user);
-
-  // availableAccounts is per-mount ephemeral — populated by LogPanel from
-  // the current order rows. Not in activityStore (different mounts return
-  // different account sets; a stale value from the modal would corrupt
-  // this page's dropdown until the first poll).
-  /** @type {string[]} */
-  let _availableAccounts = $state([]);
-
-  // Active tab mirrored from LogPanel via ActivityLogSurface bindable.
-  // Drives per-tab filter visibility in the page header.
-  let _activeTab = $state('');
-
-  // Account filter: Orders, Agents, System, Conn only.
-  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(_activeTab));
-  // Level filter: Agents, System, Conn only.
-  const _showLevelFilter   = $derived(['agent', 'system', 'conn'].includes(_activeTab));
 
   // URL ?tab=... seeding: runs once on mount so deep-links (navbar broker
   // chip, bookmarks) land on the right tab. If no param is present, the
@@ -76,20 +59,6 @@
     Activity
   </span>
   <span class="algo-ts">{$nowStamp}</span>
-  <!-- Filter chips are LEFT-aligned per canonical header rule
-       ([Title] [Tabs?] [AccountMultiSelect?] [Chips?] → spacer →
-       [Trio]). Only Refresh + Order + Chart + Activity + Collapse +
-       Fullscreen + Default-size icons sit RIGHT of ml-auto.
-       ActivityHeaderFilters' built-in margin-left:auto is overridden
-       in the <style> block below for this page-header context. -->
-  <!-- accountFilter + levelFilter bound to activityStore so state
-       persists across page visits and is shared with ActivityLogModal. -->
-  <ActivityHeaderFilters
-    bind:accountFilter={activityStore.accountFilter}
-    bind:levelFilter={activityStore.levelFilter}
-    availableAccounts={_availableAccounts}
-    showAccountFilter={_showAccountFilter}
-    showLevelFilter={_showLevelFilter} />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={_refresh} loading={_refreshing} label="activity" />
@@ -108,25 +77,13 @@
       context="page"
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={activityStore.accountFilter}
-      bind:availableAccounts={_availableAccounts}
       bind:levelFilter={activityStore.levelFilter}
-      bind:activeTab={_activeTab}
       onTabChange={(id) => { activityStore.activeTab = id; }} />
   {/key}
 </section>
 
 <style>
   :global(.page-title-icon) { color: var(--c-action); flex-shrink: 0; }
-  /* Neutralize ActivityHeaderFilters' built-in `margin-left: auto`
-     when mounted inside this page-header. The component's auto-margin
-     is designed for card-headers (where it pushes CardControls to the
-     right). In the page-header context, the canonical .ml-auto spacer
-     handles the right-push, so the filters themselves should sit
-     flush-LEFT against the timestamp per the canonical
-     [Title][Chips?] → spacer → [Trio] rule. */
-  :global(.page-header .act-filters) {
-    margin-left: 0;
-  }
   .activity-page-body {
     display: flex;
     flex-direction: column;

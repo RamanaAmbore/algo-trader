@@ -1,10 +1,10 @@
 /**
  * activity-panel.spec.ts
  *
- * Verifies the post-fix behavior of the Activity panel:
+ * Verifies the post-refactor behavior of the Activity panel unified row:
  *
  *   1. Per-tab filter visibility — account filter and level filter are shown
- *      only on tabs where they are meaningful (post-fix correct behavior):
+ *      only on tabs where they are meaningful (post-refactor correct behavior):
  *        - Orders tab:    account filter VISIBLE, level filter HIDDEN
  *        - Agents tab:    BOTH filters VISIBLE
  *        - System tab:    BOTH filters VISIBLE
@@ -13,17 +13,24 @@
  *        - Ticks tab:     NEITHER filter visible
  *        - News tab:      NEITHER filter visible
  *
- *   2. Card button group — Search, Expand/Contract, Fullscreen, Download
- *      buttons are present in the ActivityLogSurface header area on:
+ *   2. Unified row structure — single .log-tab-row contains:
+ *        - .lp-label (card title)
+ *        - .lp-sep (vertical separator)
+ *        - .algo-tabs-strip (tab buttons)
+ *        - .act-filters (account + level selectors)
+ *        - .lp-card-btns (button group: search, expand/contract, collapse/expand,
+ *          fullscreen/close, download)
+ *
+ *   3. Card button group — Search, Expand/Contract, Collapse/Expand, Fullscreen,
+ *      Download buttons are present in .lp-card-btns inside .log-tab-row on:
  *        - /orders activity card
  *        - /activity page
- *      NOTE: buttons are built into ActivityLogSurface itself, NOT inside
- *      a CardHeader .ch-right zone.
+ *        - ActivityLogModal (with Close instead of Fullscreen)
  *
  * Quality dimensions (per feedback_test_dimensions.md):
  *
  *   SSOT       — filters are driven by a single active-tab prop in
- *                ActivityLogSurface; no per-page filter-wiring needed.
+ *                ActivityLogSurface; unified row is single source of truth.
  *
  *   Performance — switching tabs and checking filter visibility
  *                completes within 5 s per assertion.
@@ -31,8 +38,8 @@
  *   Stale code — both filters are hidden for Terminal/Ticks/News (they
  *                have no account or level semantics in the data layer).
  *
- *   Reusable   — button group lives inside ActivityLogSurface so every
- *                surface (modal, card, page, console) inherits it.
+ *   Reusable   — .log-tab-row lives inside ActivityLogSurface so every
+ *                surface (modal, card, page) inherits unified structure.
  *
  *   UX         — correct filter chrome on each tab prevents the operator
  *                from seeing controls that have no effect on visible rows.
@@ -133,10 +140,9 @@ test.describe('per-tab filter visibility — /orders activity card', () => {
     const card = page.locator('section.bucket-card-activity');
     await expect(card, 'activity card renders').toBeVisible({ timeout: 25_000 });
     await card.scrollIntoViewIfNeeded();
-    // Wait for the LogPanel tab row to mount (.lp-card-btns is always rendered
-    // regardless of active tab; .log-panel class only appears on non-order tabs).
-    const btns = card.locator('.lp-card-btns').first();
-    await expect(btns, '.lp-card-btns inside activity card').toBeVisible({ timeout: 15_000 });
+    // Wait for the unified .log-tab-row to mount (always present regardless of active tab).
+    const tabRow = card.locator('.log-tab-row').first();
+    await expect(tabRow, '.log-tab-row inside activity card').toBeVisible({ timeout: 15_000 });
     return card;
   }
 
@@ -270,16 +276,13 @@ test.describe('per-tab filter visibility — /activity page', () => {
   });
 
   async function getActivityPage() {
-    // The /activity page header hosts ActivityHeaderFilters; the panel below
-    // is ActivityLogSurface. Use the page header as the root for filter checks.
-    // Use .lp-card-btns as the LogPanel mount sentinel — it is always rendered
-    // regardless of active tab (.log-panel class only appears on non-order tabs).
-    const header = page.locator('.page-header');
-    await expect(header, 'page header renders').toBeVisible({ timeout: 15_000 });
-    const panel = page.locator('.lp-card-btns').first();
-    await expect(panel, '.lp-card-btns on /activity page').toBeVisible({ timeout: 15_000 });
+    // The /activity page now has unified .log-tab-row containing filters + tabs + buttons.
+    // Wait for it to mount, then return it for both filter checks and tab navigation.
+    const tabRow = page.locator('.log-tab-row').first();
+    await expect(tabRow, '.log-tab-row on /activity page').toBeVisible({ timeout: 15_000 });
     // Return the tab-row div as the "panel" locator for clickTab() — it contains .algo-tab elements.
-    return { header, panel: page.locator('.log-tab-row').first() };
+    // Also return it as "header" for filter checks — filters are now inside .log-tab-row.
+    return { header: tabRow, panel: tabRow };
   }
 
   test('Orders tab: account filter VISIBLE, level filter HIDDEN', async () => {
@@ -402,7 +405,7 @@ test.describe('per-tab filter visibility — ActivityLogModal', () => {
 
   test('Modal Orders tab: account filter VISIBLE, level filter HIDDEN', async () => {
     const modal = await openModal();
-    // Use .log-tab-row as the panel locator for clickTab (always present in LogPanel).
+    // Use unified .log-tab-row as the panel locator for clickTab (always present in LogPanel).
     const panel = modal.locator('.log-tab-row').first();
     await expect(panel, '.log-tab-row in modal').toBeVisible({ timeout: 8_000 });
     await clickTab(modal, /orders?/i);
@@ -425,6 +428,15 @@ test.describe('per-tab filter visibility — ActivityLogModal', () => {
     await assertAccountFilter(modal, false, 'Modal Terminal tab');
     await assertLevelFilter(modal, false, 'Modal Terminal tab');
   });
+
+  test('Modal has all five buttons with Close instead of Fullscreen', async () => {
+    const modal = await openModal();
+    // Wait for unified .log-tab-row to mount in modal.
+    const tabRow = modal.locator('.log-tab-row').first();
+    await expect(tabRow, '.log-tab-row in modal').toBeVisible({ timeout: 8_000 });
+
+    await assertButtonGroupModal(modal, 'ActivityLogModal');
+  });
 });
 
 // ── Card button group — /orders activity card ──────────────────────────────
@@ -434,13 +446,14 @@ test.describe('card button group — ActivityLogSurface', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
   test.setTimeout(90_000);
 
-  // The button group is built into ActivityLogSurface itself (NOT inside a
-  // CardHeader .ch-right zone). Aria-labels on icon buttons are used as selectors.
+  // The button group is built into .lp-card-btns inside .log-tab-row (unified row).
+  // Aria-labels on icon buttons are used as selectors.
   //
-  // Expected buttons (canonical order): Search · Expand/Contract · Fullscreen · Download
-  // Each has an aria-label that names its function.
+  // Expected buttons in card context (canonical order): Search · Expand/Contract ·
+  // Collapse/Expand · Fullscreen · Download
+  // Expected buttons in modal context: Search · Expand/Contract · Collapse/Expand · Close · Download
 
-  async function assertButtonGroup(container: Locator, label: string) {
+  async function assertButtonGroupCard(container: Locator, label: string) {
     // Search button — aria-label="Search rows" (static, always "Search rows")
     const searchBtn = container.locator('button[aria-label="Search rows"]').first();
     await expect(searchBtn, `[${label}] Search button present`).toBeVisible({ timeout: 10_000 });
@@ -452,8 +465,15 @@ test.describe('card button group — ActivityLogSurface', () => {
     ).first();
     await expect(expandBtn, `[${label}] Expand/Contract button present`).toBeVisible({ timeout: 5_000 });
 
-    // Fullscreen button — aria-label="Open in fullscreen modal" (only shown outside modal context)
-    const fsBtn = container.locator('button[aria-label="Open in fullscreen modal"]').first();
+    // Collapse/Expand button — aria-label is dynamic: "Collapse card" (expanded) or
+    // "Expand card" (collapsed). Match either.
+    const collapseBtn = container.locator(
+      'button[aria-label="Collapse card"], button[aria-label="Expand card"]'
+    ).first();
+    await expect(collapseBtn, `[${label}] Collapse/Expand button present`).toBeVisible({ timeout: 5_000 });
+
+    // Fullscreen button — aria-label="Open fullscreen" (only shown outside modal context)
+    const fsBtn = container.locator('button[aria-label="Open fullscreen"]').first();
     await expect(fsBtn, `[${label}] Fullscreen button present`).toBeVisible({ timeout: 5_000 });
 
     // Download button — aria-label="Download CSV" (when not on news tab)
@@ -461,7 +481,35 @@ test.describe('card button group — ActivityLogSurface', () => {
     await expect(dlBtn, `[${label}] Download button present`).toBeVisible({ timeout: 5_000 });
   }
 
-  test('/orders activity card has all four card buttons', async ({ page }) => {
+  async function assertButtonGroupModal(container: Locator, label: string) {
+    // Search button — aria-label="Search rows" (static, always "Search rows")
+    const searchBtn = container.locator('button[aria-label="Search rows"]').first();
+    await expect(searchBtn, `[${label}] Search button present`).toBeVisible({ timeout: 10_000 });
+
+    // Expand/Contract button — aria-label is dynamic: "Expand panel" (default) or
+    // "Contract panel" (when expanded). Match either.
+    const expandBtn = container.locator(
+      'button[aria-label="Expand panel"], button[aria-label="Contract panel"]'
+    ).first();
+    await expect(expandBtn, `[${label}] Expand/Contract button present`).toBeVisible({ timeout: 5_000 });
+
+    // Collapse/Expand button — aria-label is dynamic: "Collapse card" (expanded) or
+    // "Expand card" (collapsed). Match either.
+    const collapseBtn = container.locator(
+      'button[aria-label="Collapse card"], button[aria-label="Expand card"]'
+    ).first();
+    await expect(collapseBtn, `[${label}] Collapse/Expand button present`).toBeVisible({ timeout: 5_000 });
+
+    // Close button — aria-label="Close activity log" (only shown in modal context)
+    const closeBtn = container.locator('button[aria-label="Close activity log"]').first();
+    await expect(closeBtn, `[${label}] Close button present`).toBeVisible({ timeout: 5_000 });
+
+    // Download button — aria-label="Download CSV" (when not on news tab)
+    const dlBtn = container.locator('button[aria-label="Download CSV"]').first();
+    await expect(dlBtn, `[${label}] Download button present`).toBeVisible({ timeout: 5_000 });
+  }
+
+  test('/orders activity card has all five card buttons (card context)', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
 
@@ -469,26 +517,26 @@ test.describe('card button group — ActivityLogSurface', () => {
     await expect(card, 'activity card renders').toBeVisible({ timeout: 25_000 });
     await card.scrollIntoViewIfNeeded();
 
-    // Wait for the button group to mount — .lp-card-btns is always present
-    // regardless of active tab (.log-panel class only appears on non-order tabs).
-    const btns = card.locator('.lp-card-btns').first();
-    await expect(btns, '.lp-card-btns in activity card').toBeVisible({ timeout: 15_000 });
+    // Wait for the unified .log-tab-row to mount — .lp-card-btns is always present
+    // regardless of active tab (.log-tab-row is the unified row containing all controls).
+    const tabRow = card.locator('.log-tab-row').first();
+    await expect(tabRow, '.log-tab-row in activity card').toBeVisible({ timeout: 15_000 });
 
-    await assertButtonGroup(card, '/orders activity card');
+    await assertButtonGroupCard(card, '/orders activity card');
   });
 
-  test('/activity page has all four card buttons', async ({ page }) => {
+  test('/activity page has all five card buttons (card context)', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/activity`, { waitUntil: 'domcontentloaded' });
 
     const body = page.locator('.activity-page-body');
     await expect(body, '.activity-page-body renders').toBeVisible({ timeout: 20_000 });
 
-    // Wait for LogPanel to mount via .lp-card-btns — always present regardless of tab.
-    const btns = page.locator('.lp-card-btns').first();
-    await expect(btns, '.lp-card-btns on /activity').toBeVisible({ timeout: 15_000 });
+    // Wait for LogPanel to mount via unified .log-tab-row — always present regardless of tab.
+    const tabRow = page.locator('.log-tab-row').first();
+    await expect(tabRow, '.log-tab-row on /activity').toBeVisible({ timeout: 15_000 });
 
-    await assertButtonGroup(page.locator('body'), '/activity page');
+    await assertButtonGroupCard(page.locator('body'), '/activity page');
   });
 
   // ── Search button smoke — toggle and text-filter ──────────────────────────
@@ -500,7 +548,8 @@ test.describe('card button group — ActivityLogSurface', () => {
     const card = page.locator('section.bucket-card-activity');
     await expect(card).toBeVisible({ timeout: 25_000 });
     await card.scrollIntoViewIfNeeded();
-    await expect(card.locator('.lp-card-btns').first()).toBeVisible({ timeout: 15_000 });
+    // Wait for unified .log-tab-row to mount.
+    await expect(card.locator('.log-tab-row').first()).toBeVisible({ timeout: 15_000 });
 
     const searchBtn = card.locator('button[aria-label="Search rows"]').first();
     await expect(searchBtn, 'Search button present before click').toBeVisible({ timeout: 10_000 });
@@ -521,9 +570,9 @@ test.describe('card button group — ActivityLogSurface', () => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/activity`, { waitUntil: 'domcontentloaded' });
 
-    // Wait for LogPanel to mount via .lp-card-btns; use .log-tab-row for clickTab.
-    await expect(page.locator('.lp-card-btns').first(), '.lp-card-btns on /activity').toBeVisible({ timeout: 20_000 });
+    // Wait for unified .log-tab-row to mount; use it for clickTab.
     const tabRow = page.locator('.log-tab-row').first();
+    await expect(tabRow, '.log-tab-row on /activity').toBeVisible({ timeout: 20_000 });
 
     // Land on Orders tab (default) — Downloads on Orders tab produce CSV.
     await clickTab(tabRow, /orders?/i);
@@ -554,34 +603,33 @@ test.describe('filter state persists across tab switches', () => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/activity`, { waitUntil: 'domcontentloaded' });
 
-    const header = page.locator('.page-header');
-    // Wait for LogPanel mount via .lp-card-btns; use .log-tab-row for clickTab.
-    await expect(page.locator('.lp-card-btns').first(), '.lp-card-btns on /activity').toBeVisible({ timeout: 20_000 });
-    const panel = page.locator('.log-tab-row').first();
+    // Wait for unified .log-tab-row to mount; use it for both tabs and filters.
+    const tabRow = page.locator('.log-tab-row').first();
+    await expect(tabRow, '.log-tab-row on /activity').toBeVisible({ timeout: 20_000 });
 
     // Navigate to Agents tab (level filter visible).
-    await clickTab(panel, /agents?/i);
-    await expect(header.locator('.act-level-sel'), 'level filter visible on Agents tab').toBeVisible({ timeout: 5_000 });
+    await clickTab(tabRow, /agents?/i);
+    await expect(tabRow.locator('.act-level-sel'), 'level filter visible on Agents tab').toBeVisible({ timeout: 5_000 });
 
     // Change level filter to "error".
-    await header.locator('.act-level-sel').selectOption('error');
-    const selectedAfterChange = await header.locator('.act-level-sel').inputValue();
+    await tabRow.locator('.act-level-sel').selectOption('error');
+    const selectedAfterChange = await tabRow.locator('.act-level-sel').inputValue();
     expect(selectedAfterChange, 'level filter set to "error"').toBe('error');
 
     // Switch to System tab — level filter should still show "error".
-    await clickTab(panel, /system/i);
-    await expect(header.locator('.act-level-sel'), 'level filter visible on System tab').toBeVisible({ timeout: 5_000 });
-    const selectedOnSystem = await header.locator('.act-level-sel').inputValue();
+    await clickTab(tabRow, /system/i);
+    await expect(tabRow.locator('.act-level-sel'), 'level filter visible on System tab').toBeVisible({ timeout: 5_000 });
+    const selectedOnSystem = await tabRow.locator('.act-level-sel').inputValue();
     expect(selectedOnSystem, 'level filter value persists on System tab').toBe('error');
 
     // Switch to Orders tab — level filter should be hidden, but state is preserved.
-    await clickTab(panel, /orders?/i);
-    await expect(header.locator('.act-level-sel'), 'level filter hidden on Orders tab').toHaveCount(0, { timeout: 5_000 });
+    await clickTab(tabRow, /orders?/i);
+    await expect(tabRow.locator('.act-level-sel'), 'level filter hidden on Orders tab').toHaveCount(0, { timeout: 5_000 });
 
     // Switch back to Agents tab — level filter re-appears with "error" still set.
-    await clickTab(panel, /agents?/i);
-    await expect(header.locator('.act-level-sel'), 'level filter visible on Agents tab again').toBeVisible({ timeout: 5_000 });
-    const selectedBackOnAgents = await header.locator('.act-level-sel').inputValue();
+    await clickTab(tabRow, /agents?/i);
+    await expect(tabRow.locator('.act-level-sel'), 'level filter visible on Agents tab again').toBeVisible({ timeout: 5_000 });
+    const selectedBackOnAgents = await tabRow.locator('.act-level-sel').inputValue();
     expect(selectedBackOnAgents, 'level filter still "error" after round-trip').toBe('error');
   });
 });

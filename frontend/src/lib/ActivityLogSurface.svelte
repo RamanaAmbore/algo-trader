@@ -56,16 +56,26 @@
      *  drives it. Default 'all' keeps pre-filter behaviour; surfaces that
      *  want loud-rows-only pass 'error'. */
     levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
-    /**
-     * Bindable — mirrors the active tab from LogPanel so parent surfaces
-     * (ActivityLogModal, /activity page) can derive filter visibility.
-     * One-way (LogPanel → parent). Parents must NOT write back.
-     */
-    activeTab           = $bindable(/** @type {string} */ ('')),
     /** Surface context — gates the context-derived 2-column magazine flow.
      *  Overridden entirely when `multiColumn` is provided explicitly.
      *  @type {'page'|'card'|'card-wide'|'modal'} */
     context             = /** @type {'page'|'card'|'card-wide'|'modal'} */ ('page'),
+    /** Optional label for the LogPanel header chip (e.g. "ACTIVITY"). */
+    label               = /** @type {string} */ (''),
+    /** Bindable collapse state — passed through to LogPanel. */
+    isCollapsed         = $bindable(false),
+    /** Bindable fullscreen state — passed through to LogPanel. */
+    isFullscreen        = $bindable(false),
+    /** Refresh callback — passed through to LogPanel. */
+    onRefresh           = /** @type {(() => void) | null} */ (null),
+    /** Bindable refresh-loading spinner state. */
+    refreshLoading      = $bindable(false),
+    /** Download callback — passed through to LogPanel. */
+    onDownload          = /** @type {(() => void) | null} */ (null),
+    /** Card id for CollapseButton localStorage persistence. */
+    cardId              = /** @type {string} */ (''),
+    /** Close callback — used in modal context. */
+    onClose             = /** @type {(() => void) | null} */ (null),
     /**
      * Explicit multiColumn override. When provided (true or false), this
      * value is used directly and ignores the context-derived default.
@@ -117,6 +127,8 @@
      * (ActivityLogModal, /activity page) pass no value or true.
      * Simple mounts that want the inline filter (SymbolPanel bottom
      * panel, execution panels) pass false.
+     * Retained for backwards compat; no longer used for rendering
+     * (ActivityHeaderFilters is always rendered in LogPanel).
      */
     hideInlineAccountFilter = true,
   } = $props();
@@ -147,7 +159,7 @@
   {hideInlineAccountFilter}
   bind:accountFilter
   bind:availableAccounts
-  {levelFilter}
+  bind:levelFilter
   multiColumn={_multiColumn}
   {simScope}
   {onTabChange}
@@ -156,4 +168,11 @@
   {cmdHistory}
   {tabs}
   {context}
-  bind:activeTab />
+  {label}
+  bind:isCollapsed
+  bind:isFullscreen
+  {onRefresh}
+  bind:refreshLoading
+  {onDownload}
+  {cardId}
+  {onClose} />

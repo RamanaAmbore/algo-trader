@@ -18,6 +18,11 @@
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import { openActivityModal } from '$lib/stores';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
+  import BellIcon from '$lib/icons/BellIcon.svelte';
+  import CollapseButton from '$lib/CollapseButton.svelte';
+  import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import GridDownloadButton from '$lib/GridDownloadButton.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
@@ -42,6 +47,14 @@
    *   levelFilter?: 'all'|'error'|'warning'|'info',
    *   activeTab?: string,
    *   context?: 'page'|'card'|'card-wide'|'modal',
+   *   label?: string,
+   *   isCollapsed?: boolean,
+   *   isFullscreen?: boolean,
+   *   onRefresh?: (() => void) | null,
+   *   refreshLoading?: boolean,
+   *   onDownload?: (() => void) | null,
+   *   cardId?: string,
+   *   onClose?: (() => void) | null,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -111,7 +124,7 @@
      * filtered by line-start `(ERROR|WARNING|INFO|DEBUG)` token;
      * Agent rows by their event_type mapping; Order rows by status.
      */
-    levelFilter = /** @type {'all'|'error'|'warning'|'info'} */ ('all'),
+    levelFilter = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
     /**
      * Bindable — mirrors the internally-active tab id so parents
      * (ActivityLogSurface, ActivityLogModal, /activity page) can
@@ -126,6 +139,24 @@
      * @type {'page'|'card'|'card-wide'|'modal'}
      */
     context = /** @type {'page'|'card'|'card-wide'|'modal'} */ ('page'),
+    /** Optional label shown in the tab row as a leading chip (e.g. "ACTIVITY").
+     *  When provided, the tab row renders its own label + separator + card buttons.
+     *  When empty (default), existing mounts get zero new chrome. */
+    label           = /** @type {string} */ (''),
+    /** Bindable collapse state — passed through when label is set. */
+    isCollapsed     = $bindable(false),
+    /** Bindable fullscreen state — passed through when label is set. */
+    isFullscreen    = $bindable(false),
+    /** Refresh callback — rendered as a button in lp-card-btns when provided. */
+    onRefresh       = /** @type {(() => void) | null} */ (null),
+    /** Bindable refresh-loading spinner state. */
+    refreshLoading  = $bindable(false),
+    /** Download callback — rendered as a button in lp-card-btns when provided. */
+    onDownload      = /** @type {(() => void) | null} */ (null),
+    /** Card id for CollapseButton localStorage persistence. */
+    cardId          = /** @type {string} */ (''),
+    /** Close callback — used in modal context to render a close button. */
+    onClose         = /** @type {(() => void) | null} */ (null),
   } = $props();
 
   // Line-level helpers shared by every text-log tab (System, Conn).
@@ -597,6 +628,9 @@
     return true;
   }));
 
+  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(logTab));
+  const _showLevelFilter   = $derived(['agent', 'system', 'conn'].includes(logTab));
+
   // ── Mode gating via executionMode store ──────────────────────────────
   // When gateByMode is true, the global executionMode store is the
   // implicit filter for Orders, Agent, and Terminal tabs. The mode chip
@@ -692,6 +726,26 @@
     const ax = _availableAccounts;
     if (untrack(() => availableAccounts) !== undefined) {
       availableAccounts = ax;
+    }
+  });
+  // Sync _internalAccountFilter ↔ parent's accountFilter bindable.
+  // When parent provides accountFilter, prime _internalAccountFilter
+  // from it (one-time seed, then ActivityHeaderFilters owns local writes).
+  $effect(() => {
+    const ext = accountFilter;
+    if (ext !== undefined) {
+      const cur = untrack(() => _internalAccountFilter);
+      // Only update when content differs to avoid loops.
+      if (JSON.stringify(cur) !== JSON.stringify(ext)) {
+        _internalAccountFilter = ext.slice();
+      }
+    }
+  });
+  // Push local writes back up to the parent's bindable.
+  $effect(() => {
+    const local = _internalAccountFilter;
+    if (untrack(() => accountFilter) !== undefined) {
+      accountFilter = local;
     }
   });
   // ── filteredOrderRows filter predicates ────────────────────────────────
@@ -1340,93 +1394,106 @@
 
 </script>
 
-<div class="flex items-stretch mb-2 log-tab-row" style="border-bottom: 1px solid rgba(255,255,255,0.07);">
-  <AlgoTabs
-    tabs={VISIBLE_TABS.map(([id, label]) => ({ id, label }))}
-    bind:value={logTab}
-    onChange={onTabChange}
-    compact={true}
-  />
-  <!-- Operator: "in log panel remove live and move all accounts dropdown
-       in its place". Mode chip dropped (navbar already shows mode);
-       AccountMultiSelect lifted from the order-strip into the tab row
-       so the account filter is visible at panel level.
-       ActivityLogModal renders its own copy in the modal header and
-       passes hideInlineAccountFilter=true so this version doesn't
-       duplicate. -->
-  {#if !hideInlineAccountFilter && _availableAccounts.length > 1}
-    <span class="lp-tabrow-acct">
-      <!-- Operator: "the text is spilling to the right. change it to
-           all acc. to reduce text width." Tab row is tighter than the
-           order strip; use the short placeholder so the empty state
-           doesn't push the dropdown trigger past its container. -->
-      <AccountMultiSelect
-        bind:value={_internalAccountFilter}
-        options={_availableAccounts.map(a => ({ value: a, label: a }))}
-        placeholder="All acc." />
-    </span>
+<div class="flex items-stretch mb-2 log-tab-row" class:ctx-modal={context === 'modal'} style="border-bottom: 1px solid rgba(255,255,255,0.07);">
+  {#if label && context !== 'page'}
+    {#if context === 'modal'}
+      <span class="lp-label">
+        <BellIcon width="12" height="12" class="lp-label-icon" />
+        {label}
+      </span>
+    {:else}
+      <span class="lp-label">{label}</span>
+    {/if}
+    <span class="lp-sep" aria-hidden="true"></span>
   {/if}
-  <!-- Card button group: Search · Expand/Contract · Fullscreen · Download
-       Lives at the right end of the tab row so it doesn't eat tab space.
-       Fullscreen is suppressed when already in modal context (context==='modal').
-       Download is disabled on the News tab with an explanatory tooltip. -->
-  <span class="lp-card-btns" role="group" aria-label="Activity panel controls">
-    <!-- Search -->
-    <button type="button"
-      class="lp-card-btn {_searchOpen ? 'lp-card-btn-on' : ''}"
-      title={_searchOpen ? 'Close search' : 'Search rows'}
-      aria-label="Search rows"
-      aria-pressed={_searchOpen}
-      onclick={() => { _searchOpen = !_searchOpen; if (!_searchOpen) _searchQuery = ''; }}>
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.6"/>
-        <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-      </svg>
-    </button>
-    <!-- Expand / Contract -->
-    <button type="button"
-      class="lp-card-btn {_expanded ? 'lp-card-btn-on' : ''}"
-      title={_expanded ? 'Contract panel' : 'Expand panel'}
-      aria-label={_expanded ? 'Contract panel' : 'Expand panel'}
-      aria-pressed={_expanded}
-      onclick={() => { _expanded = !_expanded; }}>
-      {#if _expanded}
-        <!-- Contract: two arrows pointing inward -->
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      {:else}
-        <!-- Expand: four arrows pointing outward -->
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
+  <div class="lp-tab-strip-wrap">
+    <AlgoTabs
+      tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
+      bind:value={logTab}
+      onChange={onTabChange}
+      compact={true}
+    />
+  </div>
+  <ActivityHeaderFilters
+    bind:accountFilter={_internalAccountFilter}
+    bind:levelFilter
+    availableAccounts={_availableAccounts}
+    showAccountFilter={_showAccountFilter}
+    showLevelFilter={_showLevelFilter} />
+  {#if label}
+    <div class="lp-card-btns">
+      {#if context !== 'page'}
+        {#if context === 'modal'}
+          <button type="button" class="alm-close-btn"
+                  aria-label="Close activity log"
+                  onclick={() => onClose?.()}>×</button>
+        {:else}
+          <CollapseButton bind:isCollapsed {cardId} />
+          <FullscreenButton bind:isFullscreen />
+        {/if}
       {/if}
-    </button>
-    <!-- Fullscreen — hidden when already in modal context -->
-    {#if context !== 'modal'}
+      {#if onDownload}
+        <GridDownloadButton onClick={onDownload} />
+      {/if}
+    </div>
+  {:else}
+    <!-- Legacy card buttons for mounts without a label prop -->
+    <span class="lp-card-btns-legacy" role="group" aria-label="Activity panel controls">
+      <!-- Search -->
       <button type="button"
-        class="lp-card-btn"
-        title="Open in fullscreen modal"
-        aria-label="Open in fullscreen modal"
-        onclick={() => { openActivityModal(); }}>
+        class="lp-card-btn {_searchOpen ? 'lp-card-btn-on' : ''}"
+        title={_searchOpen ? 'Close search' : 'Search rows'}
+        aria-label="Search rows"
+        aria-pressed={_searchOpen}
+        onclick={() => { _searchOpen = !_searchOpen; if (!_searchOpen) _searchQuery = ''; }}>
         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.6"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
-    {/if}
-    <!-- Download — disabled on News tab -->
-    <button type="button"
-      class="lp-card-btn"
-      title={logTab === 'news' ? 'Download not available for News tab' : 'Download visible rows as CSV'}
-      aria-label={logTab === 'news' ? 'Download not available for News tab' : 'Download CSV'}
-      disabled={logTab === 'news'}
-      onclick={_downloadCsv}>
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-      </svg>
-    </button>
-  </span>
+      <!-- Expand / Contract -->
+      <button type="button"
+        class="lp-card-btn {_expanded ? 'lp-card-btn-on' : ''}"
+        title={_expanded ? 'Contract panel' : 'Expand panel'}
+        aria-label={_expanded ? 'Contract panel' : 'Expand panel'}
+        aria-pressed={_expanded}
+        onclick={() => { _expanded = !_expanded; }}>
+        {#if _expanded}
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        {:else}
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        {/if}
+      </button>
+      <!-- Fullscreen — hidden when already in modal context -->
+      {#if context !== 'modal'}
+        <button type="button"
+          class="lp-card-btn"
+          title="Open in fullscreen modal"
+          aria-label="Open in fullscreen modal"
+          onclick={() => { openActivityModal(); }}>
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </button>
+      {/if}
+      <!-- Download — disabled on News tab -->
+      <button type="button"
+        class="lp-card-btn"
+        title={logTab === 'news' ? 'Download not available for News tab' : 'Download visible rows as CSV'}
+        aria-label={logTab === 'news' ? 'Download not available for News tab' : 'Download CSV'}
+        disabled={logTab === 'news'}
+        onclick={_downloadCsv}>
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </span>
+  {/if}
 </div>
 <!-- Search input row — visible when _searchOpen is true -->
 {#if _searchOpen}
@@ -1664,12 +1731,87 @@
      scaled proportionally. Still no inter-tab gap so mobile fit holds. */
   .log-tab-row { gap: 0; }
 
-  /* Account multi-select lifted into the tab row (replaces the
-     mode chip per operator). Right-aligned via `margin-left: auto`;
-     width clamped so it doesn't dominate the tab row but is wide
-     enough to show 2-3 selected account codes. */
-  .lp-tabrow-acct {
+  /* Modal context: amber gradient header matching alm-header style */
+  .ctx-modal {
+    background: linear-gradient(180deg,
+      rgba(251, 191, 36, 0.18) 0%,
+      rgba(251, 191, 36, 0.06) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  /* Tab strip wrapper — grows to fill remaining space in the flex row */
+  .lp-tab-strip-wrap {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    align-items: stretch;
+    overflow-x: hidden;
+  }
+
+  /* Label chip shown when `label` prop is provided */
+  .lp-label {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm, 0.6rem);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c-action);
+    white-space: nowrap;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0 0.5rem;
+  }
+  :global(.lp-label-icon) { color: var(--c-action); flex-shrink: 0; }
+
+  /* Separator between label and tab strip */
+  .lp-sep {
+    width: 1px;
+    align-self: stretch;
+    background: rgba(255,255,255,0.10);
+    flex-shrink: 0;
+    margin: 0.15rem 0.25rem 0.15rem 0.5rem;
+  }
+
+  /* Close button rendered in modal context */
+  .alm-close-btn {
+    margin-left: 0;
+    flex-shrink: 0;
+    width: 1.4rem;
+    height: 1.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 3px;
+    color: var(--c-short);
+    font-size: var(--fs-xl);
+    line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    font-family: monospace;
+    transition: background 0.1s;
+  }
+  .alm-close-btn:hover { background: rgba(248, 113, 113, 0.15); }
+
+  /* Legacy card-btns span for mounts without a label */
+  .lp-card-btns-legacy {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
     margin-left: auto;
+    flex-shrink: 0;
+    padding: 0 0.15rem;
+    align-self: center;
+  }
+
+  /* Account multi-select (legacy inline filter — retained for existing
+     mounts that pass hideInlineAccountFilter=false). Width clamped so it
+     doesn't dominate the tab row. */
+  .lp-tabrow-acct {
     align-self: center;
     display: inline-flex;
     min-width: 8rem;
@@ -2095,18 +2237,12 @@
     color: #bae6fd;
   }
 
-  /* ── Card button group (Search · Expand · Fullscreen · Download) ──── */
-  /* Right-aligned set of icon buttons at the end of the tab row.
-     flex-shrink:0 so they don't compress behind the tab strip.
-     gap: 0.2rem keeps buttons tight but not overlapping. */
+  /* ── Card button group (label-based: CollapseButton + FullscreenButton + Download) ──── */
   .lp-card-btns {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     gap: 0.2rem;
-    margin-left: auto;
     flex-shrink: 0;
-    padding: 0 0.15rem;
-    align-self: center;
   }
   .lp-card-btn {
     display: inline-flex;
