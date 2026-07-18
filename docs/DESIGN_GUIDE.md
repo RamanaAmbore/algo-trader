@@ -3240,7 +3240,7 @@ sequenceDiagram
 - `db_worker` — drains `db_queue`, batched SQL upserts per kind (500-row / 500ms boundary).
 - On queue full: warn + drop; next read re-fetches from broker.
 
-**Chart self-heal** (§4.5 companion) — `/api/options/historical` detects <70% coverage in DB (threshold `chart_self_heal_coverage_threshold` in settings, default 0.70) and auto-fetches from broker when ≥1 broker available. Response carries `partial: bool` for the frontend "partial data" hint.
+**Chart self-heal** (§4.5 companion) — `/api/options/historical` detects <60% coverage in DB (threshold `_SELF_HEAL_COVERAGE_THRESHOLD` in `options.py`, default 0.60) and auto-fetches from broker when ≥1 broker available. Response carries `partial: bool` for the frontend "partial data" hint.
 
 **Files:**
 - `backend/api/persistence/store_base.py` — `PersistentStoreBase.get_or_fetch`, per-key lock, completeness checks
