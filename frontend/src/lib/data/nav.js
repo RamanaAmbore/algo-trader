@@ -88,7 +88,7 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
  * function (or a wrapper that calls it) instead of reading `p.day_change_val`
  * directly.
  *
- * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null, last_price?: number|null }} p
+ * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
@@ -107,13 +107,11 @@ export function baseDayPnlForPosition(p) {
   const avg   = Number(p?.average_price ?? p?.avg_cost ?? 0);
   if (oq > 0 && dcv !== 0) return dcv;
   if (oq > 0 && dcv === 0) {
-    // Stale-snapshot guard: when close_price === last_price (Kite hasn't
-    // settled yet — common during the overnight gap), the formula
-    // pnl − oq×(close−avg) would be correct, but if close is genuinely
-    // stale (zero or equal to LTP), return 0 to avoid a distorted value.
-    const ltp = Number(p?.last_price ?? 0);
-    if (close > 0 && close !== ltp) return pnl - oq * (close - avg);
-    return 0;
+    // Case 4: only guard against zero/missing close (broker hasn't populated
+    // prev_close yet). Removed close===ltp guard — it incorrectly zeroed realized
+    // P&L when broker's close_price hadn't refreshed. Formula is correct regardless.
+    if (close <= 0) return 0;
+    return pnl - oq * (close - avg);
   }
   return pnl - oq * (close - avg);
 }

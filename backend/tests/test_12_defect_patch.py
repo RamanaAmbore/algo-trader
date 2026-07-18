@@ -107,23 +107,26 @@ def test_derivatives_page_positions_load_uses_args_not_opts():
 
 
 def test_navstrip_pslot_formula_guard_stale_snapshot():
-    """baseDayPnlForPosition must guard against close_price === last_price (stale snapshot)
-    to avoid returning a distorted formula value when previous_close is unavailable.
+    """baseDayPnlForPosition Case 4 must only guard against close <= 0 (missing prev_close).
 
-    When close_price falls back to last_price (stale LTP from broker REST endpoint),
-    the formula pnl - oq*(close-avg) produces total unrealized P&L, not day P&L.
-
-    The fix: check close !== ltp before applying the formula.
+    The former close !== ltp guard was a regression (8474a17e) that zeroed realized
+    intraday P&L whenever broker's close_price hadn't refreshed. The correct guard
+    is close <= 0 only — the formula pnl - oq*(close-avg) is valid even when close === ltp.
     """
     src_path = Path("/Users/ramanambore/projects/ramboq/frontend/src/lib/data/nav.js")
     src = src_path.read_text()
 
-    # The fix adds a close !== ltp guard before applying the formula
-    # Look for the guard condition in the baseDayPnlForPosition function
-    assert "close !== ltp" in src or "close_price !== last_price" in src, (
-        "baseDayPnlForPosition must check close !== ltp before applying the formula "
-        "pnl - oq*(close-avg) to prevent distorted values when close_price fell back "
-        "to LTP in snapshot rows. Without this guard, stale snapshots show multi-lakh distortions."
+    # Correct guard: only bail when close is zero/missing
+    assert "close <= 0" in src, (
+        "baseDayPnlForPosition Case 4 must guard only against close <= 0. "
+        "The close !== ltp guard was removed as a regression (8474a17e)."
+    )
+
+    # Regression guard: close !== ltp must NOT be present in baseDayPnlForPosition
+    assert "close !== ltp" not in src, (
+        "Regression detected: close !== ltp guard found in nav.js. "
+        "This guard incorrectly zeroes realized P&L when broker close_price hasn't refreshed. "
+        "Only close <= 0 is a valid guard."
     )
 
 
