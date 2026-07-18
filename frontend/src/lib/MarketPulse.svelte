@@ -28,6 +28,7 @@
   import { isMarketOpen } from '$lib/marketHours';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import ModalShell from '$lib/ModalShell.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel, resolveVirtual } from '$lib/data/rootOf.js';
@@ -4203,11 +4204,7 @@
      form keeps the Add flow visually contiguous. Click-overlay / Esc
      to dismiss; targets the watchlist chosen in the Add popup via
      _resolveTargetListId. -->
-{#if optionPickerUnderlying}
-  <div class="search-overlay" role="dialog" aria-modal="true"
-       aria-label="Pick option strike" tabindex="-1"
-       onclick={closeOptionPicker}
-       onkeydown={(e) => { if (e.key === 'Escape') closeOptionPicker(); }}>
+<ModalShell open={!!optionPickerUnderlying} onClose={closeOptionPicker} ariaLabel="Pick option strike">
     <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
         <span class="search-title">{optionPickerUnderlying?.name} — pick contract</span>
@@ -4291,8 +4288,7 @@
         </div>
       </div>
     </div>
-  </div>
-{/if}
+</ModalShell>
 
 <style>
   /* Mobile touch-target — WCAG 2.5.8 minimum 24px; aim for 36px on
@@ -5070,16 +5066,6 @@
     margin: 0.85rem 0 0.6rem;
   }
 
-  :global(.search-overlay) {
-    position: fixed;
-    inset: 0;
-    background: rgba(8, 15, 30, 0.7);
-    z-index: 60;
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 12vh;
-  }
   :global(.search-modal) {
     width: min(28rem, 92vw);
     background: linear-gradient(180deg, #0c1830 0%, #0a1628 100%);
