@@ -1,203 +1,85 @@
-# Plan: UI Polish Round 3 — Timestamps, Filters, Demo Banner, Payoff SSOT, Fullscreen
+# Plan: UI Polish Round 4 — Signals border, bio buttons, ag-Grid shared defaults + row shading consistency, card reuse, timestamp fix
+
+## Context
+
+Several UI polish items queued after Round 3 ship:
+- Signals button inactive border is too faint (`--algo-cyan-border-soft` = rgba cyan at low opacity)
+- Bio contact buttons in showcase lack visual cohesion with the sky-blue attribution panel
+- Derivatives page footnote "* numerical max/min within ±3.0σ..." is noise — remove it
+- Mobile timestamp blinks indefinitely (animation stays infinite even when no data) and tap does nothing (iOS Safari ignores click on spans without `cursor: pointer`)
+- ag-Grid has duplicated formatters and divergent config across MarketPulse/dashboard/perf — extract shared defaults
+- Card header patterns diverge: dashboard Capital/Equity hand-rolls a `bucket-header` instead of using CardHeader; admin/perf duplicates the card grid structure twice
 
 ## Task
 
-Fix 10 post-deploy issues across the frontend and one backend fix (ntfy priority). Issues span:
-(1) mobile timestamp toggle broken, (2) filters in wrong order, (3) bio color swap,
-(4) demo banner floating gap, (5) payoff chart SSOT, (6) risk data desktop layout,
-(7) ntfy high-priority, (8) agents tab amber separator, (9) ag-Grid row consistency,
-(10) smart fullscreen button.
+1. **Signals border** — `ChartWorkspace.svelte:2523`: change `.cw-signals-btn` inactive border from `var(--algo-cyan-border-soft)` to `var(--algo-cyan-border)` so the button is visible before activation.
+
+2. **Bio buttons** — `showcase/+page.svelte` `.show-contact-btn`: align border and text color with the sky-blue panel (`#7dd3fc` scheme). Change border from `rgba(126,151,184,0.42)` → `color-mix(in srgb, #7dd3fc 35%, transparent)`, bg from `rgba(71,100,140,0.12)` → `color-mix(in srgb, #7dd3fc 8%, transparent)`, color from `rgba(226,232,240,0.88)` → `#cbd5e1`, hover border → `color-mix(in srgb, #7dd3fc 55%, transparent)`, hover color → `#e2e8f0`.
+
+3. **Remove derivatives footnote** — `derivatives/+page.svelte:4741-4750`: delete the entire `<div class="text-[0.5rem]...">` block (10 lines) containing "* numerical max/min within ±{span_sigmas}σ...".
+
+4. **Math term hints — Greeks + Risk labels** — `derivatives/+page.svelte`:
+   - **Greeks block (lines 4670-4689)**: Each Greek row currently has `title=""` only — doesn't fire on mobile. Replace with `<InfoHint popup text="...">` inline in the `.kv-k.kv-k-greek` span. Reuse the existing title text as the InfoHint `text` prop. Keep `kv-pair` structure unchanged. Δ text: "Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs."; Γ: "Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly."; Θ: "Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone."; 𝒱: "Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)."; ρ: "Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options."
+   - **Risk labels (lines 4700-4734)**: InfoHint chips already exist but are hard to discover (0.75rem chip). Add visual affordance to the label text: add CSS for `.kv-k { cursor: help; }` and `.kv-k:not(.kv-k-greek) { border-bottom: 1px dashed rgba(148,163,184,0.3); }` so the label text itself signals it's interactive. The existing InfoHint chips remain — the dashed underline makes the whole label area scannable as "has explanation". Apply in the component's `<style>` block.
+
+5. **Timestamp mobile fix** — `app.css`: 
+   - Add `.algo-ts { cursor: pointer; }` so iOS Safari fires tap events (currently only `.algo-ts-data` has it).
+   - Change `algo-ts-pulse` from `infinite` to `animation-iteration-count: 3` (4.5 s of pulse then stops; indicates loading state, not a permanent blink).
+
+6. **ag-Grid shared defaults + row shading consistency** — Two sub-items:
+   - **Shared defaults**: Create `frontend/src/lib/data/gridDefaults.js` with `GRID_BASE_OPTS` (suppressMovableColumns, suppressCellFocus, animateRows, domLayout, headerHeight:28) and shared value formatters `fmtNum(dp)`, `fmtPct`, `fmtCcy` extracted from MarketPulse/dashboard duplicates. Import and use in MarketPulse.svelte, dashboard/+page.svelte, PerformancePage.svelte — replace inline duplicates. Do NOT change rowHeight (26/28/default intentional per grid), do NOT change theme tokens.
+   - **Row shading consistency**: `CandidateLegRow.svelte` (Legs grid) has no alternating row shading while the Snapshot grid on the same Derivatives page has `.byund-row:nth-of-type(odd) > span { background-color: rgba(13,22,42,0.30); }`. Add the same pattern to `.cand-row` in `CandidateLegRow.svelte` — add `.cand-row:nth-of-type(odd) { background: rgba(13,22,42,0.30); }`. Also update both grids to reference `var(--ag-odd-row-background-color, rgba(13,22,42,0.30))` so they stay in sync when the theme variable changes.
+
+7. **Card reuse** — Two targeted extractions:
+   - **PerformanceCardGrid.svelte** (new component in `src/lib/`): extract the duplicated 80-line `<article class="perf-card">` block that appears twice in `admin/perf/+page.svelte` (FE grid lines ~357-450, BE grid lines ~451-553). Props: `cards`, `historyData`, `regressionMap`, `isFE`. Move `.perf-card*` scoped CSS into the new component.
+   - **Dashboard Capital/Equity** (`dashboard/+page.svelte` lines ~2068-2212): replace hand-rolled `<div class="bucket-header">` with CardHeader using its `middle` slot for AlgoTabs. Wire `detectOverflow={true}` if needed.
 
 ## Agents
 
-### frontend:
-**12 targeted fixes across 8 files:**
-
-**F1 — Mobile timestamp toggle (26 algo pages via stores.js pattern)**
-Current bug: `_showLiveTs` toggles but `formatDualTz(0)` returns `''` when no
-`lastRefreshAt`, making the refresh span empty — user sees bare `|` and perceives it as
-everything disappearing. Vsep also must be conditional.
-
-In every algo page that has the `algo-ts-group` pattern
-(`frontend/src/routes/(algo)/{activity,agents,automation,chart,console,dashboard,...}/+page.svelte`):
-- The vsep `<span class="algo-ts-vsep">|</span>` MUST be wrapped in `{#if $lastRefreshAt}` so it
-  only shows when refresh data exists.
-- The live ts `onclick` handler MUST be gated: `onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}`
-- The live ts should ONLY get `algo-ts-hidden` class when `$lastRefreshAt` is truthy AND
-  `_showLiveTs` is true: `class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}`
-- When no `lastRefreshAt`: add CSS animation `.algo-ts-pulse` (keyframe: opacity 0.5→1 @1.5s ease-in-out infinite)
-  applied as `class:algo-ts-pulse={!$lastRefreshAt}`
-
-Reference: the pulse page (`frontend/src/routes/(algo)/pulse/+page.svelte`) already has the
-correct conditional vsep pattern (`{#if _moversAsOf}` block around vsep + first ts).
-Apply the same conditional logic using `$lastRefreshAt` across all 26 pages.
-
-The CSS keyframe should be added at the page level OR in a global style block
-(note: `app.css` is a safe place if it's not scoped). If adding per-page is too redundant,
-add to app.css as `.algo-ts-pulse { animation: algo-ts-pulse-kf 1.5s ease-in-out infinite; }
-@keyframes algo-ts-pulse-kf { 0%,100% { opacity:1; } 50% { opacity:0.4; } }`.
-
-**F2 — ActivityHeaderFilters AFTER tabs (`frontend/src/lib/LogPanel.svelte:1409-1421`)**
-Currently `ActivityHeaderFilters` is the FIRST child of `.lp-tab-strip-wrap`, before `AlgoTabs`.
-User wants filters AFTER the tabs. Swap order inside the div:
-```
-<div class="lp-tab-strip-wrap">
-  <AlgoTabs ... />   ← tabs FIRST
-  <ActivityHeaderFilters ... />   ← filters AFTER
-</div>
-```
-
-**F3 — Showcase bio color swap (`frontend/src/routes/(algo)/showcase/+page.svelte`)**
-Swap the colors between contact button text and bio text:
-- `.show-contact-btn { color: rgba(226, 232, 240, 0.88); }` (was `#7dd3fc`)
-- `.show-attribution { color: #7dd3fc; }` (was `rgba(226, 232, 240, 0.88)`)
-
-**F4 — Demo banner vertical gap (`frontend/src/routes/(algo)/+layout.svelte`)**
-Current bug: demo banner is in normal flow before `<main>`, creating a 2rem phantom gap.
-The fixed navbar (z-index 50) and fixed ps-strip cover the banner (z-index 10).
-The 2rem of flow space pushes `<main>` down by 2rem, creating a visible gap.
-
-Fix:
-1. Change `.demo-banner` to `position: fixed; top: 3rem; left: 0; right: 0; z-index: 48;` (above page-header:45, below navbar:50)
-2. Add: `:global(.algo-viewport:has(.ps-strip)) .demo-banner { top: calc(3rem + 1.5rem); }` (shift below ps-strip)
-3. Add: `:global(.algo-card:has(.demo-banner) .page-header) { top: calc(3rem + 2rem); }` (page-header clears demo banner)
-4. Add: `:global(.algo-viewport:has(.ps-strip):has(.demo-banner) .page-header) { top: calc(3rem + 1.5rem + 2rem); }`
-5. Add: `:global(.algo-card:has(.demo-banner)) .algo-content { padding-top: calc(3rem + 2rem + 1.8rem); }`
-6. Add: `:global(.algo-viewport:has(.ps-strip):has(.demo-banner)) .algo-content { padding-top: calc(3rem + 1.5rem + 2rem + 1.8rem); }`
-Note: remove the `width: 100%` rule that was added since fixed + left:0+right:0 handles full-width.
-
-**F5 — Payoff SSOT (`frontend/src/lib/MarketPulse.svelte:3630-3634`)**
-`ctxOpenOptions(row)` navigates to `/admin/derivatives?symbol=${sym}` where `sym = row.tradingsymbol`
-(a full contract symbol like "NIFTY24DEC18000CE"). The derivatives page reads `?u=` for underlying.
-Fix: use `row.underlying` if present, else strip the contract symbol to the underlying name.
-```js
-function ctxOpenOptions(row) {
-  closeContextMenu();
-  const underlying = encodeURIComponent(
-    row.underlying || row.tradingsymbol || ''
-  );
-  window.location.href = `/admin/derivatives?u=${underlying}`;
-}
-```
-
-**F6 — Risk/reward single row desktop (`frontend/src/routes/(algo)/admin/derivatives/+page.svelte`)**
-The `.opt-kv` div at line 4693 (Risk & expected value block) uses `grid-template-columns: 1fr 1fr`
-(2-column layout). On desktop (≥1180px) show all items in a single horizontal row, same
-technique as `.opt-kv-greeks`:
-1. Add class `opt-kv-risk` to the risk section div at line 4693
-2. Add at-media override:
-```css
-@media (min-width: 1180px) {
-  .opt-kv-risk {
-    grid-template-columns: repeat(auto-fit, minmax(0, max-content));
-    column-gap: 1rem;
-  }
-  .opt-kv-risk .kv-pair {
-    display: contents;
-  }
-  .opt-kv-risk .kv-v {
-    margin-left: 0.3rem;
-    margin-right: 0.8rem;
-    text-align: left;
-  }
-}
-```
-
-**F7 — Agents amber separator (`frontend/src/lib/LogPanel.svelte`)**
-Investigate: the "thick amber separator" is most likely from one of:
-(a) The `.opt-block-h` amber border-bottom visible in the agents content area
-(b) First agent row having `log-agent-triggered` class (color: #fb923c) that looks like a separator  
-(c) ActivityHeaderFilters level-select showing with amber border only in agents tab
-
-To fix: read the visual rendering of the agents tab content area. If the first visible row
-has orange text creating a separator-like visual, add `border-top: 1px solid rgba(255,255,255,0.07)`
-to `.log-panel.log-rows` to create a clear visual separation between header and content.
-If it's the level-select amber border (`.act-level-sel { border: 1px solid rgba(251,191,36,0.25) }`),
-reduce its opacity or change to match account-filter styling.
-
-**F8 — ag-Grid snapshot vs legs (`frontend/src/lib/MarketPulse.svelte` + derivatives)**
-Investigate: the "snapshot" grid in pulse uses `ag-theme-quartz ag-theme-algo` CSS.
-The "legs" display in derivatives uses a custom CSS subgrid (NOT ag-Grid).
-If the user is comparing pulse positions/holdings grid vs derivatives custom grid, ensure:
-- Row height consistency: verify `rowHeight` prop passed to each ag-Grid
-- `rowClassRules` consistency: both grids should use same row alternate coloring
-Read `MarketPulse.svelte` around gridOptions for positions/holdings vs the custom `.cand-grid`
-in `CandidateLegRow.svelte`. If there's a concrete difference in row height or alternating
-color rules, align them. If investigating reveals they're different UI elements, document what
-the user likely means and ensure visual consistency.
-
-**F9 — Smart fullscreen button (`frontend/src/lib/CardHeader.svelte`)**
-Add `detectOverflow` boolean prop (default false). When true:
-1. In CardHeader, get a ref to the parent container (`<slot>` host) using `$host()` or `bind:this`
-2. Use ResizeObserver inside `$effect()` to watch the container
-3. Set `_hasOverflow = el.scrollHeight > el.clientHeight + 4 || el.scrollWidth > el.clientWidth + 4`
-4. Show fullscreen button only when `_hasOverflow || isFullscreen`
-
-Implementation approach:
-```js
-// In CardHeader.svelte
-let detectOverflow = false; // new prop
-let _hasOverflow = $state(false);
-let _containerEl = $state(null);
-
-$effect(() => {
-  if (!detectOverflow || !_containerEl?.parentElement) return;
-  const el = _containerEl.parentElement;
-  const obs = new ResizeObserver(() => {
-    _hasOverflow = el.scrollHeight > el.clientHeight + 4 || el.scrollWidth > el.clientWidth + 4;
-  });
-  obs.observe(el);
-  return () => obs.disconnect();
-});
-```
-
-In the CardHeader template: `<span bind:this={_containerEl} class="ch-overflow-anchor" aria-hidden="true" style="display:none"></span>`
-Show fullscreen button: `{#if !detectOverflow || _hasOverflow || isFullscreen}`.
-
-Update cards that should use smart fullscreen to pass `detectOverflow={true}`. Start with
-MarketPulse position/holdings cards (which have fixed `--bucket-rows` heights that can overflow)
-and LogPanel.
-
-### broker: skip
-
-### doc: skip
-
-### backend-test: skip
-
-### playwright: skip (changes are CSS/layout — existing specs cover modal behavior)
-
-### backend (notify_deploy.py):
-Add `"Priority": "high"` to the ntfy request headers in
-`webhook/notify_deploy.py` at the existing ntfy block (lines 141-149).
-Change:
-```python
-headers={"Title": event_label, "Tags": "rocket", "Content-Type": "text/plain"}
-```
-To:
-```python
-headers={"Title": event_label, "Tags": "rocket", "Priority": "high", "Content-Type": "text/plain"}
-```
-Dev-deploy suppression is already in place (line 66-68: `if is_non_main: sys.exit(0)`). No other change needed.
+- frontend: Implement all 7 items above. Files to touch: `frontend/src/app.css` (timestamp cursor + animation), `frontend/src/lib/ChartWorkspace.svelte:2523` (signals border), `frontend/src/routes/(algo)/showcase/+page.svelte:507-526` (bio buttons), `frontend/src/routes/(algo)/admin/derivatives/+page.svelte:4741-4750` (remove footnote) + Greeks InfoHints (lines 4670-4689) + Risk label CSS + Snapshot row shading to use CSS variable, `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` (add alternating row shading), `frontend/src/lib/data/gridDefaults.js` (new — GRID_BASE_OPTS + shared formatters), `frontend/src/lib/MarketPulse.svelte` (import gridDefaults), `frontend/src/routes/(algo)/dashboard/+page.svelte` (import gridDefaults + CardHeader for cap/eq bucket), `frontend/src/routes/(algo)/admin/perf/+page.svelte` (import gridDefaults + use new PerformanceCardGrid), `frontend/src/lib/PerformanceCardGrid.svelte` (new component). Scope discipline: only change what's listed. Do not alter rowHeight values (26/28/default) or ag-Grid theme class names.
+- backend: skip
+- broker: skip
+- doc: skip
+- backend-test: skip
+- playwright: Add/update Playwright smoke tests for: (1) Showcase bio buttons visible with correct border color, (2) Derivatives page does NOT contain "numerical max/min" text, (3) Signals button has visible border in inactive state, (4) Legs rows alternate background color (check computed style on even/odd .cand-row), (5) Greeks InfoHint buttons are present on the derivatives page (aria-label or role=button within .kv-k-greek). Existing specs in `frontend/tests/` — add assertions to relevant spec files.
 
 ## Tests
-- pytest: no (no backend logic changes)
-- svelte-check: yes (26 pages + 8 files changed)
-- playwright: no (layout fixes — existing modal specs still valid)
+
+- pytest: no
+- svelte-check: yes
+- playwright: yes
 
 ## Commit message
+
 ```
-fix(ui): timestamp mobile toggle, demo banner position, filters order, payoff SSOT, risk row layout, ntfy priority
+feat(ui): Polish Round 4 — signals border, bio buttons, math hints, ag-Grid consistency + shared defaults, card reuse, timestamp fix
+
+- Signals button: inactive border raised from border-soft → border (visible at rest)
+- Bio contact buttons: border/bg/color aligned to sky-blue attribution scheme
+- Derivatives: remove numerical footnote (max/min ±σ% spot range); Greeks Δ/Γ/Θ/𝒱/ρ get
+  InfoHint popup (replacing title="" which doesn't fire on mobile); Risk labels get
+  dashed underline + cursor:help to signal "tap for explanation"
+- Timestamp: add cursor:pointer to .algo-ts for iOS tap; pulse animation stops after 3 cycles
+- ag-Grid row shading: add alternating row bg to Legs grid (CandidateLegRow.svelte);
+  unify Snapshot + Legs to use --ag-odd-row-background-color CSS variable
+- ag-Grid: extract GRID_BASE_OPTS + shared formatters into gridDefaults.js; import in
+  MarketPulse, dashboard, PerformancePage — eliminate inline duplicates
+- Card reuse: extract PerformanceCardGrid.svelte (dedup 80-line block in admin/perf);
+  migrate dashboard Capital/Equity bucket-header → CardHeader middle slot
 ```
 
 ## Done when
-- Mobile: tapping page timestamp toggles to refresh stamp (vsep hidden when no refresh stamp; live ts pulses when no refresh data)
-- Desktop: both stamps visible simultaneously (no change)
-- ActivityHeaderFilters (All accounts / Level) appear to the RIGHT of tabs, not left
-- Showcase bio text is sky-blue (#7dd3fc), contact button text is off-white
-- Demo banner appears as a fixed strip between NavStrip and page-header row with no phantom gap; no gap visible when not in demo mode
-- "Open in Options →" context menu in MarketPulse navigates to derivatives with `?u=<underlying>` correctly pre-selecting the underlying
-- Risk & expected value block shows all items in a single row on desktop (≥1180px); mobile unchanged
-- ntfy fires for prod deployments with Priority: high; dev deploys still suppressed
-- Agents tab visual separator (amber) investigated and eliminated
-- ag-Grid row formatting consistent across pulse grids
-- Fullscreen button on cards with `detectOverflow=true` appears only when content overflows
+
+- Signals button border visible in inactive state (visible cyan ring at rest)
+- Bio contact buttons use sky-blue border that reads against the attribution panel bg
+- Derivatives page has no "* numerical max/min within" text
+- Greeks (Δ, Γ, Θ, 𝒱, ρ) each have an InfoHint popup button (not just title attribute)
+- Risk section labels (R:R, POP, EV, etc.) show dashed underline + cursor:help to signal they carry explanation
+- Mobile: `.algo-ts` has `cursor: pointer`; pulse animation stops after ~4.5s (3 iterations)
+- `gridDefaults.js` exists; no duplicate `fmtNum`/`fmtPct`/`fmtCcy` inline in the 3 grid pages
+- Legs grid (`.cand-row`) has alternating row shading matching Snapshot grid visually
+- Both Snapshot (`.byund-row`) and Legs (`.cand-row`) use `var(--ag-odd-row-background-color, rgba(13,22,42,0.30))` for odd rows
+- `PerformanceCardGrid.svelte` exists; `admin/perf/+page.svelte` renders both grids via it
+- Dashboard Capital/Equity card uses CardHeader (no `bucket-header` div)
+- svelte-check: 0 errors
+- Playwright: smoke tests pass for bio buttons, derivatives footnote removed, signals border

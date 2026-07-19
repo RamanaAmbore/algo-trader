@@ -2544,11 +2544,13 @@ button:not(:disabled):active,
   50%       { opacity: 0.45; }
 }
 .algo-ts-pulse {
-  animation: algo-ts-pulse-kf 1.5s ease-in-out infinite;
+  animation: algo-ts-pulse-kf 1.5s ease-in-out 3;
 }
 @media (prefers-reduced-motion: reduce) {
   .algo-ts-pulse { animation: none; }
 }
+/* Global pointer affordance for live-clock spans (.algo-ts) used on all pages. */
+.algo-ts { cursor: pointer; }
 
 /* ── Shared chart tooltip ─────────────────────────────────────────────────
    Used by ChartWorkspace (OHLCV popup) and OptionsPayoff (spot/P&L popup).
