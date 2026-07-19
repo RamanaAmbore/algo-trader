@@ -49,6 +49,7 @@
    *   showSearch?: boolean,
    *   refreshAlwaysVisible?: boolean,
    *   onDownload?: ((...args: any[]) => void) | null,
+   *   hideFullscreen?: boolean,
    * }} */
   let {
     isCollapsed = $bindable(false),
@@ -61,6 +62,7 @@
     showSearch = true,
     refreshAlwaysVisible = false,
     onDownload = null,
+    hideFullscreen = false,
   } = $props();
 </script>
 
@@ -71,6 +73,8 @@
   <GridSearchButton bind:filter {label} />
 {/if}
 <CollapseButton bind:isCollapsed {cardId} {label} />
-<FullscreenButton bind:isFullscreen {label} />
+{#if !hideFullscreen || isFullscreen}
+  <FullscreenButton bind:isFullscreen {label} />
+{/if}
 <DefaultSizeButton bind:isFullscreen bind:isCollapsed {label} />
 <GridDownloadButton onClick={onDownload} {label} autoMargin={false} />

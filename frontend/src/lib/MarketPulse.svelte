@@ -3474,7 +3474,7 @@
         defaultColDef: PULSE_DEFAULT_COL_DEF,
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
-        rowHeight: 26,
+        rowHeight: 28,
       });
       positionsSummaryReady = true;
     }
@@ -3490,7 +3490,7 @@
         defaultColDef: PULSE_DEFAULT_COL_DEF,
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
-        rowHeight: 26,
+        rowHeight: 28,
       });
       holdingsSummaryReady = true;
     }
@@ -3506,7 +3506,7 @@
         defaultColDef: PULSE_DEFAULT_COL_DEF,
         sortingOrder: PULSE_SORTING_ORDER,
         domLayout: 'autoHeight',
-        rowHeight: 26,
+        rowHeight: 28,
       });
       fundsReady = true;
     }
@@ -3629,8 +3629,10 @@
 
   function ctxOpenOptions(row) {
     closeContextMenu();
-    const sym = encodeURIComponent(row.tradingsymbol || '');
-    window.location.href = `/admin/derivatives?symbol=${sym}`;
+    const underlying = encodeURIComponent(
+      row.underlying || row.tradingsymbol || ''
+    );
+    window.location.href = `/admin/derivatives?u=${underlying}`;
   }
   function ctxOpenTicket(row) {
     closeContextMenu();
@@ -4060,6 +4062,7 @@
             onRefresh={refreshAllNow}
             refreshLoading={_refreshing}
             onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
+            detectOverflow={true}
           >
             {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
@@ -4093,6 +4096,7 @@
             onRefresh={refreshAllNow}
             refreshLoading={_refreshing}
             onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
+            detectOverflow={true}
           >
             {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
@@ -4293,9 +4297,9 @@
 <style>
   /* Mobile touch-target — WCAG 2.5.8 minimum 24px; aim for 36px on
      phones. !important is required to beat ag-Grid's inline row-height
-     style (set via rowHeight: 26 in the grid options). Applies
+     style (set via rowHeight: 28 in the grid options). Applies
      uniformly to BOTH grid columns (left + right; all use
-     .ag-theme-algo). Desktop (>720px) honors the rowHeight: 26
+     .ag-theme-algo). Desktop (>720px) honors the rowHeight: 28
      setting normally. Slice AS audit clarification — the override
      is intentional, not a bug. */
   @media (max-width: 720px) {

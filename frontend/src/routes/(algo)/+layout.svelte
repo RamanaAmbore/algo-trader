@@ -2573,8 +2573,11 @@
   /* Demo banner — between ImpersonationBanner and <main>, outside algo-content.
      Full-width sibling so it spans the viewport regardless of algo-content padding. */
   .demo-banner {
-    z-index: 10;
-    width: 100%;
+    position: fixed;
+    top: 3rem;
+    left: 0;
+    right: 0;
+    z-index: 48;
     height: 2rem;
     box-sizing: border-box;
     display: flex;
@@ -2601,4 +2604,23 @@
     transition: color 0.1s;
   }
   .demo-banner-close:hover { color: rgba(148, 163, 184, 0.90); }
+
+  /* Demo banner — shift below ps-strip when active */
+  :global(.algo-viewport:has(.ps-strip)) .demo-banner {
+    top: calc(3rem + 1.5rem);
+  }
+  /* Push page-header below demo banner when visible */
+  :global(.algo-card:has(.demo-banner) .page-header) {
+    top: calc(3rem + 2rem);
+  }
+  :global(.algo-viewport:has(.ps-strip):has(.demo-banner) .page-header) {
+    top: calc(3rem + 1.5rem + 2rem);
+  }
+  /* Push algo-content padding down when demo banner visible */
+  :global(.algo-card:has(.demo-banner)) .algo-content {
+    padding-top: calc(3rem + 2rem + 1.8rem);
+  }
+  :global(.algo-viewport:has(.ps-strip):has(.demo-banner)) .algo-content {
+    padding-top: calc(3rem + 1.5rem + 2rem + 1.8rem);
+  }
 </style>
