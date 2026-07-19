@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatDualTz, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
@@ -115,6 +115,7 @@
   // basket. `_refreshing` is the canonical "any of the three loads
   // is in flight" state — the three RefreshButton instances on this
   // page bind to this instead.
+  let _showLiveTs = $state(false);
   let _refreshing   = $state(false);
   async function _refreshAll() {
     if (_refreshing) return;
@@ -3880,7 +3881,21 @@
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={_refreshAll}
@@ -4864,6 +4879,10 @@
 
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Page-header title + (i) + optional SIM badge as a single inline
      group on the left, timestamp pushed right by .page-header's
      justify-content: space-between. Earlier the InfoHint and ts both

@@ -380,20 +380,26 @@
     if (snap !== chartStore.days) chartStore.setDays(snap);
     writeChartPref(_RANGE_LS_KEY, snap);
   });
-  // Default to candle on first visit; persisted to localStorage so the
-  // operator's choice is remembered. Hydrated in onMount (SSR-safe), so
-  // the initial value here is the canonical default (not a fallback).
+  // Chart type — sourced from chartStore so modal and page share the same
+  // last-picked type. Local _chartType is a reactive alias; store is SSOT.
+  // Legacy _SERIES_LS_KEY retained so existing stored preferences carry over.
   const _SERIES_LS_KEY = 'rbq.cache.chart-series.v1';
-  let _chartType   = $state(/** @type {'line'|'area'|'candle'|'plot'} */('candle'));
-  // `$state` so flipping the gate re-fires the persist effect — see
-  // _overlaysHydrated below for the long-form rationale.
+  let _chartType   = $state(/** @type {'line'|'area'|'candle'|'plot'} */ (chartStore.chartType));
   let _seriesHydrated = $state(false);
-  // Persist series-type choice whenever it changes (after hydration).
-  // Read _chartType BEFORE the gate so the effect subscribes to it on
-  // first run, independent of the hydration state.
+  // Bridge: store → local (e.g. another surface changed the chart type).
+  $effect(() => {
+    const ct = chartStore.chartType;
+    if (!_seriesHydrated) return;
+    untrack(() => {
+      if (ct !== _chartType) _chartType = /** @type {'line'|'area'|'candle'|'plot'} */ (ct);
+    });
+  });
+  // Bridge: local → store + LS (operator picks a chart type).
   $effect(() => {
     const snap = _chartType;
     if (!_seriesHydrated) return;
+    if (snap !== chartStore.chartType) chartStore.setChartType(snap);
+    // Also keep legacy key in sync for any existing code that reads it.
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(_SERIES_LS_KEY, JSON.stringify(snap));
@@ -1693,11 +1699,12 @@
 </script>
 
 <div class="cw-root {_pulse.classOf('chart')}">
+  <div class="cw-header">
   <!-- Picker bar — type filter (1st) sets the instrument-kind scope,
        then the combined pinned+search combo box (2nd) lets the
        operator either click a pin OR type to search from a single
        field. -->
-  {#if !compact}
+  {#if !compact || showHeader}
     <div class="cw-picker" class:cw-picker-busy={_histLoading}
          aria-busy={_histLoading ? 'true' : 'false'}>
       <!-- Type filter — leading element so the operator scopes the
@@ -1847,6 +1854,7 @@
               title="Reset zoom — show full range">Reset</button>
     {/if}
   </div>
+  </div><!-- /.cw-header -->
 
   <!-- Front-month chip — shown when symbol is a bare MCX commodity
        root. Amber roll-warning when expiry is ≤ 3 days away. -->
@@ -2397,6 +2405,22 @@
        is the operator's "Indicators" picker — escapes downward into
        the chart area, matching the TradingView pattern. */
     overflow: visible;
+  }
+
+  /* ── Header wrapper: merges picker + controls into one row on desktop ── */
+  .cw-header {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  @media (min-width: 640px) {
+    .cw-header {
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: center;
+    }
+    .cw-header .cw-picker  { flex-shrink: 0; border-bottom: none; border-right: 1px solid rgba(255,255,255,0.06); }
+    .cw-header .cw-controls { flex: 1 1 0; min-width: 0; border-bottom: none; }
   }
 
   /* ── Picker bar ─────────────────────────────────────────── */

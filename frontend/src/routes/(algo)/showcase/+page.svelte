@@ -1,7 +1,7 @@
 <script>
   import { goto, invalidateAll } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { nowStamp } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import TourModal from '$lib/TourModal.svelte';
@@ -13,6 +13,7 @@
   // Refresh on a narrative tour page just re-runs load functions so the
   // hero + section cards re-flow with fresh layout. No data is
   // fetched, so this is effectively a UI reset.
+  let _showLiveTs = $state(false);
   let _refreshing = $state(false);
   async function _refresh() {
     _refreshing = true;
@@ -245,8 +246,8 @@
 </script>
 
 <svelte:head>
-  <title>Ramana Ambore · RamboQuant | About</title>
-  <meta name="description" content="Ramana Ambore — Principal System Analyst at Fidelity Investments, Platform Architect & Quant Developer at RamboQuant. FRM · CFA-L3 · M.Sc. CS · Six Sigma GB." />
+  <title>Ramana R. Ambore · RamboQuant | About</title>
+  <meta name="description" content="Ramana R. Ambore — Principal System Analyst at Fidelity Investments, Platform Architect & Quant Developer at RamboQuant. FRM · CFA-L3 · M.Sc. CS · Six Sigma GB." />
 </svelte:head>
 
 <div class="show" class:show-ready={_mounted}>
@@ -255,7 +256,21 @@
     <span class="algo-title-group">
       <h1 class="page-title-chip">About</h1>
     </span>
-    <span class="algo-ts">{$nowStamp}</span>
+    <span class="algo-ts-group">
+      <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+            onclick={() => _showLiveTs = !_showLiveTs}
+            title="Live clock — tap to switch" role="button" tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+        {$nowStamp}
+      </span>
+      <span class="algo-ts-vsep" aria-hidden="true">|</span>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+            onclick={() => _showLiveTs = !_showLiveTs}
+            title="Last refresh — tap to switch" role="button" tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+        {formatDualTz($lastRefreshAt)}
+      </span>
+    </span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
       <RefreshButton onClick={_refresh} loading={_refreshing} label="about" />
@@ -390,6 +405,10 @@
 {/if}
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .show {
     max-width: 1180px;
     margin: 0 auto;
@@ -488,7 +507,7 @@
     background: rgba(71, 100, 140, 0.12);
     border: 1px solid rgba(126, 151, 184, 0.42);
     border-radius: 4px;
-    color: rgba(148, 163, 184, 0.95);
+    color: #7dd3fc;
     font-size: 0.72rem;
     font-weight: 500;
     letter-spacing: 0.02em;

@@ -17,7 +17,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/state';
-  import { nowStamp, marketAwareInterval } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatDualTz, marketAwareInterval } from '$lib/stores';
   import {
     fetchStrategy, fetchStrategyLots, fetchStrategySnapshots,
     fetchStrategyMetrics, updateStrategy,
@@ -38,6 +38,7 @@
   let lots = $state([]);
   let totalOpen   = $state(0);
   let totalClosed = $state(0);
+  let _showLiveTs = $state(false);
   let loading = $state(false);
   let error = $state('');
   let showClosed = $state(true);
@@ -132,7 +133,21 @@
     <a href="/strategies" class="back-link">← Strategies</a>
     <h1 class="page-title-chip">{strat?.slug || '…'}</h1>
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="strategy" />
@@ -425,6 +440,10 @@
 {/if}
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .strat-error {
     padding: 0.6rem 0.9rem;
     background: var(--c-short-10);

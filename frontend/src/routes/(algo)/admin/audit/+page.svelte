@@ -14,7 +14,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { nowStamp, marketAwareInterval, authStore } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatDualTz, marketAwareInterval, authStore } from '$lib/stores';
   import { fetchAuditLog } from '$lib/api';
   import { userRole, hasCap, userCaps, userCapsReady } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -51,6 +51,7 @@
   /** @type {AuditRow[]} */
   let rows = $state([]);
   let total = $state(0);
+  let _showLiveTs = $state(false);
   let loading = $state(false);
   let error = $state('');
 
@@ -225,7 +226,21 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Audit Log</h1>
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="audit log" />
@@ -376,6 +391,10 @@
 {/if}
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .audit-empty rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
 

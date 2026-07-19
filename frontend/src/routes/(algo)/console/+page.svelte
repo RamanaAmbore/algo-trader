@@ -8,7 +8,7 @@
   // pre-filled with the parsed values, so the operator can review +
   // Submit. Keeps the safety net while making plain-text the primary UI.
 
-  import { authStore, nowStamp } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
@@ -22,6 +22,7 @@
   // header Refresh icon rotates the badge + asks LogPanel to re-poll
   // immediately rather than waiting for its next tick.
   let _refreshKey = $state(0);
+  let _showLiveTs = $state(false);
   let _refreshing = $state(false);
   function _refresh() {
     _refreshing = true;
@@ -45,7 +46,21 @@
     <span class="algo-title-group">
       <h1 class="page-title-chip">Console</h1>
     </span>
-    <span class="algo-ts">{$nowStamp}</span>
+    <span class="algo-ts-group">
+      <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+            onclick={() => _showLiveTs = !_showLiveTs}
+            title="Live clock — tap to switch" role="button" tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+        {$nowStamp}
+      </span>
+      <span class="algo-ts-vsep" aria-hidden="true">|</span>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+            onclick={() => _showLiveTs = !_showLiveTs}
+            title="Last refresh — tap to switch" role="button" tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+        {formatDualTz($lastRefreshAt)}
+      </span>
+    </span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
       <RefreshButton onClick={_refresh} loading={_refreshing} label="console" />
@@ -115,6 +130,10 @@
 {/if}
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .console-cmd-wrap {
     flex-shrink: 0;
     margin-bottom: 0.4rem;

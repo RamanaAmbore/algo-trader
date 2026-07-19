@@ -4,7 +4,7 @@
   // Seed list is the authoritative catalog of editable knobs; this page
   // renders it and writes back via PATCH.
 
-  import { nowStamp } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -52,6 +52,7 @@
    *                value:string, default_value:string, description:string,
    *                schema:any, units:string|null, updated_at:string}>} */
   let settings    = $state([]);
+  let _showLiveTs = $state(false);
   let loading     = $state(true);
   let error       = $state('');
   let dirty       = $state(/** @type {Record<string, string>} */({}));
@@ -251,7 +252,21 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Settings</h1>
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} {loading} label="settings" />
@@ -503,6 +518,10 @@
 {/if}
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
   .settings-row {

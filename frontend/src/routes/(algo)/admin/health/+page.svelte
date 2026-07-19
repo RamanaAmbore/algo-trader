@@ -5,7 +5,7 @@
   // Compact card grid — 2 columns desktop / 1 mobile. Polls every 15 s.
 
   import { onDestroy } from 'svelte';
-  import { nowStamp, branchLabel, visibleInterval } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatDualTz, branchLabel, visibleInterval } from '$lib/stores';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -19,6 +19,7 @@
   /** @type {any} */
   let health      = $state(null);
   let error       = $state('');
+  let _showLiveTs = $state(false);
   let loading     = $state(true);
   let teardown;
 
@@ -123,7 +124,21 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Health</h1>
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="health" />
@@ -451,6 +466,10 @@
 {/if}
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Scoped .page-header override removed — was shadowing the
      layout's :global(.page-header) fixed-strip rule due to
      Svelte's class-hash specificity. All algo pages now share

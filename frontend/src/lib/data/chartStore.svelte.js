@@ -38,6 +38,10 @@
 import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
 
 const _OVERLAY_LS_KEY   = 'rbq.cache.chart-overlays.v1';
+const _SYMBOL_LS_KEY    = 'rbq.cache.chart-symbol.v1';
+const _EXCHANGE_LS_KEY  = 'rbq.cache.chart-exchange.v1';
+const _DAYS_LS_KEY      = 'rbq.cache.chart-days.v1';
+const _CHART_TYPE_LS_KEY = 'rbq.cache.chart-type.v1';
 const _FETCH_TTL_MS     = 30_000;
 
 // ── Sub-panel indicator keys ─────────────────────────────────────────
@@ -48,9 +52,15 @@ const _SUB_PANEL_KEYS = new Set(['rsi', 'macd']);
 
 function createChartStore() {
   // ── Reactive cells ────────────────────────────────────────────────
-  let _symbol   = $state('');
-  let _exchange = $state('');
-  let _days     = $state(30);   // default 1M; hydrated from LS in ChartWorkspace.onMount
+  let _symbol   = $state(readChartPref(_SYMBOL_LS_KEY, ''));
+  let _exchange = $state(readChartPref(_EXCHANGE_LS_KEY, ''));
+  let _days     = $state(readChartPref(_DAYS_LS_KEY, 30, (v) => typeof v === 'number' && v > 0));
+
+  /** @type {'line'|'area'|'candle'|'plot'} */
+  let _chartType = $state(/** @type {'line'|'area'|'candle'|'plot'} */ (
+    readChartPref(_CHART_TYPE_LS_KEY, 'candle',
+      (v) => typeof v === 'string' && ['line','area','candle','plot'].includes(v))
+  ));
 
   /** @type {any[] | null} */
   let _ohlcv    = $state(null);
@@ -77,6 +87,7 @@ function createChartStore() {
     get symbol()     { return _symbol },
     get exchange()   { return _exchange },
     get days()       { return _days },
+    get chartType()  { return _chartType },
     get ohlcv()      { return _ohlcv },
     get spotBars()   { return _spotBars },
     get overlays()   { return _overlays },
@@ -92,6 +103,7 @@ function createChartStore() {
      */
     setSymbol(v) {
       _symbol = String(v || '').toUpperCase();
+      writeChartPref(_SYMBOL_LS_KEY, _symbol);
     },
 
     /**
@@ -100,6 +112,7 @@ function createChartStore() {
      */
     setExchange(v) {
       _exchange = String(v || '');
+      writeChartPref(_EXCHANGE_LS_KEY, _exchange);
     },
 
     /**
@@ -108,6 +121,19 @@ function createChartStore() {
      */
     setDays(v) {
       _days = Number(v) || 30;
+      writeChartPref(_DAYS_LS_KEY, _days);
+    },
+
+    /**
+     * Set the chart display type (line / area / candle / plot).
+     * @param {'line'|'area'|'candle'|'plot'} v
+     */
+    setChartType(v) {
+      const known = new Set(['line','area','candle','plot']);
+      if (known.has(v)) {
+        _chartType = v;
+        writeChartPref(_CHART_TYPE_LS_KEY, _chartType);
+      }
     },
 
     /**
