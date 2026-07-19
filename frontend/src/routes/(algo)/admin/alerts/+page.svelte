@@ -7,7 +7,7 @@
   // the page is visible.
 
   import { onDestroy } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatDualTz, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatIstOnly, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -168,7 +168,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>

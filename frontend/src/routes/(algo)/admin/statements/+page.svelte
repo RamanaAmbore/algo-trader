@@ -12,7 +12,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import {
     fetchStatementAudit, sendStatementNow, deleteStatementRow,
@@ -208,7 +208,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>

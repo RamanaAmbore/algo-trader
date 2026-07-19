@@ -264,16 +264,28 @@ async def test_snapshot_symbols_exchange_fallback():
 
 def test_collect_symbols_calls_snapshot_helper():
     """
-    _task_sparkline_warm._collect_symbols must call _snapshot_book_symbols,
-    not contain an inline daily_book SQL query of its own.
+    The sparkline-warm symbol collection must use _snapshot_book_symbols,
+    not contain an inline daily_book SQL query.
+
+    After the CC-reduction refactor, the delegating call moved into the
+    module-level helper _sparkline_collect_snapshot which is called from
+    _collect_symbols (nested inside _task_sparkline_warm).  Verify both:
+      1. _sparkline_collect_snapshot calls _snapshot_book_symbols.
+      2. _task_sparkline_warm (or its nested _collect_symbols) calls
+         _sparkline_collect_snapshot.
     """
     import backend.api.background as bg
     import inspect
 
-    src = inspect.getsource(bg._task_sparkline_warm)
-    assert "_snapshot_book_symbols" in src, (
-        "_collect_symbols inside _task_sparkline_warm must call "
-        "_snapshot_book_symbols (not an inline SQL query)"
+    snapshot_src = inspect.getsource(bg._sparkline_collect_snapshot)
+    assert "_snapshot_book_symbols" in snapshot_src, (
+        "_sparkline_collect_snapshot must call _snapshot_book_symbols"
+    )
+
+    warm_src = inspect.getsource(bg._task_sparkline_warm)
+    assert "_sparkline_collect_snapshot" in warm_src, (
+        "_task_sparkline_warm must call _sparkline_collect_snapshot "
+        "(not contain an inline daily_book SQL query)"
     )
 
 

@@ -154,6 +154,53 @@ def _emit_conn_event(
         pass
 
 
+def _build_stale_list(
+    subscribed_copy: set,
+    age_snapshot: dict,
+    sym_snapshot: dict,
+    now: float,
+    stale_threshold_sec: int,
+    stale_top_n: int,
+) -> tuple[list, list, float]:
+    """Compute stale-symbol metadata from pre-snapshotted lock state.
+
+    Called by TickerManager.status() outside the lock so the heavy
+    iteration does not block the Twisted tick-ingestion path.
+
+    Returns (stale, stale_top, max_age):
+      stale      — list of (sym, age) pairs that exceed the threshold
+                   (age=None means never-ticked).
+      stale_top  — top-N formatted strings "SYM@<age>s" / "SYM@never".
+      max_age    — maximum age (seconds) across all ever-ticked tokens;
+                   0.0 when nothing has ticked yet.
+    """
+    ages: list[tuple[str, float | None]] = []
+    for tok in subscribed_copy:
+        sym = sym_snapshot[tok]
+        last_ts = age_snapshot[tok]
+        age = (now - last_ts) if last_ts is not None else None
+        ages.append((sym, age))
+    # Sort: never-ticked first (None age), then oldest-tick descending.
+    ages.sort(key=lambda x: (0, 0) if x[1] is None else (1, -x[1]))
+    stale = [
+        (sym, age) for sym, age in ages
+        if age is None or age >= stale_threshold_sec
+    ]
+    # Compose top-N as printable "sym@age" strings — easier to read
+    # from a JSON dump than a list of [sym, float] pairs.
+    stale_top = [
+        f"{sym}@{'never' if age is None else f'{int(age)}s'}"
+        for sym, age in stale[:stale_top_n]
+    ]
+    # Max age across ANY token that has ever ticked. None-aged tokens
+    # are reflected in stale_count, not here.
+    max_age = max(
+        (age for _, age in ages if age is not None),
+        default=0.0,
+    )
+    return stale, stale_top, max_age
+
+
 class TickerManager:
     """
     Singleton-safe wrapper around KiteTicker. Owns the WebSocket
@@ -437,30 +484,8 @@ class TickerManager:
             connected = self._connected
             age_snapshot = {tok: self._tick_age.get(tok) for tok in subscribed_copy}
             sym_snapshot = {tok: self._token_to_sym.get(tok, f"tok:{tok}") for tok in subscribed_copy}
-        # Build the ages list outside the lock — no shared state read here.
-        ages: list[tuple[str, float | None]] = []
-        for tok in subscribed_copy:
-            sym = sym_snapshot[tok]
-            last_ts = age_snapshot[tok]
-            age = (now - last_ts) if last_ts is not None else None
-            ages.append((sym, age))
-        # Sort: never-ticked first (None age), then oldest-tick descending.
-        ages.sort(key=lambda x: (0, 0) if x[1] is None else (1, -x[1]))
-        stale = [
-            (sym, age) for sym, age in ages
-            if age is None or age >= stale_threshold_sec
-        ]
-        # Compose top-N as printable "sym@age" strings — easier to read
-        # from a JSON dump than a list of [sym, float] pairs.
-        stale_top = [
-            f"{sym}@{'never' if age is None else f'{int(age)}s'}"
-            for sym, age in stale[:stale_top_n]
-        ]
-        # Max age across ANY token that has ever ticked. None-aged tokens
-        # are reflected in stale_count, not here.
-        max_age = max(
-            (age for _, age in ages if age is not None),
-            default=0.0,
+        stale, stale_top, max_age = _build_stale_list(
+            subscribed_copy, age_snapshot, sym_snapshot, now, stale_threshold_sec, stale_top_n
         )
         # Failover state — safe to read outside the lock (small ints /
         # floats / lists all backed by Python's atomic assignment on

@@ -14,7 +14,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { nowStamp, lastRefreshAt, formatDualTz, marketAwareInterval, authStore } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatIstOnly, marketAwareInterval, authStore } from '$lib/stores';
   import { fetchAuditLog } from '$lib/api';
   import { userRole, hasCap, userCaps, userCapsReady } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -235,7 +235,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>

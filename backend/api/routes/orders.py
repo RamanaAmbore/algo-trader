@@ -57,7 +57,7 @@ from backend.api.schemas import (
 from backend.brokers.connections import Connections
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_account, mask_account_in_text, mask_column, secrets
+from backend.shared.helpers.utils import mask_account, mask_account_in_text, secrets
 
 logger = get_logger(__name__)
 
@@ -76,7 +76,6 @@ from backend.api.routes.orders_helpers import (  # noqa: E402
     _PRODUCTS,
     _TXN_TYPES,
     _EXCHANGES,
-    _VALIDITIES,
     _ORDERS_TTL,
     _REJECTION_TRACKER,
     _REJECTION_WINDOW_S,

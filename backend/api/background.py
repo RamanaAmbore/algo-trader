@@ -2830,7 +2830,7 @@ async def _snapshot_book_symbols(days: int = 7) -> list[tuple[str, str]]:
     """
     from backend.api.database import async_session
     from backend.api.models import DailyBook
-    from sqlalchemy import select as _sa_select, func as _sa_func
+    from sqlalchemy import select as _sa_select
 
     cutoff = (timestamp_indian().date() - timedelta(days=days))
     try:
@@ -2866,6 +2866,135 @@ async def _snapshot_book_symbols(days: int = 7) -> list[tuple[str, str]]:
         return []
 
 
+async def _sparkline_collect_watchlist(seen: set, pairs: list) -> None:
+    """Collect (symbol, exchange) pairs from watchlist DB rows into *pairs*."""
+    try:
+        from backend.api.database import async_session
+        from backend.api.models import WatchlistItem
+        from sqlalchemy import select as sa_select
+        from backend.api.routes.watchlist import (
+            _resolve_mcx_commodity,
+            _resolve_cds_currency,
+        )
+        async with async_session() as sess:
+            rows = (await sess.execute(
+                sa_select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
+            )).all()
+        for row in rows:
+            sym  = (row.tradingsymbol or "").upper().strip()
+            exch = (row.exchange or "NSE").upper().strip()
+            if not sym:
+                continue
+            if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
+                resolved = await _resolve_mcx_commodity(sym)
+                if resolved:
+                    sym = resolved.upper().strip()
+            elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
+                resolved = await _resolve_cds_currency(sym)
+                if resolved:
+                    sym = resolved.upper().strip()
+            key = (sym, exch)
+            if key not in seen:
+                seen.add(key)
+                pairs.append(key)
+    except Exception as e:
+        logger.warning(f"sparkline warm: watchlist query failed: {e}")
+
+
+def _sparkline_collect_holdings_cached(seen: set, pairs: list, cache_hit) -> None:
+    """Collect holdings symbols from the in-process cache (fast path)."""
+    try:
+        cached_h = cache_hit("holdings")
+        if cached_h is not None and getattr(cached_h, "rows", None):
+            for row in cached_h.rows:
+                sym  = str(getattr(row, "tradingsymbol", "") or "").upper().strip()
+                exch = str(getattr(row, "exchange", "") or "NSE").upper().strip()
+                if sym:
+                    key = (sym, exch)
+                    if key not in seen:
+                        seen.add(key)
+                        pairs.append(key)
+    except Exception as e:
+        logger.warning(f"sparkline warm: holdings (cached) collect failed: {e}")
+
+
+def _sparkline_collect_holdings_live(seen: set, pairs: list) -> None:
+    """Collect holdings symbols via live broker fetch (cold-start fallback)."""
+    try:
+        from backend.brokers import broker_apis
+        import pandas as pd
+        dfs = broker_apis.fetch_holdings()
+        df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        if not df_h.empty and "tradingsymbol" in df_h.columns:
+            _h_exch = df_h["exchange"] if "exchange" in df_h.columns else pd.Series(["NSE"] * len(df_h))
+            for sym_raw, exch_raw in zip(df_h["tradingsymbol"], _h_exch):
+                sym  = str(sym_raw or "").upper().strip()
+                exch = str(exch_raw or "NSE").upper().strip()
+                if sym:
+                    key = (sym, exch)
+                    if key not in seen:
+                        seen.add(key)
+                        pairs.append(key)
+    except Exception as e:
+        logger.warning(f"sparkline warm: holdings (live) collect failed: {e}")
+
+
+def _sparkline_collect_positions(seen: set, pairs: list, cache_hit) -> None:
+    """Collect positions symbols — cached first, then live broker fallback."""
+    try:
+        cached_p = cache_hit("positions")
+        if cached_p is not None and getattr(cached_p, "rows", None):
+            for row in cached_p.rows:
+                sym  = str(getattr(row, "tradingsymbol", "") or "").upper().strip()
+                exch = str(getattr(row, "exchange", "") or "NFO").upper().strip()
+                if sym:
+                    key = (sym, exch)
+                    if key not in seen:
+                        seen.add(key)
+                        pairs.append(key)
+        else:
+            from backend.brokers import broker_apis
+            import pandas as pd
+            dfs = broker_apis.fetch_positions()
+            df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+            if not df_p.empty and "tradingsymbol" in df_p.columns:
+                _p_exch = df_p["exchange"] if "exchange" in df_p.columns else pd.Series(["NFO"] * len(df_p))
+                for sym_raw, exch_raw in zip(df_p["tradingsymbol"], _p_exch):
+                    sym  = str(sym_raw or "").upper().strip()
+                    exch = str(exch_raw or "NFO").upper().strip()
+                    if sym:
+                        key = (sym, exch)
+                        if key not in seen:
+                            seen.add(key)
+                            pairs.append(key)
+    except Exception as e:
+        logger.warning(f"sparkline warm: positions collect failed: {e}")
+
+
+async def _sparkline_collect_snapshot(seen: set, pairs: list) -> None:
+    """Collect symbols from daily_book DB backstop (7-day window)."""
+    try:
+        snap_pairs = await _snapshot_book_symbols(days=7)
+        for key in snap_pairs:
+            if key not in seen:
+                seen.add(key)
+                pairs.append(key)
+    except Exception as e:
+        logger.warning(f"sparkline warm: snapshot book symbols failed: {e}")
+
+
+def _sparkline_collect_movers(seen: set, pairs: list) -> None:
+    """Collect the mover universe (indices + F&O largecap) into *pairs*."""
+    try:
+        from backend.shared.helpers.mover_universe import mover_warm_pairs
+        for key in mover_warm_pairs():
+            if key not in seen:
+                seen.add(key)
+                pairs.append(key)
+    except Exception as e:
+        logger.warning(f"sparkline warm: mover universe collect failed: {e}")
+
+
 async def _task_sparkline_warm(state: dict) -> None:
     """
     Pre-populate the sparkline past-close cache at startup and at each
@@ -2898,58 +3027,12 @@ async def _task_sparkline_warm(state: dict) -> None:
         pairs: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
 
-        # 1. Watchlist items. Bare MCX commodity names ("CRUDEOIL",
-        #    "GOLDM", etc.) and CDS currency names ("USDINR") aren't real
-        #    Kite instruments — the tradable contract is the near-month
-        #    future (CRUDEOIL26JUNFUT). Without this resolution the
-        #    sparkline-warm task tries to look up the bare name in the
-        #    instruments map, fails, and never subscribes the ticker —
-        #    operator sees pinned LTPs stuck at the 30 s REST-poll cadence
-        #    instead of the sub-second SSE stream. Resolve to the
-        #    front-month contract before adding to the warm set.
-        try:
-            from backend.api.database import async_session
-            from backend.api.models import WatchlistItem
-            from sqlalchemy import select as sa_select
-            from backend.api.routes.watchlist import (
-                _resolve_mcx_commodity,
-                _resolve_cds_currency,
-            )
-            async with async_session() as sess:
-                rows = (await sess.execute(
-                    sa_select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
-                )).all()
-            for row in rows:
-                sym  = (row.tradingsymbol or "").upper().strip()
-                exch = (row.exchange or "NSE").upper().strip()
-                if not sym:
-                    continue
-                # Bare-commodity heuristic: MCX/CDS + all-alpha + <= 12 chars
-                # mirrors `_build_quote_key` in watchlist.py. Real futures
-                # carry digits in their tradingsymbol (CRUDEOIL26JUNFUT)
-                # and pass through untouched.
-                if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
-                    resolved = await _resolve_mcx_commodity(sym)
-                    if resolved:
-                        sym = resolved.upper().strip()
-                elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
-                    resolved = await _resolve_cds_currency(sym)
-                    if resolved:
-                        sym = resolved.upper().strip()
-                key = (sym, exch)
-                if key not in seen:
-                    seen.add(key)
-                    pairs.append(key)
-        except Exception as e:
-            logger.warning(f"sparkline warm: watchlist query failed: {e}")
+        # 1. Watchlist — resolves bare MCX/CDS virtual roots to front-month futures.
+        await _sparkline_collect_watchlist(seen, pairs)
 
-        # 2. + 3. Holdings + Positions — prefer the in-process cache
-        # populated by _task_performance + the /api/holdings, /api/positions
-        # endpoints. At the 09:00 / 09:15 segment-open boundaries the
-        # performance cycle has typically run within the last 30 s, so
-        # the cache hit avoids a duplicate broker fan-out. Falls through
-        # to a direct broker_apis call only when the cache is cold (cold
-        # startup, dev box that hasn't received any HTTP traffic yet).
+        # 2. + 3. Holdings + Positions — prefer the in-process cache populated by
+        # _task_performance + the /api/holdings, /api/positions endpoints. Falls
+        # through to a direct broker_apis call only when the cache is cold.
         from backend.api.cache import _store as _cache_store
         import time as _t
 
@@ -2962,105 +3045,22 @@ async def _task_sparkline_warm(state: dict) -> None:
                 return value
             return None
 
-        # Holdings (equity — NSE).
-        try:
-            cached_h = _cache_hit("holdings")
-            if cached_h is not None and getattr(cached_h, "rows", None):
-                for row in cached_h.rows:
-                    sym  = str(getattr(row, "tradingsymbol", "") or "").upper().strip()
-                    exch = str(getattr(row, "exchange", "") or "NSE").upper().strip()
-                    if sym:
-                        key = (sym, exch)
-                        if key not in seen:
-                            seen.add(key)
-                            pairs.append(key)
-            else:
-                from backend.brokers import broker_apis
-                import pandas as pd
-                dfs = broker_apis.fetch_holdings()
-                df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-                if not df_h.empty and "tradingsymbol" in df_h.columns:
-                    _h_exch = df_h["exchange"] if "exchange" in df_h.columns else pd.Series(["NSE"] * len(df_h))
-                    for sym_raw, exch_raw in zip(df_h["tradingsymbol"], _h_exch):
-                        sym  = str(sym_raw or "").upper().strip()
-                        exch = str(exch_raw or "NSE").upper().strip()
-                        if sym:
-                            key = (sym, exch)
-                            if key not in seen:
-                                seen.add(key)
-                                pairs.append(key)
-        except Exception as e:
-            logger.warning(f"sparkline warm: holdings collect failed: {e}")
+        cached_h = _cache_hit("holdings")
+        if cached_h is not None and getattr(cached_h, "rows", None):
+            _sparkline_collect_holdings_cached(seen, pairs, _cache_hit)
+        else:
+            _sparkline_collect_holdings_live(seen, pairs)
 
-        # Positions (F&O / commodities).
-        try:
-            cached_p = _cache_hit("positions")
-            if cached_p is not None and getattr(cached_p, "rows", None):
-                for row in cached_p.rows:
-                    sym  = str(getattr(row, "tradingsymbol", "") or "").upper().strip()
-                    exch = str(getattr(row, "exchange", "") or "NFO").upper().strip()
-                    if sym:
-                        key = (sym, exch)
-                        if key not in seen:
-                            seen.add(key)
-                            pairs.append(key)
-            else:
-                from backend.brokers import broker_apis
-                import pandas as pd
-                dfs = broker_apis.fetch_positions()
-                df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-                if not df_p.empty and "tradingsymbol" in df_p.columns:
-                    _p_exch = df_p["exchange"] if "exchange" in df_p.columns else pd.Series(["NFO"] * len(df_p))
-                    for sym_raw, exch_raw in zip(df_p["tradingsymbol"], _p_exch):
-                        sym  = str(sym_raw or "").upper().strip()
-                        exch = str(exch_raw or "NFO").upper().strip()
-                        if sym:
-                            key = (sym, exch)
-                            if key not in seen:
-                                seen.add(key)
-                                pairs.append(key)
-        except Exception as e:
-            logger.warning(f"sparkline warm: positions collect failed: {e}")
+        _sparkline_collect_positions(seen, pairs, _cache_hit)
 
         # 4. Backstop: DB snapshot from daily_book (7-day window).
-        # Handles cold-start when Dhan / any account has its circuit-breaker
-        # open: broker fetch returns empty but the last known symbols are
-        # still in the DB. Without this, Dhan rows miss Kite ticker
-        # subscriptions until the next healthy performance cycle (30+ min).
-        try:
-            snap_pairs = await _snapshot_book_symbols(days=7)
-            for key in snap_pairs:
-                if key not in seen:
-                    seen.add(key)
-                    pairs.append(key)
-        except Exception as e:
-            logger.warning(f"sparkline warm: snapshot book symbols failed: {e}")
+        await _sparkline_collect_snapshot(seen, pairs)
 
-        # 5. Mover universe — indices + F&O largecap + NIFTY midcap +
-        # smallcap. Without this the Winners/Losers tab on /pulse pays
-        # a cold-cache hit every time a new symbol rotates into the
-        # top movers (operator: "winners and losers sparklines are
-        # slow to update"). The mover set is ~250 symbols static; we
-        # warm them at boot + midnight rollover so they're hot before
-        # the operator's first /pulse load. Symbols already added
-        # above (positions/holdings/watchlist) are deduped, so the
-        # operator's actual book never gets evicted by the mover top-up.
-        try:
-            from backend.shared.helpers.mover_universe import mover_warm_pairs
-            for key in mover_warm_pairs():
-                if key not in seen:
-                    seen.add(key)
-                    pairs.append(key)
-        except Exception as e:
-            logger.warning(f"sparkline warm: mover universe collect failed: {e}")
+        # 5. Mover universe — indices + F&O largecap + NIFTY midcap + smallcap.
+        _sparkline_collect_movers(seen, pairs)
 
-        # Hard cap: operator's book (positions + holdings + watchlist)
-        # is never truncated. Mover universe fills remaining capacity
-        # up to the 300-symbol ceiling. The comment above ("truncation
-        # only ever drops mover universe symbols") was ONLY true when
-        # the book was small — a large book (> 300 symbols) would
-        # silently drop movers and potentially book symbols added late.
-        # Fix: split at the book/mover boundary and cap movers separately.
+        # Hard cap: operator's book is never truncated. Movers fill remaining
+        # capacity up to the 300-symbol ceiling.
         from backend.shared.helpers.mover_universe import mover_warm_pairs as _mwp
         _mover_set = set(_mwp())
         book_pairs  = [p for p in pairs if p not in _mover_set]

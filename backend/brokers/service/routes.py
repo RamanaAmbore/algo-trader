@@ -67,7 +67,6 @@ from backend.brokers.service.schemas import (
     InternalAccountsResp,
     InternalAccountEnvelope,
     InternalPerAccountResp,
-    BrokerCallResp,
     VerifyPostbackResp,
     TickerSubscribeResp,
     PollResetRequest,

@@ -1054,6 +1054,49 @@ def payoff_curve(*, S: float, K: float, T_years: float, r: float,
 # the same expiry. The route layer enforces that; the math here doesn't
 # revalidate.
 
+def _leg_today_expiry_arrays(
+    leg: dict,
+    S_grid: "np.ndarray",
+    r: float,
+    eval_T: "float | None",
+) -> "tuple[np.ndarray, np.ndarray]":
+    """Return *(today_values, expiry_values)* for a single leg, both already
+    multiplied by *qty*.
+
+    *S_grid* is the spot axis for the chart. *r* is the risk-free rate.
+    *eval_T* is the near-leg expiry horizon for calendar/diagonal spreads
+    (None → intrinsic at T=0 for all legs).
+    """
+    kind  = leg.get("kind") or "opt"
+    qty   = int(leg["qty"])
+    scale = float(leg.get("scale_ratio") or 1.0)
+    s_leg = S_grid * scale
+
+    if kind == "fut":
+        today_arr  = s_leg * qty
+        expiry_arr = s_leg * qty
+        return today_arr, expiry_arr
+
+    K     = float(leg["strike"])
+    opt   = leg["opt_type"]
+    T_yrs = float(leg.get("T_years") or 0)
+    sig   = float(leg.get("sigma") or DEFAULT_IV)
+
+    today_arr = _black_scholes_vec(s_leg, K, T_yrs, r, sig, opt) * qty
+
+    if eval_T is not None and T_yrs > eval_T:
+        T_remaining = T_yrs - eval_T
+        expiry_arr = _black_scholes_vec(s_leg, K, T_remaining, r, sig, opt) * qty
+    else:
+        if opt == "CE":
+            intrinsic = np.maximum(0.0, s_leg - K)
+        else:
+            intrinsic = np.maximum(0.0, K - s_leg)
+        expiry_arr = intrinsic * qty
+
+    return today_arr, expiry_arr
+
+
 def multileg_payoff_curve(legs: list[dict], *, S: float,
                           r: float = DEFAULT_RISK_FREE,
                           span_pct: float = 0.10,
@@ -1082,35 +1125,9 @@ def multileg_payoff_curve(legs: list[dict], *, S: float,
     today_arr  = np.zeros(points, dtype=np.float64)
     expiry_arr = np.zeros(points, dtype=np.float64)
     for l in legs:
-        kind = l.get("kind") or "opt"
-        qty  = int(l["qty"])
-        # scale_ratio maps the chart's near-month spot axis to the leg's
-        # own contract-month spot. For non-MCX legs this is 1.0. For MCX
-        # the leg evaluates at the chart spot × scale_ratio.
-        scale = float(l.get("scale_ratio") or 1.0)
-        s_leg = S_grid * scale
-        if kind == "fut":
-            # Futures: linear in leg-spot, today + expiry both track it.
-            today_arr  += s_leg * qty
-            expiry_arr += s_leg * qty
-            continue
-        K     = float(l["strike"])
-        opt   = l["opt_type"]
-        T_yrs = float(l.get("T_years") or 0)
-        sig   = float(l.get("sigma") or DEFAULT_IV)
-        today_arr  += _black_scholes_vec(s_leg, K, T_yrs, r, sig, opt) * qty
-        # Expiry value: when eval_T is set and this leg has remaining
-        # time after the near expiry, re-price with T_remaining so the
-        # far leg's time value is captured (calendar spread).
-        if eval_T is not None and T_yrs > eval_T:
-            T_remaining = T_yrs - eval_T
-            expiry_arr += _black_scholes_vec(s_leg, K, T_remaining, r, sig, opt) * qty
-        else:
-            if opt == "CE":
-                intrinsic = np.maximum(0.0, s_leg - K)
-            else:
-                intrinsic = np.maximum(0.0, K - s_leg)
-            expiry_arr += intrinsic * qty
+        leg_today, leg_expiry = _leg_today_expiry_arrays(l, S_grid, r, eval_T)
+        today_arr  += leg_today
+        expiry_arr += leg_expiry
     today_arr  -= total_cost
     expiry_arr -= total_cost
     return [

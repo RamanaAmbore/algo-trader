@@ -8,7 +8,7 @@
   // pre-filled with the parsed values, so the operator can review +
   // Submit. Keeps the safety net while making plain-text the primary UI.
 
-  import { authStore, nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
@@ -55,7 +55,7 @@
       {#if $lastRefreshAt}
         <span class="algo-ts-vsep" aria-hidden="true">|</span>
         <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-          {formatDualTz($lastRefreshAt)}
+          {formatIstOnly($lastRefreshAt)}
         </span>
       {/if}
     </span>

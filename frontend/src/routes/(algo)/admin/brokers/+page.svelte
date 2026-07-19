@@ -19,7 +19,7 @@
   //     pipeline works end-to-end.
 
   import { onDestroy } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatDualTz, visibleInterval } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatIstOnly, visibleInterval } from '$lib/stores';
   import { accountDisplayOrder } from '$lib/data/accountSort.js';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -599,7 +599,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>

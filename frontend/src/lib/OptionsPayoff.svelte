@@ -1430,7 +1430,7 @@
     border: 1px solid rgba(126, 151, 184, 0.35);
     color: var(--algo-muted);
     font-family: var(--font-numeric);
-    font-size: var(--fs-2xs);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     cursor: pointer;
@@ -1534,7 +1534,7 @@
      the symbol means without giving up the canonical σ shorthand. */
   .ps-k-hint {
     margin-left: 0.2rem;
-    font-size: 8px;
+    font-size: 9px;
     font-weight: 500;
     color: #fde68a;
     opacity: 0.75;

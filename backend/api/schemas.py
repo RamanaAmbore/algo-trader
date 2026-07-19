@@ -575,11 +575,9 @@ class TicketOrderRequest(msgspec.Struct):
     strategy_id: Optional[int] = None
     # ── Legacy single-TP path ─────────────────────────────────────────
     # `target_pct` is the v1 take-profit field — fractional (0.30 =
-    # +30%). DEPRECATED in v2.1 — prefer `template_id` (rich) or
-    # `tp_pct_override` (single-field shim). When present and no
-    # template is supplied, the handler auto-maps it to
-    # tp_pct_override so the same downstream attach pipeline fires.
-    # Will be removed in v2.2 after the OrderTicket UI fully migrates.
+    # +30%). Target portfolio allocation percentage for this position.
+    # When present and no template is supplied, the handler auto-maps
+    # it to tp_pct_override so the same downstream attach pipeline fires.
     target_pct: Optional[float] = None
     # ── v2 template attachment ────────────────────────────────────────
     # `template_id` references an OrderTemplate row. When set, the

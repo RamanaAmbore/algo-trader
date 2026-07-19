@@ -782,6 +782,8 @@ async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
     compatibility we still accept a raw SDK handle and reach for its
     `basket_order_margins` method — callers should pass the adapter.
     """
+    if kite_error:
+        logger.debug("kite_error in diagnose_live_failure: %s", kite_error)
     import asyncio
     from backend.brokers.adapters.kite import get_lot_size
     # Accept either a Broker adapter or a legacy SDK handle.

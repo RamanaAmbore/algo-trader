@@ -21,7 +21,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
-  import { authStore, nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
@@ -208,7 +208,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>
@@ -448,7 +448,7 @@
     flex-shrink: 0;
   }
   .frag-pill {
-    font-size: var(--fs-xs);
+    font-size: var(--fs-sm);
     font-weight: 700;
     padding: 0.1rem 0.45rem;
     border-radius: 999px;

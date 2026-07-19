@@ -16,7 +16,7 @@
   // MCP pipeline — Claude Code (subscription) is the only LLM in the loop.
 
   import { onMount, onDestroy } from 'svelte';
-  import { authStore, nowStamp, lastRefreshAt, formatDualTz, branchLabel, visibleInterval } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatIstOnly, branchLabel, visibleInterval } from '$lib/stores';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import {
@@ -441,7 +441,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>

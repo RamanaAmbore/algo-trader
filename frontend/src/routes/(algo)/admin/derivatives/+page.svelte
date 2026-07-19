@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, lastRefreshAt, formatDualTz, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatIstOnly, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
@@ -3890,7 +3890,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>
@@ -4230,6 +4230,7 @@
           label="Legs"
           onRefresh={_refreshAll}
           bind:refreshLoading={_refreshing}
+          refreshAlwaysVisible={true}
           onDownload={() => exportRowsToCsv(
             displayedCandidates,
             [
@@ -5465,7 +5466,7 @@
     padding: 0.3rem 0.45rem;
     background: rgba(15,23,42,0.65);  /* matches History / ag-theme-algo */
     border-bottom: 1px solid var(--algo-amber-border-soft);
-    font-size: var(--fs-2xs);
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -5809,7 +5810,7 @@
     font-variant-numeric: tabular-nums;
   }
   .cand-headrow {
-    font-size: var(--fs-2xs);
+    font-size: var(--fs-xs);
     font-weight: 800;
     color: var(--text-muted);
     text-transform: uppercase;

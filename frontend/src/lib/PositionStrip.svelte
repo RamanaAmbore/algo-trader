@@ -840,7 +840,9 @@
 
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
   <span class="ps-agg">
-    <span class="ps-agg-k ps-k-p"><InfoHint popup label="P" text="<b>P — Positions P&amp;L</b> · Three slots: <b>Day P&amp;L</b> (live ticks − prev-close × net qty, all accounts) / <b>Lifetime P&amp;L</b> (cumulative since open) / <b>Expiry P&amp;L</b> (projected F&amp;O value at expiry via lognormal model). Tap the Day P&amp;L value for a per-position breakup." /></span>
+    <span class="ps-agg-k ps-k-p"><InfoHint popup panel label="P" accentColor="#fbbf24"
+      title="P — Positions P&L"
+      text="Three slots: Day P&L (live ticks − prev-close × net qty) / Lifetime P&L (cumulative since open) / Expiry P&L (projected F&O value at expiry via lognormal model)." /></span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
       style="cursor:pointer"
       role="button"
@@ -849,22 +851,36 @@
       onclick={() => _dayPnlBreakupOpen = true}
       onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_dayPnlBreakupOpen = true)}
       >{fmtMoney(dispPositionsToday)}</span
-    ><span class="ps-agg-sep">/</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#fbbf24"
+      title="Day P&L"
+      text="Live tick price − prev close × net qty across all accounts. For new intraday positions (overnight_quantity=0), shows pnl directly." /><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
       >{fmtMoney(_livePositionsPnl)}</span
-    ><span class="ps-agg-sep">/</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#fbbf24"
+      title="Lifetime P&L"
+      text="Cumulative P&L since the position was opened. Includes realised + unrealised." /><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ps-exp ' + flash.classOf('PE')}
-      >{fmtMoney(_expiryProfit)}</span>
+      >{fmtMoney(_expiryProfit)}</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#fbbf24"
+      title="Expiry P&L"
+      text="Projected P&L at expiry using lognormal model. Shows what the F&O portfolio returns if held to expiry at current spot." />
   </span>
   <!-- Margin pill: available / total (used + avail). Operator wants the
        "room I have / full capacity" framing rather than util %. -->
   <span class="ps-agg">
-    <span class="ps-agg-k ps-k-m"><InfoHint popup label="M" text="<b>M — Margin</b> · Available / Total. <b>Available</b> = cash deployable right now for new orders. <b>Total</b> = used margin + available (full collateral picture, all accounts)." /></span>
+    <span class="ps-agg-k ps-k-m"><InfoHint popup panel label="M" accentColor="#a78bfa"
+      title="M — Margin"
+      text="Two slots: Available Margin (cash deployable for new orders = Total − Used) / Total Margin (full collateral across all accounts)." /></span>
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
       >{fmtMoney(marginAvail)}</span
-    ><span class="ps-agg-sep">/</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#a78bfa"
+      title="Available Margin"
+      text="Cash deployable right now for new orders. = Total margin − used margin. Updated after every order fill." /><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin-dim' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
-      >{fmtMoney(marginTotal)}</span>
+      >{fmtMoney(marginTotal)}</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#a78bfa"
+      title="Total Margin"
+      text="Full collateral picture across all accounts. = Available + margin blocked for open positions." />
   </span>
   <!-- Cash pill: available (CA, deployable now) / total (incl. premium
        tied up in long options). Avail-first matches the M pill's
@@ -876,22 +892,38 @@
        is documented in the audit memo; if the sum diverges from broker
        apps, the Dhan/Groww adapter math is the first place to look. -->
   <span class="ps-agg">
-    <span class="ps-agg-k ps-k-c"><InfoHint popup label="C" text="<b>C — Cash</b> · CA (Available) / C (Total). <b>CA</b> = live deployable cash, nets realised P&amp;L + premium debits. <b>Total C</b> = CA + premium tied up in long options (recoverable if closed)." /></span>
+    <span class="ps-agg-k ps-k-c"><InfoHint popup panel label="C" accentColor="#38bdf8"
+      title="C — Cash"
+      text="Two slots: Cash Available / CA (live deployable cash, nets realised P&L + option premiums paid) / Total Cash (CA + premium tied in long options)." /></span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
       >{fmtMoney(liveCashTotal)}</span
-    ><span class="ps-agg-sep">/</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#38bdf8"
+      title="Cash Available (CA)"
+      text="Live deployable cash. Nets realised P&L + premium debits from long options already paid." /><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash-dim' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
-      >{fmtMoney(cashTotal)}</span>
+      >{fmtMoney(cashTotal)}</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#38bdf8"
+      title="Total Cash (C)"
+      text="CA + premium tied up in long options (recoverable if closed). Represents full liquid wealth excluding positions." />
   </span>
   <span class="ps-agg">
-    <span class="ps-agg-k ps-k-h"><InfoHint popup label="H" text="<b>H — Holdings</b> · Three slots: <b>Today MTM</b> (live LTP − prev-close × qty) / <b>Current value</b> (broker-reported, all holdings) / <b>Lifetime P&amp;L</b> (cumulative since purchase)." /></span>
+    <span class="ps-agg-k ps-k-h"><InfoHint popup panel label="H" accentColor="#22d3ee"
+      title="H — Holdings"
+      text="Three slots: Holdings Today MTM (live LTP − prev close × qty) / Holdings Value (broker current market value) / Lifetime P&L (cumulative since purchase)." /></span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
       >{fmtMoney(dispHoldingsToday)}</span
-    ><span class="ps-agg-sep">/</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#22d3ee"
+      title="Holdings Today MTM"
+      text="Live LTP − prev close × qty for all long-term holdings. Intraday MTM only; excludes overnight positions." /><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span
-    ><span class="ps-agg-sep">/</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#22d3ee"
+      title="Holdings Value"
+      text="Broker-reported current market value of all holdings across all accounts." /><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos-dim' : _liveHoldingsTotal < 0 ? 'ps-neg-dim' : 'ps-flat') + ' ' + flash.classOf('Hd')}
-      >{fmtMoney(_liveHoldingsTotal)}</span>
+      >{fmtMoney(_liveHoldingsTotal)}</span
+    ><InfoHint popup panel showOnHover label="ⓘ" accentColor="#22d3ee"
+      title="Holdings Lifetime P&L"
+      text="Cumulative P&L since purchase. (current price − avg cost) × qty, all holdings." />
   </span>
   <DayPnlBreakup
     open={_dayPnlBreakupOpen}
@@ -1002,10 +1034,11 @@
     flex-shrink: 0;
   }
   .ps-agg-k {
-    font-size: var(--fs-xs);
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.02em;
+    margin-right: 0.25rem;
   }
   /* Per-pill label accent — each pill identifier gets its own hue */
   .ps-k-p { color: var(--c-action); }           /* P — amber  */
@@ -1059,6 +1092,18 @@
     font-style: normal;
     line-height: inherit;
   }
+  /* Per-slot ⓘ icon hints — small, unobtrusive, reveal on hover.
+     Sibling of .ps-agg-v, so target the .info-wrap wrapper. */
+  .ps-agg-v + :global(.info-wrap) :global(.info-btn) {
+    font-size: var(--fs-xs);
+    color: var(--algo-slate);
+    opacity: 0.5;
+    padding: 0 0.15rem;
+  }
+  .ps-agg-v + :global(.info-wrap) :global(.info-btn):hover {
+    opacity: 1;
+    color: var(--c-info);
+  }
 
   @media (max-width: 640px) {
     /* Four pills (P · M · C · H) fill the mobile viewport width:
@@ -1073,13 +1118,13 @@
                   scrollbar-width: none; }
     .ps-strip::-webkit-scrollbar { display: none; }
     .ps-agg     { gap: 0.15rem; flex-shrink: 0; max-width: calc(25% - 0.15rem); }
-    .ps-agg-k   { font-size: var(--fs-2xs); }
+    .ps-agg-k   { font-size: var(--fs-xs); }
     .ps-agg-v   { font-size: var(--fs-sm); }
   }
   @media (max-width: 380px) {
     /* Narrowest phones — drop one more notch. */
     .ps-strip   { padding: 0 0.2rem; }
-    .ps-agg-k   { font-size: var(--fs-2xs); }
+    .ps-agg-k   { font-size: var(--fs-xs); }
     .ps-agg-v   { font-size: var(--fs-xs); }
   }
 </style>

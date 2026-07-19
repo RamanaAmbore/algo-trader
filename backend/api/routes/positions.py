@@ -204,6 +204,36 @@ def _is_broker_outage(err: Exception) -> bool:
     ))
 
 
+def _replace_row_price(r, live_ltp: float, exchange_open: bool, snap_ltp: "float | None"):
+    """Apply resolve_current_price to *r* and return a replaced struct.
+
+    When *exchange_open* is True, *snap_ltp* is ignored.
+    When *exchange_open* is False, *snap_ltp* may supply the settled close
+    price; None means no snapshot is available (pre-settle state).
+    Also overlays last_price on the settled path so legacy consumers that
+    read last_price see the frozen close price.
+    """
+    import msgspec as _msc
+    has_snapshot = exchange_open is False and snap_ltp is not None and snap_ltp > 0
+    price, source, animating = resolve_current_price(
+        exchange_open=exchange_open,
+        live_ltp=live_ltp,
+        **({} if exchange_open else dict(
+            snapshot_close=(float(snap_ltp) if has_snapshot else None),
+            snapshot_last_ltp=live_ltp,
+            settled=has_snapshot,
+        )),
+    )
+    replace_kwargs: dict = {
+        "price_source": source,
+        "current_price": price if price is not None else live_ltp,
+        "is_animating": animating,
+    }
+    if has_snapshot and price is not None:
+        replace_kwargs["last_price"] = float(price)
+    return _msc.structs.replace(r, **replace_kwargs)
+
+
 async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> list:
     """Per-exchange close-snapshot overlay under the unified animation model
     (Jul 2026 refactor).
@@ -269,14 +299,7 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
                     is_animating=False,
                 ))
                 continue
-            price, source, animating = resolve_current_price(
-                exchange_open=True, live_ltp=live_ltp,
-            )
-            out.append(_msc.structs.replace(
-                r, price_source=source,
-                current_price=price if price is not None else live_ltp,
-                is_animating=animating,
-            ))
+            out.append(_replace_row_price(r, live_ltp, exchange_open=True, snap_ltp=None))
         return out
 
     # Some rows are on closed exchanges — pull the snapshot map ONCE and
@@ -295,40 +318,12 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
             ))
             continue
         if not _closed(exch):
-            price, source, animating = resolve_current_price(
-                exchange_open=True, live_ltp=broker_ltp,
-            )
-            out.append(_msc.structs.replace(
-                r, price_source=source,
-                current_price=price if price is not None else broker_ltp,
-                is_animating=animating,
-            ))
+            out.append(_replace_row_price(r, broker_ltp, exchange_open=True, snap_ltp=None))
             continue
 
         key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
         snap_ltp = snap_map.get(key)
-        has_snapshot = snap_ltp is not None and snap_ltp > 0
-
-        price, source, animating = resolve_current_price(
-            exchange_open=False,
-            live_ltp=broker_ltp,
-            snapshot_close=(float(snap_ltp) if has_snapshot else None),
-            # broker LTP captured before close serves as the pre-settle
-            # fallback — the resolver falls through to it via
-            # snapshot_last_ltp when snapshot_close is missing.
-            snapshot_last_ltp=broker_ltp,
-            settled=has_snapshot,
-        )
-        replace_kwargs: dict = {
-            "price_source": source,
-            "current_price": price if price is not None else broker_ltp,
-            "is_animating": animating,
-        }
-        # On settled path, overlay last_price with the snapshot value so
-        # legacy consumers reading last_price see the frozen close_price.
-        if has_snapshot and price is not None:
-            replace_kwargs["last_price"] = float(price)
-        out.append(_msc.structs.replace(r, **replace_kwargs))
+        out.append(_replace_row_price(r, broker_ltp, exchange_open=False, snap_ltp=snap_ltp))
     return out
 
 
@@ -845,6 +840,22 @@ async def _build_paper_positions_response() -> PositionsResponse:
     return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
 
 
+def _batch_fetch_spots(underlying_keys: set[str]) -> dict[str, float]:
+    """Fetch last_price for each key in *underlying_keys* via one broker.quote() call.
+
+    Returns a dict mapping each key to its spot price. Returns {} on broker
+    failure so the caller can skip Greek computation gracefully.
+    """
+    from backend.brokers.registry import get_market_data_broker
+    try:
+        broker = get_market_data_broker()
+        spot_data = broker.quote(list(underlying_keys)) or {}
+        return {k: float(v.get("last_price") or 0.0) for k, v in spot_data.items()}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Greeks enrich: underlying spot fetch failed: {exc}")
+        return {}
+
+
 def _enrich_position_greeks(rows: list) -> None:
     """In-place: compute Δ-exposure (delta × qty) and Θ-per-day (theta × qty)
     for every row whose tradingsymbol parses as an option (CE / PE). Non-
@@ -863,7 +874,6 @@ def _enrich_position_greeks(rows: list) -> None:
     from backend.api.algo.derivatives import (
         parse_tradingsymbol, implied_vol, greeks, option_underlying_quote_key,
     )
-    from backend.brokers.registry import get_market_data_broker
 
     # Pass 1 — parse + collect unique underlying keys we need spots for.
     # option_underlying_quote_key() returns the right key shape for both
@@ -891,15 +901,7 @@ def _enrich_position_greeks(rows: list) -> None:
         return
 
     # Pass 2 — single batched broker.quote() for every underlying.
-    spot_by_key: dict[str, float] = {}
-    try:
-        broker = get_market_data_broker()
-        spot_data = broker.quote(list(underlying_keys)) or {}
-        for k, v in spot_data.items():
-            spot_by_key[k] = float(v.get("last_price") or 0.0)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Greeks enrich: underlying spot fetch failed: {exc}")
-        return
+    spot_by_key = _batch_fetch_spots(underlying_keys)
 
     # Pass 3 — per-option IV calibration + greeks compute.
     r_rate = 0.07  # constant; matches the rate used in /api/options/analytics

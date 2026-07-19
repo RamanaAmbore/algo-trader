@@ -143,6 +143,36 @@ SYSTEM_TEMPLATES: list[dict] = [
 _MUTABLE_FIELDS = ("name", "description", "applies_to")
 
 
+async def _promote_default_if_unclaimed(session, by_slug: dict, slug: str, applies_to: str) -> None:
+    """Promote `slug` to is_default when its applies_to scope is unclaimed.
+
+    Called once per side-default after the main upsert loop. Only fires when
+    the row exists but is_default=False AND no other system template in the
+    same applies_to scope already claims is_default=True. This allows an
+    operator who manually promoted a custom template to keep it without the
+    seeder stomping it on every deploy.
+    """
+    from sqlalchemy import select
+    from backend.api.models import OrderTemplate
+
+    row = by_slug.get(slug)
+    if row is None or row.is_default:
+        return
+    others = await session.execute(
+        select(OrderTemplate).where(
+            OrderTemplate.applies_to == applies_to,
+            OrderTemplate.is_default == True,  # noqa: E712
+            OrderTemplate.slug != slug,
+        )
+    )
+    if not others.scalars().first():
+        row.is_default = True
+        logger.info(
+            f"Order template {slug!r} promoted to is_default — "
+            f"now the side-default for {applies_to!r}."
+        )
+
+
 async def seed_templates() -> None:
     """Insert system templates that don't yet exist; refresh mutable
     metadata on existing rows; preserve numeric tuning + is_default.
@@ -206,66 +236,12 @@ async def seed_templates() -> None:
                 updated += 1
 
         # One-time rebalance for the 4-default matrix migration:
-        # - `default-long-option` flips from buy_any → buy_option.
-        #   The applies_to mutable-fields refresh above already does
-        #   this on existing rows, so no extra work here.
-        # - `default-bull` is now the buy_any side-default. Existing
-        #   prod installs had `is_default=False` for this row; promote
-        #   to True when no other buy_any system template currently
-        #   claims is_default (so an operator who manually promoted a
-        #   custom buy_any template still wins).
         # is_default is NOT in _MUTABLE_FIELDS by design (operators may
         # have intentionally demoted a default); this one-time path
         # only PROMOTES when the scope is unclaimed.
-        bull = by_slug.get("default-bull")
-        if bull is not None and not bull.is_default:
-            others = await s.execute(
-                select(OrderTemplate).where(
-                    OrderTemplate.applies_to == "buy_any",
-                    OrderTemplate.is_default == True,  # noqa: E712
-                    OrderTemplate.slug != "default-bull",
-                )
-            )
-            if not others.scalars().first():
-                bull.is_default = True
-                logger.info(
-                    "Order template 'default-bull' promoted to is_default — "
-                    "now the side-default for buy_any (BUY EQ/FUT)."
-                )
-
-        # - `default-bear` is the sell_any side-default. Promote when unclaimed.
-        bear = by_slug.get("default-bear")
-        if bear is not None and not bear.is_default:
-            others = await s.execute(
-                select(OrderTemplate).where(
-                    OrderTemplate.applies_to == "sell_any",
-                    OrderTemplate.is_default == True,  # noqa: E712
-                    OrderTemplate.slug != "default-bear",
-                )
-            )
-            if not others.scalars().first():
-                bear.is_default = True
-                logger.info(
-                    "Order template 'default-bear' promoted to is_default — "
-                    "now the side-default for sell_any (SELL EQ/FUT)."
-                )
-
-        # - `default-short-vol` is the sell_option side-default. Promote when unclaimed.
-        short_vol = by_slug.get("default-short-vol")
-        if short_vol is not None and not short_vol.is_default:
-            others = await s.execute(
-                select(OrderTemplate).where(
-                    OrderTemplate.applies_to == "sell_option",
-                    OrderTemplate.is_default == True,  # noqa: E712
-                    OrderTemplate.slug != "default-short-vol",
-                )
-            )
-            if not others.scalars().first():
-                short_vol.is_default = True
-                logger.info(
-                    "Order template 'default-short-vol' promoted to is_default — "
-                    "now the side-default for sell_option (SELL CE/PE)."
-                )
+        await _promote_default_if_unclaimed(s, by_slug, "default-bull",      "buy_any")
+        await _promote_default_if_unclaimed(s, by_slug, "default-bear",      "sell_any")
+        await _promote_default_if_unclaimed(s, by_slug, "default-short-vol", "sell_option")
 
         await s.commit()
         logger.info(

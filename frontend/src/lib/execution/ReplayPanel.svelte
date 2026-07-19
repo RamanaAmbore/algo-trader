@@ -12,12 +12,17 @@
     fetchAgents,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
+  import CardHeader   from '$lib/CardHeader.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import ConfirmModal   from '$lib/ConfirmModal.svelte';
   import PriceChart  from '$lib/PriceChart.svelte';
   import InfoHint    from '$lib/InfoHint.svelte';
   import Select      from '$lib/Select.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
+
+  // Card fullscreen / collapse state for the replay chart grid.
+  let _chartFs  = $state(false);
+  let _chartCol = $state(false);
 
   let status       = $state(/** @type {any} */ ({}));
   let results      = $state(/** @type {any[]} */ ([]));
@@ -349,18 +354,31 @@
 {/if}
 
 <!-- Chart grid -->
-{#if chartSymbols.length}
-  <div class="replay-charts mb-3">
-    {#each chartSymbols as sym (sym)}
-      <PriceChart mode="replay" symbol={sym} height={170}
-                  data={chartsBySymbol[sym]}
-                  {chartsBySymbol} />
-    {/each}
-  </div>
-{:else if !loading && status?.active}
-  <div class="sim-empty-charts">
-    No chart ticks captured yet — charts populate as the replay progresses.
-  </div>
+{#if chartSymbols.length || (!loading && status?.active)}
+  <section class="sim-card" class:fs-card-on={_chartFs} class:is-collapsed={_chartCol}>
+    <CardHeader
+      title="Replay Charts"
+      detectOverflow={false}
+      bind:isFullscreen={_chartFs}
+      bind:isCollapsed={_chartCol}
+      showSearch={false}
+    />
+    <div hidden={_chartCol}>
+      {#if chartSymbols.length}
+        <div class="replay-charts mb-3">
+          {#each chartSymbols as sym (sym)}
+            <PriceChart mode="replay" symbol={sym} height={170}
+                        data={chartsBySymbol[sym]}
+                        {chartsBySymbol} />
+          {/each}
+        </div>
+      {:else}
+        <div class="sim-empty-charts">
+          No chart ticks captured yet — charts populate as the replay progresses.
+        </div>
+      {/if}
+    </div>
+  </section>
 {/if}
 
 <ActivityLogSurface

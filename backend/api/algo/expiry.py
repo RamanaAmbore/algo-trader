@@ -25,7 +25,7 @@ from backend.brokers import broker_apis
 from backend.brokers.connections import Connections
 from backend.shared.helpers.date_time_utils import timestamp_indian, timestamp_display, is_market_open
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import config, mask_column
+from backend.shared.helpers.utils import config
 
 from backend.api.algo.chase import chase_order, ChaseConfig, ChaseResult, ChaseStatus
 

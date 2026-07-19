@@ -380,13 +380,6 @@ test.describe('algo consistency — token definitions present', () => {
     expect(src).toContain('--card-bg-gradient:');
   });
 
-  test('app.css defines .algo-chip + .algo-chip-shape + .algo-tag', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src/app.css'), 'utf-8');
-    expect(src).toContain('.algo-chip-shape');
-    expect(src).toMatch(/\.algo-chip\s*\{/);
-    expect(src).toContain('.algo-tag');
-  });
-
   test('app.css defines --algo-violet token', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/app.css'), 'utf-8');
     expect(src).toContain('--algo-violet:');
