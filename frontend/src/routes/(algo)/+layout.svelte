@@ -2139,6 +2139,7 @@
     :global(.page-header) {
       padding: 0.1rem 0.4rem;
       min-height: 1.8rem;
+      overflow-x: hidden;
     }
     /* Page-header is 1.8rem on both desktop + mobile now — icons
        (1.4rem buttons) get 0.2rem breathing room above/below instead
@@ -2165,6 +2166,11 @@
       flex-shrink: 1;
       min-width: 0;
     }
+  }
+
+  @media (max-width: 480px) {
+    :global(.algo-ts-group) { flex-shrink: 1; min-width: 0; }
+    :global(.algo-ts) { overflow: hidden; text-overflow: ellipsis; }
   }
 
   /* Algo dark-theme overrides for classes shared with public pages */

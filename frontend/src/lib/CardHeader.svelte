@@ -48,7 +48,7 @@
     refreshAlwaysVisible = false,
     onDownload = null,
     showControls = true,
-    detectOverflow = false,
+    detectOverflow = true,
     /** @type {Snippet | undefined} */ left = undefined,
     /** @type {Snippet | undefined} */ middle = undefined,
     /** @type {Snippet | undefined} */ right = undefined,
@@ -60,12 +60,33 @@
   $effect(() => {
     if (!detectOverflow || !_overflowAnchorEl?.parentElement?.parentElement) return;
     const el = _overflowAnchorEl.parentElement.parentElement;
-    const obs = new ResizeObserver(() => {
-      _hasOverflow = el.scrollHeight > el.clientHeight + 4 ||
-                     el.scrollWidth > el.clientWidth + 4;
-    });
+
+    const checkOverflow = () => {
+      if (el.scrollHeight > el.clientHeight + 4 || el.scrollWidth > el.clientWidth + 4) {
+        _hasOverflow = true; return;
+      }
+      const agRows = /** @type {HTMLElement | null} */ (el.querySelector('.ag-center-cols-container'));
+      const agViewport = el.querySelector('.ag-body-viewport');
+      if (agRows && agViewport && agRows.offsetHeight > agViewport.clientHeight + 4) {
+        _hasOverflow = true; return;
+      }
+      _hasOverflow = false;
+    };
+
+    const obs = new ResizeObserver(checkOverflow);
     obs.observe(el);
-    return () => obs.disconnect();
+    const agRows = el.querySelector('.ag-center-cols-container');
+    if (agRows) obs.observe(agRows);
+    let mutObs = null;
+    if (!agRows) {
+      mutObs = new MutationObserver(() => {
+        const newAgRows = el.querySelector('.ag-center-cols-container');
+        if (newAgRows) { obs.observe(newAgRows); mutObs?.disconnect(); mutObs = null; checkOverflow(); }
+      });
+      mutObs.observe(el, { childList: true, subtree: true });
+    }
+    checkOverflow();
+    return () => { obs.disconnect(); mutObs?.disconnect(); };
   });
 </script>
 
@@ -152,7 +173,7 @@
   .ch-right {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.3rem;
     flex-shrink: 0;
   }
 </style>

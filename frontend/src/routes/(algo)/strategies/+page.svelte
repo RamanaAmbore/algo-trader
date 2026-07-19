@@ -164,22 +164,15 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Strategies</h1>
   </span>
-  <span class="algo-ts-group">
+  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
     <span class="algo-ts"
           class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          class:algo-ts-pulse={!$lastRefreshAt}
-          onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}
-          role="button" tabindex="0"
-          onkeydown={(e) => { if ($lastRefreshAt && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
       {$nowStamp}
     </span>
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-            onclick={() => _showLiveTs = !_showLiveTs}
-            title="Last refresh — tap to switch" role="button" tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
         {formatDualTz($lastRefreshAt)}
       </span>
     {/if}
@@ -302,7 +295,6 @@
 <style>
   .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
   .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  .algo-ts-data  { cursor: pointer; }
   @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .strat-error {
     padding: 0.6rem 0.9rem;
@@ -345,7 +337,9 @@
 
   .strat-table-wrap {
     overflow-x: auto;
-    border: 1px solid rgba(126, 151, 184, 0.18);
+    border: 1.5px solid rgba(255,255,255,0.10);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border-radius: 6px;
   }
   .strat-table {
@@ -389,15 +383,15 @@
   .pnl-pos { color: var(--c-long); }
   .pnl-neg { color: var(--c-short); }
 
-  .pill-active   { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
+  .pill-active   { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px;
                    background: rgba(74,222,128,0.16); color: var(--c-long);
                    border: 1px solid rgba(74,222,128,0.40);
-                   font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.04em;
+                   font-size: var(--fs-sm); font-weight: 700; letter-spacing: 0.04em;
                    text-transform: uppercase; font-family: var(--font-numeric); }
-  .pill-inactive { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
+  .pill-inactive { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px;
                    background: rgba(126,151,184,0.16); color: var(--c-muted);
                    border: 1px solid rgba(126,151,184,0.40);
-                   font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.04em;
+                   font-size: var(--fs-sm); font-weight: 700; letter-spacing: 0.04em;
                    text-transform: uppercase; font-family: var(--font-numeric); }
 
   .btn-sm { font-size: var(--fs-sm); padding: 0.2rem 0.55rem; }

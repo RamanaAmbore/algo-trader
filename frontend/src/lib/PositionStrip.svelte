@@ -20,6 +20,7 @@
   import { batchQuote } from '$lib/api';
   import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
   import DayPnlBreakup from './DayPnlBreakup.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
@@ -838,8 +839,8 @@
 </script>
 
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
-  <span class="ps-agg" title="P — Day P&L / Lifetime P&L / F&amp;O expiry P&L (all accounts, all exchanges)">
-    <span class="ps-agg-k ps-k-p">P</span>
+  <span class="ps-agg">
+    <span class="ps-agg-k ps-k-p"><InfoHint popup label="P" text="<b>P — Positions P&amp;L</b> · Three slots: <b>Day P&amp;L</b> (live ticks − prev-close × net qty, all accounts) / <b>Lifetime P&amp;L</b> (cumulative since open) / <b>Expiry P&amp;L</b> (projected F&amp;O value at expiry via lognormal model). Tap the Day P&amp;L value for a per-position breakup." /></span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
       style="cursor:pointer"
       role="button"
@@ -857,8 +858,8 @@
   </span>
   <!-- Margin pill: available / total (used + avail). Operator wants the
        "room I have / full capacity" framing rather than util %. -->
-  <span class="ps-agg" title="Margin: available / total (used + avail)">
-    <span class="ps-agg-k ps-k-m">M</span>
+  <span class="ps-agg">
+    <span class="ps-agg-k ps-k-m"><InfoHint popup label="M" text="<b>M — Margin</b> · Available / Total. <b>Available</b> = cash deployable right now for new orders. <b>Total</b> = used margin + available (full collateral picture, all accounts)." /></span>
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
       >{fmtMoney(marginAvail)}</span
     ><span class="ps-agg-sep">/</span
@@ -874,16 +875,16 @@
        Per-broker drift in how realised M2M is folded into avail.cash
        is documented in the audit memo; if the sum diverges from broker
        apps, the Dhan/Groww adapter math is the first place to look. -->
-  <span class="ps-agg" title="Cash: available (CA, deployable now) / total (C, incl. premium tied up in long options)">
-    <span class="ps-agg-k ps-k-c">C</span>
+  <span class="ps-agg">
+    <span class="ps-agg-k ps-k-c"><InfoHint popup label="C" text="<b>C — Cash</b> · CA (Available) / C (Total). <b>CA</b> = live deployable cash, nets realised P&amp;L + premium debits. <b>Total C</b> = CA + premium tied up in long options (recoverable if closed)." /></span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
       >{fmtMoney(liveCashTotal)}</span
     ><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash-dim' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
       >{fmtMoney(cashTotal)}</span>
   </span>
-  <span class="ps-agg" title="Holdings: today's MTM move / current value / lifetime P&L">
-    <span class="ps-agg-k ps-k-h">H</span>
+  <span class="ps-agg">
+    <span class="ps-agg-k ps-k-h"><InfoHint popup label="H" text="<b>H — Holdings</b> · Three slots: <b>Today MTM</b> (live LTP − prev-close × qty) / <b>Current value</b> (broker-reported, all holdings) / <b>Lifetime P&amp;L</b> (cumulative since purchase)." /></span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
       >{fmtMoney(dispHoldingsToday)}</span
     ><span class="ps-agg-sep">/</span
@@ -1040,6 +1041,25 @@
   .ps-margin-dim { color: var(--algo-violet-text); }      /* slot 2: total capacity (pastel violet) */
   /* Expiry profit — amber action palette; signals a time-bound outcome. */
   .ps-exp  { color: var(--c-action); }
+
+  /* InfoHint inside pill label — inherit the pill hue so P/M/C/H
+     keep their amber/violet/sky/cyan accent. Strip the chip's own
+     circular styling: it renders as a plain colored letter. */
+  .ps-agg-k :global(.info-btn) {
+    color: inherit;
+    font-size: inherit;
+    font-weight: 700;
+    padding: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    width: auto;
+    height: auto;
+    border-radius: 0;
+    font-style: normal;
+    line-height: inherit;
+  }
+
   @media (max-width: 640px) {
     /* Four pills (P · M · C · H) fill the mobile viewport width:
        P locks to the left edge; M / C / H distribute across the
@@ -1052,7 +1072,7 @@
                   overflow-x: auto; -webkit-overflow-scrolling: touch;
                   scrollbar-width: none; }
     .ps-strip::-webkit-scrollbar { display: none; }
-    .ps-agg     { gap: 0.15rem; flex-shrink: 0; }
+    .ps-agg     { gap: 0.15rem; flex-shrink: 0; max-width: calc(25% - 0.15rem); }
     .ps-agg-k   { font-size: var(--fs-2xs); }
     .ps-agg-v   { font-size: var(--fs-sm); }
   }

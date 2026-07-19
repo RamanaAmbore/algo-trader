@@ -283,22 +283,15 @@
     <h1 class="page-title-chip">Templates</h1>
     <InfoHint popup align="right" text="<b>Order templates</b> are reusable exit-rule presets you pick at order entry — TP %, SL %, and (for SELL options) a protective wing leg. The selected template translates to a broker-native GTT for TP/SL and a paired basket order for the wing. Edit a template here and every future order using it inherits the new values; bulk-apply lets you push the change to open positions too." />
   </span>
-  <span class="algo-ts-group">
+  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
     <span class="algo-ts"
           class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          class:algo-ts-pulse={!$lastRefreshAt}
-          onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}
-          role="button" tabindex="0"
-          onkeydown={(e) => { if ($lastRefreshAt && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
       {$nowStamp}
     </span>
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-            onclick={() => _showLiveTs = !_showLiveTs}
-            title="Last refresh — tap to switch" role="button" tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
         {formatDualTz($lastRefreshAt)}
       </span>
     {/if}
@@ -645,7 +638,6 @@
 <style>
   .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
   .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  .algo-ts-data  { cursor: pointer; }
   @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Defaults coverage matrix — at-a-glance grid of the 4 side-default
      slots. Each cell renders the slot's scope (BUY EQ/FUT, SELL OPT,
@@ -729,21 +721,21 @@
 
   /* Filter chips */
   .tpl-chip {
-    padding: 0.25rem 0.7rem;
-    font-size: var(--fs-lg);
+    font-size: var(--fs-sm);
+    border-radius: 3px;
+    padding: 0.2rem 0.55rem;
+    color: rgba(180,200,230,0.70);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(180,200,230,0.18);
     font-family: var(--font-numeric);
-    color: rgba(180,200,230,0.75);
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(180,200,230,0.20);
-    border-radius: 4px;
     cursor: pointer;
     transition: color 0.06s, background 0.06s, border-color 0.06s;
   }
   .tpl-chip:hover { color: var(--c-action); border-color: rgba(251,191,36,0.45); }
   .tpl-chip-on {
     color: var(--c-action);
-    background: rgba(251,191,36,0.10);
-    border-color: rgba(251,191,36,0.55);
+    background: rgba(251,191,36,0.12);
+    border-color: rgba(251,191,36,0.45);
     font-weight: 700;
   }
 
@@ -950,29 +942,33 @@
     margin-top: 0.4rem;
   }
   .tpl-btn {
-    padding: 0.35rem 0.85rem;
-    font-size: var(--fs-lg);
+    font-size: var(--fs-sm);
     font-weight: 600;
+    border-radius: 3px;
+    padding: 0.25rem 0.7rem;
     color: rgba(200,216,240,0.85);
     background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(180,200,230,0.25);
-    border-radius: 4px;
+    border: 1px solid rgba(180,200,230,0.2);
     cursor: pointer;
   }
-  .tpl-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  .tpl-btn:hover {
+    color: var(--c-action);
+    background: rgba(251,191,36,0.10);
+    border-color: rgba(251,191,36,0.40);
+  }
   .tpl-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .tpl-btn-primary {
     color: var(--c-action);
-    background: rgba(251,191,36,0.10);
-    border-color: rgba(251,191,36,0.55);
+    background: rgba(251,191,36,0.15);
+    border-color: rgba(251,191,36,0.5);
+    font-weight: 700;
   }
   .tpl-btn-primary:hover {
-    background: rgba(251,191,36,0.18);
-    color: #fcd34d;
+    background: rgba(251,191,36,0.25);
   }
   .tpl-btn-danger {
     color: var(--c-short);
-    background: var(--c-short-10);
+    background: var(--c-short-10, rgba(248,113,113,0.10));
     border-color: rgba(248,113,113,0.45);
   }
   .tpl-btn-danger:hover {

@@ -1927,6 +1927,9 @@
     background: transparent;
   }
   :global(.log-panel.log-rows .log-row:last-child) { border-bottom: 0; }
+  :global(.log-panel.log-rows .log-row:nth-child(odd)) {
+    background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+  }
   :global(.log-panel.log-rows .log-row:hover) { background: rgba(255, 255, 255, 0.02); }
 
   :global(.log-panel.log-rows .log-row-time) {

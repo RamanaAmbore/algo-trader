@@ -156,12 +156,4 @@
     outline-offset: 1px;
   }
 
-  /* When CollapseButton is followed by FullscreenButton (the
-     canonical ordering — collapse first as the lighter-touch action),
-     the fs-btn drops its margin-left:auto and sits tight with a
-     small gap. Targeted via :global so the .fs-btn (declared scoped
-     in FullscreenButton.svelte) can be addressed. */
-  .collapse-btn + :global(.fs-btn) {
-    margin-left: 0.3rem;
-  }
 </style>
