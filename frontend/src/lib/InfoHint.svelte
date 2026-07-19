@@ -29,6 +29,10 @@
    *   defaultOpen?: boolean,
    *   popup?: boolean,
    *   id?: string,
+   *   panel?: boolean,
+   *   accentColor?: string,
+   *   title?: string,
+   *   showOnHover?: boolean,
    * }} */
   let {
     children,
@@ -40,6 +44,10 @@
     defaultOpen = false,
     popup = false,
     id = '',
+    panel = false,
+    accentColor = 'var(--algo-amber)',
+    title = '',
+    showOnHover = false,
   } = $props();
 
   // Unique id for aria-describedby. Generated in onMount to avoid
@@ -94,8 +102,8 @@
       // Width clamp first — JS-side guarantee that the popup never
       // exceeds viewport width regardless of CSS / max-content
       // calculations. Setting maxWidth as inline style overrides
-      // any CSS rule.
-      popoutEl.style.maxWidth = `${Math.max(120, vw - margin * 2)}px`;
+      // any CSS rule. Skip for panel mode — CSS governs max-width there.
+      if (!panel) popoutEl.style.maxWidth = `${Math.max(120, vw - margin * 2)}px`;
       // Reset position before measuring so the previous fit doesn't
       // bias the natural rect.
       popoutEl.style.left = '';
@@ -144,17 +152,23 @@
           aria-describedby={visible ? _popoutId : undefined}
           aria-label={open ? 'Hide details' : 'Show details'}
           title={open ? 'Hide details' : 'Show details'}
-          onclick={() => { open = !open; if (!open) hovered = false; }}
+          onclick={() => { if (!showOnHover) { open = !open; if (!open) hovered = false; } }}
           onmouseenter={() => hovered = true}
-          onmouseleave={() => hovered = false}>{label}</button>
+          onmouseleave={() => hovered = false}
+          onfocus={() => { if (showOnHover) hovered = true; }}
+          onblur={() => { if (showOnHover) hovered = false; }}>{label}</button>
   {#if visible}
     <span class="info-popout"
           class:info-popout-popup={popup}
           class:info-popout-pinned={popup && open}
-          style="max-width: {maxWidth}"
+          class:ih-panel={panel}
+          style={panel ? `--accent-color: ${accentColor}` : `max-width: ${maxWidth}`}
           id={_popoutId}
           role="tooltip"
           bind:this={popoutEl}>
+      {#if panel && title}
+        <div class="ih-panel-title">{title}</div>
+      {/if}
       {#if content}
         <dl class="info-struct" data-testid="metric-popover">
           <div class="info-row">
@@ -274,6 +288,34 @@
     box-shadow: 0 4px 14px rgba(0,0,0,0.45);
   }
   .info-popout-pinned { pointer-events: auto; }
+
+  /* Panel mode — richer floating panel with gradient background, accent
+     left border, and a titled header. Used for NavStrip pill hints where
+     space permits a more detailed explanation. accentColor is supplied
+     per-pill via --accent-color CSS custom property. */
+  .info-popout.ih-panel {
+    min-width: 16rem;
+    max-width: min(22rem, calc(100vw - 1.5rem));
+    padding: 0.75rem 1rem;
+    background: linear-gradient(180deg, #1c2840 0%, #141e33 100%);
+    border: 1px solid var(--algo-amber-border-soft);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    border-radius: 4px;
+    border-left: 3px solid var(--accent-color, var(--algo-amber));
+    font-size: var(--fs-sm);
+    color: var(--algo-slate);
+    line-height: 1.5;
+  }
+  .ih-panel-title {
+    font-size: var(--fs-md);
+    font-weight: 700;
+    color: var(--accent-color, var(--algo-amber));
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.5rem;
+  }
 
   /* Reset margins on common children so the popover content reads
      compactly without unintended padding. */

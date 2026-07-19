@@ -484,8 +484,9 @@ async def _ticker_watchdog() -> None:
                 continue
 
             # ── Phase 4: swap eligibility ───────────────────────────────
+            _slowed_s = _watchdog_slowed_interval_s()
             swap_has_candidates = _attempt_failover_swap(
-                ticker, log, _watchdog_cooldown_s(), _watchdog_slowed_interval_s()
+                ticker, log, _watchdog_cooldown_s(), _slowed_s
             )
             if not swap_has_candidates:
                 if not unavailable_mode:
@@ -493,7 +494,7 @@ async def _ticker_watchdog() -> None:
                     log.critical(
                         "ticker_watchdog: all Kite accounts unhealthy — "
                         "LTP REST poll fallback active (slowed cadence %.0fs)",
-                        _watchdog_slowed_interval_s(),
+                        _slowed_s,
                     )
                 _try_start_ticker()
 

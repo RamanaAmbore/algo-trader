@@ -19,7 +19,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
-  import { authStore, nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
@@ -292,7 +292,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>
@@ -788,7 +788,7 @@
 
   .tpl-badge {
     padding: 0.08rem 0.45rem;
-    font-size: var(--fs-xs);
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.05em;
     border-radius: 3px;

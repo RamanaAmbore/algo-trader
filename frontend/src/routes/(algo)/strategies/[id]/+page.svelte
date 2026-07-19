@@ -17,7 +17,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/state';
-  import { nowStamp, lastRefreshAt, formatDualTz, marketAwareInterval } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatIstOnly, marketAwareInterval } from '$lib/stores';
   import {
     fetchStrategy, fetchStrategyLots, fetchStrategySnapshots,
     fetchStrategyMetrics, updateStrategy,
@@ -142,7 +142,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>

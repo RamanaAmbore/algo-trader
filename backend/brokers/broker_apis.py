@@ -743,59 +743,25 @@ def _is_circuit_open(account: str) -> bool:
     return _circuit_state(account) == "open"
 
 
-def _record_fetch(account: str, ok: bool, error: str = "") -> None:
-    """Record one fetch attempt's outcome and advance the circuit-breaker
-    state machine.
+def _record_breaker_state(
+    account: str, ok: bool, error: str, now: float
+) -> tuple[bool, bool, bool]:
+    """Run the circuit-breaker state machine inside _BREAKER_LOCK.
 
-    Called from every per-account broker API wrapper (fetch_holdings /
-    fetch_positions / fetch_margins) on both success and failure paths
-    so the per-account health state stays current.
+    Returns (new_breaker_open, was_halfopen, was_recovering) so the
+    caller can fire conn events outside the lock without holding it
+    during the enqueue_nowait call.
 
-    State transitions (Jul 2026 circuit-breaker):
+    State transitions:
       CLOSED  → ok=True   : reset consecutive_fail_count; stay CLOSED.
       CLOSED  → ok=False  : increment consecutive_fail_count.
                              If count >= _CB_FAIL_THRESHOLD → OPEN.
       HALF-OPEN → ok=True : reset counters; CLOSED.
       HALF-OPEN → ok=False: OPEN again with exponential cool-off.
-      OPEN    → any call  : callers must check _is_circuit_open() BEFORE
-                             calling the SDK; _record_fetch is not called
-                             for short-circuited attempts.
-
-    Consecutive-fail semantics: we count any consecutive failures
-    regardless of wall-clock gap (no sliding-window). The cool-off
-    period is the rate-limiting mechanism; the counter is just the
-    threshold gate to enter it. A single success resets the counter.
     """
-    if not account:
-        return
-
-    now = _time.time()
-
-    # Fast path for non-opt-in accounts: update health stamps only so the
-    # admin badge stays accurate, but skip the full state machine.
-    if not get_breaker_optin_cache(account):
-        e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
-        if ok:
-            _was_recovering = e.get("last_fail_at", 0.0) > e.get("last_ok_at", 0.0)
-            e["last_ok_at"] = now
-            if _was_recovering:
-                _emit_conn_event(
-                    account, _broker_id_safe(account), "fetch_ok_recovery",
-                    {"after_fail_msg": e.get("last_fail_msg", "")[:200]},
-                )
-        else:
-            e["last_fail_at"] = now
-            e["last_fail_msg"] = str(error)[:200]
-            _etype = "auth_fail" if _is_auth_error_str(str(error)) else "fetch_fail"
-            _emit_conn_event(
-                account, _broker_id_safe(account), _etype,
-                {"error": str(error)[:200]},
-            )
-        return
-
-    _new_breaker_open = False   # flag set inside lock, hook fired outside
-    _was_halfopen     = False   # HALF-OPEN → CLOSED recovery
-    _was_recovering   = False   # had a prior failure (emit fetch_ok_recovery)
+    _new_breaker_open = False
+    _was_halfopen     = False
+    _was_recovering   = False
     with _BREAKER_LOCK:
         e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
         # Ensure legacy entries (without breaker fields) are back-filled.
@@ -855,6 +821,62 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
                     f"open_until={_ts_label(now + cooloff)} "
                     f"cycle={e['open_cycle_count']}"
                 )
+    return _new_breaker_open, _was_halfopen, _was_recovering
+
+
+def _record_fetch(account: str, ok: bool, error: str = "") -> None:
+    """Record one fetch attempt's outcome and advance the circuit-breaker
+    state machine.
+
+    Called from every per-account broker API wrapper (fetch_holdings /
+    fetch_positions / fetch_margins) on both success and failure paths
+    so the per-account health state stays current.
+
+    State transitions (Jul 2026 circuit-breaker):
+      CLOSED  → ok=True   : reset consecutive_fail_count; stay CLOSED.
+      CLOSED  → ok=False  : increment consecutive_fail_count.
+                             If count >= _CB_FAIL_THRESHOLD → OPEN.
+      HALF-OPEN → ok=True : reset counters; CLOSED.
+      HALF-OPEN → ok=False: OPEN again with exponential cool-off.
+      OPEN    → any call  : callers must check _is_circuit_open() BEFORE
+                             calling the SDK; _record_fetch is not called
+                             for short-circuited attempts.
+
+    Consecutive-fail semantics: we count any consecutive failures
+    regardless of wall-clock gap (no sliding-window). The cool-off
+    period is the rate-limiting mechanism; the counter is just the
+    threshold gate to enter it. A single success resets the counter.
+    """
+    if not account:
+        return
+
+    now = _time.time()
+
+    # Fast path for non-opt-in accounts: update health stamps only so the
+    # admin badge stays accurate, but skip the full state machine.
+    if not get_breaker_optin_cache(account):
+        e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
+        if ok:
+            _was_recovering = e.get("last_fail_at", 0.0) > e.get("last_ok_at", 0.0)
+            e["last_ok_at"] = now
+            if _was_recovering:
+                _emit_conn_event(
+                    account, _broker_id_safe(account), "fetch_ok_recovery",
+                    {"after_fail_msg": e.get("last_fail_msg", "")[:200]},
+                )
+        else:
+            e["last_fail_at"] = now
+            e["last_fail_msg"] = str(error)[:200]
+            _etype = "auth_fail" if _is_auth_error_str(str(error)) else "fetch_fail"
+            _emit_conn_event(
+                account, _broker_id_safe(account), _etype,
+                {"error": str(error)[:200]},
+            )
+        return
+
+    _new_breaker_open, _was_halfopen, _was_recovering = _record_breaker_state(
+        account, ok, error, now
+    )
 
     # Emit conn events OUTSIDE the lock so the enqueue_nowait call
     # never holds _BREAKER_LOCK while touching the event queue.
@@ -874,6 +896,7 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
     # an already-open circuit, so each open event is counted exactly once
     # for the 15-min history window.
     if _new_breaker_open:
+        e = _FETCH_HEALTH.get(account, {})
         _emit_conn_event(account, _bid, "circuit_open", {
             "cycle": e.get("open_cycle_count", 0),
             "consecutive_fails": e.get("consecutive_fail_count", 0),
@@ -1192,7 +1215,7 @@ def fetch_holdings(*args, **kwargs):
                 result = conn_sync.fetch_holdings()
             else:
                 result = _fetch_holdings_local()
-            result = _apply_backfill_to_list(result, qty_col="opening_quantity")
+            result = _apply_backfill_to_list(result)
             _raw_cache_put("holdings", result)
             return result
         except Exception:
@@ -1455,7 +1478,6 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
 
 def _apply_backfill_to_list(
     frames: list[pd.DataFrame],
-    qty_col: str = "quantity",
 ) -> list[pd.DataFrame]:
     """Concatenate `frames`, run `backfill_market_data` on the combined
     frame, then return it as a single-element list.
@@ -1509,7 +1531,7 @@ def fetch_positions(*args, **kwargs):
                 result = conn_sync.fetch_positions()
             else:
                 result = _fetch_positions_local()
-            result = _apply_backfill_to_list(result, qty_col="quantity")
+            result = _apply_backfill_to_list(result)
             _raw_cache_put("positions", result)
             return result
         except Exception:
@@ -1868,9 +1890,18 @@ def _bmd_build_key_index(df):
     _key_per_row: list[str] = []
     _seen_keys: set[str] = set()
     _unique_keys: list[str] = []
-    for _, _row in _missing_rows.iterrows():
-        _exch = str(_row.get('exchange', '') or 'NFO').upper()
-        _sym  = str(_row.get('tradingsymbol', '') or '').upper()
+    _exch_vals = (
+        _missing_rows['exchange'].fillna('').astype(str).str.upper()
+        if 'exchange' in _missing_rows.columns
+        else pd.Series('NFO', index=_missing_rows.index)
+    )
+    _sym_vals = (
+        _missing_rows['tradingsymbol'].fillna('').astype(str).str.upper()
+        if 'tradingsymbol' in _missing_rows.columns
+        else pd.Series('', index=_missing_rows.index)
+    )
+    for _exch_raw, _sym in zip(_exch_vals.tolist(), _sym_vals.tolist()):
+        _exch = _exch_raw or 'NFO'
         if _sym:
             _k = f"{_exch}:{_sym}"
             _key_per_row.append(_k)
@@ -2147,12 +2178,6 @@ def _bmd_recompute_derived(df, patched_indices: set) -> None:
             if 'pnl_percentage' in df.columns:
                 _pp = (df.loc[_idx_array, 'pnl'] / _inv_p.replace(0, pd.NA) * 100).fillna(0)
                 df.loc[_idx_array, 'pnl_percentage'] = _pp
-
-
-# Back-compat alias — the function used to be narrower (close only).
-# Old name still resolves so external scripts / future-refactor
-# callers don't break in the same deploy as the rename.
-backfill_close_prices = backfill_market_data
 
 
 def fetch_margins(*args, **kwargs):

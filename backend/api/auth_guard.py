@@ -12,6 +12,25 @@ from litestar.exceptions import NotAuthorizedException, PermissionDeniedExceptio
 from litestar.handlers.base import BaseRouteHandler
 
 
+def _reject_if_user_invalid(row, tv: int) -> None:
+    """Raise NotAuthorizedException for any invalid user state condition.
+
+    Checks (in order): existence, termination, suspension, inactivity, and
+    token-version mismatch. Callers invoke this after a successful DB fetch
+    of the user row; pass row=None when the user no longer exists.
+    """
+    if not row:
+        raise NotAuthorizedException("User no longer exists")
+    if row.terminated_at is not None:
+        raise NotAuthorizedException("Account terminated")
+    if row.suspended_at is not None:
+        raise NotAuthorizedException("Account suspended")
+    if not row.is_active:
+        raise NotAuthorizedException("Account inactive")
+    if (row.token_version or 1) != tv:
+        raise NotAuthorizedException("Session invalidated; please sign in again")
+
+
 async def jwt_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
     """Validate the bearer JWT signature + expiry, then validate the
     user's live state from the DB:
@@ -53,16 +72,7 @@ async def jwt_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> No
         )
         row = result.first()
 
-    if not row:
-        raise NotAuthorizedException("User no longer exists")
-    if row.terminated_at is not None:
-        raise NotAuthorizedException("Account terminated")
-    if row.suspended_at is not None:
-        raise NotAuthorizedException("Account suspended")
-    if not row.is_active:
-        raise NotAuthorizedException("Account inactive")
-    if (row.token_version or 1) != tv:
-        raise NotAuthorizedException("Session invalidated; please sign in again")
+    _reject_if_user_invalid(row, tv)
 
     # Force-password-change wall: when the must_change_password flag is
     # set (admin-issued reset), the user can ONLY hit the change-password

@@ -7,7 +7,7 @@
   directly instead of scrolling past P&L analysis on /dashboard.
 -->
 <script>
-  import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
@@ -53,7 +53,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>

@@ -16,6 +16,7 @@
     fetchStrategyAnalytics,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
+  import CardHeader    from '$lib/CardHeader.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import PriceChart    from '$lib/PriceChart.svelte';
@@ -29,6 +30,10 @@
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import RecordingsPanel from '$lib/execution/RecordingsPanel.svelte';
   import { priceFmt, aggFmt, qtyFmt } from '$lib/format';
+
+  // Card fullscreen / collapse state for chart sections.
+  let _underlyingChartsFs  = $state(false);
+  let _underlyingChartsCol = $state(false);
 
   let scenarios = $state(/** @type {any[]} */ ([]));
   let status    = $state(/** @type {any} */ ({}));
@@ -959,19 +964,27 @@
   </section>
 
   <!-- Per-underlying charts — always section-labelled. -->
-  <section class="sim-card">
-    <div class="sim-section-label">Underlyings</div>
-    {#if underlyingNames.length}
-      <div class="sim-charts">
-        {#each underlyingNames as name (name)}
-          <PriceChart mode="sim" symbol={name} height={180}
-                      data={chartsBySymbol[name]}
-                      {chartsBySymbol} />
-        {/each}
-      </div>
-    {:else}
-      <div class="sim-empty">No underlying charts yet. Charts populate when sim positions/holdings have parseable F&amp;O symbols.</div>
-    {/if}
+  <section class="sim-card" class:fs-card-on={_underlyingChartsFs} class:is-collapsed={_underlyingChartsCol}>
+    <CardHeader
+      title="Underlying Charts"
+      detectOverflow={false}
+      bind:isFullscreen={_underlyingChartsFs}
+      bind:isCollapsed={_underlyingChartsCol}
+      showSearch={false}
+    />
+    <div hidden={_underlyingChartsCol}>
+      {#if underlyingNames.length}
+        <div class="sim-charts">
+          {#each underlyingNames as name (name)}
+            <PriceChart mode="sim" symbol={name} height={180}
+                        data={chartsBySymbol[name]}
+                        {chartsBySymbol} />
+          {/each}
+        </div>
+      {:else}
+        <div class="sim-empty">No underlying charts yet. Charts populate when sim positions/holdings have parseable F&amp;O symbols.</div>
+      {/if}
+    </div>
   </section>
 
   <!-- Summary grids — positions + holdings sit side-by-side on wide

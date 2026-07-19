@@ -293,98 +293,6 @@
   box-sizing: border-box;
 }
 
-/* ── Canonical chip recipes ────────────────────────────────────────────────
-   `.algo-chip-shape` — geometry-only mixin (no palette opinion).
-       Interactive chips (RefreshButton, broker-chip, mode pill) compose
-       this + their own behaviour CSS.
-   `.algo-chip` — static labels (status / category / count badges).
-       Default = slate. Variant classes layer palette only.
-   `.algo-tag` — smaller variant of `.algo-chip` (sub-label / inline tag).
-   ─────────────────────────────────────────────────────────────────────── */
-.algo-chip-shape {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.25rem;
-  padding: 0.12rem 0.45rem;
-  border-radius: 999px;
-  line-height: 1;
-  box-sizing: border-box;
-  white-space: nowrap;
-}
-
-.algo-chip {
-  /* Composes .algo-chip-shape, repeated inline so consumers only need
-     one class. */
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.25rem;
-  padding: 0.12rem 0.45rem;
-  border-radius: 999px;
-  line-height: 1;
-  box-sizing: border-box;
-  white-space: nowrap;
-  font-family: var(--font-numeric);
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  /* Default = slate */
-  background: rgba(126, 151, 184, 0.14);
-  border: 1px solid rgba(126, 151, 184, 0.35);
-  color: var(--text-faint);
-}
-.algo-chip-amber {
-  background: var(--algo-amber-bg);
-  border-color: var(--algo-amber-border-soft);
-  color: var(--algo-amber);
-}
-.algo-chip-cash {
-  background: var(--algo-sky-bg);
-  border-color: var(--algo-sky-border-soft);
-  color: var(--algo-sky);
-}
-.algo-chip-violet {
-  background: var(--algo-violet-bg);
-  border-color: var(--algo-violet-border-soft);
-  color: var(--algo-violet);
-}
-.algo-chip-slate {
-  background: rgba(126, 151, 184, 0.14);
-  border-color: rgba(126, 151, 184, 0.35);
-  color: var(--text-faint);
-}
-.algo-chip-pos {
-  background: var(--algo-green-bg);
-  border-color: var(--algo-green-border-soft);
-  color: var(--algo-green);
-}
-.algo-chip-neg {
-  background: var(--algo-red-bg);
-  border-color: var(--algo-red-border-soft);
-  color: var(--algo-red);
-}
-
-/* Smaller cousin — sub-labels, inline tags, dense compact strips */
-.algo-tag {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 0.35rem;
-  border-radius: 3px;
-  line-height: 1.2;
-  font-family: var(--font-numeric);
-  font-size: var(--fs-2xs);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  background: rgba(126, 151, 184, 0.14);
-  border: 1px solid rgba(126, 151, 184, 0.30);
-  color: var(--text-faint);
-  white-space: nowrap;
-}
-
 /* ── Global reset — kill browser blue focus rings and tap highlights ──────── */
 @layer base {
   *,
@@ -2325,6 +2233,9 @@
    elements still look static. */
 button, [role="button"], .ctx-item, .ot-submit, .rf-btn {
   touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
 }
 button:not(:disabled):active,
 [role="button"]:not([aria-disabled="true"]):active,

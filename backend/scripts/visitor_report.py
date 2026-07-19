@@ -330,8 +330,12 @@ def _shorten_company(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def _upsert_records(records: dict[str, _IPRecord], target: date, geo_map: dict[str, dict]) -> None:
-    """Insert or update visitor_log rows for the given date."""
-    from sqlalchemy import select as sa_select
+    """Insert or update visitor_log rows for the given date.
+
+    Uses a single PostgreSQL INSERT ... ON CONFLICT (ip, seen_date) DO UPDATE
+    batch instead of N SELECT + conditional UPDATE/INSERT round-trips.
+    """
+    from sqlalchemy import func
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from backend.api.database import async_session
     from backend.api.models import VisitorLog
@@ -339,52 +343,42 @@ async def _upsert_records(records: dict[str, _IPRecord], target: date, geo_map: 
     if not records:
         return
 
+    rows = []
+    for ip, rec in records.items():
+        geo = geo_map.get(ip, {})
+        country = geo.get("country") or (rec.cf_country or None)
+        rows.append({
+            "ip":            ip,
+            "seen_date":     target,
+            "country":       country,
+            "region":        geo.get("region"),
+            "city":          geo.get("city"),
+            "asn":           geo.get("asn"),
+            "request_count": rec.count,
+            "first_seen_at": rec.first_dt,
+            "last_seen_at":  rec.last_dt,
+            "last_path":     rec.last_path[:200] if rec.last_path else None,
+            "user_agent":    rec.user_agent[:400] if rec.user_agent else None,
+        })
+
+    stmt = pg_insert(VisitorLog).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["ip", "seen_date"],
+        set_={
+            "request_count": VisitorLog.request_count + stmt.excluded.request_count,
+            "last_seen_at":  func.greatest(VisitorLog.last_seen_at, stmt.excluded.last_seen_at),
+            "first_seen_at": func.least(VisitorLog.first_seen_at, stmt.excluded.first_seen_at),
+            "last_path":     func.coalesce(VisitorLog.last_path,  stmt.excluded.last_path),
+            "user_agent":    func.coalesce(VisitorLog.user_agent, stmt.excluded.user_agent),
+            "country":       func.coalesce(VisitorLog.country,    stmt.excluded.country),
+            "region":        func.coalesce(VisitorLog.region,     stmt.excluded.region),
+            "city":          func.coalesce(VisitorLog.city,       stmt.excluded.city),
+            "asn":           func.coalesce(VisitorLog.asn,        stmt.excluded.asn),
+        },
+    )
+
     async with async_session() as sess:
-        for ip, rec in records.items():
-            geo = geo_map.get(ip, {})
-            country = geo.get("country") or (rec.cf_country or None)
-            region  = geo.get("region")
-            city    = geo.get("city")
-            asn     = geo.get("asn")
-            # Attempt update first (existing row for this ip+date)
-            result = await sess.execute(
-                sa_select(VisitorLog).where(
-                    VisitorLog.ip == ip,
-                    VisitorLog.seen_date == target,
-                )
-            )
-            existing = result.scalar_one_or_none()
-            if existing is not None:
-                existing.request_count += rec.count
-                if rec.last_dt > existing.last_seen_at:
-                    existing.last_seen_at = rec.last_dt
-                    existing.last_path = rec.last_path[:200] if rec.last_path else None
-                    existing.user_agent = rec.user_agent[:400] if rec.user_agent else None
-                if rec.first_dt < existing.first_seen_at:
-                    existing.first_seen_at = rec.first_dt
-                # Update geo if we got data and didn't have it
-                if country and not existing.country:
-                    existing.country = country
-                if region and not existing.region:
-                    existing.region = region
-                if city and not existing.city:
-                    existing.city = city
-                if asn and not existing.asn:
-                    existing.asn = asn
-            else:
-                sess.add(VisitorLog(
-                    ip=ip,
-                    seen_date=target,
-                    country=country,
-                    region=region,
-                    city=city,
-                    asn=asn,
-                    request_count=rec.count,
-                    first_seen_at=rec.first_dt,
-                    last_seen_at=rec.last_dt,
-                    last_path=rec.last_path[:200] if rec.last_path else None,
-                    user_agent=rec.user_agent[:400] if rec.user_agent else None,
-                ))
+        await sess.execute(stmt)
         await sess.commit()
 
 

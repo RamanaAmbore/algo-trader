@@ -4359,30 +4359,8 @@
      mirror the OrderTicket styling so flipping between the two
      modal modes (modal vs standalone OrderTicket) the operator sees
      the same affordance shape. */
-  /* Static mode pill — read-only (set from the navbar dropdown). The
-     row that used to wrap it was deleted; this class is still used by
-     the picker-row cluster. */
-  .oes-common-mode-chip {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.18rem 0.5rem;
-    border: 1px solid currentColor;
-    border-radius: 9999px;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 800;
-    letter-spacing: 0.08em;
-  }
-
-  .oes-common-chase-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    cursor: pointer;
-    user-select: none;
-  }
-  /* .oes-common-chase-toggle input and .is-disabled input removed —
-     checkbox is gone; visibility is now controlled by {#if _chaseEnabled}. */
+  /* .oes-common-mode-chip removed — the row that used it was deleted.
+     .oes-common-chase-toggle removed — replaced by {#if _chaseEnabled}. */
   .oes-common-chase-label {
     color: rgba(200,216,240,0.55);
     font-size: var(--fs-xs);

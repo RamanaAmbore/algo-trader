@@ -635,7 +635,6 @@ from backend.api.algo.actions_preflight import (  # noqa: E402
 
 from backend.api.algo.actions_sim import (  # noqa: E402
     _sim_prices_for,
-    _sim_ltp_for,
     _sim_positions_in_scope,
     _write_sim_order,
     _sim_paper_trade,

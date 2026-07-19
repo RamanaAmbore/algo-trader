@@ -9,6 +9,7 @@
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { getInstrument } from '$lib/data/instruments';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import OrderCard from '$lib/order/OrderCard.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
@@ -1184,7 +1185,15 @@
       : '';
     const chipsBlock = chips ? ' ' + chips : '';
     const symBlock   = _orderSymSpan(o.symbol, o.exchange);
-    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${symBlock} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
+    // Lot chip — show lots for F&O instruments (lot_size > 1).
+    // Quantity from the order is in contracts; derive lots from the
+    // instruments IndexedDB cache. Falls back gracefully to no chip
+    // when the cache miss occurs (e.g. instruments not yet loaded).
+    const ls = getInstrument(o.symbol)?.ls ?? 1;
+    const lotChip = (ls > 1 && o.quantity != null)
+      ? `<span class="log-lot-chip">${Math.round(o.quantity / ls)}L</span>`
+      : '';
+    return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${symBlock}${lotChip} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
   }
 
   function _orderLogHtml() {
@@ -1443,9 +1452,20 @@
           <FullscreenButton bind:isFullscreen />
         {/if}
       {/if}
-      {#if onDownload}
-        <GridDownloadButton onClick={onDownload} />
-      {/if}
+      <!-- Download — always present; uses onDownload callback when wired,
+           falls back to internal CSV export of visible rows. Disabled
+           on the News tab where there is no structured data to export. -->
+      <button type="button"
+        class="lp-card-btn"
+        title={logTab === 'news' ? 'Download not available for News tab' : 'Download visible rows as CSV'}
+        aria-label={logTab === 'news' ? 'Download not available for News tab' : 'Download CSV'}
+        disabled={logTab === 'news'}
+        onclick={onDownload ?? _downloadCsv}>
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
   {:else}
     <!-- Legacy card buttons for mounts without a label prop -->
@@ -1751,14 +1771,20 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
 
-  /* Tab strip wrapper — grows to fill remaining space in the flex row */
+  /* Tab strip wrapper — grows to fill remaining space in the flex row.
+     overflow-x: auto + hidden scrollbar allows the tab strip to scroll
+     on narrow viewports (e.g. modal at 320px with 7 tabs) without
+     visible scrollbar chrome eating vertical space. */
   .lp-tab-strip-wrap {
     flex: 1 1 0;
     min-width: 0;
     display: flex;
     align-items: stretch;
-    overflow-x: hidden;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
+  .lp-tab-strip-wrap::-webkit-scrollbar { display: none; }
 
   /* Label chip shown when `label` prop is provided */
   .lp-label {
@@ -2042,7 +2068,7 @@
     padding: 0 0.3rem;
     margin-right: 0.25rem;
     font-family: var(--font-numeric);
-    font-size: var(--fs-2xs);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.05em;
     border-radius: 2px;
@@ -2195,6 +2221,23 @@
   :global(.log-sym-cell:hover) {
     color: #7dd3fc;
     text-decoration: underline;
+  }
+
+  /* Lot chip — shown after the symbol for F&O instruments.
+     Displays contracts ÷ lot_size as "NL" (e.g. "2L" = 2 lots).
+     Amber palette matches the action-intent vocabulary already used
+     for order chips and mode pills. */
+  :global(.log-lot-chip) {
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    background: rgba(251,191,36,0.12);
+    color: var(--algo-amber);
+    border: 1px solid rgba(251,191,36,0.30);
+    border-radius: 2px;
+    padding: 0 0.25rem;
+    margin-left: 0.2rem;
+    font-variant-numeric: tabular-nums;
+    vertical-align: middle;
   }
 
   /* ── Inline Cancel / Modify action strip on OPEN broker OrderCards ─── */

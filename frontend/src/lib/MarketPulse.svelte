@@ -2749,16 +2749,24 @@
   const _prefetchedChartSyms = new Set();
   /** @type {number[]} */
   const _prefetchTimers = [];
+  // Count of prefetch requests still in flight (pending timers + pending
+  // fetches). Used for stagger so the delay is bounded to actually-pending
+  // requests rather than the ever-growing _prefetchTimers array length.
+  // After 125+ symbols the old `_prefetchTimers.length * 80` delay would
+  // exceed 10s; this counter resets toward zero as each request completes.
+  let _prefetchPending = $state(0);
   function _stagedPrefetch(sym, exch) {
     if (!sym || _prefetchedChartSyms.has(sym)) return;
     _prefetchedChartSyms.add(sym);
-    // Stagger: 80ms per symbol so 30 fresh symbols spread across
-    // ~2.4s instead of hammering the backend simultaneously.
+    // Stagger: 80ms per pending symbol so concurrent requests spread out
+    // without accumulating indefinitely as completed slots free up.
     const t = setTimeout(() => {
       import('$lib/ChartWorkspace.svelte')
         .then(m => m.prefetchChartBars(sym, exch || ''))
-        .catch(() => {});
-    }, _prefetchTimers.length * 80);
+        .catch(() => {})
+        .finally(() => { _prefetchPending--; });
+    }, _prefetchPending * 80);
+    _prefetchPending++;
     _prefetchTimers.push(t);
   }
 
@@ -4323,7 +4331,7 @@
   :global(.sym-badge) {
     display: inline-block;
     padding: 0 3px;
-    font-size: var(--fs-2xs);
+    font-size: var(--fs-xs);
     font-weight: 700;
     line-height: 12px;
     border-radius: 2px;

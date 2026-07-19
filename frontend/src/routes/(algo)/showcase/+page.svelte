@@ -1,7 +1,7 @@
 <script>
   import { goto, invalidateAll } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import TourModal from '$lib/TourModal.svelte';
@@ -265,7 +265,7 @@
       {#if $lastRefreshAt}
         <span class="algo-ts-vsep" aria-hidden="true">|</span>
         <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-          {formatDualTz($lastRefreshAt)}
+          {formatIstOnly($lastRefreshAt)}
         </span>
       {/if}
     </span>

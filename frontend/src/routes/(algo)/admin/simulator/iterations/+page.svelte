@@ -7,7 +7,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, nowStamp, lastRefreshAt, formatDualTz, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatIstOnly, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSimIterations } from '$lib/api';
@@ -114,7 +114,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>

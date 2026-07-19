@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatDualTz, logTime, lifespanChip, visibleInterval } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatIstOnly, logTime, lifespanChip, visibleInterval } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -602,7 +602,7 @@
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
       <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatDualTz($lastRefreshAt)}
+        {formatIstOnly($lastRefreshAt)}
       </span>
     {/if}
   </span>
@@ -1307,7 +1307,7 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
-  .ai-hint { font-size: var(--fs-xs); color: var(--algo-muted); font-family: var(--font-numeric); }
+  .ai-hint { font-size: var(--fs-sm); color: var(--algo-muted); font-family: var(--font-numeric); }
   .ai-prompt {
     width: 100%;
     background: rgba(0,0,0,0.30);
@@ -1479,7 +1479,7 @@
   :global(.tree-node-any) { border-left-color: var(--c-action); }
   :global(.tree-node-not) { border-left-color: var(--c-short); }
   :global(.tree-op) {
-    font-size: var(--fs-2xs);
+    font-size: var(--fs-xs);
     letter-spacing: 0.12em;
     text-transform: uppercase;
     font-weight: 700;
@@ -1504,7 +1504,7 @@
     overflow-wrap: anywhere;
   }
   .preview-chip {
-    font-size: var(--fs-xs);
+    font-size: var(--fs-sm);
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
     border: 1px solid;
@@ -1533,7 +1533,7 @@
     color: var(--btn-sky);
     font-family: var(--font-numeric);
     font-weight: 700;
-    font-size: var(--fs-xs);
+    font-size: var(--fs-sm);
     letter-spacing: 0.04em;
   }
   /* New lifespanChip variants — color progresses sky → amber → red as
@@ -1546,7 +1546,7 @@
     border: 1px solid;
     font-family: var(--font-numeric);
     font-weight: 700;
-    font-size: var(--fs-xs);
+    font-size: var(--fs-sm);
     letter-spacing: 0.04em;
     cursor: help;
   }
@@ -1695,7 +1695,7 @@
   /* Quick-add action pills next to the Actions textarea. Compact, colour-
      coded by rough semantic group so they don't visually blend together. */
   .action-add-pill {
-    font-size: var(--fs-2xs);
+    font-size: var(--fs-xs);
     padding: 0.1rem 0.4rem;
     border-radius: 999px;
     border: 1px solid;
