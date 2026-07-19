@@ -18,6 +18,7 @@ Code, tests, and documentation must stay in sync with this file.
 5. [Connections Singleton](#5-connections-singleton)
 6. [Circuit Breaker & Health](#6-circuit-breaker--health)
 7. [KiteTicker & Mmap Pipeline](#7-kiteticker--mmap-pipeline)
+7.1 [Market-Data Backfill Pipeline](#71-market-data-backfill-pipeline)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 9. [Remote Broker & Conn Service](#9-remote-broker--conn-service)
@@ -137,6 +138,12 @@ State machine (opt-in per account via `circuit_breaker_enabled`):
 - Cooloff: 5 min → doubles per cycle → 30 min max
 - HALF-OPEN: one probe after cooloff
 
+**State machine extraction** (Jul 2026): `_record_breaker_state(account, ok, error, now)` 
+extracted from `_record_fetch()` to isolate state transitions under `_BREAKER_LOCK`. Returns 
+`(new_breaker_open, was_halfopen, was_recovering)` so conn events fire OUTSIDE the lock, 
+preventing deadlock with `enqueue_nowait`. Non-opt-in accounts skip the full state machine 
+and update health stamps only (fast path).
+
 Dhan poll priority: `hot` (30s), `warm` (120s), `cold` (600s). Kite/Groww always poll every cycle.
 
 Health surface: `GET /api/admin/broker-health`
@@ -164,6 +171,30 @@ BroadcastBus → SSE → frontend ltpMap
 **TickerManager failover**: `_consecutive_unhealthy` watchdog; per-account 5-min cooloff prevents ping-ponging. `_swap_history` 128-entry rolling log.
 
 **Universe registration**: startup + segment opens + daily_book past-7d union (backstop survives conn_service restart).
+
+---
+
+## 7.1 Market-Data Backfill Pipeline
+
+**File**: `backend/brokers/broker_apis.py` — `backfill_market_data()` and helpers
+
+When broker APIs return zero or stale `close_price` / `last_price`, the backfill pipeline 
+patches missing values from a PriceBroker quote batch. Pipeline stages (Jul 2026 Polish R6):
+
+1. **`_bmd_build_key_index(df)`** — Vectorized extraction (replaced iterrows with pandas 
+   Series operations for ~2-3× speedup). Identifies rows with missing close/LTP, builds 
+   deduped `EXCHANGE:SYMBOL` key list for batched PriceBroker.quote() call.
+
+2. **`_apply_backfill_to_list(frames)`** — Concatenates non-empty frames and applies 
+   `backfill_market_data()` to the combined result. Signature simplified (Jul 2026): 
+   `qty_col` parameter removed — the function now uses generic `opening_quantity` / 
+   `quantity` lookup internally. Callers pass `list[DataFrame]` only.
+
+3. **`backfill_market_data(df)`** — Canonical consolidation (Jul 2026): removed stale alias 
+   `backfill_close_prices`. All callers now use `backfill_market_data(df)` directly.
+
+**Fallback chain**: PriceBroker quote → KiteTicker LTP (PriceBroker outage) → last-known-good 
+cache (both sources unavailable). Rows patched via LKG cache marked with `last_price_stale=True`.
 
 ---
 
@@ -401,3 +432,4 @@ for debugging recurring 2FA timeouts or credential rotation issues.
 | 2026-07-13 | Added §8.1 Order Placement Guards & Intent Bypass; I10, I11, I12 invariants; close intent now bypasses G2/MCX/Kite ceilings; preflight honours intent; basket adds per-leg guards |
 | 2026-07-15 | RemoteBroker.translate_qty overrides base-class no-op to forward to conn_service via _call; fixes MCX/NCO contracts→lots translation |
 | 2026-07-15 | Added I14 invariant — closed-hours snapshot query uses combined latest+prev_batch CTE; prev_close_val prefers prev_ltp over previous_close to prevent post-MCX-close Day P&L collapse |
+| 2026-07-19 | Polish R6: Extracted `_record_breaker_state()` from `_record_fetch()` to isolate state machine under `_BREAKER_LOCK`; added §7.1 Market-Data Backfill Pipeline documenting vectorized `_bmd_build_key_index`, `_apply_backfill_to_list` param removal, `backfill_market_data` consolidation |
