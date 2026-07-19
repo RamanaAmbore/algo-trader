@@ -18,7 +18,8 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import { authStore, lastRefreshAt } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
@@ -60,7 +61,6 @@
     loadPanel(tab);  // kick off the active panel's bundle fetch
   });
 
-  let _showLiveTs = $state(false);
   let _refreshing = $state(false);
   // SimulatorPanel / ReplayPanel don't yet expose a reload() handle so
   // we use a fixed-duration spinner — kicks off the next panel load and
@@ -88,19 +88,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Lab</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <!-- Page-header trio: Refresh + Order + Chart + Activity. The active
@@ -145,9 +133,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Subtitle row shown below the AlgoTabs strip; describes the active
      tab's data source so operators know what "Scenario" vs "Backtest"
      means without hovering. */

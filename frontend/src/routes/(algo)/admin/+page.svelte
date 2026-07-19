@@ -1,7 +1,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import { authStore } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
@@ -35,7 +36,6 @@
   let success    = $state('');
   let editing    = $state(null);
   let editForm   = $state(/** @type {Record<string,any>} */ ({}));
-  let _showLiveTs = $state(false);
   let showCreate = $state(false);
   let createForm = $state({ username: '', password: '', display_name: '', email: '', phone: '', role: 'partner', contribution: 0, share_pct: 0, is_approved: true });
   let creating   = $state(false);
@@ -574,19 +574,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Users</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <!-- Content-action button is LEFT-aligned per canonical header rule
        (only Refresh + Order + Chart + Activity + Collapse + Fullscreen
        + Default-size icons sit RIGHT of the ml-auto spacer). -->
@@ -1188,7 +1176,7 @@
           <div class="ip-modal-empty">No tokens minted yet.</div>
         {:else}
           <div class="ip-modal-tbl-wrap">
-            <table class="ip-modal-tbl">
+            <table class="algo-table ip-modal-tbl">
               <thead>
                 <tr>
                   <th>Token</th>
@@ -1335,7 +1323,7 @@
           <div class="ip-modal-empty">No events logged yet.</div>
         {:else}
           <div class="ip-modal-tbl-wrap">
-            <table class="ip-modal-tbl">
+            <table class="algo-table ip-modal-tbl">
               <thead>
                 <tr>
                   <th>Date</th>
@@ -1381,9 +1369,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .ip-modal-overlay {
     position: fixed; inset: 0; z-index: 200;
     background: rgba(8, 13, 26, 0.72);
@@ -1500,19 +1485,17 @@
     border: 1px solid rgba(126, 151, 184, 0.18);
     border-radius: 4px;
   }
-  .ip-modal-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
+  .ip-modal-tbl { width: 100%; }
   .ip-modal-tbl th {
     text-align: left; padding: 0.3rem 0.5rem;
     background: rgba(15, 23, 42, 0.65);
-    color: var(--text-muted); font-size: var(--fs-2xs); letter-spacing: 0.06em;
+    color: var(--text-muted); letter-spacing: 0.06em;
     text-transform: uppercase; font-weight: 800;
     border-bottom: 1px solid rgba(126, 151, 184, 0.30);
   }
   .ip-modal-tbl th.th-num { text-align: right; }
   .ip-modal-tbl td {
     padding: 0.3rem 0.5rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
-    color: #c8d8f0;
   }
   .ip-modal-tbl td.td-mono { font-family: var(--font-numeric); font-size: var(--fs-md); }
   .ip-modal-tbl td.td-num  { text-align: right; font-variant-numeric: tabular-nums; }

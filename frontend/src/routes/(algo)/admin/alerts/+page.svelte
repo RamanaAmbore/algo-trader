@@ -7,7 +7,8 @@
   // the page is visible.
 
   import { onDestroy } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
+  import { logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -23,7 +24,6 @@
   let rows       = $state([]);
   /** @type {any[]} */
   let agents     = $state([]);
-  let _showLiveTs = $state(false);
   let loading    = $state(true);
   let error      = $state('');
 
@@ -159,19 +159,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Alerts</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="alerts" />
@@ -266,7 +254,7 @@
   />
 {:else}
   <div class="alerts-table-wrap content-fade-in">
-    <table class="alerts-table">
+    <table class="algo-table alerts-table">
       <thead>
         <tr>
           <th>Time (IST)</th>
@@ -320,9 +308,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Scoped .page-header override removed — was shadowing the
      layout's :global(.page-header) fixed-strip rule due to
      Svelte's class-hash specificity. All algo pages now share
@@ -428,9 +413,6 @@
   }
   .alerts-table {
     width: 100%;
-    border-collapse: collapse;
-    font-size: var(--fs-md);
-    font-family: var(--font-numeric);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .alerts-table thead tr {
@@ -438,7 +420,6 @@
   }
   .alerts-table th {
     padding: 0.3rem 0.5rem;
-    font-size: var(--fs-xs);
     font-weight: 700;
     color: var(--c-action);
     text-transform: uppercase;
@@ -451,13 +432,10 @@
   .alerts-table th:last-child { border-right: none; }
   .alerts-table td {
     padding: 0.28rem 0.5rem;
-    color: var(--algo-slate);
-    border-bottom: 1px solid rgba(255,255,255,0.06);
     border-right: 1px solid rgba(255,255,255,0.06);
     vertical-align: top;
   }
   .alerts-table td:last-child { border-right: none; }
-  .alerts-table tbody tr:nth-child(odd) { background: rgba(13,22,42,0.45); }
   .alerts-table tbody tr:hover { background: rgba(251,191,36,0.07); }
   .alerts-table tbody tr.row-sim { background: rgba(248,113,113,0.04); }
   .alerts-table tbody tr.row-sim:hover { background: rgba(248,113,113,0.09); }

@@ -195,7 +195,7 @@
 
 {#if _navByAcct.length > 0}
   <div class="nav-bd-wrap">
-    <table class="nav-bd-table">
+    <table class="algo-table nav-bd-table">
       <thead>
         <tr>
           <th scope="col" class="nav-bd-acct">Account</th>
@@ -291,11 +291,6 @@
 
   .nav-bd-table {
     width: 100%;
-    border-collapse: collapse;
-    /* ag-theme-algo uses ui-monospace / SFMono stack */
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.72rem;        /* matches --ag-font-size in ag-theme-algo */
-    color: var(--algo-slate);
   }
 
   /* Header — deep-dark bg + muted-slate text + amber bottom border:
@@ -320,16 +315,7 @@
     text-align: left;
   }
 
-  /* Body rows — subtle alternating tint matching updated ag-theme-algo */
-  .nav-bd-table tbody tr:nth-child(odd) td {
-    background: rgba(13,22,42,0.30);  /* --ag-odd-row-background-color */
-  }
-  .nav-bd-table tbody tr:nth-child(even) td {
-    background: #1d2a44;       /* --ag-background-color */
-  }
-  .nav-bd-table tbody tr:hover td {
-    background: rgba(34,211,238,0.05) !important; /* cyan hover — matches History */
-  }
+  /* Body rows */
   .nav-bd-table tbody td {
     height: 26px;              /* matches _baseGridOpts rowHeight: 26 */
     padding: 0 3px;            /* matches ag-theme-algo cell padding */

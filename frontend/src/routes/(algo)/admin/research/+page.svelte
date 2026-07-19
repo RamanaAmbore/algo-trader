@@ -16,7 +16,8 @@
   // MCP pipeline — Claude Code (subscription) is the only LLM in the loop.
 
   import { onMount, onDestroy } from 'svelte';
-  import { authStore, nowStamp, lastRefreshAt, formatIstOnly, branchLabel, visibleInterval } from '$lib/stores';
+  import { authStore, branchLabel, visibleInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import {
@@ -39,7 +40,6 @@
   /** @type {any|null} */
   let selected    = $state(null);
   let error       = $state('');
-  let _showLiveTs = $state(false);
   let loading     = $state(true);
   let teardown;
   let activeTab   = $state(/** @type {'research'|'drafts'|'audit'|'settings'} */ ('research'));
@@ -432,19 +432,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Lab</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={() => { loadThreads(); loadDrafts(); if (activeTab === 'audit') loadAudit(); }} loading={loading} label="research" />
@@ -581,7 +569,7 @@
         action={{ label: 'Pick a thread →', onClick: () => { activeTab = 'research'; } }}
       />
     {:else}
-      <table class="drafts-table">
+      <table class="algo-table drafts-table">
         <thead>
           <tr>
             <th>Source</th>
@@ -663,7 +651,7 @@
         icon="inbox"
       />
     {:else}
-      <table class="audit-table">
+      <table class="algo-table research-table">
         <thead>
           <tr>
             <th>When</th>
@@ -862,9 +850,6 @@
 <ConfirmModal bind:this={confirmRef} />
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
 
@@ -1116,14 +1101,10 @@
   }
   .drafts-table {
     width: 100%;
-    border-collapse: collapse;
-    font-size: var(--fs-lg);
   }
   .drafts-table th {
     text-align: left;
     padding: 0.34rem 0.5rem;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
@@ -1131,8 +1112,6 @@
   }
   .drafts-table td {
     padding: 0.36rem 0.5rem;
-    color: var(--algo-slate);
-    border-bottom: 1px solid rgba(126, 151, 184, 0.08);
   }
   .drafts-name { display: block; color: var(--c-action); font-weight: 700; }
   .drafts-slug { display: block; font-family: var(--font-numeric); font-size: var(--fs-xs); color: var(--algo-muted); }
@@ -1257,25 +1236,19 @@
     cursor: pointer;
   }
   .audit-clear-link:hover { background: rgba(56, 189, 248, 0.12); }
-  .audit-table {
+  .research-table {
     width: 100%;
-    border-collapse: collapse;
-    font-size: var(--fs-md);
   }
-  .audit-table th {
+  .research-table th {
     text-align: left;
     padding: 0.34rem 0.5rem;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
     border-bottom: 1px solid rgba(126, 151, 184, 0.18);
   }
-  .audit-table td {
+  .research-table td {
     padding: 0.34rem 0.5rem;
-    color: var(--algo-slate);
-    border-bottom: 1px solid rgba(126, 151, 184, 0.08);
     vertical-align: top;
   }
   .audit-when { font-family: var(--font-numeric); font-size: var(--fs-sm); color: var(--algo-muted); }

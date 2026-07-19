@@ -17,7 +17,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/state';
-  import { nowStamp, lastRefreshAt, formatIstOnly, marketAwareInterval } from '$lib/stores';
+  import { marketAwareInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import {
     fetchStrategy, fetchStrategyLots, fetchStrategySnapshots,
     fetchStrategyMetrics, updateStrategy,
@@ -38,7 +39,6 @@
   let lots = $state([]);
   let totalOpen   = $state(0);
   let totalClosed = $state(0);
-  let _showLiveTs = $state(false);
   let loading = $state(false);
   let error = $state('');
   let showClosed = $state(true);
@@ -133,19 +133,7 @@
     <a href="/strategies" class="back-link">← Strategies</a>
     <h1 class="page-title-chip">{strat?.slug || '…'}</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="strategy" />
@@ -220,7 +208,7 @@
       </label>
     </div>
     <div class="strat-table-wrap algo-grid-chrome">
-      <table class="strat-table">
+      <table class="algo-table strat-table">
         <thead>
           <tr>
             <th>Opened (IST)</th>
@@ -438,9 +426,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .strat-error {
     padding: 0.6rem 0.9rem;
     background: var(--c-short-10);
@@ -523,25 +508,20 @@
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .strat-table {
-    width: 100%; border-collapse: collapse;
-    font-size: var(--fs-lg);
+    width: 100%;
   }
   .strat-table th {
     text-align: left;
     padding: 0.4rem 0.6rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
     color: var(--text-muted);
-    font-size: var(--fs-xs);
     font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase;
     background: rgba(15, 23, 42, 0.65);
-    font-family: var(--font-numeric);
   }
   .strat-table th.th-num { text-align: right; }
   .strat-table td {
     padding: 0.4rem 0.6rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
-    color: #c8d8f0;
   }
   .strat-table td.td-num {
     text-align: right;
@@ -549,7 +529,6 @@
     font-variant-numeric: tabular-nums;
   }
   .strat-table td.td-mono { font-family: var(--font-numeric); }
-  .strat-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .strat-row-closed td { opacity: 0.65; }
   .strat-empty {
     text-align: center; padding: 1.4rem !important;

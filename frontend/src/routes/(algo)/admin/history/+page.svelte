@@ -13,7 +13,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import {
     fetchHistoryOrders, fetchHistoryTrades, fetchHistoryFunds,
@@ -72,7 +72,6 @@
   let tradeNotional = $state(0);
   let fundsEarliest = $state(/** @type {string|null} */ (null));
 
-  let _showLiveTs = $state(false);
   let loading = $state(false);
   let error   = $state('');
 
@@ -229,19 +228,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">History</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="history" />
@@ -317,7 +304,7 @@
     <EmptyState title="No orders match" hint="Try adjusting the date range or clearing filters." icon="search" />
   {/if}
   <div class="hist-table-wrap algo-grid-chrome" style:display={!loading && orderRows.length === 0 ? 'none' : undefined}>
-    <table class="hist-table">
+    <table class="algo-table hist-table">
       <thead>
         <tr>
           <th>Time (IST)</th>
@@ -342,11 +329,11 @@
             <td class="td-mono">{r.account}</td>
             <td class="td-mono">{r.symbol}</td>
             <td><span class="hist-side hist-side-{r.transaction_type?.toLowerCase()}">{r.transaction_type}</span></td>
-            <td class="td-num">{r.quantity}</td>
-            <td class="td-num">{r.filled_quantity}</td>
-            <td class="td-num">{_fmtPrice(r.initial_price)}</td>
-            <td class="td-num">{_fmtPrice(r.fill_price)}</td>
-            <td class="td-num">{_fmtPrice(r.slippage)}</td>
+            <td class="algo-table-num">{r.quantity}</td>
+            <td class="algo-table-num">{r.filled_quantity}</td>
+            <td class="algo-table-num">{_fmtPrice(r.initial_price)}</td>
+            <td class="algo-table-num">{_fmtPrice(r.fill_price)}</td>
+            <td class="algo-table-num">{_fmtPrice(r.slippage)}</td>
             <td><span class="hist-pill {_statusClass(r.status)}">{r.status}</span></td>
             <td class="td-mono">{r.mode}</td>
             <td class="td-mono" title={r.broker_order_id ?? ''}>{r.broker_order_id ?? '—'}</td>
@@ -376,7 +363,7 @@
     <EmptyState title="No trades match" hint="Try adjusting the date range or filters." icon="search" />
   {/if}
   <div class="hist-table-wrap algo-grid-chrome" style:display={!loading && tradeRows.length === 0 ? 'none' : undefined}>
-    <table class="hist-table">
+    <table class="algo-table hist-table">
       <thead>
         <tr>
           <th>Date</th>
@@ -397,9 +384,9 @@
             <td class="td-mono">{r.segment}</td>
             <td class="td-mono">{r.symbol}</td>
             <td class="td-mono">{r.exchange ?? '—'}</td>
-            <td class="td-num">{r.qty}</td>
-            <td class="td-num">{_fmtPrice(r.avg_cost)}</td>
-            <td class="td-num">{_fmtInr(r.notional)}</td>
+            <td class="algo-table-num">{r.qty}</td>
+            <td class="algo-table-num">{_fmtPrice(r.avg_cost)}</td>
+            <td class="algo-table-num">{_fmtInr(r.notional)}</td>
           </tr>
         {/each}
       </tbody>
@@ -437,7 +424,7 @@
     <EmptyState title="No funds rows" hint="No data in this date range. Use Pull ledger to backfill Dhan, or wait for the daily capture." icon="chart" />
   {/if}
   <div class="hist-table-wrap algo-grid-chrome" style:display={!loading && fundsRows.length === 0 ? 'none' : undefined}>
-    <table class="hist-table">
+    <table class="algo-table hist-table">
       <thead>
         <tr>
           <th>Date</th>
@@ -457,15 +444,15 @@
             <td class="td-mono">{_fmtDate(r.date)}</td>
             <td class="td-mono">{r.account}</td>
             <td class="td-mono">{r.segment}</td>
-            <td class="td-num">{_fmtInr(r.cash_available)}</td>
-            <td class="td-num {(r.cash_delta ?? 0) > 0 ? 'cell-pos' : (r.cash_delta ?? 0) < 0 ? 'cell-neg' : ''}">
+            <td class="algo-table-num">{_fmtInr(r.cash_available)}</td>
+            <td class="algo-table-num {(r.cash_delta ?? 0) > 0 ? 'cell-pos' : (r.cash_delta ?? 0) < 0 ? 'cell-neg' : ''}">
               {r.cash_delta == null ? '—'
                 : (r.cash_delta > 0 ? '+' : '') + _fmtInr(r.cash_delta)}
             </td>
-            <td class="td-num">{_fmtInr(r.opening_balance)}</td>
-            <td class="td-num">{_fmtInr(r.debits_today)}</td>
-            <td class="td-num {(r.realised_m2m ?? 0) > 0 ? 'cell-pos' : (r.realised_m2m ?? 0) < 0 ? 'cell-neg' : ''}">{_fmtInr(r.realised_m2m)}</td>
-            <td class="td-num">{_fmtInr(r.net)}</td>
+            <td class="algo-table-num">{_fmtInr(r.opening_balance)}</td>
+            <td class="algo-table-num">{_fmtInr(r.debits_today)}</td>
+            <td class="algo-table-num {(r.realised_m2m ?? 0) > 0 ? 'cell-pos' : (r.realised_m2m ?? 0) < 0 ? 'cell-neg' : ''}">{_fmtInr(r.realised_m2m)}</td>
+            <td class="algo-table-num">{_fmtInr(r.net)}</td>
           </tr>
         {/each}
       </tbody>
@@ -484,9 +471,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .hist-error + .hist-empty rules removed — errors converted to
      toasts (slice AO); access-denied panel migrated to EmptyState
      component (slice AE). */
@@ -542,32 +526,25 @@
     margin-bottom: 0.6rem;
   }
   .hist-table {
-    width: 100%; border-collapse: collapse;
-    font-size: var(--fs-md);
-    color: #c8d8f0;
+    width: 100%;
   }
   .hist-table th {
     text-align: left;
     padding: 0.42rem 0.6rem;
     background: rgba(15, 23, 42, 0.65);
     color: var(--text-muted);
-    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
-    font-family: var(--font-numeric);
     white-space: nowrap;
   }
   .hist-table th.th-num { text-align: right; }
   .hist-table td {
     padding: 0.38rem 0.6rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
     white-space: nowrap;
   }
-  .hist-table td.td-num  { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-numeric); }
   .hist-table td.td-mono { font-family: var(--font-numeric); font-size: var(--fs-sm); }
-  .hist-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .hist-empty-row {
     padding: 2rem; text-align: center;
     color: #94a3b8; font-style: italic;

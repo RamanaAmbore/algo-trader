@@ -648,20 +648,6 @@ export function formatDualTz(/** @type {Date | number} */ date) {
   return result;
 }
 
-/** IST-only format for the "last refreshed at" display in page headers.
- *  Returns "HH:MM IST" in 24-hour format, or '—' for falsy input.
- *  Use this for `$lastRefreshAt` displays; leave `formatDualTz` for tooltips
- *  and log surfaces that need the full dual-timezone string. */
-export function formatIstOnly(/** @type {Date | number | null | undefined} */ date) {
-  if (!date) return '—';
-  return new Date(date).toLocaleTimeString('en-IN', {
-    timeZone: 'Asia/Kolkata',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }) + ' IST';
-}
-
 export function clientTimestamp() {
   const now = new Date();
   const key = Math.floor(now.getTime() / 60_000);

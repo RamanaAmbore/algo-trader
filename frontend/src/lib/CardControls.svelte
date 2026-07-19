@@ -72,9 +72,12 @@
 {#if showSearch}
   <GridSearchButton bind:filter {label} />
 {/if}
+<GridDownloadButton onClick={onDownload} {label} autoMargin={false} />
 <CollapseButton bind:isCollapsed {cardId} {label} />
 {#if !hideFullscreen || isFullscreen}
-  <FullscreenButton bind:isFullscreen {label} />
+  {#if !isFullscreen}
+    <FullscreenButton bind:isFullscreen {label} />
+  {:else}
+    <DefaultSizeButton bind:isFullscreen bind:isCollapsed {label} />
+  {/if}
 {/if}
-<DefaultSizeButton bind:isFullscreen bind:isCollapsed {label} />
-<GridDownloadButton onClick={onDownload} {label} autoMargin={false} />

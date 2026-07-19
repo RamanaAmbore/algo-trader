@@ -1,347 +1,560 @@
-# Plan: UI Polish Round 6 + Audit Remediation — NavStrip popups, timestamp, activity, charts, legibility, CC reductions, stale code, perf
+# Plan: Timestamp SSOT + NavStrip cleanup + Card button group ordering
 
 ## Context
 
-Polish Round 5 shipped 14 UX items. This round adds 13 more UX items from operator review, plus all findings from the CC/perf/stale-code audit: 8 CC reductions, 3 dead-param bugs, 10 dead imports, 1 dead function, 3 perf fixes, and 3 CSS stale rules.
+Three change groups:
+1. **Timestamp SSOT**: All 54 pages have duplicate timestamp toggle logic; Round 6 regressed refresh timestamp to IST-only (not dual-TZ); desktop never shows both side-by-side.
+2. **NavStrip slot hints**: Round 6 added 10 per-slot ⓘ InfoHint icons that clutter the strip. Consolidate into the 4 pill labels.
+3. **Card button group order**: Wrong order in CardControls and LogPanel; "Restore" text appears in fullscreen; activity download disabled/wrong position.
 
 ---
 
 ## Task
 
-### Item 0 — NavStrip label visibility + gap
+### A — Card button group reordering
 
-**`frontend/src/lib/PositionStrip.svelte`**:
+**Target order (default mode):** Search → Download → Expand/Contract (Collapse) → Fullscreen
 
-Labels (P/M/C/H) are currently `font-size: var(--fs-xs)` = 0.55rem — too small to read clearly. They also sit flush against the first value span with only the flex `gap: 0.2rem` separating them.
+**Full screen mode:** Search → Download → (Collapse hidden) → X (DefaultSize, last button)
 
-Fixes:
-1. `.ps-agg-k`: change `font-size: var(--fs-xs)` → `font-size: var(--fs-sm)` (0.6rem). Keep `font-weight: 700` and `text-transform: uppercase`.
-2. `.ps-agg-k`: add `margin-right: 0.25rem` — creates a clear visual gap between the label letter and the first value, making P/M/C/H read as a separate "key" rather than being glued to the numbers.
-3. Mobile breakpoints (≤640px, ≤480px): keep label at `var(--fs-xs)` minimum (don't drop to `fs-2xs` — that's 7.5px, unreadable). Change existing `font-size: var(--fs-2xs)` references in the mobile media queries for `.ps-agg-k` to `var(--fs-xs)`.
+**Files:**
 
-### Item 1 — NavStrip popup redesign (panel style, left highlight)
+**`frontend/src/lib/CardControls.svelte`**: Reorder the template. Current order: Refresh → Search → Collapse → Fullscreen → DefaultSize → Download.
+New order:
+1. Refresh (keep first — it's a data action, not display control)
+2. Search
+3. Download
+4. Collapse
+5. FullscreenButton (`{#if !isFullscreen}`) / DefaultSizeButton (`{#if isFullscreen}`) — these are mutually exclusive, both go last
 
-**Reference**: `DayPnlBreakup.svelte` is opened when clicking the Day P&L value in the P pill — that panel style (`linear-gradient(180deg, #1c2840, #141e33)`, `border: 1px solid var(--algo-amber-border-soft)`, `box-shadow: 0 8px 32px rgba(0,0,0,0.6)`) is the target aesthetic for ALL NavStrip popups.
+**`frontend/src/app.css`**: Remove the `.fs-card-on .default-btn .dsb-label { display: inline; ... }` rule and the `.fs-card-on .default-btn { padding: 0 0.4rem; width: auto; gap: 0.3rem; }` rule. No "Restore" text in fullscreen — just the icon, same size as normal.
 
-**`frontend/src/lib/InfoHint.svelte`**: Add `panel` prop (boolean, default false). When `panel=true`, switch the popup from tooltip mode to panel mode:
-- Larger: `min-width: 16rem`, padding `0.75rem 1rem`
-- Background: `linear-gradient(180deg, #1c2840 0%, #141e33 100%)`
-- Border: `1px solid var(--algo-amber-border-soft)`
-- Box shadow: `0 8px 32px rgba(0,0,0,0.6)`
-- Border radius: `4px`
-- No tooltip arrow/pointer
-- Left-side accent: `border-left: 3px solid var(--accent-color, var(--algo-amber))` — accept `accentColor` prop (CSS color string) that maps to `--accent-color` custom property on the panel root. Default = amber.
-- Title row at top: if `title` prop is provided, render a header `<div class="ih-panel-title">` with `font-size: var(--fs-md)`, `font-weight: 700`, `color: <accent-color>`, `text-transform: uppercase`, `letter-spacing: 0.05em`, bottom border `1px solid rgba(255,255,255,0.07)`, padding-bottom `0.4rem`, margin-bottom `0.5rem`
-- Body: `font-size: var(--fs-sm)`, `color: var(--algo-slate)`, `line-height: 1.5`
-- Positioning: still JS-computed viewport-relative; `max-width: min(22rem, calc(100vw - 1.5rem))`
+**`frontend/src/lib/DefaultSizeButton.svelte`**: Remove the `<span class="dsb-label">Restore</span>` element entirely (it's only rendered for the fullscreen label, which we're removing).
 
-**`frontend/src/lib/PositionStrip.svelte`**:
+**`frontend/src/lib/LogPanel.svelte`** — `lp-card-btns` button group: Current order is Search → Collapse/FS → Download. Reorder to:
+1. Search
+2. Download
+3. Collapse (if applicable)
+4. Fullscreen / Close (if applicable)
 
-Replace the 4 existing `<InfoHint popup label="P" text="...">` instances with `panel=true` version:
+LogPanel has its own button group template (`lp-card-btns`) — find it (around lines 1432-1526) and reorder the buttons.
 
-```svelte
-<InfoHint popup panel label="P" accentColor="var(--ps-k-p-color, #fbbf24)"
-  title="P — Positions P&L"
-  text="Three slots: <b>Day P&L</b> (live ticks − prev-close × net qty, all accounts) / <b>Lifetime P&L</b> (cumulative since open) / <b>Expiry P&L</b> (projected F&O value at expiry via lognormal model)." />
-```
-
-Per-pill accent colors:
-- P: `#fbbf24` (amber — matches `.ps-k-p`)
-- M: `#a78bfa` (violet — matches `.ps-k-m`)
-- C: `#38bdf8` (sky — matches `.ps-k-c`)
-- H: `#22d3ee` (cyan — matches `.ps-k-h`)
-
-**Also add per-slot InfoHint elements** — each value slot in each pill gets its own `<InfoHint popup panel>` wrapping the slot value span. Use `label=""` (empty) or an icon hint so the slot value itself is the trigger. For each slot:
-
-P pill slots (3):
-- Day P&L: `title="Day P&L"` `text="Live tick price − prev close × net qty across all accounts. For new intraday positions (overnight_quantity=0), shows pnl directly."` `accentColor="#fbbf24"`
-- Lifetime P&L: `title="Lifetime P&L"` `text="Cumulative P&L since the position was opened. Includes realised + unrealised. Survives intraday cycling."` `accentColor="#fbbf24"`
-- Expiry P&L: `title="Expiry P&L"` `text="Projected P&L at expiry using lognormal model. Shows what the F&O portfolio returns if held to expiry at current spot."` `accentColor="#fbbf24"`
-
-M pill slots (2):
-- Available: `title="Available Margin"` `text="Cash deployable right now for new orders. = Total margin − used margin. Updated after every order fill."` `accentColor="#a78bfa"`
-- Total: `title="Total Margin"` `text="Full collateral picture across all accounts. = Available + margin blocked for open positions."` `accentColor="#a78bfa"`
-
-C pill slots (2):
-- CA: `title="Cash Available (CA)"` `text="Live deployable cash. Nets realised P&L + premium debits from long options already paid."` `accentColor="#38bdf8"`
-- Total C: `title="Total Cash (C)"` `text="CA + premium tied up in long options (recoverable if closed). Represents full liquid wealth excluding positions."` `accentColor="#38bdf8"`
-
-H pill slots (3):
-- Today MTM: `title="Holdings Today MTM"` `text="Live LTP − prev close × qty for all long-term holdings. Intraday MTM only; excludes overnight positions."` `accentColor="#22d3ee"`
-- Current value: `title="Holdings Value"` `text="Broker-reported current market value of all holdings across all accounts."` `accentColor="#22d3ee"`
-- Lifetime P&L: `title="Holdings Lifetime P&L"` `text="Cumulative P&L since purchase. (current price − avg cost) × qty, all holdings."` `accentColor="#22d3ee"`
-
-Implementation: wrap each `<span class="ps-agg-v ...">` value inside an InfoHint panel trigger. Since the value is numeric and should remain tap-friendly, use `label=""` with `showOnHover=false` — clicking the value opens the panel popup. Keep the existing colored value span inside InfoHint's children/default slot so the number remains visible with its sign color.
-
-The Day P&L slot (P pill, slot 1) already has `onclick={() => _dayPnlBreakupOpen = true}` — keep that. Its InfoHint popup is secondary; the DayPnlBreakup modal opens on click as before.
-
-### Item 2 — Timestamp: IST format for both + mobile tap fix
-
-**IST format**: Both the live clock (`$nowStamp`) and the refresh timestamp (`formatDualTz($lastRefreshAt)`) should display in the same IST-only format: `"HH:MM IST"`. The dual-TZ format (adding EDT) adds visual noise. Use `clientTimestamp($lastRefreshAt)` (from `stores.js:651`) for the refresh timestamp instead of `formatDualTz`. Update the 29 page files:
-
-Replace:
-```svelte
-<span class="algo-ts algo-ts-data" ...>{formatDualTz($lastRefreshAt)}</span>
-```
-With:
-```svelte
-<span class="algo-ts algo-ts-data" ...>{clientTimestamp($lastRefreshAt)}</span>
-```
-
-Also import `clientTimestamp` from `$lib/stores` in any file that currently only imports `formatDualTz`.
-
-**Mobile tap magnifies instead of toggling**: The browser triggers text zoom/magnify on mobile when tapping text. Fix in `frontend/src/routes/(algo)/+layout.svelte` — add to `.algo-ts-group`:
-```css
-.algo-ts-group {
-  touch-action: manipulation;   /* prevents double-tap zoom */
-  user-select: none;            /* prevents selection on tap */
-  -webkit-tap-highlight-color: transparent;
-  cursor: pointer;
-}
-```
-
-### Item 3 — Activity card download button
-
-**`frontend/src/lib/ActivityLogSurface.svelte`**: Add an `onDownload` callback that exports the currently visible rows as CSV. Wire to the existing `onDownload` prop that LogPanel already accepts. When activity tab is "Orders", download the order rows; when "Agents"/"System", download the visible log rows.
-
-Add `onDownload` prop to `ActivityLogSurface` and pass it to `<LogPanel {onDownload} />`. The download implementation: collect `orderRows` (or `logRows`) and use the project's existing download pattern (check GridDownloadButton pattern in other pages — e.g., `dashboard/+page.svelte`).
-
-### Item 4 — Desktop gap between "All accounts" and "All" dropdowns (Activity)
-
-The gap still appears on desktop despite removing `margin-left: auto`. Root cause: inspect the LogPanel tab strip layout. The `lp-tab-strip-wrap` is `display:flex`. Inside it: tabs + (spacer flex: 1) + `ActivityAccountSelect` (which contains two inline-flex dropdowns). When tabs don't fill all space, the spacer element grows and pushes the dropdowns to the far right. But the gap between the two dropdowns themselves (All accounts vs All level) comes from `ActivityAccountSelect` internal layout.
-
-**`frontend/src/lib/ActivityAccountSelect.svelte`**: Read the full file carefully. Identify any `gap`, `margin`, or `padding` between the two select elements and reduce it to `0.3rem` maximum (matching the card button gap standard). Also verify there's no `justify-content: space-between` on the wrapper.
-
-### Item 5 — Activity middle strip scroll (tabs + dropdowns)
-
-**`frontend/src/lib/LogPanel.svelte`**:
-
-Current: `.lp-tab-strip-wrap { overflow-x: hidden }` — clips overflow silently.
-
-Fix: The entire middle strip (tabs + account filters) should scroll together as a unit. Change:
-```css
-.lp-tab-strip-wrap {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;        /* hide scrollbar — scroll is gesture-only */
-}
-.lp-tab-strip-wrap::-webkit-scrollbar { display: none; }
-```
-
-Ensure the `ActivityAccountSelect` component is INSIDE the same flex container as the tabs (already the case — confirm with code read). With `overflow-x: auto`, all middle elements including both dropdowns participate in horizontal scrolling when viewport is constrained.
-
-Apply same fix to any other card tab strip that has `overflow-x: hidden` — grep for this pattern and fix consistently.
-
-### Item 6 — Orders: lot-size chip after symbol
-
-**`frontend/src/lib/LogPanel.svelte`** — `_orderSymSpan()` function:
-
-Read the current `_orderSymSpan()` implementation and the `_orderRowHtml()` format. Add a lot-size chip inline after the symbol text for F&O instruments. Use the order's `lot_size` field (check what fields are available on `o`). If `o.lot_size > 1`, append `<span class="log-lot-chip">${Math.round(o.quantity / o.lot_size)}L</span>` after the symbol block (showing lot count, not contract count).
-
-Style `.log-lot-chip` in LogPanel's `<style>`:
-```css
-:global(.log-lot-chip) {
-  font-size: var(--fs-xs);
-  font-weight: 700;
-  background: rgba(251,191,36,0.12);
-  color: var(--algo-amber);
-  border: 1px solid rgba(251,191,36,0.30);
-  border-radius: 2px;
-  padding: 0 0.25rem;
-  margin-left: 0.2rem;
-  font-variant-numeric: tabular-nums;
-  vertical-align: middle;
-}
-```
-
-### Item 7 — Charts: fullscreen button for all chart surfaces
-
-Cards without CardHeader that need it added:
-
-**`frontend/src/lib/NavBreakdown.svelte`**: This is rendered inside Dashboard. It's a table component. Add a `CardHeader` wrapper INSIDE NavBreakdown itself, or add it at the call site in `dashboard/+page.svelte`. Prefer adding at call site. Check how it's called and add `<CardHeader title="NAV Breakdown" bind:isFullscreen bind:isCollapsed detectOverflow={false} />` wrapping the NavBreakdown section.
-
-**`frontend/src/lib/execution/SimulatorPanel.svelte`**: PriceChart instances (lines ~813-815, 839-840) and MultiPriceChart (line ~853). These are embedded charts inside the simulator. Add `CardHeader` with `detectOverflow={false}` above each chart container. Import CardHeader if not already imported.
-
-**`frontend/src/lib/execution/ReplayPanel.svelte`**: Same pattern — PriceChart at line ~355. Add CardHeader wrapper.
-
-**Rule**: Every chart surface (PriceChart, MultiPriceChart, OptionsPayoff, EquityCurve) must be inside a CardHeader with `detectOverflow={false}`.
-
-### Item 8 — Buttons visible in fullscreen mode
-
-The `app.css` rule `.fs-card-on .collapse-btn { display: none !important }` (line 1841) correctly hides collapse in fullscreen (not meaningful there). But verify no other button is hidden by CSS.
-
-Also: the RefreshButton only shows in fullscreen by default. For cards that have their own independent refresh path (not the page-header refresh), set `refreshAlwaysVisible={true}` so the refresh button is visible in BOTH default and fullscreen mode. Read CardControls usages and identify which cards have `onRefresh` but NOT `refreshAlwaysVisible=true` — add `refreshAlwaysVisible={true}` where the card has data independent of the page-header refresh.
-
-Cards to audit: `orders/+page.svelte` activity LogPanel, `automation/activity/+page.svelte`, `admin/brokers/+page.svelte`.
-
-Also ensure: when a card is in fullscreen, the search bar and download button remain visible (they should already — verify no CSS rule hides them and fix if found).
-
-### Item 9 — Agent tab chips legible text
-
-**`frontend/src/routes/(algo)/automation/+page.svelte`**:
-
-The following classes use `font-size: var(--fs-xs)` (= 0.55rem, ~8px) — too small:
-- `.preview-chip` (line ~1507) → `font-size: var(--fs-sm)` (0.6rem)
-- `.lifespan-chip` (line ~1549) → `font-size: var(--fs-sm)`
-- `.agent-lifespan-tag` (line ~1536) → `font-size: var(--fs-sm)`
-- `.ai-hint` (line ~1441) → `font-size: var(--fs-sm)`
-
-Also check `automation/agent-templates/+page.svelte` and `automation/templates/+page.svelte` for similar `fs-xs` chip uses — fix to `fs-sm`.
-
-### Item 10 — Grid alternating row background: comprehensive fix
-
-**`frontend/src/app.css`**: The global `--ag-odd-row-background-color: rgba(13,22,42,0.30)` is defined. All `.ag-theme-algo` grids should inherit it automatically. Verify no individual grid overrides `rowStyle` or sets a background that cancels the alternation.
-
-Check these files for `rowStyle` / `getRowStyle` / `suppressRowAlternation`:
-- `MarketPulse.svelte`
-- `PerformancePage.svelte`
-- `NavBreakdown.svelte`
-- `admin/derivatives/+page.svelte`
-- `dashboard/+page.svelte`
-- `orders/+page.svelte` (LogPanel order grid if ag-Grid based)
-- `automation/activity/+page.svelte`
-
-If any grid sets `rowStyle` with a background color, remove the background property (keep other style properties like cursor).
-
-**LogPanel activity rows**: The `nth-child(odd)` rule was added in Round 5. Verify it's present and working. If the activity grid uses a different class structure (e.g. different from `.log-panel.log-rows .log-row`), fix the selector.
-
-### Item 11 — Font legibility across the site
-
-Global sweep for unreadable text:
-
-**`frontend/src/app.css`**:
-- Any explicit `font-size: 8px` or `font-size: 7px` — change to `var(--fs-xs)` (0.55rem minimum)
-- `var(--fs-2xs)` = 0.5rem = 7.5px — this is too small for any interactive/readable text. Change any non-SVG use to `var(--fs-xs)` minimum
-
-**`frontend/src/lib/OptionsPayoff.svelte`**: Line ~1537: `font-size: 8px` (SVG axis labels). This is on a chart SVG — change to `9px` minimum for readability.
-
-**Check these files for sub-readable sizes** (< 0.55rem):
-- `admin/derivatives/+page.svelte`
-- `MarketPulse.svelte`
-- `LogPanel.svelte`
-- `PerformancePage.svelte`
-
-Minimum readable sizes by context:
-- Interactive chips/labels: `var(--fs-sm)` = 0.6rem
-- Passive display text: `var(--fs-xs)` = 0.55rem minimum
-- SVG axis labels: 9px minimum
-
-### Item 12 — Stale CSS removal (from stale audit)
-
-**`frontend/src/app.css`** lines 304-386: `.algo-chip`, `.algo-chip-amber`, `.algo-chip-cash`, `.algo-chip-violet`, `.algo-chip-slate`, `.algo-chip-pos`, `.algo-chip-neg`, `.algo-tag` — 8 rules with zero callers in any `.svelte` or `.js` file. Remove all 8.
-
-NOTE: `frontend/e2e/algo_consistency.spec.js` around line 385-387 asserts the presence of these classes. Update/remove those assertions when deleting the CSS.
-
-**`frontend/src/lib/SymbolPanel.svelte`** line ~4365: `.oes-common-mode-chip` — no usage in template. Remove.
-
-**`frontend/src/lib/SymbolPanel.svelte`** line ~4377: `.oes-common-chase-toggle` — comment at ~4384 confirms the original checkbox was removed. Remove the CSS rule.
+**All pages using CardHeader**: No page-level changes needed since CardControls handles order. Verify order is visually correct after changes.
 
 ---
 
-## Audit Remediation Items (from CC/perf/stale audit)
+### B — Dashboard activity download disabled vs orders page enabled
 
-### A1 — CC Reductions (8 functions, backend + broker)
+**Root cause (confirmed)**: Dashboard passes `defaultTab="news"` to ActivityLogSurface →
+LogPanel initialises `logTab = 'news'` → download button `disabled={logTab === 'news'}`.
+Orders page passes `defaultTab="order"` → download is active immediately.
 
-**`backend/api/persistence/migrations.py:146 seed_templates` (CC 20)**:
-Extract `_promote_default_if_unclaimed(session, by_slug, slug, applies_to)` — consolidates 3 identical promote-default blocks (bull/bear/short-vol). Call it 3 times instead.
+Both pages pass `label="ACTIVITY"` and no `onDownload` — same rendering path, same logic.
+The ONLY difference is the `defaultTab` prop.
 
-**`backend/api/background.py:2869 _task_sparkline_warm` (CC 19)**:
-Extract 5 `_collect_<source>_symbols(seen, pairs) -> None` helpers (watchlist, holdings-cached, holdings-live, positions, movers) — consolidates copy-pasted try/except/append/log boilerplate.
+**Fix** (`frontend/src/routes/(algo)/dashboard/+page.svelte`, ~line 2221):
+Change `defaultTab="news"` → `defaultTab="order"` on the ActivityLogSurface call.
+News tab is still accessible via tab click; download becomes active on all non-news tabs.
 
-**`backend/api/routes/positions.py:848 _enrich_position_greeks` (CC 19)**:
-Extract `_batch_fetch_spots(underlying_keys: set[str]) -> dict[str, float]` — isolates the `broker.quote()` batched spot-fetch pass.
+---
 
-**`backend/api/routes/positions.py:207 _overlay_snapshot_for_closed_exchanges` (CC 18)**:
-Extract `_replace_row_price(row, live_ltp, exchange_open, snap_ltp)` — consolidates the resolve + replace_kwargs logic shared between both branches.
+### C — NavStrip slot hints cleanup
 
-**`backend/brokers/broker_apis.py:746 _record_fetch` (CC 18)**:
-Extract `_record_breaker_state(account, ok, error, now, e)` — the lock-body circuit-breaker state machine. Outer function retains only the health-stamp emit.
+**`frontend/src/lib/PositionStrip.svelte`**:
 
-**`backend/api/algo/derivatives.py:1057 multileg_payoff_curve` (CC 17)**:
-Extract `_leg_today_expiry_arrays(leg, S_grid, r, eval_T) -> tuple[np.ndarray, np.ndarray]` — per-leg branching (fut/intrinsic/BS re-price/expiry-intrinsic) into one place.
+Remove all 10 per-slot `<InfoHint popup panel showOnHover label="ⓘ" ...>` elements.
+Remove the per-slot ⓘ CSS override: `.ps-agg-v + :global(.info-wrap) :global(.info-btn) { ... }`
 
-**`backend/brokers/kite_ticker.py:411 TickerManager.status` (CC 16)**:
-Extract `_build_stale_list(subscribed_copy, age_snapshot, sym_snapshot, now, threshold) -> tuple[list, float]` and `_failover_snapshot(self) -> dict`.
+Update 4 label InfoHint `text` props to describe ALL slots:
 
-**`backend/api/auth_guard.py:15 jwt_guard` (CC 17)**:
-Extract `_reject_if_user_invalid(row, tv) -> None` — 5 sequential NotAuthorized guard raises.
+**P label:**
+```
+text="<b>Day P&L:</b> Live ticks − prev-close × net qty, all accounts. For new intraday (overnight_qty=0), uses pnl directly.<br><br><b>Lifetime P&L:</b> Cumulative since position opened. Includes realised + unrealised.<br><br><b>Expiry P&L:</b> Projected F&O value at expiry via lognormal model."
+```
 
-### A2 — Dead parameters (3 bugs — params accepted but silently ignored)
+**M label:**
+```
+text="<b>Available:</b> Cash deployable for new orders = Total − used margin. Updated after every fill.<br><br><b>Total:</b> Full collateral across all accounts = Available + margin blocked for open positions."
+```
 
-**`backend/api/algo/actions_preflight.py:771 diagnose_live_failure(kite_error)`**: `kite_error` param never read inside the function. Either implement (log it to the diagnostic output) or remove the param and update 3 call sites at `actions_live.py:168, 309, 787`.
+**C label:**
+```
+text="<b>Cash Available (CA):</b> Live deployable cash. Nets realised P&L + long option premiums paid.<br><br><b>Total Cash:</b> CA + premium tied up in long options (recoverable if closed)."
+```
 
-**`backend/brokers/broker_apis.py:1456 _apply_backfill_to_list(qty_col)`**: `qty_col` param accepted, never used. The backfill always calls `backfill_market_data(combined)` ignoring `qty_col`. Two callers pass `qty_col="opening_quantity"` believing the filter is respected. Implement: pass `qty_col` through to `backfill_market_data(combined, qty_col=qty_col)` OR remove the param and update callers.
+**H label:**
+```
+text="<b>Today MTM:</b> Live LTP − prev close × qty for long-term holdings. Intraday only.<br><br><b>Value:</b> Broker-reported current market value across all accounts.<br><br><b>Lifetime P&L:</b> Cumulative since purchase = (current − avg cost) × qty."
+```
 
-**`backend/brokers/service/app.py:277 _attempt_failover_swap(slowed_s)`**: `slowed_s` accepted but never read. The log at line 496 re-calls `_watchdog_slowed_interval_s()` independently introducing a config-change race. Fix: use the passed `slowed_s` arg in the log line instead.
+---
 
-### A3 — Dead imports (remove, 7 files)
+### D — Timestamp SSOT: `AlgoTimestamp.svelte`
 
-- `backend/api/algo/expiry.py:28` — `from ... import mask_column` (never called in file)
-- `backend/api/routes/orders.py:60` — `from ... import mask_column` (never called)
-- `backend/api/routes/orders.py:79` — `from orders_helpers import _VALIDITIES` (never referenced)
-- `backend/api/algo/actions.py:638` — `from actions_sim import _sim_ltp_for` (never used)
-- `backend/api/background.py:2833` — `func as _sa_func` (only `_sa_select` used)
-- `backend/brokers/service/routes.py:70` — `from schemas import BrokerCallResp` (zero call sites)
+Create `frontend/src/lib/AlgoTimestamp.svelte`:
+- Reads `$nowStamp` + `$lastRefreshAt` from stores — no props
+- Desktop (> 640px): shows `[current IST+EDT] | [refresh IST+EDT]` always when `$lastRefreshAt > 0`
+- Mobile (≤ 640px): current by default; click toggles to refresh; separator hidden
+- Colors: current = `var(--c-info)` (sky/cyan); refresh = `var(--algo-amber)` (amber)
 
-### A4 — Dead function + alias
+```svelte
+<script>
+  import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
+  let _showRefresh = $state(false);
+  let _refreshTs = $derived($lastRefreshAt ? formatDualTz(new Date($lastRefreshAt)) : null);
+  function _toggle() { if (_refreshTs) _showRefresh = !_showRefresh; }
+</script>
 
-**`backend/brokers/broker_apis.py:1017 sort_accounts()`**: Zero production callers in routes/background/algo. Remove the function. Also update `backend/tests/` — find and remove tests that cover only this dead function (verify with grep first).
+<span class="ats-group" onclick={_toggle} role="button" tabindex="0"
+      onkeydown={(e) => e.key === 'Enter' && _toggle()}
+      style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent; cursor: pointer;">
+  <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{$nowStamp}</span>
+  {#if _refreshTs}
+    <span class="ats-sep" aria-hidden="true">|</span>
+    <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
+  {/if}
+</span>
+```
 
-**`backend/brokers/broker_apis.py:2155 backfill_close_prices = backfill_market_data`**: Dead alias with zero callers. Remove.
+CSS: `.ats-now { color: var(--c-info) }`, `.ats-refresh { color: var(--algo-amber) }`,
+`.ats-sep` only visible on desktop (hidden via media query on mobile since only 1 shows).
 
-### A5 — Performance fixes
+**Update 54 page files**: Replace `.algo-ts-group` blocks with `<AlgoTimestamp />`.
+Remove unused imports: `clientTimestamp`, `formatIstOnly`, `formatDualTz` (per-page), `lastRefreshAt` (per-page, if only used for timestamp).
+Remove unused state: `_showLiveTs`, `_moversAsOf` (ONLY if used exclusively for timestamp toggle).
 
-**`frontend/src/lib/MarketPulse.svelte:2761`**: `_prefetchTimers.length * 80` stagger uses total array length including completed handles. After 125+ symbols, delay exceeds 10s. Fix: maintain a separate `_prefetchPending = $state(0)` counter; increment on create, decrement in the callback. Use `_prefetchPending * 80` for the stagger instead of `_prefetchTimers.length`.
+**`frontend/src/lib/stores.js`**: Remove `formatIstOnly` function (added Round 6, now unused).
 
-**`backend/brokers/broker_apis.py:1871`**: `.iterrows()` on missing-rows DataFrame. Replace with `.itertuples(index=False)` or vectorized extraction.
+**`frontend/src/routes/(algo)/+layout.svelte`**: Remove `.algo-ts`, `.algo-ts-group`, `.algo-ts-hidden`, `.algo-ts-data` CSS rules IF they are not referenced anywhere outside the timestamp block. Check before removing.
 
-**`backend/scripts/visitor_report.py:332 _upsert_records`**: N round-trips per IP row. `pg_insert` is already imported but unused here. Replace the `SELECT + conditional UPDATE/INSERT` loop with PostgreSQL `INSERT ... ON CONFLICT (ip_address) DO UPDATE SET ...` using `pg_insert`. This reduces N queries to 1 batch upsert.
+---
 
-### A6 — Stale documentation
+### E — Activity dropdown gap + unified tab-strip scroll
 
-**`backend/api/schemas.py:578`**: `target_pct` field marked `DEPRECATED in v2.2 — Will be removed in v2.2`. Field is actively used by 5+ files. Remove the deprecation notice; update the docstring to reflect it's canonical.
+**`frontend/src/lib/ActivityHeaderFilters.svelte`**:
+Set `gap: 0` on `.act-filters` — the two dropdowns (All Accounts, All level) should sit flush
+with no gap between them on desktop. On mobile the same applies (they're already compact).
+
+**`frontend/src/lib/LogPanel.svelte`** — scroll conflict fix:
+`.lp-tab-strip-wrap` is the scroll container (`overflow-x: auto`), but `AlgoTabs` inside it
+also has `overflow-x: auto` on `.algo-tabs-strip`. Two nested scroll containers means the
+inner one absorbs scroll before the outer one, so tabs and dropdowns don't scroll as a unit.
+
+Fix: Override `.algo-tabs-strip` overflow inside `.lp-tab-strip-wrap`:
+```css
+.lp-tab-strip-wrap :global(.algo-tabs-strip) {
+  overflow-x: visible;  /* Let the parent wrapper handle scroll */
+}
+```
+
+This forces the entire strip (tabs + dropdowns) to scroll as one unit. Also ensure all tab
+buttons are `flex-shrink: 0` within the strip so they don't compress (AlgoTabs already does
+this via `:global(.algo-tabs-strip .algo-tab) { flex-shrink: 0 }`).
+
+**CardHeader `ch-middle` slot** (for all other cards with tabs):
+`.ch-middle` already has `overflow-x: auto` — any card placing tabs in the `middle` slot
+already scrolls correctly. No change needed here. Verify that MarketPulse's `.mp-head-tabs`
+wrapper inside `ch-middle` does NOT also have its own `overflow-x: auto` (remove if present
+to prevent the same double-scroll-container issue).
+
+**Button sequence in CardControls**: See Task A above — already planned.
+
+---
+
+### F — Activity tab row alternation fix (all non-Orders tabs)
+
+**Root cause**: `:nth-child(odd)` on `.log-row` breaks whenever any non-`.log-row` element
+(empty-state divs, conditional anchors) exists as a sibling inside `.log-panel.log-rows`.
+Also, log-level classes (`log-error`, `log-warn`, `log-debug`, `log-info`) may set their
+own `background` that overrides the alternation for those specific row types.
+
+**Files:** `frontend/src/lib/LogPanel.svelte`
+
+**Fix — JS-applied striped class**: Instead of nth-child CSS, apply `lp-row-odd` / `lp-row-even`
+class to each row based on its index in the rendered array. This is immune to sibling-count issues.
+
+In the row-building code for each non-Orders tab (agent, terminal, simulator, system, conn):
+- For each row array (`_agentRows`, `_sysRows`, `_connRows`, etc.), when building row HTML
+  via `_logRow()` or when mapping the array, pass the index and add class:
+  ```javascript
+  // In _logRow() or the array mapping:
+  const stripe = idx % 2 === 0 ? 'lp-row-odd' : 'lp-row-even';
+  // Add stripe to the row div class: `<div class="log-row ${rowClass} ${stripe}">`
+  ```
+
+- For terminal tab which uses `{@html _terminalHtmlDerived}` built from a string: apply
+  the same index-based class when building `_terminalHtmlDerived`.
+
+**CSS**: Replace the current nth-child rule with:
+```css
+:global(.log-panel.log-rows .log-row.lp-row-odd) {
+  background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+}
+:global(.log-panel.log-rows .log-row.lp-row-even) {
+  background: transparent;
+}
+```
+
+Remove the old `:nth-child(odd)` rule.
+
+**Also check**: If log-level classes (`log-error`, `log-warn`, etc.) set `background`,
+verify they still appear visually distinct (e.g., error rows can keep a colored background;
+that overrides the alternation for those specific rows which is acceptable since the color
+carries semantic meaning).
+
+**Text + row format consistency**: Verify all non-Orders tabs use identical `.log-row` CSS:
+same `font-size`, `color`, `padding`, `border-bottom`. Any tab-specific overrides that
+differ from the base should be removed unless intentional.
+
+---
+
+### G — Chase L/M/H: move from card header to symbol row in order entry
+
+**Root cause of omission**: Round 6 refactored the order page header to use `CardHeader`,
+but the planned chase-row relocation was never implemented — the cluster stayed in the
+`{#snippet left()}` of the `<CardHeader>`.
+
+**Current location** (`frontend/src/routes/(algo)/orders/+page.svelte`, ~lines 394-424):
+Chase L/M/H sits in the card header left slot as `.oc-header-cluster` alongside "ORDER ENTRY".
+
+**Target location**: Move the entire `.oc-header-cluster` (CHASE label + L/M/H button group +
+optional Clear button) to appear inline in the **symbol/instrument row** of the order entry
+form — immediately after the symbol selector, same flex row.
+
+Find the order entry form's symbol row (look for the instrument/symbol autocomplete input),
+wrap symbol input + chase cluster in a flex row. Remove `.oc-header-cluster` from the header.
+
+The header left slot should then only contain:
+```svelte
+<span class="oc-entry-label"><svg>...</svg>ORDER ENTRY</span>
+```
+
+Adjust `.oc-header-cluster` CSS if needed to fit inline in the form row (compact, no extra margin).
+
+---
+
+### H — Exp close grid alternating rows (CandidateLegRow / derivatives page)
+
+**Root cause**: `CandidateLegRow.svelte` conditionally renders an `.expiry-band-header`
+element before the `.cand-row` element inside the same component. Both are direct children
+of `.cand-grid`. This makes `.expiry-band-header` elements consume nth-child positions,
+so the `.cand-grid > :nth-child(even)` alternation rule applies to band headers, not to
+data rows. Data rows end up with wrong or missing stripes.
+
+**Files**:
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (`.cand-grid > :nth-child(even)` rule ~line 5701)
+- `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` (band header render + `.cand-row`)
+
+**Fix**: Switch from CSS nth-child to Svelte-loop index classes.
+
+In `+page.svelte`, wherever `CandidateLegRow` is rendered in a `{#each}` loop, pass
+`stripe={idx % 2 === 0 ? 'cand-row-odd' : 'cand-row-even'}` as a prop.
+
+In `CandidateLegRow.svelte`:
+- Accept `stripe = ''` prop
+- Add `{stripe}` class to the `.cand-row` div
+
+CSS in `+page.svelte`: Replace the `nth-child(even)` rule with:
+```css
+:global(.cand-row.cand-row-odd):not(:global(.cand-row-total)) {
+  background-color: rgba(13,22,42,0.30);
+}
+:global(.cand-row.cand-row-even):not(:global(.cand-row-total)) {
+  background-color: transparent;
+}
+```
+
+Remove the old `nth-child(even)` rule entirely.
+
+**This is the same root cause as Task F** — nth-child breaks when non-data siblings exist.
+The same fix pattern (index class passed from `{#each}` loop) applies to both.
+
+---
+
+### I — Grid consistency SSOT: `.algo-table` class + migrate ALL 15+ hand-rolled tables
+
+**Root cause**: 25+ pages each define their own table CSS independently — no shared class.
+Font-sizes range from 0.55rem to 0.72rem, hover is missing on 14 of 15 tables, alternating
+rows are absent on most, border colors are inconsistent. ag-Grid instances share `ag-theme-algo`
+and are consistent; hand-rolled `<table>` elements are not.
+
+**Fix strategy**: Define `.algo-table` (+ `.algo-table-wrap`, `.algo-table-num`) as the SSOT
+in `frontend/src/app.css`. Then for every hand-rolled table: add `class="algo-table"` and
+delete the per-table CSS override block. Semantic overrides (e.g., amber for token values,
+pending row amber in statements) layer on top and remain.
+
+---
+
+**New CSS in `frontend/src/app.css`** (add under `.ag-theme-algo` block):
+
+```css
+/* SSOT for hand-rolled tables — matches ag-theme-algo */
+.algo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--algo-slate);
+}
+.algo-table thead th {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding: 0 4px;
+  height: 28px;
+  background: rgba(15,23,42,0.30);
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(126,151,184,0.18);
+}
+.algo-table tbody td {
+  padding: 0 4px;
+  height: 24px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(126,151,184,0.10);
+}
+.algo-table tbody tr:nth-child(odd) td {
+  background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+}
+.algo-table tbody tr:hover td {
+  background: var(--ag-row-hover-color, rgba(34,211,238,0.05));
+}
+.algo-table-num { text-align: right; font-variant-numeric: tabular-nums; }
+.algo-table-wrap { overflow-x: auto; }
+```
+
+Note: `nth-child(odd)` works correctly inside `<tbody>` — only `<tr>` elements live there,
+so no non-row sibling break (unlike the CSS-grid/flex layouts fixed in Tasks F and H).
+
+---
+
+**Complete migration list** — for each file: add `class="algo-table"` to `<table>`, delete
+the now-redundant per-table CSS block, keep only semantic overrides:
+
+| File | Old class(es) | Notes |
+|---|---|---|
+| `admin/tokens/+page.svelte` | inline `text-[0.65rem]` | Remove Tailwind size; keep amber for token value column |
+| `admin/brokers/+page.svelte` | `.brokers-table`, `.conn-table` | Two tables; keep connection-state color chips |
+| `admin/audit/+page.svelte` | `.audit-table` | Has alternating rows already; remove font-size override |
+| `admin/statements/+page.svelte` | `.ms-table` | Keep `.ms-row.row-pending` amber override |
+| `admin/history/+page.svelte` | `.hist-table` (3 tables) | Has hover already; remove per-table CSS, keep `.td-num` → `.algo-table-num` |
+| `admin/metrics/+page.svelte` | `.metrics-table` | Remove `var(--fs-xl)` override; rename `.num` → `.algo-table-num` |
+| `admin/settings/+page.svelte` | inline `text-[0.65rem]` | Remove inline Tailwind size |
+| `admin/alerts/+page.svelte` | `.alerts-table` | Standard migration |
+| `admin/research/+page.svelte` | `.drafts-table`, `.audit-table`, `.mint-grid` | Rename `.audit-table` → `.research-table` to avoid collision with audit page |
+| `admin/perf/+page.svelte` | `.perf-hotspot-table` | Standard migration |
+| `admin/simulator/iterations/+page.svelte` | `.iter-table` | Standard migration |
+| `admin/+page.svelte` | `.ip-modal-tbl` | Modal table — apply algo-table |
+| `strategies/+page.svelte` | `.strat-table` | Standard migration; keep strategy-status color chips |
+| `strategies/[id]/+page.svelte` | `.strat-table` | Same as above |
+| `lib/NavBreakdown.svelte` | Hand-rolled with hardcoded RGBA | Apply algo-table; remove hardcoded values |
+
+**Health grid** (`admin/health/+page.svelte`): Uses a card-based `.health-grid` layout (not `<table>`).
+Apply equivalent CSS variables: same font-size 0.72rem, same color `var(--algo-slate)`, same
+border `rgba(126,151,184,0.10)` — use inline CSS vars, not `algo-table` class since it's not a `<table>`.
+
+**Agent card text legibility** (`automation/+page.svelte`):
+- Change `text-[0.55rem]` on long_name → `text-xs` (12px); color → `var(--algo-slate)`
+
+---
+
+### J — Activity panel consistency: replace UnifiedLog with ActivityLogSurface
+
+**Root cause**: `/automation/activity/+page.svelte` renders `<UnifiedLog>` — a hand-rolled
+single-tab log view — instead of `<ActivityLogSurface>`. Every other activity surface (console,
+orders, dashboard, activity page) uses `ActivityLogSurface` → `LogPanel` and is therefore
+identical in tab layout, row format, download, filter, and button order. The automation activity
+panel looks and behaves differently.
+
+**Fix** (`frontend/src/routes/(algo)/automation/activity/+page.svelte`):
+- Remove `<UnifiedLog>` import and usage
+- Import `ActivityLogSurface` from `$lib/ActivityLogSurface.svelte`
+- Replace with:
+  ```svelte
+  <ActivityLogSurface
+    context="page"
+    label="ACTIVITY"
+    defaultTab="agent"
+    cardId="automation-activity"
+    bind:accountFilter={_accountFilter}
+    bind:availableAccounts={_availableAccounts}
+    bind:levelFilter={_levelFilter} />
+  ```
+- Remove any `UnifiedLog`-specific state/props that are no longer needed
+- Verify that the automation activity page shows the same multi-tab panel as console/orders
+
+---
+
+### K — Status card + layout grid SSOT
+
+**Goal**: NavStrip, page header, card header, cards, status cards, and agent cards all read as one visual family. Exception: Pulse (ag-Grid with row-level tints) is intentionally different.
+
+**Root cause**: `.algo-status-card` is the shared shell (both OrderCard and AgentCard use it ✓), but status ENCODING inside diverges:
+- AgentCard: `data-status` attribute drives CSS border-glow + opacity via scoped rules in `+layout.svelte` — design-token approach ✓  
+- OrderCard: inline Tailwind (`bg-green-500/15 text-green-400 border-green-500/40` etc.) on the status pill — disconnected from `data-status`, duplicates the encoding ✗
+
+Additionally, card layout grids are ad-hoc per page (Tailwind `grid grid-cols-*` or page-scoped CSS) — no canonical class.
+
+---
+
+#### K1 — Unified status pill CSS via `data-status`
+
+**`frontend/src/app.css`** — extend `.algo-status-card` data-status variants to also expose CSS custom properties that the inner pill can inherit:
+
+```css
+/* Status token layer — drives both card chrome AND inner pill */
+.algo-status-card[data-status="running"]  { --st-fg: #fbbf24; --st-bg: rgba(251,191,36,0.12); --st-border: rgba(251,191,36,0.45); }
+.algo-status-card[data-status="error"]    { --st-fg: #f87171; --st-bg: rgba(248,113,113,0.12); --st-border: rgba(248,113,113,0.45); }
+.algo-status-card[data-status="complete"] { --st-fg: #4ade80; --st-bg: rgba(74,222,128,0.12); --st-border: rgba(74,222,128,0.40); }
+.algo-status-card[data-status="rejected"] { --st-fg: #f87171; --st-bg: rgba(248,113,113,0.12); --st-border: rgba(248,113,113,0.45); }
+.algo-status-card[data-status="cancelled"]{ --st-fg: #94a3b8; --st-bg: rgba(148,163,184,0.10); --st-border: rgba(148,163,184,0.30); }
+.algo-status-card[data-status="inactive"] { --st-fg: var(--text-muted); --st-bg: rgba(126,151,184,0.08); --st-border: rgba(126,151,184,0.25); }
+.algo-status-card[data-status="triggered"]{ --st-fg: #38bdf8; --st-bg: rgba(56,189,248,0.12); --st-border: rgba(56,189,248,0.40); }
+
+/* Shared pill — apply via class="algo-status-pill" */
+.algo-status-pill {
+  font-size: 0.55rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  white-space: nowrap;
+  color: var(--st-fg, var(--text-muted));
+  background: var(--st-bg, rgba(126,151,184,0.08));
+  border: 1px solid var(--st-border, rgba(126,151,184,0.25));
+}
+```
+
+**`frontend/src/lib/order/OrderCard.svelte`** — replace all inline Tailwind status pill classes with:
+```svelte
+<span class="algo-status-pill">{order.status}</span>
+```
+The `data-status` attribute (already present on the outer `.algo-status-card`) drives the colors automatically.
+Map `data-status` values to order statuses: COMPLETE → complete, REJECTED → rejected, CANCELLED → cancelled, TRIGGER_PENDING/AMO_REQ_RECEIVED → running, etc.
+
+**`frontend/src/routes/(algo)/automation/+page.svelte`** — agent status pill (ON/OFF + mode L/P) already uses its own approach. Replace the inline `bg-sky-500/15` / `bg-red-500/15` Tailwind on the ON/OFF toggle pill with `.algo-status-pill` too, or at minimum ensure the border+glow comes from CSS vars not Tailwind.
+
+---
+
+#### K2 — Canonical `.page-grid` layout class
+
+**`frontend/src/app.css`** — add:
+```css
+/* Canonical responsive grid for card pages */
+.page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 0.5rem;
+  align-items: start;
+}
+.page-grid-2col { grid-template-columns: 1fr 1fr; }
+.page-grid-3col { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 640px) {
+  .page-grid, .page-grid-2col, .page-grid-3col { grid-template-columns: 1fr; }
+}
+```
+
+Migrate the main card-layout pages to use `.page-grid` instead of ad-hoc Tailwind:
+- `automation/+page.svelte` → replace `.agent-group-grid` with `page-grid`
+- `orders/+page.svelte` → replace `grid grid-cols-5 gap-2` status counter strip with `page-grid`
+- Any other page with a `grid grid-cols-* gap-*` card layout
+
+---
+
+#### K3 — Visual hierarchy enforcement (CSS-only, no new components)
+
+The NavStrip → PageHeader → CardHeader → Card family already shares:
+- Amber (`--c-action`) for titles and primary labels
+- Muted slate (`--text-muted`) for secondary text and timestamps
+- `var(--card-bg-gradient)` / `var(--card-bg-elevated)` for card backgrounds
+- `CardHeader.svelte` as the shared card header ✓
+
+No new components needed. The only CSS gap is: some cards use `.algo-card` (no box-shadow), some use `.bucket-card` (elevated, shadow), some use `.algo-status-card` (with status chrome). Add a note to `app.css` clarifying intended usage:
+- `.algo-card` → data-only panels (no interactivity, no status)
+- `.bucket-card` → primary work surface (order entry, chart, main content)
+- `.algo-status-card` → any card that has a running/error/inactive state (orders, agents, connections)
+
+This guidance (as a comment in `app.css`) prevents future drift without requiring a refactor.
 
 ---
 
 ## Agents
 
-- frontend (Pass A — NavStrip popup redesign + per-slot hints): `frontend/src/lib/InfoHint.svelte`, `frontend/src/lib/PositionStrip.svelte`
+- frontend (Pass A — button reorder + download fix + NavStrip cleanup + row alternation + chase move):
+  `frontend/src/lib/CardControls.svelte` (button order),
+  `frontend/src/lib/DefaultSizeButton.svelte` (remove dsb-label span),
+  `frontend/src/lib/LogPanel.svelte` (button reorder + download fix + JS-applied row stripes),
+  `frontend/src/lib/PositionStrip.svelte` (remove ⓘ icons, update label texts),
+  `frontend/src/app.css` (remove fs restore-text CSS rules),
+  `frontend/src/routes/(algo)/orders/+page.svelte` (move chase L/M/H from header to symbol row, dashboard defaultTab fix),
+  `frontend/src/routes/(algo)/dashboard/+page.svelte` (defaultTab="news" → "order")
 
-- frontend (Pass B — timestamp IST format + mobile tap fix): all 29 files with `algo-ts-group` (grep -rl "algo-ts-group" frontend/src/routes/), `frontend/src/routes/(algo)/+layout.svelte` (touch-action CSS)
+- frontend (Pass A3 — status card SSOT + page-grid layout):
+  `frontend/src/app.css` (data-status CSS vars + .algo-status-pill + .page-grid classes + usage comments),
+  `frontend/src/lib/order/OrderCard.svelte` (replace Tailwind status pills with algo-status-pill),
+  `frontend/src/routes/(algo)/automation/+page.svelte` (agent ON/OFF pill → algo-status-pill),
+  pages using ad-hoc grid-cols-* → replace with page-grid
 
-- frontend (Pass C — activity scroll/gap/download + orders lot chip + agent chip legibility + grid rows + stale CSS): `frontend/src/lib/LogPanel.svelte`, `frontend/src/lib/ActivityAccountSelect.svelte`, `frontend/src/lib/ActivityLogSurface.svelte`, `frontend/src/routes/(algo)/orders/+page.svelte` or `frontend/src/lib/LogPanel.svelte` (order row renderer), `frontend/src/routes/(algo)/automation/+page.svelte`, `frontend/src/routes/(algo)/automation/agent-templates/+page.svelte`, `frontend/src/routes/(algo)/automation/templates/+page.svelte`, `frontend/src/lib/SymbolPanel.svelte` (dead CSS), `frontend/src/app.css` (dead .algo-chip* rules + font fixes + grid row bg check), `frontend/src/lib/OptionsPayoff.svelte` (8px SVG font)
+- frontend (Pass A2 — exp close grid alternation + ALL hand-rolled table consistency + activity SSOT):
+  `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (replace nth-child with index classes),
+  `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` (accept stripe prop),
+  `frontend/src/app.css` (add `.algo-table`, `.algo-table-wrap`, `.algo-table-num` SSOT classes),
+  `frontend/src/routes/(algo)/admin/tokens/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/brokers/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/audit/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/statements/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/history/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/metrics/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/settings/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/alerts/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/research/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/perf/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/health/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/+page.svelte`,
+  `frontend/src/routes/(algo)/admin/simulator/iterations/+page.svelte`,
+  `frontend/src/routes/(algo)/strategies/+page.svelte`,
+  `frontend/src/routes/(algo)/strategies/[id]/+page.svelte`,
+  `frontend/src/lib/NavBreakdown.svelte`,
+  `frontend/src/routes/(algo)/automation/+page.svelte` (agent card long_name text fix),
+  `frontend/src/routes/(algo)/automation/activity/+page.svelte` (UnifiedLog → ActivityLogSurface)
 
-- frontend (Pass D — charts fullscreen + button visibility + MarketPulse _prefetchTimers): `frontend/src/lib/NavBreakdown.svelte`, `frontend/src/routes/(algo)/dashboard/+page.svelte`, `frontend/src/lib/execution/SimulatorPanel.svelte`, `frontend/src/lib/execution/ReplayPanel.svelte`, `frontend/src/lib/CardControls.svelte`, `frontend/src/lib/MarketPulse.svelte` (prefetchTimers fix + ag-Grid rowStyle check), `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (refreshAlwaysVisible audit), `frontend/src/routes/(algo)/orders/+page.svelte` (refreshAlwaysVisible audit)
+- frontend (Pass B — AlgoTimestamp component + stores cleanup):
+  create `frontend/src/lib/AlgoTimestamp.svelte`,
+  `frontend/src/lib/stores.js` (remove formatIstOnly),
+  `frontend/src/routes/(algo)/+layout.svelte` (algo-ts CSS cleanup)
 
-- backend (Pass E — CC reductions): `backend/api/persistence/migrations.py`, `backend/api/background.py`, `backend/api/routes/positions.py`, `backend/api/auth_guard.py`, `backend/api/algo/derivatives.py`, `backend/brokers/broker_apis.py`, `backend/brokers/kite_ticker.py`
+- frontend (Pass C — 54 page files timestamp replacement):
+  grep all pages with `algo-ts-group`, replace with `<AlgoTimestamp />`, remove associated state/imports
 
-- broker (Pass F — dead params + dead imports + dead function + perf): `backend/brokers/broker_apis.py`, `backend/brokers/service/app.py`, `backend/brokers/service/routes.py`
-
-- backend (Pass G — dead imports + dead function + stale doc + visitor_report perf): `backend/api/algo/expiry.py`, `backend/api/routes/orders.py`, `backend/api/algo/actions.py`, `backend/api/background.py`, `backend/api/schemas.py`, `backend/scripts/visitor_report.py`
-
-- backend-test (Pass H — update tests for removed sort_accounts + new CC helpers): `backend/tests/` — remove sort_accounts tests, add basic tests for new extracted helpers
-
-- playwright (Pass I — e2e tests): update `frontend/e2e/algo_consistency.spec.js` to remove .algo-chip assertions; add smoke tests for new NavStrip panel popups (click P label → panel opens with left highlight), timestamp IST format check, activity download button presence, lot chip in orders, chart fullscreen buttons
+- playwright (smoke): update `frontend/e2e/polish-round6.spec.js` — assert dual-TZ format,
+  desktop shows two timestamps, refresh is amber, button order correct (search before download),
+  download button active on Orders/Agents tabs in activity, chase L/M/H appears after symbol in order entry
 
 ## Tests
-- pytest: yes
+- pytest: no
 - svelte-check: yes
 - playwright: yes
 
 ## Commit message
-feat(polish): UI Round 6 + audit — NavStrip panel popups, IST timestamps, activity scroll/download, chart fullscreen, font legibility, CC reductions, dead-code cleanup, perf fixes
+fix(ui): algo-table SSOT, activity SSOT, button order, chase to symbol row, AlgoTimestamp dual-TZ, NavStrip hints, row alternation fixed
 
 ## Done when
-- NavStrip P/M/C/H label + every value slot has a panel-style popup with left highlight
-- Both timestamps show IST-only format; mobile tap toggles without magnifying
-- Activity card has download button; middle strip (tabs + dropdowns) scrolls together on all cards
-- L/M/H lot chip appears after symbol in order rows
-- All chart surfaces (PriceChart, OptionsPayoff, NavBreakdown, EquityCurve in SimulatorPanel/ReplayPanel) have fullscreen button
-- Download/search buttons remain visible in fullscreen mode
-- Agent tab chips readable (≥ var(--fs-sm))
-- All ag-Grid instances use alternating row background consistently
-- No text below var(--fs-xs) on any interactive surface
-- 8 CC functions reduced from C to B
-- 3 dead params fixed, 6 dead imports removed, dead function removed, dead CSS removed
-- 3 perf fixes shipped (_prefetchTimers, iterrows, visitor_report upsert)
-- svelte-check 0 errors, pytest green, Playwright passing
+- CardControls order: Search → Download → Collapse → Fullscreen (default); X last (fullscreen)
+- No "Restore" text in fullscreen mode
+- LogPanel lp-card-btns same order
+- Dashboard activity `defaultTab="order"` — download button active on all non-news tabs
+- Chase L/M/H appears after symbol in order entry form row (not in card header)
+- PositionStrip: no ⓘ icons; P/M/C/H labels explain all slots on click
+- Desktop: current (sky) + refresh (amber) side-by-side on all pages
+- Mobile: current by default, click toggles to refresh (amber)
+- 54 pages use `<AlgoTimestamp />`
+- Exp close grid and LogPanel non-Orders tabs: correct alternating rows via JS index classes
+- ALL 15+ hand-rolled tables use `.algo-table`: 0.72rem body, 0.6rem header, alternating rows, hover, border rgba(126,151,184,0.10)
+- Automation activity panel uses `ActivityLogSurface` (same as console/orders/dashboard)
+- Automation agent card long_name text legible (min text-xs)
+- `.algo-status-pill` class used for ALL status pills (orders + agents) — driven by `data-status` CSS vars
+- OrderCard status pill uses `data-status` CSS tokens (not inline Tailwind)
+- `.page-grid` canonical layout class in `app.css`; card-layout pages migrated away from ad-hoc Tailwind grid
+- `.algo-card` / `.bucket-card` / `.algo-status-card` usage documented in `app.css`
+- svelte-check 0 errors, playwright passing

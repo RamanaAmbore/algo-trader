@@ -5,7 +5,8 @@
   // Compact card grid — 2 columns desktop / 1 mobile. Polls every 15 s.
 
   import { onDestroy } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly, branchLabel, visibleInterval } from '$lib/stores';
+  import { branchLabel, visibleInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -19,7 +20,6 @@
   /** @type {any} */
   let health      = $state(null);
   let error       = $state('');
-  let _showLiveTs = $state(false);
   let loading     = $state(true);
   let teardown;
 
@@ -124,19 +124,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Health</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="health" />
@@ -464,9 +452,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Scoped .page-header override removed — was shadowing the
      layout's :global(.page-header) fixed-strip rule due to
      Svelte's class-hash specificity. All algo pages now share
@@ -505,7 +490,9 @@
     align-items: baseline;
     gap: 0.4rem;
     padding: 0.18rem 0;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 0.72rem;
+    color: var(--algo-slate);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .kv-row:last-child { border-bottom: none; }
   .kv-key {
@@ -532,8 +519,9 @@
     align-items: center;
     gap: 0.45rem;
     padding: 0.2rem 0;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-    font-size: var(--fs-md);
+    font-size: 0.72rem;
+    color: var(--algo-slate);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .broker-row:last-child { border-bottom: none; }
   .broker-key {
@@ -588,7 +576,9 @@
     align-items: center;
     gap: 0.65rem;
     padding: 0.2rem 0;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
+    font-size: 0.72rem;
+    color: var(--algo-slate);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .ip-row:last-child { border-bottom: none; }
   .ip-addr {

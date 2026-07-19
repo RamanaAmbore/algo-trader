@@ -310,9 +310,10 @@
                   : 'log-agent-default';
         const cond = chipsFromJson(e.trigger_condition) || '';
         const tag  = (e.event_type || '').replace(/_/g, ' ');
+        const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
         return {
           key: e.id != null ? `a${e.id}` : `a${e.timestamp || ''}-${i}`,
-          html: _logRow(e.timestamp, cond, tag, cls),
+          html: _logRow(e.timestamp, cond, tag, `${cls} ${stripe}`),
           _raw: e,
         };
       })
@@ -321,11 +322,17 @@
   const _simRows = $derived.by(() => {
     return simLog.slice()
       .sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts))
-      .map((entry, i) => ({
-        key: `s${entry.ts || ''}-${entry.kind || ''}-${i}`,
-        html: _renderSimLine(entry),
-        _raw: entry,
-      }))
+      .map((entry, i) => {
+        const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
+        const rawHtml = _renderSimLine(entry);
+        // Inject stripe class into the outer log-row div.
+        const html = rawHtml.replace(/^<div class="log-row /, `<div class="log-row ${stripe} `);
+        return {
+          key: `s${entry.ts || ''}-${entry.kind || ''}-${i}`,
+          html,
+          _raw: entry,
+        };
+      })
       .filter(r => _rowMatchesSearch(r.html));
   });
   const _sysRows = $derived.by(() => {
@@ -339,6 +346,7 @@
         const rest = d ? stripTs(l) : l;
         const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
         const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
+        const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
         return {
           // System log keys can't use timestamp alone (multiple lines
           // per second possible); compose with line content hash via
@@ -348,7 +356,7 @@
           // bug applies to System tab when api_log_file emits multiple
           // INFO lines in one second from the same logger.
           key: `y${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
-          html: _logRow(d || null, rest, tag, sysClass(l)),
+          html: _logRow(d || null, rest, tag, `${sysClass(l)} ${stripe}`),
           _rawLine: l,
         };
       })
@@ -367,6 +375,7 @@
         const rest = d ? stripTs(l) : l;
         const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
         const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
+        const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
         return {
           // Index appended to break ties — conn_service emits multiple
           // lines per second from the same logger module (e.g. four
@@ -378,7 +387,7 @@
           // hand. Index is safe here: rows are sorted append-only by
           // timestamp; nothing depends on stable cross-poll identity.
           key: `c${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
-          html: _logRow(d || null, rest, tag, sysClass(l)),
+          html: _logRow(d || null, rest, tag, `${sysClass(l)} ${stripe}`),
           _rawLine: l,
         };
       })
@@ -1285,7 +1294,11 @@
       all = all.filter(x => _rowMatchesSearch(x.html));
     }
     return all.length
-      ? all.map(x => x.html).join('')
+      ? all.map((x, i) => {
+          const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
+          // Inject stripe class into the outer log-row div.
+          return x.html.replace(/^<div class="log-row /, `<div class="log-row ${stripe} `);
+        }).join('')
       : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
   }
 
@@ -1442,16 +1455,6 @@
           <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
-      {#if context !== 'page'}
-        {#if context === 'modal'}
-          <button type="button" class="alm-close-btn"
-                  aria-label="Close activity log"
-                  onclick={() => onClose?.()}>×</button>
-        {:else}
-          <CollapseButton bind:isCollapsed {cardId} />
-          <FullscreenButton bind:isFullscreen />
-        {/if}
-      {/if}
       <!-- Download — always present; uses onDownload callback when wired,
            falls back to internal CSV export of visible rows. Disabled
            on the News tab where there is no structured data to export. -->
@@ -1466,6 +1469,16 @@
           <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
+      {#if context !== 'page'}
+        {#if context === 'modal'}
+          <button type="button" class="alm-close-btn"
+                  aria-label="Close activity log"
+                  onclick={() => onClose?.()}>×</button>
+        {:else}
+          <CollapseButton bind:isCollapsed {cardId} />
+          <FullscreenButton bind:isFullscreen />
+        {/if}
+      {/if}
     </div>
   {:else}
     <!-- Legacy card buttons for mounts without a label prop -->
@@ -1480,6 +1493,18 @@
         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.6"/>
           <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <!-- Download — disabled on News tab -->
+      <button type="button"
+        class="lp-card-btn"
+        title={logTab === 'news' ? 'Download not available for News tab' : 'Download visible rows as CSV'}
+        aria-label={logTab === 'news' ? 'Download not available for News tab' : 'Download CSV'}
+        disabled={logTab === 'news'}
+        onclick={_downloadCsv}>
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
       <!-- Expand / Contract -->
@@ -1511,18 +1536,6 @@
           </svg>
         </button>
       {/if}
-      <!-- Download — disabled on News tab -->
-      <button type="button"
-        class="lp-card-btn"
-        title={logTab === 'news' ? 'Download not available for News tab' : 'Download visible rows as CSV'}
-        aria-label={logTab === 'news' ? 'Download not available for News tab' : 'Download CSV'}
-        disabled={logTab === 'news'}
-        onclick={_downloadCsv}>
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-        </svg>
-      </button>
     </span>
   {/if}
 </div>
@@ -1785,6 +1798,10 @@
     scrollbar-width: none;
   }
   .lp-tab-strip-wrap::-webkit-scrollbar { display: none; }
+  /* Allow the AlgoTabs strip itself to be fully visible inside the scrollable
+     wrapper — without this the tabs component clips its own overflow and the
+     active-tab underline / indicator is cut at the wrapper boundary. */
+  .lp-tab-strip-wrap :global(.algo-tabs-strip) { overflow-x: visible; }
 
   /* Label chip shown when `label` prop is provided */
   .lp-label {
@@ -1953,8 +1970,16 @@
     background: transparent;
   }
   :global(.log-panel.log-rows .log-row:last-child) { border-bottom: 0; }
-  :global(.log-panel.log-rows .log-row:nth-child(odd)) {
+  /* JS-injected stripe classes — index-based so stripes survive filter
+     reflows (unlike :nth-child which counts DOM position and breaks when
+     rows are filtered out). lp-row-odd gets the tinted background;
+     lp-row-even stays transparent (same visual result as the old
+     :nth-child(odd) rule but stable under dynamic filtering). */
+  :global(.log-panel.log-rows .log-row.lp-row-odd) {
     background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+  }
+  :global(.log-panel.log-rows .log-row.lp-row-even) {
+    background: transparent;
   }
   :global(.log-panel.log-rows .log-row:hover) { background: rgba(255, 255, 255, 0.02); }
 

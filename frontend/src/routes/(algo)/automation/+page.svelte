@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly, logTime, lifespanChip, visibleInterval } from '$lib/stores';
+  import { logTime, lifespanChip, visibleInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -18,7 +19,6 @@
   import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   let agents      = $state([]);
-  let _showLiveTs = $state(false);
   let loading     = $state(true);
   let error       = $state('');
   let logTab      = $state('agent');
@@ -593,19 +593,7 @@
       {/if}
     </h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <!-- History chip + Ask AI toggle are LEFT-aligned per canonical
        header rule (only Refresh + Order + Chart + Activity + Collapse
        + Fullscreen + Default-size icons sit RIGHT of ml-auto). -->
@@ -715,7 +703,7 @@
     {group.name}
     <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
   </h2>
-  <div class="agent-group-grid mb-3">
+  <div class="page-grid agent-group-grid mb-3">
     {#each group.agents as agent}
       {@const isOpen = expandedSlug === agent.slug}
       <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
@@ -736,7 +724,7 @@
           <span class="flex-1 min-w-0 flex flex-col leading-tight">
             <span class="text-xs text-[var(--c-action)] truncate">{agent.name}</span>
             {#if agent.long_name}
-              <span class="text-[0.55rem] text-[var(--c-muted)] font-mono truncate">{agent.long_name}</span>
+              <span class="text-xs font-mono truncate" style="color: var(--algo-slate)">{agent.long_name}</span>
             {/if}
           </span>
           <!-- Notify-channel icon strip — one tiny emoji per enabled
@@ -1217,30 +1205,17 @@
 {/each}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
-  /* ── Agent group grid — 2-col on ≥720px, 1-col on mobile ────────── */
-  .agent-group-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 0.25rem;
-  }
-  /* Grid children default to `min-width: auto` which resolves to
-     `max-content` — so any wide descendant (a long condition leaf,
-     a JSON params <pre>, an inline ai-meta-why) pushes the 1fr
-     track wider than the viewport. Forcing `min-width: 0` makes
-     the track honour `1fr` and lets inner overflow guards
-     (word-break, overflow-x) actually engage. */
+  /* ── Agent group grid — uses canonical .page-grid for layout ───────
+     Grid layout (auto-fill minmax(18rem, 1fr), gap 0.5rem, 1-col on
+     mobile) comes from .page-grid in app.css. This scoped class only
+     adds the child overflow fix: grid children default to
+     `min-width: auto` → `max-content`, so wide descendants (condition
+     leaf, JSON params <pre>, ai-meta-why) push the 1fr track past the
+     viewport. `min-width: 0` lets the track honour `1fr` and allows
+     inner overflow guards (word-break, overflow-x) to engage. */
   .agent-group-grid > * {
     min-width: 0;
     max-width: 100%;
-  }
-  @media (min-width: 720px) {
-    .agent-group-grid {
-      grid-template-columns: repeat(2, 1fr);
-      gap: 0.5rem;
-    }
   }
 
   /* ── Ask-AI form ─────────────────────────────────────────────────── */

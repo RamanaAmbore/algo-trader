@@ -12,7 +12,8 @@
 -->
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly, marketAwareInterval } from '$lib/stores';
+  import { marketAwareInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import {
     fetchStrategies, createStrategy, updateStrategy, deleteStrategy,
   } from '$lib/api';
@@ -37,7 +38,6 @@
 
   /** @type {StrategyRow[]} */
   let rows = $state([]);
-  let _showLiveTs = $state(false);
   let loading = $state(false);
   let error = $state('');
 
@@ -164,19 +164,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Strategies</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="strategies" />
@@ -217,7 +205,7 @@
 
 <!-- Table. Always renders, even for demo / observer (view_strategies includes them). -->
 <div class="strat-table-wrap">
-  <table class="strat-table">
+  <table class="algo-table strat-table">
     <thead>
       <tr>
         <th class="th-slug">Slug</th>
@@ -293,9 +281,6 @@
 <ConfirmModal bind:this={confirmRef} />
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .strat-error {
     padding: 0.6rem 0.9rem;
     background: var(--c-short-10);
@@ -343,26 +328,20 @@
     border-radius: 6px;
   }
   .strat-table {
-    width: 100%; border-collapse: collapse;
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    font-size: var(--fs-lg);
+    width: 100%;
   }
   .strat-table th {
     text-align: left;
     padding: 0.45rem 0.6rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
     color: var(--text-muted);
-    font-size: var(--fs-xs);
     font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase;
     background: rgba(15, 23, 42, 0.65);
-    font-family: var(--font-numeric);
   }
   .strat-table th.th-num { text-align: right; }
   .strat-table td {
     padding: 0.4rem 0.6rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
-    color: #c8d8f0;
   }
   .strat-table td.td-num {
     text-align: right;
@@ -373,7 +352,6 @@
     color: var(--c-action); font-weight: 700; font-family: var(--font-numeric);
   }
   .strat-slug { color: var(--c-action); font-weight: 600; }
-  .strat-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .strat-row-inactive td { opacity: 0.5; }
   .strat-row-editing td { background: rgba(251, 191, 36, 0.06); }
   .strat-empty {
