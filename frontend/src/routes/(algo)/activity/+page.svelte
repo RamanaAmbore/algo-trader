@@ -15,8 +15,9 @@
    */
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { authStore, nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import { authStore } from '$lib/stores';
   import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
@@ -40,7 +41,6 @@
   // rotates the badge and asks ActivityLogSurface to re-poll
   // immediately (LogPanel re-mounts on key change, which is the
   // cheapest way to force a fresh fetch on every tab).
-  let _showLiveTs = $state(false);
   let _refreshKey = $state(0);
   let _refreshing = $state(false);
   function _refresh() {
@@ -59,19 +59,7 @@
     <BellIcon width="14" height="14" class="page-title-icon" />
     Activity
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={_refresh} loading={_refreshing} label="activity" />
@@ -96,9 +84,6 @@
 </section>
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   :global(.page-title-icon) { color: var(--c-action); flex-shrink: 0; }
   .activity-page-body {
     display: flex;

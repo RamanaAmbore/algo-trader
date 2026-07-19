@@ -1048,6 +1048,40 @@
   color: var(--algo-muted);
 }
 
+/* ─── Hand-rolled table SSOT — matches ag-theme-algo ─────────────────────── */
+.algo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  color: var(--algo-slate);
+}
+.algo-table thead th {
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding: 0 4px;
+  height: 28px;
+  background: rgba(15,23,42,0.30);
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(126,151,184,0.18);
+}
+.algo-table tbody td {
+  padding: 0 4px;
+  height: 24px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(126,151,184,0.10);
+}
+.algo-table tbody tr:nth-child(odd) td {
+  background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+}
+.algo-table tbody tr:hover td {
+  background: var(--ag-row-hover-color, rgba(34,211,238,0.05));
+}
+.algo-table-num { text-align: right; font-variant-numeric: tabular-nums; }
+.algo-table-wrap { overflow-x: auto; }
+
 /* ── SVG chart grid lines — canonical cool-blue palette ───────────────────
    Applied via class= on SVG <line> elements across ALL algo SVG charts
    (PriceChart, EquityCurve, NavTab, OptionsPayoff, PnlAnalysis, dashboard
@@ -1774,8 +1808,6 @@
   top: 0 !important;
   z-index: 1 !important;
 }
-.fs-card-on .default-btn { padding: 0 0.4rem; width: auto; gap: 0.3rem; }
-.fs-card-on .default-btn .dsb-label { display: inline; font-size: 0.65rem; font-weight: 500; letter-spacing: 0.02em; }
 
 /* PageHeaderActions (.pha-wrap) open modals — they don't need
    viewport-pinning during fullscreen. The modal overlay itself is
@@ -1835,6 +1867,21 @@
   margin-bottom: 0 !important;
 }
 .is-collapsed .ag-root-wrapper { height: 0 !important; overflow: hidden !important; min-height: 0 !important; padding: 0 !important; }
+
+/* ─── Canonical responsive card grid ─────────────────────────────────────── */
+/* .algo-card → data panels (no status). .bucket-card → primary work surface.
+   .algo-status-card → any card with running/error/inactive state.            */
+.page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 0.5rem;
+  align-items: start;
+}
+.page-grid-2col { grid-template-columns: 1fr 1fr; }
+.page-grid-3col { grid-template-columns: 1fr 1fr 1fr; }
+@media (max-width: 640px) {
+  .page-grid, .page-grid-2col, .page-grid-3col { grid-template-columns: 1fr; }
+}
 
 /* ── Row-level chart icon button ────────────────────────────────────────────
    Used on /orders, /admin/options, and PerformancePage symbol cells.
@@ -1954,6 +2001,30 @@
 }
 .algo-card-wide {
   grid-column: 1 / -1;
+}
+
+/* Status token layer — drives card chrome AND inner pill via CSS vars */
+.algo-status-card[data-status="running"]   { --st-fg: #fbbf24; --st-bg: rgba(251,191,36,0.12);  --st-border: rgba(251,191,36,0.45); }
+.algo-status-card[data-status="error"]     { --st-fg: #f87171; --st-bg: rgba(248,113,113,0.12); --st-border: rgba(248,113,113,0.45); }
+.algo-status-card[data-status="complete"]  { --st-fg: #4ade80; --st-bg: rgba(74,222,128,0.12);  --st-border: rgba(74,222,128,0.40); }
+.algo-status-card[data-status="rejected"]  { --st-fg: #f87171; --st-bg: rgba(248,113,113,0.12); --st-border: rgba(248,113,113,0.45); }
+.algo-status-card[data-status="cancelled"] { --st-fg: #94a3b8; --st-bg: rgba(148,163,184,0.10); --st-border: rgba(148,163,184,0.30); }
+.algo-status-card[data-status="inactive"]  { --st-fg: var(--text-muted); --st-bg: rgba(126,151,184,0.08); --st-border: rgba(126,151,184,0.25); }
+.algo-status-card[data-status="triggered"] { --st-fg: #38bdf8; --st-bg: rgba(56,189,248,0.12);  --st-border: rgba(56,189,248,0.40); }
+
+/* Shared status pill — inherits color from parent .algo-status-card[data-status] */
+.algo-status-pill {
+  font-size: 0.55rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: var(--st-fg, var(--text-muted));
+  background: var(--st-bg, rgba(126,151,184,0.08));
+  border: 1px solid var(--st-border, rgba(126,151,184,0.25));
 }
 /* ── Card and section heading SSOT ──────────────────────────────────────────
    Two semantic roles — pick the one that matches the nesting level:

@@ -8,7 +8,8 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, lastRefreshAt, formatIstOnly, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore } from '$lib/stores';
+  import { authStore, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
@@ -115,7 +116,6 @@
   // basket. `_refreshing` is the canonical "any of the three loads
   // is in flight" state — the three RefreshButton instances on this
   // page bind to this instead.
-  let _showLiveTs = $state(false);
   let _refreshing   = $state(false);
   async function _refreshAll() {
     if (_refreshing) return;
@@ -3881,19 +3881,7 @@
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={_refreshAll}
@@ -4312,6 +4300,7 @@
             <CandidateLegRow
               {c}
               ci={_ci}
+              stripe={_ci % 2 === 0 ? 'cand-row-odd' : 'cand-row-even'}
               prevBand={displayedCandidates[_ci - 1]?._band ?? null}
               bandCount={displayedCandidates.filter(r => r._band === c._band && r._segment === c._segment).length}
               {legsTab}
@@ -4870,9 +4859,6 @@
 
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Page-header title + (i) + optional SIM badge as a single inline
      group on the left, timestamp pushed right by .page-header's
      justify-content: space-between. Earlier the InfoHint and ts both
@@ -5696,10 +5682,14 @@
      `min-width: max-content` removed: the grid's intrinsic minimum
      is now driven by Symbol + Account alone, not the sum of every
      column's max-content. */
-  /* Alternating row backgrounds for legs grid — even children (data rows)
-     get a subtle dark tint; headrow at child 1 (odd) is unaffected. */
-  .cand-grid > :nth-child(even) :global(.cand-row):not(:global(.cand-row-total)) {
+  /* Alternating row backgrounds for legs grid — stripe class is passed
+     from the {#each} index so band-header elements (also grid children)
+     do not consume nth-child positions and corrupt the pattern. */
+  :global(.cand-row.cand-row-odd):not(:global(.cand-row-total)) {
     background-color: rgba(13,22,42,0.30);
+  }
+  :global(.cand-row.cand-row-even):not(:global(.cand-row-total)) {
+    background-color: transparent;
   }
 
   .cand-grid {

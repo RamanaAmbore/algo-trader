@@ -45,12 +45,14 @@
   } = $props();
 
   // Status → data-status attribute. .algo-status-card reads this for
-  // the left-edge stripe colour. Matches /orders'
-  // statusDataAttr().
+  // the left-edge stripe colour; .algo-status-pill child inherits
+  // --st-fg / --st-bg / --st-border via the parent's data-status.
   /** @param {string} s */
   function _statusDataAttr(s) {
     const c = (s || '').toUpperCase();
-    if (c === 'COMPLETE')                              return 'active';
+    if (c === 'COMPLETE' || c === 'FILLED')            return 'complete';
+    if (c === 'REJECTED')                              return 'rejected';
+    if (c === 'CANCELLED')                             return 'cancelled';
     // Audit fix (H-1, H-2) — CANCEL_FAILED is a distinct state from
     // CANCELLED: the operator clicked Kill but the broker.cancel call
     // failed; the order is still live at the broker. Pre-fix it
@@ -58,8 +60,11 @@
     // long-dead rows). Now treated as `error` so the row's left-edge
     // stripe reads as a danger signal — operator must verify broker
     // state + reattempt the kill or reconcile.
-    if (c === 'REJECTED' || c === 'CANCELLED' || c === 'CANCEL_FAILED') return 'error';
-    if (c === 'OPEN' || c === 'TRIGGER PENDING')       return 'running';
+    if (c === 'CANCEL_FAILED')                         return 'error';
+    if (c === 'OPEN' || c === 'TRIGGER_PENDING'
+      || c === 'TRIGGER PENDING'
+      || c === 'AMO_REQ_RECEIVED'
+      || c === 'PUT_ORDER_REQ_RECEIVED')               return 'running';
     return 'inactive';
   }
 
@@ -157,17 +162,11 @@
         oncontextmenu={(e) => { e.preventDefault(); onSymbolContext?.(order, e); }}
         use:longPress={(ev) => { onSymbolContext?.(order, ev); }}>{_sym}</span>
     </span>
-    <!-- Audit fix (H-2) — distinct CANCEL_FAILED pill (red-orange, danger
-         signal). Pre-fix it dropped through to amber (the default) so the
-         operator couldn't distinguish it from a healthy OPEN row at a
-         glance. -->
-    <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border whitespace-nowrap
-      {order.status === 'COMPLETE' || order.status === 'FILLED' ? 'bg-green-500/15 text-green-400 border-green-500/40'
-      : order.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
-      : order.status === 'CANCEL_FAILED' ? 'bg-red-700/25 text-orange-300 border-red-700/55'
-      : order.status === 'UNFILLED' ? 'bg-orange-500/15 text-orange-400 border-orange-500/40'
-      : order.status === 'CANCELLED' ? 'bg-slate-500/20 text-slate-300 border-slate-500/40'
-      : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}"
+    <!-- Status pill — color driven by parent .algo-status-card[data-status]
+         via --st-fg / --st-bg / --st-border CSS vars. CANCEL_FAILED gets
+         a ⚠ prefix and tooltip so the operator can distinguish it from a
+         clean CANCELLED row. -->
+    <span class="algo-status-pill"
       title={order.status === 'CANCEL_FAILED'
         ? 'Kill attempt failed — order may still be live at broker. Reconcile or retry kill.'
         : ''}>{order.status === 'CANCEL_FAILED' ? '⚠ KILL FAILED' : order.status}</span>
@@ -310,6 +309,55 @@
 </div>
 
 <style>
+  /* algo-status-pill — reads --st-fg / --st-bg / --st-border set by
+     the parent .algo-status-card[data-status="…"] so every new status
+     variant only needs a CSS var block here, not a conditional class.
+     Falls back to amber (running/default) when no data-status matches. */
+  :global(.algo-status-pill) {
+    font-size: 0.55rem;
+    padding: 0.18rem 0.5rem;
+    border-radius: 3px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    border: 1px solid var(--st-border, rgba(251,191,36,0.40));
+    background: var(--st-bg, rgba(251,191,36,0.12));
+    color: var(--st-fg, #fbbf24);
+  }
+  /* Per-status CSS var blocks — parent .algo-status-card carries
+     data-status; child .algo-status-pill inherits via cascade. */
+  :global(.algo-status-card[data-status="complete"])  {
+    --st-fg:     #4ade80;
+    --st-bg:     rgba(74,222,128,0.12);
+    --st-border: rgba(74,222,128,0.38);
+  }
+  :global(.algo-status-card[data-status="rejected"])  {
+    --st-fg:     #f87171;
+    --st-bg:     rgba(248,113,113,0.12);
+    --st-border: rgba(248,113,113,0.38);
+  }
+  :global(.algo-status-card[data-status="cancelled"]) {
+    --st-fg:     #94a3b8;
+    --st-bg:     rgba(100,116,139,0.15);
+    --st-border: rgba(100,116,139,0.38);
+  }
+  :global(.algo-status-card[data-status="running"])   {
+    --st-fg:     #fbbf24;
+    --st-bg:     rgba(251,191,36,0.12);
+    --st-border: rgba(251,191,36,0.40);
+  }
+  :global(.algo-status-card[data-status="error"])     {
+    --st-fg:     #fb923c;
+    --st-bg:     rgba(220,38,38,0.18);
+    --st-border: rgba(220,38,38,0.55);
+  }
+  :global(.algo-status-card[data-status="inactive"])  {
+    --st-fg:     #94a3b8;
+    --st-bg:     rgba(100,116,139,0.12);
+    --st-border: rgba(100,116,139,0.28);
+  }
+
   /* Slippage chip — neutral slate arrow glyph (↑/↓). Side-relative
      coloring was dropped: ↑ is good for SELL, bad for BUY, so
      green/red was misleading for one side. Arrow alone reads correctly. */

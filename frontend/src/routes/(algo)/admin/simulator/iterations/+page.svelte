@@ -7,7 +7,8 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, nowStamp, lastRefreshAt, formatIstOnly, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
+  import { authStore, logTimeIst, logTimeEdt, logTime, dualTsHtml, visibleInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSimIterations } from '$lib/api';
@@ -17,7 +18,6 @@
 
   /** @type {any[]} */
   let rows        = $state([]);
-  let _showLiveTs = $state(false);
   let loading     = $state(true);
   let error       = $state('');
   let teardown;
@@ -105,19 +105,7 @@
     <a href="/admin/simulator" class="back-link">← Simulator</a>
     <h1 class="page-title-chip">Simulator iterations</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="iterations" />
@@ -148,7 +136,7 @@
         </span>
       </div>
       <div class="iter-scroll">
-      <table class="iter-table">
+      <table class="algo-table iter-table">
         <thead>
           <tr>
             <th>#</th>
@@ -197,9 +185,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .back-link {
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
@@ -252,9 +237,6 @@
   .iter-table {
     width: 100%;
     min-width: 38rem;       /* prevents column squeeze on mobile */
-    border-collapse: collapse;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
   }
   .iter-table th {
     text-align: left;
@@ -264,7 +246,6 @@
     border-bottom: 1px solid rgba(251,191,36,0.10);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    font-size: var(--fs-xs);
   }
   .iter-table th.numeric, .iter-table td.numeric {
     text-align: right;
@@ -277,8 +258,6 @@
   .iter-row:hover { background: rgba(251,191,36,0.08); }
   .iter-row td {
     padding: 0.3rem 0.55rem;
-    color: var(--algo-slate);
-    border-bottom: 1px solid rgba(255,255,255,0.05);
   }
   .slug { color: var(--c-action); }
   .er {

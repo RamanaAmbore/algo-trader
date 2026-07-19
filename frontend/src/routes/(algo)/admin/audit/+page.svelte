@@ -14,7 +14,8 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { nowStamp, lastRefreshAt, formatIstOnly, marketAwareInterval, authStore } from '$lib/stores';
+  import { marketAwareInterval, authStore } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { fetchAuditLog } from '$lib/api';
   import { userRole, hasCap, userCaps, userCapsReady } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -51,7 +52,6 @@
   /** @type {AuditRow[]} */
   let rows = $state([]);
   let total = $state(0);
-  let _showLiveTs = $state(false);
   let loading = $state(false);
   let error = $state('');
 
@@ -226,19 +226,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Audit Log</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="audit log" />
@@ -333,7 +321,7 @@
   />
 {:else}
 <div class="audit-table-wrap algo-grid-chrome content-fade-in">
-  <table class="audit-table">
+  <table class="algo-table audit-table">
     <thead>
       <tr>
         <th>Time (IST)</th>
@@ -389,9 +377,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .audit-empty rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
 
@@ -426,17 +411,13 @@
     overflow-x: auto;
   }
   .audit-table {
-    width: 100%; border-collapse: collapse;
-    font-family: var(--font-numeric);
-    font-variant-numeric: tabular-nums;
-    font-size: var(--fs-md);
+    width: 100%;
   }
   .audit-table th {
     text-align: left;
     padding: 0.4rem 0.55rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
     color: var(--text-muted);
-    font-size: var(--fs-xs);
     font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase;
     background: rgba(15, 23, 42, 0.65);
@@ -445,15 +426,7 @@
   .audit-th-narrow { width: 5rem; }
   .audit-table td {
     padding: 0.35rem 0.55rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
-    color: #c8d8f0;
     vertical-align: top;
-  }
-  .audit-table tbody tr:nth-of-type(even) td {
-    background: rgba(34, 47, 75, 0.30);
-  }
-  .audit-table tbody tr:hover td {
-    background: var(--c-info-08);
   }
 
   .audit-empty-row {

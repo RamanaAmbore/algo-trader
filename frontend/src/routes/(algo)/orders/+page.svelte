@@ -2,7 +2,8 @@
   import { onMount, onDestroy, getContext, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { nowStamp, lastRefreshAt, logTimeIst, formatIstOnly, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -24,7 +25,6 @@
   import ChartModal from '$lib/ChartModal.svelte';
 
   let orders        = $state([]);
-  let _showLiveTs   = $state(false);
   let loading       = $state(true);
   let error         = $state('');
   let _orderLoadFails = $state(0);
@@ -282,19 +282,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Order entry</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <!-- Slice 7g — strategy filter chip. When an active strategy is
@@ -391,37 +379,6 @@
         </svg>
         ORDER ENTRY
       </span>
-      <!-- Operator: "mode and chase should be left aligned. chase value
-           should be selectable." Cluster sits left, immediately after
-           the ORDER ENTRY label. The chase + aggressiveness collapse
-           into a single Select dropdown so the operator picks one of
-           off / low / med / high in one click. State is two-way bound
-           to the SymbolPanel below so a flip in either surface updates
-           the other. -->
-      <span class="oc-header-cluster">
-        <!-- Operator: "on cold start show chase with L as active."
-             Default 'low' so L is amber-highlighted out of the gate. -->
-        <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-        <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'low'}
-                  title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                  onclick={() => _pageChaseAgg = 'low'}>L</button>
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'med'}
-                  title="Medium — peg to midpoint of bid+ask."
-                  onclick={() => _pageChaseAgg = 'med'}>M</button>
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'high'}
-                  title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                  onclick={() => _pageChaseAgg = 'high'}>H</button>
-        </div>
-        {#if _pageBasketCount > 0}
-          <button type="button" class="oes-common-clear oes-common-clear-inline"
-            title="Clear all basket legs"
-            onclick={() => _triggerClear++}>Clear</button>
-        {/if}
-      </span>
     {/snippet}
   </CardHeader>
   <div class="card-body" hidden={_colEntry}>
@@ -453,7 +410,36 @@
         if (payload?.mode === 'draft') return;
         loadOrders();
       }}
-      onClose={() => { /* inline mode — no close affordance */ }} />
+      onClose={() => { /* inline mode — no close affordance */ }}>
+      {#snippet pickerSuffix()}
+        <!-- Chase cluster sits inline with the symbol input — same flex
+             row as [Account · Type · Symbol · Exchange]. Operator:
+             "mode and chase should be left aligned." Default 'low'
+             so L is amber-highlighted on cold start. -->
+        <span class="oc-header-cluster">
+          <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+          <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_pageChaseAgg === 'low'}
+                    title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                    onclick={() => _pageChaseAgg = 'low'}>L</button>
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_pageChaseAgg === 'med'}
+                    title="Medium — peg to midpoint of bid+ask."
+                    onclick={() => _pageChaseAgg = 'med'}>M</button>
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_pageChaseAgg === 'high'}
+                    title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                    onclick={() => _pageChaseAgg = 'high'}>H</button>
+          </div>
+          {#if _pageBasketCount > 0}
+            <button type="button" class="oes-common-clear oes-common-clear-inline"
+              title="Clear all basket legs"
+              onclick={() => _triggerClear++}>Clear</button>
+          {/if}
+        </span>
+      {/snippet}
+    </SymbolPanel>
     {#if isDemo}
       <div class="mt-2 text-[0.62rem] text-[var(--c-muted)] font-mono">
         Demo: read-only view
@@ -609,10 +595,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
-
   /* Natural-flow wrap — Entry + Status + Chases + Activity stack at
      their content heights. On short pages the wrap fills algo-content
      via `flex: 1 1 auto` (no gap above the sticky footer). On tall
@@ -751,6 +733,7 @@
     align-items: center;
     gap: 0.35rem;
     flex-shrink: 0;
+    margin: 0;
   }
   /* Status filter cards — polished chrome with richer gradients +
      inner highlight + soft outer shadow. Each card carries:

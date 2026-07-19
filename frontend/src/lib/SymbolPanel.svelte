@@ -108,6 +108,7 @@
    *   basketCount?:    number,
    *   showChartButton?: boolean,
    *   showCommonActions?: boolean,
+   *   pickerSuffix?:   import('svelte').Snippet,
    * }} */
   let {
     defaultTab     = /** @type {'chain'|'ticket'} */ ('ticket'),
@@ -209,6 +210,12 @@
     // needing a direct callback handle. Same pattern as triggerSubmit
     // / triggerBasket.
     triggerClearBasket = 0,
+    // Optional snippet rendered inside .oes-picker, immediately after
+    // the symbol search input. /orders passes the CHASE cluster here so
+    // it appears inline in the same flex row as the symbol input, without
+    // needing a separate header-level block.
+    /** @type {import('svelte').Snippet | undefined} */
+    pickerSuffix = undefined,
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
@@ -2055,6 +2062,9 @@
         </div>
         {#if exchange || _pickedExchange}
           <span class="oes-exch">{exchange || _pickedExchange}</span>
+        {/if}
+        {#if pickerSuffix}
+          {@render pickerSuffix()}
         {/if}
       </div>
 

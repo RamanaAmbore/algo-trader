@@ -87,7 +87,7 @@
   .act-filters {
     display: inline-flex;
     align-items: stretch;
-    gap: 0.3rem;
+    gap: 0;
   }
   /* Level dropdown chrome — exact match to MultiSelect's trigger
      (frontend/src/lib/MultiSelect.svelte .rbq-multi-trigger). Same
@@ -142,6 +142,6 @@
       padding: 0.25rem 1.05rem 0.25rem 0.4rem;
       background-position: center, right 0.3rem center;
     }
-    .act-filters { gap: 0.3rem; }
+    .act-filters { gap: 0; }
   }
 </style>

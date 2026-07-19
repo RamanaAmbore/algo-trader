@@ -13,7 +13,8 @@
 -->
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly, marketAwareInterval } from '$lib/stores';
+  import { marketAwareInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import {
     fetchCodeMetricsList,
     fetchCodeMetricsDetail,
@@ -51,7 +52,6 @@
   /** @type {Array<any>} */
   let rows = $state([]);
   let total = $state(0);
-  let _showLiveTs = $state(false);
   let loading = $state(false);
   let error = $state('');
 
@@ -203,19 +203,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Code Metrics</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={() => Promise.all([load(), loadTrends()])} loading={loading} label="code metrics" />
@@ -282,21 +270,21 @@
   <h2 class="metrics-h2">Snapshots ({total})</h2>
 
   <div class="metrics-table-wrap">
-    <table class="metrics-table">
+    <table class="algo-table metrics-table">
       <thead>
         <tr>
           <th>Release</th>
           <th>Captured</th>
-          <th class="num"><span class="metric-label">BE LOC<InfoHint content={METRIC_META.backend_loc} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">BE cx avg<InfoHint content={METRIC_META.backend_complexity_avg} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">BE cx max<InfoHint content={METRIC_META.backend_complexity_max} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">BE stale<InfoHint content={METRIC_META.backend_stale_count} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">BE cov %<InfoHint content={METRIC_META.backend_coverage_pct} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">FE LOC<InfoHint content={METRIC_META.frontend_loc} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">FE cx avg<InfoHint content={METRIC_META.frontend_complexity_avg} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">FE dup<InfoHint content={METRIC_META.frontend_duplicated_lines} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">FE stale<InfoHint content={METRIC_META.frontend_stale_count} popup={true} maxWidth="26rem" /></span></th>
-          <th class="num"><span class="metric-label">Bugs<InfoHint content={METRIC_META.bug_count_since_last_release} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE LOC<InfoHint content={METRIC_META.backend_loc} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE cx avg<InfoHint content={METRIC_META.backend_complexity_avg} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE cx max<InfoHint content={METRIC_META.backend_complexity_max} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE stale<InfoHint content={METRIC_META.backend_stale_count} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE cov %<InfoHint content={METRIC_META.backend_coverage_pct} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">FE LOC<InfoHint content={METRIC_META.frontend_loc} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">FE cx avg<InfoHint content={METRIC_META.frontend_complexity_avg} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">FE dup<InfoHint content={METRIC_META.frontend_duplicated_lines} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">FE stale<InfoHint content={METRIC_META.frontend_stale_count} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">Bugs<InfoHint content={METRIC_META.bug_count_since_last_release} popup={true} maxWidth="26rem" /></span></th>
           <th></th>
         </tr>
       </thead>
@@ -310,16 +298,16 @@
               {/if}
             </td>
             <td class="metrics-ts">{fmtTs(r.captured_at)}</td>
-            <td class="num">{fmtNum(r.backend_loc)}</td>
-            <td class="num">{fmtNum(r.backend_complexity_avg)}</td>
-            <td class="num">{fmtNum(r.backend_complexity_max)}</td>
-            <td class="num">{fmtNum(r.backend_stale_count)}</td>
-            <td class="num">{fmtNum(r.backend_coverage_pct)}</td>
-            <td class="num">{fmtNum(r.frontend_loc)}</td>
-            <td class="num">{fmtNum(r.frontend_complexity_avg)}</td>
-            <td class="num">{fmtNum(r.frontend_duplicated_lines)}</td>
-            <td class="num">{fmtNum(r.frontend_stale_count)}</td>
-            <td class="num">{fmtNum(r.bug_count_since_last_release)}</td>
+            <td class="algo-table-num">{fmtNum(r.backend_loc)}</td>
+            <td class="algo-table-num">{fmtNum(r.backend_complexity_avg)}</td>
+            <td class="algo-table-num">{fmtNum(r.backend_complexity_max)}</td>
+            <td class="algo-table-num">{fmtNum(r.backend_stale_count)}</td>
+            <td class="algo-table-num">{fmtNum(r.backend_coverage_pct)}</td>
+            <td class="algo-table-num">{fmtNum(r.frontend_loc)}</td>
+            <td class="algo-table-num">{fmtNum(r.frontend_complexity_avg)}</td>
+            <td class="algo-table-num">{fmtNum(r.frontend_duplicated_lines)}</td>
+            <td class="algo-table-num">{fmtNum(r.frontend_stale_count)}</td>
+            <td class="algo-table-num">{fmtNum(r.bug_count_since_last_release)}</td>
             <td><button class="metrics-drill" onclick={() => openDrill(r)}>Detail</button></td>
           </tr>
         {/each}
@@ -363,11 +351,11 @@
                 <div class="metrics-test-side">
                   <div class="metrics-test-side-label">{label}</div>
                   <div class="metrics-test-kv">
-                    <span>Total tests</span><span class="num">{d.total_tests ?? '—'}</span>
-                    <span>Wall time</span><span class="num">{d.total_wall_time_s != null ? d.total_wall_time_s.toFixed(2) + 's' : '—'}</span>
-                    <span>Median</span><span class="num">{d.median_s != null ? d.median_s.toFixed(3) + 's' : '—'}</span>
-                    <span>Slowest</span><span class="num">{d.max_s != null ? d.max_s.toFixed(3) + 's' : '—'}</span>
-                    <span>Slow (&gt;{d.slow_threshold_s ?? 1}s)</span><span class="num">{d.slow_count ?? '—'}</span>
+                    <span>Total tests</span><span class="algo-table-num">{d.total_tests ?? '—'}</span>
+                    <span>Wall time</span><span class="algo-table-num">{d.total_wall_time_s != null ? d.total_wall_time_s.toFixed(2) + 's' : '—'}</span>
+                    <span>Median</span><span class="algo-table-num">{d.median_s != null ? d.median_s.toFixed(3) + 's' : '—'}</span>
+                    <span>Slowest</span><span class="algo-table-num">{d.max_s != null ? d.max_s.toFixed(3) + 's' : '—'}</span>
+                    <span>Slow (&gt;{d.slow_threshold_s ?? 1}s)</span><span class="algo-table-num">{d.slow_count ?? '—'}</span>
                   </div>
                   {#if d.top_10_slowest && d.top_10_slowest.length > 0}
                     <div class="metrics-test-slow-label">Top slowest tests</div>
@@ -408,9 +396,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .metrics-trends {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -481,17 +466,12 @@
   .metrics-table-wrap { overflow-x: auto; }
   .metrics-table {
     width: 100%;
-    border-collapse: collapse;
-    font-size: var(--fs-xl);
-    font-variant-numeric: tabular-nums;
   }
   .metrics-table th, .metrics-table td {
     padding: 0.32rem 0.5rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
     text-align: left;
   }
   .metrics-table th { color: var(--text-soft, #94a3b8); font-weight: 500; }
-  .metrics-table td.num, .metrics-table th.num { text-align: right; }
   /* Inline metric label + InfoHint chip in table headers. */
   .metric-label {
     display: inline-flex;
@@ -622,7 +602,7 @@
     gap: 0.1rem 0.6rem;
     font-size: var(--fs-lg);
   }
-  .metrics-test-kv .num {
+  .metrics-test-kv :global(.algo-table-num) {
     text-align: right;
     font-variant-numeric: tabular-nums;
     color: var(--text, #e2e8f0);

@@ -4,7 +4,7 @@
   // Seed list is the authoritative catalog of editable knobs; this page
   // renders it and writes back via PATCH.
 
-  import { nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -52,7 +52,6 @@
    *                value:string, default_value:string, description:string,
    *                schema:any, units:string|null, updated_at:string}>} */
   let settings    = $state([]);
-  let _showLiveTs = $state(false);
   let loading     = $state(true);
   let error       = $state('');
   let dirty       = $state(/** @type {Record<string, string>} */({}));
@@ -252,19 +251,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Settings</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} {loading} label="settings" />
@@ -456,7 +443,7 @@
     {/if}
     {#if proxies.length}
       <div class="overflow-x-auto mb-2">
-        <table class="text-[0.65rem] w-full">
+        <table class="algo-table">
           <thead class="opacity-70">
             <tr><th class="text-left p-1">Proxy</th>
                 <th class="text-left p-1">Target</th>
@@ -516,9 +503,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
   .settings-row {

@@ -50,6 +50,7 @@
    *   legExpired: boolean,
    *   strategy: any,
    *   flash: any,
+   *   stripe?: string,
    *   onToggleEnabled: (c: any, checked: boolean) => void,
    *   onExecuteDraft: (c: any) => void,
    *   onClosePosition: (c: any) => void,
@@ -71,6 +72,7 @@
     legExpired: _legExp,
     strategy,
     flash,
+    stripe = '',
     onToggleEnabled,
     onExecuteDraft,
     onClosePosition,
@@ -152,7 +154,7 @@
   </div>
 {/if}
 
-<div class="cand-row cand-row-{dir}"
+<div class="cand-row {stripe} cand-row-{dir}"
      style={_acctColor ? `--cand-acct-color: ${_acctColor};` : ''}
      class:cand-disabled={!enabled}
      class:cand-closed={isClosed}
@@ -352,7 +354,6 @@
     transition: background 0.1s;
     border-bottom: 1px solid rgba(126,151,184,0.10);
   }
-  .cand-row:nth-of-type(odd) { background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30)); }
   .cand-row:hover { background: rgba(34,211,238,0.05); }  /* cyan — matches History hover */
 
   /* Numeric column cells — right-aligned + truncation. */

@@ -12,7 +12,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import {
     fetchStatementAudit, sendStatementNow, deleteStatementRow,
@@ -45,7 +45,6 @@
   let counts = $state({ sent: 0, failed: 0, pending: 0 });
   let periodYear  = $state(/** @type {number} */ (0));
   let periodMonth = $state(/** @type {number} */ (0));
-  let _showLiveTs = $state(false);
   let loading = $state(false);
   let error   = $state('');
   let busyRow = $state(/** @type {number|null} */ (null));
@@ -199,19 +198,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Monthly statements</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="statements" />
@@ -256,7 +243,7 @@
       icon="inbox"
     />
   {:else}
-    <table class="ms-table content-fade-in">
+    <table class="algo-table ms-table content-fade-in">
       <thead>
         <tr>
           <th>LP</th>
@@ -319,9 +306,6 @@
 <ConfirmModal bind:this={confirmRef} />
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .ms-error removed — action failures converted to toasts (slice AO). */
 
   .ms-controls {
@@ -367,26 +351,21 @@
     background: rgba(15, 23, 42, 0.30);
   }
   .ms-table {
-    width: 100%; border-collapse: collapse;
-    font-size: var(--fs-lg);
-    color: #c8d8f0;
+    width: 100%;
   }
   .ms-table th {
     text-align: left;
     padding: 0.3rem 0.55rem;
     background: rgba(15, 23, 42, 0.65);
     color: var(--text-muted);
-    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
-    font-family: var(--font-numeric);
   }
   .ms-table th.th-num { text-align: right; }
   .ms-table td {
     padding: 0.3rem 0.55rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
   }
   .ms-table td.td-num    { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-numeric); }
   .ms-table td.td-mono   { font-family: var(--font-numeric); font-size: var(--fs-md); }
@@ -397,7 +376,6 @@
 
   .ms-row.row-pending td { background: rgba(251, 191, 36, 0.05); }
   .ms-row.row-failed td  { background: rgba(248, 113, 113, 0.05); }
-  .ms-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
 
   .ms-error-cell {
     max-width: 14rem;

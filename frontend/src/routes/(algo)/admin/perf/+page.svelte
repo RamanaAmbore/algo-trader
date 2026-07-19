@@ -25,7 +25,7 @@
 -->
 <script>
   import { onMount, untrack } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import {
     fetchPerfLatest,
     fetchPerfHistory,
@@ -49,7 +49,6 @@
   /** @type {Record<string, Array<any>>} */
   let historyData = $state({});
 
-  let _showLiveTs = $state(false);
   let loadingLatest      = $state(false);
   let loadingRegressions = $state(false);
   let loadingHistory     = $state(false);
@@ -272,19 +271,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Perf Dashboard</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton
@@ -566,13 +553,13 @@
   {#if allHotspots.length > 0}
     <section class="perf-section">
       <h2 class="perf-h2">Top 10 hotspots (by cyclomatic complexity)</h2>
-      <table class="perf-hotspot-table" aria-label="Hotspot functions">
+      <table class="algo-table perf-hotspot-table" aria-label="Hotspot functions">
         <thead>
           <tr>
             <th>Function</th>
             <th>Page / route</th>
-            <th class="num"><span class="metric-label">cc<InfoHint content={METRIC_META.hotspot_cc} popup={true} maxWidth="26rem" /></span></th>
-            <th class="num">line</th>
+            <th class="algo-table-num"><span class="metric-label">cc<InfoHint content={METRIC_META.hotspot_cc} popup={true} maxWidth="26rem" /></span></th>
+            <th class="algo-table-num">line</th>
           </tr>
         </thead>
         <tbody>
@@ -580,8 +567,8 @@
             <tr>
               <td class="perf-fn-name">{h.fn_name ?? h.fn ?? '—'}</td>
               <td class="perf-fn-page" title={h.page}>{shortName(h.page)}</td>
-              <td class="num perf-fn-cc">{h.cc ?? '—'}</td>
-              <td class="num perf-fn-line">{h.line ?? '—'}</td>
+              <td class="algo-table-num perf-fn-cc">{h.cc ?? '—'}</td>
+              <td class="algo-table-num perf-fn-line">{h.line ?? '—'}</td>
             </tr>
           {/each}
         </tbody>
@@ -592,9 +579,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* ── Section headings ─────────────────────────────────────────────── */
   .perf-section {
     margin: 0.8rem 0 1.4rem;
@@ -834,21 +818,16 @@
   /* ── Hotspot table ────────────────────────────────────────────────── */
   .perf-hotspot-table {
     width: 100%;
-    border-collapse: collapse;
-    font-size: var(--fs-xl);
-    font-variant-numeric: tabular-nums;
   }
   .perf-hotspot-table th,
   .perf-hotspot-table td {
     padding: 0.3rem 0.5rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
     text-align: left;
   }
   .perf-hotspot-table th {
     color: var(--text-soft, #94a3b8);
     font-weight: 500;
   }
-  .perf-hotspot-table .num { text-align: right; }
   .perf-fn-name {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     color: var(--text, #e2e8f0);

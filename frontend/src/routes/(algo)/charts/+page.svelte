@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -11,7 +11,6 @@
 
   // ── URL params ────────────────────────────────────────────────────
   let _symbol       = $state('');
-  let _showLiveTs = $state(false);
   let _chartLoading = $state(false);
   let _error        = $state('');
   let _bump         = $state(0);
@@ -76,19 +75,7 @@
     <span class="algo-title-group">
       <h1 class="page-title-chip">Charts</h1>
     </span>
-    <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-      <span class="algo-ts"
-            class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-            title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-        {$nowStamp}
-      </span>
-      {#if $lastRefreshAt}
-        <span class="algo-ts-vsep" aria-hidden="true">|</span>
-        <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-          {formatIstOnly($lastRefreshAt)}
-        </span>
-      {/if}
-    </span>
+    <AlgoTimestamp />
     <span class="ml-auto"></span>
     <span class="page-header-actions">
       <RefreshButton onClick={_refresh} loading={_chartLoading} label="charts" />
@@ -120,9 +107,6 @@
 
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Charts page fills the full viewport below the sticky navbar.
      Algo-content is itself a flex column with min-height: 0 + padding
      calc(3rem + 1.8rem) top + calc(1.6rem + 0.4rem) bottom (or +1.5rem

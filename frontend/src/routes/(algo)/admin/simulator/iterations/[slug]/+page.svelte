@@ -8,7 +8,8 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { authStore, logTime, dualTsHtml, nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import { authStore, logTime, dualTsHtml } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -21,7 +22,6 @@
 
   /** @type {any} */
   let iteration = $state(null);
-  let _showLiveTs = $state(false);
   let loading   = $state(true);
   let error     = $state('');
   let replaying = $state(false);
@@ -97,19 +97,7 @@
     <h1 class="page-title-chip">Iteration</h1>
     <span class="slug-chip">{slug || '—'}</span>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="iteration" />
@@ -187,9 +175,6 @@
 <ConfirmModal bind:this={confirmRef} />
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .slug-chip {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);

@@ -8,7 +8,8 @@
   // pre-filled with the parsed values, so the operator can review +
   // Submit. Keeps the safety net while making plain-text the primary UI.
 
-  import { authStore, nowStamp, lastRefreshAt, formatIstOnly } from '$lib/stores';
+  import { authStore } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
@@ -22,7 +23,6 @@
   // header Refresh icon rotates the badge + asks LogPanel to re-poll
   // immediately rather than waiting for its next tick.
   let _refreshKey = $state(0);
-  let _showLiveTs = $state(false);
   let _refreshing = $state(false);
   function _refresh() {
     _refreshing = true;
@@ -46,19 +46,7 @@
     <span class="algo-title-group">
       <h1 class="page-title-chip">Console</h1>
     </span>
-    <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-      <span class="algo-ts"
-            class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-            title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-        {$nowStamp}
-      </span>
-      {#if $lastRefreshAt}
-        <span class="algo-ts-vsep" aria-hidden="true">|</span>
-        <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-          {formatIstOnly($lastRefreshAt)}
-        </span>
-      {/if}
-    </span>
+    <AlgoTimestamp />
     <span class="ml-auto"></span>
     <span class="page-header-actions">
       <RefreshButton onClick={_refresh} loading={_refreshing} label="console" />
@@ -128,9 +116,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .console-cmd-wrap {
     flex-shrink: 0;
     margin-bottom: 0.4rem;

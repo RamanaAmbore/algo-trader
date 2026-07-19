@@ -2024,14 +2024,6 @@
   :global(.algo-viewport:has(.ps-strip)) .algo-content {
     padding-top: calc(3rem + 1.5rem + 1.8rem);  /* 100.8px */
   }
-  /* Page-header timestamp — leaves only a hair before the bells (operator
-     feedback: gap was pushing the agent icon to a second line on mobile)
-     but takes a small left-margin so the title chip and timestamp aren't
-     crowded against each other. */
-  :global(.page-header .algo-ts) {
-    margin-left: 0.5rem;
-    margin-right: 0.15rem;
-  }
   /* Title chip cluster on the LEFT of every algo page header. Without
      this, flex-wrap separates them onto two lines on narrow viewports.
      Shared so per-page declarations like .pulse-title-group /
@@ -2053,8 +2045,7 @@
     flex-shrink: 0;
     white-space: nowrap;
   }
-  :global(.page-header .onb-wrap + .anb-wrap),
-  :global(.page-header .algo-ts + .onb-wrap) {
+  :global(.page-header .onb-wrap + .anb-wrap) {
     margin-left: -0.2rem;
   }
   /* When the row genuinely can't fit (mobile-portrait at narrowest)
@@ -2087,15 +2078,7 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
-  /* Mobile — squeeze the dual-TZ timestamp so the title chip + timestamp
-     + RefreshButton + PageHeaderActions trio all fit on the same flex row.
-     Smaller font-size + slight negative letter-spacing trims ~20 % width
-     without sacrificing legibility on a 360 px viewport. */
   @media (max-width: 640px) {
-    :global(.algo-ts) {
-      font-size: var(--fs-xs);
-      letter-spacing: -0.015em;
-    }
     /* Mobile chrome — keep all three sticky bands (navbar / ps-strip /
        footer) at the same 0.25rem horizontal padding so their inner
        content aligns vertically. Drop the algo-content horizontal
@@ -2166,10 +2149,17 @@
       flex-shrink: 1;
       min-width: 0;
     }
+    /* Mobile — squeeze the dual-TZ timestamp so the title chip + timestamp
+       + RefreshButton + PageHeaderActions trio all fit on the same flex row.
+       Smaller font-size + slight negative letter-spacing trims ~20 % width
+       without sacrificing legibility on a 360 px viewport. */
+    :global(.algo-ts) {
+      font-size: var(--fs-xs);
+      letter-spacing: -0.015em;
+    }
   }
 
   @media (max-width: 480px) {
-    :global(.algo-ts-group) { flex-shrink: 1; min-width: 0; }
     :global(.algo-ts) { overflow: hidden; text-overflow: ellipsis; }
   }
 

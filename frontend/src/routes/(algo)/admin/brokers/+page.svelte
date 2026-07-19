@@ -19,7 +19,8 @@
   //     pipeline works end-to-end.
 
   import { onDestroy } from 'svelte';
-  import { nowStamp, lastRefreshAt, formatIstOnly, visibleInterval } from '$lib/stores';
+  import { visibleInterval } from '$lib/stores';
+  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { accountDisplayOrder } from '$lib/data/accountSort.js';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -142,7 +143,6 @@
     }).catch(() => {});
     return () => { _wsUnsub?.(); };
   });
-  let _showLiveTs = $state(false);
   let loading  = $state(true);
   let error    = $state('');
 
@@ -590,19 +590,7 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Brokers</h1>
   </span>
-  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
-    <span class="algo-ts"
-          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
-      {$nowStamp}
-    </span>
-    {#if $lastRefreshAt}
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
-        {formatIstOnly($lastRefreshAt)}
-      </span>
-    {/if}
-  </span>
+  <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="brokers" />
@@ -647,7 +635,7 @@
     />
   {:else}
     <div class="brokers-scroll algo-grid-chrome content-fade-in">
-    <table class="brokers-table">
+    <table class="algo-table brokers-table">
       <thead>
         <tr>
           <th>Account</th>
@@ -943,7 +931,7 @@
     {:else if !connLoading && connEvents.length === 0}
       <div class="conn-empty">No events found for the selected filters.</div>
     {:else}
-      <table class="conn-table">
+      <table class="algo-table conn-table">
         <thead>
           <tr>
             <th>Time (IST)</th>
@@ -972,9 +960,6 @@
 {/if}
 
 <style>
-  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
-  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
   .brokers-list-header {
@@ -1011,9 +996,6 @@
   .brokers-table {
     width: 100%;
     min-width: 720px;
-    border-collapse: collapse;
-    font-family: monospace;
-    font-size: var(--fs-sm);
     table-layout: auto;
   }
   .brokers-table td:nth-child(5),
@@ -1027,14 +1009,11 @@
     font-weight: 700;
     padding: 0.25rem 0.4rem;
     border-bottom: 1px solid rgba(255,255,255,0.06);
-    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
   .brokers-table td {
     padding: 0.3rem 0.4rem;
-    color: var(--algo-slate);
-    border-bottom: 1px solid rgba(255,255,255,0.04);
   }
   .brokers-table tr.row-inactive td { opacity: 0.5; }
   .mono-trunc {
@@ -1289,9 +1268,6 @@
   .conn-table {
     width: 100%;
     min-width: 600px;
-    border-collapse: collapse;
-    font-family: monospace;
-    font-size: var(--fs-sm);
     table-layout: auto;
   }
   .conn-table th {
@@ -1300,17 +1276,13 @@
     font-weight: 700;
     padding: 0.2rem 0.4rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
   .conn-table td {
     padding: 0.25rem 0.4rem;
-    color: var(--algo-slate);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
     vertical-align: top;
   }
-  .conn-table tr:nth-child(odd) td { background: rgba(13, 22, 42, 0.20); }
 
   .conn-td-time {
     white-space: nowrap;

@@ -64,7 +64,6 @@
         fill="none" stroke="currentColor" stroke-width="1.5"
         stroke-linecap="round" stroke-linejoin="round" />
     </svg>
-    <span class="dsb-label">Restore</span>
   </button>
 {/if}
 
@@ -99,7 +98,5 @@
     outline: 2px solid rgba(34, 211, 238, 0.65);
     outline-offset: 1px;
   }
-  .dsb-label {
-    display: none;
-  }
+
 </style>
