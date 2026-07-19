@@ -19,7 +19,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
-  import { authStore, nowStamp } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
@@ -38,6 +38,7 @@
   import { fmtPctScaled } from '$lib/format';
 
   let templates = $state(/** @type {any[]} */ ([]));
+  let _showLiveTs = $state(false);
   let loading = $state(true);
   let error = $state('');
 
@@ -282,7 +283,21 @@
     <h1 class="page-title-chip">Templates</h1>
     <InfoHint popup align="right" text="<b>Order templates</b> are reusable exit-rule presets you pick at order entry — TP %, SL %, and (for SELL options) a protective wing leg. The selected template translates to a broker-native GTT for TP/SL and a paired basket order for the wing. Edit a template here and every future order using it inherits the new values; bulk-apply lets you push the change to open positions too." />
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="Templates" />
@@ -623,6 +638,10 @@
 <ConfirmModal bind:this={_confirmRef} />
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Defaults coverage matrix — at-a-glance grid of the 4 side-default
      slots. Each cell renders the slot's scope (BUY EQ/FUT, SELL OPT,
      etc.) and the seeded template name, with a ✓/— mark. Cells light

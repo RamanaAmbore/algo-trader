@@ -8,7 +8,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
-  import { authStore, logTime, dualTsHtml, nowStamp } from '$lib/stores';
+  import { authStore, logTime, dualTsHtml, nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
@@ -21,6 +21,7 @@
 
   /** @type {any} */
   let iteration = $state(null);
+  let _showLiveTs = $state(false);
   let loading   = $state(true);
   let error     = $state('');
   let replaying = $state(false);
@@ -96,7 +97,21 @@
     <h1 class="page-title-chip">Iteration</h1>
     <span class="slug-chip">{slug || '—'}</span>
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="iteration" />
@@ -174,6 +189,10 @@
 <ConfirmModal bind:this={confirmRef} />
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .slug-chip {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);

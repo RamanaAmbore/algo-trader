@@ -25,7 +25,7 @@
 -->
 <script>
   import { onMount, untrack } from 'svelte';
-  import { nowStamp } from '$lib/stores';
+  import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
   import {
     fetchPerfLatest,
     fetchPerfHistory,
@@ -49,6 +49,7 @@
   /** @type {Record<string, Array<any>>} */
   let historyData = $state({});
 
+  let _showLiveTs = $state(false);
   let loadingLatest      = $state(false);
   let loadingRegressions = $state(false);
   let loadingHistory     = $state(false);
@@ -271,7 +272,21 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Perf Dashboard</h1>
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton
@@ -579,6 +594,10 @@
 {/if}
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* ── Section headings ─────────────────────────────────────────────── */
   .perf-section {
     margin: 0.8rem 0 1.4rem;

@@ -635,7 +635,7 @@ function _dualTzCore(/** @type {Date} */ now) {
  *  "last refreshed at" line in the RefreshButton tooltip so the
  *  format matches the page-header wall clock exactly.
  *  Memoised at minute granularity — the output format has no seconds. */
-export function formatDualTz(/** @type {Date} */ date) {
+export function formatDualTz(/** @type {Date | number} */ date) {
   if (!date) return '';
   const now = date instanceof Date ? date : new Date(date);
   if (Number.isNaN(now.getTime())) return '';

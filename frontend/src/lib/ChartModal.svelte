@@ -120,7 +120,6 @@
           exchange={exchange}
           mode={mode}
           compact={true}
-          showHeader={false}
           bind:loading={_loading}
         />
       </div>

@@ -1320,15 +1320,16 @@
 
     <ImpersonationBanner />
 
+    {#if isDemo && !_demoBannerDismissed}
+      <div class="demo-banner" role="status">
+        <span class="demo-banner-text">
+          <strong>Demo mode</strong> — live market data · paper trades only · no real orders
+        </span>
+        <button onclick={_dismissDemoBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
+      </div>
+    {/if}
+
     <main class="algo-content">
-      {#if isDemo && !_demoBannerDismissed}
-        <div class="demo-banner" role="status">
-          <span class="demo-banner-text">
-            <strong>Demo mode</strong> — live market data · paper trades only · no real orders
-          </span>
-          <button onclick={_dismissDemoBanner} class="demo-banner-close" aria-label="Dismiss">×</button>
-        </div>
-      {/if}
       {@render children()}
     </main>
 
@@ -1351,7 +1352,7 @@
       <span class="algo-footer-text">
         Built by
         <a class="algo-footer-link"
-           href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana Ambore</a>
+           href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana R. Ambore</a>
       </span>
     </footer>
   </div>
@@ -2569,10 +2570,11 @@
     --ch-ts-color: #7e97b8;
   }
 
-  /* Demo banner — in normal document flow, first child of .algo-content.
-     Scrolls with content; no fixed positioning needed. */
+  /* Demo banner — between ImpersonationBanner and <main>, outside algo-content.
+     Full-width sibling so it spans the viewport regardless of algo-content padding. */
   .demo-banner {
     z-index: 10;
+    width: 100%;
     height: 2rem;
     box-sizing: border-box;
     display: flex;

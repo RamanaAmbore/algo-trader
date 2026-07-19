@@ -16,7 +16,7 @@
   // MCP pipeline — Claude Code (subscription) is the only LLM in the loop.
 
   import { onMount, onDestroy } from 'svelte';
-  import { authStore, nowStamp, branchLabel, visibleInterval } from '$lib/stores';
+  import { authStore, nowStamp, lastRefreshAt, formatDualTz, branchLabel, visibleInterval } from '$lib/stores';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import {
@@ -39,6 +39,7 @@
   /** @type {any|null} */
   let selected    = $state(null);
   let error       = $state('');
+  let _showLiveTs = $state(false);
   let loading     = $state(true);
   let teardown;
   let activeTab   = $state(/** @type {'research'|'drafts'|'audit'|'settings'} */ ('research'));
@@ -431,7 +432,21 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Lab</h1>
   </span>
-  <span class="algo-ts">{$nowStamp}</span>
+  <span class="algo-ts-group">
+    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Live clock — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {$nowStamp}
+    </span>
+    <span class="algo-ts-vsep" aria-hidden="true">|</span>
+    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+          onclick={() => _showLiveTs = !_showLiveTs}
+          title="Last refresh — tap to switch" role="button" tabindex="0"
+          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      {formatDualTz($lastRefreshAt)}
+    </span>
+  </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={() => { loadThreads(); loadDrafts(); if (activeTab === 'audit') loadAudit(); }} loading={loading} label="research" />
@@ -849,6 +864,10 @@
 <ConfirmModal bind:this={confirmRef} />
 
 <style>
+  .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
+  .algo-ts-data  { cursor: pointer; }
+  @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
 

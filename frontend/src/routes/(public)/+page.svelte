@@ -43,7 +43,7 @@
     "url": "https://ramboq.com",
     "logo": "https://ramboq.com/og-image-home.png",
     "description": "Long-term stock investments paired with algo-executed options strategies — covered calls, cash-secured puts, spreads, and more. 25-year track record, 22%+ XIRR, LLP registered.",
-    "founder": { "@type": "Person", "name": "Ramana Ambore" },
+    "founder": { "@type": "Person", "name": "Ramana R. Ambore" },
     "identifier": "ACU-5195",
     "areaServed": "IN",
     "knowsAbout": ["algorithmic trading", "options strategies", "portfolio management"]

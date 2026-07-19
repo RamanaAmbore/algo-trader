@@ -1407,6 +1407,12 @@
     <span class="lp-sep" aria-hidden="true"></span>
   {/if}
   <div class="lp-tab-strip-wrap">
+    <ActivityHeaderFilters
+      bind:accountFilter={_internalAccountFilter}
+      bind:levelFilter
+      availableAccounts={_availableAccounts}
+      showAccountFilter={_showAccountFilter}
+      showLevelFilter={_showLevelFilter} />
     <AlgoTabs
       tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
       bind:value={logTab}
@@ -1414,12 +1420,6 @@
       compact={true}
     />
   </div>
-  <ActivityHeaderFilters
-    bind:accountFilter={_internalAccountFilter}
-    bind:levelFilter
-    availableAccounts={_availableAccounts}
-    showAccountFilter={_showAccountFilter}
-    showLevelFilter={_showLevelFilter} />
   {#if label}
     <div class="lp-card-btns">
       <button type="button"
@@ -1524,7 +1524,7 @@
   </div>
 {/if}
 
-<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}">
+<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" hidden={isCollapsed}>
 {#if logTab === 'news'}
   <!-- News tab — rendered via shared NewsList component in algo palette.
        Activity surface flavour: 2-column magazine flow (same as dashboard
@@ -1777,13 +1777,13 @@
   }
   :global(.lp-label-icon) { color: var(--c-action); flex-shrink: 0; }
 
-  /* Separator between label and tab strip */
+  /* Separator between label and tab strip — mirrors CardHeader .ch-sep */
   .lp-sep {
     width: 1px;
     align-self: stretch;
     background: rgba(255,255,255,0.10);
     flex-shrink: 0;
-    margin: 0.15rem 0.35rem;
+    margin: 0.15rem 0;
   }
 
   /* Close button rendered in modal context */
@@ -2252,18 +2252,18 @@
   .lp-card-btns {
     display: flex;
     align-items: center;
-    gap: 0.2rem;
+    gap: 0.3rem;
     flex-shrink: 0;
   }
   .lp-card-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.35rem;
-    height: 1.35rem;
+    width: 1.4rem;
+    height: 1.4rem;
     padding: 0;
-    background: none;
-    border: 1px solid rgba(148, 163, 184, 0.20);
+    background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
+    border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
     border-radius: 3px;
     color: rgba(148, 163, 184, 0.65);
     cursor: pointer;
