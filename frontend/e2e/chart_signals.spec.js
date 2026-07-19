@@ -299,4 +299,5 @@ test.describe('chart buy/sell signal markers', () => {
       `Density throttle should clip per-indicator markers on dense charts. Got ${count} (allow ≤60).`,
     ).toBeLessThanOrEqual(60);
   });
+
 });

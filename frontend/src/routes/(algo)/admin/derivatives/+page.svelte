@@ -4667,24 +4667,24 @@
             <InfoHint popup text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
           </div>
           <div class="opt-kv opt-kv-greeks">
-            <div class="kv-pair" title="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs.">
-              <span class="kv-k kv-k-greek">Δ</span>
+            <div class="kv-pair">
+              <span class="kv-k kv-k-greek">Δ <InfoHint popup text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." /></span>
               <span class="kv-v tf-cell {flash.classOf('payoff:delta')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
             </div>
-            <div class="kv-pair" title="Gamma — rate-of-change of delta as spot moves.">
-              <span class="kv-k kv-k-greek">Γ</span>
+            <div class="kv-pair">
+              <span class="kv-k kv-k-greek">Γ <InfoHint popup text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." /></span>
               <span class="kv-v tf-cell {flash.classOf('payoff:gamma')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
             </div>
-            <div class="kv-pair" title="Theta — daily decay in rupees. Positive when net short premium.">
-              <span class="kv-k kv-k-greek">Θ</span>
+            <div class="kv-pair">
+              <span class="kv-k kv-k-greek">Θ <InfoHint popup text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." /></span>
               <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'} {flash.classOf('payoff:theta')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
             </div>
-            <div class="kv-pair" title="Vega — P&L change per 1 % IV move. Positive = long volatility.">
-              <span class="kv-k kv-k-greek">𝒱</span>
+            <div class="kv-pair">
+              <span class="kv-k kv-k-greek">𝒱 <InfoHint popup text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." /></span>
               <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'} {flash.classOf('payoff:vega')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
             </div>
-            <div class="kv-pair" title="Rho — sensitivity to a 1 % rate change. Mostly cosmetic for short-dated index options.">
-              <span class="kv-k kv-k-greek">ρ</span>
+            <div class="kv-pair">
+              <span class="kv-k kv-k-greek">ρ <InfoHint popup text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." /></span>
               <span class="kv-v tf-cell {flash.classOf('payoff:rho')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
             </div>
           </div>
@@ -4736,16 +4736,6 @@
                   {pctFmt(_mergedEvPct ?? strategy?.risk?.ev_pct)}%
                 </span>
               </div>
-            {/if}
-          </div>
-          <div class="text-[0.5rem] text-[var(--c-muted)] mt-1 italic">
-            * numerical max/min within
-            {#if (strategy?.span_sigmas ?? 0) > 0}
-              ±{(strategy?.span_sigmas ?? 0).toFixed(1)}σ
-              ({((strategy?.span_pct ?? 0) * 100).toFixed(1)}%)
-              spot range at expiry
-            {:else}
-              ±{((strategy?.span_pct ?? 0) * 100).toFixed(1)}% spot range
             {/if}
           </div>
         </div>
@@ -5219,6 +5209,13 @@
     font-size: var(--fs-sm);
     flex: 0 0 auto;
     flex-wrap: nowrap;
+    cursor: help;
+  }
+  /* Non-Greek labels: dashed underline signals "tap for explanation" */
+  .kv-k:not(.kv-k-greek) {
+    border-bottom: 1px dashed rgba(148,163,184,0.3);
+    display: inline-flex;
+    align-items: center;
   }
   .kv-v {
     color: var(--algo-slate);
@@ -5499,7 +5496,7 @@
   }
   /* Alternating row background — matches ag-theme-algo .ag-row-odd */
   .byund-row:nth-of-type(odd) > span {
-    background-color: rgba(13,22,42,0.30);
+    background-color: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
   }
   /* Row hover — cyan tint, matching History hover rgba(34,211,238,0.05). */
   .byund-row:hover > span {

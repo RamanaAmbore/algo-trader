@@ -2520,7 +2520,7 @@
   /* Signals toggle — same chip shape as intraday button.
      Active state surfaces buy/sell markers on the chart. */
   .cw-signals-btn {
-    border: 1px solid var(--algo-cyan-border-soft);
+    border: 1px solid var(--algo-cyan-border);
     border-radius: 4px;
     flex-shrink: 0;
   }

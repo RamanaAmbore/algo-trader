@@ -127,6 +127,37 @@ test.describe('Audience-routing redesign', () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/showcase.png`, fullPage: true });
   });
 
+  test('3.1 · /showcase contact buttons border visible', async ({ page }) => {
+    // Test 1 — Bio buttons border on /showcase page
+    // Verify .show-contact-btn elements have visible border (not transparent)
+    // Use DEV_URL (localhost) instead of PROD_URL for local testing
+    const URL = process.env.PLAYWRIGHT_BASE_URL ? DEV_URL : 'http://localhost:5174';
+    await page.goto(URL + '/showcase', { waitUntil: 'domcontentloaded' });
+
+    // Wait for contact buttons to be visible
+    const contactButtons = page.locator('.show-contact-btn');
+
+    // Wait for at least 5 buttons to be present (Email, GitHub, LinkedIn, Portfolio, Resume)
+    await expect(async () => {
+      const count = await contactButtons.count();
+      expect(count).toBeGreaterThanOrEqual(5);
+    }).toPass({ timeout: 10000 });
+
+    const buttonCount = await contactButtons.count();
+    expect(buttonCount).toBeGreaterThanOrEqual(5);
+
+    // Check the first button's computed border-color
+    const firstButton = contactButtons.first();
+    await expect(firstButton).toBeVisible({ timeout: 10000 });
+
+    const borderColor = await firstButton.evaluate(el => getComputedStyle(el).borderColor);
+
+    // Verify border-color is not transparent or rgba(0,0,0,0)
+    expect(borderColor).toBeTruthy();
+    expect(borderColor).not.toMatch(/rgba\s*\(\s*0\s*,\s*0\s*,\s*0\s*,\s*0\s*\)/);
+    expect(borderColor.toLowerCase()).not.toBe('transparent');
+  });
+
   test('4 · /admin/tokens in demo (prod) — read-only banner, no write buttons, tab strip renders', async ({ page }) => {
     page.on('console', msg => msg.type() === 'error' && consoleErrors.push({ url: page.url(), text: msg.text() }));
     page.on('pageerror', err => consoleErrors.push({ url: page.url(), text: `UNCAUGHT: ${err.message}` }));

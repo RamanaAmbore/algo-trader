@@ -132,4 +132,93 @@ test.describe('CandidateLegRow component extraction smoke test', () => {
       await expect(header).toBeVisible();
     }
   });
+
+  test('Test 2 — derivatives footnote removed', async ({ page }) => {
+    // Verify that /admin/derivatives does NOT contain removed footnote text
+    await loginAsAdmin(page);
+    await page.goto('/admin/derivatives');
+    await page.waitForLoadState('networkidle');
+
+    // Wait for page to settle
+    await page.waitForTimeout(1000);
+
+    // Verify page does NOT contain the old footnote phrases
+    const hasNumericalMaxMin = await page.getByText(/numerical max\/min/i).isVisible().catch(() => false);
+    const hasSpotRangeAtExpiry = await page.getByText(/spot range at expiry/i).isVisible().catch(() => false);
+
+    expect(hasNumericalMaxMin).toBe(false);
+    expect(hasSpotRangeAtExpiry).toBe(false);
+  });
+
+  test('Test 4 — legs rows alternating shading', async ({ page }) => {
+    // Verify that .cand-row elements have alternating background colors
+    await loginAsAdmin(page);
+    await page.goto('/admin/derivatives');
+    await page.waitForLoadState('networkidle');
+
+    // Wait for cand-row elements to appear
+    const candRows = page.locator('.cand-row');
+    const rowCount = await candRows.count();
+
+    // Skip if fewer than 2 rows
+    if (rowCount < 2) {
+      test.skip();
+    }
+
+    // Collect computed background-color for first few rows
+    const colors = await page.evaluate(() => {
+      const rows = document.querySelectorAll('.cand-row');
+      const rowsArray = Array.from(rows);
+      return rowsArray.slice(0, 4).map(row => {
+        const style = getComputedStyle(row);
+        return style.backgroundColor;
+      });
+    });
+
+    // Verify that at least one pair of adjacent rows has different background colors
+    let hasAlternating = false;
+    for (let i = 0; i < colors.length - 1; i++) {
+      if (colors[i] !== colors[i + 1]) {
+        hasAlternating = true;
+        break;
+      }
+    }
+
+    expect(hasAlternating, 'Rows should have alternating background colors').toBe(true);
+  });
+
+  test('Test 5 — greek InfoHint buttons present', async ({ page }) => {
+    // Verify that .kv-k-greek elements contain button elements (InfoHint chips)
+    await loginAsAdmin(page);
+    await page.goto('/admin/derivatives');
+    await page.waitForLoadState('networkidle');
+
+    // Wait for greeks section to load
+    const greeksSection = page.locator('.opt-kv-greeks');
+    await expect(greeksSection).toBeVisible({ timeout: 10000 });
+
+    // Find all .kv-k-greek spans
+    const greekSpans = page.locator('.kv-k-greek');
+    const greekCount = await greekSpans.count();
+
+    // We expect at least one greek label (Δ, Γ, Θ, 𝒱, ρ)
+    expect(greekCount).toBeGreaterThanOrEqual(1);
+
+    // Verify that at least one .kv-k-greek contains a button element
+    for (let i = 0; i < Math.min(greekCount, 3); i++) {
+      const greekSpan = greekSpans.nth(i);
+      const button = greekSpan.locator('button');
+      const buttonCount = await button.count();
+
+      if (buttonCount > 0) {
+        // Found at least one InfoHint button
+        await expect(button.first()).toBeVisible();
+        return; // Test passes
+      }
+    }
+
+    // If we get here without finding a button, verify the greeks section has role="button" somewhere
+    const hasButton = await greeksSection.locator('[role="button"]').count();
+    expect(hasButton).toBeGreaterThanOrEqual(1);
+  });
 });
