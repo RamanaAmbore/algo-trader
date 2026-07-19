@@ -4,9 +4,9 @@ Single source of truth for the NavStrip header band behavior across all market s
 and execution modes. The NavStrip is a fixed band pinned below the navbar showing live
 P&L, margin, cash, and holdings aggregates across all broker accounts.
 
-**Version**: 1.0 — 2026-07-11  
+**Version**: 1.1 — 2026-07-19  
 **Owner**: Platform  
-**Linked files**: `frontend/src/lib/PositionStrip.svelte` · `frontend/src/lib/data/nav.js` · `backend/api/routes/positions.py` · `backend/api/algo/pnl_math.py`
+**Linked files**: `frontend/src/lib/PositionStrip.svelte` · `frontend/src/lib/InfoHint.svelte` · `frontend/src/lib/data/nav.js` · `backend/api/routes/positions.py` · `backend/api/algo/pnl_math.py`
 
 ---
 
@@ -277,9 +277,51 @@ distinguishable without reading the letter:
 | Pill | Label class | Color | Token |
 |---|---|---|---|
 | P | `.ps-k-p` | Amber | `var(--c-action)` `#fbbf24` |
-| M | `.ps-k-m` | Violet | `var(--algo-violet)` `#c084fc` |
-| C | `.ps-k-c` | Sky | `var(--algo-sky)` `#7dd3fc` |
+| M | `.ps-k-m` | Violet | `var(--algo-violet)` `#a78bfa` |
+| C | `.ps-k-c` | Sky | `var(--algo-sky)` `#38bdf8` |
 | H | `.ps-k-h` | Cyan | `var(--algo-cyan)` `#22d3ee` |
+
+### Pill label panel popups
+
+Each pill label (P / M / C / H) is wrapped in `<InfoHint popup panel>` with the pill's
+accent color supplied via `accentColor`. Clicking the label opens a **panel popup** — a
+richer floating overlay distinct from the compact tooltip style used elsewhere:
+
+- **Background**: `linear-gradient(180deg, #1c2840 0%, #141e33 100%)`
+- **Border**: `1px solid var(--algo-amber-border-soft)` + 3px left accent stripe in the
+  pill's own color
+- **Shadow**: `0 8px 32px rgba(0,0,0,0.6)`
+- **Title**: uppercase, 700-weight, in the pill accent color, separated by a thin divider
+- **Body**: `var(--fs-sm)`, `var(--algo-slate)`, line-height 1.5
+
+This panel aesthetic matches the DayPnlBreakup modal so all overlay surfaces in the strip
+have a unified visual language.
+
+### Per-slot hover hints
+
+Each slot value (except the clickable Day P&L) has an **ⓘ** icon immediately to its
+right. The icon is rendered via `<InfoHint popup panel showOnHover label="ⓘ">` and uses
+the parent pill's accent color. Behavior:
+
+- Icon is low-opacity (0.5) at rest, full-opacity (`var(--c-info)`) on hover
+- `showOnHover=true` — the panel opens on mouse-enter, closes on mouse-leave; no click needed
+- Focus/blur keyboard equivalents fire the same open/close
+- The popup content describes what the slot measures and how the value is computed
+
+Slot hint content by position:
+
+| Slot | Title | Content |
+|---|---|---|
+| P:1 Day P&L | "Day P&L" | Live tick price − prev close × net qty across all accounts. New intraday positions (overnight_quantity=0) use pnl directly. |
+| P:2 Lifetime P&L | "Lifetime P&L" | Cumulative P&L since position opened. Includes realised + unrealised. |
+| P:3 Expiry P&L | "Expiry P&L" | Projected P&L at expiry using lognormal model. Shows what the F&O portfolio returns if held to expiry at current spot. |
+| M:1 Available Margin | "Available Margin" | Cash deployable right now for new orders. = Total margin − used margin. Updated after every order fill. |
+| M:2 Total Margin | "Total Margin" | Full collateral picture across all accounts. = Available + margin blocked for open positions. |
+| C:1 Cash Available | "Cash Available (CA)" | Live deployable cash. Nets realised P&L + premium debits from long options already paid. |
+| C:2 Total Cash | "Total Cash (C)" | CA + premium tied up in long options (recoverable if closed). Full liquid wealth excluding positions. |
+| H:1 Holdings Today MTM | "Holdings Today MTM" | Live LTP − prev close × qty for all long-term holdings. Intraday MTM only; excludes overnight positions. |
+| H:2 Holdings Value | "Holdings Value" | Broker-reported current market value of all holdings across all accounts. |
+| H:3 Holdings Lifetime P&L | "Holdings Lifetime P&L" | Cumulative P&L since purchase. (current price − avg cost) × qty, all holdings. |
 
 ### Slot differentiation within pills
 
@@ -438,6 +480,8 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 - **New-position day P&L**: New intraday position (oq=0) shows correct P:1 value via fallback formula
 - **Closed-leg EXP**: Fully exited F&O leg (qty=0) contributes `p.pnl` to EXP; not skipped
 - **Partial-close EXP**: Partially exited F&O leg (qty≠0) adds realised + intrinsic to EXP
+- **Panel popups (Round 6)**: Click P/M/C/H label → panel opens with accent-colored title, left-border stripe, and gradient background; accent color matches pill identity
+- **Per-slot hover hints (Round 6)**: Hover any slot value → ⓘ icon visible; hover icon → panel opens with correct title and slot description; leaves on mouse-out
 
 ### Backend (Python)
 
@@ -456,3 +500,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-07-11 | v1.0 initial spec from codebase implementation |
 | 2026-07-13 | EXP Slot spec: documented closed-leg (qty=0) handler; partial-close realized P&L (`leg.realised`) in open-leg formula |
 | 2026-07-18 | Color coding: per-pill label accents (P=amber, M=violet, C=sky, H=cyan); slot bright/dim differentiation for M, C, H pills; mobile trailing-clip padding note |
+| 2026-07-19 | Round 6: InfoHint `panel` mode spec (gradient bg, accent left border, titled header); per-slot ⓘ hover hints for all 10 slots; corrected M and C accent hex values; font-size upgrade for `.ps-agg-k` (xs→sm desktop, 2xs→xs mobile/380px); `frontend/src/lib/InfoHint.svelte` + `PositionStrip.svelte` updated |

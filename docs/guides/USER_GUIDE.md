@@ -79,6 +79,20 @@ the broker.
 - Refresh button — clicking it says "Both NSE and MCX are currently closed" + still fetches
   the snapshot from DB (fast, no broker round-trip)
 
+## NavStrip — reading the four pills
+
+Each pill label (P / M / C / H) in the header strip is now a **clickable panel**. Click any
+label to open a floating overlay that explains what the pill measures, what each slot value
+represents, and how it is computed. The panel carries a colored left-border accent matching
+the pill identity (amber for P, violet for M, sky for C, cyan for H).
+
+Every numeric slot in the strip also carries a small **ⓘ** icon that appears on hover. Mouse
+over any value to see the icon; hover the icon to open a detailed panel for that specific
+slot — e.g., "Day P&L: live tick price − prev close × net qty across all accounts."
+
+These overlays work on desktop and are keyboard-accessible (Tab to focus, Enter/Space on the
+label, or just hover for the slot icons).
+
 ## Day P&L Breakup — drill into today's intraday profit/loss
 
 The NavStrip's **P pill (Day P&L)** slot is now clickable. Clicking it opens the **Day P&L Breakup**
@@ -245,7 +259,7 @@ Then press **Start**. Every alert, Telegram message, email, and paper-traded ord
 ### What you'll see while it runs
 
 - **Position pills** at the top — each open contract with side / qty / LTP / P&L. Watch them shrink as fills close out positions.
-- **Chart panel** — one mini chart per symbol showing the price move + markers where orders were placed / filled / unfilled. **Mouse-wheel zooms in around the cursor; click-and-drag pans; "reset" button restores the full range.**
+- **Chart panel** — one mini chart per symbol showing the price move + markers where orders were placed / filled / unfilled. **Mouse-wheel zooms in around the cursor; click-and-drag pans; "reset" button restores the full range.** The chart section now has a **fullscreen button** in its card header — click it to expand the chart panel to full viewport height while the sim is running. The collapse and default-size buttons work the same way as on other cards.
 - **Log panel** at the bottom — Simulator tab streams every tick + price diff; Order tab shows the paper-traded `AlgoOrder` rows; Agent tab shows `sim_mode=true` events.
 
 ### Custom positions
@@ -536,6 +550,26 @@ picks up the changes automatically within a few seconds. You never need to
 restart it manually — it's designed to be transparent to your workflow.
 
 ---
+
+## Page timestamps — IST only
+
+Every page header that shows a "last refreshed at" timestamp now displays the time in **IST
+only** (`HH:MM IST`, 24-hour). Earlier builds showed dual-timezone (IST + UTC) with a toggle
+to switch between them. The toggle and the UTC column are gone — IST is the only timezone that
+matters in an Indian market context, and the cleaner format reduces visual noise on narrow
+screens and mobile.
+
+## Activity card — scrollable tab strip and download
+
+The **Activity** card's tab strip (Orders / Agents / Terminal / Conn / System / Ticks / News)
+now scrolls horizontally on narrow viewports (modal widths, mobile). No visible scrollbar
+chrome is added; the strip is touch-scrollable and hides the scrollbar with
+`scrollbar-width: none`. Previously tabs overflowed off-screen with no way to reach them.
+
+A **Download** button has been added to the card's button group. Click it to export the
+currently visible Activity rows as a CSV file. The button is greyed out on the News tab
+(news items do not export). On all other tabs, the export captures exactly the rows shown in
+the current filter/search state.
 
 ## Day-to-day workflow — what you'll actually do
 
