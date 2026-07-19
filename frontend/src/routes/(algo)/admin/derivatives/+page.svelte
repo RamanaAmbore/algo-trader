@@ -3882,19 +3882,24 @@
     {/if}
   </span>
   <span class="algo-ts-group">
-    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
-          onclick={() => _showLiveTs = !_showLiveTs}
-          title="Live clock — tap to switch" role="button" tabindex="0"
-          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+    <span class="algo-ts"
+          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
+          class:algo-ts-pulse={!$lastRefreshAt}
+          onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}
+          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}
+          role="button" tabindex="0"
+          onkeydown={(e) => { if ($lastRefreshAt && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
       {$nowStamp}
     </span>
-    <span class="algo-ts-vsep" aria-hidden="true">|</span>
-    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-          onclick={() => _showLiveTs = !_showLiveTs}
-          title="Last refresh — tap to switch" role="button" tabindex="0"
-          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
-      {formatDualTz($lastRefreshAt)}
-    </span>
+    {#if $lastRefreshAt}
+      <span class="algo-ts-vsep" aria-hidden="true">|</span>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+            onclick={() => _showLiveTs = !_showLiveTs}
+            title="Last refresh — tap to switch" role="button" tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+        {formatDualTz($lastRefreshAt)}
+      </span>
+    {/if}
   </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
@@ -4690,7 +4695,7 @@
             Risk &amp; expected value
             <InfoHint popup text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
           </div>
-          <div class="opt-kv">
+          <div class="opt-kv opt-kv-risk">
             <div class="kv-pair">
               <span class="kv-k">R:R <InfoHint popup text={'<b>Risk-to-reward</b> = max_profit / |max_loss|. "1 : 0.5" = risk ₹100 to make ₹50. "1 : 3" = risk ₹100 to make ₹300. <b>—</b> when one side is unbounded.'} /></span>
               <span class="kv-v">{_rrRatio == null ? '—' : `1 : ${pctFmt(_rrRatio)}`}</span>
@@ -5253,6 +5258,22 @@
     margin-left: 0.15rem;
     margin-right: 0.5rem;
     text-align: left;
+  }
+  /* Risk block: single row on desktop */
+  @media (min-width: 1180px) {
+    .opt-kv-risk {
+      grid-template-columns: repeat(6, max-content auto);
+      column-gap: 0;
+      row-gap: 0;
+    }
+    .opt-kv-risk .kv-pair {
+      display: contents;
+    }
+    .opt-kv-risk .kv-v {
+      margin-left: 0.2rem;
+      margin-right: 0.8rem;
+      text-align: left;
+    }
   }
   .kv-pos { color: var(--c-long); }
   .kv-neg { color: var(--c-short); }

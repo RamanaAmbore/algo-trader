@@ -1407,18 +1407,18 @@
     <span class="lp-sep" aria-hidden="true"></span>
   {/if}
   <div class="lp-tab-strip-wrap">
-    <ActivityHeaderFilters
-      bind:accountFilter={_internalAccountFilter}
-      bind:levelFilter
-      availableAccounts={_availableAccounts}
-      showAccountFilter={_showAccountFilter}
-      showLevelFilter={_showLevelFilter} />
     <AlgoTabs
       tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
       bind:value={logTab}
       onChange={onTabChange}
       compact={true}
     />
+    <ActivityHeaderFilters
+      bind:accountFilter={_internalAccountFilter}
+      bind:levelFilter
+      availableAccounts={_availableAccounts}
+      showAccountFilter={_showAccountFilter}
+      showLevelFilter={_showLevelFilter} />
   </div>
   {#if label}
     <div class="lp-card-btns">
@@ -1844,6 +1844,7 @@
     white-space: normal;
     padding: 0.25rem 0.55rem;
     line-height: 1.35;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
     /* Scroll containment — without overflow-y:auto the rows overflow
        their parent and the wheel events bubble up to the page,
        scrolling the host instead of the panel. This bit operators

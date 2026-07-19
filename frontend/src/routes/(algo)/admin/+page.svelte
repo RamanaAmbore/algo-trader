@@ -575,19 +575,24 @@
     <h1 class="page-title-chip">Users</h1>
   </span>
   <span class="algo-ts-group">
-    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
-          onclick={() => _showLiveTs = !_showLiveTs}
-          title="Live clock — tap to switch" role="button" tabindex="0"
-          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+    <span class="algo-ts"
+          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
+          class:algo-ts-pulse={!$lastRefreshAt}
+          onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}
+          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}
+          role="button" tabindex="0"
+          onkeydown={(e) => { if ($lastRefreshAt && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
       {$nowStamp}
     </span>
-    <span class="algo-ts-vsep" aria-hidden="true">|</span>
-    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-          onclick={() => _showLiveTs = !_showLiveTs}
-          title="Last refresh — tap to switch" role="button" tabindex="0"
-          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
-      {formatDualTz($lastRefreshAt)}
-    </span>
+    {#if $lastRefreshAt}
+      <span class="algo-ts-vsep" aria-hidden="true">|</span>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+            onclick={() => _showLiveTs = !_showLiveTs}
+            title="Last refresh — tap to switch" role="button" tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+        {formatDualTz($lastRefreshAt)}
+      </span>
+    {/if}
   </span>
   <!-- Content-action button is LEFT-aligned per canonical header rule
        (only Refresh + Order + Chart + Activity + Collapse + Fullscreen

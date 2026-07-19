@@ -257,19 +257,24 @@
       <h1 class="page-title-chip">About</h1>
     </span>
     <span class="algo-ts-group">
-      <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
-            onclick={() => _showLiveTs = !_showLiveTs}
-            title="Live clock — tap to switch" role="button" tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      <span class="algo-ts"
+            class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
+            class:algo-ts-pulse={!$lastRefreshAt}
+            onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}
+            title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}
+            role="button" tabindex="0"
+            onkeydown={(e) => { if ($lastRefreshAt && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
         {$nowStamp}
       </span>
-      <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-            onclick={() => _showLiveTs = !_showLiveTs}
-            title="Last refresh — tap to switch" role="button" tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
-        {formatDualTz($lastRefreshAt)}
-      </span>
+      {#if $lastRefreshAt}
+        <span class="algo-ts-vsep" aria-hidden="true">|</span>
+        <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+              onclick={() => _showLiveTs = !_showLiveTs}
+              title="Last refresh — tap to switch" role="button" tabindex="0"
+              onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+          {formatDualTz($lastRefreshAt)}
+        </span>
+      {/if}
     </span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
@@ -468,7 +473,7 @@
     background: color-mix(in srgb, #7dd3fc 14%, transparent);
     border: 1px solid color-mix(in srgb, #7dd3fc 45%, transparent);
     font-size: 0.75rem;
-    color: rgba(226, 232, 240, 0.88);
+    color: #7dd3fc;
     line-height: 1.5;
   }
   .show-attr-name {
@@ -507,7 +512,7 @@
     background: rgba(71, 100, 140, 0.12);
     border: 1px solid rgba(126, 151, 184, 0.42);
     border-radius: 4px;
-    color: #7dd3fc;
+    color: rgba(226, 232, 240, 0.88);
     font-size: 0.72rem;
     font-weight: 500;
     letter-spacing: 0.02em;

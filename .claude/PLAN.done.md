@@ -1,259 +1,203 @@
----
-# Plan: UI Polish Pass — Timestamps, Showcase, Activity Panel, Chart Modal, Demo Banner
+# Plan: UI Polish Round 3 — Timestamps, Filters, Demo Banner, Payoff SSOT, Fullscreen
 
-## Context
-Eight operator observations from a UI review session. Mix of visual polish (timestamps,
-name, colors), functional bugs (collapse broken, chart dropdowns missing), and layout
-fixes (demo banner position, filter alignment, chart modal single row on desktop).
+## Task
 
----
-
-## O1 — Dual-timezone timestamps on all pages
-
-### What exists
-- `nowStamp` store (stores.js) already produces `"Mon 20 Apr · 21:42 IST · 12:36 EDT"` — dual-tz format ✓
-- `lastRefreshAt` writable store (epoch ms) + `formatDualTz()` helper exist in stores.js
-- `algo-ts-group` toggle pattern already built on `/pulse` and `/dashboard` pages
-- Page title bars are per-route — no centralized layout timestamp
-
-### What needs to change
-- **Format**: `formatDualTz(lastRefreshAt)` produces the same `"Mon D Mon · HH:MM IST · HH:MM EDT"` format
-  as `nowStamp` — this is already correct; just need to display it
-- **Desktop layout** in every page title bar:
-  `[nowStamp]  |  [formatted lastRefreshAt]`
-  Both always visible. Separator: `algo-ts-vsep` (existing class, `|` glyph).
-- **Mobile**: one visible at a time; click to toggle between nowStamp and lastRefreshAt
-  (same `_showLiveTs` state variable + `algo-ts-hidden` class pattern as pulse page)
-- **Refresh timestamp source**: `lastRefreshAt` already gets set by RefreshButton + page
-  load calls (MCX, positions, holdings, cash, margin all funnel through it). No new
-  sourcing needed — just display it on all pages.
-- **Pages to update**: All algo pages that have a timestamp in the title bar but DON'T
-  yet have the two-stamp group. Already done: pulse, dashboard. Remaining: orders,
-  positions, holdings, performance, activity, strategies, automation, lab, admin pages,
-  showcase, charts — scan `grep -r "algo-ts" frontend/src/routes` to get the full list.
-
-### Implementation
-Agent: frontend
-- Add `lastRefreshAt` import from stores where missing
-- Add `_showLiveTs = $state(false)` local toggle where missing
-- Replace bare `<span class="algo-ts">{$nowStamp}</span>` with full algo-ts-group:
-  ```svelte
-  <span class="algo-ts-group">
-    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
-          onclick={() => _showLiveTs = !_showLiveTs} ...>{$nowStamp}</span>
-    <span class="algo-ts-vsep" aria-hidden="true">|</span>
-    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-          onclick={() => _showLiveTs = !_showLiveTs} ...>
-      {formatDualTz($lastRefreshAt)}
-    </span>
-  </span>
-  ```
-- Import `formatDualTz` from `$lib/stores` alongside `nowStamp`
-- CSS (add to page-local style or ensure global): `.algo-ts-group`, `.algo-ts-vsep`,
-  `@media (max-width:480px) .algo-ts-hidden { display:none !important }` — copy from pulse page
-- On desktop (>480px): both spans visible, no hidden class applied → shows both side by side
-
----
-
-## O2 — Name change + showcase contact colors
-
-### O2a — "Ramana Ambore" → "Ramana R. Ambore" (6 frontend + 2 backend occurrences)
-Files and lines:
-1. `frontend/src/routes/(algo)/+layout.svelte:1354` — footer `<a>` text
-2. `frontend/src/routes/(algo)/showcase/+page.svelte:248` — `<title>` tag
-3. `frontend/src/routes/(algo)/showcase/+page.svelte:249` — meta description content
-4. `frontend/src/routes/(public)/+page.svelte:46` — JSON-LD `"name"` field
-5. `frontend/src/routes/(public)/+layout.svelte:205` — public footer `<a>` text
-6. `frontend/src/routes/(public)/+layout.svelte:212` — public footer `<a>` text (duplicate)
-7. `backend/config/frontend_config.yaml` — two changelog entries ("Ramana Ambore (Rambo)")
-
-Agent: frontend for 1-6; doc agent for 7.
-
-### O2b — Showcase contact button text color → match RISK ENGINE text
-- RISK ENGINE text color: `color: var(--accent)` with `--accent: #7dd3fc` → computed `#7dd3fc`
-- Contact buttons (`.show-contact-btn`) currently: `color: rgba(148, 163, 184, 0.95)` (muted slate)
-- Fix: change `.show-contact-btn { color: #7dd3fc; }` in showcase page's `<style>` block
-- Apply to icon SVGs too: `stroke: currentColor` (already used) will pick up the new color
-
----
-
-## O3 — Activity card buttons: size/pattern parity + collapse/expand bug
-
-### O3a — Button size + pattern: match holdings card
-- Holdings card buttons (via CollapseButton.svelte): `1.4rem × 1.4rem`, `border-radius: 3px`,
-  `border: 1px solid var(--algo-cyan-border)`, `background: var(--algo-cyan-bg)`
-- LogPanel `.lp-card-btn`: `1.35rem × 1.35rem`, slate/muted border, no bg
-- Fix: update LogPanel's `.lp-card-btn` CSS to `1.4rem × 1.4rem` and match the
-  cyan border/bg tokens. Also align gap between buttons to match CardControls (0.3rem).
-- Applies to all activity panel instances (orders, dashboard, /activity, modal)
-  because they all render via LogPanel → `.lp-card-btns` → `.lp-card-btn`
-
-### O3b — Collapse/expand non-functional (P1 bug)
-**Root cause found**: `LogPanel.svelte` line 1527 — `.lp-body-wrap` div has no
-`hidden={isCollapsed}` attribute. The `isCollapsed` prop is accepted and bound to
-CollapseButton correctly, but the body never reacts to it.
-
-Fix: add `hidden={isCollapsed}` to the `.lp-body-wrap` div in LogPanel.svelte.
-```svelte
-<!-- line 1527, change: -->
-<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}">
-<!-- to: -->
-<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" hidden={isCollapsed}>
-```
-
-Other cards (dashboard, positions, etc.) are wired correctly via `hidden={_colXxx}`.
-Only LogPanel is broken. Verify by checking one more card (orders/holdings) after fix.
-
----
-
-## O4 — Activity panel filter dropdowns: left-align
-
-**Current state**: ActivityHeaderFilters (`.act-filters`) is placed AFTER the
-`.lp-tab-strip-wrap` (flex:1) in LogPanel's header row. Because tab-strip-wrap is
-flex:1 and takes all remaining space, the filters are pushed to the right of center.
-
-**Fix**: Move ActivityHeaderFilters INSIDE `.lp-tab-strip-wrap`, before the tabs.
-This makes the filters appear at the left edge of the middle zone, with tabs scrolling
-to the right of them.
-
-LogPanel.svelte header row change (schematic):
-```
-Before: [label] [sep] [lp-tab-strip-wrap: tabs] [ActivityHeaderFilters] [lp-card-btns]
-After:  [label] [sep] [lp-tab-strip-wrap: [ActivityHeaderFilters] [tabs]] [lp-card-btns]
-```
-
-Move `<ActivityHeaderFilters .../>` inside `.lp-tab-strip-wrap` as first child.
-
----
-
-## O5 — Chart modal: show account, symbol, candle dropdowns
-
-**Root cause**: ChartModal passes `compact={true}` and `showHeader={false}` to
-ChartWorkspace. `showHeader={false}` suppresses the `.cw-picker` row entirely — so
-symbol type, symbol search, and chart type dropdowns never render in the modal.
-
-**Fix in `ChartModal.svelte`**:
-- Remove `showHeader={false}` (or change to `showHeader={true}` / omit the prop)
-- The `.cw-picker` row (symbol type + symbol search + chart type) will now appear
-- Also check if ChartModal has its own account selector prop — read the file and
-  ensure any account/broker dropdown it manages is also visible within the modal panel
-
----
-
-## O6 — Chart modal desktop: merge two rows into one
-
-**Current**: Two rows in ChartWorkspace header:
-- Row 1 (`.cw-picker`): symbol type Select + SymbolSearchInput + chart type Select
-- Row 2 (`.cw-controls`): intraday toggle + date range pills + indicators MultiSelect + signals btn + reset zoom
-
-**Desktop fix**: Wrap both rows in a single flex container on desktop:
-```css
-@media (min-width: 640px) {
-  .cw-header-wrap {   /* new wrapper or existing parent */
-    display: flex;
-    flex-wrap: nowrap;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .cw-picker, .cw-controls { flex-shrink: 0; }
-}
-```
-Or: add `flex-direction: row` on the ChartWorkspace header container for `@media (min-width: 640px)`.
-
-**Mobile**: no change — rows stack vertically as today.
-
----
-
-## O7 — Demo mode banner: move to below NavStrip, above page content
-
-**Current DOM order in `+layout.svelte`**:
-```
-<ImpersonationBanner />
-<main class="algo-content">
-  {#if isDemo ...}<div class="demo-banner">...</div>{/if}  ← inside main
-  {@render children()}
-</main>
-```
-
-**Fix**: Move demo banner OUTSIDE `<main>`, between `<ImpersonationBanner>` and `<main>`:
-```svelte
-<ImpersonationBanner />
-{#if isDemo && !_demoBannerDismissed}
-  <div class="demo-banner" role="status">
-    ...
-  </div>
-{/if}
-<main class="algo-content">
-  {@render children()}
-</main>
-```
-
-This places it in the layout chrome between NavStrip and the page content area,
-without being inside `<main>`. Review `.demo-banner` CSS (width, margin, z-index)
-to ensure it lays out correctly outside `<main>`.
-
----
-
-## O8 — Chart page/modal: persist dropdown selections
-
-**Currently persisted**: only overlays (localStorage `rbq.cache.chart-overlays.v1`).
-**Needs persistence**: symbol, exchange, days (range), chart type (line/candle/area/plot).
-Account selector is managed by ChartModal externally — persist separately.
-
-**Implementation in `frontend/src/lib/data/chartStore.svelte.js`**:
-- Add localStorage read/write for symbol, exchange, days, chartType using existing
-  `readChartPref()` / `writeChartPref()` helpers
-- New keys: `rbq.cache.chart-symbol.v1`, `rbq.cache.chart-exchange.v1`,
-  `rbq.cache.chart-days.v1`, `rbq.cache.chart-type.v1`
-- Hydrate on store init (call `readChartPref()` for each); persist on each setter call
-- For ChartModal account selector: find where it's stored and add equivalent localStorage
-  persistence (key: `rbq.cache.chart-account.v1`)
-
----
-
----
-
-## O9 — Agent activity label divider not in sync with other card dividers
-
-The vertical bar separator between the label and the tab strip in LogPanel's header
-(`.lp-sep`) is visually inconsistent with the separator used in other card headers
-(`.ch-sep` in CardHeader.svelte).
-
-- **CardHeader `.ch-sep`**: `width:1px`, `align-self:stretch`, `background:rgba(255,255,255,0.10)`,
-  `margin:0.15rem 0`, `flex-shrink:0`
-- **LogPanel `.lp-sep`**: likely has different margin or opacity — needs to read and align
-- Fix: update `.lp-sep` CSS in LogPanel.svelte to exactly match `.ch-sep` values so all
-  card label|content separators look identical
-
----
+Fix 10 post-deploy issues across the frontend and one backend fix (ntfy priority). Issues span:
+(1) mobile timestamp toggle broken, (2) filters in wrong order, (3) bio color swap,
+(4) demo banner floating gap, (5) payoff chart SSOT, (6) risk data desktop layout,
+(7) ntfy high-priority, (8) agents tab amber separator, (9) ag-Grid row consistency,
+(10) smart fullscreen button.
 
 ## Agents
-- frontend: O1, O2a (frontend files), O2b, O3a, O3b, O4, O5, O6, O7, O8
-- doc: O2a — `backend/config/frontend_config.yaml` name update
-- backend: skip
-- broker: skip
-- backend-test: skip
-- playwright: add/update specs — collapse/expand works on activity card (O3b);
-  chart modal shows dropdowns (O5); demo banner position (O7)
+
+### frontend:
+**12 targeted fixes across 8 files:**
+
+**F1 — Mobile timestamp toggle (26 algo pages via stores.js pattern)**
+Current bug: `_showLiveTs` toggles but `formatDualTz(0)` returns `''` when no
+`lastRefreshAt`, making the refresh span empty — user sees bare `|` and perceives it as
+everything disappearing. Vsep also must be conditional.
+
+In every algo page that has the `algo-ts-group` pattern
+(`frontend/src/routes/(algo)/{activity,agents,automation,chart,console,dashboard,...}/+page.svelte`):
+- The vsep `<span class="algo-ts-vsep">|</span>` MUST be wrapped in `{#if $lastRefreshAt}` so it
+  only shows when refresh data exists.
+- The live ts `onclick` handler MUST be gated: `onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}`
+- The live ts should ONLY get `algo-ts-hidden` class when `$lastRefreshAt` is truthy AND
+  `_showLiveTs` is true: `class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}`
+- When no `lastRefreshAt`: add CSS animation `.algo-ts-pulse` (keyframe: opacity 0.5→1 @1.5s ease-in-out infinite)
+  applied as `class:algo-ts-pulse={!$lastRefreshAt}`
+
+Reference: the pulse page (`frontend/src/routes/(algo)/pulse/+page.svelte`) already has the
+correct conditional vsep pattern (`{#if _moversAsOf}` block around vsep + first ts).
+Apply the same conditional logic using `$lastRefreshAt` across all 26 pages.
+
+The CSS keyframe should be added at the page level OR in a global style block
+(note: `app.css` is a safe place if it's not scoped). If adding per-page is too redundant,
+add to app.css as `.algo-ts-pulse { animation: algo-ts-pulse-kf 1.5s ease-in-out infinite; }
+@keyframes algo-ts-pulse-kf { 0%,100% { opacity:1; } 50% { opacity:0.4; } }`.
+
+**F2 — ActivityHeaderFilters AFTER tabs (`frontend/src/lib/LogPanel.svelte:1409-1421`)**
+Currently `ActivityHeaderFilters` is the FIRST child of `.lp-tab-strip-wrap`, before `AlgoTabs`.
+User wants filters AFTER the tabs. Swap order inside the div:
+```
+<div class="lp-tab-strip-wrap">
+  <AlgoTabs ... />   ← tabs FIRST
+  <ActivityHeaderFilters ... />   ← filters AFTER
+</div>
+```
+
+**F3 — Showcase bio color swap (`frontend/src/routes/(algo)/showcase/+page.svelte`)**
+Swap the colors between contact button text and bio text:
+- `.show-contact-btn { color: rgba(226, 232, 240, 0.88); }` (was `#7dd3fc`)
+- `.show-attribution { color: #7dd3fc; }` (was `rgba(226, 232, 240, 0.88)`)
+
+**F4 — Demo banner vertical gap (`frontend/src/routes/(algo)/+layout.svelte`)**
+Current bug: demo banner is in normal flow before `<main>`, creating a 2rem phantom gap.
+The fixed navbar (z-index 50) and fixed ps-strip cover the banner (z-index 10).
+The 2rem of flow space pushes `<main>` down by 2rem, creating a visible gap.
+
+Fix:
+1. Change `.demo-banner` to `position: fixed; top: 3rem; left: 0; right: 0; z-index: 48;` (above page-header:45, below navbar:50)
+2. Add: `:global(.algo-viewport:has(.ps-strip)) .demo-banner { top: calc(3rem + 1.5rem); }` (shift below ps-strip)
+3. Add: `:global(.algo-card:has(.demo-banner) .page-header) { top: calc(3rem + 2rem); }` (page-header clears demo banner)
+4. Add: `:global(.algo-viewport:has(.ps-strip):has(.demo-banner) .page-header) { top: calc(3rem + 1.5rem + 2rem); }`
+5. Add: `:global(.algo-card:has(.demo-banner)) .algo-content { padding-top: calc(3rem + 2rem + 1.8rem); }`
+6. Add: `:global(.algo-viewport:has(.ps-strip):has(.demo-banner)) .algo-content { padding-top: calc(3rem + 1.5rem + 2rem + 1.8rem); }`
+Note: remove the `width: 100%` rule that was added since fixed + left:0+right:0 handles full-width.
+
+**F5 — Payoff SSOT (`frontend/src/lib/MarketPulse.svelte:3630-3634`)**
+`ctxOpenOptions(row)` navigates to `/admin/derivatives?symbol=${sym}` where `sym = row.tradingsymbol`
+(a full contract symbol like "NIFTY24DEC18000CE"). The derivatives page reads `?u=` for underlying.
+Fix: use `row.underlying` if present, else strip the contract symbol to the underlying name.
+```js
+function ctxOpenOptions(row) {
+  closeContextMenu();
+  const underlying = encodeURIComponent(
+    row.underlying || row.tradingsymbol || ''
+  );
+  window.location.href = `/admin/derivatives?u=${underlying}`;
+}
+```
+
+**F6 — Risk/reward single row desktop (`frontend/src/routes/(algo)/admin/derivatives/+page.svelte`)**
+The `.opt-kv` div at line 4693 (Risk & expected value block) uses `grid-template-columns: 1fr 1fr`
+(2-column layout). On desktop (≥1180px) show all items in a single horizontal row, same
+technique as `.opt-kv-greeks`:
+1. Add class `opt-kv-risk` to the risk section div at line 4693
+2. Add at-media override:
+```css
+@media (min-width: 1180px) {
+  .opt-kv-risk {
+    grid-template-columns: repeat(auto-fit, minmax(0, max-content));
+    column-gap: 1rem;
+  }
+  .opt-kv-risk .kv-pair {
+    display: contents;
+  }
+  .opt-kv-risk .kv-v {
+    margin-left: 0.3rem;
+    margin-right: 0.8rem;
+    text-align: left;
+  }
+}
+```
+
+**F7 — Agents amber separator (`frontend/src/lib/LogPanel.svelte`)**
+Investigate: the "thick amber separator" is most likely from one of:
+(a) The `.opt-block-h` amber border-bottom visible in the agents content area
+(b) First agent row having `log-agent-triggered` class (color: #fb923c) that looks like a separator  
+(c) ActivityHeaderFilters level-select showing with amber border only in agents tab
+
+To fix: read the visual rendering of the agents tab content area. If the first visible row
+has orange text creating a separator-like visual, add `border-top: 1px solid rgba(255,255,255,0.07)`
+to `.log-panel.log-rows` to create a clear visual separation between header and content.
+If it's the level-select amber border (`.act-level-sel { border: 1px solid rgba(251,191,36,0.25) }`),
+reduce its opacity or change to match account-filter styling.
+
+**F8 — ag-Grid snapshot vs legs (`frontend/src/lib/MarketPulse.svelte` + derivatives)**
+Investigate: the "snapshot" grid in pulse uses `ag-theme-quartz ag-theme-algo` CSS.
+The "legs" display in derivatives uses a custom CSS subgrid (NOT ag-Grid).
+If the user is comparing pulse positions/holdings grid vs derivatives custom grid, ensure:
+- Row height consistency: verify `rowHeight` prop passed to each ag-Grid
+- `rowClassRules` consistency: both grids should use same row alternate coloring
+Read `MarketPulse.svelte` around gridOptions for positions/holdings vs the custom `.cand-grid`
+in `CandidateLegRow.svelte`. If there's a concrete difference in row height or alternating
+color rules, align them. If investigating reveals they're different UI elements, document what
+the user likely means and ensure visual consistency.
+
+**F9 — Smart fullscreen button (`frontend/src/lib/CardHeader.svelte`)**
+Add `detectOverflow` boolean prop (default false). When true:
+1. In CardHeader, get a ref to the parent container (`<slot>` host) using `$host()` or `bind:this`
+2. Use ResizeObserver inside `$effect()` to watch the container
+3. Set `_hasOverflow = el.scrollHeight > el.clientHeight + 4 || el.scrollWidth > el.clientWidth + 4`
+4. Show fullscreen button only when `_hasOverflow || isFullscreen`
+
+Implementation approach:
+```js
+// In CardHeader.svelte
+let detectOverflow = false; // new prop
+let _hasOverflow = $state(false);
+let _containerEl = $state(null);
+
+$effect(() => {
+  if (!detectOverflow || !_containerEl?.parentElement) return;
+  const el = _containerEl.parentElement;
+  const obs = new ResizeObserver(() => {
+    _hasOverflow = el.scrollHeight > el.clientHeight + 4 || el.scrollWidth > el.clientWidth + 4;
+  });
+  obs.observe(el);
+  return () => obs.disconnect();
+});
+```
+
+In the CardHeader template: `<span bind:this={_containerEl} class="ch-overflow-anchor" aria-hidden="true" style="display:none"></span>`
+Show fullscreen button: `{#if !detectOverflow || _hasOverflow || isFullscreen}`.
+
+Update cards that should use smart fullscreen to pass `detectOverflow={true}`. Start with
+MarketPulse position/holdings cards (which have fixed `--bucket-rows` heights that can overflow)
+and LogPanel.
+
+### broker: skip
+
+### doc: skip
+
+### backend-test: skip
+
+### playwright: skip (changes are CSS/layout — existing specs cover modal behavior)
+
+### backend (notify_deploy.py):
+Add `"Priority": "high"` to the ntfy request headers in
+`webhook/notify_deploy.py` at the existing ntfy block (lines 141-149).
+Change:
+```python
+headers={"Title": event_label, "Tags": "rocket", "Content-Type": "text/plain"}
+```
+To:
+```python
+headers={"Title": event_label, "Tags": "rocket", "Priority": "high", "Content-Type": "text/plain"}
+```
+Dev-deploy suppression is already in place (line 66-68: `if is_non_main: sys.exit(0)`). No other change needed.
 
 ## Tests
-- pytest: no
-- svelte-check: yes — 0 errors required
-- playwright: yes — targeted checks for O3b, O5, O7
+- pytest: no (no backend logic changes)
+- svelte-check: yes (26 pages + 8 files changed)
+- playwright: no (layout fixes — existing modal specs still valid)
 
 ## Commit message
-fix(ui): timestamp dual-tz on all pages, collapse/expand bug, chart modal dropdowns, demo banner position, activity filter alignment, showcase colors, name update, activity divider sync
+```
+fix(ui): timestamp mobile toggle, demo banner position, filters order, payoff SSOT, risk row layout, ntfy priority
+```
 
 ## Done when
-- All algo pages show `[nowStamp] | [lastRefreshAt]`; mobile toggles on click
-- "Ramana R. Ambore" everywhere in footer + showcase + JSON-LD + config
-- Showcase contact button text is `#7dd3fc` (sky blue) matching RISK ENGINE tag
-- Activity card buttons are 1.4rem × 1.4rem, cyan pattern, matching holdings card
-- Collapse/expand buttons function on all activity cards across all pages and modals
-- Activity panel "All Accounts" / "All Error Types" dropdowns are left-aligned
-- Chart modal shows symbol type, symbol search, and chart type dropdowns
-- Chart modal desktop: one row for all controls; mobile unchanged
-- Demo mode banner sits between NavStrip chrome and page content (outside `<main>`)
-- Chart page/modal remembers last symbol, range, chart type, account across opens
-- Activity label|tabs divider (`.lp-sep`) visually matches CardHeader `.ch-sep` (same width, color, margin)
-- svelte-check: 0 errors
+- Mobile: tapping page timestamp toggles to refresh stamp (vsep hidden when no refresh stamp; live ts pulses when no refresh data)
+- Desktop: both stamps visible simultaneously (no change)
+- ActivityHeaderFilters (All accounts / Level) appear to the RIGHT of tabs, not left
+- Showcase bio text is sky-blue (#7dd3fc), contact button text is off-white
+- Demo banner appears as a fixed strip between NavStrip and page-header row with no phantom gap; no gap visible when not in demo mode
+- "Open in Options →" context menu in MarketPulse navigates to derivatives with `?u=<underlying>` correctly pre-selecting the underlying
+- Risk & expected value block shows all items in a single row on desktop (≥1180px); mobile unchanged
+- ntfy fires for prod deployments with Priority: high; dev deploys still suppressed
+- Agents tab visual separator (amber) investigated and eliminated
+- ag-Grid row formatting consistent across pulse grids
+- Fullscreen button on cards with `detectOverflow=true` appears only when content overflows

@@ -284,19 +284,24 @@
     <InfoHint popup align="right" text="<b>Order templates</b> are reusable exit-rule presets you pick at order entry — TP %, SL %, and (for SELL options) a protective wing leg. The selected template translates to a broker-native GTT for TP/SL and a paired basket order for the wing. Edit a template here and every future order using it inherits the new values; bulk-apply lets you push the change to open positions too." />
   </span>
   <span class="algo-ts-group">
-    <span class="algo-ts" class:algo-ts-hidden={_showLiveTs}
-          onclick={() => _showLiveTs = !_showLiveTs}
-          title="Live clock — tap to switch" role="button" tabindex="0"
-          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+    <span class="algo-ts"
+          class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
+          class:algo-ts-pulse={!$lastRefreshAt}
+          onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}
+          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}
+          role="button" tabindex="0"
+          onkeydown={(e) => { if ($lastRefreshAt && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
       {$nowStamp}
     </span>
-    <span class="algo-ts-vsep" aria-hidden="true">|</span>
-    <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-          onclick={() => _showLiveTs = !_showLiveTs}
-          title="Last refresh — tap to switch" role="button" tabindex="0"
-          onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
-      {formatDualTz($lastRefreshAt)}
-    </span>
+    {#if $lastRefreshAt}
+      <span class="algo-ts-vsep" aria-hidden="true">|</span>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
+            onclick={() => _showLiveTs = !_showLiveTs}
+            title="Last refresh — tap to switch" role="button" tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+        {formatDualTz($lastRefreshAt)}
+      </span>
+    {/if}
   </span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">

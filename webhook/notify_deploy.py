@@ -142,7 +142,7 @@ def main():
             req = _urlreq.Request(
                 f"{ntfy_url.rstrip('/')}/{ntfy_topic}",
                 data=detail_line.encode(),
-                headers={"Title": event_label, "Tags": "rocket", "Content-Type": "text/plain"},
+                headers={"Title": event_label, "Tags": "rocket", "Priority": "high", "Content-Type": "text/plain"},
                 method="POST",
             )
             _urlreq.urlopen(req, timeout=5)

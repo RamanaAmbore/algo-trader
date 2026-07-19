@@ -48,13 +48,29 @@
     refreshAlwaysVisible = false,
     onDownload = null,
     showControls = true,
+    detectOverflow = false,
     /** @type {Snippet | undefined} */ left = undefined,
     /** @type {Snippet | undefined} */ middle = undefined,
     /** @type {Snippet | undefined} */ right = undefined,
   } = $props();
+
+  let _hasOverflow = $state(false);
+  let _overflowAnchorEl = $state(/** @type {HTMLElement | null} */ (null));
+
+  $effect(() => {
+    if (!detectOverflow || !_overflowAnchorEl?.parentElement?.parentElement) return;
+    const el = _overflowAnchorEl.parentElement.parentElement;
+    const obs = new ResizeObserver(() => {
+      _hasOverflow = el.scrollHeight > el.clientHeight + 4 ||
+                     el.scrollWidth > el.clientWidth + 4;
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  });
 </script>
 
 <div class="card-header">
+  <span class="ch-overflow-anchor" aria-hidden="true" bind:this={_overflowAnchorEl} style="position:absolute;pointer-events:none;"></span>
   <div class="ch-left">
     {#if title}<span class="ch-title">{title}</span>{/if}
     {#if timestamp}<span class="ch-ts">{timestamp}</span>{/if}
@@ -80,6 +96,7 @@
         {showSearch}
         {refreshAlwaysVisible}
         {onDownload}
+        hideFullscreen={detectOverflow && !_hasOverflow && !isFullscreen}
       />
     {/if}
   </div>

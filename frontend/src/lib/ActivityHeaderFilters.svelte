@@ -105,7 +105,7 @@
     padding: 0.25rem 1.4rem 0.25rem 0.5rem;
     background-image: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     background-color: #1d2a44;
-    border: 1px solid rgba(251, 191, 36, 0.25);
+    border: 1px solid rgba(251, 191, 36, 0.15);
     border-radius: 3px;
     color: var(--algo-slate);
     font-size: var(--fs-sm);
