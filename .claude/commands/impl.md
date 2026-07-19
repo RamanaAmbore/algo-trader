@@ -2,7 +2,9 @@
 
 ## Permissions
 
-Activate bypass-permissions mode at the start of this command (no tool-use prompts during execution). After Step 7, call `EnterPlanMode` to return to plan mode.
+**First**: call `ExitPlanMode` immediately if plan mode is currently active — this unblocks all subagents so they can make file edits. Do this before any other step.
+
+Activate bypass-permissions mode (no tool-use prompts during execution). After Step 8, call `EnterPlanMode` to return to plan mode.
 
 Read `.claude/PLAN.md` (written during plan mode), dispatch implementation agents,
 run tests until green, commit, and report ready for `/ddev`.
