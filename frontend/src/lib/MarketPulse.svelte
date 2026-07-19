@@ -4062,7 +4062,6 @@
             onRefresh={refreshAllNow}
             refreshLoading={_refreshing}
             onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
-            detectOverflow={true}
           >
             {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
@@ -4096,7 +4095,6 @@
             onRefresh={refreshAllNow}
             refreshLoading={_refreshing}
             onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
-            detectOverflow={true}
           >
             {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>

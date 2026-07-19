@@ -1378,8 +1378,8 @@
    agent_id is null (tickets, replays without an originating agent). */
 .log-panel .log-agent-chip {
   display: inline-block;
-  font-size: 0.5rem;
-  font-weight: 600;
+  font-size: var(--fs-xs);
+  font-weight: 700;
   padding: 0 0.35rem;
   /* Tightened from 0.15rem so the agent chip sits flush against the
      last log-chip; the order-chip strip + agent chip read as one
@@ -1866,6 +1866,8 @@
   top: 0 !important;
   z-index: 1 !important;
 }
+.fs-card-on .default-btn { padding: 0 0.4rem; width: auto; gap: 0.3rem; }
+.fs-card-on .default-btn .dsb-label { display: inline; font-size: 0.65rem; font-weight: 500; letter-spacing: 0.02em; }
 
 /* PageHeaderActions (.pha-wrap) open modals — they don't need
    viewport-pinning during fullscreen. The modal overlay itself is
@@ -1901,16 +1903,8 @@
    treatment (defined in (algo)/+layout.svelte) — that's a different
    role from card headers (text-on-text vs text-with-icons). */
 
-/* Card header icon cluster — once one element gains a left auto
-   margin (AccountMultiSelect via .ams, or CollapseButton, or
-   FullscreenButton when standalone), adjacent siblings drop their
-   own auto-margin and sit tight. Result: title left, picker +
-   collapse + fullscreen cluster right with a small gap. */
-.ams + .collapse-btn,
-.ams + .fs-btn,
-.collapse-btn + .fs-btn {
-  margin-left: 0.3rem !important;
-}
+/* Card header icon cluster — right zone uses uniform `gap` from ch-right;
+   no per-sibling margin overrides needed. */
 
 /* Collapsed card — three rules to shrink the box around just its
    header:
@@ -1932,6 +1926,7 @@
 .is-collapsed > :is(.bucket-header, .card-header-row, .row3-header) {
   margin-bottom: 0 !important;
 }
+.is-collapsed .ag-root-wrapper { height: 0 !important; overflow: hidden !important; min-height: 0 !important; padding: 0 !important; }
 
 /* ── Row-level chart icon button ────────────────────────────────────────────
    Used on /orders, /admin/options, and PerformancePage symbol cells.
@@ -2535,22 +2530,9 @@ button:not(:disabled):active,
   }
 }
 
-/* ── Header timestamp — no-data pulse ────────────────────────────────────
-   Applied to the live-clock span (.algo-ts) when $lastRefreshAt is 0 (page
-   not yet loaded its first data fetch). Draws attention that data is pending
-   without being alarming. Removed once the first refresh completes.         */
-@keyframes algo-ts-pulse-kf {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.45; }
-}
-.algo-ts-pulse {
-  animation: algo-ts-pulse-kf 1.5s ease-in-out 3;
-}
-@media (prefers-reduced-motion: reduce) {
-  .algo-ts-pulse { animation: none; }
-}
 /* Global pointer affordance for live-clock spans (.algo-ts) used on all pages. */
 .algo-ts { cursor: pointer; }
+.algo-ts-data { color: var(--c-info); }
 
 /* ── Shared chart tooltip ─────────────────────────────────────────────────
    Used by ChartWorkspace (OHLCV popup) and OptionsPayoff (spot/P&L popup).

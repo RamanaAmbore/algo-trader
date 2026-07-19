@@ -199,22 +199,15 @@
   <span class="algo-title-group">
     <h1 class="page-title-chip">Agent Templates</h1>
   </span>
-  <span class="algo-ts-group">
+  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
     <span class="algo-ts"
           class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          class:algo-ts-pulse={!$lastRefreshAt}
-          onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}
-          role="button" tabindex="0"
-          onkeydown={(e) => { if ($lastRefreshAt && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
       {$nowStamp}
     </span>
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-            onclick={() => _showLiveTs = !_showLiveTs}
-            title="Last refresh — tap to switch" role="button" tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
         {formatDualTz($lastRefreshAt)}
       </span>
     {/if}
@@ -359,7 +352,6 @@
 <style>
   .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
   .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  .algo-ts-data  { cursor: pointer; }
   @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   .filter-row {
     display: flex;
@@ -377,13 +369,12 @@
     margin-right: 0.3rem;
   }
   .filter-btn {
-    padding: 0.22rem 0.6rem;
-    font-size: var(--fs-md);
-    font-weight: 500;
-    color: rgba(180,200,230,0.75);
+    font-size: var(--fs-sm);
+    border-radius: 3px;
+    padding: 0.2rem 0.55rem;
+    color: rgba(180,200,230,0.70);
     background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 0.25rem;
+    border: 1px solid rgba(180,200,230,0.18);
     cursor: pointer;
     font-family: var(--font-numeric);
     letter-spacing: 0.03em;
@@ -396,10 +387,10 @@
     border-color: rgba(251,191,36,0.3);
   }
   .filter-btn-on {
-    background: rgba(251,191,36,0.18);
     color: var(--c-action);
+    background: rgba(251,191,36,0.12);
+    border-color: rgba(251,191,36,0.45);
     font-weight: 700;
-    border-color: rgba(251,191,36,0.5);
   }
   .filter-hint {
     font-size: var(--fs-sm);
@@ -505,38 +496,38 @@
   }
 
   .action-btn {
-    padding: 0.22rem 0.65rem;
-    font-size: var(--fs-md);
-    font-weight: 500;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    border-radius: 3px;
+    padding: 0.25rem 0.7rem;
     color: rgba(200,216,240,0.85);
     background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 0.25rem;
+    border: 1px solid rgba(180,200,230,0.2);
     cursor: pointer;
     font-family: var(--font-numeric);
     letter-spacing: 0.03em;
     transition: background-color 0.06s, color 0.06s, border-color 0.06s;
   }
   .action-btn:hover {
-    background: rgba(251,191,36,0.10);
     color: var(--c-action);
-    border-color: rgba(251,191,36,0.35);
+    background: rgba(251,191,36,0.10);
+    border-color: rgba(251,191,36,0.40);
   }
   .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .action-btn-danger:hover {
-    background: rgba(251,113,133,0.12);
-    color: #fb7185;
-    border-color: rgba(251,113,133,0.45);
+    color: var(--c-short);
+    background: var(--c-short-10, rgba(248,113,113,0.10));
+    border-color: rgba(248,113,113,0.45);
   }
 
   .primary-btn {
-    padding: 0.32rem 0.95rem;
-    font-size: var(--fs-lg);
+    font-size: var(--fs-sm);
     font-weight: 700;
+    border-radius: 3px;
+    padding: 0.25rem 0.7rem;
     color: var(--c-action);
-    background: rgba(251,191,36,0.18);
+    background: rgba(251,191,36,0.15);
     border: 1px solid rgba(251,191,36,0.5);
-    border-radius: 0.25rem;
     cursor: pointer;
     font-family: var(--font-numeric);
     letter-spacing: 0.04em;

@@ -3881,22 +3881,15 @@
       <span class="opt-mode-pill opt-mode-sim" title="A simulator run is active. Candidates and analytics are sourced from the sim book.">SIMULATOR</span>
     {/if}
   </span>
-  <span class="algo-ts-group">
+  <span class="algo-ts-group" onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }} onkeydown={(e) => { if ($lastRefreshAt && (e.key === "Enter" || e.key === " ")) _showLiveTs = !_showLiveTs; }} role="button" tabindex="0">
     <span class="algo-ts"
           class:algo-ts-hidden={!!$lastRefreshAt && _showLiveTs}
-          class:algo-ts-pulse={!$lastRefreshAt}
-          onclick={() => { if ($lastRefreshAt) _showLiveTs = !_showLiveTs; }}
-          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}
-          role="button" tabindex="0"
-          onkeydown={(e) => { if ($lastRefreshAt && e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+          title={$lastRefreshAt ? 'Live clock — tap to switch' : 'Live clock'}>
       {$nowStamp}
     </span>
     {#if $lastRefreshAt}
       <span class="algo-ts-vsep" aria-hidden="true">|</span>
-      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}
-            onclick={() => _showLiveTs = !_showLiveTs}
-            title="Last refresh — tap to switch" role="button" tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') _showLiveTs = !_showLiveTs; }}>
+      <span class="algo-ts algo-ts-data" class:algo-ts-hidden={!_showLiveTs}>
         {formatDualTz($lastRefreshAt)}
       </span>
     {/if}
@@ -4080,6 +4073,7 @@
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
       showSearch={false}
+      detectOverflow={false}
     >
       {#snippet middle()}
         <div class="opt-section-chips">
@@ -4461,6 +4455,7 @@
     label="Snapshot"
     onRefresh={_refreshAll}
     bind:refreshLoading={_refreshing}
+    detectOverflow={false}
     onDownload={() => {
       const rows = _byUnderlyingTotals.map(g => {
         const _q      = _underlyingQuotes[g.underlying];
@@ -4876,7 +4871,6 @@
 <style>
   .algo-ts-group { display: inline-flex; align-items: center; gap: 0.3rem; }
   .algo-ts-vsep  { color: rgba(255,255,255,0.25); font-size: var(--fs-md); }
-  .algo-ts-data  { cursor: pointer; }
   @media (max-width: 480px) { .algo-ts-hidden { display: none !important; } }
   /* Page-header title + (i) + optional SIM badge as a single inline
      group on the left, timestamp pushed right by .page-header's

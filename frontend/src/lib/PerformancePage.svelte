@@ -1343,6 +1343,7 @@
     showSearch={false}
     onDownload={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
     label="Positions Summary"
+    detectOverflow={false}
   />
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
@@ -1356,6 +1357,7 @@
     showSearch={false}
     onDownload={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
     label="Holdings Summary"
+    detectOverflow={false}
   />
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
@@ -1373,6 +1375,7 @@
     bind:filter={_filterPositions}
     onDownload={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
     label="Positions"
+    detectOverflow={false}
   />
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
@@ -1383,6 +1386,7 @@
     bind:filter={_filterHoldings}
     onDownload={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
     label="Holdings"
+    detectOverflow={false}
   />
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>

@@ -64,6 +64,7 @@
         fill="none" stroke="currentColor" stroke-width="1.5"
         stroke-linecap="round" stroke-linejoin="round" />
     </svg>
+    <span class="dsb-label">Restore</span>
   </button>
 {/if}
 
@@ -98,19 +99,7 @@
     outline: 2px solid rgba(34, 211, 238, 0.65);
     outline-offset: 1px;
   }
-  /* When the canonical trio sits in a flex parent, ensure tight
-     spacing between adjacent control buttons regardless of their
-     parent's `gap`. Mirrors CollapseButton's existing
-     `.collapse-btn + :global(.fs-btn)` rule. */
-  :global(.fs-btn + .default-btn),
-  :global(.default-btn + .collapse-btn) {
-    margin-left: 0.3rem;
-  }
-  /* Fullscreen → Collapse (no DefaultSize between them) — preserves
-     the same compact spacing when a card opts out of the middle
-     control. Sibling-selector reach across components requires the
-     global block. */
-  :global(.fs-btn + .collapse-btn) {
-    margin-left: 0.3rem;
+  .dsb-label {
+    display: none;
   }
 </style>

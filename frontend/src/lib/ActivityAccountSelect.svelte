@@ -34,11 +34,9 @@
 {/if}
 
 <style>
-  /* Sits inside a flex header. `margin-left: auto` claims the
-     spacer slot so the close-button / CardControls cluster sits
-     to the right of the dropdown without needing its own auto.
-     Consumers can override via :global if their header wants a
-     different layout.
+  /* Sits inside a flex header. Right-alignment is handled by the
+     parent flex container (ch-right or equivalent), not by
+     margin-left: auto here.
 
      Mobile: NO min-width override — defer to AccountMultiSelect's
      internal media query (5.6rem→4.4rem at ≤600px) so the
@@ -49,7 +47,6 @@
   .act-acct {
     display: inline-flex;
     align-items: center;
-    margin-left: auto;
     font-size: var(--fs-lg);
   }
   @media (min-width: 520px) {

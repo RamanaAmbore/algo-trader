@@ -1840,6 +1840,7 @@
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
       showSearch={false}
+      detectOverflow={false}
     >
       <!-- No cardId — collapse state resets to expanded on every page
            load. Operator can still toggle in-session. Matches the
