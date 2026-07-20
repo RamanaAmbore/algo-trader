@@ -4494,13 +4494,11 @@
     }}
   >
     {#snippet middle()}
-      {#key accountChoices.length}
-        <AccountMultiSelect
-          bind:value={selectedAccounts}
-          options={accountChoices.map(a => ({ value: a, label: a }))}
-          placeholder="All accounts"
-          ariaLabel="Filter Snapshot by broker account" />
-      {/key}
+      <AccountMultiSelect
+        bind:value={selectedAccounts}
+        options={accountChoices.map(a => ({ value: a, label: a }))}
+        placeholder="All accounts"
+        ariaLabel="Filter Snapshot by broker account" />
       <!-- Slice 7f — strategy filter chip. When the operator picks a
            strategy, the snapshot's _byUnderlyingTotals derivation
            below narrows `positions` to rows whose strategy_id matches.
