@@ -156,9 +156,9 @@
   .ch-sep {
     width: 1px;
     align-self: stretch;
-    background: rgba(255,255,255,0.10);
+    background: var(--sep-color);
     flex-shrink: 0;
-    margin: 0.15rem 0;
+    margin: var(--sep-margin);
   }
   .ch-middle {
     flex: 1 1 0;

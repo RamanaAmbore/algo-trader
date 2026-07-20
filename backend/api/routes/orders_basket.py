@@ -314,12 +314,11 @@ async def basket_order_handler(
                         "cache cold). Refusing to prevent oversize order.",
                         account, sym, input_qty, exch,
                     )
-                    leg_results.append(BasketLegResult(
-                        leg_index=i, order_id=None, status="error",
-                        error=(f"lot_size for {sym} on {exch} unavailable "
-                               f"(cache cold) — retry in a moment"),
-                    ))
-                    continue
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(f"lot_size for {sym} on {exch} unavailable "
+                                f"(cache cold) — retry in a moment"),
+                    )
                 qty = input_qty * _lot   # contracts
                 # G2 fat-finger cap — 5-lot cap for F&O (MCX exempt;
                 # its own 20-lot cap fires just below).
@@ -467,8 +466,10 @@ async def basket_order_handler(
                     _leg_price = float(leg.price or 0)
                     _leg_trig  = float(leg.trigger_price or 0)
                     if _leg_order_type in ("LIMIT", "SL", "SL-M"):
-                        _leg_price = await _align_price_to_tick(exch, sym, _leg_price)
-                        _leg_trig  = await _align_price_to_tick(exch, sym, _leg_trig)
+                        if _leg_price > 0:
+                            _leg_price = await _align_price_to_tick(exch, sym, _leg_price)
+                        if _leg_trig > 0:
+                            _leg_trig = await _align_price_to_tick(exch, sym, _leg_trig)
                     kite_oid = await asyncio.to_thread(
                         broker.place_order,
                         variety=leg.variety or "regular",

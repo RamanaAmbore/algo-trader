@@ -83,9 +83,9 @@ class TokenBucketLimiter:
                 bucket["tokens"] = 0  # Mark bucket as exhausted before sleep
                 bucket["last_refill"] = time.monotonic()
             else:
-                # Zero refill rate — capacity is 0 or period is infinite, never refills
-                # Sleep indefinitely or use a very long default
-                sleep_time = float('inf')
+                # Zero refill rate — bucket never refills; release lock and return
+                # without sleeping or consuming a token (no-op for unknown/disabled groups).
+                return
 
         # Sleep outside the lock to allow other threads access
         if sleep_time != float('inf'):

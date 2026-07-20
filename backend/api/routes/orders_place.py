@@ -224,7 +224,7 @@ async def _enforce_capacity_guard(
 # to acquire DIFFERENT lock objects for the same parent_row_id and
 # double-place the GTT. Switching to a strong dict eliminates that
 # class of bug; the TTL sweep keeps memory bounded by retiring entries
-# that haven't been touched in `_TPL_LOCK_TTL_S` seconds (default 1 h
+# that haven't been touched in `_TPL_LOCK_TTL_S` seconds (default 4 h
 # — well beyond the worst-case fill-to-attach latency including a
 # slow reconcile sweep).
 _TEMPLATE_ATTACH_LOCKS: dict[int, tuple[asyncio.Lock, float]] = {}
@@ -1253,10 +1253,13 @@ async def _ticket_persist_live_algo_order(
         # existing id rather than inserting a second row.
         if _req_id:
             from sqlalchemy import select as _sel_idem
+            from datetime import datetime, timezone as _tz_idem, timedelta as _td_idem
+            _idem_cutoff = datetime.now(_tz_idem.utc) - _td_idem(seconds=60)
             async with async_session() as _s_chk:
                 _existing = (await _s_chk.execute(
                     _sel_idem(AlgoOrder.id).where(
-                        AlgoOrder.request_id == _req_id
+                        AlgoOrder.request_id == _req_id,
+                        AlgoOrder.created_at >= _idem_cutoff,
                     ).limit(1)
                 )).scalar_one_or_none()
             if _existing is not None:
