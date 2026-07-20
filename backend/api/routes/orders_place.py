@@ -728,6 +728,7 @@ async def _opp_arm_tp_live_place(
             price=tp_price,
             validity="DAY",
             tag=f"rb-tp-{parent_row_id}",
+            intent="close",
         )
         async with _async_session2() as _s2:
             tp_upd = (await _s2.execute(

@@ -606,6 +606,7 @@ class ExpiryEngine:
                 max_attempts=self._chase_cfg.max_attempts,
                 exchange=pos.exchange,
                 product=pos.product,
+                intent="close",
             )
 
             async def _chase_one(p=pos, t=txn, q=qty, c=cfg):

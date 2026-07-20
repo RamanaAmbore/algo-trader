@@ -134,17 +134,20 @@ _LOT_INDEX_STAMP: object | None = None
 
 
 def _rebuild_lot_index(items) -> None:
-    """Rebuild the (exchange, tradingsymbol) → lot_size dict from
-    the instruments cache. Called once per cache refresh."""
-    global _LOT_INDEX
-    new_index: dict[tuple[str, str], int] = {}
+    """Merge (exchange, tradingsymbol) → lot_size entries from the
+    instruments cache into _LOT_INDEX.  Never clears the dict so that
+    stale entries survive partial-response or zero-lot_size returns.
+    Only entries with lot_size > 1 are stored — lot_size == 1 is the
+    equity sentinel (no translation needed) and must not overwrite a
+    valid F&O lot size that happened to arrive as 1 in a bad response.
+    Called once per cache version-stamp flip in get_lot_size()."""
     for inst in items:
         try:
-            ls = int(inst.ls) if inst.ls > 0 else 1
+            ls = int(inst.ls)
         except (TypeError, ValueError):
-            ls = 1
-        new_index[(inst.e, inst.s)] = ls
-    _LOT_INDEX = new_index
+            continue
+        if ls > 1:
+            _LOT_INDEX[(inst.e, inst.s)] = ls
 
 
 async def get_lot_size(exchange: str, tradingsymbol: str) -> int:

@@ -476,3 +476,122 @@ async def test_get_lot_size_stale_index_fallback(monkeypatch):
         f"Expected stale lot_size=100 from _LOT_INDEX, got {result}. "
         "Returning 0 blocks GTT template attachment for MCX instruments."
     )
+
+
+# =============================================================================
+# T-A8: _rebuild_lot_index merge — stale entries survive partial fetch
+# =============================================================================
+
+
+def test_rebuild_lot_index_merge_does_not_clear_stale_entries(monkeypatch):
+    """
+    _rebuild_lot_index must NEVER clear _LOT_INDEX before merging.
+
+    Scenario: _LOT_INDEX has a valid NIFTY25JULFUT entry (lot_size=75)
+    from a prior successful fetch.  The overnight instruments fetch returns
+    an empty list (partial response / Kite outage).  After the call the
+    stale entry must still be present — the GTT template attach guard
+    (_resolve_lot_size_for_order) can then use it instead of blocking.
+
+    Regression: 2026-07-20 01:13 IST — NIFTY25JULFUT lot_size returned 0
+    because _rebuild_lot_index replaced _LOT_INDEX entirely, losing the
+    prior good value.
+    """
+    import backend.brokers.adapters.kite as kite_mod
+    from backend.brokers.adapters.kite import _rebuild_lot_index
+
+    # Pre-populate the module-level dict with a known-good entry.
+    monkeypatch.setattr(kite_mod, "_LOT_INDEX", {("NFO", "NIFTY25JULFUT"): 75})
+
+    # Simulate a partial / empty instruments response — zero new items.
+    _rebuild_lot_index([])
+
+    # The stale entry must survive.
+    result = kite_mod._LOT_INDEX.get(("NFO", "NIFTY25JULFUT"))
+    assert result == 75, (
+        f"Expected stale lot_size=75 to survive an empty rebuild, got {result}. "
+        "_rebuild_lot_index must merge, never clear."
+    )
+
+
+def test_rebuild_lot_index_merge_skips_lot_size_zero(monkeypatch):
+    """
+    When a new instruments response returns lot_size=0 for a symbol that
+    already has a valid entry, the bad value must NOT overwrite the good one.
+
+    This covers the Kite edge-case where lot_size is zero in the dump
+    (observed for expiring contracts near roll).
+    """
+    import backend.brokers.adapters.kite as kite_mod
+    from backend.brokers.adapters.kite import _rebuild_lot_index
+
+    monkeypatch.setattr(kite_mod, "_LOT_INDEX", {("MCX", "CRUDEOIL25AUGFUT"): 100})
+
+    # Craft a minimal stub that mimics an Instrument namedtuple with ls=0.
+    class _FakeInst:
+        def __init__(self, e, s, ls):
+            self.e = e
+            self.s = s
+            self.ls = ls
+
+    _rebuild_lot_index([_FakeInst("MCX", "CRUDEOIL25AUGFUT", 0)])
+
+    result = kite_mod._LOT_INDEX.get(("MCX", "CRUDEOIL25AUGFUT"))
+    assert result == 100, (
+        f"lot_size=0 from Kite must not overwrite the stale good value. Got {result}."
+    )
+
+
+def test_rebuild_lot_index_merge_skips_lot_size_one(monkeypatch):
+    """
+    lot_size=1 is the equity sentinel.  It must NOT overwrite a real F&O
+    lot_size that happens to share the same (exchange, tradingsymbol) key.
+    In practice this shouldn't happen (equity and F&O keys don't collide),
+    but the guard makes the merge logic safe against any Kite data anomaly.
+    """
+    import backend.brokers.adapters.kite as kite_mod
+    from backend.brokers.adapters.kite import _rebuild_lot_index
+
+    monkeypatch.setattr(kite_mod, "_LOT_INDEX", {("NFO", "NIFTY25JULFUT"): 75})
+
+    class _FakeInst:
+        def __init__(self, e, s, ls):
+            self.e = e
+            self.s = s
+            self.ls = ls
+
+    _rebuild_lot_index([_FakeInst("NFO", "NIFTY25JULFUT", 1)])
+
+    result = kite_mod._LOT_INDEX.get(("NFO", "NIFTY25JULFUT"))
+    assert result == 75, (
+        f"Equity-sentinel lot_size=1 must not overwrite valid lot_size=75. Got {result}."
+    )
+
+
+def test_rebuild_lot_index_adds_valid_new_entries(monkeypatch):
+    """
+    When the instruments response contains valid F&O entries (lot_size > 1),
+    they must be added / updated in the index normally.
+    """
+    import backend.brokers.adapters.kite as kite_mod
+    from backend.brokers.adapters.kite import _rebuild_lot_index
+
+    monkeypatch.setattr(kite_mod, "_LOT_INDEX", {})
+
+    class _FakeInst:
+        def __init__(self, e, s, ls):
+            self.e = e
+            self.s = s
+            self.ls = ls
+
+    _rebuild_lot_index([
+        _FakeInst("NFO", "NIFTY25JULFUT", 75),
+        _FakeInst("MCX", "CRUDEOIL25AUGFUT", 100),
+        _FakeInst("NSE", "RELIANCE", 1),   # equity sentinel — must be skipped
+    ])
+
+    assert kite_mod._LOT_INDEX.get(("NFO", "NIFTY25JULFUT")) == 75
+    assert kite_mod._LOT_INDEX.get(("MCX", "CRUDEOIL25AUGFUT")) == 100
+    assert ("NSE", "RELIANCE") not in kite_mod._LOT_INDEX, (
+        "Equity (lot_size=1) must not be stored in _LOT_INDEX."
+    )

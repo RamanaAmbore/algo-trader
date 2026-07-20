@@ -381,7 +381,9 @@ async def basket_order_handler(
                 # 2. MCX 20-lot cap — `_lot` is always set here because MCX/NCO
                 #    is in _FO; the F&O block above resolved it before we reach
                 #    this LIVE branch. `qty` is contracts = input_qty × _lot.
-                if exch in ("MCX", "NCO"):
+                #    Close legs bypass this cap (same exemption as the G2 guard
+                #    above and the adapter ceiling in kite.py).
+                if exch in ("MCX", "NCO") and not _leg_close:
                     _bk_lots_for_cap = int(qty // _lot) if _lot > 0 else 0
                     _MCX_CAP = 20
                     if _bk_lots_for_cap > _MCX_CAP:
@@ -483,6 +485,7 @@ async def basket_order_handler(
                         trigger_price=_leg_trig,
                         validity="DAY",
                         tag=basket_id,
+                        intent=_leg_intent,
                     )
                     # Persist AlgoOrder row so the order book tracks it.
                     async with _async_session2() as _s:
