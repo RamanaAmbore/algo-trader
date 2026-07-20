@@ -83,6 +83,7 @@ async def basket_margin_handler(
             # MCX contracts → lots which is what Kite expects here.
             _FO = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
             orders_payload = []
+            _bad_lot_legs: list[str] = []   # M20: collect unresolvable legs
             for leg in grp.legs:
                 _leg_exch = leg.exchange.upper()
                 _leg_sym  = leg.tradingsymbol.upper()
@@ -90,9 +91,12 @@ async def basket_margin_handler(
                 _leg_lot  = await _bm_get_lot_size(_leg_exch, _leg_sym)
                 if _leg_exch in _FO:
                     if _leg_lot <= 0:
-                        # Skip legs with unresolvable lot_size — the
-                        # placement path will 503 anyway; margin preview
-                        # is best-effort.
+                        # M20: track legs with unresolvable lot_size so the
+                        # group-level error field surfaces the issue instead
+                        # of silently skipping (placement path will 503 anyway;
+                        # margin preview is best-effort but should indicate why
+                        # a leg was excluded).
+                        _bad_lot_legs.append(f"{_leg_exch}/{_leg_sym}")
                         continue
                     _leg_contracts = _leg_input * _leg_lot
                 else:
@@ -165,11 +169,26 @@ async def basket_margin_handler(
                 )
                 required = 0.0
             shortfall = max(0.0, required - available)
+            # M20: if any F&O legs had unresolvable lot_size, surface them
+            # in the group-level error field so the operator is not silently
+            # misled by a margin figure that excludes those legs.
+            _bad_leg_err: str | None = None
+            if _bad_lot_legs:
+                _bad_leg_err = (
+                    f"lot_size unresolvable for legs: "
+                    f"{', '.join(_bad_lot_legs)} — margin excludes these legs"
+                )
+                logger.warning(
+                    "[BASKET-MARGIN] unresolvable lot_size for %s acct=%s: "
+                    "excluded from margin calc: %s",
+                    account, account, _bad_lot_legs,
+                )
             return BasketMarginGroupResult(
                 account=account,
                 required=required,
                 available=available,
                 shortfall=shortfall,
+                error=_bad_leg_err,
             )
         except HTTPException:
             raise
@@ -408,8 +427,13 @@ async def basket_order_handler(
                 if not _bk_pf.get("ok"):
                     _bk_blocked_codes = [b.get("code", "?") for b in _bk_pf.get("blocked", [])]
                     _bk_first_block = (_bk_pf.get("blocked") or [{}])[0]
+                    # M8: include the full blocked-codes list in the error so
+                    # the operator sees every blocker, not just the first one.
+                    _bk_all_reasons = "; ".join(
+                        b.get("reason") or b.get("code", "?")
+                        for b in _bk_pf.get("blocked", [])
+                    ) or f"preflight blocked: {', '.join(_bk_blocked_codes)}"
                     if any(c in ("MARGIN_SHORTFALL", "SEGMENT_INACTIVE") for c in _bk_blocked_codes):
-                        _bk_reason = _bk_first_block.get("reason", f"preflight blocked: {', '.join(_bk_blocked_codes)}")
                         logger.warning(
                             "[BASKET-LIVE] leg %d blocked by preflight: "
                             "acct=%s sym=%s codes=%s",
@@ -417,7 +441,7 @@ async def basket_order_handler(
                         )
                         leg_results.append(BasketLegResult(
                             leg_index=i, order_id=None, status="error",
-                            error=_bk_reason[:500],
+                            error=_bk_all_reasons[:500],
                         ))
                         continue
                     # Other preflight blockers (LOT_MULTIPLE, FAT_FINGER etc.)
@@ -433,8 +457,18 @@ async def basket_order_handler(
                 try:
                     broker = _broker_for(account)
                     from backend.brokers.adapters.kite import get_lot_size
+                    from backend.api.routes.orders_helpers import _align_price_to_tick
                     _ls = await get_lot_size(exch, sym)
                     _kq = broker.translate_qty(exch, qty, _ls)
+                    # M16: align limit/SL prices to the tick grid so the
+                    # broker doesn't reject with "invalid price" on F&O legs
+                    # whose price was typed by the operator without rounding.
+                    _leg_order_type = (leg.order_type or "LIMIT").upper()
+                    _leg_price = float(leg.price or 0)
+                    _leg_trig  = float(leg.trigger_price or 0)
+                    if _leg_order_type in ("LIMIT", "SL", "SL-M"):
+                        _leg_price = await _align_price_to_tick(exch, sym, _leg_price)
+                        _leg_trig  = await _align_price_to_tick(exch, sym, _leg_trig)
                     kite_oid = await asyncio.to_thread(
                         broker.place_order,
                         variety=leg.variety or "regular",
@@ -443,9 +477,9 @@ async def basket_order_handler(
                         transaction_type=side,
                         quantity=_kq,
                         product=leg.product or "NRML",
-                        order_type=leg.order_type or "LIMIT",
-                        price=float(leg.price or 0),
-                        trigger_price=float(leg.trigger_price or 0),
+                        order_type=_leg_order_type,
+                        price=_leg_price,
+                        trigger_price=_leg_trig,
                         validity="DAY",
                         tag=basket_id,
                     )
@@ -484,10 +518,24 @@ async def basket_order_handler(
                     # 29870396.16. Margin available: 9216518.60. Add
                     # 20653877.56 to place this order." reach the UI in full.
                     _full_err = str(_e)
-                    logger.error(
-                        f"[BASKET-LIVE] {account} leg {i} {side} {qty} "
-                        f"{sym}@{leg.price} rejected: {_full_err}"
+                    # M10: surface margin shortfall as WARNING (not ERROR) so
+                    # it's clearly distinguished from system faults in logs.
+                    _is_margin_err = any(
+                        kw in _full_err.lower()
+                        for kw in ("margin required", "margin available",
+                                   "insufficient funds", "margin shortfall")
                     )
+                    if _is_margin_err:
+                        logger.warning(
+                            "[BASKET-LIVE] margin shortfall: acct=%s leg %d "
+                            "%s %s qty=%s: %s",
+                            account, i, side, sym, qty, _full_err,
+                        )
+                    else:
+                        logger.error(
+                            f"[BASKET-LIVE] {account} leg {i} {side} {qty} "
+                            f"{sym}@{leg.price} rejected: {_full_err}"
+                        )
                     leg_results.append(BasketLegResult(
                         leg_index=i, order_id=None, status="error",
                         error=_full_err[:500],

@@ -305,11 +305,33 @@ def _retry_build_attached_payload(result, product: str) -> list:
     return payload
 
 
-def _retry_effective_parent_qty(row) -> int:
+async def _retry_effective_parent_qty(row) -> int:
     """Prefer accumulated `filled_quantity` when non-zero so a partial
     fill doesn't oversize the exit GTT (mirrors the postback path).
     Falls back to original quantity when no partial fill was captured.
+
+    M7: re-fetch `filled_quantity` from the DB rather than relying on
+    the in-memory row snapshot, which may be stale if the postback
+    arrived after the reconcile loaded the row but before it applied
+    the fill count. The extra SELECT is cheap (PK lookup) and prevents
+    an exit GTT sized off an unupdated row.
     """
+    try:
+        from sqlalchemy import select as _sel_rq
+        from backend.api.database import async_session as _ars
+        from backend.api.models import AlgoOrder as _AO_rq
+        async with _ars() as _s_rq:
+            _fresh_filled = (await _s_rq.execute(
+                _sel_rq(_AO_rq.filled_quantity).where(_AO_rq.id == row.id)
+            )).scalar_one_or_none()
+        if _fresh_filled is not None and int(_fresh_filled or 0) > 0:
+            return int(_fresh_filled)
+    except Exception as _rq_err:
+        logger.debug(
+            "[RETRY-QTY] DB re-fetch failed for #%s, falling back "
+            "to in-memory row: %s", row.id, _rq_err,
+        )
+    # Fall back to the in-memory row value.
     filled = int(row.filled_quantity or 0)
     if filled > 0:
         return filled
@@ -672,7 +694,7 @@ async def _rco_run_template_attach(row) -> "tuple | None":
         parent_account=row.account or "",
         parent_symbol=row.symbol or "",
         parent_side=row.transaction_type or "BUY",
-        parent_qty=_retry_effective_parent_qty(row),
+        parent_qty=await _retry_effective_parent_qty(row),
         parent_exchange=row.exchange or "NFO",
         parent_fill_price=float(row.fill_price or row.initial_price or 0),
         parent_product=row.product or "NRML",
@@ -1510,6 +1532,17 @@ class OrdersController(Controller):
         order_id, account, kite_status, kite_symbol, txn, qty, price, kite_exchange, status_msg = (
             _rco_parse_dhan_postback_body(body)
         )
+        # M9: empty account means Dhan didn't send dhanClientId — we can't
+        # route the postback to an AlgoOrder. Log CRITICAL for visibility
+        # but return 200 OK so Dhan doesn't retry indefinitely.
+        if not account:
+            logger.critical(
+                "[DHAN-POSTBACK] missing account (dhanClientId) in payload "
+                "for order_id=%s status=%s sym=%s — postback cannot be "
+                "attributed; raw payload logged above.",
+                order_id, kite_status, kite_symbol,
+            )
+            return {"status": "ok"}
         await _process_broker_postback(
             broker_id="dhan",
             order_id=order_id,

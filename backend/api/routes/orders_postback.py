@@ -79,6 +79,9 @@ async def _sync_algo_order_rows(
     price,
     status_message: str,
     qty,
+    account: str = "",
+    symbol: str = "",
+    txn: str = "",
 ) -> list:
     """Update AlgoOrder rows for broker_order_id, write order events, return filled rows.
 
@@ -86,6 +89,15 @@ async def _sync_algo_order_rows(
     fill_price + filled_at assignment, detail annotation, commit, and
     order-event writes. Returns a list of rows that transitioned to FILLED
     so the caller can fire template-attach for each.
+
+    M2(a): When no rows are found by broker_order_id, attempts a fuzzy-match
+    fallback (same logic as the Kite path) using account/symbol/txn/qty to
+    bind the postback to an OPEN row created in the last 60 s.
+
+    M2(b): Logs CRITICAL on fuzzy-match success so the race is auditable.
+
+    M2(c): Creates an orphan AlgoOrder when both direct and fallback lookups
+    produce zero matches so the postback is never silently dropped.
     """
     from sqlalchemy import select as _sql_select
     from backend.api.database import async_session as _async_s
@@ -99,6 +111,70 @@ async def _sync_algo_order_rows(
         _rows = (await _s.execute(
             _sql_select(_AO).where(_AO.broker_order_id == str(order_id))
         )).scalars().all()
+
+        # M2(a): fallback lookup when no direct broker_order_id match.
+        if not _rows and symbol and txn:
+            _fallback = await _pb_fallback_lookup_row(
+                _s,
+                order_id=order_id,
+                tradingsymbol=symbol,
+                txn=txn,
+                qty=qty,
+                account=account,
+            )
+            if _fallback is not None:
+                # M2(b): CRITICAL so the race condition is surfaced in logs.
+                logger.critical(
+                    "[%s-POSTBACK] fuzzy-matched broker_order_id=%s to "
+                    "AlgoOrder #%s via account/symbol/side (race: "
+                    "postback arrived before seed). acct=%s sym=%s",
+                    broker_id.upper(), order_id, _fallback.id, account, symbol,
+                )
+                _rows = [_fallback]
+
+        # M2(c): create an orphan row so the postback is never silently dropped.
+        if not _rows:
+            logger.warning(
+                "[%s-POSTBACK] no AlgoOrder match for broker_order_id=%s "
+                "(acct=%s sym=%s txn=%s) — creating orphan row.",
+                broker_id.upper(), order_id, account, symbol, txn,
+            )
+            try:
+                from datetime import datetime, timezone as _tz
+                _orphan = _AO(
+                    account=account or broker_id,
+                    symbol=symbol or "UNKNOWN",
+                    exchange="",
+                    transaction_type=(txn or "BUY").upper(),
+                    quantity=int(qty or 0),
+                    broker_order_id=str(order_id),
+                    status=(_new_status or "OPEN"),
+                    engine="live",
+                    mode="live",
+                    detail=(
+                        f"orphan postback from {broker_id}: {status} "
+                        + (f"@{price}" if price else "")
+                    )[:500],
+                )
+                if _new_status == "FILLED" and price:
+                    try:
+                        _orphan.fill_price = float(price)
+                    except (TypeError, ValueError):
+                        pass
+                    _orphan.filled_at = datetime.now(_tz.utc)
+                _s.add(_orphan)
+                await _s.commit()
+                logger.info(
+                    "[%s-POSTBACK] orphan AlgoOrder #%s created for %s.",
+                    broker_id.upper(), _orphan.id, order_id,
+                )
+            except Exception as _orp_err:
+                logger.warning(
+                    "[%s-POSTBACK] orphan creation failed for %s: %s",
+                    broker_id.upper(), order_id, _orp_err,
+                )
+            return _filled_rows
+
         for _r in _rows:
             if _sync_apply_row_status(
                 _r, new_status=_new_status, price=price,
@@ -160,6 +236,7 @@ async def _process_broker_postback(
         _filled_rows = await _sync_algo_order_rows(
             broker_id=broker_id, order_id=order_id, status=status,
             price=price, status_message=status_message, qty=qty,
+            account=account, symbol=symbol, txn=txn,
         )
         for _r in _filled_rows:
             try:
