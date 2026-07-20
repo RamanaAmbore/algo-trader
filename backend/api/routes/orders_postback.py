@@ -50,6 +50,61 @@ def _pb_audit_category(status: str) -> str:
     return _STATUS_AUDIT_CATEGORY.get(str(status or "").upper(), "order")
 
 
+async def _create_postback_orphan_row(
+    s,
+    *,
+    broker_id: str,
+    order_id: str,
+    account: str,
+    symbol: str,
+    txn: str,
+    qty,
+    price,
+    new_status: str | None,
+    AlgoOrder_cls,
+) -> None:
+    """Create an orphan AlgoOrder row when no direct or fuzzy-match succeeds.
+
+    Ensures postback events are never silently dropped. Logs a warning before
+    attempting the insert; logs success or a warning on failure.
+    """
+    from datetime import datetime, timezone as _tz
+
+    try:
+        _orphan = AlgoOrder_cls(
+            account=account or broker_id,
+            symbol=symbol or "UNKNOWN",
+            exchange="",
+            transaction_type=(txn or "BUY").upper(),
+            quantity=int(qty or 0),
+            broker_order_id=str(order_id),
+            status=(new_status or "OPEN"),
+            engine="live",
+            mode="live",
+            detail=(
+                f"orphan postback from {broker_id}: {new_status or 'UNKNOWN'} "
+                + (f"@{price}" if price else "")
+            )[:500],
+        )
+        if new_status == "FILLED" and price:
+            try:
+                _orphan.fill_price = float(price)
+            except (TypeError, ValueError):
+                pass
+            _orphan.filled_at = datetime.now(_tz.utc)
+        s.add(_orphan)
+        await s.commit()
+        logger.info(
+            "[%s-POSTBACK] orphan AlgoOrder #%s created for %s.",
+            broker_id.upper(), _orphan.id, order_id,
+        )
+    except Exception as _orp_err:
+        logger.warning(
+            "[%s-POSTBACK] orphan creation failed for %s: %s",
+            broker_id.upper(), order_id, _orp_err,
+        )
+
+
 def _sync_apply_row_status(
     _r, *, new_status: str, price, broker_id: str, status: str, status_message: str,
 ) -> bool:
@@ -139,40 +194,11 @@ async def _sync_algo_order_rows(
                 "(acct=%s sym=%s txn=%s) — creating orphan row.",
                 broker_id.upper(), order_id, account, symbol, txn,
             )
-            try:
-                from datetime import datetime, timezone as _tz
-                _orphan = _AO(
-                    account=account or broker_id,
-                    symbol=symbol or "UNKNOWN",
-                    exchange="",
-                    transaction_type=(txn or "BUY").upper(),
-                    quantity=int(qty or 0),
-                    broker_order_id=str(order_id),
-                    status=(_new_status or "OPEN"),
-                    engine="live",
-                    mode="live",
-                    detail=(
-                        f"orphan postback from {broker_id}: {status} "
-                        + (f"@{price}" if price else "")
-                    )[:500],
-                )
-                if _new_status == "FILLED" and price:
-                    try:
-                        _orphan.fill_price = float(price)
-                    except (TypeError, ValueError):
-                        pass
-                    _orphan.filled_at = datetime.now(_tz.utc)
-                _s.add(_orphan)
-                await _s.commit()
-                logger.info(
-                    "[%s-POSTBACK] orphan AlgoOrder #%s created for %s.",
-                    broker_id.upper(), _orphan.id, order_id,
-                )
-            except Exception as _orp_err:
-                logger.warning(
-                    "[%s-POSTBACK] orphan creation failed for %s: %s",
-                    broker_id.upper(), order_id, _orp_err,
-                )
+            await _create_postback_orphan_row(
+                _s, broker_id=broker_id, order_id=order_id,
+                account=account, symbol=symbol, txn=txn, qty=qty,
+                price=price, new_status=_new_status, AlgoOrder_cls=_AO,
+            )
             return _filled_rows
 
         for _r in _rows:

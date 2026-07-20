@@ -191,6 +191,79 @@ async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
 # history, but the order goes through instead of being rejected.
 _KITE_TAG_MAX = 20
 
+def _validate_kite_order_prices(
+    order_type: str,
+    price: Any,
+    trigger_price: Any,
+) -> None:
+    """Validate that price / trigger_price fields are populated for
+    order types that require them.
+
+    Raises BrokerOrderError with a descriptive message before the SDK
+    call so callers receive a typed error rather than an opaque
+    kiteconnect InputException.
+    """
+    if order_type in ("LIMIT", "LMT"):
+        if not (float(price or 0) > 0):
+            raise BrokerOrderError(
+                "LIMIT order requires price > 0", broker="kite"
+            )
+    if order_type in ("SL", "SL-M", "STOP_LOSS"):
+        if not (float(trigger_price or 0) > 0):
+            raise BrokerOrderError(
+                "SL order requires trigger_price > 0", broker="kite"
+            )
+    if order_type == "SL":
+        # SL (not SL-M) also requires a limit price for the order leg.
+        if not (float(price or 0) > 0):
+            raise BrokerOrderError(
+                "SL order requires price > 0", broker="kite"
+            )
+
+
+def _check_kite_qty_ceiling(
+    exchange: str,
+    qty: int,
+    symbol: str,
+    is_close: bool,
+) -> None:
+    """Last-line-of-defence absurd-qty ceiling for place_order.
+
+    MCX/NCO qty is LOTS on Kite.  50 lots is an exceptional but
+    plausible institutional close; more than that on a new open order
+    is almost certainly a typo.
+
+    NFO/CDS/BFO qty is CONTRACTS.  50 000 catches 5-digit numeric
+    typos while allowing large index-option books.
+
+    Close orders (intent="close") bypass both ceilings so a full
+    position unwind of any size can go through.
+    """
+    if not is_close and exchange in ("MCX", "NCO") and qty > 50:
+        logger.error(
+            "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s (MCX/NCO lots) "
+            "> 50-lot absurd-value ceiling.", exchange, symbol, qty,
+        )
+        raise ValueError(
+            f"[ADAPTER-QTY-CEILING] {exchange} qty={qty} exceeds 50-lot "
+            f"absurd-value ceiling for {symbol}. Refusing at adapter layer."
+        )
+    if not is_close and exchange in ("NFO", "CDS", "BFO") and qty > 50000:
+        logger.error(
+            "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s > 50000-contract "
+            "absurd-value ceiling.", exchange, symbol, qty,
+        )
+        raise ValueError(
+            f"[ADAPTER-QTY-CEILING] {exchange} qty={qty} exceeds 50000-"
+            f"contract absurd-value ceiling for {symbol}. Refusing at adapter layer."
+        )
+    if is_close and qty > 50 and exchange in ("MCX", "NCO"):
+        logger.info(
+            "[ADAPTER-QTY-CEILING] close-intent bypass: %s %s qty=%s lots "
+            "(ceiling skipped for position unwind).", exchange, symbol, qty,
+        )
+
+
 def _truncate_tag(kwargs: dict[str, Any]) -> None:
     """In-place truncation of a Kite-bound order kwargs dict's `tag`
     field. No-op when `tag` is absent or None."""
@@ -301,69 +374,20 @@ class KiteBroker(Broker):
 
     def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:
         _truncate_tag(kwargs)
-        # M3 — LIMIT/SL price validation before SDK call.
-        # Catches callers that forgot to populate price/trigger_price for
-        # non-MARKET order types. Better to raise here with a clear message
-        # than to let Kite return an opaque InputException.
-        _ot = str(kwargs.get("order_type") or "").upper()
-        if _ot in ("LIMIT", "LMT"):
-            if not (float(kwargs.get("price") or 0) > 0):
-                raise BrokerOrderError(
-                    "LIMIT order requires price > 0", broker="kite"
-                )
-        if _ot in ("SL", "SL-M", "STOP_LOSS"):
-            if not (float(kwargs.get("trigger_price") or 0) > 0):
-                raise BrokerOrderError(
-                    "SL order requires trigger_price > 0", broker="kite"
-                )
-        if _ot == "SL":
-            # SL (not SL-M) also requires a limit price for the order leg.
-            if not (float(kwargs.get("price") or 0) > 0):
-                raise BrokerOrderError(
-                    "SL order requires price > 0", broker="kite"
-                )
-        # LAST-LINE DEFENSE — absurd-qty ceiling at the adapter layer.
-        # Every upstream path (ticket, basket, agent preflight, chase,
-        # trail-stop, OCO pair-watcher) runs its own guards before reaching
-        # here. This final ceiling catches 4-5 digit numeric-typo disasters
-        # that slip past all upstream checks.
-        #
-        # Close orders bypass BOTH ceilings: a legitimate full-position unwind
-        # may exceed 50 MCX lots or 50 000 NFO contracts. The `intent="close"`
-        # signal is set by the ticket handler and propagated here so position
-        # closes of any size can go through without being hard-blocked.
-        _is_close = (intent or "").lower() == "close"
-        _exch = str(kwargs.get("exchange") or "").upper()
-        _kqty = int(kwargs.get("quantity") or 0)
-        _sym  = str(kwargs.get("tradingsymbol") or "")
-        # MCX/NCO qty is LOTS. 50 lots ≈ 5000 barrels CRUDEOIL — an
-        # exceptional but plausible institutional close. > 50 = typo for
-        # new open orders; bypassed for closes.
-        if not _is_close and _exch in ("MCX", "NCO") and _kqty > 50:
-            logger.error(
-                "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s (MCX/NCO lots) "
-                "> 50-lot absurd-value ceiling.", _exch, _sym, _kqty,
-            )
-            raise ValueError(
-                f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 50-lot "
-                f"absurd-value ceiling for {_sym}. Refusing at adapter layer."
-            )
-        # NFO/CDS/BFO qty is CONTRACTS. 50000 catches 5-digit typo but
-        # allows massive index option books. Bypassed for closes.
-        if not _is_close and _exch in ("NFO", "CDS", "BFO") and _kqty > 50000:
-            logger.error(
-                "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s > 50000-contract "
-                "absurd-value ceiling.", _exch, _sym, _kqty,
-            )
-            raise ValueError(
-                f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 50000-"
-                f"contract absurd-value ceiling for {_sym}. Refusing at adapter layer."
-            )
-        if _is_close and _kqty > 50 and _exch in ("MCX", "NCO"):
-            logger.info(
-                "[ADAPTER-QTY-CEILING] close-intent bypass: %s %s qty=%s lots "
-                "(ceiling skipped for position unwind).", _exch, _sym, _kqty,
-            )
+        # M3 — LIMIT/SL price validation + absurd-qty ceiling before SDK call.
+        # Both checks are pure logic extracted to module-level helpers to keep
+        # this method's CC below D.
+        _validate_kite_order_prices(
+            str(kwargs.get("order_type") or "").upper(),
+            kwargs.get("price"),
+            kwargs.get("trigger_price"),
+        )
+        _check_kite_qty_ceiling(
+            str(kwargs.get("exchange") or "").upper(),
+            int(kwargs.get("quantity") or 0),
+            str(kwargs.get("tradingsymbol") or ""),
+            (intent or "").lower() == "close",
+        )
         _KITE_RATE_LIMITER.throttle("orders")
         return self.kite.place_order(**kwargs)
 
