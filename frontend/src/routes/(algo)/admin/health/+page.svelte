@@ -595,7 +595,7 @@
   .ticker-stale-list {
     margin-top: 0.55rem;
     padding-top: 0.45rem;
-    border-top: 1px solid rgba(255,255,255,0.05);
+    border-top: 1px solid rgba(126,151,184,0.10);
     max-height: 12rem;
     overflow-y: auto;
     scrollbar-width: thin;
@@ -656,7 +656,7 @@
   .kv-section {
     margin-top: 0.4rem;
     padding-top: 0.35rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    border-top: 1px solid rgba(126,151,184,0.10);
   }
   .kv-indent {
     padding-left: 0.6rem;

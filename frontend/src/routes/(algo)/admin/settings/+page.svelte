@@ -411,7 +411,7 @@
   {/each}
 
 {#snippet proxyCrud()}
-  <div class="mt-2 pt-2 border-t border-white/5">
+  <div class="mt-2 pt-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
     <h3 class="text-[0.65rem] font-bold mb-1 opacity-90">Pair table</h3>
     <p class="text-[0.55rem] opacity-70 mb-1">
       Pair-only cross-reference between a held instrument and the
@@ -458,7 +458,7 @@
           </thead>
           <tbody>
             {#each proxies as p (p.id)}
-              <tr class="border-t border-white/5">
+              <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
                 <td class="p-1 font-mono">{p.proxy_symbol}</td>
                 <td class="p-1 font-mono">{p.target_root}</td>
                 <td class="p-1"><input bind:value={p.note} class="field-input w-44" /></td>
@@ -506,7 +506,7 @@
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
   .settings-row {
-    border-bottom: 1px solid rgba(255,255,255,0.05);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .settings-row:last-child { border-bottom: 0; }
   .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }

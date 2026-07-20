@@ -761,7 +761,7 @@
         {#if isOpen}
           {#if editing === agent.slug}
             <!-- ──────── Inline editor (form on top, tree preview below) ──────── -->
-            <div class="px-3 pb-3 pt-2 border-t border-white/5">
+            <div class="px-3 pb-3 pt-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
               <!-- ── FORM FIELDS ── -->
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
@@ -1028,7 +1028,7 @@
               </div>
 
               <!-- ── LIVE TREE PREVIEW (below the form) ── -->
-              <div class="agent-preview mt-4 pt-3 border-t border-white/5">
+              <div class="agent-preview mt-4 pt-3 border-t" style="border-top-color: rgba(126,151,184,0.10)">
                 <div class="preview-heading">Live preview</div>
                 <div class="grid grid-cols-1 md:grid-cols-[1fr_1fr] gap-3">
                   <div>
@@ -1099,7 +1099,7 @@
           {:else}
             {@const _aiMeta = parseAIDescription(agent.description)}
             <!-- ──────── Normal expanded view ──────── -->
-            <div class="px-2 pb-2 border-t border-white/5">
+            <div class="px-2 pb-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
               {#if _aiMeta.prompt || _aiMeta.why}
                 <div class="ai-meta-box">
                   <span class="ai-meta-pill" title="Created by AI">✦ AI</span>
