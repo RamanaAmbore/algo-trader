@@ -706,7 +706,7 @@
   <div class="page-grid agent-group-grid mb-3">
     {#each group.agents as agent}
       {@const isOpen = expandedSlug === agent.slug}
-      <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
+      <div class="algo-status-card algo-status-card-2x {agent.status === 'triggered' ? 'animate-pulse' : ''}"
            data-status={agent.status}
            style="padding: 0">
         <!-- Compact row (always visible). Div + role="button" so the inner

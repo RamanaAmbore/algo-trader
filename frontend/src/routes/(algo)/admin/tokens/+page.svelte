@@ -392,7 +392,7 @@
   <div class="algo-status-card p-0 overflow-hidden content-fade-in" data-status="inactive">
     <table class="algo-table">
       <thead>
-        <tr class="bg-[#0a1020] text-[var(--c-action)]">
+        <tr>
           <th class="text-left py-1.5 px-2">Kind</th>
           <th class="text-left py-1.5 px-2">Token</th>
           <th class="text-left py-1.5 px-2">Value</th>
@@ -404,7 +404,7 @@
       </thead>
       <tbody>
         {#each filtered() as t}
-          <tr class="border-t border-white/5 hover:bg-white/5 cursor-pointer"
+          <tr class="cursor-pointer"
               onclick={() => expandedId = expandedId === t.id ? null : t.id}>
             <td class="py-1.5 px-2 text-[var(--c-muted)] font-mono uppercase text-[0.55rem]">{t.token_kind}</td>
             <td class="py-1.5 px-2 font-mono text-[var(--c-action)]">{t.token}</td>

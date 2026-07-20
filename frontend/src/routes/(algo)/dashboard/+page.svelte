@@ -2196,7 +2196,7 @@
          its own tab-row header (label chip, filters, card buttons).
          The row3-header div is removed — LogPanel owns its chrome. -->
     <ActivityLogSurface
-      defaultTab="order"
+      defaultTab="news"
       context="card-wide"
       label="ACTIVITY"
       cardId="dash-activity"

@@ -250,8 +250,9 @@
         {#if g[kind] && g[kind].length > 0}
           <h2 class="grp-title">{kind.toUpperCase()}</h2>
           <ul class="frag-list">
-            {#each g[kind] as f}
-              <li class="frag-row" class:frag-row-open={expandedId === f.id}
+            {#each g[kind] as f, i}
+              <li class="frag-row {i % 2 === 0 ? 'row-tint-odd' : 'row-tint-even'}"
+                  class:frag-row-open={expandedId === f.id}
                   class:frag-row-system={f.is_system}
                   class:frag-row-inactive={!f.is_active}>
                 <button class="frag-head" onclick={() => expandedId = expandedId === f.id ? null : f.id}>
@@ -402,7 +403,7 @@
   }
   .frag-row {
     background: linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border: 1px solid rgba(255,255,255,0.05);
+    border: 1px solid rgba(126,151,184,0.10);
     border-radius: 0.3rem;
     overflow: hidden;
     transition: border-color 0.08s;
@@ -423,7 +424,7 @@
     color: rgba(200,216,240,0.85);
     cursor: pointer;
     font-family: var(--font-numeric);
-    font-size: var(--fs-lg);
+    font-size: 0.72rem;
     text-align: left;
   }
   .frag-name {

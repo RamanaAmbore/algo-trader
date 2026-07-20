@@ -1079,6 +1079,10 @@
 .algo-table tbody tr:hover td {
   background: var(--ag-row-hover-color, rgba(34,211,238,0.05));
 }
+/* Shared alternating-row tint — LogPanel, exp-close grid, and any hand-rolled list */
+.row-tint-odd  { background: rgba(13,22,42,0.30); }
+.row-tint-even { background: transparent; }
+.row-tint-odd:hover, .row-tint-even:hover { background: rgba(34,211,238,0.05); }
 .algo-table-num { text-align: right; font-variant-numeric: tabular-nums; }
 .algo-table-wrap { overflow-x: auto; }
 
@@ -2002,6 +2006,8 @@
 .algo-card-wide {
   grid-column: 1 / -1;
 }
+.algo-status-card-2x { grid-column: span 2; }
+@media (max-width: 640px) { .algo-status-card-2x { grid-column: span 1; } }
 
 /* Status token layer — drives card chrome AND inner pill via CSS vars */
 .algo-status-card[data-status="running"]   { --st-fg: #fbbf24; --st-bg: rgba(251,191,36,0.12);  --st-border: rgba(251,191,36,0.45); }

@@ -4300,7 +4300,7 @@
             <CandidateLegRow
               {c}
               ci={_ci}
-              stripe={_ci % 2 === 0 ? 'cand-row-odd' : 'cand-row-even'}
+              stripe={_ci % 2 === 0 ? 'row-tint-odd' : 'row-tint-even'}
               prevBand={displayedCandidates[_ci - 1]?._band ?? null}
               bandCount={displayedCandidates.filter(r => r._band === c._band && r._segment === c._segment).length}
               {legsTab}
@@ -5685,10 +5685,10 @@
   /* Alternating row backgrounds for legs grid — stripe class is passed
      from the {#each} index so band-header elements (also grid children)
      do not consume nth-child positions and corrupt the pattern. */
-  :global(.cand-row.cand-row-odd):not(:global(.cand-row-total)) {
+  :global(.cand-row.row-tint-odd):not(:global(.cand-row-total)) {
     background-color: rgba(13,22,42,0.30);
   }
-  :global(.cand-row.cand-row-even):not(:global(.cand-row-total)) {
+  :global(.cand-row.row-tint-even):not(:global(.cand-row-total)) {
     background-color: transparent;
   }
 
