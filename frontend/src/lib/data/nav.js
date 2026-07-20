@@ -88,7 +88,7 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
  * function (or a wrapper that calls it) instead of reading `p.day_change_val`
  * directly.
  *
- * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null }} p
+ * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null, tradingsymbol?: string|null, symbol?: string|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
@@ -107,10 +107,20 @@ export function baseDayPnlForPosition(p) {
   const avg   = Number(p?.average_price ?? p?.avg_cost ?? 0);
   if (oq > 0 && dcv !== 0) return dcv;
   if (oq > 0 && dcv === 0) {
-    // Case 4: only guard against zero/missing close (broker hasn't populated
-    // prev_close yet). Removed close===ltp guard — it incorrectly zeroed realized
-    // P&L when broker's close_price hadn't refreshed. Formula is correct regardless.
-    if (close <= 0) return 0;
+    // Case 4: close_price is 0 (broker hasn't populated prev_close yet for this
+    // symbol). Backend _positions_snapshot() sets close_price from prev_ltp
+    // (yesterday's settlement via daily_book) when available, falling back to
+    // previous_close. close <= 0 only during a narrow timing window when the
+    // position is brand-new (no prior snapshot row) AND the broker poll hasn't
+    // yet delivered a prev_close. In that window pnl - oq*(0 - avg) = pnl + oq*avg
+    // would be wildly wrong, so return 0 as the safe fallback.
+    // If you see this hit for overnight positions, investigate whether
+    // _positions_snapshot prev_ltp SQL CTE is working correctly.
+    if (close <= 0) {
+      // eslint-disable-next-line no-console
+      if (typeof console !== 'undefined') console.warn('[baseDayPnlForPosition] Case 4: close_price=0 for overnight position', { symbol: p?.tradingsymbol ?? p?.symbol, oq, pnl });
+      return 0;
+    }
     return pnl - oq * (close - avg);
   }
   return pnl - oq * (close - avg);

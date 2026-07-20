@@ -381,9 +381,8 @@
      .cand-sym-acct::after right-border (green/red 2px). No row
      background-color or inset bars so the band-tint (expiry-band-*)
      and account tint on the symbol cell are the only background
-     layers on the row. Hover falls through to the neutral .cand-row:hover. */
-  .cand-row-long  { background-color: transparent; }
-  .cand-row-short { background-color: transparent; }
+     layers on the row. Hover falls through to the neutral .cand-row:hover.
+     No background-color set so row-tint-odd alternating stripe shows through. */
   .cand-row-long:hover  { background: rgba(34,211,238,0.05); }
   .cand-row-short:hover { background: rgba(34,211,238,0.05); }
 
@@ -588,37 +587,32 @@
     box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.65);
   }
   .cand-row.expiry-band-netted {
-    background-color: transparent;
+    /* No background-color: let row-tint-odd alternating stripe show through. */
     box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.55);
   }
   /* Per-pair tint — each pair of opposite positions inside the
      NETTED band gets one of 5 alternating LEFT inset bars so the
      operator can visually map "this row cancels that one".
-     Background-color removed: text reads against transparent row bg.
+     No background-color set: row-tint-odd stripe shows on alternating rows.
      Bar alpha raised to 0.75 so the colour cue is legible without
      a background fill. */
   .cand-row.expiry-band-netted[data-pair-tint="0"] {
-    background-color: transparent;
     box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.75);  /* sky */
   }
   .cand-row.expiry-band-netted[data-pair-tint="1"] {
-    background-color: transparent;
     box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.75);   /* violet */
   }
   .cand-row.expiry-band-netted[data-pair-tint="2"] {
-    background-color: transparent;
     box-shadow: inset 2px 0 0 rgba(45, 212, 191, 0.75);   /* teal */
   }
   .cand-row.expiry-band-netted[data-pair-tint="3"] {
-    background-color: transparent;
     box-shadow: inset 2px 0 0 rgba(244, 114, 182, 0.75);  /* pink */
   }
   .cand-row.expiry-band-netted[data-pair-tint="4"] {
-    background-color: transparent;
     box-shadow: inset 2px 0 0 rgba(132, 204, 22, 0.75);   /* lime */
   }
   .cand-row.expiry-band-otm {
-    background-color: transparent;
+    /* No background-color: let row-tint-odd alternating stripe show through. */
     box-shadow: none;
     opacity: 0.55;
   }
@@ -636,12 +630,12 @@
   }
   .cand-row.expiry-band-netted.cand-row-long,
   .cand-row.expiry-band-netted.cand-row-short {
-    background-color: transparent;
+    /* No background-color: let row-tint-odd show through on alternating rows. */
     box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.55);
   }
   .cand-row.expiry-band-otm.cand-row-long,
   .cand-row.expiry-band-otm.cand-row-short {
-    background-color: transparent;
+    /* No background-color: let row-tint-odd show through on alternating rows. */
     box-shadow: none;
   }
   .cand-row.expiry-band-close.cand-row-long:hover,
