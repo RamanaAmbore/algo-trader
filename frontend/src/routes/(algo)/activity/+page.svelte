@@ -90,9 +90,9 @@
     flex-direction: column;
     flex: 1 1 0;
     min-height: 0;
-    margin: 0 0.5rem 0.5rem 0.5rem;
+    margin-bottom: 0.5rem;
     background: rgba(0, 0, 0, 0.18);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(126,151,184,0.10);
     border-radius: 4px;
     padding: 0.5rem;
   }
