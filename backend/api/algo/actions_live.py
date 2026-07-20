@@ -410,7 +410,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
         "side": side, "qty": qty, "price": price,
     }, status="OPEN")
 
-    cfg = ChaseConfig(exchange=exchange, product=product)
+    cfg = ChaseConfig(exchange=exchange, product=product, intent="close")
     try:
         await chase_order(
             account=account, symbol=symbol,
@@ -748,7 +748,7 @@ async def _chase_build_tasks(
             "side": side, "qty": qty, "price": price,
         }, status="OPEN")
 
-        cfg = ChaseConfig(exchange=exchange, product="NRML")
+        cfg = ChaseConfig(exchange=exchange, product="NRML", intent="close")
         chase_tasks.append(
             asyncio.create_task(
                 chase_order(account=acct, symbol=symbol,

@@ -365,6 +365,9 @@ class ChaseConfig:
     # violation, permission gap) won't fix itself in milliseconds, so
     # waiting before the next place_order avoids hammering Kite's
     # 1-order/sec rate limit and gives the operator time to react.
+    intent: str | None = None
+    # forwarded to broker.place_order so the adapter ceiling in kite.py
+    # treats close orders correctly (intent="close" bypasses the 50-lot cap).
 
 
 def _get_broker(account: str):
@@ -561,6 +564,7 @@ def _place_order(account: str, symbol: str, transaction_type: str,
         order_type="LIMIT",
         price=price,
         validity=cfg.validity,
+        intent=cfg.intent,
     )
     return str(order_id)
 
