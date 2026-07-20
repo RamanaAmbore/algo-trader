@@ -4074,12 +4074,7 @@
             {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
               {#if accountPicker && availableAccounts.length > 0}
-                <!-- Per-card Account picker. Positions and Holdings each
-                     carry their own filter so an operator can scope
-                     Positions to ZG#### (intraday) while Holdings
-                     tracks ZJ#### (long-term) independently. Left-anchored
-                     so it reads as part of the card's identity strip
-                     (label + filter), not part of the controls cluster. -->
+                <span class="mp-head-sep" aria-hidden="true"></span>
                 <div class="mp-head-acct">
                   <AccountMultiSelect bind:value={positionsAccounts}
                     options={availableAccounts.map(a => ({ value: a, label: a }))}
@@ -4107,6 +4102,7 @@
             {#snippet left()}
               <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
               {#if accountPicker && availableAccounts.length > 0}
+                <span class="mp-head-sep" aria-hidden="true"></span>
                 <div class="mp-head-acct">
                   <AccountMultiSelect bind:value={holdingsAccounts}
                     options={availableAccounts.map(a => ({ value: a, label: a }))}
@@ -5007,6 +5003,13 @@
      (canonical rule) — sits immediately after the card label, before
      the spacer + control trio. Narrow width so it doesn't crowd the
      row on tighter viewports. */
+  .mp-head-sep {
+    width: 1px;
+    align-self: stretch;
+    background: rgba(255,255,255,0.10);
+    flex-shrink: 0;
+    margin: 0.15rem 0.4rem;
+  }
   .mp-head-acct {
     flex: 0 0 auto;
     width: 7rem;
