@@ -1,110 +1,46 @@
-# Plan: 6D Audit remediation — P1/P2/P3 fixes from 2026-07-20 audit
+# Plan: GTT-QTY-GUARD stale-index fallback + RefreshButton default-mode cleanup
 
-## Context
+## Task
 
-Seven code defects + two polish items surfaced by the post-orders-hardening 6D audit.
-Backend-only except one frontend CSS SSOT and one doc sync pass.
+**P0 — CRUDEOIL GTT attach refused overnight**: At 00:19 IST (post MCX close), the
+instruments cache TTL expired and `get_lot_size("MCX", "CRUDEOIL25AUGFUT")` failed.
+The GTT-QTY-GUARD (A4 from 6D sprint) returned 0 (cache miss sentinel), which the
+`_resolve_lot_size_for_order` guard treats as "cannot safely translate qty → refuse".
+Result: exits NOT attached to the position. Fix: when live fetch fails, fall back to
+the stale `_LOT_INDEX` module-level dict (populated from last successful fetch, persists
+all process-lifetime). Covers overnight MCX window where cache expires but prior index
+is still warm.
 
----
-
-## P1 — Critical
-
-### A1 · M13 idempotency missing time bound
-`backend/api/routes/orders_place.py:1254–1261`
-The SELECT on `AlgoOrder.request_id` has no `created_at` filter. A request_id that
-was last used weeks ago would return the stale row instead of placing a new order.
-**Fix**: add `.where(AlgoOrder.created_at >= datetime.now(timezone.utc) - timedelta(seconds=60))`
-to the idempotency lookup. Import `timedelta` from `datetime` at the same local-import site.
-
-### A2 · rate_limiter refill_rate=0 consumes a token without sleeping
-`backend/brokers/rate_limiter.py:88–104`
-When `refill_rate == 0`, `sleep_time = float('inf')`. The guard at line 91
-(`if sleep_time != float('inf')`) skips the sleep, but line 104 still runs
-`bucket["tokens"] -= 1.0` — consuming a non-existent token and returning.
-**Fix**: add `return` (or `raise ValueError("rate_limiter group has zero refill rate")`
-after setting `sleep_time = float('inf')`) so the function never reaches the second
-`with self._lock` block.
-
-### A3 · M17 basket lot-miss should 503, not soft-error per leg
-`backend/api/routes/orders_basket.py:310–322`
-Lot-cache miss currently appends a per-leg `BasketLegResult(status="error")` and
-`continue`s. Plan called for `HTTPException(503)` to match ticket handler.
-**Fix**: replace the `leg_results.append(...); continue` block with
-`raise HTTPException(status_code=503, detail=f"lot_size for {sym} on {exch} unavailable — retry in a moment")`.
-
----
-
-## P2 — Important
-
-### A4 · place_gtt qty ceiling not using shared helper
-`backend/brokers/adapters/kite.py:445–468`
-Inline MCX/NCO and NFO/CDS/BFO qty ceiling in `place_gtt` duplicates
-`_check_kite_qty_ceiling`. Extract into a separate helper
-`_check_kite_gtt_qty_ceiling(exchange, orders, tradingsymbol)` that iterates
-GTT legs and calls the same ceiling logic, OR inline-call `_check_kite_qty_ceiling`
-per leg. Keep GTT close-intent bypass = always False (no `intent` on GTT calls).
-
-### A5 · place_gtt M3 missing SL/SL-M leg price guard
-`backend/brokers/adapters/kite.py:431–438`
-Current `place_gtt` M3 guard only checks LIMIT legs. SL/SL-M GTT legs that carry
-`trigger_price == 0` pass through to Kite and return an opaque 400.
-**Fix**: add trigger_price > 0 check for SL/SL-M legs inside the GTT leg loop,
-matching the logic in `_validate_kite_order_prices`.
-
-### A6 · M16 tick-align called for SL-M price=0
-`backend/api/routes/orders_basket.py:466–471`
-`_align_price_to_tick` is called for SL-M legs even when `leg.price` is None/0.
-Passing 0 to the tick helper is untested and may propagate an error.
-**Fix**: guard with `if _leg_price > 0` before aligning price; always guard trigger
-separately with `if _leg_trig > 0` before aligning trigger.
-
----
-
-## P3 — Polish / drift
-
-### A7 · Comment drift: TTL still says "1 h" after M6 raised to 4 h
-`backend/api/routes/orders_place.py:227–229`
-Update parenthetical comment from "default 1 h" to "default 4 h".
-
-### A8 · datetime alias confusion in orders_postback.py
-`backend/api/routes/orders_postback.py:23, 71`
-Module-level `from datetime import datetime, timezone` (line 23) and
-`_create_postback_orphan_row` local `from datetime import datetime, timezone as _tz`
-(line 71) coexist. The module-level import already provides everything needed.
-**Fix**: remove the local import inside `_create_postback_orphan_row`; change
-`_tz.utc` references to `timezone.utc` (matching the module-level alias).
-
-### A9 · Separator CSS not using SSOT
-`frontend/src/lib/MarketPulse.svelte:5006` `.mp-head-sep`
-`frontend/src/lib/PositionStrip.svelte:1037` `.ps-agg-sep`
-Both replicate `CardHeader.svelte:.ch-sep` instead of sharing a CSS custom property.
-**Fix**: add `--color-sep: rgba(126,151,184,0.10)` and `--sep-margin: 0.15rem 0.4rem`
-to `app.css` (or the global CSS token file). Update `.ch-sep`, `.mp-head-sep`, and
-`.ps-agg-sep` to use these variables. No visual change — pure token extraction.
-
----
+**Frontend — RefreshButton default-mode cleanup**: Two violations of the canonical
+CardControls gate (`onRefresh && (isFullscreen || refreshAlwaysVisible)`):
+1. `derivatives/+page.svelte:4221` — `refreshAlwaysVisible={true}` on the Legs card
+   shows RefreshButton always (should only show in fullscreen).
+2. `PerformancePage.svelte:1282` — standalone `<RefreshButton>` inside `{#if !compactHeader}`
+   block. PerformancePage is always embedded inside a page that has a page-header RefreshButton.
+   The per-component internal one is redundant in default mode and violates the rule.
+Rule per operator: page-header RefreshButton is canonical for all default-mode pages.
+Card-level RefreshButton only in fullscreen.
 
 ## Agents
 
-- backend: Fix A1, A3, A6, A7, A8
-  Files: `backend/api/routes/orders_place.py`, `backend/api/routes/orders_basket.py`,
-  `backend/api/routes/orders_postback.py`
-
-- broker: Fix A2, A4, A5
-  Files: `backend/brokers/rate_limiter.py`, `backend/brokers/adapters/kite.py`
-
-- frontend: Fix A9
-  Files: `frontend/src/app.css` (or global token file), `frontend/src/lib/MarketPulse.svelte`,
-  `frontend/src/lib/PositionStrip.svelte`, `frontend/src/lib/CardHeader.svelte`
-
-- backend-test: Write pytest tests for A1, A2, A3, A5, A6
-  - A1: request_id from 65s ago → new order placed (not idempotent return)
-  - A2: TokenBucketLimiter with refill_rate=0 → throttle() returns immediately (no token consumed)
-  - A3: basket place with cold lot-cache → HTTPException(503) raised
-  - A5: place_gtt SL leg trigger_price=0 → BrokerOrderError raised
-  - A6: basket SL-M leg price=0 → align_price not called (no error)
-
-- doc: skip (D6 deferred — audit agents stalled; address in separate pass)
+- backend: skip
+- frontend: In `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` line 4221,
+  remove `refreshAlwaysVisible={true}` (delete the line). In
+  `frontend/src/lib/PerformancePage.svelte` line 1282, remove the
+  `<RefreshButton onClick={() => loadAll({ fresh: true })} {loading} label="performance" />`
+  line. Check if `RefreshButton` import in `PerformancePage.svelte` is still used elsewhere
+  in that file; if not, remove the import too. Run svelte-check after.
+- broker: In `backend/brokers/adapters/kite.py`, inside `get_lot_size`, in the
+  `except Exception as e` handler (currently lines 178-182), add a stale-index fallback
+  BEFORE returning 0: check `_LOT_INDEX.get((exchange, tradingsymbol))`; if it returns
+  a value > 1, log a warning and return it. Only if stale index is also empty, return
+  0 for MCX (or 1 for non-MCX) as today. Change the `logger.debug` on line 179 to
+  `logger.warning`. Also write a new test in `backend/tests/test_audit_remediation.py`:
+  "test_get_lot_size_stale_index_fallback" — mock `get_or_fetch` to raise RuntimeError,
+  pre-populate `_LOT_INDEX` with `("MCX", "CRUDEOIL25AUGFUT") → 100`, assert
+  `get_lot_size("MCX", "CRUDEOIL25AUGFUT")` returns 100 (not 0).
+- doc: skip
+- backend-test: skip
 - playwright: skip
 
 ## Tests
@@ -115,16 +51,21 @@ to `app.css` (or the global CSS token file). Update `.ch-sep`, `.mp-head-sep`, a
 
 ## Commit message
 
-fix(audit): 6D remediation — M13 time-bound, rate-limiter zero-refill, basket 503, GTT SL guard, tick-align guard, comment + alias cleanup
+fix(gtt-guard): stale-index fallback in get_lot_size + RefreshButton default-mode cleanup
+
+GTT-QTY-GUARD (A4) refused CRUDEOIL25AUGFUT attach at 00:19 IST: instruments cache
+expired overnight, get_lot_size returned 0 sentinel, guard blocked attach. Fix:
+use stale _LOT_INDEX (warm from last successful fetch) before returning 0. Handles
+overnight MCX cache-expiry window without weakening the guard on cold start.
+
+Frontend: remove refreshAlwaysVisible={true} from Legs card and standalone <RefreshButton>
+from PerformancePage — page-header refresh button is canonical for default mode.
 
 ## Done when
 
-1. M13 idempotency query includes `created_at >= now() - 60s`.
-2. `TokenBucketLimiter.throttle` returns early (no token consumed) when `refill_rate == 0`.
-3. Basket lot-miss raises `HTTPException(503)` matching ticket handler.
-4. `place_gtt` SL/SL-M legs validate `trigger_price > 0`.
-5. `place_gtt` qty ceiling delegates to `_check_kite_qty_ceiling` (or extracted GTT variant).
-6. Basket M16 tick-align guarded by `price > 0` / `trigger > 0`.
-7. TTL comment corrected to "4 h". `_tz` local alias removed from orphan helper.
-8. Separator CSS tokens extracted to global and referenced in all three components.
-9. pytest green on all new test cases.
+- `backend/tests/test_audit_remediation.py::test_get_lot_size_stale_index_fallback` passes
+- `kite.py get_lot_size` except block: stale index checked before returning 0
+- `derivatives/+page.svelte`: `refreshAlwaysVisible={true}` line removed (Legs card)
+- `PerformancePage.svelte`: standalone `<RefreshButton>` removed from internal header
+- All pytest passes; svelte-check 0 errors
+- RefreshButton import removed from PerformancePage if no longer used

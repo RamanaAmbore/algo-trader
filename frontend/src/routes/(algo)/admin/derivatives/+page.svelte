@@ -4218,7 +4218,6 @@
           label="Legs"
           onRefresh={_refreshAll}
           bind:refreshLoading={_refreshing}
-          refreshAlwaysVisible={true}
           onDownload={() => exportRowsToCsv(
             displayedCandidates,
             [
