@@ -6260,7 +6260,7 @@
     justify-content: center;
   }
   .chain-basket-step:hover:not(:disabled) {
-    background: rgba(255,255,255,0.05);
+    background: rgba(126,151,184,0.10);
   }
   .chain-basket-step:disabled { opacity: 0.4; cursor: not-allowed; }
   .chain-basket-lots {
@@ -6319,7 +6319,7 @@
     justify-content: center;
   }
   .chain-basket-chase-pill:hover:not(:disabled):not(.on) {
-    background: rgba(255,255,255,0.05);
+    background: rgba(126,151,184,0.10);
   }
   .chain-basket-chase-pill:disabled { opacity: 0.4; cursor: not-allowed; }
   .chain-basket-chase-pill-low.on  { background: rgba(125,211,252,0.20); color: var(--algo-sky); border-color: var(--algo-sky-border); }

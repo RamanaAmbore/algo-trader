@@ -2495,7 +2495,7 @@
     letter-spacing: 0.04em;
     cursor: pointer;
   }
-  .cw-range-btn:last-child { border-right: 0; }
+  .cw-range-btn:last-child:not(.cw-signals-btn) { border-right: 0; }
   .cw-range-btn:hover { background: var(--algo-cyan-bg-soft); color: var(--algo-slate); }
   .cw-range-btn.active {
     /* Active state — cyan-400 (canonical). Operator: "check for colour

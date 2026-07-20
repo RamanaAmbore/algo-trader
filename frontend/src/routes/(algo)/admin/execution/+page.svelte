@@ -15,7 +15,7 @@
   // confused operators ("am I doing LIVE trades?" — no, you're
   // running a sandbox).
 
-  import { onMount } from 'svelte';
+  import { onMount, getContext } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { authStore, lastRefreshAt } from '$lib/stores';
@@ -24,6 +24,10 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+
+  const algoStatus = getContext('algoStatus');
+
+  let _demoBlocked = $state(false);
 
   // Active tab — 'sim' or 'replay'. Seeded from ?tab= or the legacy
   // ?mode= (backward-compat for old SIM/REPLAY dropdown deep-links).
@@ -53,7 +57,12 @@
   }
 
   onMount(() => {
+    const isDemo = algoStatus?.isDemo ?? false;
     const r = $authStore.user?.role;
+    if (isDemo) {
+      _demoBlocked = true;
+      return;                // no redirect, no panel load
+    }
     if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
     const params = page.url.searchParams;
     const want = params.get('tab') || params.get('mode');
@@ -100,39 +109,57 @@
   </span>
 </div>
 
-<AlgoTabs
-  tabs={[
-    { id: 'sim',    label: 'Scenario' },
-    { id: 'replay', label: 'Backtest' },
-  ]}
-  bind:value={tab}
-  onChange={pickTab}
-/>
-<div class="exec-tab-subtitle-row">
-  {#if tab === 'sim'}
-    <span class="exec-tab-subtitle">fabricated moves</span>
-  {:else if tab === 'replay'}
-    <span class="exec-tab-subtitle">historical data</span>
-  {/if}
-</div>
+{#if _demoBlocked}
+  <div class="lab-demo-notice">
+    <span>Sandbox is not available in demo mode.</span>
+  </div>
+{:else}
+  <AlgoTabs
+    tabs={[
+      { id: 'sim',    label: 'Scenario' },
+      { id: 'replay', label: 'Backtest' },
+    ]}
+    bind:value={tab}
+    onChange={pickTab}
+  />
+  <div class="exec-tab-subtitle-row">
+    {#if tab === 'sim'}
+      <span class="exec-tab-subtitle">fabricated moves</span>
+    {:else if tab === 'replay'}
+      <span class="exec-tab-subtitle">historical data</span>
+    {/if}
+  </div>
 
-{#if tab === 'sim'}
-  {#if SimulatorPanel}
-    {@const Comp = SimulatorPanel}
-    <Comp />
-  {:else}
-    <LoadingSkeleton variant="card" rows={5} />
-  {/if}
-{:else if tab === 'replay'}
-  {#if ReplayPanel}
-    {@const Comp = ReplayPanel}
-    <Comp />
-  {:else}
-    <LoadingSkeleton variant="card" rows={5} />
+  {#if tab === 'sim'}
+    {#if SimulatorPanel}
+      {@const Comp = SimulatorPanel}
+      <Comp />
+    {:else}
+      <LoadingSkeleton variant="card" rows={5} />
+    {/if}
+  {:else if tab === 'replay'}
+    {#if ReplayPanel}
+      {@const Comp = ReplayPanel}
+      <Comp />
+    {:else}
+      <LoadingSkeleton variant="card" rows={5} />
+    {/if}
   {/if}
 {/if}
 
 <style>
+  .lab-demo-notice {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem 1rem;
+    margin: 0.75rem 0;
+    border: 1px solid rgba(126,151,184,0.10);
+    border-radius: 4px;
+    color: var(--c-muted);
+    font-size: var(--fs-md);
+  }
+
   /* Subtitle row shown below the AlgoTabs strip; describes the active
      tab's data source so operators know what "Scenario" vs "Backtest"
      means without hovering. */

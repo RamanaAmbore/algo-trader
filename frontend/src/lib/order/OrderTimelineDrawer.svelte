@@ -238,7 +238,7 @@
     justify-content: space-between;
     padding: 0.6rem 0.85rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.2);
-    background: #0a1020;
+    background: var(--algo-bg-elev1);
     flex-shrink: 0;
   }
   .otd-title {

@@ -413,7 +413,7 @@
     column-gap: 0.4rem;
     align-items: center;
     padding: 0.32rem 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
     font-size: var(--fs-sm);
     font-family: var(--font-numeric);
     color: var(--algo-slate);

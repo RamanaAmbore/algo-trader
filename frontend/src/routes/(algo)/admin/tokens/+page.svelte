@@ -440,7 +440,7 @@
             </td>
           </tr>
           {#if expandedId === t.id}
-            <tr class="bg-[#0a1020]">
+            <tr class="bg-[var(--algo-bg-elev1)]">
               <td colspan="7" class="py-2 px-3 text-[0.6rem] text-[#c8d8f0]/80">
                 <div class="grid grid-cols-2 gap-x-6 gap-y-1">
                   {#if t.resolver}
@@ -487,4 +487,5 @@
 
 <style>
   .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }
+  :global(.algo-table) thead th { font-size: 0.68rem; }
 </style>

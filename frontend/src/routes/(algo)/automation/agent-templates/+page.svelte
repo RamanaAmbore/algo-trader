@@ -424,13 +424,16 @@
     color: rgba(200,216,240,0.85);
     cursor: pointer;
     font-family: var(--font-numeric);
-    font-size: 0.72rem;
+    font-size: var(--fs-md);
+    font-weight: 500;
     text-align: left;
   }
   .frag-name {
+    font-size: var(--fs-md);
     font-weight: 700;
     color: var(--c-action);
     letter-spacing: 0.02em;
+    padding-left: 4px;
     flex-shrink: 0;
   }
   .frag-pill {

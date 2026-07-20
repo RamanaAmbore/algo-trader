@@ -1999,7 +1999,7 @@
     left: 0;
     right: 0;
     z-index: 45;
-    background: #0a1020;
+    background: var(--algo-bg-elev1);
     /* Symmetric tight padding — operator: "header row is getting
        more space at the bottom of the row within the row".
        Breathing room between strip and content lives OUTSIDE the
@@ -2323,7 +2323,7 @@
   .mode-combo-dropdown {
     position: fixed;
     z-index: calc(var(--z-command) + 101);
-    background: #0a1020;
+    background: var(--algo-bg-elev1);
     border: 1px solid rgba(251, 191, 36, 0.25);
     border-radius: 6px;
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.55);
@@ -2350,7 +2350,7 @@
   }
   .mode-combo-item:hover { background: rgba(255,255,255,0.07); }
   .mode-combo-item-active {
-    background: rgba(255,255,255,0.05);
+    background: rgba(126,151,184,0.10);
     font-weight: 800;
   }
   .mode-combo-error {

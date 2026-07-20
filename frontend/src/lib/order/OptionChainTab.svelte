@@ -1181,7 +1181,7 @@
     cursor: pointer;
   }
   .oct-mode-btn + .oct-mode-btn { border-left: 1px solid rgba(255,255,255,0.12); }
-  .oct-mode-btn:hover { background: rgba(255,255,255,0.05); color: #f1f7ff; }
+  .oct-mode-btn:hover { background: rgba(126,151,184,0.10); color: #f1f7ff; }
   /* Audit fix — neutral cyan active state. Pre-fix the "place mode"
      workflow toggle painted green when on, which read as "direction =
      long" on every other surface (SymbolPanel uses green = BUY, red =
@@ -1411,7 +1411,7 @@
     cursor: pointer; font-family: monospace; font-size: var(--fs-lg); font-weight: 700;
     line-height: 1; display: inline-flex; align-items: center; justify-content: center;
   }
-  .chain-basket-step:hover:not(:disabled) { background: rgba(255,255,255,0.05); }
+  .chain-basket-step:hover:not(:disabled) { background: rgba(126,151,184,0.10); }
   .chain-basket-step:disabled { opacity: 0.4; cursor: not-allowed; }
   .chain-basket-lots { min-width: 1.1rem; text-align: center; color: var(--c-action); font-family: monospace; font-weight: 700; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
   .chain-basket-limit-static { color: var(--c-action); font-family: monospace; font-size: var(--fs-sm); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }

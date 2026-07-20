@@ -706,7 +706,7 @@
   <div class="page-grid agent-group-grid mb-3">
     {#each group.agents as agent}
       {@const isOpen = expandedSlug === agent.slug}
-      <div class="algo-status-card algo-status-card-2x {agent.status === 'triggered' ? 'animate-pulse' : ''}"
+      <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
            data-status={agent.status}
            style="padding: 0">
         <!-- Compact row (always visible). Div + role="button" so the inner
@@ -1206,13 +1206,16 @@
 
 <style>
   /* ── Agent group grid — uses canonical .page-grid for layout ───────
-     Grid layout (auto-fill minmax(18rem, 1fr), gap 0.5rem, 1-col on
-     mobile) comes from .page-grid in app.css. This scoped class only
-     adds the child overflow fix: grid children default to
-     `min-width: auto` → `max-content`, so wide descendants (condition
-     leaf, JSON params <pre>, ai-meta-why) push the 1fr track past the
-     viewport. `min-width: 0` lets the track honour `1fr` and allows
-     inner overflow guards (word-break, overflow-x) to engage. */
+     Overrides auto-fill with a fixed 2-column layout on desktop so each
+     agent card takes exactly half the row width. Child overflow fix:
+     `min-width: 0` lets the track honour `1fr` and allows inner overflow
+     guards (word-break, overflow-x) to engage. */
+  .agent-group-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  @media (max-width: 768px) {
+    .agent-group-grid { grid-template-columns: 1fr; }
+  }
   .agent-group-grid > * {
     min-width: 0;
     max-width: 100%;
@@ -1625,7 +1628,7 @@
     font-family: var(--font-numeric);
     padding: 0.05rem 0.35rem;
     border-radius: 3px;
-    background: rgba(255,255,255,0.05);
+    background: rgba(126,151,184,0.10);
     color: var(--algo-slate);
     border: 1px solid rgba(255,255,255,0.12);
   }

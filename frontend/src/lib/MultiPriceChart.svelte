@@ -368,7 +368,7 @@
     cursor: pointer;
   }
   .mpc-yscale-btn + .mpc-yscale-btn { border-left: 1px solid rgba(255,255,255,0.12); }
-  .mpc-yscale-btn:hover { background: rgba(255,255,255,0.05); color: #f1f7ff; }
+  .mpc-yscale-btn:hover { background: rgba(126,151,184,0.10); color: #f1f7ff; }
   .mpc-yscale-btn.on {
     background: rgba(74,222,128,0.18);
     color: var(--c-long);
