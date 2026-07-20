@@ -851,10 +851,10 @@
       onclick={() => _dayPnlBreakupOpen = true}
       onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_dayPnlBreakupOpen = true)}
       >{fmtMoney(dispPositionsToday)}</span
-    ><span class="ps-agg-sep">/</span
+    ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
       >{fmtMoney(_livePositionsPnl)}</span
-    ><span class="ps-agg-sep">/</span
+    ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ps-exp ' + flash.classOf('PE')}
       >{fmtMoney(_expiryProfit)}</span
     >
@@ -867,7 +867,7 @@
       text="<b>Available:</b> Cash deployable for new orders = Total − used margin. Updated after every fill.<br><br><b>Total:</b> Full collateral across all accounts = Available + margin blocked for open positions." /></span>
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
       >{fmtMoney(marginAvail)}</span
-    ><span class="ps-agg-sep">/</span
+    ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin-dim' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
       >{fmtMoney(marginTotal)}</span
     >
@@ -887,7 +887,7 @@
       text="<b>Cash Available (CA):</b> Live deployable cash. Nets realised P&L + long option premiums paid.<br><br><b>Total Cash:</b> CA + premium tied up in long options (recoverable if closed)." /></span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
       >{fmtMoney(liveCashTotal)}</span
-    ><span class="ps-agg-sep">/</span
+    ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash-dim' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
       >{fmtMoney(cashTotal)}</span
     >
@@ -898,9 +898,9 @@
       text="<b>Today MTM:</b> Live LTP − prev close × qty for long-term holdings. Intraday only.<br><br><b>Value:</b> Broker-reported current market value across all accounts.<br><br><b>Lifetime P&L:</b> Cumulative since purchase = (current − avg cost) × qty." /></span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
       >{fmtMoney(dispHoldingsToday)}</span
-    ><span class="ps-agg-sep">/</span
+    ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span
-    ><span class="ps-agg-sep">/</span
+    ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos-dim' : _liveHoldingsTotal < 0 ? 'ps-neg-dim' : 'ps-flat') + ' ' + flash.classOf('Hd')}
       >{fmtMoney(_liveHoldingsTotal)}</span
     >
@@ -1010,7 +1010,7 @@
   .ps-agg {
     display: inline-flex;
     align-items: baseline;
-    gap: 0.2rem;
+    gap: 0;
     flex-shrink: 0;
   }
   .ps-agg-k {
@@ -1030,11 +1030,10 @@
     font-weight: 700;
     font-variant-numeric: tabular-nums;
   }
-  /* Slash between the two values inside a paired chip. Muted slate
-     so the value glyphs read as the primary signal and the slash is
-     just a divider. Zero margin; the surrounding HTML is written with
-     no whitespace either side of the slash so it sits flush against
-     the values. */
+  /* Pipe between the two values inside a paired chip. Muted slate
+     so the value glyphs read as the primary signal and the pipe is
+     just a divider. Zero margin + zero gap so it sits flush against
+     the values with no surrounding space. */
   .ps-agg-sep {
     color: var(--algo-muted);
     margin: 0;
@@ -1073,18 +1072,14 @@
     line-height: inherit;
   }
   @media (max-width: 640px) {
-    /* Four pills (P · M · C · H) fill the mobile viewport width:
-       P locks to the left edge; M / C / H distribute across the
-       remaining width via `justify-content: space-between`. The
-       inter-pill gap expands / contracts as the viewport resizes.
-       Horizontal scroll retained as a last-resort safety net if a
-       pill's trio grows past its column (long lifetime P&L numbers). */
-    .ps-strip   { justify-content: space-between;
-                  gap: 0.15rem; padding: 0 0.25rem;
+    /* Pills flow left-to-right; the strip scrolls horizontally when
+       content overflows. Right side clips cleanly — no overlapping.
+       No justify-content: space-between (that was the overlap cause). */
+    .ps-strip   { gap: 0.15rem; padding: 0 0.25rem;
                   overflow-x: auto; -webkit-overflow-scrolling: touch;
                   scrollbar-width: none; }
     .ps-strip::-webkit-scrollbar { display: none; }
-    .ps-agg     { gap: 0.15rem; flex-shrink: 0; max-width: calc(25% - 0.15rem); }
+    .ps-agg     { gap: 0; flex-shrink: 0; }
     .ps-agg-k   { font-size: var(--fs-xs); }
     .ps-agg-v   { font-size: var(--fs-sm); }
   }
