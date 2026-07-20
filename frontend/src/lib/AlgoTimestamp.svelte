@@ -48,7 +48,12 @@
     font-size: inherit;
   }
   @media (max-width: 640px) {
-    .ats-group { font-size: 0.6rem; }
+    .ats-group {
+      font-size: 0.6rem;
+      /* Expand tap target to ~44px without shifting layout */
+      padding: 0.75rem 0.25rem;
+      margin: -0.75rem -0.25rem;
+    }
     .ats-sep { display: none; }
     .ats-mobile-hide { display: none; }
   }
