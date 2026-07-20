@@ -1,98 +1,103 @@
-# Plan: Comprehensive Audit — MCX/F&O Lots vs Contracts, Guards (Close/Add/Buy/Sell), Templates, Chase
+# Plan: Chase restart recovery + create_task reference + mode guard + G1 defensive guard
 
 ## Task
 
-Thorough D1/D5 audit across the full orders pipeline for MCX and equity F&O,
-covering all intents (buy, sell, close, add), guards (G1, G2, adapter ceiling,
-GTT-QTY-GUARD), template attach qty translation, and chase state machine/timing.
+Fix the remaining audit findings:
 
-Key questions to answer per intent × exchange:
-- Does the ticket handler correctly convert LOTS → contracts at the boundary?
-- Does G2 (5-lot cap / MCX 20-lot cap) check against lots (not contracts)?
-- Is the 50-lot adapter ceiling correctly bypassed for close intent only?
-- Does `translate_qty` (MCX: contracts→lots; NFO: pass-through contracts) fire on every
-  path that reaches the broker (ticket, basket, GTT leg, wing, chase close order)?
-- Does the GTT layer call `translate_qty` for EVERY leg including wing?
-- Does chase generate a close order with the right qty for MCX vs NFO?
+**P1 — Live chase tasks lost on server restart**: When the server restarts mid-chase,
+the asyncio task is gone but the `AlgoOrder` row is stuck at `status=OPEN` with `engine=live`
+and `next_attempt_at IS NOT NULL`. No recovery path exists (paper engine has
+`recover_from_db()` at `background.py:4883`; live chase has nothing). Position stays
+open with no re-quoting until manually intervened.
 
-Also audit: chase timing in default vs live mode; NavStrip 5-min cold-start delay
-(known — but check if there's a low-cost fix to warm NavStrip faster post-deploy).
+**P2 — `asyncio.create_task` fire-and-forget**: `orders_helpers.py:304` calls
+`asyncio.create_task(chase_order(...))` with no reference stored. On shutdown the task
+is silently GC'd or cancelled without cleanup.
+
+**P3 — `chase_order` has no internal mode guard**: The live/prod gate lives only at the
+ticket entry path (`_opp_live_check_mode_gates`). Any future caller invoking `chase_order`
+directly (recovery, retry loop, background job) bypasses the gate.
+
+**P3 — `_apply_live_g1_guard` undefended against None quantity**: In
+`template_attach.py:1312–1339`, `int(leg.get("quantity"))` raises `TypeError` if the
+leg dict has a None qty (malformed plan). No try/except — propagates as unhandled.
 
 ## Agents
 
-- backend: skip
+- backend: Implement all four fixes below.
+
+  **Fix 1 — `orders_helpers.py:304`: store task reference**
+  Change `asyncio.create_task(chase_order(...))` to assign the task to a variable,
+  add it to a module-level `_LIVE_CHASE_TASKS: set[asyncio.Task] = set()`, and use
+  `task.add_done_callback(_LIVE_CHASE_TASKS.discard)` so the set auto-cleans on completion.
+
+  **Fix 2 — `background.py`: add `recover_live_chases()` at startup**
+  Write a new async function `recover_live_chases(session_factory)` that:
+  1. Queries `AlgoOrder` for rows where `status='OPEN'` AND `engine='live'` AND
+     `next_attempt_at IS NOT NULL` AND `updated_at < now() - 120s` (2-min grace period
+     avoids recovering orders that just started).
+  2. For each row, builds a `ChaseConfig` from `_chase_default_cfg()` plus `intent`
+     from `row.intent` (if the field exists — use `getattr(row, "intent", None)`).
+  3. Calls `asyncio.create_task(chase_order(algo_order_id=row.id, account=row.account,
+     symbol=row.symbol, transaction_type=row.transaction_type, quantity=row.quantity,
+     cfg=cfg))` — adding the task to `_LIVE_CHASE_TASKS` in `orders_helpers.py`.
+  4. Logs `[CHASE-RECOVERY] restarting chase for order #{row.id} {row.symbol}`.
+  Call `recover_live_chases()` in `on_startup()` in `background.py` at the same
+  location as paper recovery (after line ~4877, before appending to `bg_tasks`).
+  Import `recover_live_chases` from wherever it's defined (can live in `orders_helpers.py`
+  or a new `backend/api/algo/chase_recovery.py`).
+
+  **Fix 3 — `chase.py:chase_order`: add mode guard at top**
+  At the very start of `chase_order` (before any broker calls), add:
+  ```python
+  from backend.api.algo.expiry import is_prod_branch
+  if not is_prod_branch():
+      logger.warning("[CHASE] chase_order called on non-prod branch — aborting")
+      return ChaseResult(status=ChaseStatus.CANCELLED, reason="non-prod branch")
+  ```
+  This mirrors the guard at `background.py:996` for the expiry engine. Only applies
+  when `RAMBOQ_BRANCH != prod` — dev server is safe; prod is unaffected.
+
+  **Fix 4 — `template_attach.py:_apply_live_g1_guard`: defensive None guard**
+  Wrap the `int(leg.get("quantity"))` call (around line 1325) in a `try/except TypeError`
+  and skip the leg with a warning log rather than propagating an unhandled TypeError.
+
+  After all fixes, run:
+  `cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=short -x 2>&1 | tail -20`
+
+  Write one test in `backend/tests/test_audit_remediation.py`:
+  `test_apply_live_g1_guard_skips_none_qty_leg` — call `_apply_live_g1_guard` with a
+  plan whose leg has `quantity=None`; assert it returns None (no error raised) rather
+  than raising TypeError.
+
 - frontend: skip
 - broker: skip
 - doc: skip
 - backend-test: skip
 - playwright: skip
 
-## Audit agents (parallel — all read-only)
-
-**Audit 1 — MCX + NFO ticket/basket qty pipeline**:
-Read `backend/api/routes/orders_place.py` fully (all of `_ticket_validate_input`,
-`_resolve_fno_qty`, `_ticket_enforce_lot_and_fat_finger`, `ticket_order_handler`).
-Read `backend/api/routes/orders_basket.py` (full lot-resolution path).
-Read `backend/brokers/adapters/kite.py` `to_kite_qty`, `translate_qty`, `place_order`
-adapter ceiling block, close-intent bypass.
-Answer for each intent (buy/sell/close/add) on each exchange (MCX, NFO, equity):
-- Does lots→contracts happen exactly once at boundary?
-- Does G2 check against LOTS, not contracts?
-- Does adapter ceiling bypass fire only on close?
-- Is there any path where raw contracts reach `place_order` on MCX?
-
-**Audit 2 — GTT template attach qty translation + wing**:
-Read `backend/api/algo/template_attach.py` lines 1300–1520 (apply_plan_live, G1 guard,
-`_ta_live_place_one_gtt`, wing placement, translate_qty calls).
-Check: does every GTT leg call `translate_qty` before `broker.place_gtt`?
-Does the wing call `translate_qty`?
-Does G1 guard fire before translate_qty, or after? (order matters for MCX)
-What happens when `translate_qty` raises ValueError (lot_size=0 on MCX)? Is the error
-surfaced to the operator or silently dropped?
-Check the `_resolve_lot_size_for_order` caller pattern (lines 1966–1980) — does the
-error result actually get returned if lot_size resolution fails? (Explore agent flagged this
-but caller at 1966–1980 appeared to check — verify with actual code read.)
-
-**Audit 3 — Chase: timing, mode-gating, close qty**:
-Read `backend/api/algo/chase.py` fully — find:
-- What modes trigger chase to actually execute live broker calls vs sim/paper?
-- How is `next_attempt_at` set, and does the frontend "default mode" suppress chase execution?
-- When chase generates a close order, what qty does it send? Does it call `translate_qty`
-  for MCX? Or does it send raw contracts?
-- Does chase call `broker.cancel_order` + `broker.place_order` for each attempt? Is
-  `place_order` called with correct intent="close" to bypass G2 and adapter ceiling?
-- What is the chase execution mode gate — is "default mode" the same as sim/paper, or
-  is chase disabled in some frontend-only mode?
-Read `backend/api/background.py` for any background chase task — confirm whether chase
-starts immediately on order placement or via a background poller.
-
-**Audit 4 — Close-intent guard matrix** (cross-cutting):
-Across all paths (ticket, basket, GTT, chase, `_arm_take_profit`), verify the invariant:
-- G2 (fat-finger cap): bypassed for intent="close"
-- Adapter ceiling (50-lot): bypassed for intent="close"
-- G1 (lot-multiple): NOT bypassed for close (still enforced)
-- GTT layer: no close-intent bypass (GTT has no intent concept) — correct
-- Chase: intent="close" → G2/ceiling bypassed → but does chase still enforce G1?
-Look for any path where a close order could be blocked by G2 or ceiling incorrectly,
-OR where a non-close order bypasses G2/ceiling incorrectly.
-
 ## Tests
 
-- pytest: no (audit only — fixes in follow-up plan)
+- pytest: yes
 - svelte-check: no
 - playwright: no
 
 ## Commit message
 
-(none — audit produces punch list, not code changes)
+fix(chase): restart recovery + task reference + mode guard + G1 defensive None guard
+
+Remaining P1/P2/P3 items from orders audit:
+- chase recovery: recover_live_chases() at startup re-queues OPEN live chase orders
+  after server restart (2-min grace period, default config)
+- task reference: _LIVE_CHASE_TASKS set in orders_helpers; auto-discards on completion
+- mode guard: chase_order refuses to run on non-prod branch (mirrors expiry engine guard)
+- G1 defensive: _apply_live_g1_guard skips legs with None quantity (TypeError → warning)
 
 ## Done when
 
-Punch list produced with file:line citations, severity (P1/P2/P3), grouped by:
-- MCX qty pipeline
-- NFO qty pipeline
-- Template attach / GTT layer
-- Chase close-order qty
-- Guard matrix (G1/G2/ceiling/intent)
-- Chase timing / mode-gating
-Ready to implement fixes in a follow-up `/depl`.
+- `recover_live_chases()` called in `background.py:on_startup` and restarts OPEN live chases
+- `asyncio.create_task` result stored in `_LIVE_CHASE_TASKS` set; cleaned up via callback
+- `chase_order` guards against non-prod branch at function entry
+- `_apply_live_g1_guard` does not raise on None qty leg
+- `test_apply_live_g1_guard_skips_none_qty_leg` passes
+- All pytest green

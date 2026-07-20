@@ -1321,7 +1321,11 @@ def _apply_live_g1_guard(plan: TemplatePlan) -> Optional[str]:
         return None
     for _spec in plan.gtts:
         for _leg_dict in _spec.orders:
-            _q = int(_leg_dict["quantity"])
+            try:
+                _q = int(_leg_dict.get("quantity"))
+            except (TypeError, ValueError):
+                logger.warning("[G1-GUARD] leg has None/invalid quantity — skipping: %s", _leg_dict)
+                continue
             if _q % _g1_ls != 0:
                 return (
                     f"G1 lot-multiple guard failed: "

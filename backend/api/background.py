@@ -4828,6 +4828,66 @@ async def _task_purge_perf_snapshots() -> None:
         await _purge_once()
 
 
+async def recover_live_chases() -> None:
+    """Restart chase_order tasks for live AlgoOrder rows that were interrupted
+    by a service restart.
+
+    Criteria: status='OPEN', engine='live', next_attempt_at IS NOT NULL,
+    and updated_at older than 120 seconds (grace period to avoid restarting
+    chases that are still being initialised).
+    """
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.api.algo.chase import chase_order, ChaseConfig, _chase_default_cfg
+    from backend.api.routes.orders_helpers import _LIVE_CHASE_TASKS
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=120)
+    try:
+        async with async_session() as _s:
+            rows = (await _s.execute(
+                select(AlgoOrder).where(
+                    AlgoOrder.status == "OPEN",
+                    AlgoOrder.engine == "live",
+                    AlgoOrder.next_attempt_at.is_not(None),
+                    AlgoOrder.updated_at < cutoff,
+                )
+            )).scalars().all()
+    except Exception as e:
+        logger.warning(f"[CHASE-RECOVERY] DB query failed: {e}")
+        return
+
+    for row in rows:
+        try:
+            cfg: ChaseConfig = _chase_default_cfg()
+            _intent = getattr(row, "intent", None)
+            if _intent is not None:
+                cfg.intent = _intent
+            task = asyncio.create_task(
+                chase_order(
+                    algo_order_id=row.id,
+                    account=row.account,
+                    symbol=row.symbol,
+                    transaction_type=row.transaction_type,
+                    quantity=row.quantity,
+                    cfg=cfg,
+                ),
+                name=f"bg-chase-recovery-{row.id}",
+            )
+            _LIVE_CHASE_TASKS.add(task)
+            task.add_done_callback(_LIVE_CHASE_TASKS.discard)
+            logger.info(
+                "[CHASE-RECOVERY] restarting chase for order #%s %s",
+                row.id, row.symbol,
+            )
+        except Exception as e:
+            logger.warning(
+                "[CHASE-RECOVERY] failed to restart chase for order #%s: %s",
+                row.id, e,
+            )
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -4886,6 +4946,13 @@ async def on_startup(app) -> None:
                         "OPEN order(s) from previous run")
     except Exception as e:
         logger.warning(f"Background: paper engine recovery failed: {e}")
+    # Restart any live chase_order tasks that were interrupted by a
+    # service restart (OPEN + engine=live + next_attempt_at IS NOT NULL
+    # + updated_at > 120 s ago).
+    try:
+        await recover_live_chases()
+    except Exception as e:
+        logger.warning(f"Background: live chase recovery failed: {e}")
     app.state.bg_tasks.append(
         asyncio.create_task(paper_engine.tick_loop(interval_seconds=5),
                             name="bg-paper-chase")
