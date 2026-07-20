@@ -314,7 +314,7 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     padding: 0.3rem 0.55rem 0.15rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
 
   .ssi-hint {
@@ -322,7 +322,7 @@
     font-family: monospace;
     font-size: var(--fs-sm);
     color: var(--algo-muted);
-    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    border-top: 1px solid rgba(126,151,184,0.10);
   }
 
   .ssi-row {

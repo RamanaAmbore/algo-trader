@@ -416,7 +416,7 @@
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .alerts-table thead tr {
-    background: #0a1020;
+    background: var(--algo-bg-elev1);
   }
   .alerts-table th {
     padding: 0.3rem 0.5rem;

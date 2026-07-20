@@ -265,7 +265,7 @@
   }
   .rec-refresh {
     margin-left: auto;
-    background: rgba(255,255,255,0.05);
+    background: rgba(126,151,184,0.10);
     border: 1px solid rgba(180,200,230,0.25);
     color: rgba(200,216,240,0.85);
     border-radius: 4px;
@@ -319,7 +319,7 @@
     font-weight: 600;
     font-family: var(--font-numeric);
     color: rgba(200,216,240,0.9);
-    background: rgba(255,255,255,0.05);
+    background: rgba(126,151,184,0.10);
     border: 1px solid rgba(180,200,230,0.25);
     border-radius: 4px;
     cursor: pointer;

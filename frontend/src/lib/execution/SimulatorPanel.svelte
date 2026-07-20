@@ -1909,7 +1909,7 @@
   }
   .sim-leg-chart-row {
     background: rgba(13, 21, 38, 0.4);
-    border: 1px solid rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(126,151,184,0.10);
     border-radius: 3px;
     padding: 0.3rem 0.4rem;
   }
@@ -2081,7 +2081,7 @@
   }
   .sim-summary-grid td {
     padding: 0.3rem 0.55rem;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .sim-summary-grid .sim-num {
     text-align: right;

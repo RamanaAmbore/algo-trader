@@ -533,7 +533,7 @@
     color: rgba(220,232,255,0.8);
     background: transparent;
     border: none;
-    border-bottom: 1px solid rgba(255,255,255,0.055);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
     cursor: pointer;
     letter-spacing: 0.01em;
     transition: background-color 0.06s, color 0.06s, border-left-color 0.06s;

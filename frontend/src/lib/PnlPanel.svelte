@@ -295,7 +295,7 @@
     font-family: var(--font-numeric);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
-  .pnl-table thead tr { background: #0a1020; }
+  .pnl-table thead tr { background: var(--algo-bg-elev1); }
   .pnl-table th {
     padding: 0.3rem 0.6rem;
     font-size: var(--fs-xs);

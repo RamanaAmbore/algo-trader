@@ -177,7 +177,7 @@
     color: var(--algo-muted);
     margin-bottom: 0.35rem;
     padding-bottom: 0.2rem;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .sc-row {
     display: flex;
@@ -205,7 +205,7 @@
 
   .sc-foot {
     padding: 0.4rem 0.7rem;
-    border-top: 1px solid rgba(255,255,255,0.05);
+    border-top: 1px solid rgba(126,151,184,0.10);
     font-size: var(--fs-xs);
     color: var(--algo-muted);
     font-style: italic;
