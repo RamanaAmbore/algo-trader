@@ -4,9 +4,10 @@
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { fetchPnlBenchmarks } from '$lib/api.js';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
-  import PnlPanel from '$lib/PnlPanel.svelte';
-  import Select   from '$lib/Select.svelte';
-  import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import PnlPanel   from '$lib/PnlPanel.svelte';
+  import Select     from '$lib/Select.svelte';
+  import AlgoTabs   from '$lib/AlgoTabs.svelte';
+  import ModalShell from '$lib/ModalShell.svelte';
 
   // Bindable prop — flips to `false` only after a successful fetch
   // confirms zero rows for the current filters. Defaults to `true` so
@@ -805,13 +806,11 @@
 </div>
 
 <!-- CSV upload modal -->
-{#if csvOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="modal-backdrop" onclick={() => csvOpen = false}></div>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="csv-modal-title">
+<ModalShell open={csvOpen} onClose={() => csvOpen = false}
+            ariaLabel="Backfill Kite P&L CSV" zIndex={300}>
+  <div class="modal">
     <div class="modal-head">
-      <h2 id="csv-modal-title" class="modal-title">Backfill Kite P&L CSV</h2>
+      <h2 class="modal-title">Backfill Kite P&L CSV</h2>
       <button class="modal-x" aria-label="Close" onclick={() => csvOpen = false}>×</button>
     </div>
     <p class="upload-hint">
@@ -884,7 +883,7 @@
       {/if}
     {/if}
   </div>
-{/if}
+</ModalShell>
 
 <style>
   .filter-bar {
@@ -1289,15 +1288,7 @@
   }
   .chevron.open { transform: rotate(90deg); }
 
-  .modal-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.55);
-    z-index: 49;
-  }
   .modal {
-    position: fixed;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
     background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
     border: 1px solid rgba(251,191,36,0.35);
     border-radius: 6px;
@@ -1305,7 +1296,6 @@
     width: min(28rem, 92vw);
     max-height: 90vh;
     overflow-y: auto;
-    z-index: 50;
     box-shadow: 0 8px 28px rgba(0,0,0,0.55);
   }
   .modal-head {

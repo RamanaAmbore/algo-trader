@@ -4952,7 +4952,7 @@
   /* Context menu (item 2) */
   :global(.ctx-menu) {
     position: fixed;
-    z-index: 9999;
+    z-index: var(--z-tooltip);
     min-width: 10rem;
     background: rgba(10,22,40,0.97);
     border: 1px solid rgba(251,191,36,0.2);

@@ -280,7 +280,7 @@
        Was 50 — got clipped behind the payoff chart on /admin/options
        because the chart card's stacking context outranked it. 9999
        matches the FullscreenButton backdrop level. */
-    z-index: 9999;
+    z-index: var(--z-tooltip);
     flex: none;
     width: max-content;
     min-width: min(12rem, calc(100vw - 1rem));

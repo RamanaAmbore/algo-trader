@@ -204,7 +204,7 @@
   .otd-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 200;
+    z-index: var(--z-drawer);
     background: rgba(0, 0, 0, 0.45);
   }
 
@@ -214,7 +214,7 @@
     top: 0;
     right: 0;
     bottom: 0;
-    z-index: 201;
+    z-index: calc(var(--z-drawer) + 1);
     width: min(360px, 100vw);
     background: #0d1829;
     border-left: 1px solid var(--algo-amber-border-soft);

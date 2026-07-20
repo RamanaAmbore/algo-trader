@@ -293,7 +293,7 @@
     position: absolute;
     top: 100%;
     left: 0;
-    z-index: 10000;
+    z-index: var(--z-search);
     margin-top: 2px;
     min-width: 14rem;
     max-height: 18rem;

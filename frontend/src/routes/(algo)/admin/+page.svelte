@@ -1370,7 +1370,7 @@
 
 <style>
   .ip-modal-overlay {
-    position: fixed; inset: 0; z-index: 200;
+    position: fixed; inset: 0; z-index: var(--z-drawer);
     background: rgba(8, 13, 26, 0.72);
     display: flex; align-items: center; justify-content: center;
     padding: 1.5rem;
