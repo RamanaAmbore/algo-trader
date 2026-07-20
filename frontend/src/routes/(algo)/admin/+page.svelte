@@ -20,6 +20,7 @@
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import ModalShell from '$lib/ModalShell.svelte';
 
   // Shared confirm modal — replaces native confirm() which silently
   // no-ops in iOS PWA standalone mode and looks jarring in the dark
@@ -1092,12 +1093,13 @@
 <!-- Investor portal modal — minted token URL + token list. Opens via
      the per-user Portal button. The modal is the entirety of the
      interaction surface; admin closes it when done. -->
-{#if portalUser}
-  <div class="ip-modal-overlay" role="dialog" aria-modal="true" tabindex="-1"
-       onclick={closePortal}
-       onkeydown={(e) => { if (e.key === 'Escape') closePortal(); }}>
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
-    <div class="ip-modal" role="document" onclick={(e) => e.stopPropagation()}>
+<ModalShell
+  open={!!portalUser}
+  onClose={closePortal}
+  ariaLabel="Investor Portal"
+  zIndex={200}
+>
+  <div class="ip-modal" onclick={(e) => e.stopPropagation()}>
       <header class="ip-modal-head">
         <div>
           <div class="ip-modal-title">Investor portal</div>
@@ -1365,16 +1367,9 @@
       </section>
       {/if}
     </div>
-  </div>
-{/if}
+</ModalShell>
 
 <style>
-  .ip-modal-overlay {
-    position: fixed; inset: 0; z-index: var(--z-drawer);
-    background: rgba(8, 13, 26, 0.72);
-    display: flex; align-items: center; justify-content: center;
-    padding: 1.5rem;
-  }
   .ip-modal {
     background: #0f172a;
     border: 1px solid rgba(126, 151, 184, 0.30);

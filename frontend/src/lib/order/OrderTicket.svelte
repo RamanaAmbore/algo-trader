@@ -44,6 +44,7 @@
   } from './orderTicketSubmit.js';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
+  import ModalShell from '$lib/ModalShell.svelte';
   import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
   import { getDefaultAccount } from '$lib/data/accounts';
@@ -2388,37 +2389,35 @@
   </div>
 </div>
 
-{#if _demoSubmitOpen}
-  <!-- Demo-mode submit modal — explains why this Submit doesn't fire
-       a real order, offers the recruiter two clear next actions. -->
-  <div class="ot-demo-overlay" onclick={() => _demoSubmitOpen = false}
-       onkeydown={(e) => { if (e.key === 'Escape') _demoSubmitOpen = false; }}
-       role="presentation">
-    <div class="ot-demo-modal" role="dialog" aria-modal="true" aria-labelledby="ot-demo-title" tabindex="-1"
-         onclick={(e) => e.stopPropagation()}
-         onkeydown={(e) => e.stopPropagation()}>
-      <button type="button" class="ot-demo-close" aria-label="Close"
-              onclick={() => _demoSubmitOpen = false}>×</button>
-      <h3 id="ot-demo-title" class="ot-demo-title">Demo mode</h3>
-      <p class="ot-demo-body">
-        You're viewing the live RamboQuant terminal as an anonymous
-        visitor. Order placement is intentionally disabled so you can
-        explore every surface — the UI, derivatives analytics,
-        simulator, agents — without touching real broker accounts.
-      </p>
-      <p class="ot-demo-body">
-        The Submit affordance stays visible so the trading workflow is
-        complete to read. To place real orders you'd need a signed-in
-        <code>trader</code> or <code>admin</code> role with assigned
-        broker accounts.
-      </p>
-      <div class="ot-demo-cta">
-        <button type="button" class="ot-demo-btn ot-demo-btn-primary"
-                onclick={() => _demoSubmitOpen = false}>Got it</button>
-      </div>
+<ModalShell
+  open={_demoSubmitOpen}
+  onClose={() => (_demoSubmitOpen = false)}
+  ariaLabel="Demo mode"
+  zIndex={300}
+>
+  <div class="ot-demo-modal"
+       onkeydown={(e) => e.stopPropagation()}>
+    <button type="button" class="ot-demo-close" aria-label="Close"
+            onclick={() => _demoSubmitOpen = false}>×</button>
+    <h3 id="ot-demo-title" class="ot-demo-title">Demo mode</h3>
+    <p class="ot-demo-body">
+      You're viewing the live RamboQuant terminal as an anonymous
+      visitor. Order placement is intentionally disabled so you can
+      explore every surface — the UI, derivatives analytics,
+      simulator, agents — without touching real broker accounts.
+    </p>
+    <p class="ot-demo-body">
+      The Submit affordance stays visible so the trading workflow is
+      complete to read. To place real orders you'd need a signed-in
+      <code>trader</code> or <code>admin</code> role with assigned
+      broker accounts.
+    </p>
+    <div class="ot-demo-cta">
+      <button type="button" class="ot-demo-btn ot-demo-btn-primary"
+              onclick={() => _demoSubmitOpen = false}>Got it</button>
     </div>
   </div>
-{/if}
+</ModalShell>
 
 <style>
   .ot-overlay {
@@ -3189,14 +3188,6 @@
      visitor clicks the (amber) Submit button. Modal sits ABOVE the
      OrderTicket (z=110 vs ticket z~50). Same visual language as
      TourModal so modal types feel like one family. */
-  .ot-demo-overlay {
-    position: fixed; inset: 0;
-    background: rgba(8, 12, 20, 0.80);
-    backdrop-filter: blur(3px);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 120;
-    padding: 1rem;
-  }
   .ot-demo-modal {
     position: relative;
     max-width: 26rem;

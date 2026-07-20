@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import CardHeader from '$lib/CardHeader.svelte';
+  import ModalShell from '$lib/ModalShell.svelte';
 
   const faqs = [
     {
@@ -191,7 +192,6 @@
 </svelte:head>
 
 
-<svelte:window onkeydown={(e) => { if (_zoomedDiagram && e.key === 'Escape') _closeZoom(); }} />
 
 <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
 
@@ -245,45 +245,19 @@
 </div>
 </div>
 
-{#if _zoomedDiagram}
-  <!-- Operator (initial): "the x label does not make sense for zooming
-       mermaid flow diagrams. i should be able zoomable on mobile using
-       pinch." × button removed.
-       Operator (follow-up): "single click on enlarged flow diagram
-       should reverse it back to old state. the scroll to see the left
-       most box is not working." Click anywhere (overlay OR panel OR
-       SVG) closes the lightbox; pinch-zoom still works because it's a
-       multi-touch gesture, not a click. Panel switched from
-       flex-centered to natural block layout so leftmost overflow can
-       be scrolled to via the native scrollbar. -->
-  <!-- Operator: "align diagram center horizontally and vertically.
-       have x button to close full screen." Wrap centers via flex when
-       SVG fits the panel; when SVG overflows, the wrap grows to
-       SVG-size (via `min-width/height: 100%`) so panel scroll origin
-       still starts at content-left and the leftmost box stays
-       reachable. -->
-  <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div class="faq-zoom-overlay"
-       role="dialog"
-       aria-modal="true"
-       aria-label="Diagram — pinch to zoom, click × or anywhere to close"
-       tabindex="-1"
-       onclick={_closeZoom}
-       onkeydown={(e) => { if (e.key === 'Escape') _closeZoom(); }}>
-    <!-- × close button — fixed-positioned over the panel so it stays
-         visible regardless of scroll. Stops propagation so it
-         doesn't double-fire with the overlay close. -->
-    <button type="button" class="faq-zoom-x" aria-label="Close diagram"
-            title="Close"
-            onclick={(e) => { e.stopPropagation(); _closeZoom(); }}>×</button>
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="faq-zoom-panel" role="document">
-      <div class="faq-zoom-wrap">
-        <div class="faq-zoom-svg">{@html _zoomedDiagram}</div>
-      </div>
+<ModalShell
+  open={!!_zoomedDiagram}
+  onClose={_closeZoom}
+  ariaLabel="Diagram zoom"
+  zIndex={1000}
+>
+  <div class="faq-zoom-panel">
+    <div class="faq-zoom-wrap">
+      <button class="faq-zoom-x" onclick={(e) => { e.stopPropagation(); _closeZoom(); }}>×</button>
+      <div class="faq-zoom-svg">{@html _zoomedDiagram}</div>
     </div>
   </div>
-{/if}
+</ModalShell>
 
 <style>
   /* FAQ list */
@@ -372,14 +346,6 @@
     pointer-events: none;
   }
 
-  /* Lightbox overlay — tap outside to close (no × button per operator). */
-  .faq-zoom-overlay {
-    position: fixed; inset: 0; z-index: 1000;
-    background: rgba(0,0,0,0.85);
-    display: flex; align-items: center; justify-content: center;
-    padding: 0.5rem;
-    cursor: zoom-out;
-  }
   /* Panel — the scroll container at viewport size. `overflow: auto`
      gives native scrollbars on both axes when the SVG exceeds it.
      `position: relative` is the anchor for the × button (the button
