@@ -228,7 +228,7 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    z-index: 60;
+    z-index: var(--z-dropdown);
     margin: 0;
     padding: 0.2rem 0;
     list-style: none;

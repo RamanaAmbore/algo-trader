@@ -1428,7 +1428,7 @@
     top: 0;
     left: 0;
     right: 0;
-    z-index: 50;
+    z-index: var(--z-nav);
     background: var(--algo-bg-elev1);
     /* Was border-bottom: 1px solid #fbbf24 (alpha 1.0) — ~2.5× heavier
        than the footer's rgba(251,191,36,0.2) and page-header's 0.30
@@ -2307,22 +2307,22 @@
 
   /* Full-viewport invisible overlay so clicking outside closes the dropdown.
      Must sit just below the dropdown itself, but above the order modal
-     (z-index 10500) so clicks on the overlay close the dropdown without
+     (var(--z-command)=10500) so clicks on the overlay close the dropdown without
      accidentally hitting the modal underneath. */
   .mode-combo-overlay {
     position: fixed;
     inset: 0;
-    z-index: 10600;
+    z-index: calc(var(--z-command) + 100);
   }
   /* Dropdown rendered via position:fixed so it escapes the navbar's own
-     stacking context (navbar is position:fixed; z-index:50 — any child
+     stacking context (navbar is position:fixed; var(--z-nav)=50 — any child
      positioned absolutely is trapped inside that context and can never
-     paint above the order-modal overlay at z-index:10500).
+     paint above the order-modal overlay at var(--z-command)=10500).
      Coordinates (top / right) are injected as inline styles computed
      from the trigger's getBoundingClientRect() when the dropdown opens. */
   .mode-combo-dropdown {
     position: fixed;
-    z-index: 10601;
+    z-index: calc(var(--z-command) + 101);
     background: #0a1020;
     border: 1px solid rgba(251, 191, 36, 0.25);
     border-radius: 6px;

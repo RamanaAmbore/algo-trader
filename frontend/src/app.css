@@ -121,6 +121,16 @@
      alias for any consumer still reading the old name. */
   --toolbar-h: 24px;
   --chart-toolbar-h: var(--toolbar-h);
+
+  /* z-index scale — use these vars; never hardcode global stacking values */
+  --z-nav:      50;
+  --z-dropdown: 60;
+  --z-toast:    80;
+  --z-drawer:   200;
+  --z-modal:    300;
+  --z-tooltip:  9999;
+  --z-search:   10000;
+  --z-command:  10500;
 }
 
 @media (max-width: 600px) {
@@ -351,7 +361,7 @@
      control trio (.default-btn / .rf-btn at 10000) so those icons
      remain reachable on the host card if the operator dismisses
      the modal. */
-  z-index: 10500;
+  z-index: var(--z-command);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1743,7 +1753,7 @@
 .fs-card-on {
   position: fixed !important;
   inset: 2rem !important;
-  z-index: 9999 !important;
+  z-index: var(--z-tooltip) !important;
   max-width: none !important;
   max-height: none !important;
   width: auto !important;

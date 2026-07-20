@@ -268,7 +268,7 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
-    z-index: 60;
+    z-index: var(--z-dropdown);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1.5px solid rgba(251,191,36,0.35);
     border-radius: 4px;

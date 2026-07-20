@@ -2428,13 +2428,13 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    /* z-index 300: above the OrderTimelineDrawer (z=200), the
-       PositionStrip (z=49), the navbar (z=50), and any per-page
+    /* z-index var(--z-modal): above the OrderTimelineDrawer (var(--z-drawer)=200),
+       the PositionStrip (z=49), the navbar (var(--z-nav)=50), and any per-page
        sticky LogPanel that might be in the operator's way when the
        ticket opens. Operators reported the Submit row getting
        clipped by bottom panels — this guarantees the ticket sits
        on top. */
-    z-index: 300;
+    z-index: var(--z-modal);
     padding: 1rem;
   }
   /* When embedded inside another dialog (standalone=false, e.g.

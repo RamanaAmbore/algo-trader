@@ -30,7 +30,7 @@
     position: fixed;
     top: 4.5rem;
     right: 1rem;
-    z-index: 80;
+    z-index: var(--z-toast);
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
