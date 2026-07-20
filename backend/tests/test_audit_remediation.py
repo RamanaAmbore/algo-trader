@@ -595,3 +595,55 @@ def test_rebuild_lot_index_adds_valid_new_entries(monkeypatch):
     assert ("NSE", "RELIANCE") not in kite_mod._LOT_INDEX, (
         "Equity (lot_size=1) must not be stored in _LOT_INDEX."
     )
+
+
+# =============================================================================
+# T-A9: _apply_live_g1_guard skips legs with None/invalid quantity
+# =============================================================================
+
+
+def test_apply_live_g1_guard_skips_none_qty_leg():
+    """
+    _apply_live_g1_guard must not raise TypeError when a GTT leg has
+    quantity=None (or any non-numeric value).  The fix wraps int() in
+    try/except and skips the offending leg with a warning log.
+
+    Regression guard: before the fix, int(None) propagated as TypeError
+    and crashed the entire apply_plan_live call, blocking GTT placement.
+    """
+    from backend.api.algo.template_attach import (
+        _apply_live_g1_guard,
+        TemplatePlan,
+        GttSpec,
+    )
+
+    # Build a plan with lot_size=75 (F&O) so the guard body is entered.
+    # One leg has quantity=None — this is the defect condition.
+    plan = TemplatePlan(
+        template_id=1,
+        template_name="test",
+        template_slug="test",
+        parent_account="ZG0000",
+        parent_symbol="NIFTY25JULFUT",
+        parent_side="SELL",
+        parent_qty=75,
+        parent_exchange="NFO",
+        parent_fill_price=24000.0,
+        parent_lot_size=75,
+        gtts=[
+            GttSpec(
+                trigger_type="single",
+                trigger_values=[24500.0],
+                orders=[{"transaction_type": "SELL", "quantity": None, "price": 24500.0}],
+                label="SL",
+            )
+        ],
+        wing=None,
+    )
+
+    # Must return None (no error string) without raising TypeError.
+    result = _apply_live_g1_guard(plan)
+    assert result is None, (
+        f"Expected None (skipped bad leg), got: {result!r}. "
+        "A TypeError from int(None) would have propagated as an exception."
+    )

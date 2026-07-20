@@ -36,6 +36,11 @@ _VALIDITIES  = {"DAY", "IOC"}
 
 _ORDERS_TTL  = 15   # orders refresh faster — 15 s cache
 
+# ── Live-chase task registry ──────────────────────────────────────────────────
+# Keep strong references to running chase_order tasks so they are not garbage-
+# collected before completion.  Tasks remove themselves via the discard callback.
+_LIVE_CHASE_TASKS: set[asyncio.Task] = set()
+
 # ── Live-order circuit breaker ────────────────────────────────────────────────
 # Stop the operator (or an agent) from re-attempting the same rejected
 # order again and again. Track rejection timestamps per
@@ -301,12 +306,14 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
                 except Exception:
                     pass
 
-    asyncio.create_task(chase_order(
+    _chase_task = asyncio.create_task(chase_order(
         account=account, symbol=symbol,
         transaction_type=transaction_type, quantity=quantity,
         cfg=cfg, on_event=on_event,
         algo_order_id=algo_order_id,
     ))
+    _LIVE_CHASE_TASKS.add(_chase_task)
+    _chase_task.add_done_callback(_LIVE_CHASE_TASKS.discard)
 
     # 15 s timeout — chase_order's first iteration fetches depth
     # and fires place_order; even a cold market should land

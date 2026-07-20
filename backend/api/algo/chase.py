@@ -1182,6 +1182,11 @@ async def chase_order(
     Returns:
         ChaseResult with fill details
     """
+    from backend.shared.helpers.utils import is_prod_branch
+    if not is_prod_branch():
+        logger.warning("[CHASE] chase_order called on non-prod branch — aborting")
+        return ChaseResult(status=ChaseStatus.CANCELLED, detail="non-prod branch")
+
     if cfg is None:
         cfg = _chase_default_cfg()
 
