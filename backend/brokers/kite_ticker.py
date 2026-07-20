@@ -62,9 +62,16 @@ actually manifests on prod.
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 import time
 from typing import Iterable
+
+# Kite WebSocket subscribe calls are chunked at this size.
+# kiteconnect-py processes each subscribe message individually; sending
+# a single message with > 3000 tokens causes the WS server to reject
+# the subscription silently. Chunking guarantees every token lands.
+KITE_TICKER_CHUNK_SIZE = 3000
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -311,7 +318,17 @@ class TickerManager:
         self._current_account = account or self._current_account
         try:
             from kiteconnect import KiteTicker
-            self._kws = KiteTicker(api_key, access_token)
+            # reconnect_max_delay=30 caps the SDK's built-in exponential
+            # backoff at 30 s (1→2→4→8→16→30→30…) so we never wait more
+            # than 30 s between reconnect attempts. reconnect_max_tries=50
+            # lets the SDK try for ~25 min before giving up; the watchdog
+            # detects a permanently-dead socket and triggers a process
+            # restart via _reactor_dead if needed.
+            self._kws = KiteTicker(
+                api_key, access_token,
+                reconnect_max_delay=30,
+                reconnect_max_tries=50,
+            )
             self._kws.on_connect   = self._on_connect
             self._kws.on_ticks     = self._on_ticks
             self._kws.on_close     = self._on_close
@@ -392,8 +409,16 @@ class TickerManager:
             if self._connected and self._kws is not None:
                 try:
                     token_list = list(new)
-                    self._kws.subscribe(token_list)
-                    self._kws.set_mode(self._kws.MODE_LTP, token_list)
+                    n_chunks = math.ceil(len(token_list) / KITE_TICKER_CHUNK_SIZE)
+                    if n_chunks > 1:
+                        logger.info(
+                            "[TICKER] subscribing %d tokens in %d chunks",
+                            len(token_list), n_chunks,
+                        )
+                    for i in range(0, len(token_list), KITE_TICKER_CHUNK_SIZE):
+                        chunk = token_list[i:i + KITE_TICKER_CHUNK_SIZE]
+                        self._kws.subscribe(chunk)
+                        self._kws.set_mode(self._kws.MODE_LTP, chunk)
                     self._subscribed |= new
                     logger.info(
                         f"KiteTicker: subscribed +{len(new)} tokens "
@@ -901,6 +926,11 @@ class TickerManager:
             # disconnect math always reflects the CURRENT connection's
             # lifecycle, not a 55-hour-old ghost.
             self._last_disconnected_at = 0.0
+            # Reset consecutive-unhealthy counter: SDK-driven reconnect
+            # succeeded, so the watchdog should start fresh on this
+            # connection rather than inheriting a stale unhealthy count
+            # from before the reconnect cycle.
+            self._consecutive_unhealthy = 0
             pending = set(self._pending)
             self._pending.clear()
 
@@ -911,8 +941,16 @@ class TickerManager:
         if pending:
             try:
                 token_list = list(pending)
-                ws.subscribe(token_list)
-                ws.set_mode(ws.MODE_LTP, token_list)
+                n_chunks = math.ceil(len(token_list) / KITE_TICKER_CHUNK_SIZE)
+                if n_chunks > 1:
+                    logger.info(
+                        "[TICKER] subscribing %d tokens in %d chunks",
+                        len(token_list), n_chunks,
+                    )
+                for i in range(0, len(token_list), KITE_TICKER_CHUNK_SIZE):
+                    chunk = token_list[i:i + KITE_TICKER_CHUNK_SIZE]
+                    ws.subscribe(chunk)
+                    ws.set_mode(ws.MODE_LTP, chunk)
                 with self._lock:
                     self._subscribed |= pending
                 logger.info(
@@ -1017,10 +1055,17 @@ class TickerManager:
         )
 
     def _on_reconnect(self, _ws, attempts_count) -> None:
-        logger.warning(f"KiteTicker: reconnecting — attempt {attempts_count}")
+        # Compute the SDK's current backoff delay for log context.
+        # KiteTicker uses exponential backoff capped at reconnect_max_delay (30 s).
+        # Delay = min(2^(attempts_count - 1), reconnect_max_delay).
+        _delay = min(2 ** max(0, int(attempts_count) - 1), 30)
+        logger.warning(
+            "[TICKER] reconnect attempt #%d after ~%.0fs backoff (account=%s)",
+            attempts_count, _delay, self._current_account or "?",
+        )
         _emit_conn_event(
             self._current_account or "", "kite", "ticker_reconnect",
-            {"attempt": attempts_count},
+            {"attempt": attempts_count, "backoff_s": _delay},
         )
 
 

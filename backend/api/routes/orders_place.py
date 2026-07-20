@@ -41,7 +41,14 @@ async def _opp_load_strategy_cap(
     from sqlalchemy import select as _select, func as _func
 
     strat = await s.get(Strategy, int(strategy_id))
-    if strat is None or strat.capacity_cap_inr is None:
+    if strat is None:
+        logger.warning(
+            "[CAP-GUARD] strategy_id=%s not found — skipping capacity check "
+            "for %s %s. Possible stale attribution; verify on /strategies.",
+            strategy_id, account, tradingsymbol,
+        )
+        return None, 0.0
+    if strat.capacity_cap_inr is None:
         return None, 0.0
     cap = float(strat.capacity_cap_inr)
     if cap <= 0:
@@ -108,8 +115,12 @@ async def _opp_resolve_notional_price(
 ) -> float:
     """Resolve the price for new-notional calculation. Priority: price_hint
     → ticker LTP → broker.ltp(). Raises 503 when no price is resolvable."""
-    px: Optional[float] = (float(price_hint) if price_hint and price_hint > 0
-                           else None)
+    # Explicit zero guard: price_hint==0 means MARKET order (caller did not
+    # supply a price); treat it the same as None so we fall through to the
+    # ticker / broker LTP chain rather than computing 0 × qty = ₹0 notional.
+    px: Optional[float] = (
+        float(price_hint) if price_hint is not None and price_hint > 0 else None
+    )
     if px is None:
         px = _opl_price_from_ticker(tradingsymbol)
     if px is None:
@@ -218,10 +229,10 @@ async def _enforce_capacity_guard(
 # slow reconcile sweep).
 _TEMPLATE_ATTACH_LOCKS: dict[int, tuple[asyncio.Lock, float]] = {}
 _TEMPLATE_ATTACH_META_LOCK = asyncio.Lock()
-# 1 h — longest realistic live-chase window is ~30 min (max_attempts ×
-# interval); 1 h is 2× headroom so a slow reconcile sweep after market
-# close still finds the lock before it expires.
-_TPL_LOCK_TTL_S = 3600
+# 4 h — longest realistic live-chase window is ~30 min (max_attempts ×
+# interval); 4 h gives 8× headroom so a slow overnight reconcile sweep
+# still finds the lock before it expires. Raised from 1 h (M6).
+_TPL_LOCK_TTL_S = 14400
 
 
 async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
@@ -244,6 +255,11 @@ async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
                   if now - ts > _TPL_LOCK_TTL_S]
         for k in _stale:
             _TEMPLATE_ATTACH_LOCKS.pop(k, None)
+        if _stale:
+            logger.debug(
+                "[TPL-LOCK] evicted %d stale lock(s): %s",
+                len(_stale), _stale,
+            )
         entry = _TEMPLATE_ATTACH_LOCKS.get(parent_row_id)
         if entry is None:
             lk = asyncio.Lock()
@@ -273,7 +289,12 @@ def _maybe_fire_template_attach_for_reconcile(row) -> None:
     FILLED, fire the template attach if the row carries a template_id
     and is a parent (parent_order_id IS NULL). Same idempotency guard
     inside `_fire_template_attach_on_fill` ensures duplicate firings
-    (postback arriving after reconcile) are safe."""
+    (postback arriving after reconcile) are safe.
+
+    M11 (intent tagging) — SKIPPED. AlgoOrder has no `intent` column;
+    adding one requires a migration. Tracked separately; implement when
+    the migration ships.
+    """
     try:
         if not _opl_reconcile_attach_eligible(row):
             return
@@ -989,6 +1010,12 @@ async def _ticket_enforce_lot_and_fat_finger(
     _lots = contracts // lot_size
     _is_close = (getattr(data, "intent", None) or "").lower() == "close"
     _is_mcx = data.exchange in ("MCX", "NCO")
+    if _is_close and _lots > 5:
+        logger.info(
+            "[FAT-FINGER-GUARD] close intent bypasses G2 cap: "
+            "acct=%s sym=%s lots=%s lot_size=%s exchange=%s",
+            account, sym, _lots, lot_size, data.exchange,
+        )
     if not _is_close and not _is_mcx and _lots > 5:
         logger.warning(
             "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s lots=%s "
@@ -1147,6 +1174,23 @@ async def _ticket_record_preflight_block(
             payload={"blocked": pf["blocked"],
                      "diagnostics": pf.get("diagnostics", {})},
         )
+        try:
+            from backend.api.audit import write_audit_event as _wae
+            _block_codes = ', '.join(b.get('code', '?') for b in pf['blocked'])
+            _wae(
+                category="order.reject",
+                action="PREFLIGHT_BLOCKED",
+                actor_username="operator",
+                actor_role="admin",
+                target_type="algo_order",
+                target_id=str(_algo_id),
+                summary=(
+                    f"preflight blocked: {_block_codes} — "
+                    f"{sym} {side} {qty} acct={account}"
+                )[:1000],
+            )
+        except Exception as _aue:
+            logger.debug(f"[LIVE-TICKET] preflight_block audit write skipped: {_aue}")
     except Exception as _ev_err:
         logger.warning(f"[LIVE-TICKET] preflight_block log failed: "
                        f"{_ev_err}")
@@ -1204,6 +1248,24 @@ async def _ticket_persist_live_algo_order(
             pass
         _eff_target_pct = _resolve_target_pct(data.target_pct)
         _req_id = (request.scope.get("state") or {}).get("request_id")
+        # M13: idempotency — if this request_id already has a persisted
+        # AlgoOrder (duplicate HTTP submission or retry), return the
+        # existing id rather than inserting a second row.
+        if _req_id:
+            from sqlalchemy import select as _sel_idem
+            async with async_session() as _s_chk:
+                _existing = (await _s_chk.execute(
+                    _sel_idem(AlgoOrder.id).where(
+                        AlgoOrder.request_id == _req_id
+                    ).limit(1)
+                )).scalar_one_or_none()
+            if _existing is not None:
+                logger.info(
+                    "[LIVE-TICKET] idempotent request_id=%s → "
+                    "returning existing AlgoOrder #%s",
+                    _req_id, _existing,
+                )
+                return int(_existing)
         async with async_session() as _s_pre:
             _live_row = AlgoOrder(
                 account=account, symbol=sym,

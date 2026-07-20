@@ -70,22 +70,27 @@ class TestPrecheckRow:
 
 
 # ── _retry_effective_parent_qty ──────────────────────────────────────────
+# M7: function is now async — DB re-fetch attempted first; falls back to
+# in-memory row when DB raises. SimpleNamespace has no .id so the DB path
+# raises AttributeError, exercising the fallback branch without mocking.
+
+@pytest.mark.asyncio
 class TestEffectiveParentQty:
-    def test_partial_fill_uses_filled(self):
+    async def test_partial_fill_uses_filled(self):
         r = SimpleNamespace(filled_quantity=25, quantity=50)
-        assert _retry_effective_parent_qty(r) == 25
+        assert await _retry_effective_parent_qty(r) == 25
 
-    def test_zero_filled_uses_original(self):
+    async def test_zero_filled_uses_original(self):
         r = SimpleNamespace(filled_quantity=0, quantity=50)
-        assert _retry_effective_parent_qty(r) == 50
+        assert await _retry_effective_parent_qty(r) == 50
 
-    def test_none_filled_uses_original(self):
+    async def test_none_filled_uses_original(self):
         r = SimpleNamespace(filled_quantity=None, quantity=50)
-        assert _retry_effective_parent_qty(r) == 50
+        assert await _retry_effective_parent_qty(r) == 50
 
-    def test_none_quantity_returns_zero(self):
+    async def test_none_quantity_returns_zero(self):
         r = SimpleNamespace(filled_quantity=None, quantity=None)
-        assert _retry_effective_parent_qty(r) == 0
+        assert await _retry_effective_parent_qty(r) == 0
 
 
 # ── _retry_build_gtt_entry ───────────────────────────────────────────────
