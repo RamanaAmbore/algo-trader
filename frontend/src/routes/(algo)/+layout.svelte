@@ -2032,6 +2032,10 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    align-self: stretch;
+    border-right: 1px solid rgba(255,255,255,0.10);
+    padding-right: 0.35rem;
+    margin-right: 0.1rem;
   }
   /* Action icon cluster on the RIGHT — RefreshButton + PageHeaderActions
      (+ any page-specific buttons). Keeps all icons on the same flex line

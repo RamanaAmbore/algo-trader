@@ -19,7 +19,7 @@
   role="button"
   tabindex="0"
   onkeydown={(e) => e.key === 'Enter' && _toggle()}
-  style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent; cursor: pointer;">
+  style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent;">
   <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{$nowStamp}</span>
   {#if _refreshTs}
     <span class="ats-sep" aria-hidden="true">|</span>
@@ -32,6 +32,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
+    cursor: pointer;
   }
   .ats-now {
     color: var(--c-info);
@@ -47,6 +48,7 @@
     font-size: inherit;
   }
   @media (max-width: 640px) {
+    .ats-group { font-size: 0.6rem; }
     .ats-sep { display: none; }
     .ats-mobile-hide { display: none; }
   }

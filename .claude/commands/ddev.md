@@ -2,7 +2,9 @@
 
 ## Permissions
 
-Activate bypass-permissions mode at the start of this command (no tool-use prompts during execution). After the final foreground report, call `EnterPlanMode` to return to plan mode.
+**First**: call `ExitPlanMode` immediately if plan mode is currently active — this unblocks all subagents so they can make file edits. Do this before any other step.
+
+Activate bypass-permissions mode (no tool-use prompts during execution). After the final foreground report, call `EnterPlanMode` to return to plan mode.
 
 Run backend tests and frontend type check. Push to dev only if both pass. Report results in foreground.
 

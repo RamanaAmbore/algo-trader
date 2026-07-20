@@ -310,7 +310,7 @@
                   : 'log-agent-default';
         const cond = chipsFromJson(e.trigger_condition) || '';
         const tag  = (e.event_type || '').replace(/_/g, ' ');
-        const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
+        const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
         return {
           key: e.id != null ? `a${e.id}` : `a${e.timestamp || ''}-${i}`,
           html: _logRow(e.timestamp, cond, tag, `${cls} ${stripe}`),
@@ -323,7 +323,7 @@
     return simLog.slice()
       .sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts))
       .map((entry, i) => {
-        const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
+        const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
         const rawHtml = _renderSimLine(entry);
         // Inject stripe class into the outer log-row div.
         const html = rawHtml.replace(/^<div class="log-row /, `<div class="log-row ${stripe} `);
@@ -346,7 +346,7 @@
         const rest = d ? stripTs(l) : l;
         const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
         const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
-        const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
+        const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
         return {
           // System log keys can't use timestamp alone (multiple lines
           // per second possible); compose with line content hash via
@@ -375,7 +375,7 @@
         const rest = d ? stripTs(l) : l;
         const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
         const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
-        const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
+        const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
         return {
           // Index appended to break ties — conn_service emits multiple
           // lines per second from the same logger module (e.g. four
@@ -1295,7 +1295,7 @@
     }
     return all.length
       ? all.map((x, i) => {
-          const stripe = i % 2 === 0 ? 'lp-row-even' : 'lp-row-odd';
+          const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
           // Inject stripe class into the outer log-row div.
           return x.html.replace(/^<div class="log-row /, `<div class="log-row ${stripe} `);
         }).join('')
@@ -1456,13 +1456,12 @@
         </svg>
       </button>
       <!-- Download — always present; uses onDownload callback when wired,
-           falls back to internal CSV export of visible rows. Disabled
-           on the News tab where there is no structured data to export. -->
+           falls back to internal CSV export of visible rows. News tab
+           has no structured rows to export — gracefully no-ops. -->
       <button type="button"
         class="lp-card-btn"
-        title={logTab === 'news' ? 'Download not available for News tab' : 'Download visible rows as CSV'}
-        aria-label={logTab === 'news' ? 'Download not available for News tab' : 'Download CSV'}
-        disabled={logTab === 'news'}
+        title="Download visible rows as CSV"
+        aria-label="Download CSV"
         onclick={onDownload ?? _downloadCsv}>
         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -1773,7 +1772,7 @@
 <style>
   /* Tab row — another +30% on the previous 0.48rem → 0.62rem. Padding
      scaled proportionally. Still no inter-tab gap so mobile fit holds. */
-  .log-tab-row { gap: 0; }
+  .log-tab-row { gap: 0; align-items: center; }
 
   /* Modal context: amber gradient header matching alm-header style */
   .ctx-modal {
@@ -1960,28 +1959,15 @@
     column-gap: 0.4rem;
     row-gap: 0.05rem;
     padding: 0.28rem 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
     /* Operator: "agents, terminal, ticks and system text size
        should be equal to news tab text size of the data". News
        row is 0.72rem; matching here. */
-    font-size: var(--fs-lg);
+    font-size: 0.72rem;
     color: var(--algo-slate);
     border-left: none;
-    background: transparent;
   }
   :global(.log-panel.log-rows .log-row:last-child) { border-bottom: 0; }
-  /* JS-injected stripe classes — index-based so stripes survive filter
-     reflows (unlike :nth-child which counts DOM position and breaks when
-     rows are filtered out). lp-row-odd gets the tinted background;
-     lp-row-even stays transparent (same visual result as the old
-     :nth-child(odd) rule but stable under dynamic filtering). */
-  :global(.log-panel.log-rows .log-row.lp-row-odd) {
-    background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
-  }
-  :global(.log-panel.log-rows .log-row.lp-row-even) {
-    background: transparent;
-  }
-  :global(.log-panel.log-rows .log-row:hover) { background: rgba(255, 255, 255, 0.02); }
 
   :global(.log-panel.log-rows .log-row-time) {
     flex: 0 0 auto;
@@ -2337,16 +2323,16 @@
     background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
     border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
     border-radius: 3px;
-    color: rgba(148, 163, 184, 0.65);
+    color: var(--c-info);
     cursor: pointer;
     flex-shrink: 0;
     transition: background 0.08s, border-color 0.08s, color 0.08s;
   }
   .lp-card-btn svg { pointer-events: none; }
   .lp-card-btn:hover:not(:disabled) {
-    background: rgba(148, 163, 184, 0.10);
-    border-color: rgba(148, 163, 184, 0.45);
-    color: var(--algo-slate);
+    background: rgba(34,211,238,0.14);
+    border-color: rgba(34,211,238,0.65);
+    color: var(--algo-cyan-text);
   }
   /* Active state (search open, expanded) — amber tint matching the tab row accent. */
   .lp-card-btn.lp-card-btn-on {

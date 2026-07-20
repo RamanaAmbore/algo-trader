@@ -6,6 +6,8 @@ Returns to plan mode when done.
 
 ## Permissions
 
+**First**: call `ExitPlanMode` immediately if plan mode is currently active — this unblocks all subagents so they can make file edits. Do this before reading the plan or dispatching any agents.
+
 Activate bypass-permissions mode immediately. Maintain it for the entire command. Call
 `EnterPlanMode` only after the final dprod report (or on any hard block that stops the pipeline).
 
