@@ -321,7 +321,7 @@
     vertical-align: middle;
   }
   .pnl-table td:last-child { border-right: none; }
-  .pnl-table tbody tr:nth-child(odd) { background: rgba(13,22,42,0.45); }
+  .pnl-table tbody tr:nth-child(odd) { background: var(--row-tint-odd-bg); }
   .pnl-table tbody tr:hover { background: rgba(251,191,36,0.07); }
 
   .td-agent { text-align: left; white-space: nowrap; }
