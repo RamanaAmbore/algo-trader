@@ -68,8 +68,6 @@ async def _create_postback_orphan_row(
     Ensures postback events are never silently dropped. Logs a warning before
     attempting the insert; logs success or a warning on failure.
     """
-    from datetime import datetime, timezone as _tz
-
     try:
         _orphan = AlgoOrder_cls(
             account=account or broker_id,
@@ -91,7 +89,7 @@ async def _create_postback_orphan_row(
                 _orphan.fill_price = float(price)
             except (TypeError, ValueError):
                 pass
-            _orphan.filled_at = datetime.now(_tz.utc)
+            _orphan.filled_at = datetime.now(timezone.utc)
         s.add(_orphan)
         await s.commit()
         logger.info(

@@ -1034,6 +1034,7 @@
      so the value glyphs read as the primary signal and the pipe is
      just a divider. Zero margin + zero gap so it sits flush against
      the values with no surrounding space. */
+  /* separator SSOT: --sep-color, --sep-margin (text char — color-based, not block) */
   .ps-agg-sep {
     color: var(--algo-muted);
     margin: 0;

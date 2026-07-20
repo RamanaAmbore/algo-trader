@@ -131,6 +131,12 @@
   --z-tooltip:  9999;
   --z-search:   10000;
   --z-command:  10500;
+
+  /* Vertical-bar separator — shared by CardHeader (.ch-sep),
+     MarketPulse (.mp-head-sep), and PositionStrip (.ps-agg-sep).
+     Single source of truth for the hairline divider color + spacing. */
+  --sep-color:  rgba(126, 151, 184, 0.10);
+  --sep-margin: 0.15rem 0.4rem;
 }
 
 @media (max-width: 600px) {
