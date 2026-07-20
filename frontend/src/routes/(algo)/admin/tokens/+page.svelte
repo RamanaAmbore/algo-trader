@@ -463,7 +463,7 @@
                       <pre class="text-[0.55rem] bg-black/30 p-2 rounded whitespace-pre-wrap">{t.template_body}</pre>
                     </div>
                   {/if}
-                  <div class="col-span-2 flex gap-2 mt-1 pt-1 border-t border-white/5">
+                  <div class="col-span-2 flex gap-2 mt-1 pt-1 border-t" style="border-top-color: rgba(126,151,184,0.10)">
                     {#if isDemo}
                       <span class="text-[var(--c-muted)] text-[0.55rem] italic">Read-only in demo.</span>
                     {:else if t.is_system}

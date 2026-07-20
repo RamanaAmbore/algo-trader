@@ -1803,7 +1803,7 @@
     color: rgba(180,200,230,0.8);
     background: transparent;
     border: none;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
+    border-bottom: 1px solid rgba(126,151,184,0.10);
     cursor: pointer;
     font-family: var(--font-numeric);
     transition: background-color 0.05s;
