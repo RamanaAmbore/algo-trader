@@ -176,9 +176,14 @@ async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
             _rebuild_lot_index(resp.items if resp else [])
             _LOT_INDEX_STAMP = resp
     except Exception as e:
-        logger.debug(f"[KITE-QTY] lot_size lookup failed for {exchange}/{tradingsymbol}: {e}")
-        # For MCX: return 0 (unknown) so callers can refuse safely.
-        # For non-MCX: return 1 (no-op — same as before).
+        logger.warning(f"[KITE-QTY] lot_size lookup failed for {exchange}/{tradingsymbol}: {e}")
+        _stale = _LOT_INDEX.get((exchange, tradingsymbol))
+        if _stale and _stale > 1:
+            logger.warning(
+                "[KITE-QTY] using stale lot_size=%s for %s/%s — cache unavailable",
+                _stale, exchange, tradingsymbol,
+            )
+            return _stale
         return 0 if _mcx else 1
     # Cache miss sentinel: 0 for MCX (dangerous to assume), 1 for non-MCX (safe no-op).
     return _LOT_INDEX.get((exchange, tradingsymbol), 0 if _mcx else 1)

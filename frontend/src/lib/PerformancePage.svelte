@@ -67,7 +67,6 @@
   import { goto } from '$app/navigation';
   import { priceFmt, pctFmt, aggCompact, aggFmtGrid, pctFmtGrid } from '$lib/format';
   import NavCard from '$lib/NavCard.svelte';
-  import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols } from '$lib/data/pulseColumns.js';
@@ -1279,7 +1278,6 @@
       {/if}
     </div>
     <span class="ml-auto"></span>
-    <RefreshButton onClick={() => loadAll({ fresh: true })} {loading} label="performance" />
   </div>
 {/if}
 

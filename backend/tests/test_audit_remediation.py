@@ -442,3 +442,37 @@ async def test_basket_503_propagates_via_http_exception():
     exc = exc_info.value
     assert exc.status_code == 503
     assert "unavailable" in str(exc.detail)
+
+
+# =============================================================================
+# T-A7: get_lot_size stale _LOT_INDEX fallback (P0 overnight cache expiry)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_get_lot_size_stale_index_fallback(monkeypatch):
+    """
+    When the instruments cache is unavailable (RuntimeError during get_or_fetch),
+    get_lot_size must fall back to the stale _LOT_INDEX value rather than
+    returning 0 (which would block GTT template attachment).
+
+    Regression: CRUDEOIL25AUGFUT exits unattached at 00:19 IST because
+    _LOT_INDEX had a valid entry but the except-branch returned 0 before
+    consulting it.
+    """
+    import backend.brokers.adapters.kite as kite_mod
+    from backend.brokers.adapters.kite import get_lot_size
+
+    # Pre-populate _LOT_INDEX as it would be after a prior successful fetch.
+    original_index = kite_mod._LOT_INDEX
+    monkeypatch.setattr(kite_mod, "_LOT_INDEX", {("MCX", "CRUDEOIL25AUGFUT"): 100})
+
+    # Force get_or_fetch to raise — simulates instruments cache being down
+    # (e.g. overnight expiry, network timeout, or cold-start race).
+    with patch("backend.api.cache.get_or_fetch", side_effect=RuntimeError("instruments cache down")):
+        result = await get_lot_size("MCX", "CRUDEOIL25AUGFUT")
+
+    assert result == 100, (
+        f"Expected stale lot_size=100 from _LOT_INDEX, got {result}. "
+        "Returning 0 blocks GTT template attachment for MCX instruments."
+    )
