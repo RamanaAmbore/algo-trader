@@ -69,12 +69,13 @@ def _dhan_exc(e: Exception, code: str | None = None,
 # Per-endpoint rate limiter — proactively prevents Dhan 429s rather than
 # discovering them after the fact (which would open the circuit breaker).
 # Toggle via _DHAN_RATE_LIMIT_ENABLED at module level; no deploy needed.
+# Dhan API v2 rate limits — https://dhanhq.co/docs/v2/ — review on SDK upgrade
 _DHAN_RATE_LIMIT_ENABLED: bool = True
 _DHAN_RATE_LIMITER = TokenBucketLimiter({
-    "orders":  (10, 1.0),   # 10 calls/s for order operations
+    "orders":  (10, 1.0),   # 10 calls/s for order operations (Dhan v2 published)
     "history": (3, 1.0),    # 3 calls/s for historical data
     "margins": (5, 1.0),    # 5 calls/s for margin checks
-    "auth":    (0.5, 120.0),  # 1 call per 2 min for token generation
+    "auth":    (1, 300.0),  # 1 call per 5 min for token generation (Dhan v2 published)
 })
 
 

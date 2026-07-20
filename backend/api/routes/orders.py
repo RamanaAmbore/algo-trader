@@ -329,7 +329,7 @@ async def _retry_effective_parent_qty(row) -> int:
     except Exception as _rq_err:
         logger.debug(
             "[RETRY-QTY] DB re-fetch failed for #%s, falling back "
-            "to in-memory row: %s", row.id, _rq_err,
+            "to in-memory row: %s", getattr(row, "id", None), _rq_err,
         )
     # Fall back to the in-memory row value.
     filled = int(row.filled_quantity or 0)

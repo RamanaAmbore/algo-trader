@@ -41,9 +41,16 @@ from backend.brokers.base import Broker
 from backend.brokers.errors import (
     BrokerAuthError, BrokerRateLimitError, BrokerNetworkError, BrokerError,
 )
+from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# Groww API rate limits — conservative estimate, update when Groww publishes official limits
+_GROWW_RATE_LIMITER = TokenBucketLimiter({
+    "orders": (5, 1.0),  # 5 calls/s for order operations (conservative)
+    "data":   (5, 1.0),  # 5 calls/s for data fetch calls (conservative)
+})
 
 
 def _groww_exc(e: Exception, status: int | None = None) -> BrokerError:
@@ -607,6 +614,7 @@ class GrowwBroker(Broker):
     def _ltp_fetch_segment(self, seg: str, keys: list[str], out: dict) -> None:
         """Fetch LTP for one segment and populate `out` with Kite-shape entries."""
         try:
+            _GROWW_RATE_LIMITER.throttle("data")
             resp = self.groww.get_ltp(tuple(keys), segment=seg)
             data = resp.get("data") if isinstance(resp, dict) else {}
             if isinstance(data, dict):
@@ -700,6 +708,7 @@ class GrowwBroker(Broker):
     ) -> None:
         """Fetch OHLC for one segment and populate `out` with Kite-shape entries."""
         try:
+            _GROWW_RATE_LIMITER.throttle("data")
             resp = self.groww.get_ohlc(exchange_trading_symbols=groww_keys, segment=seg)
             data = resp.get("data") if isinstance(resp, dict) else resp
             if not isinstance(data, dict):
@@ -918,6 +927,7 @@ class GrowwBroker(Broker):
                 "market hours or route via the Kite-mirrored account."
             )
         ex, seg = _groww_exchange_and_segment(kwargs.get("exchange", ""))
+        _GROWW_RATE_LIMITER.throttle("orders")
         resp = self.groww.place_order(
             validity=kwargs.get("validity", "DAY"),
             exchange=ex,
