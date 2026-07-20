@@ -266,6 +266,11 @@
   /* Action (amber) alpha aliases */
   --c-action-14: var(--algo-amber-bg);       /* rgba(251, 191, 36, 0.14) */
   --c-action-22: var(--algo-amber-bg-strong); /* rgba(251, 191, 36, 0.22) */
+
+  /* Alternating row tint — standard α 0.30 used by .row-tint-odd, LogPanel,
+     BrokerHealthBadge, and the derivatives legs grid. Single SSOT so any
+     palette adjustment propagates to all four consumers automatically. */
+  --row-tint-odd-bg: rgba(13, 22, 42, 0.30);
 }
 
 /* ── Canonical .algo-modal recipe ─────────────────────────────────────────
@@ -1080,7 +1085,7 @@
   background: var(--ag-row-hover-color, rgba(34,211,238,0.05));
 }
 /* Shared alternating-row tint — LogPanel, exp-close grid, and any hand-rolled list */
-.row-tint-odd  { background: rgba(13,22,42,0.30); }
+.row-tint-odd  { background: var(--row-tint-odd-bg); }
 .row-tint-even { background: transparent; }
 .row-tint-odd:hover, .row-tint-even:hover { background: rgba(34,211,238,0.05); }
 .algo-table-num { text-align: right; font-variant-numeric: tabular-nums; }

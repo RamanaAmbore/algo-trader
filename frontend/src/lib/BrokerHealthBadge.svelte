@@ -297,7 +297,7 @@
   }
   .bh-row:last-child { border-bottom: none; }
   /* Alternating row background — matches .byund-row:nth-of-type(odd) */
-  .bh-row:nth-child(odd) { background-color: rgba(13, 22, 42, 0.30); }
+  .bh-row:nth-child(odd) { background-color: var(--row-tint-odd-bg); }
   .bh-row:hover,
   .bh-row:focus-visible {
     background-color: rgba(34, 211, 238, 0.05) !important;

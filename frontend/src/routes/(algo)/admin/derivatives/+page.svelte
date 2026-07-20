@@ -5686,7 +5686,7 @@
      from the {#each} index so band-header elements (also grid children)
      do not consume nth-child positions and corrupt the pattern. */
   :global(.cand-row.row-tint-odd):not(:global(.cand-row-total)) {
-    background-color: rgba(13,22,42,0.30);
+    background-color: var(--row-tint-odd-bg);
   }
   :global(.cand-row.row-tint-even):not(:global(.cand-row-total)) {
     background-color: transparent;
