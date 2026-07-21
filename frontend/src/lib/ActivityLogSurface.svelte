@@ -64,8 +64,10 @@
     label               = /** @type {string} */ (''),
     /** Bindable collapse state — passed through to LogPanel. */
     isCollapsed         = $bindable(false),
+    /** Bindable tall/expanded state — passed through to LogPanel. */
+    isTall              = $bindable(true),
     /** Retained bindable for caller compat. Not passed to LogPanel —
-     *  LogPanel now uses in-place height expansion (_isTall) instead. */
+     *  LogPanel now uses in-place height expansion (isTall) instead. */
     isFullscreen        = $bindable(false),
     /** Refresh callback — passed through to LogPanel. */
     onRefresh           = /** @type {(() => void) | null} */ (null),
@@ -171,6 +173,7 @@
   {context}
   {label}
   bind:isCollapsed
+  bind:isTall
   {onRefresh}
   bind:refreshLoading
   {onDownload}
