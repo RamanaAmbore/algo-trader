@@ -4241,7 +4241,7 @@
           Hiding {hiddenByAccount.rows} position{hiddenByAccount.rows === 1 ? '' : 's'} on {hiddenByAccount.accts} other account{hiddenByAccount.accts === 1 ? '' : 's'}
         </div>
       {/if}
-      <div class="cand-scroll algo-grid-chrome">
+      <div class="cand-scroll algo-grid-chrome fs-content-fill" style="--fs-chrome-h: 4.5rem;">
         <div class="cand-grid">
           <!-- Header row checkbox = master toggle. Checked when
                EVERY candidate is on; unchecked when none; the

@@ -1781,6 +1781,12 @@
   }
 }
 
+/* Fills available height in a fullscreen card. Set --fs-chrome-h to account for card header height. */
+.fs-card-on .fs-content-fill {
+  height: calc(100vh - 4rem - var(--fs-chrome-h, 6rem));
+  overflow-y: auto;
+}
+
 /* In FULLSCREEN mode the card controls (Refresh, Search, Download,
    DefaultSize) stay inside their CardHeader / bucket-header bar and
    remain visible via sticky positioning. CollapseButton is hidden

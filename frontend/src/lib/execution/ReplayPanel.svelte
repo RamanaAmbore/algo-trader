@@ -67,6 +67,12 @@
     runName = _autoRunName();
   });
 
+  let _replayRefreshing = $state(false);
+  async function _refreshReplay() {
+    _replayRefreshing = true;
+    try { await load(); } finally { _replayRefreshing = false; }
+  }
+
   async function load() {
     try {
       const [stat, res, ord, syms] = await Promise.all([
@@ -362,10 +368,12 @@
       bind:isFullscreen={_chartFs}
       bind:isCollapsed={_chartCol}
       showSearch={false}
+      onRefresh={_refreshReplay}
+      bind:refreshLoading={_replayRefreshing}
     />
     <div hidden={_chartCol}>
       {#if chartSymbols.length}
-        <div class="replay-charts mb-3">
+        <div class="replay-charts fs-content-fill mb-3" style="--fs-chrome-h: 5rem;">
           {#each chartSymbols as sym (sym)}
             <PriceChart mode="replay" symbol={sym} height={170}
                         data={chartsBySymbol[sym]}
@@ -500,6 +508,15 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
     gap: 0.5rem;
+  }
+  :global(.sim-card.fs-card-on) .replay-charts {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  :global(.sim-card.fs-card-on) .replay-charts :global(.price-chart) {
+    flex: 1 1 0;
+    min-height: 200px;
   }
 
   .sim-section       { margin-bottom: 1.5rem; }

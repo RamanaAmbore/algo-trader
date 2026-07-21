@@ -2683,6 +2683,13 @@
       // ── Batch quote + pulseQuotes assembly ──────────────────────────
       if (allKeys.size) {
         const items = await batchQuoteChunked([...allKeys]);
+        // Stamp arrival time before any processing — reflects when data
+        // arrived from the broker, not when quote maps finish building.
+        // Works for both force=true (operator refresh/mount) and
+        // force=false (background auto-poll tick).
+        pulseLastUpdate = Date.now();
+        _lastPulseAt = pulseLastUpdate;
+        lastRefreshAt.set(pulseLastUpdate);
         // BH5: publish the broker-quote snapshot for every symbol in
         // view into symbolStore. This is the last non-symbolStore data
         // sink — after this, every market-data poll on this page feeds
@@ -2691,12 +2698,12 @@
         pulseQuotes = buildQuoteMaps(items, underlyingInfos);
       } else {
         pulseQuotes = { underlyings: {}, contracts: {} };
+        // No quotes requested (empty watchlist/positions) — still stamp
+        // so the RefreshButton tooltip reflects the completed poll.
+        pulseLastUpdate = Date.now();
+        _lastPulseAt = pulseLastUpdate;
+        lastRefreshAt.set(pulseLastUpdate);
       }
-      pulseLastUpdate = Date.now();
-      _lastPulseAt = pulseLastUpdate;
-      // Surface the auto-poll completion to every mounted RefreshButton's
-      // tooltip — see dashboard.loadHero for the rationale.
-      lastRefreshAt.set(pulseLastUpdate);
     } catch (_) { /* nothing fatal */ }
   }
 

@@ -1979,18 +1979,18 @@
           <!-- Operator: "mode and chase should be left aligned. chase value
                should be selectable." Cluster sits immediately AFTER the
                title chip (left-aligned). The close X stays anchored right. -->
+          {#if !inline && _localSymbol}
+            <button type="button" class="oes-chart-btn" title="Chart — {_localSymbol}"
+                    onclick={() => _chartModalOpen = true}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+              </svg>
+            </button>
+          {/if}
           <span class="oes-header-cluster">
             <!-- Operator: "remove live chip from order modal and page.
                  navbar live is enough." The mode chip used to sit here. -->
-            <!-- L/M/H selector. Operator: "on cold start show chase with
-                 L as active." Default 'low' so L is highlighted out of
-                 the gate; CHASE label always shows alongside since the
-                 cluster is opt-out by switching to MARKET/SL-M (which
-                 hides the whole row). -->
-            {#if _chaseEnabled}
-              <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-              <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
-            {/if}
             {#if basketLegs.length > 0}
               <button type="button" class="oes-common-clear oes-common-clear-inline"
                 title="Clear all basket legs"
@@ -2062,6 +2062,10 @@
         </div>
         {#if exchange || _pickedExchange}
           <span class="oes-exch">{exchange || _pickedExchange}</span>
+        {/if}
+        {#if !inline && _chaseEnabled}
+          <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
         {/if}
         {#if pickerSuffix}
           {@render pickerSuffix()}

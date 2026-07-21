@@ -922,6 +922,7 @@ export function parseLogLineDate(line) {
 // `loading` flag), plus direct `.set()` calls from pages whose
 // auto-pollers don't go through RefreshButton (loadHero on dashboard,
 // loadPulse inside MarketPulse).
+// Set by RefreshButton on loading→false; other writers set immediately after data arrives, not after processing.
 export const lastRefreshAt = writable(0);
 
 // ── Include-Holdings toggle (shared with derivatives page) ──────────────
