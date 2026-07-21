@@ -1677,11 +1677,19 @@ def _movers_build_live_rows(
     )
     rows = _movers_build_rows(combined)
 
-    # Persist NSE-only rows. MCX rows are excluded so the NSE 15:29
-    # close snapshot is never overwritten by evening MCX data.
-    nse_rows = [r for r in rows if r.exchange == "NSE"]
-    if nse_rows:
-        asyncio.create_task(_save_movers_snapshot(nse_rows, ist_today))
+    # Persist NSE-only rows during NSE hours only.
+    #
+    # The `nse_rows` filter by exchange is not sufficient: when NSE is
+    # closed but MCX is still open (15:30–23:30 IST), `_session_movers`
+    # still carries NSE sticky entries from the afternoon, so `nse_rows`
+    # is non-empty and its UPSERT would overwrite the full-universe row
+    # that `_force_movers_snapshot` wrote at the NSE close lifecycle
+    # event.  Guard on `nse_is_open` so the close snapshot is preserved
+    # intact for the off-hours fallback path.
+    if nse_is_open:
+        nse_rows = [r for r in rows if r.exchange == "NSE"]
+        if nse_rows:
+            asyncio.create_task(_save_movers_snapshot(nse_rows, ist_today))
 
     return rows, live_snapshot
 

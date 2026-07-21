@@ -483,7 +483,10 @@ export const moversStore = createDataStore({
   },
   /** @param {any} r */
   parse:   (r) => {
-    const rows = r ?? [];
+    const rows = (r ?? []).map(row => ({
+      ...row,
+      _moverDirection: row._moverDirection || (Number(row.change_pct ?? 0) >= 0 ? 'winners' : 'losers'),
+    }));
     _publishMoverRows(rows);
     return rows;
   },

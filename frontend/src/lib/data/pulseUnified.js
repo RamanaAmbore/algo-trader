@@ -346,7 +346,7 @@ function _populateMoverRow(row, m, snap, liveLtp, liveChangePct, liveClose) {
   row._mover_change_pct = liveChangePct ?? null;
   if (m._moverGroups)    row._moverGroups    = m._moverGroups;
   if (m._moverGroup)     row._moverGroup     = m._moverGroup;
-  if (m._moverDirection) row._moverDirection = m._moverDirection;
+  row._moverDirection = m._moverDirection || ((m.change_pct ?? m._mover_change_pct ?? 0) >= 0 ? 'winners' : 'losers');
   _propagateStaleAndSource(row, m);
 }
 
