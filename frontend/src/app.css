@@ -2531,6 +2531,9 @@ button:not(:disabled):active,
   0%   { background-color: rgba(125, 211, 252, 0.10); }
   100% { background-color: transparent; }
 }
+@keyframes rbq-spin {
+  to { transform: rotate(360deg); }
+}
 .cp-pulse-a {
   animation: cp-pulse-kf-a 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }

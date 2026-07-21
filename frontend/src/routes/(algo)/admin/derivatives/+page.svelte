@@ -1558,7 +1558,7 @@
   // to the deriveds, not this trigger).
   $effect(() => {
     void selectedUnderlying;
-    untrack(() => { try { loadStrategy(); } catch (_) {} });
+    untrack(() => { try { loadStrategy({ clear: true }); } catch (_) {} });
   });
 
   /** Distinct expiries (YYYY-MM-DD) the operator has positions /
@@ -2382,7 +2382,7 @@
   $effect(() => {
     void legs;
     void _includeHoldings;
-    untrack(() => loadStrategy());
+    untrack(() => loadStrategy({ clear: true }));
   });
 
   // ── Option-chain picker (Strategy mode) ───────────────────────────
@@ -3451,7 +3451,8 @@
   // synthCacheKey, synthEquityOnlyStrategy — imported from $lib/derivatives/pageLoad.js
   // (renamed: synthCacheKey(underlying, eqs), synthEquityOnlyStrategy(eqs, underlying))
 
-  async function loadStrategy(opts = { force: false }) {
+  /** @param {{ force?: boolean, clear?: boolean }} [opts] */
+  async function loadStrategy(opts = {}) {
     // Build clean legs (exclude eq kind, inline ltp for sim/draft, look up expiry).
     const cleanLegs = buildCleanLegs(legs, getInstrument);
 
@@ -3497,6 +3498,7 @@
     }
 
     const _thisGen = ++_stratGen;
+    if (opts?.clear) strategy = null;
     loading = true;
     try {
       const resp    = await fetchStrategyAnalytics(cleanLegs);
@@ -4063,6 +4065,7 @@
          EXP / DTE / σ / LEGS live in the on-chart stat overlay. -->
     <CardHeader
       title="Payoff"
+      loading={loading}
       bind:isCollapsed={_colPayoff}
       bind:isFullscreen={_fsPayoff}
       cardId="optPayoff"
