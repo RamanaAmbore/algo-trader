@@ -36,6 +36,7 @@
   let {
     title = '',
     timestamp = null,
+    loading = false,
     // CardControls props — all forwarded
     isCollapsed = $bindable(false),
     isFullscreen = $bindable(false),
@@ -93,6 +94,14 @@
 <div class="card-header">
   <span class="ch-overflow-anchor" aria-hidden="true" bind:this={_overflowAnchorEl} style="position:absolute;pointer-events:none;"></span>
   <div class="ch-left">
+    {#if loading}
+      <svg class="ch-spin" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+        <circle cx="8" cy="8" r="5.5"
+          fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round"
+          stroke-dasharray="9 30" />
+      </svg>
+    {/if}
     {#if title}<span class="ch-title">{title}</span>{/if}
     {#if timestamp}<span class="ch-ts">{timestamp}</span>{/if}
     {@render left?.()}
@@ -175,5 +184,10 @@
     align-items: center;
     gap: 0.3rem;
     flex-shrink: 0;
+  }
+  .ch-spin {
+    color: var(--c-action, #fbbf24);
+    flex-shrink: 0;
+    animation: rbq-spin 0.9s linear infinite;
   }
 </style>
