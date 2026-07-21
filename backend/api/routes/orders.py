@@ -448,6 +448,59 @@ def _rco_broadcast_position_filled(
         logger.debug(f"position_filled broadcast skipped: {_pe}")
 
 
+async def _positions_refresh_after_fill(
+    account: str, tradingsymbol: str, qty_delta: int
+) -> None:
+    """Fire-and-forget: poll broker positions for up to 5 s after a fill,
+    then invalidate the raw cache + broadcast positions_refreshed once the
+    symbol shows up (or qty changes).  The initial cache bust in
+    _rco_invalidate_terminal_caches() clears stale data immediately; this
+    task handles the broker-propagation lag so the UI eventually sees the
+    new position without waiting for the 5-min performance poll.
+    """
+    try:
+        import asyncio as _aio
+        from backend.brokers.broker_apis import fetch_positions, _raw_cache_invalidate
+        initial_qty: int | None = None
+        for _attempt in range(5):
+            await _aio.sleep(1)
+            try:
+                dfs = await _aio.to_thread(fetch_positions)
+                rows = [
+                    r for df in (dfs or [])
+                    for r in df.to_dict(orient="records")
+                    if r.get("tradingsymbol") == tradingsymbol
+                ]
+                if initial_qty is None:
+                    initial_qty = sum(int(r.get("quantity", 0)) for r in rows)
+
+                cur_qty = sum(int(r.get("quantity", 0)) for r in rows)
+                changed = rows and ((qty_delta > 0 and cur_qty > 0) or (cur_qty != initial_qty))
+                if changed:
+                    _raw_cache_invalidate("positions")
+                    broadcast(json.dumps({
+                        "event": "positions_refreshed",
+                        "tradingsymbol": tradingsymbol,
+                        "account": account,
+                        "ts": int(_time.time() * 1000),
+                    }))
+                    logger.debug(
+                        "[FILL-POLL] positions_refreshed after %d attempt(s) "
+                        "symbol=%s qty_delta=%+d",
+                        _attempt + 1, tradingsymbol, qty_delta,
+                    )
+                    return
+            except Exception as _poll_err:
+                logger.debug("[FILL-POLL] attempt %d error: %s", _attempt + 1, _poll_err)
+        logger.warning(
+            "[FILL-POLL] positions_refreshed timed out after 5 attempts "
+            "symbol=%s qty_delta=%+d",
+            tradingsymbol, qty_delta,
+        )
+    except Exception as _outer:
+        logger.debug("[FILL-POLL] outer error: %s", _outer)
+
+
 def _postback_broadcast_fanout(
     *,
     status: str,
@@ -498,6 +551,14 @@ def _postback_broadcast_fanout(
 
         if str(status).upper() == "COMPLETE":
             _rco_broadcast_position_filled(masked, exchange, symbol, txn, qty, price, order_id)
+            try:
+                _qty_int = int(qty or 0)
+                _side_sign = 1 if (txn or "").upper() == "BUY" else -1
+                asyncio.create_task(
+                    _positions_refresh_after_fill(account, symbol, _qty_int * _side_sign)
+                )
+            except Exception:
+                pass
 
         if _terminal:
             broadcast(json.dumps({

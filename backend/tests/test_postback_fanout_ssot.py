@@ -148,12 +148,16 @@ class TestPostbackBroadcastSSOT:
         )
 
     def test_raw_cache_invalidate_only_in_fanout(self):
-        """`_raw_cache_invalidate("positions")` should run from one
-        site (the fan-out helper). Pre-fix it ran from two:
-        _process_broker_postback + the Kite handler."""
+        """`_raw_cache_invalidate("positions")` has exactly two call sites
+        in orders.py:
+          1. `_rco_invalidate_terminal_caches` — immediate bust on any terminal
+             status (COMPLETE/CANCELLED/REJECTED/EXPIRED).
+          2. `_positions_refresh_after_fill` — delayed re-bust once the broker's
+             positions endpoint reflects the fill (handles propagation lag).
+        Guard: if this count changes, the SSOT invariant needs re-review."""
         src = ROUTES_FILE.read_text(encoding="utf-8")
         hits = re.findall(r'_raw_cache_invalidate\("positions"\)', src)
-        assert len(hits) == 1, (
+        assert len(hits) == 2, (
             f"_raw_cache_invalidate('positions') called from "
-            f"{len(hits)} sites; expected 1 (inside the fan-out helper)."
+            f"{len(hits)} sites; expected exactly 2 (terminal + fill-poll)."
         )

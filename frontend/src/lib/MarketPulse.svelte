@@ -1493,6 +1493,12 @@
           // grid shows the new qty within a tick. The 10 s pulse
           // poll keeps running as a backstop.
           loadPulse();
+        } else if (msg?.event === 'positions_refreshed') {
+          // Backend signals that the positions book has been refreshed
+          // (e.g. after a postback fan-out or reconcile sweep) — force
+          // a full re-fetch so the grid reflects the updated state
+          // immediately rather than waiting for the next poll tick.
+          loadPulse({ force: true });
         }
       });
     }
@@ -2599,6 +2605,15 @@
           positionsSummary = (pRaw?.summary || []).slice();
           holdingsSummary  = (hRaw?.summary || []).slice();
         }
+        // Stamp early: primary positions + holdings data has arrived.
+        // batchQuoteChunked may take additional time; this timestamp
+        // ensures the RefreshButton tooltip updates as soon as the
+        // broker positions/holdings round-trip completes. The stamp
+        // inside `if (allKeys.size)` will double-stamp when quotes
+        // arrive — harmless; the later value is always fresher.
+        pulseLastUpdate = Date.now();
+        _lastPulseAt = pulseLastUpdate;
+        lastRefreshAt.set(pulseLastUpdate);
       }
 
       const p_rows = pulsePositionsStore.value ?? [];

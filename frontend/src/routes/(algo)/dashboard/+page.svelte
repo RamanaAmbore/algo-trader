@@ -1193,6 +1193,10 @@
 
       _paperOpen = Number(algoStatus.paperStatus?.open_order_count) || 0;
       _heroLoadedAt = clientTimestamp();
+      // Stamp as soon as primary data (positions + holdings + events)
+      // arrives so the RefreshButton tooltip reflects the completed
+      // critical fetch, not the slower secondary batch below.
+      lastRefreshAt.set(Date.now());
 
       // Parallel: funds + NIFTY quote.
       // _fetchEquity intentionally NOT in this batch — it has its
@@ -1202,12 +1206,6 @@
         fundsStore.load(),
         _fetchNifty(),
       ]);
-      // Stamp after data arrives so the RefreshButton tooltip reflects
-      // the completed fetch, not the start. loadHero runs via
-      // visibleInterval and doesn't flip the page-level _refreshing
-      // state, so this explicit set is the only way auto-poll ticks
-      // surface in the timestamp.
-      lastRefreshAt.set(Date.now());
     } catch (_) { /* leave previous values up */ }
   }
 
@@ -2885,6 +2883,14 @@
     flex: 1 1 auto;
     min-height: 8rem;
     max-height: 15rem;
+  }
+  /* Fullscreen mode: lift the height cap so LogPanel fills the
+     maximised card frame without clipping or showing outer scrollbars. */
+  .dash-activity.fs-card-on > .card-body {
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: none;
+    overflow: hidden;
   }
   /* NAV chip fetch-error strip — rendered above <NavTab> when
      /api/nav/latest returns an error. Red palette matching

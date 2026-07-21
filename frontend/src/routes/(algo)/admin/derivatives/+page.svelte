@@ -3428,6 +3428,11 @@
   // etc.) — only escalates after 2+ failures in a row so the user
   // sees the chart appear cleanly when the next poll succeeds.
   let _stratFails = 0;
+  // Generation counter — incremented at the start of every fetch so
+  // a stale (slower) response that resolves after a newer request
+  // has already started can detect itself as stale and discard its
+  // result without overwriting the fresher data.
+  let _stratGen = 0;
 
   // Memoize equity-only synth — every 5s poll calls loadStrategy. When
   // strategy is synthesized from eq legs, recomputing a fresh 41-point
@@ -3491,14 +3496,18 @@
       return;
     }
 
+    const _thisGen = ++_stratGen;
     loading = true;
     try {
-      strategy      = await fetchStrategyAnalytics(cleanLegs);
+      const resp    = await fetchStrategyAnalytics(cleanLegs);
+      if (_thisGen !== _stratGen) return;
+      strategy      = resp;
       _stratLastKey = legsKey;
       strategyErr   = '';
       _stratFails   = 0;
       _saveCache();
     } catch (e) {
+      if (_thisGen !== _stratGen) return;
       _stratFails  += 1;
       // Record key on failure to suppress repeated hammering during closed
       // hours. force=true bypasses so manual retries always fire.
