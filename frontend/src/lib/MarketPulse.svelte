@@ -4234,7 +4234,7 @@
      _resolveTargetListId. -->
 <ModalShell open={!!optionPickerUnderlying} onClose={closeOptionPicker} ariaLabel="Pick option strike">
     <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
-      <div class="search-header">
+      <div class="search-header canonical-modal-header">
         <span class="search-title">{optionPickerUnderlying?.name} — pick contract</span>
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeOptionPicker}>×</button>
       </div>
@@ -5109,36 +5109,38 @@
     box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
     overflow: hidden;
   }
+  /* search-header adopts canonical-modal-header gradient via class in markup;
+     local override adds justify-content so title + close sit at opposite ends. */
   :global(.search-header) {
-    display: flex;
-    align-items: center;
     justify-content: space-between;
-    padding: 0.55rem 0.8rem;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.18);
-    background: rgba(251, 191, 36, 0.04);
   }
-  /* Modal title inside the Add / option-picker popup — canonical
-     .algo-card-title tokens so it reads at the same intensity as the
-     card headings behind it (operator: "GREEKS is good"). Was fs-lg
-     with 0.05em spacing — slightly heavier than the platform default. */
+  /* Modal title — canonical cyan-text, numeric font, bold uppercase.
+     Matches ChartModal .cm-title and ActivityLogModal header. */
   :global(.search-title) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: var(--fs-md);
-    font-weight: 700;
-    color: var(--c-action);
-    letter-spacing: 0.04em;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
+    font-weight: 800;
+    color: #67e8f9;
+    letter-spacing: 0.10em;
     text-transform: uppercase;
   }
   :global(.search-close) {
-    font-size: 1.05rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 3px;
+    color: var(--c-short);
+    font-size: var(--fs-xl);
     line-height: 1;
-    color: var(--c-muted);
     background: transparent;
-    border: none;
-    padding: 0 0.25rem;
     cursor: pointer;
+    transition: background 0.1s;
+    flex-shrink: 0;
   }
-  :global(.search-close:hover) { color: var(--c-action); }
+  :global(.search-close:hover) { background: rgba(248, 113, 113, 0.15); }
   :global(.search-body) {
     padding: 0.7rem 0.8rem 0.85rem;
     display: flex;

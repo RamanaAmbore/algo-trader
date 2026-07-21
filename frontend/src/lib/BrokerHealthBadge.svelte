@@ -65,14 +65,9 @@
   <!-- Modal overlay -->
   <div class="bh-overlay" role="presentation" onclick={() => open = false}></div>
   <div class="bh-modal algo-modal" role="dialog" aria-label="Broker auth health">
-    <div class="bh-modal-header">
+    <div class="bh-modal-header canonical-modal-header">
       <span class="bh-modal-title">Broker Auth Health</span>
-      <button class="bh-close" onclick={() => open = false} aria-label="Close">
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-          <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.8"
-                stroke-linecap="round"/>
-        </svg>
-      </button>
+      <button class="bh-close" onclick={() => open = false} aria-label="Close">×</button>
     </div>
     <div class="bh-modal-body">
       <div class="bh-grid">
@@ -220,38 +215,38 @@
     max-height: min(90vh, 480px);
   }
 
-  /* ── Modal header — matches byund-headrow canonical (Snapshot grid) ── */
+  /* ── Modal header — canonical-modal-header gradient applied via class.
+     Local overrides: justify-content (title + close side-by-side) and
+     title color (amber action token for broker auth context). ── */
   .bh-modal-header {
-    display: flex;
-    align-items: center;
     justify-content: space-between;
-    padding: 0.3rem 1rem;
-    background: rgba(15, 23, 42, 0.65);
-    border-bottom: 1px solid var(--algo-amber-border-soft);
   }
   .bh-modal-title {
     font-family: var(--font-numeric);
-    font-size: 0.85rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: var(--c-action);
+    font-size: var(--fs-lg);
+    font-weight: 800;
+    letter-spacing: 0.10em;
+    color: #67e8f9;
     text-transform: uppercase;
   }
   .bh-close {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    border-radius: 0.3rem;
-    color: var(--text-faint);
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 3px;
+    color: var(--c-short);
+    font-size: var(--fs-xl);
+    line-height: 1;
     cursor: pointer;
     outline: none;
     background: transparent;
-    border: none;
-    transition: color 0.1s;
+    transition: background 0.1s;
+    flex-shrink: 0;
   }
-  .bh-close:hover { color: var(--text-muted); }
+  .bh-close:hover { background: rgba(248, 113, 113, 0.15); }
 
   /* ── Modal body ── */
   .bh-modal-body {

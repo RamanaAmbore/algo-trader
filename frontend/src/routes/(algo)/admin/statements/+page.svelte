@@ -12,6 +12,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
+  import { formatDateIST } from '$lib/dateFormat.js';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import {
@@ -70,9 +71,7 @@
       out.push({
         year: y, month: m,
         value: `${y}-${m}`,
-        label: new Date(y, m - 1, 1).toLocaleDateString('en-IN', {
-          month: 'short', year: 'numeric',
-        }),
+        label: formatDateIST(new Date(y, m - 1, 1), { month: 'short', year: 'numeric' }),
       });
       m -= 1; if (m < 1) { m = 12; y -= 1; }
     }
@@ -171,9 +170,7 @@
 
   function _periodLabel() {
     if (!periodYear || !periodMonth) return '—';
-    return new Date(periodYear, periodMonth - 1, 1).toLocaleDateString('en-IN', {
-      month: 'short', year: 'numeric',
-    });
+    return formatDateIST(new Date(periodYear, periodMonth - 1, 1), { month: 'short', year: 'numeric' });
   }
   function _fmtBytes(/** @type {number|null} */ b) {
     if (b == null) return '—';

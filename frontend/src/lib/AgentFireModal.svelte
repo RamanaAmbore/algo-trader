@@ -55,7 +55,7 @@
 <ModalShell open={true} {onClose} zIndex={9998} clickOutside={true} ariaLabel="Agent fire details">
   <div class="afm-modal algo-modal" role="document"
        style="border-color: {palette.border}">
-    <div class="afm-header">
+    <div class="afm-header canonical-modal-header">
       <div>
         <div class="afm-tier-row">
           <span class="afm-tier"
@@ -127,13 +127,13 @@
     color: var(--algo-slate);
     font-family: var(--font-numeric);
   }
+  /* afm-header adopts canonical-modal-header gradient via class in markup.
+     Local overrides: align-items (flex-start for multi-line content),
+     justify-content (title-block + close button at opposite ends),
+     margin-bottom (gap before body sections). */
   .afm-header {
-    display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 0.5rem;
-    padding-bottom: 0.55rem;
-    border-bottom: 1px solid rgba(255,255,255,0.08);
     margin-bottom: 0.6rem;
   }
   .afm-tier-row {
@@ -185,18 +185,22 @@
     margin-top: 0.2rem;
   }
   .afm-close {
-    background: transparent;
-    border: 1px solid rgba(255,255,255,0.15);
-    color: var(--algo-slate);
-    width: 1.55rem;
-    height: 1.55rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
-    cursor: pointer;
-    font-size: 1rem;
+    color: var(--c-short);
+    font-size: var(--fs-xl);
     line-height: 1;
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.1s;
     flex-shrink: 0;
   }
-  .afm-close:hover { border-color: var(--algo-red); color: var(--algo-red); }
+  .afm-close:hover { background: rgba(248, 113, 113, 0.15); }
 
   .afm-section {
     margin-bottom: 0.6rem;

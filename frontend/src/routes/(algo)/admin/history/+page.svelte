@@ -13,6 +13,7 @@
 -->
 <script>
   import { onMount } from 'svelte';
+  import { formatDateIST } from '$lib/dateFormat.js';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import {
@@ -196,9 +197,7 @@
     if (!iso) return '—';
     try {
       const d = new Date(iso);
-      return d.toLocaleDateString('en-IN', {
-        day: '2-digit', month: 'short', year: 'numeric',
-      });
+      return formatDateIST(d, { day: '2-digit', month: 'short', year: 'numeric' });
     } catch { return iso.slice(0, 10); }
   }
   function _fmtTs(/** @type {string} */ iso) {

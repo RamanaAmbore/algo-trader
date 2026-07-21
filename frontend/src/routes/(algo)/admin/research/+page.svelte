@@ -16,6 +16,7 @@
   // MCP pipeline — Claude Code (subscription) is the only LLM in the loop.
 
   import { onMount, onDestroy } from 'svelte';
+  import { formatDateShort } from '$lib/dateFormat.js';
   import { authStore, branchLabel, visibleInterval } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
@@ -214,7 +215,7 @@
     if (!iso) return '—';
     try {
       const d = new Date(iso);
-      return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+      return formatDateShort(d)
         + ' ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
     } catch (_) { return iso; }
   }

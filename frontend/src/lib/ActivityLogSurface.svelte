@@ -35,6 +35,7 @@
 -->
 <script>
   import LogPanel from '$lib/LogPanel.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   let {
     /** Tab to land on. Modal threads its `initialTab` here; pages
@@ -150,6 +151,33 @@
   );
 </script>
 
+<!--
+  When label is provided on a card/card-wide context, render a CardHeader
+  above LogPanel so the header chrome (label chip + Collapse + Fullscreen)
+  matches every other card on the dashboard / orders / automation pages.
+  LogPanel then receives label="" so it doesn't render a duplicate lp-label
+  chip, and hideControls=true so it doesn't render its own Collapse/Fullscreen
+  buttons (CardHeader's CardControls owns those).
+
+  Modal context is excluded: LogPanel handles its own close button inline,
+  and the header chrome would conflict with the modal overlay.
+  Page context is excluded: full-page surfaces have no card chrome.
+-->
+{#if label && context !== 'page' && context !== 'modal'}
+  <CardHeader
+    title={label}
+    {cardId}
+    bind:isCollapsed
+    bind:isFullscreen
+    {onRefresh}
+    bind:refreshLoading
+    {onDownload}
+    showSearch={true}
+    showControls={true}
+    detectOverflow={false}
+  />
+{/if}
+
 <LogPanel
   {heightClass}
   {defaultTab}
@@ -168,11 +196,15 @@
   {cmdHistory}
   {tabs}
   {context}
-  {label}
+  label={label && context !== 'page' && context !== 'modal' ? '' : label}
   bind:isCollapsed
   bind:isFullscreen
   {onRefresh}
   bind:refreshLoading
   {onDownload}
   {cardId}
-  {onClose} />
+  {onClose}
+  hideControls={!!(label && context !== 'page' && context !== 'modal')}
+  hideSearch={!!(label && context !== 'page' && context !== 'modal')}
+  hideDownload={!!(label && context !== 'page' && context !== 'modal')}
+/>

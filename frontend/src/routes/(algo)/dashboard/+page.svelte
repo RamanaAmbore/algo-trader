@@ -32,6 +32,7 @@
   import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { userCaps, userRole, hasCap } from '$lib/rbac';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { todayIST } from '$lib/dateFormat.js';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
@@ -91,14 +92,7 @@
   // browser TZ differed from IST (or even across IST midnight rollover
   // when the operator was outside India).
   function istMidnightTodayAsDate() {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Kolkata',
-      year: 'numeric', month: '2-digit', day: '2-digit',
-    }).formatToParts(new Date());
-    const y = parts.find(p => p.type === 'year').value;
-    const m = parts.find(p => p.type === 'month').value;
-    const d = parts.find(p => p.type === 'day').value;
-    return new Date(`${y}-${m}-${d}T00:00:00+05:30`);
+    return new Date(`${todayIST()}T00:00:00+05:30`);
   }
 
   // ── Layout shared context (paper status + open orders) ──────────────
@@ -2068,9 +2062,12 @@
            right edge regardless of how wide the AccountMultiSelect
            grows. Same idiom as before the NAV-tab addition. -->
       <span class="cap-eq-spacer"></span>
-      <!-- Buttons bind to the ACTIVE tab's own collapse + fullscreen
-           pair. Svelte 5 doesn't permit ternary expressions inside
-           `bind:`, so we split into per-tab component instances. -->
+      <!-- These three CardControls blocks live inline intentionally:
+           this header has no title — AlgoTabs IS the card identifier.
+           Wrapping in CardHeader would nest a header-bar inside a header-bar.
+           Svelte 5 also doesn't permit ternary expressions inside `bind:`,
+           so we split into per-tab instances to bind each tab's own
+           collapse + fullscreen state. -->
       {#if _capEqTab === 'nav'}
         <CardControls
           bind:isCollapsed={_colNavBd}
@@ -2235,6 +2232,7 @@
     onRefresh={_refreshAll}
     bind:refreshLoading={_refreshing}
     showSearch={false}
+    detectOverflow={false}
   >
     <!-- Default expanded — was previously `initialCollapsed=true` so
          the empty-state "No agent fires yet today" was hidden behind

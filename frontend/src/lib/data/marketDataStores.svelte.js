@@ -487,6 +487,14 @@ export const moversStore = createDataStore({
       ...row,
       _moverDirection: row._moverDirection || (Number(row.change_pct ?? 0) >= 0 ? 'winners' : 'losers'),
     }));
+    // Schema guard: if cached rows are missing both change_pct and
+    // _moverDirection the payload is corrupt or from an incompatible
+    // schema version. Clear the cache key so the fetcher runs fresh
+    // and re-populates via the enriched fetcher path (which adds
+    // _moverGroups, _moverGroup, etc.).
+    if (rows.length > 0 && rows.some(row => !row.change_pct && !row._moverDirection)) {
+      try { localStorage.removeItem('md.movers'); } catch (_) { /* storage unavailable */ }
+    }
     _publishMoverRows(rows);
     return rows;
   },

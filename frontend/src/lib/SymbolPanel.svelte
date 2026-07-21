@@ -2393,7 +2393,7 @@
                       title={`Protective BUY leg auto-attached on fill. Reduces SPAN margin and caps tail risk. ${_activePreviewPlan.wing.order_type || 'MARKET'} order, qty matches parent.`}>
                   + Wing BUY {_activePreviewPlan.wing.quantity}× <LegLabel sym={_activePreviewPlan.wing.tradingsymbol} compact={true} />
                   {#if _activePreviewPlan.wing.estimated_price != null && _activePreviewPlan.wing.estimated_price > 0}
-                    <span class="oes-tpl-preview-chip-px">@ ~₹{Number(_activePreviewPlan.wing.estimated_price).toFixed(2)}</span>
+                    <span class="oes-tpl-preview-chip-px">@ ~₹{priceFmt(Number(_activePreviewPlan.wing.estimated_price))}</span>
                   {/if}
                 </span>
               {/if}
