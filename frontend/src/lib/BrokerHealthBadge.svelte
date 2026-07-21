@@ -226,7 +226,7 @@
     font-size: var(--fs-lg);
     font-weight: 800;
     letter-spacing: 0.10em;
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
     text-transform: uppercase;
   }
   .bh-close {

@@ -4851,7 +4851,7 @@ async def recover_live_chases() -> None:
                     AlgoOrder.status == "OPEN",
                     AlgoOrder.engine == "live",
                     AlgoOrder.next_attempt_at.is_not(None),
-                    AlgoOrder.updated_at < cutoff,
+                    AlgoOrder.created_at < cutoff,
                 )
             )).scalars().all()
     except Exception as e:

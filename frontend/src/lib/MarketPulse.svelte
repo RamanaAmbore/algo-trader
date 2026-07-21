@@ -5120,7 +5120,7 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
     font-weight: 800;
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
     letter-spacing: 0.10em;
     text-transform: uppercase;
   }

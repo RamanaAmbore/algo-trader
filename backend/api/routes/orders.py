@@ -500,7 +500,7 @@ async def _positions_refresh_after_fill(
                 # we already had a non-empty baseline.  The old
                 # `qty_delta > 0 and cur_qty > 0` arm fired on the very first
                 # poll for any existing BUY position, sending pre-fill data.
-                changed = (cur_qty != initial_qty) or (not rows and initial_qty is not None)
+                changed = (cur_qty != initial_qty) or (not rows and initial_qty is not None and initial_qty > 0)
                 if changed:
                     _raw_cache_invalidate("positions")
                     broadcast(json.dumps({
