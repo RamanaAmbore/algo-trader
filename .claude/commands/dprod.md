@@ -2,9 +2,15 @@
 
 ## Permissions
 
-**First**: call `ExitPlanMode` immediately if plan mode is currently active — this unblocks all subagents so they can make file edits. Do this before any other step.
+**If plan mode is currently active**: call `ExitPlanMode` with the following `allowedPrompts` before any other step — this grants session-level permissions so no further prompts appear:
+- `{tool: "Bash", prompt: "run complexity analysis with radon"}`
+- `{tool: "Bash", prompt: "generate PDF documentation"}`
+- `{tool: "Bash", prompt: "checkout, merge, and push git branches to remote"}`
+- `{tool: "Bash", prompt: "check git log and diff"}`
 
-Activate bypass-permissions mode (no tool-use prompts during execution). After Step 7, call `EnterPlanMode` to return to plan mode.
+**If not in plan mode**: project settings pre-authorize all needed operations — proceed directly.
+
+After Step 7, call `EnterPlanMode` to return to plan mode.
 
 Update specs, guides, DESIGN_GUIDE, PDF, and complexity — then merge dev→main and push. All steps run in background; report each result in foreground as it completes.
 

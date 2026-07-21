@@ -2,9 +2,15 @@
 
 ## Permissions
 
-**First**: call `ExitPlanMode` immediately if plan mode is currently active — this unblocks all subagents so they can make file edits. Do this before any other step.
+**If plan mode is currently active**: call `ExitPlanMode` with the following `allowedPrompts` before any other step — this grants session-level permissions so no further prompts appear:
+- `{tool: "Bash", prompt: "run backend tests with pytest"}`
+- `{tool: "Bash", prompt: "run frontend svelte-check type checker"}`
+- `{tool: "Bash", prompt: "push commits to git remote"}`
+- `{tool: "Bash", prompt: "check git status, diff, and log"}`
 
-Activate bypass-permissions mode (no tool-use prompts during execution). After the final foreground report, call `EnterPlanMode` to return to plan mode.
+**If not in plan mode**: project settings pre-authorize all needed operations — proceed directly.
+
+After the final foreground report, call `EnterPlanMode` to return to plan mode.
 
 Run backend tests and frontend type check. Push to dev only if both pass. Report results in foreground.
 

@@ -6,10 +6,20 @@ Returns to plan mode when done.
 
 ## Permissions
 
-**First**: call `ExitPlanMode` immediately if plan mode is currently active — this unblocks all subagents so they can make file edits. Do this before reading the plan or dispatching any agents.
+**If plan mode is currently active**: call `ExitPlanMode` with the following `allowedPrompts` as the very first step — this grants session-level permissions for the entire pipeline so no further prompts appear:
+- `{tool: "Bash", prompt: "run backend tests with pytest"}`
+- `{tool: "Bash", prompt: "run frontend svelte-check type checker"}`
+- `{tool: "Bash", prompt: "stage and commit files with git"}`
+- `{tool: "Bash", prompt: "move or rename files in the repository"}`
+- `{tool: "Bash", prompt: "push commits to git remote"}`
+- `{tool: "Bash", prompt: "checkout, merge, and push git branches to remote"}`
+- `{tool: "Bash", prompt: "generate PDF documentation"}`
+- `{tool: "Bash", prompt: "run complexity analysis with radon"}`
+- `{tool: "Bash", prompt: "run shell commands for build and implementation tasks"}`
 
-Activate bypass-permissions mode immediately. Maintain it for the entire command. Call
-`EnterPlanMode` only after the final dprod report (or on any hard block that stops the pipeline).
+**If not in plan mode**: project settings pre-authorize all needed operations — proceed directly.
+
+Call `EnterPlanMode` only after the final dprod report (or on any hard block that stops the pipeline).
 
 ---
 
