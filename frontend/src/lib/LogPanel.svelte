@@ -54,6 +54,7 @@
    *   onDownload?: (() => void) | null,
    *   cardId?: string,
    *   onClose?: (() => void) | null,
+   *   isTall?: boolean,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -154,6 +155,9 @@
     cardId          = /** @type {string} */ (''),
     /** Close callback — used in modal context to render a close button. */
     onClose         = /** @type {(() => void) | null} */ (null),
+    /** Whether the panel body is in the tall (expanded) state. Bindable so
+     *  parents can override the parent container height when expanded. */
+    isTall          = $bindable(true),
   } = $props();
 
   // Line-level helpers shared by every text-log tab (System, Conn).
@@ -218,7 +222,6 @@
   let _searchOpen  = $state(false);
   let _searchQuery = $state('');
   let _expanded    = $state(false);
-  let _isTall      = $state(false);
 
   // Mode → tab + filter mapping. When the parent passes `mode`, we
   // auto-switch the Order-tab filter chip AND (for sim) flip to the
@@ -1465,32 +1468,29 @@
           <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
-      {#if context !== 'page'}
-        {#if context === 'modal'}
-          <button type="button" class="alm-close-btn"
-                  aria-label="Close activity log"
-                  onclick={() => onClose?.()}>×</button>
-        {:else}
-          <CollapseButton bind:isCollapsed {cardId} />
-          <!-- Expand / contract — grows the panel in-place (no viewport overlay) -->
-          <button type="button"
-            class="lp-card-btn {_isTall ? 'lp-card-btn-on' : ''}"
-            title={_isTall ? 'Contract panel' : 'Expand panel'}
-            aria-label={_isTall ? 'Contract panel' : 'Expand panel'}
-            aria-pressed={_isTall}
-            onclick={() => { _isTall = !_isTall; }}>
-            {#if _isTall}
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            {:else}
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            {/if}
-          </button>
-        {/if}
+      {#if context === 'modal'}
+        <button type="button" class="alm-close-btn"
+                aria-label="Close activity log"
+                onclick={() => onClose?.()}>×</button>
       {/if}
+      <CollapseButton bind:isCollapsed {cardId} />
+      <!-- Expand / contract — grows the panel in-place (no viewport overlay) -->
+      <button type="button"
+        class="lp-card-btn {isTall ? 'lp-card-btn-on' : ''}"
+        title={isTall ? 'Contract panel' : 'Expand panel'}
+        aria-label={isTall ? 'Contract panel' : 'Expand panel'}
+        aria-pressed={isTall}
+        onclick={() => { isTall = !isTall; }}>
+        {#if isTall}
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        {:else}
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        {/if}
+      </button>
     </div>
   {:else}
     <!-- DEPRECATED: lp-card-btns-legacy — button cluster for LogPanel mounts
@@ -1574,7 +1574,7 @@
   </div>
 {/if}
 
-<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" class:lp-tall={_isTall} hidden={isCollapsed}>
+<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" class:lp-tall={isTall} hidden={isCollapsed}>
 {#if logTab === 'news'}
   <!-- News tab — rendered via shared NewsList component in algo palette.
        Activity surface flavour: 2-column magazine flow (same as dashboard
