@@ -215,6 +215,12 @@
   let loading     = $state(false);
   let error       = $state('');
 
+  let _perfRefreshing = $state(false);
+  async function _refreshPerf() {
+    _perfRefreshing = true;
+    try { await loadAll({ fresh: true }); } finally { _perfRefreshing = false; }
+  }
+
   // Account-scope filter. Now MultiSelect-backed — empty array =
   // all accounts (no filter), any non-empty array = scope every
   // grid to that subset. Replaces the older single-select
@@ -1342,6 +1348,8 @@
     onDownload={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
     label="Positions Summary"
     detectOverflow={false}
+    onRefresh={_refreshPerf}
+    bind:refreshLoading={_perfRefreshing}
   />
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
@@ -1356,6 +1364,8 @@
     onDownload={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
     label="Holdings Summary"
     detectOverflow={false}
+    onRefresh={_refreshPerf}
+    bind:refreshLoading={_perfRefreshing}
   />
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
@@ -1374,6 +1384,8 @@
     onDownload={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
     label="Positions"
     detectOverflow={false}
+    onRefresh={_refreshPerf}
+    bind:refreshLoading={_perfRefreshing}
   />
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
@@ -1385,6 +1397,8 @@
     onDownload={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
     label="Holdings"
     detectOverflow={false}
+    onRefresh={_refreshPerf}
+    bind:refreshLoading={_perfRefreshing}
   />
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>

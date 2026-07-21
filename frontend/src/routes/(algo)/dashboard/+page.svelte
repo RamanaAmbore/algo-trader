@@ -1193,11 +1193,6 @@
 
       _paperOpen = Number(algoStatus.paperStatus?.open_order_count) || 0;
       _heroLoadedAt = clientTimestamp();
-      // Surface the auto-poll completion to every mounted RefreshButton's
-      // tooltip — `loadHero` runs via visibleInterval and doesn't flip
-      // the page-level `_refreshing` state, so the button's own
-      // loading-transition stamp wouldn't catch it.
-      lastRefreshAt.set(Date.now());
 
       // Parallel: funds + NIFTY quote.
       // _fetchEquity intentionally NOT in this batch — it has its
@@ -1207,6 +1202,12 @@
         fundsStore.load(),
         _fetchNifty(),
       ]);
+      // Stamp after data arrives so the RefreshButton tooltip reflects
+      // the completed fetch, not the start. loadHero runs via
+      // visibleInterval and doesn't flip the page-level _refreshing
+      // state, so this explicit set is the only way auto-poll ticks
+      // surface in the timestamp.
+      lastRefreshAt.set(Date.now());
     } catch (_) { /* leave previous values up */ }
   }
 

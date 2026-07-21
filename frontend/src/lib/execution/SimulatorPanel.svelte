@@ -417,6 +417,12 @@
     await Promise.all([loadHot(), loadStatic()]);
   }
 
+  let _simRefreshing = $state(false);
+  async function _refreshSim() {
+    _simRefreshing = true;
+    try { await loadAll(); } finally { _simRefreshing = false; }
+  }
+
   /** Build the opts payload for startSim, closing over current $state. */
   function _buildSimPayload() {
     const opts = /** @type {Record<string,any>} */ ({ seed_mode: seedMode });
@@ -971,10 +977,12 @@
       bind:isFullscreen={_underlyingChartsFs}
       bind:isCollapsed={_underlyingChartsCol}
       showSearch={false}
+      onRefresh={_refreshSim}
+      bind:refreshLoading={_simRefreshing}
     />
     <div hidden={_underlyingChartsCol}>
       {#if underlyingNames.length}
-        <div class="sim-charts">
+        <div class="sim-charts fs-content-fill" style="--fs-chrome-h: 5rem;">
           {#each underlyingNames as name (name)}
             <PriceChart mode="sim" symbol={name} height={180}
                         data={chartsBySymbol[name]}
@@ -1972,6 +1980,15 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
     gap: 0.5rem;
+  }
+  :global(.sim-card.fs-card-on) .sim-charts {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  :global(.sim-card.fs-card-on) .sim-charts :global(.price-chart) {
+    flex: 1 1 0;
+    min-height: 200px;
   }
 
   /* ── Card wrapper for each section in the main column ─────────────

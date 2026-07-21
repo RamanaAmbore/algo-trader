@@ -18,7 +18,7 @@
   import { onMount, getContext } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, lastRefreshAt } from '$lib/stores';
+  import { authStore } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -74,9 +74,9 @@
   // SimulatorPanel / ReplayPanel don't yet expose a reload() handle so
   // we use a fixed-duration spinner — kicks off the next panel load and
   // flips the badge back after the panel's own debounce settles.
+  // lastRefreshAt is set by RefreshButton on loading→false transition.
   function _onRefresh() {
     _refreshing = true;
-    lastRefreshAt.set(Date.now());
     loadPanel(tab);
     setTimeout(() => { _refreshing = false; }, 400);
   }

@@ -23,6 +23,7 @@
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import GridDownloadButton from '$lib/GridDownloadButton.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
@@ -1475,7 +1476,11 @@
                   onclick={() => onClose?.()}>×</button>
         {:else}
           <CollapseButton bind:isCollapsed {cardId} />
-          <FullscreenButton bind:isFullscreen />
+          {#if !isFullscreen}
+            <FullscreenButton bind:isFullscreen label={label} />
+          {:else}
+            <DefaultSizeButton bind:isFullscreen bind:isCollapsed label={label} />
+          {/if}
         {/if}
       {/if}
     </div>

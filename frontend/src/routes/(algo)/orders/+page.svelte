@@ -381,7 +381,7 @@
       </span>
     {/snippet}
   </CardHeader>
-  <div class="card-body" hidden={_colEntry}>
+  <div class="card-body fs-content-fill" style="--fs-chrome-h: 3rem;" hidden={_colEntry}>
     <!-- `headerless` re-added: SymbolPanel's internal header strip
          (title chip + close X) was the "current orders row" the
          operator asked to remove. The picker row (Account · Type ·
