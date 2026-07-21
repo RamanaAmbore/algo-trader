@@ -2382,7 +2382,7 @@
   $effect(() => {
     void legs;
     void _includeHoldings;
-    untrack(() => loadStrategy({ clear: true }));
+    untrack(() => loadStrategy());
   });
 
   // ── Option-chain picker (Strategy mode) ───────────────────────────
