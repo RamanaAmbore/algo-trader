@@ -368,6 +368,7 @@
     onRefresh={loadOrders}
     bind:refreshLoading={loading}
     showSearch={false}
+    detectOverflow={false}
   >
     {#snippet left()}
       <span class="oc-entry-label">
@@ -621,17 +622,15 @@
   .oc-act-body {
     display: flex;
     flex-direction: column;
-    /* Cap the body so LogPanel's tab content (Orders / Agents /
-       Terminal / Ticks / System / News) scrolls INTERNALLY rather
-       than blowing the card to whatever the row count produces.
-       Page scroll handles "more cards"; tab scroll handles "more
-       rows than fit in the visible card body". 70vh keeps the card
-       comfortably under the fold; 18rem floor stops it from
-       collapsing on empty data. `overflow: hidden` makes the body a
-       containing block so LogPanel's `flex-1 min-h-0` resolves to a
-       finite height and its inner scrolls activate. */
-    min-height: 18rem;
-    max-height: 70vh;
+    /* Fixed height prevents layout shift when the operator switches
+       tabs (Orders → Agents → Terminal, etc.) — a min/max range lets
+       the container jump between its floor and ceiling as tab content
+       changes height. clamp() locks the body to one size regardless of
+       content; LogPanel's inner scroll areas handle overflow internally.
+       `overflow: hidden` makes the body a containing block so
+       LogPanel's `flex-1 min-h-0` resolves to a finite height and its
+       inner scrolls activate. */
+    height: clamp(18rem, 40vh, 500px);
     overflow: hidden;
   }
   /* Fullscreen mode pins the Activity card to the viewport; re-enable
@@ -640,8 +639,7 @@
      caps so the maximised card fills its modal frame. */
   :global(.bucket-card-activity.fs-card-on) .oc-act-body {
     flex: 1 1 0;
-    min-height: 0;
-    max-height: none;
+    height: auto;
   }
   /* Activity card title styles moved into LogPanel's .lp-label chrome. */
   :global(.oc-act-title-icon) { color: var(--c-action); flex-shrink: 0; transform: translateY(-0.5px); }

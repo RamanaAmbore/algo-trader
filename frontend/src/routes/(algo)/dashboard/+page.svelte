@@ -2232,6 +2232,7 @@
     onRefresh={_refreshAll}
     bind:refreshLoading={_refreshing}
     showSearch={false}
+    detectOverflow={false}
   >
     <!-- Default expanded — was previously `initialCollapsed=true` so
          the empty-state "No agent fires yet today" was hidden behind

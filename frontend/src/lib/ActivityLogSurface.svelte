@@ -172,7 +172,7 @@
     {onRefresh}
     bind:refreshLoading
     {onDownload}
-    showSearch={false}
+    showSearch={true}
     showControls={true}
     detectOverflow={false}
   />
@@ -205,4 +205,6 @@
   {cardId}
   {onClose}
   hideControls={!!(label && context !== 'page' && context !== 'modal')}
+  hideSearch={!!(label && context !== 'page' && context !== 'modal')}
+  hideDownload={!!(label && context !== 'page' && context !== 'modal')}
 />

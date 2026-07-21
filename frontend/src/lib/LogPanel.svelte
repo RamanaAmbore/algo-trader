@@ -58,6 +58,8 @@
    *   cardId?: string,
    *   onClose?: (() => void) | null,
    *   hideControls?: boolean,
+   *   hideSearch?: boolean,
+   *   hideDownload?: boolean,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -168,6 +170,18 @@
      * Modal close button (context === 'modal') is also unaffected.
      */
     hideControls    = false,
+    /**
+     * When true, suppresses the Search button in the lp-card-btns group.
+     * Set by ActivityLogSurface when CardHeader owns the Search button so
+     * LogPanel does not render a duplicate cluster.
+     */
+    hideSearch      = false,
+    /**
+     * When true, suppresses the Download button in the lp-card-btns group.
+     * Set by ActivityLogSurface when CardHeader owns the Download button so
+     * LogPanel does not render a duplicate cluster.
+     */
+    hideDownload    = false,
   } = $props();
 
   // Line-level helpers shared by every text-log tab (System, Conn).
@@ -1454,6 +1468,7 @@
   </div>
   {#if label}
     <div class="lp-card-btns">
+      {#if !hideSearch}
       <button type="button"
         class="lp-card-btn {_searchOpen ? 'lp-card-btn-on' : ''}"
         title={_searchOpen ? 'Close search' : 'Search rows'}
@@ -1465,6 +1480,8 @@
           <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
+      {/if}
+      {#if !hideDownload}
       <!-- Download — always present; uses onDownload callback when wired,
            falls back to internal CSV export of visible rows. News tab
            has no structured rows to export — gracefully no-ops. -->
@@ -1478,6 +1495,7 @@
           <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
+      {/if}
       {#if context !== 'page'}
         {#if context === 'modal'}
           <button type="button" class="alm-close-btn"
@@ -1494,7 +1512,12 @@
       {/if}
     </div>
   {:else}
-    <!-- Legacy card buttons for mounts without a label prop -->
+    <!-- DEPRECATED: lp-card-btns-legacy — button cluster for LogPanel mounts
+         that do not pass a `label` prop. All ActivityLogSurface-wrapped mounts
+         (the canonical path) go through the `label` branch above; this path
+         is retained only for any edge-case direct LogPanel mount without a
+         label. Do NOT delete yet — removal requires auditing every direct
+         LogPanel mount that does not go through ActivityLogSurface. -->
     <span class="lp-card-btns-legacy" role="group" aria-label="Activity panel controls">
       <!-- Search -->
       <button type="button"

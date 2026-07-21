@@ -53,7 +53,7 @@
 
 <ModalShell open={!!open} {onClose} ariaLabel="Add to Pulse">
     <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
-      <div class="search-header">
+      <div class="search-header canonical-modal-header">
         <span class="search-title">Manage watchlists</span>
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={onClose}>×</button>
       </div>
