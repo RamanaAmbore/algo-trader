@@ -43,7 +43,7 @@
 
 <ActivityLogSurface
   context="page"
-  label="ACTIVITY"
+  label="Log"
   defaultTab="agent"
   cardId="automation-activity"
   bind:accountFilter={_accountFilter}

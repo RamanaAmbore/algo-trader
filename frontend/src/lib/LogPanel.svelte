@@ -22,8 +22,6 @@
   import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
-  import FullscreenButton from '$lib/FullscreenButton.svelte';
-  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import GridDownloadButton from '$lib/GridDownloadButton.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
@@ -51,15 +49,11 @@
    *   context?: 'page'|'card'|'card-wide'|'modal',
    *   label?: string,
    *   isCollapsed?: boolean,
-   *   isFullscreen?: boolean,
    *   onRefresh?: (() => void) | null,
    *   refreshLoading?: boolean,
    *   onDownload?: (() => void) | null,
    *   cardId?: string,
    *   onClose?: (() => void) | null,
-   *   hideControls?: boolean,
-   *   hideSearch?: boolean,
-   *   hideDownload?: boolean,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -150,8 +144,6 @@
     label           = /** @type {string} */ (''),
     /** Bindable collapse state — passed through when label is set. */
     isCollapsed     = $bindable(false),
-    /** Bindable fullscreen state — passed through when label is set. */
-    isFullscreen    = $bindable(false),
     /** Refresh callback — rendered as a button in lp-card-btns when provided. */
     onRefresh       = /** @type {(() => void) | null} */ (null),
     /** Bindable refresh-loading spinner state. */
@@ -162,26 +154,6 @@
     cardId          = /** @type {string} */ (''),
     /** Close callback — used in modal context to render a close button. */
     onClose         = /** @type {(() => void) | null} */ (null),
-    /**
-     * When true, suppresses the Collapse + Fullscreen/DefaultSize buttons
-     * in the lp-card-btns group. Used by ActivityLogSurface when it renders
-     * a CardHeader above this panel — the header owns those controls so
-     * LogPanel must not duplicate them. Search + Download remain unaffected.
-     * Modal close button (context === 'modal') is also unaffected.
-     */
-    hideControls    = false,
-    /**
-     * When true, suppresses the Search button in the lp-card-btns group.
-     * Set by ActivityLogSurface when CardHeader owns the Search button so
-     * LogPanel does not render a duplicate cluster.
-     */
-    hideSearch      = false,
-    /**
-     * When true, suppresses the Download button in the lp-card-btns group.
-     * Set by ActivityLogSurface when CardHeader owns the Download button so
-     * LogPanel does not render a duplicate cluster.
-     */
-    hideDownload    = false,
   } = $props();
 
   // Line-level helpers shared by every text-log tab (System, Conn).
@@ -246,6 +218,7 @@
   let _searchOpen  = $state(false);
   let _searchQuery = $state('');
   let _expanded    = $state(false);
+  let _isTall      = $state(false);
 
   // Mode → tab + filter mapping. When the parent passes `mode`, we
   // auto-switch the Order-tab filter chip AND (for sim) flip to the
@@ -1441,7 +1414,7 @@
 </script>
 
 <div class="flex items-stretch mb-2 log-tab-row" class:ctx-modal={context === 'modal'} style="border-bottom: 1px solid rgba(255,255,255,0.07);">
-  {#if label && context !== 'page'}
+  {#if label}
     {#if context === 'modal'}
       <span class="lp-label">
         <BellIcon width="12" height="12" class="lp-label-icon" />
@@ -1467,21 +1440,18 @@
       showLevelFilter={_showLevelFilter} />
   </div>
   {#if label}
-    <div class="lp-card-btns">
-      {#if !hideSearch}
+    <div class="lp-card-btns canonical-card-btn-group">
       <button type="button"
         class="lp-card-btn {_searchOpen ? 'lp-card-btn-on' : ''}"
         title={_searchOpen ? 'Close search' : 'Search rows'}
         aria-label="Search rows"
         aria-pressed={_searchOpen}
         onclick={() => { _searchOpen = !_searchOpen; if (!_searchOpen) _searchQuery = ''; }}>
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.6"/>
           <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
-      {/if}
-      {#if !hideDownload}
       <!-- Download — always present; uses onDownload callback when wired,
            falls back to internal CSV export of visible rows. News tab
            has no structured rows to export — gracefully no-ops. -->
@@ -1490,24 +1460,35 @@
         title="Download visible rows as CSV"
         aria-label="Download CSV"
         onclick={onDownload ?? _downloadCsv}>
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
           <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
         </svg>
       </button>
-      {/if}
       {#if context !== 'page'}
         {#if context === 'modal'}
           <button type="button" class="alm-close-btn"
                   aria-label="Close activity log"
                   onclick={() => onClose?.()}>×</button>
-        {:else if !hideControls}
+        {:else}
           <CollapseButton bind:isCollapsed {cardId} />
-          {#if !isFullscreen}
-            <FullscreenButton bind:isFullscreen label={label} />
-          {:else}
-            <DefaultSizeButton bind:isFullscreen bind:isCollapsed label={label} />
-          {/if}
+          <!-- Expand / contract — grows the panel in-place (no viewport overlay) -->
+          <button type="button"
+            class="lp-card-btn {_isTall ? 'lp-card-btn-on' : ''}"
+            title={_isTall ? 'Contract panel' : 'Expand panel'}
+            aria-label={_isTall ? 'Contract panel' : 'Expand panel'}
+            aria-pressed={_isTall}
+            onclick={() => { _isTall = !_isTall; }}>
+            {#if _isTall}
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            {:else}
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            {/if}
+          </button>
         {/if}
       {/if}
     </div>
@@ -1593,7 +1574,7 @@
   </div>
 {/if}
 
-<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" hidden={isCollapsed}>
+<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" class:lp-tall={_isTall} hidden={isCollapsed}>
 {#if logTab === 'news'}
   <!-- News tab — rendered via shared NewsList component in algo palette.
        Activity surface flavour: 2-column magazine flow (same as dashboard
@@ -2440,6 +2421,15 @@
     flex: 1 1 0;
     min-height: min(600px, 70vh);
     min-height: min(600px, 70svh);
+  }
+  /* Height-only expand for label-based panel (no viewport overlay).
+     Grows the body in-place; overflow-y allows inner scrollers to
+     remain active. */
+  .lp-body-wrap.lp-tall {
+    display: flex;
+    flex-direction: column;
+    height: min(85vh, 1100px);
+    overflow-y: auto;
   }
 
 </style>

@@ -138,7 +138,7 @@
   let _colEntry    = $state(false);
   let _fsEntry     = $state(false);
   let _colActivity = $state(false);
-  let _fsActivity  = $state(false);
+  // _fsActivity retired — Activity card uses in-place height expansion.
 
   // Account dropdown lives in the Activity card header so it's
   // visible regardless of which tab is active — same UX the
@@ -487,7 +487,6 @@
      opens its OrderTicket modal pre-filled. Same plumbing the Activity
      modal uses. -->
 <section class="bucket-card bucket-card-activity oc-fill mb-2"
-  class:fs-card-on={_fsActivity}
   class:is-collapsed={_colActivity}
   use:listenModifyOrder>
   <div class="card-body oc-act-body" hidden={_colActivity}>
@@ -497,11 +496,10 @@
     <ActivityLogSurface
       defaultTab="order"
       context="card-wide"
-      label="ACTIVITY"
+      label="Log"
       cardId="orders-activity"
       onRefresh={loadOrders}
       bind:isCollapsed={_colActivity}
-      bind:isFullscreen={_fsActivity}
       statusFilter={_statusFilter}
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={_actAccountFilter}

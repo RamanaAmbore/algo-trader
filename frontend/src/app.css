@@ -2651,3 +2651,14 @@ button:not(:disabled):active,
   color: var(--c-short);
   background: rgba(248, 113, 113, 0.12);
 }
+
+/* ── Canonical card button group ──────────────────────────────────────────
+   Shared layout token for every card action cluster (search, expand,
+   download, close). Applied via class to .cm-actions (ChartModal),
+   .oes-right-group (SymbolPanel), .lp-card-btns (LogPanel). */
+.canonical-card-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
