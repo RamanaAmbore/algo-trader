@@ -352,9 +352,8 @@
   let _fsNavBd       = $state(false);   // NAV tab on the equity card
   let _fsWinners     = $state(false);
   let _fsLosers      = $state(false);
-  // Renamed _fsNews → _fsActivity — the dashboard's News strip was
-  // replaced by an ActivityLogSurface mount whose default tab is News.
-  let _fsActivity    = $state(false);
+  // _fsActivity retired — the Activity card now uses in-place height
+  // expansion (_isTall inside LogPanel) rather than viewport fullscreen.
   // _fsPnl / _colPnl retired with the standalone P&L Analysis card —
   // PnlAnalysis now lives inside the Intraday/Performance tabbed card
   // (shares _fsEquityCurve + _colEquityCurve).
@@ -2185,7 +2184,6 @@
      ActivityHeaderFilters + ActivityLogSurface pair, so the four
      mounts can't drift on filter UI or LogPanel config. -->
 <section class="bucket-card dash-activity"
-  class:fs-card-on={_fsActivity}
   class:is-collapsed={_colActivity}>
   <div class="card-body" hidden={_colActivity}>
     <!-- ActivityLogSurface with label="ACTIVITY" so LogPanel renders
@@ -2194,11 +2192,10 @@
     <ActivityLogSurface
       defaultTab="news"
       context="card-wide"
-      label="ACTIVITY"
+      label="Log"
       cardId="dash-activity"
       onRefresh={_refreshAll}
       bind:isCollapsed={_colActivity}
-      bind:isFullscreen={_fsActivity}
       bind:accountFilter={_actAccountFilter}
       bind:availableAccounts={_actAvailableAccounts}
       bind:levelFilter={_actLevelFilter} />
@@ -2881,14 +2878,6 @@
     flex: 1 1 auto;
     min-height: 8rem;
     max-height: 15rem;
-  }
-  /* Fullscreen mode: lift the height cap so LogPanel fills the
-     maximised card frame without clipping or showing outer scrollbars. */
-  .dash-activity.fs-card-on > .card-body {
-    flex: 1 1 0;
-    min-height: 0;
-    max-height: none;
-    overflow: hidden;
   }
   /* NAV chip fetch-error strip — rendered above <NavTab> when
      /api/nav/latest returns an error. Red palette matching

@@ -99,7 +99,7 @@
            Refresh icon rotates while a fetch is in flight; static
            otherwise. Operator: "add rotating refresh icon before X
            and rotate it while refreshing. keep it right aligned". -->
-      <span class="cm-actions">
+      <span class="cm-actions canonical-card-btn-group">
         <span class="cm-refresh-wrap"
               title={_loading ? 'Refreshing chart — modal is locked until done' : ''}
               aria-live="polite">
@@ -256,7 +256,7 @@
   .cm-actions {
     display: inline-flex;
     align-items: center;
-    gap: 0.45rem;
+    gap: 0.3rem;
     margin-left: auto;
   }
   .cm-refresh-wrap {

@@ -1979,12 +1979,12 @@
           <!-- Operator: "mode and chase should be left aligned. chase value
                should be selectable." Cluster sits immediately AFTER the
                title chip (left-aligned). The close X stays anchored right. -->
-          <span class="oes-right-group">
+          <span class="oes-right-group canonical-card-btn-group">
             {#if !inline && _localSymbol}
               <button type="button" class="oes-chart-btn" title="Chart — {_localSymbol}"
                       onclick={() => _chartModalOpen = true}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
                 </svg>
               </button>
@@ -2931,6 +2931,7 @@
         <ActivityLogSurface
           context="card"
           heightClass="flex-1 min-h-0"
+          label="Log"
           defaultTab="order"
           hideInlineAccountFilter={false}
         />
@@ -3068,7 +3069,7 @@
   .oes-right-group {
     display: inline-flex;
     align-items: center;
-    gap: 0.45rem;
+    gap: 0.3rem;
     margin-left: auto;
     flex-shrink: 0;
   }
@@ -3238,7 +3239,7 @@
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    background: var(--c-info-14);
+    background: var(--algo-cyan-bg);
     border: 1px solid rgba(34, 211, 238, 0.40);
     border-radius: 3px;
     color: var(--c-info);

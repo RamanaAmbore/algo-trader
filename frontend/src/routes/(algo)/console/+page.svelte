@@ -90,6 +90,7 @@
       context="page"
       heightClass="flex-1 min-h-0"
       defaultTab={logTab}
+      label="Log"
       hideInlineAccountFilter={false}
       onTabChange={(id) => { logTab = id; }}
     />

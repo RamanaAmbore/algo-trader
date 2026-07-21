@@ -76,6 +76,7 @@
       heightClass="activity-page-rows"
       defaultTab={activityStore.activeTab}
       context="page"
+      label="Log"
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={activityStore.accountFilter}
       bind:levelFilter={activityStore.levelFilter}

@@ -80,7 +80,7 @@
       <ActivityLogSurface
         defaultTab={activityStore.activeTab}
         context="modal"
-        label="Activity"
+        label="Log"
         {onClose}
         symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
         bind:accountFilter={activityStore.accountFilter}

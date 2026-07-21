@@ -1704,6 +1704,7 @@
   context="page"
   heightClass="h-[50vh]"
   defaultTab={logTab}
+  label="Log"
   simScope={simActive}
   multiColumn={true}
   hideInlineAccountFilter={false}

@@ -1484,6 +1484,7 @@
 <ActivityLogSurface
   context="card"
   heightClass="h-[40vh]"
+  label="Log"
   mode="sim"
   defaultTab={logTab}
   simScope={true}

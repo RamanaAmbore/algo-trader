@@ -392,6 +392,7 @@
 <ActivityLogSurface
   context="card"
   heightClass="h-[40vh]"
+  label="Log"
   defaultTab="order"
   mode="replay"
   hideInlineAccountFilter={false}
