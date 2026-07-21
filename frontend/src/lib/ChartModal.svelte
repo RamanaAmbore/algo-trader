@@ -124,7 +124,7 @@
           symbol={symbol}
           exchange={exchange}
           mode={mode}
-          compact={true}
+          compact={false}
           bind:loading={_loading}
         />
       </div>
