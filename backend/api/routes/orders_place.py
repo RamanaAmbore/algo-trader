@@ -1332,6 +1332,7 @@ async def _ticket_place_or_chase_live(
             quantity=qty,
             aggressiveness=(data.chase_aggressiveness or "low"),
             algo_order_id=live_algo_id,
+            intent=getattr(data, "intent", None),
         )
     else:
         broker = _broker_for(account)

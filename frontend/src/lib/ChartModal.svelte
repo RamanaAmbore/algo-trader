@@ -65,11 +65,14 @@
 </script>
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
-<!-- overlay is pointer-events:none so click-outside-to-close is gone;
-     operator uses × button or Esc. tabindex retained for screen readers. -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- overlay sits at z-index 10600 (above SymbolPanel at 10500) so
+     ChartModal is never hidden behind it. pointer-events:auto enables
+     backdrop click-to-close (clicking outside the panel calls onClose). -->
 <div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
      role="dialog" aria-modal="true"
-     aria-label={_ariaLabel} tabindex="-1">
+     aria-label={_ariaLabel} tabindex="-1"
+     onclick={(e) => { if (e.target === e.currentTarget) { closeChartModal(); onClose?.(); } }}>
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
@@ -132,6 +135,15 @@
      app.css under .canonical-modal-overlay / .canonical-modal-panel.
      Local styles only carry the chart-specific header + close-button
      chrome below. */
+
+  /* Override the global .canonical-modal-overlay z-index (10500, shared
+     with SymbolPanel) so ChartModal always renders on top. Also enable
+     pointer-events so clicking the backdrop (outside the panel) closes
+     the modal — .cm-modal restores auto on the panel itself. */
+  .cm-overlay {
+    z-index: 10600;
+    pointer-events: auto;
+  }
 
   .cm-header {
     /* Operator: "The line below modal headers is too prominent.

@@ -215,7 +215,7 @@ def _broker_for(account: str):
 
 # ── Chase helpers ─────────────────────────────────────────────────────────────
 
-def _live_chase_config(aggressiveness: str):
+def _live_chase_config(aggressiveness: str, intent: str | None = None):
     """Map operator-facing L/M/H aggressiveness to ChaseConfig.
 
     Industry analogue: IBKR Adaptive Algo Patient / Normal / Urgent.
@@ -231,25 +231,33 @@ def _live_chase_config(aggressiveness: str):
     Default: 'low' — the operator's standing instruction is "be
     patient on entry"; callers explicitly bump to med/high when
     they want more fill speed at the cost of slippage.
+
+    intent is forwarded to ChaseConfig so that close orders
+    (intent="close") bypass the 50-lot Kite ceiling on each
+    re-place attempt inside the chase loop.
     """
     from backend.api.algo.chase import ChaseConfig
     a = (aggressiveness or "low").lower()
     if a == "high":
-        return ChaseConfig(interval_seconds=10, aggression_step=0.25,
-                           max_attempts=10)
-    if a == "med":
-        return ChaseConfig(interval_seconds=20, aggression_step=0.10,
-                           max_attempts=20)
-    # low (default) — patient: peg passively, ease into the
-    # spread only after enough ticks pass.
-    return ChaseConfig(interval_seconds=30, aggression_step=0.05,
-                       max_attempts=30)
+        cfg = ChaseConfig(interval_seconds=10, aggression_step=0.25,
+                          max_attempts=10)
+    elif a == "med":
+        cfg = ChaseConfig(interval_seconds=20, aggression_step=0.10,
+                          max_attempts=20)
+    else:
+        # low (default) — patient: peg passively, ease into the
+        # spread only after enough ticks pass.
+        cfg = ChaseConfig(interval_seconds=30, aggression_step=0.05,
+                          max_attempts=30)
+    cfg.intent = intent
+    return cfg
 
 
 async def _start_live_chase(account: str, symbol: str, exchange: str,
                             transaction_type: str, quantity: int,
                             aggressiveness: str,
-                            algo_order_id: int | None = None) -> str:
+                            algo_order_id: int | None = None,
+                            intent: str | None = None) -> str:
     """Place + chase a LIVE order in the background.
 
     Spawns `chase_order()` as an asyncio task and synchronously
@@ -267,7 +275,7 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
     attached on fill.
     """
     from backend.api.algo.chase import chase_order
-    cfg = _live_chase_config(aggressiveness)
+    cfg = _live_chase_config(aggressiveness, intent=intent)
     cfg.exchange = exchange or "NFO"
 
     loop = asyncio.get_running_loop()
