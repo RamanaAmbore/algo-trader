@@ -10,6 +10,7 @@
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { chartStore } from '$lib/data/chartStore.svelte.js';
   import { closeChartModal } from '$lib/stores';
+  import { portal } from '$lib/portal';
 
   let {
     /** @type {string} */ symbol = '',
@@ -72,6 +73,7 @@
 <div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
      role="dialog" aria-modal="true"
      aria-label={_ariaLabel} tabindex="-1"
+     use:portal
      onclick={(e) => { if (e.target === e.currentTarget) { closeChartModal(); onClose?.(); } }}>
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
     <div class="cm-header">
