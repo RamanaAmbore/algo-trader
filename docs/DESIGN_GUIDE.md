@@ -998,6 +998,7 @@ erDiagram
         json attached_gtts_json "TP/SL/Wing"
         string basket_tag
         string request_id "audit drill"
+        string intent "nullable; 'close' for position-close chases"
     }
     algo_order_events {
         int id PK
@@ -1678,6 +1679,21 @@ already_filled = quantity - remaining_qty
 new_delta = cumulative_filled - already_filled
 fire partial branch when: cumulative_filled > 0 AND new_delta > 0 AND cumulative_filled < quantity
 ```
+
+### 7.1 Chase recovery on startup
+
+`backend/api/background.py::recover_live_chases()` fires during app startup to
+restart chase loops that were interrupted by a service restart. Queries for rows
+where `status='OPEN'`, `engine='live'`, `next_attempt_at IS NOT NULL`, and
+`created_at < 120s ago` (grace period to avoid restarting chases still initializing).
+For each recovered row, restores the original `intent` field from the DB — when
+`intent='close'` was set by a position-close chase, recovery re-applies it so the
+50-lot ceiling bypass applies to the resumed chase. This prevents close orders from
+being silently truncated to 50 lots after a restart.
+
+**Key files:**
+- `backend/api/background.py::recover_live_chases()` — recovery handler
+- `backend/api/background.py::on_startup()` — calls recovery on app boot (line ~4953)
 
 ---
 

@@ -291,9 +291,9 @@ def _maybe_fire_template_attach_for_reconcile(row) -> None:
     inside `_fire_template_attach_on_fill` ensures duplicate firings
     (postback arriving after reconcile) are safe.
 
-    M11 (intent tagging) — SKIPPED. AlgoOrder has no `intent` column;
-    adding one requires a migration. Tracked separately; implement when
-    the migration ships.
+    M11 (intent tagging) — implemented. AlgoOrder.intent column added via
+    _migrate_algo_orders_intent; live AlgoOrder rows carry intent from the
+    request so recover_live_chases can reinstate intent="close" on restart.
     """
     try:
         if not _opl_reconcile_attach_eligible(row):
@@ -1287,6 +1287,7 @@ async def _ticket_persist_live_algo_order(
                 template_id=data.template_id,
                 template_overrides_json=_build_overrides_json(data),
                 product=(data.product or "NRML"),
+                intent=getattr(data, "intent", None),
                 detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
                        f"{' @₹' + str(data.price) if data.price else ''}",
             )

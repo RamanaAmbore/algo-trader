@@ -814,6 +814,9 @@ class AlgoOrder(Base):
     # basket_tag groups the legs of a single basket submission.  Carried
     # through to kite.place_order(tag=…) so the broker also groups them.
     basket_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # M11 — intent tag for chase recovery. NULL = normal open order;
+    # "close" = position-close chase that must bypass the 50-lot ceiling on recovery.
+    intent: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

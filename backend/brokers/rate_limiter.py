@@ -88,8 +88,7 @@ class TokenBucketLimiter:
                 return
 
         # Sleep outside the lock to allow other threads access
-        if sleep_time != float('inf'):
-            time.sleep(sleep_time)
+        time.sleep(sleep_time)
 
         # After sleep, consume the token (non-blocking, always succeeds)
         with self._lock:

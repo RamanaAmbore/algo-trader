@@ -651,6 +651,19 @@ async def _migrate_algo_orders_chase_timing(conn) -> None:
         await conn.execute(text(stmt))
 
 
+async def _migrate_algo_orders_intent(conn) -> None:
+    """Add intent column to algo_orders (idempotent).
+
+    intent VARCHAR(16) — NULL for normal open orders; "close" for
+    position-close chases so recover_live_chases can reinstate
+    intent="close" and bypass the 50-lot Kite ceiling on restart.
+    """
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS intent VARCHAR(16)"
+    ))
+
+
 async def init_db() -> None:
     """Create all tables (idempotent).
 
@@ -683,6 +696,7 @@ async def init_db() -> None:
         await _migrate_code_metrics_perf_snapshots(conn)
         await _migrate_daily_book_previous_close(conn)
         await _migrate_algo_orders_chase_timing(conn)
+        await _migrate_algo_orders_intent(conn)
     logger.info("Database: tables verified")
 
     # broker_accounts schema lives on the SHARED engine (ramboq DB) — always
