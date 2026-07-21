@@ -411,17 +411,32 @@ def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
     )
 
 
-def _rco_invalidate_terminal_caches() -> None:
-    """Invalidate positions/holdings/margins/funds API + raw-DF caches on terminal order status."""
-    for _key in ("positions", "holdings", "funds"):
-        try:
-            invalidate(_key)
-        except Exception:
-            pass
+def _rco_invalidate_terminal_caches(status: str) -> None:
+    """Invalidate API + raw-DF caches on terminal order status.
+
+    positions/holdings caches are only busted on COMPLETE — they don't
+    change on CANCELLED/REJECTED/EXPIRED, so busting them there just causes
+    a cold-cache broker round-trip on the next NavStrip poll.
+
+    funds/margins are busted on every terminal status: a fill releases margin
+    and a cancel may release reserved funds.
+    """
+    _is_complete = str(status).upper() == "COMPLETE"
+    if _is_complete:
+        for _key in ("positions", "holdings"):
+            try:
+                invalidate(_key)
+            except Exception:
+                pass
+    try:
+        invalidate("funds")
+    except Exception:
+        pass
     try:
         from backend.brokers.broker_apis import _raw_cache_invalidate
-        _raw_cache_invalidate("positions")
-        _raw_cache_invalidate("holdings")
+        if _is_complete:
+            _raw_cache_invalidate("positions")
+            _raw_cache_invalidate("holdings")
         _raw_cache_invalidate("margins")
     except Exception:
         pass
@@ -462,6 +477,11 @@ async def _positions_refresh_after_fill(
         import asyncio as _aio
         from backend.brokers.broker_apis import fetch_positions, _raw_cache_invalidate
         initial_qty: int | None = None
+        # Give the broker 2 s to propagate the fill before the first poll so
+        # that (a) we don't read pre-fill data and set initial_qty incorrectly,
+        # and (b) a fully-closed position (rows=[]) is not confused with "no
+        # position ever existed".
+        await _aio.sleep(2)
         for _attempt in range(5):
             await _aio.sleep(1)
             try:
@@ -475,7 +495,12 @@ async def _positions_refresh_after_fill(
                     initial_qty = sum(int(r.get("quantity", 0)) for r in rows)
 
                 cur_qty = sum(int(r.get("quantity", 0)) for r in rows)
-                changed = rows and ((qty_delta > 0 and cur_qty > 0) or (cur_qty != initial_qty))
+                # Fire only when quantity has actually changed, or when the
+                # position disappeared entirely (close fill → empty rows) after
+                # we already had a non-empty baseline.  The old
+                # `qty_delta > 0 and cur_qty > 0` arm fired on the very first
+                # poll for any existing BUY position, sending pre-fill data.
+                changed = (cur_qty != initial_qty) or (not rows and initial_qty is not None)
                 if changed:
                     _raw_cache_invalidate("positions")
                     broadcast(json.dumps({
@@ -540,7 +565,7 @@ def _postback_broadcast_fanout(
     try:
         invalidate("orders")
         if _terminal:
-            _rco_invalidate_terminal_caches()
+            _rco_invalidate_terminal_caches(status)
 
         broadcast(json.dumps({
             "event": "order_update",

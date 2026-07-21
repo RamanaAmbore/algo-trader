@@ -1331,23 +1331,6 @@
     await tick();
     mountGrid();
 
-    // Kick off positions + holdings loads immediately — they don't need
-    // instruments, lists, or movers. The $effect bridge at lines 192-199
-    // fires as soon as either store resolves, painting positions/holdings
-    // in the grid before the gated batch below completes.
-    // createDataStore deduplicates by args so the load() calls inside
-    // loadPulse({ force: true }) below join these in-flight promises —
-    // zero extra HTTP round-trips.
-    const _prePositionsP = pulsePositionsStore.load();
-    const _preHoldingsP  = pulseHoldingsStore.load();
-    Promise.allSettled([_prePositionsP, _preHoldingsP]).then(() => {
-      if (pulsePositionsStore.value != null || pulseHoldingsStore.value != null) {
-        pulseLastUpdate = Date.now();
-        _lastPulseAt = pulseLastUpdate;
-        lastRefreshAt.set(pulseLastUpdate);
-      }
-    });
-
     // Parallel cold-mount fan-out. Previously instruments → accounts →
     // lists → loadActive → loadPulse → loadFunds → loadMovers ran
     // strictly serially, blocking first paint for 3–5 s on a cold
