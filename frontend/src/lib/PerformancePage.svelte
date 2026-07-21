@@ -1190,7 +1190,7 @@
     const sym   = msg.tradingsymbol;
     const price = Number(msg.fill_price);
     _fillToast = `✓ Filled: ${side} ${qty} ${sym}` +
-      (price > 0 ? ` @₹${price.toFixed(2)}` : '');
+      (price > 0 ? ` @₹${priceFmt(price)}` : '');
     if (_fillToastTimer) clearTimeout(_fillToastTimer);
     _fillToastTimer = setTimeout(() => { _fillToast = ''; }, 3000);
   }

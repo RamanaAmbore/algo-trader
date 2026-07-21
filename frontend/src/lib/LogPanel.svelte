@@ -57,6 +57,7 @@
    *   onDownload?: (() => void) | null,
    *   cardId?: string,
    *   onClose?: (() => void) | null,
+   *   hideControls?: boolean,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -159,6 +160,14 @@
     cardId          = /** @type {string} */ (''),
     /** Close callback — used in modal context to render a close button. */
     onClose         = /** @type {(() => void) | null} */ (null),
+    /**
+     * When true, suppresses the Collapse + Fullscreen/DefaultSize buttons
+     * in the lp-card-btns group. Used by ActivityLogSurface when it renders
+     * a CardHeader above this panel — the header owns those controls so
+     * LogPanel must not duplicate them. Search + Download remain unaffected.
+     * Modal close button (context === 'modal') is also unaffected.
+     */
+    hideControls    = false,
   } = $props();
 
   // Line-level helpers shared by every text-log tab (System, Conn).
@@ -1474,7 +1483,7 @@
           <button type="button" class="alm-close-btn"
                   aria-label="Close activity log"
                   onclick={() => onClose?.()}>×</button>
-        {:else}
+        {:else if !hideControls}
           <CollapseButton bind:isCollapsed {cardId} />
           {#if !isFullscreen}
             <FullscreenButton bind:isFullscreen label={label} />

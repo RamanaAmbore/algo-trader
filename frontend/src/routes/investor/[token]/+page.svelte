@@ -14,6 +14,7 @@
 <script>
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import { formatDateIST } from '$lib/dateFormat.js';
   import Select from '$lib/Select.svelte';
 
   /** @typedef {{
@@ -75,9 +76,7 @@
     if (!iso) return '—';
     try {
       const d = new Date(iso);
-      return d.toLocaleDateString('en-IN', {
-        weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
-      });
+      return formatDateIST(d, { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
     } catch { return iso; }
   }
   function _fmtPct(/** @type {number|null|undefined} */ v) {
@@ -100,9 +99,7 @@
     let m = now.getMonth();  // 0-indexed, so this is already "last month"
     if (m === 0) { m = 12; y -= 1; }
     for (let i = 0; i < n; i++) {
-      const label = new Date(y, m - 1, 1).toLocaleDateString('en-IN', {
-        month: 'short', year: 'numeric',
-      });
+      const label = formatDateIST(new Date(y, m - 1, 1), { month: 'short', year: 'numeric' });
       out.push({ year: y, month: m, label });
       m -= 1;
       if (m < 1) { m = 12; y -= 1; }

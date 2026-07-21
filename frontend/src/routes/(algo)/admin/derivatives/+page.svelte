@@ -48,6 +48,7 @@
   import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction } from '$lib/format';
+  import { todayIST } from '$lib/dateFormat.js';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
@@ -1819,7 +1820,7 @@
     if (!expISO) return false;
     try {
       // Compare expiry date (yyyy-mm-dd) to today's IST date.
-      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      const today = todayIST();
       return expISO <= today;
     } catch (_) {
       return false;
