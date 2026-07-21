@@ -1979,29 +1979,31 @@
           <!-- Operator: "mode and chase should be left aligned. chase value
                should be selectable." Cluster sits immediately AFTER the
                title chip (left-aligned). The close X stays anchored right. -->
-          {#if !inline && _localSymbol}
-            <button type="button" class="oes-chart-btn" title="Chart — {_localSymbol}"
-                    onclick={() => _chartModalOpen = true}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-              </svg>
-            </button>
-          {/if}
-          <span class="oes-header-cluster">
-            <!-- Operator: "remove live chip from order modal and page.
-                 navbar live is enough." The mode chip used to sit here. -->
-            {#if basketLegs.length > 0}
-              <button type="button" class="oes-common-clear oes-common-clear-inline"
-                title="Clear all basket legs"
-                disabled={basketSubmitting}
-                onclick={clearBasket}>Clear</button>
+          <span class="oes-right-group">
+            {#if !inline && _localSymbol}
+              <button type="button" class="oes-chart-btn" title="Chart — {_localSymbol}"
+                      onclick={() => _chartModalOpen = true}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                </svg>
+              </button>
+            {/if}
+            <span class="oes-header-cluster">
+              <!-- Operator: "remove live chip from order modal and page.
+                   navbar live is enough." The mode chip used to sit here. -->
+              {#if basketLegs.length > 0}
+                <button type="button" class="oes-common-clear oes-common-clear-inline"
+                  title="Clear all basket legs"
+                  disabled={basketSubmitting}
+                  onclick={clearBasket}>Clear</button>
+              {/if}
+            </span>
+            {#if !inline}
+              <button type="button" class="oes-close" title="Close" aria-label="Close"
+                      onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
             {/if}
           </span>
-          {#if !inline}
-            <button type="button" class="oes-close" title="Close" aria-label="Close"
-                    onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
-          {/if}
         {/snippet}
       </CardHeader>
     </div>
@@ -3063,12 +3065,18 @@
   /* Cluster inside `.oes-header` — sits immediately AFTER the title
      chip (left-aligned per operator). The close X carries
      margin-left:auto to stay anchored at the right edge. */
+  .oes-right-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-left: auto;
+    flex-shrink: 0;
+  }
   .oes-header-cluster {
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
     flex-shrink: 0;
-    margin-left: 0.4rem;
   }
   /* Type filter — narrowed so it fits in the same row as Account +
      Symbol. The "EQ · FUT · OPT" label gets ellipsised when not the
@@ -3256,7 +3264,6 @@
     /* Standard close button — square 1.4rem matches ChartModal's
        refresh + close buttons; glyph 0.95rem is proportional to the
        0.72rem header title text. */
-    margin-left: auto;
     background: none;
     border: 1px solid rgba(248, 113, 113, 0.35);
     color: var(--c-short);
