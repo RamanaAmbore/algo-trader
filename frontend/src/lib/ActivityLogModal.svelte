@@ -107,4 +107,13 @@
   :global(.canonical-modal-panel.alm-panel) {
     border-color: rgba(251, 146, 60, 0.45);
   }
+
+  /* LogPanel emits .log-tab-row and .om-bar as direct flex children of
+     .alm-body via the transparent .lp-body-wrap (display:contents) wrapper.
+     Without flex-shrink:0 these compete with the scroll area for height and
+     get crushed on short viewports. .lp-order-scroll and .log-panel already
+     carry flex:1 1 0 + min-height:0 in LogPanel's own styles — no override
+     needed here. */
+  :global(.alm-body .log-tab-row) { flex-shrink: 0; }
+  :global(.alm-body .om-bar)      { flex-shrink: 0; }
 </style>
