@@ -2425,7 +2425,7 @@
     inset: 0;
     background: rgba(0,0,0,0.55);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     /* z-index var(--z-modal): above the OrderTimelineDrawer (var(--z-drawer)=200),
        the PositionStrip (z=49), the navbar (var(--z-nav)=50), and any per-page
@@ -2434,7 +2434,14 @@
        clipped by bottom panels — this guarantees the ticket sits
        on top. */
     z-index: var(--z-modal);
-    padding: 1rem;
+    /* Top-anchored at the canonical sheet position — same Y as
+       ChartModal / ActivityLogModal so all modals open at the same
+       vertical position below the page header. */
+    padding-top: var(--modal-sheet-top, calc(3rem + 1.8rem));
+    padding-left: 0;
+    padding-right: 0;
+    padding-bottom: 0;
+    box-sizing: border-box;
   }
   /* When embedded inside another dialog (standalone=false, e.g.
      SymbolPanel), suppress the backdrop overlay entirely — the host
@@ -2453,21 +2460,18 @@
     border-radius: 8px;
     padding: 0.85rem 1rem;
     width: min(28rem, calc(100vw - 2rem));
-    max-height: calc(100vh - 2rem);
+    max-height: calc(100dvh - var(--modal-sheet-top, calc(3rem + 1.8rem)) - 1rem);
     overflow-y: auto;
     color: var(--algo-slate);
     font-family: var(--font-numeric);
     box-shadow: 0 12px 32px rgba(0,0,0,0.6);
   }
-  /* Mobile: match the canonical-modal-panel sizing (96vw × 90vh)
-     so every modal — ticket, order shell, chart, activity — opens
-     at the same dimensions and position. Operator request: "on
-     mobile, all the modals should be of same dimensions and at the
-     same location. They should be fully visible on mobile." */
+  /* Mobile: match the canonical-modal-panel sizing (96vw) so every modal
+     opens at the same width; height is bounded by the top-anchored
+     max-height above, no separate override needed. */
   @media (max-width: 760px) {
     .ot-modal {
       width: 96vw;
-      max-height: 90vh;
     }
   }
 

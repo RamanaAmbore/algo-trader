@@ -10,6 +10,7 @@
     All CardControls props forwarded (isCollapsed, isFullscreen, filter, …)
 
   Slots:
+    prefix  — content rendered BEFORE the title in the left zone (e.g. an icon)
     left    — extra content after title + timestamp in the left zone
     middle  — content between left and right (tabs, spacer, etc.)
     right   — extra content before the CardControls cluster in the right zone
@@ -52,6 +53,7 @@
     showCollapse = true,
     detectOverflow = true,
     hideFullscreen = false,
+    /** @type {Snippet | undefined} */ prefix = undefined,
     /** @type {Snippet | undefined} */ left = undefined,
     /** @type {Snippet | undefined} */ middle = undefined,
     /** @type {Snippet | undefined} */ right = undefined,
@@ -104,6 +106,7 @@
           stroke-dasharray="9 30" />
       </svg>
     {/if}
+    {@render prefix?.()}
     {#if title}<span class="ch-title">{title}</span>{/if}
     {#if timestamp}<span class="ch-ts">{timestamp}</span>{/if}
     {@render left?.()}
