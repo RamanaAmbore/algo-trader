@@ -4,6 +4,13 @@
     "allow": [
       "Edit",
       "Write",
+      "Read",
+      "Glob",
+      "Grep",
+      "Agent",
+      "ToolSearch",
+      "WebFetch",
+      "WebSearch",
       "Bash(*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
