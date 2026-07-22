@@ -1374,6 +1374,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    --modal-sheet-top: calc(3rem + 1.8rem);
   }
   /* Force the html + body background to the algo dark navy on every
      page that mounts this layout. Without this, the public-site

@@ -20,7 +20,6 @@
   import { openActivityModal } from '$lib/stores';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
-  import BellIcon from '$lib/icons/BellIcon.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
@@ -1425,6 +1424,8 @@
     title={label}
     {cardId}
     {onRefresh}
+    refreshAlwaysVisible={context === 'modal'}
+    showCollapse={context !== 'modal'}
     bind:isCollapsed
     bind:refreshLoading
     bind:filter={_searchQuery}
@@ -1432,11 +1433,6 @@
     onDownload={logTab === 'news' ? null : (onDownload ?? _downloadCsv)}
     hideFullscreen={true}
   >
-    {#snippet left()}
-      {#if context === 'modal'}
-        <BellIcon width="12" height="12" class="lp-label-icon" />
-      {/if}
-    {/snippet}
     {#snippet middle()}
       <AlgoTabs
         tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
@@ -1814,7 +1810,6 @@
   .lp-tab-strip-wrap :global(.algo-tabs-strip) { overflow-x: visible; }
 
   /* Label icon shown in modal context (rendered via CardHeader left snippet) */
-  :global(.lp-label-icon) { color: var(--c-action); flex-shrink: 0; }
 
   /* Fullscreen-open button (label-branch, non-modal context) */
   .lp-fs-btn, .lp-close-btn {

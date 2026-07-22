@@ -49,6 +49,7 @@
     refreshAlwaysVisible = false,
     onDownload = null,
     showControls = true,
+    showCollapse = true,
     detectOverflow = true,
     hideFullscreen = false,
     /** @type {Snippet | undefined} */ left = undefined,
@@ -114,7 +115,6 @@
   </div>
 
   <div class="ch-right">
-    {@render right?.()}
     {#if showControls}
       <CardControls
         bind:isCollapsed
@@ -126,10 +126,12 @@
         bind:refreshLoading
         {showSearch}
         {refreshAlwaysVisible}
+        {showCollapse}
         {onDownload}
         hideFullscreen={hideFullscreen || (detectOverflow && !_hasOverflow && !isFullscreen)}
       />
     {/if}
+    {@render right?.()}
   </div>
 </div>
 
@@ -157,6 +159,9 @@
     letter-spacing: var(--ch-title-letter-spacing, 0.04em);
     text-transform: var(--ch-title-transform, uppercase);
     white-space: nowrap;
+    background: rgba(251, 191, 36, 0.10);
+    padding: 0.1em 0.45em;
+    border-radius: 3px;
   }
   .ch-ts {
     font-size: var(--ch-ts-size, var(--fs-md, 0.65rem));
