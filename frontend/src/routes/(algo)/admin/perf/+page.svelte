@@ -816,9 +816,7 @@
   }
 
   /* ── Hotspot table ────────────────────────────────────────────────── */
-  .perf-hotspot-table {
-    width: 100%;
-  }
+  /* .perf-hotspot-table width:100% removed — algo-table global provides it. */
   .perf-hotspot-table th,
   .perf-hotspot-table td {
     padding: 0.3rem 0.5rem;

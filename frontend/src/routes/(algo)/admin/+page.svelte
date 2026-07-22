@@ -1480,7 +1480,7 @@
     border: 1px solid rgba(126, 151, 184, 0.18);
     border-radius: 4px;
   }
-  .ip-modal-tbl { width: 100%; }
+  /* .ip-modal-tbl width:100% removed — algo-table global provides it. */
   .ip-modal-tbl th {
     text-align: left; padding: 0.3rem 0.5rem;
     background: rgba(15, 23, 42, 0.65);

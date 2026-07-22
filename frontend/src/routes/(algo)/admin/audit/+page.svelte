@@ -320,7 +320,7 @@
     icon="search"
   />
 {:else}
-<div class="audit-table-wrap algo-grid-chrome content-fade-in">
+<div class="algo-table-wrap algo-grid-chrome content-fade-in">
   <table class="algo-table audit-table">
     <thead>
       <tr>
@@ -405,14 +405,8 @@
 
   /* .audit-error removed — fetch failures converted to toasts (slice AO). */
 
-  /* Chrome properties (border, border-radius, box-shadow, background)
-     delegated to .algo-grid-chrome in app.css — only overflow retained. */
-  .audit-table-wrap {
-    overflow-x: auto;
-  }
-  .audit-table {
-    width: 100%;
-  }
+  /* .audit-table-wrap renamed to algo-table-wrap (handled globally).
+     .audit-table width:100% removed (algo-table global provides it). */
   .audit-table th {
     text-align: left;
     padding: 0.4rem 0.55rem;

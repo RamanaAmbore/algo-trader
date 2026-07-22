@@ -293,9 +293,7 @@
     background: var(--card-bg-elevated);
   }
 
-  .nav-bd-table {
-    width: 100%;
-  }
+  /* .nav-bd-table width:100% removed — algo-table global provides it. */
 
   /* Header — deep-dark bg + muted-slate text + amber bottom border:
      mirrors the .hist-table reference (History page). */

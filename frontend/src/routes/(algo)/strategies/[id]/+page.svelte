@@ -238,12 +238,12 @@
               </td>
               <td class="td-mono">{l.account}</td>
               <td class="td-mono">{l.symbol}</td>
-              <td class="td-num">
+              <td class="algo-table-num">
                 {l.qty}{#if l.remaining_qty !== l.qty}<span class="qty-rem"> ({l.remaining_qty})</span>{/if}
               </td>
-              <td class="td-num">{_fmtPx(l.open_price)}</td>
-              <td class="td-num">{_fmtPx(l.close_price)}</td>
-              <td class="td-num {l.realized_pnl > 0 ? 'pnl-pos' : l.realized_pnl < 0 ? 'pnl-neg' : ''}">
+              <td class="algo-table-num">{_fmtPx(l.open_price)}</td>
+              <td class="algo-table-num">{_fmtPx(l.close_price)}</td>
+              <td class="algo-table-num {l.realized_pnl > 0 ? 'pnl-pos' : l.realized_pnl < 0 ? 'pnl-neg' : ''}">
                 {l.realized_pnl === 0 ? '—' : _fmtInr(l.realized_pnl)}
               </td>
               <td>{_fmtTs(l.closed_at)}</td>
@@ -507,9 +507,7 @@
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
-  .strat-table {
-    width: 100%;
-  }
+  /* .strat-table width:100% removed — algo-table global provides it. */
   .strat-table th {
     text-align: left;
     padding: 0.4rem 0.6rem;
@@ -523,10 +521,10 @@
   .strat-table td {
     padding: 0.4rem 0.6rem;
   }
-  .strat-table td.td-num {
-    text-align: right;
+  /* .strat-table td.td-num renamed to algo-table-num — global provides text-align + tabular-nums.
+     Keeping font-family override here since it's semantic for this table. */
+  .strat-table td.algo-table-num {
     font-family: var(--font-numeric);
-    font-variant-numeric: tabular-nums;
   }
   .strat-table td.td-mono { font-family: var(--font-numeric); }
   .strat-row-closed td { opacity: 0.65; }
