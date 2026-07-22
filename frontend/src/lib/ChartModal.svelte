@@ -21,6 +21,7 @@
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   let _loading = $state(false);
+  let _refreshKey = $state(0);
 
   const _ariaLabel = $derived.by(() => {
     const rl = rootOfLabel(symbol, exchange);
@@ -100,10 +101,12 @@
            otherwise. Operator: "add rotating refresh icon before X
            and rotate it while refreshing. keep it right aligned". -->
       <span class="cm-actions canonical-card-btn-group">
-        <span class="cm-refresh-wrap"
-              title={_loading ? 'Refreshing chart — modal is locked until done' : ''}
-              aria-live="polite">
-          <svg class="cm-refresh-icon" class:cm-refresh-icon-loading={_loading}
+        <button type="button" class="cm-refresh-btn"
+                title={_loading ? 'Refreshing…' : 'Refresh chart'}
+                aria-label="Refresh chart"
+                disabled={_loading}
+                onclick={() => { _refreshKey += 1; }}>
+          <svg class:cm-refresh-icon-loading={_loading}
                width="13" height="13" viewBox="0 0 16 16"
                fill="none" stroke="currentColor" stroke-width="1.6"
                stroke-linecap="round" stroke-linejoin="round"
@@ -112,7 +115,7 @@
             <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9" />
             <path d="M13.5 3v3h-3" />
           </svg>
-        </span>
+        </button>
         <button type="button" class="cm-close"
                 onclick={() => { closeChartModal(); onClose?.(); }}
                 aria-label="Close chart modal">×</button>
@@ -125,6 +128,7 @@
           exchange={exchange}
           mode={mode}
           compact={false}
+          bump={_refreshKey}
           bind:loading={_loading}
         />
       </div>
@@ -259,20 +263,26 @@
     gap: 0.3rem;
     margin-left: auto;
   }
-  .cm-refresh-wrap {
-    /* Refresh icon — square 1.4rem to match the X close button to
-       its right. Same chip chrome as the page-header RefreshButton
-       so the operator's mental model carries across surfaces. */
-    display: inline-flex;
+  .cm-refresh-btn {
+    display: flex;
     align-items: center;
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    color: var(--c-info);
+    background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
+    border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
     border-radius: 3px;
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
+    color: var(--c-info, #22d3ee);
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+    transition: background 0.08s, border-color 0.08s;
   }
+  .cm-refresh-btn:hover:not(:disabled) {
+    background: rgba(34,211,238,0.14);
+    border-color: rgba(34,211,238,0.65);
+  }
+  .cm-refresh-btn:disabled { opacity: 0.45; cursor: default; }
   /* Refresh-state icon rotates while a fetch is in flight; static
      otherwise. Replaces the prior `cm-title-icon-loading` rotation
      on the chart glyph — the chart icon is the modal identity, the

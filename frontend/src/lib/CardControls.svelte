@@ -48,6 +48,7 @@
    *   refreshLoading?: boolean,
    *   showSearch?: boolean,
    *   refreshAlwaysVisible?: boolean,
+   *   showCollapse?: boolean,
    *   onDownload?: ((...args: any[]) => void) | null,
    *   hideFullscreen?: boolean,
    * }} */
@@ -61,6 +62,7 @@
     refreshLoading = $bindable(false),
     showSearch = true,
     refreshAlwaysVisible = false,
+    showCollapse = true,
     onDownload = null,
     hideFullscreen = false,
   } = $props();
@@ -73,7 +75,9 @@
   <GridSearchButton bind:filter {label} />
 {/if}
 <GridDownloadButton onClick={onDownload} {label} autoMargin={false} />
-<CollapseButton bind:isCollapsed {cardId} {label} />
+{#if showCollapse}
+  <CollapseButton bind:isCollapsed {cardId} {label} />
+{/if}
 {#if !hideFullscreen || isFullscreen}
   {#if !isFullscreen}
     <FullscreenButton bind:isFullscreen {label} />

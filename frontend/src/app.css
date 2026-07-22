@@ -369,34 +369,27 @@
      the modal. */
   z-index: var(--z-command);
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1rem;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 0;
+  padding-top: var(--modal-sheet-top, calc(3rem + 1.8rem));
   box-sizing: border-box;
 }
-/* Composes .algo-modal chrome + content-rich dimensions for the four
-   canonical full-screen-ish modals (ChartModal, ActivityLogModal,
-   SymbolPanel, OrderTicket). Phase 2 SSOT — the bg / border / shadow
-   chrome now lives on `.algo-modal` above; this rule only contributes
-   the dimensions. Consumers keep `class="canonical-modal-panel"` for
-   backwards compat. */
+/* Sheet modal — fills full width and full height below the page header.
+   Flush against the page-header bottom edge (border-top: none, border-radius: 0).
+   Consumers keep `class="canonical-modal-panel"` for backwards compat. */
 .canonical-modal-panel {
   pointer-events: auto;
   background: var(--card-bg-gradient);
   border: 1px solid rgba(251, 191, 36, 0.40);
-  border-radius: 6px;
+  border-top: none;
+  border-radius: 0;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--algo-amber-bg-soft);
-  width: min(78vw, 980px);
-  height: min(82vh, 760px);
+  width: 100%;
+  height: calc(100dvh - var(--modal-sheet-top, calc(3rem + 1.8rem)));
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-@media (max-width: 760px) {
-  .canonical-modal-panel {
-    width: 96vw;
-    height: 90vh;
-  }
 }
 
 /* ── Canonical modal header ─────────────────────────────────────────────────
