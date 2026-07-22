@@ -2142,6 +2142,15 @@
 .bucket-card-activity,
 .bucket-card-chase { /* no-op — inherits amber from .bucket-card */ }
 
+/* Canonical inter-card gap — 0.6rem between sibling bucket-cards.
+   Applies globally so pages that stack bucket-cards vertically don't
+   need per-page margin overrides. Per-page mb-* / mt-* Tailwind
+   classes on the cards themselves should be removed when this rule
+   covers the gap. */
+.bucket-card + .bucket-card {
+  margin-top: 0.6rem;
+}
+
 /* ── Canonical outer chrome for bespoke data grids / tables ─────────────────
    Applied via .algo-grid-chrome so hand-rolled grids (byund-scroll,
    cand-scroll, hist-table-wrap, strat-table-wrap, brokers-scroll,

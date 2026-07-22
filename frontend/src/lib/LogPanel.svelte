@@ -21,8 +21,7 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
-  import CollapseButton from '$lib/CollapseButton.svelte';
-  import GridDownloadButton from '$lib/GridDownloadButton.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
@@ -1416,100 +1415,79 @@
 
 </script>
 
-<div class="flex items-stretch mb-2 log-tab-row" class:ctx-modal={context === 'modal'} style="border-bottom: 1px solid rgba(255,255,255,0.07);">
-  {#if label}
-    {#if context === 'modal'}
-      <span class="lp-label">
-        <BellIcon width="12" height="12" class="lp-label-icon" />
-        {label}
-      </span>
-    {:else}
-      <span class="lp-label">{label}</span>
-    {/if}
-    <span class="lp-sep" aria-hidden="true"></span>
-  {/if}
-  <div class="lp-tab-strip-wrap">
-    <AlgoTabs
-      tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
-      bind:value={logTab}
-      onChange={onTabChange}
-      compact={true}
-    />
-    <ActivityHeaderFilters
-      bind:accountFilter={_internalAccountFilter}
-      bind:levelFilter
-      availableAccounts={_availableAccounts}
-      showAccountFilter={_showAccountFilter}
-      showLevelFilter={_showLevelFilter} />
-  </div>
-  {#if label}
-    <div class="lp-card-btns canonical-card-btn-group">
-      <button type="button"
-        class="lp-card-btn {_searchOpen ? 'lp-card-btn-on' : ''}"
-        title={_searchOpen ? 'Close search' : 'Search rows'}
-        aria-label="Search rows"
-        aria-pressed={_searchOpen}
-        onclick={() => { _searchOpen = !_searchOpen; if (!_searchOpen) _searchQuery = ''; }}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.6"/>
-          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-        </svg>
-      </button>
-      <!-- Download — always present; uses onDownload callback when wired,
-           falls back to internal CSV export of visible rows. News tab
-           has no structured rows to export — gracefully no-ops. -->
-      <button type="button"
-        class="lp-card-btn"
-        title="Download visible rows as CSV"
-        aria-label="Download CSV"
-        onclick={onDownload ?? _downloadCsv}>
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M2 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-        </svg>
-      </button>
+{#if label}
+  <!-- Unified header — CardHeader owns left/middle/right layout: scrollable middle
+       zone for tabs + filters, canonical CardControls buttons (chevron collapse,
+       search, download). hideFullscreen=true suppresses card-portal fullscreen;
+       LogPanel's own modal-open button sits in the right snippet instead. -->
+  <div class="lp-header-wrap" class:ctx-modal={context === 'modal'}>
+  <CardHeader
+    title={label}
+    {cardId}
+    {onRefresh}
+    bind:isCollapsed
+    bind:refreshLoading
+    bind:filter={_searchQuery}
+    showSearch={true}
+    onDownload={logTab === 'news' ? null : (onDownload ?? _downloadCsv)}
+    hideFullscreen={true}
+  >
+    {#snippet left()}
       {#if context === 'modal'}
-        <button type="button" class="alm-close-btn"
+        <BellIcon width="12" height="12" class="lp-label-icon" />
+      {/if}
+    {/snippet}
+    {#snippet middle()}
+      <AlgoTabs
+        tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
+        bind:value={logTab}
+        onChange={onTabChange}
+        compact={true}
+      />
+      <ActivityHeaderFilters
+        bind:accountFilter={_internalAccountFilter}
+        bind:levelFilter
+        availableAccounts={_availableAccounts}
+        showAccountFilter={_showAccountFilter}
+        showLevelFilter={_showLevelFilter} />
+    {/snippet}
+    {#snippet right()}
+      {#if context === 'modal'}
+        <button type="button" class="lp-close-btn"
                 aria-label="Close activity log"
                 onclick={() => onClose?.()}>×</button>
-      {/if}
-      <!-- Expand / contract — collapses panel body in-place -->
-      <button type="button"
-        class="lp-card-btn"
-        title={isCollapsed ? 'Expand panel' : 'Contract panel'}
-        aria-label={isCollapsed ? 'Expand panel' : 'Contract panel'}
-        aria-pressed={isCollapsed}
-        onclick={() => { isCollapsed = !isCollapsed; }}>
-        {#if isCollapsed}
+      {:else}
+        <button type="button" class="lp-fs-btn"
+                title="Open fullscreen"
+                aria-label="Open fullscreen"
+                onclick={() => openActivityModal()}>
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        {:else}
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        {/if}
-      </button>
-      <!-- Fullscreen — opens ActivityLogModal; hidden when already in modal context -->
-      {#if context !== 'modal'}
-        <button type="button"
-          class="lp-card-btn"
-          title="Open fullscreen"
-          aria-label="Open fullscreen"
-          onclick={() => { openActivityModal(); }}>
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"
+                  stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
           </svg>
         </button>
       {/if}
+    {/snippet}
+  </CardHeader>
+  </div><!-- /.lp-header-wrap -->
+{:else}
+  <!-- DEPRECATED: lp-card-btns-legacy retained for direct non-label LogPanel mounts.
+       Remove after all mounts are confirmed label-bearing. -->
+  <div class="flex items-stretch mb-2 log-tab-row" style="border-bottom: 1px solid rgba(255,255,255,0.07);">
+    <div class="lp-tab-strip-wrap">
+      <AlgoTabs
+        tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
+        bind:value={logTab}
+        onChange={onTabChange}
+        compact={true}
+      />
+      <ActivityHeaderFilters
+        bind:accountFilter={_internalAccountFilter}
+        bind:levelFilter
+        availableAccounts={_availableAccounts}
+        showAccountFilter={_showAccountFilter}
+        showLevelFilter={_showLevelFilter} />
     </div>
-  {:else}
-    <!-- DEPRECATED: lp-card-btns-legacy — button cluster for LogPanel mounts
-         that do not pass a `label` prop. All ActivityLogSurface-wrapped mounts
-         (the canonical path) go through the `label` branch above; this path
-         is retained only for any edge-case direct LogPanel mount without a
-         label. Do NOT delete yet — removal requires auditing every direct
-         LogPanel mount that does not go through ActivityLogSurface. -->
     <span class="lp-card-btns-legacy" role="group" aria-label="Activity panel controls">
       <!-- Search -->
       <button type="button"
@@ -1565,24 +1543,24 @@
         </button>
       {/if}
     </span>
-  {/if}
-</div>
-<!-- Search input row — visible when _searchOpen is true -->
-{#if _searchOpen}
-  <div class="lp-search-row">
-    <input
-      type="search"
-      class="lp-search-input"
-      placeholder="Filter rows…"
-      bind:value={_searchQuery}
-      aria-label="Filter log rows"
-      autocomplete="off"
-    />
-    {#if _searchQuery}
-      <button type="button" class="lp-search-clear" aria-label="Clear search"
-        onclick={() => { _searchQuery = ''; }}>×</button>
-    {/if}
   </div>
+  <!-- Search input row — visible when _searchOpen is true (legacy path only) -->
+  {#if _searchOpen}
+    <div class="lp-search-row">
+      <input
+        type="search"
+        class="lp-search-input"
+        placeholder="Filter rows…"
+        bind:value={_searchQuery}
+        aria-label="Filter log rows"
+        autocomplete="off"
+      />
+      {#if _searchQuery}
+        <button type="button" class="lp-search-clear" aria-label="Clear search"
+          onclick={() => { _searchQuery = ''; }}>×</button>
+      {/if}
+    </div>
+  {/if}
 {/if}
 
 <div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" class:lp-tall={isTall} hidden={isCollapsed}>
@@ -1799,23 +1777,27 @@
 
 
 <style>
-  /* Tab row — another +30% on the previous 0.48rem → 0.62rem. Padding
-     scaled proportionally. Still no inter-tab gap so mobile fit holds. */
+  /* Header wrapper for the label-branch CardHeader. */
+  .lp-header-wrap {
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+  }
+
+  /* Tab row — legacy path only (no-label mounts). */
   .log-tab-row { gap: 0; align-items: center; }
 
-  /* Modal context: amber gradient header matching alm-header style */
+  /* Modal context: amber gradient header — applied to lp-header-wrap in
+     label-branch, or to log-tab-row in legacy-branch via .ctx-modal. */
   .ctx-modal {
     background: linear-gradient(180deg,
       rgba(251, 191, 36, 0.18) 0%,
       rgba(251, 191, 36, 0.06) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
   }
 
-  /* Tab strip wrapper — grows to fill remaining space in the flex row.
+  /* Tab strip wrapper — grows to fill remaining space in the flex row (legacy path).
      overflow-x: auto + hidden scrollbar allows the tab strip to scroll
-     on narrow viewports (e.g. modal at 320px with 7 tabs) without
-     visible scrollbar chrome eating vertical space. */
+     on narrow viewports without visible scrollbar chrome eating vertical space. */
   .lp-tab-strip-wrap {
     flex: 1 1 0;
     min-width: 0;
@@ -1831,33 +1813,34 @@
      active-tab underline / indicator is cut at the wrapper boundary. */
   .lp-tab-strip-wrap :global(.algo-tabs-strip) { overflow-x: visible; }
 
-  /* Label chip shown when `label` prop is provided */
-  .lp-label {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm, 0.6rem);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--c-action);
-    white-space: nowrap;
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0 0.5rem;
-  }
+  /* Label icon shown in modal context (rendered via CardHeader left snippet) */
   :global(.lp-label-icon) { color: var(--c-action); flex-shrink: 0; }
 
-  /* Separator between label and tab strip — mirrors CardHeader .ch-sep */
-  .lp-sep {
-    width: 1px;
-    align-self: stretch;
-    background: rgba(255,255,255,0.10);
+  /* Fullscreen-open button (label-branch, non-modal context) */
+  .lp-fs-btn, .lp-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
+    border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
+    border-radius: 3px;
+    color: var(--c-info, #22d3ee);
+    cursor: pointer;
     flex-shrink: 0;
-    margin: 0.15rem 0;
+    transition: background 0.08s, border-color 0.08s, color 0.08s;
+    font-size: 0.85rem;
+    line-height: 1;
+    padding: 0;
+  }
+  .lp-fs-btn:hover:not(:disabled), .lp-close-btn:hover:not(:disabled) {
+    background: rgba(34,211,238,0.14);
+    border-color: rgba(34,211,238,0.65);
+    color: var(--algo-cyan-text, #67e8f9);
   }
 
-  /* Close button rendered in modal context */
+  /* Close button rendered in modal context (legacy path) */
   .alm-close-btn {
     margin-left: 0;
     flex-shrink: 0;
@@ -2335,13 +2318,7 @@
     color: #bae6fd;
   }
 
-  /* ── Card button group (label-based: CollapseButton + FullscreenButton + Download) ──── */
-  .lp-card-btns {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    flex-shrink: 0;
-  }
+  /* ── Card button (legacy path: lp-card-btns-legacy buttons) ──── */
   .lp-card-btn {
     display: inline-flex;
     align-items: center;

@@ -306,7 +306,7 @@
      modal resolves to one of these per (side × instrument-type) combo.
      Click a cell to filter the list to that scope below + jump to the
      active row when one exists. -->
-<section class="bucket-card p-3 mb-3">
+<section class="bucket-card p-3">
   <div class="tpl-matrix-head">
     <span class="mp-section-label">Side-default coverage</span>
     <InfoHint popup={true} align="right"
@@ -335,7 +335,7 @@
 </section>
 
 <!-- Filter strip + create button -->
-<section class="bucket-card p-3 mb-3"
+<section class="bucket-card p-3"
   class:fs-card-on={_fsTemplates}
   class:is-collapsed={_colTemplates}>
   <CardHeader
