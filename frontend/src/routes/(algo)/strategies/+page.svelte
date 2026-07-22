@@ -231,10 +231,10 @@
             <td><input bind:value={editForm.slug} class="field-input field-input-sm" /></td>
             <td><input bind:value={editForm.name} class="field-input field-input-sm" /></td>
             <td>{r.owner_username ?? '—'}</td>
-            <td class="td-num">{r.open_order_count}</td>
-            <td class="td-num">{r.closed_order_count}</td>
-            <td class="td-num">{_fmtInr(r.realised_pnl)}</td>
-            <td class="td-num">{_fmtInr(r.unrealised_pnl)}</td>
+            <td class="algo-table-num">{r.open_order_count}</td>
+            <td class="algo-table-num">{r.closed_order_count}</td>
+            <td class="algo-table-num">{_fmtInr(r.realised_pnl)}</td>
+            <td class="algo-table-num">{_fmtInr(r.unrealised_pnl)}</td>
             <td><input bind:value={editForm.capacity_cap_inr} type="number" class="field-input field-input-sm field-input-num" /></td>
             <td><input bind:value={editForm.target_volatility} type="number" step="0.01" class="field-input field-input-sm field-input-num" /></td>
             <td><input type="checkbox" bind:checked={editForm.is_active} /></td>
@@ -254,12 +254,12 @@
             </td>
             <td>{r.name}</td>
             <td>{r.owner_username ?? '—'}</td>
-            <td class="td-num">{r.open_order_count}</td>
-            <td class="td-num">{r.closed_order_count}</td>
-            <td class="td-num {r.realised_pnl > 0 ? 'pnl-pos' : r.realised_pnl < 0 ? 'pnl-neg' : ''}">{_fmtInr(r.realised_pnl)}</td>
-            <td class="td-num {r.unrealised_pnl > 0 ? 'pnl-pos' : r.unrealised_pnl < 0 ? 'pnl-neg' : ''}">{_fmtInr(r.unrealised_pnl)}</td>
-            <td class="td-num">{_fmtInr(r.capacity_cap_inr)}</td>
-            <td class="td-num">{_fmtPctOpt(r.target_volatility)}</td>
+            <td class="algo-table-num">{r.open_order_count}</td>
+            <td class="algo-table-num">{r.closed_order_count}</td>
+            <td class="algo-table-num {r.realised_pnl > 0 ? 'pnl-pos' : r.realised_pnl < 0 ? 'pnl-neg' : ''}">{_fmtInr(r.realised_pnl)}</td>
+            <td class="algo-table-num {r.unrealised_pnl > 0 ? 'pnl-pos' : r.unrealised_pnl < 0 ? 'pnl-neg' : ''}">{_fmtInr(r.unrealised_pnl)}</td>
+            <td class="algo-table-num">{_fmtInr(r.capacity_cap_inr)}</td>
+            <td class="algo-table-num">{_fmtPctOpt(r.target_volatility)}</td>
             <td>
               <span class={r.is_active ? 'pill-active' : 'pill-inactive'}>
                 {r.is_active ? 'active' : 'paused'}
@@ -327,9 +327,7 @@
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border-radius: 6px;
   }
-  .strat-table {
-    width: 100%;
-  }
+  /* .strat-table width:100% removed — algo-table global provides it. */
   .strat-table th {
     text-align: left;
     padding: 0.45rem 0.6rem;
@@ -343,10 +341,10 @@
   .strat-table td {
     padding: 0.4rem 0.6rem;
   }
-  .strat-table td.td-num {
-    text-align: right;
+  /* .strat-table td.td-num renamed to algo-table-num — global provides text-align + tabular-nums.
+     Keeping font-family override here since it's semantic for this table. */
+  .strat-table td.algo-table-num {
     font-family: var(--font-numeric);
-    font-variant-numeric: tabular-nums;
   }
   .strat-table td.td-slug {
     color: var(--c-action); font-weight: 700; font-family: var(--font-numeric);

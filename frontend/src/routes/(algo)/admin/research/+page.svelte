@@ -822,7 +822,7 @@
     <article class="lab-card">
       <h2>3. Available tools (Phase 1)</h2>
       <p>The MCP server exposes these research tools. <code>save_agent_draft</code> is the only write — it creates an INACTIVE Agent in paper-mode (cannot activate or place orders). Phase 3 adds gated trade tools (place_order with per-call confirm token).</p>
-      <table class="tools-table">
+      <table class="algo-table tools-table">
         <thead><tr><th>Tool</th><th>Purpose</th></tr></thead>
         <tbody>
           {#each TOOLS as t (t.name)}
@@ -1383,11 +1383,8 @@
     color: var(--algo-muted) !important;
     font-size: var(--fs-md) !important;
   }
-  .tools-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: var(--fs-lg);
-  }
+  /* .tools-table width/border-collapse/font-size removed — algo-table global provides them.
+     .tools-table td color/border-bottom removed — algo-table global provides them. */
   .tools-table th {
     text-align: left;
     padding: 0.32rem 0.5rem;
@@ -1400,8 +1397,6 @@
   }
   .tools-table td {
     padding: 0.32rem 0.5rem;
-    color: var(--algo-slate);
-    border-bottom: 1px solid rgba(126, 151, 184, 0.08);
   }
   /* .lab-card-safety / .lab-card-mint retired — every card now
      carries the canonical 3px amber left border via .lab-card. */

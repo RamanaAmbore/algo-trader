@@ -269,7 +269,7 @@
 
   <h2 class="metrics-h2">Snapshots ({total})</h2>
 
-  <div class="metrics-table-wrap">
+  <div class="algo-table-wrap">
     <table class="algo-table metrics-table">
       <thead>
         <tr>
@@ -463,10 +463,8 @@
     color: var(--c-action);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  .metrics-table-wrap { overflow-x: auto; }
-  .metrics-table {
-    width: 100%;
-  }
+  /* .metrics-table-wrap renamed to algo-table-wrap (handled globally).
+     .metrics-table width:100% removed — algo-table global provides it. */
   .metrics-table th, .metrics-table td {
     padding: 0.32rem 0.5rem;
     text-align: left;

@@ -235,7 +235,7 @@
     scrollbar-color: rgba(126, 151, 184, 0.4) transparent;
   }
   .iter-table {
-    width: 100%;
+    /* width: 100% removed — algo-table global provides it. */
     min-width: 38rem;       /* prevents column squeeze on mobile */
   }
   .iter-table th {

@@ -230,7 +230,7 @@
   </div>
 </section>
 
-<section class="ms-table-wrap">
+<section class="algo-table-wrap">
   {#if loading}
     <LoadingSkeleton variant="grid-row" rows={4} height="1.6rem" />
   {:else if filteredRows.length === 0}
@@ -262,7 +262,7 @@
               <div class="ms-lp-sub">{r.username}</div>
             </td>
             <td class="td-mono">{r.email || '—'}</td>
-            <td class="td-num">{r.share_pct.toFixed(2)}%</td>
+            <td class="algo-table-num">{r.share_pct.toFixed(2)}%</td>
             <td>
               {#if r.status === 'sent'}
                 <span class="ms-pill-status ms-pill-sent">Sent</span>
@@ -273,7 +273,7 @@
               {/if}
             </td>
             <td class="td-mono">{_fmtTs(r.sent_at)}</td>
-            <td class="td-num">{_fmtBytes(r.pdf_size_bytes)}</td>
+            <td class="algo-table-num">{_fmtBytes(r.pdf_size_bytes)}</td>
             <td class="ms-error-cell" title={r.error || ''}>{r.error || ''}</td>
             <td class="td-actions">
               {#if canManage}
@@ -341,15 +341,13 @@
     font-weight: 800;
   }
 
-  .ms-table-wrap {
+  .algo-table-wrap {
     overflow-x: auto;
     border: 1px solid rgba(126, 151, 184, 0.18);
     border-radius: 4px;
     background: rgba(15, 23, 42, 0.30);
   }
-  .ms-table {
-    width: 100%;
-  }
+  /* .ms-table width:100% removed — algo-table global provides it. */
   .ms-table th {
     text-align: left;
     padding: 0.3rem 0.55rem;
@@ -364,7 +362,7 @@
   .ms-table td {
     padding: 0.3rem 0.55rem;
   }
-  .ms-table td.td-num    { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-numeric); }
+  /* .ms-table td.td-num removed — renamed to algo-table-num (handled globally). */
   .ms-table td.td-mono   { font-family: var(--font-numeric); font-size: var(--fs-md); }
   .ms-table td.td-actions { text-align: right; white-space: nowrap; }
   .ms-table td.td-actions :global(button) { margin-left: 0.25rem; }
