@@ -1288,6 +1288,17 @@
                 onclick={() => onToggleHoldings && onToggleHoldings()}>HOLD</button>
       {/if}
     </div>
+  {#if loading}
+    <div class="payoff-loading-ring" aria-label="Loading payoff…" role="status">
+      <svg class="payoff-spin-svg" width="22" height="22" viewBox="0 0 16 16"
+           fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" stroke-linejoin="round"
+           aria-hidden="true">
+        <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9" />
+        <path d="M13.5 3v3h-3" />
+      </svg>
+    </div>
+  {/if}
   {/if}
 </div>
 
@@ -1617,5 +1628,28 @@
   }
   .payoff-tt-spot {
     color: #7dd3fc;
+  }
+  .payoff-loading-ring {
+    position: absolute;
+    top: 0.4rem;
+    right: 0.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .payoff-spin-svg {
+    color: var(--c-info, #22d3ee);
+    animation: payoff-spin 1.1s linear infinite;
+    transform-origin: 50% 50%;
+    opacity: 0.75;
+  }
+  @keyframes payoff-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .payoff-spin-svg { animation: none; }
   }
 </style>

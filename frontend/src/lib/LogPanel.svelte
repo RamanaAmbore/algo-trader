@@ -835,11 +835,24 @@
     });
   }
 
+  const _TERMINAL_STATUSES = new Set(['COMPLETE', 'CANCELLED', 'REJECTED', 'EXPIRED']);
+  function _applyDateFilter(rows) {
+    // IST = UTC + 5:30 — broker timestamps are already in IST
+    const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+    const today  = istNow.toISOString().slice(0, 10); // "YYYY-MM-DD"
+    return rows.filter(o => {
+      const ts   = (o.created_at || o.order_timestamp || '').slice(0, 10);
+      const term = _TERMINAL_STATUSES.has((o.status || '').toUpperCase());
+      return !(ts && ts !== today && term);
+    });
+  }
+
   const filteredOrderRows = $derived.by(() => {
     let rows = orderRows || [];
     rows = _applyModeFilter(rows, _gatingMode, orderModeFilter);
     rows = _applyAccountFilter(rows, orderAccountFilter);
     rows = _applyStatusFilter(rows, statusFilter);
+    rows = _applyDateFilter(rows);
     // Used by /orders to thread the global strategy filter through.
     rows = _applySymbolFilter(rows, symbolFilter);
     // Card button group search filter — text match on symbol, account, status

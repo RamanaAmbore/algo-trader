@@ -1753,6 +1753,16 @@
     return strategy?.spot;
   });
 
+  // True for the one render frame between selectedUnderlying changing and the
+  // post-render loadStrategy({clear:true}) effect firing. liveSpot recomputes
+  // immediately (reads _underlyingQuotes[selectedUnderlying]?.ltp) while
+  // strategy still holds the old symbol's data — this derived detects that
+  // stale window and gates the OptionsPayoff props.
+  const _strategyStale = $derived(
+    !!strategy &&
+    String(strategy.underlying || '').toUpperCase() !== selectedUnderlying.toUpperCase()
+  );
+
   // Live-adjusted: incorporate SSE-tick price moves on top of the broker
   // snapshot day_change_val. Without this, the DAY row in the payoff
   // overlay stayed pinned at the last poll's value while ticks were
@@ -4141,11 +4151,11 @@
     -->
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
-        payoff={strategy ? _mergedPayoff : (_clientPayoffStub ?? [])}
+        payoff={!_strategyStale && strategy ? _mergedPayoff : (_clientPayoffStub ?? [])}
         spot={liveSpot}
         prevClose={strategy?.spot_prev_close}
         breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
-        intermediateCurves={strategy?.intermediate_curves || []}
+        intermediateCurves={!_strategyStale ? (strategy?.intermediate_curves || []) : []}
         spanSigmas={strategy?.span_sigmas}
         spanPct={strategy?.span_pct}
         dte={strategy?.days_to_expiry}
@@ -4165,7 +4175,7 @@
         includeHoldings={_includeHoldings}
         onToggleHoldings={_flipHoldings}
         netCost={_netStrategyCost}
-        loading={loading}
+        loading={loading || _strategyStale}
         height={320} />
     </div>
   </div>
