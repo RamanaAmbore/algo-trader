@@ -6,13 +6,18 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPl
 
 ## Permissions
 
-All tools are pre-authorised via frontmatter — no permission prompts will appear.
+**Step 1 — Exit plan mode (if active):** If plan mode is currently active, call `ExitPlanMode` (no `allowedPrompts`) as the very first step.
 
-**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step.
+**Step 2 — Engage bypass mode:** Immediately after ExitPlanMode (or as first step if not in plan mode), run:
+```bash
+python3 -c "import json; p='.claude/settings.json'; d=json.load(open(p)); d['permissions']['defaultMode']='bypassPermissions'; json.dump(d, open(p,'w'), indent=2)"
+```
 
-**If not in plan mode**: proceed directly.
-
-After Step 7, call `EnterPlanMode` to return to plan mode.
+**Final step — Restore plan mode:** After Step 7, before calling `EnterPlanMode`, run:
+```bash
+python3 -c "import json; p='.claude/settings.json'; d=json.load(open(p)); d['permissions']['defaultMode']='plan'; json.dump(d, open(p,'w'), indent=2)"
+```
+Then call `EnterPlanMode`.
 
 Update specs, guides, DESIGN_GUIDE, PDF, and complexity — then merge dev→main and push. All steps run in background; report each result in foreground as it completes.
 
