@@ -19,7 +19,6 @@
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
   import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
-  import DayPnlBreakup from './DayPnlBreakup.svelte';
   import NavBreakdown from '$lib/NavBreakdown.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
 
@@ -33,8 +32,8 @@
   // reads this to re-run on the boundary even when no other state has
   // changed (otherwise we'd wait up to 30s for the next loadOnce poll
   // before clearing the stale-tick delta after market close).
-  let _dayPnlBreakupOpen = $state(false);
   let _breakdownOpen = $state(false);
+  let _activeSlot = $state(/** @type {'P'|'M'|'C'|'H'} */ ('P'));
   let _mktTick = $state(0);
   /** @type {(() => void) | null} */
   let _mktTimer = null;
@@ -843,17 +842,17 @@
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-p" role="button" tabindex="0"
-      onclick={() => _breakdownOpen = true}
-      onkeydown={(e) => e.key === 'Enter' && (_breakdownOpen = true)}><InfoHint popup panel label="P" accentColor="#fbbf24"
+      onclick={() => { _activeSlot = 'P'; _breakdownOpen = true; }}
+      onkeydown={(e) => e.key === 'Enter' && (_activeSlot = 'P', _breakdownOpen = true)}><InfoHint popup panel label="P" accentColor="#fbbf24"
       title="P — Positions P&L"
       text="<b>Day P&L:</b> Live ticks − prev-close × net qty, all accounts. For new intraday (overnight_qty=0), uses pnl directly.<br><br><b>Lifetime P&L:</b> Cumulative since position opened. Includes realised + unrealised.<br><br><b>Expiry P&L:</b> Projected F&O value at expiry via lognormal model." /></span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
       style="cursor:pointer"
       role="button"
       tabindex="0"
-      title="Click for Day P&L breakup"
-      onclick={() => _dayPnlBreakupOpen = true}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_dayPnlBreakupOpen = true)}
+      title="Click for account breakdown"
+      onclick={() => { _activeSlot = 'P'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'P', _breakdownOpen = true)}
       >{fmtMoney(dispPositionsToday)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
@@ -867,8 +866,8 @@
        "room I have / full capacity" framing rather than util %. -->
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-m" role="button" tabindex="0"
-      onclick={() => _breakdownOpen = true}
-      onkeydown={(e) => e.key === 'Enter' && (_breakdownOpen = true)}><InfoHint popup panel label="M" accentColor="#a78bfa"
+      onclick={() => { _activeSlot = 'M'; _breakdownOpen = true; }}
+      onkeydown={(e) => e.key === 'Enter' && (_activeSlot = 'M', _breakdownOpen = true)}><InfoHint popup panel label="M" accentColor="#a78bfa"
       title="M — Margin"
       text="<b>Available:</b> Cash deployable for new orders = Total − used margin. Updated after every fill.<br><br><b>Total:</b> Full collateral across all accounts = Available + margin blocked for open positions." /></span>
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
@@ -889,8 +888,8 @@
        apps, the Dhan/Groww adapter math is the first place to look. -->
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-c" role="button" tabindex="0"
-      onclick={() => _breakdownOpen = true}
-      onkeydown={(e) => e.key === 'Enter' && (_breakdownOpen = true)}><InfoHint popup panel label="C" accentColor="#38bdf8"
+      onclick={() => { _activeSlot = 'C'; _breakdownOpen = true; }}
+      onkeydown={(e) => e.key === 'Enter' && (_activeSlot = 'C', _breakdownOpen = true)}><InfoHint popup panel label="C" accentColor="#38bdf8"
       title="C — Cash"
       text="<b>Cash Available (CA):</b> Live deployable cash. Nets realised P&L + long option premiums paid.<br><br><b>Total Cash:</b> CA + premium tied up in long options (recoverable if closed)." /></span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
@@ -902,8 +901,8 @@
   </span>
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-h" role="button" tabindex="0"
-      onclick={() => _breakdownOpen = true}
-      onkeydown={(e) => e.key === 'Enter' && (_breakdownOpen = true)}><InfoHint popup panel label="H" accentColor="#22d3ee"
+      onclick={() => { _activeSlot = 'H'; _breakdownOpen = true; }}
+      onkeydown={(e) => e.key === 'Enter' && (_activeSlot = 'H', _breakdownOpen = true)}><InfoHint popup panel label="H" accentColor="#22d3ee"
       title="H — Holdings"
       text="<b>Today MTM:</b> Live LTP − prev close × qty for long-term holdings. Intraday only.<br><br><b>Value:</b> Broker-reported current market value across all accounts.<br><br><b>Lifetime P&L:</b> Cumulative since purchase = (current − avg cost) × qty." /></span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
@@ -926,15 +925,10 @@
         <button type="button" class="ps-breakdown-close"
                 onclick={() => _breakdownOpen = false}
                 aria-label="Close breakdown">✕</button>
-        <NavBreakdown />
+        <NavBreakdown activeSlot={_activeSlot} />
       </div>
     </div>
   {/if}
-  <DayPnlBreakup
-    open={_dayPnlBreakupOpen}
-    {positions}
-    onClose={() => (_dayPnlBreakupOpen = false)}
-  />
 </div>
 
 <style>

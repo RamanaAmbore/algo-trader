@@ -934,7 +934,18 @@
   <BrokerHealthBadge bind:open={brokerHealthOpen} />
 {/if}
 
-<div class="algo-viewport card-theme-dark">
+<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+<div class="algo-viewport card-theme-dark"
+  onclick={(e) => {
+    // Delegated click zone — any click inside a .page-header that does NOT
+    // originate from .page-header-actions triggers the timestamp toggle.
+    // This wires the entire empty header area (title zone + spacer) as a
+    // click target without touching every page's +page.svelte.
+    const t = /** @type {HTMLElement} */ (e.target);
+    if (t.closest('.page-header') && !t.closest('.page-header-actions') && !t.closest('.algo-ts')) {
+      window.dispatchEvent(new CustomEvent('toggle-ts'));
+    }
+  }}>
   <div class="algo-card">
     <!-- Top bar -->
     <header class="algo-navbar">

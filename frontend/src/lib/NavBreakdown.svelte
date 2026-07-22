@@ -33,12 +33,16 @@
 
   /** @type {{
    *   accountFilter?: string[],
+   *   activeSlot?: 'P'|'M'|'C'|'H',
    * }} */
   let {
     // Empty = all accounts (no filter). When set, the table only
     // shows the picked accounts and the TOTAL row sums over the
     // filtered subset.
     accountFilter = /** @type {string[]} */ ([]),
+    // When set, highlights the column group relevant to the clicked
+    // pill so the operator knows which values they're looking at.
+    activeSlot = /** @type {'P'|'M'|'C'|'H'} */ ('P'),
   } = $props();
 
   /**
@@ -199,29 +203,29 @@
       <thead>
         <tr>
           <th scope="col" class="nav-bd-acct">Account</th>
-          <th scope="col">Cash</th>
-          <th scope="col">Pos M2M</th>
-          <th scope="col">Holdings</th>
-          <th scope="col" class="nav-bd-nav">NAV</th>
+          <th scope="col" class:nav-bd-col-active={activeSlot === 'C' || activeSlot === 'M'}>Cash</th>
+          <th scope="col" class:nav-bd-col-active={activeSlot === 'P'}>Pos M2M</th>
+          <th scope="col" class:nav-bd-col-active={activeSlot === 'H'}>Holdings</th>
+          <th scope="col" class="nav-bd-nav" class:nav-bd-col-active={activeSlot === 'P' || activeSlot === 'M'}>NAV</th>
         </tr>
       </thead>
       <tbody>
         {#each _navByAcct as r (r.account)}
           <tr>
             <td class="nav-bd-acct">{r.account}</td>
-            <td class="nav-num {_cls(r.cash)}">{_fmt(r.cash)}</td>
-            <td class="nav-num {_cls(r.pos_m2m)}">{_fmt(r.pos_m2m)}</td>
-            <td class="nav-num {_cls(r.holdings_mtm)}">{_fmt(r.holdings_mtm)}</td>
-            <td class="nav-num nav-bd-nav {_cls(r.nav)}">{_fmt(r.nav)}</td>
+            <td class="nav-num {_cls(r.cash)}" class:nav-bd-col-active={activeSlot === 'C' || activeSlot === 'M'}>{_fmt(r.cash)}</td>
+            <td class="nav-num {_cls(r.pos_m2m)}" class:nav-bd-col-active={activeSlot === 'P'}>{_fmt(r.pos_m2m)}</td>
+            <td class="nav-num {_cls(r.holdings_mtm)}" class:nav-bd-col-active={activeSlot === 'H'}>{_fmt(r.holdings_mtm)}</td>
+            <td class="nav-num nav-bd-nav {_cls(r.nav)}" class:nav-bd-col-active={activeSlot === 'P' || activeSlot === 'M'}>{_fmt(r.nav)}</td>
           </tr>
         {/each}
         {#if _navTotal}
           <tr class="nav-bd-total">
             <td class="nav-bd-acct">TOTAL</td>
-            <td class="nav-num {_cls(_navTotal?.cash)}">{_fmt(_navTotal?.cash)}</td>
-            <td class="nav-num {_cls(_navTotal?.pos_m2m)}">{_fmt(_navTotal?.pos_m2m)}</td>
-            <td class="nav-num {_cls(_navTotal?.holdings_mtm)}">{_fmt(_navTotal?.holdings_mtm)}</td>
-            <td class="nav-num nav-bd-nav {_cls(_navTotal?.nav)}">{_fmt(_navTotal?.nav)}</td>
+            <td class="nav-num {_cls(_navTotal?.cash)}" class:nav-bd-col-active={activeSlot === 'C' || activeSlot === 'M'}>{_fmt(_navTotal?.cash)}</td>
+            <td class="nav-num {_cls(_navTotal?.pos_m2m)}" class:nav-bd-col-active={activeSlot === 'P'}>{_fmt(_navTotal?.pos_m2m)}</td>
+            <td class="nav-num {_cls(_navTotal?.holdings_mtm)}" class:nav-bd-col-active={activeSlot === 'H'}>{_fmt(_navTotal?.holdings_mtm)}</td>
+            <td class="nav-num nav-bd-nav {_cls(_navTotal?.nav)}" class:nav-bd-col-active={activeSlot === 'P' || activeSlot === 'M'}>{_fmt(_navTotal?.nav)}</td>
           </tr>
         {/if}
       </tbody>
@@ -331,6 +335,18 @@
     text-align: left;
     color: var(--algo-slate);
     font-weight: 600;
+  }
+
+  /* Active column — highlights the metric group matching the clicked pill.
+     Subtle amber tint + bold weight so the operator instantly spots the
+     relevant column without other metrics disappearing. */
+  .nav-bd-col-active {
+    background: rgba(251, 191, 36, 0.07);
+    font-weight: 700;
+    color: var(--c-action) !important;
+  }
+  .nav-bd-total .nav-bd-col-active {
+    color: var(--c-action) !important;
   }
   .nav-num {
     text-align: right;
