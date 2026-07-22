@@ -1479,7 +1479,8 @@
       <button type="button" class="lp-fs-btn"
               title="Open fullscreen"
               aria-label="Open fullscreen"
-              onclick={() => openActivityModal()}>
+              onclick={() => openActivityModal(/** @type {'order'|'agent'|'terminal'|'simulator'|'system'|'conn'|'news'} */ (logTab))}>
+
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"
                 stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
@@ -1490,7 +1491,7 @@
 </CardHeader>
 </div><!-- /.lp-header-wrap -->
 
-<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" class:lp-tall={isTall} hidden={isCollapsed}>
+<div class="lp-body-wrap {_expanded ? 'lp-body-expanded' : ''}" class:lp-tall={isTall} class:lp-body-card={context === 'card' || context === 'card-wide'} hidden={isCollapsed}>
 {#if logTab === 'news'}
   <!-- News tab — rendered via shared NewsList component in algo palette.
        Activity surface flavour: 2-column magazine flow (same as dashboard
@@ -1607,7 +1608,7 @@
      changed. Audit defect #11 (the old @html-joined-string
      approach destroyed all row DOM identity on every poll,
      killing text selection inside the log). -->
-<div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}">
+<div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' && logTab !== 'conn' ? 'lp-multicol' : ''}">
   {#if logTab === 'terminal'}
     {@html _terminalHtmlDerived}
   {:else if logTab === 'agent'}
@@ -2310,6 +2311,14 @@
     min-height: min(600px, 70vh);
     min-height: min(600px, 70svh);
   }
+  /* Card context — clamp the body to a fixed height so tab switching
+     doesn't cause card reflow. Content scrolls within the fixed zone. */
+  .lp-body-wrap.lp-body-card {
+    display: flex;
+    flex-direction: column;
+    height: 320px;
+    overflow-y: auto;
+  }
   /* Height-only expand for label-based panel (no viewport overlay).
      Grows the body in-place; overflow-y allows inner scrollers to
      remain active. */
@@ -2336,11 +2345,11 @@
     align-items: baseline;
     gap: 0.5rem;
     padding: 0.1rem 0.5rem;
-    font-size: var(--fs-sm);
+    font-size: var(--fs-base, 0.78rem);
     white-space: nowrap;
     overflow: hidden;
   }
-  .lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-xs, 0.6rem); }
+  .lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-sm, 0.72rem); }
   .lp-conn-acct   { flex-shrink: 0; min-width: 5rem; color: var(--algo-slate); }
   .lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
   .lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
