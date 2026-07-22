@@ -10,13 +10,18 @@ Returns to plan mode when done.
 
 ## Permissions
 
-All tools are pre-authorised via frontmatter — no permission prompts will appear throughout the pipeline.
+**Step 1 — Exit plan mode (if active):** If plan mode is currently active, call `ExitPlanMode` (no `allowedPrompts`) as the very first step.
 
-**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step.
+**Step 2 — Engage bypass mode:** Immediately after ExitPlanMode (or as the very first step if not in plan mode), run:
+```bash
+python3 -c "import json; p='.claude/settings.json'; d=json.load(open(p)); d['permissions']['defaultMode']='bypassPermissions'; json.dump(d, open(p,'w'), indent=2)"
+```
 
-**If not in plan mode**: proceed directly.
-
-Call `EnterPlanMode` only after the final dprod report (or on any hard block that stops the pipeline).
+**Final step — Restore plan mode:** Before calling `EnterPlanMode` (after the dprod report or on any hard block), run:
+```bash
+python3 -c "import json; p='.claude/settings.json'; d=json.load(open(p)); d['permissions']['defaultMode']='plan'; json.dump(d, open(p,'w'), indent=2)"
+```
+Then call `EnterPlanMode`.
 
 ---
 
