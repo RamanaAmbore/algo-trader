@@ -14,12 +14,12 @@ Returns to plan mode when done.
 
 **Step 2 — Engage bypass mode:** Immediately after ExitPlanMode (or as the very first step if not in plan mode), run:
 ```bash
-python3 -c "import json; p='.claude/settings.json'; d=json.load(open(p)); d['permissions']['defaultMode']='bypassPermissions'; json.dump(d, open(p,'w'), indent=2)"
+python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='bypassPermissions'; json.dump(d, open(p,'w'), indent=2)"
 ```
 
 **Final step — Restore plan mode:** Before calling `EnterPlanMode` (after the dprod report or on any hard block), run:
 ```bash
-python3 -c "import json; p='.claude/settings.json'; d=json.load(open(p)); d['permissions']['defaultMode']='plan'; json.dump(d, open(p,'w'), indent=2)"
+python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='plan'; json.dump(d, open(p,'w'), indent=2)"
 ```
 Then call `EnterPlanMode`.
 
