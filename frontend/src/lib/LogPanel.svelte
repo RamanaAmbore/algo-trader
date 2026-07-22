@@ -19,9 +19,7 @@
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import { openActivityModal } from '$lib/stores';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
-  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
-  import BellIcon from '$lib/icons/BellIcon.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
@@ -635,9 +633,6 @@
     if (id === 'simulator' && _gatingMode && _gatingMode !== 'sim') return false;
     return true;
   }));
-
-  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(logTab));
-  const _showLevelFilter   = $derived(['agent', 'system', 'conn'].includes(logTab));
 
   // ── Mode gating via executionMode store ──────────────────────────────
   // When gateByMode is true, the global executionMode store is the
@@ -1451,9 +1446,6 @@
   onDownload={logTab === 'news' ? null : (onDownload ?? _downloadCsv)}
   hideFullscreen={true}
 >
-  {#snippet prefix()}
-    <BellIcon width="12" height="12" class="lp-bell-icon" />
-  {/snippet}
   {#snippet middle()}
     <AlgoTabs
       tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
@@ -1461,12 +1453,6 @@
       onChange={onTabChange}
       compact={true}
     />
-    <ActivityHeaderFilters
-      bind:accountFilter={_internalAccountFilter}
-      bind:levelFilter
-      availableAccounts={_availableAccounts}
-      showAccountFilter={_showAccountFilter}
-      showLevelFilter={_showLevelFilter} />
   {/snippet}
   {#snippet right()}
     {#if context === 'modal'}
@@ -1748,7 +1734,6 @@
   .lp-tab-strip-wrap :global(.algo-tabs-strip) { overflow-x: visible; }
 
   /* Bell icon rendered before the LOG title via CardHeader prefix snippet */
-  .lp-bell-icon { flex-shrink: 0; }
 
   /* Fullscreen-open button (label-branch, non-modal context) */
   .lp-fs-btn, .lp-default-btn {
