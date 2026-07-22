@@ -28,6 +28,15 @@ P&L, margin, cash, and holdings aggregates across all broker accounts.
 Four pills cluster below the navbar, separated by gaps. Each pill shows two or three values
 separated by slashes.
 
+### Pill label click-to-breakdown
+
+Clicking any P/M/C/H pill **label** (the letter identifier) opens a **NavBreakdown panel**
+showing a per-account breakdown of that pill's aggregate value. The panel appears as a
+fixed overlay below the NavStrip, anchored to the right edge, spanning `min(28rem, 100vw)`
+in width. Content scrolls vertically if needed. Dismiss via Escape key or clicking outside
+the panel. The panel coexists independently with any modal on the pill's **value slot**
+(e.g., the DayPnlBreakup modal on P:1 value).
+
 ### P pill: Positions P&L
 
 Formula: three slots displaying position profit from three perspectives.
@@ -269,10 +278,13 @@ On real SSE tick arrivals (independent of polls):
 
 ## 6. Color Coding
 
-### Pill label accent colors
+### Pill label typography and accent colors
 
-Each pill identifier (P / M / C / H) carries its own fixed accent hue so pills are
-distinguishable without reading the letter:
+Pill identifiers (P / M / C / H) use class `.ps-agg-k`. **Font size**: `var(--fs-md)` on
+desktop, `var(--fs-sm)` on mobile (≤ 380px viewport).
+
+Each label carries its own fixed accent hue so pills are distinguishable without reading
+the letter:
 
 | Pill | Label class | Color | Token |
 |---|---|---|---|
@@ -501,3 +513,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-07-13 | EXP Slot spec: documented closed-leg (qty=0) handler; partial-close realized P&L (`leg.realised`) in open-leg formula |
 | 2026-07-18 | Color coding: per-pill label accents (P=amber, M=violet, C=sky, H=cyan); slot bright/dim differentiation for M, C, H pills; mobile trailing-clip padding note |
 | 2026-07-19 | Round 6: InfoHint `panel` mode spec (gradient bg, accent left border, titled header); per-slot ⓘ hover hints for all 10 slots; corrected M and C accent hex values; font-size upgrade for `.ps-agg-k` (xs→sm desktop, 2xs→xs mobile/380px); `frontend/src/lib/InfoHint.svelte` + `PositionStrip.svelte` updated |
+| 2026-07-22 | Pill label click-to-breakdown: clicking any P/M/C/H label opens NavBreakdown panel overlay (fixed below NavStrip, min(28rem, 100vw) width); dismiss via Escape or click-outside; typography note: `.ps-agg-k` uses `var(--fs-md)` (desktop) / `var(--fs-sm)` (mobile) |
