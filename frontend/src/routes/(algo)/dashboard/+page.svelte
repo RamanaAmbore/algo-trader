@@ -2856,7 +2856,6 @@
   /* Chrome migrated to canonical .bucket-card; local class kept for
      the bottom-margin only. */
   .dash-activity {
-    margin-bottom: 0.6rem;
     /* Activity surface owns the tail of the dashboard. Min-height
        caps the empty-state shrink so the operator's eye lands on the
        card even when News + Orders + Agents tabs are all empty. */

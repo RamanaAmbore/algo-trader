@@ -1947,20 +1947,22 @@
           {action !== 'open' ? ' · ' + action.toUpperCase() : ''}
         </span>
       </div>
-      <button type="button" class="ot-refresh-btn"
-              title="Refresh"
-              aria-label="Refresh order data"
-              disabled={submitting}
-              onclick={() => { _internalRefreshKey += 1; }}>
-        <svg width="13" height="13" viewBox="0 0 16 16"
-             fill="none" stroke="currentColor" stroke-width="1.6"
-             stroke-linecap="round" stroke-linejoin="round"
-             aria-hidden="true">
-          <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9" />
-          <path d="M13.5 3v3h-3" />
-        </svg>
-      </button>
-      <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose} disabled={submitting}>×</button>
+      <div class="ot-header-actions">
+        <button type="button" class="ot-refresh-btn"
+                title="Refresh"
+                aria-label="Refresh order data"
+                disabled={submitting}
+                onclick={() => { _internalRefreshKey += 1; }}>
+          <svg width="13" height="13" viewBox="0 0 16 16"
+               fill="none" stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true">
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9" />
+            <path d="M13.5 3v3h-3" />
+          </svg>
+        </button>
+        <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose} disabled={submitting}>×</button>
+      </div>
     </div>
 
     <!-- Combined top row: Account · Symbol · Qty (and Side toggle).
@@ -2511,6 +2513,14 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
+  .ot-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
   .ot-close {
     background: transparent;
     border: 1px solid rgba(255,255,255,0.15);
