@@ -2578,12 +2578,9 @@
      Intraday / Performance tabbed card. */
 
   /* Agent log — chrome now lives on the .bucket-card outer class.
-     Local rules cover only the margin + the inner header-row layout
-     (which uses the same `.dash-agent-summary` class but no longer
-     duplicates the card chrome that .bucket-card supplies). */
-  .dash-agent {
-    margin-top: 0.6rem;
-  }
+     Local rules cover only the inner header-row layout (the margin-top
+     between dash-activity and dash-agent is now handled by the global
+     .bucket-card + .bucket-card rule in app.css at 0.6rem). */
   .dash-agent-summary::-webkit-details-marker { display: none; }
   .dash-agent-chip {
     display: inline-flex;

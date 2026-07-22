@@ -50,6 +50,7 @@
     onDownload = null,
     showControls = true,
     detectOverflow = true,
+    hideFullscreen = false,
     /** @type {Snippet | undefined} */ left = undefined,
     /** @type {Snippet | undefined} */ middle = undefined,
     /** @type {Snippet | undefined} */ right = undefined,
@@ -126,7 +127,7 @@
         {showSearch}
         {refreshAlwaysVisible}
         {onDownload}
-        hideFullscreen={detectOverflow && !_hasOverflow && !isFullscreen}
+        hideFullscreen={hideFullscreen || (detectOverflow && !_hasOverflow && !isFullscreen)}
       />
     {/if}
   </div>

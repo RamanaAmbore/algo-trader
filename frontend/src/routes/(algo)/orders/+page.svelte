@@ -342,7 +342,7 @@
      from SymbolPanel and matches the modal's rendering exactly.
      `headerless` suppresses SymbolPanel's own header chip so the
      bucket-header's section label isn't duplicated. -->
-<section class="bucket-card bucket-card-entry mt-1 mb-2"
+<section class="bucket-card bucket-card-entry mt-1"
   class:fs-card-on={_fsEntry}
   class:is-collapsed={_colEntry}
   style="--ch-padding:0.35rem 0.5rem">
@@ -456,7 +456,7 @@
      no chases are running AND no orders are OPEN — keeps the page
      clean during idle hours. -->
 {#if _showChases}
-<section class="bucket-card bucket-card-chase mb-2">
+<section class="bucket-card bucket-card-chase">
   <CardHeader showControls={false}>
     {#snippet left()}
       <span class="mp-section-label">Chases</span>
@@ -486,7 +486,7 @@
      when the operator clicks the inline pencil on any row; the host
      opens its OrderTicket modal pre-filled. Same plumbing the Activity
      modal uses. -->
-<section class="bucket-card bucket-card-activity oc-fill mb-2"
+<section class="bucket-card bucket-card-activity oc-fill"
   class:is-collapsed={_colActivity}
   use:listenModifyOrder>
   <div class="card-body oc-act-body">
