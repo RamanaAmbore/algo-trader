@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash, Read, Write, Edit, Agent, ExitPlanMode, EnterPlanMode, ToolSearch
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch
 ---
 
 # /ddev — Test and push to dev
