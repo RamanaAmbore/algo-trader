@@ -5632,7 +5632,7 @@
     padding: 0 0.25rem 0;
     cursor: pointer;
     color: var(--c-action);
-    font-family: monospace;
+    font-family: inherit;
     font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
