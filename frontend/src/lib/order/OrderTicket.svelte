@@ -1053,7 +1053,7 @@
     const pick = (_lastQuote.ltp && _lastQuote.ltp > 0)
       ? _lastQuote.ltp
       : ((marketable && marketable > 0) ? marketable : null);
-    if (pick && pick > 0) _price = _formatTick(_roundToTick(pick));
+    if (pick && pick > 0) _price = String(_formatTick(_roundToTick(pick)));
   }
   function onDepthQuote(/** @type {any} */ q) {
     _lastQuote = q ? {
