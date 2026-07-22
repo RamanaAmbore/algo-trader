@@ -1,8 +1,14 @@
+---
+allowed-tools: Bash, Read, Write, Edit, Agent, ExitPlanMode, EnterPlanMode, ToolSearch
+---
+
 # /impl — Implement agreed plan, loop to green, ready for /ddev
 
 ## Permissions
 
-**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step — project settings pre-authorize all needed operations in normal mode so no further prompts appear.
+All tools are pre-authorised via frontmatter — no permission prompts will appear.
+
+**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step.
 
 **If not in plan mode**: proceed directly.
 

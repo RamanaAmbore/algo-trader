@@ -1,3 +1,7 @@
+---
+allowed-tools: Bash, Read, Write, Edit, Agent, ExitPlanMode, EnterPlanMode, ToolSearch
+---
+
 # /depl — Full deploy pipeline: impl → ddev → dprod
 
 Run the complete build-and-deploy pipeline in sequence: implement the plan, gate on tests,
@@ -6,7 +10,9 @@ Returns to plan mode when done.
 
 ## Permissions
 
-**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step — project settings pre-authorize all needed operations in normal mode so no further prompts appear throughout the pipeline.
+All tools are pre-authorised via frontmatter — no permission prompts will appear throughout the pipeline.
+
+**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step.
 
 **If not in plan mode**: proceed directly.
 
