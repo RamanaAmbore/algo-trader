@@ -1,275 +1,201 @@
-# Plan: Conn tab unification + LogPanel account dropdown restore
+# Plan: NavStrip font + click breakdown + movers snapshot tests
 
 ## Context
 
-Two tasks:
+Three tasks:
 
-**A — Account dropdown restore (correction)**
-The previous session removed all dropdowns from LogPanel. The user wants the account dropdown back — but this time it must scroll *with* the tabs on mobile instead of sitting outside the tab strip's scroll container. The level-filter dropdown stays removed.
+**A — NavStrip label font slightly bigger**  
+Labels (P, M, C, H pills) currently use `var(--fs-sm)`. Operator wants slightly larger.
 
-**B — Conn tab unification**
-The LogPanel Conn tab today shows raw `conn_service.log` text lines (via `GET /api/admin/logs/conn`). The admin/brokers page has a structured Connection Log that shows the same events as a table: time, account, broker_id, event_type, detail (from `GET /api/admin/broker-connection-events`, DB-backed). Goal: upgrade the Conn tab to use the structured endpoint so it shows rich fields as compact single rows — paving the way to retire the Connection Log panel later.
+**B — NavStrip values clickable → per-account breakdown panel**  
+Clicking any NavStrip value (any slot in P/M/C/H pills) should open a compact panel showing per-account breakdown of all values, UX similar to the broker health chip on the navbar (click element → small panel appears below → Escape/click-outside closes).
+
+`NavBreakdown.svelte` already exists (468 lines, used by dashboard NAV tab) and shows per-account: Cash | Pos M2M | Holdings | NAV. Reuse it inside an overlay panel rather than building a new component.
+
+**C — Movers tests: use real snapshot payload structure**  
+The new `test_movers_route.py` mocks `_load_latest_movers_snapshot` with a Python object. The gainers/losers tests should instead build a realistic `MoversSnapshot` with actual `payload_json` content and let `_movers_offhours_response` deserialize it — confirming the real JSON→MoverRow pipeline works, not just that the mock fires. The conftest patches `init_db` to a noop so a real DB table won't exist; use `patch("backend.api.routes.watchlist.async_session")` to inject a fake session that returns the fixture snapshot row.
 
 ---
 
-## Task A — Restore account dropdown with proper scroll
+## Task A — NavStrip label font size
 
-**Root cause of original scroll problem**: `AlgoTabs` renders `.algo-tabs-strip` with `overflow-x: auto; max-width: 100%`. That makes it fill `ch-middle` and scroll internally. Anything placed *after* it in `ch-middle` is pushed off-screen without being part of the scroll.
+**File:** `frontend/src/lib/PositionStrip.svelte`
 
-**Fix**: Override `.algo-tabs-strip` inside LogPanel's header so it expands naturally instead of clipping internally. `ch-middle` (already `overflow-x: auto`) becomes the single scroll container for tabs + dropdown combined.
+Find `.ps-agg-k` CSS rule:
+```css
+/* current */
+.ps-agg-k { font-size: var(--fs-sm); ... }
 
-### File: `frontend/src/lib/LogPanel.svelte`
-
-**Script changes:**
-- Add: `import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';`  
-  (replaces the removed `ActivityHeaderFilters`; `_showLevelFilter` stays gone)
-- Restore: `const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(logTab));`
-
-**Template — `{#snippet middle()}`** (currently only `<AlgoTabs>`):
-```svelte
-{#snippet middle()}
-  <AlgoTabs
-    tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
-    bind:value={logTab}
-    onChange={onTabChange}
-    compact={true}
-  />
-  {#if _showAccountFilter && !hideInlineAccountFilter}
-    <ActivityAccountSelect
-      bind:value={_internalAccountFilter}
-      availableAccounts={_availableAccounts} />
-  {/if}
-{/snippet}
+/* change to */
+.ps-agg-k { font-size: var(--fs-md); ... }
 ```
 
-**CSS — add in `<style>`:**
+Also update the mobile override at `@media (max-width: 640px)` — bump from `var(--fs-xs)` to `var(--fs-sm)` so the relative increase carries through to mobile.
+
+---
+
+## Task B — NavStrip click → per-account breakdown
+
+**File:** `frontend/src/lib/PositionStrip.svelte`
+
+### State
+```js
+import NavBreakdown from '$lib/NavBreakdown.svelte';
+
+let _breakdownOpen = $state(false);
+```
+
+### Make all pills clickable
+Each pill label/group (P, M, C, H) gets `onclick={() => _breakdownOpen = true}` plus `role="button"` + `tabindex="0"` + `onkeydown={(e) => e.key === 'Enter' && (_breakdownOpen = true)`. Apply to the outermost `<span class="ps-agg">` for each pill, or to the label `<span class="ps-agg-k">` — whichever is cleaner given the existing template.
+
+The **P pill's Day P&L slot** already has `onclick={() => _dayPnlBreakupOpen = true}` (the DayPnlBreakup modal). Keep that separate behavior: clicking the Day P&L value still opens DayPnlBreakup; clicking the P label (ps-agg-k) opens the new per-account breakdown panel. Treat the two as coexisting.
+
+### Overlay panel
+Below the existing template (before `{#if _dayPnlBreakupOpen}...`), add:
+
+```svelte
+{#if _breakdownOpen}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div class="ps-breakdown-overlay" role="presentation"
+       onclick={() => _breakdownOpen = false}
+       onkeydown={(e) => e.key === 'Escape' && (_breakdownOpen = false)}>
+    <div class="ps-breakdown-panel" onclick={(e) => e.stopPropagation()}>
+      <button type="button" class="ps-breakdown-close"
+              onclick={() => _breakdownOpen = false}
+              aria-label="Close breakdown">✕</button>
+      <NavBreakdown />
+    </div>
+  </div>
+{/if}
+```
+
+### CSS for overlay + panel
 ```css
-/* Override AlgoTabs' self-scroll so ch-middle scrolls tabs+dropdown together.
-   Scoped to lp-header-wrap so other AlgoTabs usages are unaffected. */
-:global(.lp-header-wrap .algo-tabs-strip) {
-  overflow-x: visible;
-  max-width: none;
-  flex-shrink: 0;
+.ps-breakdown-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: transparent;
+}
+.ps-breakdown-panel {
+  position: fixed;
+  top: var(--navstrip-height, 2.5rem);  /* below the navstrip */
+  right: 0;
+  width: min(28rem, 100vw);
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--card-bg, #0f1a2e);
+  border: 1px solid var(--border-color, rgba(255,255,255,0.08));
+  border-radius: 4px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  z-index: 201;
+  padding: 0.5rem;
+}
+.ps-breakdown-close {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.5rem;
+  background: none;
+  border: none;
+  color: var(--algo-cyan, #22d3ee);
+  cursor: pointer;
+  font-size: var(--fs-md);
+  line-height: 1;
+}
+/* Cursor on pills to signal clickability */
+.ps-agg {
+  cursor: pointer;
 }
 ```
 
-The account select already renders with `flex-shrink: 0` in `ActivityAccountSelect.svelte`. No change needed there.
+If `NavBreakdown` requires props (positions, holdings, funds arrays), pass them through — they are already in scope in PositionStrip's script.
 
 ---
 
-## Task B — Conn tab: switch to structured events
+## Task C — Movers tests: realistic snapshot payload
 
-### Data source change
+**File:** `backend/tests/test_movers_route.py`
 
-| | Before | After |
-|---|---|---|
-| State | `connLog: string[]` | `connEvents: any[]` |
-| Fetch fn | `fetchAdminConnLogs(200)` | `fetchBrokerConnectionEvents({ limit: 200 })` |
-| Endpoint | `GET /api/admin/logs/conn` | `GET /api/admin/broker-connection-events` |
-| Shape | Raw text lines | `{id, account, broker_id, event_type, event_ts, detail}` |
+Update `test_movers_snapshot_contains_gainers` and `test_movers_snapshot_contains_losers`:
 
-`fetchBrokerConnectionEvents` already exists in `frontend/src/lib/api.js` — no new API function needed.
-
-### File: `frontend/src/lib/LogPanel.svelte`
-
-**Script changes:**
-
-1. Import — add `fetchBrokerConnectionEvents`, remove `fetchAdminConnLogs`:
-   ```js
-   import { ..., fetchBrokerConnectionEvents } from '$lib/api';
-   // remove fetchAdminConnLogs
-   ```
-
-2. State — replace `connLog`:
-   ```js
-   let connEvents = $state(/** @type {any[]} */ ([]));
-   ```
-
-3. Severity helper (same logic as `_connEventCls` in brokers/+page.svelte:520):
-   ```js
-   function _connEvtCls(evType) {
-     if (['login_ok','token_ok','fetch_ok_recovery','circuit_close'].includes(evType)) return 'conn-ev-green';
-     if (['login_fail','auth_fail','circuit_open','rotation_detected'].includes(evType)) return 'conn-ev-red';
-     if (['rate_limited','token_expiry'].includes(evType)) return 'conn-ev-amber';
-     return 'conn-ev-muted';
-   }
-   ```
-
-4. Detail formatter (same logic as `_fmtConnDetail` added to brokers/+page.svelte today):
-   ```js
-   function _fmtConnDetail(detail) {
-     if (detail == null) return '';
-     if (typeof detail === 'string') return detail;
-     if (typeof detail === 'object')
-       return Object.entries(detail).map(([k, v]) => `${k}: ${v}`).join(' · ');
-     return String(detail);
-   }
-   ```
-
-5. Derived row array (replaces `_connRows`):
-   ```js
-   const _connEventRows = $derived.by(() => {
-     return connEvents.slice()
-       .filter(e => {
-         if (orderAccountFilter.length > 0 && !orderAccountFilter.includes(e.account)) return false;
-         if (levelFilter === 'error')   return _connEvtCls(e.event_type) === 'conn-ev-red';
-         if (levelFilter === 'warning') return _connEvtCls(e.event_type) === 'conn-ev-amber';
-         if (levelFilter === 'info')    return ['conn-ev-green','conn-ev-muted'].includes(_connEvtCls(e.event_type));
-         return true;
-       })
-       .sort((a, b) => _tsKey(b.event_ts) - _tsKey(a.event_ts));
-   });
-   ```
-
-6. Loader — replace `_loadConn()`:
-   ```js
-   async function _loadConn() {
-     try {
-       const d = await fetchBrokerConnectionEvents({ limit: 200 });
-       connEvents = d?.events ?? [];
-     } catch (_) { /* keep last-good */ }
-   }
-   ```
-
-7. Time formatter for `event_ts` (ISO-8601 UTC → IST display):
-   ```js
-   function _fmtConnEvtTime(iso) {
-     if (!iso) return '—';
-     try {
-       return new Date(iso).toLocaleTimeString('en-IN', {
-         timeZone: 'Asia/Kolkata',
-         hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-       }) + ' IST';
-     } catch (_) { return iso; }
-   }
-   ```
-
-8. Download CSV for conn tab — update the `_downloadCsv` branch for `logTab === 'conn'` to use `connEventRows` fields (account, broker_id, event_type, event_ts, detail) instead of raw lines.
-
-**Template — replace conn tab block** (currently `{:else if logTab === 'conn'}`):
-```svelte
-{:else if logTab === 'conn'}
-  {#if _connEventRows.length}
-    {#each _connEventRows as ev (ev.id ?? ev.event_ts + ev.account + ev.event_type)}
-      {@const _cls = _connEvtCls(ev.event_type)}
-      {@const _det = _fmtConnDetail(ev.detail)}
-      {@const _stripe = /* alternating tint via index */ ''}
-      <div class="lp-conn-row {_cls}">
-        <span class="lp-conn-time">{_fmtConnEvtTime(ev.event_ts)}</span>
-        <span class="lp-conn-acct font-mono">{ev.account || '—'}</span>
-        <span class="lp-conn-broker">{ev.broker_id || '—'}</span>
-        <span class="lp-conn-type">{ev.event_type}</span>
-        {#if _det}
-          <span class="lp-conn-det" title={JSON.stringify(ev.detail, null, 2)}>{_det}</span>
-        {/if}
-      </div>
-    {/each}
-  {:else}
-    <div class="log-row log-debug"><span class="log-row-msg">No connection events yet.</span></div>
-  {/if}
-```
-
-**CSS — add in `<style>`:**
-```css
-.lp-conn-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.1rem 0.5rem;
-  font-size: var(--fs-sm);
-  white-space: nowrap;
-  overflow: hidden;
-}
-.lp-conn-row:nth-child(even) { background: var(--row-tint-even, rgba(255,255,255,0.02)); }
-.lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-xs, 0.6rem); }
-.lp-conn-acct   { flex-shrink: 0; min-width: 5rem; color: var(--algo-slate); }
-.lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
-.lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
-.lp-conn-det    { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--algo-muted); }
-/* severity colours — reuse brokers page tokens */
-.lp-conn-row.conn-ev-green .lp-conn-type { color: var(--c-long); }
-.lp-conn-row.conn-ev-red   .lp-conn-type { color: var(--c-short); }
-.lp-conn-row.conn-ev-amber .lp-conn-type { color: var(--c-action); }
-.lp-conn-row.conn-ev-muted .lp-conn-type { color: var(--algo-muted); }
-```
-
-### Files changed
-- `frontend/src/lib/LogPanel.svelte` — both tasks
-
-### No changes needed
-- `frontend/src/lib/api.js` — `fetchBrokerConnectionEvents` already exists
-- `frontend/src/lib/ActivityAccountSelect.svelte` — used as-is
-- Backend routes — both endpoints already exist
-
----
-
----
-
-## Task C — Losers / Gainers: broker-fail snapshot fallback + tests
-
-### Root cause
-
-`GET /api/watchlist/movers` in `backend/api/routes/watchlist.py` has two paths:
-- **Market closed** → `_movers_offhours_response(ist_today)` (reads `movers_snapshots` DB table) ✓
-- **Market open** → live broker quotes via `_movers_fetch_quotes_cached()` → if broker fails returns **empty list** ✗
-
-When the broker (`get_market_data_broker()`) fails during market hours, `quote_data` comes back as `{}`, the route logs `[MOVERS-EMPTY] reason=broker_quote_empty` at `INFO` and returns `movers: []`. Frontend shows blank gainers/losers grids.
-
-### Fix — `backend/api/routes/watchlist.py`
-
-In the live-path handler (~line 2114), after the empty-quote guard, add snapshot fallback:
+Instead of mocking `_load_latest_movers_snapshot` to return a Python object directly, build a `MoversSnapshot` row with real `payload_json` content (a JSON-serialised list of `MoverRow`-shaped dicts) and inject it via a patched `async_session`. Then do NOT mock `_movers_offhours_response` — let it run the real deserialization path.
 
 ```python
-# before (logs INFO, falls through to empty response):
-if not quote_data and key_to_meta:
-    logger.info(f"[MOVERS-EMPTY] reason=broker_quote_empty ...")
+import json
+from backend.api.models import MoversSnapshot
+from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import date, datetime, timezone
 
-# after (falls back to snapshot on broker failure):
-if not quote_data and key_to_meta:
-    logger.warning(f"[MOVERS-EMPTY] reason=broker_quote_empty — snapshot fallback")
-    return await _movers_offhours_response(ist_today)
+def _make_snapshot(rows: list[dict]) -> MoversSnapshot:
+    snap = MoversSnapshot()
+    snap.id = 1
+    snap.date = date.today()
+    snap.payload_json = json.dumps(rows)
+    snap.captured_at = datetime.now(tz=timezone.utc)
+    return snap
+
+async def test_movers_snapshot_contains_gainers(async_client):
+    gainer_row = {
+        "tradingsymbol": "RELIANCE", "exchange": "NSE",
+        "last_price": 2500.0, "previous_close": 2400.0,
+        "change_pct": 4.17, "peak_pct": 4.17,
+        "sticky": False, "price_source": "snapshot",
+        "is_animating": False, "quote_symbol": None,
+    }
+    snap = _make_snapshot([gainer_row])
+
+    # Patch async_session so _load_latest_movers_snapshot gets our fixture row
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = snap
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value.execute = AsyncMock(return_value=mock_result)
+
+    with patch('backend.api.routes.watchlist._movers_probe_market_state', return_value=(False, False)), \
+         patch('backend.api.routes.watchlist.async_session', return_value=mock_session), \
+         patch('backend.api.auth_guard.is_authenticated_request', return_value=True), \
+         patch('backend.api.auth_guard.jwt_guard', new_callable=AsyncMock):
+        response = await async_client.get("/api/watchlist/movers")
+        assert response.status_code == 200
+        movers = response.json()["movers"]
+        assert any(m["change_pct"] > 0 for m in movers), "Expected at least one gainer"
+        assert response.json()["captured_at"] is not None
+
+async def test_movers_snapshot_contains_losers(async_client):
+    loser_row = {
+        "tradingsymbol": "HDFC", "exchange": "NSE",
+        "last_price": 1600.0, "previous_close": 1700.0,
+        "change_pct": -5.88, "peak_pct": -5.88,
+        "sticky": False, "price_source": "snapshot",
+        "is_animating": False, "quote_symbol": None,
+    }
+    snap = _make_snapshot([loser_row])
+    # ... same mock_session / patching pattern as above ...
+    assert any(m["change_pct"] < 0 for m in movers), "Expected at least one loser"
 ```
 
-One-line logic change + severity bump. `_movers_offhours_response` already reads the `movers_snapshots` table and returns the last captured snapshot with a `captured_at` timestamp.
-
-### Tests — `backend/tests/test_movers_route.py` (new file)
-
-Five pytest cases covering the snapshot gate behaviour for both gainers and losers:
-
-| Test | Setup | Expected |
-|---|---|---|
-| `test_movers_live_market_hours_ok` | Market open, broker returns quotes | `movers` list non-empty, `captured_at` is None |
-| `test_movers_broker_fail_market_hours_returns_snapshot` | Market open, broker raises / returns `{}` | Falls back to snapshot; `captured_at` non-null |
-| `test_movers_offhours_returns_snapshot` | Market closed | `_movers_offhours_response` called; `captured_at` non-null |
-| `test_movers_snapshot_contains_gainers` | Snapshot row with positive `change_pct` exists | At least one row with `change_pct > 0` in response |
-| `test_movers_snapshot_contains_losers` | Snapshot row with negative `change_pct` exists | At least one row with `change_pct < 0` in response |
-
-All tests patch `_any_segment_open` (market state) and `_movers_fetch_quotes_cached` (broker), and seed the `movers_snapshots` table with fixture rows to cover both gainers and losers.
+This tests the actual JSON deserialization in `_movers_offhours_response` not just the mock return.
 
 ---
 
 ## Agents
-- frontend: implement Task A and Task B in `frontend/src/lib/LogPanel.svelte`
-- backend: implement Task C fix in `backend/api/routes/watchlist.py`
+- frontend: Task A (font) + Task B (click/panel) in `frontend/src/lib/PositionStrip.svelte`
+- backend: skip
 - broker: skip
 - doc: skip
-- backend-test: write `backend/tests/test_movers_route.py` for Task C
+- backend-test: Task C — update `backend/tests/test_movers_route.py` gainers/losers tests
 - playwright: skip
 
 ## Tests
-- pytest: yes (new test_movers_route.py — 5 cases)
+- pytest: yes (test_movers_route.py)
 - svelte-check: yes
 - playwright: no
 
 ## Commit message
-feat(ui,backend): conn tab structured events, account dropdown scroll fix, movers snapshot fallback
+feat(ui,test): navstrip font bump, click-to-breakdown panel, movers snapshot payload test
 
 ## Done when
-- Account dropdown scrolls with tabs on mobile (single scroll container, no nested overflow)
-- Account dropdown shows per-tab same as before (hidden on terminal/ticks/news/simulator)
-- LogPanel Conn tab shows time · account · broker · event_type · detail as compact single rows
-- Severity colours on conn event_type: green/red/amber/muted
-- Account filter works on structured conn events
-- Movers route: broker failure during market hours falls back to last snapshot (not empty list)
-- `test_movers_route.py`: all 5 cases green (market hours OK, broker fail fallback, off-hours, gainers, losers)
-- svelte-check: 0 errors
+- NavStrip P/M/C/H pill labels are visibly larger on both desktop and mobile
+- Clicking any NavStrip pill opens a per-account breakdown panel (NavBreakdown) anchored below the strip; Escape and click-outside close it
+- Day P&L breakup (DayPnlBreakup modal on P value) still works independently
+- Movers gainers/losers tests use real payload_json deserialization, not mocked return objects
+- pytest green, svelte-check 0 errors

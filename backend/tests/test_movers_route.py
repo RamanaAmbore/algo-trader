@@ -10,16 +10,27 @@ Covers:
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Optional
 
 import pytest
 
+from backend.api.models import MoversSnapshot
 from backend.api.routes.watchlist import (
     MoverRow,
     MoversResponse,
 )
+
+
+def _make_snapshot(rows: list[dict]) -> MoversSnapshot:
+    """Build a real MoversSnapshot instance with JSON-serialized payload."""
+    snap = MoversSnapshot()
+    snap.id = 1
+    snap.date = date.today()
+    snap.payload_json = json.dumps(rows)
+    snap.captured_at = datetime.now(tz=timezone.utc)
+    return snap
 
 
 @pytest.mark.asyncio
@@ -179,35 +190,34 @@ async def test_movers_offhours_returns_snapshot(async_client):
 @pytest.mark.asyncio
 async def test_movers_snapshot_contains_gainers(async_client):
     """
-    Snapshot table has a row with change_pct = 3.5 (positive)
-    → response includes at least one mover with change_pct > 0.
+    Snapshot table has a row with change_pct = 3.17 (positive)
+    → response deserialises JSON payload correctly and includes gainer.
+    Tests the actual MoverRow deserialization pipeline, not just mocking.
     """
-    # Create a mock snapshot with a gainer
-    now_utc = datetime.now(timezone.utc)
-    snapshot_rows = [
-        {
-            "tradingsymbol": "BAJAJFINSV",
-            "exchange": "NSE",
-            "last_price": 19500.0,
-            "previous_close": 18900.0,
-            "change_pct": 3.17,  # Positive gainer
-            "peak_pct": 3.17,
-            "sticky": False,
-        }
-    ]
-    mock_snapshot = MagicMock()
-    mock_snapshot.date = now_utc.date()
-    mock_snapshot.captured_at = now_utc
-    mock_snapshot.payload_json = json.dumps(snapshot_rows)
+    gainer_row = {
+        "tradingsymbol": "BAJAJFINSV",
+        "exchange": "NSE",
+        "last_price": 19500.0,
+        "previous_close": 18900.0,
+        "change_pct": 3.17,  # Positive gainer
+        "peak_pct": 3.17,
+        "sticky": False,
+        "price_source": "snapshot",
+        "is_animating": False,
+        "quote_symbol": None,
+    }
+    snap = _make_snapshot([gainer_row])
 
-    # Both exchanges closed → use snapshot
+    # Mock async_session context manager
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = snap
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value.execute = AsyncMock(return_value=mock_result)
+    mock_session.__aexit__.return_value = None
+
+    # Both exchanges closed → use snapshot deserialization path
     with patch("backend.api.routes.watchlist._movers_probe_market_state", return_value=(False, False)):
-        # Mock _load_latest_movers_snapshot to return our test snapshot
-        with patch(
-            "backend.api.routes.watchlist._load_latest_movers_snapshot",
-            new_callable=AsyncMock,
-            return_value=mock_snapshot,
-        ):
+        with patch("backend.api.routes.watchlist.async_session", return_value=mock_session):
             mock_ist_now = MagicMock()
             mock_ist_now.date.return_value.isoformat.return_value = "2026-07-22"
             with patch(
@@ -235,35 +245,34 @@ async def test_movers_snapshot_contains_gainers(async_client):
 @pytest.mark.asyncio
 async def test_movers_snapshot_contains_losers(async_client):
     """
-    Snapshot table has a row with change_pct = -2.1 (negative)
-    → response includes at least one mover with change_pct < 0.
+    Snapshot table has a row with change_pct = -2.5 (negative)
+    → response deserialises JSON payload correctly and includes loser.
+    Tests the actual MoverRow deserialization pipeline, not just mocking.
     """
-    # Create a mock snapshot with a loser
-    now_utc = datetime.now(timezone.utc)
-    snapshot_rows = [
-        {
-            "tradingsymbol": "TCS",
-            "exchange": "NSE",
-            "last_price": 3900.0,
-            "previous_close": 4000.0,
-            "change_pct": -2.5,  # Negative loser
-            "peak_pct": -2.5,
-            "sticky": False,
-        }
-    ]
-    mock_snapshot = MagicMock()
-    mock_snapshot.date = now_utc.date()
-    mock_snapshot.captured_at = now_utc
-    mock_snapshot.payload_json = json.dumps(snapshot_rows)
+    loser_row = {
+        "tradingsymbol": "TCS",
+        "exchange": "NSE",
+        "last_price": 3900.0,
+        "previous_close": 4000.0,
+        "change_pct": -2.5,  # Negative loser
+        "peak_pct": -2.5,
+        "sticky": False,
+        "price_source": "snapshot",
+        "is_animating": False,
+        "quote_symbol": None,
+    }
+    snap = _make_snapshot([loser_row])
 
-    # Both exchanges closed → use snapshot
+    # Mock async_session context manager
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = snap
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value.execute = AsyncMock(return_value=mock_result)
+    mock_session.__aexit__.return_value = None
+
+    # Both exchanges closed → use snapshot deserialization path
     with patch("backend.api.routes.watchlist._movers_probe_market_state", return_value=(False, False)):
-        # Mock _load_latest_movers_snapshot to return our test snapshot
-        with patch(
-            "backend.api.routes.watchlist._load_latest_movers_snapshot",
-            new_callable=AsyncMock,
-            return_value=mock_snapshot,
-        ):
+        with patch("backend.api.routes.watchlist.async_session", return_value=mock_session):
             mock_ist_now = MagicMock()
             mock_ist_now.date.return_value.isoformat.return_value = "2026-07-22"
             with patch(
