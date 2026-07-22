@@ -2,13 +2,9 @@
 
 ## Permissions
 
-**If plan mode is currently active**: call `ExitPlanMode` with the following `allowedPrompts` before any other step — this grants session-level permissions so no further prompts appear:
-- `{tool: "Bash", prompt: "run complexity analysis with radon"}`
-- `{tool: "Bash", prompt: "generate PDF documentation"}`
-- `{tool: "Bash", prompt: "checkout, merge, and push git branches to remote"}`
-- `{tool: "Bash", prompt: "check git log and diff"}`
+**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step — project settings pre-authorize all needed operations in normal mode so no further prompts appear.
 
-**If not in plan mode**: project settings pre-authorize all needed operations — proceed directly.
+**If not in plan mode**: proceed directly.
 
 After Step 7, call `EnterPlanMode` to return to plan mode.
 
