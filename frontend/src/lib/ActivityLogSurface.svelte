@@ -65,7 +65,7 @@
     /** Bindable collapse state — passed through to LogPanel. */
     isCollapsed         = $bindable(false),
     /** Bindable tall/expanded state — passed through to LogPanel. */
-    isTall              = $bindable(true),
+    isTall              = $bindable(false),
     /** Retained bindable for caller compat. Not passed to LogPanel —
      *  LogPanel now uses in-place height expansion (isTall) instead. */
     isFullscreen        = $bindable(false),

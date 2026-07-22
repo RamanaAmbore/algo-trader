@@ -157,7 +157,7 @@
     onClose         = /** @type {(() => void) | null} */ (null),
     /** Whether the panel body is in the tall (expanded) state. Bindable so
      *  parents can override the parent container height when expanded. */
-    isTall          = $bindable(true),
+    isTall          = $bindable(false),
   } = $props();
 
   // Line-level helpers shared by every text-log tab (System, Conn).
@@ -1473,24 +1473,35 @@
                 aria-label="Close activity log"
                 onclick={() => onClose?.()}>×</button>
       {/if}
-      <CollapseButton bind:isCollapsed {cardId} />
-      <!-- Expand / contract — grows the panel in-place (no viewport overlay) -->
+      <!-- Expand / contract — collapses panel body in-place -->
       <button type="button"
-        class="lp-card-btn {isTall ? 'lp-card-btn-on' : ''}"
-        title={isTall ? 'Contract panel' : 'Expand panel'}
-        aria-label={isTall ? 'Contract panel' : 'Expand panel'}
-        aria-pressed={isTall}
-        onclick={() => { isTall = !isTall; }}>
-        {#if isTall}
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        {:else}
+        class="lp-card-btn"
+        title={isCollapsed ? 'Expand panel' : 'Contract panel'}
+        aria-label={isCollapsed ? 'Expand panel' : 'Contract panel'}
+        aria-pressed={isCollapsed}
+        onclick={() => { isCollapsed = !isCollapsed; }}>
+        {#if isCollapsed}
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
+        {:else}
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 2v4H2M10 14v-4h4M2 10h4v4M14 6h-4V2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
         {/if}
       </button>
+      <!-- Fullscreen — opens ActivityLogModal; hidden when already in modal context -->
+      {#if context !== 'modal'}
+        <button type="button"
+          class="lp-card-btn"
+          title="Open fullscreen"
+          aria-label="Open fullscreen"
+          onclick={() => { openActivityModal(); }}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </button>
+      {/if}
     </div>
   {:else}
     <!-- DEPRECATED: lp-card-btns-legacy — button cluster for LogPanel mounts

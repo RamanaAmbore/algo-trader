@@ -138,7 +138,6 @@
   let _colEntry    = $state(false);
   let _fsEntry     = $state(false);
   let _colActivity = $state(false);
-  let _actTall     = $state(true);
   // _fsActivity retired — Activity card uses in-place height expansion.
 
   // Account dropdown lives in the Activity card header so it's
@@ -490,7 +489,7 @@
 <section class="bucket-card bucket-card-activity oc-fill mb-2"
   class:is-collapsed={_colActivity}
   use:listenModifyOrder>
-  <div class="card-body oc-act-body" class:oc-act-tall={_actTall} hidden={_colActivity}>
+  <div class="card-body oc-act-body">
     <!-- ActivityLogSurface with label="Log" so LogPanel renders its own
          tab-row header (label chip, filters, card buttons).
          The external CardHeader is removed — LogPanel owns its chrome. -->
@@ -501,7 +500,6 @@
       cardId="orders-activity"
       onRefresh={loadOrders}
       bind:isCollapsed={_colActivity}
-      bind:isTall={_actTall}
       statusFilter={_statusFilter}
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={_actAccountFilter}
@@ -629,16 +627,8 @@
        content; `overflow: hidden` makes the body a containing block so
        LogPanel's `flex-1 min-h-0` resolves to a finite height and its
        inner scrolls activate. */
-    height: clamp(18rem, 40vh, 500px);
+    height: clamp(6rem, 25vh, 280px);
     overflow: hidden;
-  }
-  /* When expanded (isTall=true), lift the fixed-height cap so the LogPanel
-     lp-tall height can take effect. Inner scrolls remain active via overflow-y. */
-  .oc-act-body.oc-act-tall {
-    height: auto;
-    max-height: min(85vh, 1100px);
-    overflow-y: auto;
-    overflow-x: hidden;
   }
   /* Fullscreen mode pins the Activity card to the viewport; re-enable
      the inner flex chain so LogPanel's heightClass="flex-1 min-h-0"

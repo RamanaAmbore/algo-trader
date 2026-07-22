@@ -357,7 +357,6 @@
   // _fsPnl / _colPnl retired with the standalone P&L Analysis card —
   // PnlAnalysis now lives inside the Intraday/Performance tabbed card
   // (shares _fsEquityCurve + _colEquityCurve).
-  let _actTall        = $state(true);
   let _fsAgent       = $state(false);
 
   // Per-card collapse toggles. CollapseButton hydrates each from
@@ -2186,7 +2185,7 @@
      mounts can't drift on filter UI or LogPanel config. -->
 <section class="bucket-card dash-activity"
   class:is-collapsed={_colActivity}>
-  <div class="card-body" class:act-tall={_actTall} hidden={_colActivity}>
+  <div class="card-body">
     <!-- ActivityLogSurface with label="Log" so LogPanel renders its own
          tab-row header (label chip, filters, card buttons).
          The row3-header div is removed — LogPanel owns its chrome. -->
@@ -2197,7 +2196,6 @@
       cardId="dash-activity"
       onRefresh={_refreshAll}
       bind:isCollapsed={_colActivity}
-      bind:isTall={_actTall}
       bind:accountFilter={_actAccountFilter}
       bind:availableAccounts={_actAvailableAccounts}
       bind:levelFilter={_actLevelFilter} />
@@ -2874,12 +2872,7 @@
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 8rem;
-    max-height: 15rem;
-  }
-  /* When expanded (isTall=true), lift the max-height cap so the LogPanel
-     lp-tall height can take effect. */
-  .dash-activity > .card-body.act-tall {
-    max-height: none;
+    max-height: 33vh;
   }
   /* NAV chip fetch-error strip — rendered above <NavTab> when
      /api/nav/latest returns an error. Red palette matching
