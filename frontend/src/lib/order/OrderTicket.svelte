@@ -1381,6 +1381,7 @@
   }
 
   let submitting = $state(false);
+  let _internalRefreshKey = $state(0);
   // Demo-mode submit modal — opens when an anonymous prod visitor
   // clicks Submit. Replaces the silent-disable UX with a friendly
   // explanation of demo mode + sign-in CTA + Hire Me CTA.
@@ -1478,7 +1479,8 @@
     // immediate re-fetch of the margin preview.
     const _watchers = [
       _side, _qty, _account, _product, _type, _variety,
-      _price, _trigger, symbol, exchange, _resolvedSymbol, refreshKey,
+      _price, _trigger, symbol, exchange, _resolvedSymbol,
+      refreshKey, _internalRefreshKey,
     ];
     void _watchers;
 
@@ -1921,7 +1923,7 @@
   // the avail-margin chip and the modal-wide funds line both reflect
   // the latest balances after a fill/cancel elsewhere.
   $effect(() => {
-    if (refreshKey > 0) _refetchFunds();
+    if (refreshKey > 0 || _internalRefreshKey > 0) _refetchFunds();
   });
 </script>
 
@@ -1945,6 +1947,19 @@
           {action !== 'open' ? ' · ' + action.toUpperCase() : ''}
         </span>
       </div>
+      <button type="button" class="ot-refresh-btn"
+              title="Refresh"
+              aria-label="Refresh order data"
+              disabled={submitting}
+              onclick={() => { _internalRefreshKey += 1; }}>
+        <svg width="13" height="13" viewBox="0 0 16 16"
+             fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9" />
+          <path d="M13.5 3v3h-3" />
+        </svg>
+      </button>
       <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose} disabled={submitting}>×</button>
     </div>
 
@@ -2247,7 +2262,7 @@
     <OrderDepth
       symbol={_resolvedSymbol || symbol}
       exchange={_exchange || _resolvedExchange || exchange || 'NFO'}
-      {refreshKey}
+      refreshKey={refreshKey + _internalRefreshKey}
       paused={suspended}
       onQuote={onDepthQuote} />
 
@@ -2508,6 +2523,27 @@
     line-height: 1;
   }
   .ot-close:hover { border-color: var(--c-short); color: var(--c-short); }
+
+  .ot-refresh-btn {
+    width: 1.4rem;
+    height: 1.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
+    border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
+    border-radius: 3px;
+    color: var(--c-info, #22d3ee);
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+    transition: background 0.08s, border-color 0.08s;
+  }
+  .ot-refresh-btn:hover:not(:disabled) {
+    background: rgba(34,211,238,0.14);
+    border-color: rgba(34,211,238,0.65);
+  }
+  .ot-refresh-btn:disabled { opacity: 0.45; cursor: default; }
 
   .ot-row {
     display: flex;

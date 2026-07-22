@@ -162,9 +162,6 @@
     letter-spacing: var(--ch-title-letter-spacing, 0.04em);
     text-transform: var(--ch-title-transform, uppercase);
     white-space: nowrap;
-    background: rgba(251, 191, 36, 0.10);
-    padding: 0.1em 0.45em;
-    border-radius: 3px;
   }
   .ch-ts {
     font-size: var(--ch-ts-size, var(--fs-md, 0.65rem));
