@@ -10,12 +10,12 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPl
 
 **Step 2 — Engage bypass mode:** Immediately after ExitPlanMode (or as first step if not in plan mode), run:
 ```bash
-python3 -c "import json; p='.claude/settings.json'; d=json.load(open(p)); d['permissions']['defaultMode']='bypassPermissions'; json.dump(d, open(p,'w'), indent=2)"
+python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='bypassPermissions'; json.dump(d, open(p,'w'), indent=2)"
 ```
 
 **Final step — Restore plan mode:** After Step 7, before calling `EnterPlanMode`, run:
 ```bash
-python3 -c "import json; p='.claude/settings.json'; d=json.load(open(p)); d['permissions']['defaultMode']='plan'; json.dump(d, open(p,'w'), indent=2)"
+python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='plan'; json.dump(d, open(p,'w'), indent=2)"
 ```
 Then call `EnterPlanMode`.
 
