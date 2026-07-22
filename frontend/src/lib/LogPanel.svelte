@@ -21,6 +21,7 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
+  import BellIcon from '$lib/icons/BellIcon.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
@@ -1433,6 +1434,9 @@
     onDownload={logTab === 'news' ? null : (onDownload ?? _downloadCsv)}
     hideFullscreen={true}
   >
+    {#snippet prefix()}
+      <BellIcon width="12" height="12" class="lp-bell-icon" />
+    {/snippet}
     {#snippet middle()}
       <AlgoTabs
         tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
@@ -1449,17 +1453,26 @@
     {/snippet}
     {#snippet right()}
       {#if context === 'modal'}
-        <button type="button" class="lp-close-btn"
-                aria-label="Close activity log"
-                onclick={() => onClose?.()}>×</button>
+        <button type="button" class="lp-default-btn"
+                title="Restore to card"
+                aria-label="Restore to card"
+                onclick={() => onClose?.()}>
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <rect x="2.5" y="5.5" width="8" height="8" rx="0.8"
+              fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M5.5 5.5V2.5h8v8h-3"
+              fill="none" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       {:else}
         <button type="button" class="lp-fs-btn"
                 title="Open fullscreen"
                 aria-label="Open fullscreen"
                 onclick={() => openActivityModal()}>
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"
-                  stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"
+                  stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
         </button>
       {/if}
@@ -1809,10 +1822,11 @@
      active-tab underline / indicator is cut at the wrapper boundary. */
   .lp-tab-strip-wrap :global(.algo-tabs-strip) { overflow-x: visible; }
 
-  /* Label icon shown in modal context (rendered via CardHeader left snippet) */
+  /* Bell icon rendered before the LOG title via CardHeader prefix snippet */
+  .lp-bell-icon { flex-shrink: 0; }
 
   /* Fullscreen-open button (label-branch, non-modal context) */
-  .lp-fs-btn, .lp-close-btn {
+  .lp-fs-btn, .lp-default-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1829,7 +1843,7 @@
     line-height: 1;
     padding: 0;
   }
-  .lp-fs-btn:hover:not(:disabled), .lp-close-btn:hover:not(:disabled) {
+  .lp-fs-btn:hover:not(:disabled), .lp-default-btn:hover:not(:disabled) {
     background: rgba(34,211,238,0.14);
     border-color: rgba(34,211,238,0.65);
     color: var(--algo-cyan-text, #67e8f9);
@@ -2398,6 +2412,10 @@
   .lp-body-wrap {
     display: contents; /* transparent wrapper — no layout change by default */
   }
+  /* `display: contents` beats UA [hidden]{display:none} at equal specificity.
+     This scoped rule (0,2,0 with Svelte attribute) wins over the base rule
+     so collapse via the hidden HTML attribute actually hides the body. */
+  .lp-body-wrap[hidden] { display: none; }
   .lp-body-wrap.lp-body-expanded {
     display: flex;
     flex-direction: column;
