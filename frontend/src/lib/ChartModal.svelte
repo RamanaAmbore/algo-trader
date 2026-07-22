@@ -189,32 +189,28 @@
   .cm-title-icon { color: var(--c-info); flex-shrink: 0; }
 
   .cm-close {
-    /* Operator: "X and refresh rotating icon should be of similar
-       size and consistent with header text font size". Square 1.4rem
-       button matches the refresh icon to the left; glyph font-size
-       (0.95rem) is proportional to the 0.72rem header text. */
     width: 1.4rem;
     height: 1.4rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: none;
-    border: 1px solid rgba(248, 113, 113, 0.35);
+    background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
+    border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
     border-radius: 3px;
-    color: var(--c-short);
+    color: var(--c-info, #22d3ee);
     font-size: var(--fs-xl);
     line-height: 1;
     padding: 0;
     cursor: pointer;
-    font-family: monospace;
-    transition: background 0.1s;
+    transition: background 0.08s, border-color 0.08s;
     pointer-events: auto;
     position: relative;
     z-index: 2;
     flex-shrink: 0;
   }
   .cm-close:hover {
-    background: rgba(248, 113, 113, 0.15);
+    background: rgba(34,211,238,0.14);
+    border-color: rgba(34,211,238,0.65);
   }
 
   .cm-body {

@@ -11,6 +11,8 @@
  *   loadPositions (cc=76), loadStrategy (cc=50), candidatePositions (cc=43).
  */
 
+import { baseDayPnlForPosition } from '$lib/data/nav.js';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared predicates
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,7 +215,7 @@ export function splitClosedReopened(p) {
     brokerQty, Number(p.pnl || 0), oq, exit_price, avg_cost, closed_qty
   );
 
-  const open_dcv = Number(p.day_change_val || 0) - closed_day_pnl;
+  const open_dcv = baseDayPnlForPosition(p) - closed_day_pnl;
 
   const closedRow = {
     ...p,

@@ -2870,6 +2870,11 @@
     min-height: 8rem;
     max-height: 33vh;
   }
+  .dash-activity.is-collapsed > .card-body {
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: none;
+  }
   /* NAV chip fetch-error strip — rendered above <NavTab> when
      /api/nav/latest returns an error. Red palette matching
      PerformancePage .perf-banner-error. Compact (padding-light)
