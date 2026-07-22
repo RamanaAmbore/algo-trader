@@ -2522,17 +2522,26 @@
   }
 
   .ot-close {
-    background: transparent;
-    border: 1px solid rgba(255,255,255,0.15);
-    color: var(--algo-slate);
-    width: 1.55rem;
-    height: 1.55rem;
+    width: 1.4rem;
+    height: 1.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
+    border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
     border-radius: 3px;
-    cursor: pointer;
-    font-size: var(--fs-lg);
+    color: var(--c-info, #22d3ee);
+    font-size: var(--fs-xl);
     line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.08s, border-color 0.08s;
   }
-  .ot-close:hover { border-color: var(--c-short); color: var(--c-short); }
+  .ot-close:hover {
+    background: rgba(34,211,238,0.14);
+    border-color: rgba(34,211,238,0.65);
+  }
 
   .ot-refresh-btn {
     width: 1.4rem;
