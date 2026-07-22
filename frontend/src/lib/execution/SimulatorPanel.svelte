@@ -15,7 +15,6 @@
     fetchSimOrders, fetchSimIterations, replaySimIteration,
     fetchStrategyAnalytics,
   } from '$lib/api';
-  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import CardHeader    from '$lib/CardHeader.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
@@ -315,8 +314,6 @@
   // Log panel feeds
   let simLog    = $state(/** @type {any[]} */ ([]));
   let systemLog = $state(/** @type {string[]} */ ([]));
-  let logTab    = $state('simulator');
-
   async function loadSimLog() {
     try { simLog = await fetchSimTicks(100) || []; }
     catch (_) { /* ignore — cap flag off */ }
@@ -327,12 +324,6 @@
       systemLog = d.lines || [];
     } catch (_) { /* ignore */ }
   }
-  function loadCurrentLog() {
-    // 'order' tab is now self-fetching via UnifiedLog in LogPanel.
-    if (logTab === 'simulator') loadSimLog();
-    else if (logTab === 'system') loadSystemLog();
-  }
-
   async function loadHot() {
     try {
       // Parallel fetch — status, agent events, sim orders, past
@@ -672,7 +663,7 @@
     // nothing — which is rare. Live updates while the sim ticks is
     // the actual common case, so optimize for that.
     refreshTeardown = visibleInterval(
-      () => { loadHot(); loadCurrentLog(); }, 3000,
+      () => { loadHot(); loadSimLog(); loadSystemLog(); }, 3000,
     );
   });
   onDestroy(() => { refreshTeardown?.(); });
@@ -1480,17 +1471,6 @@
 
 </aside>  <!-- /.sim-grid-side-col — controls strip (rendered first via CSS order) -->
 </div>    <!-- /.sim-stack — single-column wrapper before LogPanel -->
-
-<ActivityLogSurface
-  context="card"
-  heightClass="h-[40vh]"
-  label="Log"
-  mode="sim"
-  defaultTab={logTab}
-  simScope={true}
-  hideInlineAccountFilter={false}
-  onTabChange={(id) => { logTab = id; }}
-/>
 
 <style>
   /* Two-column Lab grid — controls on the left, monitoring on the
