@@ -2,15 +2,9 @@
 
 ## Permissions
 
-**If plan mode is currently active**: call `ExitPlanMode` with the following `allowedPrompts` before any other step — this grants session-level permissions so no further prompts appear:
-- `{tool: "Bash", prompt: "run backend tests with pytest"}`
-- `{tool: "Bash", prompt: "run frontend svelte-check type checker"}`
-- `{tool: "Bash", prompt: "stage and commit files with git"}`
-- `{tool: "Bash", prompt: "move or rename files in the repository"}`
-- `{tool: "Bash", prompt: "generate PDF documentation"}`
-- `{tool: "Bash", prompt: "run shell commands for build and implementation tasks"}`
+**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step — project settings pre-authorize all needed operations in normal mode so no further prompts appear.
 
-**If not in plan mode**: project settings pre-authorize all needed operations — proceed directly.
+**If not in plan mode**: proceed directly.
 
 After Step 8, call `EnterPlanMode` to return to plan mode.
 

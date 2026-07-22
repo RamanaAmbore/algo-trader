@@ -6,18 +6,9 @@ Returns to plan mode when done.
 
 ## Permissions
 
-**If plan mode is currently active**: call `ExitPlanMode` with the following `allowedPrompts` as the very first step — this grants session-level permissions for the entire pipeline so no further prompts appear:
-- `{tool: "Bash", prompt: "run backend tests with pytest"}`
-- `{tool: "Bash", prompt: "run frontend svelte-check type checker"}`
-- `{tool: "Bash", prompt: "stage and commit files with git"}`
-- `{tool: "Bash", prompt: "move or rename files in the repository"}`
-- `{tool: "Bash", prompt: "push commits to git remote"}`
-- `{tool: "Bash", prompt: "checkout, merge, and push git branches to remote"}`
-- `{tool: "Bash", prompt: "generate PDF documentation"}`
-- `{tool: "Bash", prompt: "run complexity analysis with radon"}`
-- `{tool: "Bash", prompt: "run shell commands for build and implementation tasks"}`
+**If plan mode is currently active**: call `ExitPlanMode` (no `allowedPrompts`) as the very first step — project settings pre-authorize all needed operations in normal mode so no further prompts appear throughout the pipeline.
 
-**If not in plan mode**: project settings pre-authorize all needed operations — proceed directly.
+**If not in plan mode**: proceed directly.
 
 Call `EnterPlanMode` only after the final dprod report (or on any hard block that stops the pipeline).
 

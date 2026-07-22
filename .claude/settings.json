@@ -1,5 +1,21 @@
 {
-  "defaultMode": "bypassPermissions",
+  "permissions": {
+    "defaultMode": "plan",
+    "allow": [
+      "Edit",
+      "Write",
+      "Bash(*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(git push:*)",
+      "Bash(git cherry-pick:*)",
+      "Bash(ssh ramboq:*)",
+      "Bash(chmod +x:*)",
+      "Bash(pip install:*)"
+    ]
+  },
   "hooks": {
     "PostToolUse": [
       {
