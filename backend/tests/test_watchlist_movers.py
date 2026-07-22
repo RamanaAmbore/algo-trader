@@ -104,7 +104,7 @@ async def test_movers_market_open_mixed_winners_losers(async_client, monkeypatch
         pass
 
     async def mock_fetch(*args, **kwargs):
-        return {}
+        return {"NSE:NIFTY": {}, "NSE:RELIANCE": {}, "NSE:INFY": {}}  # non-empty = broker OK
 
     def mock_key_to_meta(*args, **kwargs):
         return {"NIFTY": {}, "RELIANCE": {}, "INFY": {}}
@@ -271,7 +271,7 @@ async def test_movers_direction_parity_no_sign_flip(async_client, monkeypatch):
         pass
 
     async def mock_fetch(*args, **kwargs):
-        return {}
+        return {"NSE:WIN1": {}, "NSE:WIN2": {}, "NSE:WIN3": {}, "NSE:LOSE1": {}, "NSE:LOSE2": {}}  # non-empty = broker OK
 
     def mock_build_live_rows(*args, **kwargs):
         return (rows, {})
@@ -351,7 +351,7 @@ async def test_movers_zero_change_excluded(async_client):
     ), patch(
         'backend.api.routes.watchlist._movers_fetch_quotes_cached',
         new_callable=AsyncMock,
-        return_value={},
+        return_value={"NSE:WINNER": {}, "NSE:FLAT": {}, "NSE:LOSER": {}},  # non-empty = broker OK
     ), patch(
         'backend.api.routes.watchlist._movers_build_live_rows',
         return_value=(rows, {}),
@@ -557,7 +557,7 @@ async def test_movers_exchange_tradingsymbol_present(async_client, monkeypatch):
         pass
 
     async def mock_fetch(*args, **kwargs):
-        return {}
+        return {"NSE:NIFTY": {}, "MCX:CRUDEOIL26AUGFUT": {}}  # non-empty = broker OK
 
     def mock_build_live_rows(*args, **kwargs):
         return (rows, {})

@@ -110,7 +110,7 @@ plan mode  →  /impl  →  /ddev  →  /dprod (on request)
 ```
 Or use **`/depl`** to run all three phases in one command.
 
-**Plan before implement** — always enter plan mode for non-trivial tasks. During plan mode, write `.claude/PLAN.md` using the format below, then call ExitPlanMode for operator approval. After ExitPlanMode, always append: *"Plan ready — run `/impl` to build only, or `/depl` to build + deploy to prod."*
+**Plan before implement** — always enter plan mode for non-trivial tasks. During plan mode, write `.claude/PLAN.md` using the format below, then call ExitPlanMode for operator approval. After ExitPlanMode, output exactly: *"Plan ready — run `/impl` to build only, or `/depl` to build + deploy to prod."* Then **STOP**. Do not start implementing. Do not ask for permissions. Do not take any further action. Wait silently for the operator to run `/impl`, `/ddev`, `/dprod`, or `/depl`.
 
 **Operator's role**: requirements, design, defect identification — plan mode only.  
 **Claude's role**: research, implementation, test loops, doc updates, deployment — background.

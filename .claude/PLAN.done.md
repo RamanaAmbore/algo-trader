@@ -1,244 +1,275 @@
-# Plan: LogPanel collapse fix + card button consistency + audit P1/P2 fixes
+# Plan: Conn tab unification + LogPanel account dropdown restore
 
 ## Context
 
-Four issue clusters identified via collapse bug report, 6-day audit, and card button consistency audit:
+Two tasks:
 
-1. **LogPanel collapse broken**: `.dash-activity.is-collapsed > .card-body` still has `flex: 1 1 auto; min-height: 8rem` — when `isCollapsed` fires, `.lp-body-wrap[hidden]` removes content but the `.card-body` container keeps its flex sizing, leaving a blank space instead of shrinking to header-only height.
+**A — Account dropdown restore (correction)**
+The previous session removed all dropdowns from LogPanel. The user wants the account dropdown back — but this time it must scroll *with* the tabs on mobile instead of sitting outside the tab strip's scroll container. The level-filter dropdown stays removed.
 
-2. **Card button inconsistency (user request)**: Three non-conforming surfaces vs canonical cyan 1.4rem button pattern:
-   - `ChartModal.cm-close` — red palette (`c-short`), monospace font; should match refresh button (cyan)
-   - `OrderTicket.ot-close` — 1.55rem×1.55rem (too large), generic white border, red hover; should be 1.4rem cyan
-   - `LogPanel lp-card-btns-legacy` — slate palette, 0.2rem gap; dead code path (all 9 mounts pass `label=` so legacy is never reached)
+**B — Conn tab unification**
+The LogPanel Conn tab today shows raw `conn_service.log` text lines (via `GET /api/admin/logs/conn`). The admin/brokers page has a structured Connection Log that shows the same events as a table: time, account, broker_id, event_type, detail (from `GET /api/admin/broker-connection-events`, DB-backed). Goal: upgrade the Conn tab to use the structured endpoint so it shows rich fields as compact single rows — paving the way to retire the Connection Log panel later.
 
-3. **Audit P1 — `derivatives/pageLoad.js:216`**: `open_dcv = Number(p.day_change_val || 0) - closed_day_pnl` reads `day_change_val` directly. When `overnight_quantity===0 && pnl!==0` (new intraday position), Kite returns `day_change_val=0` and real value is in `pnl`. This makes the split-row's day P&L wrong by the full position value. Must use `baseDayPnlForPosition(p)` (SSOT in `nav.js`).
+---
 
-4. **Audit P2 — `LogPanel.svelte:839`**: `_applyDateFilter` compares `o.created_at.slice(0,10)` against IST today. `created_at` on algo/paper/sim orders is stored as UTC (`datetime.now(timezone.utc)` in models). Between 00:00–05:30 IST the UTC slice gives yesterday's date, causing that night's orders to be incorrectly filtered out. Fix: for `created_at`, offset by +5.5h before slicing; use `order_timestamp` (already IST) where available as the primary.
+## Task A — Restore account dropdown with proper scroll
+
+**Root cause of original scroll problem**: `AlgoTabs` renders `.algo-tabs-strip` with `overflow-x: auto; max-width: 100%`. That makes it fill `ch-middle` and scroll internally. Anything placed *after* it in `ch-middle` is pushed off-screen without being part of the scroll.
+
+**Fix**: Override `.algo-tabs-strip` inside LogPanel's header so it expands naturally instead of clipping internally. `ch-middle` (already `overflow-x: auto`) becomes the single scroll container for tabs + dropdown combined.
+
+### File: `frontend/src/lib/LogPanel.svelte`
+
+**Script changes:**
+- Add: `import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';`  
+  (replaces the removed `ActivityHeaderFilters`; `_showLevelFilter` stays gone)
+- Restore: `const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(logTab));`
+
+**Template — `{#snippet middle()}`** (currently only `<AlgoTabs>`):
+```svelte
+{#snippet middle()}
+  <AlgoTabs
+    tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
+    bind:value={logTab}
+    onChange={onTabChange}
+    compact={true}
+  />
+  {#if _showAccountFilter && !hideInlineAccountFilter}
+    <ActivityAccountSelect
+      bind:value={_internalAccountFilter}
+      availableAccounts={_availableAccounts} />
+  {/if}
+{/snippet}
+```
+
+**CSS — add in `<style>`:**
+```css
+/* Override AlgoTabs' self-scroll so ch-middle scrolls tabs+dropdown together.
+   Scoped to lp-header-wrap so other AlgoTabs usages are unaffected. */
+:global(.lp-header-wrap .algo-tabs-strip) {
+  overflow-x: visible;
+  max-width: none;
+  flex-shrink: 0;
+}
+```
+
+The account select already renders with `flex-shrink: 0` in `ActivityAccountSelect.svelte`. No change needed there.
+
+---
+
+## Task B — Conn tab: switch to structured events
+
+### Data source change
+
+| | Before | After |
+|---|---|---|
+| State | `connLog: string[]` | `connEvents: any[]` |
+| Fetch fn | `fetchAdminConnLogs(200)` | `fetchBrokerConnectionEvents({ limit: 200 })` |
+| Endpoint | `GET /api/admin/logs/conn` | `GET /api/admin/broker-connection-events` |
+| Shape | Raw text lines | `{id, account, broker_id, event_type, event_ts, detail}` |
+
+`fetchBrokerConnectionEvents` already exists in `frontend/src/lib/api.js` — no new API function needed.
+
+### File: `frontend/src/lib/LogPanel.svelte`
+
+**Script changes:**
+
+1. Import — add `fetchBrokerConnectionEvents`, remove `fetchAdminConnLogs`:
+   ```js
+   import { ..., fetchBrokerConnectionEvents } from '$lib/api';
+   // remove fetchAdminConnLogs
+   ```
+
+2. State — replace `connLog`:
+   ```js
+   let connEvents = $state(/** @type {any[]} */ ([]));
+   ```
+
+3. Severity helper (same logic as `_connEventCls` in brokers/+page.svelte:520):
+   ```js
+   function _connEvtCls(evType) {
+     if (['login_ok','token_ok','fetch_ok_recovery','circuit_close'].includes(evType)) return 'conn-ev-green';
+     if (['login_fail','auth_fail','circuit_open','rotation_detected'].includes(evType)) return 'conn-ev-red';
+     if (['rate_limited','token_expiry'].includes(evType)) return 'conn-ev-amber';
+     return 'conn-ev-muted';
+   }
+   ```
+
+4. Detail formatter (same logic as `_fmtConnDetail` added to brokers/+page.svelte today):
+   ```js
+   function _fmtConnDetail(detail) {
+     if (detail == null) return '';
+     if (typeof detail === 'string') return detail;
+     if (typeof detail === 'object')
+       return Object.entries(detail).map(([k, v]) => `${k}: ${v}`).join(' · ');
+     return String(detail);
+   }
+   ```
+
+5. Derived row array (replaces `_connRows`):
+   ```js
+   const _connEventRows = $derived.by(() => {
+     return connEvents.slice()
+       .filter(e => {
+         if (orderAccountFilter.length > 0 && !orderAccountFilter.includes(e.account)) return false;
+         if (levelFilter === 'error')   return _connEvtCls(e.event_type) === 'conn-ev-red';
+         if (levelFilter === 'warning') return _connEvtCls(e.event_type) === 'conn-ev-amber';
+         if (levelFilter === 'info')    return ['conn-ev-green','conn-ev-muted'].includes(_connEvtCls(e.event_type));
+         return true;
+       })
+       .sort((a, b) => _tsKey(b.event_ts) - _tsKey(a.event_ts));
+   });
+   ```
+
+6. Loader — replace `_loadConn()`:
+   ```js
+   async function _loadConn() {
+     try {
+       const d = await fetchBrokerConnectionEvents({ limit: 200 });
+       connEvents = d?.events ?? [];
+     } catch (_) { /* keep last-good */ }
+   }
+   ```
+
+7. Time formatter for `event_ts` (ISO-8601 UTC → IST display):
+   ```js
+   function _fmtConnEvtTime(iso) {
+     if (!iso) return '—';
+     try {
+       return new Date(iso).toLocaleTimeString('en-IN', {
+         timeZone: 'Asia/Kolkata',
+         hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+       }) + ' IST';
+     } catch (_) { return iso; }
+   }
+   ```
+
+8. Download CSV for conn tab — update the `_downloadCsv` branch for `logTab === 'conn'` to use `connEventRows` fields (account, broker_id, event_type, event_ts, detail) instead of raw lines.
+
+**Template — replace conn tab block** (currently `{:else if logTab === 'conn'}`):
+```svelte
+{:else if logTab === 'conn'}
+  {#if _connEventRows.length}
+    {#each _connEventRows as ev (ev.id ?? ev.event_ts + ev.account + ev.event_type)}
+      {@const _cls = _connEvtCls(ev.event_type)}
+      {@const _det = _fmtConnDetail(ev.detail)}
+      {@const _stripe = /* alternating tint via index */ ''}
+      <div class="lp-conn-row {_cls}">
+        <span class="lp-conn-time">{_fmtConnEvtTime(ev.event_ts)}</span>
+        <span class="lp-conn-acct font-mono">{ev.account || '—'}</span>
+        <span class="lp-conn-broker">{ev.broker_id || '—'}</span>
+        <span class="lp-conn-type">{ev.event_type}</span>
+        {#if _det}
+          <span class="lp-conn-det" title={JSON.stringify(ev.detail, null, 2)}>{_det}</span>
+        {/if}
+      </div>
+    {/each}
+  {:else}
+    <div class="log-row log-debug"><span class="log-row-msg">No connection events yet.</span></div>
+  {/if}
+```
+
+**CSS — add in `<style>`:**
+```css
+.lp-conn-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.1rem 0.5rem;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.lp-conn-row:nth-child(even) { background: var(--row-tint-even, rgba(255,255,255,0.02)); }
+.lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-xs, 0.6rem); }
+.lp-conn-acct   { flex-shrink: 0; min-width: 5rem; color: var(--algo-slate); }
+.lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
+.lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
+.lp-conn-det    { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--algo-muted); }
+/* severity colours — reuse brokers page tokens */
+.lp-conn-row.conn-ev-green .lp-conn-type { color: var(--c-long); }
+.lp-conn-row.conn-ev-red   .lp-conn-type { color: var(--c-short); }
+.lp-conn-row.conn-ev-amber .lp-conn-type { color: var(--c-action); }
+.lp-conn-row.conn-ev-muted .lp-conn-type { color: var(--algo-muted); }
+```
+
+### Files changed
+- `frontend/src/lib/LogPanel.svelte` — both tasks
+
+### No changes needed
+- `frontend/src/lib/api.js` — `fetchBrokerConnectionEvents` already exists
+- `frontend/src/lib/ActivityAccountSelect.svelte` — used as-is
+- Backend routes — both endpoints already exist
+
+---
+
+---
+
+## Task C — Losers / Gainers: broker-fail snapshot fallback + tests
+
+### Root cause
+
+`GET /api/watchlist/movers` in `backend/api/routes/watchlist.py` has two paths:
+- **Market closed** → `_movers_offhours_response(ist_today)` (reads `movers_snapshots` DB table) ✓
+- **Market open** → live broker quotes via `_movers_fetch_quotes_cached()` → if broker fails returns **empty list** ✗
+
+When the broker (`get_market_data_broker()`) fails during market hours, `quote_data` comes back as `{}`, the route logs `[MOVERS-EMPTY] reason=broker_quote_empty` at `INFO` and returns `movers: []`. Frontend shows blank gainers/losers grids.
+
+### Fix — `backend/api/routes/watchlist.py`
+
+In the live-path handler (~line 2114), after the empty-quote guard, add snapshot fallback:
+
+```python
+# before (logs INFO, falls through to empty response):
+if not quote_data and key_to_meta:
+    logger.info(f"[MOVERS-EMPTY] reason=broker_quote_empty ...")
+
+# after (falls back to snapshot on broker failure):
+if not quote_data and key_to_meta:
+    logger.warning(f"[MOVERS-EMPTY] reason=broker_quote_empty — snapshot fallback")
+    return await _movers_offhours_response(ist_today)
+```
+
+One-line logic change + severity bump. `_movers_offhours_response` already reads the `movers_snapshots` table and returns the last captured snapshot with a `captured_at` timestamp.
+
+### Tests — `backend/tests/test_movers_route.py` (new file)
+
+Five pytest cases covering the snapshot gate behaviour for both gainers and losers:
+
+| Test | Setup | Expected |
+|---|---|---|
+| `test_movers_live_market_hours_ok` | Market open, broker returns quotes | `movers` list non-empty, `captured_at` is None |
+| `test_movers_broker_fail_market_hours_returns_snapshot` | Market open, broker raises / returns `{}` | Falls back to snapshot; `captured_at` non-null |
+| `test_movers_offhours_returns_snapshot` | Market closed | `_movers_offhours_response` called; `captured_at` non-null |
+| `test_movers_snapshot_contains_gainers` | Snapshot row with positive `change_pct` exists | At least one row with `change_pct > 0` in response |
+| `test_movers_snapshot_contains_losers` | Snapshot row with negative `change_pct` exists | At least one row with `change_pct < 0` in response |
+
+All tests patch `_any_segment_open` (market state) and `_movers_fetch_quotes_cached` (broker), and seed the `movers_snapshots` table with fixture rows to cover both gainers and losers.
+
+---
 
 ## Agents
-- backend: skip
-- frontend: All four changes below.
+- frontend: implement Task A and Task B in `frontend/src/lib/LogPanel.svelte`
+- backend: implement Task C fix in `backend/api/routes/watchlist.py`
 - broker: skip
 - doc: skip
-- backend-test: skip
+- backend-test: write `backend/tests/test_movers_route.py` for Task C
 - playwright: skip
 
-## Frontend agent brief
-
-### Change A — LogPanel collapse: fix `.dash-activity.is-collapsed > .card-body` height
-File: `frontend/src/routes/(algo)/dashboard/+page.svelte`
-
-Find the `.dash-activity > .card-body` CSS block (around line 2865). Add a collapsed override immediately after:
-
-```css
-/* BEFORE — only this block exists */
-.dash-activity > .card-body {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 8rem;
-  max-height: 33vh;
-}
-
-/* AFTER — add the override block */
-.dash-activity > .card-body {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 8rem;
-  max-height: 33vh;
-}
-.dash-activity.is-collapsed > .card-body {
-  flex: 0 0 auto;
-  min-height: 0;
-  max-height: none;
-}
-```
-
-### Change B — Card button consistency
-Three sub-changes across three files. All buttons must conform to canonical: `1.4rem × 1.4rem`, `border-radius: 3px`, cyan palette (`var(--algo-cyan-bg)` / `var(--algo-cyan-border)` / `var(--c-info)`), cyan hover.
-
-**B1 — ChartModal.cm-close** (`frontend/src/lib/ChartModal.svelte`):
-
-Find `.cm-close` CSS block. Replace red styling with cyan to match `.cm-refresh-btn`:
-```css
-/* BEFORE */
-.cm-close {
-  width: 1.4rem;
-  height: 1.4rem;
-  ...
-  border: 1px solid rgba(248, 113, 113, 0.35);
-  border-radius: 3px;
-  color: var(--c-short);
-  font-size: var(--fs-xl);
-  ...
-  font-family: monospace;
-  ...
-}
-.cm-close:hover {
-  background: rgba(248, 113, 113, 0.15);
-}
-
-/* AFTER */
-.cm-close {
-  width: 1.4rem;
-  height: 1.4rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
-  border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
-  border-radius: 3px;
-  color: var(--c-info, #22d3ee);
-  font-size: var(--fs-xl);
-  line-height: 1;
-  padding: 0;
-  cursor: pointer;
-  transition: background 0.08s, border-color 0.08s;
-  pointer-events: auto;
-  position: relative;
-  z-index: 2;
-  flex-shrink: 0;
-}
-.cm-close:hover {
-  background: rgba(34,211,238,0.14);
-  border-color: rgba(34,211,238,0.65);
-}
-```
-Remove `font-family: monospace` — it causes glyph rendering inconsistency.
-
-**B2 — OrderTicket.ot-close** (`frontend/src/lib/order/OrderTicket.svelte`):
-
-Find `.ot-close` CSS block. Fix size from 1.55rem to 1.4rem, change border/color to cyan, change hover to cyan:
-```css
-/* BEFORE */
-.ot-close {
-  width: 1.55rem;
-  height: 1.55rem;
-  background: transparent;
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 3px;
-  color: var(--algo-slate);
-  font-size: var(--fs-lg);
-  ...
-}
-.ot-close:hover {
-  border-color: var(--c-short);
-  color: var(--c-short);
-}
-
-/* AFTER */
-.ot-close {
-  width: 1.4rem;
-  height: 1.4rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
-  border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
-  border-radius: 3px;
-  color: var(--c-info, #22d3ee);
-  font-size: var(--fs-xl);
-  line-height: 1;
-  padding: 0;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.08s, border-color 0.08s;
-}
-.ot-close:hover {
-  background: rgba(34,211,238,0.14);
-  border-color: rgba(34,211,238,0.65);
-}
-```
-
-**B3 — LogPanel lp-card-btns-legacy removal** (`frontend/src/lib/LogPanel.svelte`):
-
-The legacy path is unreachable: all 9 `ActivityLogSurface` / `LogPanel` mounts in the codebase pass `label="Log"`, which triggers the modern CardHeader path. The `{:else}` branch (`lp-card-btns-legacy`) never fires.
-
-Remove from the template: the entire `{:else}` block inside `{#if label}...{:else}...{/if}` header conditional — this includes the `<header class="lp-header lp-header-legacy">` element and everything inside it.
-
-Remove from CSS: all rules for `.lp-card-btns-legacy`, `.lp-card-btn`, `.lp-card-btn:hover`, `.lp-header-legacy`, and any CSS blocks exclusively used by the legacy path. Look for the comment "DEPRECATED: lp-card-btns-legacy".
-
-**Verify** after removal: if `{#if label}` block is the only branch remaining, simplify to just the modern header block (remove the `{#if label}` conditional wrapper entirely, keeping only its inner content).
-
-### Change C — P1 fix: `derivatives/pageLoad.js` open_dcv uses wrong day P&L base
-File: `frontend/src/lib/derivatives/pageLoad.js`
-
-Around line 216, find:
-```javascript
-const open_dcv = Number(p.day_change_val || 0) - closed_day_pnl;
-```
-
-Change to use `baseDayPnlForPosition` (SSOT from nav.js):
-```javascript
-const open_dcv = baseDayPnlForPosition(p) - closed_day_pnl;
-```
-
-Also add the import at the top of the file if not already present:
-```javascript
-import { baseDayPnlForPosition } from '$lib/data/nav.js';
-```
-
-Check whether `baseDayPnlForPosition` is already imported — if so, just change the usage.
-
-### Change D — P2 fix: LogPanel date filter UTC vs IST bug
-File: `frontend/src/lib/LogPanel.svelte`
-
-Find `_applyDateFilter` function (around line 839). The current code:
-```javascript
-function _applyDateFilter(rows) {
-  const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
-  const today = istNow.toISOString().slice(0, 10);
-  return rows.filter(o => {
-    const ts = (o.created_at || o.order_timestamp || '').slice(0, 10);
-    const term = _TERMINAL_STATUSES.has((o.status || '').toUpperCase());
-    return !(ts && ts !== today && term);
-  });
-}
-```
-
-The bug: `o.created_at` is stored as UTC by the backend; `.slice(0,10)` gives wrong date between 00:00–05:30 IST.
-
-Fix: prefer `order_timestamp` (already IST) for the date comparison; only fall back to `created_at` with UTC→IST offset applied:
-```javascript
-function _applyDateFilter(rows) {
-  const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
-  const today = istNow.toISOString().slice(0, 10);
-  return rows.filter(o => {
-    // order_timestamp is already IST; created_at is UTC — offset before slicing
-    let ts = '';
-    if (o.order_timestamp) {
-      ts = String(o.order_timestamp).slice(0, 10);
-    } else if (o.created_at) {
-      ts = new Date(new Date(o.created_at).getTime() + 5.5 * 60 * 60 * 1000)
-             .toISOString().slice(0, 10);
-    }
-    const term = _TERMINAL_STATUSES.has((o.status || '').toUpperCase());
-    return !(ts && ts !== today && term);
-  });
-}
-```
-
-### After all changes, run svelte-check:
-```bash
-cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1 | tail -10
-```
-
-Fix any errors before reporting done.
-
 ## Tests
-- pytest: no
+- pytest: yes (new test_movers_route.py — 5 cases)
 - svelte-check: yes
 - playwright: no
 
 ## Commit message
-fix(ui): collapse height, cyan close buttons, legacy path removal, day-pnl SSOT, UTC date filter
+feat(ui,backend): conn tab structured events, account dropdown scroll fix, movers snapshot fallback
 
 ## Done when
-- Dashboard LogPanel collapses to header-only height (no blank space below header)
-- ChartModal × button is cyan (matches refresh button beside it)
-- OrderTicket × button is 1.4rem cyan (matches refresh button beside it)
-- LogPanel legacy `lp-card-btns-legacy` path removed from template + CSS
-- `derivatives/pageLoad.js` `open_dcv` uses `baseDayPnlForPosition(p)` not raw `day_change_val`
-- LogPanel date filter correctly handles UTC `created_at` timestamps
+- Account dropdown scrolls with tabs on mobile (single scroll container, no nested overflow)
+- Account dropdown shows per-tab same as before (hidden on terminal/ticks/news/simulator)
+- LogPanel Conn tab shows time · account · broker · event_type · detail as compact single rows
+- Severity colours on conn event_type: green/red/amber/muted
+- Account filter works on structured conn events
+- Movers route: broker failure during market hours falls back to last snapshot (not empty list)
+- `test_movers_route.py`: all 5 cases green (market hours OK, broker fail fallback, off-hours, gainers, losers)
 - svelte-check: 0 errors

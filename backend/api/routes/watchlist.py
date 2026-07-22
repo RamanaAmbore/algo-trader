@@ -2117,12 +2117,11 @@ class WatchlistController(Controller):
         quote_data = await _movers_fetch_quotes_cached(key_to_meta)
 
         if not quote_data and key_to_meta:
-            logger.info(
-                f"[MOVERS-EMPTY] reason=broker_quote_empty "
-                f"universe_size={len(key_to_meta)} "
-                f"session_movers={len(_session_movers)}"
+            logger.warning(
+                "[MOVERS-EMPTY] reason=broker_quote_empty universe=%d — snapshot fallback",
+                len(key_to_meta),
             )
-            # Fall through — session_movers may still yield rows.
+            return await _movers_offhours_response(ist_today)
 
         rows, live_snapshot = _movers_build_live_rows(
             key_to_meta, quote_data, nse_is_open, mcx_is_open, ist_today,

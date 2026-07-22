@@ -3,7 +3,7 @@
   import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz, executionMode, visibleInterval } from '$lib/stores';
   import {
     fetchRecentAgentEvents, fetchSimEvents,
-    fetchSimTicks, fetchAdminLogs, fetchAdminConnLogs, fetchAlgoOrdersRecent,
+    fetchSimTicks, fetchAdminLogs, fetchBrokerConnectionEvents, fetchAlgoOrdersRecent,
     fetchOrders, cancelOrder, reconcileSingleOrder,
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
@@ -19,9 +19,8 @@
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import { openActivityModal } from '$lib/stores';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
-  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
+  import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
-  import BellIcon from '$lib/icons/BellIcon.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
@@ -261,7 +260,7 @@
   let orderRows = $state(/** @type {any[]} */ ([]));   // for Terminal tab embedding
   let agentLog  = $state(/** @type {any[]} */ ([]));
   let systemLog = $state(/** @type {string[]} */ ([]));
-  let connLog   = $state(/** @type {string[]} */ ([]));
+  let connEvents = $state(/** @type {any[]} */ ([]));
   let simLog    = $state(/** @type {any[]} */ ([]));
 
   // Derived row arrays for the keyed {#each} renderers below —
@@ -350,8 +349,8 @@
           // per second possible); compose with line content hash via
           // a length+first-32-chars tuple — cheap to compute, stable
           // across polls for the same source line.
-          // Same each_key_duplicate guard as _connRows below — same
-          // bug applies to System tab when api_log_file emits multiple
+          // Same each_key_duplicate guard as the old _connRows had —
+          // same bug applies to System tab when api_log_file emits multiple
           // INFO lines in one second from the same logger.
           key: `y${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
           html: _logRow(d || null, rest, tag, `${sysClass(l)} ${stripe}`),
@@ -360,36 +359,18 @@
       })
       .filter(r => _rowMatchesSearch(r.html));
   });
-  // Same shape as _sysRows but sourced from connLog. Keeps the
-  // rendering loop simple — one #each per tab, no shared list with
-  // a filter (which would re-sort + re-key on every poll of either
-  // source).
-  const _connRows = $derived.by(() => {
-    return connLog.slice()
-      .filter(l => _lineMatchesLevel(l) && _lineMatchesAccount(l, orderAccountFilter))
-      .map(l => ({ l, d: parseLogLineDate(l) }))
-      .sort((a, b) => _tsKey(b.d) - _tsKey(a.d))
-      .map(({ l, d }, i) => {
-        const rest = d ? stripTs(l) : l;
-        const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
-        const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
-        const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
-        return {
-          // Index appended to break ties — conn_service emits multiple
-          // lines per second from the same logger module (e.g. four
-          // Groww DEBUG calls inside one quote batch), producing the
-          // same (timestamp, length, first-32-chars) tuple for several
-          // rows. Svelte 5's each_key_duplicate guard threw a pageerror
-          // that aborted the entire {#each} block, leaving the Conn tab
-          // showing the empty-state sentinel even with 200 lines in
-          // hand. Index is safe here: rows are sorted append-only by
-          // timestamp; nothing depends on stable cross-poll identity.
-          key: `c${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
-          html: _logRow(d || null, rest, tag, `${sysClass(l)} ${stripe}`),
-          _rawLine: l,
-        };
+  // Conn tab — structured connection events from the broker-connection-events
+  // endpoint. Replaces the old raw-log-line _connRows approach.
+  const _connEventRows = $derived.by(() => {
+    return connEvents.slice()
+      .filter(e => {
+        if (orderAccountFilter.length > 0 && !orderAccountFilter.includes(e.account)) return false;
+        if (levelFilter === 'error')   return _connEvtCls(e.event_type) === 'conn-ev-red';
+        if (levelFilter === 'warning') return _connEvtCls(e.event_type) === 'conn-ev-amber';
+        if (levelFilter === 'info')    return ['conn-ev-green','conn-ev-muted'].includes(_connEvtCls(e.event_type));
+        return true;
       })
-      .filter(r => _rowMatchesSearch(r.html));
+      .sort((a, b) => _tsKey(b.event_ts) - _tsKey(a.event_ts));
   });
 
   /** @type {Array<() => void>} */
@@ -424,16 +405,34 @@
   }
   async function _loadConn() {
     try {
-      const d = await fetchAdminConnLogs(200);
-      connLog = d?.lines || [];
-    } catch (e) {
-      // Surface fetch errors as a sentinel row so an operator who
-      // sees an empty Conn tab can diagnose. Previous silent catch
-      // made every failure look like 'no entries yet' — indistinguishable
-      // from a healthy-but-quiet conn_service.
-      const msg = /** @type {any} */ (e)?.message || String(e);
-      connLog = [`CONN_FETCH_ERROR ${new Date().toISOString()} ${msg}`];
-    }
+      const d = await fetchBrokerConnectionEvents({ limit: 200 });
+      connEvents = d?.events ?? [];
+    } catch (_) { /* keep last-good */ }
+  }
+
+  function _connEvtCls(/** @type {string} */ evType) {
+    if (['login_ok','token_ok','fetch_ok_recovery','circuit_close'].includes(evType)) return 'conn-ev-green';
+    if (['login_fail','auth_fail','circuit_open','rotation_detected'].includes(evType)) return 'conn-ev-red';
+    if (['rate_limited','token_expiry'].includes(evType)) return 'conn-ev-amber';
+    return 'conn-ev-muted';
+  }
+
+  function _fmtConnDetail(/** @type {any} */ detail) {
+    if (detail == null) return '';
+    if (typeof detail === 'string') return detail;
+    if (typeof detail === 'object')
+      return Object.entries(detail).map(([k, v]) => `${k}: ${v}`).join(' · ');
+    return String(detail);
+  }
+
+  function _fmtConnEvtTime(/** @type {string} */ iso) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleTimeString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      }) + ' IST';
+    } catch (_) { return iso; }
   }
   async function _loadSim() {
     try {
@@ -636,9 +635,6 @@
     return true;
   }));
 
-  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(logTab));
-  const _showLevelFilter   = $derived(['agent', 'system', 'conn'].includes(logTab));
-
   // ── Mode gating via executionMode store ──────────────────────────────
   // When gateByMode is true, the global executionMode store is the
   // implicit filter for Orders, Agent, and Terminal tabs. The mode chip
@@ -713,6 +709,7 @@
   const orderAccountFilter = $derived(
     accountFilter !== undefined ? accountFilter : _internalAccountFilter,
   );
+  const _showAccountFilter = $derived(['order', 'agent', 'system', 'conn'].includes(logTab));
 
   const _availableAccounts = $derived.by(() => {
     const s = new Set();
@@ -1375,14 +1372,14 @@
         return [d ? d.toISOString() : '', lm ? lm[1].toUpperCase() : '', rest];
       });
     } else if (logTab === 'conn') {
-      header = ['time', 'level', 'message'];
-      rows = _connRows.map(r => {
-        const l = r._rawLine || '';
-        const d = parseLogLineDate(l);
-        const rest = d ? stripTs(l) : l;
-        const lm = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
-        return [d ? d.toISOString() : '', lm ? lm[1].toUpperCase() : '', rest];
-      });
+      header = ['time', 'account', 'broker_id', 'event_type', 'detail'];
+      rows = _connEventRows.map(e => [
+        e.event_ts || '',
+        e.account || '',
+        e.broker_id || '',
+        e.event_type || '',
+        _fmtConnDetail(e.detail),
+      ]);
     } else if (logTab === 'terminal') {
       header = ['time', 'source', 'message'];
       const all = [
@@ -1451,9 +1448,6 @@
   onDownload={logTab === 'news' ? null : (onDownload ?? _downloadCsv)}
   hideFullscreen={true}
 >
-  {#snippet prefix()}
-    <BellIcon width="12" height="12" class="lp-bell-icon" />
-  {/snippet}
   {#snippet middle()}
     <AlgoTabs
       tabs={VISIBLE_TABS.map(([id, lbl]) => ({ id, label: lbl }))}
@@ -1461,12 +1455,11 @@
       onChange={onTabChange}
       compact={true}
     />
-    <ActivityHeaderFilters
-      bind:accountFilter={_internalAccountFilter}
-      bind:levelFilter
-      availableAccounts={_availableAccounts}
-      showAccountFilter={_showAccountFilter}
-      showLevelFilter={_showLevelFilter} />
+    {#if _showAccountFilter && !hideInlineAccountFilter}
+      <ActivityAccountSelect
+        bind:value={_internalAccountFilter}
+        availableAccounts={_availableAccounts} />
+    {/if}
   {/snippet}
   {#snippet right()}
     {#if context === 'modal'}
@@ -1630,10 +1623,22 @@
       <div class="log-row log-debug"><span class="log-row-msg">No simulator ticks yet.</span></div>
     {/if}
   {:else if logTab === 'conn'}
-    {#if _connRows.length}
-      {#each _connRows as r (r.key)}{@html r.html}{/each}
+    {#if _connEventRows.length}
+      {#each _connEventRows as ev, i (ev.id ?? (ev.event_ts + ev.account + ev.event_type))}
+        {@const _cls = _connEvtCls(ev.event_type)}
+        {@const _det = _fmtConnDetail(ev.detail)}
+        <div class="lp-conn-row {_cls}" class:row-tint-even={i % 2 === 0} class:row-tint-odd={i % 2 !== 0}>
+          <span class="lp-conn-time">{_fmtConnEvtTime(ev.event_ts)}</span>
+          <span class="lp-conn-acct font-mono">{ev.account || '—'}</span>
+          <span class="lp-conn-broker">{ev.broker_id || '—'}</span>
+          <span class="lp-conn-type">{ev.event_type}</span>
+          {#if _det}
+            <span class="lp-conn-det" title={ev.detail ? JSON.stringify(ev.detail, null, 2) : ''}>{_det}</span>
+          {/if}
+        </div>
+      {/each}
     {:else}
-      <div class="log-row log-debug"><span class="log-row-msg">No conn_service entries yet.</span></div>
+      <div class="log-row log-debug"><span class="log-row-msg">No connection events yet.</span></div>
     {/if}
   {:else}
     {#if _sysRows.length}
@@ -1748,7 +1753,6 @@
   .lp-tab-strip-wrap :global(.algo-tabs-strip) { overflow-x: visible; }
 
   /* Bell icon rendered before the LOG title via CardHeader prefix snippet */
-  .lp-bell-icon { flex-shrink: 0; }
 
   /* Fullscreen-open button (label-branch, non-modal context) */
   .lp-fs-btn, .lp-default-btn {
@@ -2315,5 +2319,35 @@
     height: min(85vh, 1100px);
     overflow-y: auto;
   }
+
+  /* Allow ch-middle to be the single horizontal scroll container for tabs +
+     account select combined. Without this override, algo-tabs-strip fills
+     ch-middle entirely via max-width:100% and clips internally, leaving the
+     account select pushed off-screen and non-scrollable. */
+  :global(.lp-header-wrap .algo-tabs-strip) {
+    overflow-x: visible;
+    max-width: none;
+    flex-shrink: 0;
+  }
+
+  /* Conn tab — structured connection event rows */
+  .lp-conn-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.1rem 0.5rem;
+    font-size: var(--fs-sm);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-xs, 0.6rem); }
+  .lp-conn-acct   { flex-shrink: 0; min-width: 5rem; color: var(--algo-slate); }
+  .lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
+  .lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
+  .lp-conn-det    { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--algo-muted); }
+  .lp-conn-row.conn-ev-green .lp-conn-type { color: var(--c-long); }
+  .lp-conn-row.conn-ev-red   .lp-conn-type { color: var(--c-short); }
+  .lp-conn-row.conn-ev-amber .lp-conn-type { color: var(--c-action); }
+  .lp-conn-row.conn-ev-muted .lp-conn-type { color: var(--algo-muted); }
 
 </style>

@@ -535,6 +535,14 @@
     } catch (_) { return iso; }
   }
 
+  function _fmtConnDetail(/** @type {any} */ detail) {
+    if (detail == null) return '—';
+    if (typeof detail === 'string') return detail || '—';
+    if (typeof detail === 'object')
+      return Object.entries(detail).map(([k, v]) => `${k}: ${v}`).join(' · ') || '—';
+    return String(detail);
+  }
+
   async function loadConnEvents() {
     if (_loadingConnEvents) return;
     _loadingConnEvents = true;
@@ -948,7 +956,7 @@
               <td class="font-mono">{ev.account}</td>
               <td>{ev.broker_id || '—'}</td>
               <td class="font-mono {_connEventCls(ev.event_type)}">{ev.event_type}</td>
-              <td class="conn-td-detail" title={ev.detail ?? ''}>{ev.detail || '—'}</td>
+              <td class="conn-td-detail" title={ev.detail ? JSON.stringify(ev.detail, null, 2) : ''}>{_fmtConnDetail(ev.detail)}</td>
             </tr>
           {/each}
         </tbody>
