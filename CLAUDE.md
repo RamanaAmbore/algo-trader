@@ -1,7 +1,46 @@
-# CLAUDE.md — RamboQuant Project Reference
+# CLAUDE.md
 
-For Claude Code. Three-layer architecture reference + guardrails. Sprint diaries + 
-completed-slice history live in [CLAUDE_HISTORY.md](CLAUDE_HISTORY.md).
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
+## Development Commands
+
+**Backend tests** (requires `venv/`):
+```bash
+venv/bin/pytest backend/tests/ -q --tb=line          # all tests
+venv/bin/pytest backend/tests/test_X.py -v           # single file
+venv/bin/pytest backend/tests/broker/ -q --tb=line   # broker-layer only
+```
+Set `PYTEST_RUNNING=1` (conftest does this automatically). Do NOT run with `RAMBOQ_USE_CONN_SERVICE=1` unless the conn service is running.
+
+**Frontend type check** (canonical gate before push):
+```bash
+cd frontend && npx svelte-check --output machine 2>&1
+```
+
+**Frontend dev server** (local only — prod/dev deploy via webhook):
+```bash
+cd frontend && npm run dev    # vite dev server
+cd frontend && npm run build  # production build
+```
+
+**E2e tests** (targets dev.ramboq.com or localhost):
+```bash
+cd frontend && npx playwright test
+cd frontend && npx playwright test --ui   # interactive
+```
+
+**Complexity gate** (blocks push if D/E/F grade):
+```bash
+venv/bin/python -m radon cc backend/ -s -n D
+```
+
+---
+
+# RamboQuant Project Reference
+
+Sprint diaries + completed-slice history live in [CLAUDE_HISTORY.md](CLAUDE_HISTORY.md).
 
 **Docs layout** — all markdown except CLAUDE.md / CLAUDE_HISTORY.md / README.md lives under `docs/`:
 
