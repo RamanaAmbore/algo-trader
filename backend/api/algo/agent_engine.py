@@ -1197,8 +1197,13 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     missing = [e for e in code_events if e["channel"] not in stored_channels]
     if missing:
         existing.events = list(existing.events or []) + missing
-    if existing.fire_at_time != agent_def.get("fire_at_time"):
-        existing.fire_at_time = agent_def.get("fire_at_time")
+    new_fire_at_time = agent_def.get("fire_at_time")
+    if existing.fire_at_time != new_fire_at_time:
+        existing.fire_at_time = new_fire_at_time
+        # Reset cooldown so the agent fires promptly at the new time
+        # instead of being silenced by a stale last_fired timestamp
+        # from the old schedule.
+        existing.last_fired = None
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':
@@ -1268,6 +1273,35 @@ async def seed_agents():
         await _ae_prune_retired_builtins(session, builtin_slugs)
         await session.commit()
     logger.info(f"Agent engine: {len(BUILTIN_AGENTS)} built-in agents verified")
+
+    # B5: Validate ntfy configuration at startup so operators see a clear
+    # log message if ntfy_topic is missing or ntfy_token is absent on a
+    # protected server, rather than silent delivery failures at alert time.
+    try:
+        from backend.shared.helpers.utils import secrets as _ntfy_secrets
+        _ntfy_topic = _ntfy_secrets.get("ntfy_topic")
+        _ntfy_token = _ntfy_secrets.get("ntfy_token")
+        if not _ntfy_topic:
+            logger.warning(
+                "Agent engine: ntfy_topic not configured in secrets — "
+                "ntfy push alerts will be silently skipped."
+            )
+        else:
+            _ntfy_url = _ntfy_secrets.get("ntfy_url", "https://ntfy.sh")
+            if not _ntfy_token:
+                logger.info(
+                    "Agent engine: ntfy configured (topic=%s url=%s) — "
+                    "no auth token (open server assumed).",
+                    _ntfy_topic, _ntfy_url,
+                )
+            else:
+                logger.info(
+                    "Agent engine: ntfy configured (topic=%s url=%s) — "
+                    "Bearer token present.",
+                    _ntfy_topic, _ntfy_url,
+                )
+    except Exception as _ntfy_cfg_err:
+        logger.warning("Agent engine: ntfy config check failed: %s", _ntfy_cfg_err)
 
 
 def _ae_segment_flags(seg_name: str, seg_cfg: dict, now) -> dict:

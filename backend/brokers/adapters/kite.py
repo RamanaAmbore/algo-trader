@@ -282,15 +282,17 @@ def _check_kite_gtt_qty_ceiling(
     _exch = exchange.upper()
     for _leg in orders:
         _kqty = int(_leg.get("quantity") or 0)
-        if _exch in ("MCX", "NCO") and _kqty > 50:
+        from backend.shared.helpers.settings import get_int
+        _mcx_gtt_ceiling = get_int("orders.mcx_gtt_lot_ceiling", 200)
+        if _exch in ("MCX", "NCO") and _kqty > _mcx_gtt_ceiling:
             logger.error(
                 "[ADAPTER-GTT-QTY-CEILING] REFUSING GTT %s %s: leg qty=%s "
-                "(MCX/NCO lots) > 50-lot absurd-value ceiling.",
-                _exch, tradingsymbol, _kqty,
+                "(MCX/NCO lots) > %s-lot absurd-value ceiling.",
+                _exch, tradingsymbol, _kqty, _mcx_gtt_ceiling,
             )
             raise ValueError(
                 f"[ADAPTER-GTT-QTY-CEILING] {_exch} GTT leg qty={_kqty} "
-                f"exceeds 50-lot absurd-value ceiling for {tradingsymbol}. "
+                f"exceeds {_mcx_gtt_ceiling}-lot absurd-value ceiling for {tradingsymbol}. "
                 f"Refusing at adapter layer — translate_qty must be called "
                 f"before place_gtt on MCX/NCO."
             )

@@ -98,6 +98,7 @@
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { getProvisionalPositions, applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
     dirCls,
@@ -1489,11 +1490,20 @@
     if (!isDemo) {
       stopWS = createPerformanceSocket((msg) => {
         if (msg?.event === 'position_filled') {
+          // Insert a provisional row immediately so the grid shows the
+          // new position within a frame, before the broker book updates.
+          applyFill(msg);
+          // 60 s safety — drop the provisional row even if
+          // `positions_refreshed` never arrives (broker lag, etc.).
+          setTimeout(() => clearFill(msg), 60_000);
           // Order just filled — refresh both books right now so the
           // grid shows the new qty within a tick. The 10 s pulse
           // poll keeps running as a backstop.
           loadPulse();
         } else if (msg?.event === 'positions_refreshed') {
+          // Broker book is fully up to date — clear all provisional rows
+          // (positions_refreshed has no per-symbol payload).
+          clearAllProvisional();
           // Backend signals that the positions book has been refreshed
           // (e.g. after a postback fan-out or reconcile sweep) — force
           // a full re-fetch so the grid reflects the updated state
@@ -2742,12 +2752,26 @@
     return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
   };
 
-  const scopedPositions = $derived(
-    (positionsAccounts.length === 0
+  // Merge provisional rows (from `position_filled` WS events) that
+  // have no matching real row yet. They become invisible the moment
+  // `positions_refreshed` fires (clearAllProvisional) or after 60 s
+  // (per-symbol clearFill safety fallback).
+  const scopedPositions = $derived.by(() => {
+    const real = (positionsAccounts.length === 0
       ? positions
       : positions.filter(r => _includesPosAcct(r.account))
-    ).filter(r => _matchStrategySym(r.tradingsymbol || r.symbol || ''))
-  );
+    ).filter(r => _matchStrategySym(r.tradingsymbol || r.symbol || ''));
+    const prov = getProvisionalPositions();
+    if (prov.size === 0) return real;
+    const realKeys = new Set(
+      real.map(r => `${r.exchange}:${String(r.tradingsymbol || r.symbol || '').toUpperCase()}:${r.account}`)
+    );
+    const provRows = [...prov.values()].filter(p => {
+      const k = `${p.exchange}:${String(p.tradingsymbol || '').toUpperCase()}:${p.account}`;
+      return !realKeys.has(k) && _matchStrategySym(p.tradingsymbol || '');
+    });
+    return provRows.length === 0 ? real : [...real, ...provRows];
+  });
   const scopedHoldings = $derived(
     (holdingsAccounts.length === 0
       ? holdings
@@ -3245,7 +3269,12 @@
       if (q > 0) dirLabel = '<span class="sr-only">Long position</span>';
       else if (q < 0) dirLabel = '<span class="sr-only">Short position</span>';
     }
-    return `<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+    // Provisional rows — fill arrived but broker book hasn't updated yet.
+    // Tilde prefix + muted chip so the operator sees "pending broker confirm".
+    const provChip = row._provisional
+      ? '<span class="sym-provisional" title="Provisional — awaiting broker confirmation">~</span>'
+      : '';
+    return `${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
   }
 
   /**
@@ -3350,6 +3379,7 @@
     if (r._majorGroup === 'movers') classes.push(..._moverRowClasses(r));
     classes.push(..._sourceRowClasses(r, s));
     if (r.account_stale === true) classes.push('row-account-stale');
+    if (r._provisional === true) classes.push('row-provisional');
     return classes.join(' ');
   }
 
@@ -4338,6 +4368,20 @@
   :global(.sym-main.sym-ce) { color: var(--c-long); }
   :global(.sym-main.sym-pe) { color: var(--c-short); }
   :global(.sym-alias) { color: var(--c-muted); font-size: var(--fs-xs); }
+  /* Provisional position — fill received, broker book not yet updated.
+     Tilde prefix rendered as an amber chip; row is also dimmed via
+     ag-Grid row class `row-provisional` below. */
+  :global(.sym-provisional) {
+    color: var(--c-action);
+    font-weight: 700;
+    font-size: var(--fs-xs);
+    margin-right: 2px;
+    opacity: 0.85;
+  }
+  :global(.ag-theme-algo .row-provisional) {
+    opacity: 0.65;
+    font-style: italic;
+  }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. */
   :global(.sym-badges) {

@@ -468,6 +468,15 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // Mirror broker raw values for TOTAL footer parity.
     row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
     row._broker_day_pnl = (row._broker_day_pnl ?? 0) + baseDayPnlForPosition(r);
+    // Propagate provisional flag — row is _provisional only when EVERY
+    // contributing account leg is provisional (i.e. no real broker row
+    // has merged in yet). Once a real leg lands it clears the flag.
+    if (r._provisional === true) {
+      if (row._provisional === undefined) row._provisional = true;
+      // flag stays true — real rows don't set r._provisional
+    } else {
+      row._provisional = false;
+    }
     _propagateStaleAndSource(row, r);
     fillSymbolMeta(row, sym, getInst);
   }
