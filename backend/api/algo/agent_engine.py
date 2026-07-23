@@ -832,6 +832,20 @@ _LOSS_AGENTS = [
          scope="total",
          ),
 
+    # ── Funds: margin shortfall warning (early-warning before negative) ──
+    dict(slug="loss-margin-low",
+         long_name="when:funds.any_acct.avail_margin<25000   alert:high/tg+email+ntfy+log   do:notify-only",
+         tier="high",
+         topic="funds_warning",
+         name="Margin shortfall warning",
+         description=(
+             "Fires when available margin on any account drops below "
+             "₹25,000 — warning before margin goes negative."
+         ),
+         conditions={"op": "<", "scope": "funds.any_acct", "value": 25000, "metric": "avail_margin"},
+         scope="total",
+         ),
+
     # ── Funds: operational negatives (one agent — both are critical) ────
     dict(slug="loss-funds-negative",
          long_name="when:funds.any_acct.cash<0 OR margin<0   alert:critical/tg+email+log   do:notify-only",
@@ -1009,6 +1023,7 @@ _EXPIRY_AGENT_DEFAULTS = dict(
         {"channel": "telegram", "enabled": True},
         {"channel": "email",    "enabled": True},
         {"channel": "log",      "enabled": True},
+        {"channel": "ntfy",     "enabled": True},
     ],
     actions=[],
 )
@@ -1016,6 +1031,55 @@ for _a in _EXPIRY_AGENTS:
     for _k, _v in _EXPIRY_AGENT_DEFAULTS.items():
         _a.setdefault(_k, _v)
 BUILTIN_AGENTS.extend(_EXPIRY_AGENTS)
+
+
+# ── Market open/close info agents ────────────────────────────────────
+#
+# Notify-only agents that fire at exact market open/close times.
+# schedule="always" because these must fire at off-peak hours too
+# (market open is outside market_hours gate at 09:15 IST). The
+# cooldown_minutes=1320 (22 hours) ensures at most one fire per day.
+# Condition is a perpetually-true avail_margin >= -999999999 so the
+# evaluator always returns a match when the fire_at_time window is open.
+
+_INFO_AGENT_DEFAULTS = dict(
+    schedule="always",
+    cooldown_minutes=1320,
+    actions=[],
+    status="active",
+    tier="info",
+    topic="market_status",
+    events=[
+        {"channel": "telegram", "enabled": True},
+        {"channel": "log",      "enabled": True},
+        {"channel": "ntfy",     "enabled": True, "priority": "default"},
+    ],
+)
+
+_INFO_AGENTS = [
+    {
+        "slug": "market-open-nse",
+        "name": "NSE market open",
+        "long_name": "when:fire_at=09:15   alert:info/tg+ntfy(default)+log   do:notify-only",
+        "description": "Fires once at NSE open (09:15 IST) on trading days.",
+        "fire_at_time": "09:15",
+        "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
+    },
+    {
+        "slug": "market-close-mcx",
+        "name": "MCX market close",
+        "long_name": "when:fire_at=23:30   alert:info/tg+ntfy(default)+log   do:notify-only",
+        "description": "Fires once at MCX close (23:30 IST) on trading days.",
+        "fire_at_time": "23:30",
+        "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
+    },
+]
+
+for _a in _INFO_AGENTS:
+    for _k, _v in _INFO_AGENT_DEFAULTS.items():
+        _a.setdefault(_k, _v)
+
+BUILTIN_AGENTS.extend(_INFO_AGENTS)
 
 
 # ── Manual agent: every operator-initiated order submit fires under
@@ -1033,6 +1097,7 @@ MANUAL_AGENT = dict(
         {"channel": "telegram", "enabled": True},
         {"channel": "email",    "enabled": True},
         {"channel": "log",      "enabled": True},
+        {"channel": "ntfy",     "enabled": True},
     ],
     actions=[],
     scope="manual",
@@ -1074,6 +1139,13 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     if existing.topic == "general" and _def_topic != "general":
         existing.topic = _def_topic
     _ae_sync_builtin_status(existing, agent_def.get("status"))
+    # Additive-sync events: add any default channel missing from the stored events.
+    # Never removes channels the operator may have added manually.
+    code_events = agent_def.get("events", [])
+    stored_channels = {e["channel"] for e in (existing.events or [])}
+    missing = [e for e in code_events if e["channel"] not in stored_channels]
+    if missing:
+        existing.events = list(existing.events or []) + missing
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':

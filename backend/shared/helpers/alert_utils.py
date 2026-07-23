@@ -894,11 +894,12 @@ def send_order_failure_alert(
         logger.error(f"send_order_failure_alert internal error: {_top_e}")
 
 
-def send_ntfy_alert(title: str, message: str) -> None:
+def send_ntfy_alert(title: str, message: str, priority: str | None = None) -> None:
     """Deliver via ntfy.sh (or self-hosted ntfy). Priority is ET clock-based:
       22:00–07:00 ET → urgent  (operator night / Indian market hours)
       07:00–22:00 ET → high    (operator day)
     Configurable via ntfy_night_start / ntfy_night_end in secrets (24h hours ET).
+    A caller-supplied `priority` value takes precedence over the clock-based default.
     """
     import zoneinfo
     from datetime import datetime
@@ -914,7 +915,8 @@ def send_ntfy_alert(title: str, message: str) -> None:
     et_hour = datetime.now(zoneinfo.ZoneInfo("America/New_York")).hour
     is_night = (et_hour >= night_start or et_hour < night_end) if night_start > night_end \
                else (night_start <= et_hour < night_end)
-    priority = "urgent" if is_night else "high"
+    if priority is None:
+        priority = "urgent" if is_night else "high"
 
     try:
         import urllib.request as _urlreq

@@ -1711,7 +1711,7 @@
   .algo-group-overlay {
     position: fixed;
     inset: 0;
-    z-index: 48;
+    z-index: calc(var(--z-dropdown) - 1);
     background: transparent;
     cursor: default;
   }
@@ -1719,7 +1719,7 @@
     position: absolute;
     top: 100%;
     left: 0;
-    z-index: 49;
+    z-index: var(--z-dropdown);
     margin-top: 0.3rem;
     min-width: 8rem;
     padding: 0.3rem;
@@ -1778,7 +1778,7 @@
     top: 100%;
     left: 0;
     right: 0;
-    z-index: 49;
+    z-index: var(--z-dropdown);
     background: var(--algo-bg-elev1);
     border-top: 1px solid var(--algo-amber-border);
     border-bottom: 1px solid var(--algo-amber-border);
