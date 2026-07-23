@@ -2348,6 +2348,10 @@
     font-size: var(--fs-base, 0.78rem);
     white-space: nowrap;
     overflow: hidden;
+    border-bottom: 1px solid rgba(126,151,184,0.10);
+  }
+  .lp-conn-row:last-child {
+    border-bottom: none;
   }
   .lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-sm, 0.72rem); }
   .lp-conn-acct   { flex-shrink: 0; min-width: 5rem; color: var(--algo-slate); }

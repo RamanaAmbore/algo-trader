@@ -934,18 +934,7 @@
   <BrokerHealthBadge bind:open={brokerHealthOpen} />
 {/if}
 
-<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-<div class="algo-viewport card-theme-dark"
-  onclick={(e) => {
-    // Delegated click zone — any click inside a .page-header that does NOT
-    // originate from .page-header-actions triggers the timestamp toggle.
-    // This wires the entire empty header area (title zone + spacer) as a
-    // click target without touching every page's +page.svelte.
-    const t = /** @type {HTMLElement} */ (e.target);
-    if (t.closest('.page-header') && !t.closest('.page-header-actions') && !t.closest('.algo-ts')) {
-      window.dispatchEvent(new CustomEvent('toggle-ts'));
-    }
-  }}>
+<div class="algo-viewport card-theme-dark">
   <div class="algo-card">
     <!-- Top bar -->
     <header class="algo-navbar">
@@ -2137,17 +2126,17 @@
        below so the first card sits at the new page-header bottom. */
     :global(.page-header) {
       padding: 0.1rem 0.4rem;
-      min-height: 2.5rem;
+      min-height: 1.8rem;
     }
-    /* Page-header is 1.8rem on both desktop + mobile now — icons
+    /* Page-header is 1.8rem on both desktop + mobile — icons
        (1.4rem buttons) get 0.2rem breathing room above/below instead
        of touching the strip's top/bottom borders. algo-content
        padding-top stays in lockstep with desktop. */
     .algo-content {
-      padding-top: calc(3rem + 2.5rem);
+      padding-top: calc(3rem + 1.8rem);
     }
     :global(.algo-viewport:has(.ps-strip)) .algo-content {
-      padding-top: calc(3rem + 1.5rem + 2.5rem);
+      padding-top: calc(3rem + 1.5rem + 1.8rem);
     }
     /* Mobile relaxation: the page-header action cluster has
        `white-space: nowrap` + `flex-shrink: 0` for desktop so the

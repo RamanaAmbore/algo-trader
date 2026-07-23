@@ -1,33 +1,30 @@
 <!--
-  NavBreakdown — per-account NAV breakdown table.
+  NavBreakdown — slot-specific per-account breakdown table.
 
-  Same arithmetic as PerformancePage's `navByAcct` derivation and
-  backend/api/algo/nav.py:compute_firm_nav (v4 formula):
+  Switches columns based on `activeSlot` (P/M/C/H) so the popup
+  immediately shows the data that matches the NavStrip pill value the
+  operator just clicked:
 
-      NAV = (cash_sod + option_premium)     ← "Cash" column
-          + Σ position.unrealised           ← "Pos M2M" column
-          + Σ holdings.cur_val              ← "Holdings" column
+    P — Day P&L (baseDayPnlForPosition) + Lifetime P&L (Σ pnl)
+    M — Available Margin + Total Margin (used + avail)
+    C — Live Cash (live_cash ?? cash) + Total Cash (+ long-option premium)
+    H — Today MTM (Σ day_change_val) + Value (Σ cur_val) + Lifetime (Σ pnl)
+
+  TOTAL row sums the same scoped accounts and matches the NavStrip pill
+  value for that slot.
 
   Sources funds + positions + holdings from the module-level
-  marketDataStores singletons (three-tier: memory → localStorage →
-  broker fetch). No extra fetch — the dashboard's loadHero already
-  warms these stores. TOTAL row matches PerformancePage's TOTAL row
-  exactly so the dashboard NAV tab and /performance NAV grid can't
-  drift.
+  marketDataStores singletons. No extra fetch.
 
   Reused by:
     - dashboard NAV tab (algo dark palette)
-    - any future surface that needs the per-account NAV breakdown
-
-  No ag-Grid — the row count is tiny (one per broker account, plus
-  TOTAL). Plain HTML table keeps the bundle light and the markup
-  testable from the e2e suite without ag-Grid plumbing.
+    - any future surface that needs the per-account slot breakdown
 -->
 <script>
   import { onDestroy, untrack } from 'svelte';
   import { aggCompact } from '$lib/format';
   import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
-  import { navByAccount, navTotalRow } from '$lib/data/nav';
+  import { baseDayPnlForPosition } from '$lib/data/nav';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
 
@@ -40,8 +37,7 @@
     // shows the picked accounts and the TOTAL row sums over the
     // filtered subset.
     accountFilter = /** @type {string[]} */ ([]),
-    // When set, highlights the column group relevant to the clicked
-    // pill so the operator knows which values they're looking at.
+    // When set, the table shows the data relevant to that NavStrip pill.
     activeSlot = /** @type {'P'|'M'|'C'|'H'} */ ('P'),
   } = $props();
 
@@ -56,7 +52,7 @@
 
   // Module-level store reads — $derived so the table re-renders
   // whenever loadHero (or any other surface) writes through the
-  // store singletons. No local fetch.
+  // store singletons.
   /** @type {any[]} */
   const _funds      = $derived(fundsStore.value     ?? []);
   /** @type {any[]} */
@@ -145,8 +141,7 @@
   onDestroy(() => { _unsubNavOrder(); });
 
   // Page-wide account union — every account with data in any of the
-  // three sources. Sorted by canonical display order (Kite → DH3747 →
-  // Groww → DH6847) so row order matches every other grid.
+  // three sources. Sorted by canonical display order.
   const _allAccounts = $derived.by(() => {
     const set = new Set();
     for (const r of _funds)     if (r.account && r.account !== 'TOTAL') set.add(String(r.account));
@@ -161,10 +156,87 @@
     return _allAccounts.filter(a => allow.has(a));
   });
 
-  // Canonical NAV breakdown via `$lib/data/nav`. Same math as
-  // PerformancePage navByAcct + backend nav.py:compute_firm_nav.
-  const _navByAcct = $derived(navByAccount(_scopedAccounts, _funds, _positions, _holdings));
-  const _navTotal  = $derived(navTotalRow(_navByAcct));
+  // ── P slot — per-account Day P&L + Lifetime P&L from positions ──────
+  const _pByAcct = $derived.by(() => {
+    return _scopedAccounts.map(acct => {
+      const rows = _positions.filter(p => String(p.account) === acct);
+      const dayPnl      = rows.reduce((s, p) => s + baseDayPnlForPosition(p), 0);
+      const lifetimePnl = rows.reduce((s, p) => s + Number(p.pnl ?? 0), 0);
+      return { account: acct, dayPnl, lifetimePnl };
+    });
+  });
+
+  const _pTotal = $derived.by(() => ({
+    dayPnl:      _pByAcct.reduce((s, r) => s + r.dayPnl, 0),
+    lifetimePnl: _pByAcct.reduce((s, r) => s + r.lifetimePnl, 0),
+  }));
+
+  // ── M slot — per-account Avail Margin + Total Margin from funds ──────
+  const _mByAcct = $derived.by(() => {
+    return _scopedAccounts.map(acct => {
+      const f = _funds.find(x => String(x.account) === acct);
+      const availMargin = Number(f?.avail_margin ?? 0);
+      const usedMargin  = Number(f?.used_margin  ?? 0);
+      const totalMargin = availMargin + usedMargin;
+      return { account: acct, availMargin, totalMargin };
+    });
+  });
+
+  const _mTotal = $derived.by(() => ({
+    availMargin: _mByAcct.reduce((s, r) => s + r.availMargin, 0),
+    totalMargin: _mByAcct.reduce((s, r) => s + r.totalMargin, 0),
+  }));
+
+  // ── C slot — per-account Live Cash + Total Cash ──────────────────────
+  // Total Cash = live_cash + long-option premium paid
+  // Long-option premium = Σ avg_price × qty for CE/PE with qty > 0
+  const _cByAcct = $derived.by(() => {
+    return _scopedAccounts.map(acct => {
+      const f = _funds.find(x => String(x.account) === acct);
+      const liveCash = Number(f?.live_cash ?? f?.cash ?? 0);
+      const optPremium = _positions
+        .filter(p =>
+          String(p.account) === acct &&
+          Number(p.quantity ?? 0) > 0 &&
+          (String(p.tradingsymbol ?? '').endsWith('CE') ||
+           String(p.tradingsymbol ?? '').endsWith('PE'))
+        )
+        .reduce((s, p) => s + Number(p.average_price ?? 0) * Number(p.quantity ?? 0), 0);
+      const totalCash = liveCash + optPremium;
+      return { account: acct, liveCash, totalCash };
+    });
+  });
+
+  const _cTotal = $derived.by(() => ({
+    liveCash:  _cByAcct.reduce((s, r) => s + r.liveCash, 0),
+    totalCash: _cByAcct.reduce((s, r) => s + r.totalCash, 0),
+  }));
+
+  // ── H slot — per-account Today MTM + Value + Lifetime from holdings ──
+  const _hByAcct = $derived.by(() => {
+    return _scopedAccounts.map(acct => {
+      const rows = _holdings.filter(h => String(h.account) === acct);
+      const todayMtm    = rows.reduce((s, h) => s + Number(h.day_change_val ?? 0), 0);
+      const value       = rows.reduce((s, h) => s + Number(h.cur_val        ?? 0), 0);
+      const lifetimePnl = rows.reduce((s, h) => s + Number(h.pnl            ?? 0), 0);
+      return { account: acct, todayMtm, value, lifetimePnl };
+    });
+  });
+
+  const _hTotal = $derived.by(() => ({
+    todayMtm:    _hByAcct.reduce((s, r) => s + r.todayMtm, 0),
+    value:       _hByAcct.reduce((s, r) => s + r.value, 0),
+    lifetimePnl: _hByAcct.reduce((s, r) => s + r.lifetimePnl, 0),
+  }));
+
+  // ── _hasData — slot-aware gate ───────────────────────────────────────
+  const _hasData = $derived.by(() => {
+    if (activeSlot === 'P') return _pByAcct.length > 0;
+    if (activeSlot === 'M') return _mByAcct.length > 0;
+    if (activeSlot === 'C') return _cByAcct.length > 0;
+    if (activeSlot === 'H') return _hByAcct.length > 0;
+    return false;
+  });
 
   function _cls(v) {
     if (v == null || !Number.isFinite(v)) return 'nav-zero';
@@ -177,66 +249,168 @@
     return aggCompact(v);
   }
 
-  /** Export NAV breakdown rows (including TOTAL) to CSV. */
+  /** Caption text per slot. */
+  const _caption = $derived.by(() => {
+    if (activeSlot === 'P') return 'Positions: Day P&L (baseDayPnl) + Lifetime P&L (Σ pnl)';
+    if (activeSlot === 'M') return 'Margin: Available + Total (used + avail)';
+    if (activeSlot === 'C') return 'Cash: Live cash + long-option premiums paid';
+    if (activeSlot === 'H') return 'Holdings: Today MTM + Market Value + Lifetime P&L';
+    return '';
+  });
+
+  /** Export the currently visible slot's data to CSV. */
   function _downloadCsv() {
-    const rows = [
-      ..._navByAcct,
-      ...(_navTotal ? [{ account: 'TOTAL', ..._navTotal }] : []),
-    ];
-    exportRowsToCsv(
-      rows,
-      [
-        { header: 'Account',  key: 'account' },
-        { header: 'Cash',     key: 'cash',         format: (v) => v == null ? '' : String(v) },
-        { header: 'Pos M2M',  key: 'pos_m2m',      format: (v) => v == null ? '' : String(v) },
-        { header: 'Holdings', key: 'holdings_mtm',  format: (v) => v == null ? '' : String(v) },
-        { header: 'NAV',      key: 'nav',           format: (v) => v == null ? '' : String(v) },
-      ],
-      'nav-breakdown.csv'
-    );
+    if (activeSlot === 'P') {
+      const rows = [
+        ..._pByAcct,
+        { account: 'TOTAL', dayPnl: _pTotal.dayPnl, lifetimePnl: _pTotal.lifetimePnl },
+      ];
+      exportRowsToCsv(rows, [
+        { header: 'Account',      key: 'account' },
+        { header: 'Day P&L',      key: 'dayPnl',      format: (v) => v == null ? '' : String(v) },
+        { header: 'Lifetime P&L', key: 'lifetimePnl', format: (v) => v == null ? '' : String(v) },
+      ], 'nav-p-breakdown.csv');
+    } else if (activeSlot === 'M') {
+      const rows = [
+        ..._mByAcct,
+        { account: 'TOTAL', availMargin: _mTotal.availMargin, totalMargin: _mTotal.totalMargin },
+      ];
+      exportRowsToCsv(rows, [
+        { header: 'Account',      key: 'account' },
+        { header: 'Avail Margin', key: 'availMargin', format: (v) => v == null ? '' : String(v) },
+        { header: 'Total Margin', key: 'totalMargin', format: (v) => v == null ? '' : String(v) },
+      ], 'nav-m-breakdown.csv');
+    } else if (activeSlot === 'C') {
+      const rows = [
+        ..._cByAcct,
+        { account: 'TOTAL', liveCash: _cTotal.liveCash, totalCash: _cTotal.totalCash },
+      ];
+      exportRowsToCsv(rows, [
+        { header: 'Account',    key: 'account' },
+        { header: 'Live Cash',  key: 'liveCash',  format: (v) => v == null ? '' : String(v) },
+        { header: 'Total Cash', key: 'totalCash', format: (v) => v == null ? '' : String(v) },
+      ], 'nav-c-breakdown.csv');
+    } else if (activeSlot === 'H') {
+      const rows = [
+        ..._hByAcct,
+        { account: 'TOTAL', todayMtm: _hTotal.todayMtm, value: _hTotal.value, lifetimePnl: _hTotal.lifetimePnl },
+      ];
+      exportRowsToCsv(rows, [
+        { header: 'Account',      key: 'account' },
+        { header: 'Today MTM',    key: 'todayMtm',    format: (v) => v == null ? '' : String(v) },
+        { header: 'Value',        key: 'value',        format: (v) => v == null ? '' : String(v) },
+        { header: 'Lifetime P&L', key: 'lifetimePnl', format: (v) => v == null ? '' : String(v) },
+      ], 'nav-h-breakdown.csv');
+    }
   }
 </script>
 
-{#if _navByAcct.length > 0}
+{#if _hasData}
   <div class="nav-bd-wrap">
-    <table class="algo-table nav-bd-table">
-      <thead>
-        <tr>
-          <th scope="col" class="nav-bd-acct">Account</th>
-          <th scope="col" class:nav-bd-col-active={activeSlot === 'C' || activeSlot === 'M'}>Cash</th>
-          <th scope="col" class:nav-bd-col-active={activeSlot === 'P'}>Pos M2M</th>
-          <th scope="col" class:nav-bd-col-active={activeSlot === 'H'}>Holdings</th>
-          <th scope="col" class="nav-bd-nav" class:nav-bd-col-active={activeSlot === 'P' || activeSlot === 'M'}>NAV</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each _navByAcct as r (r.account)}
+    {#if activeSlot === 'P'}
+      <table class="algo-table nav-bd-table">
+        <thead>
           <tr>
-            <td class="nav-bd-acct">{r.account}</td>
-            <td class="nav-num {_cls(r.cash)}" class:nav-bd-col-active={activeSlot === 'C' || activeSlot === 'M'}>{_fmt(r.cash)}</td>
-            <td class="nav-num {_cls(r.pos_m2m)}" class:nav-bd-col-active={activeSlot === 'P'}>{_fmt(r.pos_m2m)}</td>
-            <td class="nav-num {_cls(r.holdings_mtm)}" class:nav-bd-col-active={activeSlot === 'H'}>{_fmt(r.holdings_mtm)}</td>
-            <td class="nav-num nav-bd-nav {_cls(r.nav)}" class:nav-bd-col-active={activeSlot === 'P' || activeSlot === 'M'}>{_fmt(r.nav)}</td>
+            <th scope="col" class="nav-bd-acct">Account</th>
+            <th scope="col">Day P&L</th>
+            <th scope="col">Lifetime P&L</th>
           </tr>
-        {/each}
-        {#if _navTotal}
+        </thead>
+        <tbody>
+          {#each _pByAcct as r (r.account)}
+            <tr>
+              <td class="nav-bd-acct">{r.account}</td>
+              <td class="nav-num {_cls(r.dayPnl)}">{_fmt(r.dayPnl)}</td>
+              <td class="nav-num {_cls(r.lifetimePnl)}">{_fmt(r.lifetimePnl)}</td>
+            </tr>
+          {/each}
           <tr class="nav-bd-total">
             <td class="nav-bd-acct">TOTAL</td>
-            <td class="nav-num {_cls(_navTotal?.cash)}" class:nav-bd-col-active={activeSlot === 'C' || activeSlot === 'M'}>{_fmt(_navTotal?.cash)}</td>
-            <td class="nav-num {_cls(_navTotal?.pos_m2m)}" class:nav-bd-col-active={activeSlot === 'P'}>{_fmt(_navTotal?.pos_m2m)}</td>
-            <td class="nav-num {_cls(_navTotal?.holdings_mtm)}" class:nav-bd-col-active={activeSlot === 'H'}>{_fmt(_navTotal?.holdings_mtm)}</td>
-            <td class="nav-num nav-bd-nav {_cls(_navTotal?.nav)}" class:nav-bd-col-active={activeSlot === 'P' || activeSlot === 'M'}>{_fmt(_navTotal?.nav)}</td>
+            <td class="nav-num">{_fmt(_pTotal.dayPnl)}</td>
+            <td class="nav-num">{_fmt(_pTotal.lifetimePnl)}</td>
           </tr>
-        {/if}
-      </tbody>
-    </table>
-    <!-- Caption — same formula footnote PerformancePage carries inline
-         in its column-header tooltip; surfaced here so the operator
-         glances and knows what each column means without hovering.
-         Download is exposed via the exported downloadCsv() method so the
-         parent can wire it into its CardControls toolbar. -->
+        </tbody>
+      </table>
+    {:else if activeSlot === 'M'}
+      <table class="algo-table nav-bd-table">
+        <thead>
+          <tr>
+            <th scope="col" class="nav-bd-acct">Account</th>
+            <th scope="col">Avail Margin</th>
+            <th scope="col">Total Margin</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each _mByAcct as r (r.account)}
+            <tr>
+              <td class="nav-bd-acct">{r.account}</td>
+              <td class="nav-num {_cls(r.availMargin)}">{_fmt(r.availMargin)}</td>
+              <td class="nav-num {_cls(r.totalMargin)}">{_fmt(r.totalMargin)}</td>
+            </tr>
+          {/each}
+          <tr class="nav-bd-total">
+            <td class="nav-bd-acct">TOTAL</td>
+            <td class="nav-num">{_fmt(_mTotal.availMargin)}</td>
+            <td class="nav-num">{_fmt(_mTotal.totalMargin)}</td>
+          </tr>
+        </tbody>
+      </table>
+    {:else if activeSlot === 'C'}
+      <table class="algo-table nav-bd-table">
+        <thead>
+          <tr>
+            <th scope="col" class="nav-bd-acct">Account</th>
+            <th scope="col">Live Cash</th>
+            <th scope="col">Total Cash</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each _cByAcct as r (r.account)}
+            <tr>
+              <td class="nav-bd-acct">{r.account}</td>
+              <td class="nav-num {_cls(r.liveCash)}">{_fmt(r.liveCash)}</td>
+              <td class="nav-num {_cls(r.totalCash)}">{_fmt(r.totalCash)}</td>
+            </tr>
+          {/each}
+          <tr class="nav-bd-total">
+            <td class="nav-bd-acct">TOTAL</td>
+            <td class="nav-num">{_fmt(_cTotal.liveCash)}</td>
+            <td class="nav-num">{_fmt(_cTotal.totalCash)}</td>
+          </tr>
+        </tbody>
+      </table>
+    {:else if activeSlot === 'H'}
+      <table class="algo-table nav-bd-table">
+        <thead>
+          <tr>
+            <th scope="col" class="nav-bd-acct">Account</th>
+            <th scope="col">Today MTM</th>
+            <th scope="col">Value</th>
+            <th scope="col">Lifetime</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each _hByAcct as r (r.account)}
+            <tr>
+              <td class="nav-bd-acct">{r.account}</td>
+              <td class="nav-num {_cls(r.todayMtm)}">{_fmt(r.todayMtm)}</td>
+              <td class="nav-num {_cls(r.value)}">{_fmt(r.value)}</td>
+              <td class="nav-num {_cls(r.lifetimePnl)}">{_fmt(r.lifetimePnl)}</td>
+            </tr>
+          {/each}
+          <tr class="nav-bd-total">
+            <td class="nav-bd-acct">TOTAL</td>
+            <td class="nav-num">{_fmt(_hTotal.todayMtm)}</td>
+            <td class="nav-num">{_fmt(_hTotal.value)}</td>
+            <td class="nav-num">{_fmt(_hTotal.lifetimePnl)}</td>
+          </tr>
+        </tbody>
+      </table>
+    {/if}
+    <!-- Caption — slot-specific formula footnote so the operator
+         glances and knows what each column means without hovering. -->
     <div class="nav-bd-caption">
-      <span>NAV = Cash (SOD + long-option premium) + Σ position M2M + Σ holdings MTM</span>
+      <span>{_caption}</span>
     </div>
   </div>
 {:else if _anyError && !_inFlight}
@@ -335,23 +509,9 @@
     font-weight: 600;
   }
 
-  /* Active column — highlights the metric group matching the clicked pill.
-     Subtle amber tint + bold weight so the operator instantly spots the
-     relevant column without other metrics disappearing. */
-  .nav-bd-col-active {
-    background: rgba(251, 191, 36, 0.07);
-    font-weight: 700;
-    color: var(--c-action) !important;
-  }
-  .nav-bd-total .nav-bd-col-active {
-    color: var(--c-action) !important;
-  }
   .nav-num {
     text-align: right;
     font-variant-numeric: tabular-nums;
-  }
-  .nav-bd-nav {
-    font-weight: 700;
   }
 
   /* Direction palette matches the algo theme tokens used across
@@ -374,11 +534,7 @@
     letter-spacing: 0.05em;
     text-transform: uppercase;
   }
-  .nav-bd-total .nav-up,
-  .nav-bd-total .nav-down,
-  .nav-bd-total .nav-zero {
-    color: var(--c-action) !important;
-  }
+  /* TOTAL row always renders amber — direction classes don't apply. */
 
   .nav-bd-caption {
     display: flex;
@@ -470,7 +626,7 @@
     color: #67e8f9;
   }
 
-  /* Mobile: tighten padding so 5 columns fit comfortably on a
+  /* Mobile: tighten padding so columns fit comfortably on a
      360px viewport without column wrap or horizontal scroll. */
   @media (max-width: 600px) {
     .nav-bd-table          { font-size: 0.65rem; }
