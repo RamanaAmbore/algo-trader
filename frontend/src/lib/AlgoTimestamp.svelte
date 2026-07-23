@@ -54,6 +54,12 @@
     color: var(--algo-amber, #fbbf24);
     font-size: inherit;
   }
+  @media (min-width: 641px) {
+    .ats-group {
+      cursor: default;
+      pointer-events: none;
+    }
+  }
   @media (max-width: 640px) {
     .ats-group {
       font-size: 0.6rem;
