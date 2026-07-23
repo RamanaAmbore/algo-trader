@@ -72,8 +72,6 @@
       cursor: pointer;
       pointer-events: auto;
       font-size: 0.6rem;
-      min-height: 1.8rem;
-      align-items: center;
     }
     .ats-sep { display: none; }
     .ats-now, .ats-refresh {

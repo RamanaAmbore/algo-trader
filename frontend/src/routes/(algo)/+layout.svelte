@@ -2126,17 +2126,17 @@
        below so the first card sits at the new page-header bottom. */
     :global(.page-header) {
       padding: 0.1rem 0.4rem;
-      min-height: 1.8rem;
+      min-height: 1.4rem;
     }
-    /* Page-header is 1.8rem on both desktop + mobile — icons
+    /* Page-header is 2rem on desktop, 1.4rem on mobile — icons
        (1.4rem buttons) get 0.2rem breathing room above/below instead
        of touching the strip's top/bottom borders. algo-content
        padding-top stays in lockstep with desktop. */
     .algo-content {
-      padding-top: calc(3rem + 1.8rem);
+      padding-top: calc(3rem + 1.4rem);
     }
     :global(.algo-viewport:has(.ps-strip)) .algo-content {
-      padding-top: calc(3rem + 1.5rem + 1.8rem);
+      padding-top: calc(3rem + 1.5rem + 1.4rem);
     }
     /* Mobile relaxation: the page-header action cluster has
        `white-space: nowrap` + `flex-shrink: 0` for desktop so the
