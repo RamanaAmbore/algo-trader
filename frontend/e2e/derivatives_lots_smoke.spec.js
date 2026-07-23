@@ -153,7 +153,7 @@ test.describe('MCX lot-size correctness after IDB cache clear', () => {
 
   // ── Dimension 3: Stale — schema version bump is present in the bundle ─────
   test('3-Stale: INDEX_SCHEMA_VERSION >= 6 in compiled instruments bundle', async ({ page }) => {
-    const schemaVersionsSeen: number[] = [];
+    const schemaVersionsSeen = [];
     page.on('response', async (resp) => {
       const ct = resp.headers()['content-type'] || '';
       if (!ct.includes('javascript')) return;

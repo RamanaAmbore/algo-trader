@@ -695,33 +695,64 @@
     return expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
   }
 
+  /**
+   * Per-position expiry P&L contribution.
+   * Returns the numeric contribution for this single position row,
+   * or null when the exchange is not a derivative segment.
+   * Called by both `_expiryProfit` (grand total) and
+   * `_expiryProfitByAcct` (per-account map).
+   *
+   * @param {any} p - raw position row
+   * @returns {number | null}
+   */
+  function _expiryForPosition(p) {
+    const exch = String(p?.exchange || '').toUpperCase();
+    if (!_isDerivativeExch(exch)) return null;
+    const sym  = String(p?.tradingsymbol || '').toUpperCase();
+    const qty  = Number(p?.quantity) || 0;
+    const avg  = Number(p?.average_price) || 0;
+    if (!qty) {
+      // Closed leg — realized P&L is locked in, no spot needed
+      return Number(p?.pnl || 0);
+    }
+    const isCE  = sym.endsWith('CE');
+    const isPE  = sym.endsWith('PE');
+    const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
+    let v = null;
+    if (isCE || isPE) {
+      v = _optionLegExpiryPnl(p, sym, qty, avg, positions, holdings);
+    } else if (isFut) {
+      v = _futureLegExpiryPnl(p, sym, qty, avg);
+    }
+    if (v != null) return v + Number(p?.realised || 0);
+    return null;
+  }
+
   const _expiryProfit = $derived.by(() => {
     void _throttledTick;
     void _mktTick;
     let total = 0;
     for (const p of positions) {
-      const exch = String(p?.exchange || '').toUpperCase();
-      if (!_isDerivativeExch(exch)) continue;
-      const sym  = String(p?.tradingsymbol || '').toUpperCase();
-      const qty  = Number(p?.quantity) || 0;
-      const avg  = Number(p?.average_price) || 0;
-      if (!qty) {
-        // Closed leg — realized P&L is locked in, no spot needed
-        total += Number(p?.pnl || 0);
-        continue;
-      }
-      const isCE  = sym.endsWith('CE');
-      const isPE  = sym.endsWith('PE');
-      const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
-      let v = null;
-      if (isCE || isPE) {
-        v = _optionLegExpiryPnl(p, sym, qty, avg, positions, holdings);
-      } else if (isFut) {
-        v = _futureLegExpiryPnl(p, sym, qty, avg);
-      }
-      if (v != null) total += v + Number(p?.realised || 0);
+      const v = _expiryForPosition(p);
+      if (v != null) total += v;
     }
     return total;
+  });
+
+  /** Map<account, expiry P&L sum> — used by NavBreakdown P slot expiry column. */
+  const _expiryProfitByAcct = $derived.by(() => {
+    void _throttledTick;
+    void _mktTick;
+    /** @type {Map<string, number>} */
+    const map = new Map();
+    for (const p of positions) {
+      const acct = String(p?.account || '');
+      if (!acct) continue;
+      const v = _expiryForPosition(p);
+      if (v == null) continue;
+      map.set(acct, (map.get(acct) ?? 0) + v);
+    }
+    return map;
   });
   // Margin: available (what's deployable) and total (used + avail = full
   // capacity). Pill shows avail / total to match the operator's mental
@@ -953,7 +984,7 @@
         <button type="button" class="ps-breakdown-close"
                 onclick={() => _breakdownOpen = false}
                 aria-label="Close breakdown">✕</button>
-        <NavBreakdown activeSlot={_activeSlot} />
+        <NavBreakdown activeSlot={_activeSlot} expiryByAcct={_expiryProfitByAcct} />
       </div>
     </div>
   {/if}
@@ -1141,7 +1172,7 @@
   .ps-breakdown-overlay {
     position: fixed;
     inset: 0;
-    z-index: 200;
+    z-index: calc(var(--z-dropdown) - 1);
     background: transparent;
   }
   .ps-breakdown-panel {
@@ -1155,7 +1186,7 @@
     border: 1px solid var(--border-color, rgba(255,255,255,0.08));
     border-radius: 4px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-    z-index: 201;
+    z-index: var(--z-drawer);
     padding: 0.5rem;
   }
   .ps-breakdown-close {

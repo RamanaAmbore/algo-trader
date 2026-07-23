@@ -124,9 +124,9 @@
 
   /* z-index scale — use these vars; never hardcode global stacking values */
   --z-nav:      50;
-  --z-dropdown: 60;
+  --z-dropdown: 20000;
   --z-toast:    80;
-  --z-drawer:   200;
+  --z-drawer:   20001;
   --z-modal:    300;
   --z-tooltip:  9999;
   --z-search:   10000;

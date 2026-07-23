@@ -125,16 +125,15 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
     for ch in channels:
         if not ch.get("enabled", False):
             continue
-        channel = ch.get("channel", "")
 
         try:
             await _dispatch_channel(
-                channel, agent, telegram_body, email_subject, email_body,
+                ch, agent, telegram_body, email_subject, email_body,
                 condition_text, ist_display, eval_result, broadcast_fn,
                 sim_mode, branch, branch_tag,
             )
         except Exception as e:
-            logger.error(f"Agent event dispatch failed ({channel}): {e}")
+            logger.error(f"Agent event dispatch failed ({ch.get('channel', '')}): {e}")
 
     # Persist to agent_events table (sim_mode flag flows through)
     await _log_event(agent, "triggered", condition_text, eval_result.detail,
@@ -142,11 +141,12 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
 
 
 async def _dispatch_channel(
-    channel: str, agent, telegram_body: str, email_subject: str,
+    ch: dict, agent, telegram_body: str, email_subject: str,
     email_body: str, condition_text: str, ist_display: str,
     eval_result, broadcast_fn, sim_mode: bool, branch: str, branch_tag: str,
 ) -> None:
     """Route one channel event. Raises on error — caller wraps in try/except."""
+    channel = ch.get("channel", "")
     if channel == "telegram" and is_enabled("telegram"):
         await _send_telegram(telegram_body)
     elif channel == "email" and is_enabled("mail"):
@@ -174,7 +174,8 @@ async def _dispatch_channel(
         from backend.shared.helpers.alert_utils import send_ntfy_alert
         import asyncio
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=telegram_body))
+        ntfy_priority = ch.get("priority")
+        await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=telegram_body, priority=ntfy_priority))
     elif channel == "log":
         log_sim_tag = "[SIM] " if sim_mode else ""
         logger.warning(f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}")

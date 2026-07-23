@@ -5,7 +5,7 @@
   immediately shows the data that matches the NavStrip pill value the
   operator just clicked:
 
-    P — Day P&L (baseDayPnlForPosition) + Lifetime P&L (Σ pnl)
+    P — Day P&L (baseDayPnlForPosition) + Lifetime P&L (Σ pnl) + Expiry P&L (lognormal projection)
     M — Available Margin + Total Margin (used + avail)
     C — Live Cash (live_cash ?? cash) + Total Cash (+ long-option premium)
     H — Today MTM (Σ day_change_val) + Value (Σ cur_val) + Lifetime (Σ pnl)
@@ -31,6 +31,7 @@
   /** @type {{
    *   accountFilter?: string[],
    *   activeSlot?: 'P'|'M'|'C'|'H',
+   *   expiryByAcct?: Map<string, number>,
    * }} */
   let {
     // Empty = all accounts (no filter). When set, the table only
@@ -39,6 +40,9 @@
     accountFilter = /** @type {string[]} */ ([]),
     // When set, the table shows the data relevant to that NavStrip pill.
     activeSlot = /** @type {'P'|'M'|'C'|'H'} */ ('P'),
+    // Per-account expiry P&L map — passed from PositionStrip (which has
+    // access to symbolStore spots). NavBreakdown cannot compute this itself.
+    expiryByAcct = /** @type {Map<string,number>} */ (new Map()),
   } = $props();
 
   /**
@@ -156,19 +160,22 @@
     return _allAccounts.filter(a => allow.has(a));
   });
 
-  // ── P slot — per-account Day P&L + Lifetime P&L from positions ──────
+  // ── P slot — per-account Day P&L + Lifetime P&L + Expiry P&L ────────
+  // expiryPnl comes from PositionStrip (which owns symbolStore spots).
   const _pByAcct = $derived.by(() => {
     return _scopedAccounts.map(acct => {
       const rows = _positions.filter(p => String(p.account) === acct);
       const dayPnl      = rows.reduce((s, p) => s + baseDayPnlForPosition(p), 0);
       const lifetimePnl = rows.reduce((s, p) => s + Number(p.pnl ?? 0), 0);
-      return { account: acct, dayPnl, lifetimePnl };
+      const expiryPnl   = expiryByAcct.get(acct) ?? null;
+      return { account: acct, dayPnl, lifetimePnl, expiryPnl };
     });
   });
 
   const _pTotal = $derived.by(() => ({
     dayPnl:      _pByAcct.reduce((s, r) => s + r.dayPnl, 0),
     lifetimePnl: _pByAcct.reduce((s, r) => s + r.lifetimePnl, 0),
+    expiryPnl:   _pByAcct.reduce((s, r) => s + (r.expiryPnl ?? 0), 0),
   }));
 
   // ── M slot — per-account Avail Margin + Total Margin from funds ──────
@@ -251,10 +258,10 @@
 
   /** Caption text per slot. */
   const _caption = $derived.by(() => {
-    if (activeSlot === 'P') return 'Positions: Day P&L (baseDayPnl) + Lifetime P&L (Σ pnl)';
-    if (activeSlot === 'M') return 'Margin: Available + Total (used + avail)';
-    if (activeSlot === 'C') return 'Cash: Live cash + long-option premiums paid';
-    if (activeSlot === 'H') return 'Holdings: Today MTM + Market Value + Lifetime P&L';
+    if (activeSlot === 'P') return 'Day P&L | Lifetime P&L (Σ pnl) | Expiry P&L (lognormal projection)';
+    if (activeSlot === 'M') return 'Available = Total − used margin | Total = used + available';
+    if (activeSlot === 'C') return 'Cash Avail (CA) = live deployable cash | Total = CA + long option premiums';
+    if (activeSlot === 'H') return 'Today MTM | Current Value | Lifetime P&L';
     return '';
   });
 
@@ -263,12 +270,13 @@
     if (activeSlot === 'P') {
       const rows = [
         ..._pByAcct,
-        { account: 'TOTAL', dayPnl: _pTotal.dayPnl, lifetimePnl: _pTotal.lifetimePnl },
+        { account: 'TOTAL', dayPnl: _pTotal.dayPnl, lifetimePnl: _pTotal.lifetimePnl, expiryPnl: _pTotal.expiryPnl },
       ];
       exportRowsToCsv(rows, [
         { header: 'Account',      key: 'account' },
         { header: 'Day P&L',      key: 'dayPnl',      format: (v) => v == null ? '' : String(v) },
         { header: 'Lifetime P&L', key: 'lifetimePnl', format: (v) => v == null ? '' : String(v) },
+        { header: 'Expiry P&L',   key: 'expiryPnl',   format: (v) => v == null ? '' : String(v) },
       ], 'nav-p-breakdown.csv');
     } else if (activeSlot === 'M') {
       const rows = [
@@ -313,7 +321,8 @@
           <tr>
             <th scope="col" class="nav-bd-acct">Account</th>
             <th scope="col">Day P&L</th>
-            <th scope="col">Lifetime P&L</th>
+            <th scope="col">Lifetime</th>
+            <th scope="col">Expiry</th>
           </tr>
         </thead>
         <tbody>
@@ -322,12 +331,14 @@
               <td class="nav-bd-acct">{r.account}</td>
               <td class="nav-num {_cls(r.dayPnl)}">{_fmt(r.dayPnl)}</td>
               <td class="nav-num {_cls(r.lifetimePnl)}">{_fmt(r.lifetimePnl)}</td>
+              <td class="nav-num {_cls(r.expiryPnl)}">{_fmt(r.expiryPnl)}</td>
             </tr>
           {/each}
           <tr class="nav-bd-total">
             <td class="nav-bd-acct">TOTAL</td>
             <td class="nav-num">{_fmt(_pTotal.dayPnl)}</td>
             <td class="nav-num">{_fmt(_pTotal.lifetimePnl)}</td>
+            <td class="nav-num">{_fmt(_pTotal.expiryPnl)}</td>
           </tr>
         </tbody>
       </table>

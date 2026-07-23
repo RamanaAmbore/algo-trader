@@ -98,7 +98,12 @@ Hand-placed on each server path. Contains Kite keys, SMTP creds, DB password, Te
 | `prod` | `ramboq_api.service` |
 | `dev` | `ramboq_dev_api.service` |
 
-Deploy notification (`notify_deploy.py`) reports status of all 3 services (`ramboq_api`, `ramboq_dev_api`, `ramboq_hook`) in every message — this is informational cross-env visibility, not the list of what was restarted.
+Deploy notification (`notify_deploy.py`) reports status of all 3 services
+(`ramboq_api`, `ramboq_dev_api`, `ramboq_hook`) in every message — this is
+informational cross-env visibility, not the list of what was restarted. Deploy
+alerts to ntfy.sh use `Priority: default` (lower urgency) since deploy notifications
+are informational and should not interrupt active trading. Telegram remains instant
+via the bot API.
 
 ---
 
