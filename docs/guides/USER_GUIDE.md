@@ -159,14 +159,16 @@ So the first email when things go bad is the static agent. Subsequent emails are
 
 ### Built-in agents
 
-The platform ships with 14 loss / risk agents pre-seeded and active:
+The platform ships with 16 loss / risk / market-status agents pre-seeded:
 
-| Slug pattern | What it watches |
-|---|---|
-| `loss-pos-*` | Position P&L (intraday F&O exposure) |
-| `loss-hold-*` | Holdings P&L (long-term equity) |
-| `loss-funds-cash-negative` | Cash balance below zero |
-| `loss-funds-margin-negative` | Available margin below zero |
+| Slug pattern | What it watches | Default status |
+|---|---|---|
+| `loss-pos-*` | Position P&L (intraday F&O exposure) | active |
+| `loss-hold-*` | Holdings P&L (long-term equity) | active |
+| `loss-margin-low` | Available margin on any account drops below ₹25,000 (early warning) | active |
+| `loss-funds-*-negative` | Cash or margin balance below zero | active |
+| `market-open-nse` | Fires at NSE open (09:15 IST), info-only notification | active |
+| `market-close-mcx` | Fires at MCX close (23:30 IST), info-only notification | active |
 
 Edit them from `/agents` — change a threshold, add Telegram-only notification, or attach a `chase_close_positions` action that auto-cuts losses. The conditions are JSON trees you can read like a sentence.
 

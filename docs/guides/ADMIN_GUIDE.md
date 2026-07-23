@@ -224,10 +224,14 @@ A composite tree:
 ```json
 [
   { "channel": "telegram", "enabled": true },
-  { "channel": "email",    "enabled": true }
+  { "channel": "email",    "enabled": true },
+  { "channel": "ntfy",     "enabled": true, "priority": "default" }
 ]
 ```
-Mix and match: `telegram` / `email` / `websocket` / `log`.
+Mix and match: `telegram` / `email` / `websocket` / `log` / `ntfy`. The `ntfy`
+channel supports an optional `priority` key (defaults to "high"): set to
+`"default"` for lower-priority notifications (useful for info-only agents
+like market-open alerts), or `"high"` to escalate urgency.
 
 ### 3. Actions
 

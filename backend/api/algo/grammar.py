@@ -216,6 +216,21 @@ def _metric_is_ntm(ctx, row):
     return 1.0 if abs(intrinsic) <= 0.015 else 0.0
 
 
+def _metric_is_future(ctx, row):
+    """1.0 when the position is a futures contract (kind == 'fut'),
+    0.0 when it is an option, None for equity or unrecognised symbols."""
+    sym = row.get('tradingsymbol') or ''
+    parsed = _parsed_or_none(sym)
+    if not parsed:
+        return None
+    kind = parsed.get('kind')
+    if kind == 'fut':
+        return 1.0
+    if kind == 'opt':
+        return 0.0
+    return None
+
+
 def _scope_positions_expiring_today(ctx):
     """Per-symbol position rows where the symbol parses to an F&O
     contract expiring TODAY (or already past expiry — days_to_expiry
@@ -621,6 +636,10 @@ SYSTEM_TOKENS: list[dict] = [
      'value_type': 'number', 'units': '',
      'description': 'Returns 1.0 when an option is within ±1.5%% of spot (near-the-money), 0.0 otherwise. Needs ctx.spot_prices.',
      'resolver': 'backend.api.algo.grammar._metric_is_ntm'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'is_future',
+     'description': 'Returns 1.0 for futures contracts, 0.0 for options, None for equity.',
+     'units': 'binary',
+     'resolver': 'backend.api.algo.grammar._metric_is_future'},
 
     {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'minutes_since_open',
      'value_type': 'number', 'units': 'min',

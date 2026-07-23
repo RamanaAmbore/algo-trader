@@ -1033,6 +1033,57 @@ for _a in _EXPIRY_AGENTS:
 BUILTIN_AGENTS.extend(_EXPIRY_AGENTS)
 
 
+# ── Expiry risk alert agents ──────────────────────────────────────────
+#
+# Two active (not INACTIVE) notify-only agents that fire during market
+# hours on expiry day whenever any position requires active management:
+#   - NFO: ITM options (risk of assignment/STT trap) or open futures
+#     (must be rolled or closed before expiry)
+#   - MCX: any open position (broker auto-settles at a potentially
+#     unfavourable price if not manually closed)
+
+_EXPIRY_RISK_AGENT_DEFAULTS = dict(
+    schedule="market_hours",
+    cooldown_minutes=60,
+    actions=[],
+    status="active",
+    tier="high",
+    topic="expiry_warning",
+    events=[
+        {"channel": "telegram", "enabled": True},
+        {"channel": "email",    "enabled": True},
+        {"channel": "log",      "enabled": True},
+        {"channel": "ntfy",     "enabled": True, "priority": "high"},
+    ],
+)
+
+_EXPIRY_RISK_AGENTS = [
+    {
+        "slug": "expiry-nfo-risk-alert",
+        "name": "NFO expiry risk — ITM options or open futures",
+        "long_name": "when:positions.expiring_today.nfo.(is_itm==1 OR is_future==1)   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires on expiry day when any NFO position is ITM (option) or is an open future — both require active management.",
+        "conditions": {"any": [
+            {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_itm",    "value": 1.0},
+            {"op": "==", "scope": "positions.expiring_today.nfo", "metric": "is_future", "value": 1.0},
+        ]},
+    },
+    {
+        "slug": "expiry-mcx-risk-alert",
+        "name": "MCX expiry risk — unhedged options or open futures",
+        "long_name": "when:positions.expiring_today.mcx_unhedged.pnl>=-inf   alert:high/tg+email+ntfy(high)+log   do:notify-only",
+        "description": "Fires on expiry day when any MCX position is unhedged (net exposure) or is a future — broker will auto-settle without manual close.",
+        "conditions": {"op": ">=", "scope": "positions.expiring_today.mcx_unhedged", "metric": "pnl", "value": -999999999},
+    },
+]
+
+for _a in _EXPIRY_RISK_AGENTS:
+    for _k, _v in _EXPIRY_RISK_AGENT_DEFAULTS.items():
+        _a.setdefault(_k, _v)
+
+BUILTIN_AGENTS.extend(_EXPIRY_RISK_AGENTS)
+
+
 # ── Market open/close info agents ────────────────────────────────────
 #
 # Notify-only agents that fire at exact market open/close times.
