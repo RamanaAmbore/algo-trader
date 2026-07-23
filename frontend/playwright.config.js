@@ -35,11 +35,11 @@ export default defineConfig({
     },
     {
       name: 'mobile-portrait',
-      use: { viewport: { width: 360,  height: 800 }, browserName: 'chromium', isMobile: true },
+      use: { viewport: { width: 360,  height: 800 }, browserName: 'chromium', isMobile: true, hasTouch: true },
     },
     {
       name: 'mobile-landscape',
-      use: { viewport: { width: 800,  height: 360 }, browserName: 'chromium', isMobile: true },
+      use: { viewport: { width: 800,  height: 360 }, browserName: 'chromium', isMobile: true, hasTouch: true },
     },
   ],
 

@@ -1,4 +1,4 @@
-<script lang="ts">
+<script>
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
   import { lastRefreshAt, formatDualTz } from '$lib/stores';
@@ -22,7 +22,6 @@
   let _nowTs     = $derived(_nowEpoch ? formatDualTz(new Date(_nowEpoch)) : '');
   let _refreshTs = $derived(_lastRefresh ? formatDualTz(new Date(_lastRefresh)) : null);
 
-  function _handleTap(e: TouchEvent) { e.preventDefault(); _toggle(); }
   function _toggle() { if (_refreshTs) _showRefresh = !_showRefresh; }
 
   $effect(() => { if (!_refreshTs && _showRefresh) _showRefresh = false; });
@@ -31,7 +30,6 @@
 <button
   type="button"
   class="ats-group"
-  ontouchend={_handleTap}
   onclick={_toggle}
   onkeydown={(e) => e.key === 'Enter' && _toggle()}
   style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent;">
@@ -69,7 +67,7 @@
     color: var(--algo-amber, #fbbf24);
     font-size: inherit;
   }
-  @media (hover: none) and (pointer: coarse) {
+  @media (max-width: 640px) {
     .ats-group {
       cursor: pointer;
       pointer-events: auto;
@@ -78,6 +76,13 @@
       align-items: center;
     }
     .ats-sep { display: none; }
-    .ats-mobile-hide { display: none; }
+    .ats-now, .ats-refresh {
+      transition: opacity 0.15s ease;
+    }
+    .ats-mobile-hide {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
+    }
   }
 </style>
