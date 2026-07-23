@@ -33,11 +33,12 @@
   onclick={_toggle}
   onkeydown={(e) => e.key === 'Enter' && _toggle()}
   style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent;">
-  <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{_nowTs}</span>
-  {#if _refreshTs}
-    <span class="ats-sep" aria-hidden="true">|</span>
-    <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
-  {/if}
+  <span class="ats-slot">
+    <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{_nowTs}</span>
+    {#if _refreshTs}
+      <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
+    {/if}
+  </span>
 </button>
 
 <style>
@@ -54,14 +55,12 @@
     align-items: center;
     gap: 0.3rem;
   }
+  .ats-slot {
+    display: inline-flex;
+  }
   .ats-now {
     color: var(--c-info);
     font-size: inherit;
-  }
-  .ats-sep {
-    color: var(--text-muted);
-    font-size: inherit;
-    opacity: 0.5;
   }
   .ats-refresh {
     color: var(--algo-amber, #fbbf24);
@@ -73,7 +72,8 @@
       pointer-events: auto;
       font-size: 0.6rem;
     }
-    .ats-sep { display: none; }
+    .ats-slot { display: grid; }
+    .ats-now, .ats-refresh { grid-area: 1 / 1; }
     .ats-now, .ats-refresh {
       transition: opacity 0.15s ease;
     }
