@@ -922,16 +922,24 @@ def send_ntfy_alert(title: str, message: str, priority: str | None = None) -> No
         import urllib.request as _urlreq
         url = f"{base_url.rstrip('/')}/{topic}"
         send_count = 3 if priority == "urgent" else 1
+
+        headers = {
+            "Title": title,
+            "Priority": priority,
+            "Tags": "rotating_light",
+            "Content-Type": "text/plain",
+        }
+
+        # Add Authorization header if ntfy_token is configured
+        token = secrets.get("ntfy_token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
         for _ in range(send_count):
             req = _urlreq.Request(
                 url,
                 data=message.encode(),
-                headers={
-                    "Title": title,
-                    "Priority": priority,
-                    "Tags": "rotating_light",
-                    "Content-Type": "text/plain",
-                },
+                headers=headers,
                 method="POST",
             )
             _urlreq.urlopen(req, timeout=5)

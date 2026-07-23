@@ -196,7 +196,9 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
                 f"applies_to:  {applies_to}\n"
                 f"reason:      {reason}\n\n"
                 f"Parent order FILLED. Exits NOT attached.\n"
-                f"Arm exits manually if needed.</code>"
+                f"Arm exits manually if needed.\n\n"
+                f"Fix: at /admin/templates, change this template's "
+                f"'applies_to' to 'both' or 'buy_option'.</code>"
             )
             _send_telegram(msg)
         except Exception as e:
@@ -1728,6 +1730,15 @@ async def _resolve_lot_size_for_order(
     try:
         from backend.brokers.adapters.kite import get_lot_size
         _ls = await get_lot_size(parent_exchange, parent_symbol)
+        if _ls <= 1 and parent_exchange.upper() in ("MCX", "NCO"):
+            # Instruments cache warms asynchronously at startup; a fresh
+            # postback that arrives before the cache is fully populated
+            # can return 0 (miss) or 1 (equity sentinel) for MCX/NCO.
+            # One 3 s retry catches the common race without blocking the
+            # fill pipeline significantly.
+            import asyncio as _asyncio_retry
+            await _asyncio_retry.sleep(3)
+            _ls = await get_lot_size(parent_exchange, parent_symbol)
         if _ls > 1:
             return _ls, None
         # 0 = cache miss, 1 = equity sentinel — both are dangerous on

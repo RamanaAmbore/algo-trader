@@ -24,6 +24,7 @@
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { navByAccount, navTotalRow, aggregateDayPnlForPositions } from '$lib/data/nav';
+  import { applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
   // re-runs cellRenderer on every redraw — a Map cache avoids
@@ -1128,7 +1129,18 @@
         // split the fill, partial, etc.) the fresh row overwrites.
         _applyFillDelta(msg);
         _flashFillToast(msg);
+        // Insert provisional row in the shared store so other surfaces
+        // (MarketPulse, PositionStrip) react immediately.
+        applyFill(msg);
+        // 60 s safety — drop the provisional row if positions_refreshed
+        // never arrives.
+        setTimeout(() => clearFill(msg), 60_000);
         loadAll({ fresh: true });
+      } else if (msg.event === 'positions_refreshed') {
+        // Broker book is fully up to date — clear all provisional rows
+        // (positions_refreshed has no per-symbol payload).
+        clearAllProvisional();
+        loadAll();
       } else {
         loadAll();
       }

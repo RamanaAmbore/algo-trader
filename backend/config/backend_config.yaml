@@ -160,3 +160,8 @@ macros:
   gdp_as_of:            "2025-09-30"
   inr_usd:              83.50   # Approximate spot reference
   inr_usd_as_of:        "2025-12-15"
+
+# Order-layer ceiling overrides. Operator-tunable at /admin/settings
+# without a deploy. Default matches Kite's practical MCX GTT lot limit.
+orders:
+  mcx_gtt_lot_ceiling: 200  # per-leg MCX/NCO GTT ceiling (in lots)

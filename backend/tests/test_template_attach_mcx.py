@@ -209,27 +209,29 @@ def test_wing_order_qty_translated():
 # ── Adapter ceiling guard ─────────────────────────────────────────────
 
 def test_kite_broker_place_gtt_rejects_mcx_qty_over_50():
-    """KiteBroker.place_gtt must refuse MCX/NCO legs with qty > 50 lots."""
+    """KiteBroker.place_gtt must refuse MCX/NCO legs with qty above the
+    configurable ceiling (default 200 lots per orders.mcx_gtt_lot_ceiling).
+    Qty=300 is above the default and must be refused."""
     from backend.brokers.adapters.kite import KiteBroker
 
     mock_conn = MagicMock()
     kite_broker = KiteBroker(mock_conn)
 
-    # Simulate untranslated qty=100 (contracts) leaking through
-    with pytest.raises(ValueError, match="50-lot absurd-value ceiling"):
+    # Use 300 lots — above the new default 200-lot ceiling
+    with pytest.raises(ValueError, match="absurd-value ceiling"):
         kite_broker.place_gtt(
             trigger_type="single",
             tradingsymbol="CRUDEOIL25AUGFUT",
             exchange="MCX",
             last_price=5000.0,
             trigger_values=[5500.0],
-            orders=[{"transaction_type": "SELL", "quantity": 100,
+            orders=[{"transaction_type": "SELL", "quantity": 300,
                      "price": 5500.0, "order_type": "LIMIT", "product": "NRML"}],
         )
 
 
 def test_kite_broker_place_gtt_allows_mcx_qty_50():
-    """MCX qty=50 lots is at the ceiling — must be allowed through."""
+    """MCX qty=50 lots is well below the default 200-lot ceiling — must be allowed through."""
     from backend.brokers.adapters.kite import KiteBroker
 
     mock_conn = MagicMock()
@@ -329,8 +331,11 @@ def test_mcx_lot_overrides_all_keys_uppercase():
 
 def test_raw_qty_blocked_by_ceiling_before_reaching_sdk():
     """Defense-in-depth: even if translate_qty was bypassed, the adapter
-    ceiling in place_gtt must block raw MCX contract qty from reaching
-    the Kite SDK.  This test ensures the ceiling exists at the adapter layer."""
+    ceiling in place_gtt must block absurd MCX contract qty from reaching
+    the Kite SDK.  This test ensures the ceiling exists at the adapter layer.
+
+    The ceiling is configurable (default 200 lots). We use 300 lots here
+    which is above the default ceiling and represents an obvious fat-finger."""
     from backend.brokers.adapters.kite import KiteBroker
 
     mock_conn = MagicMock()
@@ -338,15 +343,15 @@ def test_raw_qty_blocked_by_ceiling_before_reaching_sdk():
     mock_conn.get_kite_conn.return_value = mock_kite
     kite_broker = KiteBroker(mock_conn)
 
-    # Raw contracts for 1-lot CRUDEOIL = 100 — must be caught before SDK call
-    with pytest.raises(ValueError, match="50-lot absurd-value ceiling"):
+    # 300 lots — above the default 200-lot ceiling — must be blocked
+    with pytest.raises(ValueError, match="absurd-value ceiling"):
         kite_broker.place_gtt(
             trigger_type="single",
             tradingsymbol="CRUDEOIL25AUGFUT",
             exchange="MCX",
             last_price=5000.0,
             trigger_values=[5500.0],
-            orders=[{"transaction_type": "SELL", "quantity": 100,
+            orders=[{"transaction_type": "SELL", "quantity": 300,
                      "price": 5500.0, "order_type": "LIMIT", "product": "NRML"}],
         )
 
