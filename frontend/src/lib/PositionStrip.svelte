@@ -856,9 +856,15 @@
       >{fmtMoney(dispPositionsToday)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'P'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'P', _breakdownOpen = true)}
       >{fmtMoney(_livePositionsPnl)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ps-exp ' + flash.classOf('PE')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'P'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'P', _breakdownOpen = true)}
       >{fmtMoney(_expiryProfit)}</span
     >
   </span>
@@ -871,9 +877,15 @@
       title="M — Margin"
       text="<b>Available:</b> Cash deployable for new orders = Total − used margin. Updated after every fill.<br><br><b>Total:</b> Full collateral across all accounts = Available + margin blocked for open positions." /></span>
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'M'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'M', _breakdownOpen = true)}
       >{fmtMoney(marginAvail)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin-dim' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'M'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'M', _breakdownOpen = true)}
       >{fmtMoney(marginTotal)}</span
     >
   </span>
@@ -893,9 +905,15 @@
       title="C — Cash"
       text="<b>Cash Available (CA):</b> Live deployable cash. Nets realised P&L + long option premiums paid.<br><br><b>Total Cash:</b> CA + premium tied up in long options (recoverable if closed)." /></span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'C'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'C', _breakdownOpen = true)}
       >{fmtMoney(liveCashTotal)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash-dim' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'C'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'C', _breakdownOpen = true)}
       >{fmtMoney(cashTotal)}</span
     >
   </span>
@@ -906,11 +924,21 @@
       title="H — Holdings"
       text="<b>Today MTM:</b> Live LTP − prev close × qty for long-term holdings. Intraday only.<br><br><b>Value:</b> Broker-reported current market value across all accounts.<br><br><b>Lifetime P&L:</b> Cumulative since purchase = (current − avg cost) × qty." /></span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'H'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'H', _breakdownOpen = true)}
       >{fmtMoney(dispHoldingsToday)}</span
     ><span class="ps-agg-sep">|</span
-    ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span
+    ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'H'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'H', _breakdownOpen = true)}
+      >{fmtMoney(_liveHoldingsValue)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos-dim' : _liveHoldingsTotal < 0 ? 'ps-neg-dim' : 'ps-flat') + ' ' + flash.classOf('Hd')}
+      style="cursor:pointer" role="button" tabindex="0"
+      onclick={() => { _activeSlot = 'H'; _breakdownOpen = true; }}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'H', _breakdownOpen = true)}
       >{fmtMoney(_liveHoldingsTotal)}</span
     >
   </span>
@@ -1118,7 +1146,7 @@
   }
   .ps-breakdown-panel {
     position: fixed;
-    top: var(--navstrip-height, 2.5rem);
+    top: calc(3rem + 1px + 1.5rem);
     right: 0;
     width: min(28rem, 100vw);
     max-height: 70vh;

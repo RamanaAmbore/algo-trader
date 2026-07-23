@@ -63,12 +63,6 @@
     color: var(--algo-amber, #fbbf24);
     font-size: inherit;
   }
-  /* Hide the non-active time span at ALL viewports — the toggle works
-     globally, not just on mobile. Previously this was inside the
-     @media (max-width: 640px) block which meant desktop always showed
-     both spans (toggle was a no-op on desktop). */
-  .ats-mobile-hide { display: none; }
-
   @media (max-width: 640px) {
     .ats-group {
       font-size: 0.6rem;
@@ -76,5 +70,6 @@
       align-items: center;
     }
     .ats-sep { display: none; }
+    .ats-mobile-hide { display: none; }
   }
 </style>

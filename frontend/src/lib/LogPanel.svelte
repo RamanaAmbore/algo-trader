@@ -2359,4 +2359,12 @@
   .lp-conn-row.conn-ev-amber .lp-conn-type { color: var(--c-action); }
   .lp-conn-row.conn-ev-muted .lp-conn-type { color: var(--algo-muted); }
 
+  @media (max-width: 640px) {
+    .lp-conn-row {
+      flex-wrap: wrap;
+      white-space: normal;
+    }
+    .lp-conn-acct { word-break: break-all; }
+  }
+
 </style>
