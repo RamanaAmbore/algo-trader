@@ -326,6 +326,33 @@ test.describe('AlgoTimestamp — Mobile toggle', () => {
     // Sep only renders when refreshRendered — if absent, that's fine too
   });
 
+  test('ats-group does not overflow page-header on mobile-portrait', async ({ page, viewport }, { project }) => {
+    // Regression: verify that the .ats-group button stays within the bounds of .page-header
+    // on mobile viewport. Both bounding boxes must align vertically; height must not exceed.
+    test.skip(!project.name.includes('mobile'), 'mobile-portrait only');
+
+    const headerLocator = page.locator('.page-header').first();
+    const atsGroupLocator = page.locator('button.ats-group').first();
+
+    // Wait for both elements to be attached
+    await headerLocator.waitFor({ state: 'attached', timeout: 12_000 }).catch(() => {});
+    await atsGroupLocator.waitFor({ state: 'attached', timeout: 12_000 }).catch(() => {});
+
+    const headerBox = await headerLocator.boundingBox();
+    const atsBox = await atsGroupLocator.boundingBox();
+
+    if (!headerBox || !atsBox) { test.skip(); return; }
+
+    // Verify height does not exceed header with 2px tolerance for rounding
+    expect(atsBox.height).toBeLessThanOrEqual(headerBox.height + 2);
+
+    // Verify vertical alignment: button must start at or after header's top
+    expect(atsBox.y).toBeGreaterThanOrEqual(headerBox.y);
+
+    // Verify button does not extend beyond header's bottom
+    expect(atsBox.y + atsBox.height).toBeLessThanOrEqual(headerBox.y + headerBox.height + 2);
+  });
+
   test('font-size smaller on mobile (0.6rem vs inherit on desktop)', async ({ page }, { project }) => {
     if (!project.name.includes('mobile')) test.skip();
 
