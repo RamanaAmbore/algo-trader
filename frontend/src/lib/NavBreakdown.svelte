@@ -200,7 +200,8 @@
   const _cByAcct = $derived.by(() => {
     return _scopedAccounts.map(acct => {
       const f = _funds.find(x => String(x.account) === acct);
-      const liveCash = Number(f?.live_cash ?? f?.cash ?? 0);
+      const _lc = Number(f?.live_cash ?? 0);
+      const liveCash = _lc !== 0 ? _lc : Number(f?.cash ?? 0);
       const optPremium = _positions
         .filter(p =>
           String(p.account) === acct &&

@@ -9,7 +9,7 @@
   let _refreshTs = $derived(_lastRefresh ? formatDualTz(new Date(_lastRefresh)) : null);
 
   function _toggle() {
-    _showRefresh = !_showRefresh;
+    if (_refreshTs) _showRefresh = !_showRefresh;
   }
 
   $effect(() => { if (!_refreshTs && _showRefresh) _showRefresh = false; });
