@@ -1,5 +1,4 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
   import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
 
   let _lastRefresh = $state(0);
@@ -14,14 +13,6 @@
   }
 
   $effect(() => { if (!_refreshTs && _showRefresh) _showRefresh = false; });
-
-  // Listen for the global 'toggle-ts' custom event so the page-header
-  // click zone (delegated from the layout wrapper) can trigger the toggle
-  // without needing a direct component ref. The button's own onclick
-  // still works — this just adds a second trigger path.
-  function _onToggleTs() { _toggle(); }
-  onMount(() => { window.addEventListener('toggle-ts', _onToggleTs); });
-  onDestroy(() => { window.removeEventListener('toggle-ts', _onToggleTs); });
 </script>
 
 <button
@@ -66,7 +57,7 @@
   @media (max-width: 640px) {
     .ats-group {
       font-size: 0.6rem;
-      min-height: 2.5rem;
+      min-height: 1.8rem;
       align-items: center;
     }
     .ats-sep { display: none; }

@@ -1,141 +1,176 @@
-# Plan: Migrate 15+ tables to .algo-table global class
+# Plan: 4 follow-up UI fixes — mobile header height, timestamp toggle, conn borders, NavBreakdown slot-specific
 
-## Task
-A parallel agent is adding `.algo-table`, `.algo-table-num`, and `.algo-table-wrap` to `app.css`.
-This pass migrates every hand-rolled `<table>` element across 15 frontend files to add the
-`algo-table` class and strips out the per-file CSS that duplicates what `.algo-table` will
-provide globally (font-size, font-family, base color, alternating rows, generic hover).
-Semantic overrides (amber chips, status colors, pending rows, sticky headers) are preserved.
+## Context
+After the 5-bug fix ship (commit `fce75119` remediation), 4 regressions/gaps remain:
+1. Mobile page-header is now 2.5rem tall (over-corrected from the old 1.8rem); user wants smaller.
+2. Timestamp toggle on mobile is still awkward — the delegation handler excludes the `.algo-ts` zone so clicking the timestamp fires the button's own onclick AND the delegated handler doesn't fire; user says "it's a simple change."
+3. Conn tab rows have no bottom border — other log tab grids (event/order rows) have `border-bottom: 1px solid rgba(126,151,184,0.10)`; conn rows are visually inconsistent.
+4. NavBreakdown popup shows the same 4-column NAV table for every slot (P/M/C/H); user wants slot-specific data whose TOTAL matches the NavStrip pill value for that slot.
 
 ## Agents
-- frontend: Migrate all 15 files as specified below. All edits are frontend-only.
+- frontend: All 4 fixes (layout.svelte + AlgoTimestamp.svelte + LogPanel.svelte + NavBreakdown.svelte + PositionStrip.svelte).
 - backend: skip
 - broker: skip
 - doc: skip
 - backend-test: skip
-- playwright: skip
+- playwright: Update/add e2e spec covering the 4 fixed surfaces.
 
-## Per-file migration details
+## Fixes
 
-### 1. admin/tokens/+page.svelte
-- `<table class="w-full text-[0.65rem]">` → `<table class="algo-table">`
-- Remove `text-[0.65rem]` from table element; remove `py-1.5 px-2` from all `<th>` and `<td>` cells
-- No style block table rules to remove
-- Keep: amber `font-mono text-[var(--c-action)]` on token-value td (inline Tailwind — keep)
+### Fix 1 · layout.svelte — Revert mobile page-header to 1.8rem
+**File**: `frontend/src/routes/(algo)/+layout.svelte`
 
-### 2. admin/brokers/+page.svelte
-- `<table class="brokers-table">` → `<table class="brokers-table algo-table">`
-- `<table class="conn-table">` → `<table class="conn-table algo-table">`
-- Remove from `.brokers-table` CSS: `font-family: monospace`, `font-size: var(--fs-sm)`, `.brokers-table td { color: var(--algo-slate); border-bottom: ... }`
-- Remove from `.conn-table` CSS: same font/color/border, plus `tr:nth-child(odd) td { background: rgba(13,22,42,0.20) }` (algo-table handles alternating rows)
-- KEEP: `.brokers-table th` (amber border-bottom + sticky — semantic), `.conn-table th` (same), `.status-pill` variants, `.brokers-hist-pill`, `.priority-chip`, `.conn-ev-*` colors, `.brokers-table .destructive :global()`, column-width rules, `tr.row-inactive td { opacity: 0.5 }`, `.conn-td-time`, `.conn-td-detail`
+Mobile `@media (max-width: 640px)` block currently (line ~2138):
+```css
+:global(.page-header) {
+  padding: 0.1rem 0.4rem;
+  min-height: 2.5rem;   /* ← revert to 1.8rem */
+}
+.algo-content { padding-top: calc(3rem + 2.5rem); }
+:global(.algo-viewport:has(.ps-strip)) .algo-content {
+  padding-top: calc(3rem + 1.5rem + 2.5rem);
+}
+```
 
-### 3. admin/audit/+page.svelte
-- `<table class="audit-table">` → `<table class="audit-table algo-table">`
-- `<div class="audit-table-wrap algo-grid-chrome">` — rename class to `<div class="algo-table-wrap algo-grid-chrome">`
-- Remove from `.audit-table` CSS: `font-family`, `font-variant-numeric`, `font-size: var(--fs-md)`, `td { color: #c8d8f0 }`, `td { border-bottom }`, `tbody tr:nth-child(even) { background: rgba(34,47,75,0.30) }`, generic hover rule
-- KEEP: `.audit-table th` sticky + amber border-bottom, `.audit-ts`, `.audit-actor`, role/cat/status chips, `.audit-th-narrow`, `.audit-req-id`, `.audit-ip`
-- Update CSS: rename `.audit-table-wrap` → `.algo-table-wrap`
+Change to:
+```css
+:global(.page-header) {
+  padding: 0.1rem 0.4rem;
+  min-height: 1.8rem;   /* restored; no overflow-x:hidden so no clipping */
+}
+.algo-content { padding-top: calc(3rem + 1.8rem); }
+:global(.algo-viewport:has(.ps-strip)) .algo-content {
+  padding-top: calc(3rem + 1.5rem + 1.8rem);
+}
+```
 
-### 4. admin/statements/+page.svelte
-- `<table class="ms-table content-fade-in">` → `<table class="ms-table algo-table content-fade-in">`
-- `<section class="ms-table-wrap">` → `<section class="algo-table-wrap">`
-- `.td-num` → `algo-table-num` in both markup (all `<th class="td-num">` and `<td class="td-num">`) and CSS
-- Remove from `.ms-table` CSS: `font-size: var(--fs-lg)`, `color: #c8d8f0`, `td { border-bottom }`, generic hover
-- KEEP: `.row-pending` amber bg, `.row-failed` red bg, `.ms-lp-name`, `.ms-lp-sub`, `.ms-error-cell`, `.ms-pill-status` chips, header amber border, `.td-mono`, `.td-actions`
-- CSS: rename `.ms-table-wrap` → `.algo-table-wrap`, rename `.td-num` → `.algo-table-num`
+Note: `overflow-x: hidden` was already removed in the previous fix — do NOT re-add it. Without it, the 1.8rem header won't clip the button touch target.
 
-### 5. admin/history/+page.svelte
-- All three `<table class="hist-table">` → `<table class="hist-table algo-table">`
-- `<div class="hist-table-wrap">` → `<div class="algo-table-wrap">`
-- `.td-num` → `algo-table-num` in both markup and CSS
-- Remove from `.hist-table` CSS: `font-size: var(--fs-md)`, `color: #c8d8f0`, `td { border-bottom }`, generic hover
-- KEEP: `.hist-side-buy/sell` chips, `.cell-pos/neg`, `.hist-audit-link`, `.td-mono`, amber `th border-bottom`, `th background`
+---
 
-### 6. admin/metrics/+page.svelte
-- `<table class="metrics-table">` → `<table class="metrics-table algo-table">`
-- `<div class="metrics-table-wrap">` → `<div class="algo-table-wrap">`
-- `.num` → `algo-table-num` in both markup (all `<th class="num">` and `<td class="num">`) and CSS
-- Remove from `.metrics-table` CSS: `font-size: var(--fs-xl)`, `font-variant-numeric: tabular-nums`, generic `border-bottom`, generic `td`/`th` color rules
-- KEEP: `.metrics-tag code`, `.metrics-sha`, `.metrics-ts`, `.metrics-drill`, `.metric-label`
-- CSS: rename `.metrics-table-wrap` → `.algo-table-wrap`, rename `.num` → `.algo-table-num`
+### Fix 2 · layout.svelte + AlgoTimestamp.svelte — Remove page-header delegated click zone
+**Files**:
+- `frontend/src/routes/(algo)/+layout.svelte` (delegated handler, line ~937)
+- `frontend/src/lib/AlgoTimestamp.svelte` (toggle-ts listener, lines ~22-24)
 
-### 7. admin/settings/+page.svelte
-- `<table class="text-[0.65rem] w-full">` → `<table class="algo-table w-full">`
-- Remove `text-[0.65rem]` from table element
-- No style block table rules
+**What exists**: Commit `fce75119` added an `onclick` on `.algo-viewport` that fires a `toggle-ts` custom event whenever the user taps empty space inside `.page-header`. AlgoTimestamp listens for this via `window.addEventListener('toggle-ts', ...)`. User does not want the header area to be a click zone — only the timestamp button itself should toggle.
 
-### 8. admin/alerts/+page.svelte
-- `<table class="alerts-table">` → `<table class="alerts-table algo-table">`
-- `.alerts-table-wrap` has border/box-shadow/border-radius — keep the wrapper class name (do NOT rename, it has semantic chrome beyond just overflow)
-- Remove from `.alerts-table` CSS: `font-size: var(--fs-md)`, `font-family`, `tbody tr:nth-child(odd)` alternating rule, generic hover
-- KEEP: amber `th border-bottom`, `th color: var(--c-action)`, `tr.row-sim` special bg, `td border-right`, `background: linear-gradient(...)` on the table itself (branded bg — keep), event chip classes, `.td-cond`, `.td-detail`, `.td-channels`, `.td-time`, `.td-agent`
+**Fix**:
 
-### 9. admin/research/+page.svelte
-- `<table class="drafts-table">` → `<table class="drafts-table algo-table">`
-- `<table class="audit-table">` → `<table class="research-table algo-table">` (rename local class to avoid name collision with audit page)
-- `<table class="tools-table">` → `<table class="tools-table algo-table">`
-- Remove from `.drafts-table` CSS: `font-size: var(--fs-lg)`, generic th/td color/border
-- Remove from `.audit-table` CSS: same; rename class throughout to `.research-table`
-- Remove from `.tools-table` CSS: `font-size: var(--fs-lg)`, generic th/td color/border
-- `.mint-grid` is a CSS grid (display: grid), NOT a table — add `font-size: 0.72rem`, `color: var(--algo-slate)`, `border: 1px solid rgba(126,151,184,0.10)` to the `.mint-grid` CSS rule in-place
+**layout.svelte** — remove the entire `onclick` from `.algo-viewport` and the associated svelte-ignore comment:
+```svelte
+<!-- Before: -->
+<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+<div class="algo-viewport card-theme-dark"
+  onclick={(e) => {
+    const t = /** @type {HTMLElement} */ (e.target);
+    if (t.closest('.page-header') && !t.closest('.page-header-actions') && !t.closest('.algo-ts')) {
+      window.dispatchEvent(new CustomEvent('toggle-ts'));
+    }
+  }}>
 
-### 10. admin/perf/+page.svelte
-- `<table class="perf-hotspot-table">` → `<table class="perf-hotspot-table algo-table">`
-- `.num` → `algo-table-num` in both markup and CSS
-- Remove from `.perf-hotspot-table` CSS: `font-size: var(--fs-xl)`, `font-variant-numeric: tabular-nums`, generic `border-bottom`, `th` color
-- KEEP: `.perf-fn-name`, `.perf-fn-page`, `.perf-fn-cc`, `.perf-fn-line`, `.metric-label`
+<!-- After: -->
+<div class="algo-viewport card-theme-dark">
+```
 
-### 11. admin/simulator/iterations/+page.svelte
-- `<table class="iter-table">` → `<table class="iter-table algo-table">`
-- Remove from `.iter-table` CSS: `font-size: var(--fs-sm)`, `font-family: var(--font-numeric)`
-- Keep `.numeric` class as-is (semantic name, covers both th and td; algo-table's global `.algo-table-num` would be separate)
-- KEEP: `.er-ok/warn/err/pending/other` chips, `.slug` amber, `.iter-row:hover` (amber — semantic), amber th border-bottom
+**AlgoTimestamp.svelte** — remove the `toggle-ts` event listener (no longer fired by anything) and the `onMount`/`onDestroy` pair that wire it up. Keep `onclick={_toggle}` on the button as the sole toggle path:
+```svelte
+// Remove:
+function _onToggleTs() { _toggle(); }
+onMount(() => { window.addEventListener('toggle-ts', _onToggleTs); });
+onDestroy(() => { window.removeEventListener('toggle-ts', _onToggleTs); });
+```
+Remove `onMount`/`onDestroy` imports if no longer used by anything else in the file.
 
-### 12. admin/+page.svelte (Users page — investor portal modal)
-- Two `<table class="ip-modal-tbl">` → `<table class="ip-modal-tbl algo-table">`
-- Remove from `.ip-modal-tbl` CSS: `font-size: var(--fs-md)` (table-level rule), `td { color: #c8d8f0; border-bottom: ... }` generic td rules
-- KEEP: `.ip-modal-tbl-wrap` (has semantic border + border-radius — do NOT rename), `.ip-modal-tbl th` (all semantic — background, color, amber border-bottom, text-transform), `.ip-modal-tbl td.td-mono`, `.ip-modal-tbl td.td-num`, `.ip-modal-tbl td.td-actions`, `.ip-modal-tbl tr.revoked td`, `.ip-modal-note`
+Also update `.ats-group` mobile `min-height` from `2.5rem` back to `1.8rem` to match the restored header height:
+```css
+@media (max-width: 640px) {
+  .ats-group {
+    font-size: 0.6rem;
+    min-height: 1.8rem;   /* was 2.5rem — matches restored header */
+    align-items: center;
+  }
+}
+```
 
-### 13. strategies/+page.svelte
-- `<table class="strat-table">` → `<table class="strat-table algo-table">`
-- `.strat-table-wrap` has overflow-x + border + box-shadow + gradient bg chrome — keep class name but add `algo-table-wrap` alongside OR just keep existing name (wrapper has too much chrome to be a plain algo-table-wrap)
-  - Decision: keep `.strat-table-wrap` as-is; it's not a plain overflow wrapper
-- `.td-num` → `algo-table-num` in both markup and CSS
-- Remove from `.strat-table` CSS: `font-size: var(--fs-lg)`, `color: #c8d8f0`, `td { border-bottom }`, generic hover
-- KEEP: amber `th border-bottom`, `background` on header, `.strat-slug`, `.pnl-pos/neg`, `.strat-row-inactive`, `.strat-row-editing`, `.pill-active/inactive`, `.td-slug`, `td.td-num` alignment/tabular-nums (now under `algo-table-num`)
+---
 
-### 14. strategies/[id]/+page.svelte
-- `<table class="strat-table">` → `<table class="strat-table algo-table">`
-- Same wrapper decision: keep `.strat-table-wrap algo-grid-chrome` as-is
-- `.td-num` → `algo-table-num` in both markup and CSS
-- KEEP: `side-long/side-short` chips, `.pnl-pos/neg`, `.strat-row-closed`, `.qty-rem`, `.td-mono`
+### Fix 3 · LogPanel.svelte — Conn tab row borders
+**File**: `frontend/src/lib/LogPanel.svelte`
 
-### 15. lib/NavBreakdown.svelte
-- `<table class="nav-bd-table">` → `<table class="nav-bd-table algo-table">`
-- Remove from `.nav-bd-table` CSS:
-  - `font-size: 0.72rem` (exact match — algo-table provides this)
-  - `color: var(--algo-slate)` (exact match)
-  - `tbody tr:nth-child(odd) td { background: rgba(13,22,42,0.30) }` (algo-table provides)
-  - `tbody tr:nth-child(even) td { background: #1d2a44 }` (remove — algo-table's odd rule is enough)
-  - Generic hover rule (algo-table provides)
-- KEEP: `.nav-bd-total` TOTAL row amber styling, `nav-bd-acct`, `nav-num`, `nav-bd-nav`, `nav-bd-caption`, empty/error/warn/hint state divs, `th` styling (height, amber border-bottom), `tbody td` height/padding/border specifics
+Add `border-bottom` to `.lp-conn-row` to match other tab grid row borders:
+```css
+.lp-conn-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.2rem 0.5rem;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(126,151,184,0.10);  /* ← ADD */
+}
+.lp-conn-row:last-child {
+  border-bottom: none;   /* ← ADD — no double-border at list end */
+}
+```
 
-### 16. admin/health/+page.svelte (SKIP — no table, and .health-grid has no font-size/color/border to update)
-- `.health-grid` CSS only has `display: grid`, `grid-template-columns`, `gap` — nothing to change
-- No `<table>` elements present in this file
+---
+
+### Fix 4 · NavBreakdown.svelte — Slot-specific per-account breakdown
+**File**: `frontend/src/lib/NavBreakdown.svelte`
+
+Replace the single 5-column NAV table with a slot-aware table. When `activeSlot` changes, the columns and per-account computations switch. TOTAL rows must match the corresponding NavStrip pill values.
+
+**Slot → columns → data source**:
+
+| Slot | Col 1 | Col 2 | Source |
+|------|-------|-------|--------|
+| P | Day P&L | Lifetime P&L | `positionsStore`: Σ `baseDayPnlForPosition(p)` per acct; Σ `p.pnl` per acct |
+| M | Avail Margin | Total Margin | `fundsStore`: `f.avail_margin`; `f.used_margin + f.avail_margin` per acct |
+| C | Live Cash | Total Cash | `fundsStore`: `f.live_cash ?? f.cash`; add per-acct long-option premium from `positionsStore` |
+| H | Today MTM | Value | Lifetime | `holdingsStore`: Σ `h.day_change_val`; Σ `h.cur_val`; Σ `h.pnl` per acct |
+
+**TOTAL row match targets** (from PositionStrip):
+- P Day: `dispPositionsToday` (live-tick version; `baseDayPnlForPosition` total is the static approximation — acceptable)
+- P Lifetime: `_livePositionsPnl` = Σ `p.pnl`
+- M Avail: `marginAvail` = Σ `f.avail_margin`
+- M Total: `marginTotal` = Σ `(f.used_margin + f.avail_margin)`
+- C Live: `liveCashTotal` = Σ `(f.live_cash ?? f.cash)`
+- C Total: `cashTotal` = `liveCashTotal + longOptionsCashPaid`
+- H Today: `dispHoldingsToday` ≈ Σ `h.day_change_val` (live tick delta excluded — close enough)
+- H Value: `_liveHoldingsValue` = Σ `h.cur_val`
+- H Lifetime: `_liveHoldingsTotal` = Σ `h.pnl`
+
+**Implementation approach**:
+- Keep the existing `_funds`, `_positions`, `_holdings` store bindings and `_allAccounts`/`_scopedAccounts` derivation.
+- Add `$derived.by()` blocks for each slot's per-account data:
+  - `_pByAcct`: group positions by account → compute day PnL via `baseDayPnlForPosition` + Σ pnl
+  - `_mByAcct`: group funds by account → avail + total margin
+  - `_cByAcct`: funds live_cash per account + per-account long-option premium from positions
+  - `_hByAcct`: group holdings by account → Σ day_change_val, Σ cur_val, Σ pnl
+- Import `baseDayPnlForPosition` from `$lib/data/nav`.
+- Template: `{#if activeSlot === 'P'}` … `{:else if activeSlot === 'M'}` … etc. Each branch renders its own `<table>` with appropriate headers + data rows + TOTAL row.
+- Preserve existing loading/error/timeout/empty state machine (check `_allLoaded`, `_anyError`, `_inFlight` as before — but only require the stores that the active slot uses).
+- Keep existing `.nav-bd-*` CSS; add `.nav-slot-label` for a small slot-name indicator above the table.
+- Update the caption to describe the current slot's formula.
+- `downloadCsv()` exports the currently visible slot's data.
+
+---
 
 ## Tests
 - pytest: no
 - svelte-check: yes
-- playwright: no
-
-## Commit message
-refactor(frontend): migrate 15 tables to global .algo-table class; strip duplicate font/color/border CSS
+- playwright: yes — add/update spec covering:
+  - Mobile viewport: page-header `min-height` ≈ 1.8rem (≤ 30px)
+  - Mobile: tapping anywhere in header area (including on timestamp text) toggles refresh timestamp
+  - Conn tab: row has `border-bottom` visible (CSS check)
+  - NavStrip P slot click → NavBreakdown shows "Day P&L" + "Lifetime P&L" columns
+  - NavStrip M slot click → NavBreakdown shows "Avail Margin" + "Total Margin" columns
+  - NavStrip C slot click → NavBreakdown shows "Live Cash" + "Total Cash" columns
+  - NavStrip H slot click → NavBreakdown shows "Today MTM" + "Value" + "Lifetime" columns
 
 ## Done when
-- All 15 tables have `algo-table` in their class list
-- Per-file CSS that duplicates `.algo-table` globals (font-size, font-family, base color, alternating rows, generic hover) is removed
-- Semantic overrides (amber chips, status colors, sticky headers, pending rows) remain intact
-- `svelte-check` passes with no type errors
-- Visual spot-check: tables render with correct monospace font, alternating rows, hover highlight
+1. Mobile page-header `min-height` is 1.8rem; `algo-content` padding-top adjusted in lockstep
+2. Tapping anywhere on the mobile page-header (including on the timestamp text itself) toggles the refresh timestamp; no double-fire
+3. Conn tab rows have `border-bottom` matching other log tab grids
+4. Each NavStrip slot (P/M/C/H) opens NavBreakdown with slot-specific columns; TOTAL row matches NavStrip pill values
+5. `svelte-check` clean, Playwright green
