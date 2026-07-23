@@ -375,6 +375,12 @@
     _prevLoading = loading;
   });
 
+  let _prevRefiring = false;
+  $effect(() => {
+    if (_prevRefiring && !_refiring) lastRefreshAt.set(Date.now());
+    _prevRefiring = _refiring;
+  });
+
   // Subscribe for tooltip rendering.
   // SUBSCRIPTION LEAK FIX (Perf audit Jul 2026): both subscribes used to
   // be top-level (no cleanup) — every RefreshButton instance leaked one

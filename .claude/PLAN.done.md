@@ -1,314 +1,173 @@
-# Plan: Nav z-index + NavBreakdown + ntfy agent integration + margin shortfall alert
+# Plan: AlgoTimestamp + RefreshButton + market-open-nse ntfy — timestamp accuracy + Android click + agent fire_at_time sync
 
-## Context
-Four issues:
-1. **Hamburger drawer + nav menus behind modals** — drawer at z-index 200, nav panels at 49; full-screen modals at 9998–10600. Nav elements must appear above any modal on mobile and desktop.
-2. **NavBreakdown popup** — clicking any sub-value of a NavStrip pill opens a popup with Account + one column per sub-value for THAT pill, TOTAL row matching pill values:
-   - P: Day P&L | Lifetime P&L | Expiry P&L (3 columns)
-   - M: Avail Margin | Total Margin (2 columns)
-   - C: Cash Avail | Total Cash (2 columns)
-   - H: Today MTM | Value | Lifetime (3 columns)
-3. **ntfy not integrated with agent code** — `_EXPIRY_AGENT_DEFAULTS` and `manual` agent missing ntfy channel. `_ae_sync_existing_builtin` doesn't sync events so existing DB rows were never updated. DB already patched via SQL; code needs to match + forward-sync on deploy.
-4. **No margin shortfall warning** — `loss-funds-negative` only fires when margin already hits 0 (too late). Need a warning agent at avail_margin < ₹25,000.
+## Current state (verified)
 
-## Already done (prod DB patched live)
-- ntfy topic updated in `/opt/ramboq/backend/config/secrets.yaml`: `ramboq-loss-x72km` → `ramboq-alert-x7k2m`
-- All 8 agents in DB now have `{"channel": "ntfy", "enabled": true}` in their events
+### `AlgoTimestamp.svelte`
+```js
+let _lastRefresh = $state(0);                     // initialized to 0 always
+$effect(() => { _lastRefresh = $lastRefreshAt; }) // bridge fires post-render
+let _refreshTs = $derived(_lastRefresh ? formatDualTz(new Date(_lastRefresh)) : null);
+function _toggle() { if (_refreshTs) _showRefresh = !_showRefresh; }
+$effect(() => { if (!_refreshTs && _showRefresh) _showRefresh = false; });
+```
+Template uses `{$nowStamp}` (60 s writable store from stores.js).  
+CSS: `@media (min-width: 641px) { pointer-events: none }` for desktop  
+CSS: `@media (max-width: 640px)` for mobile toggle with `.ats-mobile-hide`  
+Button only has `onclick` — no `ontouchend`.
+
+### `RefreshButton.svelte`
+```js
+let _prevLoading = false;
+$effect(() => {
+  if (_prevLoading && !loading) lastRefreshAt.set(Date.now());
+  _prevLoading = loading;
+});
+```
+Stamps `lastRefreshAt` ONLY on `loading: true→false`. No stamp on `_refiring: true→false`.
+
+---
+
+## Bugs
+
+### Bug 1 — Android portrait: onclick doesn't fire (ats-group in position:fixed parent)
+`onclick` relies on browser click-synthesis from touch events. Android Chrome cancels this synthesis when a touch moves 1–2 px on a `position:fixed` container (`.page-header` is `position:fixed`). The CSS `:active` state still fires on `touchstart` (visual animation), but the synthesised `click` never arrives.  
+**Fix:** add `ontouchend` that calls `e.preventDefault()` (cancels ghost click) then `_toggle()`.
+
+### Bug 2 — refresh timestamp > current timestamp
+`$nowStamp` ticks every 60 s from page-load time (not aligned to minute boundary). If a data refresh lands after `$nowStamp` just snapped its minute (e.g. now shows ":29" and refresh happens at ":31" in the next minute), `_refreshTs` shows ":31 IST" while `$nowStamp` still shows ":29 IST" — refresh appears to be in the future for up to ~60 s.  
+**Fix:** Replace `{$nowStamp}` with a local `_nowEpoch` that ticks every 30 s AND snaps to `Date.now()` whenever a refresh arrives, guaranteeing current ≥ refresh.
+
+### Bug 3 — initial flash: refresh timestamp absent on first render
+`let _lastRefresh = $state(0)` initializes to 0. The `$effect` bridge fires only after the first render. If `lastRefreshAt` is already set (from a prior page visit in the same session), `_refreshTs` is null for one render cycle → `| HH:MM IST` blinks in.  
+**Fix:** Initialize `_lastRefresh` with the current store value synchronously using `get(lastRefreshAt)`.
+
+### Bug 4 — refire path never stamps lastRefreshAt ← CONFIRMED (09:20 IST symptom)
+`postHibernationRefiring` goes `true` when the tab returns from background, causing the RefreshButton to spin (via `_refiring`). Data is actually refreshed during this cycle. But `loading` never transitions (`true→false`) during a refire — only `_refiring` does. The `_prevLoading` effect never fires → `lastRefreshAt` is never stamped → timestamp freezes at the last genuine load (e.g. 09:20 at page-open), even as the spinner animates on every tab-return.  
+**Fix:** Add a parallel `_prevRefiring` effect in RefreshButton that stamps `lastRefreshAt` when `_refiring` goes `true→false`.
+
+### Bug 5 — market-open-nse never fires at 09:15 on ntfy ← CONFIRMED
+`_ae_build_agent_row` in `agent_engine.py` does NOT write `fire_at_time` when seeding the agent row. `_ae_sync_existing_builtin` also does NOT sync it. Result: the DB column is NULL. `_cycle_outside_fire_at` sees NULL → treats the agent as schedule-only (no time window) → agent fires on the very first background cycle (random time) → enters 22-hour cooldown → next fire is 22h later at that same random time. Never fires at 09:15.  
+ntfy infrastructure is confirmed working (order alerts arrive). The issue is purely the NULL `fire_at_time` in the agent row.  
+**Fix:**  
+1. In `_ae_build_agent_row` (agent_engine.py ~line 1216): add `fire_at_time=agent_def.get("fire_at_time")`.  
+2. In `_ae_sync_existing_builtin` (agent_engine.py ~line 1184): add syncing of `fire_at_time` field alongside `long_name`, `schedule`, etc.  
+On next restart, `seed_agents()` will call `_ae_sync_existing_builtin` for the existing market-open-nse row and write "09:15" to the DB. No manual SQL needed.
+
+---
+
+## Files and changes
+
+### `frontend/src/lib/AlgoTimestamp.svelte`
+
+**Script:**
+```js
+import { get } from 'svelte/store';
+import { browser } from '$app/environment';
+import { lastRefreshAt, formatDualTz } from '$lib/stores';
+// remove: nowStamp import
+
+let _lastRefresh = $state(browser ? get(lastRefreshAt) : 0);  // Bug 3: sync init
+let _showRefresh = $state(false);
+
+let _nowEpoch = $state(browser ? Date.now() : 0);             // Bug 2: local clock
+
+$effect(() => {
+  const lr = $lastRefreshAt;
+  _lastRefresh = lr;
+  if (lr > _nowEpoch) _nowEpoch = Date.now();                 // Bug 2: snap forward
+});
+
+$effect(() => {                                                 // Bug 2: 30 s tick
+  const id = setInterval(() => { _nowEpoch = Date.now(); }, 30_000);
+  return () => clearInterval(id);
+});
+
+let _nowTs     = $derived(_nowEpoch ? formatDualTz(new Date(_nowEpoch)) : '');
+let _refreshTs = $derived(_lastRefresh ? formatDualTz(new Date(_lastRefresh)) : null);
+
+function _handleTap(e) { e.preventDefault(); _toggle(); }     // Bug 1: ontouchend
+function _toggle() { if (_refreshTs) _showRefresh = !_showRefresh; }
+$effect(() => { if (!_refreshTs && _showRefresh) _showRefresh = false; });
+```
+
+**Template:** replace `{$nowStamp}` → `{_nowTs}`, add `ontouchend={_handleTap}`:
+```svelte
+<button
+  type="button"
+  class="ats-group"
+  ontouchend={_handleTap}
+  onclick={_toggle}
+  onkeydown={(e) => e.key === 'Enter' && _toggle()}
+  style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent;">
+  <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{_nowTs}</span>
+  {#if _refreshTs}
+    <span class="ats-sep" aria-hidden="true">|</span>
+    <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
+  {/if}
+</button>
+```
+
+**CSS:** Replace `max-width: 640px` breakpoint with capability-based detection (touch devices, any viewport width):
+```css
+/* Default: desktop — show both, no interaction */
+.ats-group { cursor: default; pointer-events: none; ... }
+
+/* Touch devices: tap-to-toggle regardless of viewport width */
+@media (hover: none) and (pointer: coarse) {
+  .ats-group { cursor: pointer; pointer-events: auto; font-size: 0.6rem; min-height: 1.8rem; }
+  .ats-sep { display: none; }
+  .ats-mobile-hide { display: none; }
+}
+```
+Remove the `min-width: 641px` block (replaced by default cursor:default/pointer-events:none on `.ats-group`).
+
+### `frontend/src/lib/RefreshButton.svelte`
+
+Add after the existing `_prevLoading` effect (line ~376):
+```js
+// Bug 4: stamp lastRefreshAt when refire completes — the _prevLoading
+// effect only fires on the loading prop; _refiring never touches loading.
+let _prevRefiring = false;
+$effect(() => {
+  if (_prevRefiring && !_refiring) lastRefreshAt.set(Date.now());
+  _prevRefiring = _refiring;
+});
+```
+
+### `backend/api/algo/agent_engine.py` — Bug 5 fix
+
+**`_ae_build_agent_row`** (when creating a new agent row for the first time):
+```python
+# Add alongside schedule, tier, topic, etc.:
+fire_at_time=agent_def.get("fire_at_time"),
+```
+
+**`_ae_sync_existing_builtin`** (when syncing an existing agent row on startup):
+```python
+# Add alongside the existing synced fields (long_name, schedule, tier, topic, status, events):
+if agent.fire_at_time != agent_def.get("fire_at_time"):
+    agent.fire_at_time = agent_def.get("fire_at_time")
+    dirty = True
+```
+
+---
 
 ## Agents
-- frontend: Fix 1 (z-index) + Fix 2 (NavBreakdown).
-- backend: Fix 3 (ntfy agent code) + Fix 4 (margin shortfall agent).
-- broker: skip
-- doc: skip
-- backend-test: pytest for new margin-shortfall agent condition + ntfy channel sync.
-- playwright: Update spec for z-index and NavBreakdown columns.
-
----
-
-## Fix 1 · Z-index — Nav elements above all modals
-
-Highest modal: `ChartModal` at 10600.
-
-### 1a. `frontend/src/app.css` — raise vars
-
-```css
-/* Before: */
---z-dropdown: 60;
---z-drawer:   200;
-
-/* After: */
---z-dropdown: 20000;
---z-drawer:   20001;
-```
-
-### 1b. `frontend/src/routes/(algo)/+layout.svelte` — switch hardcoded z-indexes
-
-Replace hardcoded values with variables. Search for each occurrence:
-
-| Current value | Element | Replace with |
-|---|---|---|
-| `z-index: 48` | `.algo-group-overlay` | `z-index: calc(var(--z-dropdown) - 1)` |
-| `z-index: 49` | `.algo-group-panel` | `z-index: var(--z-dropdown)` |
-| `z-index: 49` | `.algo-mobile-dropdown` | `z-index: var(--z-dropdown)` |
-| `z-index: 48` | second overlay (~line 2580) | `z-index: calc(var(--z-dropdown) - 1)` |
-
-Do NOT change `z-index: 40`, `z-index: 45`, `z-index: 61` or any other values unrelated to nav panels.
-
-### 1c. `frontend/src/lib/PositionStrip.svelte` — raise breakdown panel
-
-`.ps-breakdown-panel` currently `z-index: 201`.
-Change to `z-index: var(--z-drawer)` (= 20001 after the fix above).
-
----
-
-## Fix 2 · NavBreakdown + PositionStrip — per-slot per-account table
-
-### What the popup shows per active slot
-
-| Slot | Columns | TOTAL row matches |
-|------|---------|-------------------|
-| P | Account \| Day P&L \| Lifetime P&L \| Expiry P&L | `dispPositionsToday`, `_livePositionsPnl`, `_expiryProfit` |
-| M | Account \| Avail Margin \| Total Margin | `marginAvail`, `marginTotal` |
-| C | Account \| Cash Avail \| Total Cash | `liveCashTotal`, `cashTotal` |
-| H | Account \| Today MTM \| Value \| Lifetime | `dispHoldingsToday`, `_liveHoldingsValue`, `_liveHoldingsTotal` |
-
-### 2a. `frontend/src/lib/PositionStrip.svelte` — add per-account expiry breakdown
-
-`_expiryProfit` already iterates all positions using `symbolStore` spots and the `expiryPnl()` helper. NavBreakdown cannot replicate this (no symbolStore access). Solution: compute `_expiryProfitByAcct` in PositionStrip and pass as a prop.
-
-Add a derived that produces `Map<string, number>` (account → expiry P&L):
-```js
-const _expiryProfitByAcct = $derived.by(() => {
-  void _throttledTick;
-  void _mktTick;
-  const map = new Map();
-  for (const p of positions) {
-    const acct = String(p?.account || '');
-    if (!acct) continue;
-    const exch = String(p?.exchange || '').toUpperCase();
-    if (!_isDerivativeExch(exch)) continue;
-    // Same per-position logic as _expiryProfit — call _expiryForPos(p)
-    const v = _expiryForPosition(p);  // extract the per-position logic into a helper
-    map.set(acct, (map.get(acct) ?? 0) + (v ?? 0));
-  }
-  return map;
-});
-```
-
-Extract the existing per-position expiry logic from `_expiryProfit` into a private helper `_expiryForPosition(p)` so it can be reused. The current `_expiryProfit` becomes `$derived.by(() => { ...; return [...map.values()].reduce(... ) })` or keep it as-is and add `_expiryProfitByAcct` alongside.
-
-Pass to NavBreakdown:
-```svelte
-<NavBreakdown
-  activeSlot={_activeSlot}
-  expiryByAcct={_expiryProfitByAcct}
-/>
-```
-
-### 2b. `frontend/src/lib/NavBreakdown.svelte` — slot-specific tables (update current impl)
-
-Current implementation (from last commit) already switches tables per slot with 2 columns for P and H. Update to the correct column counts:
-
-**Props** — add `expiryByAcct`:
-```js
-let {
-  accountFilter = [],
-  activeSlot = 'P',
-  expiryByAcct = /** @type {Map<string,number>} */ (new Map()),
-} = $props();
-```
-
-**P slot derivation** — add expiry column:
-```js
-// _pByAcct already has dayPnl + lifetimePnl per account.
-// Extend each row:
-const _pRows = $derived.by(() =>
-  _scopedAccounts.map(a => ({
-    account: a,
-    dayPnl:     _pByAcct.get(a)?.dayPnl ?? null,
-    lifetimePnl: _pByAcct.get(a)?.lifetimePnl ?? null,
-    expiryPnl:  expiryByAcct.get(a) ?? null,
-  }))
-);
-const _pTotal = $derived({
-  dayPnl:     _pRows.reduce((s,r) => s + (r.dayPnl ?? 0), 0),
-  lifetimePnl: _pRows.reduce((s,r) => s + (r.lifetimePnl ?? 0), 0),
-  expiryPnl:  _pRows.reduce((s,r) => s + (r.expiryPnl ?? 0), 0),
-});
-```
-
-**P slot template** — 3 data columns:
-```svelte
-{#if activeSlot === 'P'}
-<table class="algo-table nav-bd-table">
-  <thead><tr>
-    <th class="nav-bd-acct">Account</th>
-    <th>Day P&L</th>
-    <th>Lifetime</th>
-    <th>Expiry</th>
-  </tr></thead>
-  <tbody>
-    {#each _pRows as r (r.account)}
-    <tr>
-      <td class="nav-bd-acct">{r.account}</td>
-      <td class="nav-num {_cls(r.dayPnl)}">{_fmt(r.dayPnl)}</td>
-      <td class="nav-num {_cls(r.lifetimePnl)}">{_fmt(r.lifetimePnl)}</td>
-      <td class="nav-num {_cls(r.expiryPnl)}">{_fmt(r.expiryPnl)}</td>
-    </tr>
-    {/each}
-    <tr class="nav-bd-total">
-      <td class="nav-bd-acct">TOTAL</td>
-      <td class="nav-num {_cls(_pTotal.dayPnl)}">{_fmt(_pTotal.dayPnl)}</td>
-      <td class="nav-num {_cls(_pTotal.lifetimePnl)}">{_fmt(_pTotal.lifetimePnl)}</td>
-      <td class="nav-num {_cls(_pTotal.expiryPnl)}">{_fmt(_pTotal.expiryPnl)}</td>
-    </tr>
-  </tbody>
-</table>
-```
-
-**M slot** — 2 columns (avail, total) — keep as current impl but verify TOTAL matches `marginAvail`/`marginTotal`.
-
-**C slot** — 2 columns (live cash, total cash) — keep as current impl but verify TOTAL matches `liveCashTotal`/`cashTotal`.
-
-**H slot** — 3 columns (today MTM, value, lifetime) — keep as current but update TOTAL to match `dispHoldingsToday`, `_liveHoldingsValue`, `_liveHoldingsTotal`.
-
-**Caption per slot:**
-- P: "Day P&L | Lifetime P&L (Σ pnl) | Expiry P&L (lognormal projection)"
-- M: "Available = Total − used margin | Total = used + available"
-- C: "Cash Avail (CA) = live deployable cash | Total = CA + long option premiums"
-- H: "Today MTM | Current Value | Lifetime P&L"
-
----
-
----
-
-## Fix 3 · ntfy agent code integration
-
-**File:** `backend/api/algo/agent_engine.py`
-
-### 3a. Add ntfy to `_EXPIRY_AGENT_DEFAULTS` (line ~1008)
-```python
-_EXPIRY_AGENT_DEFAULTS = dict(
-    events=[
-        {"channel": "telegram", "enabled": True},
-        {"channel": "email",    "enabled": True},
-        {"channel": "log",      "enabled": True},
-        {"channel": "ntfy",     "enabled": True},   # ADD THIS
-    ],
-    ...
-)
-```
-
-### 3b. Add ntfy to `manual` agent events (line ~1032)
-```python
-events=[
-    {"channel": "telegram", "enabled": True},
-    {"channel": "email",    "enabled": True},
-    {"channel": "log",      "enabled": True},
-    {"channel": "ntfy",     "enabled": True},   # ADD THIS
-],
-```
-
-### 3c. Additive channel sync in `_ae_sync_existing_builtin` (line ~1059)
-Add after the existing sync block — for system agents, merge any channel present in the code default but missing from the DB row (additive only, never removes operator-added channels):
-```python
-# Additive-sync events: add any default channel missing from the stored events
-code_events = agent_def.get("events", [])
-stored_channels = {e["channel"] for e in (existing.events or [])}
-missing = [e for e in code_events if e["channel"] not in stored_channels]
-if missing:
-    existing.events = list(existing.events or []) + missing
-```
-
----
-
-## Fix 4 · Margin shortfall warning agent
-
-**File:** `backend/api/algo/agent_engine.py`
-
-Add a new `loss-margin-low` agent to `_LOSS_AGENTS` list (before `loss-funds-negative`):
-
-```python
-{
-    "slug": "loss-margin-low",
-    "name": "Margin shortfall warning",
-    "long_name": "when:funds.any_acct.avail_margin<25000   alert:high/tg+email+ntfy+log   do:notify-only",
-    "description": "Fires when available margin on any account drops below ₹25,000 — warning before margin goes negative.",
-    "conditions": {"op": "<", "scope": "funds.any_acct", "value": 25000, "metric": "avail_margin"},
-    "actions": [],
-    "status": "active",
-    "tier": "high",
-    "topic": "funds_warning",
-},
-```
-
-This inherits `_LOSS_AGENT_DEFAULTS` (telegram + email + log + ntfy, cooldown 30 min).
-
----
+- frontend: implement AlgoTimestamp.svelte + RefreshButton.svelte changes (Bugs 1–4 above)
+- backend: fix `_ae_build_agent_row` + `_ae_sync_existing_builtin` in `backend/api/algo/agent_engine.py` to write/sync `fire_at_time` field (Bug 5)
 
 ## Tests
-- pytest: yes — test `loss-margin-low` condition fires at avail_margin < 25000 and is suppressed above; test `_ae_sync_existing_builtin` adds missing ntfy channel to existing agent row without removing existing channels.
+- pytest: yes (backend — verify seed_agents sets fire_at_time on new + existing rows)
 - svelte-check: yes
-- playwright: yes — update spec:
-  - `OrderTimelineDrawer` renders with `z-index` ≥ 20000
-  - `.algo-group-panel` has `z-index` ≥ 20000
-  - P slot popup: 3 data columns (Day P&L, Lifetime, Expiry) + Account + TOTAL row
-  - M slot popup: 2 data columns + TOTAL
-  - C slot popup: 2 data columns + TOTAL
-  - H slot popup: 3 data columns + TOTAL
+- playwright: no
 
-## SSOT consistency rule
-NavBreakdown TOTAL rows are computed bottom-up (Σ per-account values). If the TOTAL ≠ the corresponding NavStrip pill value, the NavStrip formula is wrong — fix the NavStrip derivation to match. The per-account breakdown is the source of truth. Use the same formula in both places:
-- P Day: `baseDayPnlForPosition(p)` — same helper NavStrip uses via `livePositionDayPnl`
-- P Lifetime: `Σ p.pnl` — same as `_livePositionsPnl`
-- P Expiry: per-account slice of `_expiryProfit` computed in PositionStrip (passed as prop)
-- M Avail: `f.avail_margin` — same as `marginAvail`
-- M Total: `f.used_margin + f.avail_margin` — same as `marginTotal`
-- C Live: `f.live_cash ?? f.cash` — same as `liveCashTotal`
-- C Total: live cash + option premium per account — same as `cashTotal`
-- H Today: `Σ h.day_change_val` — same as `dispHoldingsToday`
-- H Value: `Σ h.cur_val` — same as `_liveHoldingsValue`
-- H Lifetime: `Σ h.pnl` — same as `_liveHoldingsTotal`
-
-If any total diverges on the live site, instrument both the NavStrip variable and the NavBreakdown sum with `console.log` to identify which formula differs.
-
----
-
-## Fix 5 · Market-open + MCX-close informational agents + deploy alert priority
-
-### 5a. `send_ntfy_alert` priority override (`backend/shared/helpers/alert_utils.py`)
-Add optional `priority: str | None = None` parameter. When `None`, keep existing time-based auto-detection (urgent/high). When set, use that value directly:
-```python
-def send_ntfy_alert(title: str, message: str, priority: str | None = None) -> None:
-    ...
-    if priority is None:
-        priority = "urgent" if is_night else "high"
-    # rest unchanged
-```
-
-### 5b. Thread priority through `_dispatch_channel` (`backend/api/algo/events.py`)
-Change `_dispatch_channel` to receive the full channel config dict (`ch: dict`) instead of just `channel: str`. Extract `channel = ch.get("channel", "")` inside. For ntfy, read `ntfy_priority = ch.get("priority")` and pass to `send_ntfy_alert`. Update the call site in `dispatch()` to pass `ch` (full dict).
-
-### 5c. New informational agents (`backend/api/algo/agent_engine.py`)
-Add `_INFO_AGENT_DEFAULTS` and `_INFO_AGENTS` list with two agents that fire once daily via `fire_at_time`, cooldown 22h, ntfy `default` priority, no email:
-- `market-open-nse`: `fire_at_time: "09:15"`, `schedule: "always"`, `tier: "info"`, `topic: "market_status"`, condition `avail_margin >= -999999999` (always true when fund data exists), events `[telegram, log, ntfy(priority=default)]`
-- `market-close-mcx`: `fire_at_time: "23:30"`, same defaults, same condition
-
-### 5d. Deploy alert priority (`webhook/notify_deploy.py`)
-Change `"Priority": "high"` → `"Priority": "default"` in the ntfy POST headers.
-
----
+## Commit message
+fix(ui,agents): timestamp Android tap + refire stamp + clock accuracy + market-open-nse fire_at_time sync
 
 ## Done when
-1. Hamburger drawer z-index ≥ 20001; nav dropdown panels ≥ 20000 — both above ChartModal (10600)
-2. NavBreakdown P popup: Account | Day P&L | Lifetime | Expiry — 3 per-account rows + TOTAL matching NavStrip P values
-3. NavBreakdown M popup: Account | Avail | Total — TOTAL matches marginAvail/marginTotal
-4. NavBreakdown C popup: Account | Cash Avail | Total Cash — TOTAL matches liveCashTotal/cashTotal
-5. NavBreakdown H popup: Account | Today MTM | Value | Lifetime — TOTAL matches NavStrip H values
-6. If any TOTAL ≠ NavStrip: NavStrip formula corrected to use the same per-position/per-fund calculation
-7. `_EXPIRY_AGENT_DEFAULTS` and `manual` events include ntfy in code
-8. `_ae_sync_existing_builtin` additively syncs missing channels into existing system agent rows on deploy
-9. `loss-margin-low` agent active on prod — fires ntfy + telegram when avail_margin < ₹25,000 on any account
-10. `market-open-nse` fires ntfy(default) at 09:15 IST; `market-close-mcx` fires ntfy(default) at 23:30 IST
-11. Deploy ntfy alert uses `Priority: default`
-12. `svelte-check` clean, pytest green, Playwright green
+1. Android portrait tap toggles between current time and refresh time
+2. Post-hibernation refire (tab return) updates the refresh timestamp when spinner completes
+3. Refresh timestamp never shows a time later than the displayed current time
+4. Refresh timestamp appears immediately on page nav when lastRefreshAt is already set
+5. market-open-nse agent has fire_at_time="09:15" in DB after next restart/seed
+6. svelte-check 0 errors, pytest green

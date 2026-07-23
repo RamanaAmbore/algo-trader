@@ -1197,6 +1197,8 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     missing = [e for e in code_events if e["channel"] not in stored_channels]
     if missing:
         existing.events = list(existing.events or []) + missing
+    if existing.fire_at_time != agent_def.get("fire_at_time"):
+        existing.fire_at_time = agent_def.get("fire_at_time")
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':
@@ -1218,6 +1220,7 @@ def _ae_build_agent_row(agent_def: dict) -> 'Agent':
         topic=agent_def.get("topic", "general"),
         digest_window_sec=agent_def.get("digest_window_sec", 30),
         status=agent_def.get("status", "active"),
+        fire_at_time=agent_def.get("fire_at_time"),
         is_system=True,
     )
 
