@@ -2131,12 +2131,13 @@
     /* Page-header is 2rem on desktop, 1.4rem on mobile — icons
        (1.4rem buttons) get 0.2rem breathing room above/below instead
        of touching the strip's top/bottom borders. algo-content
-       padding-top stays in lockstep with desktop. */
+       padding-top stays in lockstep with desktop. + 0.3rem gap
+       added below the page-header for breathing room on mobile. */
     .algo-content {
-      padding-top: calc(3rem + 1.4rem);
+      padding-top: calc(3rem + 1.4rem + 0.3rem);
     }
     :global(.algo-viewport:has(.ps-strip)) .algo-content {
-      padding-top: calc(3rem + 1.5rem + 1.4rem);
+      padding-top: calc(3rem + 1.5rem + 1.4rem + 0.3rem);
     }
     /* Mobile relaxation: the page-header action cluster has
        `white-space: nowrap` + `flex-shrink: 0` for desktop so the
