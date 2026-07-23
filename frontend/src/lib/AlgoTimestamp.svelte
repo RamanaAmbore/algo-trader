@@ -1,16 +1,29 @@
-<script>
-  import { nowStamp, lastRefreshAt, formatDualTz } from '$lib/stores';
+<script lang="ts">
+  import { get } from 'svelte/store';
+  import { browser } from '$app/environment';
+  import { lastRefreshAt, formatDualTz } from '$lib/stores';
 
-  let _lastRefresh = $state(0);
+  let _lastRefresh = $state(browser ? get(lastRefreshAt) : 0);
   let _showRefresh = $state(false);
 
-  $effect(() => { _lastRefresh = $lastRefreshAt; });
+  let _nowEpoch = $state(browser ? Date.now() : 0);
 
+  $effect(() => {
+    const lr = $lastRefreshAt;
+    _lastRefresh = lr;
+    if (lr > _nowEpoch) _nowEpoch = Date.now();
+  });
+
+  $effect(() => {
+    const id = setInterval(() => { _nowEpoch = Date.now(); }, 30_000);
+    return () => clearInterval(id);
+  });
+
+  let _nowTs     = $derived(_nowEpoch ? formatDualTz(new Date(_nowEpoch)) : '');
   let _refreshTs = $derived(_lastRefresh ? formatDualTz(new Date(_lastRefresh)) : null);
 
-  function _toggle() {
-    if (_refreshTs) _showRefresh = !_showRefresh;
-  }
+  function _handleTap(e: TouchEvent) { e.preventDefault(); _toggle(); }
+  function _toggle() { if (_refreshTs) _showRefresh = !_showRefresh; }
 
   $effect(() => { if (!_refreshTs && _showRefresh) _showRefresh = false; });
 </script>
@@ -18,10 +31,11 @@
 <button
   type="button"
   class="ats-group"
+  ontouchend={_handleTap}
   onclick={_toggle}
   onkeydown={(e) => e.key === 'Enter' && _toggle()}
   style="touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent;">
-  <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{$nowStamp}</span>
+  <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{_nowTs}</span>
   {#if _refreshTs}
     <span class="ats-sep" aria-hidden="true">|</span>
     <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
@@ -36,7 +50,8 @@
     font: inherit;
     color: inherit;
     text-align: inherit;
-    cursor: pointer;
+    cursor: default;
+    pointer-events: none;
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
@@ -54,14 +69,10 @@
     color: var(--algo-amber, #fbbf24);
     font-size: inherit;
   }
-  @media (min-width: 641px) {
+  @media (hover: none) and (pointer: coarse) {
     .ats-group {
-      cursor: default;
-      pointer-events: none;
-    }
-  }
-  @media (max-width: 640px) {
-    .ats-group {
+      cursor: pointer;
+      pointer-events: auto;
       font-size: 0.6rem;
       min-height: 1.8rem;
       align-items: center;

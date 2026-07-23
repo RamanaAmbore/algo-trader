@@ -161,13 +161,29 @@
   });
 
   // ── P slot — per-account Day P&L + Lifetime P&L + Expiry P&L ────────
-  // expiryPnl comes from PositionStrip (which owns symbolStore spots).
+  // Primary source: expiryByAcct prop from PositionStrip (lognormal projection).
+  // Fallback: sum p.pnl for derivative positions per account — covers the case
+  // where lognormal spot price resolution hasn't fired yet (open positions with
+  // no symbolStore snapshot at popup-open time).
+  const _DERIV_EXCHS = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
+  const _expiryFallback = $derived.by(() => {
+    /** @type {Map<string, number>} */
+    const m = new Map();
+    for (const p of _positions) {
+      if (!_DERIV_EXCHS.has(String(p?.exchange || '').toUpperCase())) continue;
+      const acct = String(p?.account || '');
+      if (!acct) continue;
+      m.set(acct, (m.get(acct) ?? 0) + Number(p?.pnl ?? 0));
+    }
+    return m;
+  });
+
   const _pByAcct = $derived.by(() => {
     return _scopedAccounts.map(acct => {
       const rows = _positions.filter(p => String(p.account) === acct);
       const dayPnl      = rows.reduce((s, p) => s + baseDayPnlForPosition(p), 0);
       const lifetimePnl = rows.reduce((s, p) => s + Number(p.pnl ?? 0), 0);
-      const expiryPnl   = expiryByAcct.get(acct) ?? null;
+      const expiryPnl   = expiryByAcct.get(acct) ?? _expiryFallback.get(acct) ?? null;
       return { account: acct, dayPnl, lifetimePnl, expiryPnl };
     });
   });
