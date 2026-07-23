@@ -137,12 +137,16 @@ def main():
     ntfy_topic = sec.get("ntfy_topic")
     if ntfy_topic:
         ntfy_url = sec.get("ntfy_url", "https://ntfy.sh")
+        ntfy_token = sec.get("ntfy_token")
         try:
             import urllib.request as _urlreq
+            _ntfy_headers = {"Title": event_label, "Tags": "rocket", "Priority": "default", "Content-Type": "text/plain"}
+            if ntfy_token:
+                _ntfy_headers["Authorization"] = f"Bearer {ntfy_token}"
             req = _urlreq.Request(
                 f"{ntfy_url.rstrip('/')}/{ntfy_topic}",
                 data=detail_line.encode(),
-                headers={"Title": event_label, "Tags": "rocket", "Priority": "default", "Content-Type": "text/plain"},
+                headers=_ntfy_headers,
                 method="POST",
             )
             _urlreq.urlopen(req, timeout=5)
