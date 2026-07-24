@@ -610,11 +610,15 @@ _legsExpPnlTotal =
      → `2 × (2875 − 2850) = +50` (intrinsic) + `30` (realised) = `+80`
 
 2. **F&O closed legs** (qty = 0) — entire position exited today. Formula: 
-   `row.realised || row.pnl`
+   `row.realised || row.pnl || 0`
    - When qty is 0, the entire position was closed; realized P&L is locked
    - Value is certain, independent of current spot price
    - Example: sold 2 CE 2850 short, covered today for +100 profit
      → contributes +100 to total
+   - **Expiry P&L fix (commit 90d3735f)**: Kite returns `realised=0` for options settled
+     at expiry; the actual P&L is stored in `c.pnl` instead. Formula now checks 
+     `realised || pnl || 0` instead of `realised || 0` alone. This ensures the Legs grid 
+     TOTAL row matches the sum of individual leg rows when options expire.
    - Note: closed legs previously skipped (continue statement) — now included
 
 3. **Equity legs** — stocks in the strategy. Linear profit via 
@@ -626,7 +630,7 @@ _legsExpPnlTotal =
 
 A helper `_legExpPnlDisplay(leg, spot)` provides the per-cell EXP value:
 - **Open leg** (qty ≠ 0): `expiryPnl(leg, spot) + (leg.realised || 0)`
-- **Closed leg** (qty = 0): `leg.realised || leg.pnl` (not "—", fully realized)
+- **Closed leg** (qty = 0): `leg.realised || leg.pnl || 0` (not "—", fully realized)
 - Replaces direct `expiryPnl()` calls; ensures closed legs show locked-in values
 
 **Payoff chart sync — dual-offset behaviour**:
@@ -895,6 +899,14 @@ Buttons stack horizontally or wrap on mobile.
 - Card scrolls independently; underlying grids still scroll
 - Esc key exits fullscreen
 
+**Refresh timestamp accuracy** (fix commit c0ce46be):
+- Derivatives page `loadPositions()` now calls `lastRefreshAt.set(Date.now())` on success
+- Previously, the AlgoTimestamp showed a frozen time (last manual-click only) because 
+  background position polls set a local `loading` flag while `RefreshButton` watched a 
+  different variable `_refreshing`. These watches were not synchronized.
+- Now the timestamp advances automatically on every successful 30-second position poll cycle,
+  giving operators accurate visibility into when data was last refreshed.
+
 **Search UI** (in SearchInput wrapper):
 - Symbol typeahead (instruments cache, ≥2 chars)
 - Exchange picker (NSE, NFO, MCX, CDS)
@@ -929,3 +941,5 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-11 | v1.2 added §11–24 comprehensive component + data-layer expansion (pulseUnified, buckets, columns, context menu, watchlist, account-select, cache, closed-hours, card controls) |
 | 2026-07-13 | §17 EXP formula: documented partial-close `realised` field in open-leg formula; closed-leg (qty=0) now included; per-leg helper `_legExpPnlDisplay` for Legs grid display |
 | 2026-07-14 | Bucket labels and order-modal close button restored after Svelte 4→5 snippet migration (behavioral parity) |
+| 2026-07-24 | §17 closed-leg P&L fallback fix (90d3735f): `_legsExpPnlTotal` and `_legExpPnlDisplay` now use `realised \|\| pnl \|\| 0` to handle Kite's expiry settlement behavior (P&L in `pnl` field when `realised=0`); Legs TOTAL row now matches sum of individual legs |
+| 2026-07-24 | §24 refresh timestamp accuracy fix (c0ce46be): `loadPositions()` on derivatives page now calls `lastRefreshAt.set(Date.now())` on success, advancing timestamp on every 30s poll cycle instead of freezing at last manual-click |
