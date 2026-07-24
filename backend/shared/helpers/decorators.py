@@ -61,6 +61,11 @@ def retry_kite_conn(max_attempts):
                             f"{func.__name__}: Operation failed after {n} attempts."
                         )
                         raise
+                    # Exponential backoff between retries
+                    is_rate_limit = "too many" in str(e).lower() or "429" in str(e)
+                    delay = 30 if is_rate_limit else min(2 ** attempt, 30)
+                    logger.debug(f"{func.__name__}: waiting {delay}s before retry {attempt + 2}")
+                    time.sleep(delay)
 
         return wrapper
 

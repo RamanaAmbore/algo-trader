@@ -32,8 +32,10 @@ field names the rest of the codebase consumes.
 from __future__ import annotations
 
 import functools
+import ssl
 import time as _time
 import threading
+import urllib3.exceptions
 from collections import defaultdict
 from typing import Any, Callable
 
@@ -180,6 +182,15 @@ def _retry_groww_auth(fn: Callable) -> Callable:
                     self._conn.refresh()
                 except Exception:
                     pass  # refresh_session is best-effort; proceed regardless
+                return fn(self, *args, **kwargs)
+
+            # SSL EOF → retry once after a short pause
+            except (ssl.SSLError, urllib3.exceptions.SSLError) as ssl_err:
+                logger.warning(
+                    f"[GROWW-SSL] SSL EOF on {fn.__name__} for {self.account!r}; "
+                    f"retrying after 2s: {ssl_err}"
+                )
+                _time.sleep(2)
                 return fn(self, *args, **kwargs)
 
         finally:
