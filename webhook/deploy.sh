@@ -375,6 +375,15 @@ JSONEOF
       && echo "[$TS] Startup notification done" \
       || echo "[$TS] WARNING: startup notification failed"
 
+  echo "[$TS] Deployment complete (HEAD: $(git rev-parse --short HEAD))"
+
+  # Release the host-wide lock before running metrics capture.
+  # capture_metrics.py can take 10-20 min; holding the lock for its
+  # duration blocks any concurrent deploy (e.g. prod waiting on dev).
+  # All safety-critical steps (pull, build, restart, health check,
+  # notification) are done above — metrics are best-effort only.
+  exec 200>&-
+
   # D12 — Capture per-release code metrics. Best-effort; never fails
   # the deploy. Main branch deploys land under `git describe`, dev
   # branches use `dev-<short-sha>` so the trend chart doesn't mix
@@ -387,12 +396,10 @@ JSONEOF
       else
           METRICS_TAG="dev-$(git rev-parse --short HEAD)"
       fi
-      echo "[$TS] Capturing code metrics under tag $METRICS_TAG..."
+      echo "[$TS] Capturing code metrics under tag $METRICS_TAG (lock released)..."
       "$APP_ROOT/venv/bin/python" "$APP_ROOT/scripts/capture_metrics.py" \
           --release-tag "$METRICS_TAG" --force --with-test-times \
           && echo "[$TS] Code metrics captured" \
           || echo "[$TS] WARNING: code-metrics capture failed (deploy itself unaffected)"
   fi
-
-  echo "[$TS] Deployment complete (HEAD: $(git rev-parse --short HEAD))"
 } >> "$LOG" 2>&1
