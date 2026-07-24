@@ -1098,7 +1098,7 @@ class BrokerConnectionEventsController(Controller):
             events = [
                 BrokerConnectionEventItem(
                     id=row.id,
-                    account=mask_account(row.account),
+                    account=row.account,
                     broker_id=row.broker_id,
                     event_type=row.event_type,
                     event_ts=row.event_ts.isoformat() if row.event_ts else None,

@@ -32,6 +32,7 @@
   import { tickBus } from '$lib/data/symbolStore.svelte.js';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
+  import { pollOpenOrders } from '$lib/data/openOrdersStore.svelte.js';
 
   const { children } = $props();
 
@@ -865,8 +866,11 @@
     // live chase progress), 60 s otherwise. Without this it ran at 10 s
     // on every algo page including Tokens / Settings / Brokers / Users
     // where chase is irrelevant — 6 wasted req/min per idle tab.
+    // pollOpenOrders runs alongside pollChase to keep the shared
+    // openOrderQtyBySymbol store current for derivatives + other consumers.
     pollChase();
-    chaseTeardown = _adaptiveInterval(pollChase,
+    pollOpenOrders();
+    chaseTeardown = _adaptiveInterval(async () => { await pollChase(); pollOpenOrders(); },
       () => openOrderIds.size > 0, 5000, 60000);
   });
   onDestroy(() => {

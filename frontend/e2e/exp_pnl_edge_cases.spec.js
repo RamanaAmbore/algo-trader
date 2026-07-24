@@ -41,7 +41,12 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
+import path from 'path';
+import assert from 'assert';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 test.setTimeout(90000);
 
@@ -758,6 +763,106 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     expect(fnBody).toContain('_eqExpPnlByKey');
     console.log('[TC9.5-pass] _legExpPnlDisplay covers equity legs');
   });
+});
+
+test.describe('Order ticket + chase UX stale-checks (TC10.x)', () => {
+
+  test('TC10.0 OrderTicket imports and uses CardHeader in header zone', async () => {
+    const src = readFileSync(path.join(__dirname, '../src/lib/order/OrderTicket.svelte'), 'utf8');
+    assert(
+      src.includes("import CardHeader from '$lib/CardHeader.svelte'") ||
+      src.includes('import CardHeader from "$lib/CardHeader.svelte"'),
+      'OrderTicket.svelte must import CardHeader'
+    );
+    assert(src.includes('<CardHeader'), 'OrderTicket.svelte must use <CardHeader in template');
+    assert(src.includes('showControls={false}'), 'CardHeader in OrderTicket must have showControls={false}');
+  });
+
+  test('TC10.1 Chase toggle rendered inside CardHeader (not in body)', async () => {
+    const src = readFileSync(path.join(__dirname, '../src/lib/order/OrderTicket.svelte'), 'utf8');
+    const chIdx = src.indexOf('<CardHeader');
+    assert(chIdx !== -1, 'CardHeader must be present');
+    const chaseIdx = src.indexOf('ot-chase-toggle', chIdx);
+    assert(chaseIdx !== -1, 'Chase toggle must appear inside CardHeader block');
+    assert(chaseIdx > chIdx, 'Chase toggle must come after CardHeader opening tag');
+  });
+
+  test('TC10.2 LTP display uses _lastQuote.ltp in OrderTicket body', async () => {
+    const src = readFileSync(path.join(__dirname, '../src/lib/order/OrderTicket.svelte'), 'utf8');
+    assert(
+      src.includes('_lastQuote?.ltp') || src.includes('_lastQuote.ltp'),
+      'OrderTicket body must reference _lastQuote.ltp for LTP display'
+    );
+    assert(src.includes('ot-ltp'), 'OrderTicket must have ot-ltp CSS class for LTP display');
+  });
+
+  test('TC10.3 ChaseCard has pulsing dot animation', async () => {
+    const src = readFileSync(path.join(__dirname, '../src/lib/order/ChaseCard.svelte'), 'utf8');
+    assert(src.includes('cc-pulse'), 'ChaseCard must have cc-pulse class for pulsing dot');
+    assert(
+      src.includes('cc-pulse-anim') || src.includes('@keyframes'),
+      'ChaseCard must have keyframe animation for pulse'
+    );
+  });
+
+  test('TC10.4 ChaseCard age column shown outside compact guard', async () => {
+    const src = readFileSync(path.join(__dirname, '../src/lib/order/ChaseCard.svelte'), 'utf8');
+    const ageIdx = src.indexOf('cc-col-age');
+    assert(ageIdx !== -1, 'ChaseCard must have cc-col-age cell');
+    // The age span must NOT be immediately inside {#if !compact}
+    const beforeAge = src.slice(Math.max(0, ageIdx - 200), ageIdx);
+    assert(
+      !beforeAge.match(/\{#if !compact\}\s*$/),
+      'cc-col-age must not be immediately gated by {#if !compact}'
+    );
+  });
+
+  test('TC10.5 CANCELLED/REJECTED triggers loadPositions in WS handler', async () => {
+    const src = readFileSync(
+      path.join(__dirname, '../src/routes/(algo)/admin/derivatives/+page.svelte'), 'utf8');
+    // The terminal branch must check s === 'CANCELLED' and call loadPositions
+    assert(
+      src.includes("s === 'CANCELLED'") || src.includes('s === "CANCELLED"'),
+      'WS handler must check for CANCELLED status in terminal branch'
+    );
+    assert(
+      src.includes("s === 'REJECTED'") || src.includes('s === "REJECTED"'),
+      'WS handler must check for REJECTED status in terminal branch'
+    );
+    // Verify loadPositions is called in the terminal block
+    // Find the terminal branch and check loadPositions appears after the CANCELLED check
+    const cancelCheckIdx = src.indexOf("s === 'CANCELLED'");
+    const loadAfterIdx = src.indexOf('loadPositions', cancelCheckIdx);
+    assert(
+      loadAfterIdx !== -1 && loadAfterIdx - cancelCheckIdx < 200,
+      'loadPositions must be called within the CANCELLED/REJECTED terminal branch'
+    );
+  });
+
+  test('TC10.6 openOrderQtyBySymbol exported from openOrdersStore', async () => {
+    const storePath = path.join(__dirname, '../src/lib/data/openOrdersStore.svelte.js');
+    assert(existsSync(storePath), 'openOrdersStore.svelte.js must exist');
+    const src = readFileSync(storePath, 'utf8');
+    assert(src.includes('openOrderQtyBySymbol'), 'openOrdersStore must export openOrderQtyBySymbol');
+    assert(src.includes('pollOpenOrders'), 'openOrdersStore must export pollOpenOrders');
+    assert(src.includes('writable'), 'openOrdersStore must use a writable store');
+  });
+
+  test('TC10.7 CandidateLegRow accepts pendingQty and renders chips', async () => {
+    const src = readFileSync(
+      path.join(__dirname, '../src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte'), 'utf8');
+    assert(src.includes('pendingQty'), 'CandidateLegRow must accept pendingQty prop');
+    assert(src.includes('cand-open-chip'), 'CandidateLegRow must reference cand-open-chip');
+    assert(src.includes('cand-closed-chip'), 'CandidateLegRow must reference cand-closed-chip');
+  });
+
+  test('TC10.8 derivatives page passes pendingQty from shared store', async () => {
+    const src = readFileSync(
+      path.join(__dirname, '../src/routes/(algo)/admin/derivatives/+page.svelte'), 'utf8');
+    assert(src.includes('pendingQty'), 'derivatives page must pass pendingQty to CandidateLegRow');
+    assert(src.includes('openOrderQtyBySymbol'), 'derivatives page must import openOrderQtyBySymbol');
+  });
+
 });
 
 // ─────────────────────────────────────────────────────────────────

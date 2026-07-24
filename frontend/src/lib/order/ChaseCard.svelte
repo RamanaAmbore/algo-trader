@@ -249,8 +249,8 @@
       <span class="cc-col cc-col-sym">Symbol</span>
       <span class="cc-col cc-col-limit">Limit</span>
       <span class="cc-col cc-col-att">Attempts</span>
+      <span class="cc-col cc-col-age">Age</span>
       {#if !compact}
-        <span class="cc-col cc-col-age">Age</span>
         <span class="cc-col cc-col-mode">Mode</span>
       {/if}
       <span class="cc-col cc-col-actions"></span>
@@ -267,7 +267,12 @@
           {row.transaction_type}
         </span>
         <span class="cc-col cc-col-qty">{row.quantity}</span>
-        <span class="cc-col cc-col-sym" title={row.symbol}>{formatSymbol(row.symbol)}</span>
+        <span class="cc-col cc-col-sym" title={row.symbol}>
+          {#if row.status === 'active'}
+            <span class="cc-pulse cc-pulse-{(row.transaction_type || '').toLowerCase()}" aria-hidden="true"></span>
+          {/if}
+          {formatSymbol(row.symbol)}
+        </span>
         <!-- Audit fix (M-6) — show current_limit (live re-quoted) when
              the chase has moved off initial_price; otherwise fall back
              to initial_price for the first iteration. A small "·N"
@@ -296,8 +301,8 @@
               <span class="cc-countdown cc-requoting" title="Re-quoting now"> · re-quoting…</span>
             {/if}
           {/if}</span>
+        <span class="cc-col cc-col-age">{_age(row.last_attempt_at || row.created_at)}</span>
         {#if !compact}
-          <span class="cc-col cc-col-age">{_age(row.last_attempt_at || row.created_at)}</span>
           <span class="cc-col {_modeCls(row.mode)}">{(row.mode || '?').toUpperCase()}</span>
         {/if}
         <span class="cc-col cc-col-actions">
@@ -423,6 +428,7 @@
     grid-template-columns:
       minmax(0, 1.4fr) minmax(0, 0.6fr) minmax(0, 0.6fr)
       minmax(0, 2.4fr) minmax(0, 1fr) minmax(0, 0.8fr)
+      minmax(0, 0.6fr)   /* age — always shown now */
       minmax(2.6rem, auto);
   }
   /* Child rows — auto-attached legs of the parent above (typically
@@ -496,10 +502,26 @@
   .cc-kill:disabled { opacity: 0.45; cursor: progress; }
   .cc-countdown {
     font-size: var(--fs-2xs);
-    color: rgba(180, 200, 230, 0.6);
+    color: rgba(180, 200, 230, 0.85);
     font-variant-numeric: tabular-nums;
   }
   .cc-countdown.cc-requoting {
     color: var(--c-action);
   }
+  .cc-pulse {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    margin-right: 0.25rem;
+    vertical-align: middle;
+    flex-shrink: 0;
+    animation: cc-pulse-anim 1.4s ease-in-out infinite;
+  }
+  @keyframes cc-pulse-anim {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.2; }
+  }
+  .cc-pulse-buy  { background: var(--c-pos, #4ade80); }
+  .cc-pulse-sell { background: var(--c-neg, #f87171); }
 </style>

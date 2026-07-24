@@ -57,6 +57,7 @@
    *   onRemoveDraft: (draftId: any) => void,
    *   onOpenChartTicket: (c: any) => void,
    *   onContextMenu: (c: any, ev: MouseEvent | PointerEvent) => void,
+   *   pendingQty?: number,
    * }}
    */
   let {
@@ -73,6 +74,7 @@
     strategy,
     flash,
     stripe = '',
+    pendingQty = 0,
     onToggleEnabled,
     onExecuteDraft,
     onClosePosition,
@@ -276,7 +278,17 @@
   </span>
   <!-- Expiry cell removed — the hyphenated symbol shows it. -->
   <span class="font-mono">{c.account}</span>
-  <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
+  {#if isClosed}
+    <span class="cand-status-chip cand-closed-chip">closed</span>
+  {:else if pendingQty > 0}
+    <span class="num kv-pos">{pendingQty}</span>
+    <span class="cand-status-chip cand-open-chip">open</span>
+    {#if Math.abs(displayQty) - pendingQty > 0}
+      <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{Math.abs(displayQty) - pendingQty}</span>
+    {/if}
+  {:else}
+    <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
+  {/if}
   <!-- Lots column. For proxy eq rows the lot count is in
        TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
        so the math derives from the same market_value /
