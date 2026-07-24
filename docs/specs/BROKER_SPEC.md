@@ -355,6 +355,32 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 ---
 
+## 13.1 Connection Resilience Improvements (Jul 2026 Polish)
+
+**Kite 502/503 retry routing fix**
+- `backend/brokers/adapters/kite.py`: `DataException` (HTTP 502/503 gateway errors) now maps 
+  to `BrokerNetworkError` instead of `BrokerInputError`. This allows the retry decorator 
+  (`@retry_kite_conn`) to correctly re-attempt transient gateway failures.
+
+**Dhan login stagger**
+- `backend/brokers/connections.py`: Multiple Dhan accounts now stagger login 2 seconds apart 
+  at startup to avoid concurrent auth storms that trigger broker rate-limiting or session conflicts.
+
+**Token TOCTOU fix**
+- `backend/brokers/connections.py`: `get_kite_conn()` and `get_dhan_conn()` fast-path returns 
+  are now inside `self._login_lock` to prevent stale handle races when two threads request 
+  the same broker connection simultaneously during token refresh.
+
+**Dhan cooloff persistence**
+- `backend/brokers/broker_apis.py`: `_dhan_next_poll` cooloff entries now persist to 
+  `/tmp/ramboq_dhan_cooloff.json` and survive process restarts. Prevents tight-retry loops 
+  when ramboq_api restarts during a Dhan rate-limit window.
+
+**Operator impact**: These fixes reduce spurious login failures, retry noise, and intermittent 
+connection dropouts in the logs. Circuit breaker should open/close more predictably.
+
+---
+
 ## 14. Broker Connection Events Audit Log
 
 **Table**: `broker_connection_events` (shared ramboq DB)
