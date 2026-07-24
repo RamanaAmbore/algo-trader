@@ -2459,7 +2459,7 @@
        so the trigger doesn't reflow when the operator picks a
        narrower value (Equity / Futures / Options). Earlier min/max
        range let the trigger grow / shrink with the selection. */
-    width: 8.5rem;
+    width: 5.7rem;
     flex-shrink: 0;
   }
   .cw-type-wrap :global(.rbq-select-trigger) {

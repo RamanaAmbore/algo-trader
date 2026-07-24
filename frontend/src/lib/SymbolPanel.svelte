@@ -3239,9 +3239,9 @@
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    background: var(--algo-cyan-bg);
+    background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(34, 211, 238, 0.40);
-    border-radius: 3px;
+    border-radius: 4px;
     color: var(--c-info);
     cursor: pointer;
     flex-shrink: 0;
@@ -3249,7 +3249,7 @@
     padding: 0;
   }
   .oes-chart-btn:hover:not(:disabled) {
-    background: rgba(103, 232, 249, 0.18);
+    background: var(--c-info-14);
     color: #67e8f9;
     border-color: rgba(103, 232, 249, 0.65);
   }
