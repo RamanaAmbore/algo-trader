@@ -1,3 +1,4 @@
+import json as _json
 import os
 import random
 import threading
@@ -284,6 +285,18 @@ _PRIORITY_INTERVALS_SEC: dict[str, float] = {
     "cold": 600.0,
 }
 _dhan_next_poll: dict[str, float] = {}  # account → next allowed poll epoch
+_dhan_next_poll_lock = threading.Lock()
+
+_COOLOFF_PATH = "/tmp/ramboq_dhan_cooloff.json"
+
+# Load persisted cooloff entries that haven't expired yet (survives restarts).
+try:
+    if os.path.exists(_COOLOFF_PATH):
+        _saved = _json.loads(open(_COOLOFF_PATH).read())
+        _now_boot = _time.time()
+        _dhan_next_poll.update({k: v for k, v in _saved.items() if v > _now_boot})
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # In-process poll-priority cache (avoids async DB reads from thread context)
@@ -359,11 +372,12 @@ def dhan_next_poll_clear(accounts: list[str] | None = None) -> None:
     Dhan accounts (safe — non-Dhan entries are never inserted into this
     dict, so a full clear only affects Dhan accounts).
     """
-    if accounts is None:
-        _dhan_next_poll.clear()
-    else:
-        for acct in accounts:
-            _dhan_next_poll.pop(acct, None)
+    with _dhan_next_poll_lock:
+        if accounts is None:
+            _dhan_next_poll.clear()
+        else:
+            for acct in accounts:
+                _dhan_next_poll.pop(acct, None)
 
 
 def _is_dhan_interval_due(account: str, broker) -> bool:
@@ -404,7 +418,12 @@ def _update_dhan_next_poll(account: str, broker) -> None:
         return
     priority = _get_dhan_poll_priority(account)
     interval = _PRIORITY_INTERVALS_SEC.get(priority, 30.0)
-    _dhan_next_poll[account] = _time.time() + interval
+    with _dhan_next_poll_lock:
+        _dhan_next_poll[account] = _time.time() + interval
+        try:
+            open(_COOLOFF_PATH, 'w').write(_json.dumps(dict(_dhan_next_poll)))
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +689,8 @@ def _maybe_auto_downgrade(account: str) -> None:
             set_dhan_priority_cache(account, "cold")
             # Reset next_poll to 0 so the next background cycle re-schedules
             # the cold interval via _update_dhan_next_poll.
-            _dhan_next_poll[account] = 0.0
+            with _dhan_next_poll_lock:
+                _dhan_next_poll[account] = 0.0
 
             logger.warning(
                 f"[DHAN-AUTO-DOWNGRADE] account={account} "

@@ -62,14 +62,14 @@ class TestKiteExceptionMapping:
         assert isinstance(result, BrokerInputError)
         assert result.code == "InputException"
 
-    def test_data_exception_maps_to_input_error(self):
-        """DataException → BrokerInputError."""
+    def test_data_exception_maps_to_network_error(self):
+        """DataException → BrokerNetworkError (raised by Kite for 502/503)."""
         mock_exc = MagicMock()
         mock_exc.__class__.__name__ = "DataException"
         mock_exc.__str__ = MagicMock(return_value="invalid data")
 
         result = _kite_exc(mock_exc)
-        assert isinstance(result, BrokerInputError)
+        assert isinstance(result, BrokerNetworkError)
 
     def test_general_exception_maps_to_broker_error(self):
         """GeneralException → BrokerError."""

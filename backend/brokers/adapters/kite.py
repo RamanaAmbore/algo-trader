@@ -39,7 +39,7 @@ _KITE_ERROR_MAP: dict[str, type[BrokerError]] = {
     "NetworkException":  BrokerNetworkError,
     "OrderException":    BrokerOrderError,
     "InputException":    BrokerInputError,
-    "DataException":     BrokerInputError,
+    "DataException":     BrokerNetworkError,
     "GeneralException":  BrokerError,
 }
 
