@@ -1879,10 +1879,12 @@
   }
 
   /**
-   * EXP P&L for one leg to display in the legs grid.
-   * For open legs: intrinsic + partial-close realized.
-   * For closed legs (qty=0, non-equity): locked-in realized P&L.
-   * For equity or no-spot: null (shows '—').
+   * EXP P&L for one leg — canonical per-candidate formula used by both
+   * the legs grid and _legsExpPnlTotal so sum(rows) == TOTAL by construction.
+   * - Open F&O: intrinsic at expiry + partial-close realised
+   * - Closed F&O (qty=0): locked-in realised || pnl (Kite settled-option fallback)
+   * - Equity / proxy hedge: beta-adjusted linear P&L via _eqExpPnlByKey
+   * - No spot or unparseable option: null (shows '—')
    * @param {any} c
    * @param {number|null} spot
    * @returns {number|null}
@@ -1891,6 +1893,7 @@
     const v = _expiryPnl(c, spot);
     if (v != null) return v + Number(c.realised || 0);
     if (Number(c.qty || 0) === 0 && c.kind !== 'eq') return Number(c.realised || c.pnl || 0);
+    if (c.kind === 'eq') return _eqExpPnlByKey[enKey(c)] ?? null;
     return null;
   }
 
@@ -1911,25 +1914,15 @@
    *  source the cascade is bounded by the _throttledTick gate. */
   const _legsExpPnlTotal = $derived.by(() => {
     const spot = liveSpot ?? null;
-    // F&O open legs: intrinsic at expiry (options) or (spot − cost)×qty (futures).
-    const fnoOpen = displayedCandidates
-      .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
+    // Single pass: _legExpPnlDisplay is the canonical per-candidate formula
+    // so sum(per-leg rows in the grid) == this TOTAL by construction.
+    // Handles open F&O, closed F&O, equity/proxy legs, and null (no-spot) legs uniformly.
+    return displayedCandidates
+      .filter(c => _isLegEnabled(c))
       .reduce((/** @type {number} */ s, c) => {
-        const v = _expiryPnl(c, spot);
-        return v == null ? s : s + v + Number(c.realised || 0);
+        const v = _legExpPnlDisplay(c, spot);
+        return v == null ? s : s + v;
       }, 0);
-    // F&O closed legs: realized P&L is locked in regardless of spot.
-    // Same component that `chartPnlOffset` adds to the backend curve so stat
-    // overlay and tooltip stay in sync when legs have been exited today.
-    const fnoClosed = displayedCandidates
-      .filter(c => _isLegEnabled(c) && c.kind !== 'eq' && Number(c.qty || 0) === 0)
-      .reduce((/** @type {number} */ s, c) => s + Number(c.realised || c.pnl || 0), 0);
-    // Equity legs: same linear formula as `_mergedPayoff` — handles exited equity
-    // (opening_qty fallback) and beta-adjusted proxy legs. Empty when !_includeHoldings.
-    const eqTotal = spot != null
-      ? _equityLinearLegs.reduce((s, l) => s + (spot - l.cost) * l.qty, 0)
-      : 0;
-    return fnoOpen + fnoClosed + eqTotal;
   });
 
   /** Realised P&L offset for the expiry curve — locked-in gains from
@@ -2160,7 +2153,7 @@
    *  whose proxy price or target spot is unusable. */
   const _equityLinearLegs = $derived.by(() => {
     const eqs = _equityLegs;
-    /** @type {Array<{qty:number,cost:number}>} */
+    /** @type {Array<{qty:number,cost:number,key:string}>} */
     const out = [];
     if (!eqs.length) return out;
     const targetSpot = Number(strategy?.spot) || 0;
@@ -2182,9 +2175,17 @@
         if (effQty === 0) continue;
         effCost = investmentValue / effQty;
       }
-      out.push({ qty: effQty, cost: effCost });
+      out.push({ qty: effQty, cost: effCost, key: enKey(eq) });
     }
     return out;
+  });
+  const _eqExpPnlByKey = $derived.by(() => {
+    const spot = liveSpot;
+    if (spot == null) return /** @type {Record<string,number>} */ ({});
+    /** @type {Record<string,number>} */
+    const m = {};
+    for (const l of _equityLinearLegs) m[l.key] = (spot - l.cost) * l.qty;
+    return m;
   });
   const _mergedPayoff = $derived.by(() => {
     const base = strategy?.payoff;
