@@ -31,8 +31,8 @@ DEPLOY_SCRIPT = REPO_ROOT / "webhook" / "deploy.sh"
 # ---------------------------------------------------------------------------
 
 _SECRETS = {
-    "telegram_bot_token": "fake-token",
-    "telegram_chat_id": "123456",
+    "ntfy_topic": "ramboq-test",
+    "ntfy_url": "https://ntfy.sh",
 }
 
 
@@ -47,7 +47,7 @@ def _run_main(cfg: dict, *, branch: str = "dev", status: str = "ok",
               commit: str = "abc1234", deploy_type: str = "full"):
     """
     Run notify_deploy.main() with patched I/O and return the
-    mock requests.post object so callers can assert call_count / args.
+    mock urlopen object so callers can inspect the ntfy Request.
     """
     notify = _load_notify()
 
@@ -56,10 +56,6 @@ def _run_main(cfg: dict, *, branch: str = "dev", status: str = "ok",
         if "secrets" in str(path):
             return io.StringIO(yaml.dump(_SECRETS))
         return io.StringIO(yaml.dump(cfg))
-
-    resp = MagicMock()
-    resp.ok = True
-    resp.status_code = 200
 
     argv = [
         "notify_deploy.py",
@@ -72,15 +68,14 @@ def _run_main(cfg: dict, *, branch: str = "dev", status: str = "ok",
     with (
         patch.object(sys, "argv", argv),
         patch("builtins.open", side_effect=_fake_open),
-        patch("subprocess.run", return_value=MagicMock(stdout="active", returncode=0)),
-        patch("requests.post", return_value=resp) as mock_post,
+        patch("urllib.request.urlopen") as mock_urlopen,
     ):
         try:
             notify.main()
         except SystemExit:
             pass
 
-    return mock_post
+    return mock_urlopen
 
 
 # ---------------------------------------------------------------------------
@@ -103,12 +98,12 @@ class TestCapGating:
         mock_post.assert_not_called()
 
     def test_main_branch_always_fires(self):
-        """main branch always fires regardless of cap_in_dev value."""
+        """main branch always fires ntfy regardless of cap_in_dev value."""
         cfg = {"deploy_branch": "main", "cap_in_dev": {"notify_on_deploy": False}}
-        mock_post = _run_main(cfg, branch="main")
-        mock_post.assert_called_once()
-        url = mock_post.call_args.args[0] if mock_post.call_args.args else ""
-        assert "api.telegram.org" in url
+        mock_urlopen = _run_main(cfg, branch="main")
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert "ntfy.sh" in req.full_url
 
     def test_fail_status_fires_even_when_cap_disabled(self):
         """dev branch failure is also suppressed — use ntfy for failure awareness."""
@@ -122,28 +117,31 @@ class TestCapGating:
 # ---------------------------------------------------------------------------
 
 class TestPayload:
-    """Telegram message content."""
+    """ntfy notification content."""
 
     def test_branch_tag_in_dev_message(self):
-        """Main branch deploy message has no [main] tag (it's always main)."""
+        """Main branch ntfy title has no [main] tag (branch tag only for non-main)."""
         cfg = {"deploy_branch": "main"}
-        mock_post = _run_main(cfg, branch="main")
-        text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
-        assert "[main]" not in text, f"Expected no [main] tag in Telegram body: {text!r}"
+        mock_urlopen = _run_main(cfg, branch="main")
+        req = mock_urlopen.call_args[0][0]
+        title = req.get_header("Title")
+        assert "[main]" not in title, f"Expected no [main] tag in ntfy title: {title!r}"
 
     def test_commit_hash_in_message(self):
-        """Commit hash appears in Telegram body (prod branch)."""
+        """Commit hash appears in ntfy body (prod branch)."""
         cfg = {"deploy_branch": "main"}
-        mock_post = _run_main(cfg, branch="main", commit="deadbeef")
-        text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
-        assert "deadbeef" in text, f"Expected commit hash in Telegram body: {text!r}"
+        mock_urlopen = _run_main(cfg, branch="main", commit="deadbeef")
+        req = mock_urlopen.call_args[0][0]
+        body = req.data.decode()
+        assert "deadbeef" in body, f"Expected commit hash in ntfy body: {body!r}"
 
     def test_fe_only_suffix_for_fe_deploy(self):
-        """FE-only deploy appends '· FE-only' suffix in the OK message (prod)."""
+        """FE-only deploy appends 'FE-only' in the ntfy title (prod)."""
         cfg = {"deploy_branch": "main"}
-        mock_post = _run_main(cfg, branch="main", deploy_type="fe-only")
-        text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
-        assert "FE-only" in text, f"Expected FE-only label: {text!r}"
+        mock_urlopen = _run_main(cfg, branch="main", deploy_type="fe-only")
+        req = mock_urlopen.call_args[0][0]
+        title = req.get_header("Title")
+        assert "FE-only" in title, f"Expected FE-only label in ntfy title: {title!r}"
 
 
 # ---------------------------------------------------------------------------

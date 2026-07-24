@@ -896,12 +896,12 @@ _LOSS_AGENTS = [
 
 # Enrich each row with the common notify + cooldown shape so BUILTIN_AGENTS
 # keeps its existing keys; the engine's scheduler reads these fields.
+# email + ntfy removed from defaults — routing now driven by alert_routing in
+# backend_config.yaml. ntfy priority is set per-agent (high or urgent) below.
 _LOSS_AGENT_DEFAULTS = dict(
     events=[
         {"channel": "telegram", "enabled": True},
-        {"channel": "email",    "enabled": True},
         {"channel": "log",      "enabled": True},
-        {"channel": "ntfy",     "enabled": True},
     ],
     actions=[],                 # notify-only. Attach actions via admin UI later.
     schedule="market_hours",
@@ -909,9 +909,25 @@ _LOSS_AGENT_DEFAULTS = dict(
     status="active",            # v2 grammar is now the sole loss-alert engine
 )
 
+# ntfy priority per agent slug. critical-tier agents → urgent; high-tier → high.
+_LOSS_AGENT_NTFY: dict[str, str] = {
+    "loss-positions-acct":        "high",
+    "loss-positions-total":       "urgent",
+    "loss-margin-low":            "high",
+    "loss-funds-negative":        "urgent",
+    "loss-pos-total-auto-close":  "urgent",
+}
+
 for _a in _LOSS_AGENTS:
     for _k, _v in _LOSS_AGENT_DEFAULTS.items():
         _a.setdefault(_k, _v)
+    _slug = _a.get("slug", "")
+    if _slug in _LOSS_AGENT_NTFY and not any(
+        e.get("channel") == "ntfy" for e in _a.get("events", [])
+    ):
+        _a["events"] = list(_a["events"]) + [
+            {"channel": "ntfy", "enabled": True, "priority": _LOSS_AGENT_NTFY[_slug]},
+        ]
 BUILTIN_AGENTS.extend(_LOSS_AGENTS)
 
 

@@ -253,6 +253,86 @@ def _send_telegram(message: str):
         _log.error(f"Telegram error: {e}")
 
 
+def _send_telegram_info(message: str):
+    """Send to the info/deploy Telegram channel (telegram_chat_id_deploy).
+    Falls back to the ops channel keys if the dedicated deploy keys are absent.
+    Shares the same engine-idle suppression and is_enabled gate as _send_telegram.
+    """
+    import logging
+    _log = logging.getLogger('backend.api.background')
+    try:
+        from backend.shared.helpers.utils import is_engine_idle
+        if is_engine_idle():
+            _log.info("Telegram info skipped — engine idle (dev)")
+            return
+    except Exception:
+        pass
+    if not is_enabled('telegram'):
+        _log.info("Telegram info skipped — disabled for this environment")
+        return
+    token   = secrets.get('telegram_bot_token_deploy') or secrets.get('telegram_bot_token', '')
+    chat_id = secrets.get('telegram_chat_id_deploy')   or secrets.get('telegram_chat_id', '')
+    if not token or not chat_id:
+        logger.warning("Telegram info channel not configured — skipping")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        resp = requests.post(
+            url,
+            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+            timeout=10,
+        )
+        if resp.ok:
+            _log.info("Telegram info alert sent")
+        else:
+            _log.error(f"Telegram info send failed: {resp.status_code} {resp.text}")
+    except Exception as e:
+        _log.error(f"Telegram info error: {e}")
+
+
+def _alert_route(
+    event_key: str,
+    title: str,
+    body: str,
+    email_fn: "Callable[[], None] | None" = None,
+) -> None:
+    """Config-driven alert dispatch.
+
+    Reads ``alert_routing.<event_key>`` from backend_config.yaml and dispatches
+    to the configured channels:
+      telegram: ops  → _send_telegram
+      telegram: info → _send_telegram_info
+      telegram: false → skip
+      ntfy: <priority> → send_ntfy_alert with that priority; false → skip
+      email: true → call email_fn() if provided; false → skip
+
+    ``title`` is the ntfy notification title.
+    ``body``  is the Telegram message (HTML-safe).
+    ``email_fn`` is a zero-arg callable that delivers the email. Ignored when the
+    routing table has ``email: false`` or when email_fn is None.
+    """
+    routing = config.get('alert_routing', {})
+    route   = routing.get(event_key, {})
+
+    tg_channel = route.get('telegram', 'ops')
+    if tg_channel == 'ops':
+        _send_telegram(body)
+    elif tg_channel == 'info':
+        _send_telegram_info(body)
+    # tg_channel == false/False → skip
+
+    ntfy_priority = route.get('ntfy', False)
+    if ntfy_priority and ntfy_priority is not False and str(ntfy_priority).lower() != 'false':
+        send_ntfy_alert(title, body, priority=str(ntfy_priority))
+
+    send_email_flag = route.get('email', False)
+    if send_email_flag and email_fn is not None:
+        try:
+            email_fn()
+        except Exception as _email_err:
+            logger.error(f"_alert_route email delivery failed for {event_key!r}: {_email_err}")
+
+
 def _fixed_table(headers, rows):
     """Render a list of string-tuple rows as a fixed-width monospace table (for Telegram)."""
     col_widths = [max(len(h), max((len(r[i]) for r in rows), default=0))
@@ -442,18 +522,13 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
         f"<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}\n\n"
         f"<code>{tg_table}</code>"
     )
-    _send_telegram(telegram_msg)
+    # Route via the config-driven table.
+    # open/close → info channel, no email (routing: telegram:info, email:false)
+    # alert      → ops channel, email on  (routing: telegram:ops,  email:true)
+    event_key = 'market_open' if msg_type == 'open' else (
+                'market_close' if msg_type == 'close' else 'agent_alert')
 
-    # Operator request (Jun 2026): market open/close summaries ship
-    # Telegram-only. Agent alerts ('alert' msg_type) continue to fan
-    # out across both Telegram + email per the existing operator
-    # alert recipients. Deploy notifications are sent by
-    # webhook/notify_deploy.py against a dedicated Telegram channel
-    # (telegram_chat_id_deploy), already Telegram-only.
-    if msg_type in ('open', 'close'):
-        return
-
-    _dispatch_email(
+    email_kw = dict(
         email_prefix_full=email_prefix_full,
         branch_tag=branch_tag,
         mode_tag=mode_tag,
@@ -465,6 +540,12 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
         email_table_html=email_table_html,
         sim_prefix=sim_prefix,
         tg_prefix=tg_prefix,
+    )
+    _alert_route(
+        event_key,
+        title=f"{tg_prefix_full} — {ist_display}",
+        body=telegram_msg,
+        email_fn=lambda: _dispatch_email(**email_kw),
     )
 
 
@@ -799,15 +880,22 @@ def _send_order_failure_messages(
         + (f" ({mode})" if mode else "")
     )
 
-    _send_telegram(tg_body)
-    alert_emails = get_alert_recipients()
-    for email in alert_emails:
-        def _send_failure_email(addr=email, subj=subject, body=email_body):
-            try:
-                send_email("", addr, subj, body)
-            except Exception as _mail_e:
-                logger.error(f"order-failure email to {addr} failed: {_mail_e}")
-        _SMTP_EXECUTOR.submit(_send_failure_email)
+    def _email_fn():
+        alert_emails = get_alert_recipients()
+        for _addr in alert_emails:
+            def _send_failure_email(addr=_addr, subj=subject, body=email_body):
+                try:
+                    send_email("", addr, subj, body)
+                except Exception as _mail_e:
+                    logger.error(f"order-failure email to {addr} failed: {_mail_e}")
+            _SMTP_EXECUTOR.submit(_send_failure_email)
+
+    _alert_route(
+        'order_failure',
+        title=f"Order Rejected: {symbol} {side}",
+        body=tg_body,
+        email_fn=_email_fn,
+    )
 
     logger.warning(
         f"order-failure alert sent: {masked} {side} {qty} {symbol} "
