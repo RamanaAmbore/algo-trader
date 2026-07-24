@@ -1,131 +1,60 @@
-# Plan: Alert channel matrix redesign
+# Plan: Broker connection robustness — instruments cache, retry backoff, get_int crash, Groww SSL
 
 ## Context
-Operator lives in USA; Indian market hours (09:15–15:30 IST = 23:45–06:00 ET) are sleep time.
-Goals: ntfy = sound alerts with per-event priority (not time-of-day clock), Telegram = two
-channels (ops vs info, using existing keys), email = market summaries only. Nothing hardcoded
-— all routing driven by `alert_routing` config table + agent channel dicts.
 
-Two existing Telegram channels:
-- `telegram_chat_id` → Ch1 ops (action/alert events)
-- `telegram_chat_id_deploy` → Ch2 info (summaries, visitor report)
-- Deploy: ntfy `default` only, remove from Telegram
+Live server audit identified 4 distinct error patterns. In priority order:
 
-## Architecture
+1. **P0 — Agent engine crashes every ~5 min** (`name 'get_int' is not defined`)  
+   `agent_engine.py:_cycle_outside_fire_at` uses `get_int` at line 1438 but never imports it. All lazy imports of `get_int` in that file are scoped to OTHER functions (`_v2_underlying_breakdown`, `_v2_cfg`). The agent engine scheduler calls `_cycle_outside_fire_at` on every cycle → NameError → entire agent loop dies and restarts every ~5 min. 31 occurrences in today's log.
 
-### Config-driven routing (NEW)
-Add `alert_routing` section to `backend/config/backend_config.yaml`:
+2. **P1 — Kite `instruments` 429 storm on every restart/deploy**  
+   `kite.py:instruments()` calls `self.kite.instruments(exchange)` with zero caching. Each preflight in `actions_preflight.py:_preflight_fetch_instruments` calls `broker.instruments(exchange)` independently. At service startup / after conn-service restart, all concurrent preflights fire in parallel → 5-10+ parallel downloads of the 7MB Kite instruments CSV → `NetworkException: Too many requests`. Seen in bursts at 07:25, 07:30, 07:34, 07:36, 07:42 UTC.
 
-```yaml
-alert_routing:
-  order_failure:        { telegram: ops,  ntfy: urgent,  email: false }
-  ticker_degraded:      { telegram: ops,  ntfy: urgent,  email: false }
-  ticker_recovered:     { telegram: ops,  ntfy: high,    email: false }
-  gtt_asymmetric:       { telegram: ops,  ntfy: high,    email: false }
-  oco_double_fire:      { telegram: ops,  ntfy: urgent,  email: false }
-  template_guard:       { telegram: ops,  ntfy: high,    email: false }
-  template_attach_fail: { telegram: ops,  ntfy: urgent,  email: false }
-  market_open:          { telegram: info, ntfy: false,   email: true  }
-  market_close:         { telegram: info, ntfy: false,   email: true  }
-  visitor_report:       { telegram: info, ntfy: false,   email: false }
-  agent_alert:          { telegram: ops,  ntfy: false,   email: false }
-  deploy:               { telegram: false, ntfy: default, email: false }
-```
+3. **P2 — `retry_kite_conn` retries immediately with no backoff**  
+   `decorators.py:retry_kite_conn` loops with no `sleep` between attempts. On a 429, it fires the next retry instantly — making the rate-limit problem worse.
 
-### `_alert_route()` helper (NEW in alert_utils.py)
-Single dispatch function that reads the table above:
-```python
-def _alert_route(event_key, title, ntfy_msg, tg_body=None, email_fn=None):
-    routing = config.get('alert_routing', {}).get(event_key, {})
-    if routing.get('ntfy'):
-        send_ntfy_alert(title=title, message=ntfy_msg, priority=routing['ntfy'])
-    ch = routing.get('telegram')
-    if ch == 'ops':   _send_telegram(tg_body or ntfy_msg)
-    if ch == 'info':  _send_telegram_info(tg_body or ntfy_msg)
-    if routing.get('email') and email_fn:
-        email_fn()
-```
+4. **P3 — Groww SSL EOF not retried**  
+   `SSLEOFError: EOF occurred in violation of protocol` for `api.groww.in/v1/positions/user` at 07:15. urllib3 exhausted its own retries with no application-level recovery.
 
-### Agent channel dicts (loss agents in agent_engine.py)
-Already config-driven via channel dicts. `_dispatch_channel()` already reads `ch.get("priority")`.
-Update `_LOSS_AGENT_DEFAULTS` + per-agent overrides:
-- Remove `{"channel": "email"}` from all loss agents (no email for agent alerts)
-- Remove `{"channel": "ntfy"}` from defaults
-- Per critical-tier agents (`loss-positions-total`, `loss-funds-negative`): add `{"channel": "ntfy", "priority": "urgent"}`
-- Per high-tier agents (`loss-positions-acct`, `loss-margin-low`): add `{"channel": "ntfy", "priority": "high"}`
-
-## Target matrix
-
-| Event | TG Ch1 (ops) | TG Ch2 (info) | Email | ntfy |
-|---|:---:|:---:|:---:|:---:|
-| Loss total / funds negative (critical) | ✅ | ✗ | ✗ | `urgent` |
-| Order rejection | ✅ | ✗ | ✗ | `urgent` |
-| Ticker degraded | ✅ | ✗ | ✗ | `urgent` |
-| Template attach failure | ✅ | ✗ | ✗ | `urgent` |
-| OCO double-fire | ✅ | ✗ | ✗ | `urgent` |
-| Loss per-account / margin low (high) | ✅ | ✗ | ✗ | `high` |
-| GTT asymmetric | ✅ | ✗ | ✗ | `high` |
-| Template guard fired | ✅ | ✗ | ✗ | `high` |
-| Ticker recovered | ✅ | ✗ | ✗ | `high` |
-| MCP place/cancel/modify | ✅ | ✗ | ✗ | ✗ |
-| MCP agent toggle | ✅ | ✗ | ✗ | ✗ |
-| Market open summary | ✗ | ✅ | ✅ | ✗ |
-| Market close summary | ✗ | ✅ | ✅ | ✗ |
-| Visitor report | ✗ | ✅ | ✗ | ✗ |
-| Deploy OK/FAIL | ✗ | ✗ | ✗ | `default` |
-
-## Task
-
-### 1. `backend/config/backend_config.yaml`
-Add the `alert_routing` block above.
-
-### 2. `backend/shared/helpers/alert_utils.py`
-- Add `_send_telegram_info(message)` — same as `_send_telegram()` using `telegram_chat_id_deploy` key (fallback to `telegram_chat_id`), same idle/enabled gates
-- Add `_alert_route(event_key, title, ntfy_msg, tg_body=None, email_fn=None)` — reads `alert_routing` from config, dispatches to ntfy / Ch1 / Ch2 / email
-- Update `_dispatch(msg_type, ...)` — replace hardcoded channel logic with `_alert_route()` call using key map `{'open':'market_open','close':'market_close','alert':'agent_alert'}`
-- Update `_send_order_failure_messages()` — replace Telegram call + email block with `_alert_route('order_failure', 'Order rejected', ntfy_msg, tg_body)`
-
-### 3. `backend/api/algo/template_attach.py`
-- `_fire_guard_alert()` — replace separate `_do_telegram()` + `_do_ntfy()` with single `_alert_route('template_guard', ...)` call
-- `_fire_attach_fail_alert()` — same, use `'template_attach_fail'` key
-
-### 4. `backend/api/background.py`
-Replace per-event telegram calls + missing ntfy calls with `_alert_route()`:
-- Ticker degraded → `_alert_route('ticker_degraded', ...)`
-- Ticker recovered → `_alert_route('ticker_recovered', ...)`
-- GTT asymmetric → `_alert_route('gtt_asymmetric', ...)`
-- OCO double-fire → `_alert_route('oco_double_fire', ...)`
-- Visitor report → `_alert_route('visitor_report', ...)` (no ntfy, goes to Ch2)
-
-### 5. `backend/api/algo/agent_engine.py`
-Update `_LOSS_AGENTS` channel configs:
-- Move ntfy out of `_LOSS_AGENT_DEFAULTS`, remove email from defaults
-- `loss-positions-total`, `loss-funds-negative`: channels += `{"channel":"ntfy","priority":"urgent"}`
-- `loss-positions-acct`, `loss-margin-low`: channels += `{"channel":"ntfy","priority":"high"}`
-
-### 6. `webhook/notify_deploy.py`
-- Remove Telegram block (~lines 117–134)
-- Keep ntfy block as-is (`priority="default"`)
+---
 
 ## Agents
-- backend: all 6 file changes above
-- frontend: skip
-- broker: skip
-- doc: skip
-- backend-test: update/add pytest for `_alert_route()`, `_dispatch()` routing, loss agent channel configs
+
+- **backend**: Fix `agent_engine.py:_cycle_outside_fire_at` — add `from backend.shared.helpers.settings import get_int` as a lazy import inside the function (line 1434).
+
+- **broker**: Three fixes in broker layer:
+  1. **Instruments in-process cache** — `backend/brokers/adapters/kite.py`: Add per-`(account, exchange)` TTL cache (4h) + threading.Lock coalescing so concurrent callers await the first fetch rather than all firing in parallel. Use a module-level dict `_INSTR_CACHE: dict[str, tuple[float, list]]` keyed by `f"{account}:{exchange or ''}"`; `_INSTR_LOCK: threading.Lock()`. On cache miss, only the first thread fetches; others wait for the lock and then get the result.
+  2. **Exponential backoff in `retry_kite_conn`** — `backend/shared/helpers/decorators.py`: After a failed attempt (not the last), add `time.sleep(min(2 ** attempt, 30))`. Special-case 429 ("Too many requests" in `str(e)`): sleep at least 30s before retry. Import `time` at the top of the file.
+  3. **Groww SSL EOF retry** — `backend/brokers/adapters/groww.py`: In the `@_retry_groww_auth` decorator (or in `broker_apis.py` Groww fetch wrapper), add a catch for `requests.exceptions.SSLError` (or its urllib3 parent `urllib3.exceptions.SSLError`) with 1 retry after `time.sleep(2)` and a log line `[GROWW-SSL] SSL EOF on {method}; retrying after 2s`.
+
+- **backend-test**: Write 3 tests in `backend/tests/broker/`:
+  - `test_kite_instruments_cache`: mock `KiteBroker.kite.instruments`, verify second concurrent call returns cached result (not second HTTP call).
+  - `test_retry_kite_conn_backoff`: mock `time.sleep`, verify it's called with exponential delays on retry.
+  - `test_retry_kite_conn_429`: verify that when exception message contains "Too many requests", sleep ≥ 30s.
+
+- **doc**: skip
+- **playwright**: skip
+
+---
 
 ## Tests
+
 - pytest: yes
 - svelte-check: no
 - playwright: no
 
+---
+
 ## Commit message
-feat(alerts): config-driven alert routing table; telegram ops/info split; ntfy priorities by event; email summaries only
+
+fix(broker): instruments TTL cache + retry backoff + get_int crash + Groww SSL retry
+
+---
 
 ## Done when
-- `alert_routing` table in backend_config.yaml drives all system event dispatch
-- `_alert_route()` is the single dispatch path for all non-agent system events
-- Loss agents have explicit ntfy priority in channel dicts, no email channel
-- `_dispatch()` reads from config for market summaries (Ch2 + email) and agent alerts (Ch1, no email)
-- Deploy → ntfy `default` only, no Telegram
-- pytest green
+
+- Agent engine no longer logs `name 'get_int' is not defined` (P0 fix in agent_engine.py)
+- `kite.py instruments()` returns cached result within 4h TTL; concurrent callers coalesce on the first fetch
+- `retry_kite_conn` sleeps exponentially between attempts; 429 triggers ≥30s sleep
+- Groww SSLError retried once after 2s with log
+- All 3 new tests pass

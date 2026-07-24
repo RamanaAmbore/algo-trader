@@ -1435,6 +1435,7 @@ def _cycle_outside_fire_at(agent, now, *, bypass_schedule: bool) -> bool:
     """True when fire_at_time is set and the current time is outside its window."""
     if bypass_schedule or not getattr(agent, "fire_at_time", None):
         return False
+    from backend.shared.helpers.settings import get_int
     window_sec = int(get_int('alerts.fire_at_window_sec', 360))
     return not _fire_at_window_active(agent.fire_at_time, now, window_sec=window_sec)
 

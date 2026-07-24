@@ -10,6 +10,8 @@ facade over that machinery.
 
 from __future__ import annotations
 
+import threading
+import time as _time_mod
 from typing import Any
 
 from backend.brokers.base import Broker
@@ -40,6 +42,15 @@ _KITE_ERROR_MAP: dict[str, type[BrokerError]] = {
     "DataException":     BrokerInputError,
     "GeneralException":  BrokerError,
 }
+
+
+# Instruments cache: keyed by "account:exchange" → (expires_at, data)
+# 4h TTL — Kite instruments file is a daily dump, never changes intraday.
+# threading.Lock coalesces concurrent callers: first thread fetches,
+# others wait and read from cache once the lock is released.
+_INSTR_CACHE: dict[str, tuple[float, list]] = {}
+_INSTR_LOCK = threading.Lock()
+_INSTR_TTL = 4 * 3600  # 4 hours
 
 
 def _kite_exc(e: Exception) -> BrokerError:
@@ -394,7 +405,21 @@ class KiteBroker(Broker):
         return self.kite.quote(symbols)
 
     def instruments(self, exchange: str | None = None) -> list[dict]:
-        return self.kite.instruments(exchange) if exchange else self.kite.instruments()
+        cache_key = f"{self.account}:{exchange or ''}"
+        now = _time_mod.monotonic()
+        # Fast path: valid cached result (no lock needed for read)
+        cached = _INSTR_CACHE.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
+        # Slow path: fetch under lock so concurrent callers coalesce
+        with _INSTR_LOCK:
+            # Re-check after acquiring lock (another thread may have fetched)
+            cached = _INSTR_CACHE.get(cache_key)
+            if cached and cached[0] > now:
+                return cached[1]
+            result = self.kite.instruments(exchange) if exchange else self.kite.instruments()
+            _INSTR_CACHE[cache_key] = (_time_mod.monotonic() + _INSTR_TTL, result)
+            return result
 
     def historical_data(
         self,
