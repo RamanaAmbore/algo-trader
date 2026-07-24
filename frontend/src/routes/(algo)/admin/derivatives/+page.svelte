@@ -1923,7 +1923,7 @@
     // overlay and tooltip stay in sync when legs have been exited today.
     const fnoClosed = displayedCandidates
       .filter(c => _isLegEnabled(c) && c.kind !== 'eq' && Number(c.qty || 0) === 0)
-      .reduce((/** @type {number} */ s, c) => s + Number(c.realised || 0), 0);
+      .reduce((/** @type {number} */ s, c) => s + Number(c.realised || c.pnl || 0), 0);
     // Equity legs: same linear formula as `_mergedPayoff` — handles exited equity
     // (opening_qty fallback) and beta-adjusted proxy legs. Empty when !_includeHoldings.
     const eqTotal = spot != null

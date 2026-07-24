@@ -11,6 +11,9 @@
  * - Derivatives overlay stat (_legsExpPnlTotal fnoOpen): v + c.realised for partial closes
  * - Derivatives Snapshot EXP column (_expPnlByRootMap): closed → c.realised || c.pnl; partial → v + c.realised
  * - Per-leg EXP cell (_legExpPnlDisplay): closed legs show realised value (not '—')
+ * - _legsExpPnlTotal fnoClosed: uses c.realised || c.pnl fallback so settled options
+ *   (where Kite returns realised=0 and P&L is in c.pnl) appear in the TOTAL — matches
+ *   _legExpPnlDisplay so sum(per-leg rows) == TOTAL (2026-07-23)
  *
  * Five quality dimensions (feedback_test_dimensions.md):
  *  1. SSOT   — expiryPnl.js + _legExpPnlDisplay + _legsExpPnlTotal canonical implementations
@@ -458,7 +461,11 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     console.log('[TC6.1-pass] expiryPnl.js SSOT returns null for qty=0');
   });
 
-  test('6.2-Stale: _legsExpPnlTotal fnoClosed uses c.realised not c.pnl', async () => {
+  test('6.2-Stale: _legsExpPnlTotal fnoClosed uses c.realised || c.pnl fallback', async () => {
+    // Bug fixed: fnoClosed previously used c.realised only.
+    // Kite returns realised=0 for settled options (P&L lands in c.pnl, not c.realised).
+    // With only c.realised, those legs contributed 0 to the total while the per-leg
+    // display showed c.pnl — causing sum(rows) ≠ total.
     const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
     const content = readFileSync(derivPath, 'utf-8');
 
@@ -467,13 +474,34 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     const fnoClosedEnd = content.indexOf('}, 0);', fnoClosedStart) + 6;
     const fnoClosedBlock = content.substring(fnoClosedStart, fnoClosedEnd);
 
-    // Verify it uses c.realised
-    expect(fnoClosedBlock).toContain('c.realised');
+    // Verify it uses c.realised with c.pnl fallback (matches _legExpPnlDisplay)
+    expect(fnoClosedBlock).toContain('c.realised || c.pnl');
 
     // Verify filter is for qty=0
     expect(fnoClosedBlock).toContain("Number(c.qty || 0) === 0");
 
-    console.log('[TC6.2-pass] _legsExpPnlTotal fnoClosed uses c.realised');
+    console.log('[TC6.2-pass] _legsExpPnlTotal fnoClosed uses c.realised || c.pnl fallback');
+  });
+
+  test('6.4-Stale: _legExpPnlDisplay closed-leg pnl fallback matches fnoClosed', async () => {
+    // Regression guard: _legExpPnlDisplay (per-row display) and fnoClosed (total)
+    // must use the same formula for closed legs. Both must use c.realised || c.pnl.
+    const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    const content = readFileSync(derivPath, 'utf-8');
+
+    // _legExpPnlDisplay closed-leg path
+    const dispStart = content.indexOf('function _legExpPnlDisplay');
+    const dispEnd   = content.indexOf('\n  }', dispStart) + 4;
+    const dispBody  = content.substring(dispStart, dispEnd);
+    expect(dispBody).toContain('c.realised || c.pnl');
+
+    // fnoClosed reduce path
+    const fnoClosedStart = content.indexOf('const fnoClosed');
+    const fnoClosedEnd   = content.indexOf('}, 0);', fnoClosedStart) + 6;
+    const fnoClosedBlock = content.substring(fnoClosedStart, fnoClosedEnd);
+    expect(fnoClosedBlock).toContain('c.realised || c.pnl');
+
+    console.log('[TC6.4-pass] _legExpPnlDisplay and fnoClosed both use c.realised || c.pnl');
   });
 
   test('6.3-Stale: No double-counting between fnoOpen and fnoClosed', async () => {
