@@ -2356,7 +2356,7 @@
                     title="Add this leg to the basket — place every leg together later"
                     onclick={addToBasket}>+ Basket</button>
           {/if}
-          {#if basketMode && action !== 'modify'}
+          {#if basketMode && action === 'open'}
             <button type="button" class="ot-submit ot-submit-basket-mode"
                     disabled={!!validationErr || _noSymbol}
                     onclick={addToBasket}>
