@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt } from '$lib/stores';
+  import { authStore, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -1938,13 +1938,16 @@
    *  this carries only the closed-leg realised component. BS drift has
    *  no meaning at expiry — intrinsic value is path-independent — so
    *  the expiry curve should shift only by locked-in gains, not by
-   *  any mark-to-market noise from open legs. This ensures the tooltip
-   *  EXP value and the overlay EXP stat (_legsExpPnlTotal) remain in
-   *  sync: both include c.realised and neither includes BS drift. */
+   *  any mark-to-market noise from open legs.
+   *  For closed legs (qty=0): use c.realised || c.pnl — Kite returns
+   *  realised=0 for options settled at expiry and puts the P&L in c.pnl.
+   *  For open legs: c.realised only (c.pnl includes unrealised MTM). */
   const _expiryPnlOffset = $derived.by(() =>
     displayedCandidates
       .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
-      .reduce((s, c) => s + Number(c.realised || 0), 0)
+      .reduce((s, c) => s + (Number(c.qty || 0) === 0
+        ? Number(c.realised || c.pnl || 0)
+        : Number(c.realised || 0)), 0)
   );
 
   // Master "select all" plumbing for the Legs panel header checkbox.
@@ -3765,7 +3768,7 @@
     // critical data — throttle to 30 s on hidden so the operator
     // returns to current P&L without waiting for a cold-start cycle.
     teardown    = marketAwareInterval(loadStrategy,  5000);
-    posTeardown = marketAwareInterval(loadPositions, 30000, 30_000);
+    posTeardown = visibleInterval(loadPositions, 30000, 'throttle:30000');
     // Per-underlying spot / day-% / prev-close for the Snapshot grid.
     // Same 30 s cadence as positions — broker LTPs change every tick
     // but the Snapshot rolls up money quantities that already update

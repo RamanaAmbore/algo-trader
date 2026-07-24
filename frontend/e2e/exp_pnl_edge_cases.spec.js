@@ -679,6 +679,25 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     console.log('[TC9.1-pass] lastRefreshAt imported in derivatives page');
   });
 
+  test('9.0-Stale: _expiryPnlOffset uses c.realised || c.pnl for closed legs', async () => {
+    // Bug: fnoClosed uses c.realised || c.pnl but _expiryPnlOffset only used c.realised.
+    // For options settled at expiry Kite returns realised=0 and puts P&L in c.pnl.
+    // Chart curve was missing the offset → payoff curve diverged from overlay stat.
+    // Fix: closed legs (qty=0) use c.realised || c.pnl; open legs keep c.realised only.
+    const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    const content = readFileSync(derivPath, 'utf-8');
+
+    const offStart = content.indexOf('const _expiryPnlOffset');
+    const offEnd   = content.indexOf(');', offStart) + 2;
+    const offBlock = content.substring(offStart, offEnd);
+
+    // Must handle closed legs with pnl fallback
+    expect(offBlock).toContain('c.realised || c.pnl');
+    // Must guard by qty=0 so open legs don't pick up MTM c.pnl
+    expect(offBlock).toContain('Number(c.qty || 0) === 0');
+    console.log('[TC9.0-pass] _expiryPnlOffset uses c.realised || c.pnl for closed legs');
+  });
+
   test('9.2-Stale: loadPositions calls lastRefreshAt.set on success', async () => {
     // Bug fixed: background polls set `loading` but RefreshButton watches `_refreshing` —
     // lastRefreshAt never updated during auto-poll. Fix: call lastRefreshAt.set(Date.now())
@@ -694,6 +713,18 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     expect(fnBody).toContain('lastRefreshAt.set(Date.now())');
     expect(fnBody).toContain('positionsStore.error');
     console.log('[TC9.2-pass] loadPositions updates lastRefreshAt on successful poll');
+  });
+
+  test('9.3-Stale: loadPositions uses visibleInterval (not marketAwareInterval) for after-hours polling', async () => {
+    // Bug fixed: marketAwareInterval skips the callback after market close (23:30 IST),
+    // so EOD broker settlement updates (positions, cash, margin) were never picked up.
+    // Fix: switch to visibleInterval so the 30s poll continues after hours.
+    const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    const content = readFileSync(derivPath, 'utf-8');
+
+    expect(content).toContain("visibleInterval(loadPositions,");
+    expect(content).not.toContain("marketAwareInterval(loadPositions,");
+    console.log('[TC9.3-pass] loadPositions uses visibleInterval for after-hours polling');
   });
 });
 

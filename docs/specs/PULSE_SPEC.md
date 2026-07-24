@@ -643,17 +643,21 @@ stats in sync:
   Black-Scholes Greeks calculations and the broker's actual position snapshots (e.g., 
   rounding on MCX lot fills, slippage on partial closes).
 
-- **`expiryPnlOffset` (= Σ `c.realised` for enabled non-equity candidates = locked-in 
-  closed-leg gains only)** — applied ONLY to `expiry_value` (expiry P&L at current spot). 
-  This captures the sum of all closed-leg realised gains that are already locked in.
+- **`expiryPnlOffset` (= Σ closed-leg P&L)** — applied ONLY to `expiry_value` (expiry P&L 
+  at current spot). For **closed legs** (qty=0), uses `c.realised || c.pnl || 0` to 
+  capture locked-in settlement gains. For **open legs** (qty≠0), uses `c.realised || 0` 
+  only (excludes `c.pnl` to avoid double-counting unrealised MTM). This ensures the 
+  payoff chart's expiry curve shifts to reflect actual settlement P&L, matching the 
+  Legs grid TOTAL row.
 
 **Effect on tooltip EXP stat**: At the current spot price, tooltip EXP now equals 
 `expiry_value_at_spot + expiryPnlOffset = _legsExpPnlTotal`. The full `chartPnlOffset` 
 (which includes broker MTM noise with no meaning at settlement) is excluded from the 
 settlement-time EXP calculation, preventing tooltip drift.
 
-Before this fix, both curves shifted by the full `chartPnlOffset`, causing tooltip EXP 
-to include BS-vs-broker MTM noise that has no settlement meaning.
+Before this fix, closed legs (options settled at expiry with `realised=0, pnl≠0`) were 
+skipped in `expiryPnlOffset` calculation, causing the payoff chart expiry curve to diverge 
+from the overlay TOTAL stat and the Legs grid TOTAL row.
 
 **Backend `_expPnlByRootMap` accessor**:
 
@@ -907,6 +911,14 @@ Buttons stack horizontally or wrap on mobile.
 - Now the timestamp advances automatically on every successful 30-second position poll cycle,
   giving operators accurate visibility into when data was last refreshed.
 
+**Derivatives page polling schedule** (fix commit 7ed72480):
+- `loadPositions()` now uses `visibleInterval` (30s cadence, continues after market close)
+  — ensures EOD broker settlement data (positions marked to settlement price, cash/margin 
+  adjusted) is picked up after 23:30 IST when market closes
+- `loadStrategy()` and `loadUnderlyingQuotes()` remain on `marketAwareInterval` — those are 
+  analytics/LTP feeds with no value after market close, and rate-limiting broker calls 
+  during closed hours is counterproductive
+
 **Search UI** (in SearchInput wrapper):
 - Symbol typeahead (instruments cache, ≥2 chars)
 - Exchange picker (NSE, NFO, MCX, CDS)
@@ -943,3 +955,5 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-14 | Bucket labels and order-modal close button restored after Svelte 4→5 snippet migration (behavioral parity) |
 | 2026-07-24 | §17 closed-leg P&L fallback fix (90d3735f): `_legsExpPnlTotal` and `_legExpPnlDisplay` now use `realised \|\| pnl \|\| 0` to handle Kite's expiry settlement behavior (P&L in `pnl` field when `realised=0`); Legs TOTAL row now matches sum of individual legs |
 | 2026-07-24 | §24 refresh timestamp accuracy fix (c0ce46be): `loadPositions()` on derivatives page now calls `lastRefreshAt.set(Date.now())` on success, advancing timestamp on every 30s poll cycle instead of freezing at last manual-click |
+| 2026-07-24 | §17 `_expiryPnlOffset` fix (71f91aa0): closed legs (qty===0) now use `c.realised \|\| c.pnl \|\| 0` instead of `c.realised \|\| 0` alone; for options settled at expiry, Kite returns `realised=0` with P&L in `pnl` field; open legs still use `c.realised` only to avoid double-counting unrealised MTM; payoff chart expiry curve now shifts to reflect settlement P&L |
+| 2026-07-24 | Derivatives page polling fix (7ed72480): `loadPositions()` switched from `marketAwareInterval` to `visibleInterval` (30s cadence, continues after market close); EOD broker settlement data now picked up after 23:30 IST; `loadStrategy` and `loadUnderlyingQuotes` remain on `marketAwareInterval` |
