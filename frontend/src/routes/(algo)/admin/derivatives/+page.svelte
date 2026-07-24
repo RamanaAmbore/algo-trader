@@ -77,6 +77,7 @@
     synthCacheKey, synthEquityOnlyStrategy,
   } from '$lib/derivatives/pageLoad.js';
   import CandidateLegRow from './CandidateLegRow.svelte';
+  import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -3793,17 +3794,20 @@
     // Debounce handle for order_update bursts (basket fills, rapid postbacks).
     wsTeardown = createPerformanceSocket((msg) => {
       if (msg?.event === 'order_update') {
-        // Only debounce non-terminal statuses — terminal fills (COMPLETE/
-        // REJECTED/CANCELLED) will trigger loadPositions via position_filled,
-        // so debouncing them here would cause a redundant second broker call.
         const terminal = ['COMPLETE', 'REJECTED', 'CANCELLED'].includes(String(msg.status || '').toUpperCase());
-        if (!terminal) {
-          if (_orderUpdateTimer) clearTimeout(_orderUpdateTimer);
-          _orderUpdateTimer = setTimeout(() => {
-            _orderUpdateTimer = null;
-            loadPositions({ fresh: true });
-          }, 200);
+        if (terminal) {
+          // CANCELLED/REJECTED won't trigger position_filled, so we must
+          // refresh positions directly so the candidates panel reconciles.
+          const s = String(msg.status || '').toUpperCase();
+          if (s === 'CANCELLED' || s === 'REJECTED') loadPositions({ fresh: true });
+          return;
         }
+        // Non-terminal: debounce to coalesce rapid postback bursts (basket fills).
+        if (_orderUpdateTimer) clearTimeout(_orderUpdateTimer);
+        _orderUpdateTimer = setTimeout(() => {
+          _orderUpdateTimer = null;
+          loadPositions({ fresh: true });
+        }, 200);
         return;
       }
       if (msg?.event !== 'position_filled') return;
@@ -4332,6 +4336,7 @@
               bandCount={displayedCandidates.filter(r => r._band === c._band && r._segment === c._segment).length}
               {legsTab}
               legAnalytics={legAnalyticsBySymbol[c.symbol]}
+              pendingQty={$openOrderQtyBySymbol[c.symbol] ?? 0}
               enabled={_isLegEnabled(c)}
               dayPnl={_dayPnlForLeg(c, liveSpot ?? null)}
               expPnl={_legExpPnlDisplay(c, liveSpot ?? null)}
@@ -5416,6 +5421,30 @@
     border: 1px solid rgba(126,151,184,0.30);
     border-radius: 3px;
     cursor: help;
+  }
+
+  /* Candidate row status chips — open/closed order state indicators. */
+  .cand-status-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.3rem;
+    border-radius: 3px;
+    font-size: var(--fs-2xs);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    vertical-align: middle;
+    line-height: 1.5;
+  }
+  .cand-open-chip {
+    background: rgba(74, 222, 128, 0.15);
+    border: 1px solid rgba(74, 222, 128, 0.4);
+    color: var(--c-long, #4ade80);
+  }
+  .cand-closed-chip {
+    background: rgba(126, 151, 184, 0.12);
+    border: 1px solid rgba(126, 151, 184, 0.3);
+    color: var(--c-muted, #7e97b8);
   }
 
   /* LTP heat encoding for .cand-grid rows moved to CandidateLegRow.svelte. */

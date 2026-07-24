@@ -33,6 +33,7 @@
   import OrderKnobsRow from '$lib/order/OrderKnobsRow.svelte';
   import SideToggle from '$lib/order/SideToggle.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
   import {
@@ -49,7 +50,7 @@
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
   import { getDefaultAccount } from '$lib/data/accounts';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { aggFmt } from '$lib/format';
+  import { aggFmt, priceFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
   import {
     getInstrument, listExpiries, listStrikes,
@@ -1938,16 +1939,33 @@
        aria-modal={standalone ? 'true' : undefined}
        aria-label={standalone ? 'Place order' : undefined}
        onclick={(e) => e.stopPropagation()}>
-    <div class="ot-header">
-      <div class="ot-symbol">
-        <span class="ot-symbol-text"><LegLabel sym={symbol} exchange={exchange || ''} /></span>
-        <span class="ot-symbol-meta">
-          {exchange ? exchange + ' · ' : ''}
-          {kind}{_lotSize ? ' · lot ' + _lotSize : ''}
-          {action !== 'open' ? ' · ' + action.toUpperCase() : ''}
-        </span>
-      </div>
-      <div class="ot-header-actions">
+    <CardHeader showControls={false}>
+      {#snippet left()}
+        <div class="ot-symbol">
+          <span class="ot-symbol-text"><LegLabel sym={symbol} exchange={exchange || ''} /></span>
+          <span class="ot-symbol-meta">
+            {exchange ? exchange + ' · ' : ''}
+            {kind}{_lotSize ? ' · lot ' + _lotSize : ''}
+            {action !== 'open' ? ' · ' + action.toUpperCase() : ''}
+          </span>
+        </div>
+      {/snippet}
+      {#snippet middle()}
+        {#if showLimit && !modeChaseHidden}
+          <label class="ot-chase-toggle"
+                 title={_chase
+                   ? 'Chase ON — re-quote the limit each tick until filled'
+                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+            <input type="checkbox" checked={_chase}
+                   onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
+            <span class="ot-chase-label" class:on={_chase}>CHASE</span>
+          </label>
+          {#if _chase}
+            <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
+          {/if}
+        {/if}
+      {/snippet}
+      {#snippet right()}
         <button type="button" class="ot-refresh-btn"
                 title="Refresh"
                 aria-label="Refresh order data"
@@ -1962,8 +1980,8 @@
           </svg>
         </button>
         <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose} disabled={submitting}>×</button>
-      </div>
-    </div>
+      {/snippet}
+    </CardHeader>
 
     <!-- Combined top row: Account · Symbol · Qty (and Side toggle).
          Operator reads the entry strip left-to-right: WHO is placing,
@@ -2294,26 +2312,11 @@
         <span class="ot-mode-hint-src">(navbar)</span>
       </span>
 
-      <!-- Chase toggle — only meaningful for limit-bearing orders.
-           When ON, the engine re-quotes the limit each tick until
-           the order fills. The aggressiveness pills below set HOW
-           it re-quotes:
-             L (patient) — sit on your own side, wait for the market
-             M (balanced) — peg to the midpoint
-             H (urgent) — cross the spread to take liquidity
-           Mirrors IBKR's Adaptive Algo Patient / Normal / Urgent. -->
-      {#if showLimit}
-        <label class="ot-chase-toggle"
-               title={_chase
-                 ? 'Chase ON — re-quote the limit each tick until filled'
-                 : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-          <input type="checkbox" checked={_chase}
-                 onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
-          <span class="ot-chase-label" class:on={_chase}>CHASE</span>
-        </label>
-        {#if _chase}
-          <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
-        {/if}
+      {#if _lastQuote?.ltp != null}
+        <span class="ot-ltp-display">
+          <span class="ot-ltp-label">LTP</span>
+          <span class="ot-ltp-val num">{priceFmt(_lastQuote.ltp)}</span>
+        </span>
       {/if}
     </div>
     {/if}
@@ -2492,15 +2495,18 @@
     }
   }
 
-  .ot-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding-bottom: 0.55rem;
-    border-bottom: 1px solid rgba(251,191,36,0.15);
-    margin-bottom: 0.6rem;
+  /* Make CardHeader look like the previous .ot-header inside the modal */
+  .ot-modal :global(.card-header) {
+    padding: var(--ot-header-pad, 0.55rem 0.9rem 0.55rem 1rem);
+    border-bottom: 1px solid rgba(126,151,184,0.13);
+    background: var(--ot-header-bg, rgba(14,22,36,0.65));
+    gap: 0.6rem;
   }
+  .ot-modal :global(.ch-left) { gap: 0.4rem; }
+  .ot-modal :global(.ch-middle) { gap: 0.5rem; align-items: center; }
+  .ot-modal :global(.ch-right) { gap: 0.35rem; }
+  .ot-modal :global(.ch-sep) { margin: 0.1rem 0; }
+
   .ot-symbol-text {
     font-size: var(--fs-lg);
     font-weight: 700;
@@ -2512,13 +2518,6 @@
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-  }
-  .ot-header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    flex-shrink: 0;
-    margin-left: auto;
   }
 
   .ot-close {
@@ -2935,6 +2934,27 @@
     background: rgba(251,191,36,0.18);
     border-color: rgba(251,191,36,0.55);
     color: var(--c-action);
+  }
+
+  .ot-ltp-display {
+    display: flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    margin-left: auto;
+  }
+  .ot-ltp-label {
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .ot-ltp-val {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    font-weight: 700;
+    color: var(--algo-slate);
+    font-variant-numeric: tabular-nums;
   }
 
   .ot-err {

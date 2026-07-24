@@ -873,6 +873,11 @@
               <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} class:chain-row-active-ce={activeCe} class:chain-row-active-pe={activePe} use:chainAtmRow>
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
+                    <span class="chain-cell-quote">
+                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.bid)}</span><span
+                            class="chain-cell-sep">-</span><span
+                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.ask)}</span>
+                    </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
@@ -886,21 +891,11 @@
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
                     </span>
-                    <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.bid)}</span><span
-                            class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.ask)}</span>
-                    </span>
                   </span>
                 </td>
                 <td class="chain-td-strike chain-td-strike-atm">{k.toFixed(0)}</td>
                 <td class="chain-td-pe">
                   <span class="chain-cell-row chain-cell-row-pe">
-                    <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.bid)}</span><span
-                            class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.ask)}</span>
-                    </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
@@ -913,6 +908,11 @@
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
+                    </span>
+                    <span class="chain-cell-quote">
+                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.bid)}</span><span
+                            class="chain-cell-sep">-</span><span
+                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.ask)}</span>
                     </span>
                   </span>
                 </td>
@@ -921,6 +921,11 @@
               <tr class="chain-row chain-row-{dir}" class:chain-row-active={activeRow} class:chain-row-active-ce={activeCe} class:chain-row-active-pe={activePe}>
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
+                    <span class="chain-cell-quote">
+                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.bid)}</span><span
+                            class="chain-cell-sep">-</span><span
+                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.ask)}</span>
+                    </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
@@ -934,21 +939,11 @@
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
                     </span>
-                    <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.bid)}</span><span
-                            class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.ask)}</span>
-                    </span>
                   </span>
                 </td>
                 <td class="chain-td-strike">{k.toFixed(0)}</td>
                 <td class="chain-td-pe">
                   <span class="chain-cell-row chain-cell-row-pe">
-                    <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.bid)}</span><span
-                            class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.ask)}</span>
-                    </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
@@ -961,6 +956,11 @@
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
+                    </span>
+                    <span class="chain-cell-quote">
+                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.bid)}</span><span
+                            class="chain-cell-sep">-</span><span
+                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.ask)}</span>
                     </span>
                   </span>
                 </td>
@@ -1279,10 +1279,13 @@
   .chain-cell-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 0.4rem;
     width: 100%;
   }
+  /* CE: push block to right so +/- sit immediately left of the strike column.
+     PE: push block to left so +/- sit immediately right of the strike column. */
+  .chain-cell-row-ce { justify-content: flex-end; }
+  .chain-cell-row-pe { justify-content: flex-start; }
   /* Audit fix — tabular-nums on strike + bid/ask cells. Strikes are
      fixed integers but column-align with LTP/IV/OI in adjacent
      columns; without tabular-nums the digit widths can drift between
