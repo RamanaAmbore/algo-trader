@@ -1280,6 +1280,72 @@ GET /api/admin/health/broker-connection-events?
 
 **Retention:** Log entries are kept indefinitely. No automatic purge.
 
+### Dhan token management diagnostics
+
+Dhan accounts use OAuth-style token-based authentication. Tokens expire after
+24 hours from mint time. The platform automatically renews tokens before expiry
+and logs diagnostic data to help troubleshoot auth issues.
+
+**Token age tracking**: When the connection service restarts, it now preserves
+the original token creation timestamp from the persistent cache file instead of
+resetting it to the restart time. This means token expiry is correctly computed
+from when the token was first minted, not from when the service started. If a
+token is close to expiry, it will be detected and renewed promptly.
+
+**Renewal before re-login**: When a Dhan token expires normally, the system
+attempts a lightweight `/v2/RenewToken` GET call (no TOTP required) before
+falling through to a full PIN+TOTP re-mint. This reduces authentication
+latency by skipping a re-login round-trip when possible.
+
+**Watching the logs**: Three places to monitor token lifecycle:
+
+1. **Successful renewal** — in `/opt/ramboq/.log/conn_log_file` (or
+   `/admin/activity` → Conn tab), look for lines like:
+   ```
+   Dhan renew_token success for <account>
+   ```
+   This means a token refresh was attempted and succeeded without needing
+   a full re-login.
+
+2. **Auth failures** — when any Dhan call returns a 401 or token-expired
+   error, the logs now include JWT claims decoded from the token:
+   ```
+   DhanBroker <account> got auth failure
+   JWT claims: iat=2026-07-23T10:30:00Z exp=2026-07-24T10:30:00Z validity=24.0h consumer='APP'
+   ```
+   Use these timestamps to verify whether the token had actually expired on
+   the server's clock or if there's a time-sync issue.
+
+3. **Full re-mint fallback** — if renewal fails and a full re-login is needed,
+   the log will show:
+   ```
+   _mint_and_build falling back to full re-mint for <account>
+   ```
+
+**Troubleshooting Dhan auth failures**:
+
+- **Token appears "always fresh" even though orders fail** — check
+  `broker_connection_events` for `event_type=auth_fail` + `event_type=fetch_fail`.
+  The `detail` field will show the exact error from Dhan (e.g. "Invalid Token",
+  "Token Expired"). If the JWT claims show a timestamp in the past, the server's
+  clock may be drifting. Verify `/admin/health` → look at the conn-service
+  `started_at` field to confirm it matches the current time.
+
+- **Renewal succeeds but next fetch still fails** — renewal may have succeeded
+  but the new token wasn't persisted or wasn't used for the next call. Check
+  the logs for both `renew_token success` AND the corresponding `fetch_ok`
+  or `fetch_fail` line that follows. A `fetch_fail` immediately after a
+  successful renewal indicates a different error (rate-limit, network, etc.)
+  — check the error message in the audit log.
+
+- **Renewal keeps failing (every 5–30 min)** — the renewal endpoint is
+  returning an error (e.g. 400, 401). The system will fall back to full
+  re-mint on the next polling cycle. This happens automatically; monitor
+  `_mint_and_build` logs to ensure the re-mint succeeds. If re-mints fail
+  repeatedly, the account's TOTP secret or PIN may have been rotated on Dhan's
+  side — verify via `/admin/brokers` → Edit account → re-enter TOTP and PIN
+  from Dhan dashboard.
+
 ---
 
 ## Investor portal — mint URL for an LP
