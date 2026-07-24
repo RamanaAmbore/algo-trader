@@ -492,6 +492,12 @@ class KiteBroker(Broker):
                         f"GTT SL leg requires price > 0 (limit price for the order leg)",
                         broker="kite",
                     )
+            if _leg_ot == "MARKET":
+                logger.warning(
+                    "GTT leg coerced MARKET→LIMIT (Kite GTT does not support MARKET orders); "
+                    "trigger price used as limit price"
+                )
+                _leg["order_type"] = "LIMIT"
         # LAST-LINE DEFENSE (GTT layer) — same ceiling as place_order but
         # applied to each GTT leg. GTT legs arrive with qty already
         # translated to lots (template_attach.apply_plan_live calls

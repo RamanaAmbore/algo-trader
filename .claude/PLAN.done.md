@@ -1,163 +1,118 @@
-# Plan: Fix ntfy deploy token + integration test with live receive-side verification
+# Plan: UI fixes + GTT MARKET order guard
 
 ## Context
-`notify_deploy.py`'s ntfy block has no Bearer token support — `send_ntfy_alert()` in
-`alert_utils.py` conditionally adds `Authorization: Bearer {ntfy_token}`, but the inline
-ntfy POST in `notify_deploy.py` (lines 136–151) never reads `ntfy_token` from secrets.
-If the ntfy topic requires auth (ntfy.sh private topic or self-hosted), every deploy
-notification silently fails. The fix is one-liner. The user also wants testing that
-actually sends alerts and verifies receipt on the ntfy side, not just mocks.
+Four visual regressions / inconsistencies:
+1. The `|` separator between current and refresh timestamps is missing on desktop. It was removed in the last AlgoTimestamp restructure (the agent incorrectly dropped it entirely). On desktop `.ats-slot` is `display: inline-flex` so both spans render side-by-side without any divider.
+2. The chart button in the order modal (`SymbolPanel.svelte`) uses a different background (`var(--algo-cyan-bg)` = visible cyan tint) and `border-radius: 3px`, whereas the canonical chart button in `PageHeaderActions.svelte` uses `rgba(255,255,255,0.03)` (near-transparent) and `border-radius: 4px`. The hover also uses a literal rgba instead of the `var(--c-info-14)` token.
+3. The intraday performance trend chart card in the dashboard has no heading text — only the vertical `.ch-sep` bar renders. Root cause: `CardHeader` at `frontend/src/routes/(algo)/dashboard/+page.svelte` line ~1806 is missing the `title` prop (only `label="Chart"` is set; `label` is for accessibility only and does not render visible text).
+4. The "All" symbol-type filter dropdown in ChartWorkspace is too wide. `.cw-type-wrap` is `width: 8.5rem` on desktop. Reduce to two-thirds: `5.7rem`.
+5. GTT order failure alerts firing for MARKET orders: Kite GTT API only accepts LIMIT orders; the `place_gtt` validation loop in `kite.py` (lines 475–494) has no guard rejecting MARKET legs, so they pass through to the API and fail. Fix: coerce `order_type="MARKET"` → `"LIMIT"` at the Kite adapter boundary, log a warning.
 
 ## Task
-1. Fix `notify_deploy.py`: add Bearer token header to the ntfy block.
-2. Add a unit test asserting the token appears in the deploy notification request.
-3. Add a live integration test (`test_ntfy_integration.py`) that:
-   - Sends a real `send_ntfy_alert()` with a unique ID
-   - Polls the ntfy topic's `/json?poll=1&since=30s` endpoint
-   - Asserts the message appears in the received list
-   - Also sends a simulated deploy notification and verifies that too
-   - Skips automatically if `ntfy_topic` is not configured in secrets
+1. Restore the `ats-sep` divider inside `AlgoTimestamp.svelte`.
+2. Align `oes-chart-btn` in `SymbolPanel.svelte` to match `pha-btn pha-chart`.
+3. Add `title="Intraday Performance"` to the CardHeader for the equity-curve chart in the dashboard.
+4. Reduce `.cw-type-wrap` width in `ChartWorkspace.svelte` from `8.5rem` → `5.7rem`.
+5. Guard MARKET→LIMIT coercion in `backend/brokers/adapters/kite.py` `place_gtt` validation loop.
 
 ## Agents
 - backend: skip
-- frontend: skip
+- broker: In `backend/brokers/adapters/kite.py` `place_gtt` validation loop (lines 475–494), add a coercion guard after the existing leg validation. For each leg where `order_type` is `"MARKET"`, log a warning and coerce to `"LIMIT"` (GTT trigger fires at limit price = trigger price, which is the correct Kite behavior):
+  ```python
+  if _leg_ot == "MARKET":
+      logger.warning(
+          "GTT leg coerced MARKET→LIMIT (Kite GTT does not support MARKET orders); "
+          "trigger price used as limit price"
+      )
+      _leg["order_type"] = "LIMIT"
+  ```
+  This goes inside the `for _leg in orders:` loop, before the leg dict is passed to the Kite API.
+
+  Also add a pytest in `backend/tests/test_kite_gtt.py` (or the nearest existing GTT test file) asserting that a `place_gtt` call with a MARKET leg coerces it to LIMIT and does not raise.
+
+- frontend: Four targeted edits:
+
+  **Edit 1 — `frontend/src/lib/AlgoTimestamp.svelte`**
+
+  Restore `<span class="ats-sep" aria-hidden="true">|</span>` inside `.ats-slot`, between `ats-now` and `ats-refresh`:
+  ```html
+  <span class="ats-slot">
+    <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{_nowTs}</span>
+    {#if _refreshTs}
+      <span class="ats-sep" aria-hidden="true">|</span>
+      <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
+    {/if}
+  </span>
+  ```
+
+  Restore `.ats-sep` CSS rule in the global block (before media query):
+  ```css
+  .ats-sep {
+    color: var(--text-muted);
+    font-size: inherit;
+    opacity: 0.5;
+  }
+  ```
+
+  In the `@media (max-width: 640px)` block add:
+  ```css
+  .ats-sep { display: none; }
+  ```
+  (hides it on mobile so the grid-stacked toggle is clean)
+
+  **Edit 2 — `frontend/src/lib/SymbolPanel.svelte`** (lines ~3233–3259)
+
+  Update `.oes-chart-btn` to match `pha-btn pha-chart`:
+  - `background`: `var(--algo-cyan-bg)` → `rgba(255, 255, 255, 0.03)`
+  - `border-radius`: `3px` → `4px`
+  - Hover `background`: `rgba(103, 232, 249, 0.18)` → `var(--c-info-14)`
+
+  **Edit 3 — `frontend/src/routes/(algo)/dashboard/+page.svelte`** (around line 1806)
+
+  Add `title="Intraday Performance"` to the `<CardHeader>` for the equity-curve / intraday chart card:
+  ```svelte
+  <CardHeader
+    bind:isCollapsed={_colEquityCurve}
+    bind:isFullscreen={_fsEquityCurve}
+    title="Intraday Performance"
+    label="Chart"
+    onRefresh={_refreshAll}
+    bind:refreshLoading={_refreshing}
+    showSearch={false}
+    detectOverflow={false}
+  >
+  ```
+
+  **Edit 4 — `frontend/src/lib/ChartWorkspace.svelte`** (line ~2462)
+
+  Reduce `.cw-type-wrap` desktop width from `8.5rem` to `5.7rem` (two-thirds):
+  ```css
+  .cw-type-wrap {
+    width: 5.7rem;   /* was 8.5rem — reduced to 2/3 per operator */
+    flex-shrink: 0;
+  }
+  ```
+  Leave the mobile breakpoint (`4.2rem` at ≤520px) unchanged.
+
 - broker: skip
 - doc: skip
-- backend-test: Three changes:
-
-  **1. Fix `webhook/notify_deploy.py`** (lines 136–151):
-  After `ntfy_url = sec.get("ntfy_url", "https://ntfy.sh")`, add:
-  ```python
-  ntfy_token = sec.get("ntfy_token")
-  ```
-  Replace the hardcoded headers dict:
-  ```python
-  headers={"Title": event_label, "Tags": "rocket", "Priority": "default", "Content-Type": "text/plain"},
-  ```
-  with:
-  ```python
-  _ntfy_headers = {"Title": event_label, "Tags": "rocket", "Priority": "default", "Content-Type": "text/plain"}
-  if ntfy_token:
-      _ntfy_headers["Authorization"] = f"Bearer {ntfy_token}"
-  ```
-  and pass `headers=_ntfy_headers` to `_urlreq.Request(...)`.
-
-  **2. New unit test `backend/tests/test_ntfy_deploy_token.py`**:
-  Using the existing `_run_main` / `_load_notify` pattern from `test_deploy_notify.py`,
-  but patching `urllib.request.urlopen` instead of `requests.post` to capture the ntfy
-  request:
-  - Test A: secrets include `ntfy_token` → `Authorization: Bearer <token>` header present in ntfy Request
-  - Test B: secrets omit `ntfy_token` → no Authorization header
-  - Test C: secrets include both `ntfy_topic` and `ntfy_token` on prod branch → urlopen called AND has auth header
-
-  Reference files for patterns:
-  - `backend/tests/test_deploy_notify.py` (load/run helpers)
-  - `backend/tests/test_ntfy_alert_auth.py` (urllib mock assertion pattern)
-
-  **3. New integration test `backend/tests/test_ntfy_integration.py`**:
-  Marked `@pytest.mark.integration` and skipped automatically when `ntfy_topic` absent.
-
-  Test structure:
-  ```python
-  import uuid, time, json, urllib.request, pytest, yaml
-  from pathlib import Path
-
-  SECRETS_PATH = Path(__file__).parents[2] / "config" / "secrets.yaml"
-
-  def _load_secrets():
-      try:
-          return yaml.safe_load(SECRETS_PATH.read_text()) or {}
-      except FileNotFoundError:
-          return {}
-
-  @pytest.fixture(scope="module")
-  def ntfy_config():
-      sec = _load_secrets()
-      topic = sec.get("ntfy_topic")
-      if not topic:
-          pytest.skip("ntfy_topic not configured — skipping live ntfy integration tests")
-      return {
-          "topic": topic,
-          "url": sec.get("ntfy_url", "https://ntfy.sh"),
-          "token": sec.get("ntfy_token"),
-      }
-
-  def _poll_ntfy(cfg, since_seconds=30):
-      """Poll ntfy topic for recent messages. Returns list of message dicts."""
-      poll_url = f"{cfg['url'].rstrip('/')}/{cfg['topic']}/json?poll=1&since={since_seconds}s"
-      headers = {"Accept": "application/json"}
-      if cfg["token"]:
-          headers["Authorization"] = f"Bearer {cfg['token']}"
-      req = urllib.request.Request(poll_url, headers=headers)
-      resp = urllib.request.urlopen(req, timeout=10)
-      lines = resp.read().decode().strip().split("\n")
-      return [json.loads(line) for line in lines if line.strip()]
-
-  @pytest.mark.integration
-  class TestNtfyLiveAlertReceive:
-      """Send real alerts and verify receipt via ntfy polling API."""
-
-      def test_send_ntfy_alert_received(self, ntfy_config):
-          """send_ntfy_alert() delivers a message; poll verifies receipt."""
-          from backend.shared.helpers.alert_utils import send_ntfy_alert
-          unique_id = str(uuid.uuid4())[:12]
-          title = f"RamboQ Test {unique_id}"
-          body = f"Integration test body {unique_id}"
-
-          send_ntfy_alert(title, body, priority="default")
-          time.sleep(4)  # allow delivery
-
-          messages = _poll_ntfy(ntfy_config, since_seconds=30)
-          titles = [m.get("title", "") for m in messages]
-          assert title in titles, (
-              f"Expected title {title!r} in ntfy messages.\nReceived: {titles}"
-          )
-
-      def test_deploy_ntfy_alert_received(self, ntfy_config):
-          """Simulate deploy notification ntfy block; poll verifies receipt."""
-          import urllib.request as _urlreq
-          cfg = ntfy_config
-          unique_id = str(uuid.uuid4())[:12]
-          event_label = f"Deploy Test {unique_id}"
-          body = f"deploy integration check {unique_id}"
-
-          _ntfy_headers = {
-              "Title": event_label,
-              "Tags": "rocket",
-              "Priority": "default",
-              "Content-Type": "text/plain",
-          }
-          if cfg["token"]:
-              _ntfy_headers["Authorization"] = f"Bearer {cfg['token']}"
-
-          req = _urlreq.Request(
-              f"{cfg['url'].rstrip('/')}/{cfg['topic']}",
-              data=body.encode(),
-              headers=_ntfy_headers,
-              method="POST",
-          )
-          _urlreq.urlopen(req, timeout=5)
-          time.sleep(4)
-
-          messages = _poll_ntfy(cfg, since_seconds=30)
-          titles = [m.get("title", "") for m in messages]
-          assert event_label in titles, (
-              f"Expected deploy notification {event_label!r} in ntfy.\nReceived: {titles}"
-          )
-  ```
-
+- backend-test: skip
 - playwright: skip
 
 ## Tests
-- pytest: yes (unit: `test_ntfy_deploy_token.py`; integration: `test_ntfy_integration.py`)
-- svelte-check: no
+- pytest: yes (GTT MARKET coercion test)
+- svelte-check: yes
 - playwright: no
 
 ## Commit message
-fix(alerts): add Bearer token to ntfy deploy notification; add unit+integration tests with live receive-side check
+fix(ui,broker): restore ats-sep divider; align chart btn; dashboard chart title; narrow dropdown; coerce GTT MARKET→LIMIT
 
 ## Done when
-- `notify_deploy.py` ntfy block includes `Authorization: Bearer` when `ntfy_token` present
-- Unit tests pass (mock-based, no network)
-- Integration tests run against real ntfy and confirm messages are received in the topic
-- All existing ntfy + deploy tests still green
+- Desktop: `[HH:MM IST / HH:MM ET] | [HH:MM IST / HH:MM ET]` separator visible
+- Mobile: no separator (grid toggle unaffected)
+- Order modal chart button: near-transparent background + 4px radius, matches page-header button
+- Dashboard intraday performance trend card shows "Intraday Performance" heading
+- Chart workspace "All" dropdown visibly narrower (5.7rem vs 8.5rem)
+- GTT with MARKET leg no longer fails: coerced to LIMIT silently, warning logged
+- pytest green for the new GTT coercion test
+- svelte-check 0 errors

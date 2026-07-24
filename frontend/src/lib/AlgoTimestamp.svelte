@@ -36,6 +36,7 @@
   <span class="ats-slot">
     <span class="ats-now" class:ats-mobile-hide={_showRefresh}>{_nowTs}</span>
     {#if _refreshTs}
+      <span class="ats-sep" aria-hidden="true">|</span>
       <span class="ats-refresh" class:ats-mobile-hide={!_showRefresh}>{_refreshTs}</span>
     {/if}
   </span>
@@ -66,6 +67,11 @@
     color: var(--algo-amber, #fbbf24);
     font-size: inherit;
   }
+  .ats-sep {
+    color: var(--text-muted);
+    font-size: inherit;
+    opacity: 0.5;
+  }
   @media (max-width: 640px) {
     .ats-group {
       cursor: pointer;
@@ -82,5 +88,6 @@
       pointer-events: none;
       transition: opacity 0.15s ease;
     }
+    .ats-sep { display: none; }
   }
 </style>
