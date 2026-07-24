@@ -883,6 +883,22 @@ class DhanBroker(Broker):
                 f"(remarks={resp.get('remarks')!r}, token_age={age_s}). "
                 f"Forcing re-login via PIN+TOTP and retrying once."
             )
+            # Decode JWT iat/exp without crypto — confirms whether Dhan's
+            # reported token validity matches what's actually in the token.
+            try:
+                import base64 as _b64, json as _json
+                _raw = getattr(self._conn, "_access_token", "") or ""
+                _parts = _raw.split(".")
+                if len(_parts) >= 2:
+                    _claims = _json.loads(_b64.urlsafe_b64decode(_parts[1] + "=="))
+                    _iat, _exp = _claims.get("iat", 0), _claims.get("exp", 0)
+                    _validity_h = f"{(_exp - _iat) / 3600:.1f}h" if (_exp and _iat) else "?"
+                    logger.warning(
+                        f"  JWT claims: iat={_iat} exp={_exp} "
+                        f"validity={_validity_h} consumer={_claims.get('tokenConsumerType')!r}"
+                    )
+            except Exception:
+                pass
             # Cross-account rotation signal — if another Dhan account
             # logged in within the recent past (≤ this token's lifetime),
             # the timing strongly suggests Dhan invalidated THIS token

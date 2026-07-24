@@ -694,8 +694,8 @@ class DhanConnection:
     def _try_restore_token(self) -> None:
         token, created = _load_cached_token(self._cache_key())
         if token:
-            self._access_token   = token
-            self._conn_created_at = timestamp_indian()
+            self._access_token    = token
+            self._conn_created_at = created  # preserve actual mint time, not NOW
             self._build_client(token)
             logger.info(f"Restored cached Dhan token for {self.account} "
                         f"(age: {(datetime.now(timezone.utc) - created).seconds // 3600}h)")
@@ -1057,6 +1057,23 @@ class DhanConnection:
         cached = self._check_login_rate_limit(test_conn)
         if cached is not None:
             return cached
+        # Attempt lightweight renewal before full PIN+TOTP re-mint.
+        # /v2/RenewToken requires an existing (possibly stale) token and avoids
+        # a new TOTP login — no new session is created, existing one rolls forward.
+        if self._access_token:
+            new_token = self._try_renew()
+            if new_token:
+                self._access_token    = new_token
+                self._conn_created_at = timestamp_indian()
+                self._save_token(new_token)
+                self._build_client(new_token)
+                try:
+                    from backend.brokers.adapters.dhan import record_dhan_login_event
+                    record_dhan_login_event(self.account)
+                except Exception:
+                    pass
+                _emit_conn_event(self.account, "dhan", "token_renewed")
+                return self._dhan
         self._mint_and_build()
         return None  # signal: mint was attempted; validate after lock release
 
