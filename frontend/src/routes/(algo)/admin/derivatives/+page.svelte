@@ -1938,13 +1938,16 @@
    *  this carries only the closed-leg realised component. BS drift has
    *  no meaning at expiry — intrinsic value is path-independent — so
    *  the expiry curve should shift only by locked-in gains, not by
-   *  any mark-to-market noise from open legs. This ensures the tooltip
-   *  EXP value and the overlay EXP stat (_legsExpPnlTotal) remain in
-   *  sync: both include c.realised and neither includes BS drift. */
+   *  any mark-to-market noise from open legs.
+   *  For closed legs (qty=0): use c.realised || c.pnl — Kite returns
+   *  realised=0 for options settled at expiry and puts the P&L in c.pnl.
+   *  For open legs: c.realised only (c.pnl includes unrealised MTM). */
   const _expiryPnlOffset = $derived.by(() =>
     displayedCandidates
       .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
-      .reduce((s, c) => s + Number(c.realised || 0), 0)
+      .reduce((s, c) => s + (Number(c.qty || 0) === 0
+        ? Number(c.realised || c.pnl || 0)
+        : Number(c.realised || 0)), 0)
   );
 
   // Master "select all" plumbing for the Legs panel header checkbox.
