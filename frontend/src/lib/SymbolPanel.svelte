@@ -1983,9 +1983,9 @@
             {#if !inline && _localSymbol}
               <button type="button" class="oes-chart-btn" title="Chart — {_localSymbol}"
                       onclick={() => _chartModalOpen = true}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M2 13h12M3 11l3-4 3 2 4-6" stroke="currentColor" stroke-width="1.9"
+                        stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
               </button>
             {/if}
