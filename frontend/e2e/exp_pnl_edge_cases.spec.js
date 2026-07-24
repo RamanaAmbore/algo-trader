@@ -667,6 +667,34 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
 
     console.log('[TC8-pass] Multi-underlying TOTAL row rendered with mixed leg types');
   });
+
+  // ─────────────────────────────────────────────────────────────────
+  // Group 9: Refresh timestamp — derivatives page updates lastRefreshAt
+  // ─────────────────────────────────────────────────────────────────
+
+  test('9.1-Stale: derivatives page imports lastRefreshAt from stores', async () => {
+    const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    const content = readFileSync(derivPath, 'utf-8');
+    expect(content).toContain("lastRefreshAt } from '$lib/stores'");
+    console.log('[TC9.1-pass] lastRefreshAt imported in derivatives page');
+  });
+
+  test('9.2-Stale: loadPositions calls lastRefreshAt.set on success', async () => {
+    // Bug fixed: background polls set `loading` but RefreshButton watches `_refreshing` —
+    // lastRefreshAt never updated during auto-poll. Fix: call lastRefreshAt.set(Date.now())
+    // directly in loadPositions() on success, matching the MarketPulse pattern.
+    const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    const content = readFileSync(derivPath, 'utf-8');
+
+    // Find loadPositions function body
+    const fnStart = content.indexOf('async function loadPositions(');
+    const fnEnd   = content.indexOf('\n  }', fnStart) + 4;
+    const fnBody  = content.substring(fnStart, fnEnd);
+
+    expect(fnBody).toContain('lastRefreshAt.set(Date.now())');
+    expect(fnBody).toContain('positionsStore.error');
+    console.log('[TC9.2-pass] loadPositions updates lastRefreshAt on successful poll');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────

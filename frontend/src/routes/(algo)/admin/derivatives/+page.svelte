@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore } from '$lib/stores';
+  import { authStore, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -3426,6 +3426,7 @@
 
     _excludedByAccount = _excluded;
     _positionsLoaded   = true;
+    if (!positionsStore.error) lastRefreshAt.set(Date.now());
 
     // Do NOT include enabledSymbols in the positions-poll snapshot —
     // the strategy-success path persists selections; polls must not
