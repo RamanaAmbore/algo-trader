@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import threading
+import time as _time_mod
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -56,6 +57,7 @@ def _ramboq_allowed_gai_family():
     return socket.AF_INET
 urllib3.util.connection.allowed_gai_family = _ramboq_allowed_gai_family
 
+from backend.brokers.errors import BrokerNetworkError
 from backend.shared.helpers.date_time_utils import timestamp_indian
 from backend.shared.helpers.decorators import retry_kite_conn
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -91,25 +93,60 @@ else:
     _TOKEN_CACHE_PATH = _FALLBACK_TOKEN_CACHE
 
 
+_LOCK_DIR = "/tmp/ramboq_locks"
+_LOCK_TIMEOUT_S = 30.0
+_LOCK_POLL_S = 0.5
+
+
+def _safe_lock_name(account: str) -> str:
+    """Sanitize account name for use as a filename component.
+
+    DhanConnection._cache_key() returns "dhan:DH6847" — the colon is
+    not valid in a filename path on some filesystems (and is confusing
+    on Linux). Replace colons and slashes so the lock path is portable.
+    """
+    return account.replace(":", "_").replace("/", "_")
+
+
 @contextlib.contextmanager
 def _cross_process_login_lock(account: str):
     """
     Cross-process exclusive lock keyed by account. Pairs with each
     KiteConnection's in-process `_login_lock` to keep parallel logins
     serialized both within a process AND across processes (prod + dev
-    sharing the same Kite app keys). The lock file lives next to the
-    token cache; opening it in append mode is safe even if the file
-    doesn't exist yet — `flock` works on the file descriptor.
+    sharing the same Kite app keys).
+
+    Lock files live under /tmp/ramboq_locks/ — a single system-wide
+    path shared by both prod (/opt/ramboq) and dev (/opt/ramboq_dev)
+    processes on the same host. Previously the lock file lived next to
+    the token cache, which differed between prod and dev and meant the
+    cross-process serialization was silently broken.
+
+    Uses a non-blocking LOCK_EX | LOCK_NB poll loop so a stuck process
+    can't hang the lock holder forever — raises BrokerNetworkError
+    after _LOCK_TIMEOUT_S (30 s).
     """
-    lock_path = _TOKEN_CACHE_PATH.with_suffix(f'.{account}.lock')
     try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        os.makedirs(_LOCK_DIR, exist_ok=True)
     except Exception:
         pass
+    safe_name = _safe_lock_name(account)
+    lock_path = os.path.join(_LOCK_DIR, f"{safe_name}.lock")
     fp = None
+    deadline = _time_mod.monotonic() + _LOCK_TIMEOUT_S
     try:
         fp = open(lock_path, 'a+')
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+        while True:
+            try:
+                fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break  # acquired
+            except BlockingIOError:
+                if _time_mod.monotonic() >= deadline:
+                    raise BrokerNetworkError(
+                        f"login lock timeout for {account!r} — "
+                        f"another process may be stuck (waited {_LOCK_TIMEOUT_S:.0f}s)"
+                    )
+                _time_mod.sleep(_LOCK_POLL_S)
         yield
     finally:
         if fp is not None:
@@ -283,17 +320,33 @@ def _cache_file_lock(shared: bool = False):
     """Acquire an advisory lock on a sibling .lock file. `shared=True`
     grants a read lock (multiple readers, no writers); `shared=False`
     grants an exclusive lock (one writer, no readers). The lock is
-    released when the context exits."""
+    released when the context exits.
+
+    Uses a non-blocking poll loop to avoid hanging forever if a process
+    is stuck holding the lock — raises BrokerNetworkError after
+    _LOCK_TIMEOUT_S (30 s).
+    """
     lock_path = _TOKEN_CACHE_PATH.with_suffix('.cache.lock')
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
     fp = None
+    flag = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+    deadline = _time_mod.monotonic() + _LOCK_TIMEOUT_S
     try:
         fp = open(lock_path, 'a+')
-        fcntl.flock(fp.fileno(),
-                    fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+        while True:
+            try:
+                fcntl.flock(fp.fileno(), flag | fcntl.LOCK_NB)
+                break  # acquired
+            except BlockingIOError:
+                if _time_mod.monotonic() >= deadline:
+                    raise BrokerNetworkError(
+                        f"token cache lock timeout (waited {_LOCK_TIMEOUT_S:.0f}s) — "
+                        f"another process may be stuck on {lock_path}"
+                    )
+                _time_mod.sleep(_LOCK_POLL_S)
         yield
     finally:
         if fp is not None:
@@ -1003,11 +1056,14 @@ class DhanConnection:
         try:
             access_token = self._do_login()
         except RuntimeError as e:
-            # 130 s = Dhan's 2-min limit + 10 s safety margin.
-            self._login_blocked_until = _time_mod.time() + 130.0
+            # 120 s = Dhan's documented 2-min generate_token rate limit.
+            # Previously set to 130 s (10 s safety margin) which compounded
+            # across multiple restarts; using exactly 120 s matches Dhan's
+            # actual limit and avoids unnecessary extra delay.
+            self._login_blocked_until = _time_mod.time() + 120.0
             logger.error(
                 f"Dhan _do_login failed for {self.account!r}: {e!s:.200} — "
-                f"blocking re-login attempts for 130 s"
+                f"blocking re-login attempts for 120 s"
             )
             _emit_conn_event(
                 self.account, "dhan", "auth_fail",
@@ -1041,7 +1097,17 @@ class DhanConnection:
         Returns the cached client when no re-mint is needed.  Returns
         None when _mint_and_build() was called (caller must validate
         self._dhan after releasing the lock).
+
+        Token re-read on lock acquisition (P0-1 Fix 2): always refresh
+        from disk here because another process may have minted a valid
+        token while this one was waiting for _cross_process_login_lock.
+        Without this, the waiter ignores the fresh token and runs its own
+        generate_token, triggering Dhan's 2-min rate-limit error for the
+        account (rotation storm).
         """
+        # Always re-read from disk — another process may have minted a
+        # fresh token while we waited for the cross-process lock.
+        self._try_restore_token()
         if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
             return self._dhan
         if not self._access_token:

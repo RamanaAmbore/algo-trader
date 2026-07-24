@@ -32,11 +32,17 @@ import time
 from typing import Iterable, Optional
 
 # ---------------------------------------------------------------------------
-# Throttled log helpers — emit at most once per (key, 60s) to avoid
-# log spam when the sym→token registry gap is widespread at boot.
+# Per-token-per-process-lifetime missing-sym tracking.
 # ---------------------------------------------------------------------------
-_MMAP_LOG_TTL_S = 60.0
-_mmap_missing_sym_last: dict[int, float] = {}  # token → last_log_monotonic
+# Log the [MMAP-MISSING-SYM] warning exactly ONCE per token per process
+# lifetime, then add to _known_absent_tokens and skip silently.  The
+# previous 60s-TTL dict (_mmap_missing_sym_last) still fired at 1440
+# events/day per token (once/minute × 24h), producing 100k+/week entries
+# in log pipelines for tokens that will never be registered during the
+# session (e.g. tokens from a prior trading session).  A lifetime set is
+# cheaper to check (set.__contains__ is O(1)) and eliminates the spam
+# while preserving the first-occurrence diagnostic.
+_known_absent_tokens: set[int] = set()
 
 from backend.brokers.tick_buffer import (
     DEFAULT_PATH,
@@ -104,6 +110,7 @@ class MmapTickReader:
 
     # ── BroadcastBus passthrough (SSE) ─────────────────────────────────
 
+    @property
     def bus(self) -> BroadcastBus:
         return self._bus
 
@@ -312,10 +319,13 @@ class MmapTickReader:
                             continue
                         sym_str = self._token_to_sym.get(tok, "")
                         if not sym_str:
-                            # Throttled: log at most once per token per 60s
-                            _now = time.monotonic()
-                            if _now - _mmap_missing_sym_last.get(tok, 0.0) > _MMAP_LOG_TTL_S:
-                                _mmap_missing_sym_last[tok] = _now
+                            # Log exactly once per token per process lifetime
+                            # to avoid the 100k+/week log spam from tokens
+                            # that never get registered (e.g. prior-session
+                            # tokens). After the first warning, add to set
+                            # and skip silently on every subsequent tick.
+                            if tok not in _known_absent_tokens:
+                                _known_absent_tokens.add(tok)
                                 logger.warning(
                                     "[MMAP-MISSING-SYM] token=%d "
                                     "reason=local_token_not_registered",

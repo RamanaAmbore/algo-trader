@@ -180,15 +180,16 @@ class TestPollLoopSkipsUnregisteredTokens:
     """
 
     def setup_method(self, _method):
-        """Clear the module-level throttle dict so downstream tests can
-        observe [MMAP-MISSING-SYM] warnings — the throttle otherwise
-        suppresses re-emission for 60s per token."""
+        """Clear the module-level absent-token set so each test starts
+        fresh and can observe [MMAP-MISSING-SYM] warnings on first
+        encounter (the set otherwise suppresses all subsequent warnings
+        for a token seen in a prior test)."""
         import backend.brokers.mmap_ticker as _mod
-        _mod._mmap_missing_sym_last.clear()
+        _mod._known_absent_tokens.clear()
 
     def teardown_method(self, _method):
         import backend.brokers.mmap_ticker as _mod
-        _mod._mmap_missing_sym_last.clear()
+        _mod._known_absent_tokens.clear()
 
     @pytest.mark.asyncio
     async def test_poll_loop_does_not_publish_for_unregistered_token(self, tmp_buffer_path):

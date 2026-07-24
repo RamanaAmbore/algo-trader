@@ -28,6 +28,7 @@ from backend.brokers.client.remote_broker import (
     list_remote_accounts,
     trigger_rebuild,
 )
+from backend.brokers.errors import BrokerError, BrokerNetworkError
 
 
 class TestRemoteBrokerProperties:
@@ -81,22 +82,22 @@ class TestRemoteBrokerCall:
             mock_client.post.return_value = mock_resp
             mock_get_client.return_value = mock_client
 
-            with pytest.raises(RuntimeError, match="Token expired"):
+            with pytest.raises(BrokerError, match="Token expired"):
                 broker._call("holdings")
 
-    def test_call_connection_error_raises_runtime_error(self):
-        """RemoteBroker._call() raises RuntimeError on connection failure."""
+    def test_call_connection_error_raises_broker_network_error(self):
+        """RemoteBroker._call() raises BrokerNetworkError on connection failure."""
         broker = RemoteBroker(account="ZG0790", broker_id="zerodha_kite")
         with patch('backend.brokers.client.remote_broker._get_client') as mock_get_client:
             mock_client = MagicMock()
             mock_client.post.side_effect = httpx.ConnectError("Connection refused")
             mock_get_client.return_value = mock_client
 
-            with pytest.raises(RuntimeError, match="conn_service unreachable"):
+            with pytest.raises(BrokerNetworkError, match="conn_service unreachable"):
                 broker._call("holdings")
 
     def test_call_http_error_extracts_detail(self):
-        """RemoteBroker._call() raises RuntimeError on HTTP errors."""
+        """RemoteBroker._call() raises BrokerNetworkError on HTTP errors."""
         broker = RemoteBroker(account="ZG0790", broker_id="zerodha_kite")
         with patch('backend.brokers.client.remote_broker._get_client') as mock_get_client:
             mock_client = MagicMock()
@@ -108,7 +109,7 @@ class TestRemoteBrokerCall:
             mock_client.post.return_value = mock_resp
             mock_get_client.return_value = mock_client
 
-            with pytest.raises(RuntimeError, match="conn_service unreachable"):
+            with pytest.raises(BrokerNetworkError, match="conn_service unreachable"):
                 broker._call("holdings")
 
     def test_call_constructs_correct_path(self):
