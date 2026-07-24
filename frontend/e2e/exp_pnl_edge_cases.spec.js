@@ -726,6 +726,38 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     expect(content).not.toContain("marketAwareInterval(loadPositions,");
     console.log('[TC9.3-pass] loadPositions uses visibleInterval for after-hours polling');
   });
+
+  test('9.4-Stale: _legsExpPnlTotal uses _legExpPnlDisplay (no fnoOpen/fnoClosed/eqTotal split)', async () => {
+    // SSOT fix: _legsExpPnlTotal now calls _legExpPnlDisplay for all candidates so
+    // sum(per-leg rows) == TOTAL by construction for F&O, closed, and equity legs.
+    const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    const content = readFileSync(derivPath, 'utf-8');
+
+    const totalStart = content.indexOf('const _legsExpPnlTotal = $derived.by(');
+    const totalEnd   = content.indexOf('\n  });', totalStart) + 5;
+    const totalBody  = content.substring(totalStart, totalEnd);
+
+    expect(totalBody).toContain('_legExpPnlDisplay(c, spot)');
+    expect(totalBody).not.toContain('fnoOpen');
+    expect(totalBody).not.toContain('fnoClosed');
+    expect(totalBody).not.toContain('eqTotal');
+    console.log('[TC9.4-pass] _legsExpPnlTotal delegates to _legExpPnlDisplay');
+  });
+
+  test('9.5-Stale: _legExpPnlDisplay has equity branch for SSOT coverage', async () => {
+    // SSOT fix: _legExpPnlDisplay now handles equity legs via _eqExpPnlByKey so it
+    // is the single canonical per-candidate formula for all leg types.
+    const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    const content = readFileSync(derivPath, 'utf-8');
+
+    const fnStart = content.indexOf('function _legExpPnlDisplay(');
+    const fnEnd   = content.indexOf('\n  }', fnStart) + 4;
+    const fnBody  = content.substring(fnStart, fnEnd);
+
+    expect(fnBody).toContain("c.kind === 'eq'");
+    expect(fnBody).toContain('_eqExpPnlByKey');
+    console.log('[TC9.5-pass] _legExpPnlDisplay covers equity legs');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────
