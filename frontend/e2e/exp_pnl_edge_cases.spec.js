@@ -714,6 +714,18 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     expect(fnBody).toContain('positionsStore.error');
     console.log('[TC9.2-pass] loadPositions updates lastRefreshAt on successful poll');
   });
+
+  test('9.3-Stale: loadPositions uses visibleInterval (not marketAwareInterval) for after-hours polling', async () => {
+    // Bug fixed: marketAwareInterval skips the callback after market close (23:30 IST),
+    // so EOD broker settlement updates (positions, cash, margin) were never picked up.
+    // Fix: switch to visibleInterval so the 30s poll continues after hours.
+    const derivPath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    const content = readFileSync(derivPath, 'utf-8');
+
+    expect(content).toContain("visibleInterval(loadPositions,");
+    expect(content).not.toContain("marketAwareInterval(loadPositions,");
+    console.log('[TC9.3-pass] loadPositions uses visibleInterval for after-hours polling');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────
