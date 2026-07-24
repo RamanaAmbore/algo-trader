@@ -12,22 +12,8 @@ Flags:
 """
 import argparse
 import sys
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
-import requests
 import yaml
-
-INDIAN_TZ = ZoneInfo("Asia/Kolkata")
-EST_TZ    = ZoneInfo("US/Eastern")
-
-
-def _timestamp():
-    now_ist = datetime.now(tz=INDIAN_TZ)
-    now_est = datetime.now(tz=EST_TZ)
-    return (f"{now_ist.strftime('%a, %B %d, %Y, %I:%M %p IST')} | "
-            f"{now_est.strftime('%a, %B %d, %Y, %I:%M %p %Z')}")
-
 
 def main():
     parser = argparse.ArgumentParser(description="RamboQuant deploy notification")
@@ -67,7 +53,6 @@ def main():
         print("notify_deploy: skipped — dev branch deploys suppressed")
         sys.exit(0)
 
-    ts = _timestamp()
     errors = []
 
     # Suffix the success label with the deploy-type so the operator can
@@ -80,60 +65,17 @@ def main():
     if status == "ok":
         event_label = f"Deploy OK{branch_tag}{type_suffix}"
         detail_line = f"{branch} → {commit}"
-        tg_header   = f"<b>Deploy OK{branch_tag}{type_suffix}</b> · <code>{commit}</code>"
     else:
         event_label = f"⚠ DEPLOY FAILED{branch_tag}"
         detail_line = f"{branch} → {commit}" + (f" — {reason}" if reason else "")
-        tg_header   = (f"<b>⚠ DEPLOY FAILED{branch_tag}</b> · <code>{commit}</code>"
-                       + (f"\n{reason}" if reason else ""))
-
-    # Services that were restarted by this deploy (per-env)
-    import subprocess
-    env_service = "ramboq_api.service" if branch == "main" else "ramboq_dev_api.service"
-    # Always include the shared webhook listener
-    all_services = [env_service, "ramboq_hook.service"]
-
-    services_status = []
-    for svc in all_services:
-        try:
-            result = subprocess.run(["systemctl", "is-active", svc],
-                                    capture_output=True, text=True, timeout=5)
-            svc_status = result.stdout.strip()
-            services_status.append(f"{svc}: {svc_status}")
-        except Exception:
-            services_status.append(f"{svc}: unknown")
-    svc_text = " | ".join(services_status)
 
     # notify_on_deploy is the single gate for the deploy message — by the time
     # we reach here we've already confirmed it's on (or we're on prod). Deploy
-    # pings ship Telegram-only by operator preference (May 2026); the prior
-    # email path was retired because deploy noise was cluttering the inbox
-    # while the same information already lands instantly on the ops channel.
+    # pings ship ntfy-only; the prior Telegram path was retired and folded into
+    # _send_telegram_info() inside alert_utils so all Telegram routing goes
+    # through the config-driven _alert_route() table.
 
-    # --- Telegram ---
-    # Prefer dedicated deploy-bot keys so deploy pings can go to a
-    # separate bot/channel; fall back to the shared alert keys so
-    # existing deployments require no secrets.yaml change.
-    token   = sec.get("telegram_bot_token_deploy") or sec.get("telegram_bot_token", "")
-    chat_id = sec.get("telegram_chat_id_deploy")   or sec.get("telegram_chat_id", "")
-    if token and chat_id:
-        branch_line = ""  # is_non_main is always False here (dev exits above)
-        try:
-            resp = requests.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat_id,
-                      "text": f"{tg_header}{branch_line}\n{ts}\n<code>{svc_text}</code>",
-                      "parse_mode": "HTML"},
-                timeout=10,
-            )
-            if resp.ok:
-                print("notify_deploy: Telegram sent")
-            else:
-                errors.append(f"Telegram failed {resp.status_code}: {resp.text[:100]}")
-        except Exception as e:
-            errors.append(f"Telegram error: {e}")
-
-    # ntfy — runs independently of Telegram success/failure
+    # ntfy
     ntfy_topic = sec.get("ntfy_topic")
     if ntfy_topic:
         ntfy_url = sec.get("ntfy_url", "https://ntfy.sh")

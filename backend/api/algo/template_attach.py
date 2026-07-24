@@ -183,116 +183,40 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
         f"Reason: {reason}. Parent order is filled; EXITS NOT ATTACHED."
     )
 
-    def _do_telegram() -> None:
-        try:
-            from backend.shared.helpers.alert_utils import _send_telegram
-            msg = (
-                f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
-                f"<code>"
-                f"order #{parent_order_id}\n"
-                f"{parent_side} {parent_qty} {parent_symbol}\n"
-                f"@ ₹{parent_fill_price:.2f}  ({parent_account})\n\n"
-                f"template:    {template_slug}\n"
-                f"applies_to:  {applies_to}\n"
-                f"reason:      {reason}\n\n"
-                f"Parent order FILLED. Exits NOT attached.\n"
-                f"Arm exits manually if needed.\n\n"
-                f"Fix: at /admin/templates, change this template's "
-                f"'applies_to' to 'both' or 'buy_option'.</code>"
-            )
-            _send_telegram(msg)
-        except Exception as e:
-            logger.warning(f"guard alert: Telegram failed: {e}")
+    tg_msg = (
+        f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
+        f"<code>"
+        f"order #{parent_order_id}\n"
+        f"{parent_side} {parent_qty} {parent_symbol}\n"
+        f"@ ₹{parent_fill_price:.2f}  ({parent_account})\n\n"
+        f"template:    {template_slug}\n"
+        f"applies_to:  {applies_to}\n"
+        f"reason:      {reason}\n\n"
+        f"Parent order FILLED. Exits NOT attached.\n"
+        f"Arm exits manually if needed.\n\n"
+        f"Fix: at /admin/templates, change this template's "
+        f"'applies_to' to 'both' or 'buy_option'.</code>"
+    )
 
-    def _do_ntfy() -> None:
+    def _dispatch_guard() -> None:
         try:
-            from backend.shared.helpers.alert_utils import send_ntfy_alert
-            send_ntfy_alert(
+            from backend.shared.helpers.alert_utils import _alert_route
+            _alert_route(
+                'template_guard',
                 title="Template guard fired",
-                message=f"order #{parent_order_id} {parent_side} {parent_qty} {parent_symbol} — {reason}. Exits NOT attached.",
+                body=tg_msg,
+                # template_guard routing has email:false — email_fn ignored
             )
         except Exception as e:
-            logger.warning(f"guard alert: ntfy failed: {e}")
-
-    def _do_email() -> None:
-        try:
-            from backend.shared.helpers.alert_utils import get_alert_recipients
-            from backend.shared.helpers.mail_utils import send_email
-            recipients = get_alert_recipients()
-            if not recipients:
-                logger.info("guard alert: no email recipients configured; skipping")
-                return
-            subject = (
-                f"RamboQuant: Template guard fired — "
-                f"#{parent_order_id} {parent_side} {parent_qty} {parent_symbol}"
-            )
-            html = f"""
-<html><body style='font-family:sans-serif;background:#0a1020;color:#c8d8f0;margin:0;padding:18px'>
-  <div style='max-width:620px;margin:0 auto'>
-    <div style='background:#7c2d12;color:#fff;padding:10px 14px;border-radius:4px;
-                margin-bottom:14px;font-weight:700'>
-      ⚠ Template guard fired
-    </div>
-    <p style='font-size:14px;color:#fbbf24;margin:0 0 12px 0'>
-      <b>{ist_label}</b>
-    </p>
-    <p style='font-size:13px;line-height:1.5;color:#c8d8f0'>
-      A template attach was refused because the leg's side or kind
-      did not match the template's <code>applies_to</code> scope.
-      The parent order filled normally; <b>exit legs were NOT
-      attached</b>. Review the position and arm exits manually if
-      needed.
-    </p>
-    <table style='border-collapse:collapse;font-family:ui-monospace,monospace;
-                  font-size:13px;color:#c8d8f0;margin-top:12px'>
-      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Order</td>
-          <td style='padding:4px 0'>#{parent_order_id}</td></tr>
-      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Side / Qty</td>
-          <td style='padding:4px 0'>{parent_side} {parent_qty}</td></tr>
-      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Symbol</td>
-          <td style='padding:4px 0'>{parent_symbol}</td></tr>
-      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Account</td>
-          <td style='padding:4px 0'>{parent_account}</td></tr>
-      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Fill price</td>
-          <td style='padding:4px 0'>₹{parent_fill_price:.2f}</td></tr>
-      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Template</td>
-          <td style='padding:4px 0'><code>{template_slug}</code> (applies_to={applies_to})</td></tr>
-      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Reason</td>
-          <td style='padding:4px 0'>{reason}</td></tr>
-    </table>
-    <p style='font-size:11px;color:#7e97b8;margin-top:18px'>
-      Sent automatically by RamboQuant's template_attach guard
-      (2026-06-22 incident pattern). To suppress these alerts,
-      either fix the template's <code>applies_to</code> scope or
-      stop selecting a mismatched default in the OrderTicket.
-    </p>
-  </div>
-</body></html>
-"""
-            for r in recipients:
-                try:
-                    send_email(r, r, subject, html)
-                except Exception as e:
-                    logger.warning(f"guard alert: email to {r} failed: {e}")
-        except Exception as e:
-            logger.warning(f"guard alert: email path failed: {e}")
+            logger.warning(f"guard alert: dispatch failed: {e}")
 
     async def _both():
-        # Run all synchronously inside one task so they share the
-        # same wall-clock budget and the email never blocks Telegram.
-        # Each helper is sync-on-the-network so they don't await.
-        _do_telegram()
-        _do_ntfy()
-        _do_email()
+        _dispatch_guard()
 
     try:
         _asyncio.get_running_loop().create_task(_both())
     except RuntimeError:
-        # Not in an asyncio context (test harness / sync caller).
-        # Run the sync helpers directly so the alert still goes out.
-        _do_telegram()
-        _do_ntfy()
-        _do_email()
+        _dispatch_guard()
 
     logger.info(f"guard alert dispatched: {summary}")
 
@@ -327,42 +251,35 @@ def _fire_attach_fail_alert(
 
     err_summary = "; ".join((str(e) for e in errors[:2]))
 
-    def _do_telegram() -> None:
-        try:
-            from backend.shared.helpers.alert_utils import _send_telegram
-            msg = (
-                f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
-                f"<code>"
-                f"order #{order_id}\n"
-                f"symbol:   {symbol}\n"
-                f"account:  {account}\n\n"
-                f"errors:   {err_summary}\n\n"
-                f"Parent order FILLED. Exits NOT attached.\n"
-                f"Arm exits manually if needed.</code>"
-            )
-            _send_telegram(msg)
-        except Exception as _e:
-            logger.warning(f"attach fail alert: Telegram failed: {_e}")
+    tg_msg = (
+        f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
+        f"<code>"
+        f"order #{order_id}\n"
+        f"symbol:   {symbol}\n"
+        f"account:  {account}\n\n"
+        f"errors:   {err_summary}\n\n"
+        f"Parent order FILLED. Exits NOT attached.\n"
+        f"Arm exits manually if needed.</code>"
+    )
 
-    def _do_ntfy() -> None:
+    def _dispatch_attach_fail() -> None:
         try:
-            from backend.shared.helpers.alert_utils import send_ntfy_alert
-            send_ntfy_alert(
+            from backend.shared.helpers.alert_utils import _alert_route
+            _alert_route(
+                'template_attach_fail',
                 title="Template attach failed",
-                message=f"order #{order_id} {symbol} — {err_summary}. Exits NOT attached.",
+                body=tg_msg,
             )
-        except Exception as e:
-            logger.warning(f"attach fail alert: ntfy failed: {e}")
+        except Exception as _e:
+            logger.warning(f"attach fail alert: dispatch failed: {_e}")
 
     async def _task():
-        _do_telegram()
-        _do_ntfy()
+        _dispatch_attach_fail()
 
     try:
         _asyncio.get_running_loop().create_task(_task())
     except RuntimeError:
-        _do_telegram()
-        _do_ntfy()
+        _dispatch_attach_fail()
 
     logger.warning(
         "attach fail alert dispatched: order #%s %s %s errors=[%s]",

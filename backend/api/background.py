@@ -2243,17 +2243,19 @@ async def _send_trail_partial_modify_alert(
         f"intervention required."
     )
     try:
-        from backend.shared.helpers.utils import is_enabled
-        if is_enabled('telegram'):
-            from backend.shared.helpers.alert_utils import _send_telegram
-            await asyncio.to_thread(
-                _send_telegram,
+        from backend.shared.helpers.alert_utils import _alert_route
+        await asyncio.to_thread(
+            _alert_route,
+            'gtt_asymmetric',
+            "GTT asymmetric",
+            (
                 f"⚠ Dhan GTT asymmetric: "
                 f"{parent_symbol} on {row.account} — "
                 f"trail ratcheted entry but target "
                 f"leg rejected. Cancel + recreate "
-                f"or verify at broker.",
-            )
+                f"or verify at broker."
+            ),
+        )
     except Exception:
         pass
 
@@ -2637,18 +2639,20 @@ async def _oco_handle_settled_pair(
         f"verify no double-close at the broker."
     )
     try:
-        from backend.shared.helpers.utils import is_enabled
-        if is_enabled('telegram'):
-            from backend.shared.helpers.alert_utils import _send_telegram
-            await asyncio.to_thread(
-                _send_telegram,
+        from backend.shared.helpers.alert_utils import _alert_route
+        await asyncio.to_thread(
+            _alert_route,
+            'oco_double_fire',
+            "OCO double-fire",
+            (
                 f"⚠ OCO double-fire (emulated): "
                 f"{entry.get('parent_symbol', '?')} on "
                 f"{entry.get('parent_account', '?')} — "
                 f"both legs settled in one 15s poll "
                 f"window. Verify broker position; "
-                f"manual close may be needed.",
-            )
+                f"manual close may be needed."
+            ),
+        )
     except Exception as _alert_err:
         logger.debug(f"[OCO-WATCH] double-fire alert failed: {_alert_err}")
     entry.pop("sibling_id", None)
@@ -3354,9 +3358,8 @@ async def _watchdog_check_market_open(
 
 
 async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
-    """Send a Telegram recovery alert when a previously-degraded ticker reconnects."""
-    from backend.shared.helpers.alert_utils import _send_telegram
-    from backend.shared.helpers.utils import is_enabled
+    """Send a recovery alert when a previously-degraded ticker reconnects."""
+    from backend.shared.helpers.alert_utils import _alert_route
     _ticker_alert_state["alert_active"] = False
     now_ts = _time.time()
     duration_min = int((now_ts - _ticker_alert_state["incident_start"]) / 60)
@@ -3371,8 +3374,7 @@ async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
         f"Time: {ts}"
     )
     logger.info(f"ticker watchdog: recovered on {connected_acct} after {duration_min} min")
-    if is_enabled("telegram"):
-        await asyncio.to_thread(_send_telegram, msg)
+    await asyncio.to_thread(_alert_route, 'ticker_recovered', "Ticker recovered", msg)
 
 
 def _watchdog_select_failover(
@@ -3431,9 +3433,8 @@ async def _watchdog_alert_degraded(
     current: Optional[str],
     alert_refire_s: float,
 ) -> None:
-    """Fire (or re-fire) the Telegram degraded alert when all accounts are blocked."""
-    from backend.shared.helpers.alert_utils import _send_telegram
-    from backend.shared.helpers.utils import is_enabled
+    """Fire (or re-fire) the degraded alert when all accounts are blocked."""
+    from backend.shared.helpers.alert_utils import _alert_route
     now_ts = _time.time()
     should_alert = (
         not _ticker_alert_state["alert_active"]
@@ -3453,8 +3454,7 @@ async def _watchdog_alert_degraded(
         f"(current={current or '?'}, disconnected_s={disconnected_s:.0f}) — "
         f"continuing to wait for primary to recover"
     )
-    if is_enabled("telegram"):
-        await asyncio.to_thread(_send_telegram, msg)
+    await asyncio.to_thread(_alert_route, 'ticker_degraded', "Ticker degraded", msg)
 
 
 def _bg_watchdog_reset_alert_state() -> None:
@@ -3612,15 +3612,15 @@ async def _task_visitor_log_daily() -> None:
             branch = config.get("deploy_branch", "main")
             branch_tag = f" [{branch}]" if branch != "main" else ""
 
-            if send_telegram and is_enabled("telegram"):
+            if send_telegram:
                 try:
-                    from backend.shared.helpers.alert_utils import _send_telegram
+                    from backend.shared.helpers.alert_utils import _alert_route
                     from backend.scripts.visitor_report import summary_for_telegram
                     tg_body = summary_for_telegram(report_path)
                     msg = f"<b>Visitors{branch_tag}</b>\n{tg_body}"
-                    await asyncio.to_thread(_send_telegram, msg)
+                    await asyncio.to_thread(_alert_route, 'visitor_report', "Visitor report", msg)
                 except Exception as tg_err:
-                    logger.warning(f"Background: visitor log telegram failed: {tg_err}")
+                    logger.warning(f"Background: visitor log alert failed: {tg_err}")
             # Operator request (Jun 2026): visitor reports ship to the
             # RamboQuant alerts Telegram channel only — no email. The
             # full markdown report stays on disk at .log/visitors-<date>.md
