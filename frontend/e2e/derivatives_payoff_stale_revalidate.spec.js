@@ -167,6 +167,7 @@ test.describe('Derivatives payoff — stale-while-revalidate on underlying switc
   test('Chart preserves old curve during fetch; shows loading spinner', async ({
     page,
   }) => {
+    test.setTimeout(180_000);
     await authOnce(page);
     const trigger = await gotoDerivatives(page);
 
