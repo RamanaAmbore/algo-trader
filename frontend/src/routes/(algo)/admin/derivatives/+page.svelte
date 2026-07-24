@@ -3515,7 +3515,6 @@
     }
 
     const _thisGen = ++_stratGen;
-    if (opts?.clear) strategy = null;
     loading = true;
     try {
       const resp    = await fetchStrategyAnalytics(cleanLegs);
@@ -4160,7 +4159,7 @@
     -->
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
-        payoff={!_strategyStale && strategy ? _mergedPayoff : (_clientPayoffStub ?? [])}
+        payoff={strategy ? _mergedPayoff : (_clientPayoffStub ?? [])}
         spot={liveSpot}
         prevClose={strategy?.spot_prev_close}
         breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}

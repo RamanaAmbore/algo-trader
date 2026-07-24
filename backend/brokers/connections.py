@@ -508,21 +508,21 @@ class KiteConnection:
         until the retry loop cleared.
         """
         now = timestamp_indian()
-        if not (self._is_kite_conn_expired(now) or test_conn):
-            return self.kite
-
-        with self._login_lock, _cross_process_login_lock(self.account):
-            now = timestamp_indian()
+        with self._login_lock:
             if not (self._is_kite_conn_expired(now) or test_conn):
                 return self.kite
-            if self._is_kite_conn_expired(now):
-                self._conn_created_at = now
-                logger.info(f"Kite connection refreshed at "
-                            f"{now.strftime('%a, %b %d, %Y, %I:%M %p')}")
-            if self._validate_or_clear_kite_token():
+            with _cross_process_login_lock(self.account):
+                now = timestamp_indian()
+                if not (self._is_kite_conn_expired(now) or test_conn):
+                    return self.kite
+                if self._is_kite_conn_expired(now):
+                    self._conn_created_at = now
+                    logger.info(f"Kite connection refreshed at "
+                                f"{now.strftime('%a, %b %d, %Y, %I:%M %p')}")
+                if self._validate_or_clear_kite_token():
+                    return self.kite
+                self.init_kite_conn(test_conn=True)
                 return self.kite
-            self.init_kite_conn(test_conn=True)
-            return self.kite
 
     @retry_kite_conn(_retry_count)
     def login(self):
@@ -1087,14 +1087,14 @@ class DhanConnection:
         same Partner-API app.
         """
         now = timestamp_indian()
-        if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
-            return self._dhan
-
-        with self._login_lock, _cross_process_login_lock(self._cache_key()):
-            now = timestamp_indian()
-            result = self._dhan_conn_under_lock(now, test_conn)
-            if result is not None:
-                return result
+        with self._login_lock:
+            if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
+                return self._dhan
+            with _cross_process_login_lock(self._cache_key()):
+                now = timestamp_indian()
+                result = self._dhan_conn_under_lock(now, test_conn)
+                if result is not None:
+                    return result
 
         if self._dhan is None:
             raise RuntimeError(
@@ -1457,16 +1457,21 @@ class Connections(SingletonBase):
         IP-stabilizer).  Per-row errors are logged and skipped.
         """
         new_conn: dict[str, Any] = {}
+        dhan_built = 0
         for r in rows:
             broker_id = (r.broker_id or "zerodha_kite").lower()
             if broker_id == "dhan" and r.account in dhan_deferred:
                 continue
+            if broker_id == "dhan" and dhan_built > 0:
+                import time as _t; _t.sleep(2)
             try:
                 conn_obj = self._build_conn_for_row(r, broker_id)
                 if conn_obj is not None:
                     new_conn[r.account] = conn_obj
             except Exception as e:
                 logger.error(f"{broker_id} connection init failed for {r.account!r}: {e}")
+            if broker_id == "dhan":
+                dhan_built += 1
         return new_conn
 
     async def rebuild_from_db(self) -> None:

@@ -2071,7 +2071,7 @@ See [BROKER_SPEC.md §14](docs/specs/BROKER_SPEC.md#14-broker-connection-events-
 1. **Kite-shape contract** — every return value must match Kite Connect shape. Dhan/Groww adapters have `_normalise_*` helpers. The `_DHAN_STATUS_TO_KITE` status map is critical (audit B-1).
 2. **Singleton per process** — adapters live via `Connections()` singleton. Each Kite login takes 10-15s; re-doing per-request is unworkable.
 3. **IPv6 source-binding** — Kite + Dhan enforce one-session-per-IP rules. Each account binds to a unique IPv6 via `_IPv6SourceAdapter` (Kite/Dhan) or ContextVar proxy (Groww).
-4. **Token cache** — each broker persists tokens to `.log/<broker>_tokens.json`. On startup, skips login if fresh token cached; fires full login only on miss/expiry/manual delete.
+4. **Token cache** — each broker persists tokens to `.log/<broker>_tokens.json`. On startup, skips login if fresh token cached; fires full login only on miss/expiry/manual delete. **TOCTOU fix (Jul 2026)**: `get_kite_conn()` and `get_dhan_conn()` fast-path returns inside `self._login_lock` to prevent stale handle races during concurrent token refresh.
 5. **Registry factories** — use `get_broker(account)` for operator actions, `get_price_broker()` for shared market data, `get_historical_brokers()` for OHLCV + regression, `get_sparkline_broker()` for KiteTicker.
 6. **Capabilities immutable** — frozen dataclass with every field explicit per broker (no defaults). Used to render warning chips on OrderTicket when template asks for unsupported GTT shape.
 
@@ -2768,6 +2768,8 @@ gantt
     OCO pair watcher (15s)      :oco, 09:00, 6h
     Trail-stop poller (30s)     :trail, 09:00, 6h
     Ticker watchdog (30s)       :tw, 09:00, 6h
+    section Authentication
+    Token pre-warm (daily 05:45) :warm, 05:45, 2m
     section Daily ops
     Open summaries              :open, 09:15, 5m
     Close summaries             :close, 15:30, 5m
@@ -2788,6 +2790,11 @@ gantt
 - `_task_closed_hours_refresh` (30min, post-market-close) — persists fresh broker data 
   to `daily_book` after settlement window; invalidates live-data caches so closed-hours 
   routes serve updated snapshots (positions, holdings, funds, trades)
+
+**Token lifecycle tasks:**
+- `_task_token_refresh` (05:45 IST daily) — fires before the 06:00 IST Kite token expiry 
+  window; calls `get_kite_conn(test_conn=True)` for all Kite accounts to pre-warm tokens 
+  and detect auth issues early. Prevents token-expiry 401 errors during market hours.
 
 ⚙ **TECH — Why poll-based + not event-based** — `WHY` Vendor postbacks are unreliable (Dhan + Groww have no inbound webhook; Kite drops 0.5-2% in our experience). Polling is the conservative floor. `WHAT` Each task runs on its own asyncio cadence; no scheduler library. `HOW` Pick interval based on operator latency tolerance: trail-stop = 30s (slow ratchet OK), OCO watcher = 15s (faster because both legs settling within window means double-fire). `WHERE` `backend/api/background.py`.
 
@@ -4112,8 +4119,14 @@ Three improvements accelerate page load + rendering fidelity on the `/admin/deri
 
 **Stub today_value** — `_clientPayoffStub` in `backend/api/routes/derivatives.py` now returns `today_value: null` instead of `expiry_value`. This prevents the frontend's "today" curve from rendering with an incorrect negative slope before Black-Scholes pricing arrives. `OptionsPayoff.svelte` skips the today curve entirely when `hasTodayValues=false`.
 
+**Payoff curve stale-while-revalidate** — On underlying symbol switch, the old payoff curve 
+stays visible under a loading overlay instead of immediately showing a wrong intrinsic-only 
+stub. This preserves context during the fetch latency, preventing the "chart collapsed to a 
+single line" flash that confused operators mid-analysis. When the fresh payload arrives, the 
+overlay clears and the new curve renders.
+
 **Files:**
-- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — picker ordering + cold-start seed
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — picker ordering + cold-start seed + stale-while-revalidate overlay
 - `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` — extracted leg-grid row component (841 lines, 9 props, 6 callbacks)
 - `frontend/src/lib/OptionsPayoff.svelte` — `hasTodayValues` check
 - `backend/api/routes/derivatives.py` — stub today_value change

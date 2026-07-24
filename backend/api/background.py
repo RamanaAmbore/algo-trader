@@ -370,6 +370,30 @@ async def _task_market(state: dict) -> None:
             logger.error(f"Background: market warm failed: {e}")
 
 
+async def _task_token_refresh() -> None:
+    """Pre-warm Kite tokens at 05:45 IST before 06:00 AM expiry."""
+    _TARGET = "05:45"
+    last_fired: str | None = None
+    while True:
+        await asyncio.sleep(60)
+        try:
+            now = timestamp_indian()
+            today = now.strftime("%Y-%m-%d")
+            if now.strftime("%H:%M") == _TARGET and last_fired != today:
+                last_fired = today
+                from backend.brokers.connections import Connections, KiteConnection
+                for account, conn in Connections().conn.items():
+                    if not isinstance(conn, KiteConnection):
+                        continue
+                    try:
+                        conn.get_kite_conn(test_conn=True)
+                        logger.info(f"[TOKEN-PREWARM] {account} refreshed")
+                    except Exception as e:
+                        logger.warning(f"[TOKEN-PREWARM] {account} failed: {e}")
+        except Exception:
+            pass
+
+
 _PERF_KICK_EVENT: asyncio.Event | None = None
 
 
@@ -4897,6 +4921,7 @@ async def on_startup(app) -> None:
     start_persist_flush()
     app.state.bg_tasks = [
         asyncio.create_task(_task_market(state),         name="bg-market"),
+        asyncio.create_task(_task_token_refresh(),        name="bg-token-refresh"),
         asyncio.create_task(_task_performance(state),    name="bg-performance"),
         asyncio.create_task(_task_close(state),          name="bg-close"),
         asyncio.create_task(_task_expiry_check(),        name="bg-expiry"),
