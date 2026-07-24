@@ -1807,7 +1807,7 @@
       bind:isCollapsed={_colEquityCurve}
       bind:isFullscreen={_fsEquityCurve}
       label="Chart"
-      title="Intraday Performance"
+      title="Performance"
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
       showSearch={false}

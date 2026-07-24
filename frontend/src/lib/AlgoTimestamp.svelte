@@ -58,6 +58,7 @@
   }
   .ats-slot {
     display: inline-flex;
+    gap: 0.3rem;
   }
   .ats-now {
     color: var(--c-info);
