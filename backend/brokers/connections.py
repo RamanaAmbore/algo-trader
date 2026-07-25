@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from backend.shared.helpers.ssot_fetch import ssot_fetch
+
 import contextvars
 import socket
 
@@ -1541,6 +1543,7 @@ class Connections(SingletonBase):
                 dhan_built += 1
         return new_conn
 
+    @ssot_fetch(mode="serialize", key="rebuild")
     async def rebuild_from_db(self) -> None:
         """
         Switch to the DB-backed view of broker accounts. Behaviour:

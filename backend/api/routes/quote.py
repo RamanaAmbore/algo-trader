@@ -25,6 +25,7 @@ from backend.api.auth_guard import auth_or_demo_guard
 from backend.api.helpers.snapshot_gate import _any_segment_open
 from backend.brokers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.ssot_fetch import ssot_fetch
 
 logger = get_logger(__name__)
 
@@ -809,8 +810,7 @@ _spark_warm_at: Optional[str] = None   # ISO-8601 UTC string
 # Cache the union map for the day; it only changes at midnight IST.
 # Key: IST date string.  Value: {(tradingsymbol, exchange) → instrument_token}.
 _TOKEN_MAP_CACHE: dict[str, dict[tuple[str, str], int]] = {}
-_TOKEN_MAP_LOCK      = threading.Lock()
-_TOKEN_MAP_FETCH_LOCK = threading.Lock()  # serialises cold-cache broker download
+_TOKEN_MAP_LOCK = threading.Lock()
 
 _SPARKLINE_EXCHANGES = ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS")
 
@@ -867,13 +867,16 @@ def _qt_read_instr_store_tier1(today: str) -> "dict[tuple[str, str], int] | None
         return None
 
 
+@ssot_fetch(mode="coalesce", key=lambda broker: _ist_today())
 def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[no-untyped-def]
     """Return the day-cached {(tradingsymbol, exchange) → token} map.
 
     Read priority:
       1. instruments_store._MEM_CACHE (Tier 1) — O(1) sync read.
       2. Module-level _TOKEN_MAP_CACHE — used before persistent store is warmed.
-      3. Live broker.instruments() walk — fires background store populate.
+      3. Live broker.instruments() walk — @ssot_fetch(coalesce) ensures only ONE
+         thread executes the broker download; all concurrent callers share the
+         single in-flight result.
 
     Always called via asyncio.to_thread — must stay synchronous.
     """
@@ -892,29 +895,16 @@ def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[
         if cached is not None:
             return cached
 
-    # ── Tier 3: live broker fetch — serialised so only ONE thread downloads ──────
-    # The original code built the map outside any lock (comment said "slow calls").
-    # On cold cache (startup / midnight rollover) all concurrent sparkline-warm
-    # threads simultaneously missed both tiers and each downloaded 6 exchanges
-    # × all broker accounts → instruments storm → OOM (seen 2026-07-24).
-    with _TOKEN_MAP_FETCH_LOCK:
-        # Double-check: another thread may have fetched while we waited.
-        with _TOKEN_MAP_LOCK:
-            cached = _TOKEN_MAP_CACHE.get(today)
-            if cached is not None:
-                return cached
-        new_map = _qt_broker_token_map(broker)
-        with _TOKEN_MAP_LOCK:
-            for k in list(_TOKEN_MAP_CACHE):
-                if k != today:
-                    _TOKEN_MAP_CACHE.pop(k, None)
-            _TOKEN_MAP_CACHE[today] = new_map
-
-    # _trigger_instruments_store_populate() was removed here (2026-07-25).
-    # Calling get_or_fetch_all_today() immediately after _qt_broker_token_map
-    # launched 6 concurrent broker.instruments() downloads (via asyncio.gather)
-    # while the first set's raw data was still in memory → double OOM storm.
-    # The module-level _TOKEN_MAP_CACHE is sufficient for all callers.
+    # ── Tier 3: live broker fetch ─────────────────────────────────────────────
+    # @ssot_fetch(coalesce) on this function guarantees only one thread reaches
+    # here for the same key (today's date); concurrent callers wait on the
+    # in-flight threading.Event and share the result.
+    new_map = _qt_broker_token_map(broker)
+    with _TOKEN_MAP_LOCK:
+        for k in list(_TOKEN_MAP_CACHE):
+            if k != today:
+                _TOKEN_MAP_CACHE.pop(k, None)
+        _TOKEN_MAP_CACHE[today] = new_map
     return new_map
 
 

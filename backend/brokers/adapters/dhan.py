@@ -47,6 +47,7 @@ from backend.brokers.errors import (
 )
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.ssot_fetch import ssot_fetch
 
 logger = get_logger(__name__)
 
@@ -469,15 +470,16 @@ def _load_dhan_instruments_unlocked() -> dict | None:
 
 
 def _apply_dhan_instruments(data: dict) -> None:
-    """Swap in freshly fetched instrument data. Called under _dhan_instruments_lock."""
+    """Swap in freshly fetched instrument data under _dhan_instruments_lock."""
     global _DHAN_BY_EXCHANGE, _DHAN_BY_SYMBOL, _DHAN_INSTRUMENTS_DATE
-    _DHAN_BY_EXCHANGE = data["by_exchange"]
-    _DHAN_BY_SYMBOL = data["by_symbol"]
-    _DHAN_INSTRUMENTS_DATE = data["date"]
+    with _dhan_instruments_lock:
+        _DHAN_BY_EXCHANGE = data["by_exchange"]
+        _DHAN_BY_SYMBOL = data["by_symbol"]
+        _DHAN_INSTRUMENTS_DATE = data["date"]
 
 
 def _load_dhan_instruments() -> None:
-    """Compat wrapper: fetch + apply instruments. Called under _dhan_instruments_lock."""
+    """Compat wrapper: fetch + apply instruments."""
     global _DHAN_INSTRUMENTS_FAIL_UNTIL
     data = _load_dhan_instruments_unlocked()
     if data is None:
@@ -486,30 +488,32 @@ def _load_dhan_instruments() -> None:
     _apply_dhan_instruments(data)
 
 
+@ssot_fetch(mode="coalesce", key="dhan_instruments")
 def _ensure_dhan_instruments() -> None:
     """Ensure the instruments cache is warm for today's IST date.
 
-    Fast path (date already today) runs without the lock. On a stale date,
-    fetch is done OUTSIDE the lock so concurrent callers don't queue for
-    the 15 s network timeout. A double-check after acquiring the lock
-    prevents duplicate downloads when two threads race on the stale path.
+    The @ssot_fetch(mode="coalesce") decorator deduplicates concurrent callers:
+    only one thread executes the network fetch; all others block on a
+    threading.Event and share the result.  The manual double-check lock
+    pattern previously inside this function is therefore unnecessary.
+
+    Fast path: cache already current — returns immediately without I/O.
+    Slow path: calls _load_dhan_instruments_unlocked() (network, no lock)
+    then _apply_dhan_instruments() (atomic global swap under lock).
     """
     global _DHAN_INSTRUMENTS_FAIL_UNTIL
-    # Fast path: cache is current — check without lock (date string is
-    # a single-assignment write; GIL-safe for this read).
+    # Fast path: cache is current — GIL-safe read of a string global.
     if (time.time() < _DHAN_INSTRUMENTS_FAIL_UNTIL
             or _DHAN_INSTRUMENTS_DATE == _ist_today()):
         return
-    # Fetch outside the lock so concurrent callers don't queue for 15 s.
+    # Network fetch outside any lock; @ssot_fetch coalesce guarantees
+    # at most one in-flight call at a time.
     new_data = _load_dhan_instruments_unlocked()
     if new_data is None:
-        with _dhan_instruments_lock:
-            _DHAN_INSTRUMENTS_FAIL_UNTIL = time.time() + 300
+        _DHAN_INSTRUMENTS_FAIL_UNTIL = time.time() + 300
         return
-    # Swap globals under lock — only the assignment needs serialisation.
-    with _dhan_instruments_lock:
-        if _DHAN_INSTRUMENTS_DATE != _ist_today():   # double-check after acquiring
-            _apply_dhan_instruments(new_data)
+    # Swap globals under lock inside _apply_dhan_instruments.
+    _apply_dhan_instruments(new_data)
 
 
 def _resolve_security_id(tradingsymbol: str, kite_exchange: str) -> str:

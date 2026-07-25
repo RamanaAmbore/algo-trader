@@ -20,6 +20,7 @@ from typing import Any
 
 from backend.api.persistence.store_base import PersistentStoreBase
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.ssot_fetch import ssot_fetch
 
 logger = get_logger(__name__)
 
@@ -189,6 +190,7 @@ def _rows_to_map(rows: list[dict[str, Any]], exchange: str) -> dict[tuple[str, s
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+@ssot_fetch(mode="coalesce", key=lambda exchange, bypass_cache=None: f"{_ist_today()}:{exchange}")
 async def get_or_fetch_instruments(
     exchange: str, bypass_cache: bool | None = None,
 ) -> dict[tuple[str, str], int]:
@@ -207,25 +209,19 @@ async def get_or_fetch_instruments(
     return await _instruments_store.get(key, bypass_cache=bypass_cache)
 
 
+@ssot_fetch(mode="coalesce", key="all_today")
 async def get_or_fetch_all_today() -> dict[tuple[str, str], int]:
     """Fetch all 6 sparkline exchanges in parallel and return the union map.
 
     This is what _get_today_token_map in quote.py should delegate to.
 
-    Concurrency is capped at 2 simultaneous downloads via a local Semaphore.
-    On expiry days NFO alone can return 300K rows; running all 6 exchanges at
-    once would double the in-memory footprint and risk an OOM storm.  The
-    Semaphore is kept local (not module-level) so it resets per call and
-    doesn't leak state across consecutive warm cycles.
+    Concurrent callers coalesce on a single in-flight Task via @ssot_fetch;
+    per-exchange calls also coalesce via @ssot_fetch on get_or_fetch_instruments,
+    so even if get_or_fetch_all_today and an independent get_or_fetch_instruments
+    call race, the broker is called at most once per (date, exchange) pair.
     """
-    _sem = asyncio.Semaphore(2)
-
-    async def _throttled(ex: str):
-        async with _sem:
-            return await get_or_fetch_instruments(ex)
-
     results = await asyncio.gather(
-        *[_throttled(exch) for exch in _SPARKLINE_EXCHANGES],
+        *[get_or_fetch_instruments(exch) for exch in _SPARKLINE_EXCHANGES],
         return_exceptions=True,
     )
     union: dict[tuple[str, str], int] = {}
