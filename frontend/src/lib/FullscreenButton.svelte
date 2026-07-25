@@ -37,52 +37,11 @@
 -->
 <script>
   let { isFullscreen = $bindable(false), label = 'card' } = $props();
-
-  // ESC key + body scroll lock + portalled backdrop for the active
-  // fullscreen card. Multiple cards on the page may each be bound
-  // to their own isFullscreen; only the one currently true installs
-  // the side-effects + backdrop node.
-  function _onKey(e) {
-    if (e.key === 'Escape' && isFullscreen) {
-      isFullscreen = false;
-    }
-  }
-
-  $effect(() => {
-    if (!isFullscreen) return;
-    document.addEventListener('keydown', _onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    // Portal-style backdrop — appended to document.body so its
-    // stacking context is the viewport root, not the parent card.
-    // backdrop-filter blur then applies only to page content, not
-    // to the card itself.
-    const backdrop = document.createElement('div');
-    backdrop.className = 'fs-backdrop';
-    backdrop.setAttribute('aria-hidden', 'true');
-    backdrop.addEventListener('click', () => { isFullscreen = false; });
-    document.body.appendChild(backdrop);
-
-    // Pinned ✕ close button — portalled to body at z-index 10001 so it
-    // floats above the card (9999) and backdrop (9998). Clicking it
-    // exits fullscreen without requiring the operator to find the
-    // DefaultSizeButton inside the card header.
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'fs-modal-close-btn';
-    closeBtn.setAttribute('aria-label', 'Close fullscreen');
-    closeBtn.setAttribute('type', 'button');
-    closeBtn.textContent = '✕';
-    closeBtn.addEventListener('click', () => { isFullscreen = false; });
-    document.body.appendChild(closeBtn);
-
-    return () => {
-      document.removeEventListener('keydown', _onKey);
-      document.body.style.overflow = prev;
-      backdrop.remove();
-      closeBtn.remove();
-    };
-  });
+  // Side-effects (backdrop, close-btn, scroll-lock, Escape handler) live in
+  // DefaultSizeButton.svelte, which is mounted only while isFullscreen=true.
+  // Keeping them here would cause a race: CardControls unmounts FullscreenButton
+  // as part of the same reactive flush that sets isFullscreen=true, so the
+  // $effect would never fire.
 </script>
 
 <!-- Only renders in the DEFAULT state (not fullscreen). The "exit
@@ -144,16 +103,6 @@
     outline-offset: 1px;
   }
 
-  /* Backdrop styles are GLOBAL because the element is appended to
-     document.body imperatively (not via Svelte template), so style
-     scoping wouldn't reach it. Mirrored in app.css for discoverability;
-     this :global() wins specificity and is the authoritative definition. */
-  :global(.fs-backdrop) {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    z-index: 9998;
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
-  }
+  /* .fs-backdrop :global() rule lives in DefaultSizeButton.svelte — that
+     component owns the portalled backdrop element. Mirrored in app.css. */
 </style>

@@ -31,6 +31,42 @@
     /** Card name for a11y / tooltip. */
     label = 'card',
   } = $props();
+
+  // This component is mounted by CardControls only while isFullscreen=true, so
+  // we can use $effect unconditionally here — no isFullscreen guard needed.
+  // Placing these side-effects here (rather than in FullscreenButton) avoids the
+  // mount-race: CardControls unmounts FullscreenButton as part of the same reactive
+  // flush that sets isFullscreen=true, which would destroy its $effect before it ran.
+  function _onKey(e) {
+    if (e.key === 'Escape') isFullscreen = false;
+  }
+
+  $effect(() => {
+    document.addEventListener('keydown', _onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'fs-backdrop';
+    backdrop.setAttribute('aria-hidden', 'true');
+    backdrop.addEventListener('click', () => { isFullscreen = false; });
+    document.body.appendChild(backdrop);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'fs-modal-close-btn';
+    closeBtn.setAttribute('aria-label', 'Close fullscreen');
+    closeBtn.setAttribute('type', 'button');
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', () => { isFullscreen = false; });
+    document.body.appendChild(closeBtn);
+
+    return () => {
+      document.removeEventListener('keydown', _onKey);
+      document.body.style.overflow = prev;
+      backdrop.remove();
+      closeBtn.remove();
+    };
+  });
 </script>
 
 <!-- Only renders in the FULLSCREEN state. Paired with FullscreenButton
@@ -57,6 +93,18 @@
 {/if}
 
 <style>
+  /* Backdrop: GLOBAL because the element is portalled to document.body
+     imperatively, so Svelte's scoped selector wouldn't reach it.
+     Mirrored in app.css for discoverability; this :global() is authoritative. */
+  :global(.fs-backdrop) {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 9998;
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+  }
+
   /* Shared cyan-400 palette with RefreshButton + FullscreenButton +
      CollapseButton so the four card-control icons read as one family.
      `margin: 0` because this button always sits BETWEEN
