@@ -64,10 +64,23 @@
     backdrop.addEventListener('click', () => { isFullscreen = false; });
     document.body.appendChild(backdrop);
 
+    // Pinned ✕ close button — portalled to body at z-index 10001 so it
+    // floats above the card (9999) and backdrop (9998). Clicking it
+    // exits fullscreen without requiring the operator to find the
+    // DefaultSizeButton inside the card header.
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'fs-modal-close-btn';
+    closeBtn.setAttribute('aria-label', 'Close fullscreen');
+    closeBtn.setAttribute('type', 'button');
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', () => { isFullscreen = false; });
+    document.body.appendChild(closeBtn);
+
     return () => {
       document.removeEventListener('keydown', _onKey);
       document.body.style.overflow = prev;
       backdrop.remove();
+      closeBtn.remove();
     };
   });
 </script>
@@ -133,14 +146,14 @@
 
   /* Backdrop styles are GLOBAL because the element is appended to
      document.body imperatively (not via Svelte template), so style
-     scoping wouldn't reach it. Mirror in app.css to make the global
-     selector visible to tools and accidentally-overlapping cleanups. */
+     scoping wouldn't reach it. Mirrored in app.css for discoverability;
+     this :global() wins specificity and is the authoritative definition. */
   :global(.fs-backdrop) {
     position: fixed;
     inset: 0;
-    background: rgba(5, 10, 22, 0.65);
+    background: rgba(0, 0, 0, 0.55);
     z-index: 9998;
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
   }
 </style>

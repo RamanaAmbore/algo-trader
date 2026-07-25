@@ -27,6 +27,7 @@
     getAccountsSync,
   } from '$lib/data/accounts';
   import BellIcon from '$lib/icons/BellIcon.svelte';
+  import PageFullscreenButton from '$lib/PageFullscreenButton.svelte';
 
   // Phase B: availableModes / defaultMode no longer passed to SymbolPanel.
   // Mode is read from the global executionMode store (set via navbar dropdown).
@@ -210,6 +211,11 @@
            that was duplicated across PageHeaderActions + ActivityLogModal. -->
       <BellIcon width="14" height="14" />
     </button>
+
+  <!-- Page-level fullscreen shortcut — targets the most recently hovered
+       card on the current page via activeCardStore. Disabled until the
+       operator has hovered a card (store.open is null on fresh page load). -->
+  <PageFullscreenButton />
 </span>
 
 <!-- ── Modals ──────────────────────────────────────────────────────── -->

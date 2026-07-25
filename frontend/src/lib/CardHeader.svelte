@@ -31,6 +31,7 @@
 -->
 <script>
   import CardControls from '$lib/CardControls.svelte';
+  import { activeCardStore } from '$lib/stores.js';
 
   /** @typedef {import('svelte').Snippet} Snippet */
 
@@ -61,6 +62,14 @@
 
   let _hasOverflow = $state(false);
   let _overflowAnchorEl = $state(/** @type {HTMLElement | null} */ (null));
+
+  /** Register this card as the "active" target for the page-header
+   *  fullscreen button. Called on mouseenter so the PHA button always
+   *  targets the card the operator is looking at. */
+  function _onCardFocus() {
+    const cardLabel = label || title || 'Card';
+    activeCardStore.set({ label: cardLabel, open: () => { isFullscreen = true; } });
+  }
 
   $effect(() => {
     if (!detectOverflow || !_overflowAnchorEl?.parentElement?.parentElement) return;
@@ -95,7 +104,7 @@
   });
 </script>
 
-<div class="card-header">
+<div class="card-header" role="presentation" onmouseenter={_onCardFocus}>
   <span class="ch-overflow-anchor" aria-hidden="true" bind:this={_overflowAnchorEl} style="position:absolute;pointer-events:none;"></span>
   <div class="ch-left">
     {#if loading}
