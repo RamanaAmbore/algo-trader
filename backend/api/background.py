@@ -1696,6 +1696,12 @@ async def _task_instruments() -> None:
             result = await _run(_fetch_instruments)
             _store["instruments"] = (_time.monotonic() + 86400, result)
             logger.info(f"Background: instruments cache warmed ({result.count} rows)")
+            # Pre-warm instruments_store so sparkline-warm token resolution
+            # hits Tier 1 (memory) instead of triggering a parallel broker
+            # download storm (OOM seen 2026-07-24 with 50+ concurrent threads
+            # each downloading 6 exchanges × all broker accounts).
+            from backend.api.persistence.instruments_store import get_or_fetch_all_today as _gofat
+            asyncio.create_task(_gofat())
         except Exception as e:
             logger.error(f"Background: instruments warm failed: {e}")
 

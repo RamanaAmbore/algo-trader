@@ -509,6 +509,113 @@ for debugging recurring 2FA timeouts or credential rotation issues.
 
 ---
 
+## 15. Daily Broker Issue Aggregation & Monitoring
+
+**File**: `backend/api/models.py` · `backend/api/background.py` · `backend/brokers/service/routes.py`
+
+### Table: `broker_issue_daily`
+
+Per-account daily roll-up of broker connection health issues. Written by
+`_task_broker_issue_daily` background cron (23:45 IST + once at startup).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | BIGSERIAL PK | |
+| `broker_id` | VARCHAR(32) | Broker vendor (zerodha_kite, dhan, groww) |
+| `account` | VARCHAR(32) | Account code (e.g. ZG0790), indexed |
+| `issue_date` | DATE | Date (IST) of aggregated events, indexed |
+| `issue_count` | INT | Total issue-count for the day |
+| `breakdown` | JSONB | `{auth_fail, fetch_fail, circuit_open, rotation_detected}` counts |
+| `updated_at` | TIMESTAMP | Last-write timestamp (UTC) |
+
+Unique constraint: `(broker_id, account, issue_date)`. UPSERT
+replaces when a re-run happens or the date rolls.
+
+### Background Task: `_task_broker_issue_daily`
+
+**Registration**: `_supervised(coro_fn="_task_broker_issue_daily", name="bg-broker-daily")`
+
+- **Execution**: 23:45 IST daily + once at startup (catches yesterday if the
+  service was down)
+- **Logic**: Queries `broker_connection_events` for `issue_date`, groups by
+  event_type, pivots into JSONB breakdown dict (`{auth_fail: N, fetch_fail: N, ...}`),
+  UPSERTs into `broker_issue_daily` with the aggregate count
+- **Resilience**: Wrapped in `_supervised()` so a single failed aggregation
+  doesn't silence the task forever; crashes trigger a 60s retry
+
+---
+
+## 15.1 CONNCHECK TLM Tool
+
+**File**: `tools/tlm/conncheck.py` → delegates to `scripts/check_broker_conn_issues.py`
+
+CLI tool integrated into the daily TLM audit pipeline (`/tlm` endpoint).
+Scans `broker_issue_daily` for the last N days and emits a severity score.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | No issues (green) |
+| 1 | P1 — critical issues detected |
+| 2 | P2 — warnings detected |
+| 3 | DB unreachable / query failed |
+
+### Thresholds
+
+**Config key**: `backend_config.yaml` section `broker_issue_thresholds`
+
+| Threshold | Default | Meaning |
+|---|---|---|
+| `auth_fail_p1` | 10 | If any account has ≥10 auth failures, P1 |
+| `circuit_open_p1` | 5 | If any account has ≥5 circuit opens, P1 |
+| `total_p1` | 50 | If total issues across all accounts ≥50, P1 |
+| `total_p2` | 20 | If total issues ≥20 but <50, P2 |
+| `lookback_days` | 7 | Scan the last N days of `broker_issue_daily` |
+
+Operator can tune these via `/admin/settings` (or backend_config.yaml).
+
+---
+
+## 15.2 Deploy Notification Receipt Tracking
+
+**File**: `scripts/monitor_ntfy_deploy.py`
+
+After a successful prod deploy (main branch only), an async monitor polls the
+ntfy.sh API to verify that the notification was delivered to subscribed
+devices. Called from `webhook/deploy.sh` after a successful `git push origin main`.
+
+### Behaviour
+
+- **Trigger**: On successful prod deploy (main branch push completes)
+- **Poll interval**: Every 2s, max 30s total
+- **Failure handling**: Logs warning but does NOT fail the deploy (best-effort only)
+- **Integration**: Wired into deploy.sh → called after `systemctl restart ramboq_api`
+
+Helps operators catch silent ntfy.sh delivery failures early so they know
+whether the deployment alert actually reached the team's devices.
+
+---
+
+## 15.3 Alert Routing Restoration
+
+**File**: `backend/config/backend_config.yaml`
+
+Order failure and agent-alert email routing restored to `true`:
+
+```yaml
+alerts:
+  order_failure:
+    email: true               # was: false; restored
+  agent_alert:
+    email: true               # was: false; restored
+```
+
+Alerts now route to designated + admin recipients via SMTP as originally
+designed.
+
+---
+
 ## Change log
 
 | Date | Change |
@@ -520,3 +627,4 @@ for debugging recurring 2FA timeouts or credential rotation issues.
 | 2026-07-15 | Added I14 invariant — closed-hours snapshot query uses combined latest+prev_batch CTE; prev_close_val prefers prev_ltp over previous_close to prevent post-MCX-close Day P&L collapse |
 | 2026-07-19 | Polish R6: Extracted `_record_breaker_state()` from `_record_fetch()` to isolate state machine under `_BREAKER_LOCK`; added §7.1 Market-Data Backfill Pipeline documenting vectorized `_bmd_build_key_index`, `_apply_backfill_to_list` param removal, `backfill_market_data` consolidation |
 | 2026-07-24 | v1.1 Resilience improvements (commit 8352fc9f): Dhan cross-process login lock (`/tmp/ramboq_locks/<account>.lock`); file lock timeout (30s poll, `LOCK_EX|LOCK_NB`); MMAP `_known_absent_tokens` persistent set; Dhan 429→BrokerRateLimitError and 5xx→BrokerNetworkError; KiteTicker re-subscription on reconnect; Kite quote rate limiting (1/s); RemoteBroker typed error mapping; circuit breaker persistence (`/tmp/ramboq_cb_state.json`); background task supervisor `_supervised()` with crash restart |
+| 2026-07-24 | v1.2 Daily broker-issue aggregation (commit 629397ac): `broker_issue_daily` table + `_task_broker_issue_daily` cron; CONNCHECK TLM tool for issue severity scoring; ntfy deploy-receipt monitor; alert routing restored (order_failure.email + agent_alert.email = true) |
