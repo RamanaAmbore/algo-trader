@@ -68,13 +68,26 @@ def test_single_raw_cache_implementation():
 
     The audit reveals the only places that need a raw-DF cache are
     holdings / positions / margins. We assert this is the sole shape.
+
+    The cache is now backed by ssot_fetch(mode="coalesce") — each of the
+    three _fetch_*_cached functions carries a _result_cache dict, keyed by
+    the static string passed to @ssot_fetch.  The public _raw_cache_invalidate
+    callable is the sole external invalidation API.
     """
     from backend.brokers import broker_apis
 
-    # Module exposes the three helpers expected by the route + postback
-    # callers — invalidate must be callable with a key OR no args.
-    assert callable(broker_apis._raw_cache_get)
-    assert callable(broker_apis._raw_cache_put)
+    # Each cached function must expose _result_cache (ssot_fetch contract).
+    assert hasattr(broker_apis._fetch_holdings_cached, "_result_cache"), (
+        "_fetch_holdings_cached must have _result_cache attr (ssot_fetch)"
+    )
+    assert hasattr(broker_apis._fetch_positions_cached, "_result_cache"), (
+        "_fetch_positions_cached must have _result_cache attr (ssot_fetch)"
+    )
+    assert hasattr(broker_apis._fetch_margins_cached, "_result_cache"), (
+        "_fetch_margins_cached must have _result_cache attr (ssot_fetch)"
+    )
+
+    # Invalidate must be callable with a key OR with no args (key=None).
     assert callable(broker_apis._raw_cache_invalidate)
 
     # Only three keys are produced anywhere in the codebase. Anything
@@ -89,55 +102,80 @@ def test_single_raw_cache_implementation():
 
 
 def test_raw_cache_round_trip():
-    """put → get returns same object; expiry returns None; invalidate clears."""
+    """put → get returns same object; invalidate clears correctly.
+
+    The ssot_fetch _result_cache dict is the backing store.  We write to it
+    directly to simulate what the decorator does after a successful fetch, then
+    verify that _raw_cache_invalidate correctly evicts individual keys or all.
+    """
     from backend.brokers import broker_apis
 
-    broker_apis._raw_cache_invalidate()  # start clean
+    broker_apis._raw_cache_invalidate(None)  # start clean
 
     df = pd.DataFrame({"account": ["TEST"], "pnl": [100.0]})
     payload = [df]
 
-    # Miss → None
-    assert broker_apis._raw_cache_get("positions") is None
+    # Miss — cache is empty.
+    assert broker_apis._fetch_positions_cached._result_cache.get("positions") is None
 
-    # Put → get returns SAME reference (no deep copy).
-    broker_apis._raw_cache_put("positions", payload)
-    out = broker_apis._raw_cache_get("positions")
+    # Seed a value directly (simulates what ssot_fetch stores after the
+    # first successful _fetch_positions_cached() call).
+    broker_apis._fetch_positions_cached._result_cache["positions"] = payload
+    out = broker_apis._fetch_positions_cached._result_cache.get("positions")
     assert out is payload, "raw cache must return the same reference (no deep copy)"
 
     # Other keys unaffected.
-    assert broker_apis._raw_cache_get("holdings") is None
-    assert broker_apis._raw_cache_get("margins") is None
+    assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is None
+    assert broker_apis._fetch_margins_cached._result_cache.get("margins") is None
 
     # Targeted invalidate drops one key only.
-    broker_apis._raw_cache_put("holdings", payload)
+    broker_apis._fetch_holdings_cached._result_cache["holdings"] = payload
     broker_apis._raw_cache_invalidate("positions")
-    assert broker_apis._raw_cache_get("positions") is None
-    assert broker_apis._raw_cache_get("holdings") is payload
+    assert broker_apis._fetch_positions_cached._result_cache.get("positions") is None
+    assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is payload
 
     # Full invalidate clears everything.
-    broker_apis._raw_cache_invalidate()
-    assert broker_apis._raw_cache_get("positions") is None
-    assert broker_apis._raw_cache_get("holdings") is None
+    broker_apis._raw_cache_invalidate(None)
+    assert broker_apis._fetch_positions_cached._result_cache.get("positions") is None
+    assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is None
 
 
-def test_raw_cache_ttl_expiry(monkeypatch):
-    """Cache entry expires after `_RAW_TTL_S` seconds."""
+def test_raw_cache_invalidate_is_only_eviction_path():
+    """The ssot_fetch cache is invalidation-based (no TTL).
+
+    Entries persist until _raw_cache_invalidate() is called or
+    force_refresh=True is passed.  This test verifies that:
+      1. A seeded entry survives without expiry.
+      2. _raw_cache_invalidate(key) removes that specific key.
+      3. _raw_cache_invalidate(None) removes all three keys.
+    """
     from backend.brokers import broker_apis
 
-    broker_apis._raw_cache_invalidate()
+    broker_apis._raw_cache_invalidate(None)
+
     df = pd.DataFrame({"account": ["A"], "pnl": [1.0]})
     payload = [df]
-    broker_apis._raw_cache_put("positions", payload)
 
-    # Still fresh — same reference.
-    assert broker_apis._raw_cache_get("positions") is payload
+    # Seed all three caches.
+    broker_apis._fetch_holdings_cached._result_cache["holdings"] = payload
+    broker_apis._fetch_positions_cached._result_cache["positions"] = payload
+    broker_apis._fetch_margins_cached._result_cache["margins"] = payload
 
-    # Advance monotonic past the TTL — should now return None.
-    base = time.monotonic()
-    monkeypatch.setattr(broker_apis._time, "monotonic",
-                        lambda: base + broker_apis._RAW_TTL_S + 1.0)
-    assert broker_apis._raw_cache_get("positions") is None
+    # All three should be present without any time-based eviction.
+    assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is payload
+    assert broker_apis._fetch_positions_cached._result_cache.get("positions") is payload
+    assert broker_apis._fetch_margins_cached._result_cache.get("margins") is payload
+
+    # Targeted invalidate — only margins cleared.
+    broker_apis._raw_cache_invalidate("margins")
+    assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is payload
+    assert broker_apis._fetch_positions_cached._result_cache.get("positions") is payload
+    assert broker_apis._fetch_margins_cached._result_cache.get("margins") is None
+
+    # Full invalidate clears all.
+    broker_apis._raw_cache_invalidate(None)
+    assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is None
+    assert broker_apis._fetch_positions_cached._result_cache.get("positions") is None
 
 
 # ── 3. Stale code — no rival caching layer ────────────────────────────────────
@@ -146,9 +184,9 @@ def test_raw_cache_ttl_expiry(monkeypatch):
 def test_no_parallel_raw_cache_in_compute_firm_nav():
     """algo/nav.py does NOT maintain its own broker-DF cache.
 
-    compute_firm_nav must rely on broker_apis._RAW_CACHE; a parallel
-    in-process memo here would mean the postback invalidate path can't
-    reach it and NavCard would lag /performance after every fill.
+    compute_firm_nav must rely on broker_apis ssot_fetch coalesce caches;
+    a parallel in-process memo here would mean the postback invalidate
+    path can't reach it and NavCard would lag /performance after every fill.
     """
     from backend.api.algo import nav
     import inspect
@@ -162,7 +200,7 @@ def test_no_parallel_raw_cache_in_compute_firm_nav():
     for pat in forbidden_patterns:
         assert pat not in src, (
             f"algo/nav.py should not maintain its own raw-DF cache "
-            f"({pat!r} found) — use broker_apis._RAW_CACHE which is "
+            f"({pat!r} found) — use broker_apis ssot_fetch coalesce which is "
             f"already invalidated by every postback path."
         )
 
@@ -172,15 +210,13 @@ def test_no_parallel_raw_cache_in_compute_firm_nav():
 
 def test_fetch_zero_arg_routes_through_cache(monkeypatch):
     """fetch_holdings() / fetch_positions() / fetch_margins() with no
-    args must consult `_RAW_CACHE` first and store the result.
-
-    We patch the local fetchers to record call counts. Two zero-arg
-    calls within the TTL window must trigger ONLY ONE underlying call;
-    the second comes from cache.
+    args must consult the ssot_fetch _result_cache first and store the
+    result.  Two zero-arg calls must trigger ONLY ONE underlying call;
+    the second comes from the coalesce cache.
     """
     from backend.brokers import broker_apis
 
-    broker_apis._raw_cache_invalidate()
+    broker_apis._raw_cache_invalidate(None)
     # Disable conn-service shortcut so we hit the local fetchers.
     monkeypatch.setattr(broker_apis, "_USE_CONN_SERVICE", False)
 
@@ -235,7 +271,7 @@ def test_fetch_with_args_bypasses_cache(monkeypatch):
     """
     from backend.brokers import broker_apis
 
-    broker_apis._raw_cache_invalidate()
+    broker_apis._raw_cache_invalidate(None)
     monkeypatch.setattr(broker_apis, "_USE_CONN_SERVICE", False)
 
     count = {"n": 0}

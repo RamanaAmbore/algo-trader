@@ -326,50 +326,48 @@ class TestCircuitBreakerStateMachine:
 
 
 class TestRawCacheReserve:
-    """Test _raw_cache_reserve for cache-stampede prevention."""
+    """Test the ssot_fetch-based coalesce cache (replaces _raw_cache_reserve).
+
+    The hand-rolled _RAW_CACHE / _RAW_INFLIGHT / _raw_cache_reserve/release
+    was replaced by ssot_fetch(mode="coalesce").  These tests verify the new
+    interface: _result_cache on each _fetch_*_cached function, direct dict
+    seeding, and _raw_cache_invalidate.
+    """
 
     def setup_method(self):
-        broker_apis._RAW_CACHE.clear()
-        broker_apis._RAW_INFLIGHT.clear()
+        broker_apis._raw_cache_invalidate(None)
 
     def teardown_method(self):
-        broker_apis._RAW_CACHE.clear()
-        broker_apis._RAW_INFLIGHT.clear()
+        broker_apis._raw_cache_invalidate(None)
 
-    def test_cache_reserve_miss_makes_leader(self):
-        """First caller on cache miss becomes leader."""
-        cached, is_leader = broker_apis._raw_cache_reserve("holdings")
+    def test_result_cache_empty_initially(self):
+        """_result_cache starts empty after invalidate(None)."""
+        assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is None
+        assert broker_apis._fetch_positions_cached._result_cache.get("positions") is None
+        assert broker_apis._fetch_margins_cached._result_cache.get("margins") is None
 
-        assert is_leader is True, "First caller should be leader"
-        assert cached is None, "Cache miss should return None"
-
-    def test_cache_reserve_hit_non_leader(self):
-        """Subsequent caller on cache hit is not leader."""
-        # Populate cache
+    def test_result_cache_populated_after_seed(self):
+        """Seeding _result_cache directly returns the same object reference."""
         test_data = [pd.DataFrame({"symbol": ["RELIANCE"]})]
-        broker_apis._raw_cache_put("holdings", test_data)
+        broker_apis._fetch_holdings_cached._result_cache["holdings"] = test_data
 
-        # Next caller hits cache
-        cached, is_leader = broker_apis._raw_cache_reserve("holdings")
+        cached = broker_apis._fetch_holdings_cached._result_cache.get("holdings")
+        assert cached is test_data, "Cache must return the exact same reference (no copy)"
 
-        assert is_leader is False, "Cache hit should not be leader"
-        assert cached is test_data, "Cache hit should return cached value"
+    def test_invalidate_single_key_clears_only_that_key(self):
+        """_raw_cache_invalidate('holdings') drops only the holdings entry."""
+        test_data = [pd.DataFrame({"col": [1]})]
+        broker_apis._fetch_holdings_cached._result_cache["holdings"] = test_data
+        broker_apis._fetch_positions_cached._result_cache["positions"] = test_data
 
-    def test_cache_release_wakes_waiters(self):
-        """_raw_cache_release signals waiters without storing result."""
-        key = "holdings"
+        broker_apis._raw_cache_invalidate("holdings")
 
-        # Leader reserves
-        _, is_leader = broker_apis._raw_cache_reserve(key)
-        assert is_leader is True
-
-        # Simulate a waiter trying to reserve concurrently
-        # (we can't easily test true concurrency here, but we can verify
-        # the lock mechanism exists)
-        broker_apis._raw_cache_release(key)
-
-        # Verify inflight event was cleaned up
-        assert key not in broker_apis._RAW_INFLIGHT, "Release should clear inflight event"
+        assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is None, (
+            "holdings key must be cleared by invalidate('holdings')"
+        )
+        assert broker_apis._fetch_positions_cached._result_cache.get("positions") is test_data, (
+            "positions key must NOT be cleared when only holdings is invalidated"
+        )
 
 
 class TestDhanPollPriority:
@@ -609,75 +607,89 @@ class TestBreaker_OpinCacheAndHealthEntry:
 
 
 class TestRawCacheLifecycle:
-    """Test _raw_cache_reserve/put/release/invalidate flow."""
+    """Test ssot_fetch-based coalesce cache lifecycle.
+
+    The hand-rolled _raw_cache_reserve/put/release/get was replaced by
+    ssot_fetch(mode="coalesce") exposing _result_cache on each function.
+    These tests verify direct dict semantics and the _raw_cache_invalidate
+    interface that postback handlers and ?fresh=1 use.
+    """
 
     def teardown_method(self):
         """Clear caches before each test."""
-        broker_apis._RAW_CACHE.clear()
-        broker_apis._RAW_INFLIGHT.clear()
+        broker_apis._raw_cache_invalidate(None)
 
-    def test_raw_cache_reserve_new_key_is_leader(self):
-        """First reserve() on a new key returns (None, True) — is leader."""
-        cached, is_leader = broker_apis._raw_cache_reserve("test_key")
-        assert cached is None, "No cached value yet"
-        assert is_leader is True, "First caller should be leader"
+    def test_result_cache_starts_empty(self):
+        """_result_cache is empty after invalidate(None)."""
+        assert "holdings" not in broker_apis._fetch_holdings_cached._result_cache
+        assert "positions" not in broker_apis._fetch_positions_cached._result_cache
+        assert "margins" not in broker_apis._fetch_margins_cached._result_cache
 
-    def test_raw_cache_reserve_second_caller_waits(self):
-        """Second reserve() on same key waits for leader."""
-        broker_apis._raw_cache_reserve("test_key")
-        # Simulate a second caller hitting the wait path
-        cached, is_leader = broker_apis._raw_cache_reserve("test_key")
-        assert is_leader is False, "Second caller should not be leader"
-
-    def test_raw_cache_put_signals_waiters(self):
-        """_raw_cache_put signals any blocked waiters."""
-        broker_apis._raw_cache_reserve("test_key")
+    def test_seed_and_retrieve_same_reference(self):
+        """Value seeded into _result_cache is returned by reference (no copy)."""
         df = pd.DataFrame({"col": [1, 2, 3]})
-        broker_apis._raw_cache_put("test_key", [df])
+        payload = [df]
+        broker_apis._fetch_holdings_cached._result_cache["holdings"] = payload
 
-        cached = broker_apis._raw_cache_get("test_key")
-        assert cached is not None, "Value should be cached"
-        assert len(cached) == 1, "Should have one DataFrame"
+        cached = broker_apis._fetch_holdings_cached._result_cache.get("holdings")
+        assert cached is payload, "Must return the same object reference"
+        assert len(cached) == 1, "Should contain one DataFrame"
 
-    def test_raw_cache_release_signals_on_error(self):
-        """_raw_cache_release signals waiters when fetch fails."""
-        broker_apis._raw_cache_reserve("test_key")
-        broker_apis._raw_cache_release("test_key")
-
-        # Waiter should wake up and find no value
-        cached = broker_apis._raw_cache_get("test_key")
-        assert cached is None, "No value should be cached after release"
-
-    def test_raw_cache_invalidate_single_key(self):
-        """_raw_cache_invalidate(key) drops one key."""
+    def test_invalidate_single_key_leaves_others(self):
+        """_raw_cache_invalidate('holdings') drops holdings but not others."""
         df = pd.DataFrame({"col": [1, 2, 3]})
-        broker_apis._raw_cache_put("key1", [df])
-        broker_apis._raw_cache_put("key2", [df])
+        broker_apis._fetch_holdings_cached._result_cache["holdings"] = [df]
+        broker_apis._fetch_positions_cached._result_cache["positions"] = [df]
 
-        broker_apis._raw_cache_invalidate("key1")
+        broker_apis._raw_cache_invalidate("holdings")
 
-        assert broker_apis._raw_cache_get("key1") is None, "key1 should be cleared"
-        assert broker_apis._raw_cache_get("key2") is not None, "key2 should remain"
+        assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is None, (
+            "holdings should be cleared"
+        )
+        assert broker_apis._fetch_positions_cached._result_cache.get("positions") is not None, (
+            "positions should remain"
+        )
 
-    def test_raw_cache_invalidate_all_keys(self):
-        """_raw_cache_invalidate(None) clears all keys."""
+    def test_invalidate_none_clears_all_three(self):
+        """_raw_cache_invalidate(None) clears all three caches."""
         df = pd.DataFrame({"col": [1, 2, 3]})
-        broker_apis._raw_cache_put("key1", [df])
-        broker_apis._raw_cache_put("key2", [df])
+        broker_apis._fetch_holdings_cached._result_cache["holdings"] = [df]
+        broker_apis._fetch_positions_cached._result_cache["positions"] = [df]
+        broker_apis._fetch_margins_cached._result_cache["margins"] = [df]
 
         broker_apis._raw_cache_invalidate(None)
 
-        assert broker_apis._raw_cache_get("key1") is None, "key1 should be cleared"
-        assert broker_apis._raw_cache_get("key2") is None, "key2 should be cleared"
+        assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is None, (
+            "holdings should be cleared by invalidate(None)"
+        )
+        assert broker_apis._fetch_positions_cached._result_cache.get("positions") is None, (
+            "positions should be cleared by invalidate(None)"
+        )
+        assert broker_apis._fetch_margins_cached._result_cache.get("margins") is None, (
+            "margins should be cleared by invalidate(None)"
+        )
 
-    def test_raw_cache_ttl_enforcement(self):
-        """Cache entries respect TTL — old entries not returned."""
-        df = pd.DataFrame({"col": [1, 2, 3]})
-        broker_apis._raw_cache_put("test_key", [df])
+    def test_invalidate_nonexistent_key_is_noop(self):
+        """_raw_cache_invalidate with a key not present is a no-op (no KeyError)."""
+        # Should not raise even though the key was never set.
+        broker_apis._raw_cache_invalidate("nonexistent_key")
 
-        # Immediately after put, value should be cached
-        cached = broker_apis._raw_cache_get("test_key")
-        assert cached is not None, "Fresh cache should be available"
+    def test_cache_is_invalidation_based_not_ttl(self):
+        """Cache entries persist indefinitely until explicitly invalidated.
+
+        The ssot_fetch coalesce cache has no TTL — it is invalidation-only.
+        A seeded entry survives any amount of logical time.
+        """
+        df = pd.DataFrame({"col": [1]})
+        broker_apis._fetch_holdings_cached._result_cache["holdings"] = [df]
+
+        # Still present — no TTL expiry mechanism.
+        cached = broker_apis._fetch_holdings_cached._result_cache.get("holdings")
+        assert cached is not None, "Cache must persist until explicitly invalidated (no TTL)"
+
+        # Only invalidate removes it.
+        broker_apis._raw_cache_invalidate("holdings")
+        assert broker_apis._fetch_holdings_cached._result_cache.get("holdings") is None
 
 
 class TestAccountOrderMap:
@@ -993,8 +1005,7 @@ class TestFetchPositionsFunction:
 
     def teardown_method(self):
         """Clear caches."""
-        broker_apis._RAW_CACHE.clear()
-        broker_apis._RAW_INFLIGHT.clear()
+        broker_apis._raw_cache_invalidate(None)
 
     def test_fetch_positions_with_mocked_broker(self):
         """Call fetch_positions with mocked broker."""
@@ -1017,8 +1028,7 @@ class TestFetchHoldingsFunction:
 
     def teardown_method(self):
         """Clear caches."""
-        broker_apis._RAW_CACHE.clear()
-        broker_apis._RAW_INFLIGHT.clear()
+        broker_apis._raw_cache_invalidate(None)
 
     def test_fetch_holdings_with_mocked_broker(self):
         """Call fetch_holdings with mocked broker."""
@@ -1039,8 +1049,7 @@ class TestFetchMarginsFunction:
 
     def teardown_method(self):
         """Clear caches."""
-        broker_apis._RAW_CACHE.clear()
-        broker_apis._RAW_INFLIGHT.clear()
+        broker_apis._raw_cache_invalidate(None)
 
     def test_fetch_margins_with_mocked_broker(self):
         """Call fetch_margins with mocked broker."""

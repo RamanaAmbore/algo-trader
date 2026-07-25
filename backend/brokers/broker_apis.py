@@ -10,6 +10,7 @@ from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
 from backend.brokers.connections import Connections
 from backend.shared.helpers.decorators import for_all_accounts
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.ssot_fetch import ssot_fetch
 
 logger = get_logger(__name__)
 
@@ -1143,7 +1144,7 @@ def sort_accounts(accounts: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Raw broker-DataFrame TTL cache (Tier 1 — shared by routes + algo.nav)
+# Raw broker-DataFrame coalesce cache (Tier 1 — shared by routes + algo.nav)
 # ---------------------------------------------------------------------------
 # `fetch_holdings()` / `fetch_positions()` / `fetch_margins()` are the
 # zero-arg public entry points. They run @for_all_accounts → N broker
@@ -1159,116 +1160,60 @@ def sort_accounts(accounts: list[str]) -> list[str]:
 #   • intraday_equity background poller — wants live data per 5min tick
 #     anyway, so it intentionally bypasses (see _fetch_*_direct below).
 #
-# This module-level TTL cache memos the raw `list[pd.DataFrame]` shape
-# returned by `fetch_*()` so two callers within `_RAW_TTL_S` seconds
-# share one broker round-trip. The route-level `get_or_fetch` cache
-# continues to memo the FORMATTED response (msgspec.Struct), so the
-# fast path stays unchanged; this just plugs the leak where
-# `compute_firm_nav` previously bypassed both layers.
-#
-# Per-key asyncio-style locking would require this whole module to be
-# async; instead we use a threading.Lock since broker_apis is the
-# sync layer (callers offload to threadpool). The race window between
-# cache-miss + broker call is bounded by `_RAW_TTL_S`.
-_RAW_CACHE_LOCK = threading.Lock()
-_RAW_CACHE: dict[str, tuple[float, list[pd.DataFrame]]] = {}
-_RAW_TTL_S: float = 30.0  # matches the route-level cache TTL
-
-# In-flight sentinel dict — cache-stampede prevention.
-# When a cache miss is detected and a fetch is about to start, a
-# threading.Event is inserted here under the same key. Concurrent callers
-# that see the sentinel wait on it (up to 5 s) then re-check _RAW_CACHE.
-# The leader clears the sentinel via _raw_cache_put (success) or
-# _raw_cache_release (failure path). Both ops are serialised under
-# _RAW_CACHE_LOCK so there is no window where a new waiter races against
-# the clear.
-_RAW_INFLIGHT: dict[str, threading.Event] = {}
-
-
-def _raw_cache_get(key: str) -> list[pd.DataFrame] | None:
-    """Return cached list[DataFrame] for `key` if still fresh, else None."""
-    with _RAW_CACHE_LOCK:
-        entry = _RAW_CACHE.get(key)
-    if entry is None:
-        return None
-    expires_at, value = entry
-    if _time.monotonic() >= expires_at:
-        return None
-    return value
-
-
-def _raw_cache_reserve(key: str) -> tuple[list[pd.DataFrame] | None, bool]:
-    """Atomic cache-check + in-flight reservation.
-
-    Returns ``(cached_value, is_leader)`` under a single lock acquisition:
-    - If the cache is fresh → returns ``(value, False)`` (fast path, no fetch needed).
-    - If another thread is already fetching → waits on its Event then re-checks;
-      returns ``(value_or_None, False)`` so the caller skips its own fetch.
-    - If the cache is empty and no fetch is in-flight → inserts a new Event
-      and returns ``(None, True)``; the caller MUST follow up with
-      ``_raw_cache_put`` or ``_raw_cache_release``.
-    """
-    with _RAW_CACHE_LOCK:
-        entry = _RAW_CACHE.get(key)
-        if entry is not None:
-            expires_at, value = entry
-            if _time.monotonic() < expires_at:
-                return value, False  # cache hit
-
-        evt = _RAW_INFLIGHT.get(key)
-        if evt is not None:
-            # Another thread is fetching — release lock and wait.
-            pass
-        else:
-            # We are the leader for this key.
-            new_evt = threading.Event()
-            _RAW_INFLIGHT[key] = new_evt
-            return None, True
-
-    # Wait outside the lock so the leader thread can write.
-    evt.wait(timeout=5.0)
-
-    # Re-check after wait (leader may or may not have succeeded).
-    cached = _raw_cache_get(key)
-    return cached, False
-
-
-def _raw_cache_put(key: str, value: list[pd.DataFrame]) -> None:
-    """Store list[DataFrame] under `key` with the standard TTL and signal
-    any waiters that were blocked on _RAW_INFLIGHT[key].
-
-    Stored value is the caller's reference — DataFrames are NOT deep-copied
-    (would defeat the purpose). Callers that need to mutate must `.copy()`
-    first; the existing route _fetch() handlers already do this via the
-    Polars conversion (`pl.from_pandas(raw)` creates an independent view).
-    """
-    with _RAW_CACHE_LOCK:
-        _RAW_CACHE[key] = (_time.monotonic() + _RAW_TTL_S, value)
-        evt = _RAW_INFLIGHT.pop(key, None)
-    if evt is not None:
-        evt.set()
-
-
-def _raw_cache_release(key: str) -> None:
-    """Signal waiters after a fetch failure without storing a result.
-
-    Call this in the exception handler when the leader fetch raises so
-    waiters are unblocked (they will re-check the cache and find nothing,
-    then proceed to fetch on their own)."""
-    with _RAW_CACHE_LOCK:
-        evt = _RAW_INFLIGHT.pop(key, None)
-    if evt is not None:
-        evt.set()
+# ssot_fetch(mode="coalesce") replaces the hand-rolled _RAW_CACHE /
+# _RAW_INFLIGHT / _RAW_CACHE_LOCK block. Concurrent callers for the same
+# key share one in-flight threading.Event; sequential callers reuse the
+# last non-None result. force_refresh=True or _raw_cache_invalidate()
+# evicts the cached result. No TTL — invalidation-based only (postback
+# book_changed events + ?fresh=1 calls).
 
 
 def _raw_cache_invalidate(key: str | None = None) -> None:
     """Drop a key (or all keys when key=None). Used by tests + on postback
     `book_changed` events so the next fetch picks up the fresh broker state."""
-    with _RAW_CACHE_LOCK:
+    for fn in (_fetch_holdings_cached, _fetch_positions_cached, _fetch_margins_cached):
+        cache = getattr(fn, "_result_cache", None)
+        if cache is None:
+            continue
         if key is None:
-            _RAW_CACHE.clear()
+            cache.clear()
         else:
-            _RAW_CACHE.pop(key, None)
+            cache.pop(key, None)
+
+
+@ssot_fetch(mode="coalesce", key="holdings")
+def _fetch_holdings_cached() -> list[pd.DataFrame]:
+    """Coalesced zero-arg holdings fetch. ssot_fetch deduplicates
+    concurrent callers and caches the last non-None result.
+    Invalidate via _raw_cache_invalidate('holdings') or force_refresh=True."""
+    if _use_conn_service():
+        from backend.brokers.client import sync as conn_sync
+        result = conn_sync.fetch_holdings()
+    else:
+        result = _fetch_holdings_local()
+    return _apply_backfill_to_list(result)
+
+
+@ssot_fetch(mode="coalesce", key="positions")
+def _fetch_positions_cached() -> list[pd.DataFrame]:
+    """Coalesced zero-arg positions fetch."""
+    if _use_conn_service():
+        from backend.brokers.client import sync as conn_sync
+        result = conn_sync.fetch_positions()
+    else:
+        result = _fetch_positions_local()
+    return _apply_backfill_to_list(result)
+
+
+@ssot_fetch(mode="coalesce", key="margins")
+def _fetch_margins_cached() -> list[pd.DataFrame]:
+    """Coalesced zero-arg margins fetch."""
+    if _use_conn_service():
+        from backend.brokers.client import sync as conn_sync
+        result = conn_sync.fetch_margins()
+    else:
+        result = _fetch_margins_local()
+    return result
 
 
 def fetch_holdings(*args, **kwargs):
@@ -1280,9 +1225,10 @@ def fetch_holdings(*args, **kwargs):
     Explicit `account=`/`broker=` kwargs fall through to the local
     path so single-account internal use keeps working.
 
-    Zero-arg results are memoised in `_RAW_CACHE` for `_RAW_TTL_S`
-    seconds so concurrent consumers (routes + compute_firm_nav +
-    investor slice) share one broker round-trip per cache window.
+    Zero-arg results are coalesced via ssot_fetch so concurrent
+    consumers (routes + compute_firm_nav + investor slice) share one
+    broker round-trip. _raw_cache_invalidate('holdings') or
+    force_refresh=True evicts the cached result.
 
     NAV-consistency guarantee (Approach A): the cached value is a
     single-element list containing the post-backfill concatenated
@@ -1290,30 +1236,11 @@ def fetch_holdings(*args, **kwargs):
     close_price + last_price from PriceBroker.quote(), then
     recomputes day_change_val, pnl, cur_val, and pnl_percentage.
     Every consumer (route + compute_firm_nav) then reads the SAME
-    patched cur_val so NavCard and /performance agree. The route's
-    own `backfill_market_data` call becomes a no-op (no zero-LTP
-    rows remain), and `_override_stale_ltp_from_ticker` continues
-    to handle the post-cache KiteTicker tick diff.
+    patched cur_val so NavCard and /performance agree.
     """
     if not args and not kwargs:
-        cached, is_leader = _raw_cache_reserve("holdings")
-        if not is_leader:
-            # Either a cache hit or waited for another thread's fetch.
-            return cached if cached is not None else _fetch_holdings_local(*args, **kwargs)
-        try:
-            if _use_conn_service():
-                from backend.brokers.client import sync as conn_sync
-                result = conn_sync.fetch_holdings()
-            else:
-                result = _fetch_holdings_local()
-            result = _apply_backfill_to_list(result)
-            _raw_cache_put("holdings", result)
-            return result
-        except Exception:
-            _raw_cache_release("holdings")
-            raise
-    result = _fetch_holdings_local(*args, **kwargs)
-    return result
+        return _fetch_holdings_cached()
+    return _fetch_holdings_local(*args, **kwargs)
 
 
 @for_all_accounts
@@ -1604,8 +1531,8 @@ def fetch_positions(*args, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
     is on, otherwise runs the local @for_all_accounts path.
 
-    Zero-arg results are memoised in `_RAW_CACHE` for `_RAW_TTL_S`
-    seconds — see `fetch_holdings` docstring for the rationale.
+    Zero-arg results are coalesced via ssot_fetch — see fetch_holdings
+    docstring for the rationale.
 
     Same NAV-consistency guarantee as fetch_holdings (Approach A):
     the cached value is a post-backfill concatenated DataFrame in a
@@ -1613,23 +1540,8 @@ def fetch_positions(*args, **kwargs):
     pnl values as the positions route.
     """
     if not args and not kwargs:
-        cached, is_leader = _raw_cache_reserve("positions")
-        if not is_leader:
-            return cached if cached is not None else _fetch_positions_local(*args, **kwargs)
-        try:
-            if _use_conn_service():
-                from backend.brokers.client import sync as conn_sync
-                result = conn_sync.fetch_positions()
-            else:
-                result = _fetch_positions_local()
-            result = _apply_backfill_to_list(result)
-            _raw_cache_put("positions", result)
-            return result
-        except Exception:
-            _raw_cache_release("positions")
-            raise
-    result = _fetch_positions_local(*args, **kwargs)
-    return result
+        return _fetch_positions_cached()
+    return _fetch_positions_local(*args, **kwargs)
 
 
 def _extract_net_rows(broker, kite):
@@ -2275,26 +2187,12 @@ def fetch_margins(*args, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
     is on, otherwise runs the local @for_all_accounts path.
 
-    Zero-arg results are memoised in `_RAW_CACHE` for `_RAW_TTL_S`
-    seconds — see `fetch_holdings` docstring for the rationale.
+    Zero-arg results are coalesced via ssot_fetch — see fetch_holdings
+    docstring for the rationale.
     """
     if not args and not kwargs:
-        cached, is_leader = _raw_cache_reserve("margins")
-        if not is_leader:
-            return cached if cached is not None else _fetch_margins_local(*args, **kwargs)
-        try:
-            if _use_conn_service():
-                from backend.brokers.client import sync as conn_sync
-                result = conn_sync.fetch_margins()
-            else:
-                result = _fetch_margins_local()
-            _raw_cache_put("margins", result)
-            return result
-        except Exception:
-            _raw_cache_release("margins")
-            raise
-    result = _fetch_margins_local(*args, **kwargs)
-    return result
+        return _fetch_margins_cached()
+    return _fetch_margins_local(*args, **kwargs)
 
 
 @for_all_accounts
