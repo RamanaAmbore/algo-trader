@@ -3863,7 +3863,7 @@
      data-status="inactive">
 
   {#if error}
-    <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
+    <div class="mb-2 p-2 rounded bg-[var(--c-short-10)] text-[var(--c-short)] text-xs border border-[rgba(248,113,113,0.40)]">{error}</div>
   {/if}
   <!-- Chrome row retired — Show dropdown removed, + moved into the
        Pinned/Watchlist card header, refresh moved into each card's

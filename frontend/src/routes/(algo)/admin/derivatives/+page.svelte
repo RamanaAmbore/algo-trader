@@ -3973,7 +3973,7 @@
        When broker is green, snapshot lag shows the inline chip instead.
        Short banner per ops convention (≤35 chars). Full error detail
        logged to console by api.js. -->
-  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40"
+  <div class="mb-3 p-2 rounded bg-[var(--c-short-10)] text-[var(--c-short)] text-[0.65rem] border border-[rgba(248,113,113,0.40)]"
        title={positionsLoadErr}>
     Positions feed unavailable — candidates may be stale.
   </div>

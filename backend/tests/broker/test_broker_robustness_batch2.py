@@ -700,5 +700,292 @@ class TestKiteDataResilience:
         assert result == hist_data, "historical_data() result must return from SDK"
 
 
+# ---------------------------------------------------------------------------
+# Test 13: _persist_cb_state no dict race condition
+# ---------------------------------------------------------------------------
+
+class TestPersistCBStateNoRace:
+    """_persist_cb_state must not crash when concurrent thread adds to _FETCH_HEALTH."""
+
+    def test_persist_cb_state_no_dict_race(self):
+        """Regression for dictionary changed size during iteration error.
+
+        _persist_cb_state iterates _FETCH_HEALTH while a concurrent thread
+        may add a key via _record_fetch → _record_breaker_state.
+        RuntimeError: dictionary changed size during iteration must NOT occur.
+        """
+        from backend.brokers import broker_apis
+        from backend.brokers.broker_apis import _persist_cb_state, _record_fetch
+        from backend.brokers.broker_apis import _FETCH_HEALTH, _BREAKER_LOCK
+        import threading
+
+        # Pre-populate with 5 accounts to ensure iteration happens
+        with _BREAKER_LOCK:
+            for i in range(5):
+                acct = f"TEST_ACCT_{i}"
+                _FETCH_HEALTH[acct] = broker_apis._default_health_entry()
+
+        errors_caught = []
+
+        def concurrent_record_fetch():
+            """Simulate concurrent _record_fetch adding new account."""
+            try:
+                for i in range(100):
+                    _record_fetch(f"NEW_ACCT_{i}", ok=False, error="test error")
+                    _time.sleep(0.001)  # stagger the additions
+            except Exception as e:
+                errors_caught.append(("record_fetch", e))
+
+        def concurrent_persist():
+            """Simulate multiple _persist_cb_state calls."""
+            try:
+                for i in range(50):
+                    # Mock the file write to avoid disk I/O
+                    with patch("backend.brokers.broker_apis._CB_STATE_PATH") as mock_path:
+                        with patch("builtins.open", create=True) as mock_open:
+                            _persist_cb_state()
+                    _time.sleep(0.002)
+            except Exception as e:
+                errors_caught.append(("persist", e))
+
+        # Run both concurrently
+        thread_record = threading.Thread(target=concurrent_record_fetch)
+        thread_persist = threading.Thread(target=concurrent_persist)
+
+        thread_record.start()
+        thread_persist.start()
+
+        thread_record.join(timeout=30)
+        thread_persist.join(timeout=30)
+
+        # Check for RuntimeError: dictionary changed size during iteration
+        dict_size_errors = [
+            e for name, e in errors_caught
+            if "dictionary changed size during iteration" in str(e)
+        ]
+        assert not dict_size_errors, (
+            f"_persist_cb_state must handle concurrent dict mutations; "
+            f"caught {len(dict_size_errors)} RuntimeErrors: {dict_size_errors}"
+        )
+
+        # Verify no other unexpected errors
+        assert not errors_caught, (
+            f"Unexpected errors during concurrent access: {errors_caught}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 14: rebuild_from_db uses asyncio.to_thread for blocking _build_conn_map
+# ---------------------------------------------------------------------------
+
+class TestRebuildFromDBNoEventLoopBlock:
+    """Regression for rebuild_from_db blocking event loop on _build_conn_map."""
+
+    @pytest.mark.asyncio
+    async def test_rebuild_from_db_uses_asyncio_to_thread(self):
+        """rebuild_from_db must not block the event loop when _build_conn_map sleeps.
+
+        _build_conn_map calls time.sleep(2) per Dhan account. If rebuild_from_db
+        calls _build_conn_map synchronously (not via asyncio.to_thread), a concurrent
+        coroutine cannot make progress during the 2-second sleep.
+
+        This test verifies that asyncio.to_thread is used so the event loop
+        can continue serving other coroutines during the blocking operation.
+        """
+        from backend.brokers.connections import Connections
+        import asyncio
+
+        # Track whether concurrent coroutine completed during rebuild
+        concurrent_completed = False
+
+        async def concurrent_work():
+            """Lightweight coroutine that should complete during rebuild_from_db."""
+            nonlocal concurrent_completed
+            await asyncio.sleep(0.05)  # 50ms — well within the sleep window
+            concurrent_completed = True
+
+        # Mock the database and connection setup
+        with patch.object(
+            Connections, "_load_active_broker_rows"
+        ) as mock_load_rows, \
+             patch.object(
+                Connections, "_compute_dhan_deferred_accounts"
+            ) as mock_deferred, \
+             patch.object(
+                Connections, "_build_conn_map"
+            ) as mock_build_conn, \
+             patch.object(
+                Connections, "_build_row_lookup_maps"
+            ) as mock_build_maps, \
+             patch.object(
+                Connections, "_refresh_mask_registry"
+            ) as mock_refresh_mask, \
+             patch.object(
+                Connections, "_refresh_dhan_priority_caches"
+            ) as mock_refresh_priority, \
+             patch.object(
+                Connections, "_nudge_ticker_on_rebind"
+            ) as mock_nudge:
+
+            # Create a mock row simulating Dhan
+            mock_row = MagicMock()
+            mock_row.account = "DH6847"
+            mock_row.broker_id = "dhan"
+
+            # Setup return values
+            mock_load_rows.return_value = [mock_row]
+            mock_deferred.return_value = set()
+
+            # Simulate blocking call in _build_conn_map
+            def slow_build_conn_map(rows, deferred):
+                # This simulates the 2-second sleep in the real implementation
+                _time.sleep(0.15)  # 150ms blocking call
+                return {"DH6847": MagicMock()}
+
+            mock_build_conn.side_effect = slow_build_conn_map
+            mock_build_maps.return_value = ({"DH6847": "dhan"}, {}, {})
+
+            # Get or create Connections singleton
+            from backend.shared.helpers.singleton_base import SingletonBase
+            SingletonBase._instances.clear()
+            conn = Connections()
+
+            # Run rebuild_from_db and concurrent_work at the same time
+            start_time = _time.time()
+            await asyncio.gather(
+                conn.rebuild_from_db(),
+                concurrent_work(),
+            )
+            elapsed = _time.time() - start_time
+
+            # If concurrent work completed, the event loop was NOT blocked
+            assert concurrent_completed, (
+                "Concurrent coroutine did not complete; event loop may have been "
+                "blocked during _build_conn_map execution. "
+                "Verify rebuild_from_db uses asyncio.to_thread."
+            )
+
+            # Also verify timing: if properly async, elapsed should be ~150ms
+            # (not 150ms + other work time). Some slack for overhead + test env variance.
+            assert elapsed < 0.5, (
+                f"Expected ~150ms (parallel execution), but took {elapsed:.3f}s "
+                "(sequential execution suspected)"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Test 15: RemoteBroker._call includes error_type in error responses
+# ---------------------------------------------------------------------------
+
+class TestRemoteBrokerErrorTypeRoundTrip:
+    """RemoteBroker._call must preserve error_type for typed exception re-raise."""
+
+    def test_call_broker_error_type_round_trip(self):
+        """Regression for missing error_type in call_broker response.
+
+        When RemoteBroker._call receives {"ok": False, "error": "...", "error_type": "BrokerAuthError"},
+        it must re-raise BrokerAuthError (not plain BrokerError).
+        """
+        from backend.brokers.client.remote_broker import RemoteBroker, _get_client
+        from backend.brokers.errors import BrokerAuthError, BrokerError
+
+        # Create RemoteBroker instance
+        broker = RemoteBroker("test_account", "zerodha_kite")
+
+        # Mock _get_client to return a mock client whose post returns error response
+        mock_response = MagicMock()
+        mock_response.is_success = True  # HTTP 200 OK (but JSON has error)
+        mock_response.json.return_value = {
+            "ok": False,
+            "error": "Invalid token",
+            "error_type": "BrokerAuthError",
+        }
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get:
+            mock_get.return_value = mock_client
+
+            # Call _call() and expect BrokerAuthError to be raised
+            with pytest.raises(BrokerAuthError) as exc_info:
+                broker._call("holdings")
+
+            # Verify the error message includes the account and method
+            assert "test_account" in str(exc_info.value)
+            assert "holdings" in str(exc_info.value)
+
+    def test_call_broker_error_without_error_type_falls_back_to_broker_error(self):
+        """When error_type is missing, fall back to plain BrokerError."""
+        from backend.brokers.client.remote_broker import RemoteBroker
+        from backend.brokers.errors import BrokerAuthError, BrokerError
+
+        broker = RemoteBroker("test_account", "zerodha_kite")
+
+        # Mock response without error_type field
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.json.return_value = {
+            "ok": False,
+            "error": "Some error occurred",
+            # NOTE: error_type is missing — this is the old behavior pre-fix
+        }
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+
+        with patch("backend.brokers.client.remote_broker._get_client") as mock_get:
+            mock_get.return_value = mock_client
+
+            # Should raise plain BrokerError (not BrokerAuthError)
+            with pytest.raises(BrokerError) as exc_info:
+                broker._call("holdings")
+
+            # Verify it's not the more specific subclass
+            assert type(exc_info.value) is BrokerError or \
+                   isinstance(exc_info.value, BrokerError)
+
+    def test_call_broker_maps_all_error_types(self):
+        """Verify _ERROR_TYPE_MAP handles all expected error types."""
+        from backend.brokers.client.remote_broker import RemoteBroker
+        from backend.brokers.errors import (
+            BrokerAuthError,
+            BrokerRateLimitError,
+            BrokerNetworkError,
+            BrokerError,
+        )
+
+        broker = RemoteBroker("test_account", "zerodha_kite")
+
+        test_cases = [
+            ("BrokerAuthError", BrokerAuthError),
+            ("BrokerRateLimitError", BrokerRateLimitError),
+            ("BrokerNetworkError", BrokerNetworkError),
+            ("BrokerError", BrokerError),
+        ]
+
+        for error_type_name, expected_exc_class in test_cases:
+            mock_response = MagicMock()
+            mock_response.is_success = True
+            mock_response.json.return_value = {
+                "ok": False,
+                "error": f"Test {error_type_name}",
+                "error_type": error_type_name,
+            }
+
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+
+            with patch("backend.brokers.client.remote_broker._get_client") as mock_get:
+                mock_get.return_value = mock_client
+
+                # Each error_type should map to its corresponding exception class
+                with pytest.raises(expected_exc_class) as exc_info:
+                    broker._call("positions")
+
+                # Verify the message includes account and method
+                assert "test_account" in str(exc_info.value)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

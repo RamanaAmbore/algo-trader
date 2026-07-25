@@ -4390,7 +4390,6 @@ async def _task_warm_backfill() -> None:
         # zero delay, creating a tight loop that starves the event loop.
         await asyncio.sleep(86400)
         return
-    _task_warm_backfill._fired = True   # type: ignore[attr-defined]
 
     # Startup settle — wait for conn_service token mint.
     await asyncio.sleep(60)
@@ -4409,6 +4408,12 @@ async def _task_warm_backfill() -> None:
         logger.warning("backfill warm: empty symbol universe — nothing to backfill")
         await asyncio.sleep(3600)
         return
+
+    # Mark as fired only after we've confirmed a non-empty symbol universe.
+    # Setting this flag before collection would cause the backfill to silently
+    # skip for the rest of the process lifetime if the awaits above raised or
+    # the universe came back empty on first attempt.
+    _task_warm_backfill._fired = True   # type: ignore[attr-defined]
 
     logger.info(f"backfill warm: universe={len(symbols)} symbols")
 

@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import fcntl
 import json
@@ -1581,7 +1582,7 @@ class Connections(SingletonBase):
             return
 
         _dhan_deferred = self._compute_dhan_deferred_accounts(rows)
-        new_conn = self._build_conn_map(rows, _dhan_deferred)
+        new_conn = await asyncio.to_thread(self._build_conn_map, rows, _dhan_deferred)
 
         if not new_conn:
             logger.warning("rebuild_from_db: every broker_accounts row failed to load; "

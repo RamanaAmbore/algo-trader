@@ -55,7 +55,7 @@ _DHAN_ERROR_MAP: dict[str, type[BrokerError]] = {
     "DH-901": BrokerAuthError,    # Invalid token / session expired
     "DH-902": BrokerAuthError,    # Unauthorised
     "DH-904": BrokerRateLimitError,  # Rate limit exceeded
-    "DH-906": BrokerOrderError,   # Order not found / rejected
+    "DH-906": BrokerAuthError,    # Invalid Token — primary Dhan token-rotation signal
 }
 
 
@@ -413,10 +413,8 @@ def _dhan_process_instrument_row(
     by_symbol[(kite_exch, ts)] = sid
 
 
-def _load_dhan_instruments() -> None:
-    """Fetch Dhan's master CSV and populate the module-level caches.
-    Called under _dhan_instruments_lock. Silently no-ops on any failure
-    so a network blip doesn't crash the broker registry.
+def _load_dhan_instruments_unlocked() -> dict | None:
+    """Fetch Dhan's master CSV and return parsed data without touching globals.
 
     The public CSV URL changed in Jun 2026 from
       api.dhan.co/v2/instruments-detailed  → (HTTP 404)
@@ -431,8 +429,13 @@ def _load_dhan_instruments() -> None:
       • Lot-size column renamed: SM_LOT_SIZE → SEM_LOT_UNITS.
       Both old and new column names are probed so a future schema revert
       doesn't silently zero lot sizes.
+
+    Returns a dict with keys "by_exchange", "by_symbol", "date" on success,
+    or None on failure. The caller is responsible for setting
+    _DHAN_INSTRUMENTS_FAIL_UNTIL on None return.
+    Called WITHOUT the _dhan_instruments_lock so concurrent callers don't
+    queue for the full 15 s network timeout.
     """
-    global _DHAN_INSTRUMENTS_DATE, _DHAN_BY_EXCHANGE, _DHAN_BY_SYMBOL, _DHAN_INSTRUMENTS_FAIL_UNTIL
     by_exchange: dict[str, list[dict]] = {}
     by_symbol: dict[tuple, str] = {}
     try:
@@ -441,10 +444,10 @@ def _load_dhan_instruments() -> None:
         lines = raw.splitlines()
         if not lines:
             logger.warning("DhanBroker: instruments CSV empty")
-            return
+            return None
         parsed = _parse_dhan_csv_header(lines)
         if parsed is None:
-            return
+            return None
         col, has_seg_col = parsed
         min_col = max(col.get("SEM_SMST_SECURITY_ID", 0),
                       col.get("SEM_TRADING_SYMBOL", 0),
@@ -455,25 +458,58 @@ def _load_dhan_instruments() -> None:
             if len(parts) <= min_col:
                 continue
             _dhan_process_instrument_row(parts, col, has_seg_col, by_exchange, by_symbol)
-        _DHAN_BY_EXCHANGE = by_exchange
-        _DHAN_BY_SYMBOL = by_symbol
-        _DHAN_INSTRUMENTS_DATE = _ist_today()
         total = sum(len(v) for v in by_exchange.values())
         logger.info(f"DhanBroker: instruments cache loaded — {total} rows "
                     f"across {len(by_exchange)} exchanges "
                     f"({'new' if has_seg_col else 'legacy'} schema)")
+        return {"by_exchange": by_exchange, "by_symbol": by_symbol, "date": _ist_today()}
     except Exception as e:
-        _DHAN_INSTRUMENTS_FAIL_UNTIL = time.time() + 300  # 5-min cooloff on network error / 429
         logger.warning(f"DhanBroker: instruments cache load failed: {e}; retry blocked for 5 min")
+        return None
+
+
+def _apply_dhan_instruments(data: dict) -> None:
+    """Swap in freshly fetched instrument data. Called under _dhan_instruments_lock."""
+    global _DHAN_BY_EXCHANGE, _DHAN_BY_SYMBOL, _DHAN_INSTRUMENTS_DATE
+    _DHAN_BY_EXCHANGE = data["by_exchange"]
+    _DHAN_BY_SYMBOL = data["by_symbol"]
+    _DHAN_INSTRUMENTS_DATE = data["date"]
+
+
+def _load_dhan_instruments() -> None:
+    """Compat wrapper: fetch + apply instruments. Called under _dhan_instruments_lock."""
+    global _DHAN_INSTRUMENTS_FAIL_UNTIL
+    data = _load_dhan_instruments_unlocked()
+    if data is None:
+        _DHAN_INSTRUMENTS_FAIL_UNTIL = time.time() + 300
+        return
+    _apply_dhan_instruments(data)
 
 
 def _ensure_dhan_instruments() -> None:
-    """Ensure the instruments cache is warm for today's IST date."""
+    """Ensure the instruments cache is warm for today's IST date.
+
+    Fast path (date already today) runs without the lock. On a stale date,
+    fetch is done OUTSIDE the lock so concurrent callers don't queue for
+    the 15 s network timeout. A double-check after acquiring the lock
+    prevents duplicate downloads when two threads race on the stale path.
+    """
+    global _DHAN_INSTRUMENTS_FAIL_UNTIL
+    # Fast path: cache is current — check without lock (date string is
+    # a single-assignment write; GIL-safe for this read).
+    if (time.time() < _DHAN_INSTRUMENTS_FAIL_UNTIL
+            or _DHAN_INSTRUMENTS_DATE == _ist_today()):
+        return
+    # Fetch outside the lock so concurrent callers don't queue for 15 s.
+    new_data = _load_dhan_instruments_unlocked()
+    if new_data is None:
+        with _dhan_instruments_lock:
+            _DHAN_INSTRUMENTS_FAIL_UNTIL = time.time() + 300
+        return
+    # Swap globals under lock — only the assignment needs serialisation.
     with _dhan_instruments_lock:
-        if time.time() < _DHAN_INSTRUMENTS_FAIL_UNTIL:
-            return  # still in cooloff after a failed fetch — skip retry
-        if _DHAN_INSTRUMENTS_DATE != _ist_today():
-            _load_dhan_instruments()
+        if _DHAN_INSTRUMENTS_DATE != _ist_today():   # double-check after acquiring
+            _apply_dhan_instruments(new_data)
 
 
 def _resolve_security_id(tradingsymbol: str, kite_exchange: str) -> str:

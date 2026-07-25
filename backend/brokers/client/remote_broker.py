@@ -43,17 +43,14 @@ from backend.brokers.errors import (
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(30.0, connect=5.0)
-_client: httpx.Client | None = None
+_client = httpx.Client(
+    base_url="http://conn",
+    transport=httpx.HTTPTransport(uds=CONN_SOCK),
+    timeout=_TIMEOUT,
+)
 
 
 def _get_client() -> httpx.Client:
-    global _client
-    if _client is None:
-        _client = httpx.Client(
-            transport=httpx.HTTPTransport(uds=CONN_SOCK),
-            base_url="http://conn",
-            timeout=_TIMEOUT,
-        )
     return _client
 
 
@@ -99,7 +96,6 @@ class RemoteBroker(Broker):
                     request=resp.request,
                     response=resp,
                 )
-            resp.raise_for_status()
         except httpx.HTTPError as e:
             # Transport / 5xx — surface as BrokerNetworkError so existing
             # try/except in callers (broker_apis, routes/orders, etc.)

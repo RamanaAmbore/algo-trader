@@ -140,57 +140,6 @@
 {/if}
 
 <style>
-  /* ── Badge pill (mirrors .broker-chip palette) ── */
-  .bh-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.28rem;
-    height: 1.4rem;
-    padding: 0 0.5rem;
-    border-radius: 9999px;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    letter-spacing: 0.07em;
-    cursor: pointer;
-    white-space: nowrap;
-    outline: none;
-    margin-right: 0.3rem;
-    transition: filter 0.08s;
-    border: 1px solid transparent;
-  }
-  .bh-badge:hover { filter: brightness(1.15); }
-
-  .bh-badge-green {
-    color: var(--c-long);
-    background: var(--c-long-10);
-    border-color: rgba(74, 222, 128, 0.45);
-  }
-  .bh-badge-amber {
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.10);
-    border-color: rgba(251, 191, 36, 0.45);
-  }
-  .bh-badge-red {
-    color: var(--c-short);
-    background: var(--c-short-10);
-    border-color: rgba(248, 113, 113, 0.45);
-    animation: bh-pulse 2s ease-in-out infinite;
-  }
-
-  @keyframes bh-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.65; }
-  }
-
-  .bh-dot {
-    width: 0.38rem;
-    height: 0.38rem;
-    border-radius: 50%;
-    background: currentColor;
-  }
-  .bh-label { font-size: var(--fs-xs); }
-
   /* ── Modal overlay ── */
   .bh-overlay {
     position: fixed;
