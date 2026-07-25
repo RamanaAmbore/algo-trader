@@ -15,6 +15,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 import httpx
 
+from backend.brokers.errors import BrokerError, BrokerNetworkError
 from backend.brokers.client.remote_broker import (
     RemoteBroker,
     verify_postback,
@@ -88,7 +89,7 @@ class TestRemoteBrokerCall:
             assert body["kwargs"] == {"quantity": 10, "price": 100.0}
 
     def test_call_raises_on_network_error(self):
-        """_call() raises RuntimeError on transport error."""
+        """_call() raises BrokerNetworkError on transport error."""
         broker = RemoteBroker("ZG0790")
 
         with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
@@ -96,11 +97,11 @@ class TestRemoteBrokerCall:
             mock_get_client.return_value = mock_client
             mock_client.post.side_effect = httpx.ConnectError("UDS unreachable")
 
-            with pytest.raises(RuntimeError, match="conn_service unreachable"):
+            with pytest.raises(BrokerNetworkError, match="conn_service unreachable"):
                 broker._call("holdings")
 
     def test_call_raises_on_ok_false(self):
-        """_call() raises RuntimeError when response has ok=false."""
+        """_call() raises BrokerError when response has ok=false."""
         broker = RemoteBroker("ZG0790")
 
         with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
@@ -111,11 +112,11 @@ class TestRemoteBrokerCall:
                 json=lambda: {"ok": False, "error": "Account not found"}
             )
 
-            with pytest.raises(RuntimeError, match="Account not found"):
+            with pytest.raises(BrokerError, match="Account not found"):
                 broker._call("holdings")
 
     def test_call_raises_on_http_error(self):
-        """_call() raises RuntimeError on HTTP error status."""
+        """_call() raises BrokerNetworkError on HTTP error status."""
         broker = RemoteBroker("ZG0790")
 
         with patch("backend.brokers.client.remote_broker._get_client") as mock_get_client:
@@ -127,7 +128,7 @@ class TestRemoteBrokerCall:
             )
             mock_client.post.return_value = mock_response
 
-            with pytest.raises(RuntimeError):
+            with pytest.raises(BrokerNetworkError):
                 broker._call("holdings")
 
     def test_call_returns_result_field(self):

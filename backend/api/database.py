@@ -942,6 +942,14 @@ async def _ensure_shared_broker_schema() -> None:
     except Exception as _bce_err:
         logger.warning("shared schema: broker_connection_events migration skipped — %s", _bce_err)
 
+    # broker_issue_daily — nightly rollup of broker_connection_events
+    try:
+        from backend.api.persistence.migrations import create_broker_issue_daily_table
+        async with _shared_engine.begin() as _bid_conn:
+            await create_broker_issue_daily_table(_bid_conn)
+    except Exception as _bid_err:
+        logger.warning("shared schema: broker_issue_daily migration skipped — %s", _bid_err)
+
     await _seed_circuit_breaker_for_dh6847()
     await _seed_display_order()
     logger.info("Shared broker schema verified on ramboq")

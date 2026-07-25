@@ -166,9 +166,19 @@ macros:
 orders:
   mcx_gtt_lot_ceiling: 200  # per-leg MCX/NCO GTT ceiling (in lots)
 
+# Broker connection issue thresholds — queried daily by CONNCHECK TLM tool.
+# If any broker/account exceeds these counts in broker_issue_daily, CONNCHECK
+# raises P1/P2. Tune from here without a deploy (the script reads the file directly).
+broker_issue_thresholds:
+  auth_fail_p1:    10   # auth failures per account per day → P1
+  circuit_open_p1:  5   # circuit opens per account per day → P1
+  total_p1:        50   # total issues per account per day → P1
+  total_p2:        20   # total issues per account per day → P2 (warn)
+  lookback_days:    7   # days to look back
+
 # Alert channel routing — telegram: ops|info|false, ntfy: urgent|high|default|false, email: true|false
 alert_routing:
-  order_failure:        { telegram: ops,   ntfy: urgent,  email: false }
+  order_failure:        { telegram: ops,   ntfy: urgent,  email: true  }
   ticker_degraded:      { telegram: ops,   ntfy: urgent,  email: false }
   ticker_recovered:     { telegram: ops,   ntfy: high,    email: false }
   gtt_asymmetric:       { telegram: ops,   ntfy: high,    email: false }
@@ -178,5 +188,5 @@ alert_routing:
   market_open:          { telegram: info,  ntfy: false,   email: true  }
   market_close:         { telegram: info,  ntfy: false,   email: true  }
   visitor_report:       { telegram: info,  ntfy: false,   email: false }
-  agent_alert:          { telegram: ops,   ntfy: false,   email: false }
+  agent_alert:          { telegram: ops,   ntfy: false,   email: true  }
   deploy:               { telegram: info,  ntfy: default, email: false }

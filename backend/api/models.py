@@ -3,7 +3,7 @@ SQLAlchemy ORM models — user and partner management.
 """
 
 import secrets as _secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, Time, UniqueConstraint, text
@@ -1108,6 +1108,26 @@ class BrokerConnectionEvent(Base):
         default=lambda: datetime.now(timezone.utc),
     )
     detail:     Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+
+class BrokerIssueDaily(Base):
+    __tablename__ = "broker_issue_daily"
+    __table_args__ = (
+        UniqueConstraint("broker_id", "account", "issue_date",
+                         name="uq_broker_issue_daily_broker_account_date"),
+        Index("ix_broker_issue_daily_date", "issue_date"),
+        Index("ix_broker_issue_daily_broker_date", "broker_id", "issue_date"),
+    )
+    id:          Mapped[int]      = mapped_column(primary_key=True, autoincrement=True)
+    broker_id:   Mapped[str]      = mapped_column(String(32), nullable=False)
+    account:     Mapped[str]      = mapped_column(String(32), nullable=False)
+    issue_date:  Mapped[date]     = mapped_column(Date, nullable=False)
+    issue_count: Mapped[int]      = mapped_column(Integer, nullable=False, default=0)
+    breakdown:   Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    updated_at:  Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                   nullable=False,
+                                                   default=lambda: datetime.now(timezone.utc),
+                                                   onupdate=lambda: datetime.now(timezone.utc))
 
 
 # ---------------------------------------------------------------------------

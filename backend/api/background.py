@@ -4913,6 +4913,72 @@ async def recover_live_chases() -> None:
             )
 
 
+async def _task_broker_issue_daily() -> None:
+    """Daily aggregation of broker_connection_events into broker_issue_daily."""
+    import json as _json
+    from sqlalchemy import text as _text
+
+    _IST = timedelta(hours=5, minutes=30)
+
+    async def _aggregate(target_date) -> None:
+        from backend.api.database import get_session
+        async with get_session() as session:
+            rows = (await session.execute(_text("""
+                SELECT broker_id, account, event_type, COUNT(*) AS cnt
+                FROM broker_connection_events
+                WHERE event_type IN ('auth_fail','fetch_fail','circuit_open','rotation_detected')
+                  AND event_ts::date = :target_date
+                GROUP BY broker_id, account, event_type
+            """), {"target_date": target_date})).fetchall()
+            # pivot into {(broker_id, account): {event_type: count}}
+            pivot: dict[tuple, dict] = {}
+            for broker_id, account, event_type, cnt in rows:
+                key = (broker_id, account)
+                pivot.setdefault(key, {})
+                pivot[key][event_type] = int(cnt)
+            # upsert one row per (broker_id, account)
+            for (broker_id, account), breakdown in pivot.items():
+                total = sum(breakdown.values())
+                await session.execute(_text("""
+                    INSERT INTO broker_issue_daily
+                        (broker_id, account, issue_date, issue_count, breakdown, updated_at)
+                    VALUES (:broker_id, :account, :issue_date, :issue_count, :breakdown::jsonb, now())
+                    ON CONFLICT (broker_id, account, issue_date) DO UPDATE
+                        SET issue_count = EXCLUDED.issue_count,
+                            breakdown   = EXCLUDED.breakdown,
+                            updated_at  = now()
+                """), {
+                    "broker_id": broker_id,
+                    "account": account,
+                    "issue_date": target_date,
+                    "issue_count": total,
+                    "breakdown": _json.dumps(breakdown),
+                })
+            await session.commit()
+        logger.info("[BROKER-DAILY] Aggregated %d broker/account pairs for %s",
+                    len(pivot), target_date)
+
+    # Run once at startup for yesterday (catches missed runs after a restart)
+    try:
+        yesterday = (datetime.now(timezone.utc) + _IST - timedelta(days=1)).date()
+        await _aggregate(yesterday)
+    except Exception as _startup_err:
+        logger.warning("[BROKER-DAILY] Startup catch-up failed: %s", _startup_err)
+
+    # Then schedule daily at 23:45 IST
+    while True:
+        now_ist = datetime.now(timezone.utc) + _IST
+        target = now_ist.replace(hour=23, minute=45, second=0, microsecond=0)
+        if now_ist >= target:
+            target += timedelta(days=1)
+        await asyncio.sleep((target - now_ist).total_seconds())
+        today = (datetime.now(timezone.utc) + _IST).date()
+        try:
+            await _aggregate(today)
+        except Exception as _nightly_err:
+            logger.warning("[BROKER-DAILY] Nightly aggregation failed: %s", _nightly_err)
+
+
 async def _supervised(coro_fn, *, name: str, restart_delay: int = 60) -> None:
     """Supervisor wrapper for long-running background tasks.
 
@@ -4976,6 +5042,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(_task_warm_backfill,                   name="bg-warm-backfill"),   name="bg-warm-backfill"),
         asyncio.create_task(_supervised(_task_perf_snapshot,                   name="bg-perf-snapshot"),   name="bg-perf-snapshot"),
         asyncio.create_task(_supervised(_task_purge_perf_snapshots,            name="bg-purge-perf-snapshots"), name="bg-purge-perf-snapshots"),
+        asyncio.create_task(_supervised(_task_broker_issue_daily,               name="bg-broker-daily"),         name="bg-broker-daily"),
     ]
     # Mode 2 (real-data paper) runs on BOTH main and dev branches.
     # The PaperTradeEngine singleton processes its open-order book against
