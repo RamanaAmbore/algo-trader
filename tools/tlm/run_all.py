@@ -37,6 +37,7 @@ from depscan import DepScan  # noqa: E402
 from docdrift import DocDrift  # noqa: E402
 from perfmon import PerfMon  # noqa: E402
 from snapcheck import SnapCheck  # noqa: E402
+from conncheck import ConnCheck  # noqa: E402
 
 # Ordered registry of all tools
 ALL_TOOLS = [
@@ -44,6 +45,7 @@ ALL_TOOLS = [
     PyCheck(),
     PerfMon(),
     SnapCheck(),
+    ConnCheck(),
     DepScan(),
     DocDrift(),
 ]

@@ -385,6 +385,12 @@ JSONEOF
       && echo "[$TS] Startup notification done" \
       || echo "[$TS] WARNING: startup notification failed"
 
+  if [ "$DEPLOY_STATUS" = "ok" ] && [ "$BRANCH" = "main" ]; then
+      python3 "$APP_ROOT/scripts/monitor_ntfy_deploy.py" --title-contains "Deploy" --since 90 --timeout 30 \
+          && echo "[$TS] ntfy receipt confirmed" \
+          || echo "[$TS] WARNING: ntfy receipt check failed — notification may not have arrived"
+  fi
+
   echo "[$TS] Deployment complete (HEAD: $(git rev-parse --short HEAD))"
 
   # Release the host-wide lock before running metrics capture.

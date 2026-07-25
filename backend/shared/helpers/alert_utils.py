@@ -45,6 +45,7 @@ from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import secrets, config, is_enabled
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     import redis as _redis_t
 
 # ---------------------------------------------------------------------------
@@ -322,7 +323,7 @@ def _alert_route(
     # tg_channel == false/False → skip
 
     ntfy_priority = route.get('ntfy', False)
-    if ntfy_priority and ntfy_priority is not False and str(ntfy_priority).lower() != 'false':
+    if ntfy_priority:
         send_ntfy_alert(title, body, priority=str(ntfy_priority))
 
     send_email_flag = route.get('email', False)
@@ -523,8 +524,8 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
         f"<code>{tg_table}</code>"
     )
     # Route via the config-driven table.
-    # open/close → info channel, no email (routing: telegram:info, email:false)
-    # alert      → ops channel, email on  (routing: telegram:ops,  email:true)
+    # open/close → info channel, email: true per backend_config.yaml
+    # alert      → ops channel, email: true per backend_config.yaml
     event_key = 'market_open' if msg_type == 'open' else (
                 'market_close' if msg_type == 'close' else 'agent_alert')
 

@@ -156,3 +156,37 @@ async def create_broker_connection_events_table(conn) -> None:  # type: ignore[n
         "CREATE INDEX IF NOT EXISTS ix_bce_ts "
         "ON broker_connection_events (event_ts DESC)"
     ))
+
+
+async def create_broker_issue_daily_table(conn) -> None:  # type: ignore[no-untyped-def]
+    """broker_issue_daily — nightly rollup of broker_connection_events per (broker, account, date).
+
+    Aggregates auth_fail, fetch_fail, circuit_open, rotation_detected event counts
+    into a compact daily summary row. Populated by _task_broker_issue_daily in
+    background.py at 23:45 IST, with a catch-up run for yesterday on startup.
+
+    UPSERT semantics: re-running the aggregation for the same date is safe.
+    """
+    from sqlalchemy import text
+
+    await conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS broker_issue_daily (
+            id          SERIAL PRIMARY KEY,
+            broker_id   VARCHAR(32) NOT NULL,
+            account     VARCHAR(32) NOT NULL,
+            issue_date  DATE NOT NULL,
+            issue_count INTEGER NOT NULL DEFAULT 0,
+            breakdown   JSONB,
+            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CONSTRAINT uq_broker_issue_daily_broker_account_date
+                UNIQUE (broker_id, account, issue_date)
+        )
+    """))
+    await conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_broker_issue_daily_date
+            ON broker_issue_daily (issue_date)
+    """))
+    await conn.execute(text("""
+        CREATE INDEX IF NOT EXISTS ix_broker_issue_daily_broker_date
+            ON broker_issue_daily (broker_id, issue_date)
+    """))
