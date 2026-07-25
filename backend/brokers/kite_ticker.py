@@ -933,10 +933,16 @@ class TickerManager:
             self._consecutive_unhealthy = 0
             pending = set(self._pending)
             self._pending.clear()
+            # P1-3: tokens that were fully subscribed before the disconnect
+            # (i.e. in _subscribed but not in _pending) must be re-sent to
+            # Kite on reconnect — the broker drops all subscriptions when
+            # the WebSocket closes. Capture here under the same lock so
+            # _subscribed can't change between the two reads.
+            previously_subscribed = set(self._subscribed) - pending
 
         logger.info(
             f"KiteTicker: connected — flushing {len(pending)} pending "
-            f"subscription(s)"
+            f"+ {len(previously_subscribed)} previously-subscribed token(s)"
         )
         if pending:
             try:
@@ -959,6 +965,29 @@ class TickerManager:
                 )
             except Exception:
                 logger.exception("KiteTicker: pending flush failed")
+        # P1-3: re-subscribe tokens that were active before the disconnect.
+        # These are already in _subscribed so we do NOT update _subscribed
+        # again — only the WebSocket channel needs to be re-established.
+        if previously_subscribed:
+            try:
+                prev_list = list(previously_subscribed)
+                n_chunks = math.ceil(len(prev_list) / KITE_TICKER_CHUNK_SIZE)
+                if n_chunks > 1:
+                    logger.info(
+                        "[TICKER] re-subscribing %d previously-subscribed tokens "
+                        "in %d chunks",
+                        len(prev_list), n_chunks,
+                    )
+                for i in range(0, len(prev_list), KITE_TICKER_CHUNK_SIZE):
+                    chunk = prev_list[i:i + KITE_TICKER_CHUNK_SIZE]
+                    ws.subscribe(chunk)
+                    ws.set_mode(ws.MODE_LTP, chunk)
+                logger.info(
+                    "[TICKER] re-subscribed %d previously-subscribed tokens",
+                    len(previously_subscribed),
+                )
+            except Exception:
+                logger.exception("KiteTicker: previously-subscribed re-subscribe failed")
 
     def _on_ticks(self, _ws, ticks) -> None:
         """

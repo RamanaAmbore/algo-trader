@@ -33,6 +33,12 @@ from backend.brokers.capabilities import (
     BrokerCapabilities,
     capabilities_for_broker_id,
 )
+from backend.brokers.errors import (
+    BrokerAuthError,
+    BrokerNetworkError,
+    BrokerRateLimitError,
+    BrokerError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,17 +101,34 @@ class RemoteBroker(Broker):
                 )
             resp.raise_for_status()
         except httpx.HTTPError as e:
-            # Transport / 5xx — surface as RuntimeError so existing
+            # Transport / 5xx — surface as BrokerNetworkError so existing
             # try/except in callers (broker_apis, routes/orders, etc.)
             # catches it the same way a local SDK failure would.
-            raise RuntimeError(
+            raise BrokerNetworkError(
                 f"conn_service unreachable for {self._account}.{method}: {e}"
             ) from e
 
         payload = resp.json() or {}
         if not payload.get("ok", False):
-            raise RuntimeError(
-                f"{self._account}.{method} failed: {payload.get('error', '?')}"
+            # Map error_type from conn_service payload to typed BrokerError
+            # subclasses so callers (circuit breaker, order handler) can
+            # distinguish auth failures from rate limits from network errors
+            # without parsing the error string.
+            _error_msg = payload.get("error", "?")
+            _error_type = payload.get("error_type", "")
+            _ERROR_TYPE_MAP: dict[str, type[BrokerError]] = {
+                "BrokerAuthError":       BrokerAuthError,
+                "BrokerRateLimitError":  BrokerRateLimitError,
+                "BrokerNetworkError":    BrokerNetworkError,
+                "BrokerError":           BrokerError,
+            }
+            _exc_cls = _ERROR_TYPE_MAP.get(_error_type)
+            if _exc_cls is not None:
+                raise _exc_cls(
+                    f"{self._account}.{method} failed: {_error_msg}"
+                )
+            raise BrokerError(
+                f"{self._account}.{method} failed: {_error_msg}"
             )
         return payload.get("result")
 

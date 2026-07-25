@@ -30,6 +30,7 @@ logger = get_logger(__name__)
 _KITE_RATE_LIMITER = TokenBucketLimiter({
     "history": (3, 1.0),   # 3 calls/s for historical data
     "orders":  (10, 1.0),  # 10 calls/s for order placement
+    "quote":   (1, 1.0),   # 1 call/s for quote / ltp / ohlc (Kite docs)
 })
 
 # Maps kiteconnect SDK exception class names → typed BrokerError subclass.
@@ -399,9 +400,11 @@ class KiteBroker(Broker):
     # ── Market data ───────────────────────────────────────────────────
 
     def ltp(self, symbols: list[str]) -> dict:
+        _KITE_RATE_LIMITER.throttle("quote")
         return self.kite.ltp(symbols)
 
     def quote(self, symbols: list[str]) -> dict:
+        _KITE_RATE_LIMITER.throttle("quote")
         return self.kite.quote(symbols)
 
     def instruments(self, exchange: str | None = None) -> list[dict]:

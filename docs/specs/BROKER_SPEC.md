@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.0 — 2026-07-11  
+**Version**: 1.1 — 2026-07-24  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -22,6 +22,7 @@ Code, tests, and documentation must stay in sync with this file.
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 9. [Remote Broker & Conn Service](#9-remote-broker--conn-service)
+9.1 [Background Task Supervisor](#91-background-task-supervisor)
 10. [Virtual Root Resolution](#10-virtual-root-resolution)
 11. [Key Invariants](#11-key-invariants)
 12. [Test Coverage Map](#12-test-coverage-map)
@@ -81,7 +82,8 @@ All adapters return **Zerodha Kite-normalised shapes**. Callers never branch per
 | Margin Preview | ✓ | ✓ | ✗ |
 | GTT Postback | webhook | poll_only | poll_only |
 | historical_data | ✓ | ✗ (returns []) | ✗ (returns []) |
-| Rate Limit | 10 orders/s | 20 orders/s | 5 orders/s |
+| Quote Rate Limit | 1/s | — | — |
+| Order Rate Limit | 10 orders/s | 20 orders/s | 5 orders/s |
 
 **`historical_data` invariant**: Kite-only. `get_historical_brokers()` excludes Dhan/Groww. `ohlcv_store` and `intraday_store` MUST use `get_historical_brokers()[0]`, NEVER `get_market_data_broker()`.
 
@@ -113,12 +115,22 @@ Populated by `rebuild_from_db()` — queries `broker_accounts`, decrypts Fernet 
 ### KiteConnection
 - OAuth + TOTP 2FA; token cached at `/opt/ramboq/.log/kite_tokens.json`
 - **Cross-process lock** (`fcntl.flock(LOCK_EX)`): serialises concurrent prod+dev logins
+- **File lock timeout** (Jul 2026): `fcntl.flock(LOCK_EX | LOCK_NB)` with 30s poll loop
+  (100ms retry intervals); raises `BrokerNetworkError` on timeout instead of hanging.
 - **In-process lock** (`threading.Lock`): prevents two threads running login simultaneously
 - **Token write**: `tempfile + os.replace()` (POSIX atomic) under flock
 - **IPv6**: `_IPv6SourceAdapter` per account; `_IPV6_FAMILY_OVERRIDE` ContextVar for thread safety
 
 ### DhanConnection
-- Headless TOTP; 2-min cooloff between login attempts
+- Headless TOTP; 120s (2-min) cooloff between login attempts
+- **Cross-process login lock** (Jul 2026): lock file at `/tmp/ramboq_locks/<account>.lock`
+  (system-wide, shared by prod + dev instances). After acquiring lock, token is re-read from
+  cache BEFORE calling `generate_token`, preventing stale-token races when two processes
+  attempt simultaneous login.
+- **File lock timeout** (Jul 2026): `fcntl.flock(LOCK_EX | LOCK_NB)` with 30s poll loop
+  (100ms retry intervals); raises `BrokerNetworkError` on timeout instead of hanging.
+- Failed `generate_token` cooloff persists to `/tmp/ramboq_dhan_cooloff.json` and survives
+  process restarts, preventing tight-retry loops during rate-limit windows.
 - IPv6 on both login and runtime sessions
 
 ### GrowwConnection
@@ -138,6 +150,10 @@ State machine (opt-in per account via `circuit_breaker_enabled`):
 - Cooloff: 5 min → doubles per cycle → 30 min max
 - HALF-OPEN: one probe after cooloff
 
+**Circuit breaker persistence** (Jul 2026): `circuit_open_until` state persists to
+`/tmp/ramboq_cb_state.json`; non-expired entries are loaded on startup. Prevents
+redundant probe loops when main API restarts during an active cooloff window.
+
 **State machine extraction** (Jul 2026): `_record_breaker_state(account, ok, error, now)` 
 extracted from `_record_fetch()` to isolate state transitions under `_BREAKER_LOCK`. Returns 
 `(new_breaker_open, was_halfopen, was_recovering)` so conn events fire OUTSIDE the lock, 
@@ -152,7 +168,7 @@ Health surface: `GET /api/admin/broker-health`
 
 ## 7. KiteTicker & Mmap Pipeline
 
-**Files**: `backend/brokers/kite_ticker.py` · `backend/brokers/tick_buffer.py`
+**Files**: `backend/brokers/kite_ticker.py` · `backend/brokers/tick_buffer.py` · `backend/brokers/service/routes.py`
 
 ```
 KiteTicker WebSocket (Twisted reactor, conn_service)
@@ -168,9 +184,18 @@ BroadcastBus → SSE → frontend ltpMap
 
 **Torn-read protection**: version word checked before/after slot read; retry on mismatch.
 
-**TickerManager failover**: `_consecutive_unhealthy` watchdog; per-account 5-min cooloff prevents ping-ponging. `_swap_history` 128-entry rolling log.
+**TickerManager failover**: `_consecutive_unhealthy` watchdog; per-account 5-min cooloff prevents
+ping-ponging. `_swap_history` 128-entry rolling log.
+
+**Re-subscription on reconnect** (Jul 2026): `_on_connect` now re-subscribes all
+previously-subscribed tokens (not just tokens added during the disconnect window). Ensures
+market data resumes immediately after network transients.
 
 **Universe registration**: startup + segment opens + daily_book past-7d union (backstop survives conn_service restart).
+
+**MMAP missing-symbol suppression** (Jul 2026): `_known_absent_tokens: set[int]` replaces the
+60s-TTL dict. Warning fires once per token per process lifetime; subsequent lookups for that
+token are silent. Reduces log spam when Dhan lacks certain F&O contracts.
 
 ---
 
@@ -208,6 +233,11 @@ cache (both sources unavailable). Rows patched via LKG cache marked with `last_p
 
 ### DhanBroker
 - Instruments CSV from `images.dhan.co` once per IST day; F&O symbol: Dhan format → Kite format
+- **429 → BrokerRateLimitError** (Jul 2026): `_safe_call()` checks `resp.get("code") == "DH-904"`
+  and raises `BrokerRateLimitError` instead of returning the dict as-is. Allows PriceBroker
+  failover and registry retry-cooloff to activate correctly.
+- **5xx → BrokerNetworkError** (Jul 2026): `_safe_call()` raises `BrokerNetworkError` on HTTP
+  502/503/504 responses, enabling transient retry logic upstream.
 - `historical_data()` returns `[]` by design — excluded from `get_historical_brokers()`
 - `place_gtt()` raises `NotImplementedError` for MCX/NCO
 
@@ -239,13 +269,43 @@ Previously, basket placement lacked these guards and sent all legs unconditional
 
 ## 9. Remote Broker & Conn Service
 
-`RemoteBroker` proxies every `Broker` ABC method via `POST /internal/broker/{account}/call/{method}` over UDS. Errors re-raised as `RuntimeError`.
+`RemoteBroker` proxies every `Broker` ABC method via `POST /internal/broker/{account}/call/{method}` over UDS.
+
+**Typed error mapping** (Jul 2026): `RemoteBroker._call()` no longer raises raw `RuntimeError`.
+Instead, it:
+- Maps `error_type` string in response payload to domain exceptions:
+  - `"auth_error"` → `BrokerAuthError`
+  - `"network_error"` → `BrokerNetworkError`
+  - `"rate_limit_error"` → `BrokerRateLimitError`
+  - `"error"` (default) → `BrokerError`
+- Transport failures (socket errors, timeouts) → `BrokerNetworkError`
+
+This enables circuit breaker and PriceBroker failover logic to correctly handle remote errors.
 
 `_ALLOWED_BROKER_METHODS` whitelist (28 methods) — unknown method → 403.
 
 **`api_secret` invariant**: Never leaves conn_service. Main API calls `POST /internal/broker/{account}/verify_postback`; only True/False returned.
 
 Key endpoints: `/health`, `/internal/accounts`, `/internal/broker/{account}/call/{method}`, `/internal/rebuild`, `/internal/broker/{account}/verify_postback`
+
+---
+
+## 9.1 Background Task Supervisor
+
+**File**: `backend/brokers/service/routes.py` — `_supervised(coro_fn, *, name, restart_delay=60)`
+
+All long-running broker tasks (`_task_fetch_positions`, `_task_fetch_holdings`, etc.) wrap
+in `_supervised` to enable resilient restart-on-crash semantics:
+
+- **Crash handling**: If coroutine raises an exception (not `CancelledError`), logs the error
+  and reschedules the task after `restart_delay` seconds (default: 60s).
+- **Graceful cancellation**: `CancelledError` propagates immediately without retry (app
+  shutdown, task cancel).
+- **Task naming**: Each wrapped coroutine is tracked by name in logs for operator diagnostics.
+
+This prevents a single failed broker fetch from silencing all subsequent polls, improving
+resilience when broker APIs experience transient outages or the conn_service encounters
+temporary socket issues.
 
 ---
 
@@ -459,3 +519,4 @@ for debugging recurring 2FA timeouts or credential rotation issues.
 | 2026-07-15 | RemoteBroker.translate_qty overrides base-class no-op to forward to conn_service via _call; fixes MCX/NCO contracts→lots translation |
 | 2026-07-15 | Added I14 invariant — closed-hours snapshot query uses combined latest+prev_batch CTE; prev_close_val prefers prev_ltp over previous_close to prevent post-MCX-close Day P&L collapse |
 | 2026-07-19 | Polish R6: Extracted `_record_breaker_state()` from `_record_fetch()` to isolate state machine under `_BREAKER_LOCK`; added §7.1 Market-Data Backfill Pipeline documenting vectorized `_bmd_build_key_index`, `_apply_backfill_to_list` param removal, `backfill_market_data` consolidation |
+| 2026-07-24 | v1.1 Resilience improvements (commit 8352fc9f): Dhan cross-process login lock (`/tmp/ramboq_locks/<account>.lock`); file lock timeout (30s poll, `LOCK_EX|LOCK_NB`); MMAP `_known_absent_tokens` persistent set; Dhan 429→BrokerRateLimitError and 5xx→BrokerNetworkError; KiteTicker re-subscription on reconnect; Kite quote rate limiting (1/s); RemoteBroker typed error mapping; circuit breaker persistence (`/tmp/ramboq_cb_state.json`); background task supervisor `_supervised()` with crash restart |

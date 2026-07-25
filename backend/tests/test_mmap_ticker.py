@@ -107,7 +107,7 @@ class TestMmapTickReaderBusPassthrough:
     def test_bus_returns_broadcast_bus(self, tmp_buffer_path):
         """bus() returns the local BroadcastBus instance."""
         reader = MmapTickReader(path=tmp_buffer_path)
-        bus = reader.bus()
+        bus = reader.bus
         assert bus is not None
 
     def test_set_loop_sets_asyncio_loop(self, tmp_buffer_path):
@@ -297,8 +297,8 @@ class TestMmapTickReaderBusAttach:
     def test_bus_attachment(self, tmp_buffer_path):
         """MmapTickReader has a bus for SSE clients."""
         reader = MmapTickReader(path=tmp_buffer_path)
-        bus = reader.bus()
-        assert isinstance(bus, BroadcastBus), "bus() should return BroadcastBus"
+        bus = reader.bus
+        assert isinstance(bus, BroadcastBus), "bus should return BroadcastBus"
 
 
 class TestMmapTickReaderOpenReader:

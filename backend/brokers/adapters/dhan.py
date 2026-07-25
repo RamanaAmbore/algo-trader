@@ -859,7 +859,27 @@ class DhanBroker(Broker):
             _DHAN_RATE_LIMITER.throttle(endpoint_group)
         self._last_req = {"broker": "dhan", "account": self.account,
                           "endpoint_group": endpoint_group}
-        resp = sdk_call(self.dhan)
+        # P1-2: wrap the SDK call to catch underlying HTTP exceptions.
+        # The dhanhq SDK surfaces 5xx responses as exceptions whose
+        # `response` attribute holds the requests.Response object.
+        try:
+            resp = sdk_call(self.dhan)
+        except Exception as _sdk_exc:
+            _raw_resp = getattr(_sdk_exc, "response", None)
+            _status = getattr(_raw_resp, "status_code", None)
+            if _status in (502, 503, 504):
+                raise BrokerNetworkError(
+                    f"Dhan HTTP {_status} for {self.account!r}: {_sdk_exc}"
+                ) from _sdk_exc
+            raise
+        # P1-1: Dhan's DH-904 (rate-limit) comes back as a JSON dict
+        # with code="DH-904" rather than an HTTP exception. Raise early
+        # so the circuit breaker and caller see a typed BrokerRateLimitError
+        # instead of the auth-failure retry path consuming the error.
+        if isinstance(resp, dict) and resp.get("code") == "DH-904":
+            raise BrokerRateLimitError(
+                f"Dhan rate limit (DH-904) for {self.account!r}: {resp}"
+            )
         self._last_resp = {"shape": type(resp).__name__,
                            "status_hint": "auth_fail" if _looks_like_auth_failure(resp) else "ok"}
         if _looks_like_auth_failure(resp):

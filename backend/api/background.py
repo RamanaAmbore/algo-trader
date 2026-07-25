@@ -25,6 +25,7 @@ import pandas as pd
 
 from backend.shared.helpers.date_time_utils import timestamp_indian, is_market_open, timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.settings import get_int
 from backend.shared.helpers.utils import config, get_nearest_time, get_cycle_date
 
 logger = get_logger(__name__)
@@ -4912,6 +4913,31 @@ async def recover_live_chases() -> None:
             )
 
 
+async def _supervised(coro_fn, *, name: str, restart_delay: int = 60) -> None:
+    """Supervisor wrapper for long-running background tasks.
+
+    Runs ``coro_fn()`` in a loop. If the coroutine raises an unhandled
+    exception it is logged and the task is restarted after ``restart_delay``
+    seconds, preventing silent task death. CancelledError propagates normally
+    so Litestar shutdown still cancels all tasks cleanly.
+
+    Usage::
+
+        asyncio.create_task(_supervised(_task_foo, name="foo"))
+        asyncio.create_task(_supervised(lambda: _task_bar(state), name="bar"))
+    """
+    while True:
+        try:
+            await coro_fn()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                f"[BG-CRASH] {name} crashed — restarting in {restart_delay}s"
+            )
+            await asyncio.sleep(restart_delay)
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -4920,36 +4946,36 @@ async def on_startup(app) -> None:
     from backend.api.routes.algo import start_persist_flush
     start_persist_flush()
     app.state.bg_tasks = [
-        asyncio.create_task(_task_market(state),         name="bg-market"),
-        asyncio.create_task(_task_token_refresh(),        name="bg-token-refresh"),
-        asyncio.create_task(_task_performance(state),    name="bg-performance"),
-        asyncio.create_task(_task_close(state),          name="bg-close"),
-        asyncio.create_task(_task_expiry_check(),        name="bg-expiry"),
-        asyncio.create_task(_task_instruments(),         name="bg-instruments"),
-        asyncio.create_task(_task_daily_snapshot(),      name="bg-daily-snapshot"),
-        asyncio.create_task(_task_sim_cleanup(),         name="bg-sim-cleanup"),
-        asyncio.create_task(_task_mcp_audit_cleanup(),   name="bg-mcp-audit-cleanup"),
-        asyncio.create_task(_task_visitor_log_daily(),   name="bg-visitor-log"),
-        asyncio.create_task(_task_sparkline_warm(state), name="bg-sparkline-warm"),
-        asyncio.create_task(_task_ticker_watchdog(state), name="bg-ticker-watchdog"),
-        asyncio.create_task(_task_holiday_refresh(),     name="bg-holiday-refresh"),
-        asyncio.create_task(_task_hedge_proxy_regression(), name="bg-hedge-proxy-regression"),
-        asyncio.create_task(_task_trail_stop(),          name="bg-trail-stop"),
-        asyncio.create_task(_task_oco_pair_watcher(),    name="bg-oco-pair-watcher"),
-        asyncio.create_task(_task_strategy_snapshot(),   name="bg-strategy-snapshot"),
-        asyncio.create_task(_task_monthly_statement(),   name="bg-monthly-statement"),
-        asyncio.create_task(_task_nav_compute(),         name="bg-nav-compute"),
-        asyncio.create_task(_task_purge_persistence_caches(), name="bg-purge-persistence"),
-        asyncio.create_task(_task_purge_audit_log(),           name="bg-purge-audit-log"),
-        asyncio.create_task(_task_purge_visitor_log(),         name="bg-purge-visitor-log"),
-        asyncio.create_task(_task_purge_impersonation_events(), name="bg-purge-impersonation-events"),
-        asyncio.create_task(_task_purge_admin_email_events(),   name="bg-purge-admin-email-events"),
-        asyncio.create_task(_task_market_lifecycle(),    name="bg-market-lifecycle"),
-        asyncio.create_task(_task_funds_offhours(),      name="bg-funds-offhours"),
-        asyncio.create_task(_task_closed_hours_refresh(), name="bg-closed-hours-refresh"),
-        asyncio.create_task(_task_warm_backfill(),       name="bg-warm-backfill"),
-        asyncio.create_task(_task_perf_snapshot(),       name="bg-perf-snapshot"),
-        asyncio.create_task(_task_purge_perf_snapshots(), name="bg-purge-perf-snapshots"),
+        asyncio.create_task(_supervised(lambda: _task_market(state),          name="bg-market"),          name="bg-market"),
+        asyncio.create_task(_supervised(_task_token_refresh,                   name="bg-token-refresh"),   name="bg-token-refresh"),
+        asyncio.create_task(_supervised(lambda: _task_performance(state),      name="bg-performance"),     name="bg-performance"),
+        asyncio.create_task(_supervised(lambda: _task_close(state),            name="bg-close"),           name="bg-close"),
+        asyncio.create_task(_supervised(_task_expiry_check,                    name="bg-expiry"),          name="bg-expiry"),
+        asyncio.create_task(_supervised(_task_instruments,                     name="bg-instruments"),     name="bg-instruments"),
+        asyncio.create_task(_supervised(_task_daily_snapshot,                  name="bg-daily-snapshot"),  name="bg-daily-snapshot"),
+        asyncio.create_task(_supervised(_task_sim_cleanup,                     name="bg-sim-cleanup"),     name="bg-sim-cleanup"),
+        asyncio.create_task(_supervised(_task_mcp_audit_cleanup,               name="bg-mcp-audit-cleanup"), name="bg-mcp-audit-cleanup"),
+        asyncio.create_task(_supervised(_task_visitor_log_daily,               name="bg-visitor-log"),     name="bg-visitor-log"),
+        asyncio.create_task(_supervised(lambda: _task_sparkline_warm(state),   name="bg-sparkline-warm"),  name="bg-sparkline-warm"),
+        asyncio.create_task(_supervised(lambda: _task_ticker_watchdog(state),  name="bg-ticker-watchdog"), name="bg-ticker-watchdog"),
+        asyncio.create_task(_supervised(_task_holiday_refresh,                 name="bg-holiday-refresh"), name="bg-holiday-refresh"),
+        asyncio.create_task(_supervised(_task_hedge_proxy_regression,          name="bg-hedge-proxy-regression"), name="bg-hedge-proxy-regression"),
+        asyncio.create_task(_supervised(_task_trail_stop,                      name="bg-trail-stop"),      name="bg-trail-stop"),
+        asyncio.create_task(_supervised(_task_oco_pair_watcher,                name="bg-oco-pair-watcher"), name="bg-oco-pair-watcher"),
+        asyncio.create_task(_supervised(_task_strategy_snapshot,               name="bg-strategy-snapshot"), name="bg-strategy-snapshot"),
+        asyncio.create_task(_supervised(_task_monthly_statement,               name="bg-monthly-statement"), name="bg-monthly-statement"),
+        asyncio.create_task(_supervised(_task_nav_compute,                     name="bg-nav-compute"),     name="bg-nav-compute"),
+        asyncio.create_task(_supervised(_task_purge_persistence_caches,        name="bg-purge-persistence"), name="bg-purge-persistence"),
+        asyncio.create_task(_supervised(_task_purge_audit_log,                 name="bg-purge-audit-log"), name="bg-purge-audit-log"),
+        asyncio.create_task(_supervised(_task_purge_visitor_log,               name="bg-purge-visitor-log"), name="bg-purge-visitor-log"),
+        asyncio.create_task(_supervised(_task_purge_impersonation_events,      name="bg-purge-impersonation-events"), name="bg-purge-impersonation-events"),
+        asyncio.create_task(_supervised(_task_purge_admin_email_events,        name="bg-purge-admin-email-events"), name="bg-purge-admin-email-events"),
+        asyncio.create_task(_supervised(_task_market_lifecycle,                name="bg-market-lifecycle"), name="bg-market-lifecycle"),
+        asyncio.create_task(_supervised(_task_funds_offhours,                  name="bg-funds-offhours"),  name="bg-funds-offhours"),
+        asyncio.create_task(_supervised(_task_closed_hours_refresh,            name="bg-closed-hours-refresh"), name="bg-closed-hours-refresh"),
+        asyncio.create_task(_supervised(_task_warm_backfill,                   name="bg-warm-backfill"),   name="bg-warm-backfill"),
+        asyncio.create_task(_supervised(_task_perf_snapshot,                   name="bg-perf-snapshot"),   name="bg-perf-snapshot"),
+        asyncio.create_task(_supervised(_task_purge_perf_snapshots,            name="bg-purge-perf-snapshots"), name="bg-purge-perf-snapshots"),
     ]
     # Mode 2 (real-data paper) runs on BOTH main and dev branches.
     # The PaperTradeEngine singleton processes its open-order book against

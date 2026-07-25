@@ -250,10 +250,32 @@ _FETCH_HEALTH: dict[str, dict] = {}
 # path and those fields are informational-only (stale by design).
 _BREAKER_LOCK = threading.Lock()
 
+# Separate lock for CB-state file I/O — never held at the same time as
+# _BREAKER_LOCK to avoid lock-order deadlocks.
+_CB_PERSIST_LOCK = threading.Lock()
+_CB_STATE_PATH = "/tmp/ramboq_cb_state.json"
+
 # Circuit-breaker thresholds.
 _CB_FAIL_THRESHOLD: int = 3          # consecutive fails to open the breaker
 _CB_INITIAL_COOLOFF_S: float = 300.0 # 5 min
 _CB_MAX_COOLOFF_S: float = 1800.0    # 30 min cap
+
+# Load persisted CB state that hasn't expired yet (survives process restarts).
+# Mirrors the _dhan_next_poll pattern at line 292.
+try:
+    if os.path.exists(_CB_STATE_PATH):
+        _cb_saved = _json.loads(open(_CB_STATE_PATH).read())
+        _cb_now_boot = _time.time()
+        for _cb_acct, _cb_entry in _cb_saved.items():
+            _cb_until = _cb_entry.get("circuit_open_until")
+            if _cb_until and _cb_until > _cb_now_boot:
+                _FETCH_HEALTH.setdefault(_cb_acct, {}).update({
+                    "circuit_open_until":     _cb_until,
+                    "open_cycle_count":       _cb_entry.get("open_cycle_count", 0),
+                    "circuit_last_opened_at": _cb_entry.get("circuit_last_opened_at"),
+                })
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Per-account Dhan poll-priority interval gate (Jul 2026)
@@ -421,7 +443,8 @@ def _update_dhan_next_poll(account: str, broker) -> None:
     with _dhan_next_poll_lock:
         _dhan_next_poll[account] = _time.time() + interval
         try:
-            open(_COOLOFF_PATH, 'w').write(_json.dumps(dict(_dhan_next_poll)))
+            with open(_COOLOFF_PATH, 'w') as _f:
+                _f.write(_json.dumps(dict(_dhan_next_poll)))
         except Exception:
             pass
 
@@ -763,6 +786,36 @@ def _is_circuit_open(account: str) -> bool:
     return _circuit_state(account) == "open"
 
 
+def _persist_cb_state() -> None:
+    """Write non-expired circuit_open_until entries to disk.
+
+    Called OUTSIDE _BREAKER_LOCK (under its own _CB_PERSIST_LOCK) so
+    I/O never blocks the in-memory state machine. Survives process
+    restarts — on next startup the module-level loader (above) repopulates
+    _FETCH_HEALTH with any still-valid entries.
+
+    Mirrors the _COOLOFF_PATH pattern for Dhan poll-priority cooloff.
+    """
+    try:
+        now = _time.time()
+        snapshot: dict = {}
+        # Read without _BREAKER_LOCK — only reading float/None fields
+        # which are single-assignment writes (GIL-safe).
+        for acct, entry in _FETCH_HEALTH.items():
+            until = entry.get("circuit_open_until")
+            if until and until > now:
+                snapshot[acct] = {
+                    "circuit_open_until":     until,
+                    "open_cycle_count":       entry.get("open_cycle_count", 0),
+                    "circuit_last_opened_at": entry.get("circuit_last_opened_at"),
+                }
+        with _CB_PERSIST_LOCK:
+            with open(_CB_STATE_PATH, "w") as _f:
+                _json.dump(snapshot, _f)
+    except Exception:
+        logger.debug("_persist_cb_state: write failed (non-fatal)", exc_info=True)
+
+
 def _record_breaker_state(
     account: str, ok: bool, error: str, now: float
 ) -> tuple[bool, bool, bool]:
@@ -841,6 +894,11 @@ def _record_breaker_state(
                     f"open_until={_ts_label(now + cooloff)} "
                     f"cycle={e['open_cycle_count']}"
                 )
+    # Persist CB state OUTSIDE _BREAKER_LOCK so disk I/O never blocks
+    # the in-memory state machine. Any state change (open or close)
+    # triggers a write; steady-state CLOSED accounts with no
+    # circuit_open_until entry are simply omitted from the snapshot.
+    _persist_cb_state()
     return _new_breaker_open, _was_halfopen, _was_recovering
 
 
