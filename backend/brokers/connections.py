@@ -775,6 +775,14 @@ class DhanConnection:
         rotate every few minutes — see the `Dhan rotation pattern`
         diagnostic in dhan.py for the symptom shape.
         """
+        if not self._source_ip:
+            logger.error(
+                "[DHAN-IP] account=%r has no source_ip configured — all Dhan accounts "
+                "share the same server IPv4; Dhan auth backend will invalidate other "
+                "accounts' tokens on every login (DH-906 rotation loop). "
+                "Add source_ip to secrets.yaml for this account.",
+                self.account,
+            )
         try:
             from dhanhq import dhanhq  # type: ignore[import-not-found]
         except ImportError as e:
@@ -814,10 +822,11 @@ class DhanConnection:
         if not self._source_ip:
             return
         if http_holder is None:
-            logger.warning(
-                f"Dhan {self.account!r}: SDK doesn't expose dhan_http "
-                f"holder; source_ip binding skipped. Token rotation "
-                f"pattern may persist."
+            logger.critical(
+                "[DHAN-IP] account=%r: dhanhq SDK did not expose dhan_http — "
+                "source_ip binding skipped; multi-account token rotation risk (DH-906). "
+                "Check dhanhq SDK version.",
+                self.account,
             )
             return
         session = getattr(http_holder, "session", None)
@@ -1408,27 +1417,28 @@ class GrowwConnection:
         written a fresh token to the file cache — the inner check uses
         that token instead of running another HTTP mint."""
         cache_key = f"groww:{self.account}"
-        with self._login_lock, _cross_process_login_lock(cache_key):
-            # Did a peer just refresh? If the cached token is fresh and
-            # different from the one we're holding, use it and skip the
-            # mint entirely.
-            cached, _ = _load_cached_token(cache_key)
-            if cached and cached != self._access_token:
-                self._access_token = cached
+        with self._login_lock:
+            with _cross_process_login_lock(cache_key):
+                # Did a peer just refresh? If the cached token is fresh and
+                # different from the one we're holding, use it and skip the
+                # mint entirely.
+                cached, _ = _load_cached_token(cache_key)
+                if cached and cached != self._access_token:
+                    self._access_token = cached
+                    try:
+                        from growwapi import GrowwAPI  # type: ignore[import-not-found]
+                        self._groww = GrowwAPI(cached)
+                        return
+                    except Exception:
+                        # Fall through to a full re-mint if the SDK rejects.
+                        pass
+                # No peer mint observed — clear cache + re-build (which will
+                # mint via TOTP under `_resolve_token`).
                 try:
-                    from growwapi import GrowwAPI  # type: ignore[import-not-found]
-                    self._groww = GrowwAPI(cached)
-                    return
+                    _save_cached_token(cache_key, "")
                 except Exception:
-                    # Fall through to a full re-mint if the SDK rejects.
                     pass
-            # No peer mint observed — clear cache + re-build (which will
-            # mint via TOTP under `_resolve_token`).
-            try:
-                _save_cached_token(cache_key, "")
-            except Exception:
-                pass
-            self._build()
+                self._build()
 
     def get_groww_conn(self):
         if self._groww is None:

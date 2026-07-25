@@ -523,69 +523,100 @@ class TestLastGoodLtpTtl:
 class TestRawCacheKeyScope:
     """Each of "positions", "holdings", "margins" is an independent cache key.
 
-    test_3tier_audit.py covers the put/get/invalidate round-trip for one key;
-    this class asserts that partial invalidate leaves the sibling keys live
-    and that a new put to one key does not affect another.
+    The raw broker-DataFrame cache is now managed by ssot_fetch(mode='coalesce')
+    on _fetch_*_cached() functions. Cache state is accessed via the _result_cache
+    attribute exposed on each decorated function. _raw_cache_invalidate() provides
+    the same external API as before.
     """
+
+    def _get_cache(self, key: str):
+        """Return cached value for key, or None if not present."""
+        from backend.brokers.broker_apis import (
+            _fetch_holdings_cached, _fetch_positions_cached, _fetch_margins_cached,
+        )
+        fn_map = {
+            "holdings": _fetch_holdings_cached,
+            "positions": _fetch_positions_cached,
+            "margins": _fetch_margins_cached,
+        }
+        fn = fn_map.get(key)
+        if fn is None:
+            return None
+        cache = getattr(fn, "_result_cache", {})
+        return cache.get(key)
+
+    def _put_cache(self, key: str, value) -> None:
+        """Directly seed a value into the ssot_fetch _result_cache."""
+        from backend.brokers.broker_apis import (
+            _fetch_holdings_cached, _fetch_positions_cached, _fetch_margins_cached,
+        )
+        fn_map = {
+            "holdings": _fetch_holdings_cached,
+            "positions": _fetch_positions_cached,
+            "margins": _fetch_margins_cached,
+        }
+        fn = fn_map.get(key)
+        if fn is not None:
+            cache = getattr(fn, "_result_cache", None)
+            if cache is not None:
+                cache[key] = value
 
     def setup_method(self):
         from backend.brokers.broker_apis import _raw_cache_invalidate
-        _raw_cache_invalidate()  # clean slate
+        _raw_cache_invalidate(None)  # clean slate
 
     def teardown_method(self):
         from backend.brokers.broker_apis import _raw_cache_invalidate
-        _raw_cache_invalidate()
+        _raw_cache_invalidate(None)
 
     def test_sibling_keys_independent_on_put(self):
-        """Putting "positions" must not make "holdings" appear as cached."""
-        from backend.brokers.broker_apis import _raw_cache_put, _raw_cache_get
-
+        """Seeding 'positions' must not make 'holdings' appear as cached."""
         df = pd.DataFrame({"account": ["T"], "pnl": [0.0]})
-        _raw_cache_put("positions", [df])
+        self._put_cache("positions", [df])
 
-        assert _raw_cache_get("positions") is not None, (
+        assert self._get_cache("positions") is not None, (
             "positions should be cached after put"
         )
-        assert _raw_cache_get("holdings") is None, (
+        assert self._get_cache("holdings") is None, (
             "holdings must not be cached when only positions was put"
         )
-        assert _raw_cache_get("margins") is None, (
+        assert self._get_cache("margins") is None, (
             "margins must not be cached when only positions was put"
         )
 
     def test_partial_invalidate_leaves_siblings_live(self):
         """Invalidating one key must leave the other two keys accessible."""
-        from backend.brokers.broker_apis import _raw_cache_put, _raw_cache_get, _raw_cache_invalidate
+        from backend.brokers.broker_apis import _raw_cache_invalidate
 
         df = pd.DataFrame({"account": ["T"], "pnl": [0.0]})
         for key in ("positions", "holdings", "margins"):
-            _raw_cache_put(key, [df])
+            self._put_cache(key, [df])
 
         _raw_cache_invalidate("positions")
 
-        assert _raw_cache_get("positions") is None, (
+        assert self._get_cache("positions") is None, (
             "positions should be invalidated"
         )
-        assert _raw_cache_get("holdings") is not None, (
+        assert self._get_cache("holdings") is not None, (
             "holdings must remain cached after positions-only invalidate"
         )
-        assert _raw_cache_get("margins") is not None, (
+        assert self._get_cache("margins") is not None, (
             "margins must remain cached after positions-only invalidate"
         )
 
     def test_full_invalidate_clears_all_three_keys(self):
-        """_raw_cache_invalidate() with no argument clears every key."""
-        from backend.brokers.broker_apis import _raw_cache_put, _raw_cache_get, _raw_cache_invalidate
+        """_raw_cache_invalidate(None) clears every key."""
+        from backend.brokers.broker_apis import _raw_cache_invalidate
 
         df = pd.DataFrame({"account": ["T"], "pnl": [0.0]})
         for key in ("positions", "holdings", "margins"):
-            _raw_cache_put(key, [df])
+            self._put_cache(key, [df])
 
-        _raw_cache_invalidate()
+        _raw_cache_invalidate(None)
 
         for key in ("positions", "holdings", "margins"):
-            assert _raw_cache_get(key) is None, (
-                f"{key} should be None after full invalidate, got {_raw_cache_get(key)}"
+            assert self._get_cache(key) is None, (
+                f"{key} should be None after full invalidate(None)"
             )
 
 

@@ -30,13 +30,16 @@ logger = get_logger(__name__)
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _clear_kite_cache() -> None:
-    """Clear the module-level instruments cache in the kite adapter.
+def _clear_kite_cache(broker) -> None:
+    """Evict the ssot_fetch cache for the broker's instruments() method.
 
-    Called before each test to ensure cache isolation between tests.
+    ssot_fetch(coalesce) caches per (account, exchange) key inside the
+    decorated method's _result_cache dict. Use force_refresh=True to evict
+    a specific key, or clear _result_cache directly for test isolation.
     """
-    from backend.brokers.adapters.kite import _INSTR_CACHE
-    _INSTR_CACHE.clear()
+    cache = getattr(broker.instruments, "_result_cache", None)
+    if cache is not None:
+        cache.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,12 +50,9 @@ class TestKiteInstrumentsCache:
     """Verify that KiteBroker.instruments() caches results per exchange.
 
     Second call to instruments(exchange) must return the cached result without
-    invoking kite.instruments() again.
+    invoking kite.instruments() again. The cache is managed by ssot_fetch
+    (mode='coalesce') which replaced the hand-rolled _INSTR_CACHE/_INSTR_LOCK.
     """
-
-    def setup_method(self):
-        """Clear the cache before each test."""
-        _clear_kite_cache()
 
     def test_instruments_cache_hit(self):
         """Second call to instruments(exchange) must use cache, not SDK."""
@@ -66,14 +66,15 @@ class TestKiteInstrumentsCache:
         ]
         mock_kite.instruments.return_value = mock_instruments_response
 
-        # KiteBroker.__init__ takes a KiteConnection, not a raw kite handle.
-        # Mock the connection object so get_kite_conn() returns mock_kite.
+        # KiteBroker.__init__ takes a KiteConnection (conn param only).
+        # kite is a property calling conn.get_kite_conn() — not settable.
         mock_conn = MagicMock()
-        mock_conn.account = "ZG0001"
+        mock_conn.account = "ZG_cache_test"
         mock_conn.get_kite_conn.return_value = mock_kite
 
-        # Create a KiteBroker with the mock connection
         broker = KiteBroker(conn=mock_conn)
+        # Start with a clean cache for this broker's account+exchange key
+        _clear_kite_cache(broker)
 
         # First call — should hit the SDK
         result1 = broker.instruments("NSE")
@@ -84,7 +85,7 @@ class TestKiteInstrumentsCache:
             f"Expected 1 SDK call, got {mock_kite.instruments.call_count}"
         )
 
-        # Second call with same exchange — should use cache
+        # Second call with same exchange — should use ssot_fetch cache
         result2 = broker.instruments("NSE")
         assert result2 == mock_instruments_response, (
             f"Second call should return cached response, got {result2}"
@@ -93,13 +94,37 @@ class TestKiteInstrumentsCache:
             f"Expected still 1 SDK call (cache hit), got {mock_kite.instruments.call_count}"
         )
 
-        # Call with different exchange — should hit SDK again
+        # Call with different exchange — should hit SDK again (different key)
         mock_kite.instruments.return_value = [
             {"tradingsymbol": "NIFTY25JUN20000CE", "exchange": "NFO", "lot_size": 50},
         ]
         result3 = broker.instruments("NFO")
         assert mock_kite.instruments.call_count == 2, (
             f"Expected 2 SDK calls after different exchange, got {mock_kite.instruments.call_count}"
+        )
+
+    def test_force_refresh_bypasses_cache(self):
+        """force_refresh=True must evict and re-fetch from SDK."""
+        from backend.brokers.adapters.kite import KiteBroker
+
+        mock_kite = MagicMock()
+        mock_kite.instruments.return_value = [{"tradingsymbol": "SBIN", "exchange": "NSE"}]
+
+        mock_conn = MagicMock()
+        mock_conn.account = "ZG_force_refresh_test"
+        mock_conn.get_kite_conn.return_value = mock_kite
+
+        broker = KiteBroker(conn=mock_conn)
+        _clear_kite_cache(broker)
+
+        # Populate cache
+        broker.instruments("NSE")
+        assert mock_kite.instruments.call_count == 1
+
+        # force_refresh=True must trigger a new SDK call
+        broker.instruments("NSE", force_refresh=True)
+        assert mock_kite.instruments.call_count == 2, (
+            "force_refresh=True must bypass ssot_fetch cache and call SDK again"
         )
 
 

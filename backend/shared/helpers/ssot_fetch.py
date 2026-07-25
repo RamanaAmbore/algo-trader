@@ -84,6 +84,7 @@ def ssot_fetch(
                 async with _ser_locks[k]:
                     return await fn(*args, **kwargs)
 
+            async_wrapper._result_cache = _result_cache
             return async_wrapper
 
         else:
@@ -159,6 +160,7 @@ def ssot_fetch(
                 with lock:
                     return fn(*args, **kwargs)
 
+            sync_wrapper._result_cache = _result_cache
             return sync_wrapper
 
     return decorator

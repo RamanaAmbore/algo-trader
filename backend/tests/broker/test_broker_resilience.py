@@ -597,6 +597,65 @@ class TestDhanCrossProcessLockPath:
 # P0-2: Dhan double-check after lock (token restoration)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Dhan IP binding — startup validation and silent-failure guards
+# ---------------------------------------------------------------------------
+
+class TestDhanIpBindingDiagnostics:
+    """DhanConnection must emit visible errors when source_ip is missing or
+    the SDK doesn't expose its HTTP session holder."""
+
+    def test_build_client_logs_error_when_source_ip_missing(self):
+        """_build_client() must log ERROR when source_ip is None so
+        misconfiguration is caught at startup, not after the DH-906 loop starts."""
+        import threading
+        from unittest.mock import MagicMock, patch
+        from backend.brokers.connections import DhanConnection
+        import backend.brokers.connections as _conn_mod
+
+        conn = object.__new__(DhanConnection)
+        conn.account = "DH-TEST"
+        conn._source_ip = None
+        conn._dhan = None
+        conn._import_error = None
+        conn._login_lock = threading.Lock()
+
+        mock_dhanhq_cls = MagicMock(return_value=MagicMock())
+        mock_ctx_cls = MagicMock(return_value=MagicMock(dhan_http=MagicMock(session=MagicMock())))
+        mock_module = MagicMock(dhanhq=mock_dhanhq_cls, DhanContext=mock_ctx_cls)
+
+        with patch.object(_conn_mod.logger, "error") as mock_error:
+            with patch.dict("sys.modules", {"dhanhq": mock_module}):
+                try:
+                    conn._build_client("fake-token")
+                except Exception:
+                    pass
+
+        calls = [str(c) for c in mock_error.call_args_list]
+        assert any("DHAN-IP" in c and "source_ip" in c for c in calls), (
+            f"Expected logger.error([DHAN-IP] ... source_ip ...); got: {calls}"
+        )
+
+    def test_mount_source_ip_adapter_logs_critical_when_holder_missing(self):
+        """_mount_source_ip_adapter() must log CRITICAL (not WARNING) when
+        the SDK doesn't expose dhan_http, so it's not buried in WARNING noise."""
+        from unittest.mock import patch
+        from backend.brokers.connections import DhanConnection
+        import backend.brokers.connections as _conn_mod
+
+        conn = object.__new__(DhanConnection)
+        conn.account = "DH-TEST"
+        conn._source_ip = "2001:db8::1"  # source_ip set so we enter the guard
+
+        with patch.object(_conn_mod.logger, "critical") as mock_critical:
+            conn._mount_source_ip_adapter(None)  # http_holder=None → CRITICAL
+
+        calls = [str(c) for c in mock_critical.call_args_list]
+        assert any("DHAN-IP" in c and "dhan_http" in c for c in calls), (
+            f"Expected logger.critical([DHAN-IP] ... dhan_http ...); got: {calls}"
+        )
+
+
 class TestDhanTokenRestoration:
     """Dhan must restore an existing valid token instead of regenerating."""
 
@@ -613,4 +672,395 @@ class TestDhanTokenRestoration:
         # Also verify it returns early if token is valid and conn exists
         assert "_dhan is not None" in source or "return self._dhan" in source, (
             "_dhan_conn_under_lock must have fast path for valid cached token"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. ssot_fetch._result_cache exposure + force_refresh behaviour
+# ---------------------------------------------------------------------------
+
+class TestSsotFetchResultCache:
+    """ssot_fetch(mode='coalesce') must expose _result_cache on the wrapper
+    and honour force_refresh=True to trigger a fresh call."""
+
+    def test_result_cache_exposed_on_sync_wrapper(self):
+        """Decorated sync function must have _result_cache attribute."""
+        from backend.shared.helpers.ssot_fetch import ssot_fetch
+
+        @ssot_fetch(mode="coalesce", key="test_key_cache_12")
+        def my_fn():
+            return {"data": 42}
+
+        assert hasattr(my_fn, "_result_cache"), (
+            "ssot_fetch sync wrapper must expose _result_cache dict"
+        )
+        assert isinstance(my_fn._result_cache, dict)
+
+    def test_force_refresh_triggers_fresh_call_after_cache(self):
+        """After a result is cached, force_refresh=True must re-call the function."""
+        from backend.shared.helpers.ssot_fetch import ssot_fetch
+
+        call_count = {"n": 0}
+
+        @ssot_fetch(mode="coalesce", key="test_force_refresh_12")
+        def counted_fn():
+            call_count["n"] += 1
+            return f"call_{call_count['n']}"
+
+        # First call: populates cache
+        r1 = counted_fn()
+        assert r1 == "call_1"
+        assert call_count["n"] == 1
+        assert "test_force_refresh_12" in counted_fn._result_cache
+
+        # Second call: should hit cache (no new call)
+        r2 = counted_fn()
+        assert r2 == "call_1"
+        assert call_count["n"] == 1, "Sequential call should use cache"
+
+        # Third call with force_refresh: must re-run
+        r3 = counted_fn(force_refresh=True)
+        assert r3 == "call_2"
+        assert call_count["n"] == 2, "force_refresh=True must trigger fresh call"
+
+    def test_result_cache_exposed_on_async_wrapper(self):
+        """Decorated async function must also expose _result_cache."""
+        from backend.shared.helpers.ssot_fetch import ssot_fetch
+
+        @ssot_fetch(mode="coalesce", key="async_test_key_12")
+        async def async_fn():
+            return "async_result"
+
+        assert hasattr(async_fn, "_result_cache"), (
+            "ssot_fetch async wrapper must expose _result_cache dict"
+        )
+
+    def test_none_result_is_never_cached(self):
+        """None returns must not be stored so the next call re-runs."""
+        from backend.shared.helpers.ssot_fetch import ssot_fetch
+
+        call_count = {"n": 0}
+
+        @ssot_fetch(mode="coalesce", key="test_none_not_cached_12")
+        def returns_none():
+            call_count["n"] += 1
+            return None
+
+        r1 = returns_none()
+        r2 = returns_none()
+        assert r1 is None
+        assert r2 is None
+        assert call_count["n"] == 2, "None result must not be cached — fn called twice"
+        assert "test_none_not_cached_12" not in returns_none._result_cache
+
+
+# ---------------------------------------------------------------------------
+# 13. Kite instruments() coalesce — single SDK call under concurrent load
+# ---------------------------------------------------------------------------
+
+class TestKiteInstrumentsCoalesce:
+    """KiteBroker.instruments() decorated with ssot_fetch(coalesce) must
+    call the underlying SDK exactly once when N threads request the same
+    exchange simultaneously."""
+
+    def test_instruments_calls_sdk_once_for_concurrent_threads(self):
+        """10 concurrent callers for the same account+exchange share one fetch."""
+        from unittest.mock import MagicMock
+        from backend.brokers.adapters.kite import KiteBroker
+
+        sdk_call_count = {"n": 0}
+        fake_instruments = [{"tradingsymbol": "NIFTY", "exchange": "NSE"}]
+
+        def fake_kite_instruments(exchange=None):
+            sdk_call_count["n"] += 1
+            _time.sleep(0.05)  # simulate network latency
+            return fake_instruments
+
+        # KiteBroker.kite is a property that calls conn.get_kite_conn()
+        mock_sdk = MagicMock()
+        mock_sdk.instruments.side_effect = fake_kite_instruments
+        mock_conn = MagicMock()
+        mock_conn.account = "ZG0790_coalesce_test"
+        mock_conn.get_kite_conn.return_value = mock_sdk
+
+        broker = KiteBroker(conn=mock_conn)
+
+        # Evict any prior cached result for this account+exchange key
+        broker.instruments("NSE", force_refresh=True)
+        sdk_call_count["n"] = 0  # reset counter; cache is now fresh
+
+        # All threads will find the cache already populated → 0 new SDK calls
+        results = []
+        errors = []
+
+        def fetch():
+            try:
+                r = broker.instruments("NSE")
+                results.append(r)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=fetch) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Unexpected errors: {errors}"
+        assert len(results) == 10, "All 10 threads must get a result"
+        for r in results:
+            assert r == fake_instruments, f"Unexpected result: {r}"
+        # Cache was already populated; no new SDK calls
+        assert sdk_call_count["n"] == 0, (
+            f"Expected 0 new SDK calls (cache hit), got {sdk_call_count['n']}"
+        )
+
+    def test_instruments_concurrent_cold_start_coalesces(self):
+        """10 threads hitting a cold cache must share one in-flight SDK call."""
+        from unittest.mock import MagicMock
+        from backend.brokers.adapters.kite import KiteBroker
+
+        sdk_call_count = {"n": 0}
+        fake_instruments = [{"tradingsymbol": "BANKNIFTY", "exchange": "NSE"}]
+
+        def slow_fetch(exchange=None):
+            sdk_call_count["n"] += 1
+            _time.sleep(0.1)  # long enough for all 10 threads to pile up
+            return fake_instruments
+
+        mock_sdk = MagicMock()
+        mock_sdk.instruments.side_effect = slow_fetch
+        mock_conn = MagicMock()
+        mock_conn.account = "ZG0790_cold_coalesce"
+        mock_conn.get_kite_conn.return_value = mock_sdk
+
+        broker = KiteBroker(conn=mock_conn)
+        # Clear cache so all threads start cold
+        cache = getattr(broker.instruments, "_result_cache", None)
+        if cache is not None:
+            cache.pop(f"{broker.account}:NSE", None)
+
+        results = []
+        errors = []
+
+        def fetch():
+            try:
+                r = broker.instruments("NSE")
+                results.append(r)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=fetch) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Unexpected errors: {errors}"
+        assert len(results) == 10
+        for r in results:
+            assert r == fake_instruments
+        # ssot_fetch(coalesce) must coalesce all 10 → exactly 1 SDK call
+        assert sdk_call_count["n"] == 1, (
+            f"Expected 1 SDK call (coalesce), got {sdk_call_count['n']}"
+        )
+
+    def test_instruments_cache_key_includes_account_and_exchange(self):
+        """Key function must differentiate by account + exchange."""
+        from unittest.mock import MagicMock
+        from backend.brokers.adapters.kite import KiteBroker
+
+        nse_data = [{"exchange": "NSE_acct1"}]
+        nse_data2 = [{"exchange": "NSE_acct2"}]
+
+        mock_sdk1 = MagicMock()
+        mock_sdk1.instruments.return_value = nse_data
+        mock_conn1 = MagicMock()
+        mock_conn1.account = "ZG0790_key_test_A"
+        mock_conn1.get_kite_conn.return_value = mock_sdk1
+
+        mock_sdk2 = MagicMock()
+        mock_sdk2.instruments.return_value = nse_data2
+        mock_conn2 = MagicMock()
+        mock_conn2.account = "ZG0791_key_test_B"
+        mock_conn2.get_kite_conn.return_value = mock_sdk2
+
+        broker1 = KiteBroker(conn=mock_conn1)
+        broker2 = KiteBroker(conn=mock_conn2)
+
+        r1 = broker1.instruments("NSE", force_refresh=True)
+        r2 = broker2.instruments("NSE", force_refresh=True)
+
+        # Different accounts must get different results (separate cache keys)
+        assert r1 == nse_data, f"broker1 got wrong result: {r1}"
+        assert r2 == nse_data2, f"broker2 got wrong result: {r2}"
+
+
+# ---------------------------------------------------------------------------
+# 14. _raw_cache_invalidate operates on ssot_fetch _result_cache
+# ---------------------------------------------------------------------------
+
+class TestRawCacheInvalidate:
+    """_raw_cache_invalidate(key) must selectively clear ssot_fetch caches."""
+
+    def _seed_cache(self, fn, key, value):
+        """Directly write into the _result_cache of a ssot_fetch-decorated fn."""
+        cache = getattr(fn, "_result_cache", None)
+        if cache is not None:
+            cache[key] = value
+
+    def test_invalidate_specific_key_clears_only_that_cache(self):
+        """_raw_cache_invalidate('holdings') must clear holdings cache only."""
+        from backend.brokers.broker_apis import (
+            _fetch_holdings_cached, _fetch_positions_cached,
+            _fetch_margins_cached, _raw_cache_invalidate,
+        )
+
+        # Start clean
+        _raw_cache_invalidate(None)
+
+        # Seed fake results into all three caches
+        self._seed_cache(_fetch_holdings_cached, "holdings", ["h_data"])
+        self._seed_cache(_fetch_positions_cached, "positions", ["p_data"])
+        self._seed_cache(_fetch_margins_cached, "margins", ["m_data"])
+
+        # Invalidate only holdings
+        _raw_cache_invalidate("holdings")
+
+        assert "holdings" not in _fetch_holdings_cached._result_cache, (
+            "holdings cache must be cleared after invalidate('holdings')"
+        )
+        assert "positions" in _fetch_positions_cached._result_cache, (
+            "positions cache must NOT be cleared by invalidate('holdings')"
+        )
+        assert "margins" in _fetch_margins_cached._result_cache, (
+            "margins cache must NOT be cleared by invalidate('holdings')"
+        )
+
+        # Clean up
+        _raw_cache_invalidate(None)
+
+    def test_invalidate_none_clears_all_caches(self):
+        """_raw_cache_invalidate(None) must clear all three caches."""
+        from backend.brokers.broker_apis import (
+            _fetch_holdings_cached, _fetch_positions_cached,
+            _fetch_margins_cached, _raw_cache_invalidate,
+        )
+
+        self._seed_cache(_fetch_holdings_cached, "holdings", ["h_data"])
+        self._seed_cache(_fetch_positions_cached, "positions", ["p_data"])
+        self._seed_cache(_fetch_margins_cached, "margins", ["m_data"])
+
+        _raw_cache_invalidate(None)
+
+        assert not _fetch_holdings_cached._result_cache, (
+            "holdings cache must be empty after invalidate(None)"
+        )
+        assert not _fetch_positions_cached._result_cache, (
+            "positions cache must be empty after invalidate(None)"
+        )
+        assert not _fetch_margins_cached._result_cache, (
+            "margins cache must be empty after invalidate(None)"
+        )
+
+    def test_invalidate_nonexistent_key_is_noop(self):
+        """Invalidating a key not in cache must not raise."""
+        from backend.brokers.broker_apis import _raw_cache_invalidate
+
+        # Must not raise even if key absent
+        _raw_cache_invalidate("nonexistent_key")
+        _raw_cache_invalidate(None)
+
+
+# ---------------------------------------------------------------------------
+# 15. Dhan extended error map — DH-903/905/907/908
+# ---------------------------------------------------------------------------
+
+class TestDhanExtendedErrorMap:
+    """New Dhan error codes DH-903/905/907/908 must map to correct types."""
+
+    def test_dh903_maps_to_broker_order_error(self):
+        """DH-903 (order rejected by exchange) → BrokerOrderError."""
+        from backend.brokers.adapters.dhan import _DHAN_ERROR_MAP, _dhan_exc
+        from backend.brokers.errors import BrokerOrderError
+
+        assert "DH-903" in _DHAN_ERROR_MAP
+        assert _DHAN_ERROR_MAP["DH-903"] is BrokerOrderError
+
+        exc = _dhan_exc("order rejected", code="DH-903", status=400)
+        assert isinstance(exc, BrokerOrderError)
+        assert exc.code == "DH-903"
+
+    def test_dh905_maps_to_broker_network_error(self):
+        """DH-905 (service unavailable) → BrokerNetworkError."""
+        from backend.brokers.adapters.dhan import _DHAN_ERROR_MAP, _dhan_exc
+        from backend.brokers.errors import BrokerNetworkError
+
+        assert "DH-905" in _DHAN_ERROR_MAP
+        assert _DHAN_ERROR_MAP["DH-905"] is BrokerNetworkError
+
+        exc = _dhan_exc("service unavailable", code="DH-905", status=503)
+        assert isinstance(exc, BrokerNetworkError)
+        assert exc.code == "DH-905"
+
+    def test_dh907_maps_to_broker_auth_error(self):
+        """DH-907 (account suspended) → BrokerAuthError."""
+        from backend.brokers.adapters.dhan import _DHAN_ERROR_MAP, _dhan_exc
+        from backend.brokers.errors import BrokerAuthError
+
+        assert "DH-907" in _DHAN_ERROR_MAP
+        assert _DHAN_ERROR_MAP["DH-907"] is BrokerAuthError
+
+        exc = _dhan_exc("account suspended", code="DH-907", status=403)
+        assert isinstance(exc, BrokerAuthError)
+
+    def test_dh908_maps_to_broker_input_error(self):
+        """DH-908 (invalid request parameters) → BrokerInputError."""
+        from backend.brokers.adapters.dhan import _DHAN_ERROR_MAP, _dhan_exc
+        from backend.brokers.errors import BrokerInputError
+
+        assert "DH-908" in _DHAN_ERROR_MAP
+        assert _DHAN_ERROR_MAP["DH-908"] is BrokerInputError
+
+        exc = _dhan_exc("invalid request", code="DH-908", status=422)
+        assert isinstance(exc, BrokerInputError)
+        assert exc.code == "DH-908"
+
+    def test_dh903_dh905_not_in_rotation_signal_patterns(self):
+        """DH-903/905/907/908 must NOT trigger cross-account token rotation."""
+        from backend.brokers.adapters.dhan import _AUTH_ERROR_HINTS
+
+        hints_str = " ".join(_AUTH_ERROR_HINTS).lower()
+        for code in ("dh-903", "dh-905", "dh-907", "dh-908"):
+            assert code not in hints_str, (
+                f"{code.upper()} must not trigger token rotation "
+                f"(not in _AUTH_ERROR_HINTS)"
+            )
+
+
+# ---------------------------------------------------------------------------
+# 16. Groww refresh() nested lock ordering
+# ---------------------------------------------------------------------------
+
+class TestGrowwRefreshLockOrdering:
+    """GrowwConnection.refresh() must use nested `with A: with B:` form
+    rather than `with A, B:` to avoid holding the cross-process file lock
+    during the in-process check."""
+
+    def test_groww_refresh_uses_nested_lock_form(self):
+        """Source of GrowwConnection.refresh must show nested with blocks."""
+        import inspect
+        from backend.brokers.connections import GrowwConnection
+
+        source = inspect.getsource(GrowwConnection.refresh)
+        lines = [l.strip() for l in source.splitlines()]
+        login_lock_lines = [l for l in lines if "with self._login_lock" in l]
+        assert login_lock_lines, "refresh() must acquire self._login_lock"
+        # Confirm no composite form (both on same line with comma)
+        composite_lines = [
+            l for l in login_lock_lines if "_cross_process_login_lock" in l
+        ]
+        assert not composite_lines, (
+            "refresh() must NOT use composite 'with self._login_lock, "
+            "_cross_process_login_lock:' — use nested form instead"
         )

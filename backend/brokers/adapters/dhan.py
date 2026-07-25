@@ -43,7 +43,7 @@ from urllib.request import urlopen
 from backend.brokers.base import Broker
 from backend.brokers.errors import (
     BrokerAuthError, BrokerRateLimitError, BrokerNetworkError,
-    BrokerOrderError, BrokerError,
+    BrokerOrderError, BrokerInputError, BrokerError,
 )
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -53,10 +53,14 @@ logger = get_logger(__name__)
 
 # Maps Dhan error codes → typed BrokerError subclass.
 _DHAN_ERROR_MAP: dict[str, type[BrokerError]] = {
-    "DH-901": BrokerAuthError,    # Invalid token / session expired
-    "DH-902": BrokerAuthError,    # Unauthorised
-    "DH-904": BrokerRateLimitError,  # Rate limit exceeded
-    "DH-906": BrokerAuthError,    # Invalid Token — primary Dhan token-rotation signal
+    "DH-901": BrokerAuthError,        # Invalid token / session expired
+    "DH-902": BrokerAuthError,        # Unauthorised
+    "DH-903": BrokerOrderError,       # Order rejected by exchange
+    "DH-904": BrokerRateLimitError,   # Rate limit exceeded
+    "DH-905": BrokerNetworkError,     # Service temporarily unavailable
+    "DH-906": BrokerAuthError,        # Invalid Token — primary Dhan token-rotation signal
+    "DH-907": BrokerAuthError,        # Account suspended / blocked
+    "DH-908": BrokerInputError,       # Invalid request parameters
 }
 
 
