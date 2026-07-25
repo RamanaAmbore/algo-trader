@@ -66,7 +66,7 @@ async def test_paper_engine_scheduled_on_prod_branch():
     """
     from backend.api.background import on_startup
 
-    mock_engine = MagicMock()
+    mock_engine = AsyncMock()
     mock_engine.recover_from_db = AsyncMock(return_value=0)
     mock_engine.tick_loop = MagicMock(return_value=_noop_coro())
 
@@ -75,6 +75,7 @@ async def test_paper_engine_scheduled_on_prod_branch():
     with patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
          patch("backend.api.algo.paper.get_prod_paper_engine", return_value=mock_engine), \
          patch("backend.api.routes.algo.start_persist_flush"), \
+         patch("backend.api.background.recover_live_chases", new_callable=AsyncMock), \
          _patch_all_bg_tasks():
         await on_startup(app)
 
@@ -82,6 +83,15 @@ async def test_paper_engine_scheduled_on_prod_branch():
     assert "bg-paper-chase" in task_names, (
         f"bg-paper-chase missing from bg_tasks on prod branch. Tasks: {task_names}"
     )
+
+    # Clean up tasks to prevent pytest from hanging
+    for task in app.state.bg_tasks:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 @pytest.mark.asyncio
@@ -92,7 +102,7 @@ async def test_paper_engine_scheduled_on_dev_branch():
     """
     from backend.api.background import on_startup
 
-    mock_engine = MagicMock()
+    mock_engine = AsyncMock()
     mock_engine.recover_from_db = AsyncMock(return_value=0)
     mock_engine.tick_loop = MagicMock(return_value=_noop_coro())
 
@@ -101,6 +111,7 @@ async def test_paper_engine_scheduled_on_dev_branch():
     with patch("backend.shared.helpers.utils.is_prod_branch", return_value=False), \
          patch("backend.api.algo.paper.get_prod_paper_engine", return_value=mock_engine), \
          patch("backend.api.routes.algo.start_persist_flush"), \
+         patch("backend.api.background.recover_live_chases", new_callable=AsyncMock), \
          _patch_all_bg_tasks():
         await on_startup(app)
 
@@ -108,6 +119,15 @@ async def test_paper_engine_scheduled_on_dev_branch():
     assert "bg-paper-chase" in task_names, (
         f"bg-paper-chase missing from bg_tasks on dev branch. Tasks: {task_names}"
     )
+
+    # Clean up tasks to prevent pytest from hanging
+    for task in app.state.bg_tasks:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,10 +148,20 @@ async def test_recover_from_db_called_on_prod():
     with patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
          patch("backend.api.algo.paper.get_prod_paper_engine", return_value=mock_engine), \
          patch("backend.api.routes.algo.start_persist_flush"), \
+         patch("backend.api.background.recover_live_chases", new_callable=AsyncMock), \
          _patch_all_bg_tasks():
         await on_startup(app)
 
     mock_engine.recover_from_db.assert_awaited_once()
+
+    # Clean up tasks to prevent pytest from hanging
+    for task in app.state.bg_tasks:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 @pytest.mark.asyncio
@@ -152,6 +182,15 @@ async def test_recover_from_db_called_on_dev():
         await on_startup(app)
 
     mock_engine.recover_from_db.assert_awaited_once()
+
+    # Clean up tasks to prevent pytest from hanging
+    for task in app.state.bg_tasks:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -251,6 +290,11 @@ async def _noop_coro(*args, **kwargs):
     return
 
 
+async def _cancel_immediately(*args, **kwargs):
+    """Coroutine that raises CancelledError immediately to exit _supervised loop."""
+    raise asyncio.CancelledError()
+
+
 def _patch_all_bg_tasks():
     """
     Patch every individual background task coroutine launched by on_startup
@@ -262,6 +306,7 @@ def _patch_all_bg_tasks():
 
     _TASK_NAMES = [
         "_task_market",
+        "_task_token_refresh",
         "_task_performance",
         "_task_close",
         "_task_expiry_check",
@@ -272,6 +317,7 @@ def _patch_all_bg_tasks():
         "_task_visitor_log_daily",
         "_task_sparkline_warm",
         "_task_ticker_watchdog",
+        "_task_holiday_refresh",
         "_task_hedge_proxy_regression",
         "_task_trail_stop",
         "_task_oco_pair_watcher",
@@ -280,9 +326,16 @@ def _patch_all_bg_tasks():
         "_task_nav_compute",
         "_task_purge_persistence_caches",
         "_task_purge_audit_log",
+        "_task_purge_visitor_log",
+        "_task_purge_impersonation_events",
+        "_task_purge_admin_email_events",
         "_task_market_lifecycle",
         "_task_funds_offhours",
+        "_task_closed_hours_refresh",
         "_task_warm_backfill",
+        "_task_perf_snapshot",
+        "_task_purge_perf_snapshots",
+        "_task_broker_issue_daily",
     ]
 
     @contextlib.contextmanager
@@ -292,7 +345,7 @@ def _patch_all_bg_tasks():
                 stack.enter_context(
                     patch(
                         f"backend.api.background.{name}",
-                        side_effect=_noop_coro,
+                        side_effect=_cancel_immediately,
                     )
                 )
             yield
