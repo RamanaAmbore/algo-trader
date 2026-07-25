@@ -1771,22 +1771,65 @@
    - scrolls internally when content overflows
    - keeps the card's existing colour palette + border-radius
 */
+/* Dark overlay backdrop for fullscreen cards — portalled to document.body
+   by FullscreenButton.svelte. Mirrored here so the rule is discoverable by
+   tools; the authoritative version lives in FullscreenButton.svelte's
+   :global(.fs-backdrop) block so it always wins specificity. */
+.fs-backdrop {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+}
+
 .fs-card-on {
   position: fixed !important;
-  inset: 2rem !important;
-  z-index: var(--z-tooltip) !important;
+  inset: 1.5rem !important;
+  z-index: 9999 !important;
   max-width: none !important;
   max-height: none !important;
   width: auto !important;
   height: auto !important;
   margin: 0 !important;
   overflow: auto !important;
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.70),
-              0 0 0 1.5px rgba(251, 191, 36, 0.45) !important;
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.80),
+              0 0 0 1.5px rgba(251, 191, 36, 0.55) !important;
+  border-radius: 0.75rem !important;
+  animation: fs-pop-in 0.15s ease-out;
   /* Promote stacking context so child elements (tabs, tables,
      hover popovers) layer correctly inside the modal. */
   isolation: isolate;
 }
+
+@keyframes fs-pop-in {
+  from { transform: scale(0.97); opacity: 0.6; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+/* Pinned ✕ close button — portalled to document.body alongside the backdrop. */
+.fs-modal-close-btn {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 10001;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 9999px;
+  background: rgba(30, 41, 59, 0.90);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #e2e8f0;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  line-height: 1;
+}
+.fs-modal-close-btn:hover { background: rgba(239, 68, 68, 0.75); }
+.fs-x-icon { font-size: 1.1rem; line-height: 1; }
 
 /* Tight viewport: less aggressive inset on phones so the card
    doesn't waste edge real estate. */

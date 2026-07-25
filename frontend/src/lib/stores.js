@@ -1355,3 +1355,18 @@ export function startBrokerHealthPoller() {
   // auth breaks in the background without burning unnecessary quota.
   _bhPollerTeardown = visibleInterval(poll, 30_000, 'throttle:60000');
 }
+
+// ---------------------------------------------------------------------------
+// Active-card store — page-header fullscreen shortcut
+// ---------------------------------------------------------------------------
+// Tracks the most recently hovered card so PageHeaderActions can expose a
+// fullscreen button that targets whichever card the operator is looking at,
+// without requiring per-page wiring. Components write via
+// `activeCardStore.set({ label, open })` on card mouseenter; the store
+// resets to null when nothing is hovered.
+//
+// Shape: { label: string | null, open: (() => void) | null }
+//   label — card title shown in the PHA button tooltip
+//   open  — callback that sets the card's isFullscreen to true
+/** @type {import('svelte/store').Writable<{ label: string | null, open: (() => void) | null }>} */
+export const activeCardStore = writable({ label: null, open: null });

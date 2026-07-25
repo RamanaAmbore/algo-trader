@@ -71,6 +71,9 @@ For each non-"skip" agent listed under `## Agents`, dispatch the matching subage
 
 Pass each agent its task text verbatim from PLAN.md, plus the project context it needs (working directory, relevant file paths from the plan).
 
+**Test requirement (standing rule — non-negotiable)**: Every agent brief MUST include the following instruction verbatim:
+> "For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. Backend changes → add/update a pytest test in `backend/tests/`. Frontend changes → add/update a Playwright spec in `frontend/tests/`. No change ships without a test."
+
 Wait for all agents to complete before proceeding.
 
 ---
@@ -113,10 +116,14 @@ Fix manually, then run /ddev.
 
 ## Step 4 — Self-audit (before commit)
 
-Run the three self-audit checks from CLAUDE.md:
+Run the four self-audit checks from CLAUDE.md:
 1. Scan for structurally unreachable code in changed files (`git diff --name-only HEAD`)
 2. For any P&L / NavStrip / market-data fix: grep all consumers and verify fix propagates
 3. If a function was delegated/refactored: verify the called helper contains the original logic
+4. **Test coverage gate** — for every changed file, verify at least one new or updated test exists that exercises the changed behaviour:
+   - Backend files (`backend/`) → check `backend/tests/` for a matching new or modified test
+   - Frontend files (`frontend/src/`) → check `frontend/tests/` for a matching new or modified Playwright spec
+   - If no test was written for a changed file, dispatch a targeted `backend-test` or `playwright` agent to add one before committing. This gate is **non-negotiable** — no change ships without a test.
 
 If audit finds a defect, dispatch one more targeted fix, re-run affected tests, then proceed.
 
@@ -207,4 +214,4 @@ Call `EnterPlanMode` to return to plan mode after completion.
 - Never modify `secrets.yaml` or any file listed in `.gitignore`.
 - If PLAN.md has `playwright: no` and `svelte-check: no` and `pytest: no`, still run svelte-check as a baseline sanity check.
 - The plan's `## Done when` is informational — tests passing is the machine-checkable gate.
-- Agents are responsible for writing tests per the standing rule (spec + test for every fix/feature).
+- **Standing rule (hard gate)**: Every code change must ship with a new or updated test. This is enforced in Step 2 (agent brief) and Step 4 (self-audit). No commit without tests.

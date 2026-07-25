@@ -31,6 +31,42 @@
     /** Card name for a11y / tooltip. */
     label = 'card',
   } = $props();
+
+  // This component is mounted by CardControls only while isFullscreen=true, so
+  // we can use $effect unconditionally here — no isFullscreen guard needed.
+  // Placing these side-effects here (rather than in FullscreenButton) avoids the
+  // mount-race: CardControls unmounts FullscreenButton as part of the same reactive
+  // flush that sets isFullscreen=true, which would destroy its $effect before it ran.
+  function _onKey(e) {
+    if (e.key === 'Escape') isFullscreen = false;
+  }
+
+  $effect(() => {
+    document.addEventListener('keydown', _onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'fs-backdrop';
+    backdrop.setAttribute('aria-hidden', 'true');
+    backdrop.addEventListener('click', () => { isFullscreen = false; });
+    document.body.appendChild(backdrop);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'fs-modal-close-btn';
+    closeBtn.setAttribute('aria-label', 'Close fullscreen');
+    closeBtn.setAttribute('type', 'button');
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', () => { isFullscreen = false; });
+    document.body.appendChild(closeBtn);
+
+    return () => {
+      document.removeEventListener('keydown', _onKey);
+      document.body.style.overflow = prev;
+      backdrop.remove();
+      closeBtn.remove();
+    };
+  });
 </script>
 
 <!-- Only renders in the FULLSCREEN state. Paired with FullscreenButton
@@ -48,26 +84,27 @@
     }}
     aria-label={`Restore ${label} to default size`}
     title="Restore to default size">
-    <!-- Windows "Restore Down" glyph — two overlapping offset
-         rectangles. Visually distinct from FullscreenButton's outward
-         four-arrows so the operator never confuses the two icons.
-         Same universal "exit maximized window" affordance every
-         desktop OS ships. -->
-    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <!-- Front (lower-left) rectangle -->
-      <rect x="2.5" y="5.5" width="8" height="8" rx="0.8"
-        fill="none" stroke="currentColor" stroke-width="1.5"
-        stroke-linejoin="round" />
-      <!-- Back (upper-right) rectangle — open at the bottom-left so
-           the two rectangles read as offset/stacked, not overlapping. -->
-      <path d="M5.5 5.5V2.5h8v8h-3"
-        fill="none" stroke="currentColor" stroke-width="1.5"
-        stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    <!-- ✕ close glyph — universally recognised "exit / close" affordance.
+         Paired with the pinned body close-button added in FullscreenButton
+         so the operator has two clear exit paths: the in-card button here
+         and the floating ✕ at top-right of the viewport. -->
+    <span class="fs-x-icon" aria-hidden="true">✕</span>
   </button>
 {/if}
 
 <style>
+  /* Backdrop: GLOBAL because the element is portalled to document.body
+     imperatively, so Svelte's scoped selector wouldn't reach it.
+     Mirrored in app.css for discoverability; this :global() is authoritative. */
+  :global(.fs-backdrop) {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 9998;
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+  }
+
   /* Shared cyan-400 palette with RefreshButton + FullscreenButton +
      CollapseButton so the four card-control icons read as one family.
      `margin: 0` because this button always sits BETWEEN

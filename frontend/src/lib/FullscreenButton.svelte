@@ -37,39 +37,11 @@
 -->
 <script>
   let { isFullscreen = $bindable(false), label = 'card' } = $props();
-
-  // ESC key + body scroll lock + portalled backdrop for the active
-  // fullscreen card. Multiple cards on the page may each be bound
-  // to their own isFullscreen; only the one currently true installs
-  // the side-effects + backdrop node.
-  function _onKey(e) {
-    if (e.key === 'Escape' && isFullscreen) {
-      isFullscreen = false;
-    }
-  }
-
-  $effect(() => {
-    if (!isFullscreen) return;
-    document.addEventListener('keydown', _onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    // Portal-style backdrop — appended to document.body so its
-    // stacking context is the viewport root, not the parent card.
-    // backdrop-filter blur then applies only to page content, not
-    // to the card itself.
-    const backdrop = document.createElement('div');
-    backdrop.className = 'fs-backdrop';
-    backdrop.setAttribute('aria-hidden', 'true');
-    backdrop.addEventListener('click', () => { isFullscreen = false; });
-    document.body.appendChild(backdrop);
-
-    return () => {
-      document.removeEventListener('keydown', _onKey);
-      document.body.style.overflow = prev;
-      backdrop.remove();
-    };
-  });
+  // Side-effects (backdrop, close-btn, scroll-lock, Escape handler) live in
+  // DefaultSizeButton.svelte, which is mounted only while isFullscreen=true.
+  // Keeping them here would cause a race: CardControls unmounts FullscreenButton
+  // as part of the same reactive flush that sets isFullscreen=true, so the
+  // $effect would never fire.
 </script>
 
 <!-- Only renders in the DEFAULT state (not fullscreen). The "exit
@@ -131,16 +103,6 @@
     outline-offset: 1px;
   }
 
-  /* Backdrop styles are GLOBAL because the element is appended to
-     document.body imperatively (not via Svelte template), so style
-     scoping wouldn't reach it. Mirror in app.css to make the global
-     selector visible to tools and accidentally-overlapping cleanups. */
-  :global(.fs-backdrop) {
-    position: fixed;
-    inset: 0;
-    background: rgba(5, 10, 22, 0.65);
-    z-index: 9998;
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
-  }
+  /* .fs-backdrop :global() rule lives in DefaultSizeButton.svelte — that
+     component owns the portalled backdrop element. Mirrored in app.css. */
 </style>
