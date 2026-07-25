@@ -1021,6 +1021,8 @@ async def _task_expiry_check() -> None:
     if not is_prod_branch():
         logger.info("Background: bg-expiry inert on non-main branch "
                     "(expiry close orders are prod-only — see CLAUDE.md)")
+        while not is_prod_branch():
+            await asyncio.sleep(300)
         return
 
     from backend.api.algo.expiry import ExpiryEngine
@@ -4384,6 +4386,9 @@ async def _task_warm_backfill() -> None:
     """
     # Guard: only fire once per process (idempotent against module reloads).
     if getattr(_task_warm_backfill, "_fired", False):
+        # Park indefinitely — _supervised restarts any returning coroutine with
+        # zero delay, creating a tight loop that starves the event loop.
+        await asyncio.sleep(86400)
         return
     _task_warm_backfill._fired = True   # type: ignore[attr-defined]
 
@@ -4402,6 +4407,7 @@ async def _task_warm_backfill() -> None:
 
     if not symbols:
         logger.warning("backfill warm: empty symbol universe — nothing to backfill")
+        await asyncio.sleep(3600)
         return
 
     logger.info(f"backfill warm: universe={len(symbols)} symbols")
