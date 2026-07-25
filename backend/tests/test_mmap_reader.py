@@ -243,7 +243,7 @@ class TestMmapTickReader:
         from backend.brokers.mmap_ticker import MmapTickReader
 
         reader = MmapTickReader()
-        bus = reader.bus()
+        bus = reader.bus
         from backend.brokers.kite_ticker import BroadcastBus
         assert isinstance(bus, BroadcastBus)
 

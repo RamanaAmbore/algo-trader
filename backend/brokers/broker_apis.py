@@ -443,7 +443,8 @@ def _update_dhan_next_poll(account: str, broker) -> None:
     with _dhan_next_poll_lock:
         _dhan_next_poll[account] = _time.time() + interval
         try:
-            open(_COOLOFF_PATH, 'w').write(_json.dumps(dict(_dhan_next_poll)))
+            with open(_COOLOFF_PATH, 'w') as _f:
+                _f.write(_json.dumps(dict(_dhan_next_poll)))
         except Exception:
             pass
 
