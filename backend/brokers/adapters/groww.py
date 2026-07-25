@@ -45,6 +45,7 @@ from backend.brokers.errors import (
 )
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.ssot_fetch import ssot_fetch
 
 logger = get_logger(__name__)
 
@@ -761,6 +762,7 @@ class GrowwBroker(Broker):
             )
         return out
 
+    @ssot_fetch(mode="coalesce", key="groww_instruments")
     @_retry_groww_auth
     def instruments(self, exchange: str | None = None) -> list[dict]:
         """Groww's `get_all_instruments()` returns the master CSV as a
