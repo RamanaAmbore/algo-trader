@@ -1699,6 +1699,12 @@ async def _task_instruments() -> None:
         except Exception as e:
             logger.error(f"Background: instruments warm failed: {e}")
 
+    # Delay startup warm by 120 s so _task_sparkline_warm's _qt_broker_token_map
+    # (which downloads all 6 exchanges sequentially) can complete and release its
+    # raw instrument lists before _fetch_instruments starts its own 5-exchange
+    # download.  Overlapping these two downloads causes a double-NFO-peak OOM
+    # (seen 2026-07-25 on expiry day with 300K+ NFO rows).
+    await asyncio.sleep(120)
     await _warm()
 
     while True:
