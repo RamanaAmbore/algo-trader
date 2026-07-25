@@ -3585,6 +3585,11 @@ async def _task_ticker_watchdog(state: dict) -> None:
             "ticker_watchdog: skipped — conn_service owns the WebSocket "
             "(its own watchdog supervises restart). Main API is mmap-reader only."
         )
+        # Sleep rather than return immediately. _supervised restarts this coroutine
+        # on any return with no delay, creating a tight loop that starves the event
+        # loop and prevents on_startup from completing (port 8000 never binds).
+        while is_cutover_on():
+            await asyncio.sleep(300)
         return
 
     while True:
