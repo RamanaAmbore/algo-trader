@@ -837,7 +837,7 @@ class TestRebuildFromDBNoEventLoopBlock:
             mock_deferred.return_value = set()
 
             # Simulate blocking call in _build_conn_map
-            def slow_build_conn_map(rows, deferred):
+            def slow_build_conn_map(rows, deferred, effective_ips=None):
                 # This simulates the 2-second sleep in the real implementation
                 _time.sleep(0.15)  # 150ms blocking call
                 return {"DH6847": MagicMock()}

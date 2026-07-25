@@ -67,6 +67,12 @@ from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.singleton_base import SingletonBase
 from backend.shared.helpers.utils import generate_totp, secrets, config
 
+
+def _get_source_ip_from_secrets(section: str, account: str) -> str | None:
+    """Return source_ip from secrets.yaml for a broker section + account.
+    Returns None when section/account absent so caller falls back to DB value."""
+    return (secrets.get(section) or {}).get(account, {}).get("source_ip")
+
 # Token cache — shared across processes via a single file on disk so a
 # successful login from prod's process is reused by dev (and vice versa)
 # instead of each starting their own login flow against the same Kite app.
@@ -802,6 +808,12 @@ class DhanConnection:
             # DhanHTTP exposes its session as `dhan_http.session` (verified
             # against dhanhq 2.x source). Skipped when no source_ip is
             # configured — falls back to the OS default route.
+            # Post-construction mount is race-free: DhanHTTP.__init__ creates
+            # self.session = requests.Session() and makes zero outbound HTTP calls.
+            # All SDK calls go through _send_request which uses self.session —
+            # the mounted adapter intercepts every subsequent call. SDK provides
+            # no constructor-level session injection (pool= only configures
+            # HTTPAdapter kwargs, not a pre-built adapter or source_ip).
             self._mount_source_ip_adapter(getattr(ctx, "dhan_http", None))
         except ImportError:
             # dhanhq 1.x fallback (positional args). Older shape has the
@@ -1529,12 +1541,17 @@ class Connections(SingletonBase):
             account: True for account in accts.keys()
         }
 
-    def _build_conn_map(self, rows, dhan_deferred: set) -> dict:
+    def _build_conn_map(self, rows, dhan_deferred: set,
+                        effective_ips: dict | None = None) -> dict:
         """Build the account→connection map from active DB rows.
 
         Dhan accounts in ``dhan_deferred`` are skipped (multi-account
         IP-stabilizer).  Per-row errors are logged and skipped.
+        ``effective_ips`` overrides r.source_ip per-account (secrets.yaml wins
+        over DB when present).
         """
+        if effective_ips is None:
+            effective_ips = {}
         new_conn: dict[str, Any] = {}
         dhan_built = 0
         for r in rows:
@@ -1543,8 +1560,9 @@ class Connections(SingletonBase):
                 continue
             if broker_id == "dhan" and dhan_built > 0:
                 import time as _t; _t.sleep(2)
+            effective_ip = effective_ips.get(r.account, r.source_ip)
             try:
-                conn_obj = self._build_conn_for_row(r, broker_id)
+                conn_obj = self._build_conn_for_row(r, broker_id, effective_ip)
                 if conn_obj is not None:
                     new_conn[r.account] = conn_obj
             except Exception as e:
@@ -1594,8 +1612,18 @@ class Connections(SingletonBase):
             # Truly empty (no DB rows and YAML seed had nothing). Leave self.conn as-is.
             return
 
-        _dhan_deferred = self._compute_dhan_deferred_accounts(rows)
-        new_conn = await asyncio.to_thread(self._build_conn_map, rows, _dhan_deferred)
+        _BROKER_SECTION = {"dhan": "dhan_accounts", "groww": "groww_accounts"}
+        effective_source_ip: dict[str, str | None] = {}
+        for r in rows:
+            section = _BROKER_SECTION.get((getattr(r, "broker_id", "") or "").lower())
+            if section:
+                secrets_ip = _get_source_ip_from_secrets(section, r.account)
+                effective_source_ip[r.account] = secrets_ip or r.source_ip
+            else:
+                effective_source_ip[r.account] = r.source_ip
+
+        _dhan_deferred = self._compute_dhan_deferred_accounts(rows, effective_source_ip)
+        new_conn = await asyncio.to_thread(self._build_conn_map, rows, _dhan_deferred, effective_source_ip)
 
         if not new_conn:
             logger.warning("rebuild_from_db: every broker_accounts row failed to load; "
@@ -1701,7 +1729,9 @@ class Connections(SingletonBase):
         return deferred
 
     @staticmethod
-    def _compute_dhan_deferred_accounts(rows) -> set[str]:
+    def _compute_dhan_deferred_accounts(
+        rows, effective_ips: dict | None = None
+    ) -> set[str]:
         """Dhan multi-account stabilizer — permanent fix for the rotation
         loop discovered 2026-06-15. Background: Dhan enforces "one
         active session per partner app per source IP" at the v2 auth
@@ -1722,31 +1752,41 @@ class Connections(SingletonBase):
         column in /admin/brokers (lowest number wins). Eliminates the
         rotation cycle at the connection layer so positions/holdings
         for the active Dhan account stay stable across every refresh.
+
+        ``effective_ips`` — when provided, use resolved IPs (secrets.yaml
+        overlay over DB) for grouping. Without this, secrets-overridden IPs
+        are missed and two accounts that SHOULD be separated still appear to
+        share the server-default route, causing spurious deferral.
         """
+        if effective_ips is None:
+            effective_ips = {}
         from collections import defaultdict
         dhan_by_ip: dict[str, list] = defaultdict(list)
         for r in rows:
             if (r.broker_id or "").lower() == "dhan":
-                dhan_by_ip[(r.source_ip or "").strip().lower()].append(r)
+                resolved_ip = effective_ips.get(r.account, r.source_ip)
+                dhan_by_ip[(resolved_ip or "").strip().lower()].append(r)
         deferred: set[str] = set()
         for ip_key, group in dhan_by_ip.items():
             if len(group) > 1:
                 deferred |= Connections._defer_dhan_ip_group(ip_key, group)
         return deferred
 
-    def _build_conn_for_row(self, r, broker_id: str):
+    def _build_conn_for_row(self, r, broker_id: str, effective_ip: str | None = None):
         """Dispatch to the per-broker connection builder. Returns the
         connection object or None if the row was skipped for any
-        credential-missing reason (already logged inside the builder)."""
+        credential-missing reason (already logged inside the builder).
+        ``effective_ip`` — resolved source IP (secrets.yaml overlay wins over
+        DB r.source_ip) passed through to Dhan/Groww constructors."""
         if broker_id == "dhan":
-            return self._build_dhan_conn(r)
+            return self._build_dhan_conn(r, source_ip=effective_ip)
         if broker_id == "groww":
-            return self._build_groww_conn(r)
+            return self._build_groww_conn(r, source_ip=effective_ip)
         # Default — Kite (and "zerodha_kite" alias).
         return self._build_kite_conn(r)
 
     @staticmethod
-    def _build_dhan_conn(r):
+    def _build_dhan_conn(r, source_ip: str | None = None):
         """Dhan path — Partner-API auto-login.
         broker_accounts columns reused for Dhan:
           client_id       → Dhan client ID (plaintext)
@@ -1760,6 +1800,9 @@ class Connections(SingletonBase):
         (POST auth.dhan.co/app/generateAccessToken) on
         first use + every 23 h; no operator paste needed
         after initial setup.
+
+        ``source_ip`` — effective resolved IP (secrets.yaml overlay wins
+        over r.source_ip). When None, falls back to r.source_ip.
         """
         from backend.shared.helpers.broker_creds import decrypt
         if not r.client_id:
@@ -1782,6 +1825,7 @@ class Connections(SingletonBase):
                 f"the connection will load on next save."
             )
             return None
+        resolved_ip = source_ip if source_ip is not None else r.source_ip
         return DhanConnection(
             r.account,
             client_id=r.client_id,
@@ -1789,11 +1833,11 @@ class Connections(SingletonBase):
             api_secret=api_secret,
             pin=pin,
             totp_token=totp_token,
-            source_ip=r.source_ip,
+            source_ip=resolved_ip,
         )
 
     @staticmethod
-    def _build_groww_conn(r):
+    def _build_groww_conn(r, source_ip: str | None = None):
         """Groww path — three auth modes, tried in order:
           (1) api_key + api_secret  → programmatic refresh
           (2) api_key + totp_token  → programmatic refresh
@@ -1806,6 +1850,9 @@ class Connections(SingletonBase):
         schema reuses the same totp_token_enc / access_token_enc
         columns Kite uses, so /admin/brokers paints them as
         plain text fields.
+
+        ``source_ip`` — effective resolved IP (secrets.yaml overlay wins
+        over r.source_ip). When None, falls back to r.source_ip.
         """
         from backend.shared.helpers.broker_creds import decrypt
         totp_token  = (decrypt(r.totp_token_enc)
@@ -1824,12 +1871,13 @@ class Connections(SingletonBase):
                 f"/admin/brokers."
             )
             return None
+        resolved_ip = source_ip if source_ip is not None else r.source_ip
         return GrowwConnection(
             r.account,
             api_key=(r.api_key or None),
             totp_seed=(totp_token or None),
             access_token=(access_token or None),
-            source_ip=r.source_ip,
+            source_ip=resolved_ip,
         )
 
     @staticmethod
