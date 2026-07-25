@@ -33,6 +33,8 @@ DEPLOY_SCRIPT = REPO_ROOT / "webhook" / "deploy.sh"
 _SECRETS = {
     "ntfy_topic": "ramboq-test",
     "ntfy_url": "https://ntfy.sh",
+    "telegram_bot_token": "test-token",
+    "telegram_chat_id": "test-chat",
 }
 
 
@@ -44,10 +46,11 @@ def _load_notify():
 
 
 def _run_main(cfg: dict, *, branch: str = "dev", status: str = "ok",
-              commit: str = "abc1234", deploy_type: str = "full"):
+              commit: str = "abc1234", deploy_type: str = "full",
+              layers: str = "Backend API · Frontend"):
     """
-    Run notify_deploy.main() with patched I/O and return the
-    mock urlopen object so callers can inspect the ntfy Request.
+    Run notify_deploy.main() with patched I/O. Returns (mock_urlopen, mock_tg_post)
+    so callers can inspect ntfy Request and Telegram post call.
     """
     notify = _load_notify()
 
@@ -57,25 +60,30 @@ def _run_main(cfg: dict, *, branch: str = "dev", status: str = "ok",
             return io.StringIO(yaml.dump(_SECRETS))
         return io.StringIO(yaml.dump(cfg))
 
+    mock_tg_resp = MagicMock()
+    mock_tg_resp.ok = True
+
     argv = [
         "notify_deploy.py",
         "--branch", branch,
         "--status", status,
         "--commit", commit,
         "--deploy-type", deploy_type,
+        "--layers", layers,
     ]
 
     with (
         patch.object(sys, "argv", argv),
         patch("builtins.open", side_effect=_fake_open),
         patch("urllib.request.urlopen") as mock_urlopen,
+        patch("requests.post", return_value=mock_tg_resp) as mock_tg_post,
     ):
         try:
             notify.main()
         except SystemExit:
             pass
 
-    return mock_urlopen
+    return mock_urlopen, mock_tg_post
 
 
 # ---------------------------------------------------------------------------
@@ -88,28 +96,32 @@ class TestCapGating:
     def test_fires_when_cap_enabled_on_dev(self):
         """dev branch always suppressed regardless of cap — dev deploys don't notify."""
         cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
-        mock_post = _run_main(cfg, branch="dev")
-        mock_post.assert_not_called()
+        mock_ntfy, mock_tg = _run_main(cfg, branch="dev")
+        mock_ntfy.assert_not_called()
+        mock_tg.assert_not_called()
 
     def test_skipped_when_cap_disabled_on_dev(self):
-        """dev + notify_on_deploy=False → Telegram NOT called."""
+        """dev branch: neither ntfy nor Telegram called."""
         cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": False}}
-        mock_post = _run_main(cfg, branch="dev")
-        mock_post.assert_not_called()
+        mock_ntfy, mock_tg = _run_main(cfg, branch="dev")
+        mock_ntfy.assert_not_called()
+        mock_tg.assert_not_called()
 
-    def test_main_branch_always_fires(self):
-        """main branch always fires ntfy regardless of cap_in_dev value."""
+    def test_main_branch_fires_ntfy_and_telegram(self):
+        """main branch fires both ntfy and Telegram."""
         cfg = {"deploy_branch": "main", "cap_in_dev": {"notify_on_deploy": False}}
-        mock_urlopen = _run_main(cfg, branch="main")
-        mock_urlopen.assert_called_once()
-        req = mock_urlopen.call_args[0][0]
+        mock_ntfy, mock_tg = _run_main(cfg, branch="main")
+        mock_ntfy.assert_called_once()
+        req = mock_ntfy.call_args[0][0]
         assert "ntfy.sh" in req.full_url
+        mock_tg.assert_called_once()
 
     def test_fail_status_fires_even_when_cap_disabled(self):
         """dev branch failure is also suppressed — use ntfy for failure awareness."""
         cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": False}}
-        mock_post = _run_main(cfg, branch="dev", status="fail")
-        mock_post.assert_not_called()
+        mock_ntfy, mock_tg = _run_main(cfg, branch="dev", status="fail")
+        mock_ntfy.assert_not_called()
+        mock_tg.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -122,26 +134,46 @@ class TestPayload:
     def test_branch_tag_in_dev_message(self):
         """Main branch ntfy title has no [main] tag (branch tag only for non-main)."""
         cfg = {"deploy_branch": "main"}
-        mock_urlopen = _run_main(cfg, branch="main")
-        req = mock_urlopen.call_args[0][0]
+        mock_ntfy, _ = _run_main(cfg, branch="main")
+        req = mock_ntfy.call_args[0][0]
         title = req.get_header("Title")
         assert "[main]" not in title, f"Expected no [main] tag in ntfy title: {title!r}"
 
     def test_commit_hash_in_message(self):
         """Commit hash appears in ntfy body (prod branch)."""
         cfg = {"deploy_branch": "main"}
-        mock_urlopen = _run_main(cfg, branch="main", commit="deadbeef")
-        req = mock_urlopen.call_args[0][0]
+        mock_ntfy, _ = _run_main(cfg, branch="main", commit="deadbeef")
+        req = mock_ntfy.call_args[0][0]
         body = req.data.decode()
         assert "deadbeef" in body, f"Expected commit hash in ntfy body: {body!r}"
 
     def test_fe_only_suffix_for_fe_deploy(self):
         """FE-only deploy appends 'FE-only' in the ntfy title (prod)."""
         cfg = {"deploy_branch": "main"}
-        mock_urlopen = _run_main(cfg, branch="main", deploy_type="fe-only")
-        req = mock_urlopen.call_args[0][0]
+        mock_ntfy, _ = _run_main(cfg, branch="main", deploy_type="fe-only")
+        req = mock_ntfy.call_args[0][0]
         title = req.get_header("Title")
         assert "FE-only" in title, f"Expected FE-only label in ntfy title: {title!r}"
+
+    def test_layers_in_ntfy_body(self):
+        """Layers string appears in the ntfy notification body."""
+        cfg = {"deploy_branch": "main"}
+        mock_ntfy, _ = _run_main(cfg, branch="main", layers="Backend API · Broker Layer")
+        req = mock_ntfy.call_args[0][0]
+        body = req.data.decode()
+        assert "Broker Layer" in body, f"Expected layers in ntfy body: {body!r}"
+
+    def test_layers_in_telegram_body(self):
+        """Layers string appears in the Telegram message."""
+        cfg = {"deploy_branch": "main"}
+        _, mock_tg = _run_main(cfg, branch="main", layers="Backend API · Broker Layer")
+        tg_payload = mock_tg.call_args[1]["json"]
+        assert "Broker Layer" in tg_payload["text"], f"Expected layers in Telegram: {tg_payload['text']!r}"
+
+    def test_deploy_type_flag_in_deploy_sh(self):
+        """deploy.sh passes --layers flag to notify_deploy.py."""
+        text = DEPLOY_SCRIPT.read_text()
+        assert "--layers" in text, "deploy.sh must pass --layers to notify_deploy.py"
 
 
 # ---------------------------------------------------------------------------
