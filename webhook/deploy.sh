@@ -366,12 +366,22 @@ PYEOF
 JSONEOF
   sudo chown www-data:www-data "$LAST_DEPLOY_JSON" 2>/dev/null || true
 
+  # Compute human-readable layer summary for the deploy notification.
+  if [ "$DEPLOY_TYPE" = "fe-only" ]; then
+      LAYERS="Frontend"
+  elif [ "$CONN_TOUCHED" = "true" ]; then
+      LAYERS="Backend API · Frontend · Broker Layer"
+  else
+      LAYERS="Backend API · Frontend"
+  fi
+
   echo "[$TS] Sending startup notification..."
   python "$APP_ROOT/webhook/notify_deploy.py" \
       --status "$DEPLOY_STATUS" \
       --branch "$BRANCH" \
       --commit "$(git rev-parse --short HEAD)" \
       --deploy-type "$DEPLOY_TYPE" \
+      --layers "$LAYERS" \
       && echo "[$TS] Startup notification done" \
       || echo "[$TS] WARNING: startup notification failed"
 

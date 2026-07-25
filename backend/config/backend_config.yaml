@@ -179,4 +179,4 @@ alert_routing:
   market_close:         { telegram: info,  ntfy: false,   email: true  }
   visitor_report:       { telegram: info,  ntfy: false,   email: false }
   agent_alert:          { telegram: ops,   ntfy: false,   email: false }
-  deploy:               { telegram: false, ntfy: default, email: false }
+  deploy:               { telegram: info,  ntfy: default, email: false }

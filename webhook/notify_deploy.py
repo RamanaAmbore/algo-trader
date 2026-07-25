@@ -13,6 +13,7 @@ Flags:
 import argparse
 import sys
 
+import requests
 import yaml
 
 def main():
@@ -29,6 +30,8 @@ def main():
                         choices=["full", "fe-only"],
                         help="full = backend service restarted; fe-only = "
                              "frontend rebuild only, broker sessions preserved")
+    parser.add_argument("--layers", default="",
+                        help="Human-readable layer summary, e.g. 'Backend API · Frontend'")
     args = parser.parse_args()
 
     try:
@@ -62,18 +65,37 @@ def main():
     deploy_type = args.deploy_type
     type_suffix = " · FE-only" if (status == "ok" and deploy_type == "fe-only") else ""
 
+    layers = args.layers
+    layers_line = f"\nLayers: {layers}" if layers else ""
+
     if status == "ok":
         event_label = f"Deploy OK{branch_tag}{type_suffix}"
-        detail_line = f"{branch} → {commit}"
+        detail_line = f"{branch} → {commit}{layers_line}"
+        tg_body = (f"<b>Deploy OK{branch_tag}{type_suffix}</b> · <code>{commit}</code>"
+                   + (f"\nLayers: {layers}" if layers else ""))
     else:
         event_label = f"⚠ DEPLOY FAILED{branch_tag}"
-        detail_line = f"{branch} → {commit}" + (f" — {reason}" if reason else "")
+        detail_line = f"{branch} → {commit}" + (f" — {reason}" if reason else "") + layers_line
+        tg_body = (f"<b>⚠ DEPLOY FAILED{branch_tag}</b> · <code>{commit}</code>"
+                   + (f"\n{reason}" if reason else "")
+                   + (f"\nLayers: {layers}" if layers else ""))
 
-    # notify_on_deploy is the single gate for the deploy message — by the time
-    # we reach here we've already confirmed it's on (or we're on prod). Deploy
-    # pings ship ntfy-only; the prior Telegram path was retired and folded into
-    # _send_telegram_info() inside alert_utils so all Telegram routing goes
-    # through the config-driven _alert_route() table.
+    # Telegram — info/deploy channel
+    tg_token   = sec.get("telegram_bot_token_deploy") or sec.get("telegram_bot_token", "")
+    tg_chat_id = sec.get("telegram_chat_id_deploy")   or sec.get("telegram_chat_id", "")
+    if tg_token and tg_chat_id:
+        try:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                json={"chat_id": tg_chat_id, "text": tg_body, "parse_mode": "HTML"},
+                timeout=10,
+            )
+            if resp.ok:
+                print("notify_deploy: telegram sent")
+            else:
+                errors.append(f"telegram: {resp.status_code} {resp.text[:120]}")
+        except Exception as e:
+            errors.append(f"telegram: {e}")
 
     # ntfy
     ntfy_topic = sec.get("ntfy_topic")
