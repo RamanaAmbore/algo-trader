@@ -809,7 +809,8 @@ _spark_warm_at: Optional[str] = None   # ISO-8601 UTC string
 # Cache the union map for the day; it only changes at midnight IST.
 # Key: IST date string.  Value: {(tradingsymbol, exchange) → instrument_token}.
 _TOKEN_MAP_CACHE: dict[str, dict[tuple[str, str], int]] = {}
-_TOKEN_MAP_LOCK   = threading.Lock()
+_TOKEN_MAP_LOCK      = threading.Lock()
+_TOKEN_MAP_FETCH_LOCK = threading.Lock()  # serialises cold-cache broker download
 
 _SPARKLINE_EXCHANGES = ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS")
 
@@ -891,13 +892,23 @@ def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[
         if cached is not None:
             return cached
 
-    # ── Tier 3: live broker fetch ─────────────────────────────────────────────
-    new_map = _qt_broker_token_map(broker)
-    with _TOKEN_MAP_LOCK:
-        for k in list(_TOKEN_MAP_CACHE):
-            if k != today:
-                _TOKEN_MAP_CACHE.pop(k, None)
-        _TOKEN_MAP_CACHE[today] = new_map
+    # ── Tier 3: live broker fetch — serialised so only ONE thread downloads ──────
+    # The original code built the map outside any lock (comment said "slow calls").
+    # On cold cache (startup / midnight rollover) all concurrent sparkline-warm
+    # threads simultaneously missed both tiers and each downloaded 6 exchanges
+    # × all broker accounts → instruments storm → OOM (seen 2026-07-24).
+    with _TOKEN_MAP_FETCH_LOCK:
+        # Double-check: another thread may have fetched while we waited.
+        with _TOKEN_MAP_LOCK:
+            cached = _TOKEN_MAP_CACHE.get(today)
+            if cached is not None:
+                return cached
+        new_map = _qt_broker_token_map(broker)
+        with _TOKEN_MAP_LOCK:
+            for k in list(_TOKEN_MAP_CACHE):
+                if k != today:
+                    _TOKEN_MAP_CACHE.pop(k, None)
+            _TOKEN_MAP_CACHE[today] = new_map
 
     _trigger_instruments_store_populate()
     return new_map
