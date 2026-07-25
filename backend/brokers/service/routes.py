@@ -510,7 +510,7 @@ class BrokerDispatchController(Controller):
                 "conn_service: broker dispatch failed: %s.%s",
                 account, method,
             )
-            return {"ok": False, "error": str(e)[:500]}
+            return {"ok": False, "error": str(e)[:500], "error_type": type(e).__name__}
 
     @post("/{account:str}/verify_postback")
     async def verify_postback(

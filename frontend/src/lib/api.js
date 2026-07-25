@@ -99,7 +99,7 @@ function _trimDetail(/** @type {unknown} */ s) {
     str = String(s ?? '');
   }
   const cleaned = str.replace(_METHOD_PREFIX_RE, '');
-  return cleaned.length > 60 ? cleaned.slice(0, 57) + '…' : cleaned;
+  return cleaned.length > 35 ? cleaned.slice(0, 32) + '…' : cleaned;
 }
 
 /** Translate a fetch failure into a short UI string. Pages render

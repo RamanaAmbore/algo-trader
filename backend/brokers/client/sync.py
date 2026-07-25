@@ -25,20 +25,17 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
-_client: Optional[httpx.Client] = None
-
 # Module-level decoder — reuse across calls for maximum efficiency.
 _per_account_decoder = msgspec.json.Decoder(InternalPerAccountResp)
 
+_client = httpx.Client(
+    base_url="http://conn",
+    transport=httpx.HTTPTransport(uds=CONN_SOCK),
+    timeout=_TIMEOUT,
+)
+
 
 def _get_client() -> httpx.Client:
-    global _client
-    if _client is None:
-        _client = httpx.Client(
-            transport=httpx.HTTPTransport(uds=CONN_SOCK),
-            base_url="http://conn",
-            timeout=_TIMEOUT,
-        )
     return _client
 
 

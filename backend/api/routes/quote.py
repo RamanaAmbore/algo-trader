@@ -918,23 +918,6 @@ def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[
     return new_map
 
 
-def _trigger_instruments_store_populate() -> None:
-    """Fire a background coroutine to populate instruments_store from broker.
-
-    Safe to call from a thread (asyncio.to_thread context). Uses
-    run_coroutine_threadsafe to schedule on the running event loop.
-    If no loop is running, silently skips (test / import-only contexts).
-    """
-    try:
-        import asyncio as _asyncio
-        from backend.api.persistence.instruments_store import get_or_fetch_all_today as _g
-        from backend.api.persistence.write_queue import get_main_loop as _get_loop
-        loop = _get_loop()
-        if loop is not None and loop.is_running():
-            _asyncio.run_coroutine_threadsafe(_g(), loop)
-    except Exception:
-        pass  # never let a background-populate failure surface to the caller
-
 
 def _ist_today() -> str:
     """Return today's date in IST as YYYY-MM-DD."""

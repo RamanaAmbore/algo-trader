@@ -307,6 +307,9 @@ _PRIORITY_INTERVALS_SEC: dict[str, float] = {
     "cold": 600.0,
 }
 _dhan_next_poll: dict[str, float] = {}  # account → next allowed poll epoch
+# Guards dict structure mutations (add/remove keys) and disk writes.
+# Scalar float value reads are GIL-atomic and intentionally lock-free —
+# see _is_dhan_interval_due() which reads without acquiring this lock.
 _dhan_next_poll_lock = threading.Lock()
 
 _COOLOFF_PATH = "/tmp/ramboq_dhan_cooloff.json"
@@ -406,8 +409,13 @@ def _is_dhan_interval_due(account: str, broker) -> bool:
     """Return True when this Dhan account should be polled right now.
 
     Also returns True for non-Dhan brokers (gate is Dhan-only).
-    The check reads _dhan_next_poll without a lock — single dict
-    lookup is GIL-safe.
+
+    Deliberately reads _dhan_next_poll WITHOUT acquiring _dhan_next_poll_lock.
+    Dict value reads for an existing key are GIL-atomic in CPython (the float
+    object reference is loaded in a single bytecode op), so there is no torn-
+    read risk.  Adding a lock here would put a mutex acquisition on every poll
+    tick — an unnecessary hot-path cost.  _dhan_next_poll_lock only guards
+    structural mutations (key add/remove) and disk persistence writes.
     """
     if broker is None:
         return True  # legacy kite= path; always poll
@@ -442,11 +450,13 @@ def _update_dhan_next_poll(account: str, broker) -> None:
     interval = _PRIORITY_INTERVALS_SEC.get(priority, 30.0)
     with _dhan_next_poll_lock:
         _dhan_next_poll[account] = _time.time() + interval
-        try:
-            with open(_COOLOFF_PATH, 'w') as _f:
-                _f.write(_json.dumps(dict(_dhan_next_poll)))
-        except Exception:
-            pass
+        snapshot = dict(_dhan_next_poll)   # copy under lock
+    # Write outside the lock — disk I/O doesn't need the dict guard.
+    try:
+        with open(_COOLOFF_PATH, 'w') as _f:
+            _f.write(_json.dumps(snapshot))
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -799,9 +809,12 @@ def _persist_cb_state() -> None:
     try:
         now = _time.time()
         snapshot: dict = {}
-        # Read without _BREAKER_LOCK — only reading float/None fields
-        # which are single-assignment writes (GIL-safe).
-        for acct, entry in _FETCH_HEALTH.items():
+        # Before iterating, snapshot the dict under _BREAKER_LOCK so concurrent
+        # _record_fetch() calls can't add keys mid-iteration (RuntimeError risk).
+        with _BREAKER_LOCK:
+            _health_snapshot = dict(_FETCH_HEALTH)
+
+        for acct, entry in _health_snapshot.items():
             until = entry.get("circuit_open_until")
             if until and until > now:
                 snapshot[acct] = {

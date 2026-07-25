@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.1 — 2026-07-24  
+**Version**: 1.3 — 2026-07-25  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -19,6 +19,7 @@ Code, tests, and documentation must stay in sync with this file.
 6. [Circuit Breaker & Health](#6-circuit-breaker--health)
 7. [KiteTicker & Mmap Pipeline](#7-kiteticker--mmap-pipeline)
 7.1 [Market-Data Backfill Pipeline](#71-market-data-backfill-pipeline)
+7.2 [Instruments & Token-Map Cache](#72-instruments--token-map-cache)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 9. [Remote Broker & Conn Service](#9-remote-broker--conn-service)
@@ -203,6 +204,64 @@ token are silent. Reduces log spam when Dhan lacks certain F&O contracts.
 
 **File**: `backend/brokers/broker_apis.py` — `backfill_market_data()` and helpers
 
+### Token Map Fetch Lock
+
+**File**: `backend/api/routes/quote.py` — `_TOKEN_MAP_FETCH_LOCK`
+
+`_TOKEN_MAP_FETCH_LOCK` is a `threading.Lock()` that serialises cold-cache broker 
+`instruments()` downloads. Uses double-checked locking pattern:
+
+```
+_get_today_token_map():
+  if _TOKEN_MAP_CACHE:
+    return _TOKEN_MAP_CACHE  # fast path, no lock
+  
+  with _TOKEN_MAP_FETCH_LOCK:
+    if _TOKEN_MAP_CACHE:      # recheck inside lock
+      return _TOKEN_MAP_CACHE  
+    _TOKEN_MAP_CACHE = _qt_broker_token_map()  # fetch 6 exchanges sequentially
+    return _TOKEN_MAP_CACHE
+```
+
+Without this lock: 50+ concurrent `asyncio.to_thread(_get_today_token_map)` calls all 
+missed the cold cache simultaneously → each downloaded 6 exchanges sequentially → 
+peak 6.4GB RAM → OOM kill on high-volume days (especially expiry when NFO has 300K+ rows).
+
+`_qt_broker_token_map()` downloads all 6 exchanges sequentially (not concurrently) 
+under the lock.
+
+### Task Instruments Startup Delay
+
+**File**: `backend/api/background.py` — `_task_instruments`
+
+`_task_instruments` has a 120-second startup delay (`await asyncio.sleep(120)` before 
+the first warm run). 
+
+**Reason**: `_task_sparkline_warm` runs at startup and downloads 6 exchanges sequentially 
+via `_qt_broker_token_map()`. Without the delay, `_task_instruments` starts its own 
+5-exchange download concurrently, causing a double-NFO peak on expiry days (NFO has 
+300K+ rows → ~400-500MB per parse). The 120s stagger ensures the sparkline warm finishes 
+before instruments begins its cycle.
+
+### Removed Function: `_trigger_instruments_store_populate`
+
+**File**: `backend/api/routes/quote.py` (deleted 2026-07-25)
+
+`_trigger_instruments_store_populate()` was removed from `_get_today_token_map()`.
+
+It called `get_or_fetch_all_today()` immediately after the broker token map was populated, 
+launching 6 concurrent `asyncio.gather` downloads while the first set's raw data was still 
+in memory — a double OOM storm during peak hours.
+
+**Do NOT re-introduce this function.** The module-level `_TOKEN_MAP_CACHE` is sufficient 
+for all callers; lazy population via `get_or_fetch_all_today()` is preferred.
+
+---
+
+## 7.2 Market-Data Backfill Pipeline (continued)
+
+**File**: `backend/brokers/broker_apis.py` — `backfill_market_data()` and helpers
+
 When broker APIs return zero or stale `close_price` / `last_price`, the backfill pipeline 
 patches missing values from a PriceBroker quote batch. Pipeline stages (Jul 2026 Polish R6):
 
@@ -306,6 +365,27 @@ in `_supervised` to enable resilient restart-on-crash semantics:
 This prevents a single failed broker fetch from silencing all subsequent polls, improving
 resilience when broker APIs experience transient outages or the conn_service encounters
 temporary socket issues.
+
+### Background Task Early-Return Contract
+
+**Critical requirement for all `_task_*` coroutines wrapped in `_supervised()`**:
+
+`_supervised()` restarts any returning coroutine **immediately with zero delay** — it only 
+sleeps (`restart_delay=60s`) on exceptions, not on clean returns.
+
+**Consequence of violation**: If a `_task_*` function returns early (before its main `while True:` 
+loop) without sleeping, the event loop runs the coroutine at 100% CPU on a tight no-op loop. 
+This starves the asyncio event loop, preventing `on_startup()` from completing, and uvicorn 
+never binds the port.
+
+**Rule**: Any `_task_*` function that exits before its main `while True:` loop MUST include an 
+`await asyncio.sleep(N)` before the `return` to yield control and prevent tight looping.
+
+**Canonical examples in the codebase**:
+- `_task_ticker_watchdog`: cutover mode exit → `while is_cutover_on(): await asyncio.sleep(300); return`
+- `_task_warm_backfill`: already-fired guard → `await asyncio.sleep(86400); return`
+- `_task_warm_backfill`: empty symbol universe → `await asyncio.sleep(3600); return`
+- `_task_expiry_check`: non-prod branch → `while not is_prod_branch(): await asyncio.sleep(300); return`
 
 ---
 
@@ -628,3 +708,4 @@ designed.
 | 2026-07-19 | Polish R6: Extracted `_record_breaker_state()` from `_record_fetch()` to isolate state machine under `_BREAKER_LOCK`; added §7.1 Market-Data Backfill Pipeline documenting vectorized `_bmd_build_key_index`, `_apply_backfill_to_list` param removal, `backfill_market_data` consolidation |
 | 2026-07-24 | v1.1 Resilience improvements (commit 8352fc9f): Dhan cross-process login lock (`/tmp/ramboq_locks/<account>.lock`); file lock timeout (30s poll, `LOCK_EX|LOCK_NB`); MMAP `_known_absent_tokens` persistent set; Dhan 429→BrokerRateLimitError and 5xx→BrokerNetworkError; KiteTicker re-subscription on reconnect; Kite quote rate limiting (1/s); RemoteBroker typed error mapping; circuit breaker persistence (`/tmp/ramboq_cb_state.json`); background task supervisor `_supervised()` with crash restart |
 | 2026-07-24 | v1.2 Daily broker-issue aggregation (commit 629397ac): `broker_issue_daily` table + `_task_broker_issue_daily` cron; CONNCHECK TLM tool for issue severity scoring; ntfy deploy-receipt monitor; alert routing restored (order_failure.email + agent_alert.email = true) |
+| 2026-07-25 | v1.3 Production outage fixes: Added §7.2 Instruments & Token-Map Cache covering `_TOKEN_MAP_FETCH_LOCK` double-checked locking (cold-cache serialisation, prevents 6.4GB OOM peak), `_task_instruments` 120s startup delay (stagger with `_task_sparkline_warm`), and removal of `_trigger_instruments_store_populate()` (was causing double OOM storm). Added §9.1 Background Task Early-Return Contract documenting `_supervised()` restart behaviour and requirement for all `_task_*` early-exit paths to include `await asyncio.sleep()` to prevent tight event-loop starvation and port-binding failure. |

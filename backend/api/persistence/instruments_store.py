@@ -211,9 +211,21 @@ async def get_or_fetch_all_today() -> dict[tuple[str, str], int]:
     """Fetch all 6 sparkline exchanges in parallel and return the union map.
 
     This is what _get_today_token_map in quote.py should delegate to.
+
+    Concurrency is capped at 2 simultaneous downloads via a local Semaphore.
+    On expiry days NFO alone can return 300K rows; running all 6 exchanges at
+    once would double the in-memory footprint and risk an OOM storm.  The
+    Semaphore is kept local (not module-level) so it resets per call and
+    doesn't leak state across consecutive warm cycles.
     """
+    _sem = asyncio.Semaphore(2)
+
+    async def _throttled(ex: str):
+        async with _sem:
+            return await get_or_fetch_instruments(ex)
+
     results = await asyncio.gather(
-        *[get_or_fetch_instruments(exch) for exch in _SPARKLINE_EXCHANGES],
+        *[_throttled(exch) for exch in _SPARKLINE_EXCHANGES],
         return_exceptions=True,
     )
     union: dict[tuple[str, str], int] = {}
