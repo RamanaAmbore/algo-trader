@@ -3084,9 +3084,13 @@ async def _task_sparkline_warm(state: dict) -> None:
         if cached_h is not None and getattr(cached_h, "rows", None):
             _sparkline_collect_holdings_cached(seen, pairs, _cache_hit)
         else:
-            _sparkline_collect_holdings_live(seen, pairs)
+            # Run in a thread so the blocking broker.holdings() call doesn't
+            # freeze the event loop and block on_startup from completing.
+            # When Dhan accounts are rate-limited, this can block 60-120 s
+            # and prevent uvicorn from binding port 8000 (seen 2026-07-25).
+            await asyncio.to_thread(_sparkline_collect_holdings_live, seen, pairs)
 
-        _sparkline_collect_positions(seen, pairs, _cache_hit)
+        await asyncio.to_thread(_sparkline_collect_positions, seen, pairs, _cache_hit)
 
         # 4. Backstop: DB snapshot from daily_book (7-day window).
         await _sparkline_collect_snapshot(seen, pairs)
