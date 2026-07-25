@@ -910,7 +910,11 @@ def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[
                     _TOKEN_MAP_CACHE.pop(k, None)
             _TOKEN_MAP_CACHE[today] = new_map
 
-    _trigger_instruments_store_populate()
+    # _trigger_instruments_store_populate() was removed here (2026-07-25).
+    # Calling get_or_fetch_all_today() immediately after _qt_broker_token_map
+    # launched 6 concurrent broker.instruments() downloads (via asyncio.gather)
+    # while the first set's raw data was still in memory → double OOM storm.
+    # The module-level _TOKEN_MAP_CACHE is sufficient for all callers.
     return new_map
 
 
