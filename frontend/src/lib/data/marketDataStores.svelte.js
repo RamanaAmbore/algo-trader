@@ -329,6 +329,8 @@ export const pulseHoldingsStore = createDataStore({
 
 // ── Holdings ──────────────────────────────────────────────────────────────
 
+let _holdingsSnapshotAt = $state(null);
+
 /**
  * Holdings (overnight / long-term book).
  * TTL 15 min — same reasoning as positions.
@@ -341,6 +343,7 @@ export const holdingsStore = createDataStore({
   parse:   (r) => {
     const rows = r?.rows ?? [];
     _publishHoldingsRows(rows);
+    _holdingsSnapshotAt = r?.as_of ?? null;
     return rows;
   },
 });
@@ -709,6 +712,8 @@ const _BOOK_HIDDEN_MS = 30_000;
  *  setting on the layout's onMount). 5 s matches the prior MarketPulse
  *  cadence so cross-page hotness preserves the previous "live feel". */
 let _bookForegroundMs = 5_000;
+let _bookLiveMs   = 5_000;
+let _bookClosedMs = 30 * 60 * 1_000;
 
 async function _tickBookPollers() {
   // Promise.allSettled so a single broker failure (e.g. /api/funds
@@ -723,6 +728,8 @@ async function _tickBookPollers() {
     // Signal completion so PositionStrip's flash animation fires at
     // book-poller cadence (default 5 s) rather than its own 30 s interval.
     _bookPollerTick++;
+    const _wantMs = _holdingsSnapshotAt != null ? _bookClosedMs : _bookLiveMs;
+    if (_wantMs !== _bookForegroundMs) setBookPollerInterval(_wantMs);
   } catch (_) { /* defensive — allSettled should never throw, but guard */ }
 }
 
@@ -740,6 +747,7 @@ export function startBookPollers(intervalMs) {
   _bookPollerStarted = true;
   if (Number.isFinite(intervalMs) && /** @type {number} */ (intervalMs) > 0) {
     _bookForegroundMs = /** @type {number} */ (intervalMs);
+    _bookLiveMs = /** @type {number} */ (intervalMs);
   }
   // Kick once immediately so the first paint after a cold load doesn't
   // wait `intervalMs` for the initial fetch. createDataStore already
@@ -766,6 +774,16 @@ export function setBookPollerInterval(intervalMs) {
     _bookPollerTeardown();
     _bookPollerTeardown = visibleInterval(_tickBookPollers, _bookForegroundMs, `throttle:${_BOOK_HIDDEN_MS}`);
   }
+}
+
+export function setBookPollerLiveMs(ms) {
+  if (!browser || !Number.isFinite(ms) || ms < 1000) return;
+  _bookLiveMs = ms;
+}
+
+export function setBookPollerClosedMs(ms) {
+  if (!browser || !Number.isFinite(ms) || ms < 60000) return;
+  _bookClosedMs = ms;
 }
 
 /** Teardown — exposed for tests + dev hot-reload. Production layout

@@ -26,7 +26,7 @@
   import ShortcutCheatsheet from '$lib/ShortcutCheatsheet.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
-  import { startBookPollers, setBookPollerInterval } from '$lib/data/marketDataStores.svelte.js';
+  import { startBookPollers, setBookPollerInterval, setBookPollerLiveMs, setBookPollerClosedMs } from '$lib/data/marketDataStores.svelte.js';
   import { loadAccountOrder } from '$lib/data/accountSort.js';
   import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream } from '$lib/data/quoteStream';
   import { tickBus } from '$lib/data/symbolStore.svelte.js';
@@ -815,6 +815,13 @@
         if (Number.isFinite(tickV) && tickV >= 500 && tickV <= 60000) {
           setBookPollerInterval(tickV);
         }
+        const liveRow = all.find?.(s => s?.key === 'polling.book_live_ms');
+        const liveV   = Number(liveRow?.value ?? liveRow?.default_value);
+        if (Number.isFinite(liveV) && liveV >= 1000) setBookPollerLiveMs(liveV);
+
+        const closedRow = all.find?.(s => s?.key === 'polling.book_closed_ms');
+        const closedV   = Number(closedRow?.value ?? closedRow?.default_value);
+        if (Number.isFinite(closedV) && closedV >= 60000) setBookPollerClosedMs(closedV);
       } catch { /* anon/demo — keep defaults */ }
     })();
     // Cross-page book poller (positions / holdings / funds). Layout-resident

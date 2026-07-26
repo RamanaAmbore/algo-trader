@@ -600,7 +600,7 @@ class HoldingsController(Controller):
                 )
                 if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
                     # Market closed — snapshot path: scope + mask then return.
-                    logger.info(
+                    logger.debug(
                         f"holdings: market closed ({source}) — serving daily_book snapshot"
                     )
                     return await _scope_and_mask_holdings(resp, request)
