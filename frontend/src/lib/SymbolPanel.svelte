@@ -2976,6 +2976,7 @@
           heightClass="flex-1 min-h-0"
           label="Log"
           defaultTab="order"
+          statusFilter="open"
           hideInlineAccountFilter={false}
         />
       </div>
