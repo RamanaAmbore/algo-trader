@@ -2108,23 +2108,33 @@
             }}
             ariaLabel="Symbol — pinned or search" />
         </div>
-        <div class="oes-quick-qty">
-          <input type="number" min="1" step="1"
-                 bind:value={_pickerQty}
-                 placeholder="Qty"
-                 class="oes-quick-field"
-                 title="Quantity" />
-        </div>
-        <div class="oes-quick-price">
-          <input type="number" min="0" step="0.05"
-                 bind:value={_pickerPrice}
-                 placeholder="Price"
-                 class="oes-quick-field"
-                 title="Limit price" />
-        </div>
         {#if pickerSuffix}
           {@render pickerSuffix()}
         {/if}
+      </div>
+
+      <!-- Quick band — qty · LTP · limit price on large screens -->
+      <div class="oes-quick-band">
+        <div class="oes-qb-field">
+          <span class="oes-qb-label">Qty</span>
+          <input type="number" min="1" step="1"
+                 bind:value={_pickerQty}
+                 placeholder="—"
+                 class="oes-qb-input"
+                 title="Quantity" />
+        </div>
+        <div class="oes-qb-ltp">
+          <span class="oes-qb-label">LTP</span>
+          <span class="oes-qb-value">{_ltp != null && _ltp > 0 ? '₹' + _ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</span>
+        </div>
+        <div class="oes-qb-field">
+          <span class="oes-qb-label">Price</span>
+          <input type="number" min="0" step="0.05"
+                 bind:value={_pickerPrice}
+                 placeholder="—"
+                 class="oes-qb-input"
+                 title="Limit price" />
+        </div>
       </div>
 
       <!-- Cluster lifted INTO `.oes-header` above (modal) or into the
@@ -2159,12 +2169,12 @@
           _setActiveTab(/** @type {any} */ (id));
         }}
       />
+      {#if _ltp != null && _ltp > 0}
+        <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>₹{_ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+      {/if}
       {#if _chaseEnabled}
         <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
         <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
-      {/if}
-      {#if _ltp != null && _ltp > 0}
-        <span class="oes-tab-ltp">₹{_ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
       {/if}
     </div>
     {/if}
@@ -3175,37 +3185,6 @@
     width: 5rem;
   }
   .oes-exch-filter :global(.rbq-select-trigger) { width: 100%; }
-  /* Quick qty/price fields — hidden on mobile, visible on large screens. */
-  .oes-quick-qty,
-  .oes-quick-price {
-    flex-shrink: 0;
-    display: none;
-  }
-  @media (min-width: 1024px) {
-    .oes-quick-qty,
-    .oes-quick-price { display: block; }
-  }
-  .oes-quick-field {
-    width: 4.5rem;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 3px;
-    padding: 0.18rem 0.35rem;
-    color: var(--c-action);
-    font-size: var(--fs-md);
-    font-family: var(--font-numeric);
-    font-weight: 600;
-    text-align: right;
-    -moz-appearance: textfield;
-    appearance: textfield;
-  }
-  .oes-quick-field::-webkit-outer-spin-button,
-  .oes-quick-field::-webkit-inner-spin-button { -webkit-appearance: none; }
-  .oes-quick-field:focus,
-  .oes-quick-field:focus-visible {
-    outline: none !important;
-    border-color: rgba(251, 191, 36, 0.55);
-  }
   .oes-account-single {
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
@@ -3398,13 +3377,81 @@
     align-items: center;
   }
   .oes-tab-ltp {
-    margin-left: auto;
-    padding-right: 0.5rem;
+    padding: 0 0.4rem;
     font-size: 0.7rem;
     font-variant-numeric: tabular-nums;
     color: var(--c-value, #e2e8f0);
     font-weight: 600;
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .oes-tab-ltp-label {
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--algo-muted);
+    font-weight: 700;
+  }
+  /* Quick band — qty · LTP · limit price, large screens only */
+  .oes-quick-band {
+    display: none;
+  }
+  @media (min-width: 1024px) {
+    .oes-quick-band {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.3rem 0.5rem;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      flex-shrink: 0;
+    }
+  }
+  .oes-qb-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .oes-qb-ltp {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 5rem;
+  }
+  .oes-qb-label {
+    font-size: 0.58rem;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--c-action);
+    font-weight: 700;
+    opacity: 0.85;
+  }
+  .oes-qb-value {
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
+    font-weight: 600;
+    color: var(--c-value, #e2e8f0);
+    font-variant-numeric: tabular-nums;
+  }
+  .oes-qb-input {
+    width: 5rem;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 3px;
+    padding: 0.15rem 0.3rem;
+    color: var(--c-action);
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
+    font-weight: 600;
+    text-align: right;
+    -moz-appearance: textfield;
+  }
+  .oes-qb-input::-webkit-outer-spin-button,
+  .oes-qb-input::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .oes-qb-input:focus, .oes-qb-input:focus-visible {
+    outline: none !important;
+    border-color: rgba(251,191,36,0.55);
   }
 
   /* Basket bar — sticky bottom strip inside the modal when legs exist. */
