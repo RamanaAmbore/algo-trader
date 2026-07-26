@@ -52,19 +52,10 @@
     backdrop.addEventListener('click', () => { isFullscreen = false; });
     document.body.appendChild(backdrop);
 
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'fs-modal-close-btn';
-    closeBtn.setAttribute('aria-label', 'Close fullscreen');
-    closeBtn.setAttribute('type', 'button');
-    closeBtn.textContent = '✕';
-    closeBtn.addEventListener('click', () => { isFullscreen = false; });
-    document.body.appendChild(closeBtn);
-
     return () => {
       document.removeEventListener('keydown', _onKey);
       document.body.style.overflow = prev;
       backdrop.remove();
-      closeBtn.remove();
     };
   });
 </script>

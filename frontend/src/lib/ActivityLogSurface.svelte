@@ -55,7 +55,7 @@
     /** Active log level filter — bindable so parent's ActivityHeaderFilters
      *  drives it. Default 'all' keeps pre-filter behaviour; surfaces that
      *  want loud-rows-only pass 'error'. */
-    levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
+    levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('warning')),
     /** Surface context — gates the context-derived 2-column magazine flow.
      *  Overridden entirely when `multiColumn` is provided explicitly.
      *  @type {'page'|'card'|'card-wide'|'modal'} */

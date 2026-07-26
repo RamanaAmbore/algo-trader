@@ -3517,7 +3517,7 @@
     const _thisGen = ++_stratGen;
     loading = true;
     try {
-      const resp    = await fetchStrategyAnalytics(cleanLegs);
+      const resp    = await fetchStrategyAnalytics(cleanLegs, { spot: liveSpot ?? null });
       if (_thisGen !== _stratGen) return;
       strategy      = resp;
       _stratLastKey = legsKey;

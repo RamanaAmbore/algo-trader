@@ -84,7 +84,6 @@ test.describe('Fullscreen card modal — new modal chrome + X sync', () => {
 
     await expect(page.locator('.fs-card-on').first()).toBeVisible({ timeout: 8_000 });
     await expect(page.locator('.fs-backdrop').first()).toBeVisible({ timeout: 5_000 });
-    await expect(page.locator('.fs-modal-close-btn').first()).toBeVisible({ timeout: 5_000 });
   });
 
   // ── 2. Pinned ✕ button closes modal ──────────────────────────────────────
@@ -143,30 +142,6 @@ test.describe('Fullscreen card modal — new modal chrome + X sync', () => {
     expect(xIconText).toBe('✕');
   });
 
-  // ── 5. Page-header button expands the last-hovered card ──────────────────
-  test('page_header_fullscreen_button_expands_active_card', async ({ page }) => {
-    // Dimensions: Reusable (PageFullscreenButton integration), UX (modal opens)
-    await authOnce(page);
-    await navDashboard(page);
-
-    const cardHeader = page.locator('.card-header').first();
-    if (!await cardHeader.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      test.skip(true, 'no .card-header found on dashboard');
-    }
-    await cardHeader.hover();
-
-    const phaFsBtn = page.locator('.pha-btn.pha-fs').first();
-    if (!await phaFsBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      test.skip(true, 'no .pha-btn.pha-fs in page header — feature not yet deployed');
-    }
-    await expect(phaFsBtn).toBeEnabled({ timeout: 5_000 });
-
-    const t0 = Date.now();
-    await phaFsBtn.click();
-    expect(Date.now() - t0).toBeLessThan(500);
-    await expect(page.locator('.fs-card-on').first()).toBeVisible({ timeout: 8_000 });
-  });
-
   // ── 6. Escape key closes modal ────────────────────────────────────────────
   test('escape_key_closes_modal', async ({ page }) => {
     // Dimensions: SSOT (DOM state), UX (keyboard shortcut)
@@ -221,28 +196,6 @@ test.describe('Fullscreen card modal — new modal chrome + X sync', () => {
     } else {
       expect(bgColor).toMatch(/rgba?/);
     }
-  });
-
-  // ── 9. Stale-code guard ───────────────────────────────────────────────────
-  test('stale_code_fullscreen_button_still_creates_close_btn', async ({ page }) => {
-    // Dimensions: Stale code — guards against removal of close-btn creation in FullscreenButton
-    await authOnce(page);
-    const fsBtn = await navDashboard(page);
-    await fsBtn.click();
-    await expect(page.locator('.fs-card-on').first()).toBeVisible({ timeout: 8_000 });
-    // Give the portalled element time to render.
-    await page.waitForTimeout(300);
-
-    const info = await page.evaluate(() => {
-      const btn = document.querySelector('.fs-modal-close-btn');
-      if (!btn) return null;
-      return { text: btn.textContent?.trim(), ariaLabel: btn.getAttribute('aria-label') };
-    });
-    if (!info) {
-      test.skip(true, '.fs-modal-close-btn not created — feature not yet deployed');
-    }
-    expect(info.text).toBe('✕');
-    expect(info.ariaLabel).toBe('Close fullscreen');
   });
 
 });

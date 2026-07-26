@@ -219,6 +219,83 @@ class TestGrowwInstrumentsCoalesces(unittest.TestCase):
                          f"SDK should be called exactly once by coalescer; "
                          f"got {sdk_call_count}")
 
+    def test_groww_multi_instance_distinct_ssot_keys(self):
+        """Two GrowwBroker instances with different accounts use distinct
+        @ssot_fetch cache keys and don't interfere with each other's results."""
+        from backend.brokers.adapters import groww as groww_mod
+
+        # Create two connections with different accounts
+        conn1 = MagicMock()
+        conn1.account = "GR87DF"
+
+        conn2 = MagicMock()
+        conn2.account = "GR12AB"
+
+        # Track SDK calls per account
+        call_counts = {"GR87DF": 0, "GR12AB": 0}
+
+        def make_instruments_fn(account, token_id):
+            """Factory to create account-specific SDK mock functions."""
+            def fake_get_all_instruments():
+                call_counts[account] += 1
+                # Return different data for each account so we can verify
+                # each broker got its own result
+                return [
+                    {
+                        "exchange": "NSE",
+                        "trading_symbol": f"SYMBOL_{token_id}",
+                        "exchange_token": str(token_id),
+                        "lot_size": 1,
+                        "tick_size": 0.05,
+                    }
+                ]
+            return fake_get_all_instruments
+
+        conn1.get_groww_conn.return_value.get_all_instruments = \
+            make_instruments_fn("GR87DF", "1000")
+        conn2.get_groww_conn.return_value.get_all_instruments = \
+            make_instruments_fn("GR12AB", "2000")
+
+        # Create two brokers with different accounts
+        broker1 = groww_mod.GrowwBroker(conn1)
+        broker2 = groww_mod.GrowwBroker(conn2)
+
+        # Call instruments() on each
+        result1 = broker1.instruments()
+        result2 = broker2.instruments()
+
+        # Verify each broker received its own data
+        self.assertEqual(len(result1), 1, "Broker1 must return 1 instrument")
+        self.assertEqual(len(result2), 1, "Broker2 must return 1 instrument")
+
+        # Check that each got the right trading symbol (distinct per account)
+        self.assertEqual(result1[0]["tradingsymbol"], "SYMBOL_1000",
+                         f"Broker1 (GR87DF) returned wrong symbol")
+        self.assertEqual(result2[0]["tradingsymbol"], "SYMBOL_2000",
+                         f"Broker2 (GR12AB) returned wrong symbol")
+
+        # Verify each account's SDK was called exactly once
+        self.assertEqual(call_counts["GR87DF"], 1,
+                         f"GR87DF SDK should be called once; got {call_counts['GR87DF']}")
+        self.assertEqual(call_counts["GR12AB"], 1,
+                         f"GR12AB SDK should be called once; got {call_counts['GR12AB']}")
+
+        # Call again sequentially to verify caching works per account
+        result1_cached = broker1.instruments()
+        result2_cached = broker2.instruments()
+
+        # Verify cached results match originals (cached, no new SDK calls)
+        self.assertEqual(result1_cached[0]["tradingsymbol"], "SYMBOL_1000",
+                         f"Broker1 cached result mismatch")
+        self.assertEqual(result2_cached[0]["tradingsymbol"], "SYMBOL_2000",
+                         f"Broker2 cached result mismatch")
+
+        # Verify SDK was NOT called again (still 1 each due to caching)
+        self.assertEqual(call_counts["GR87DF"], 1,
+                         f"GR87DF SDK should still be called once (cached); got {call_counts['GR87DF']}")
+        self.assertEqual(call_counts["GR12AB"], 1,
+                         f"GR12AB SDK should still be called once (cached); got {call_counts['GR12AB']}")
+
 
 # ── SDK construction safety ───────────────────────────────────────────────────
 

@@ -183,9 +183,9 @@ class TestDhanExc:
         assert exc.broker == "dhan"
 
     def test_order_error_code_906(self):
-        """DH-906 → BrokerOrderError."""
+        """DH-906 → BrokerAuthError (Invalid Token / primary rotation signal)."""
         exc = _dhan_exc(Exception("test"), code="DH-906", status=400)
-        assert isinstance(exc, BrokerOrderError)
+        assert isinstance(exc, BrokerAuthError)
 
     def test_unknown_error_code(self):
         """Unknown code → generic BrokerError."""

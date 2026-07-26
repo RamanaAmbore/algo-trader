@@ -64,8 +64,7 @@ class TestTokenMapFetchLock:
 
         with patch("backend.api.routes.quote._SPARKLINE_EXCHANGES", _SPARKLINE_EXCHANGES), \
              patch("backend.api.routes.quote._ist_today", return_value="2099-01-01"), \
-             patch("backend.api.routes.quote._qt_read_instr_store_tier1", return_value=None), \
-             patch("backend.api.routes.quote._trigger_instruments_store_populate"):
+             patch("backend.api.routes.quote._qt_read_instr_store_tier1", return_value=None):
 
             # Clear the 2099-01-01 cache key specifically.
             with _TOKEN_MAP_LOCK:
@@ -118,8 +117,7 @@ class TestTokenMapFetchLock:
         broker.instruments.side_effect = counting
 
         with patch("backend.api.routes.quote._ist_today", return_value="2099-01-02"), \
-             patch("backend.api.routes.quote._qt_read_instr_store_tier1", return_value=None), \
-             patch("backend.api.routes.quote._trigger_instruments_store_populate"):
+             patch("backend.api.routes.quote._qt_read_instr_store_tier1", return_value=None):
 
             with _TOKEN_MAP_LOCK:
                 _TOKEN_MAP_CACHE.pop("2099-01-02", None)
@@ -147,8 +145,7 @@ class TestTokenMapFetchLock:
         warm_map = {("NIFTY", "NSE"): 256265}
 
         with patch("backend.api.routes.quote._ist_today", return_value="2099-01-03"), \
-             patch("backend.api.routes.quote._qt_read_instr_store_tier1", return_value=warm_map), \
-             patch("backend.api.routes.quote._trigger_instruments_store_populate"):
+             patch("backend.api.routes.quote._qt_read_instr_store_tier1", return_value=warm_map):
 
             with _TOKEN_MAP_LOCK:
                 _TOKEN_MAP_CACHE.pop("2099-01-03", None)

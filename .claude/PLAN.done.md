@@ -1,132 +1,169 @@
-# Plan: Broker layer — @ssot_fetch consolidation + remaining TOCTOU/resilience gaps
+# Plan: Modal chrome + Payoff SSOT + Conn tab sync + System tab warnings + Groww ssot_fetch
 
 ## Context
 
-This week's broker fixes landed in 7 separate commits, each patching one symptom at a
-time. Three structural issues remain:
+Six post-deploy items:
 
-1. **Hand-rolled TOCTOU coalesce still exists at two sites** — `kite.py` and
-   `broker_apis.py` both re-implement the exact pattern that `@ssot_fetch(coalesce)`
-   was built to replace. The `_RAW_CACHE` / `_RAW_INFLIGHT` block in `broker_apis.py`
-   is ~60 lines of bespoke lock+Event logic; Kite's `_INSTR_LOCK` / `_INSTR_CACHE`
-   double-check is a smaller version of the same thing.
+**1. Log modal** (ActivityLogModal) wraps with `ModalShell` (centers panel via
+`align-items:center`); canonical pattern is `.canonical-modal-overlay` (sheet below
+navbar, `padding-top:var(--modal-sheet-top)`). LogPanel modal close button shows SVG
+restore icon; user wants `×` matching ChartModal.
 
-2. **Groww login lock ordering bug (same as Dhan's that was fixed in f84dcb2b)** —
-   `GrowwConnection.refresh()` still uses the composite
-   `with self._login_lock, _cross_process_login_lock(...)` form that holds the
-   cross-process file lock for the full inner check. Dhan was fixed to nested form;
-   Groww was not touched.
+**2. Fullscreen card modal** — `inset:1.5rem` (floating gutters); should be
+`inset:var(--modal-sheet-top) 0 0 0` (full-width sheet below navbar matching
+canonical-modal-panel). DefaultSizeButton portals `.fs-modal-close-btn` to body — second
+`×` to remove; in-card `×` button (DefaultSizeButton itself) is the one to keep.
+Page-header fullscreen button not needed; remove with dead code.
 
-3. **Dhan error map gaps** — only 4 DH-codes are mapped. Other codes that appear in
-   prod logs (DH-903 order rejected, DH-905 service unavailable) fall through to bare
-   `BrokerError`, bypassing the auth/rate-limit recovery paths in the CB and retry logic.
+**3. Payoff chart spot price not SSOT** — `fetchStrategyAnalytics(cleanLegs)` at
+`derivatives/+page.svelte:3520` passes NO spot → backend calls `_resolve_spot()` which
+hits the broker independently. `liveSpot` is already resolved at scope (line 1725).
+`fetchStrategyAnalytics` already accepts `opts.spot` (`api.js:948`); backend
+short-circuits broker call when provided (`options.py:1221`). One-line fix eliminates
+the extra broker round-trip.
+
+**4. Conn tab not in sync with system tab** — three gaps:
+- *Timestamp*: conn uses IST-only `_fmtConnEvtTime()`; system uses `formatDualTz()`
+  (IST + EDT, `stores.js:638`). Fix: replace `_fmtConnEvtTime` body with `formatDualTz`.
+- *Magazine layout*: line 1611 explicitly excludes conn (`logTab !== 'conn'`).
+  Fix: remove that exclusion.
+- *Colors*: conn applies color only to `.lp-conn-type` span; system colors full row.
+  Fix: target `.lp-conn-row.conn-ev-*` directly (not child span).
+
+**5. System tab too many warnings** — root cause: `file_log_level: 10` (DEBUG) in
+`backend/config/backend_config.yaml` captures every broker operation (token renewals,
+reconnection backoffs, rate limits) into the log file that the system tab tails
+(`/api/admin/logs` at `admin.py:1085`). Fix: raise `file_log_level` from `10` to `20`
+(INFO level) — drops DEBUG-level chatter while keeping INFO, WARNING, ERROR. Additionally,
+initialize the system tab levelFilter to `'warning'` by default (not `'all'`) so
+operators see only actionable rows; they can toggle to 'all' or 'info' for more.
+
+**6. Groww instruments ssot_fetch key** — fixed string `"groww_instruments"` shared
+across all GrowwBroker instances. Fix: lambda key per `self.account`.
 
 ## Agents
 
-- backend: skip
-- frontend: skip
-- broker: Three changes in `backend/brokers/`:
+- backend: One change in `backend/config/backend_config.yaml`:
+  - Change `file_log_level: 10` → `file_log_level: 20`
+  - (Raises log file level from DEBUG to INFO — removes broker DEBUG chatter;
+    WARNING/ERROR/INFO still captured and visible in system tab)
 
-  **Change 1 — Remove `_INSTR_LOCK` / `_INSTR_CACHE` from `kite.py` and apply
-  `@ssot_fetch(coalesce)` to `KiteBroker.instruments()`.**
+- frontend: All changes in `frontend/src/`:
 
-  `backend/brokers/adapters/kite.py`:
-  - Delete module-level `_INSTR_CACHE`, `_INSTR_LOCK`, `_INSTR_TTL` (lines 48–54).
-  - Import `ssot_fetch` from `backend.shared.helpers.ssot_fetch`.
-  - Replace the `instruments()` method body with just the raw SDK call —
-    `@ssot_fetch(coalesce, key=lambda self, exchange=None: f"{self.account}:{exchange or ''}")`
-    on the method handles deduplication and caching (non-None results cached by the
-    decorator; TTL is handled via the decorator's result cache — no expiry needed since
-    Kite instruments are a daily dump; use `force_refresh=True` for the rare manual flush).
-  - Remove `import time as _time_mod` if only used by `_INSTR_TTL`.
-
-  **Change 2 — Replace `_RAW_CACHE` / `_RAW_INFLIGHT` block in `broker_apis.py` with
-  `@ssot_fetch(coalesce)` on `fetch_holdings`, `fetch_positions`, `fetch_margins`.**
-
-  `backend/brokers/broker_apis.py`:
-  - Delete `_RAW_CACHE_LOCK`, `_RAW_CACHE`, `_RAW_TTL_S`, `_RAW_INFLIGHT` and the four
-    helper functions: `_raw_cache_get`, `_raw_cache_reserve`, `_raw_cache_put`,
-    `_raw_cache_release` (~85 lines total).
-  - Keep `_raw_cache_invalidate` but re-implement it as `force_refresh=True` calls on
-    each of the three decorated functions, or as a simple dict clear if the decorator's
-    internal `_result_cache` is accessible. Cleanest: add a thin `_raw_cache_invalidate`
-    wrapper that calls each function with `force_refresh=True` on the next call (set a
-    `_raw_invalidated` flag that the decorated function checks). Actually simplest: keep
-    a module-level `_raw_invalidated: set[str]` flag that the wrapped function body
-    checks — if flagged, pass `force_refresh=True` to its own re-entry. Better: expose
-    the decorator's `_result_cache` dict reference and clear it directly.
-    **Simplest approach**: rewrite `_raw_cache_invalidate` to call each decorated
-    function with `force_refresh=True` and discard the result (fires a background
-    refetch that populates cache) OR simply expose `_result_cache` on the decorator
-    wrapper (add `wrapper._result_cache = _result_cache` inside `ssot_fetch`) and call
-    `.pop(key)` from `_raw_cache_invalidate`.
-  - Decorate `fetch_holdings`, `fetch_positions`, `fetch_margins` with
-    `@ssot_fetch(mode="coalesce", key=<fixed string "holdings"/"positions"/"margins">)`.
-  - The three functions already guard the zero-arg path with `if not args and not kwargs:`.
-    Keep that guard — `@ssot_fetch` should only wrap the zero-arg fast path. Use a thin
-    inner function for the decorated path, or restructure so the decorator sits on the
-    zero-arg function body only.
-    **Cleaner**: extract the zero-arg paths to `_fetch_holdings_cached()`,
-    `_fetch_positions_cached()`, `_fetch_margins_cached()` decorated with
-    `@ssot_fetch(coalesce, key="holdings"/"positions"/"margins")`. The public outer
-    functions remain unchanged and call the decorated inner on zero-arg path.
-
-  **Change 3 — Fix Groww login lock ordering in `connections.py`.**
-
-  `backend/brokers/connections.py` `GrowwConnection.refresh()` (line 1411):
-  - Change composite `with self._login_lock, _cross_process_login_lock(cache_key):` to
-    nested form matching DhanConnection:
-    ```python
-    with self._login_lock:
-        with _cross_process_login_lock(cache_key):
-            # inner check + mint
+  **A — `lib/ActivityLogModal.svelte`** — replace ModalShell with canonical-modal-overlay:
+  - Remove `import ModalShell from '$lib/ModalShell.svelte';`
+  - Add `import { portal } from '$lib/portal';`
+  - Replace `<ModalShell open={true} {onClose} zIndex={10500} ...>` + closing tag with:
+    ```svelte
+    <!-- svelte-ignore a11y_interactive_supports_focus -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="canonical-modal-overlay" style="z-index:10500"
+         role="dialog" aria-modal="true" aria-label="Activity log"
+         use:portal>
     ```
-  - No logic change — just lock ordering so the cross-process lock is NOT held during
-    the in-process guard check.
+    close with `</div>`. Keep `_onKey`, `_focusables`, `onMount`, `onDestroy` unchanged.
 
-  **Change 4 — Extend Dhan error map with missing codes.**
+  **B — `lib/LogPanel.svelte`** — four changes:
 
-  `backend/brokers/adapters/dhan.py` `_DHAN_ERROR_MAP` (line 56):
-  - Add:
-    ```python
-    "DH-903": BrokerOrderError,   # Order rejected by exchange
-    "DH-905": BrokerNetworkError, # Service temporarily unavailable
-    "DH-907": BrokerAuthError,    # Account suspended
-    "DH-908": BrokerInputError,   # Invalid request parameters
+  B1. Modal close button → `×` (around lines 1465-1477):
+  - In `{#if context === 'modal'}` replace `.lp-default-btn` SVG button with:
+    ```svelte
+    <button type="button" class="lp-close-btn"
+            title="Close" aria-label="Close activity log"
+            onclick={() => onClose?.()}>×</button>
     ```
-  - Also extend the `_ROTATION_SIGNAL_PATTERNS` list if any DH-903/905/907 text appears
-    in prod logs as a rotation signal (check existing log pattern list first).
+  - Add `.lp-close-btn` style (cyan palette, 1.4rem × 1.4rem, matching `.cm-close` in ChartModal).
+  - Remove `.lp-default-btn` style block if no longer used elsewhere in LogPanel.
+
+  B2. Conn tab timestamp → dual IST+EDT (around lines 428-436):
+  - Import `formatDualTz` from `$lib/stores.js` (exported at line 638).
+  - Rewrite `_fmtConnEvtTime(iso)` to return `formatDualTz(new Date(iso))`.
+  - Expand `lp-conn-time` min-width CSS to at least `13rem` to fit the longer string.
+
+  B3. Conn tab magazine layout (line 1611):
+  - Remove `logTab !== 'conn'` from the multicol conditional:
+    ```svelte
+    {multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}
+    ```
+  - Check if `white-space: nowrap` on `.lp-conn-row` breaks 2-column grid;
+    if so, allow wrapping on `lp-conn-time` and `lp-conn-det` spans.
+
+  B4. Conn tab full-row colors (around lines 2361-2364):
+  - Change selectors from targeting only `.lp-conn-type` to targeting the full row:
+    ```css
+    .lp-conn-row.conn-ev-green { color: var(--c-long); }
+    .lp-conn-row.conn-ev-red   { color: var(--c-short); }
+    .lp-conn-row.conn-ev-amber { color: var(--c-action); }
+    .lp-conn-row.conn-ev-muted { color: var(--algo-muted); }
+    ```
+
+  B5. System tab default levelFilter → 'warning' (line 125):
+  - In `ActivityLogSurface.svelte` (line 58), change `levelFilter` default from `'all'`
+    to `'warning'`. The levelFilter UI chip remains so operator can toggle to 'info' or
+    'all'. Note: conn tab green events (`conn-ev-green`) map to 'info' level
+    (`lines 368-370`), so with default 'warning', conn shows only amber/red by default.
+    This is acceptable since the user's concern is noise reduction. Operator can toggle.
+
+  **C — `lib/DefaultSizeButton.svelte`** — remove portalled .fs-modal-close-btn:
+  - In `$effect` remove the `closeBtn` createElement / appendChild block + cleanup.
+  - Keep backdrop, scroll-lock, Esc handler unchanged.
+
+  **D — `app.css`** — fix `.fs-card-on` + remove dead CSS:
+  - Change `inset: 1.5rem !important;` →
+    `inset: var(--modal-sheet-top, calc(3rem + 1.8rem)) 0 0 0 !important;`
+  - Change `border-radius: 0.75rem !important;` → `border-radius: 0 !important;`
+  - Remove `.fs-modal-close-btn { … }` + `.fs-modal-close-btn:hover { … }` block (~19 lines)
+  - Remove `.fs-x-icon { … }` rule
+  - Update `@media (max-width:600px) .fs-card-on` override with same inset formula
+
+  **E — Remove page-header fullscreen button**:
+  - `lib/PageHeaderActions.svelte`: remove import + `<PageFullscreenButton />`.
+  - `lib/CardHeader.svelte`: remove `import { activeCardStore }`, `_onCardFocus()`, `onmouseenter={_onCardFocus}`.
+  - `lib/stores.js`: remove `activeCardStore` export.
+  - Delete `lib/PageFullscreenButton.svelte`.
+  - `e2e/fullscreen_card_modal.spec.js`: remove test 5 (`page_header_fullscreen_button_expands_active_card`) and test 9 (`stale_code_fullscreen_button_still_creates_close_btn`).
+
+  **F — `routes/(algo)/admin/derivatives/+page.svelte:3520`** — payoff SSOT fix:
+  - Change:
+    ```js
+    const resp = await fetchStrategyAnalytics(cleanLegs);
+    ```
+    To:
+    ```js
+    const resp = await fetchStrategyAnalytics(cleanLegs, { spot: liveSpot ?? null });
+    ```
+
+- broker: One-line fix in `backend/brokers/adapters/groww.py`:
+  ```python
+  @ssot_fetch(mode="coalesce", key=lambda self, *a, **kw: f"groww_instruments_{self.account}")
+  ```
 
 - doc: skip
-- backend-test: Add/update tests in `backend/tests/broker/`:
-  - `test_ssot_fetch.py`: add a test that `force_refresh=True` evicts the result cache
-    (verify via the exposed `_result_cache` dict if exposed, or by calling twice and
-    confirming the underlying function ran twice).
-  - `test_broker_resilience.py`: add tests for:
-    - Kite `instruments()` coalesce: concurrent calls share one SDK invoke.
-    - `fetch_holdings/positions/margins` coalesce: concurrent calls share one fetch.
-    - `_raw_cache_invalidate` invalidates all three caches.
-    - Groww login: acquiring `_login_lock` first before `_cross_process_login_lock`
-      (verify by checking lock acquisition order in the code path — mock the
-      cross-process lock and assert `_login_lock.locked()` when it's entered).
-    - Dhan DH-903 maps to `BrokerOrderError`; DH-905 to `BrokerNetworkError`.
+- backend-test: Update `backend/tests/broker/test_source_ip_overlay.py` — add multi-instance
+  Groww test: two GrowwBroker instances, concurrent `instruments()` → each hits SDK
+  independently (distinct cache keys, no cross-account collision).
+
 - playwright: skip
 
 ## Tests
 
-- pytest: yes
-- svelte-check: no
+- pytest: yes (broker tests: `venv/bin/pytest backend/tests/broker/ -q --tb=line`)
+- svelte-check: yes
 - playwright: no
 
 ## Commit message
 
-fix(brokers): @ssot_fetch for Kite instruments + RAW_CACHE; Groww lock order; Dhan error map
+fix: modal sheet + payoff SSOT + conn tab sync + system log noise + Groww ssot_fetch key
 
 ## Done when
 
-- `kite.py` has no `_INSTR_LOCK` / `_INSTR_CACHE` — instruments() is decorated with @ssot_fetch
-- `broker_apis.py` has no `_RAW_INFLIGHT` / `_raw_cache_reserve` — holdings/positions/margins use @ssot_fetch
-- `_raw_cache_invalidate` still works (clears the decorator's result cache for all three)
-- `GrowwConnection.refresh()` uses nested `with` blocks, not composite form
-- Dhan `_DHAN_ERROR_MAP` covers DH-901/902/903/904/905/906/907/908
-- `venv/bin/pytest backend/tests/broker/ -q --tb=line` passes (no new failures)
+- ActivityLogModal: canonical-modal-overlay (sheet below navbar, not centered)
+- LogPanel modal close: `×` cyan button
+- DefaultSizeButton: no portalled .fs-modal-close-btn
+- .fs-card-on: starts below navbar, border-radius 0
+- PageFullscreenButton deleted, activeCardStore removed
+- fetchStrategyAnalytics passes liveSpot — payoff instant (no extra broker call)
+- Conn tab: dual IST+EDT timestamps, magazine layout, full-row colors
+- System tab: default levelFilter 'warning'; file_log_level raised to INFO (20)
+- Groww instruments(): per-account lambda key
+- pytest broker tests pass; svelte-check 0 errors

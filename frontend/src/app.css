@@ -1786,7 +1786,7 @@
 
 .fs-card-on {
   position: fixed !important;
-  inset: 1.5rem !important;
+  inset: var(--modal-sheet-top, calc(3rem + 1.8rem)) 0 0 0 !important;
   z-index: 9999 !important;
   max-width: none !important;
   max-height: none !important;
@@ -1796,7 +1796,7 @@
   overflow: auto !important;
   box-shadow: 0 16px 64px rgba(0, 0, 0, 0.80),
               0 0 0 1.5px rgba(251, 191, 36, 0.55) !important;
-  border-radius: 0.75rem !important;
+  border-radius: 0 !important;
   animation: fs-pop-in 0.15s ease-out;
   /* Promote stacking context so child elements (tabs, tables,
      hover popovers) layer correctly inside the modal. */
@@ -1808,34 +1808,10 @@
   to   { transform: scale(1);    opacity: 1; }
 }
 
-/* Pinned ✕ close button — portalled to document.body alongside the backdrop. */
-.fs-modal-close-btn {
-  position: fixed;
-  top: 1rem;
-  right: 1rem;
-  z-index: 10001;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 9999px;
-  background: rgba(30, 41, 59, 0.90);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #e2e8f0;
-  font-size: 1rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.15s;
-  line-height: 1;
-}
-.fs-modal-close-btn:hover { background: rgba(239, 68, 68, 0.75); }
-.fs-x-icon { font-size: 1.1rem; line-height: 1; }
-
-/* Tight viewport: less aggressive inset on phones so the card
-   doesn't waste edge real estate. */
+/* Tight viewport: same sheet inset as desktop — card fills below the navbar. */
 @media (max-width: 600px) {
   .fs-card-on {
-    inset: 0.5rem !important;
+    inset: var(--modal-sheet-top, calc(3rem + 1.8rem)) 0 0 0 !important;
   }
 }
 

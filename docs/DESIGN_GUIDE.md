@@ -136,6 +136,16 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 - §22.15. [Chart indicator system — pure module + overlay persistence](#2215-chart-indicator-system--pure-module--overlay-persistence)
 - §22.16. [Derivatives page — cold-start and payoff improvements](#2216-derivatives-page--cold-start-and-payoff-improvements)
 - §22.17. [Derivatives page — `_throttledTick` market-close gate](#2217-derivatives-page--_throttledtick-market-close-gate)
+- §22.18. [NavStrip — lifetime slot SSOT aligned with MarketPulse TOTAL](#2218-navstrip--lifetime-slot-ssot-aligned-with-marketpulse-total)
+- §22.19. [CSV export button — all ag-Grid card headers](#2219-csv-export-button--all-ag-grid-card-headers)
+- §22.20. [docs/ folder reorganisation + exhaustive spec files](#2220-docs-folder-reorganisation--exhaustive-spec-files)
+- §22.21. [Spec files expanded — Orders, Activity, Charts (modal + page coverage)](#2221-spec-files-expanded--orders-activity-charts-modal--page-coverage)
+- §22.22. [Agent execution — actions.py updates (NCO guard + async close)](#2222-agent-execution--actionspy-updates-nco-guard--async-close)
+- §22.23. [Template attach — parent_lot_size NFO/BFO/CDS support](#2223-template-attach--parent_lot_size-nfobfocds-support)
+- §22.24. [Agent engine — topic suppression doesn't burn lifespan](#2224-agent-engine--topic-suppression-doesnt-burn-lifespan)
+- §22.25. [Demo banner + Showcase page + Nav + Fullscreen + Derivatives Exp Close](#2225-demo-banner--showcase-page--nav--fullscreen--derivatives-exp-close)
+- §22.26. [Derivatives rows + LogPanel CSS Grid — border-bottom + 2-col grid layout](#2226-derivatives-rows--logpanel-css-grid--border-bottom--2-col-grid-layout)
+- §22.27. [Modal consolidation — ActivityLogModal sheet pattern + fullscreen inset flush](#2227-modal-consolidation--activitylogmodal-sheet-pattern--fullscreen-inset-flush)
 
 **Part VII — Operations**
 
@@ -4536,6 +4546,75 @@ Grid handles dynamic row heights cleanly; scroll axis is independent from layout
 
 ---
 
+## 22.27. Modal consolidation — ActivityLogModal sheet pattern + fullscreen inset flush
+
+Three UI refinements converge modal/overlay architecture onto canonical patterns and improve
+fullscreen card edge-to-edge rendering.
+
+### ActivityLogModal — canonical sheet-modal overlay
+
+**Problem:** `ActivityLogModal.svelte` used a custom `<ModalShell>` component that center-aligned
+the modal. This diverged from the app's other sheet-modals (ChartModal, OrderTicket) which use
+a fixed `.canonical-modal-overlay` CSS class for top-anchored sheet behavior.
+
+**Fix:** Replaced `<ModalShell>` with `.canonical-modal-overlay` + `use:portal`. New structure:
+- **Container:** `<div class="canonical-modal-overlay" use:portal>`
+- **CSS:** `position: fixed; inset: 0; align-items: flex-start; padding-top: var(--modal-sheet-top, calc(3rem + 1.8rem))`
+- **Backdrop:** `position: absolute; inset: 0; backdrop-filter: blur(2px)` sibling
+- **Sheet:** `position: relative; z-index: 1` — slides down from top
+
+Result: ActivityLogModal now visually matches the rest of the sheet-modal ecosystem (ChartModal,
+OrderTicket). No center-aligned break-glass modal — all modals anchor top, slide down on open,
+scroll internally if content exceeds viewport.
+
+**Files:** `frontend/src/lib/ActivityLogModal.svelte` — replaced `<ModalShell>` with overlay div
+
+### Fullscreen card — inset flush to edges + close button removal
+
+**Problem:** Fullscreen cards (`.fs-card-on` class) had `inset: 1.5rem` (floating card with
+rounded corners, border, shadow). The separate `PageFullscreenButton.svelte` component created a
+portalled close button that sat in a fixed overlay. Two issues: (a) floating inset looked wrong
+on edge-case mobile layouts, (b) close button lifecycle was fragile (portalled elements can unmount
+unexpectedly on tab switch).
+
+**Fix:** Two changes—
+
+1. **Inset changed to flush-to-edges:** `.fs-card-on` now uses `inset: var(--modal-sheet-top, calc(3rem + 1.8rem)) 0 0 0`
+   so fullscreen cards reach the top (respecting the demo banner if present) and flush-extend left/right/bottom.
+   No floating border-radius, no margin. Card content renders edge-to-edge, maximizing usable space.
+
+2. **Close button inlined in card:** Removed the portalled `PageFullscreenButton.svelte` component entirely.
+   Close button now lives in `DefaultSizeButton.svelte` (which already existed for the "reset to default size" action).
+   Button lifecycle is now tied to the card itself, not a separate portal.
+
+Result: fullscreen cards are now true full-screen (edge-to-edge, no floating padding), and close
+button lifecycle is simpler and more predictable.
+
+**Files changed:**
+- `frontend/src/app.css` — `.fs-card-on` inset changed
+- `frontend/src/lib/DefaultSizeButton.svelte` — embedded close button
+- `frontend/src/lib/PageFullscreenButton.svelte` — deleted (dead code)
+
+### Payoff analytics — spot price SSOT via frontend to backend
+
+**Problem:** The derivatives payoff chart (`/admin/derivatives` page) called `fetchStrategyAnalytics(cleanLegs)`
+without passing the live spot price. Backend `_resolve_spot()` then attempted to resolve spot via the
+broker's PriceBroker chain, iterating 5 brokers on cache miss (5–30s latency on token expiry).
+
+**Fix:** Frontend now passes `{ spot: liveSpot ?? null }` to the backend endpoint. Backend
+`_resolve_spot()` short-circuits immediately when spot is provided, skipping the entire broker
+quote call chain.
+
+Result: payoff chart refreshes instantly when underlying spot is already available in the frontend's
+real-time SSE stream, rather than incurring a full broker round-trip every time the user changes the
+underlying symbol.
+
+**Files changed:**
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — passes `spot: liveSpot` to backend
+- `backend/api/routes/derivatives.py::_resolve_spot` — early return when spot is provided
+
+---
+
 # Part VII — Operations
 
 ## 23. How to add a new template field
@@ -5306,6 +5385,7 @@ Quick-jump index by first significant word — useful when you remember a name b
 | Logging discipline | §25 |
 | Market-status probe | §22.14 |
 | Metrics + performance tracking | §4.9 |
+| Modal consolidation — ActivityLogModal + fullscreen inset | §22.27 |
 | Navbar audit — rename + resequence | §22.11 |
 | NavStrip — lifetime slot SSOT fix | §22.18 |
 | Operator's mental model | §30 |
