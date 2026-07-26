@@ -597,6 +597,35 @@
     }
     _prevLotSize = _lotSize;
   });
+
+  // Watch qty prop changes from parent (e.g. SymbolPanel picker row).
+  // Only updates _lots when lotSize is known and operator hasn't manually adjusted.
+  let _lastPropQty = $state(Number(qty) || 0);
+  $effect(() => {
+    const q = Number(qty) || 0;
+    if (q === untrack(() => _lastPropQty)) return;
+    untrack(() => { _lastPropQty = q; });
+    const ls = untrack(() => _lotSize);
+    if (q > 0 && ls > 0) {
+      const newLots = Math.max(1, Math.round(q / ls));
+      untrack(() => { _lots = newLots; _lotsTouched = false; });
+    } else if (q > 0 && ls === 0) {
+      untrack(() => { _qty = q; });
+    }
+  });
+
+  // Watch price prop changes from parent (e.g. SymbolPanel picker row).
+  // Only updates _price when operator hasn't manually set it.
+  let _lastPropPrice = $state(price ?? '');
+  $effect(() => {
+    const p = price;
+    if (p === untrack(() => _lastPropPrice)) return;
+    untrack(() => { _lastPropPrice = p; });
+    if (p != null && !untrack(() => _priceTouched)) {
+      untrack(() => { _price = String(p); });
+    }
+  });
+
   // Keep _qty in sync with _lots × _lotSize so submit + validation see
   // the resolved raw quantity. Skipped when _lotSize=0 (operator types
   // qty directly).

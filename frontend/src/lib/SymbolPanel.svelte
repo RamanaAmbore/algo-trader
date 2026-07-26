@@ -71,7 +71,10 @@
   // Symbol-type filter — shared 4-option vocabulary so every
   // surface (modals, /orders, /charts) reads the same.
   const _SYM_TYPE_OPTS = SYM_TYPE_OPTS;
-  let _symType = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'));
+  let _symType     = $state(/** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'));
+  let _exchFilter  = $state(/** @type {string} */ ('ALL'));
+  let _pickerQty   = $state(/** @type {number|''} */ (''));
+  let _pickerPrice = $state(/** @type {number|''} */ (''));
 
   /** @type {{
    *   defaultTab?:     'ticket' | 'chain',
@@ -1935,9 +1938,15 @@
   }));
 
   // Effective OrderTicket props — shell-level props forwarded to the ticket.
+  // When the picker row's quick-qty / quick-price fields have a value, they
+  // override the caller-supplied qty / price so the operator can set them
+  // from the compact top row without scrolling to the full ticket form.
   const _ticketProps = $derived({
-    symbol, exchange, side, action, qty, product, orderType, variety,
-    price, trigger, lotSize, accounts, account, orderId,
+    symbol, exchange, side, action,
+    qty: (_pickerQty !== '' && Number(_pickerQty) > 0) ? Number(_pickerQty) : qty,
+    product, orderType, variety,
+    price: (_pickerPrice !== '' && Number(_pickerPrice) > 0) ? Number(_pickerPrice) : price,
+    trigger, lotSize, accounts, account, orderId,
     currentQty, avgCost, unrealizedPnl, onAddToBasket, initialDraftId,
   });
 </script>
@@ -2069,10 +2078,26 @@
         {:else if _sharedAccount}
           <span class="oes-account-single" title="Trading account (list loading)">{_sharedAccount}</span>
         {/if}
+        <div class="oes-exch-filter">
+          <Select
+            options={[
+              { value: 'ALL', label: 'All'  },
+              { value: 'NSE', label: 'NSE'  },
+              { value: 'BSE', label: 'BSE'  },
+              { value: 'NFO', label: 'NFO'  },
+              { value: 'MCX', label: 'MCX'  },
+              { value: 'NCO', label: 'NCO'  },
+            ]}
+            value={_exchFilter}
+            onValueChange={(v) => { _exchFilter = String(v); }}
+            placeholder="All"
+            ariaLabel="Exchange filter" />
+        </div>
         <div class="oes-sym-pick">
           <SymbolSearchInput
             value={_localSymbol}
             type={_symType}
+            exchangeFilter={_exchFilter}
             placeholder="Symbol — pick or type 3+"
             onPick={(sym, meta) => {
               // No hardcoded pin list — every picked symbol is already
@@ -2083,17 +2108,20 @@
             }}
             ariaLabel="Symbol — pinned or search" />
         </div>
-        {#if _localSymbol}
-          {@const _exch = exchange || _pickedExchange || ''}
-          {@const _seg = _exch === 'NSE' || _exch === 'BSE' ? 'EQ'
-                       : _exch === 'NFO' ? 'NFO'
-                       : _exch === 'MCX' ? 'MCX'
-                       : _exch === 'NCO' ? 'NCO'
-                       : _exch || ''}
-          {#if _seg}
-            <span class="oes-exch">{_seg}</span>
-          {/if}
-        {/if}
+        <div class="oes-quick-qty">
+          <input type="number" min="1" step="1"
+                 bind:value={_pickerQty}
+                 placeholder="Qty"
+                 class="oes-quick-field"
+                 title="Quantity" />
+        </div>
+        <div class="oes-quick-price">
+          <input type="number" min="0" step="0.05"
+                 bind:value={_pickerPrice}
+                 placeholder="Price"
+                 class="oes-quick-field"
+                 title="Limit price" />
+        </div>
         {#if pickerSuffix}
           {@render pickerSuffix()}
         {/if}
@@ -3140,6 +3168,44 @@
     width: 5.5rem;
   }
   .oes-account-pick :global(.rbq-select-trigger) { width: 100%; }
+  /* Exchange filter dropdown — sits before the symbol input, replaces
+     the old static chip. Narrow (5rem) so it doesn't crowd the row. */
+  .oes-exch-filter {
+    flex-shrink: 0;
+    width: 5rem;
+  }
+  .oes-exch-filter :global(.rbq-select-trigger) { width: 100%; }
+  /* Quick qty/price fields — hidden on mobile, visible on large screens. */
+  .oes-quick-qty,
+  .oes-quick-price {
+    flex-shrink: 0;
+    display: none;
+  }
+  @media (min-width: 1024px) {
+    .oes-quick-qty,
+    .oes-quick-price { display: block; }
+  }
+  .oes-quick-field {
+    width: 4.5rem;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 3px;
+    padding: 0.18rem 0.35rem;
+    color: var(--c-action);
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
+    font-weight: 600;
+    text-align: right;
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+  .oes-quick-field::-webkit-outer-spin-button,
+  .oes-quick-field::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .oes-quick-field:focus,
+  .oes-quick-field:focus-visible {
+    outline: none !important;
+    border-color: rgba(251, 191, 36, 0.55);
+  }
   .oes-account-single {
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
@@ -3220,17 +3286,8 @@
     font-size: var(--fs-xs);
     letter-spacing: 0.06em;
   }
-  /* Exchange tag — small, muted, matches the LogPanel chip palette. */
-  .oes-exch {
-    color: var(--algo-muted);
-    background: rgba(126, 151, 184, 0.15);
-    border: 1px solid rgba(126, 151, 184, 0.32);
-    padding: 0.06rem 0.32rem;
-    border-radius: 2px;
-    font-size: var(--fs-xs);
-    letter-spacing: 0.06em;
-    font-family: var(--font-numeric);
-  }
+  /* .oes-exch was the old static exchange chip — removed in favour of
+     the exchange filter dropdown (.oes-exch-filter). */
   /* Push the close button to the right edge regardless of how many
      header chips render. */
   /* .oes-close margin handled by its main rule below — auto-pushed to
