@@ -211,6 +211,28 @@ Platform ships with two:
 
 You can edit these, create new ones, and mark any template as your default so it auto-fills in OrderTicket.
 
+### Off-market-hours behaviour
+
+When a postback arrives while the exchange is closed:
+
+- **GTT-only templates** (TP + SL legs only): GTT orders are accepted by Kite 24×7 and will be placed normally. The template attaches as usual.
+- **Templates with a wing leg** (a MARKET order placed immediately on fill): The wing MARKET order cannot be placed while the exchange is closed. RamboQuant will skip the wing and fire a Telegram alert. The TP + SL GTTs are still placed. If you need the wing, you must place it manually once the market opens.
+
+### Template `applies_to` gate
+
+Each template has an `applies_to` field that gates which orders it can attach to:
+
+| Value | Description |
+|---|---|
+| `both` | Attaches to any BUY or SELL order |
+| `buy_any` | Only attaches to BUY orders |
+| `sell_any` | Only attaches to SELL orders |
+| `buy_option` | Only attaches to BUY orders on option contracts (CE/PE) |
+| `sell_option` | Only attaches to SELL orders on option contracts |
+| `none` | Template is disabled — never auto-attaches |
+
+If a template is auto-selected and the order side doesn't match `applies_to`, the attach is refused silently and a Telegram alert is fired. Set the correct `applies_to` when creating templates to avoid spurious alerts.
+
 ### Multi-broker support — what works where
 
 Templates now work on **all three brokers**, with a small caveat on Groww. The OrderTicket shows an inline warning chip (amber) below the template summary when the selected template asks for a feature the selected broker can't provide natively — you see the gap at submit time, not at fill time.
@@ -287,6 +309,12 @@ Real-world option orders rarely fill at exactly the price you asked. The platfor
 3. **Cap at `simulator.chase_max_attempts`** (default 5). After the cap, mark `UNFILLED` and stop.
 
 You see this in the Order tab as live updates: `chase #2 limit=₹180.00`, then `chase #3 limit=₹181.50`, then `FILLED @₹181.50 after 3 chase(s)`. The chase engine is the same code path for paper and live — just the quote source differs.
+
+### Chase and market hours
+
+If you submit an order with chase enabled and the exchange is already closed at submission time, the chase will fail immediately with an operator alert (Telegram + email). No order is placed at the broker — the position stays flat. This is intentional: it avoids the previous behaviour where chase would spin, accumulate broker rejections, and only abort after 3 consecutive errors.
+
+**Behaviour at market close mid-chase**: If a chase is already in progress when the exchange closes (e.g., an order placed at 3:28 PM and still chasing at 3:31 PM), the chase will encounter broker rejections and abort after 3 consecutive errors. The position is left flat; the operator receives an alert.
 
 **Partial fills** — when the broker fills part of your order and you chase the residual, the row's `detail` updates to `PARTIAL 60/100 @ ₹1234.50 (chasing residual 40)`. The exit GTT (TP/SL) sized when the rest fills correctly reflects only the actually-filled portion, not the original ask. (Pre-Sprint-B the chase ignored partial fills entirely; the UNFILLED give-up showed the original quantity even when 60 % had traded.)
 

@@ -1690,6 +1690,8 @@ new_delta = cumulative_filled - already_filled
 fire partial branch when: cumulative_filled > 0 AND new_delta > 0 AND cumulative_filled < quantity
 ```
 
+**Market-hours pre-flight (added 2026-07)**: Before the first `_place_order` call, `chase_order` checks `is_any_segment_open()`. If the exchange is closed, the function returns `ChaseResult(FAILED)` immediately and fires an operator alert. No broker call is made.
+
 ### 7.1 Chase recovery on startup
 
 `backend/api/background.py::recover_live_chases()` fires during app startup to
@@ -1775,6 +1777,12 @@ flowchart TD
 - `backend/api/algo/template_attach.py::AttachResult` — return type (NOT `TemplateAttachResult` — the docs previously had this wrong)
 - `backend/api/routes/orders.py::_fire_template_attach_on_fill` — idempotency guard + persistence
 - `backend/api/routes/orders.py::retry_template` — manual re-fire path. Persists `attached_gtts_json` per H-7 + trail-stop scaffolding per Sc.5
+
+**Market-hours guard (added 2026-07)**: After lot_size resolution and before plan computation, `_symbol_exchange_open()` is called. If the exchange is closed:
+- Templates with a wing leg (MARKET order): attach is refused, operator alert fires, `AttachResult.errors` returned.
+- GTT-only templates: proceed normally (Kite accepts GTTs 24×7).
+
+`apply_plan_live` also checks the exchange-open state before any broker call and returns `AttachResult.errors` if closed.
 
 **Idempotency:** `_get_template_attach_lock(parent_row_id)` + `attached_gtts_json IS NULL` check. Strong dict with 1h TTL after M-5 fix replaces the prior WeakValueDictionary.
 
@@ -1899,6 +1907,28 @@ sequenceDiagram
 - `backend/brokers/adapters/dhan.py::ltp` — wired via instruments cache (B-2 fix)
 
 **Asymmetric SELL guard note:** the poller's SELL ratchet check is `current_trigger > 0 AND proposed < current_trigger`. If `current_trigger=0` (entry never persisted), the guard short-circuits → trail silently dead. This is why **every persistence path that writes a trail entry MUST seed `current_trigger`** (see Sc.5a fix in `retry_template`).
+
+---
+
+## 13.1 Order ticket enhancements (added 2026-07)
+
+The OrderTicket modal now displays rich market context for every order:
+
+- **Contract LTP in header** — live last-traded price next to the symbol name, updates every 2s
+- **Underlying spot price** — header middle shows the index or commodity root level (for options/futures)
+- **Days-to-expiry chip** — F&O contracts show remaining DTE in symbol meta row; amber when ≤3 days
+- **Market depth section** — OpenInterest, Volume, and bid-ask spread displayed in-modal
+- **Position context for CLOSE orders** — entry price + unrealized P&L shown before submission
+- **ATM/ITM/OTM classification** — option orders display moneyness relative to current spot
+- **Chase aggressiveness row** — LIMIT order type displays a three-mode toggle (Low / Med / High); relocated from header to price-entry row for better UX
+- **Exchange-closed badge** — header indicates when market is closed; template with wing leg shows warning
+- **Wing-leg warning chip** — amber chip appears when a wing-enabled template is selected during closed hours
+
+**Files:**
+- `frontend/src/routes/(algo)/orders/+page.svelte` — OrderTicket modal
+- `frontend/src/lib/order/OrderTicket.svelte` — component logic
+- `frontend/src/lib/order/orderTicketSubmit.js` — submission handler
+- `backend/api/routes/orders_place.py` — backend validation + market-hours checks
 
 ---
 

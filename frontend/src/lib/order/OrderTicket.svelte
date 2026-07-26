@@ -60,6 +60,7 @@
   import { isNseOpen, isMcxOpen, isMarketOpen } from '$lib/marketHours';
   import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
   import { rootOf } from '$lib/data/rootOf.js';
+  import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
 
   // Demo-mode detection — used to suppress margin preflight (403) and
   // account self-fetch (401) for anonymous prod visitors.
@@ -115,6 +116,7 @@
    *   standalone?: boolean,
    *   defaultChase?: boolean,
    *   defaultChaseAgg?: 'low' | 'med' | 'high',
+   *   initialDraftId?: string | null,
    * }} */
   let {
     symbol,
@@ -267,6 +269,12 @@
     // operator's chase preference instead of snapping back to true/'low'.
     defaultChase              = true,
     defaultChaseAgg           = /** @type {'low'|'med'|'high'} */ ('low'),
+    // When set to a payoffDrafts id, the ticket opens pre-filled from
+    // that draft entry with _draftMode=true. Submit → "Update Draft"
+    // (removes old entry, adds new). Cancel when id is set → removes
+    // the draft from the store then closes. When null (default) the
+    // "Add to Payoff" path creates a new entry (no id to replace).
+    initialDraftId            = /** @type {string|null} */ (null),
   } = $props();
 
   // E1: focus ping — when PageHeaderActions increments the store while
@@ -274,6 +282,26 @@
   // to re-orient the operator. Uses a $state flag with a 600ms timeout.
   let _pingActive = $state(false);
   let _pingTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+
+  // "Add to Payoff" draft mode — when ON the submit button adds the leg
+  // to the session-only payoffDrafts store instead of routing to the broker.
+  // Only available for F&O instruments (isEquity false) and mutually exclusive
+  // with Chase (enabling one disables the other).
+  let _draftMode = $state(false);
+  // Success message for the draft-add path (replaces submitOk temporarily).
+  let _draftOk = $state('');
+
+  // Close handler that respects draft lifecycle:
+  //   - _draftMode=true && initialDraftId set → remove the draft then close
+  //     (operator cancelled editing an existing draft — discard it)
+  //   - _draftMode=true && initialDraftId null → just close (new unsaved draft, no store mutation)
+  //   - _draftMode=false → normal close (no draft mutation)
+  function _handleClose() {
+    if (_draftMode && initialDraftId) {
+      payoffDrafts.remove(initialDraftId);
+    }
+    onClose();
+  }
   $effect(() => {
     const unsub = orderModalFocusPing.subscribe((n) => {
       if (n <= 0) return;
@@ -983,6 +1011,8 @@
   function _setChase(/** @type {boolean} */ v) {
     _chaseInternal = v;
     if (chase !== undefined) chase = v;
+    // Mutual exclusion: turning Chase ON disables Draft mode.
+    if (v) _draftMode = false;
   }
   function _setChaseAgg(/** @type {'low'|'med'|'high'} */ v) {
     _chaseAggInternal = v;
@@ -1697,6 +1727,47 @@
 
   async function submit() {
     _submitTried = true;
+
+    // ── "Add to Payoff" / "Update Draft" path ───────────────────
+    // When _draftMode is ON, skip ALL broker / backend interaction
+    // and write the leg directly into the session-only payoffDrafts
+    // store. The derivatives page reads that store and merges the
+    // entry into its candidatePositions so the payoff curve updates.
+    //
+    // If initialDraftId is set (opened from an existing draft row),
+    // remove the old entry then add a new one — effectively replacing
+    // it. If no initialDraftId, just add (new draft).
+    if (_draftMode && !isEquity) {
+      const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+      if (!sym) { submitErr = 'Symbol required'; return; }
+      const signedQty = _side === 'BUY'
+        ? Math.abs(_qty || _lots * Math.max(_lotSize, 1))
+        : -Math.abs(_qty || _lots * Math.max(_lotSize, 1));
+      // Replace existing draft if we were opened from one.
+      if (initialDraftId) {
+        payoffDrafts.remove(initialDraftId);
+      }
+      payoffDrafts.add({
+        symbol:     sym,
+        exchange:   _resolvedExchange || exchange || 'NFO',
+        qty:        signedQty,
+        avg_cost:   _price != null ? Number(_price) : null,
+        underlying: rootOf(sym, _resolvedExchange || exchange || 'NFO'),
+      });
+      const verb = initialDraftId ? 'Updated draft' : 'Added';
+      _draftOk = `${verb} ${sym} in payoff`;
+      setTimeout(() => { _draftOk = ''; }, 2500);
+      return;
+    }
+
+    // When _draftMode was toggled OFF mid-session while an existing draft
+    // is loaded, the submit fires the real broker path (handled below).
+    // Clean up the stale draft entry so the payoff chart doesn't show both
+    // the old draft and the newly placed real position simultaneously.
+    if (!_draftMode && initialDraftId) {
+      payoffDrafts.remove(initialDraftId);
+    }
+
     // Demo session — short-circuit before any validation or broker
     // call. Open the friendly "Demo mode" modal instead of silently
     // disabling Submit; recruiter sees the affordance + understands
@@ -1868,7 +1939,7 @@
       const onKey = (/** @type {KeyboardEvent} */ e) => {
         if (e.key === 'Escape') {
           if (submitting) return;
-          onClose();
+          _handleClose();
         }
       };
       window.addEventListener('keydown', onKey);
@@ -1889,6 +1960,23 @@
         _lots = Math.max(1, qty > 0 ? Math.round(qty / ls) : 1);
       }
     }
+    // Draft pre-fill — when opened from a payoffDrafts row (initialDraftId
+    // is set), seed the form fields from the draft entry and activate draft
+    // mode. The caller (orders page or derivatives page) already sets
+    // symbol/qty/price as props; we just need to enable _draftMode so the
+    // submit button reads "Update Draft" and cancel removes the entry.
+    if (initialDraftId) {
+      const existing = payoffDrafts.value.get(initialDraftId);
+      if (existing) {
+        _draftMode = true;
+        // Fields are already seeded via props (symbol, price, qty/lotSize).
+        // Only override if the draft has non-null values the prop didn't carry.
+        if (existing.avg_cost != null && !_price) {
+          _price = Number(existing.avg_cost);
+        }
+      }
+    }
+
     // HIGH 4: skip account self-fetch for demo sessions (would 401-spam).
     const propRealCount = (accounts || []).filter(_isRealAcct).length;
     if (!propRealCount && !_isDemo) {
@@ -2126,7 +2214,7 @@
             <path d="M13.5 3v3h-3" />
           </svg>
         </button>
-        <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose} disabled={submitting}>×</button>
+        <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={_handleClose} disabled={submitting}>×</button>
       {/snippet}
     </CardHeader>
 
@@ -2427,11 +2515,32 @@
                  ? 'Chase ON — re-quote the limit each tick until filled'
                  : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
           <input type="checkbox" checked={_chase}
+                 disabled={_draftMode}
                  onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
           <span class="ot-chase-label" class:on={_chase}>CHASE</span>
         </label>
         {#if _chase}
           <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
+        {/if}
+        <!-- Draft mode toggle — F&O only, mutually exclusive with Chase.
+             When ON, the submit button adds the leg to the session payoff
+             draft store (payoffDrafts) instead of routing to the broker.
+             The derivatives page merges these into candidatePositions so
+             the payoff curve updates immediately. -->
+        {#if !isEquity && action !== 'modify'}
+          <label class="ot-draft-toggle"
+                 title={_draftMode
+                   ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
+                   : 'Draft OFF — submit routes to broker normally'}>
+            <input type="checkbox" checked={_draftMode}
+                   disabled={_chase}
+                   onchange={(e) => {
+                     _draftMode = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
+                     // Mutual exclusion: Draft ON → Chase OFF.
+                     if (_draftMode) _setChase(false);
+                   }} />
+            <span class="ot-draft-label" class:on={_draftMode}>DRAFT</span>
+          </label>
         {/if}
       </div>
     {/if}
@@ -2561,13 +2670,15 @@
                  for those. Label varies by action so the operator knows
                  what's about to fire. -->
             <button type="button" class="ot-submit"
-                    class:ot-submit-buy={_side === 'BUY'}
-                    class:ot-submit-sell={_side === 'SELL'}
+                    class:ot-submit-buy={_side === 'BUY' && !_draftMode}
+                    class:ot-submit-sell={_side === 'SELL' && !_draftMode}
+                    class:ot-submit-draft={_draftMode}
                     class:ot-submit-demo={_isDemo}
                     disabled={_isDemo ? false : (!!validationErr || submitting || _noSymbol)}
-                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : ''}
+                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : (_draftMode ? 'Add leg to payoff chart (no broker order)' : '')}
                     onclick={submit}>
               {#if _isDemo}Submit (Demo){:else if submitting}…
+              {:else if _draftMode}Add to Payoff
               {:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}
               {:else if action === 'close'}Close · {_side.toLowerCase()}
               {:else if action === 'repeat'}Place again
@@ -2585,9 +2696,9 @@
            cost/cash vs margin/avail readout for both tabs.
            Keeps the success message slot since that's a
            per-ticket lifecycle signal (not shared). -->
-      {#if submitOk}
+      {#if submitOk || _draftOk}
         <div class="ot-footer-info">
-          <div class="ot-ok">✓ {submitOk}</div>
+          <div class="ot-ok">✓ {_draftOk || submitOk}</div>
         </div>
       {/if}
 
@@ -3247,6 +3358,50 @@
     gap: 0.3rem;
     cursor: pointer;
     user-select: none;
+  }
+
+  /* Draft toggle — sits after Chase in the same row.
+     Uses magenta/purple palette (matches draft-row identity in
+     CandidateLegRow) to visually distinguish it from Chase (amber). */
+  .ot-draft-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .ot-draft-toggle input[type="checkbox"] {
+    accent-color: #c084fc;
+    width: 0.85rem;
+    height: 0.85rem;
+    cursor: pointer;
+  }
+  .ot-draft-label {
+    font-family: monospace;
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.04);
+  }
+  .ot-draft-label.on {
+    background: rgba(192,132,252,0.18);
+    border-color: rgba(192,132,252,0.55);
+    color: #c084fc;
+  }
+  /* Draft-mode submit button — magenta/violet instead of green/red. */
+  .ot-submit.ot-submit-draft {
+    background: rgba(192,132,252,0.22);
+    border-color: rgba(192,132,252,0.55);
+    color: #c084fc;
+  }
+  .ot-submit.ot-submit-draft:hover:not(:disabled) {
+    background: rgba(192,132,252,0.35);
+    border-color: rgba(192,132,252,0.80);
+    color: #e9d5ff;
   }
   .ot-chase-toggle input[type="checkbox"] {
     accent-color: #fbbf24;

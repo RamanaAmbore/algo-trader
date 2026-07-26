@@ -23,6 +23,8 @@
     batchQuote,
   } from '$lib/api';
   import { positionsStore, holdingsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
+  import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
+  import { getDraftPositions } from '$lib/data/draftPositions.svelte.js';
   import { getSnapshot, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -78,6 +80,7 @@
   } from '$lib/derivatives/pageLoad.js';
   import CandidateLegRow from './CandidateLegRow.svelte';
   import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
+  import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -155,6 +158,27 @@
   let _draftSeq = 0;
   /** @type {Array<{id:number, symbol:string, qty:number|'', avg_cost:number|'', ltp:number|''}>} */
   let drafts = $state([]);
+
+  // Merged draft list: local text-input drafts + OrderTicket "Add to Payoff" entries.
+  // buildCandidatePositions accepts the same shape for both sources.
+  // payoffDrafts entries carry string ids; we normalise them to a numeric-compatible
+  // shape (the function only uses `.id` as an opaque key for draftId).
+  const _allDrafts = $derived.by(() => {
+    const pd = [...payoffDrafts.value.values()];
+    return [
+      ...drafts,
+      ...pd.map(e => ({
+        id:       e.id,
+        symbol:   e.symbol,
+        qty:      e.qty,
+        avg_cost: e.avg_cost ?? '',
+        ltp:      '',
+      })),
+    ];
+  });
+
+  // showDraftInPayoff is declared further down (near _loadDraftInPayoff)
+  // with localStorage persistence. No duplicate declaration here.
 
   // Non-blocking completion toast stack. Pushed by onTicketSubmit when
   // a paper/live order lands; rendered as fixed-position cards at the
@@ -246,8 +270,13 @@
   function addDraft() {
     drafts = [...drafts, { id: ++_draftSeq, symbol: '', qty: '', avg_cost: '', ltp: '' }];
   }
-  function removeDraft(/** @type {number} */ id) {
+  function removeDraft(/** @type {number|string} */ id) {
+    // Local text-input drafts use numeric ids.
     drafts = drafts.filter(d => d.id !== id);
+    // payoffDrafts entries use string ids prefixed with 'pd_'.
+    if (typeof id === 'string' && id.startsWith('pd_')) {
+      payoffDrafts.remove(id);
+    }
   }
 
   // Strategy mode v2 — pick (Account, Underlying) and the matching
@@ -351,6 +380,11 @@
   // hold button is on... it is similar to exp p & L."
   let _includeHoldings = $state($includeHoldings);
   $effect(() => { _includeHoldings = $includeHoldings; });
+  // Stable callback reference for OptionsPayoff.onToggleDraft.
+  function _flipDraft() {
+    showDraftInPayoff = !showDraftInPayoff;
+  }
+
   // Stable callback reference for OptionsPayoff.onToggleHoldings.
   // Hoisting it out of the JSX prevents the fresh-closure problem —
   // every parent re-render would otherwise pass a new function ref,
@@ -359,6 +393,27 @@
   function _flipHoldings() {
     includeHoldings.set(!_includeHoldings);
   }
+  /** Whether provisional (~) and draft-store (D) legs are included in the
+   *  payoff curve. Both non-confirmed sources are gated by one toggle so
+   *  the operator can quickly exclude unconfirmed legs from the analytics
+   *  without having to uncheck each row individually. Default ON so fills
+   *  that haven't settled yet still appear in the curve immediately.
+   *  Persisted to localStorage so the operator's choice survives reload. */
+  const _DRAFT_PAYOFF_KEY = 'ramboq:options-draft-in-payoff';
+  function _loadDraftInPayoff() {
+    if (typeof localStorage === 'undefined') return true;
+    try {
+      const v = localStorage.getItem(_DRAFT_PAYOFF_KEY);
+      return v === null ? true : v !== 'false';
+    } catch { return true; }
+  }
+  let showDraftInPayoff = $state(_loadDraftInPayoff());
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') {
+      try { localStorage.setItem(_DRAFT_PAYOFF_KEY, String(showDraftInPayoff)); }
+      catch { /* quota / private mode — silent */ }
+    }
+  });
   // Composite key for the enabledSymbols map. Plain symbol collided
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
   // ZJ#### would share one checkbox, and the candidatesActualPnl
@@ -1581,8 +1636,8 @@
       const inst = getInstrument(upper);
       if (inst?.x) set.add(inst.x);
     };
-    for (const p of positions) consider(p.symbol);
-    for (const d of drafts)    consider(d.symbol);
+    for (const p of positions)  consider(p.symbol);
+    for (const d of _allDrafts) consider(d.symbol);
     return Array.from(set).sort();
   });
 
@@ -1605,20 +1660,27 @@
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
-  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string}[]} */
+  // Three sources appear in order: real → provisional (~) → draft store (D).
+  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     void proxyTableReady;   // re-derive when the proxy table loads
+    // Reading the store Maps here registers reactive dependencies —
+    // getProvisionalPositions() and getDraftPositions() return $state Maps
+    // that are replaced on every applyFill / addDraftPosition call,
+    // so this derived re-runs automatically on each mutation.
     return buildCandidatePositions({
       positions,
       holdings,
-      drafts,
-      target:           selectedUnderlying.toUpperCase(),
+      drafts: _allDrafts,
+      target:               selectedUnderlying.toUpperCase(),
       selectedExpiries,
       selectedAccounts,
       simActive,
       proxiesForTarget,
       getInstrument,
+      provisionalPositions: getProvisionalPositions(),
+      draftStorePositions:  getDraftPositions(),
     });
   });
 
@@ -2092,11 +2154,21 @@
   // operator explicitly filtered out. Re-apply the expiry gate here so
   // legs stays scoped to the picked expiries even when the panel
   // shows extra context rows.
+  //
+  // showDraftInPayoff gates provisional (~), draft-store (D), and
+  // payoffDraft (text-input + OrderTicket "Add to Payoff") legs:
+  // when OFF they still appear as rows in the Legs panel but are
+  // excluded from the payoff curve / analytics fetch.
   $effect(() => {
-    void candidatePositions; void enabledSymbols;
+    void candidatePositions; void enabledSymbols; void showDraftInPayoff;
     untrack(() => {
       legs = candidatePositions
-        .filter(c => _isLegEnabled(c))
+        .filter(c => {
+          if (!_isLegEnabled(c)) return false;
+          if (!showDraftInPayoff &&
+              (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
+          return true;
+        })
         .map(c => ({
           symbol:   c.symbol,
           qty:      c.qty,
@@ -3986,7 +4058,7 @@
   </div>
 {/if}
 
-{#if !strategy && !strategyErr && !loading && !drafts.length}
+{#if !strategy && !strategyErr && !loading && !_allDrafts.length}
   <div class="text-[0.65rem] text-[var(--c-muted)] italic mb-3">
     {#if !selectedUnderlying}
       Pick an underlying to surface {simActive ? 'sim' : 'live'} candidates, or click
@@ -4183,6 +4255,8 @@
           : null}
         includeHoldings={_includeHoldings}
         onToggleHoldings={_flipHoldings}
+        showDraftInPayoff={showDraftInPayoff}
+        onToggleDraft={_flipDraft}
         netCost={_netStrategyCost}
         loading={loading || _strategyStale}
         height={320} />
@@ -4271,6 +4345,18 @@
       {#if hiddenByAccount.rows > 0}
         <div class="cand-hidden-hint" title="Picker scopes legs to the chosen accounts. Clear the Account filter to include these rows in the payoff.">
           Hiding {hiddenByAccount.rows} position{hiddenByAccount.rows === 1 ? '' : 's'} on {hiddenByAccount.accts} other account{hiddenByAccount.accts === 1 ? '' : 's'}
+        </div>
+      {/if}
+      <!-- Draft/Provisional payoff toggle — shown when at least one
+           ~ or D row is present in the displayed candidates, OR when
+           payoffDrafts has any entries (added via OrderTicket). Amber
+           tint matches the "non-confirmed" palette of those chips. -->
+      {#if candidatePositions.some(c => c._provisional || c._draft_store || c.source === 'draft')}
+        <div class="cand-draft-payoff-bar">
+          <label class="cand-draft-payoff-toggle" title="Include provisional (~), draft-store (D), and payoff draft legs in the payoff curve and analytics. When off, they appear in the legs list but are excluded from the chart.">
+            <input type="checkbox" bind:checked={showDraftInPayoff} />
+            <span class="cand-draft-payoff-label">Incl. draft/prov in payoff</span>
+          </label>
         </div>
       {/if}
       <div class="cand-scroll algo-grid-chrome fs-content-fill" style="--fs-chrome-h: 4.5rem;">
@@ -5421,6 +5507,38 @@
     border: 1px solid rgba(126,151,184,0.30);
     border-radius: 3px;
     cursor: help;
+  }
+
+  /* Draft/provisional payoff toggle bar — amber-tinted strip below the
+     hidden-account hint (when present). Shown only when at least one
+     ~ or D row is visible. Matches the amber "non-confirmed" palette. */
+  .cand-draft-payoff-bar {
+    margin-top: 0.4rem;
+    padding: 0.25rem 0.55rem;
+    font-size: var(--fs-sm);
+    background: var(--algo-amber-bg);
+    border: 1px solid var(--algo-amber-border);
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+  }
+  .cand-draft-payoff-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .cand-draft-payoff-toggle input[type="checkbox"] {
+    accent-color: var(--c-action);
+    width: 0.9rem;
+    height: 0.9rem;
+    cursor: pointer;
+  }
+  .cand-draft-payoff-label {
+    color: var(--c-action);
+    font-weight: 600;
+    letter-spacing: 0.02em;
   }
 
   /* Candidate row status chips — open/closed order state indicators. */

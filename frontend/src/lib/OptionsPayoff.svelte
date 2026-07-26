@@ -37,6 +37,8 @@
    *   includeHoldings?: boolean | null,
    *   onToggleHoldings?: (() => void) | null,
    *   netCost?:     number|null,
+   *   showDraftInPayoff?: boolean | null,
+   *   onToggleDraft?: (() => void) | null,
    * }} */
   let {
     payoff = [],
@@ -103,6 +105,11 @@
     // that don't expose holdings).
     includeHoldings = /** @type {boolean | null} */ (null),
     onToggleHoldings = /** @type {(() => void) | null} */ (null),
+    // Draft payoff toggle — when wired, renders a DRAFT button next to
+    // HOLD in the chart legend so the operator can exclude payoffDrafts
+    // entries from the curve without removing them from the Legs table.
+    showDraftInPayoff = /** @type {boolean | null} */ (null),
+    onToggleDraft = /** @type {(() => void) | null} */ (null),
     // Net strategy cost (total premium paid/received across all option legs).
     // Positive = net debit (operator paid premium); negative = net credit
     // (operator received premium). Rendered as a single horizontal dashed
@@ -1287,6 +1294,20 @@
                   : 'Holdings OFF — equity holdings hidden. Click to include.'}
                 onclick={() => onToggleHoldings && onToggleHoldings()}>HOLD</button>
       {/if}
+      {#if onToggleDraft && showDraftInPayoff !== null}
+        <!-- Draft payoff toggle — same visual style as HOLD but uses the
+             magenta/violet palette to match the draft-row identity in
+             CandidateLegRow. Default ON — drafts added via OrderTicket
+             appear in the curve immediately. Click to exclude them from
+             the curve while keeping their rows visible in the Legs table. -->
+        <button type="button" class="legend-toggle legend-toggle-draft"
+                class:legend-toggle-on={showDraftInPayoff}
+                aria-pressed={showDraftInPayoff}
+                title={showDraftInPayoff
+                  ? 'Draft ON — payoff drafts included in curve. Click to exclude.'
+                  : 'Draft OFF — payoff drafts excluded from curve. Click to include.'}
+                onclick={() => onToggleDraft && onToggleDraft()}>DRAFT</button>
+      {/if}
     </div>
   {#if loading}
     <div class="payoff-loading-ring" aria-label="Loading payoff…" role="status">
@@ -1459,6 +1480,21 @@
   }
   .legend-toggle-on:hover {
     background: rgba(125, 211, 252, 0.22);
+  }
+  /* Draft toggle — same shape as HOLD but magenta/violet palette
+     to match the draft-row identity in CandidateLegRow. `margin-left`
+     is not auto here so it sits immediately after HOLD (not pushed
+     to the far right like HOLD which is the last item). */
+  .legend-toggle-draft {
+    margin-left: 0.3rem;
+  }
+  .legend-toggle-draft.legend-toggle-on {
+    background: rgba(192, 132, 252, 0.16);
+    border-color: rgba(192, 132, 252, 0.65);
+    color: #c084fc;
+  }
+  .legend-toggle-draft.legend-toggle-on:hover {
+    background: rgba(192, 132, 252, 0.22);
   }
   .legend-legs {
     display: inline-flex;
