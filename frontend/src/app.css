@@ -360,6 +360,7 @@
   position: fixed;
   inset: 0;
   pointer-events: none;
+  background: rgba(8, 12, 20, 0.42);   /* dims navbar/positionstrip above modal sheet */
   /* Must sit above .fs-card-on (z-index 9999) so any modal opened
      from within a fullscreen card — e.g. clicking a symbol in a
      fullscreened Pulse / Holdings grid — lands on TOP of the card,

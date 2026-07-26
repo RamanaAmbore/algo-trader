@@ -590,9 +590,9 @@ def _lv_format_log_line(ip: str, country: str, colo: str,
                          city_region: str, company: str, asn: str,
                          method: str, path: str, ua: str) -> str:
     """Build the [visitor] log line digest."""
-    loc_parts = [p for p in (city_region, company, asn) if p]
+    loc_parts = [p for p in (city_region, company) if p]
     loc_part = (" — " + " · ".join(loc_parts)) if loc_parts else ""
-    return f"[visitor] {ip} ({country}, CF:{colo}){loc_part} {method} {path} UA=\"{ua}\""
+    return f"[visitor] ({country}, CF:{colo}){loc_part} {method} {path} UA=\"{ua}\""
 
 
 async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]

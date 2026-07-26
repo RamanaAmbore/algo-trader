@@ -16,8 +16,9 @@
 // most often; Chain stays as the second tab for basket-builder flows.
 export const ORDER_TABS = /** @type {const} */ ([
   { id: /** @type {'ticket'}  */ ('ticket'),  label: 'Ticket' },
-  { id: /** @type {'chain'}   */ ('chain'),   label: 'Chain' },
+  { id: /** @type {'chain'}   */ ('chain'),   label: 'Chain'  },
+  { id: /** @type {'chart'}   */ ('chart'),   label: 'Chart'  },
 ]);
 
-/** @type {ReadonlyArray<'chain' | 'ticket'>} */
+/** @type {ReadonlyArray<'chain' | 'ticket' | 'chart'>} */
 export const ORDER_TAB_IDS = ORDER_TABS.map(t => t.id);
