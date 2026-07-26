@@ -1,46 +1,60 @@
-# Plan: Fix equity option payoff parallel lines + conn grid row height
+# Plan: Fix liveSpot stale-strategy leak + conn grid density
 
 ## Task
 
-Two frontend bugs:
+**Bug 1: Equity option payoff parallel lines — previous fix incomplete**
 
-**Bug 1: Equity option payoff shows parallel lines (regression from cdbf39af + 539a7e69)**
+The tier-4 guard added in the last commit (check `stratUnd === selectedUnderlying` before returning `strategy.spot`) never fires because tiers 1 and 2 leak the stale value first:
 
-Root cause chain:
-1. `539a7e69` added stale-while-revalidate: old `strategy` persists during underlying switch
-2. `cdbf39af` added `spot: liveSpot ?? null` to `fetchStrategyAnalytics`
-3. When switching from NIFTY → RELIANCE CE: `strategy.underlying = "NIFTY"`, `strategy.spot = 25000`
-4. `liveSpot` falls back to `strategy?.spot = 25000` (RELIANCE not in SSE/batchQuote on derivatives page)
-5. Backend receives `spot: 25000` for RELIANCE CE (strike ~3200) → grid spans 22500–27500 → strike deep OTM → both today_value and expiry_value are flat/linear across the grid
-6. With different frontend offsets (chartPnlOffset vs expiryPnlOffset) applied → **parallel lines**
-7. New `strategy.spot = 25000` → `liveSpot` stays at 25000 → circular, never fixes itself
+- Tier 1: reads `strategy?.spot_anchor_contract` (e.g. "NIFTY25JULFUT") unconditionally → `getSnapshot("NIFTY25JULFUT")?.ltp = 25000` → returns immediately
+- Tier 2: reads `strategy?.underlying` (e.g. "NIFTY") unconditionally → `getSnapshot("NIFTY")?.ltp = 25000` → returns immediately
 
-Secondary bug: `_stratLastKey = legsKey` on error (line ~3532) silently suppresses retries for equity option fetches that failed.
+Both tiers 1 and 2 must be gated on `strategy.underlying === selectedUnderlying`. The correct fix restructures `liveSpot` so that strategy-derived SSE lookups (anchor + underlying) only run when the cached strategy is for the SAME underlying.
 
-**Fix A — `liveSpot` underlying guard** (in `+page.svelte`, `liveSpot` derived):
-Replace the unconditional final fallback `return strategy?.spot` with a conditional that only uses it when `strategy.underlying` matches `selectedUnderlying`. Otherwise return `undefined` → `undefined ?? null = null` → backend computes spot from broker (correct equity stock price).
+**Fix**: Rewrite the full `liveSpot` block (lines 1726–1759 approx):
 
-```js
-// BEFORE (buggy):
-return strategy?.spot;
+```javascript
+const liveSpot = $derived.by(() => {
+  void _throttledTick;
+  const stratUnd = String(strategy?.underlying || '').toUpperCase();
+  const stratMatchesSel = stratUnd && stratUnd === selectedUnderlying;
 
-// AFTER:
-const stratUnd = String(strategy?.underlying || '').toUpperCase();
-return stratUnd && stratUnd === selectedUnderlying ? strategy?.spot : undefined;
+  if (stratMatchesSel) {
+    const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+    if (anchor) {
+      const v = Number(untrack(() => getSnapshot(anchor)?.ltp));
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+    const v = Number(untrack(() => getSnapshot(stratUnd)?.ltp));
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+
+  // Tier 3: batchQuote for selectedUnderlying (30 s stale at most).
+  // untrack() is essential — _underlyingQuotes is replaced wholesale every
+  // 30 s; tracking it would re-derive liveSpot on every poll, defeating
+  // the 250 ms _throttledTick gate and causing extra SVG re-renders.
+  const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
+  if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
+
+  // Tier 4: server-side spot — only when strategy is for the same underlying.
+  return stratMatchesSel ? strategy?.spot : undefined;
+});
 ```
 
-**Fix B — don't memo legsKey on error** (in `+page.svelte`, catch block ~line 3532):
-Remove `_stratLastKey = legsKey;` from the error path so failed fetches can retry on the next interval.
+**Bug 2: Conn grid density**
 
-**Bug 2: Conn grid row height too small**
-`.lp-conn-row` in `LogPanel.svelte` has `padding: 0.1rem 0.5rem; align-items: baseline` (0.2rem vertical).
-System tab `.log-row` uses `padding: 0.28rem 0; align-items: center` (0.56rem vertical).
-Fix: change `.lp-conn-row` to `padding: 0.28rem 0.5rem; align-items: center`.
+`.lp-conn-row` has `font-size: var(--fs-base, 0.78rem)` and `gap: 0.5rem`. 
+- System rows use `font-size: 0.72rem` — the larger font makes conn rows taller than system rows and the column content bigger than necessary
+- `gap: 0.5rem` creates excess horizontal space between account / broker / type columns
+
+Fix: change `.lp-conn-row` in `frontend/src/lib/LogPanel.svelte`:
+- `font-size: var(--fs-base, 0.78rem)` → `font-size: 0.72rem`
+- `gap: 0.5rem` → `gap: 0.25rem`
 
 ## Agents
 
 - backend: skip
-- frontend: Three fixes. (1) In `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`, find `liveSpot` derived (around line 1725-1755). The final fallback line `return strategy?.spot` must be changed to only return `strategy?.spot` when `strategy.underlying` (uppercased) equals `selectedUnderlying`; otherwise return `undefined`. Exact code: `const stratUnd = String(strategy?.underlying || '').toUpperCase(); return stratUnd && stratUnd === selectedUnderlying ? strategy?.spot : undefined;`. (2) In the same file, find the catch block around line 3532 that sets `_stratLastKey = legsKey;` on error — remove that line so failed equity option fetches are not memoized (they should retry). (3) In `frontend/src/lib/LogPanel.svelte` find `.lp-conn-row` CSS (near line 2354) and change `padding: 0.1rem 0.5rem` → `padding: 0.28rem 0.5rem` and `align-items: baseline` → `align-items: center`.
+- frontend: Two fixes. (1) In `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`, find the `liveSpot` derived block (around line 1726). Replace the ENTIRE block body with the restructured version that gates tiers 1 and 2 (anchor + underlying SSE lookups) behind `stratMatchesSel = stratUnd && stratUnd === selectedUnderlying`. Preserve the existing long comment block explaining tier 3 (`_underlyingQuotes` / `untrack()` rationale). Keep the opening `void _throttledTick;` line. The logic: compute `stratUnd` and `stratMatchesSel` first; if stratMatchesSel, try anchor then stratUnd via getSnapshot; then try batchQuote (tier 3, always, with untrack); finally return `stratMatchesSel ? strategy?.spot : undefined`. Do NOT touch anything outside the liveSpot block. (2) In `frontend/src/lib/LogPanel.svelte`, find `.lp-conn-row` CSS (around line 2354): change `font-size: var(--fs-base, 0.78rem)` → `font-size: 0.72rem` and `gap: 0.5rem` → `gap: 0.25rem`.
 - broker: skip
 - doc: skip
 - backend-test: skip
@@ -54,10 +68,10 @@ Fix: change `.lp-conn-row` to `padding: 0.28rem 0.5rem; align-items: center`.
 
 ## Commit message
 
-fix(derivatives): equity option payoff parallel lines + conn grid row height
+fix(derivatives): gate liveSpot tiers 1+2 on underlying match; tighten conn row density
 
 ## Done when
 
-- Switching from NIFTY options to RELIANCE CE (or any equity stock option) shows a correct non-linear option payoff curve, not two parallel lines
-- `.lp-conn-row` rows in the conn tab have the same vertical padding/height as system tab rows
+- Switching BHEL → NIFTY → BHEL shows correct option payoff (not parallel lines)
+- Conn grid rows have same visual height as system tab rows; account/broker columns have tighter spacing
 - svelte-check exits 0
