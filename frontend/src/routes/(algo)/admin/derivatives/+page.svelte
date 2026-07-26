@@ -1724,16 +1724,19 @@
   // back to strategy.underlying, fall back to the server value.
   const liveSpot = $derived.by(() => {
     void _throttledTick;
-    const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
-    if (anchor) {
-      const v = Number(untrack(() => getSnapshot(anchor)?.ltp));
+    const stratUnd = String(strategy?.underlying || '').toUpperCase();
+    const stratMatchesSel = stratUnd && stratUnd === selectedUnderlying;
+
+    if (stratMatchesSel) {
+      const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+      if (anchor) {
+        const v = Number(untrack(() => getSnapshot(anchor)?.ltp));
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+      const v = Number(untrack(() => getSnapshot(stratUnd)?.ltp));
       if (Number.isFinite(v) && v > 0) return v;
     }
-    const und = String(strategy?.underlying || '').toUpperCase();
-    if (und) {
-      const v = Number(untrack(() => getSnapshot(und)?.ltp));
-      if (Number.isFinite(v) && v > 0) return v;
-    }
+
     // Third fallback: the Snapshot card's batchQuote result for the
     // selected underlying. Covers the IDFC-style case where the SSE
     // symbolStore has no live tick yet (first-open, pre-market, or a
@@ -1751,8 +1754,8 @@
     //    intervals even with no user interaction.
     const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
     if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-    const stratUnd = String(strategy?.underlying || '').toUpperCase();
-    return stratUnd && stratUnd === selectedUnderlying ? strategy?.spot : undefined;
+
+    return stratMatchesSel ? strategy?.spot : undefined;
   });
 
   // True for the one render frame between selectedUnderlying changing and the

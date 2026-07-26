@@ -2354,9 +2354,9 @@
   .lp-conn-row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.25rem;
     padding: 0.28rem 0.5rem;
-    font-size: var(--fs-base, 0.78rem);
+    font-size: 0.72rem;
     white-space: nowrap;
     overflow: hidden;
     border-bottom: 1px solid rgba(126,151,184,0.10);
