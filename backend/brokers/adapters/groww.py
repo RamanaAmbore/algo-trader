@@ -1040,6 +1040,14 @@ class GrowwBroker(Broker):
     #   trading_symbol, quantity, product_type, exchange, duration,
     #   trigger_price, trigger_direction, order, ...)`.
 
+    _GROWW_GTT_UNSUPPORTED: frozenset[str] = frozenset({"MCX", "NCO"})
+
+    def validate_gtt_exchange(self, exchange: str) -> None:
+        if exchange in self._GROWW_GTT_UNSUPPORTED:
+            raise ValueError(
+                f"Groww Smart Order GTT is not supported on {exchange}"
+            )
+
     @_retry_groww_auth
     def place_gtt(
         self,
