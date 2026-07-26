@@ -2310,7 +2310,7 @@ class AppMessage(Base):
     tags:         Mapped[list]           = mapped_column(PG_ARRAY(String), nullable=False, default=list)
     title:        Mapped[Optional[str]]  = mapped_column(String(255), nullable=True)
     body:         Mapped[str]            = mapped_column(Text, nullable=False, default="")
-    account:      Mapped[Optional[str]]  = mapped_column(String(50), nullable=True, index=True)
+    account:      Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)
     symbol:       Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)
     data:         Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     retain_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
