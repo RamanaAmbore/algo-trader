@@ -420,10 +420,10 @@
   }
 
   .ob-status-bar {
-    display: flex;
-    gap: 0.35rem;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.25rem;
     padding: 0.3rem 0.4rem 0.2rem;
-    flex-wrap: wrap;
   }
 
   /* Status filter chips — match .oc-filter-card chrome from the orders page.
