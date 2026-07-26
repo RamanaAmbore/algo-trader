@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch, Monitor, TaskCreate, TaskUpdate, TaskGet, TaskList, TaskOutput, TaskStop
 ---
 
 # /dprod — Update docs and deploy to prod
@@ -19,7 +19,7 @@ python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=
 ```
 Then call `EnterPlanMode`.
 
-Update specs, guides, DESIGN_GUIDE, PDF, and complexity — then merge dev→main and push. All steps run in background; report each result in foreground as it completes.
+Update specs, guides, DESIGN_GUIDE, PDF, and complexity — then merge dev→main and push. Doc agents run in background; report each result in foreground as it completes.
 
 ## Prerequisite check
 
@@ -34,16 +34,26 @@ Run `git log main..dev --oneline`. If nothing ahead, report "already up to date"
 - `backend/brokers/` → check `docs/guides/ADMIN_GUIDE.md`
 - `backend/api/background.py` or core architecture → `docs/DESIGN_GUIDE.md`
 
-### 2. Update affected docs (background doc agent per surface)
-Only update docs where the commit log shows a behaviour change visible to that doc's audience. Skip if changes are internal refactors with no operator-visible effect. Use `doc` subagent.
+### 2. Update affected docs (background doc agents dispatched in parallel)
+Only update docs where the commit log shows a behaviour change visible to that doc's audience. Skip if changes are internal refactors with no operator-visible effect. Dispatch all `doc` subagents in one message (parallel). Wait for all to complete.
 
 ### 3. Regenerate DESIGN_GUIDE PDF (if DESIGN_GUIDE.md was touched)
-`python3 docs/generate_pdf.py` — must complete without error. Report file size.
+Launch with `run_in_background: true`:
+```
+python3 docs/generate_pdf.py
+```
+Use Monitor to collect output when it completes. Must exit 0. Report file size.
 
 ### 4. Complexity gate
-`venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20`
+Launch with `run_in_background: true`:
+```
+venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20
+```
+Use Monitor to collect output.
 - Any D/E/F grade found → **block prod deploy**. Report hotspots. Stop.
 - Clean → proceed.
+
+Steps 3 and 4 can run in parallel (dispatch both as background Bash in one message).
 
 ### 5. Merge and push
 ```

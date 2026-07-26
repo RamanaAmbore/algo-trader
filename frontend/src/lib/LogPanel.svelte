@@ -1619,7 +1619,7 @@
         <div class="lp-conn-row {_cls}" class:row-tint-even={i % 2 === 0} class:row-tint-odd={i % 2 !== 0}>
           <span class="lp-conn-time">{_fmtConnEvtTime(ev.event_ts)}</span>
           <span class="lp-conn-acct font-mono">{ev.account || '—'}</span>
-          <span class="lp-conn-broker">{ev.broker_id || '—'}</span>
+          <span class="lp-conn-broker">{ev.broker_id === 'zerodha_kite' ? 'zerodha' : (ev.broker_id || '—')}</span>
           <span class="lp-conn-type">{ev.event_type}</span>
           {#if _det}
             <span class="lp-conn-det" title={ev.detail ? JSON.stringify(ev.detail, null, 2) : ''}>{_det}</span>
@@ -2365,7 +2365,7 @@
     border-bottom: none;
   }
   .lp-conn-time   { flex: 0 0 auto; white-space: nowrap; color: var(--c-info); font-size: var(--fs-sm, 0.72rem); }
-  .lp-conn-acct   { flex-shrink: 0; min-width: 5rem; color: var(--algo-slate); }
+  .lp-conn-acct   { flex-shrink: 0; min-width: 3.5rem; color: var(--algo-slate); }
   .lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
   .lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
   .lp-conn-det    { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--algo-muted); white-space: normal; overflow-wrap: break-word; }

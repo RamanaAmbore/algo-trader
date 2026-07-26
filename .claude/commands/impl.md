@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch, Monitor, TaskCreate, TaskUpdate, TaskGet, TaskList, TaskOutput, TaskStop
 ---
 
 # /impl — Implement agreed plan, loop to green, ready for /ddev
@@ -80,28 +80,30 @@ Wait for all agents to complete before proceeding.
 
 ## Step 3 — Test loop (max 3 iterations)
 
-Run the test surfaces flagged in `## Tests`:
+Run all flagged test surfaces **in background** simultaneously:
 
-**Backend** (`pytest: yes`):
+**Backend** (`pytest: yes`) — launch with `run_in_background: true`:
 ```
 cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=short
 ```
-Capture: passed / skipped / failed counts + FAILED lines.
+Use Monitor to collect output when it completes. Capture: passed / skipped / failed counts + FAILED lines.
 
-**Frontend** (`svelte-check: yes`):
+**Frontend** (`svelte-check: yes`) — launch with `run_in_background: true`:
 ```
 cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1
 ```
-Capture: error count + ERROR lines.
+Use Monitor to collect output when it completes. Capture: error count + ERROR lines.
 
 **Playwright** (`playwright: yes`): dispatch `playwright` subagent with the spec path(s) from the plan.
+
+Launch all surfaces simultaneously (parallel Bash `run_in_background` calls + Agent dispatch in one message). Wait for all to complete via Monitor notifications before evaluating results.
 
 ### On failure — fix iteration
 
 If any surface fails and iteration < 3:
 - Dispatch a targeted fix agent (same subagent type that owns the failing surface)
 - Give it: the exact FAILED lines / ERROR lines + the plan task for context
-- Re-run the failing surface only
+- Re-run the failing surface only (background)
 - Increment iteration counter
 
 If still failing after **3 iterations**: report blockers and stop (do not commit).
@@ -176,11 +178,11 @@ After committing, identify which documentation surfaces are affected and update 
    - New shared helpers / SSOT functions added → update component/data-flow diagrams or descriptions
    - Broker-layer changes, new config knobs, new capabilities → update relevant DESIGN_GUIDE section
 
-   If DESIGN_GUIDE.md needs updating: dispatch a `doc` subagent to edit only the affected sections (do NOT rewrite unaffected sections or alter diagrams unless the diagram is wrong). Then regenerate the PDF:
+   If DESIGN_GUIDE.md needs updating: dispatch a `doc` subagent to edit only the affected sections (do NOT rewrite unaffected sections or alter diagrams unless the diagram is wrong). Then regenerate the PDF with `run_in_background: true`:
    ```
    python3 docs/generate_pdf.py
    ```
-   Verify the command exits 0 and report the PDF file size. If it fails, fix DESIGN_GUIDE.md and retry before proceeding.
+   Use Monitor to collect output. Verify the command exits 0 and report the PDF file size. If it fails, fix DESIGN_GUIDE.md and retry before proceeding.
 
 5. If any doc agent made changes, commit them together in one commit:
    ```
@@ -212,6 +214,6 @@ Call `EnterPlanMode` to return to plan mode after completion.
 
 - Never push — `/impl` only commits. `/ddev` pushes.
 - Never modify `secrets.yaml` or any file listed in `.gitignore`.
-- If PLAN.md has `playwright: no` and `svelte-check: no` and `pytest: no`, still run svelte-check as a baseline sanity check.
+- If PLAN.md has `playwright: no` and `svelte-check: no` and `pytest: no`, still run svelte-check as a baseline sanity check (background).
 - The plan's `## Done when` is informational — tests passing is the machine-checkable gate.
 - **Standing rule (hard gate)**: Every code change must ship with a new or updated test. This is enforced in Step 2 (agent brief) and Step 4 (self-audit). No commit without tests.

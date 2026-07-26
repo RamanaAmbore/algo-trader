@@ -40,7 +40,7 @@ import {
 import { mergeSymbolBatch } from './symbolStore.svelte.js';
 import { cachedDelete } from './persistentCache.js';
 import { browser } from '$app/environment';
-import { marketAwareInterval, visibleInterval } from '$lib/stores';
+import { marketAwareInterval, visibleInterval, lastRefreshAt } from '$lib/stores';
 // Hardening: dev-only runtime shape assertions on backend responses.
 // Vite dead-code-eliminates the assertion body in production so the
 // operator's browser pays zero cost.
@@ -728,6 +728,7 @@ async function _tickBookPollers() {
     // Signal completion so PositionStrip's flash animation fires at
     // book-poller cadence (default 5 s) rather than its own 30 s interval.
     _bookPollerTick++;
+    lastRefreshAt.set(Date.now());
     const _wantMs = _holdingsSnapshotAt != null ? _bookClosedMs : _bookLiveMs;
     if (_wantMs !== _bookForegroundMs) setBookPollerInterval(_wantMs);
   } catch (_) { /* defensive — allSettled should never throw, but guard */ }

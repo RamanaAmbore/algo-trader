@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch, Monitor, TaskCreate, TaskUpdate, TaskGet, TaskList, TaskOutput, TaskStop
 ---
 
 # /ddev — Test and push to dev
@@ -19,13 +19,25 @@ python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=
 ```
 Then call `EnterPlanMode`.
 
-Run backend tests and frontend type check. Push to dev only if both pass. Report results in foreground.
+Run backend tests and frontend type check in parallel background processes. Push to dev only if both pass. Report results in foreground.
 
-## Steps (run backend and frontend checks in parallel background agents)
+## Steps
 
-1. **Backend** — `venv/bin/pytest backend/tests/ -q --tb=line --timeout=60` from repo root. Capture passed/skipped/failed counts and any FAILED lines.
+Launch both checks simultaneously with `run_in_background: true` in a single message:
 
-2. **Frontend** — `cd frontend && npx svelte-check --output machine 2>&1` from repo root. Capture error count.
+1. **Backend** — launch in background:
+   ```
+   cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=line
+   ```
+   Use Monitor to collect output when it completes. Capture passed/skipped/failed counts and any FAILED lines.
+
+2. **Frontend** — launch in background:
+   ```
+   cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1
+   ```
+   Use Monitor to collect output when it completes. Capture error count.
+
+Both run in parallel. Wait for both Monitor notifications before evaluating results.
 
 ---
 
@@ -50,7 +62,7 @@ After tests complete (pass or fail), check spec coverage. This step runs regardl
    ddev: ⚠ spec-sync warning — nav.js:baseDayPnlForPosition changed but NAVSTRIP_SPEC.md not updated in this push
    ```
 
-4. Proceed to the Decision step regardless. Warnings are informational — the operator decides whether to update the spec before or after pushing.
+4. Proceed to the Decision step regardless. Warnings are informational.
 
 ## Decision
 

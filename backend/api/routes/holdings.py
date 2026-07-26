@@ -552,7 +552,8 @@ class HoldingsController(Controller):
                 snap = await _holdings_snapshot()
                 if snap is None:
                     return HoldingsResponse(rows=[], summary=[],
-                                            refreshed_at=timestamp_display())
+                                            refreshed_at=timestamp_display(),
+                                            as_of=timestamp_display())
                 return snap
 
             async def _broker_fn() -> HoldingsResponse:
