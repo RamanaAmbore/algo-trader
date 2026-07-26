@@ -1,7 +1,15 @@
 /**
- * bookChanged — singleton subscriber for the `book_changed` WebSocket
- * event emitted by the broker postback handler on every terminal
- * order status (COMPLETE / CANCELLED / REJECTED / EXPIRED).
+ * bookChanged — singleton subscriber for the `book_changed` and
+ * `fill_event` WebSocket events emitted by the broker postback handler.
+ *
+ * Events handled:
+ *   book_changed — emitted on every terminal order status
+ *                  (COMPLETE / CANCELLED / REJECTED / EXPIRED).
+ *   fill_event   — emitted immediately after a COMPLETE fill so the
+ *                  positions grid updates within ~2 s without waiting
+ *                  for the next poll cycle. Backend must emit with
+ *                  key "event" (not "type") — ws.js drops frames that
+ *                  lack an `event` field.
  *
  * Why centralize: previously each surface that displays position-
  * derived data (snapshot grid, legs panel, payoff curve, dashboard
@@ -18,6 +26,11 @@
  * Pages call their primary loader on store change (debounced 200ms
  * so a burst of fills coalesces into one refresh).
  *
+ * `fill_event` additionally increments `bookChanged` immediately
+ * (no debounce — backend emits after the position row is updated)
+ * and writes `lastFillEvent` for consumers that need the
+ * account / symbol detail.
+ *
  * Usage in a page:
  *
  *   import { bookChanged } from '$lib/data/bookChanged';
@@ -31,19 +44,23 @@
  * The store value is a monotonically-increasing counter (not the
  * event payload) so the effect re-runs on every increment. Pages
  * that need the changed (account, symbol, exchange) tuple can read
- * `lastBookEvent` separately.
+ * `lastBookEvent` or `lastFillEvent` separately.
  */
 
 import { writable } from 'svelte/store';
 import { createPerformanceSocket } from '$lib/ws';
 
-/** Monotonic counter — increments on every book_changed event.
+/** Monotonic counter — increments on every book_changed or fill_event.
  *  Effects depending on this store re-run automatically. */
 export const bookChanged = writable(0);
 
-/** Latest event payload — null until first event. Pages that need
+/** Latest book_changed event payload — null until first event. Pages that need
  *  scope info (account / symbol / exchange) can branch on this. */
 export const lastBookEvent = writable(/** @type {null|{account:string, exchange:string, tradingsymbol:string, reason:string, ts:number}} */ (null));
+
+/** Latest fill_event payload — null until first fill. Carries the account
+ *  and symbol that just filled so consumers can scope their re-fetch. */
+export const lastFillEvent = writable(/** @type {null|{account:string, symbol:string, ts:number}} */ (null));
 
 let _unsub = null;
 let _started = false;
@@ -60,7 +77,18 @@ export function startBookChangedBus() {
   _started = true;
   try {
     _unsub = createPerformanceSocket((msg) => {
-      if (!msg || msg.event !== 'book_changed') return;
+      if (!msg) return;
+
+      // fill_event — immediate positions re-fetch trigger. No debounce;
+      // backend emits after the position row is already updated so the
+      // re-fetch lands fresh data on the first try.
+      if (msg.event === 'fill_event') {
+        lastFillEvent.set({ account: msg.account, symbol: msg.symbol, ts: msg.ts ?? Date.now() });
+        bookChanged.update(n => n + 1);
+        return;
+      }
+
+      if (msg.event !== 'book_changed') return;
       _pendingEvent = msg;
       clearTimeout(_debounceTimer);
       _debounceTimer = setTimeout(() => {
