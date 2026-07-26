@@ -3350,8 +3350,8 @@
     padding: 0 0.4rem;
     font-size: 0.7rem;
     font-variant-numeric: tabular-nums;
-    color: var(--c-action, #fbbf24);
-    font-weight: 700;
+    color: rgba(200, 216, 240, 0.85);
+    font-weight: 600;
     white-space: nowrap;
     display: inline-flex;
     align-items: center;
@@ -3363,7 +3363,6 @@
     letter-spacing: 0.07em;
     color: var(--c-action);
     font-weight: 700;
-    opacity: 0.65;
   }
 
   /* Basket bar — sticky bottom strip inside the modal when legs exist. */
