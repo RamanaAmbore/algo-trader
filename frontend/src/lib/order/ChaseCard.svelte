@@ -28,6 +28,10 @@
     // visibility on whether any chase is active without needing to
     // mount a second poller.
     activeCount = $bindable(0),
+    // Bindable outward set of broker_order_ids currently active in
+    // the chase engine. The orders page uses this to exclude those
+    // orders from the pendingOrders list (they already appear as chase rows).
+    chaseOrderIds = $bindable(/** @type {Set<string>} */ (new Set())),
     // Draft payoff orders — shown below real pending rows with a "D"
     // chip in the status column. Inline × removes without a modal;
     // row click opens the order ticket pre-filled in draft mode.
@@ -37,12 +41,22 @@
     onDraftRemove = /** @type {((id: string) => void) | null} */ (null),
     // Called when the operator clicks a draft row body (opens ticket).
     onDraftClick  = /** @type {((entry: any) => void) | null} */ (null),
+    // OPEN / TRIGGER_PENDING broker orders that are not active chases.
+    // Shown as clickable rows between chase rows and draft rows.
+    // Clicking opens the order ticket pre-filled for modify.
+    pendingOrders = /** @type {any[]} */ ([]),
+    // Called when the operator clicks a pending order row body.
+    onPendingModify = /** @type {((o: any) => void) | undefined} */ (undefined),
   } = $props();
 
   let _chases  = $state(/** @type {any[]} */ ([]));
-  // Mirror the chase count out to the bindable prop so the parent's
-  // `{#if openOrders > 0 || chaseActive > 0}` gate can react.
-  $effect(() => { const n = _chases.length; if (n !== activeCount) activeCount = n; });
+  // Mirror the chase count and broker_order_id set out to bindable
+  // props so the parent's gate and dedup logic can react.
+  $effect(() => {
+    const n = _chases.length;
+    if (n !== activeCount) activeCount = n;
+    chaseOrderIds = new Set(_chases.map(c => String(c.broker_order_id || '')).filter(Boolean));
+  });
   // Group children directly under their parents so the operator sees
   // parent + protective wing as a visual cluster. Rows are partitioned
   // into "parents and standalones" first, then each child is spliced
@@ -226,14 +240,14 @@
 
 <!-- Operator: "in chase card, if there are no active chases, no
      need to show 'no active chases' and refresh it continuously".
-     Root is gated on either real chases OR draft orders being present.
+     Root is gated on real chases OR pending broker orders OR draft orders.
      Polling auto-slows in _rescheduleTimer when idle so background
      traffic drops to one fetch every ~30s. -->
-{#if _chases.length || draftOrders.length}
+{#if _chases.length || pendingOrders.length || draftOrders.length}
 <div class="cc-root" class:cc-compact={compact}>
   <div class="cc-header">
     <span class="cc-label">Chases in flight</span>
-    <span class="cc-count">{_chases.length + draftOrders.length}</span>
+    <span class="cc-count">{_chases.length + pendingOrders.length + draftOrders.length}</span>
     <span class="cc-spacer"></span>
     {#if _reconcileMsg}
       <span class="cc-reconcile-msg" title={_reconcileMsg}>{_reconcileMsg}</span>
@@ -325,12 +339,66 @@
       </div>
     {/each}
 
+    <!-- Pending broker order rows — OPEN / TRIGGER_PENDING orders that
+         are not managed by the chase engine. Shown between chase rows
+         and draft rows. Clicking the row opens the order ticket pre-filled
+         for modify/cancel. No inline action — cancel goes through the modal. -->
+    {#if pendingOrders.length}
+      {#if _orderedChases.length}
+        <div class="cc-pending-divider" role="separator" aria-label="Pending orders"></div>
+      {/if}
+      {#each pendingOrders as o (o.order_id ?? o.id)}
+        <!-- svelte-ignore a11y_interactive_supports_focus -->
+        <div class="cc-row cc-pending-row"
+             role="button"
+             tabindex="0"
+             title="Click to modify or cancel this order"
+             onclick={() => onPendingModify?.(o)}
+             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPendingModify?.(o); } }}>
+          <!-- Status chip: OPEN (green) or PENDING (amber) -->
+          <span class="cc-col cc-col-acct cc-pending-acct" title={o.account || ''}>
+            {#if o.status === 'OPEN'}
+              <span class="cc-pending-chip cc-pending-chip-open" aria-label="Open order">OPEN</span>
+            {:else}
+              <span class="cc-pending-chip cc-pending-chip-pending" aria-label="Trigger pending">PENDING</span>
+            {/if}
+          </span>
+          <span class="cc-col cc-col-side cc-side-{(o.transaction_type || '').toLowerCase()}">
+            {o.transaction_type || '—'}
+          </span>
+          <span class="cc-col cc-col-qty">{o.quantity ?? '—'}</span>
+          <span class="cc-col cc-col-sym" title={o.tradingsymbol || o.symbol}>
+            {formatSymbol(o.tradingsymbol || o.symbol || '')}
+          </span>
+          <span class="cc-col cc-col-limit">
+            {#if (o.price ?? 0) > 0}
+              ₹{priceFmt(o.price)}
+            {:else if (o.trigger_price ?? 0) > 0}
+              ₹{priceFmt(o.trigger_price)}
+            {:else}
+              MKT
+            {/if}
+          </span>
+          <!-- Attempts, Age, Mode cols — empty for pending (no chase data) -->
+          <span class="cc-col cc-col-att">—</span>
+          <span class="cc-col cc-col-age">—</span>
+          {#if !compact}
+            <span class="cc-col cc-mode cc-mode-pending">
+              {(o.product || '').toUpperCase() || '—'}
+            </span>
+          {/if}
+          <!-- No inline action — modify/cancel goes through the modal -->
+          <span class="cc-col cc-col-actions"></span>
+        </div>
+      {/each}
+    {/if}
+
     <!-- Draft payoff order rows — shown below real chases with an amber
          "D" chip instead of a broker status pill. Clicking the row body
          opens the order ticket pre-filled in draft mode. The inline ×
          removes the draft immediately without a confirm modal. -->
     {#if draftOrders.length}
-      {#if _orderedChases.length}
+      {#if _orderedChases.length || pendingOrders.length}
         <div class="cc-draft-divider" role="separator" aria-label="Draft orders"></div>
       {/if}
       {#each draftOrders as draft (draft.id)}
@@ -641,5 +709,52 @@
     background: rgba(251, 191, 36, 0.12);
     color: #fbbf24;
     border-color: rgba(251, 191, 36, 0.75);
+  }
+
+  /* Pending broker order rows — OPEN / TRIGGER_PENDING, not in chase engine.
+     Sky-tinted background; pointer cursor signals click-to-modify. */
+  .cc-pending-row {
+    cursor: pointer;
+    background: rgba(125, 211, 252, 0.04);
+  }
+  .cc-pending-row:hover {
+    background: rgba(125, 211, 252, 0.10);
+  }
+  /* Status chips: OPEN = green, PENDING = amber */
+  .cc-pending-chip {
+    display: inline-block;
+    font-size: 0.55rem;
+    padding: 0.18rem 0.42rem;
+    border-radius: 3px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .cc-pending-chip-open {
+    border: 1px solid rgba(74, 222, 128, 0.50);
+    background: rgba(74, 222, 128, 0.12);
+    color: var(--c-long);
+  }
+  .cc-pending-chip-pending {
+    border: 1px solid rgba(251, 191, 36, 0.50);
+    background: rgba(251, 191, 36, 0.12);
+    color: #fbbf24;
+  }
+  .cc-pending-acct {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  /* PENDING mode label — sky palette (info) */
+  .cc-mode-pending {
+    color: #7dd3fc;
+    border-color: rgba(125, 211, 252, 0.45);
+  }
+  /* Visual separator between chase rows and pending rows */
+  .cc-pending-divider {
+    height: 1px;
+    background: rgba(125, 211, 252, 0.18);
+    margin: 0.25rem 0;
   }
 </style>

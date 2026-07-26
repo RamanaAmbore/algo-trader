@@ -121,13 +121,25 @@
   // operator lands on Order Activity by default whenever the section
   // shows.
   let _activeChases = $state(0);
+  // Set of broker_order_ids that are currently managed by the chase engine.
+  // Populated from ChaseCard's bindable chaseOrderIds prop so we can
+  // exclude those from the pendingOrders list (they already appear as chase rows).
+  let _chaseOrderIds = $state(/** @type {Set<string>} */ (new Set()));
   const _openOrderCount = $derived(
     orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length
+  );
+  // OPEN / TRIGGER_PENDING broker orders that are NOT active chases.
+  // These are plain working orders the operator can modify or cancel.
+  const _pendingOrders = $derived(
+    orders.filter(o =>
+      (o.status === 'OPEN' || o.status === 'TRIGGER PENDING' || o.status === 'TRIGGER_PENDING') &&
+      !_chaseOrderIds.has(String(o.order_id || ''))
+    )
   );
   // Derive an array from the reactive payoffDrafts Map so ChaseCard
   // re-renders whenever a draft is added or removed.
   const _draftOrdersList = $derived([...payoffDrafts.value.values()]);
-  const _showChases = $derived(_openOrderCount > 0 || _activeChases > 0 || _draftOrdersList.length > 0);
+  const _showChases = $derived(_openOrderCount > 0 || _activeChases > 0 || _draftOrdersList.length > 0 || _pendingOrders.length > 0);
 
   // Per-card collapse + fullscreen state. No persistence (no cardId
   // on CollapseButton) so every page load opens both cards expanded
@@ -492,9 +504,12 @@
   </CardHeader>
   <div class="card-body oc-chase-body">
     <ChaseCard pollMs={3000} onKilled={() => loadOrders()} bind:activeCount={_activeChases}
+      bind:chaseOrderIds={_chaseOrderIds}
       draftOrders={_draftOrdersList}
       onDraftRemove={(id) => payoffDrafts.remove(id)}
-      onDraftClick={_openDraftTicket} />
+      onDraftClick={_openDraftTicket}
+      pendingOrders={_pendingOrders}
+      onPendingModify={(o) => { orderTicketProps = _buildModifyProps(o); }} />
   </div>
 </section>
 {:else}
@@ -502,9 +517,12 @@
      _activeChases — without this the section would never re-appear on
      the first chase fire. compact + display:none keeps the DOM small. -->
 <div style="display:none"><ChaseCard pollMs={3000} compact bind:activeCount={_activeChases}
+  bind:chaseOrderIds={_chaseOrderIds}
   draftOrders={_draftOrdersList}
   onDraftRemove={(id) => payoffDrafts.remove(id)}
-  onDraftClick={_openDraftTicket} /></div>
+  onDraftClick={_openDraftTicket}
+  pendingOrders={_pendingOrders}
+  onPendingModify={(o) => { orderTicketProps = _buildModifyProps(o); }} /></div>
 {/if}
 
 <!-- Order Activity card — same 6-tab LogPanel surface the ActivityLogModal
