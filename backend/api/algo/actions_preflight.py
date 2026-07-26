@@ -89,7 +89,14 @@ async def _preflight_validate_lots(
     except Exception:
         _pf_lot = 0
 
-    if _pf_lot > 1:
+    # MCX/NCO: broker returns position qty already in LOTS (e.g. 50 lots), not
+    # contracts. A G1 lot-multiple check against lot_size (e.g. 100) would
+    # incorrectly reject a valid whole-lot quantity (50 % 100 ≠ 0).
+    # FAT_FINGER_5_LOT_CAP skips MCX/NCO below for the same reason — mirror
+    # that pattern here so close_position paths don't get spuriously blocked.
+    _is_mcx_exch = exchange in ("MCX", "NCO")
+
+    if _pf_lot > 1 and not _is_mcx_exch:
         if qty % _pf_lot != 0:
             blockers.append({
                 "code": "LOT_MULTIPLE",
@@ -108,8 +115,8 @@ async def _preflight_validate_lots(
             # MCX/NCO: the route-level MCX size guard (20-lot cap, 422) is
             # the authoritative check. Skip the 5-lot FAT_FINGER cap here
             # to avoid a 422 preflight-block that shadows the MCX route guard.
-            _is_mcx_exch = exchange in ("MCX", "NCO")
-            if _pf_lots > 5 and not _is_mcx_exch:
+            # (_is_mcx_exch is already False here — outer guard ensures that)
+            if _pf_lots > 5:
                 blockers.append({
                     "code": "FAT_FINGER_5_LOT_CAP",
                     "reason": (
