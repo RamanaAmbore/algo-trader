@@ -51,12 +51,16 @@
   import { getDefaultAccount } from '$lib/data/accounts';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { aggFmt, priceFmt } from '$lib/format';
-  import { executionMode } from '$lib/stores';
+  import { executionMode, orderModalFocusPing } from '$lib/stores';
   import {
     getInstrument, listExpiries, listStrikes,
     findOption, findNearestFuture, listFutures,
     listExchangesForSymbol,
   } from '$lib/data/instruments';
+  import { isNseOpen, isMcxOpen, isMarketOpen } from '$lib/marketHours';
+  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+  import { rootOf } from '$lib/data/rootOf.js';
+  import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
 
   // Demo-mode detection — used to suppress margin preflight (403) and
   // account self-fetch (401) for anonymous prod visitors.
@@ -79,6 +83,8 @@
    *   account?:  string,
    *   orderId?:  string,
    *   currentQty?: number,
+   *   avgCost?:  number | null,
+   *   unrealizedPnl?: number | null,
    *   onSubmit:  (payload: any) => void | Promise<void>,
    *   onClose:   () => void,
    *   onAddToBasket?: ((payload: any) => void) | null,
@@ -110,6 +116,7 @@
    *   standalone?: boolean,
    *   defaultChase?: boolean,
    *   defaultChaseAgg?: 'low' | 'med' | 'high',
+   *   initialDraftId?: string | null,
    * }} */
   let {
     symbol,
@@ -139,6 +146,11 @@
     //   currentQty < 0  → existing SHORT ⇒ SELL pill = ADD, BUY  = CLOSE
     //   currentQty == 0 → no existing position ⇒ plain BUY / SELL labels
     currentQty = 0,
+    // B5: position context — shown in the header when action='close'
+    // so the operator sees average cost + unrealized P&L before deciding
+    // on the close price. Wired from position-row prefill payloads.
+    avgCost = /** @type {number | null} */ (null),
+    unrealizedPnl = /** @type {number | null} */ (null),
     onSubmit,
     onClose,
     // Pushed back to OrderEntryShell when the operator picks a
@@ -257,7 +269,48 @@
     // operator's chase preference instead of snapping back to true/'low'.
     defaultChase              = true,
     defaultChaseAgg           = /** @type {'low'|'med'|'high'} */ ('low'),
+    // When set to a payoffDrafts id, the ticket opens pre-filled from
+    // that draft entry with _draftMode=true. Submit → "Update Draft"
+    // (removes old entry, adds new). Cancel when id is set → removes
+    // the draft from the store then closes. When null (default) the
+    // "Add to Payoff" path creates a new entry (no id to replace).
+    initialDraftId            = /** @type {string|null} */ (null),
   } = $props();
+
+  // E1: focus ping — when PageHeaderActions increments the store while
+  // the modal is already open, flash an amber ring on the modal border
+  // to re-orient the operator. Uses a $state flag with a 600ms timeout.
+  let _pingActive = $state(false);
+  let _pingTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+
+  // "Add to Payoff" draft mode — when ON the submit button adds the leg
+  // to the session-only payoffDrafts store instead of routing to the broker.
+  // Only available for F&O instruments (isEquity false) and mutually exclusive
+  // with Chase (enabling one disables the other).
+  let _draftMode = $state(false);
+  // Success message for the draft-add path (replaces submitOk temporarily).
+  let _draftOk = $state('');
+
+  // Close handler that respects draft lifecycle:
+  //   - _draftMode=true && initialDraftId set → remove the draft then close
+  //     (operator cancelled editing an existing draft — discard it)
+  //   - _draftMode=true && initialDraftId null → just close (new unsaved draft, no store mutation)
+  //   - _draftMode=false → normal close (no draft mutation)
+  function _handleClose() {
+    if (_draftMode && initialDraftId) {
+      payoffDrafts.remove(initialDraftId);
+    }
+    onClose();
+  }
+  $effect(() => {
+    const unsub = orderModalFocusPing.subscribe((n) => {
+      if (n <= 0) return;
+      if (_pingTimer) clearTimeout(_pingTimer);
+      _pingActive = true;
+      _pingTimer = setTimeout(() => { _pingActive = false; _pingTimer = null; }, 600);
+    });
+    return () => { unsub(); if (_pingTimer) clearTimeout(_pingTimer); };
+  });
 
   // Derived label map for the side toggle. Keeps the actual _side
   // state as 'BUY' / 'SELL' (the broker payload never changes); only
@@ -958,6 +1011,8 @@
   function _setChase(/** @type {boolean} */ v) {
     _chaseInternal = v;
     if (chase !== undefined) chase = v;
+    // Mutual exclusion: turning Chase ON disables Draft mode.
+    if (v) _draftMode = false;
   }
   function _setChaseAgg(/** @type {'low'|'med'|'high'} */ v) {
     _chaseAggInternal = v;
@@ -1070,6 +1125,103 @@
   $effect(() => {
     void _side; void _type;
     _autoFillFromQuote();
+  });
+
+  // ── A1: underlying spot price ─────────────────────────────────
+  // Extract the underlying root from the current contract so we can
+  // show the spot index / underlying LTP in the header. MCX/CDS uses
+  // rootOf; NSE/BSE options use the alpha prefix before the first digit.
+  // Same pattern as SymbolPanel's _parseRoot — weekly option NIFTY2512522000CE
+  // → "NIFTY"; monthly NIFTY26JAN22000CE → "NIFTY"; CRUDEOIL26JUNFUT → "CRUDEOIL".
+  function _underlyingSymbol(/** @type {string} */ sym, /** @type {string} */ exch) {
+    if (!sym) return null;
+    const up = sym.toUpperCase();
+    const ex = (exch || '').toUpperCase();
+    if (ex === 'MCX' || ex === 'CDS') {
+      const r = rootOf(up, ex);
+      // rootOf returns the contract unchanged if it's not a recognised futures root
+      return r !== up ? r : null;
+    }
+    const m = up.match(/^([A-Z&]+)\d/);
+    return m ? m[1] : null;
+  }
+
+  const _rootSym = $derived.by(() => {
+    const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+    const exch = String(_exchange || _resolvedExchange || exchange || '').toUpperCase();
+    return _underlyingSymbol(sym, exch) || null;
+  });
+
+  // Lookup the underlying's snapshot from symbolStore (reactive on tick).
+  const _underlyingSnap  = $derived(_rootSym ? getSnapshot(_rootSym) : null);
+  const _underlyingLtp   = $derived(_underlyingSnap?.ltp ?? null);
+  const _underlyingChange = $derived(_underlyingSnap?.day_change_pct ?? null);
+
+  // ── B1: days to expiry ────────────────────────────────────────
+  // Parse expiry date from the instrument cache. Falls back to null
+  // when the instrument isn't loaded or has no expiry (equities, cash).
+  const _dte = $derived.by(() => {
+    const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+    if (!sym) return null;
+    const inst = getInstrument(sym);
+    const x = inst?.x; // ISO date string e.g. "2026-01-30"
+    if (!x) return null;
+    try {
+      const d = new Date(x + 'T15:30:00+05:30');
+      const diffMs = d.getTime() - Date.now();
+      return Math.max(0, Math.floor(diffMs / 86_400_000));
+    } catch { return null; }
+  });
+
+  // ── B6: moneyness (ATM / ITM / OTM) ──────────────────────────
+  // Requires: strike, option type (CE/PE), underlying LTP.
+  // ATM: |strike − spot| / spot < 1%; ITM/OTM per type.
+  const _strike = $derived.by(() => {
+    const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+    const inst = getInstrument(sym);
+    if (inst?.k != null) return Number(inst.k);
+    // Fallback: parse from symbol string (e.g. NIFTY26JAN22000CE → 22000)
+    const m = sym.match(/(\d+\.?\d*)(CE|PE)$/i);
+    return m ? Number(m[1]) : null;
+  });
+
+  const _optType = $derived.by(() => {
+    const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+    const inst = getInstrument(sym);
+    if (inst?.t === 'CE') return 'CE';
+    if (inst?.t === 'PE') return 'PE';
+    if (sym.endsWith('CE')) return 'CE';
+    if (sym.endsWith('PE')) return 'PE';
+    return null;
+  });
+
+  const _moneyness = $derived.by(() => {
+    if (!_strike || !_optType || !_underlyingLtp) return null;
+    const spot = _underlyingLtp;
+    const pctDiff = (_strike - spot) / spot;
+    const atm = Math.abs(pctDiff) < 0.01;
+    if (atm) return 'ATM';
+    if (_optType === 'CE') return pctDiff < 0 ? 'ITM' : 'OTM';
+    // PE: in-the-money when strike > spot
+    return pctDiff > 0 ? 'ITM' : 'OTM';
+  });
+
+  // ── D1: market open/closed state ─────────────────────────────
+  // Reactive state updated from the depth quote callback + a live
+  // clock tick. isNseOpen / isMcxOpen / isMarketOpen are synchronous.
+  let _isOpen = $state(true);
+  $effect(() => {
+    // Re-evaluate whenever the depth quote fires (onDepthQuote bumps
+    // _lastQuote) or on a fresh render. Use the resolved exchange.
+    const exch = String(_exchange || _resolvedExchange || exchange || '').toUpperCase();
+    if (exch === 'MCX' || exch === 'CDS') {
+      _isOpen = isMcxOpen();
+    } else if (exch === 'NFO' || exch === 'NSE' || exch === 'BSE' || exch === 'BFO') {
+      _isOpen = isNseOpen();
+    } else {
+      _isOpen = isMarketOpen();
+    }
+    void _lastQuote; // reactive dependency so it re-runs on each tick
   });
 
   // Self-fetched real account list — backstop for when the caller
@@ -1575,6 +1727,47 @@
 
   async function submit() {
     _submitTried = true;
+
+    // ── "Add to Payoff" / "Update Draft" path ───────────────────
+    // When _draftMode is ON, skip ALL broker / backend interaction
+    // and write the leg directly into the session-only payoffDrafts
+    // store. The derivatives page reads that store and merges the
+    // entry into its candidatePositions so the payoff curve updates.
+    //
+    // If initialDraftId is set (opened from an existing draft row),
+    // remove the old entry then add a new one — effectively replacing
+    // it. If no initialDraftId, just add (new draft).
+    if (_draftMode && !isEquity) {
+      const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+      if (!sym) { submitErr = 'Symbol required'; return; }
+      const signedQty = _side === 'BUY'
+        ? Math.abs(_qty || _lots * Math.max(_lotSize, 1))
+        : -Math.abs(_qty || _lots * Math.max(_lotSize, 1));
+      // Replace existing draft if we were opened from one.
+      if (initialDraftId) {
+        payoffDrafts.remove(initialDraftId);
+      }
+      payoffDrafts.add({
+        symbol:     sym,
+        exchange:   _resolvedExchange || exchange || 'NFO',
+        qty:        signedQty,
+        avg_cost:   _price != null ? Number(_price) : null,
+        underlying: rootOf(sym, _resolvedExchange || exchange || 'NFO'),
+      });
+      const verb = initialDraftId ? 'Updated draft' : 'Added';
+      _draftOk = `${verb} ${sym} in payoff`;
+      setTimeout(() => { _draftOk = ''; }, 2500);
+      return;
+    }
+
+    // When _draftMode was toggled OFF mid-session while an existing draft
+    // is loaded, the submit fires the real broker path (handled below).
+    // Clean up the stale draft entry so the payoff chart doesn't show both
+    // the old draft and the newly placed real position simultaneously.
+    if (!_draftMode && initialDraftId) {
+      payoffDrafts.remove(initialDraftId);
+    }
+
     // Demo session — short-circuit before any validation or broker
     // call. Open the friendly "Demo mode" modal instead of silently
     // disabling Submit; recruiter sees the affordance + understands
@@ -1746,7 +1939,7 @@
       const onKey = (/** @type {KeyboardEvent} */ e) => {
         if (e.key === 'Escape') {
           if (submitting) return;
-          onClose();
+          _handleClose();
         }
       };
       window.addEventListener('keydown', onKey);
@@ -1767,6 +1960,23 @@
         _lots = Math.max(1, qty > 0 ? Math.round(qty / ls) : 1);
       }
     }
+    // Draft pre-fill — when opened from a payoffDrafts row (initialDraftId
+    // is set), seed the form fields from the draft entry and activate draft
+    // mode. The caller (orders page or derivatives page) already sets
+    // symbol/qty/price as props; we just need to enable _draftMode so the
+    // submit button reads "Update Draft" and cancel removes the entry.
+    if (initialDraftId) {
+      const existing = payoffDrafts.value.get(initialDraftId);
+      if (existing) {
+        _draftMode = true;
+        // Fields are already seeded via props (symbol, price, qty/lotSize).
+        // Only override if the draft has non-null values the prop didn't carry.
+        if (existing.avg_cost != null && !_price) {
+          _price = Number(existing.avg_cost);
+        }
+      }
+    }
+
     // HIGH 4: skip account self-fetch for demo sessions (would 401-spam).
     const propRealCount = (accounts || []).filter(_isRealAcct).length;
     if (!propRealCount && !_isDemo) {
@@ -1936,33 +2146,58 @@
      role="presentation"
      onclick={standalone ? onClose : undefined}>
   <div class="ot-modal" role={standalone ? 'dialog' : 'document'}
+       class:ot-modal--ping={_pingActive}
        aria-modal={standalone ? 'true' : undefined}
        aria-label={standalone ? 'Place order' : undefined}
        onclick={(e) => e.stopPropagation()}>
     <CardHeader showControls={false}>
       {#snippet left()}
         <div class="ot-symbol">
-          <span class="ot-symbol-text"><LegLabel sym={symbol} exchange={exchange || ''} /></span>
+          <div class="ot-symbol-title-row">
+            <span class="ot-symbol-text"><LegLabel sym={symbol} exchange={exchange || ''} /></span>
+            <!-- A0: contract LTP from depth poll — amber, tabular-nums -->
+            {#if _lastQuote?.ltp != null}
+              <span class="ot-hdr-ltp">{priceFmt(_lastQuote.ltp)}</span>
+            {/if}
+          </div>
           <span class="ot-symbol-meta">
             {exchange ? exchange + ' · ' : ''}
             {kind}{_lotSize ? ' · lot ' + _lotSize : ''}
             {action !== 'open' ? ' · ' + action.toUpperCase() : ''}
+            <!-- B1: DTE chip -->
+            {#if _dte != null}<span class="ot-dte-chip">{_dte}d</span>{/if}
+            <!-- B6: moneyness chip -->
+            {#if _moneyness}<span class="ot-mono-chip ot-mono-{_moneyness.toLowerCase()}">{_moneyness}</span>{/if}
+            <!-- D1: market closed badge -->
+            {#if !_isOpen}<span class="ot-closed-badge">Closed</span>{/if}
           </span>
+          <!-- B5: position context when closing — avg cost + unrealized P&L -->
+          {#if action === 'close' && (avgCost != null || unrealizedPnl != null)}
+            <span class="ot-pos-context">
+              {#if avgCost != null}
+                <span class="ot-pos-avg">avg ₹{priceFmt(avgCost)}</span>
+              {/if}
+              {#if unrealizedPnl != null}
+                <span class="ot-pos-pnl" class:pos={unrealizedPnl >= 0} class:neg={unrealizedPnl < 0}>
+                  {unrealizedPnl >= 0 ? '+' : ''}₹{priceFmt(Math.abs(unrealizedPnl))}
+                </span>
+              {/if}
+            </span>
+          {/if}
         </div>
       {/snippet}
       {#snippet middle()}
-        {#if showLimit && !modeChaseHidden}
-          <label class="ot-chase-toggle"
-                 title={_chase
-                   ? 'Chase ON — re-quote the limit each tick until filled'
-                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-            <input type="checkbox" checked={_chase}
-                   onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
-            <span class="ot-chase-label" class:on={_chase}>CHASE</span>
-          </label>
-          {#if _chase}
-            <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
-          {/if}
+        <!-- A1: underlying spot LTP when showing a derivative contract -->
+        {#if _rootSym && _underlyingLtp != null}
+          <span class="ot-underlying-spot">
+            <span class="ot-underlying-label">{_rootSym}</span>
+            <span class="ot-underlying-ltp">{priceFmt(_underlyingLtp)}</span>
+            {#if _underlyingChange != null}
+              <span class="ot-underlying-chg" class:pos={_underlyingChange >= 0} class:neg={_underlyingChange < 0}>
+                {_underlyingChange >= 0 ? '+' : ''}{_underlyingChange.toFixed(2)}%
+              </span>
+            {/if}
+          </span>
         {/if}
       {/snippet}
       {#snippet right()}
@@ -1979,7 +2214,7 @@
             <path d="M13.5 3v3h-3" />
           </svg>
         </button>
-        <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={onClose} disabled={submitting}>×</button>
+        <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={_handleClose} disabled={submitting}>×</button>
       {/snippet}
     </CardHeader>
 
@@ -2269,6 +2504,47 @@
          with the Ticket form's reactive state. -->
 
 
+    <!-- A2: CHASE toggle moved here — inline above the depth ladder
+         so the operator can toggle chase while watching the depth
+         rather than hunting for it in the card header middle slot.
+         Only shown when limit price is relevant + not hidden by host. -->
+    {#if showLimit && !modeChaseHidden}
+      <div class="ot-chase-row">
+        <label class="ot-chase-toggle"
+               title={_chase
+                 ? 'Chase ON — re-quote the limit each tick until filled'
+                 : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+          <input type="checkbox" checked={_chase}
+                 disabled={_draftMode}
+                 onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
+          <span class="ot-chase-label" class:on={_chase}>CHASE</span>
+        </label>
+        {#if _chase}
+          <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
+        {/if}
+        <!-- Draft mode toggle — F&O only, mutually exclusive with Chase.
+             When ON, the submit button adds the leg to the session payoff
+             draft store (payoffDrafts) instead of routing to the broker.
+             The derivatives page merges these into candidatePositions so
+             the payoff curve updates immediately. -->
+        {#if !isEquity && action !== 'modify'}
+          <label class="ot-draft-toggle"
+                 title={_draftMode
+                   ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
+                   : 'Draft OFF — submit routes to broker normally'}>
+            <input type="checkbox" checked={_draftMode}
+                   disabled={_chase}
+                   onchange={(e) => {
+                     _draftMode = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
+                     // Mutual exclusion: Draft ON → Chase OFF.
+                     if (_draftMode) _setChase(false);
+                   }} />
+            <span class="ot-draft-label" class:on={_draftMode}>DRAFT</span>
+          </label>
+        {/if}
+      </div>
+    {/if}
+
     <!-- Depth — also bubbles its quote tick up via `onQuote` so the
          ticket can keep the limit price aligned with the marketable
          side (BUY → top ask, SELL → top bid). Operator edits to the
@@ -2319,6 +2595,25 @@
         </span>
       {/if}
     </div>
+    {/if}
+
+    <!-- D2: wing warning — shown when the selected template has a wing
+         component (strike-offset or premium-pct). Contextual reminder
+         that a protective wing will be placed alongside the main order.
+         Uses wing_strike_offset / wing_premium_pct fields (not has_wing).
+         Only shown when NOT using the 'none' template. -->
+    {#if _selectedTemplate && !_isUsingNone &&
+         (_selectedTemplate.wing_strike_offset != null || _selectedTemplate.wing_premium_pct != null)}
+      <div class="ot-wing-warning" role="note">
+        <span class="ot-wing-icon">⛊</span>
+        Wing order will be placed:
+        {#if _selectedTemplate.wing_strike_offset != null}
+          <strong>+{_selectedTemplate.wing_strike_offset} pts offset</strong>
+        {/if}
+        {#if _selectedTemplate.wing_premium_pct != null}
+          {_selectedTemplate.wing_strike_offset != null ? ' or' : ''} <strong>{_selectedTemplate.wing_premium_pct}% premium</strong>
+        {/if}
+      </div>
     {/if}
 
     {#if _shownErr}
@@ -2375,13 +2670,15 @@
                  for those. Label varies by action so the operator knows
                  what's about to fire. -->
             <button type="button" class="ot-submit"
-                    class:ot-submit-buy={_side === 'BUY'}
-                    class:ot-submit-sell={_side === 'SELL'}
+                    class:ot-submit-buy={_side === 'BUY' && !_draftMode}
+                    class:ot-submit-sell={_side === 'SELL' && !_draftMode}
+                    class:ot-submit-draft={_draftMode}
                     class:ot-submit-demo={_isDemo}
                     disabled={_isDemo ? false : (!!validationErr || submitting || _noSymbol)}
-                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : ''}
+                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : (_draftMode ? 'Add leg to payoff chart (no broker order)' : '')}
                     onclick={submit}>
               {#if _isDemo}Submit (Demo){:else if submitting}…
+              {:else if _draftMode}Add to Payoff
               {:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}
               {:else if action === 'close'}Close · {_side.toLowerCase()}
               {:else if action === 'repeat'}Place again
@@ -2399,9 +2696,9 @@
            cost/cash vs margin/avail readout for both tabs.
            Keeps the success message slot since that's a
            per-ticket lifecycle signal (not shared). -->
-      {#if submitOk}
+      {#if submitOk || _draftOk}
         <div class="ot-footer-info">
-          <div class="ot-ok">✓ {submitOk}</div>
+          <div class="ot-ok">✓ {_draftOk || submitOk}</div>
         </div>
       {/if}
 
@@ -2486,6 +2783,15 @@
     font-family: var(--font-numeric);
     box-shadow: 0 12px 32px rgba(0,0,0,0.6);
   }
+  /* E1: focus-ping animation — 600ms amber ring pulse */
+  @keyframes ot-ping {
+    0%   { box-shadow: 0 0 0 0 rgba(251,191,36,0.60), 0 12px 32px rgba(0,0,0,0.6); border-color: rgba(251,191,36,0.80); }
+    50%  { box-shadow: 0 0 0 6px rgba(251,191,36,0.20), 0 12px 32px rgba(0,0,0,0.6); border-color: rgba(251,191,36,0.90); }
+    100% { box-shadow: 0 0 0 0 rgba(251,191,36,0.00), 0 12px 32px rgba(0,0,0,0.6); border-color: rgba(251,191,36,0.35); }
+  }
+  .ot-modal--ping {
+    animation: ot-ping 0.6s ease-out forwards;
+  }
   /* Mobile: match the canonical-modal-panel sizing (96vw) so every modal
      opens at the same width; height is bounded by the top-anchored
      max-height above, no separate override needed. */
@@ -2507,17 +2813,157 @@
   .ot-modal :global(.ch-right) { gap: 0.35rem; }
   .ot-modal :global(.ch-sep) { margin: 0.1rem 0; }
 
+  /* A0: title row containing symbol + contract LTP side-by-side */
+  .ot-symbol-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+  }
   .ot-symbol-text {
     font-size: var(--fs-lg);
     font-weight: 700;
     color: var(--algo-slate);
-    display: block;
+  }
+  /* A0: contract LTP — amber, tabular-nums, slightly smaller than symbol name */
+  .ot-hdr-ltp {
+    font-size: var(--fs-base);
+    font-weight: 600;
+    color: var(--algo-amber, var(--c-action));
+    font-variant-numeric: tabular-nums;
+    font-family: monospace;
+    flex-shrink: 0;
   }
   .ot-symbol-meta {
     font-size: var(--fs-sm);
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  /* B1: DTE chip — info sky */
+  .ot-dte-chip {
+    background: rgba(125, 211, 252, 0.12);
+    border: 1px solid rgba(125, 211, 252, 0.28);
+    color: var(--algo-sky, #7dd3fc);
+    border-radius: 3px;
+    padding: 0 0.3em;
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  /* B6: moneyness chips — color-coded */
+  .ot-mono-chip {
+    border-radius: 3px;
+    padding: 0 0.3em;
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border: 1px solid transparent;
+  }
+  .ot-mono-atm {
+    background: rgba(251, 191, 36, 0.12);
+    border-color: rgba(251, 191, 36, 0.30);
+    color: var(--algo-amber, var(--c-action));
+  }
+  .ot-mono-itm {
+    background: rgba(74, 222, 128, 0.10);
+    border-color: rgba(74, 222, 128, 0.25);
+    color: var(--algo-green, var(--c-long));
+  }
+  .ot-mono-otm {
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.25);
+    color: var(--algo-red, var(--c-short));
+  }
+  /* D1: closed badge */
+  .ot-closed-badge {
+    background: rgba(251, 191, 36, 0.15);
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    color: var(--algo-amber, var(--c-action));
+    border-radius: 3px;
+    padding: 0 0.3em;
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  /* A1: underlying spot strip in header middle */
+  .ot-underlying-spot {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    font-size: var(--fs-sm);
+  }
+  .ot-underlying-label {
+    color: var(--algo-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+  }
+  .ot-underlying-ltp {
+    color: var(--algo-slate);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    font-family: monospace;
+  }
+  .ot-underlying-chg {
+    font-variant-numeric: tabular-nums;
+    font-size: var(--fs-xs);
+  }
+  .ot-underlying-chg.pos { color: var(--algo-green, var(--c-long)); }
+  .ot-underlying-chg.neg { color: var(--algo-red, var(--c-short)); }
+
+  /* B5: position context row — avg cost + unrealizedP&L */
+  .ot-pos-context {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-size: var(--fs-xs);
+    margin-top: 0.15rem;
+  }
+  .ot-pos-avg {
+    color: var(--algo-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .ot-pos-pnl {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .ot-pos-pnl.pos { color: var(--algo-green, var(--c-long)); }
+  .ot-pos-pnl.neg { color: var(--algo-red, var(--c-short)); }
+
+  /* A2: CHASE row — placed above the depth ladder */
+  .ot-chase-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.3rem 0 0.2rem;
+  }
+
+  /* D2: wing warning */
+  .ot-wing-warning {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: var(--fs-xs);
+    color: var(--algo-amber, var(--c-action));
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.22);
+    border-radius: 3px;
+    padding: 0.25rem 0.45rem;
+    margin-top: 0.3rem;
+  }
+  .ot-wing-icon {
+    font-size: var(--fs-base);
+    opacity: 0.8;
   }
 
   .ot-close {
@@ -2912,6 +3358,50 @@
     gap: 0.3rem;
     cursor: pointer;
     user-select: none;
+  }
+
+  /* Draft toggle — sits after Chase in the same row.
+     Uses magenta/purple palette (matches draft-row identity in
+     CandidateLegRow) to visually distinguish it from Chase (amber). */
+  .ot-draft-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .ot-draft-toggle input[type="checkbox"] {
+    accent-color: #c084fc;
+    width: 0.85rem;
+    height: 0.85rem;
+    cursor: pointer;
+  }
+  .ot-draft-label {
+    font-family: monospace;
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: var(--text-muted);
+    background: rgba(255,255,255,0.04);
+  }
+  .ot-draft-label.on {
+    background: rgba(192,132,252,0.18);
+    border-color: rgba(192,132,252,0.55);
+    color: #c084fc;
+  }
+  /* Draft-mode submit button — magenta/violet instead of green/red. */
+  .ot-submit.ot-submit-draft {
+    background: rgba(192,132,252,0.22);
+    border-color: rgba(192,132,252,0.55);
+    color: #c084fc;
+  }
+  .ot-submit.ot-submit-draft:hover:not(:disabled) {
+    background: rgba(192,132,252,0.35);
+    border-color: rgba(192,132,252,0.80);
+    color: #e9d5ff;
   }
   .ot-chase-toggle input[type="checkbox"] {
     accent-color: #fbbf24;

@@ -253,6 +253,19 @@
       <span class="cand-split-tag cand-split-open"
             title="Currently open portion after today's close-and-reopen">OPEN</span>
     {/if}
+    {#if c._provisional}
+      <!-- Provisional (~) chip — fill received from broker event but the
+           broker positions API has not yet reflected this position.
+           Amber tint signals "non-confirmed, awaiting book refresh". -->
+      <span class="cand-split-tag cand-provisional-tag"
+            title="Provisional — fill event received; waiting for broker book to refresh">~</span>
+    {:else if c._draft_store}
+      <!-- Draft store (D) chip — operator-added hypothetical from the
+           draft positions store. Amber tint matches the ~ chip as
+           both are "non-confirmed" rows for the payoff toggle. -->
+      <span class="cand-split-tag cand-draftstore-tag"
+            title="Draft position from store — hypothetical, not yet confirmed">D</span>
+    {/if}
     {#if isDraft}
       <!-- Draft remove button — page-local removal only,
            NO order placed. Clicking the row body still
@@ -555,6 +568,24 @@
     color: var(--c-long);
     background: var(--algo-green-bg);
     border: 1px solid rgba(74, 222, 128, 0.45);
+  }
+  /* Provisional (~) and draft-store (D) chips — amber palette signals
+     "non-confirmed / awaiting settlement". Both chips use the same
+     colour family so the operator reads them as a single "pending" tier.
+     Monospace font and fixed-width padding keep the character centred. */
+  .cand-provisional-tag {
+    color: var(--c-action);
+    background: var(--algo-amber-bg);
+    border: 1px solid var(--algo-amber-border);
+    font-family: var(--font-numeric);
+    letter-spacing: 0;
+  }
+  .cand-draftstore-tag {
+    color: var(--c-action);
+    background: var(--algo-amber-bg);
+    border: 1px solid var(--algo-amber-border);
+    font-family: var(--font-numeric);
+    letter-spacing: 0;
   }
   /* Equity-leg tag — sky-blue family, distinct from the green/red
      split tags so the operator can scan the panel and instantly tell

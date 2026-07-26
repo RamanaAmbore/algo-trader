@@ -248,6 +248,11 @@ export function splitClosedReopened(p) {
  * testable without reactive wiring. The $derived shell in the page
  * passes all reactive state as plain values here.
  *
+ * Three position sources appear in this order:
+ *   1. Real positions (live/sim) + equity holdings + proxy hedges + local drafts
+ *   2. Provisional positions (~) — fills received before broker book refreshes
+ *   3. Draft store positions (D) — operator-added hypothetical positions from store
+ *
  * @param {{
  *   positions: any[],
  *   holdings: any[],
@@ -258,6 +263,8 @@ export function splitClosedReopened(p) {
  *   simActive: boolean,
  *   proxiesForTarget: (t: string) => string[],
  *   getInstrument: (sym: string) => {x?: string} | null,
+ *   provisionalPositions?: Map<string, any>,
+ *   draftStorePositions?: Map<string, any>,
  * }} params
  * @returns {any[]}
  */
@@ -265,6 +272,8 @@ export function buildCandidatePositions({
   positions, holdings, drafts,
   target, selectedExpiries, selectedAccounts, simActive,
   proxiesForTarget, getInstrument,
+  provisionalPositions,
+  draftStorePositions,
 }) {
   const prefixRe = new RegExp(`^${target}\\d`, 'i');
   const wantedSource = simActive ? 'sim' : 'live';
@@ -278,7 +287,11 @@ export function buildCandidatePositions({
     : (acct) => selectedAccounts.includes(String(acct || ''));
 
   /** @type {any[]} */
-  const out = [];
+  const real = [];
+  /** @type {any[]} */
+  const provisional = [];
+  /** @type {any[]} */
+  const draftStore = [];
 
   // F&O positions
   for (const p of positions) {
@@ -290,7 +303,7 @@ export function buildCandidatePositions({
     const isOpt = /(CE|PE)$/i.test(sym);
     if (!isFut && !isOpt) continue;
     if (!matchExpiry(sym)) continue;
-    out.push({ ...p, kind: isFut ? 'fut' : 'opt' });
+    real.push({ ...p, kind: isFut ? 'fut' : 'opt' });
   }
 
   // Direct equity holdings of the underlying
@@ -298,7 +311,7 @@ export function buildCandidatePositions({
     const sym = String(h.symbol || '').toUpperCase();
     if (sym !== target) continue;
     if (!matchAccount(h.account)) continue;
-    out.push({ ...h, source: 'live', kind: 'eq' });
+    real.push({ ...h, source: 'live', kind: 'eq' });
   }
 
   // Proxy hedges (GOLDBEES → GOLD etc.)
@@ -308,11 +321,11 @@ export function buildCandidatePositions({
       const sym = String(h.symbol || '').toUpperCase();
       if (!_allowedProxies.has(sym)) continue;
       if (!matchAccount(h.account)) continue;
-      out.push({ ...h, source: 'live', kind: 'eq', proxy_for: target });
+      real.push({ ...h, source: 'live', kind: 'eq', proxy_for: target });
     }
   }
 
-  // Drafts — no account filter (drafts are not tied to a broker account)
+  // Local drafts — no account filter (drafts are not tied to a broker account)
   for (const d of drafts) {
     const sym = String(d.symbol || '').toUpperCase();
     if (!sym || !prefixRe.test(sym)) continue;
@@ -323,20 +336,78 @@ export function buildCandidatePositions({
     const qty  = d.qty      === '' || d.qty      == null ? 0    : Number(d.qty);
     const cost = d.avg_cost === '' || d.avg_cost == null ? null : Number(d.avg_cost);
     const ltp  = d.ltp      === '' || d.ltp      == null ? null : Number(d.ltp);
-    out.push({
+    real.push({
       symbol: sym, account: '', qty, avg_cost: cost, ltp,
       source: 'draft', kind: isFut ? 'fut' : 'opt', draftId: d.id,
     });
   }
 
-  // Closed positions sort to the end; stable otherwise
-  out.sort((a, b) => {
+  // Provisional positions (~) — post-fill, pre-broker-refresh
+  if (provisionalPositions) {
+    for (const entry of provisionalPositions.values()) {
+      const sym = String(entry.tradingsymbol || '').toUpperCase();
+      if (!sym || !prefixRe.test(sym)) continue;
+      const isFut = /FUT$/i.test(sym);
+      const isOpt = /(CE|PE)$/i.test(sym);
+      if (!isFut && !isOpt) continue;
+      if (!matchExpiry(sym)) continue;
+      if (!matchAccount(entry.account)) continue;
+      provisional.push({
+        symbol:    sym,
+        account:   String(entry.account || ''),
+        qty:       Number(entry.quantity || 0),
+        avg_cost:  entry.average_price != null ? Number(entry.average_price) : null,
+        ltp:       entry.last_price    != null ? Number(entry.last_price)    : null,
+        prev_close: 0,
+        pnl:       Number(entry.pnl || 0),
+        realised:  Number(entry.realised || 0),
+        day_change_val: Number(entry.day_change_val || 0),
+        source:    'provisional',
+        kind:      isFut ? 'fut' : 'opt',
+        _provisional: true,
+      });
+    }
+  }
+
+  // Draft store positions (D) — operator-added hypothetical store entries
+  if (draftStorePositions) {
+    for (const entry of draftStorePositions.values()) {
+      const sym = String(entry.tradingsymbol || '').toUpperCase();
+      if (!sym || !prefixRe.test(sym)) continue;
+      const isFut = /FUT$/i.test(sym);
+      const isOpt = /(CE|PE)$/i.test(sym);
+      if (!isFut && !isOpt) continue;
+      if (!matchExpiry(sym)) continue;
+      if (!matchAccount(entry.account)) continue;
+      draftStore.push({
+        symbol:    sym,
+        account:   String(entry.account || ''),
+        qty:       Number(entry.quantity || 0),
+        avg_cost:  entry.average_price != null ? Number(entry.average_price) : null,
+        ltp:       entry.last_price    != null ? Number(entry.last_price)    : null,
+        prev_close: 0,
+        pnl:       Number(entry.pnl || 0),
+        realised:  Number(entry.realised || 0),
+        day_change_val: Number(entry.day_change_val || 0),
+        source:    'draft_store',
+        kind:      isFut ? 'fut' : 'opt',
+        _draft_store: true,
+      });
+    }
+  }
+
+  // Sort each group: closed (qty=0) to end within group, stable otherwise.
+  const closedLast = (a, b) => {
     const ac = (Number(a?.qty || 0) === 0) ? 1 : 0;
     const bc = (Number(b?.qty || 0) === 0) ? 1 : 0;
     return ac - bc;
-  });
+  };
+  real.sort(closedLast);
+  provisional.sort(closedLast);
+  draftStore.sort(closedLast);
 
-  return out;
+  // Ordering: real first, then provisional (~), then draft store (D).
+  return [...real, ...provisional, ...draftStore];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -363,7 +434,8 @@ export function buildCleanLegs(legs, getInstrument) {
         symbol:   sym,
         qty:      l.qty === '' || l.qty == null ? 0 : Number(l.qty),
         avg_cost: l.avg_cost === '' || l.avg_cost == null ? null : Number(l.avg_cost),
-        ltp: (l.source === 'sim' || l.source === 'draft')
+        ltp: (l.source === 'sim' || l.source === 'draft' ||
+              l.source === 'provisional' || l.source === 'draft_store')
           ? (l.ltp === '' || l.ltp == null ? null : Number(l.ltp))
           : null,
         expiry,

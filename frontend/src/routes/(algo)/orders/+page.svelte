@@ -23,6 +23,7 @@
   } from '$lib/data/accounts';
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
+  import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
 
   let orders        = $state([]);
   let loading       = $state(true);
@@ -123,7 +124,10 @@
   const _openOrderCount = $derived(
     orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length
   );
-  const _showChases = $derived(_openOrderCount > 0 || _activeChases > 0);
+  // Derive an array from the reactive payoffDrafts Map so ChaseCard
+  // re-renders whenever a draft is added or removed.
+  const _draftOrdersList = $derived([...payoffDrafts.value.values()]);
+  const _showChases = $derived(_openOrderCount > 0 || _activeChases > 0 || _draftOrdersList.length > 0);
 
   // Per-card collapse + fullscreen state. No persistence (no cardId
   // on CollapseButton) so every page load opens both cards expanded
@@ -227,6 +231,30 @@
       product:   o.product,
       account:   String(o.account || ''),
       accounts:  [],
+    };
+  }
+
+  // Opens the order ticket pre-filled from a draft payoff entry. Sets
+  // initialDraftId so the ticket knows to operate in "edit draft" mode
+  // (button label = "Update Draft", cancel removes the draft from the store).
+  function _openDraftTicket(/** @type {any} */ draft) {
+    const sym  = String(draft.symbol || '').toUpperCase();
+    const inst = getInstrument(sym);
+    const lot  = Number(inst?.ls || 1);
+    const absQty = Math.abs(Number(draft.qty || 0));
+    const side = (draft.transaction_type === 'SELL' || Number(draft.qty || 0) < 0)
+      ? 'SELL' : 'BUY';
+    orderTicketProps = {
+      symbol:         sym,
+      exchange:       draft.exchange || inst?.e || 'NFO',
+      side,
+      action:         'open',
+      qty:            absQty || lot,
+      lotSize:        lot,
+      price:          draft.avg_cost != null ? Number(draft.avg_cost) : undefined,
+      accounts:       _entryAccounts,
+      account:        _entryAccount,
+      initialDraftId: String(draft.id),
     };
   }
 
@@ -463,14 +491,20 @@
     {/snippet}
   </CardHeader>
   <div class="card-body oc-chase-body">
-    <ChaseCard pollMs={3000} onKilled={() => loadOrders()} bind:activeCount={_activeChases} />
+    <ChaseCard pollMs={3000} onKilled={() => loadOrders()} bind:activeCount={_activeChases}
+      draftOrders={_draftOrdersList}
+      onDraftRemove={(id) => payoffDrafts.remove(id)}
+      onDraftClick={_openDraftTicket} />
   </div>
 </section>
 {:else}
 <!-- Even when hidden, keep ChaseCard mounted so its poller updates
      _activeChases — without this the section would never re-appear on
      the first chase fire. compact + display:none keeps the DOM small. -->
-<div style="display:none"><ChaseCard pollMs={3000} compact bind:activeCount={_activeChases} /></div>
+<div style="display:none"><ChaseCard pollMs={3000} compact bind:activeCount={_activeChases}
+  draftOrders={_draftOrdersList}
+  onDraftRemove={(id) => payoffDrafts.remove(id)}
+  onDraftClick={_openDraftTicket} /></div>
 {/if}
 
 <!-- Order Activity card — same 6-tab LogPanel surface the ActivityLogModal
@@ -527,6 +561,7 @@
     accounts={orderTicketProps?.accounts}
     account={orderTicketProps?.account}
     currentQty={orderTicketProps?.currentQty ?? 0}
+    initialDraftId={orderTicketProps?.initialDraftId ?? null}
     onSubmit={(payload) => {
       // Drafts are page-local — no broker write, no refresh needed.
       // Modify and PAPER/LIVE submits hit the backend before this

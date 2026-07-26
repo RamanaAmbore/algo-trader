@@ -28,6 +28,15 @@
     // visibility on whether any chase is active without needing to
     // mount a second poller.
     activeCount = $bindable(0),
+    // Draft payoff orders — shown below real pending rows with a "D"
+    // chip in the status column. Inline × removes without a modal;
+    // row click opens the order ticket pre-filled in draft mode.
+    // Passed from the orders page which reads payoffDrafts.value.
+    draftOrders = /** @type {any[]} */ ([]),
+    // Called when the operator clicks × on a draft row.
+    onDraftRemove = /** @type {((id: string) => void) | null} */ (null),
+    // Called when the operator clicks a draft row body (opens ticket).
+    onDraftClick  = /** @type {((entry: any) => void) | null} */ (null),
   } = $props();
 
   let _chases  = $state(/** @type {any[]} */ ([]));
@@ -217,16 +226,14 @@
 
 <!-- Operator: "in chase card, if there are no active chases, no
      need to show 'no active chases' and refresh it continuously".
-     Entire root is gated on _chases.length so the card simply
-     vanishes when idle (the parent's bucket-card chrome
-     disappears with it via :empty / display:none). Polling auto-
-     slows in _rescheduleTimer when idle so background traffic
-     drops to one fetch every ~30s. -->
-{#if _chases.length}
+     Root is gated on either real chases OR draft orders being present.
+     Polling auto-slows in _rescheduleTimer when idle so background
+     traffic drops to one fetch every ~30s. -->
+{#if _chases.length || draftOrders.length}
 <div class="cc-root" class:cc-compact={compact}>
   <div class="cc-header">
     <span class="cc-label">Chases in flight</span>
-    <span class="cc-count">{_chases.length}</span>
+    <span class="cc-count">{_chases.length + draftOrders.length}</span>
     <span class="cc-spacer"></span>
     {#if _reconcileMsg}
       <span class="cc-reconcile-msg" title={_reconcileMsg}>{_reconcileMsg}</span>
@@ -317,6 +324,59 @@
         </span>
       </div>
     {/each}
+
+    <!-- Draft payoff order rows — shown below real chases with an amber
+         "D" chip instead of a broker status pill. Clicking the row body
+         opens the order ticket pre-filled in draft mode. The inline ×
+         removes the draft immediately without a confirm modal. -->
+    {#if draftOrders.length}
+      {#if _orderedChases.length}
+        <div class="cc-draft-divider" role="separator" aria-label="Draft orders"></div>
+      {/if}
+      {#each draftOrders as draft (draft.id)}
+        <!-- svelte-ignore a11y_interactive_supports_focus -->
+        <div class="cc-row cc-row-draft"
+             role="button"
+             tabindex="0"
+             title="Click to edit this draft in the order ticket"
+             onclick={() => onDraftClick?.(draft)}
+             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onDraftClick?.(draft); } }}>
+          <!-- Account col: empty for draft rows (no account assigned yet) -->
+          <span class="cc-col cc-col-acct cc-draft-acct" title="Draft — no account assigned">
+            <span class="cc-draft-chip" aria-label="Draft order">D</span>
+          </span>
+          <span class="cc-col cc-col-side cc-side-{(draft.transaction_type || '').toLowerCase()}">
+            {draft.transaction_type || '—'}
+          </span>
+          <!-- Draft qty is signed; show absolute value -->
+          <span class="cc-col cc-col-qty">{Math.abs(draft.qty || 0)}</span>
+          <span class="cc-col cc-col-sym" title={draft.symbol}>
+            {formatSymbol(draft.symbol || '')}
+          </span>
+          <!-- Limit = avg_cost from the ticket price field -->
+          <span class="cc-col cc-col-limit">
+            {draft.avg_cost != null ? '₹' + priceFmt(draft.avg_cost) : '—'}
+          </span>
+          <!-- Attempts col: empty for drafts -->
+          <span class="cc-col cc-col-att">—</span>
+          <!-- Age col: empty for drafts -->
+          <span class="cc-col cc-col-age">—</span>
+          {#if !compact}
+            <span class="cc-col cc-mode cc-mode-draft">DRAFT</span>
+          {/if}
+          <!-- × remove button — inline delete, no modal -->
+          <span class="cc-col cc-col-actions">
+            <button type="button"
+                    class="cc-draft-remove"
+                    title="Remove this draft order"
+                    aria-label="Remove draft {draft.symbol}"
+                    onclick={(e) => { e.stopPropagation(); onDraftRemove?.(draft.id); }}>
+              ×
+            </button>
+          </span>
+        </div>
+      {/each}
+    {/if}
   </div>
 </div>
 {/if}
@@ -524,4 +584,62 @@
   }
   .cc-pulse-buy  { background: var(--c-pos, #4ade80); }
   .cc-pulse-sell { background: var(--c-neg, #f87171); }
+
+  /* Draft order rows — amber palette, visually distinct from live chases.
+     Row is clickable (opens order ticket pre-filled); cursor:pointer. */
+  .cc-row-draft {
+    cursor: pointer;
+    background: rgba(251, 191, 36, 0.04);
+  }
+  .cc-row-draft:hover {
+    background: rgba(251, 191, 36, 0.10);
+  }
+  /* "D" chip — amber, same pill shape as algo-status-pill */
+  .cc-draft-chip {
+    display: inline-block;
+    font-size: 0.55rem;
+    padding: 0.18rem 0.42rem;
+    border-radius: 3px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid rgba(251, 191, 36, 0.50);
+    background: rgba(251, 191, 36, 0.14);
+    color: #fbbf24;
+    white-space: nowrap;
+  }
+  .cc-draft-acct {
+    /* Flex so the "D" chip aligns with account text in real rows */
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  /* DRAFT mode label in the mode column */
+  .cc-mode-draft {
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.45);
+  }
+  /* Visual separator between real chases and draft rows */
+  .cc-draft-divider {
+    height: 1px;
+    background: rgba(251, 191, 36, 0.20);
+    margin: 0.25rem 0;
+  }
+  /* × remove button for drafts — amber palette, smaller than Kill */
+  .cc-draft-remove {
+    padding: 0.18rem 0.45rem;
+    border-radius: 3px;
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    background: transparent;
+    color: rgba(251, 191, 36, 0.85);
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .cc-draft-remove:hover {
+    background: rgba(251, 191, 36, 0.12);
+    color: #fbbf24;
+    border-color: rgba(251, 191, 36, 0.75);
+  }
 </style>

@@ -89,6 +89,8 @@
    *   account?:        string,
    *   orderId?:        string,
    *   currentQty?:     number,
+   *   avgCost?:        number | null,
+   *   unrealizedPnl?:  number | null,
    *   onSubmit:        (payload: any) => void | Promise<void>,
    *   onClose:         () => void,
    *   onAddToBasket?:  ((payload: any) => void) | null,
@@ -109,6 +111,7 @@
    *   showChartButton?: boolean,
    *   showCommonActions?: boolean,
    *   pickerSuffix?:   import('svelte').Snippet,
+   *   initialDraftId?: string | null,
    * }} */
   let {
     defaultTab     = /** @type {'chain'|'ticket'} */ ('ticket'),
@@ -128,6 +131,8 @@
     account        = '',
     orderId        = '',
     currentQty     = 0,
+    avgCost        = /** @type {number|null} */ (null),
+    unrealizedPnl  = /** @type {number|null} */ (null),
     onSubmit,
     onClose,
     onAddToBasket  = /** @type {((payload:any)=>void)|null} */ (null),
@@ -216,6 +221,11 @@
     // needing a separate header-level block.
     /** @type {import('svelte').Snippet | undefined} */
     pickerSuffix = undefined,
+    // When set, OrderTicket opens pre-filled from this payoffDrafts id
+    // with _draftMode=true. Submit → "Update Draft". Cancel → removes draft.
+    // Passed through from _openDraftTicket on the /orders page and from
+    // executeDraft on the derivatives page.
+    initialDraftId = /** @type {string|null} */ (null),
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
@@ -1911,7 +1921,7 @@
   const _ticketProps = $derived({
     symbol, exchange, side, action, qty, product, orderType, variety,
     price, trigger, lotSize, accounts, account, orderId,
-    currentQty, onAddToBasket,
+    currentQty, avgCost, unrealizedPnl, onAddToBasket, initialDraftId,
   });
 </script>
 
@@ -2171,6 +2181,8 @@
             onSideChange={(s) => { _modalSide = s; }}
             orderId={_ticketProps.orderId ?? orderId}
             currentQty={_ticketProps.currentQty ?? currentQty}
+            avgCost={_ticketProps.avgCost ?? avgCost}
+            unrealizedPnl={_ticketProps.unrealizedPnl ?? unrealizedPnl}
             onAddToBasket={addToBasket}
             basketMode={basketMode}
             accountHidden={true}
@@ -2202,6 +2214,7 @@
               _modalCapWarning     = capW;
             }}
             onValidationChange={(err) => { _ticketValidationErr = err; }}
+            initialDraftId={_ticketProps.initialDraftId ?? null}
             {onSubmit}
             {onClose} />
       </div>

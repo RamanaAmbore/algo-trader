@@ -29,6 +29,23 @@ from backend.api.algo.template_attach import (
 )
 
 
+# ── Module-level market-hours bypass ─────────────────────────────────
+# apply_plan_live now guards against a closed exchange. Tests in this module
+# call apply_plan_live directly and are not market-hours-aware.
+
+@pytest.fixture(autouse=True)
+def _market_open(monkeypatch):
+    """Make all apply_plan_live calls in this module see an open market."""
+    monkeypatch.setattr(
+        "backend.api.algo.agent_engine._symbol_exchange_open",
+        lambda *_a, **_kw: True,
+    )
+    monkeypatch.setattr(
+        "backend.api.algo.agent_engine._build_now_ctx",
+        lambda: {"nse_open": True, "mcx_open": True},
+    )
+
+
 # ── Shared overrides that force an ad-hoc template via build_adhoc_template
 # (template_id=None + template_slug=None + has_any_override=True)
 
