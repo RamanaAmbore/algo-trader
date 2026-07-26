@@ -79,6 +79,27 @@ The page is **always populated** — no blank grids, no "—" placeholders. Clos
 
 ## 4. Section Specs
 
+### 4.0 Order Entry — CardHeader Layout
+
+The order-entry ticket (LIMIT, MARKET, SL orders) relocates chase toggle and
+aggressiveness picker from order body to CardHeader middle zone.
+
+**LIMIT / SL orders**:
+- Header left: symbol (read-only)
+- Header middle: CHASE toggle + aggressiveness pills (L/M/H)
+- Header right: refresh + close buttons
+- Body area: live LTP display (from depth WebSocket)
+
+**MARKET orders**:
+- Header left: symbol
+- Header middle: empty (chase not applicable)
+- Header right: refresh + close buttons
+- Body: live LTP display
+
+**Rationale**: High-frequency CHASE workflows benefit from one-click toggle placement in 
+the header; L/M/H aggressiveness picker selection moves alongside for rapid execution mode 
+changes. LTP display relocated to body preserves real-estate balance.
+
 ### 4.1 Watchlist
 
 - Authenticated: own lists from DB, LTP via SSE, sparklines polled on tick cadence
@@ -129,7 +150,41 @@ See Section 5 for DB-first policy and fallback ladder.
 - NavStrip P-slot is guarded against zero-flash during live→snapshot transitions
   (when `close_price === ltp`, the guard returns 0 to prevent distortion)
 
-### 4.5 Card Controls — CSV Export Button
+### 4.5 Chase Card Status Columns
+
+Active chase rows now display enhanced visual feedback for execution state.
+
+**Symbol column**:
+- Pulsing colored dot adjacent to symbol name (green for BUY, red for SELL)
+- Dot animation syncs with order lifecycle (stops when chase completes or cancels)
+
+**Age column**:
+- Now visible in all layout modes (previously compact-mode only)
+- Shows elapsed time since chase order entered the queue
+
+**Countdown timer**:
+- Opacity increased for improved legibility (was previously dim)
+- Millisecond countdown clearly visible during active execution
+
+**All other columns** (symbol, qty, price, status) — unchanged
+
+### 4.5.1 Cancel Reconciliation — Derivatives Page
+
+When an order is cancelled or rejected via WebSocket `order_update` message, the 
+`order_update` handler now immediately calls `loadPositions({ fresh: true })` to refresh 
+the Legs grid with the updated broker state.
+
+**Behavior**:
+- Status is `CANCELLED` or `REJECTED` → trigger immediate `fresh: true` refresh
+- Previously: handler returned without refreshing, leaving stale leg quantities until 
+  next poll interval (5–30 seconds)
+- Now: users see leg qty update on the same tick the cancel confirmation arrives
+
+**Impact**: Eliminates race conditions where an operator cancels a close order and 
+immediately submits a new one; the Legs grid no longer shows stale qty from the cancelled 
+order.
+
+### 4.6 Card Controls — CSV Export Button
 
 All ag-Grid cards on `/pulse` and related admin surfaces include a Download button for
 immediate CSV export of the current grid view (filtered, sorted).
@@ -164,6 +219,24 @@ immediate CSV export of the current grid view (filtered, sorted).
 
 **Component**: `GridDownloadButton.svelte` (reusable). Accepts `onDownload` callback prop
 passed from `CardControls.svelte` to parent ag-Grid wrapper.
+
+### 4.7 Option Chain Tab — Buy/Sell Button Layout
+
+Strike-adjacency rule: Buy (+) and Sell (−) buttons always cluster toward the strike 
+column for optimal scanning.
+
+**Call (CE) side** (left of strike):
+- Buttons cluster at the right edge of the cell (immediately adjacent to strike)
+- Quote columns (bid/ask/LTP) at outer left
+- Button alignment: `justify-content: flex-end`
+
+**Put (PE) side** (right of strike):
+- Buttons cluster at the left edge of the cell (immediately adjacent to strike)
+- Quote columns at outer right
+- Button alignment: `justify-content: flex-start`
+
+**Rationale**: Operators scanning the chain quickly locate buy/sell actions in the same 
+visual line as the strike price, eliminating eye travel to distant button zones.
 
 ---
 
@@ -664,6 +737,22 @@ from the overlay TOTAL stat and the Legs grid TOTAL row.
 For Snapshot EXP column (MarketPulse Derivatives view):
 - **Open leg** (qty ≠ 0): `expiryPnl(c, spot) + (c.realised || 0)`
 - **Closed leg** (qty = 0): `c.realised || c.pnl` (locked value, not null/empty)
+
+### 17.1 Candidate Leg Row — Pending Qty Chip
+
+The Legs grid now displays a qty chip per row that reflects both closed and pending-order 
+states.
+
+**Data source**: `openOrderQtyBySymbol` store (`src/lib/data/openOrdersStore.svelte.js`)
+— symbol-to-pending-qty map, co-polled with chase orders.
+
+**Display logic**:
+- If `isClosed === true`: show `closed` chip (muted / grey text)
+- Else if `pendingQty > 0`: show `{pendingQty} [open]` chip + remaining qty in a separate span
+- Else: show plain qty (no special marking)
+
+**Use case**: Operators tracking partial-close executions see which legs have open 
+cancel/reduce orders queued, preventing accidental double-reduces.
 
 ---
 
