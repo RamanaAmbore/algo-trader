@@ -27,7 +27,7 @@ Launch both checks simultaneously with `run_in_background: true` in a single mes
 
 1. **Backend** — launch in background:
    ```
-   cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=line --timeout=60
+   cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=line
    ```
    Use Monitor to collect output when it completes. Capture passed/skipped/failed counts and any FAILED lines.
 

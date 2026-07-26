@@ -51,7 +51,7 @@ Do NOT call `EnterPlanMode` here — continue to Phase 2.
 
 Follow all steps from `/ddev` exactly:
 
-1. Run pytest (`venv/bin/pytest backend/tests/ -q --tb=line`) with `run_in_background: true`.
+1. Run pytest (`venv/bin/pytest backend/tests/ -q --tb=line`) with `run_in_background: true`. Do NOT use `--timeout` flag.
 2. Run svelte-check (`cd frontend && npx svelte-check --output machine 2>&1`) with `run_in_background: true`.
 3. Launch both in one message (parallel). Use Monitor to collect each result when done.
 4. Spec-sync gate: check `git diff origin/dev...HEAD --name-only` for unsynced spec files (warning only, non-blocking).
