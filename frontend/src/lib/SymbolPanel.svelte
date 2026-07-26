@@ -982,12 +982,21 @@
     const m = key.match(
       /^([A-Z]+?)(\d{2}[A-Z]{3}|\d{4,5})(\d+(?:\.\d+)?)(CE|PE)$/
     );
-    if (!m) { _SYMBOL_PARSE_CACHE.set(key, null); return null; }
+    if (!m) {
+      _SYMBOL_PARSE_CACHE.set(key, null);
+      if (_SYMBOL_PARSE_CACHE.size > 500) _SYMBOL_PARSE_CACHE.delete(_SYMBOL_PARSE_CACHE.keys().next().value);
+      return null;
+    }
     const [, root, expTok, strikeStr, opt] = m;
     const strike = parseInt(strikeStr, 10);
-    if (!Number.isFinite(strike)) { _SYMBOL_PARSE_CACHE.set(key, null); return null; }
+    if (!Number.isFinite(strike)) {
+      _SYMBOL_PARSE_CACHE.set(key, null);
+      if (_SYMBOL_PARSE_CACHE.size > 500) _SYMBOL_PARSE_CACHE.delete(_SYMBOL_PARSE_CACHE.keys().next().value);
+      return null;
+    }
     const parsed = { root, expTok, strike, opt };
     _SYMBOL_PARSE_CACHE.set(key, parsed);
+    if (_SYMBOL_PARSE_CACHE.size > 500) _SYMBOL_PARSE_CACHE.delete(_SYMBOL_PARSE_CACHE.keys().next().value);
     return parsed;
   }
   function _wingSymbolFor(/** @type {string} */ parentSym) {
@@ -1516,8 +1525,8 @@
     if (_modalMargin?.error) {
       return { level: 'err',  text: '⚠ ' + String(_modalMargin.error).slice(0, 60), detail: '' };
     }
-    if (Array.isArray(_modalMargin?.blocked) && _modalMargin.blocked.length) {
-      const b = _modalMargin.blocked[0];
+    if (Array.isArray(_modalMargin?.blocked) && _modalMargin.blocked.length > 0) {
+      const b = _modalMargin.blocked[0] ?? null;
       return { level: 'err',  text: '⚠ ' + String(b?.reason || 'preview blocked').slice(0, 60), detail: String(b?.fix || '') };
     }
     // Market-hours check — operator: "when exchange is resolved

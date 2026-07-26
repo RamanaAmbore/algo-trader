@@ -449,8 +449,10 @@
   function _deriveKind(/** @type {string|undefined} */ status) {
     switch ((status || '').toUpperCase()) {
       case 'COMPLETE': return 'fill';
+      case 'PARTIAL': return 'fill';
       case 'REJECTED': return 'reject';
       case 'CANCELLED': return 'cancel';
+      case 'CANCEL_FAILED': return 'cancel';
       default: return 'placed';
     }
   }
@@ -463,7 +465,7 @@
       const sym  = o.tradingsymbol || o.symbol || '';
       const side = o.transaction_type || '';
       const qty  = o.quantity ?? '';
-      const price = o.price;
+      const price = o.initial_price ?? o.price ?? null;
       const ts   = o.order_timestamp || o.created_at || '';
       const st   = (o.status || '').toUpperCase();
 
@@ -477,7 +479,7 @@
 
       // Terminal events
       if (st === 'COMPLETE') {
-        const fp = o.average_price || price;
+        const fp = o.fill_price ?? o.average_price ?? price;
         events.push({
           id:      oid + '-fill',
           ts,
@@ -502,14 +504,16 @@
     }
     // Algo-engine events are more accurate; exclude broker lifecycle events for
     // order_ids that already have algo events.
-    const algoIds = new Set(filteredOrderEvents.map(e => String(e.order_id || '')));
+    const algoIds = new Set(filteredOrderEvents.map(e => String(e.order_id || e.id || '')).filter(Boolean));
     const brokerOnly = events.filter(e => {
       const baseId = e.id.replace(/-(?:placed|fill|cancel|reject)$/, '');
       return !algoIds.has(baseId);
     });
-    return [...filteredOrderEvents, ...brokerOnly].sort((a, b) =>
-      (Date.parse(/** @type {any} */ (b).ts || '') || 0) -
-      (Date.parse(/** @type {any} */ (a).ts || '') || 0));
+    return [...filteredOrderEvents, ...brokerOnly].sort((a, b) => {
+      const ta = Date.parse(/** @type {any} */ (a).ts || /** @type {any} */ (a).created_at || /** @type {any} */ (a).timestamp || '') || 0;
+      const tb = Date.parse(/** @type {any} */ (b).ts || /** @type {any} */ (b).created_at || /** @type {any} */ (b).timestamp || '') || 0;
+      return tb - ta;
+    });
   });
 
   function _fmtConnDetail(/** @type {any} */ detail) {
@@ -1622,7 +1626,7 @@
         {#each _derivedOrderEvents as evt (evt.id)}
           <div class="log-row {_orderEvtCls(evt.kind)}">
             {@html _dualTsHtml(evt.ts)}
-            <span class="log-row-tag">{(evt.kind || '').replace(/_/g, ' ').toUpperCase()}</span>
+            <span class="log-row-tag">{(evt.kind || '').toUpperCase()}</span>
             <span class="log-row-msg">{evt.message || ''}</span>
           </div>
         {/each}

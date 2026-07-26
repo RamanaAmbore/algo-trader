@@ -50,7 +50,7 @@
             onclick={() => stepLots(1)}
             {disabled}
             aria-label="Increase lots">+</button>
-    <span class="ot-meta">× {lotSize} = {qty} qty</span>
+    <span class="ot-qty-chip" title="Lots × lot size = total units sent to broker">= {qty} units</span>
   </div>
 {:else}
   <label class="ot-label" for="ot-qty">Qty</label>
@@ -166,6 +166,16 @@
   .ot-input:focus { outline: none; border-color: var(--c-action); }
   .ot-num { text-align: right; }
 
-  /* "× {lotSize} = {qty} qty" annotation */
-  .ot-meta { font-size: var(--fs-md); color: var(--text-muted); }
+  /* "= N units" conversion chip — read-only annotation next to the stepper */
+  .ot-qty-chip {
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
+    background: rgba(200,216,240,0.06);
+    border: 1px solid rgba(200,216,240,0.12);
+    border-radius: 3px;
+    padding: 0.1rem 0.35rem;
+    font-family: monospace;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
 </style>

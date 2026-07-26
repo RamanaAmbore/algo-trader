@@ -580,7 +580,11 @@
     exchange={_ctxExch}
     action="close"
     currentQty={_ctxQty}
-    onSubmit={() => {}}
+    side={_ctxQty > 0 ? 'SELL' : 'BUY'}
+    orderType="MARKET"
+    account={_entryAccount}
+    accounts={_entryAccounts}
+    onSubmit={() => { loadOrders(); }}
     onClose={() => { _ctxAction = null; }}
   />
 {/if}
