@@ -32,8 +32,10 @@
   // reads this to re-run on the boundary even when no other state has
   // changed (otherwise we'd wait up to 30s for the next loadOnce poll
   // before clearing the stale-tick delta after market close).
-  let _breakdownOpen = $state(false);
-  let _activeSlot = $state(/** @type {'P'|'M'|'C'|'H'} */ ('P'));
+  let _breakdown = $state(
+    /** @type {{ open: boolean, slot: 'P'|'M'|'C'|'H', left: number, top: number }} */
+    ({ open: false, slot: 'P', left: 0, top: 0 })
+  );
   let _mktTick = $state(0);
   /** @type {(() => void) | null} */
   let _mktTimer = null;
@@ -66,6 +68,19 @@
   // caching (Tier 1 memory / Tier 2 localStorage / Tier 3 broker fetch)
   // is handled inside each store. Concurrent calls are deduped by the
   // store (second caller awaits the same Promise).
+  /** @param {MouseEvent|KeyboardEvent} e @param {'P'|'M'|'C'|'H'} slot */
+  function _openBreakdown(e, slot) {
+    const rect = /** @type {HTMLElement} */ (e.currentTarget).getBoundingClientRect();
+    const PW = Math.min(28 * 16, window.innerWidth); // 28rem popup width
+    let left = rect.left + rect.width / 2 - PW / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - PW - 8));
+    const maxH = window.innerHeight * 0.7;
+    const top = (rect.bottom + 4 + maxH < window.innerHeight)
+      ? rect.bottom + 4
+      : rect.top - maxH - 4;
+    _breakdown = { open: true, slot, left, top };
+  }
+
   async function _load() {
     try {
       await Promise.allSettled([
@@ -873,8 +888,8 @@
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-p" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'P'; _breakdownOpen = true; }}
-      onkeydown={(e) => e.key === 'Enter' && (_activeSlot = 'P', _breakdownOpen = true)}><InfoHint popup panel label="P" accentColor="#fbbf24"
+      onclick={(e) => _openBreakdown(e, 'P')}
+      onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'P')}><InfoHint popup panel label="P" accentColor="#fbbf24"
       title="P — Positions P&L"
       text="<b>Day P&L:</b> Live ticks − prev-close × net qty, all accounts. For new intraday (overnight_qty=0), uses pnl directly.<br><br><b>Lifetime P&L:</b> Cumulative since position opened. Includes realised + unrealised.<br><br><b>Expiry P&L:</b> Projected F&O value at expiry via lognormal model." /></span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
@@ -882,20 +897,20 @@
       role="button"
       tabindex="0"
       title="Click for account breakdown"
-      onclick={() => { _activeSlot = 'P'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'P', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'P')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'P')}
       >{fmtMoney(dispPositionsToday)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'P'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'P', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'P')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'P')}
       >{fmtMoney(_livePositionsPnl)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ps-exp ' + flash.classOf('PE')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'P'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'P', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'P')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'P')}
       >{fmtMoney(_expiryProfit)}</span
     >
   </span>
@@ -903,20 +918,20 @@
        "room I have / full capacity" framing rather than util %. -->
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-m" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'M'; _breakdownOpen = true; }}
-      onkeydown={(e) => e.key === 'Enter' && (_activeSlot = 'M', _breakdownOpen = true)}><InfoHint popup panel label="M" accentColor="#a78bfa"
+      onclick={(e) => _openBreakdown(e, 'M')}
+      onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'M')}><InfoHint popup panel label="M" accentColor="#a78bfa"
       title="M — Margin"
       text="<b>Available:</b> Cash deployable for new orders = Total − used margin. Updated after every fill.<br><br><b>Total:</b> Full collateral across all accounts = Available + margin blocked for open positions." /></span>
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'M'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'M', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'M')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'M')}
       >{fmtMoney(marginAvail)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-margin-dim' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'M'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'M', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'M')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'M')}
       >{fmtMoney(marginTotal)}</span
     >
   </span>
@@ -931,60 +946,62 @@
        apps, the Dhan/Groww adapter math is the first place to look. -->
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-c" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'C'; _breakdownOpen = true; }}
-      onkeydown={(e) => e.key === 'Enter' && (_activeSlot = 'C', _breakdownOpen = true)}><InfoHint popup panel label="C" accentColor="#38bdf8"
+      onclick={(e) => _openBreakdown(e, 'C')}
+      onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'C')}><InfoHint popup panel label="C" accentColor="#38bdf8"
       title="C — Cash"
       text="<b>Cash Available (CA):</b> Live deployable cash. Nets realised P&L + long option premiums paid.<br><br><b>Total Cash:</b> CA + premium tied up in long options (recoverable if closed)." /></span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'C'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'C', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'C')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'C')}
       >{fmtMoney(liveCashTotal)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash-dim' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'C'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'C', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'C')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'C')}
       >{fmtMoney(cashTotal)}</span
     >
   </span>
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-h" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'H'; _breakdownOpen = true; }}
-      onkeydown={(e) => e.key === 'Enter' && (_activeSlot = 'H', _breakdownOpen = true)}><InfoHint popup panel label="H" accentColor="#22d3ee"
+      onclick={(e) => _openBreakdown(e, 'H')}
+      onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'H')}><InfoHint popup panel label="H" accentColor="#22d3ee"
       title="H — Holdings"
       text="<b>Today MTM:</b> Live LTP − prev close × qty for long-term holdings. Intraday only.<br><br><b>Value:</b> Broker-reported current market value across all accounts.<br><br><b>Lifetime P&L:</b> Cumulative since purchase = (current − avg cost) × qty." /></span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'H'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'H', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'H')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'H')}
       >{fmtMoney(dispHoldingsToday)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'H'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'H', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'H')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'H')}
       >{fmtMoney(_liveHoldingsValue)}</span
     ><span class="ps-agg-sep">|</span
     ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos-dim' : _liveHoldingsTotal < 0 ? 'ps-neg-dim' : 'ps-flat') + ' ' + flash.classOf('Hd')}
       style="cursor:pointer" role="button" tabindex="0"
-      onclick={() => { _activeSlot = 'H'; _breakdownOpen = true; }}
-      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (_activeSlot = 'H', _breakdownOpen = true)}
+      onclick={(e) => _openBreakdown(e, 'H')}
+      onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'H')}
       >{fmtMoney(_liveHoldingsTotal)}</span
     >
   </span>
-  {#if _breakdownOpen}
+  {#if _breakdown.open}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
     <div class="ps-breakdown-overlay" role="presentation"
-         onclick={() => _breakdownOpen = false}
-         onkeydown={(e) => e.key === 'Escape' && (_breakdownOpen = false)}>
-      <div class="ps-breakdown-panel" role="dialog" tabindex="-1"
+         onclick={() => (_breakdown.open = false)}
+         onkeydown={(e) => e.key === 'Escape' && (_breakdown.open = false)}>
+      <div class="ps-breakdown-panel"
+           style="left:{_breakdown.left}px; top:{_breakdown.top}px"
+           role="dialog" tabindex="-1"
            onclick={(e) => e.stopPropagation()}
            onkeydown={(e) => e.stopPropagation()}>
         <button type="button" class="ps-breakdown-close"
-                onclick={() => _breakdownOpen = false}
+                onclick={() => (_breakdown.open = false)}
                 aria-label="Close breakdown">✕</button>
-        <NavBreakdown activeSlot={_activeSlot} expiryByAcct={_expiryProfitByAcct} />
+        <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={_expiryProfitByAcct} />
       </div>
     </div>
   {/if}
@@ -1177,8 +1194,6 @@
   }
   .ps-breakdown-panel {
     position: fixed;
-    top: calc(3rem + 1px + 1.5rem);
-    right: 0;
     width: min(28rem, 100vw);
     max-height: 70vh;
     overflow-y: auto;

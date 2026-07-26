@@ -219,6 +219,14 @@ class Broker(ABC):
     # reads BrokerCapabilities BEFORE dispatching, so this method only
     # fires when capabilities say it should.
 
+    def validate_gtt_exchange(self, exchange: str) -> None:
+        """Raise ValueError if this broker does not support GTT on `exchange`.
+        Default: all exchanges supported. Adapters override where gaps exist.
+
+        Called at the top of apply_plan_live — before lot-size resolution,
+        plan resolution, and any broker call — so the operator sees a
+        clear error without paying for any upstream work."""
+
     def place_gtt(
         self,
         *,

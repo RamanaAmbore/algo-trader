@@ -1375,6 +1375,15 @@ class DhanBroker(Broker):
     #
     # Dhan docs: https://dhanhq.co/docs/api-reference/v2/forever-orders/
 
+    _DHAN_GTT_UNSUPPORTED: frozenset[str] = frozenset({"MCX", "NCO"})
+
+    def validate_gtt_exchange(self, exchange: str) -> None:
+        if exchange in self._DHAN_GTT_UNSUPPORTED:
+            raise ValueError(
+                f"Dhan Forever Order does not support GTT on {exchange} — "
+                "use a Kite-mirrored account for MCX/NCO templates"
+            )
+
     def place_gtt(
         self,
         *,

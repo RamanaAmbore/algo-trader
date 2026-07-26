@@ -1406,6 +1406,13 @@ def apply_plan_live(
     one side fires."""
     result = AttachResult(plan=plan)
 
+    # Broker-layer exchange validation — fail fast before any broker call.
+    try:
+        broker.validate_gtt_exchange(plan.parent_exchange)
+    except ValueError as _ve:
+        result.errors.append(str(_ve))
+        return result
+
     # C2 — Market-hours guard: GTT registration itself is accepted by Kite
     # 24×7 so GTT-only plans are allowed off-hours. Only plans with a wing
     # MARKET leg need an open exchange — the wing order is rejected
@@ -1848,6 +1855,50 @@ async def _maybe_scan_wing_by_premium(
     return overrides, reason
 
 
+def _mcx_capability_guard(
+    caps,
+    parent_exchange: str,
+    parent_account: str,
+    parent_symbol: str,
+    parent_side: str,
+    parent_qty: int,
+    parent_fill_price: float,
+    parent_order_id,
+    template: dict,
+) -> "AttachResult | None":
+    """Return a pre-filled AttachResult error if the broker doesn't support GTT
+    on MCX/NCO, else return None. Fires an attach-fail alert when blocking."""
+    if caps is None or caps.gtt_supports_mcx or parent_exchange not in ("MCX", "NCO"):
+        return None
+    _err = (
+        f"{caps.display_name} does not support GTT on {parent_exchange} — "
+        "template attach skipped; use a Kite account for MCX/NCO templates"
+    )
+    logger.warning("[TEMPLATE-GUARD] %s", _err)
+    _plan = TemplatePlan(
+        template_id=template.get("id"),
+        template_name=template.get("name") or "(unnamed)",
+        template_slug=template.get("slug"),
+        parent_account=parent_account,
+        parent_symbol=parent_symbol,
+        parent_side=parent_side,
+        parent_qty=parent_qty,
+        parent_exchange=parent_exchange,
+        parent_fill_price=float(parent_fill_price),
+        parent_lot_size=1,
+    )
+    result = AttachResult(plan=_plan)
+    result.errors.append(_err)
+    _fire_attach_fail_alert(
+        order_id=parent_order_id,
+        symbol=parent_symbol,
+        account=parent_account,
+        errors=[_err],
+    )
+    result.guard_alert_fired = True
+    return result
+
+
 async def apply_template_to_order(
     *,
     template_id:        Optional[int],
@@ -1923,6 +1974,15 @@ async def apply_template_to_order(
         except Exception:
             caps = None
 
+    # Pre-attach MCX guard — reject before lot-size resolution and plan resolution
+    # so no work is wasted on an unsupported broker/exchange combination.
+    _mcx_guard = _mcx_capability_guard(
+        caps, parent_exchange, parent_account, parent_symbol,
+        parent_side, parent_qty, parent_fill_price, parent_order_id, template,
+    )
+    if _mcx_guard is not None:
+        return _mcx_guard
+
     # F&O lot_size resolution — look up lot_size BEFORE resolving the plan so
     # apply_plan_live has what it needs without an async call.  get_lot_size
     # is async and we're already in async context here.  For non-derivative
@@ -1949,6 +2009,7 @@ async def apply_template_to_order(
     # can proceed off-hours. We check HERE — after lot_size resolution but
     # before plan resolution — to avoid unnecessary computation. Only live
     # and auto paths enforce the guard; preview/sim are always allowed.
+    _offhours_note: Optional[str] = None
     if apply_path in ("live", "auto"):
         try:
             from backend.api.algo.agent_engine import (  # circular: lazy OK
@@ -1983,6 +2044,10 @@ async def apply_template_to_order(
                     )
                     return _wing_err_result
                 # GTT-only template — no wing, proceed off-hours (Kite accepts GTTs 24×7)
+                _offhours_note = (
+                    f"GTT registered off-hours ({parent_exchange} closed) — "
+                    "will activate at next session open"
+                )
         except Exception as _mh_e:
             logger.warning(f"apply_template_to_order: market-hours check failed: {_mh_e}")
 
@@ -2011,6 +2076,8 @@ async def apply_template_to_order(
     )
     if wing_scan_note:
         plan.notes.append(wing_scan_note)
+    if _offhours_note:
+        plan.notes.append(_offhours_note)
 
     result = _route_apply_path(plan, apply_path, parent_account, parent_order_id)
     # Fire operational-failure alert on any error that silently
