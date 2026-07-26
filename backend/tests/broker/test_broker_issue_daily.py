@@ -84,8 +84,8 @@ async def test_task_broker_issue_daily_handles_no_events():
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.commit = AsyncMock()
 
-    # Patch get_session where it's imported (inside the _aggregate function)
-    with patch("backend.api.database.get_session") as mock_get_session:
+    # Patch async_session at the background module level (it's a module-level import)
+    with patch("backend.api.background.async_session") as mock_get_session:
         mock_get_session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_get_session.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -138,7 +138,7 @@ async def test_task_broker_issue_daily_aggregates_events():
     mock_session.execute = AsyncMock(side_effect=capture_execute)
     mock_session.commit = AsyncMock()
 
-    with patch("backend.api.database.get_session") as mock_get_session:
+    with patch("backend.api.background.async_session") as mock_get_session:
         mock_get_session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
         mock_get_session.return_value.__aexit__ = AsyncMock(return_value=False)
 

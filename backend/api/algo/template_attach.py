@@ -1406,23 +1406,24 @@ def apply_plan_live(
     one side fires."""
     result = AttachResult(plan=plan)
 
-    # C2 — Market-hours guard: live GTT placement requires an open market
-    # so the broker can price-validate triggers. GTT registration itself is
-    # accepted by Kite 24×7, but a closed exchange means the wing MARKET leg
-    # will be rejected immediately — reject the whole plan now and let the
-    # caller retry after open. Lazy import avoids the known circular dep.
-    try:
-        from backend.api.algo.agent_engine import (  # circular: lazy OK
-            _symbol_exchange_open, _build_now_ctx,
-        )
-        if not _symbol_exchange_open(plan.parent_exchange, _build_now_ctx()):
-            result.errors.append(
-                f"Exchange {plan.parent_exchange} closed — "
-                "live GTT placement deferred"
+    # C2 — Market-hours guard: GTT registration itself is accepted by Kite
+    # 24×7 so GTT-only plans are allowed off-hours. Only plans with a wing
+    # MARKET leg need an open exchange — the wing order is rejected
+    # immediately by the broker when the exchange is closed.
+    # Mirror of C1 in apply_template_to_order which gates on _template_has_wing.
+    if plan.wing is not None:
+        try:
+            from backend.api.algo.agent_engine import (  # circular: lazy OK
+                _symbol_exchange_open, _build_now_ctx,
             )
-            return result
-    except Exception as _mh_e:
-        logger.warning(f"apply_plan_live: market-hours check failed: {_mh_e}")
+            if not _symbol_exchange_open(plan.parent_exchange, _build_now_ctx()):
+                result.errors.append(
+                    f"Exchange {plan.parent_exchange} closed — "
+                    "wing order skipped off-hours"
+                )
+                return result
+        except Exception as _mh_e:
+            logger.warning(f"apply_plan_live: market-hours check failed: {_mh_e}")
 
     # G1 lot-multiple guard — fire before any broker call so sub-lot GTT
     # legs are caught here, not by the adapter ceiling after wire cost.
@@ -1708,14 +1709,15 @@ async def _resolve_lot_size_for_order(
 def _template_has_wing(template: dict) -> bool:
     """Return True when the template dict specifies a wing leg.
 
-    A wing is present when either wing_strike_offset (int offset from
-    parent strike) or wing_premium_pct (% of parent premium as limit price)
-    is non-None and non-zero. Called by the market-hours guard to decide
-    whether a closed-exchange attach can proceed (GTT-only: yes; wing: no).
+    A wing is present when wing_strike_offset is non-None (including 0 for
+    ATM) or wing_premium_pct is non-zero. Called by the market-hours guard to
+    decide whether a closed-exchange attach can proceed (GTT-only: yes;
+    wing: no). Note: offset=0 is a valid ATM wing — matches resolve_template_plan
+    which uses `if wing_strike_offset is not None:`.
     """
     offset = template.get("wing_strike_offset")
     pct    = template.get("wing_premium_pct")
-    return bool(offset) or bool(pct)
+    return (offset is not None) or bool(pct)
 
 
 def _ta_resolve_sim_active(apply_path: str) -> bool:

@@ -290,6 +290,10 @@
   let _draftMode = $state(false);
   // Success message for the draft-add path (replaces submitOk temporarily).
   let _draftOk = $state('');
+  // True when the ticket was opened from a specific draft (initialDraftId set)
+  // but that entry no longer exists in payoffDrafts — form stays open and
+  // submitting will place a live order rather than updating the draft.
+  let _draftMissing = $state(false);
 
   // Close handler that respects draft lifecycle:
   //   - _draftMode=true && initialDraftId set → remove the draft then close
@@ -310,6 +314,17 @@
       _pingTimer = setTimeout(() => { _pingActive = false; _pingTimer = null; }, 600);
     });
     return () => { unsub(); if (_pingTimer) clearTimeout(_pingTimer); };
+  });
+
+  // B3: detect stale initialDraftId — if the ticket was opened for an
+  // existing draft but that entry has since been removed from the store
+  // (e.g. another surface cleared it), warn the operator. _draftMode is
+  // kept false so the submit does NOT silently create a duplicate draft.
+  $effect(() => {
+    if (initialDraftId && !payoffDrafts.value.has(initialDraftId)) {
+      _draftMissing = true;
+      _draftMode = false;
+    }
   });
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -1307,22 +1322,28 @@
   let _strategies = $state([]);
   let _strategyId = $state(/** @type {number|null} */ (null));
   let _strategiesLoaded = $state(false);
+  // C3: distinct error flag so a network failure doesn't permanently
+  // suppress the strategy picker — shows a reload link instead.
+  let _strategiesErr = $state(false);
   async function _loadStrategies() {
+    _strategiesErr = false;
     try {
       const r = await fetchStrategies({ activeOnly: true });
       _strategies = Array.isArray(r?.rows)
         ? r.rows.map(s => ({ id: s.id, slug: s.slug, name: s.name }))
         : [];
+      _strategiesLoaded = true;
     } catch (_) {
       // Demo / unauth: server still 200s for view_strategies; this
-      // catch is for total network failure. Keep _strategies empty.
+      // catch is for total network failure. Keep _strategies empty and
+      // set the error flag so the UI can show a retry link.
       _strategies = [];
-    } finally {
-      _strategiesLoaded = true;
+      _strategiesErr = true;
+      // Do NOT set _strategiesLoaded — keeps the retry path live.
     }
   }
   $effect(() => {
-    if (!_strategiesLoaded) {
+    if (!_strategiesLoaded && !_strategiesErr) {
       _loadStrategies();
     }
   });
@@ -2404,6 +2425,15 @@
                     ..._strategies.map(s => ({ value: String(s.id), label: s.slug })),
                   ]} />
         </div>
+      {:else if _strategiesErr}
+        <!-- C3: network failure loading strategies — show a retry affordance
+             so the operator can reload without a hard page refresh. -->
+        <div class="ot-knob ot-knob-strategy">
+          <span class="ot-label">Strategy</span>
+          <button type="button" class="ot-strategies-reload"
+                  title="Strategy list failed to load — click to retry"
+                  onclick={_loadStrategies}>&#x21BB; Reload</button>
+        </div>
       {/if}
     </div>
 
@@ -2625,6 +2655,10 @@
            had been placed when they hadn't. -->
       <div class="ot-err">{submitErr}</div>
     {/if}
+    {#if _draftMissing}
+      <!-- B3: draft entry gone — warn before a live order is placed -->
+      <div class="ot-warn-draft-missing">Draft no longer exists — submitting will place a live order.</div>
+    {/if}
 
     <div class="ot-footer">
       <!-- Buttons FIRST, margin preview BELOW per operator request.
@@ -2674,7 +2708,7 @@
                         submitting = true; submitErr = '';
                         try {
                           await cancelOrder(orderId, _account, _variety);
-                          await onSubmit({ action: 'cancel', orderId });
+                          try { await onSubmit({ action: 'cancel', orderId }); } catch (_) {}
                           onClose();
                         } catch (e) {
                           submitErr = /** @type {any} */ (e)?.message || 'Cancel failed';
@@ -3285,6 +3319,18 @@
     min-width: 5rem;
   }
   .ot-knob-side { flex: 1.4 1 7rem; min-width: 7rem; }
+  /* C3: strategy reload link */
+  .ot-strategies-reload {
+    background: none;
+    border: none;
+    color: var(--c-info, #7dd3fc);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+    padding: 0;
+    text-align: left;
+    text-decoration: underline;
+  }
+  .ot-strategies-reload:hover { color: #bae6fd; }
   /* Tick-size chip on the Limit / Trigger labels — informs the
      operator of the symbol's minimum price increment. Reading the
      chip at a glance is cheaper than learning by Kite rejection
@@ -3475,6 +3521,16 @@
     background: var(--c-short-10);
     border: 1px solid rgba(248,113,113,0.4);
     color: var(--c-short);
+    padding: 0.35rem 0.55rem;
+    border-radius: 3px;
+    font-size: var(--fs-sm);
+    margin: 0.4rem 0;
+  }
+  /* B3: missing-draft amber notice */
+  .ot-warn-draft-missing {
+    background: rgba(251,191,36,0.12);
+    border: 1px solid rgba(251,191,36,0.4);
+    color: #fbbf24;
     padding: 0.35rem 0.55rem;
     border-radius: 3px;
     font-size: var(--fs-sm);
