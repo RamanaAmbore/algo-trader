@@ -158,7 +158,7 @@
   let _colEntry    = $state(false);
   let _fsEntry     = $state(false);
   let _colActivity = $state(false);
-  // _fsActivity retired — Activity card uses in-place height expansion.
+  let _fsActivity  = $state(false);
 
   // Account dropdown lives in the Activity card header so it's
   // visible regardless of which tab is active — same UX the
@@ -346,31 +346,6 @@
   </div>
 {/if}
 
-<!-- Status counter strip — at-a-glance counts (All / Open / Filled /
-     Rejected / Cancelled). Click any card to uncollapse the Activity
-     card below; status FILTERING lives inside LogPanel's mode + account
-     chips (Activity now uses the canonical 6-tab LogPanel, same as the
-     modal). The cards stay un-toggled — they're informational + a
-     quick "expand activity" affordance, not a filter selector. -->
-<div class="grid grid-cols-5 gap-2 mt-1 mb-2">
-  {#each [
-    { id: 'all',       label: 'All',       count: _scopedOrders.length, accent: 'inactive' },
-    { id: 'open',      label: 'Open',      count: _scopedOrders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING' || o.status === 'TRIGGER_PENDING').length, accent: 'running' },
-    { id: 'complete',  label: 'Filled',    count: _scopedOrders.filter(o => o.status === 'COMPLETE').length,  accent: 'active' },
-    { id: 'rejected',  label: 'Rejected',  count: _scopedOrders.filter(o => o.status === 'REJECTED').length,  accent: 'error' },
-    { id: 'cancelled', label: 'Cancelled', count: _scopedOrders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
-  ] as f}
-    <button type="button"
-      onclick={() => { _colActivity = false; _statusFilter = /** @type {any} */ (f.id); }}
-      class="oc-filter-card"
-      class:is-active={_statusFilter === f.id}
-      data-status={f.accent}>
-      <span class="oc-filter-count">{f.count}</span>
-      <span class="oc-filter-label">{f.label}</span>
-    </button>
-  {/each}
-</div>
-
 <!-- Order Entry card — bucket-card chrome re-added per operator
      request. Has its own [Collapse · DefaultSize · Fullscreen] trio
      on the right. Tabs strip stays in the header alongside the
@@ -539,14 +514,14 @@
      modal uses. -->
 <section class="bucket-card bucket-card-activity oc-fill"
   class:is-collapsed={_colActivity}
+  class:fs-card-on={_fsActivity}
   use:listenModifyOrder>
-  <div class="card-body oc-act-body"
-       style="display:flex; flex-direction:column; height:320px; overflow:hidden;">
-    <OrderBook
-      statusFilter={_statusFilter}
-      accountFilter={_actAccountFilter}
-    />
-  </div>
+  <OrderBook
+    statusFilter={_statusFilter}
+    accountFilter={_actAccountFilter}
+    bind:isCollapsed={_colActivity}
+    bind:isFullscreen={_fsActivity}
+  />
 </section>
 
 </div>
@@ -659,27 +634,6 @@
     flex: 1 1 auto;
     min-height: 12rem;
   }
-  .oc-act-body {
-    display: flex;
-    flex-direction: column;
-    /* Fixed height prevents layout shift when the operator switches
-       tabs (Orders → Agents → Terminal, etc.) — a min/max range lets
-       the container jump between its floor and ceiling as tab content
-       changes height. clamp() locks the body to one size regardless of
-       content; `overflow: hidden` makes the body a containing block so
-       LogPanel's `flex-1 min-h-0` resolves to a finite height and its
-       inner scrolls activate. */
-    height: clamp(6rem, 25vh, 280px);
-    overflow: hidden;
-  }
-  /* Fullscreen mode pins the Activity card to the viewport; re-enable
-     the inner flex chain so LogPanel's heightClass="flex-1 min-h-0"
-     resolves correctly to the modal-style frame, and lift the body
-     caps so the maximised card fills its modal frame. */
-  :global(.bucket-card-activity.fs-card-on) .oc-act-body {
-    flex: 1 1 0;
-    height: auto;
-  }
   /* Activity card title styles moved into LogPanel's .lp-label chrome. */
   :global(.oc-act-title-icon) { color: var(--c-action); flex-shrink: 0; transform: translateY(-0.5px); }
   /* .oc-act-acct CSS lifted into ActivityAccountSelect.svelte (the
@@ -772,130 +726,6 @@
     flex-shrink: 0;
     margin: 0;
   }
-  /* Status filter cards — polished chrome with richer gradients +
-     inner highlight + soft outer shadow. Each card carries:
-       • two-stop status-tinted gradient (richer than the previous
-         linear blend; goes from a brighter top edge to a darker
-         bottom edge for depth)
-       • status-colored border (~60% opacity)
-       • status-colored count number (1.25rem)
-       • inset highlight at the top edge (~1px white-8%) for the
-         "lit from above" feel every modern fintech UI carries
-         (IBKR, ToS, TradingView, Sensibull)
-     Hover bumps the border to 80% opacity + lifts the card 1px.
-     Selected adds a 2px amber inset ring on top of the card's own
-     status colour — unambiguous active-filter cue. */
-  .oc-filter-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 0.2rem;
-    padding: 0.6rem 0.5rem;
-    background:
-      linear-gradient(180deg,
-        rgba(255, 255, 255, 0.04) 0%,
-        rgba(255, 255, 255, 0.00) 30%,
-        rgba(0, 0, 0, 0.08) 100%),
-      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 5px;
-    box-shadow:
-      0 1px 0 rgba(255, 255, 255, 0.06) inset,
-      0 2px 4px rgba(0, 0, 0, 0.25);
-    color: var(--algo-slate);
-    font-family: var(--font-numeric);
-    cursor: pointer;
-    transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
-  }
-  .oc-filter-card:hover {
-    border-color: rgba(255, 255, 255, 0.30);
-    transform: translateY(-1px);
-  }
-  .oc-filter-card.is-active {
-    box-shadow:
-      0 0 0 2px rgba(251, 191, 36, 0.55) inset,
-      0 1px 0 rgba(255, 255, 255, 0.06) inset,
-      0 2px 4px rgba(0, 0, 0, 0.25);
-  }
-
-  /* Status-tinted backgrounds + borders. Two-stop gradient (status
-     hue at 14% top → 4% bottom) over the base navy. The 8% black
-     bottom-cap from .oc-filter-card layers on top so even tinted
-     cards keep the depth cue. */
-  .oc-filter-card[data-status="running"] {
-    background:
-      linear-gradient(180deg,
-        rgba(251, 191, 36, 0.18) 0%,
-        rgba(251, 191, 36, 0.06) 60%,
-        rgba(0, 0, 0, 0.08) 100%),
-      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
-    border-color: rgba(251, 191, 36, 0.60);
-  }
-  .oc-filter-card[data-status="active"] {
-    background:
-      linear-gradient(180deg,
-        rgba(74, 222, 128, 0.18) 0%,
-        var(--algo-green-bg-soft) 60%,
-        rgba(0, 0, 0, 0.08) 100%),
-      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
-    border-color: rgba(74, 222, 128, 0.60);
-  }
-  .oc-filter-card[data-status="error"] {
-    background:
-      linear-gradient(180deg,
-        rgba(248, 113, 113, 0.18) 0%,
-        var(--algo-red-bg-soft) 60%,
-        rgba(0, 0, 0, 0.08) 100%),
-      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
-    border-color: var(--algo-red-border);
-  }
-  /* Cancelled stays in the orange family — distinct from rejected
-     red so the operator can tell the two terminal-error buckets
-     apart. Industry convention: red = broker rejection (something
-     went wrong); orange = operator/system cancel (intent
-     withdrawal). */
-  .oc-filter-card[data-status="cancelled"] {
-    background:
-      linear-gradient(180deg,
-        rgba(251, 146, 60, 0.18) 0%,
-        rgba(251, 146, 60, 0.06) 60%,
-        rgba(0, 0, 0, 0.08) 100%),
-      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
-    border-color: rgba(251, 146, 60, 0.55);
-  }
-  .oc-filter-card[data-status="inactive"] {
-    border-color: rgba(126, 151, 184, 0.45);
-  }
-
-  /* `.oc-filter-card-on` retired — strip is informational + click-to-
-     uncollapse-activity only; no toggle state. */
-
-  /* Count number — bigger + colour-coded by status. */
-  .oc-filter-count {
-    font-weight: 800;
-    font-size: 1.3rem;
-    line-height: 1;
-    color: var(--algo-slate);
-    font-variant-numeric: tabular-nums;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-  }
-  .oc-filter-card[data-status="running"]   .oc-filter-count { color: var(--c-action); }
-  .oc-filter-card[data-status="active"]    .oc-filter-count { color: var(--c-long); }
-  .oc-filter-card[data-status="error"]     .oc-filter-count { color: var(--c-short); }
-  .oc-filter-card[data-status="cancelled"] .oc-filter-count { color: #fb923c; }
-
-  .oc-filter-label {
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--algo-muted);
-  }
-
-  /* oc-count retired with the standalone Order Book card header. */
-
-
   /* Exchange filter strip + per-row Modify/Cancel/Reconcile buttons
      retired — the Activity card now mounts LogPanel which carries its
      own filter chips + action buttons via `.lp-oc-actions`. */
