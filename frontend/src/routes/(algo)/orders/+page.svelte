@@ -542,7 +542,8 @@
 <section class="bucket-card bucket-card-activity oc-fill"
   class:is-collapsed={_colActivity}
   use:listenModifyOrder>
-  <div class="card-body oc-act-body">
+  <div class="card-body oc-act-body"
+       style="display:flex; flex-direction:column; height:320px; overflow:hidden;">
     <OrderBook
       statusFilter={_statusFilter}
       accountFilter={_actAccountFilter}
