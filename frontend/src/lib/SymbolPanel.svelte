@@ -60,6 +60,7 @@
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
+  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
 
   // Pinned anchors: no hardcoded list — SymbolSearchInput's own
   // _autoLoadPins() fires when no `pins` prop is supplied and loads
@@ -442,6 +443,10 @@
     if (s && /\d/.test(s)) _contextSymbol = s;
   });
 
+  // Live LTP for the current symbol — pulled from the shared symbolStore
+  // so the tab row can show a real-time price without a separate fetch.
+  const _ltp = $derived(getSnapshot(_localSymbol)?.ltp ?? null);
+
   // Tab-activation refresh bumps. Operator request: "when chain tab is
   // pressed, the chain details need to be refreshed. when order ticket
   // is clicked, market depth and other details need to be refreshed".
@@ -460,6 +465,8 @@
       else if (t === 'chain') _chainBump++;
     });
   });
+
+  function _refreshAll() { _ticketBump++; _chainBump++; }
 
   // Chart modal — opens ChartModal for the current symbol when the
   // operator clicks the chart-icon button in the header. Hidden in
@@ -1972,7 +1979,7 @@
          amber gradient bg + border supplied by the algo layout's
          CardHeader theme tokens. -->
     <div style="--ch-padding: 0.35rem 0.65rem">
-      <CardHeader showControls={false}>
+      <CardHeader showControls={false} onRefresh={_refreshAll}>
         {#snippet left()}
           <span class="oes-modal-name">
             <!-- Order-slip / receipt glyph — matches the page-header Order
@@ -2125,6 +2132,9 @@
           _setActiveTab(/** @type {any} */ (id));
         }}
       />
+      {#if _ltp != null && _ltp > 0}
+        <span class="oes-tab-ltp">₹{_ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+      {/if}
     </div>
     {/if}
 
@@ -3084,6 +3094,7 @@
     /* Take the remaining row space so Symbol gets the largest slot. */
     flex: 1 1 0;
     min-width: 0;
+    max-width: 14rem;
   }
   .oes-sym-pick :global(.ssi-wrap) { width: 100%; }
   .oes-sym-pick :global(.ssi-input) { width: 100%; min-width: 0; }
@@ -3334,6 +3345,16 @@
     gap: 0;
     padding: 0 0.4rem;
     flex-shrink: 0;
+    align-items: center;
+  }
+  .oes-tab-ltp {
+    margin-left: auto;
+    padding-right: 0.5rem;
+    font-size: 0.7rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--c-value, #e2e8f0);
+    font-weight: 600;
+    white-space: nowrap;
   }
 
   /* Basket bar — sticky bottom strip inside the modal when legs exist. */
