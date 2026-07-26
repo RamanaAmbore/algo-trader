@@ -17,7 +17,7 @@
   import { onMount, onDestroy } from 'svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
-  import ModalShell from '$lib/ModalShell.svelte';
+  import { portal } from '$lib/portal';
   import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import { activityStore } from '$lib/data/activityStore.svelte.js';
 
@@ -66,7 +66,11 @@
   });
 </script>
 
-<ModalShell open={true} {onClose} zIndex={10500} dim={false} passthrough={true} clickOutside={false} ariaLabel="Activity log">
+<!-- svelte-ignore a11y_interactive_supports_focus -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div class="canonical-modal-overlay" style="z-index:10500"
+     role="dialog" aria-modal="true" aria-label="Activity log"
+     use:portal>
   <div class="canonical-modal-panel alm-panel" bind:this={_modalEl}>
     <div class="alm-body">
       <!-- ChaseCard — surfaces OPEN algo_orders across paper/live/shadow.
@@ -88,7 +92,7 @@
         onTabChange={(id) => { activityStore.activeTab = id; }} />
     </div>
   </div>
-</ModalShell>
+</div>
 
 <style>
   .alm-body {

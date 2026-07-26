@@ -15,7 +15,7 @@ error_log_file: .log/error_file
 # Boot-time defaults — handlers wire from these at module import. Live
 # changes from /admin/settings → DB key `logging.<file|console|error>_log_level`
 # fire `_apply_live_effects` and reconfigure the handlers in place.
-file_log_level: 10
+file_log_level: 20
 error_log_level: 40
 console_log_level: 40
 

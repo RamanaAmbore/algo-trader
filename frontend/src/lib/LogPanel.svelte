@@ -428,10 +428,7 @@
   function _fmtConnEvtTime(/** @type {string} */ iso) {
     if (!iso) return '—';
     try {
-      return new Date(iso).toLocaleTimeString('en-IN', {
-        timeZone: 'Asia/Kolkata',
-        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-      }) + ' IST';
+      return formatDualTz(new Date(iso));
     } catch (_) { return iso; }
   }
   async function _loadSim() {
@@ -1463,18 +1460,9 @@
   {/snippet}
   {#snippet right()}
     {#if context === 'modal'}
-      <button type="button" class="lp-default-btn"
-              title="Restore to card"
-              aria-label="Restore to card"
-              onclick={() => onClose?.()}>
-        <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-          <rect x="2.5" y="5.5" width="8" height="8" rx="0.8"
-            fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-          <path d="M5.5 5.5V2.5h8v8h-3"
-            fill="none" stroke="currentColor" stroke-width="1.5"
-            stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
+      <button type="button" class="lp-close-btn"
+              title="Close" aria-label="Close activity log"
+              onclick={() => onClose?.()}>×</button>
     {:else}
       <button type="button" class="lp-fs-btn"
               title="Open fullscreen"
@@ -1608,7 +1596,7 @@
      changed. Audit defect #11 (the old @html-joined-string
      approach destroyed all row DOM identity on every poll,
      killing text selection inside the log). -->
-<div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' && logTab !== 'conn' ? 'lp-multicol' : ''}">
+<div class="log-panel log-rows {heightClass} {multiColumn && logTab !== 'order' ? 'lp-multicol' : ''}">
   {#if logTab === 'terminal'}
     {@html _terminalHtmlDerived}
   {:else if logTab === 'agent'}
@@ -1756,7 +1744,7 @@
   /* Bell icon rendered before the LOG title via CardHeader prefix snippet */
 
   /* Fullscreen-open button (label-branch, non-modal context) */
-  .lp-fs-btn, .lp-default-btn {
+  .lp-fs-btn {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1773,10 +1761,33 @@
     line-height: 1;
     padding: 0;
   }
-  .lp-fs-btn:hover:not(:disabled), .lp-default-btn:hover:not(:disabled) {
+  .lp-fs-btn:hover:not(:disabled) {
     background: rgba(34,211,238,0.14);
     border-color: rgba(34,211,238,0.65);
     color: var(--algo-cyan-text, #67e8f9);
+  }
+
+  /* Close button in modal context */
+  .lp-close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    padding: 0;
+    background: var(--algo-cyan-bg);
+    border: 1px solid var(--algo-cyan-border);
+    border-radius: 3px;
+    color: var(--c-info);
+    font-size: 1rem;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .lp-close-btn:hover {
+    background: rgba(34, 211, 238, 0.26);
+    border-color: rgba(34, 211, 238, 0.85);
+    color: #67e8f9;
   }
 
   /* Close button rendered in modal context (legacy path) */
@@ -2353,15 +2364,15 @@
   .lp-conn-row:last-child {
     border-bottom: none;
   }
-  .lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-sm, 0.72rem); }
+  .lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-sm, 0.72rem); min-width: 13rem; white-space: normal; overflow-wrap: break-word; }
   .lp-conn-acct   { flex-shrink: 0; min-width: 5rem; color: var(--algo-slate); }
   .lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
   .lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
-  .lp-conn-det    { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--algo-muted); }
-  .lp-conn-row.conn-ev-green .lp-conn-type { color: var(--c-long); }
-  .lp-conn-row.conn-ev-red   .lp-conn-type { color: var(--c-short); }
-  .lp-conn-row.conn-ev-amber .lp-conn-type { color: var(--c-action); }
-  .lp-conn-row.conn-ev-muted .lp-conn-type { color: var(--algo-muted); }
+  .lp-conn-det    { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--algo-muted); white-space: normal; overflow-wrap: break-word; }
+  .lp-conn-row.conn-ev-green { color: var(--c-long); }
+  .lp-conn-row.conn-ev-red   { color: var(--c-short); }
+  .lp-conn-row.conn-ev-amber { color: var(--c-action); }
+  .lp-conn-row.conn-ev-muted { color: var(--algo-muted); }
 
   @media (max-width: 640px) {
     .lp-conn-row {
