@@ -26,6 +26,7 @@
    *   title?: string,
    *   pollMs?: number,
    *   statusFilter?: 'all'|'open'|'complete'|'rejected'|'cancelled',
+   *   onSymbolClick?: ((ord: any) => void) | null,
    * }} */
   let {
     orderId       = null,
@@ -33,6 +34,7 @@
     title         = 'Order Book',
     pollMs        = 3000,
     statusFilter  = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
+    onSymbolClick = /** @type {((ord: any) => void) | null} */ (null),
   } = $props();
 
   // ── Data ─────────────────────────────────────────────────────────────
@@ -229,7 +231,11 @@
       {#each filteredOrderRows as o (o.order_id ?? o.id)}
         {@const _oKey = String(o.order_id || o.id || '')}
         <OrderCard order={o}
-          onSymbolClick={(ord) => { _symPanelSym = ord.tradingsymbol || ord.symbol || ''; _symPanelExch = ord.exchange || ''; }}
+          onSymbolClick={(ord) => {
+            if (onSymbolClick) { onSymbolClick(ord); return; }
+            _symPanelSym = ord.tradingsymbol || ord.symbol || '';
+            _symPanelExch = ord.exchange || '';
+          }}
           onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: /** @type {MouseEvent} */ (e).clientX, y: /** @type {MouseEvent} */ (e).clientY }; }}>
           {#snippet actions(ord)}
             <div class="lp-oc-actions" role="group" aria-label="Order actions">
@@ -282,7 +288,7 @@
   {/if}
 </div>
 
-{#if _symPanelSym}
+{#if _symPanelSym && !onSymbolClick}
   <SymbolPanel
     symbol={_symPanelSym}
     exchange={_symPanelExch}
