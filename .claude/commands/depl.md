@@ -1,12 +1,13 @@
 ---
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPlanMode, ToolSearch, Monitor, TaskCreate, TaskUpdate, TaskGet, TaskList, TaskOutput, TaskStop
 ---
 
 # /depl — Full deploy pipeline: impl → ddev → dprod
 
 Run the complete build-and-deploy pipeline in sequence: implement the plan, gate on tests,
 and ship to prod. All three phases execute with bypass-permissions (no tool-use prompts).
-Returns to plan mode when done.
+Long-running steps (pytest, svelte-check, PDF regen, CC check) run as background Bash
+processes; use Monitor to collect each result. Returns to plan mode when done.
 
 ## Permissions
 
@@ -31,12 +32,15 @@ Follow all steps from `/impl` exactly:
 
 1. Guard: check `.claude/PLAN.md` exists. If missing, auto-copy from `~/.claude/plans/` (most recently modified `.md`) **and delete the source**: `_src=$(ls -t ~/.claude/plans/*.md | head -1) && cp "$_src" .claude/PLAN.md && rm "$_src"`. If no plan anywhere, stop and call `EnterPlanMode`.
 2. Read plan (title, agents, tests, commit message, done criteria).
-3. Dispatch agents in parallel (backend, frontend, doc, backend-test as specified in plan).
+3. Dispatch agents in parallel (backend, frontend, doc, backend-test as specified in plan). All agents run as background Agent calls in a single message.
 4. Run test loop (pytest + svelte-check + playwright per plan flags). Max 3 fix iterations.
+   - pytest: `run_in_background: true` + Monitor
+   - svelte-check: `run_in_background: true` + Monitor
+   - Both launched in one message (parallel). Wait for Monitor notifications before evaluating.
    - If still failing after 3 iterations: report blockers, call `EnterPlanMode`, stop.
 5. Self-audit (unreachable code, P&L consumer grep, delegation verification).
 6. Archive plan + Commit: `mv .claude/PLAN.md .claude/PLAN.done.md`, then `git add -u && git add .claude/`, commit with plan message + Co-Authored-By trailer.
-7. Spec/doc sync (NAVSTRIP_SPEC, PULSE_SPEC, BROKER_SPEC, USER_GUIDE, DESIGN_GUIDE as affected).
+7. Spec/doc sync (NAVSTRIP_SPEC, PULSE_SPEC, BROKER_SPEC, USER_GUIDE, DESIGN_GUIDE as affected). Doc agents dispatched in parallel.
 8. Report: `impl: <title> → committed <hash>`.
 
 Do NOT call `EnterPlanMode` here — continue to Phase 2.
@@ -47,13 +51,14 @@ Do NOT call `EnterPlanMode` here — continue to Phase 2.
 
 Follow all steps from `/ddev` exactly:
 
-1. Run pytest (`venv/bin/pytest backend/tests/ -q --tb=line`) in background.
-2. Run svelte-check (`cd frontend && npx svelte-check --output machine 2>&1`) in background.
-3. Spec-sync gate: check `git diff origin/dev...HEAD --name-only` for unsynced spec files (warning only, non-blocking).
-4. Decision:
+1. Run pytest (`venv/bin/pytest backend/tests/ -q --tb=line`) with `run_in_background: true`.
+2. Run svelte-check (`cd frontend && npx svelte-check --output machine 2>&1`) with `run_in_background: true`.
+3. Launch both in one message (parallel). Use Monitor to collect each result when done.
+4. Spec-sync gate: check `git diff origin/dev...HEAD --name-only` for unsynced spec files (warning only, non-blocking).
+5. Decision:
    - Any failures → report, call `EnterPlanMode`, **stop** (do not proceed to dprod).
    - All green → `git push origin dev`.
-5. Report: `ddev: backend <N> passed, 0 failed | svelte-check 0 errors → pushed dev <hash>`.
+6. Report: `ddev: backend <N> passed, 0 failed | svelte-check 0 errors → pushed dev <hash>`.
 
 Do NOT call `EnterPlanMode` here — continue to Phase 3.
 
@@ -64,16 +69,18 @@ Do NOT call `EnterPlanMode` here — continue to Phase 3.
 Follow all steps from `/dprod` exactly:
 
 1. Prerequisite: `git log main..dev --oneline`. If nothing, report "already up to date", call `EnterPlanMode`, stop.
-2. Identify changed surfaces; dispatch doc agents for affected specs/guides.
-3. Regenerate DESIGN_GUIDE PDF if DESIGN_GUIDE.md was touched (`python3 docs/generate_pdf.py`).
-4. Complexity gate: `venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20`.
-   - Any D/E/F → report hotspots, call `EnterPlanMode`, **stop**.
-5. Merge and push:
+2. Identify changed surfaces; dispatch doc agents for affected specs/guides (parallel, background).
+3. Launch PDF regen and CC gate simultaneously with `run_in_background: true`:
+   - PDF: `python3 docs/generate_pdf.py` (only if DESIGN_GUIDE.md was touched)
+   - CC gate: `venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20`
+   - Use Monitor for both. Wait for both before proceeding.
+   - Any D/E/F CC grade → report hotspots, call `EnterPlanMode`, **stop**.
+4. Merge and push:
    ```
    git checkout main && git merge dev --no-edit && git push origin main
    git checkout dev && git push origin dev
    ```
-6. Report:
+5. Report:
    ```
    depl: impl ✓ | ddev ✓ | dprod ✓
    → <N> doc(s) updated | CC clean | PDF <size>MB
