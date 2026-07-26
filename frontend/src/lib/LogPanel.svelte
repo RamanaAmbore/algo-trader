@@ -456,20 +456,60 @@
   }
 
   const _derivedOrderEvents = $derived.by(() => {
-    const events = /** @type {Array<{id: any, ts: string, kind: string, message: string}>} */ ([]);
+    /** @type {Array<{id: string, ts: string, kind: string, message: string}>} */
+    const events = [];
     for (const o of filteredOrderRows) {
+      const oid  = String(o.order_id || o.id || '');
       const sym  = o.tradingsymbol || o.symbol || '';
       const side = o.transaction_type || '';
       const qty  = o.quantity ?? '';
+      const price = o.price;
       const ts   = o.order_timestamp || o.created_at || '';
-      const kind = _deriveKind(o.status);
-      const msg  = `${side} ${qty} ${sym}${o.price ? ' @ ₹' + o.price : ''}${o.status_message ? ' — ' + o.status_message : ''}`;
-      events.push({ id: o.order_id || o.id, ts, kind, message: msg });
+      const st   = (o.status || '').toUpperCase();
+
+      // PLACED — always
+      events.push({
+        id:      oid + '-placed',
+        ts,
+        kind:    'placed',
+        message: `${side} ${qty} ${sym}${price ? ' @ ₹' + price : ''}`,
+      });
+
+      // Terminal events
+      if (st === 'COMPLETE') {
+        const fp = o.average_price || price;
+        events.push({
+          id:      oid + '-fill',
+          ts,
+          kind:    'fill',
+          message: `${side} ${o.filled_quantity || qty} ${sym}${fp ? ' @ ₹' + fp : ''}`,
+        });
+      } else if (st === 'CANCELLED') {
+        events.push({
+          id:      oid + '-cancel',
+          ts,
+          kind:    'cancel',
+          message: `${side} ${qty} ${sym} cancelled${o.status_message ? ' — ' + o.status_message : ''}`,
+        });
+      } else if (st === 'REJECTED') {
+        events.push({
+          id:      oid + '-reject',
+          ts,
+          kind:    'reject',
+          message: `${side} ${qty} ${sym} rejected${o.status_message ? ' — ' + o.status_message : ''}`,
+        });
+      }
     }
+    // Algo-engine events are more accurate; exclude broker lifecycle events for
+    // order_ids that already have algo events.
     const algoIds = new Set(filteredOrderEvents.map(e => String(e.order_id || '')));
-    const brokerOnly = events.filter(e => !algoIds.has(String(e.id || '')));
+    const brokerOnly = events.filter(e => {
+      const baseId = e.id.replace(/-(?:placed|fill|cancel|reject)$/, '');
+      return !algoIds.has(baseId);
+    });
     return [...filteredOrderEvents, ...brokerOnly].sort((a, b) =>
-      (Date.parse(b.ts || '') || 0) - (Date.parse(a.ts || '') || 0));
+      (Date.parse(/** @type {any} */ (b).ts || '') || 0) -
+      (Date.parse(/** @type {any} */ (a).ts || '') || 0));
   });
 
   function _fmtConnDetail(/** @type {any} */ detail) {
@@ -1578,13 +1618,15 @@
   </div>
   <div class="lp-order-scroll {heightClass}">
     {#if _derivedOrderEvents.length}
-      {#each _derivedOrderEvents as evt (evt.id)}
-        <div class="log-row {_orderEvtCls(evt.kind)}">
-          {@html _dualTsHtml(evt.ts)}
-          <span class="log-row-tag">{(evt.kind || '').replace(/_/g, ' ').toUpperCase()}</span>
-          <span class="log-row-msg">{evt.message || ''}</span>
-        </div>
-      {/each}
+      <div class="log-panel log-rows {multiColumn ? 'lp-multicol' : ''}">
+        {#each _derivedOrderEvents as evt (evt.id)}
+          <div class="log-row {_orderEvtCls(evt.kind)}">
+            {@html _dualTsHtml(evt.ts)}
+            <span class="log-row-tag">{(evt.kind || '').replace(/_/g, ' ').toUpperCase()}</span>
+            <span class="log-row-msg">{evt.message || ''}</span>
+          </div>
+        {/each}
+      </div>
     {:else}
       <div class="log-debug py-2 text-center">No orders today.</div>
     {/if}
