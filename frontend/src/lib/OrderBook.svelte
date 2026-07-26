@@ -29,6 +29,7 @@
    *   statusFilter?: 'all'|'open'|'complete'|'rejected'|'cancelled',
    *   onSymbolClick?: ((ord: any) => void) | null,
    *   isCollapsed?: boolean,
+   *   isFullscreen?: boolean,
    * }} */
   let {
     orderId       = null,
@@ -38,6 +39,7 @@
     statusFilter  = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
     onSymbolClick = /** @type {((ord: any) => void) | null} */ (null),
     isCollapsed   = $bindable(false),
+    isFullscreen  = $bindable(false),
   } = $props();
 
   // ── Data ─────────────────────────────────────────────────────────────
@@ -235,8 +237,11 @@
   let _ctxExch = $state('');
 </script>
 
+<div class="ob-root" class:ob-fs={isFullscreen}>
+
 <!-- Header -->
-<CardHeader label={title} showSearch={false} bind:isCollapsed
+<CardHeader title={title} showSearch={false} bind:isCollapsed bind:isFullscreen
+  detectOverflow={false}
   onRefresh={_loadOrders}
   onDownload={_downloadCsv}
 >
@@ -249,13 +254,14 @@
 {#if !isCollapsed}
   <div class="ob-status-bar">
     {#each [
-      { id: 'all',       label: 'All',       count: orderRows.length },
-      { id: 'open',      label: 'Open',      count: orderRows.filter(o => { const s = (o.status||'').toUpperCase(); return s === 'OPEN' || s === 'TRIGGER PENDING'; }).length },
-      { id: 'complete',  label: 'Filled',    count: orderRows.filter(o => (o.status||'').toUpperCase() === 'COMPLETE').length },
-      { id: 'rejected',  label: 'Rejected',  count: orderRows.filter(o => (o.status||'').toUpperCase() === 'REJECTED').length },
-      { id: 'cancelled', label: 'Cancelled', count: orderRows.filter(o => (o.status||'').toUpperCase() === 'CANCELLED').length },
+      { id: 'all',       label: 'All',       status: 'inactive',  count: orderRows.length },
+      { id: 'open',      label: 'Open',      status: 'running',   count: orderRows.filter(o => { const s = (o.status||'').toUpperCase(); return s === 'OPEN' || s === 'TRIGGER PENDING'; }).length },
+      { id: 'complete',  label: 'Filled',    status: 'active',    count: orderRows.filter(o => (o.status||'').toUpperCase() === 'COMPLETE').length },
+      { id: 'rejected',  label: 'Rejected',  status: 'error',     count: orderRows.filter(o => (o.status||'').toUpperCase() === 'REJECTED').length },
+      { id: 'cancelled', label: 'Cancelled', status: 'cancelled', count: orderRows.filter(o => (o.status||'').toUpperCase() === 'CANCELLED').length },
     ] as f}
-      <button type="button" class="ob-sc" class:ob-sc-on={_activeStatus === f.id}
+      <button type="button" class="ob-sc" class:is-active={_activeStatus === f.id}
+        data-status={f.status}
         onclick={() => { _internalStatus = f.id; }}>
         <span class="ob-sc-n">{f.count}</span>
         <span class="ob-sc-l">{f.label}</span>
@@ -368,7 +374,25 @@
   />
 {/if}
 
+</div>
+
 <style>
+  /* Fullscreen wrapper — transparent by default (display:contents passes
+     layout through to children); switches to a fixed-position modal frame
+     when ob-fs activates. Modals inside (ChartModal, SymbolPanel, etc.)
+     use fixed positioning themselves so display:contents doesn't trap them. */
+  .ob-root { display: contents; }
+  .ob-fs {
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    background: var(--algo-navy, #0f1c36);
+    padding: 0.5rem;
+  }
+  .ob-fs .ob-scroll { flex: 1 1 0; min-height: 0; }
+
   .ob-count {
     font-size: 0.65rem;
     color: rgba(255,255,255,0.3);
@@ -397,37 +421,109 @@
 
   .ob-status-bar {
     display: flex;
-    gap: 0.25rem;
-    padding: 0.25rem 0.3rem 0.1rem;
+    gap: 0.35rem;
+    padding: 0.3rem 0.4rem 0.2rem;
     flex-wrap: wrap;
   }
+
+  /* Status filter chips — match .oc-filter-card chrome from the orders page.
+     Navy gradient base, status-tinted gradient overlay via data-status,
+     amber inset ring on .is-active. */
   .ob-sc {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.05rem;
-    padding: 0.2rem 0.45rem;
-    border-radius: 4px;
-    border: 1px solid rgba(255,255,255,0.08);
-    background: transparent;
+    justify-content: center;
+    gap: 0.15rem;
+    padding: 0.45rem 0.6rem;
+    background:
+      linear-gradient(180deg,
+        rgba(255, 255, 255, 0.04) 0%,
+        rgba(255, 255, 255, 0.00) 30%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 5px;
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.06) inset,
+      0 2px 4px rgba(0, 0, 0, 0.25);
+    color: var(--algo-slate, #94a3b8);
+    font-family: var(--font-numeric);
     cursor: pointer;
-    transition: background 0.12s;
+    transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
   }
-  .ob-sc:hover { background: rgba(255,255,255,0.05); }
-  .ob-sc-on { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.35); }
+  .ob-sc:hover {
+    border-color: rgba(255, 255, 255, 0.30);
+    transform: translateY(-1px);
+  }
+  .ob-sc.is-active {
+    box-shadow:
+      0 0 0 2px rgba(251, 191, 36, 0.55) inset,
+      0 1px 0 rgba(255, 255, 255, 0.06) inset,
+      0 2px 4px rgba(0, 0, 0, 0.25);
+  }
+
+  /* Status-tinted backgrounds + borders per data-status value. */
+  .ob-sc[data-status="running"] {
+    background:
+      linear-gradient(180deg,
+        rgba(251, 191, 36, 0.18) 0%,
+        rgba(251, 191, 36, 0.06) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(251, 191, 36, 0.60);
+  }
+  .ob-sc[data-status="active"] {
+    background:
+      linear-gradient(180deg,
+        rgba(74, 222, 128, 0.18) 0%,
+        rgba(74, 222, 128, 0.04) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(74, 222, 128, 0.60);
+  }
+  .ob-sc[data-status="error"] {
+    background:
+      linear-gradient(180deg,
+        rgba(248, 113, 113, 0.18) 0%,
+        rgba(248, 113, 113, 0.04) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(248, 113, 113, 0.60);
+  }
+  .ob-sc[data-status="cancelled"] {
+    background:
+      linear-gradient(180deg,
+        rgba(251, 146, 60, 0.18) 0%,
+        rgba(251, 146, 60, 0.06) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(251, 146, 60, 0.55);
+  }
+  .ob-sc[data-status="inactive"] {
+    border-color: rgba(126, 151, 184, 0.45);
+  }
+
+  /* Count number — bigger + color-coded by status. */
   .ob-sc-n {
-    font-size: 0.7rem;
-    font-weight: 600;
-    color: #e2e8f0;
+    font-weight: 800;
+    font-size: 1.1rem;
+    line-height: 1;
+    color: var(--algo-slate, #94a3b8);
     font-variant-numeric: tabular-nums;
-    line-height: 1;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
   }
-  .ob-sc-on .ob-sc-n { color: #fbbf24; }
+  .ob-sc[data-status="running"]   .ob-sc-n { color: var(--c-action, #fbbf24); }
+  .ob-sc[data-status="active"]    .ob-sc-n { color: var(--c-long, #4ade80); }
+  .ob-sc[data-status="error"]     .ob-sc-n { color: var(--c-short, #f87171); }
+  .ob-sc[data-status="cancelled"] .ob-sc-n { color: #fb923c; }
+
   .ob-sc-l {
-    font-size: 0.55rem;
-    color: rgba(255,255,255,0.4);
-    letter-spacing: 0.03em;
+    font-size: var(--fs-xs, 0.6rem);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--algo-muted, rgba(255,255,255,0.4));
     line-height: 1;
   }
-  .ob-sc-on .ob-sc-l { color: rgba(251,191,36,0.7); }
 </style>
