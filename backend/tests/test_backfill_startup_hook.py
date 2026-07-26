@@ -98,7 +98,13 @@ async def test_singleton_guard_prevents_double_run():
     # Set _fired = True BEFORE calling the hook.
     _task_warm_backfill._fired = True  # type: ignore[attr-defined]
 
-    with patch(
+    async def _fast_sleep(_n):
+        pass
+
+    # Park path (commit 80b9c4b6) does `await asyncio.sleep(86400)` before
+    # returning so _supervised doesn't tight-loop. Patch sleep to a no-op so
+    # the test doesn't hang for 24 hours.
+    with patch("asyncio.sleep", new=_fast_sleep), patch(
         "backend.api.persistence.backfill.backfill_ohlcv_daily",
         new=_mock_ohlcv,
     ), patch(

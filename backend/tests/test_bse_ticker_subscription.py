@@ -235,7 +235,6 @@ def test_bse_empty_instruments_logs_warning():
     with (
         patch("backend.api.persistence.instruments_store._MEM_CACHE", empty_mem),
         patch("backend.api.persistence.instruments_store._purge_stale"),
-        patch("backend.api.routes.quote._trigger_instruments_store_populate"),
         patch.object(q_mod.logger, "warning", side_effect=_capture_warning),
     ):
         q_mod._get_today_token_map(mock_broker)

@@ -123,9 +123,8 @@ class TestRemoteBrokerCall:
             mock_client = MagicMock()
             mock_get_client.return_value = mock_client
             mock_response = MagicMock()
-            mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-                "404", request=MagicMock(), response=MagicMock()
-            )
+            mock_response.is_success = False
+            mock_response.json.return_value = {"error": "connection refused"}
             mock_client.post.return_value = mock_response
 
             with pytest.raises(BrokerNetworkError):

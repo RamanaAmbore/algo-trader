@@ -79,19 +79,16 @@ async def test_paper_engine_scheduled_on_prod_branch():
          _patch_all_bg_tasks():
         await on_startup(app)
 
-    task_names = [t.get_name() for t in app.state.bg_tasks]
-    assert "bg-paper-chase" in task_names, (
-        f"bg-paper-chase missing from bg_tasks on prod branch. Tasks: {task_names}"
-    )
+        task_names = [t.get_name() for t in app.state.bg_tasks]
+        assert "bg-paper-chase" in task_names, (
+            f"bg-paper-chase missing from bg_tasks on prod branch. Tasks: {task_names}"
+        )
 
-    # Clean up tasks to prevent pytest from hanging
-    for task in app.state.bg_tasks:
-        if not task.done():
+        # Cancel ALL tasks first (patches still active), then gather — prevents
+        # real broker code from running when event loop steps tasks during await.
+        for task in app.state.bg_tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        await asyncio.gather(*app.state.bg_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -115,19 +112,14 @@ async def test_paper_engine_scheduled_on_dev_branch():
          _patch_all_bg_tasks():
         await on_startup(app)
 
-    task_names = [t.get_name() for t in app.state.bg_tasks]
-    assert "bg-paper-chase" in task_names, (
-        f"bg-paper-chase missing from bg_tasks on dev branch. Tasks: {task_names}"
-    )
+        task_names = [t.get_name() for t in app.state.bg_tasks]
+        assert "bg-paper-chase" in task_names, (
+            f"bg-paper-chase missing from bg_tasks on dev branch. Tasks: {task_names}"
+        )
 
-    # Clean up tasks to prevent pytest from hanging
-    for task in app.state.bg_tasks:
-        if not task.done():
+        for task in app.state.bg_tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        await asyncio.gather(*app.state.bg_tasks, return_exceptions=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -151,17 +143,10 @@ async def test_recover_from_db_called_on_prod():
          patch("backend.api.background.recover_live_chases", new_callable=AsyncMock), \
          _patch_all_bg_tasks():
         await on_startup(app)
-
-    mock_engine.recover_from_db.assert_awaited_once()
-
-    # Clean up tasks to prevent pytest from hanging
-    for task in app.state.bg_tasks:
-        if not task.done():
+        mock_engine.recover_from_db.assert_awaited_once()
+        for task in app.state.bg_tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        await asyncio.gather(*app.state.bg_tasks, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -178,19 +163,13 @@ async def test_recover_from_db_called_on_dev():
     with patch("backend.shared.helpers.utils.is_prod_branch", return_value=False), \
          patch("backend.api.algo.paper.get_prod_paper_engine", return_value=mock_engine), \
          patch("backend.api.routes.algo.start_persist_flush"), \
+         patch("backend.api.background.recover_live_chases", new_callable=AsyncMock), \
          _patch_all_bg_tasks():
         await on_startup(app)
-
-    mock_engine.recover_from_db.assert_awaited_once()
-
-    # Clean up tasks to prevent pytest from hanging
-    for task in app.state.bg_tasks:
-        if not task.done():
+        mock_engine.recover_from_db.assert_awaited_once()
+        for task in app.state.bg_tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        await asyncio.gather(*app.state.bg_tasks, return_exceptions=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
