@@ -2069,12 +2069,6 @@
         {:else if _sharedAccount}
           <span class="oes-account-single" title="Trading account (list loading)">{_sharedAccount}</span>
         {/if}
-        <div class="oes-type-wrap">
-          <Select
-            options={_SYM_TYPE_OPTS}
-            bind:value={_symType}
-            ariaLabel="Symbol type filter" />
-        </div>
         <div class="oes-sym-pick">
           <SymbolSearchInput
             value={_localSymbol}
@@ -2089,8 +2083,16 @@
             }}
             ariaLabel="Symbol — pinned or search" />
         </div>
-        {#if exchange || _pickedExchange}
-          <span class="oes-exch">{exchange || _pickedExchange}</span>
+        {#if _localSymbol}
+          {@const _exch = exchange || _pickedExchange || ''}
+          {@const _seg = _exch === 'NSE' || _exch === 'BSE' ? 'EQ'
+                       : _exch === 'NFO' ? 'NFO'
+                       : _exch === 'MCX' ? 'MCX'
+                       : _exch === 'NCO' ? 'NCO'
+                       : _exch || ''}
+          {#if _seg}
+            <span class="oes-exch">{_seg}</span>
+          {/if}
         {/if}
         {#if !inline && _chaseEnabled}
           <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
@@ -3130,16 +3132,7 @@
     gap: 0.35rem;
     flex-shrink: 0;
   }
-  /* Type filter — narrowed so it fits in the same row as Account +
-     Symbol. The "EQ · FUT · OPT" label gets ellipsised when not the
-     active selection; the active value renders fully (Equity /
-     Futures / Options all fit). */
-  .oes-type-wrap {
-    width: 5.5rem;
-    flex-shrink: 0;
-  }
-  .oes-type-wrap :global(.rbq-select-trigger) { width: 100%; }
-  /* Account picker — narrower so the picker row fits Account + Type +
+  /* Account picker — narrower so the picker row fits Account +
      Symbol on a single line at common viewport widths. 10 chars of
      account code fit at 5.5rem in monospace. */
   .oes-account-pick {
