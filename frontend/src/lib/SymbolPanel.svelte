@@ -2094,10 +2094,6 @@
             <span class="oes-exch">{_seg}</span>
           {/if}
         {/if}
-        {#if !inline && _chaseEnabled}
-          <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
-        {/if}
         {#if pickerSuffix}
           {@render pickerSuffix()}
         {/if}
@@ -2135,6 +2131,10 @@
           _setActiveTab(/** @type {any} */ (id));
         }}
       />
+      {#if _chaseEnabled}
+        <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+        <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
+      {/if}
       {#if _ltp != null && _ltp > 0}
         <span class="oes-tab-ltp">₹{_ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
       {/if}
@@ -2985,7 +2985,7 @@
            the card list and prevented other tabs from rendering. -->
       <div class="oes-bottom-panel">
         <OrderBook
-          statusFilter="open"
+          statusFilter="all"
           onSymbolClick={() => {}}
         />
       </div>
