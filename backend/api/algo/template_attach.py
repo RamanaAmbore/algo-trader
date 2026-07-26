@@ -1855,6 +1855,50 @@ async def _maybe_scan_wing_by_premium(
     return overrides, reason
 
 
+def _mcx_capability_guard(
+    caps,
+    parent_exchange: str,
+    parent_account: str,
+    parent_symbol: str,
+    parent_side: str,
+    parent_qty: int,
+    parent_fill_price: float,
+    parent_order_id,
+    template: dict,
+) -> "AttachResult | None":
+    """Return a pre-filled AttachResult error if the broker doesn't support GTT
+    on MCX/NCO, else return None. Fires an attach-fail alert when blocking."""
+    if caps is None or caps.gtt_supports_mcx or parent_exchange not in ("MCX", "NCO"):
+        return None
+    _err = (
+        f"{caps.display_name} does not support GTT on {parent_exchange} — "
+        "template attach skipped; use a Kite account for MCX/NCO templates"
+    )
+    logger.warning("[TEMPLATE-GUARD] %s", _err)
+    _plan = TemplatePlan(
+        template_id=template.get("id"),
+        template_name=template.get("name") or "(unnamed)",
+        template_slug=template.get("slug"),
+        parent_account=parent_account,
+        parent_symbol=parent_symbol,
+        parent_side=parent_side,
+        parent_qty=parent_qty,
+        parent_exchange=parent_exchange,
+        parent_fill_price=float(parent_fill_price),
+        parent_lot_size=1,
+    )
+    result = AttachResult(plan=_plan)
+    result.errors.append(_err)
+    _fire_attach_fail_alert(
+        order_id=parent_order_id,
+        symbol=parent_symbol,
+        account=parent_account,
+        errors=[_err],
+    )
+    result.guard_alert_fired = True
+    return result
+
+
 async def apply_template_to_order(
     *,
     template_id:        Optional[int],
@@ -1932,36 +1976,12 @@ async def apply_template_to_order(
 
     # Pre-attach MCX guard — reject before lot-size resolution and plan resolution
     # so no work is wasted on an unsupported broker/exchange combination.
-    if (caps is not None
-            and not caps.gtt_supports_mcx
-            and parent_exchange in ("MCX", "NCO")):
-        _err = (
-            f"{caps.display_name} does not support GTT on {parent_exchange} — "
-            "template attach skipped; use a Kite account for MCX/NCO templates"
-        )
-        logger.warning("[TEMPLATE-GUARD] %s", _err)
-        _mcx_plan = TemplatePlan(
-            template_id=template.get("id"),
-            template_name=template.get("name") or "(unnamed)",
-            template_slug=template.get("slug"),
-            parent_account=parent_account,
-            parent_symbol=parent_symbol,
-            parent_side=parent_side,
-            parent_qty=parent_qty,
-            parent_exchange=parent_exchange,
-            parent_fill_price=float(parent_fill_price),
-            parent_lot_size=1,
-        )
-        _mcx_result = AttachResult(plan=_mcx_plan)
-        _mcx_result.errors.append(_err)
-        _fire_attach_fail_alert(
-            order_id=parent_order_id,
-            symbol=parent_symbol,
-            account=parent_account,
-            errors=[_err],
-        )
-        _mcx_result.guard_alert_fired = True
-        return _mcx_result
+    _mcx_guard = _mcx_capability_guard(
+        caps, parent_exchange, parent_account, parent_symbol,
+        parent_side, parent_qty, parent_fill_price, parent_order_id, template,
+    )
+    if _mcx_guard is not None:
+        return _mcx_guard
 
     # F&O lot_size resolution — look up lot_size BEFORE resolving the plan so
     # apply_plan_live has what it needs without an async call.  get_lot_size
