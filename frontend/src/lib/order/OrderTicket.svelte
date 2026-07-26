@@ -2451,7 +2451,7 @@
       {#if showLimit}
         <div class="ot-label-block ot-price-cell">
           <label class="ot-label" for="ot-price">
-            Limit price
+            L.PRICE
             <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick ₹{_tickSize.toFixed(_tickDecimals)}</span>
             {#if _priceTouched && _lastQuote}
               <button type="button" class="ot-price-reset"

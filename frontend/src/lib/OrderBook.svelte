@@ -44,6 +44,7 @@
 
   // ── Data ─────────────────────────────────────────────────────────────
   let orderRows = $state(/** @type {any[]} */ ([]));
+  let _loading  = $state(true);
 
   let _internalStatus = $state(/** @type {string|null} */ (null));
   const _activeStatus = $derived(_internalStatus ?? statusFilter);
@@ -75,7 +76,9 @@
         return tb - ta;
       });
       orderRows = merged;
-    } catch (_) { /* keep last-good */ }
+    } catch (_) { /* keep last-good */ } finally {
+      _loading = false;
+    }
   }
 
   function _downloadCsv() {
@@ -110,7 +113,7 @@
 
   /** @type {Record<string, (st: string) => boolean>} */
   const _STATUS_PREDICATES = {
-    open:      st => st === 'OPEN' || st === 'TRIGGER PENDING',
+    open:      st => st === 'OPEN' || st === 'TRIGGER PENDING' || st === 'TRIGGER_PENDING',
     complete:  st => st === 'COMPLETE',
     rejected:  st => st === 'REJECTED',
     cancelled: st => st === 'CANCELLED',
@@ -173,7 +176,7 @@
   /** Returns true when the order is an OPEN broker order that can be acted on. */
   function _isOpenBroker(/** @type {any} */ o) {
     const st = (o?.status || '').toUpperCase();
-    return (st === 'OPEN' || st === 'TRIGGER PENDING') && !o?.mode;
+    return (st === 'OPEN' || st === 'TRIGGER PENDING' || st === 'TRIGGER_PENDING') && !o?.mode;
   }
 
   /** Returns true when the order is in-flight and reconciling is meaningful. */
@@ -185,7 +188,7 @@
 
   async function _cancelRow(/** @type {any} */ o) {
     const key = String(o.order_id || o.id || '');
-    if (_cancelling.has(key)) return;
+    if (!key || _cancelling.has(key)) return;
     _cancelling = new Set([..._cancelling, key]);
     _cancelErr = '';
     try {
@@ -226,6 +229,15 @@
     }
   }
 
+  // ── Status counts (computed once per render, not 5× inline) ─────────
+  const _statusCounts = $derived.by(() => ({
+    all:       orderRows.length,
+    open:      orderRows.filter(o => _STATUS_PREDICATES.open((o.status || '').toUpperCase())).length,
+    complete:  orderRows.filter(o => _STATUS_PREDICATES.complete((o.status || '').toUpperCase())).length,
+    rejected:  orderRows.filter(o => _STATUS_PREDICATES.rejected((o.status || '').toUpperCase())).length,
+    cancelled: orderRows.filter(o => _STATUS_PREDICATES.cancelled((o.status || '').toUpperCase())).length,
+  }));
+
   // ── Symbol panel / chart modal / context menu state ───────────────────
   let _symPanelSym  = $state('');
   let _symPanelExch = $state('');
@@ -254,11 +266,11 @@
 {#if !isCollapsed}
   <div class="ob-status-bar">
     {#each [
-      { id: 'all',       label: 'All',       status: 'inactive',  count: orderRows.length },
-      { id: 'open',      label: 'Open',      status: 'running',   count: orderRows.filter(o => { const s = (o.status||'').toUpperCase(); return s === 'OPEN' || s === 'TRIGGER PENDING'; }).length },
-      { id: 'complete',  label: 'Filled',    status: 'active',    count: orderRows.filter(o => (o.status||'').toUpperCase() === 'COMPLETE').length },
-      { id: 'rejected',  label: 'Rejected',  status: 'error',     count: orderRows.filter(o => (o.status||'').toUpperCase() === 'REJECTED').length },
-      { id: 'cancelled', label: 'Cancelled', status: 'cancelled', count: orderRows.filter(o => (o.status||'').toUpperCase() === 'CANCELLED').length },
+      { id: 'all',       label: 'All',       status: 'inactive',  count: _statusCounts.all },
+      { id: 'open',      label: 'Open',      status: 'running',   count: _statusCounts.open },
+      { id: 'complete',  label: 'Filled',    status: 'active',    count: _statusCounts.complete },
+      { id: 'rejected',  label: 'Rejected',  status: 'error',     count: _statusCounts.rejected },
+      { id: 'cancelled', label: 'Cancelled', status: 'cancelled', count: _statusCounts.cancelled },
     ] as f}
       <button type="button" class="ob-sc" class:is-active={_activeStatus === f.id}
         data-status={f.status}
@@ -327,7 +339,15 @@
       {/if}
     </div>
   {:else}
-    <div class="log-debug py-2 text-center">No orders.</div>
+    <div class="log-debug py-2 text-center">
+      {#if _loading}
+        Loading…
+      {:else if orderRows.length > 0}
+        No orders match the current filters.
+      {:else}
+        No orders today.
+      {/if}
+    </div>
   {/if}
 </div>
 {/if}
