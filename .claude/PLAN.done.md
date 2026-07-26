@@ -1,13 +1,19 @@
-# Plan: Modal backdrop dim + Chart tab in order modal
+# Plan: Replace ActivityLogSurface with OrderBook in modal + /orders page
 
-## Context
-Two operator-reported UX gaps after the AppMessage/OrderBook deploy:
-1. **Modal visibility**: navbar links work while a canonical modal is open (pointer-events:none on overlay), but the page behind looks identical whether a modal is open or not — no visual cue, so accidentally following a nav link loads a new page hidden under the modal.
-2. **Chart in order modal**: order modal (SymbolPanel) has a log panel at the bottom and a chart-icon button that opens ChartModal as a *separate* overlay. Operator wants chart and log together inside the same modal, not two separate modals.
+## Task
+The order modal (SymbolPanel bottom panel) and /orders page currently show a full LogPanel
+(ActivityLogSurface with multiple tabs). Replace both with the standalone OrderBook component,
+which shows only order cards with cancel/modify/reconcile actions and no unrelated tabs.
+
+Two surfaces:
+1. SymbolPanel `.oes-bottom-panel` — replace ActivityLogSurface with OrderBook, statusFilter="open"
+2. /orders page Activity card — replace ActivityLogSurface with OrderBook, statusFilter={_statusFilter}
+
+LogPanel's order tab in all other mounts (dashboard, console, ActivityLogModal, etc.) is unchanged.
 
 ## Agents
-- frontend: implement Part 1 (modal backdrop dim in app.css + ChartModal/SymbolPanel Esc handling) + Part 2 (Chart tab in SymbolPanel + ChartWorkspace inline)
 - backend: skip
+- frontend: implement all three file changes (OrderBook.svelte prop addition, SymbolPanel.svelte swap, /orders page swap) as described in the critical-files section below
 - broker: skip
 - doc: skip
 - backend-test: skip
@@ -19,112 +25,116 @@ Two operator-reported UX gaps after the AppMessage/OrderBook deploy:
 - playwright: no
 
 ## Commit message
-feat(ui): modal backdrop dim + Chart tab in order modal
+feat(ui): replace LogPanel with OrderBook in order modal + /orders page
 
 ## Done when
-- All canonical modals (SymbolPanel, ChartModal, ActivityLogModal) show a dim overlay above the sheet panel — navbar area visibly darkened when any canonical modal is open
-- SymbolPanel tab strip has a 3rd "Chart" tab (Ticket / Chain / Chart); selecting it renders ChartWorkspace inline for the current symbol at full height of the tab body
-- Bottom log panel (ActivityLogSurface) remains visible below the Chart tab body
-- Chart-icon button in SymbolPanel header still opens ChartModal (unchanged)
-- `ORDER_TABS` and `ORDER_TAB_IDS` updated to include 'chart'
+- SymbolPanel bottom panel renders OrderBook (open orders) — no LogPanel tabs visible
+- /orders page Activity card renders OrderBook — counter cards (All/Open/Filled/etc.) still filter it via statusFilter prop
+- LogPanel / ActivityLogSurface in all other mounts unchanged
 - svelte-check 0 errors
-- No change to orders page (log already at bottom) or LogPanel
-
----
-
-## Part 1 — Modal backdrop dim
-
-### File: `frontend/src/app.css`
-
-`.canonical-modal-overlay` already covers `position: fixed; inset: 0` with `pointer-events: none`.
-Add a semi-opaque background fill to the padding area above the sheet panel:
-
-```css
-.canonical-modal-overlay {
-  /* existing rules unchanged */
-  background: rgba(8, 12, 20, 0.42);   /* ← ADD: dims navbar/strip above sheet */
-}
-```
-
-Keep `pointer-events: none` — intentional (page stays interactive, matches existing comment).
-The amber-border panel sits on top of the overlay so the panel itself is unaffected.
-
-**No changes needed to individual modal files** — the overlay is shared across SymbolPanel,
-ChartModal, and ActivityLogModal automatically.
-
----
-
-## Part 2 — Chart tab inside SymbolPanel
-
-### 2a. `frontend/src/lib/order/tabs.js`
-
-Add 'chart' as a third tab:
-```js
-export const ORDER_TABS = ([
-  { id: 'ticket', label: 'Ticket' },
-  { id: 'chain',  label: 'Chain'  },
-  { id: 'chart',  label: 'Chart'  },
-]);
-export const ORDER_TAB_IDS = ORDER_TABS.map(t => t.id);
-```
-
-Type annotation update: `'chain' | 'ticket' | 'chart'`
-
-### 2b. `frontend/src/lib/SymbolPanel.svelte`
-
-**Imports**: add `import ChartWorkspace from '$lib/ChartWorkspace.svelte'`
-
-**`activeTab` type**: update from `'ticket' | 'chain'` to `'ticket' | 'chain' | 'chart'`
-
-**`_resolveInitialTab()`**: Chart tab should never be the initial default; fallback to 'ticket' if somehow passed.
-
-**`basketMode` derived**: keep as `_activeTab === 'chain'` (chart tab is not basket mode)
-
-**Tab body markup**: add a `{#if _activeTab === 'chart'}` branch alongside the ticket and chain branches:
-```svelte
-{#if _activeTab === 'chart'}
-  <div class="oes-chart-tab-body">
-    {#if _localSymbol}
-      <ChartWorkspace
-        symbol={_localSymbol}
-        exchange={_pickedExchange || exchange}
-        mode="live" />
-    {:else}
-      <p class="oes-chart-placeholder">Select a symbol to view chart</p>
-    {/if}
-  </div>
-{/if}
-```
-
-**CSS** (scoped to SymbolPanel):
-```css
-.oes-chart-tab-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.oes-chart-placeholder {
-  margin: auto;
-  color: var(--algo-slate-dim);
-  font-size: 0.8rem;
-}
-```
-
-**Suppress basket footer** when chart tab active:
-The action footer (BUY/SELL buttons + basket controls) is gated by `_activeTab === 'ticket'` conditions already in several places — verify the chart tab doesn't show them. Add `&& _activeTab !== 'chart'` guards where needed (same pattern as chain-tab suppression).
-
-**Important**: The `.oes-bottom-panel` (ActivityLogSurface) sits OUTSIDE and AFTER the tab body; it remains visible regardless of which tab is active — no change needed.
-
-### 2c. ChartWorkspace props
-
-ChartModal passes: `symbol`, `exchange`, `mode="live"` to `ChartWorkspace`. Use the same props from SymbolPanel's `_localSymbol` + `_pickedExchange || exchange`. Do NOT replicate the full ChartModal header chrome — the SymbolPanel header already provides navigation context.
 
 ---
 
 ## Critical files
-- `frontend/src/app.css` — `.canonical-modal-overlay` (line ~359)
-- `frontend/src/lib/order/tabs.js` — ORDER_TABS and ORDER_TAB_IDS
-- `frontend/src/lib/SymbolPanel.svelte` — tab body block (~line 2164), activeTab type, ChartWorkspace import, CSS
-- `frontend/src/lib/ChartWorkspace.svelte` — read-only reference for props API
+
+### Change 1 — OrderBook.svelte (`frontend/src/lib/OrderBook.svelte`)
+
+Add `onSymbolClick` as an optional prop. When provided, call it on symbol click instead of
+spawning a nested SymbolPanel (prevents circular rendering when embedded inside SymbolPanel).
+
+**Current props block (lines 30–36):**
+```js
+let {
+  orderId       = null,
+  accountFilter = /** @type {string[]} */ ([]),
+  title         = 'Order Book',
+  pollMs        = 3000,
+  statusFilter  = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
+} = $props();
+```
+
+**New props block:**
+```js
+let {
+  orderId       = null,
+  accountFilter = /** @type {string[]} */ ([]),
+  title         = 'Order Book',
+  pollMs        = 3000,
+  statusFilter  = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
+  onSymbolClick = /** @type {((ord: any) => void) | null} */ (null),
+} = $props();
+```
+
+**Current OrderCard onSymbolClick (line 232–233):**
+```svelte
+onSymbolClick={(ord) => { _symPanelSym = ord.tradingsymbol || ord.symbol || ''; _symPanelExch = ord.exchange || ''; }}
+```
+
+**New OrderCard onSymbolClick:**
+```svelte
+onSymbolClick={(ord) => {
+  if (onSymbolClick) { onSymbolClick(ord); return; }
+  _symPanelSym = ord.tradingsymbol || ord.symbol || '';
+  _symPanelExch = ord.exchange || '';
+}}
+```
+
+**Guard the internal SymbolPanel spawner (lines 285–292) — add `&& !onSymbolClick` guard:**
+```svelte
+{#if _symPanelSym && !onSymbolClick}
+  <SymbolPanel ... />
+{/if}
+```
+
+### Change 2 — SymbolPanel.svelte (`frontend/src/lib/SymbolPanel.svelte`)
+
+**Import swap (line 47):**
+Remove: `import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';`
+Add:    `import OrderBook from '$lib/OrderBook.svelte';`
+
+**Bottom panel swap (lines 2974–2981):**
+Replace:
+```svelte
+<ActivityLogSurface
+  context="card"
+  heightClass="flex-1 min-h-0"
+  label="Log"
+  defaultTab="order"
+  statusFilter="open"
+  hideInlineAccountFilter={false}
+/>
+```
+With:
+```svelte
+<OrderBook
+  statusFilter="open"
+  onSymbolClick={() => {}}
+/>
+```
+
+### Change 3 — /orders page (`frontend/src/routes/(algo)/orders/+page.svelte`)
+
+**Import swap:**
+Remove: `import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';`
+Add:    `import OrderBook from '$lib/OrderBook.svelte';`
+
+**Drop unused variables (only used by ActivityLogSurface — lines 172–174):**
+Remove:
+```js
+let _actAvailableAccounts = $state([]);
+let _actLevelFilter = $state('all');
+```
+Keep `_actAccountFilter` — passed to OrderBook.
+
+**Activity section body swap (lines 549–564):**
+Replace the `<ActivityLogSurface ...>` block inside `.card-body.oc-act-body` with:
+```svelte
+<OrderBook
+  statusFilter={_statusFilter}
+  accountFilter={_actAccountFilter}
+/>
+```
+
+Keep the surrounding `<section class="bucket-card bucket-card-activity oc-fill" ...>` wrapper
+and `use:listenModifyOrder` directive unchanged — OrderBook dispatches the same `lp:modify-order`
+CustomEvent so modify-order handling still works.

@@ -8,7 +8,7 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
-  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
+  import OrderBook from '$lib/OrderBook.svelte';
   import { fetchOrders } from '$lib/api';
   import { bookChanged } from '$lib/data/bookChanged';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -168,10 +168,6 @@
   // and modals."
   /** @type {string[]} */
   let _actAccountFilter = $state([]);
-  /** @type {string[]} */
-  let _actAvailableAccounts = $state([]);
-  /** @type {'all'|'error'|'warning'|'info'} */
-  let _actLevelFilter = $state('all');
   /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
   let _statusFilter = $state('open');
 
@@ -547,21 +543,10 @@
   class:is-collapsed={_colActivity}
   use:listenModifyOrder>
   <div class="card-body oc-act-body">
-    <!-- ActivityLogSurface with label="Log" so LogPanel renders its own
-         tab-row header (label chip, filters, card buttons).
-         The external CardHeader is removed — LogPanel owns its chrome. -->
-    <ActivityLogSurface
-      defaultTab="order"
-      context="card-wide"
-      label="Log"
-      cardId="orders-activity"
-      onRefresh={loadOrders}
-      bind:isCollapsed={_colActivity}
+    <OrderBook
       statusFilter={_statusFilter}
-      symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
-      bind:accountFilter={_actAccountFilter}
-      bind:availableAccounts={_actAvailableAccounts}
-      bind:levelFilter={_actLevelFilter} />
+      accountFilter={_actAccountFilter}
+    />
   </div>
 </section>
 
