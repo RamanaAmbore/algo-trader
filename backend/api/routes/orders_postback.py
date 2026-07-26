@@ -506,6 +506,10 @@ def _pb_dispatch_take_profit_and_template(filled_rows: list) -> None:
     """Arm TP on parent fills without a template, else fire template
     attach. Both fan-outs run as detached tasks so postback ack isn't
     blocked.
+
+    Also emits a ``fill_event`` WebSocket push for each filled row so
+    connected clients can re-fetch positions immediately without waiting
+    for the next 5-minute performance poll.
     """
     for _r in filled_rows:
         if _pb_wants_take_profit_arm(_r):
@@ -514,6 +518,22 @@ def _pb_dispatch_take_profit_and_template(filled_rows: list) -> None:
     for _r in filled_rows:
         if _pb_wants_template_attach(_r):
             _pb_dispatch_template_attach(_r)
+
+    # Emit fill_event to all connected WS clients so the frontend
+    # can immediately re-fetch positions after a parent order fills.
+    # Uses the same broadcast mechanism as order_update events.
+    for _r in filled_rows:
+        try:
+            import json as _json
+            from backend.api.routes.ws import broadcast as _ws_broadcast
+            from backend.shared.helpers.utils import mask_account as _mask
+            _ws_broadcast(_json.dumps({
+                "event":   "fill_event",
+                "account": _mask(str(_r.account or "")),
+                "symbol":  str(_r.symbol or ""),
+            }))
+        except Exception as _fe:
+            logger.debug("fill_event broadcast skipped: %s", _fe)
 
 
 async def _pb_event_kite(

@@ -59,12 +59,17 @@ def _conns_with(account: str) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_mcx_g1_fires_on_non_multiple_qty():
-    """MCX qty=50 with lot_size=100 (non-multiple) → G1 LOT_MULTIPLE fires."""
+    """MCX qty=50 with lot_size=100 (non-multiple in contract terms) → G1 SKIPPED.
+
+    MCX broker returns position qty in LOTS (e.g., 50 lots), not contracts.
+    So 50 is a valid whole-lot quantity and should NOT trigger G1 LOT_MULTIPLE.
+    This is the POST-FIX behavior (Bug 1 fix).
+    """
     from backend.api.algo.actions import run_preflight
 
     broker = _make_broker_stub()
     conns = _conns_with("ZG0790")
-    bad_qty = 50  # not a multiple of 100
+    qty_in_lots = 50  # 50 lots is valid for MCX (even though 50 % 100 ≠ 0 in contracts)
 
     with patch("backend.brokers.connections.Connections", return_value=conns), \
          patch("backend.brokers.registry.get_broker", return_value=broker), \
@@ -73,7 +78,7 @@ async def test_mcx_g1_fires_on_non_multiple_qty():
         result = await run_preflight("ZG0790", {
             "exchange": "MCX",
             "tradingsymbol": MCX_SYMBOL,
-            "quantity": bad_qty,
+            "quantity": qty_in_lots,
             "order_type": "LIMIT",
             "product": "NRML",
             "variety": "regular",
@@ -81,15 +86,11 @@ async def test_mcx_g1_fires_on_non_multiple_qty():
             "price": 5500.0,
         })
 
-    # G1 must fire for MCX non-multiple
-    assert result["ok"] is False, f"Expected G1 block, got ok={result['ok']}"
+    # G1 must be SKIPPED for MCX (qty already in lots from broker)
     codes = [b["code"] for b in result["blocked"]]
-    assert "LOT_MULTIPLE" in codes, (
-        f"MCX G1 must fire for non-multiple qty; got: {result['blocked']}"
+    assert "LOT_MULTIPLE" not in codes, (
+        f"MCX G1 must be skipped (qty already in lots), but got: {result['blocked']}"
     )
-    g1 = next(b for b in result["blocked"] if b["code"] == "LOT_MULTIPLE")
-    assert g1["data"]["qty"] == bad_qty
-    assert g1["data"]["lot_size"] == MCX_LOT_SIZE
 
 
 @pytest.mark.asyncio
@@ -226,12 +227,16 @@ async def test_nfo_g2_still_fires_for_6_lots():
 
 @pytest.mark.asyncio
 async def test_nco_g1_fires_on_non_multiple():
-    """NCO qty not a multiple → G1 LOT_MULTIPLE fires (like MCX)."""
+    """NCO qty not a multiple (in contract terms) → G1 SKIPPED (like MCX).
+
+    NCO is commodity exchange like MCX, so qty is already in LOTS from broker.
+    G1 must be skipped for NCO just like MCX (Bug 1 fix).
+    """
     from backend.api.algo.actions import run_preflight
 
     broker = _make_broker_stub()
     conns = _conns_with("ZG0790")
-    bad_qty = MCX_LOT_SIZE + 7
+    qty_in_lots = MCX_LOT_SIZE + 7  # 107 lots (would be "non-multiple" in contracts)
 
     with patch("backend.brokers.connections.Connections", return_value=conns), \
          patch("backend.brokers.registry.get_broker", return_value=broker), \
@@ -240,7 +245,7 @@ async def test_nco_g1_fires_on_non_multiple():
         result = await run_preflight("ZG0790", {
             "exchange": "NCO",
             "tradingsymbol": "CRUDEOILNOV25FUT",
-            "quantity": bad_qty,
+            "quantity": qty_in_lots,
             "order_type": "LIMIT",
             "product": "NRML",
             "variety": "regular",
@@ -248,11 +253,10 @@ async def test_nco_g1_fires_on_non_multiple():
             "price": 5500.0,
         })
 
-    # G1 must fire for NCO non-multiple
-    assert result["ok"] is False, f"Expected G1 block, got ok={result['ok']}"
+    # G1 must be SKIPPED for NCO (qty already in lots from broker)
     codes = [b["code"] for b in result["blocked"]]
-    assert "LOT_MULTIPLE" in codes, (
-        f"NCO G1 must fire for non-multiple qty; got: {result['blocked']}"
+    assert "LOT_MULTIPLE" not in codes, (
+        f"NCO G1 must be skipped (qty already in lots), but got: {result['blocked']}"
     )
 
 

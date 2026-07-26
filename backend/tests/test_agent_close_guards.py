@@ -59,8 +59,9 @@ def _make_agent(slug: str = "test-agent") -> MagicMock:
 @pytest.mark.asyncio
 async def test_close_position_sub_lot_mcx_blocked():
     """
-    Sub-lot qty=50 for CRUDEOIL (lot_size=100) must trigger G1 (LOT_MULTIPLE).
-    chase_order must NOT be called.
+    MCX qty=50 with lot_size=100 is valid (50 lots, already in lots from broker).
+    Post-Bug-1-fix: G1 is SKIPPED for MCX, so this should NOT trigger G1.
+    Instead, this tests that valid MCX close passes preflight and proceeds.
     """
     from backend.api.algo.actions import _action_live_close_position
 
@@ -72,7 +73,7 @@ async def test_close_position_sub_lot_mcx_blocked():
         "account":  "ZG0790",
         "symbol":   "CRUDEOILAUG25FUT",
         "exchange": "MCX",
-        "quantity": 50,       # sub-lot — CRUDEOIL lot_size=100
+        "quantity": 50,       # 50 lots for MCX (valid whole-lot qty)
         "side":     "SELL",
     }
 
@@ -90,14 +91,15 @@ async def test_close_position_sub_lot_mcx_blocked():
 
         await _action_live_close_position(agent, context, params)
 
-    mock_chase.assert_not_called()
-    # Must have written a REJECTED row (not OPEN).
+    # With Bug 1 fix, MCX qty=50 lots should pass preflight (G1 skipped)
+    # So chase_order SHOULD be called (not blocked)
+    mock_chase.assert_called()
+    # Write should be OPEN (not REJECTED), since it passed preflight
     write_calls = mock_write.call_args_list
-    assert write_calls, "expected _write_live_order call for the blocked row"
-    # Positional: (agent, action_type, resolved_dict, ...) + kw status=
+    assert write_calls, "expected _write_live_order call for the order row"
     statuses = [c.kwargs.get("status") for c in write_calls]
-    assert "REJECTED" in statuses, (
-        f"expected REJECTED in write statuses; got {statuses}"
+    assert "OPEN" in statuses or "PENDING" in statuses, (
+        f"expected OPEN/PENDING in write statuses (not REJECTED), got {statuses}"
     )
 
 
@@ -188,7 +190,8 @@ def _make_positions_df(rows: list[dict]):
 @pytest.mark.asyncio
 async def test_chase_close_positions_sub_lot_blocked():
     """
-    Single sub-lot MCX position — preflight blocks; chase_order NOT called.
+    MCX qty=50 lots is valid (50 lots, already in lots from broker).
+    Post-Bug-1-fix: G1 is SKIPPED, so chase_order IS called.
     """
     from backend.api.algo.actions import _action_live_chase_close_positions
 
@@ -199,7 +202,7 @@ async def test_chase_close_positions_sub_lot_blocked():
         "account":       "ZG0790",
         "tradingsymbol": "CRUDEOILAUG25FUT",
         "exchange":      "MCX",
-        "quantity":      50,   # sub-lot
+        "quantity":      50,   # 50 lots (valid MCX whole-lot qty)
         "last_price":    7500.0,
         "close_price":   7450.0,
     }])
@@ -219,7 +222,8 @@ async def test_chase_close_positions_sub_lot_blocked():
 
         await _action_live_chase_close_positions(agent, context, params)
 
-    mock_chase.assert_not_called()
+    # With Bug 1 fix, MCX qty=50 lots passes preflight, so chase_order IS called
+    mock_chase.assert_called()
 
 
 @pytest.mark.asyncio
@@ -300,8 +304,8 @@ async def test_chase_close_positions_6_lot_passes_g2_bypassed():
 @pytest.mark.asyncio
 async def test_chase_close_positions_mixed_blocked_and_valid():
     """
-    Two positions — sub-lot CRUDEOIL (blocked) + valid GOLD (passes).
-    Loop must NOT abort early; only the valid position reaches chase_order.
+    Two positions — MCX qty=50 lots (valid post-Bug1-fix) + valid GOLD (1 lot).
+    Both should now pass preflight. Both reach chase_order.
     """
     from backend.api.algo.actions import _action_live_chase_close_positions
 
@@ -313,7 +317,7 @@ async def test_chase_close_positions_mixed_blocked_and_valid():
             "account":       "ZG0790",
             "tradingsymbol": "CRUDEOILAUG25FUT",
             "exchange":      "MCX",
-            "quantity":      50,    # sub-lot — must be blocked
+            "quantity":      50,    # 50 lots (valid MCX qty post-Bug1-fix)
             "last_price":    7500.0,
             "close_price":   7450.0,
         },
@@ -343,13 +347,9 @@ async def test_chase_close_positions_mixed_blocked_and_valid():
 
         await _action_live_chase_close_positions(agent, context, params)
 
-    # Exactly ONE chase task (GOLD); CRUDEOIL was blocked.
-    assert mock_chase.call_count == 1, (
-        f"expected 1 chase call (GOLD only), got {mock_chase.call_count}"
-    )
-    called_symbol = mock_chase.call_args.kwargs.get("symbol", "")
-    assert "GOLD" in called_symbol, (
-        f"expected chase for GOLD, got symbol={called_symbol!r}"
+    # TWO chase tasks now (both pass preflight post-Bug1-fix)
+    assert mock_chase.call_count == 2, (
+        f"expected 2 chase calls (both valid), got {mock_chase.call_count}"
     )
 
 
