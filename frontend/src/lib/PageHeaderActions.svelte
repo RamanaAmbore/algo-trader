@@ -11,7 +11,7 @@
    */
 
   import { getContext, onMount, onDestroy } from 'svelte';
-  import { executionMode, openActivityModal, orderTicketModal, closeOrderTicketModal, openChartModal } from '$lib/stores';
+  import { executionMode, openActivityModal, orderTicketModal, closeOrderTicketModal, openChartModal, orderModalFocusPing } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
@@ -109,7 +109,7 @@
   // Null when the ticket was opened by clicking the header button
   // directly (no prefill — blank ticket). Cleared on modal close so
   // a subsequent blank-open doesn't inherit a previous surface's values.
-  /** @type {{ symbol?:string|null, exchange?:string|null, side?:'BUY'|'SELL'|null, qty?:number|null, lots?:number|null, price?:number|null, product?:'CNC'|'NRML'|'MIS'|null, lotSize?:number|null, currentQty?:number|null, action?:'open'|'close'|'modify'|'repeat'|'cancel'|null, account?:string|null, accounts?:string[]|null, triggerSource?:string|null } | null} */
+  /** @type {{ symbol?:string|null, exchange?:string|null, side?:'BUY'|'SELL'|null, qty?:number|null, lots?:number|null, price?:number|null, product?:'CNC'|'NRML'|'MIS'|null, lotSize?:number|null, currentQty?:number|null, action?:'open'|'close'|'modify'|'repeat'|'cancel'|null, account?:string|null, accounts?:string[]|null, triggerSource?:string|null, avgCost?:number|null, unrealizedPnl?:number|null } | null} */
   let _orderPrefill = $state(null);
 
   // ── Global keyboard-shortcut bridge ────────────────────────────────
@@ -127,6 +127,14 @@
   onDestroy(() => { _unsubOrder?.(); });
 
   async function _openOrder(/** @type {{ fromStore?: boolean }} */ opts = {}) {
+    // E1: when the modal is already open and the operator clicks the
+    // order button again, ping the modal to re-orient rather than
+    // re-opening (which would reset state). The OrderTicket header
+    // plays a brief amber ring animation on each ping increment.
+    if (_orderOpen) {
+      orderModalFocusPing.update(n => n + 1);
+      return;
+    }
     // When called directly by the header button (not from the store path),
     // clear any stale prefill so the modal opens as a blank ticket.
     if (!opts.fromStore) _orderPrefill = null;
@@ -237,6 +245,8 @@
     qty={_orderPrefill?.qty ?? 0}
     lotSize={_orderPrefill?.lotSize ?? 0}
     currentQty={_orderPrefill?.currentQty ?? 0}
+    avgCost={_orderPrefill?.avgCost ?? null}
+    unrealizedPnl={_orderPrefill?.unrealizedPnl ?? null}
     price={_orderPrefill?.price ?? undefined}
     product={_orderPrefill?.product ?? undefined}
     defaultTab="ticket"

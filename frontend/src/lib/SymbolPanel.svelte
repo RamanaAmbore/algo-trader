@@ -89,6 +89,8 @@
    *   account?:        string,
    *   orderId?:        string,
    *   currentQty?:     number,
+   *   avgCost?:        number | null,
+   *   unrealizedPnl?:  number | null,
    *   onSubmit:        (payload: any) => void | Promise<void>,
    *   onClose:         () => void,
    *   onAddToBasket?:  ((payload: any) => void) | null,
@@ -128,6 +130,8 @@
     account        = '',
     orderId        = '',
     currentQty     = 0,
+    avgCost        = /** @type {number|null} */ (null),
+    unrealizedPnl  = /** @type {number|null} */ (null),
     onSubmit,
     onClose,
     onAddToBasket  = /** @type {((payload:any)=>void)|null} */ (null),
@@ -1911,7 +1915,7 @@
   const _ticketProps = $derived({
     symbol, exchange, side, action, qty, product, orderType, variety,
     price, trigger, lotSize, accounts, account, orderId,
-    currentQty, onAddToBasket,
+    currentQty, avgCost, unrealizedPnl, onAddToBasket,
   });
 </script>
 
@@ -2171,6 +2175,8 @@
             onSideChange={(s) => { _modalSide = s; }}
             orderId={_ticketProps.orderId ?? orderId}
             currentQty={_ticketProps.currentQty ?? currentQty}
+            avgCost={_ticketProps.avgCost ?? avgCost}
+            unrealizedPnl={_ticketProps.unrealizedPnl ?? unrealizedPnl}
             onAddToBasket={addToBasket}
             basketMode={basketMode}
             accountHidden={true}

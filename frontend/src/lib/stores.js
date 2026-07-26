@@ -1045,6 +1045,8 @@ export function closeActivityModal() {
  *   account?:       string | null,
  *   accounts?:      string[] | null,
  *   triggerSource?: string | null,
+ *   avgCost?:       number | null,
+ *   unrealizedPnl?: number | null,
  * }} OrderTicketPrefill */
 
 export const orderTicketModal = writable(
@@ -1068,6 +1070,15 @@ export function openOrderTicketModal(prefill = null) {
 export function closeOrderTicketModal() {
   orderTicketModal.set({ open: false, prefill: null });
 }
+
+/**
+ * E1: Focus-ping store — incremented when the order button is clicked
+ * while the order modal is already open. SymbolPanel (OrderTicket header)
+ * subscribes and plays a brief amber ring animation to re-orient the operator.
+ * Using a monotonically-increasing counter (not a boolean toggle) means
+ * rapid double-clicks each produce a distinct reactive event.
+ */
+export const orderModalFocusPing = writable(0);
 
 // ── Chart modal control ──────────────────────────────────────────────
 // Mounted once in (algo)/+layout.svelte (same as ActivityLogModal).

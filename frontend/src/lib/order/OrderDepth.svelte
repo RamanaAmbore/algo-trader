@@ -21,39 +21,48 @@
    * }} */
   let { symbol, exchange = 'NFO', onQuote = null, refreshKey = 0, paused = false } = $props();
 
-  /** @type {{ ltp: number, bid: number|null, ask: number|null, depth_buy: any[], depth_sell: any[], ohlc?: { close?: number } | null } | null} */
+  /** @type {{ ltp: number, bid: number|null, ask: number|null, depth_buy: any[], depth_sell: any[], depth_total_buy?: number|null, depth_total_sell?: number|null, oi?: number|null, volume?: number|null, ohlc?: { close?: number } | null } | null} */
   let q = $state(null);
   /** @type {string} */
   let err = $state('');
-  /** @type {ReturnType<typeof setInterval> | null} */
-  let timer = null;
+  // In-flight race guard: each poll() call claims a generation id.
+  // When the response arrives we only write `q` if the id still
+  // matches — prevents a slow response from the OLD symbol overwriting
+  // data already populated by the NEW symbol's first poll.
+  let _pollGen = 0;
 
   async function poll() {
     if (!symbol) return;
+    const gen = ++_pollGen;
     try {
-      q   = await fetchQuote(exchange || 'NFO', symbol);
-      err = '';
-      // Bubble the fresh quote up so the OrderTicket can auto-fill
-      // the limit price (BUY → top ask, SELL → top bid). Defensive
-      // try/catch — a parent throwing must never break the depth
-      // poll.
-      try { onQuote?.(q); } catch (_) { /* ignore */ }
+      const result = await fetchQuote(exchange || 'NFO', symbol);
+      if (gen !== _pollGen) return;   // stale response — discard
+      if (result) {
+        // Only update state when we got a valid response.
+        // When the response is falsy (null / empty), keep the last
+        // known depth visible and set an error indicator instead —
+        // this prevents a momentary null from blanking the ladder.
+        q = result;
+        err = '';
+        try { onQuote?.(q); } catch (_) { /* ignore */ }
+      } else {
+        // Falsy response: surface the error but preserve stale q.
+        err = 'no quote';
+      }
     } catch (e) {
+      if (gen !== _pollGen) return;
       err = /** @type {any} */ (e)?.message || 'depth unavailable';
+      // Keep stale q — do not null it. Operator sees last-known
+      // depth with the error indicator until a good poll lands.
     }
   }
 
   // Audit fix — consolidate timer lifecycle into a single `$effect` so
   // the visibility handler can't race the paused-effect on `timer`.
-  // Pre-fix the visibility handler and the $effect both independently
-  // started/stopped the timer; when `paused` flipped false while the
-  // tab was hidden, the $effect called `setInterval(poll, 2000)` even
-  // though the visibility handler had just cleared the timer and would
-  // clear it again on the next visibilitychange — but the inverse race
-  // (visibility handler sets timer, $effect immediately clears it for
-  // paused, $effect doesn't restart on the next visibility transition)
-  // left depth permanently stale. Now: `_hidden` is a $state read by
-  // the single effect; the visibility handler just flips the flag.
+  // Symbol-change fix: Svelte 5 $effect cleanup pattern — when the
+  // `symbol` reactive dependency changes, the cleanup fn runs first
+  // (clearing the old interval), then the body re-runs immediately
+  // with the new symbol. No `_prevSymbol` tracking needed.
   let _hidden = $state(typeof document !== 'undefined' && document.hidden);
   function _onVisibilityChange() {
     _hidden = !!document.hidden;
@@ -63,34 +72,30 @@
     // Regression-audit fix: sync `_hidden` once at mount so a page
     // loaded with the tab already in the background doesn't sit there
     // polling depth quietly until the first visibilitychange event.
-    // The $state init only sees SSR's `false` (or the CSR snapshot at
-    // module-eval time); the actual current visibility may be `true`.
     _hidden = !!document.hidden;
     document.addEventListener('visibilitychange', _onVisibilityChange);
   });
   onDestroy(() => {
-    if (timer) clearInterval(timer);
     document.removeEventListener('visibilitychange', _onVisibilityChange);
   });
 
   // Single lifecycle effect — start polling iff: have symbol, not
-  // paused by host, not hidden. Stop otherwise. The effect re-runs
-  // whenever any of those flip.
+  // paused by host, not hidden. Stop otherwise.
+  // Svelte 5 cleanup return: when symbol / paused / _hidden changes,
+  // the returned cleanup fn fires (clearInterval) BEFORE the next run,
+  // so a symbol change immediately starts polling the new symbol
+  // without having to wait for the old 2s interval to tick first.
   $effect(() => {
-    if (!symbol || paused || _hidden) {
-      if (timer) { clearInterval(timer); timer = null; }
-      return;
-    }
-    if (!timer) {
-      poll();
-      timer = setInterval(poll, 2000);
-    }
+    if (!symbol || paused || _hidden) return;
+    poll();
+    const t = setInterval(poll, 2000);
+    return () => clearInterval(t);
   });
 
   // Host-triggered refresh — when the host increments refreshKey we
   // re-poll immediately so depth always reflects the latest tick on
   // tab activation / modal re-open. Skipped when key is still 0
-  // (initial render; the paused-effect above handles the first fetch).
+  // (initial render; the effect above handles the first fetch).
   $effect(() => {
     if (refreshKey > 0 && !paused) poll();
   });
@@ -105,6 +110,26 @@
   }
   const buyRows  = $derived(pad(q?.depth_buy));
   const sellRows = $derived(pad(q?.depth_sell));
+
+  // B4: bid-ask spread from top-of-book.
+  const _spread = $derived.by(() => {
+    const b = q?.depth_buy?.[0]?.price;
+    const a = q?.depth_sell?.[0]?.price;
+    if (b == null || a == null || !(a > 0) || !(b > 0)) return null;
+    return a - b;
+  });
+
+  // B2/B3: OI + Volume display — format in Indian lakh notation.
+  // 1,00,000 → "1L", 1,23,456 → "1.23L", 12,34,567 → "12.35L"
+  /** @param {number|null|undefined} n */
+  function fmtLakh(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v <= 0) return '—';
+    if (v >= 1e7) return (v / 1e7).toFixed(2).replace(/\.?0+$/, '') + 'Cr';
+    if (v >= 1e5) return (v / 1e5).toFixed(2).replace(/\.?0+$/, '') + 'L';
+    if (v >= 1e3) return (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(Math.round(v));
+  }
 </script>
 
 <div class="ot-depth">
@@ -120,6 +145,33 @@
         {/if}
       {:else if err}
         <span class="ot-depth-meta">{err}</span>
+      {/if}
+      {#if err && q}
+        <span class="ot-depth-stale" title="Showing last known depth">stale</span>
+      {/if}
+    </div>
+  {/if}
+
+  <!-- B2/B3/B4: OI · Volume · Spread stats row -->
+  {#if q && (q.oi != null || q.volume != null || _spread != null)}
+    <div class="ot-depth-stats">
+      {#if q.oi != null && q.oi > 0}
+        <span class="ot-depth-stat">
+          <span class="ot-depth-stat-lbl">OI</span>
+          <span class="ot-depth-stat-val">{fmtLakh(q.oi)}</span>
+        </span>
+      {/if}
+      {#if q.volume != null && q.volume > 0}
+        <span class="ot-depth-stat">
+          <span class="ot-depth-stat-lbl">Vol</span>
+          <span class="ot-depth-stat-val">{fmtLakh(q.volume)}</span>
+        </span>
+      {/if}
+      {#if _spread != null && _spread >= 0}
+        <span class="ot-depth-stat">
+          <span class="ot-depth-stat-lbl">Spd</span>
+          <span class="ot-depth-stat-val ot-depth-spread">₹{priceFmt(_spread)}</span>
+        </span>
       {/if}
     </div>
   {/if}
@@ -220,4 +272,41 @@
   .ot-depth-bid-qty { color: var(--algo-green, var(--c-long)); opacity: 0.7; }
   .ot-depth-ask     { color: var(--algo-red, var(--c-short)); }
   .ot-depth-ask-qty { color: var(--algo-red, var(--c-short)); opacity: 0.7; }
+
+  /* Stale indicator — shows when error exists but old q is preserved */
+  .ot-depth-stale {
+    font-size: var(--fs-2xs);
+    color: var(--algo-amber, var(--c-action));
+    opacity: 0.7;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-left: auto;
+  }
+
+  /* B2/B3/B4: OI · Volume · Spread stats strip */
+  .ot-depth-stats {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.3rem;
+    font-size: var(--fs-2xs);
+  }
+  .ot-depth-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.2rem;
+  }
+  .ot-depth-stat-lbl {
+    color: var(--algo-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .ot-depth-stat-val {
+    color: var(--algo-slate);
+    font-variant-numeric: tabular-nums;
+    font-family: monospace;
+  }
+  .ot-depth-spread {
+    color: var(--algo-sky, #7dd3fc);
+  }
 </style>
