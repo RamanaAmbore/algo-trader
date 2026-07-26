@@ -1751,7 +1751,8 @@
     //    intervals even with no user interaction.
     const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
     if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-    return strategy?.spot;
+    const stratUnd = String(strategy?.underlying || '').toUpperCase();
+    return stratUnd && stratUnd === selectedUnderlying ? strategy?.spot : undefined;
   });
 
   // True for the one render frame between selectedUnderlying changing and the
@@ -3527,9 +3528,6 @@
     } catch (e) {
       if (_thisGen !== _stratGen) return;
       _stratFails  += 1;
-      // Record key on failure to suppress repeated hammering during closed
-      // hours. force=true bypasses so manual retries always fire.
-      _stratLastKey = legsKey;
       if (!strategy && _stratFails >= 2) {
         strategyErr = /** @type {any} */ (e).message || String(e);
       }

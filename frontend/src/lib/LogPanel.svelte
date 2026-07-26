@@ -2353,9 +2353,9 @@
   /* Conn tab — structured connection event rows */
   .lp-conn-row {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 0.5rem;
-    padding: 0.1rem 0.5rem;
+    padding: 0.28rem 0.5rem;
     font-size: var(--fs-base, 0.78rem);
     white-space: nowrap;
     overflow: hidden;
