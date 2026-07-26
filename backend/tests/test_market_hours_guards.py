@@ -129,11 +129,21 @@ class TestTemplateHasWing:
         t["wing_premium_pct"] = 0.05
         assert _template_has_wing(t) is True
 
-    def test_wing_fields_zero_returns_false(self):
-        """SSOT: wing fields explicitly 0 → False (same as None)."""
+    def test_wing_strike_offset_zero_returns_true(self):
+        """SSOT: offset=0 is a valid ATM wing (same-strike hedge) → True.
+
+        resolve_template_plan uses `if wing_strike_offset is not None:` so
+        offset=0 does produce a wing leg — the guard must detect it.
+        """
         t = _gtt_only_template()
         t["wing_strike_offset"] = 0
-        t["wing_premium_pct"] = 0.0
+        assert _template_has_wing(t) is True
+
+    def test_wing_fields_none_returns_false(self):
+        """SSOT: wing_strike_offset=None and wing_premium_pct=None/0 → False."""
+        t = _gtt_only_template()
+        # _gtt_only_template already has both fields as None — double-check.
+        assert t.get("wing_strike_offset") is None
         assert _template_has_wing(t) is False
 
 
@@ -354,11 +364,16 @@ class TestApplyTemplateToOrderMarketHoursGuard:
 # ── C2: apply_plan_live market-hours guard ────────────────────────────────
 
 class TestApplyPlanLiveMarketHoursGuard:
-    """C2 — market-hours guard at the top of apply_plan_live."""
+    """C2 — market-hours guard at the top of apply_plan_live.
 
-    def test_closed_exchange_returns_error_before_gtt_call(self):
-        """SSOT: apply_plan_live returns error immediately when exchange closed."""
-        plan = _make_plan(exchange="NFO")
+    The C2 guard ONLY fires when plan.wing is not None (has a protective
+    wing MARKET leg). GTT-only plans (wing=None) are allowed to register
+    24×7 since Kite accepts GTT registration off-hours.
+    """
+
+    def test_closed_exchange_with_wing_returns_error_before_gtt_call(self):
+        """SSOT: apply_plan_live + wing + closed exchange → error immediately."""
+        plan = _make_plan(exchange="NFO", with_wing=True)
         mock_broker = MagicMock()
 
         with patch(
@@ -375,9 +390,9 @@ class TestApplyPlanLiveMarketHoursGuard:
         assert "NFO" in result.errors[0]
         assert "closed" in result.errors[0].lower()
 
-    def test_closed_exchange_broker_place_gtt_not_called(self):
-        """Perf: broker.place_gtt never called when exchange is closed."""
-        plan = _make_plan(exchange="NSE")
+    def test_closed_exchange_with_wing_broker_place_gtt_not_called(self):
+        """Perf: broker.place_gtt never called when exchange closed + wing."""
+        plan = _make_plan(exchange="NSE", with_wing=True)
         mock_broker = MagicMock()
 
         with patch(
@@ -389,14 +404,39 @@ class TestApplyPlanLiveMarketHoursGuard:
         ):
             apply_plan_live(plan, mock_broker)
 
-        assert not mock_broker.place_gtt.called, "place_gtt must not be called on closed market"
+        assert not mock_broker.place_gtt.called, "place_gtt must not be called on closed market with wing"
 
-    def test_open_exchange_proceeds_past_guard(self):
-        """Stale: open exchange → guard does not fire, G1 + GTT run normally."""
-        plan = _make_plan(exchange="NSE")
+    def test_closed_exchange_gtt_only_proceeds_past_guard(self):
+        """Stale: GTT-only plan (wing=None) + closed exchange → proceeds.
+        Kite accepts GTT registration 24×7; only wing MARKET orders need open market."""
+        plan = _make_plan(exchange="NSE", with_wing=False)
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"
         mock_broker.place_gtt.return_value = "gtt-55"
+        mock_broker.translate_qty.side_effect = lambda e, q, ls: q
+
+        with patch(
+            "backend.api.algo.agent_engine._symbol_exchange_open",
+            return_value=False,
+        ), patch(
+            "backend.api.algo.agent_engine._build_now_ctx",
+            return_value={},
+        ):
+            result = apply_plan_live(plan, mock_broker)
+
+        # No market-hours error; GTT placement should proceed
+        assert not any("closed" in e.lower() for e in result.errors), (
+            "GTT-only plan must not be blocked by closed-market guard"
+        )
+        assert mock_broker.place_gtt.called, "place_gtt must be called for GTT-only when closed"
+
+    def test_open_exchange_with_wing_proceeds_past_guard(self):
+        """Stale: open exchange + wing → guard does not fire, G1 + GTT run normally."""
+        plan = _make_plan(exchange="NSE", with_wing=True)
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "zerodha_kite"
+        mock_broker.place_gtt.return_value = "gtt-55"
+        mock_broker.place_order.return_value = "order-55"
         mock_broker.translate_qty.side_effect = lambda e, q, ls: q
 
         with patch(
@@ -412,11 +452,11 @@ class TestApplyPlanLiveMarketHoursGuard:
         assert not any("closed" in e.lower() for e in result.errors), (
             "No closed-market error when exchange is open"
         )
-        assert mock_broker.place_gtt.called, "place_gtt must be called for open market"
+        assert mock_broker.place_gtt.called, "place_gtt must be called for open market with wing"
 
-    def test_closed_mcx_exchange_named_in_error(self):
-        """UX: error string includes the exchange name (MCX in this case)."""
-        plan = _make_plan(exchange="MCX")
+    def test_closed_mcx_exchange_with_wing_named_in_error(self):
+        """UX: error string includes the exchange name (MCX in this case) when wing present."""
+        plan = _make_plan(exchange="MCX", with_wing=True)
         mock_broker = MagicMock()
 
         with patch(
@@ -428,15 +468,38 @@ class TestApplyPlanLiveMarketHoursGuard:
         ):
             result = apply_plan_live(plan, mock_broker)
 
+        assert len(result.errors) == 1, "Must have exactly one error for closed MCX with wing"
         assert "MCX" in result.errors[0], "Error must name the exchange"
+
+    def test_closed_mcx_gtt_only_no_error(self):
+        """SSOT: GTT-only plan (wing=None) + closed MCX → no error, proceeds normally."""
+        plan = _make_plan(exchange="MCX", with_wing=False)
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "zerodha_kite"
+        mock_broker.place_gtt.return_value = "gtt-mcx"
+        mock_broker.translate_qty.side_effect = lambda e, q, ls: q
+
+        with patch(
+            "backend.api.algo.agent_engine._symbol_exchange_open",
+            return_value=False,
+        ), patch(
+            "backend.api.algo.agent_engine._build_now_ctx",
+            return_value={},
+        ):
+            result = apply_plan_live(plan, mock_broker)
+
+        # No error; GTT-only is allowed off-hours
+        assert not result.errors, f"Expected no errors for GTT-only on closed MCX, got: {result.errors}"
+        assert mock_broker.place_gtt.called, "place_gtt must be called even when MCX closed (GTT-only)"
 
     def test_market_hours_check_exception_proceeds_safely(self):
         """Reuse: if _symbol_exchange_open raises, apply_plan_live continues
         (fail-open: better to attempt placement than silently block)."""
-        plan = _make_plan(exchange="NSE")
+        plan = _make_plan(exchange="NSE", with_wing=True)
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"
         mock_broker.place_gtt.return_value = "gtt-77"
+        mock_broker.place_order.return_value = "order-77"
         mock_broker.translate_qty.side_effect = lambda e, q, ls: q
 
         with patch(

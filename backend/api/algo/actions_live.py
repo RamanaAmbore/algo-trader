@@ -127,8 +127,11 @@ async def _place_order_preflight_block(
 
 async def _place_order_write_intent(agent_shim, pf: dict,
                                     account: str, symbol: str, exchange: str,
-                                    side: str, qty: int, price) -> None:
-    """Write OPEN AlgoOrder row and fire preflight_ok event (best-effort)."""
+                                    side: str, qty: int, price) -> "int | None":
+    """Write OPEN AlgoOrder row and fire preflight_ok event (best-effort).
+
+    Returns the AlgoOrder row id so callers can pass algo_order_id to chase_order.
+    """
     from backend.api.algo.actions import _write_live_order
 
     try:
@@ -146,8 +149,9 @@ async def _place_order_write_intent(agent_shim, pf: dict,
                 "Preflight passed",
                 payload={"diagnostics": pf["diagnostics"]},
             ))
+        return intent_id
     except Exception:
-        pass
+        return None
 
 
 async def _place_order_on_failure(
@@ -246,8 +250,8 @@ async def _action_place_order(context: dict, params: dict):
         )
         return  # abort without placing
 
-    # Emit preflight_ok event (fire-and-forget).
-    await _place_order_write_intent(_shim, pf, account, symbol, exchange, side, qty, price)
+    # Emit preflight_ok event (fire-and-forget); capture row id for chase.
+    _oid = await _place_order_write_intent(_shim, pf, account, symbol, exchange, side, qty, price)
 
     cfg = ChaseConfig(exchange=exchange, product=product)
     try:
@@ -255,6 +259,7 @@ async def _action_place_order(context: dict, params: dict):
             account=account, symbol=symbol,
             transaction_type=side, quantity=qty,
             cfg=cfg,
+            algo_order_id=_oid,
         )
     except Exception as e:
         await _place_order_on_failure(e, context, account, symbol, exchange, side, qty, price, product)
@@ -405,7 +410,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
         return  # abort — do not reach chase_order
 
     # Persist the intent row before touching the broker.
-    await _write_live_order(agent, "close_position", {
+    _oid = await _write_live_order(agent, "close_position", {
         "account": account, "symbol": symbol, "exchange": exchange,
         "side": side, "qty": qty, "price": price,
     }, status="OPEN")
@@ -416,6 +421,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
             account=account, symbol=symbol,
             transaction_type=side, quantity=qty,
             cfg=cfg,
+            algo_order_id=_oid,
         )
     except Exception as e:
         await _close_position_on_failure(
@@ -743,7 +749,7 @@ async def _chase_build_tasks(
             continue  # skip this position; other positions in the loop proceed
 
         # Persist intent row before broker call.
-        await _write_live_order(agent, "chase_close_positions", {
+        _oid = await _write_live_order(agent, "chase_close_positions", {
             "account": acct, "symbol": symbol, "exchange": exchange,
             "side": side, "qty": qty, "price": price,
         }, status="OPEN")
@@ -752,7 +758,8 @@ async def _chase_build_tasks(
         chase_tasks.append(
             asyncio.create_task(
                 chase_order(account=acct, symbol=symbol,
-                            transaction_type=side, quantity=qty, cfg=cfg)
+                            transaction_type=side, quantity=qty, cfg=cfg,
+                            algo_order_id=_oid)
             )
         )
         task_rows.append(p)

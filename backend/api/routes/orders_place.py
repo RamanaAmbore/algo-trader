@@ -396,7 +396,7 @@ def _opp_build_attach_entries(
             entry["sl_trail_pct"]   = float(spec.sl_trail_pct)
             entry["trigger_values"] = list(spec.trigger_values)
             entry["highest_ltp"]    = float(fill_price)
-            entry["low_ltp"]        = float(fill_price)
+            entry["lowest_ltp"]     = float(fill_price)
             entry["parent_side"]    = parent_side
         attached.append(entry)
     return attached

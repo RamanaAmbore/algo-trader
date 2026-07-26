@@ -126,7 +126,7 @@ async def test_chase_close_error_loop_uses_task_rows_not_rows():
     # chase_order: raises for the first task (pos2), succeeds for the second (pos3)
     _chase_call_count = 0
 
-    async def mock_chase(*, account, symbol, transaction_type, quantity, cfg):
+    async def mock_chase(*, account, symbol, transaction_type, quantity, cfg, algo_order_id=None):
         nonlocal _chase_call_count
         _chase_call_count += 1
         if _chase_call_count == 1:

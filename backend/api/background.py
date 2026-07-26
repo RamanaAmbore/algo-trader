@@ -23,6 +23,7 @@ from typing import Optional
 
 import pandas as pd
 
+from backend.api.database import async_session
 from backend.shared.helpers.date_time_utils import timestamp_indian, is_market_open, timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.settings import get_int
@@ -4889,7 +4890,6 @@ async def recover_live_chases() -> None:
     """
     from datetime import datetime, timezone, timedelta
     from sqlalchemy import select
-    from backend.api.database import async_session
     from backend.api.models import AlgoOrder
     from backend.api.algo.chase import chase_order, ChaseConfig, _chase_default_cfg
     from backend.api.routes.orders_helpers import _LIVE_CHASE_TASKS
@@ -4915,6 +4915,8 @@ async def recover_live_chases() -> None:
             _intent = getattr(row, "intent", None)
             if _intent is not None:
                 cfg.intent = _intent
+            cfg.exchange = getattr(row, "exchange", None) or cfg.exchange
+            cfg.product  = getattr(row, "product",  None) or cfg.product
             task = asyncio.create_task(
                 chase_order(
                     algo_order_id=row.id,
@@ -4947,8 +4949,7 @@ async def _task_broker_issue_daily() -> None:
     _IST = timedelta(hours=5, minutes=30)
 
     async def _aggregate(target_date) -> None:
-        from backend.api.database import get_session
-        async with get_session() as session:
+        async with async_session() as session:
             rows = (await session.execute(_text("""
                 SELECT broker_id, account, event_type, COUNT(*) AS cnt
                 FROM broker_connection_events
@@ -5094,6 +5095,7 @@ async def on_startup(app) -> None:
     # service restart (OPEN + engine=live + next_attempt_at IS NOT NULL
     # + updated_at > 120 s ago).
     try:
+        await asyncio.sleep(3)  # allow SQLAlchemy pool to bind before first DB query
         await recover_live_chases()
     except Exception as e:
         logger.warning(f"Background: live chase recovery failed: {e}")

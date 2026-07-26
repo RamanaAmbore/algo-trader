@@ -201,7 +201,7 @@ def _chase_terminal_fire_fill_hooks(
         _ch_maybe_fire_auto_tp(row_snap, final_price)
         _ch_maybe_fire_template_attach(row_snap, final_price)
     except Exception as _tp_e:
-        logger.debug(f"_emit_chase_terminal TP arm failed: {_tp_e}")
+        logger.warning(f"_emit_chase_terminal TP arm failed: {_tp_e}", exc_info=True)
 
 
 async def _emit_chase_terminal(
@@ -933,7 +933,7 @@ async def _chase_poll_status(
             current_order_id, cfg, algo_order_id, emit,
         )
 
-    if order_status == "CANCELLED":
+    if order_status in ("CANCELLED", "EXPIRED"):
         return _ch_poll_handle_cancelled(
             result, status, attempt, remaining_qty,
             current_order_id, symbol, transaction_type, quantity,

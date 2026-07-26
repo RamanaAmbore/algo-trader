@@ -126,7 +126,11 @@
   // exclude those from the pendingOrders list (they already appear as chase rows).
   let _chaseOrderIds = $state(/** @type {Set<string>} */ (new Set()));
   const _openOrderCount = $derived(
-    orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length
+    orders.filter(o =>
+      o.status === 'OPEN' ||
+      o.status === 'TRIGGER PENDING' ||
+      o.status === 'TRIGGER_PENDING'
+    ).length
   );
   // OPEN / TRIGGER_PENDING broker orders that are NOT active chases.
   // These are plain working orders the operator can modify or cancel.
@@ -241,6 +245,7 @@
       price:     o.price > 0 ? o.price : undefined,
       trigger:   o.trigger_price > 0 ? o.trigger_price : undefined,
       product:   o.product,
+      variety:   o.variety || 'regular',
       account:   String(o.account || ''),
       accounts:  [],
     };
@@ -354,7 +359,7 @@
 <div class="grid grid-cols-5 gap-2 mt-1 mb-2">
   {#each [
     { id: 'all',       label: 'All',       count: _scopedOrders.length, accent: 'inactive' },
-    { id: 'open',      label: 'Open',      count: _scopedOrders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length, accent: 'running' },
+    { id: 'open',      label: 'Open',      count: _scopedOrders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING' || o.status === 'TRIGGER_PENDING').length, accent: 'running' },
     { id: 'complete',  label: 'Filled',    count: _scopedOrders.filter(o => o.status === 'COMPLETE').length,  accent: 'active' },
     { id: 'rejected',  label: 'Rejected',  count: _scopedOrders.filter(o => o.status === 'REJECTED').length,  accent: 'error' },
     { id: 'cancelled', label: 'Cancelled', count: _scopedOrders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
