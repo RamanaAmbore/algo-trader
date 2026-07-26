@@ -36,6 +36,7 @@ import ssl
 import time as _time
 import threading
 import urllib3.exceptions
+import requests.exceptions
 from collections import defaultdict
 from typing import Any, Callable
 
@@ -185,8 +186,13 @@ def _retry_groww_auth(fn: Callable) -> Callable:
                     pass  # refresh_session is best-effort; proceed regardless
                 return fn(self, *args, **kwargs)
 
-            # SSL EOF → retry once after a short pause
-            except (ssl.SSLError, urllib3.exceptions.SSLError) as ssl_err:
+            # SSL EOF → retry once after a short pause.
+            # requests.exceptions.SSLError wraps urllib3's MaxRetryError when
+            # the growwapi SDK's module-level requests calls exhaust urllib3's
+            # internal retries — it is NOT a subclass of ssl.SSLError or
+            # urllib3.exceptions.SSLError, so it must be listed explicitly.
+            except (ssl.SSLError, urllib3.exceptions.SSLError,
+                    requests.exceptions.SSLError) as ssl_err:
                 logger.warning(
                     f"[GROWW-SSL] SSL EOF on {fn.__name__} for {self.account!r}; "
                     f"retrying after 2s: {ssl_err}"
