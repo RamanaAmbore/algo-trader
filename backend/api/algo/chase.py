@@ -258,7 +258,10 @@ async def _emit_chase_terminal(
         _chase_terminal_fire_fill_hooks(_row_snap, outcome, final_price)
 
     except Exception as _e:
-        logger.debug(f"_emit_chase_terminal: {_e}")
+        logger.warning(
+            f"_emit_chase_terminal failed — template attach or DB update may not have fired: {_e}",
+            exc_info=True,
+        )
 
 _executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chase")
 
@@ -431,6 +434,12 @@ def _calc_limit_price(depth: dict, transaction_type: str, attempt: int,
     NFO/NSE, ₹1 on MCX commodities, …). Without this, the chase would
     happily send ₹437.55 on a ₹1-tick contract and Kite rejects with
     "the entered price is not as per the ticker price".
+
+    Tick-quantization limitation: when the bid-ask spread is 1–2 ticks
+    (e.g. spread=0.05, tick=0.05), ``spread × aggression_step × 0.5``
+    is sub-tick and successive calls may snap to the same price for
+    multiple consecutive attempts. The caller (``chase_order``) enforces
+    a minimum 1-tick progression per attempt — do not add that logic here.
     """
     best_bid, best_ask = _ch_extract_best_bid_ask(depth)
 
@@ -550,6 +559,16 @@ def _place_order(account: str, symbol: str, transaction_type: str,
     """Place a limit order. Returns order_id."""
     broker    = _get_broker(account)
     lot_size  = _lot_size_sync(cfg.exchange, symbol)
+    # C4 — explicit lot_size=0 guard: instruments cache miss returns 0.
+    # Sending qty with lot_size=0 to normalise_qty causes a ZeroDivisionError
+    # or silently passes raw contract qty as lots → multi-lakh order bloat.
+    # Raise here so the chase loop's exception handler catches it and aborts.
+    if lot_size == 0:
+        raise ValueError(
+            f"[CHASE-GUARD] lot_size=0 for {cfg.exchange}/{symbol} — "
+            "instruments cache miss; cannot normalise qty. "
+            "Retry after cache warms."
+        )
     # normalise_qty handles per-broker contract↔lot translation
     # (Kite needs lots for MCX/NCO, qty for everything else). Default
     # is a no-op for brokers that always accept contracts.
@@ -1190,6 +1209,30 @@ async def chase_order(
     if cfg is None:
         cfg = _chase_default_cfg()
 
+    # C3 — Market-hours pre-flight: chase places LIMIT orders which the
+    # broker rejects instantly when the exchange is closed. Fail fast here
+    # to avoid burning all max_attempts against a closed market.
+    # Uses _symbol_exchange_open (not is_any_segment_open) so an NFO chase
+    # is blocked during the 09:00–09:15 MCX-only window. Lazy import avoids
+    # the known circular dep with agent_engine.
+    try:
+        from backend.api.algo.agent_engine import (  # circular: lazy OK
+            _symbol_exchange_open, _build_now_ctx,
+        )
+        if not _symbol_exchange_open(cfg.exchange, _build_now_ctx()):
+            logger.warning(
+                "[CHASE] %s closed — chase not started for %s on %s",
+                cfg.exchange, symbol, account,
+            )
+            return ChaseResult(
+                account=account, symbol=symbol,
+                transaction_type=transaction_type, quantity=quantity,
+                status=ChaseStatus.FAILED,
+                detail=f"{cfg.exchange} closed — chase not started",
+            )
+    except Exception as _mh_e:
+        logger.warning("[CHASE] market-hours check failed (proceeding): %s", _mh_e)
+
     result = ChaseResult(
         account=account, symbol=symbol,
         transaction_type=transaction_type, quantity=quantity,
@@ -1199,6 +1242,7 @@ async def chase_order(
     current_order_id = None
     remaining_qty    = quantity
     consecutive_errors = 0        # reset on any successful broker call
+    last_placed_price: float = 0.0  # enforces minimum 1-tick movement per attempt
 
     for attempt in range(1, cfg.max_attempts + 1):
         result.attempts = attempt
@@ -1216,6 +1260,25 @@ async def chase_order(
                 await asyncio.sleep(cfg.interval_seconds)
                 continue
 
+            # Minimum 1-tick progression guard — when the bid-ask spread is
+            # 1–2 ticks wide, spread × aggression_step × 0.5 is sub-tick and
+            # _calc_limit_price can return the same snapped price for several
+            # consecutive attempts. Force at least 1-tick movement so the
+            # operator sees real price progression in the chase panel.
+            if attempt > 1 and price == last_placed_price:
+                tick = _tick_size_sync(cfg.exchange, symbol)
+                best_bid, best_ask = _ch_extract_best_bid_ask(depth)
+                if transaction_type == "BUY":
+                    forced = _snap_to_tick(last_placed_price + tick, tick)
+                    price = min(forced, best_ask) if best_ask > 0 else forced
+                else:  # SELL
+                    forced = _snap_to_tick(last_placed_price - tick, tick)
+                    price = max(forced, best_bid) if best_bid > 0 else forced
+                logger.debug(
+                    "[CHASE] %s attempt %d: sub-tick formula, forced %s price %.4f→%.4f",
+                    symbol, attempt, transaction_type, last_placed_price, price,
+                )
+
             if attempt == 1:
                 result.initial_price = price
 
@@ -1227,6 +1290,7 @@ async def chase_order(
                 _place_order, account, symbol, transaction_type, remaining_qty, price, cfg
             )
             consecutive_errors = 0   # successful placement resets the error streak
+            last_placed_price = price  # track for minimum-tick progression check
             result.order_id = current_order_id
             logger.info(f"Chase {symbol}: attempt {attempt}/{cfg.max_attempts} "
                         f"— {transaction_type} {remaining_qty} @ {price} (order {current_order_id})")

@@ -1406,6 +1406,24 @@ def apply_plan_live(
     one side fires."""
     result = AttachResult(plan=plan)
 
+    # C2 — Market-hours guard: live GTT placement requires an open market
+    # so the broker can price-validate triggers. GTT registration itself is
+    # accepted by Kite 24×7, but a closed exchange means the wing MARKET leg
+    # will be rejected immediately — reject the whole plan now and let the
+    # caller retry after open. Lazy import avoids the known circular dep.
+    try:
+        from backend.api.algo.agent_engine import (  # circular: lazy OK
+            _symbol_exchange_open, _build_now_ctx,
+        )
+        if not _symbol_exchange_open(plan.parent_exchange, _build_now_ctx()):
+            result.errors.append(
+                f"Exchange {plan.parent_exchange} closed — "
+                "live GTT placement deferred"
+            )
+            return result
+    except Exception as _mh_e:
+        logger.warning(f"apply_plan_live: market-hours check failed: {_mh_e}")
+
     # G1 lot-multiple guard — fire before any broker call so sub-lot GTT
     # legs are caught here, not by the adapter ceiling after wire cost.
     # plan.parent_lot_size is set by apply_template_to_order via get_lot_size()
@@ -1687,6 +1705,19 @@ async def _resolve_lot_size_for_order(
         return 1, result_err
 
 
+def _template_has_wing(template: dict) -> bool:
+    """Return True when the template dict specifies a wing leg.
+
+    A wing is present when either wing_strike_offset (int offset from
+    parent strike) or wing_premium_pct (% of parent premium as limit price)
+    is non-None and non-zero. Called by the market-hours guard to decide
+    whether a closed-exchange attach can proceed (GTT-only: yes; wing: no).
+    """
+    offset = template.get("wing_strike_offset")
+    pct    = template.get("wing_premium_pct")
+    return bool(offset) or bool(pct)
+
+
 def _ta_resolve_sim_active(apply_path: str) -> bool:
     """Return True when SimDriver is active and apply_path is 'auto' or 'sim'."""
     if apply_path == "sim":
@@ -1910,6 +1941,48 @@ async def apply_template_to_order(
                 errors=_lot_err.errors,
             )
         return _lot_err
+
+    # C1 — Market-hours guard: wing MARKET legs fail at the broker when the
+    # exchange is closed. GTT-only templates are accepted by Kite 24×7 and
+    # can proceed off-hours. We check HERE — after lot_size resolution but
+    # before plan resolution — to avoid unnecessary computation. Only live
+    # and auto paths enforce the guard; preview/sim are always allowed.
+    if apply_path in ("live", "auto"):
+        try:
+            from backend.api.algo.agent_engine import (  # circular: lazy OK
+                _symbol_exchange_open, _build_now_ctx,
+            )
+            if not _symbol_exchange_open(parent_exchange, _build_now_ctx()):
+                if _template_has_wing(template):
+                    _err_msg = (
+                        f"Exchange {parent_exchange} closed — "
+                        "wing MARKET leg requires open market; attach deferred"
+                    )
+                    logger.warning("[TEMPLATE-GUARD] %s", _err_msg)
+                    _wing_err_plan = TemplatePlan(
+                        template_id=template.get("id"),
+                        template_name=template.get("name") or "(unnamed)",
+                        template_slug=template.get("slug"),
+                        parent_account=parent_account,
+                        parent_symbol=parent_symbol,
+                        parent_side=parent_side,
+                        parent_qty=parent_qty,
+                        parent_exchange=parent_exchange,
+                        parent_fill_price=float(parent_fill_price),
+                        parent_lot_size=parent_lot_size,
+                    )
+                    _wing_err_result = AttachResult(plan=_wing_err_plan)
+                    _wing_err_result.errors.append(_err_msg)
+                    _fire_attach_fail_alert(
+                        order_id=parent_order_id,
+                        symbol=parent_symbol,
+                        account=parent_account,
+                        errors=[_err_msg],
+                    )
+                    return _wing_err_result
+                # GTT-only template — no wing, proceed off-hours (Kite accepts GTTs 24×7)
+        except Exception as _mh_e:
+            logger.warning(f"apply_template_to_order: market-hours check failed: {_mh_e}")
 
     # Phase 1B — when the template says "pick wing by premium %" AND
     # no explicit wing_strike_offset overrides it, run the chain scan

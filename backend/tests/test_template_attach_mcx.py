@@ -40,6 +40,25 @@ from backend.brokers.adapters.kite import KiteBroker, to_kite_qty
 from backend.api.routes.instruments import _MCX_LOT_OVERRIDES
 
 
+# ── Module-level market-hours bypass ─────────────────────────────────
+# apply_plan_live now checks whether the exchange is open before placing
+# any GTT. Tests in this module call apply_plan_live directly and are not
+# market-hours-aware, so we patch the exchange-open check to return True
+# for the duration of every test in this module.
+
+@pytest.fixture(autouse=True)
+def _market_open(monkeypatch):
+    """Make all apply_plan_live calls in this module see an open market."""
+    monkeypatch.setattr(
+        "backend.api.algo.agent_engine._symbol_exchange_open",
+        lambda *_a, **_kw: True,
+    )
+    monkeypatch.setattr(
+        "backend.api.algo.agent_engine._build_now_ctx",
+        lambda: {"nse_open": True, "mcx_open": True},
+    )
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 _MCX_TEMPLATE = {

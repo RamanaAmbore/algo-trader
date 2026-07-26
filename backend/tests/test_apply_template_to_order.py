@@ -681,6 +681,12 @@ async def test_apply_template_to_order_live_mode_route():
     ), patch(
         "backend.brokers.registry.get_broker",
         return_value=mock_broker,
+    ), patch(
+        "backend.api.algo.agent_engine._symbol_exchange_open",
+        return_value=True,
+    ), patch(
+        "backend.api.algo.agent_engine._build_now_ctx",
+        return_value={},
     ):
         result = await apply_template_to_order(
             template_id=1,
@@ -743,6 +749,12 @@ async def test_apply_template_to_order_auto_mode_sim_inactive():
     ) as mock_sim_class, patch(
         "backend.brokers.registry.get_broker",
         return_value=mock_broker,
+    ), patch(
+        "backend.api.algo.agent_engine._symbol_exchange_open",
+        return_value=True,
+    ), patch(
+        "backend.api.algo.agent_engine._build_now_ctx",
+        return_value={},
     ):
         mock_driver = MagicMock()
         mock_driver.active = False
