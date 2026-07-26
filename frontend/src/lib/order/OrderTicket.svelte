@@ -2172,41 +2172,6 @@
        aria-label={standalone ? 'Place order' : undefined}
        onclick={(e) => e.stopPropagation()}>
     <CardHeader showControls={false}>
-      {#snippet left()}
-        <div class="ot-symbol">
-          <div class="ot-symbol-title-row">
-            <span class="ot-symbol-text"><LegLabel sym={symbol} exchange={exchange || ''} /></span>
-            <!-- A0: contract LTP from depth poll — amber, tabular-nums -->
-            {#if _lastQuote?.ltp != null}
-              <span class="ot-hdr-ltp">{priceFmt(_lastQuote.ltp)}</span>
-            {/if}
-          </div>
-          <span class="ot-symbol-meta">
-            {exchange ? exchange + ' · ' : ''}
-            {kind}{_lotSize ? ' · lot ' + _lotSize : ''}
-            {action !== 'open' ? ' · ' + action.toUpperCase() : ''}
-            <!-- B1: DTE chip -->
-            {#if _dte != null}<span class="ot-dte-chip">{_dte}d</span>{/if}
-            <!-- B6: moneyness chip -->
-            {#if _moneyness}<span class="ot-mono-chip ot-mono-{_moneyness.toLowerCase()}">{_moneyness}</span>{/if}
-            <!-- D1: market closed badge -->
-            {#if !_isOpen}<span class="ot-closed-badge">Closed</span>{/if}
-          </span>
-          <!-- B5: position context when closing — avg cost + unrealized P&L -->
-          {#if action === 'close' && (avgCost != null || unrealizedPnl != null)}
-            <span class="ot-pos-context">
-              {#if avgCost != null}
-                <span class="ot-pos-avg">avg ₹{priceFmt(avgCost)}</span>
-              {/if}
-              {#if unrealizedPnl != null}
-                <span class="ot-pos-pnl" class:pos={unrealizedPnl >= 0} class:neg={unrealizedPnl < 0}>
-                  {unrealizedPnl >= 0 ? '+' : ''}₹{priceFmt(Math.abs(unrealizedPnl))}
-                </span>
-              {/if}
-            </span>
-          {/if}
-        </div>
-      {/snippet}
       {#snippet middle()}
         <!-- A1: underlying spot LTP when showing a derivative contract -->
         {#if _rootSym && _underlyingLtp != null}
@@ -2871,87 +2836,6 @@
   .ot-modal :global(.ch-right) { gap: 0.35rem; }
   .ot-modal :global(.ch-sep) { margin: 0.1rem 0; }
 
-  /* A0: title row containing symbol + contract LTP side-by-side */
-  .ot-symbol-title-row {
-    display: flex;
-    align-items: baseline;
-    gap: 0.45rem;
-    flex-wrap: wrap;
-  }
-  .ot-symbol-text {
-    font-size: var(--fs-lg);
-    font-weight: 700;
-    color: var(--algo-slate);
-  }
-  /* A0: contract LTP — amber, tabular-nums, slightly smaller than symbol name */
-  .ot-hdr-ltp {
-    font-size: var(--fs-base);
-    font-weight: 600;
-    color: var(--algo-amber, var(--c-action));
-    font-variant-numeric: tabular-nums;
-    font-family: monospace;
-    flex-shrink: 0;
-  }
-  .ot-symbol-meta {
-    font-size: var(--fs-sm);
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.25rem;
-  }
-  /* B1: DTE chip — info sky */
-  .ot-dte-chip {
-    background: rgba(125, 211, 252, 0.12);
-    border: 1px solid rgba(125, 211, 252, 0.28);
-    color: var(--algo-sky, #7dd3fc);
-    border-radius: 3px;
-    padding: 0 0.3em;
-    font-size: var(--fs-2xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  /* B6: moneyness chips — color-coded */
-  .ot-mono-chip {
-    border-radius: 3px;
-    padding: 0 0.3em;
-    font-size: var(--fs-2xs);
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    border: 1px solid transparent;
-  }
-  .ot-mono-atm {
-    background: rgba(251, 191, 36, 0.12);
-    border-color: rgba(251, 191, 36, 0.30);
-    color: var(--algo-amber, var(--c-action));
-  }
-  .ot-mono-itm {
-    background: rgba(74, 222, 128, 0.10);
-    border-color: rgba(74, 222, 128, 0.25);
-    color: var(--algo-green, var(--c-long));
-  }
-  .ot-mono-otm {
-    background: rgba(248, 113, 113, 0.10);
-    border-color: rgba(248, 113, 113, 0.25);
-    color: var(--algo-red, var(--c-short));
-  }
-  /* D1: closed badge */
-  .ot-closed-badge {
-    background: rgba(251, 191, 36, 0.15);
-    border: 1px solid rgba(251, 191, 36, 0.35);
-    color: var(--algo-amber, var(--c-action));
-    border-radius: 3px;
-    padding: 0 0.3em;
-    font-size: var(--fs-2xs);
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-
   /* A1: underlying spot strip in header middle */
   .ot-underlying-spot {
     display: inline-flex;
@@ -2978,25 +2862,6 @@
   }
   .ot-underlying-chg.pos { color: var(--algo-green, var(--c-long)); }
   .ot-underlying-chg.neg { color: var(--algo-red, var(--c-short)); }
-
-  /* B5: position context row — avg cost + unrealizedP&L */
-  .ot-pos-context {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.35rem;
-    font-size: var(--fs-xs);
-    margin-top: 0.15rem;
-  }
-  .ot-pos-avg {
-    color: var(--algo-muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .ot-pos-pnl {
-    font-variant-numeric: tabular-nums;
-    font-weight: 600;
-  }
-  .ot-pos-pnl.pos { color: var(--algo-green, var(--c-long)); }
-  .ot-pos-pnl.neg { color: var(--algo-red, var(--c-short)); }
 
   /* A2: CHASE row — placed above the depth ladder */
   .ot-chase-row {

@@ -169,7 +169,7 @@
   /** @type {string[]} */
   let _actAccountFilter = $state([]);
   /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
-  let _statusFilter = $state('open');
+  let _statusFilter = $state('all');
 
   // Activity-card tab state. Order Book (card grid) is the default —
   // matches the LogPanel Orders tab format shown in every other
@@ -427,32 +427,11 @@
       }}
       onClose={() => { /* inline mode — no close affordance */ }}>
       {#snippet pickerSuffix()}
-        <!-- Chase cluster sits inline with the symbol input — same flex
-             row as [Account · Type · Symbol · Exchange]. Operator:
-             "mode and chase should be left aligned." Default 'low'
-             so L is amber-highlighted on cold start. -->
-        <span class="oc-header-cluster">
-          <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-          <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_pageChaseAgg === 'low'}
-                    title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                    onclick={() => _pageChaseAgg = 'low'}>L</button>
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_pageChaseAgg === 'med'}
-                    title="Medium — peg to midpoint of bid+ask."
-                    onclick={() => _pageChaseAgg = 'med'}>M</button>
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_pageChaseAgg === 'high'}
-                    title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                    onclick={() => _pageChaseAgg = 'high'}>H</button>
-          </div>
-          {#if _pageBasketCount > 0}
-            <button type="button" class="oes-common-clear oes-common-clear-inline"
-              title="Clear all basket legs"
-              onclick={() => _triggerClear++}>Clear</button>
-          {/if}
-        </span>
+        {#if _pageBasketCount > 0}
+          <button type="button" class="oes-common-clear oes-common-clear-inline"
+            title="Clear all basket legs"
+            onclick={() => _triggerClear++}>Clear</button>
+        {/if}
       {/snippet}
     </SymbolPanel>
     {#if isDemo}
@@ -715,17 +694,6 @@
     flex-shrink: 0;
   }
   .oc-entry-icon { color: currentColor; flex-shrink: 0; width: 11px; height: 11px; }
-  /* Mode + CHASE + L/M/H + Clear cluster inside the bucket header.
-     Sits between the "ORDER ENTRY" label and the CardHeader middle
-     spacer zone. Inline-flex so all children line up on the row's
-     baseline; matches the modal's `.oes-header-cluster` cadence. */
-  .oc-header-cluster {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    flex-shrink: 0;
-    margin: 0;
-  }
   /* Exchange filter strip + per-row Modify/Cancel/Reconcile buttons
      retired — the Activity card now mounts LogPanel which carries its
      own filter chips + action buttons via `.lp-oc-actions`. */
