@@ -30,6 +30,7 @@
     pins       = /** @type {string[]} */ ([]),
     resolvePin = /** @type {((pin: string) => string | null) | null} */ (null),
     type       = /** @type {'ALL'|'EQ'|'FUT'|'OPT'} */ ('ALL'),
+    exchangeFilter = /** @type {string} */ ('ALL'),
     placeholder = 'Type 3+ chars…',
     minChars   = 3,
     onPick     = /** @type {(sym: string, meta?: {pinLabel?: string, exchange?: string, type?: string}) => void} */ ((_sym, _meta) => {}),
@@ -88,11 +89,21 @@
     if (v && displaySymbol(v) !== untrack(() => _symQuery)) _symQuery = displaySymbol(v);
   });
 
-  // Re-run search when the type filter changes from the outside.
+  // Re-run search when the type or exchange filter changes from the outside.
   $effect(() => {
     void type;
+    void exchangeFilter;
     if (_symQuery.length >= minChars) _runSearch(_symQuery);
   });
+
+  /** Filter a list of instrument rows by the active exchangeFilter prop. */
+  function _filterByExchange(/** @type {any[]} */ rows) {
+    if (!exchangeFilter || exchangeFilter === 'ALL') return rows;
+    return rows.filter(r => {
+      const e = String(r?.e || r?.exchange || '').toUpperCase();
+      return e === exchangeFilter;
+    });
+  }
 
   /** Filter a list of instrument rows by the active type prop. */
   function _filterByType(/** @type {any[]} */ rows) {
@@ -121,13 +132,14 @@
         // Fetch wide (80) then filter — searchByPrefix front-loads EQ rows
         // so a small limit would starve OPT/FUT picks on heavy-volume names.
         const full = await searchByPrefix(v, 80);
-        const typed = _filterByType(Array.isArray(full) ? full : []);
+        const typed    = _filterByType(Array.isArray(full) ? full : []);
+        const filtered = _filterByExchange(typed);
         // Drop bare underlying roots — they're not directly tradable.
         // EQ rows whose tradingsymbol exactly matches a bare root are
         // excluded (e.g. the equity "NIFTY" entry for the index name).
         // Virtual roots (GOLD, GOLD_NEXT) injected by searchByPrefix are
         // intentionally tradable picks — do NOT drop them via _isBareRoot.
-        const tradable = typed.filter(r => {
+        const tradable = filtered.filter(r => {
           if (r?.virtual) return true;
           const sym = String(r?.s || r?.sym || r?.tradingsymbol || '').toUpperCase();
           return !_isBareRoot(sym);
