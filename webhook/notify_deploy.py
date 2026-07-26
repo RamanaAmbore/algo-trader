@@ -124,6 +124,23 @@ def main():
     # back, restore the prior block from git history (it lived here)
     # plus add a `deploy_emails` list to secrets.yaml.
 
+    # AppMessage DB record — best-effort. This script runs as a subprocess
+    # with no asyncio event loop so fire() silently no-ops (its RuntimeError
+    # guard swallows the missing loop). The callsite is retained so that
+    # if dispatch is ever called from an async context this correctly routes.
+    try:
+        from backend.shared.helpers.app_message import AppMessage as _AppMsg, fire as _fire_msg
+        _fire_msg(_AppMsg(
+            level="info" if status == "ok" else "error",
+            tags=["deploy"],
+            title=event_label,
+            body=detail_line,
+            data={"branch": branch, "commit": commit, "deploy_type": deploy_type,
+                  "status": status},
+        ))
+    except Exception:
+        pass  # subprocess environment may lack the installed package
+
     if errors:
         print("notify_deploy: errors:", "; ".join(errors), file=sys.stderr)
         sys.exit(1)

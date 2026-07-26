@@ -1,39 +1,38 @@
-# Plan: NavStrip Popup + MCX/Dhan GTT Broker Guard
+# Plan: Unified AppMessage — DB-backed Notification + Log System + Order Book Panel
 
 ## Context
-Two independent improvements bundled in one deploy:
+Three related changes in one plan:
 
-**1. NavStrip popup anchor** — Clicking any P/M/C/H pill in `PositionStrip.svelte` opens
-`NavBreakdown` in a fixed right-side panel. Operator wants it to appear as a floating popup
-anchored below the clicked label/value instead.
+1. **AppMessage system** — DB-backed `app_messages` table + dispatcher + `/api/messages` REST
+   endpoint. All sinks (ntfy, Telegram, email) and LogPanel tabs route through it. Tags are
+   metadata only — never displayed. News/terminal/simulator tabs excluded.
 
-**2. MCX/Dhan GTT fail-fast + after-market edge cases** — Currently, attaching a template
-to an MCX position on a Dhan account only fails at `place_gtt` call time (`dhan.py:1390`),
-after lot-size resolution and plan resolution have already run. The `capabilities.py` matrix
-already records `gtt_supports_mcx=False` for Dhan but it isn't used as a pre-attach gate.
-The fix adds a `validate_gtt_exchange(exchange)` method at the broker-layer ABC so adapters
-own the rejection, and wires it as a fail-fast check in `apply_template_to_order` (before plan
-resolution). After-market edge cases — MCX evening session hours, Groww OCO split at close
-boundary, off-hours GTT attach note — are also addressed.
+2. **Order Book panel** — Order cards currently live in the LogPanel "order" tab, which has a
+   different visual format from every other tab. Extract cards into a dedicated `OrderBook.svelte`
+   panel shown on the Orders page and in the Order modal. The LogPanel "order" tab becomes a
+   plain text log feed (AppMessage rows tagged `order`), consistent with agent/system/conn tabs.
+   LogPanel is removed from the Orders page and Order modal.
 
-## Task
-1. Anchor NavStrip breakdown popup to the clicked element.
-2. Add `validate_gtt_exchange` to broker ABC + Dhan/Groww overrides.
-3. Pre-reject MCX+Dhan (and MCX+Groww) templates in `apply_template_to_order` before plan
-   resolution, using `caps`, with `_fire_attach_fail_alert`.
-4. Add off-hours attach note when GTT-only template is placed outside session hours.
-5. Write pytest coverage for cases 2-4.
+3. **Consolidated post-market cron** — Replace the current N individual post-market background
+   tasks (each running an infinite poll loop checking time) with a single `_task_post_market_cron`
+   orchestrator. It fires the right sub-jobs at the right windows; individual task functions
+   become helpers called by the orchestrator.
+
+## Constraints
+- No changes to chase.py, template_attach.py, agent_engine.py, alert_utils.py internals
+- Dispatcher is always fire-and-forget from callers; DB/sink failures never propagate
+- `news`, `terminal`, `simulator` tabs excluded from AppMessage system
+- Order card rendering logic is preserved — just moved to OrderBook.svelte
+- Post-market task logic is preserved — just consolidated under one orchestrator loop
 
 ## Agents
-- frontend: Edit `frontend/src/lib/PositionStrip.svelte` per the NavStrip popup steps below.
-- broker: Add `validate_gtt_exchange` to `backend/brokers/broker_apis.py` ABC + override in
-  `backend/brokers/adapters/dhan.py` + `backend/brokers/adapters/groww.py`. Also call it
-  from the top of `apply_plan_live` in `backend/api/algo/template_attach.py`.
-- backend: In `backend/api/algo/template_attach.py:apply_template_to_order`, after line 1924
-  where `caps` is resolved, add the MCX fail-fast block and off-hours GTT note. No other files.
-- backend-test: Add `backend/tests/broker/test_gtt_broker_guard.py` covering: MCX+Dhan raises
-  at validate, MCX+Kite passes, Groww MCX raises, NSE on all brokers passes, off-hours GTT-only
-  note presence, off-hours wing template blocks (existing C1 behaviour regression test).
+- backend: AppMessage model + migration + dispatcher + REST endpoint + register route +
+  consolidated post-market cron + 2 initial callsites (deploy + close summary)
+- frontend: OrderBook.svelte (extract from LogPanel order tab) + wire to Orders page +
+  wire to Order modal + remove LogPanel from Orders page/modal +
+  update LogPanel order tab to poll /api/messages?tags=order
+- backend-test: tests for dispatcher, endpoint, and cron orchestrator
+- broker: skip
 - doc: skip
 - playwright: skip
 
@@ -42,203 +41,217 @@ boundary, off-hours GTT attach note — are also addressed.
 - svelte-check: yes
 - playwright: no
 
-## Implementation — Part 1: NavStrip popup (PositionStrip.svelte)
-
-### 1 — Replace two state vars with one object (lines 35-36)
-
-```js
-// OLD:
-let _breakdownOpen = $state(false);
-let _activeSlot   = $state(/** @type {'P'|'M'|'C'|'H'} */ ('P'));
-
-// NEW:
-let _breakdown = $state(
-  /** @type {{ open: boolean, slot: 'P'|'M'|'C'|'H', left: number, top: number }} */
-  ({ open: false, slot: 'P', left: 0, top: 0 })
-);
-```
-
-### 2 — Add positioning helper (after state block, before `_load`)
-
-```js
-/** @param {MouseEvent|KeyboardEvent} e @param {'P'|'M'|'C'|'H'} slot */
-function _openBreakdown(e, slot) {
-  const rect = /** @type {HTMLElement} */ (e.currentTarget).getBoundingClientRect();
-  const PW = Math.min(28 * 16, window.innerWidth); // 28rem popup width
-  let left = rect.left + rect.width / 2 - PW / 2;
-  left = Math.max(8, Math.min(left, window.innerWidth - PW - 8));
-  const maxH = window.innerHeight * 0.7;
-  const top = (rect.bottom + 4 + maxH < window.innerHeight)
-    ? rect.bottom + 4
-    : rect.top - maxH - 4;
-  _breakdown = { open: true, slot, left, top };
-}
-```
-
-### 3 — Replace all 12 click handlers (pills P/M/C/H, labels + values)
-
-Labels (Enter only):
-```js
-onclick={(e) => _openBreakdown(e, 'X')}
-onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'X')}
-```
-Values (Enter or Space):
-```js
-onclick={(e) => _openBreakdown(e, 'X')}
-onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'X')}
-```
-
-### 4 — Update panel markup (lines 976-990)
-
-```svelte
-{#if _breakdown.open}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_click_events_have_key_events -->
-  <div class="ps-breakdown-overlay" role="presentation"
-       onclick={() => (_breakdown.open = false)}
-       onkeydown={(e) => e.key === 'Escape' && (_breakdown.open = false)}>
-    <div class="ps-breakdown-panel"
-         style="left:{_breakdown.left}px; top:{_breakdown.top}px"
-         role="dialog" tabindex="-1"
-         onclick={(e) => e.stopPropagation()}
-         onkeydown={(e) => e.stopPropagation()}>
-      <button type="button" class="ps-breakdown-close"
-              onclick={() => (_breakdown.open = false)}
-              aria-label="Close breakdown">✕</button>
-      <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={_expiryProfitByAcct} />
-    </div>
-  </div>
-{/if}
-```
-
-### 5 — Update CSS (lines 1178-1202)
-
-Remove `top: calc(3rem + 1px + 1.5rem)` and `right: 0` from `.ps-breakdown-panel`.
-`left` and `top` now come from the inline `style=` on the element.
-
 ---
 
-## Implementation — Part 2: Broker-layer GTT guard
+## Part 1 — AppMessage Backend
 
-### A. Add `validate_gtt_exchange` to broker ABC (`backend/brokers/broker_apis.py`)
+### 1a. ORM Model (`backend/api/models.py`)
 
-Find the Broker ABC (or base class). Add:
 ```python
-def validate_gtt_exchange(self, exchange: str) -> None:
-    """Raise ValueError if this broker does not support GTT on `exchange`.
-    Default: all exchanges supported. Override in adapters that have gaps."""
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+
+class AppMessage(Base):
+    __tablename__ = "app_messages"
+
+    id:           Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    created_at:   Mapped[datetime]       = mapped_column(
+                      DateTime(timezone=True),
+                      default=lambda: datetime.now(timezone.utc), index=True)
+    level:        Mapped[str]            = mapped_column(String(10), nullable=False)
+    tags:         Mapped[list]           = mapped_column(ARRAY(String), nullable=False)
+    title:        Mapped[Optional[str]]  = mapped_column(String(255), nullable=True)
+    body:         Mapped[str]            = mapped_column(Text, nullable=False)
+    account:      Mapped[Optional[str]]  = mapped_column(String(50), nullable=True, index=True)
+    symbol:       Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)
+    data:         Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    retain_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+
+    __table_args__ = (
+        Index("ix_app_messages_tags", "tags", postgresql_using="gin"),
+        Index("ix_app_messages_retain", "retain_until",
+              postgresql_where=text("retain_until IS NOT NULL")),
+    )
 ```
 
-### B. Override in `backend/brokers/adapters/dhan.py`
+### 1b. Migration (`backend/api/database.py`)
+
+Add `async def _migrate_app_messages_table(conn)` using raw idempotent SQL
+(`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`). Call it from `init_db()`
+after the last existing migration.
+
+### 1c. Dispatcher (`backend/shared/helpers/app_message.py`) — new file
 
 ```python
-_GTT_UNSUPPORTED_EXCHANGES = frozenset({"MCX", "NCO"})
+@dataclass
+class AppMessage:
+    body:    str
+    tags:    list[str]
+    level:   str            = "info"   # info | warning | error | critical
+    title:   str            = ""
+    account: Optional[str]  = None
+    symbol:  Optional[str]  = None
+    data:    Optional[dict] = field(default=None)
 
-def validate_gtt_exchange(self, exchange: str) -> None:
-    if exchange in _GTT_UNSUPPORTED_EXCHANGES:
-        raise ValueError(
-            f"Dhan Forever Order does not support GTT on {exchange} — "
-            "use a Kite-mirrored account for MCX/NCO templates"
-        )
+async def dispatch(msg: AppMessage) -> None:
+    """Write to DB; fan-out to sinks fire-and-forget. Swallows all errors."""
+
+def fire(msg: AppMessage) -> None:
+    """Sync entry point — schedules dispatch on the running event loop."""
 ```
 
-Remove or delegate the duplicate inline guard at `dhan.py:1390-1395` (keep for belt-and-suspenders
-if preferred, or remove since `validate_gtt_exchange` now fires earlier).
+**Retention rules (set at write time):**
+| level | Retention |
+|-------|-----------|
+| critical / error | Permanent (retain_until = NULL) |
+| warning | 90 days |
+| info — order/chase/template/agent | 30 days |
+| info — broker/conn | 14 days |
+| info — system/deploy/market | 7 days |
 
-### C. Override in `backend/brokers/adapters/groww.py`
+**Sink routing** (fire-and-forget via `asyncio.create_task`):
+- error/critical → ntfy urgent
+- warning + agent tag → ntfy default
+- deploy/alert tag → ntfy always
+- Telegram/email: reuse existing `_alert_route` for now; full migration in Phase 2
 
+### 1d. REST endpoint (`backend/api/routes/messages.py`) — new file
+
+```
+GET /api/messages?tags=order,chase&limit=500&since=<ISO>&account=<str>
+```
+- `tags` filter uses PostgreSQL `&&` (array overlap)
+- `limit` capped at 500
+- `since` filters `created_at >`
+- Returns `list[AppMessageRow]` (id, created_at, level, tags, title, body, account, symbol)
+- Tags NOT included in display data (only for routing/filtering)
+
+Register `MessagesController` in `backend/api/app.py` route_handlers list.
+
+### 1e. Initial callsites (additive, no internals touched)
+
+**Deploy notification** (`backend/shared/helpers/notify_deploy.py`):
 ```python
-def validate_gtt_exchange(self, exchange: str) -> None:
-    if exchange in {"MCX", "NCO"}:
-        raise ValueError(
-            f"Groww Smart Order GTT is not supported on {exchange}"
-        )
+fire(AppMessage(body=f"Deploy: {branch}→{env}", tags=["deploy","system"], level="info", title="Deploy"))
 ```
 
-### D. Call from `apply_plan_live` (`template_attach.py:1407`, before G1 guard)
-
+**Market close summary** (`_task_close` helper, after `send_summary(...)` call):
 ```python
-# Broker-layer exchange validation — fail fast before any broker call.
-try:
-    broker.validate_gtt_exchange(plan.parent_exchange)
-except ValueError as _ve:
-    result.errors.append(str(_ve))
-    return result
+fire(AppMessage(body=f"{label} close summary sent", tags=["market","system"], level="info"))
 ```
 
 ---
 
-## Implementation — Part 3: Fail-fast in `apply_template_to_order`
+## Part 2 — Order Book Panel (Frontend)
 
-### E. After `caps` resolution (line 1924), add MCX pre-rejection block
+### 2a. New component: `frontend/src/lib/OrderBook.svelte`
 
-```python
-# Pre-attach MCX capability guard — reject before plan resolution so
-# lot-size / premium-scan work is not wasted on an unsupported path.
-if caps is not None and not caps.gtt_supports_mcx and parent_exchange in ("MCX", "NCO"):
-    _err = (
-        f"{caps.display_name} does not support GTT on {parent_exchange} — "
-        "template attach skipped; use a Kite account for MCX/NCO templates"
-    )
-    logger.warning("[TEMPLATE-GUARD] %s", _err)
-    _mcx_plan = TemplatePlan(
-        template_id=template.get("id"),
-        template_name=template.get("name") or "(unnamed)",
-        template_slug=template.get("slug"),
-        parent_account=parent_account, parent_symbol=parent_symbol,
-        parent_side=parent_side, parent_qty=parent_qty,
-        parent_exchange=parent_exchange, parent_fill_price=float(parent_fill_price),
-        parent_lot_size=1,
-    )
-    _mcx_result = AttachResult(plan=_mcx_plan)
-    _mcx_result.errors.append(_err)
-    _fire_attach_fail_alert(
-        order_id=parent_order_id, symbol=parent_symbol,
-        account=parent_account, errors=[_err],
-    )
-    _mcx_result.guard_alert_fired = True
-    return _mcx_result
+Extract the order card rendering from `LogPanel.svelte`'s `order` tab into a standalone
+`OrderBook.svelte` component:
+
+```
+Props:
+  orderId?: number          — when set, filters to that single order (modal usage)
+  accountFilter?: string[]  — optional account scope
+  title?: string            — defaults to "Order Book"
+
+Behaviour:
+  - Polls existing /api/logs/unified?kinds=placed,filled,rejected,cancelled,chase_modify endpoint
+    at 3 s interval (same source as current LogPanel order tab)
+  - Renders order cards (status chips, fill price, qty, symbol, time) exactly as they look now
+  - No LogPanel dependency
 ```
 
-### F. Off-hours GTT-only note (line 1985, after the wing-guard block)
+### 2b. Orders page (`frontend/src/routes/(algo)/orders/+page.svelte`)
 
-At the point where code says `# GTT-only template — no wing, proceed off-hours`, add:
-```python
-plan_notes_pending.append(
-    f"GTT registered off-hours ({parent_exchange} closed) — "
-    "will activate at next session open"
-)
-```
-Append this to `plan.notes` after `resolve_template_plan` returns. Use a module-level list or
-pass via `_extra_notes` kwarg so the note survives into the returned `AttachResult`.
+- Replace the `<LogPanel>` embedded in this page with `<OrderBook />`
+- `<OrderBook>` sits below the live order table, labelled "Order Book" / "Order History"
 
-*(Implementation detail: simplest approach is a local `_offhours_note` string variable set
-in the C1 block, appended to `plan.notes` after `resolve_template_plan` at line 2001.)*
+### 2c. Order modal (wherever `LogPanel` appears with order filter)
+
+- Replace `<LogPanel tab="order" orderId={...}>` with `<OrderBook orderId={order.id} />`
+- Shows history for that specific order only
+
+### 2d. LogPanel "order" tab — convert to AppMessage text feed
+
+- Remove card rendering from the `order` tab in `LogPanel.svelte`
+- Add parallel poll to `GET /api/messages?tags=order&limit=500&since=<lastSince>`
+- Render rows as plain text log entries (same format as agent/system/conn tabs):
+  `[timestamp] [level chip] body`
+- Merge with existing `/api/logs/unified` rows (de-duplicate by `source + id` prefix)
+- Tab will be sparse initially; fills as AppMessage callsites are wired in Phase 2
 
 ---
 
-## After-market edge cases addressed
+## Part 3 — Consolidated Post-Market Cron
 
-| Scenario | Before | After |
-|----------|--------|-------|
-| MCX+Dhan template on fill | Fails at `dhan.py:place_gtt` after lot-size + plan resolution | Fails at `apply_template_to_order` before plan resolution; alert fired |
-| MCX+Groww template on fill | Silently fails (no guard in groww.py) | Same fail-fast path |
-| GTT-only template after NSE close | Silently proceeds | Proceeds + attaches note "will activate at session open" |
-| Wing template after NSE close | C1 blocks, alert fires | Unchanged (already correct) |
-| GTT-only template after MCX close (Kite) | Silently proceeds | Proceeds + note |
-| MCX wing template after MCX close (Kite) | C1 blocks correctly | Unchanged |
-| Groww OCO split: leg1 ok, market closes before leg2 | Groww rolls back leg1 (`_place_oco_emulated:1147`) | Unchanged (already correct) |
+### Current fragmentation (tasks to consolidate)
+
+| Task | Current fire time | Action |
+|------|------------------|--------|
+| `_task_close` | polls every 5min, fires at 16:15/00:15 IST | → sub-job in orchestrator |
+| `_task_nav_compute` | polls every 5min, fires at 16:00 IST | → sub-job |
+| `_task_strategy_snapshot` | polls every 5min, fires at 15:45 IST | → sub-job (pre-close window) |
+| `_task_daily_snapshot` | polls every 5min, fires at 16:15/00:15 IST | → sub-job |
+| `_task_visitor_log_daily` | polls every 5min, fires at 23:35 IST | → sub-job |
+| `_task_monthly_statement` | polls every 5min, fires at 02:00 IST | → sub-job |
+| `_task_app_messages_cleanup` | new, 00:30 IST | → sub-job |
+
+### New consolidated task: `_task_post_market_cron`
+
+Single infinite loop, polls every 60 s. Three time windows:
+
+```python
+async def _task_post_market_cron(state: dict) -> None:
+    """Single post-market orchestrator. Replaces individual post-market task loops."""
+    while True:
+        await asyncio.sleep(60)
+        now  = timestamp_indian()
+        date = now.date()
+        h, m = now.hour, now.minute
+
+        # ── Pre-close: 15:40–16:00 IST (NSE strategy snapshot) ──────────
+        if (15, 40) <= (h, m) < (16, 0) and state.get('pre_close') != date:
+            state['pre_close'] = date
+            await _run_strategy_snapshot(date)
+
+        # ── NSE post-close: 16:00–16:30 IST ─────────────────────────────
+        if (16, 0) <= (h, m) < (16, 30) and state.get('nse_close') != date:
+            state['nse_close'] = date
+            await _run_nse_close(date)    # nav_compute + close_summary_nse + daily_snapshot_nse
+
+        # ── MCX post-close: 23:30–23:59 IST ─────────────────────────────
+        if (23, 30) <= (h, m) < (24, 0) and state.get('mcx_close') != date:
+            state['mcx_close'] = date
+            await _run_mcx_close(date)    # close_summary_mcx + daily_snapshot_mcx
+
+        # ── Late night: 00:00–00:45 IST ──────────────────────────────────
+        late_date = (now - timedelta(days=1)).date()  # yesterday's marker
+        if (0, 0) <= (h, m) < (0, 45) and state.get('late_night') != date:
+            state['late_night'] = date
+            await _run_late_night(date)   # visitor_log + app_messages_cleanup
+
+        # ── Monthly: 02:00–02:10 IST ─────────────────────────────────────
+        if (2, 0) <= (h, m) < (2, 10) and state.get('monthly') != date:
+            state['monthly'] = date
+            await _run_monthly_statement(date)
+```
+
+**Each `_run_*` function** is the extracted body of the corresponding existing task (no logic change, just restructured). The old `_task_close`, `_task_nav_compute`, etc. loop wrappers are removed; their inner logic becomes helpers.
+
+**Register** `_task_post_market_cron` in `_start_background_tasks()`. Remove the individual old task registrations that are absorbed.
 
 ---
 
 ## Commit message
-feat(template+navstrip): fail-fast MCX/Dhan GTT guard + broker validate_gtt_exchange + navstrip label popup
+feat(app-message): unified AppMessage system + Order Book panel + consolidated post-market cron
 
 ## Done when
-- Clicking any P/M/C/H label/value shows NavBreakdown as popup below the element
-- MCX fill on a Dhan account → `apply_template_to_order` returns error before plan resolution; alert fires
-- MCX fill on a Groww account → same
-- NSE fill on any broker → template attaches normally
-- GTT-only template attached off-hours → `AttachResult.notes` contains the off-hours note
-- `validate_gtt_exchange` in broker ABC; overridden in Dhan + Groww; called at top of `apply_plan_live`
-- pytest green (new `test_gtt_broker_guard.py` + existing tests pass)
-- svelte-check 0 errors
+- `app_messages` table created on `init_db()`; GIN index on tags
+- `dispatch(AppMessage(...))` writes to DB; `fire()` works from sync callers
+- `GET /api/messages?tags=order&limit=500` returns rows correctly
+- `OrderBook.svelte` renders order cards; wired to Orders page + Order modal
+- LogPanel order tab shows AppMessage text rows; LogPanel removed from Orders page/modal
+- Single `_task_post_market_cron` runs all post-market jobs in time windows; old individual loops removed
+- 2 initial callsites (deploy + close summary) write AppMessages
+- svelte-check 0 errors | pytest green
+- No changes to chase, template, agent, or broker internals
