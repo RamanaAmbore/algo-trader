@@ -4,7 +4,7 @@
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchBrokerConnectionEvents, fetchAlgoOrdersRecent,
-    fetchOrders, cancelOrder, reconcileSingleOrder,
+    fetchOrders, cancelOrder, reconcileSingleOrder, fetchOrderEvents,
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
@@ -257,11 +257,12 @@
   // same cadence (`pollMs`), so a page mounting a LogPanel doesn't have to
   // wire up four independent loaders. Order tab still uses UnifiedLog
   // (already centralised).
-  let orderRows = $state(/** @type {any[]} */ ([]));   // for Terminal tab embedding
-  let agentLog  = $state(/** @type {any[]} */ ([]));
-  let systemLog = $state(/** @type {string[]} */ ([]));
-  let connEvents = $state(/** @type {any[]} */ ([]));
-  let simLog    = $state(/** @type {any[]} */ ([]));
+  let orderRows   = $state(/** @type {any[]} */ ([]));   // for Terminal tab embedding
+  let orderEvents = $state(/** @type {any[]} */ ([]));   // order lifecycle event log
+  let agentLog    = $state(/** @type {any[]} */ ([]));
+  let systemLog   = $state(/** @type {string[]} */ ([]));
+  let connEvents  = $state(/** @type {any[]} */ ([]));
+  let simLog      = $state(/** @type {any[]} */ ([]));
 
   // Derived row arrays for the keyed {#each} renderers below —
   // operator-visible benefit: text selection inside an agent /
@@ -417,6 +418,34 @@
     return 'conn-ev-muted';
   }
 
+  function _orderEvtCls(/** @type {string} */ kind) {
+    switch (kind) {
+      case 'placed':          return 'log-row-info';
+      case 'fill':            return 'log-row-ok';
+      case 'reject':          return 'log-row-error';
+      case 'cancel':          return 'log-row-warn';
+      case 'preflight_block': return 'log-row-error';
+      case 'preflight_ok':    return 'log-row-ok';
+      default:                return 'log-row-debug';
+    }
+  }
+
+  const filteredOrderEvents = $derived.by(() => {
+    let evts = orderEvents;
+    if (orderAccountFilter.length) {
+      const want = new Set(orderAccountFilter);
+      evts = evts.filter(e => !e.account || want.has(String(e.account)));
+    }
+    if (_searchQuery) {
+      const q = _searchQuery.toLowerCase();
+      evts = evts.filter(e =>
+        (e.message || '').toLowerCase().includes(q) ||
+        (e.kind || '').toLowerCase().includes(q)
+      );
+    }
+    return evts;
+  });
+
   function _fmtConnDetail(/** @type {any} */ detail) {
     if (detail == null) return '';
     if (typeof detail === 'string') return detail;
@@ -473,6 +502,9 @@
       });
       orderRows = merged;
     } catch (_) { /* keep last-good */ }
+    // Fire-and-forget: fetch order lifecycle events in parallel for the
+    // order tab event log. Does not block orderRows from rendering.
+    fetchOrderEvents(200).then(evts => { orderEvents = Array.isArray(evts) ? evts : (evts?.events ?? []); }).catch(() => {});
   }
 
   // Deferred poll flags — system and sim ticks are low-traffic tabs that
@@ -1519,70 +1551,16 @@
     <!-- Account filter moved to the tab row above per operator. -->
   </div>
   <div class="lp-order-scroll {heightClass}">
-    {#if filteredOrderRows.length}
-      <div class="oc-book-grid">
-        {#each filteredOrderRows as o (o.order_id ?? o.id)}
-          {@const _oKey = String(o.order_id || o.id || '')}
-          <OrderCard order={o}
-            onSymbolClick={(ord) => { _symPanelSym = ord.tradingsymbol || ord.symbol || ''; _symPanelExch = ord.exchange || ''; }}
-            onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: e.clientX, y: e.clientY }; }}>
-            {#snippet actions(ord)}
-              <div class="lp-oc-actions" role="group" aria-label="Order actions">
-                {#if _isOpenBroker(ord)}
-                  <!-- Modify — dispatches lp:modify-order so the host page opens its modal -->
-                  <button type="button" class="lp-oc-btn lp-oc-modify"
-                    title="Modify order"
-                    aria-label="Modify"
-                    onclick={(e) => { e.stopPropagation(); _requestModify(ord, e.currentTarget?.closest('.alm-body, .lp-order-scroll')); }}>
-                    <!-- Pencil / edit glyph — cyan-400 -->
-                    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                      <path d="M11.5 2.5l2 2L5 13H3v-2L11.5 2.5z" stroke="currentColor" stroke-width="1.6"
-                            stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  </button>
-                  <!-- Cancel — calls broker DELETE endpoint -->
-                  <button type="button" class="lp-oc-btn lp-oc-cancel"
-                    title="Cancel order"
-                    aria-label="Cancel"
-                    disabled={_cancelling.has(_oKey)}
-                    onclick={(e) => { e.stopPropagation(); _cancelRow(ord); }}>
-                    <!-- X glyph — red-400 -->
-                    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                      <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8"
-                            stroke-linecap="round"/>
-                    </svg>
-                  </button>
-                {/if}
-                <!-- Reconcile — sync this single row against the broker book.
-                     Only shown for in-flight statuses (OPEN, TRIGGER PENDING,
-                     CANCEL_FAILED, PARTIAL) where a sync can change the row
-                     state. Terminal rows (COMPLETE, REJECTED, CANCELLED,
-                     UNFILLED) are already settled — reconcile is a no-op. -->
-                {#if _isInFlight(ord)}
-                <button type="button" class="lp-oc-btn lp-oc-reconcile"
-                  title="Reconcile with broker"
-                  aria-label="Reconcile"
-                  disabled={_reconciling.has(_oKey)}
-                  onclick={(e) => { e.stopPropagation(); _reconcileRow(ord); }}>
-                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M3 8a5 5 0 0 1 8.6-3.5M13 8a5 5 0 0 1-8.6 3.5"
-                      stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                    <path d="M11.5 2v3h-3M4.5 14v-3h3"
-                      stroke="currentColor" stroke-width="1.5"
-                      stroke-linecap="round" stroke-linejoin="round" />
-                  </svg>
-                </button>
-                {/if}
-              </div>
-            {/snippet}
-          </OrderCard>
-        {/each}
-        {#if _cancelErr}
-          <div class="log-row log-agent-failed">{_cancelErr}</div>
-        {/if}
-      </div>
+    {#if filteredOrderEvents.length}
+      {#each filteredOrderEvents as evt (evt.id)}
+        <div class="log-row {_orderEvtCls(evt.kind)}">
+          {@html _dualTsHtml(evt.ts)}
+          <span class="log-row-tag">{(evt.kind || '').replace(/_/g, ' ').toUpperCase()}</span>
+          <span class="log-row-msg">{evt.message || ''}</span>
+        </div>
+      {/each}
     {:else}
-      <div class="log-debug py-2 text-center">No {_gatingMode || orderModeFilter} orders yet.</div>
+      <div class="log-debug py-2 text-center">No order events.</div>
     {/if}
   </div>
 {:else}
@@ -2015,6 +1993,40 @@
   @media (min-width: 1024px) {
     .lp-order-scroll .oc-book-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
+
+  /* Order-event log rows inside .lp-order-scroll — same density/padding
+     as the .log-panel.log-rows rows. Color-coded by event kind. */
+  .lp-order-scroll .log-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.2rem 0.4rem;
+    font-size: var(--fs-xs);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    flex-wrap: wrap;
+  }
+  .lp-order-scroll .log-row:last-child { border-bottom: 0; }
+  .lp-order-scroll .log-row-tag {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0 0.3rem;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.5);
+    flex-shrink: 0;
+  }
+  .lp-order-scroll .log-row-msg {
+    color: rgba(255,255,255,0.7);
+    flex: 1 1 0;
+    min-width: 0;
+    word-break: break-word;
+  }
+  .lp-order-scroll .log-row-ok    { color: var(--c-long); }
+  .lp-order-scroll .log-row-info  { color: #7dd3fc; }
+  .lp-order-scroll .log-row-warn  { color: var(--c-action); }
+  .lp-order-scroll .log-row-error { color: var(--c-short); }
+  .lp-order-scroll .log-row-debug { color: #94a3b8; }
 
   /* Unified-log container inside the LogPanel — matches the <pre>
      visual context (same background, same overflow) but is a <div>

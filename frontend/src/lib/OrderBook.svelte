@@ -19,6 +19,7 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
 
   /** @type {{
    *   orderId?: string | null,
@@ -27,6 +28,7 @@
    *   pollMs?: number,
    *   statusFilter?: 'all'|'open'|'complete'|'rejected'|'cancelled',
    *   onSymbolClick?: ((ord: any) => void) | null,
+   *   isCollapsed?: boolean,
    * }} */
   let {
     orderId       = null,
@@ -35,6 +37,7 @@
     pollMs        = 3000,
     statusFilter  = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
     onSymbolClick = /** @type {((ord: any) => void) | null} */ (null),
+    isCollapsed   = $bindable(false),
   } = $props();
 
   // ── Data ─────────────────────────────────────────────────────────────
@@ -219,12 +222,14 @@
 </script>
 
 <!-- Header -->
-<div class="ob-header">
-  <span class="ob-label">{title}</span>
-  <span class="ob-count">{filteredOrderRows.length} order{filteredOrderRows.length !== 1 ? 's' : ''}</span>
-</div>
+<CardHeader label={title} showSearch={false} bind:isCollapsed>
+  {#snippet left()}
+    <span class="ob-count">{filteredOrderRows.length} order{filteredOrderRows.length !== 1 ? 's' : ''}</span>
+  {/snippet}
+</CardHeader>
 
 <!-- Order card grid -->
+{#if !isCollapsed}
 <div class="ob-scroll">
   {#if filteredOrderRows.length}
     <div class="oc-book-grid">
@@ -287,6 +292,7 @@
     <div class="log-debug py-2 text-center">No orders.</div>
   {/if}
 </div>
+{/if}
 
 {#if _symPanelSym && !onSymbolClick}
   <SymbolPanel
@@ -331,32 +337,29 @@
 {/if}
 
 <style>
-  .ob-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.375rem 0.75rem;
-    border-bottom: 1px solid rgba(255,255,255,0.07);
-    background: rgba(255,255,255,0.03);
-  }
-
-  .ob-label {
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(255,255,255,0.5);
-  }
-
   .ob-count {
     font-size: 0.65rem;
     color: rgba(255,255,255,0.3);
     font-variant-numeric: tabular-nums;
+    margin-left: 0.25rem;
   }
 
   .ob-scroll {
     overflow-y: auto;
     flex: 1 1 0;
     min-height: 0;
+    padding: 0.4rem 0.2rem;
+  }
+
+  .ob-scroll :global(.oc-book-grid) {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+  }
+  @media (min-width: 640px) {
+    .ob-scroll :global(.oc-book-grid) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (min-width: 1024px) {
+    .ob-scroll :global(.oc-book-grid) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
 </style>
