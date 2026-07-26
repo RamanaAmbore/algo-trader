@@ -2623,7 +2623,6 @@
         // arrive — harmless; the later value is always fresher.
         pulseLastUpdate = Date.now();
         _lastPulseAt = pulseLastUpdate;
-        lastRefreshAt.set(pulseLastUpdate);
       }
 
       const p_rows = pulsePositionsStore.value ?? [];
@@ -2714,7 +2713,6 @@
         // force=false (background auto-poll tick).
         pulseLastUpdate = Date.now();
         _lastPulseAt = pulseLastUpdate;
-        lastRefreshAt.set(pulseLastUpdate);
         // BH5: publish the broker-quote snapshot for every symbol in
         // view into symbolStore. This is the last non-symbolStore data
         // sink — after this, every market-data poll on this page feeds
@@ -2727,7 +2725,6 @@
         // so the RefreshButton tooltip reflects the completed poll.
         pulseLastUpdate = Date.now();
         _lastPulseAt = pulseLastUpdate;
-        lastRefreshAt.set(pulseLastUpdate);
       }
     } catch (_) { /* nothing fatal */ }
   }
