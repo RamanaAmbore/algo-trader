@@ -5006,6 +5006,335 @@ async def _task_broker_issue_daily() -> None:
             logger.warning("[BROKER-DAILY] Nightly aggregation failed: %s", _nightly_err)
 
 
+# ---------------------------------------------------------------------------
+# Post-market cron helpers
+# ---------------------------------------------------------------------------
+
+async def _run_close_once(state: dict) -> None:
+    """One close-summary sweep — all segments that crossed their close trigger."""
+    from backend.shared.helpers.alert_utils import send_summary
+    from backend.shared.helpers.summarise import (
+        summarise_holdings as _summarise_holdings,
+        summarise_positions as _summarise_positions,
+    )
+    from backend.shared.helpers.settings import get_int as _get_int
+    from backend.shared.helpers.app_message import AppMessage, fire as _fire
+
+    close_offset = _get_int(
+        "performance.close_summary_offset_min",
+        config.get("close_summary_offset_minutes", 15),
+    )
+    now   = timestamp_indian()
+    today = now.date()
+    segments = _build_segments()
+    seg_state = state.setdefault("close_seg_state", _default_seg_state())
+
+    for seg in segments:
+        ss = seg_state[seg["name"]]
+        if ss["last_close"] == today:
+            continue
+        close_trigger = now.replace(
+            hour=seg["hours_end"].hour,
+            minute=seg["hours_end"].minute,
+            second=0, microsecond=0,
+        ) + timedelta(minutes=close_offset)
+
+        if now.weekday() < 5 and now >= close_trigger:
+            try:
+                try:
+                    (df_h, sum_h), (df_p, sum_p) = await asyncio.wait_for(
+                        _run(lambda: (_fetch_holdings_direct(), _fetch_positions_direct())),
+                        timeout=45,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[BROKER-TIMEOUT] account=all op=holdings+positions timeout=45s")
+                    df_h, sum_h, df_p, sum_p = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+                try:
+                    df_margins = await asyncio.wait_for(
+                        _run(_fetch_margins_direct), timeout=45
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[BROKER-TIMEOUT] account=all op=margins timeout=45s")
+                    df_margins = pd.DataFrame()
+
+                ist_display = timestamp_display()
+                _sh = _summarise_holdings(df_h, sum_h, None)
+                _sp = _summarise_positions(df_p)
+                _label = seg["name"].capitalize()
+                await _run(lambda: send_summary(_sh, _sp, ist_display, "close",
+                                                label=_label,
+                                                df_margins=df_margins,
+                                                df_positions=df_p))
+                ss["last_close"] = today
+                logger.info(f"Background[cron]: close summary sent for {seg['name']}")
+                _fire(AppMessage(
+                    level="info",
+                    tags=["summary", seg["name"]],
+                    title=f"{_label} Close",
+                    body=f"{_label} close summary sent · {ist_display}",
+                ))
+            except Exception as e:
+                logger.error(f"Background[cron]: close summary failed for {seg['name']}: {e}")
+
+
+async def _run_nav_compute_once(state: dict) -> None:
+    """Write a NAV snapshot at 16:00 IST if not already done today."""
+    from backend.api.algo.nav import write_nav_snapshot
+
+    now   = timestamp_indian()
+    today = now.date()
+    if state.get("nav_done") == today:
+        return
+    target = dtime(16, 0)
+    if now.time() < target:
+        return
+    state["nav_done"] = today
+    try:
+        snap = await write_nav_snapshot()
+        logger.info(
+            f"Background[cron]: NAV snapshot ₹{snap['nav']:,.0f} for {today.isoformat()}"
+        )
+        try:
+            from backend.api.audit import write_audit_event
+            write_audit_event(
+                category="system.nav",
+                action="NAV_SNAPSHOT",
+                actor_username="system",
+                actor_role="system",
+                target_type="nav_daily",
+                target_id=today.isoformat(),
+                summary=(f"₹{snap['nav']:,.0f} · cash=₹{snap.get('cash_total', 0):,.0f}"
+                         f" · pos=₹{snap.get('positions_mtm', 0):,.0f}"
+                         f" · hold=₹{snap.get('holdings_mtm', 0):,.0f}")[:1000],
+            )
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.warning(f"Background[cron]: NAV snapshot failed: {exc}")
+        state.pop("nav_done", None)  # allow retry next poll
+        try:
+            from backend.api.audit import write_audit_event
+            write_audit_event(
+                category="system.nav",
+                action="NAV_SNAPSHOT_FAILED",
+                actor_username="system",
+                actor_role="system",
+                target_type="nav_daily",
+                target_id=today.isoformat(),
+                summary=f"compute failed: {exc}"[:1000],
+                status_code=500,
+            )
+        except Exception:
+            pass
+
+
+async def _run_strategy_snapshot_once(state: dict) -> None:
+    """Write per-strategy snapshots at 15:45 IST if not already done today."""
+    now   = timestamp_indian()
+    today = now.date()
+    if state.get("strategy_done") == today:
+        return
+    if now.time() < dtime(15, 45):
+        return
+    state["strategy_done"] = today
+    try:
+        from backend.api.database import async_session as _async_session
+        from backend.api.models import Strategy, StrategyLot, StrategySnapshot, AlgoOrder
+        from backend.api.algo.lot_ledger import (
+            compute_strategy_pnl, compute_unrealised_marked_to_ltp,
+        )
+        from sqlalchemy import select as _select, func as _func
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        async with _async_session() as s:
+            strategies = (await s.execute(
+                _select(Strategy).where(Strategy.is_active.is_(True))
+            )).scalars().all()
+            today_ist = timestamp_indian().date()
+            written = 0
+            _open_states = ("OPEN", "CHASING", "PENDING")
+            for strat in strategies:
+                try:
+                    pnl = await compute_strategy_pnl(s, strat.id)
+                    notional = (await s.execute(
+                        _select(_func.coalesce(
+                            _func.sum(StrategyLot.remaining_qty * StrategyLot.open_price),
+                            0.0,
+                        )).where(StrategyLot.strategy_id == strat.id,
+                                 StrategyLot.remaining_qty > 0)
+                    )).scalar_one() or 0.0
+                    if pnl["open_lots_count"] > 0:
+                        mtm = await compute_unrealised_marked_to_ltp(s, strat.id)
+                        if mtm is not None:
+                            unrealised = mtm
+                        else:
+                            unrealised = (await s.execute(
+                                _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
+                                .where(AlgoOrder.strategy_id == strat.id,
+                                       AlgoOrder.status.in_(_open_states))
+                            )).scalar_one() or 0.0
+                    else:
+                        unrealised = (await s.execute(
+                            _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
+                            .where(AlgoOrder.strategy_id == strat.id,
+                                   AlgoOrder.status.in_(_open_states))
+                        )).scalar_one() or 0.0
+                    stmt = pg_insert(StrategySnapshot).values(
+                        strategy_id=strat.id,
+                        as_of_date=today_ist,
+                        open_lots_count=pnl["open_lots_count"],
+                        open_notional=float(notional or 0.0),
+                        realised_pnl=pnl["realised_pnl"],
+                        unrealised_pnl=float(unrealised or 0.0),
+                    ).on_conflict_do_update(
+                        index_elements=["strategy_id", "as_of_date"],
+                        set_=dict(
+                            open_lots_count=pnl["open_lots_count"],
+                            open_notional=float(notional or 0.0),
+                            realised_pnl=pnl["realised_pnl"],
+                            unrealised_pnl=float(unrealised or 0.0),
+                        ),
+                    )
+                    await s.execute(stmt)
+                    written += 1
+                except Exception as exc:
+                    logger.warning(
+                        f"strategy_snapshot[cron]: failed for strategy "
+                        f"{strat.slug!r} (id={strat.id}): {exc}"
+                    )
+            await s.commit()
+        logger.info(
+            f"Background[cron]: strategy snapshot wrote {written} rows "
+            f"for {today_ist.isoformat()}"
+        )
+    except Exception as exc:
+        logger.warning(f"Background[cron]: strategy snapshot failed: {exc}")
+        state.pop("strategy_done", None)  # allow retry next poll
+
+
+async def _run_monthly_statement_once(state: dict) -> None:
+    """Process any unsent LP monthly statements at 02:00 IST if not already done today."""
+    from datetime import date as _date
+    from sqlalchemy import select as _select
+    from backend.api.database import async_session as _async_session
+    from backend.api.models import MonthlyStatement, User
+    from backend.shared.helpers.utils import is_enabled
+
+    now   = timestamp_indian()
+    today = now.date()
+    if state.get("monthly_done") == today:
+        return
+    if now.time() < dtime(2, 0):
+        return
+    state["monthly_done"] = today
+
+    if not is_enabled("mail"):
+        logger.info("Background[cron]: monthly statement — mail capability off, skipping")
+        return
+    from backend.shared.helpers.settings import get_bool as _get_bool
+    if not _get_bool("notifications.monthly_statement_email", False):
+        logger.info("Background[cron]: monthly statement — setting opt-in off, skipping")
+        return
+
+    today_ist = timestamp_indian().date()
+    first_of_this_month = _date(today_ist.year, today_ist.month, 1)
+    prior_period_end = first_of_this_month - timedelta(days=1)
+    period_year  = prior_period_end.year
+    period_month = prior_period_end.month
+
+    try:
+        async with _async_session() as s:
+            eligible = (await s.execute(
+                _select(User).where(
+                    User.is_active.is_(True),
+                    User.share_pct > 0,
+                    User.email.is_not(None),
+                    User.email != "",
+                )
+            )).scalars().all()
+            already_sent = (await s.execute(
+                _select(MonthlyStatement.user_id).where(
+                    MonthlyStatement.period_year  == period_year,
+                    MonthlyStatement.period_month == period_month,
+                )
+            )).scalars().all()
+        sent_ids = set(already_sent)
+        pending = [u for u in eligible if u.id not in sent_ids]
+        if not pending:
+            logger.info(
+                f"Background[cron]: monthly statement nothing to send for "
+                f"{period_year}-{period_month:02d} (eligible={len(eligible)})"
+            )
+            return
+        logger.info(
+            f"Background[cron]: monthly statement processing {len(pending)} LPs "
+            f"for {period_year}-{period_month:02d}"
+        )
+        sent_ok = 0
+        for user in pending:
+            await _send_one_monthly_statement(user, period_year, period_month)
+            sent_ok += 1
+            await asyncio.sleep(1)
+        logger.info(f"Background[cron]: monthly statement done ({sent_ok}/{len(pending)} sent)")
+    except Exception as exc:
+        logger.warning(f"Background[cron]: monthly statement cycle failed: {exc}")
+        state.pop("monthly_done", None)  # allow retry next poll
+
+
+async def _run_late_night_once(state: dict) -> None:
+    """Nightly cleanup at 02:30 IST — prune expired app_messages rows."""
+    now   = timestamp_indian()
+    today = now.date()
+    if state.get("late_night_done") == today:
+        return
+    # Window: [02:30, 04:00) IST to avoid a daytime restart re-firing.
+    if not (dtime(2, 30) <= now.time() < dtime(4, 0)):
+        return
+    state["late_night_done"] = today
+    try:
+        from backend.api.database import async_session as _async_session
+        from sqlalchemy import text as _text
+        async with _async_session() as s:
+            result = await s.execute(_text(
+                "DELETE FROM app_messages WHERE retain_until IS NOT NULL AND retain_until <= :today"
+            ), {"today": today})
+            await s.commit()
+            deleted = result.rowcount
+        if deleted:
+            logger.info(f"Background[cron]: pruned {deleted} expired app_messages rows")
+    except Exception as exc:
+        logger.warning(f"Background[cron]: app_messages cleanup failed: {exc}")
+        state.pop("late_night_done", None)  # allow retry next poll
+
+
+async def _task_post_market_cron(state: dict) -> None:
+    """Single post-market orchestrator replacing four individual nightly tasks.
+
+    Replaces: _task_close, _task_nav_compute, _task_strategy_snapshot,
+              _task_monthly_statement.  Also adds late-night app_messages
+              pruning (_run_late_night_once).
+
+    Each slot fires once per IST calendar day when its target wall-clock
+    time passes. State is keyed on date so each slot auto-resets at
+    midnight and remains idempotent across supervisor restarts.
+
+    Poll cadence: 30 s (same as _task_daily_snapshot / _task_market_lifecycle).
+    """
+    _CRON_POLL_S = 30
+
+    while True:
+        await asyncio.sleep(_CRON_POLL_S)
+        from backend.shared.helpers.utils import is_engine_idle
+        if is_engine_idle():
+            continue
+        await _run_close_once(state)
+        await _run_strategy_snapshot_once(state)
+        await _run_nav_compute_once(state)
+        await _run_monthly_statement_once(state)
+        await _run_late_night_once(state)
+
+
 async def _supervised(coro_fn, *, name: str, restart_delay: int = 60) -> None:
     """Supervisor wrapper for long-running background tasks.
 
@@ -5042,7 +5371,6 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(lambda: _task_market(state),          name="bg-market"),          name="bg-market"),
         asyncio.create_task(_supervised(_task_token_refresh,                   name="bg-token-refresh"),   name="bg-token-refresh"),
         asyncio.create_task(_supervised(lambda: _task_performance(state),      name="bg-performance"),     name="bg-performance"),
-        asyncio.create_task(_supervised(lambda: _task_close(state),            name="bg-close"),           name="bg-close"),
         asyncio.create_task(_supervised(_task_expiry_check,                    name="bg-expiry"),          name="bg-expiry"),
         asyncio.create_task(_supervised(_task_instruments,                     name="bg-instruments"),     name="bg-instruments"),
         asyncio.create_task(_supervised(_task_daily_snapshot,                  name="bg-daily-snapshot"),  name="bg-daily-snapshot"),
@@ -5055,9 +5383,10 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(_task_hedge_proxy_regression,          name="bg-hedge-proxy-regression"), name="bg-hedge-proxy-regression"),
         asyncio.create_task(_supervised(_task_trail_stop,                      name="bg-trail-stop"),      name="bg-trail-stop"),
         asyncio.create_task(_supervised(_task_oco_pair_watcher,                name="bg-oco-pair-watcher"), name="bg-oco-pair-watcher"),
-        asyncio.create_task(_supervised(_task_strategy_snapshot,               name="bg-strategy-snapshot"), name="bg-strategy-snapshot"),
-        asyncio.create_task(_supervised(_task_monthly_statement,               name="bg-monthly-statement"), name="bg-monthly-statement"),
-        asyncio.create_task(_supervised(_task_nav_compute,                     name="bg-nav-compute"),     name="bg-nav-compute"),
+        # _task_post_market_cron consolidates: close summary, NAV snapshot,
+        # strategy snapshot, monthly statement, and late-night app_messages
+        # cleanup — all in one poll-and-debounce loop (30 s cadence).
+        asyncio.create_task(_supervised(lambda: _task_post_market_cron(state), name="bg-post-market-cron"), name="bg-post-market-cron"),
         asyncio.create_task(_supervised(_task_purge_persistence_caches,        name="bg-purge-persistence"), name="bg-purge-persistence"),
         asyncio.create_task(_supervised(_task_purge_audit_log,                 name="bg-purge-audit-log"), name="bg-purge-audit-log"),
         asyncio.create_task(_supervised(_task_purge_visitor_log,               name="bg-purge-visitor-log"), name="bg-purge-visitor-log"),
@@ -5103,7 +5432,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(paper_engine.tick_loop(interval_seconds=5),
                             name="bg-paper-chase")
     )
-    logger.info("Background: all tasks started (market, performance, close, "
+    logger.info("Background: all tasks started (market, performance, post-market-cron, "
                 "expiry, instruments, daily-snapshot, visitor-log, sparkline-warm, "
                 "ticker-watchdog, paper-chase)")
 

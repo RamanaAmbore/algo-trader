@@ -68,6 +68,7 @@ from backend.api.routes.replay import ReplayController
 from backend.api.routes.live import LiveController
 from backend.api.routes.execution import ExecutionController
 from backend.api.routes.logs import LogsController
+from backend.api.routes.messages import MessagesController
 from backend.api.routes.metrics import MetricsController
 from backend.api.routes.perf import PerfController
 from backend.api.routes.watchlist import WatchlistController
@@ -219,6 +220,7 @@ _route_handlers = [
     LiveController,
     ExecutionController,
     LogsController,
+    MessagesController,
     MetricsController,
     PerfController,
     ChartsController,

@@ -8,7 +8,7 @@ from typing import Optional
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, Time, UniqueConstraint, text
 from sqlalchemy import func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 
@@ -2281,4 +2281,44 @@ class MarketSpecialSession(Base):
 
     __table_args__ = (
         Index("ix_special_sessions_exchange_date", "exchange", "date"),
+    )
+
+
+class AppMessage(Base):
+    """Unified operator notification + log record.
+
+    Every system event that crosses a notification channel (ntfy, Telegram,
+    WebSocket) is also written here so the operator has a single queryable
+    source of truth for all messages regardless of delivery channel.
+
+    Retention contract
+    ------------------
+    retain_until IS NULL  — keep forever (critical / error).
+    retain_until IS NOT NULL — delete on or after that date (nightly cleanup).
+    _task_post_market_cron runs the DELETE once per night.
+    """
+    __tablename__ = "app_messages"
+
+    id:           Mapped[int]            = mapped_column(primary_key=True, autoincrement=True)
+    created_at:   Mapped[datetime]       = mapped_column(
+                      DateTime(timezone=True),
+                      nullable=False,
+                      default=lambda: datetime.now(timezone.utc),
+                      index=True,
+                  )
+    level:        Mapped[str]            = mapped_column(String(10), nullable=False)
+    tags:         Mapped[list]           = mapped_column(PG_ARRAY(String), nullable=False, default=list)
+    title:        Mapped[Optional[str]]  = mapped_column(String(255), nullable=True)
+    body:         Mapped[str]            = mapped_column(Text, nullable=False, default="")
+    account:      Mapped[Optional[str]]  = mapped_column(String(50), nullable=True, index=True)
+    symbol:       Mapped[Optional[str]]  = mapped_column(String(50), nullable=True)
+    data:         Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    retain_until: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+
+    __table_args__ = (
+        Index("ix_app_messages_tags",    "tags",         postgresql_using="gin"),
+        Index("ix_app_messages_retain",  "retain_until",
+              postgresql_where=text("retain_until IS NOT NULL")),
+        Index("ix_app_messages_account", "account",
+              postgresql_where=text("account IS NOT NULL")),
     )

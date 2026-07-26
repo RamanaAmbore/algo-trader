@@ -106,7 +106,7 @@ async def _migrate_create_tables(conn) -> None:
         User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline,
         GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog,
         CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday,
-        MarketSpecialSession, BrokerAccount, PerfSnapshot,
+        MarketSpecialSession, BrokerAccount, PerfSnapshot, AppMessage,
     )
     from sqlalchemy import text
     _branch_local_tables = [
@@ -664,6 +664,39 @@ async def _migrate_algo_orders_intent(conn) -> None:
     ))
 
 
+async def _migrate_app_messages_table(conn) -> None:
+    """Idempotent — create app_messages table + indexes.
+
+    Uses raw DDL rather than metadata.create_all so the GIN index on
+    tags and the partial index on retain_until are both created correctly
+    on first boot (SQLAlchemy's create_all does not emit GIN indexes from
+    the ORM Index(..., postgresql_using=...) unless the table is brand new;
+    this function covers the upgrade path for existing deployments).
+    """
+    from sqlalchemy import text as _text
+    await conn.execute(_text("""
+        CREATE TABLE IF NOT EXISTS app_messages (
+            id           BIGSERIAL PRIMARY KEY,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            level        VARCHAR(10)  NOT NULL,
+            tags         TEXT[]       NOT NULL DEFAULT '{}',
+            title        VARCHAR(255),
+            body         TEXT         NOT NULL DEFAULT '',
+            account      VARCHAR(50),
+            symbol       VARCHAR(50),
+            data         JSONB,
+            retain_until DATE
+        )
+    """))
+    for stmt in [
+        "CREATE INDEX IF NOT EXISTS ix_app_messages_created ON app_messages (created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS ix_app_messages_tags ON app_messages USING gin(tags)",
+        "CREATE INDEX IF NOT EXISTS ix_app_messages_retain ON app_messages (retain_until) WHERE retain_until IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS ix_app_messages_account ON app_messages (account) WHERE account IS NOT NULL",
+    ]:
+        await conn.execute(_text(stmt))
+
+
 async def init_db() -> None:
     """Create all tables (idempotent).
 
@@ -697,6 +730,7 @@ async def init_db() -> None:
         await _migrate_daily_book_previous_close(conn)
         await _migrate_algo_orders_chase_timing(conn)
         await _migrate_algo_orders_intent(conn)
+        await _migrate_app_messages_table(conn)
     logger.info("Database: tables verified")
 
     # broker_accounts schema lives on the SHARED engine (ramboq DB) — always
