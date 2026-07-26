@@ -406,8 +406,6 @@
     bind:isCollapsed={_colEntry}
     bind:isFullscreen={_fsEntry}
     label="Order Entry"
-    onRefresh={loadOrders}
-    bind:refreshLoading={loading}
     showSearch={false}
     detectOverflow={false}
   >
