@@ -36,6 +36,7 @@
   import { aggregateCapWarnings } from '$lib/data/brokerCapWarnings';
   import { placeBasket, fetchBasketMargin, fetchLiveStatus, previewTicketTemplate } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
+  import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import { executionMode } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
@@ -99,7 +100,7 @@
    *   headerless?:     boolean,
    *   onSymbolChange?: ((sym: string) => void) | null,
    *   tabsExternal?:   boolean,
-   *   activeTab?:      'ticket' | 'chain',
+   *   activeTab?:      'ticket' | 'chain' | 'chart',
    *   hideBottomPanel?: boolean,
    *   actionsHidden?:  boolean,
    *   triggerSubmit?:  number,
@@ -175,7 +176,7 @@
     // to the requested defaultTab if no host binding is wired. When
     // tabsExternal is true the host MUST bind this prop or the body
     // won't update on tab clicks.
-    activeTab      = $bindable(/** @type {'ticket'|'chain'|undefined} */ (undefined)),
+    activeTab      = $bindable(/** @type {'ticket'|'chain'|'chart'|undefined} */ (undefined)),
     // When true the shell omits its own bottom panel (Order Log /
     // Order History). The host renders these in a separate card.
     // Used by /orders to split the entry shell from the activity
@@ -370,11 +371,17 @@
     if (req === 'chain' && chainDisabled) return 'ticket';   // fall through for cash equity
     return req;
   }
+  // chart tab guard on external activeTab binding — chart is never the
+  // default starting tab so if the host somehow passes 'chart' via the
+  // bindable, resolve to 'ticket' instead.
+  // (No separate function needed — _activeTab is derived from activeTab
+  // and _activeTabInternal; chart is a valid in-session state once the
+  // operator clicks the tab, just not a valid initial default.)
   // If the host wired `activeTab` we mirror it; otherwise own the
   // state internally. Either way, downstream code reads `_activeTab`
   // and tab-click handlers write to it — the two-way bind takes care
   // of pushing the change back up to the host when applicable.
-  let _activeTabInternal = $state(/** @type {'ticket'|'chain'} */ (_resolveInitialTab()));
+  let _activeTabInternal = $state(/** @type {'ticket'|'chain'|'chart'} */ (_resolveInitialTab()));
   // Seed the host's binding from the resolved default on first render.
   $effect(() => { if (activeTab === undefined) activeTab = _activeTabInternal; });
   const _activeTab = $derived(activeTab || _activeTabInternal);
@@ -407,7 +414,7 @@
     return m ? m[1] : up;
   }
 
-  function _setActiveTab(/** @type {'ticket'|'chain'} */ id) {
+  function _setActiveTab(/** @type {'ticket'|'chain'|'chart'} */ id) {
     _activeTabInternal = id;
     activeTab = id;
     // Tab swap drives the picker's displayed value per the rule above.
@@ -422,6 +429,8 @@
       // contract via Chain → +CE).
       if (_contextSymbol) _localSymbol = _contextSymbol;
     }
+    // chart tab: keep _localSymbol as-is — ChartWorkspace shows whatever
+    // symbol is currently in the picker.
   }
   // Keep _contextSymbol in sync when the parent passes a new contract
   // (row click, chain pick, etc.). Only treat it as a "context" change
@@ -2219,6 +2228,26 @@
             {onClose} />
       </div>
 
+      {#if _activeTab === 'chart'}
+        <!-- Chart tab — embedded ChartWorkspace for the current symbol.
+             No ticket form, no submit buttons, no basket controls — only
+             the chart canvas. The bottom panel (ActivityLogSurface) and
+             the .oes-bottom-panel remain visible outside the tab body,
+             exactly as they do for Ticket and Chain tabs. -->
+        <div class="oes-chart-tab-body">
+          {#if _localSymbol}
+            <ChartWorkspace
+              symbol={_localSymbol}
+              exchange={_pickedExchange || exchange || ''}
+              mode="live"
+              compact={true}
+              showHeader={false} />
+          {:else}
+            <p class="oes-chart-placeholder">Select a symbol to view chart</p>
+          {/if}
+        </div>
+      {/if}
+
       {#if _activeTab === 'chain'}
         <!-- OptionChainTab's own basket state is migrated to the shell.
              The tab receives the shared basket as props and calls back
@@ -2291,7 +2320,7 @@
          and the focused-leg's symbol (last-leg by default) for the
          CE/PE regex via _appliesToFor — falling back through
          _localSymbol when no legs are staged. -->
-    {#if _isDemo && action === 'open'
+    {#if _activeTab !== 'chart' && _isDemo && action === 'open'
          && ((_localSymbol || '').trim() || basketLegs.length > 0)}
       <!-- Audit fix (L-3) — demo session sees a single muted note
            where the Template Default/None toggle would render for
@@ -2302,7 +2331,7 @@
         <span class="oes-basket-tpl-label">Template</span>
         <span class="oes-basket-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
       </div>
-    {:else if _templates.length > 0 && action === 'open'
+    {:else if _activeTab !== 'chart' && _templates.length > 0 && action === 'open'
          && ((_localSymbol || '').trim() || basketLegs.length > 0)}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
            title={!_shellUsingNone && _selectedTemplate
@@ -2419,12 +2448,13 @@
       </div>
     {/if}
 
-    <!-- Shell-level basket bar — visible from any tab when legs exist.
+    <!-- Shell-level basket bar — visible from any tab when legs exist,
+         except the Chart tab which shows only the ChartWorkspace.
          Per-leg pills (B/S · sym · lots stepper · × remove) sit on the
          left; Clear / Submit on the right. Same shape as the chain
          tab's in-tab basket so the operator sees what's pending from
          any tab without flipping back to Chain. -->
-    {#if basketLegs.length > 0}
+    {#if basketLegs.length > 0 && _activeTab !== 'chart'}
       <div class="oes-basket-bar">
         <!-- Per-account margin strip — shown when basket spans >1 account.
              Single-account baskets keep using the existing common-footer
@@ -2703,7 +2733,7 @@
          don't accept a generic submit (Chain has its own per-strike
          buttons; CommandLine submits via Enter), but +Basket still
          works when there's pending content. -->
-    {#if showCommonActions && !actionsHidden}
+    {#if showCommonActions && !actionsHidden && _activeTab !== 'chart'}
       <div class="oes-common-actions">
         <!-- Mode pill + chase controls + Clear lifted to the picker row
              (heading row) above. The dedicated mode/chase row that used
@@ -4722,5 +4752,18 @@
     flex: 1 1 0;
     min-height: 0;
     padding: 0.1rem 0.25rem;
+  }
+  .oes-chart-tab-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .oes-chart-placeholder {
+    margin: auto;
+    color: var(--algo-slate-dim);
+    font-size: 0.8rem;
+    letter-spacing: 0.02em;
   }
 </style>
