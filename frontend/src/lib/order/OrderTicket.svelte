@@ -2200,6 +2200,7 @@
        aria-modal={standalone ? 'true' : undefined}
        aria-label={standalone ? 'Place order' : undefined}
        onclick={(e) => e.stopPropagation()}>
+    {#if standalone}
     <CardHeader showControls={false}>
       {#snippet middle()}
         <!-- A1: underlying spot LTP when showing a derivative contract -->
@@ -2232,6 +2233,7 @@
         <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={_handleClose} disabled={submitting}>×</button>
       {/snippet}
     </CardHeader>
+    {/if}
 
     <!-- Combined top row: Account · Symbol · Qty (and Side toggle).
          Operator reads the entry strip left-to-right: WHO is placing,
@@ -2369,6 +2371,7 @@
          vertical space (8 pills + 5 pills + 2 pills across 2 rows).
          Selects keep the density tight on mobile and align cleanly
          with the rest of the form. -->
+    <div class="ot-knobs-price-wrap">
     <div class="ot-row ot-row-knobs">
       <!-- Side toggle sits as the FIRST knob alongside Type / Product
            / Variety / Validity. Operators pick "what I'm doing"
@@ -2478,6 +2481,7 @@
         </div>
       {/if}
     </div>
+    </div><!-- /.ot-knobs-price-wrap -->
 
     <!-- Trigger row only when BOTH limit AND trigger are required (SL). -->
     {#if showLimit && showTrigger}
@@ -2822,6 +2826,23 @@
     z-index: auto;
     padding: 0;
     display: contents;
+  }
+  /* On large screens, knobs row and lots/price row sit side-by-side */
+  .ot-knobs-price-wrap {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+  @media (min-width: 1024px) {
+    .ot-knobs-price-wrap {
+      flex-direction: row;
+      align-items: flex-start;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .ot-knobs-price-wrap .ot-row {
+      flex: 1 1 auto;
+      border-bottom: none;
+    }
   }
   .ot-modal {
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
