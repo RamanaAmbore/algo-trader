@@ -60,7 +60,7 @@
   // Render order: high-touch operator knobs first, vendor/infra knobs last.
   // Anything not in this list falls through to 'misc' and is appended.
   const CATEGORY_ORDER = ['execution', 'orders', 'alerts', 'algo', 'performance',
-                          'simulator', 'notifications', 'logging', 'misc'];
+                          'polling', 'ticker', 'simulator', 'notifications', 'logging', 'misc'];
   // Singleton categories (1-2 keys each) collapse into 'misc' so they don't
   // each get their own card.
   const CATEGORY_REMAP = /** @type {Record<string,string>} */ ({

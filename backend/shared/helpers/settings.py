@@ -124,6 +124,16 @@ SEEDS: list[tuple] = [
      "Hidden >= threshold: critical pollers throttled to 30 s, "
      "non-critical pollers paused. 0 disables hibernation.",
      "min", {"min": 0, "max": 60, "step": 1}),
+    ("polling", "polling.book_live_ms",   "int", 5000,
+     "Book poller cadence during market hours (ms). Drives holdings/positions/funds "
+     "refresh rate. Lower = faster, more broker API calls. Syncs with ticker activity — "
+     "5 s catches any fill within one poll cycle.",
+     "ms", {"min": 1000, "max": 60000, "step": 500}),
+    ("polling", "polling.book_closed_ms", "int", 1800000,
+     "Book poller cadence during NSE/MCX market closure (ms). Holdings and positions "
+     "are frozen during closed hours; a 30-minute refresh is sufficient and eliminates "
+     "720+/hr backend hits. Auto-restores to book_live_ms on market open.",
+     "ms", {"min": 60000, "max": 7200000, "step": 60000}),
 
     # ── Performance refresh ─────────────────────────────────────────────
     ("performance", "performance.refresh_interval",        "int", 5,
@@ -531,6 +541,23 @@ SEEDS: list[tuple] = [
      "Useful for defect tracking + post-mortem ('operator clicked "
      "SUBMIT and got 422; what blocked?'). Off by default so the "
      "audit log doesn't balloon with validation noise.", None, None),
+
+    # ── KiteTicker resilience knobs ─────────────────────────────────────────
+    # These are read by get_int() in backend/brokers/service/app.py but were
+    # not seeded, making them invisible in /admin/settings. Seeding here so
+    # operators can tune them without a code deploy.
+    ("ticker", "kite_ticker.unhealthy_threshold", "int", 2,
+     "Consecutive missed heartbeats before a Kite account is considered unhealthy "
+     "and triggers an auto-swap to the next available account.",
+     None, {"min": 1, "max": 10, "step": 1}),
+    ("ticker", "kite_ticker.swap_cooldown_seconds", "int", 300,
+     "Minimum seconds between auto-swaps of the KiteTicker account. Prevents rapid "
+     "ping-pong when multiple accounts are marginal. Default 5 min.",
+     "s", {"min": 30, "max": 3600, "step": 30}),
+    ("ticker", "kite_ticker.all_down_watchdog_seconds", "int", 60,
+     "Seconds the watchdog waits before declaring all accounts unhealthy and "
+     "attempting a forced restart of the KiteTicker.",
+     "s", {"min": 10, "max": 300, "step": 10}),
 
     # ── Logging ──────────────────────────────────────────────────────────
     # Values must be a Python logging level name (DEBUG, INFO, WARNING,

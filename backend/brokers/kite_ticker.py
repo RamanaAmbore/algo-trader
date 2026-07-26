@@ -277,6 +277,7 @@ class TickerManager:
         # forgotten force-unhealthy doesn't leave the ticker permanently
         # broken. Set via POST /internal/ticker/force-unhealthy.
         self._force_unhealthy_until: float = 0.0
+        self._last_swap_log_ts: float = 0.0
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -734,11 +735,13 @@ class TickerManager:
             # operator would have intervened.
             if len(self._swap_history) > 128:
                 self._swap_history = self._swap_history[-128:]
-        # Log-side signal — historian + tail-grep friendly.
-        logger.info(
-            "KiteTicker: recorded auto-failover swap %s → %s (total_swaps=%d)",
-            prev_account or "?", next_account, len(self._swap_history),
-        )
+        _now = time.time()
+        if len(self._swap_history) % 10 == 0 or _now - self._last_swap_log_ts > 5.0:
+            self._last_swap_log_ts = _now
+            logger.info(
+                "KiteTicker: recorded auto-failover swap %s → %s (total_swaps=%d)",
+                prev_account or "?", next_account, len(self._swap_history),
+            )
 
     def swaps_since(self, seconds: float) -> int:
         """Count swap events within the last `seconds` window. Watchdog

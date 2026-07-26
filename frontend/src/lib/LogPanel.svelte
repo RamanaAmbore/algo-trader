@@ -2354,17 +2354,17 @@
   .lp-conn-row {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
-    padding: 0.28rem 0.5rem;
+    column-gap: 0.4rem;
+    row-gap: 0.05rem;
+    padding: 0.28rem 0;
     font-size: 0.72rem;
-    white-space: nowrap;
-    overflow: hidden;
+    flex-wrap: wrap;
     border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .lp-conn-row:last-child {
     border-bottom: none;
   }
-  .lp-conn-time   { flex-shrink: 0; color: var(--c-info); font-size: var(--fs-sm, 0.72rem); min-width: 13rem; white-space: normal; overflow-wrap: break-word; }
+  .lp-conn-time   { flex: 0 0 auto; white-space: nowrap; color: var(--c-info); font-size: var(--fs-sm, 0.72rem); }
   .lp-conn-acct   { flex-shrink: 0; min-width: 5rem; color: var(--algo-slate); }
   .lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
   .lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
@@ -2375,11 +2375,11 @@
   .lp-conn-row.conn-ev-muted { color: var(--algo-muted); }
 
   @media (max-width: 640px) {
-    .lp-conn-row {
-      flex-wrap: wrap;
-      white-space: normal;
-    }
     .lp-conn-acct { word-break: break-all; }
+  }
+
+  @media (min-width: 1024px) {
+    .lp-conn-row { flex-wrap: nowrap; }
   }
 
 </style>

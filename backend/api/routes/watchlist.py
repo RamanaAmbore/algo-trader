@@ -16,6 +16,7 @@ admin. The `user_id` filter is derived from the JWT's `sub` claim, so
 one user can never see or mutate another's lists.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -33,6 +34,8 @@ from backend.api.models import User, Watchlist, WatchlistItem, MoversSnapshot
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+_SEED_LOCK = asyncio.Lock()
 
 # Cap per watchlist — Kite's `quote()` batch tops out around 500 keys
 # but the UI gets unreadable past ~50. 100 leaves headroom.
@@ -1181,41 +1184,42 @@ async def seed_global_pinned() -> None:
     Called from init_db on every startup. Operator-created (non-pinned)
     rows are untouched. Global Pinned rows have user_id=NULL.
     """
-    async with async_session() as session:
-        now = datetime.now(timezone.utc)
+    async with _SEED_LOCK:
+        async with async_session() as session:
+            now = datetime.now(timezone.utc)
 
-        # 1+2. Find-or-create global row, then absorb legacy per-user rows.
-        global_row = await _sgp_find_or_create_global(session, now)
-        await _sgp_migrate_legacy(session, global_row, now)
+            # 1+2. Find-or-create global row, then absorb legacy per-user rows.
+            global_row = await _sgp_find_or_create_global(session, now)
+            await _sgp_migrate_legacy(session, global_row, now)
 
-        # 5a. One-shot cleanup waves — each fires ONCE then is gated by a
-        #     settings marker so operator re-adds survive subsequent restarts.
-        await _sgp_run_delete_wave(
-            session, global_row,
-            "migrations.pinned_remove_goldm_usdinr_v1",
-            [("GOLDM", "MCX"), ("USDINR", "CDS")],
-            "wave 1 (GOLDM/USDINR)",
-        )
-        await _sgp_run_delete_wave(
-            session, global_row,
-            "migrations.pinned_remove_mcx_futures_v1",
-            [("COPPER", "MCX"), ("CRUDEOIL", "MCX"),
-             ("NATURALGAS", "MCX"), ("SILVERM", "MCX")],
-            "wave 2 (MCX futures)",
-        )
-        await _sgp_run_delete_wave(
-            session, global_row,
-            "migrations.pinned_remove_silver_mcx_v1",
-            [("SILVER", "MCX")],
-            "wave 3 (SILVER MCX)",
-        )
-        await _sgp_wave4_usdinr_bare_root(session, global_row)
-        await _sgp_wave5_next_adjacency(session, global_row, now)
+            # 5a. One-shot cleanup waves — each fires ONCE then is gated by a
+            #     settings marker so operator re-adds survive subsequent restarts.
+            await _sgp_run_delete_wave(
+                session, global_row,
+                "migrations.pinned_remove_goldm_usdinr_v1",
+                [("GOLDM", "MCX"), ("USDINR", "CDS")],
+                "wave 1 (GOLDM/USDINR)",
+            )
+            await _sgp_run_delete_wave(
+                session, global_row,
+                "migrations.pinned_remove_mcx_futures_v1",
+                [("COPPER", "MCX"), ("CRUDEOIL", "MCX"),
+                 ("NATURALGAS", "MCX"), ("SILVERM", "MCX")],
+                "wave 2 (MCX futures)",
+            )
+            await _sgp_run_delete_wave(
+                session, global_row,
+                "migrations.pinned_remove_silver_mcx_v1",
+                [("SILVER", "MCX")],
+                "wave 3 (SILVER MCX)",
+            )
+            await _sgp_wave4_usdinr_bare_root(session, global_row)
+            await _sgp_wave5_next_adjacency(session, global_row, now)
 
-        # 6. Additive top-up with MARKETS_DEFAULT entries.
-        await _sgp_topup_defaults(session, global_row, now)
+            # 6. Additive top-up with MARKETS_DEFAULT entries.
+            await _sgp_topup_defaults(session, global_row, now)
 
-        await session.commit()
+            await session.commit()
 
 
 async def _ensure_default_watchlists(session, user_id: int) -> None:

@@ -992,7 +992,7 @@ async def _resolve_positions_source(
     # When market is closed and the DB has a genuine snapshot (as_of
     # is set), return it directly — scope/mask applied by caller.
     if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
-        logger.info(
+        logger.debug(
             f"positions: market closed ({source}) — serving daily_book snapshot"
         )
         return resp
