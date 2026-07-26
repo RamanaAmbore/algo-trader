@@ -35,7 +35,7 @@
   import LegLabel from '$lib/LegLabel.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies, cancelOrder } from '$lib/api';
   import {
     buildModifyPayload,
     buildOnSubmitPayload,
@@ -2661,6 +2661,30 @@
               + Add to basket
             </button>
           {:else}
+            {#if action === 'modify' && orderId}
+              <!-- Cancel Order — red secondary button shown only in modify
+                   mode. Calls DELETE /api/orders/{id} then notifies the
+                   caller (loadOrders) and closes the modal. Uses the same
+                   `submitting` lock as the Modify submit so both buttons
+                   disable together while the request is in flight. -->
+              <button type="button" class="ot-btn-cancel-order"
+                      disabled={submitting}
+                      title="Cancel this working order with the broker"
+                      onclick={async () => {
+                        submitting = true; submitErr = '';
+                        try {
+                          await cancelOrder(orderId, _account, _variety);
+                          await onSubmit({ action: 'cancel', orderId });
+                          onClose();
+                        } catch (e) {
+                          submitErr = /** @type {any} */ (e)?.message || 'Cancel failed';
+                        } finally {
+                          submitting = false;
+                        }
+                      }}>
+                {submitting ? '…' : 'Cancel Order'}
+              </button>
+            {/if}
             <!-- Direct-submit button. Operator: "I tried closing position
                  using the order, it didn't place the order" — the
                  unified-basket spec retired this for action='open' (the
@@ -2679,7 +2703,7 @@
                     onclick={submit}>
               {#if _isDemo}Submit (Demo){:else if submitting}…
               {:else if _draftMode}Add to Payoff
-              {:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}
+              {:else if action === 'modify'}Modify Order{orderId ? ' · #' + orderId : ''}
               {:else if action === 'close'}Close · {_side.toLowerCase()}
               {:else if action === 'repeat'}Place again
               {:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}
@@ -3636,6 +3660,27 @@
   .ot-submit:disabled { opacity: 0.45; cursor: not-allowed; }
   .ot-close:disabled { opacity: 0.35; cursor: not-allowed; }
   .ot-submit-basket-mode:disabled { opacity: 0.45; cursor: not-allowed; }
+  /* Cancel Order — red danger secondary, shown only in modify mode to the
+     left of the Modify Order submit. Matches the project's `--c-short`
+     palette (#f87171). Outlined so it reads as destructive-secondary, not
+     as the primary action button. */
+  .ot-btn-cancel-order {
+    padding: 0.45rem 1rem;
+    border-radius: 3px;
+    font-size: var(--fs-lg);
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+    border: 1px solid rgba(248, 113, 113, 0.60);
+    background: rgba(248, 113, 113, 0.10);
+    color: var(--c-short);
+  }
+  .ot-btn-cancel-order:hover:not(:disabled) {
+    background: rgba(248, 113, 113, 0.20);
+    border-color: rgba(248, 113, 113, 0.90);
+    color: #fca5a5;
+  }
+  .ot-btn-cancel-order:disabled { opacity: 0.45; cursor: not-allowed; }
 
   /* `.ot-label-sub` kept — used by the Template card "(exit rules)"
      hint and other secondary-text spans across the ticket. */
