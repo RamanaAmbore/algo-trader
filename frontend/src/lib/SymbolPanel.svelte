@@ -3346,11 +3346,12 @@
     align-items: center;
   }
   .oes-tab-ltp {
+    margin-left: auto;
     padding: 0 0.4rem;
     font-size: 0.7rem;
     font-variant-numeric: tabular-nums;
-    color: var(--c-value, #e2e8f0);
-    font-weight: 600;
+    color: var(--c-action, #fbbf24);
+    font-weight: 700;
     white-space: nowrap;
     display: inline-flex;
     align-items: center;
@@ -3360,8 +3361,9 @@
     font-size: 0.6rem;
     text-transform: uppercase;
     letter-spacing: 0.07em;
-    color: var(--algo-muted);
+    color: var(--c-action);
     font-weight: 700;
+    opacity: 0.65;
   }
 
   /* Basket bar — sticky bottom strip inside the modal when legs exist. */
