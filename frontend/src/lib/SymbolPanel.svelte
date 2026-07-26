@@ -445,7 +445,8 @@
 
   // Live LTP for the current symbol — pulled from the shared symbolStore
   // so the tab row can show a real-time price without a separate fetch.
-  const _ltp = $derived(getSnapshot(_localSymbol)?.ltp ?? null);
+  const _ltpSym = $derived(_parseRoot(_localSymbol) || _localSymbol);
+  const _ltp = $derived(getSnapshot(_ltpSym)?.ltp ?? null);
 
   // Tab-activation refresh bumps. Operator request: "when chain tab is
   // pressed, the chain details need to be refreshed. when order ticket
@@ -3094,7 +3095,6 @@
     /* Take the remaining row space so Symbol gets the largest slot. */
     flex: 1 1 0;
     min-width: 0;
-    max-width: 14rem;
   }
   .oes-sym-pick :global(.ssi-wrap) { width: 100%; }
   .oes-sym-pick :global(.ssi-input) { width: 100%; min-width: 0; }

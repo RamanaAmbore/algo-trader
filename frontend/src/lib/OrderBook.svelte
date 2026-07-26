@@ -43,6 +43,9 @@
   // ── Data ─────────────────────────────────────────────────────────────
   let orderRows = $state(/** @type {any[]} */ ([]));
 
+  let _internalStatus = $state(/** @type {string|null} */ (null));
+  const _activeStatus = $derived(_internalStatus ?? statusFilter);
+
   async function _loadOrders() {
     // Merge broker orders + algo orders so the book carries the same data
     // LogPanel's order tab renders — broker rows plus paper/sim/shadow rows
@@ -71,6 +74,17 @@
       });
       orderRows = merged;
     } catch (_) { /* keep last-good */ }
+  }
+
+  function _downloadCsv() {
+    const rows = filteredOrderRows;
+    if (!rows.length) return;
+    const cols = ['order_id','tradingsymbol','exchange','transaction_type','quantity','price','status','order_timestamp'];
+    const csv = [cols.join(','), ...rows.map(r => cols.map(c => JSON.stringify(r[c] ?? '')).join(','))].join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = 'orders.csv';
+    a.click();
   }
 
   // ── Interval management ───────────────────────────────────────────────
@@ -140,7 +154,7 @@
   const filteredOrderRows = $derived.by(() => {
     let rows = orderRows || [];
     rows = _applyAccountFilter(rows, accountFilter);
-    rows = _applyStatusFilter(rows, statusFilter);
+    rows = _applyStatusFilter(rows, _activeStatus);
     rows = _applyDateFilter(rows);
     rows = _applyOrderIdFilter(rows, orderId);
     return rows;
@@ -222,7 +236,10 @@
 </script>
 
 <!-- Header -->
-<CardHeader label={title} showSearch={false} bind:isCollapsed>
+<CardHeader label={title} showSearch={false} bind:isCollapsed
+  onRefresh={_loadOrders}
+  onDownload={_downloadCsv}
+>
   {#snippet left()}
     <span class="ob-count">{filteredOrderRows.length} order{filteredOrderRows.length !== 1 ? 's' : ''}</span>
   {/snippet}
@@ -230,6 +247,21 @@
 
 <!-- Order card grid -->
 {#if !isCollapsed}
+  <div class="ob-status-bar">
+    {#each [
+      { id: 'all',       label: 'All',       count: orderRows.length },
+      { id: 'open',      label: 'Open',      count: orderRows.filter(o => { const s = (o.status||'').toUpperCase(); return s === 'OPEN' || s === 'TRIGGER PENDING'; }).length },
+      { id: 'complete',  label: 'Filled',    count: orderRows.filter(o => (o.status||'').toUpperCase() === 'COMPLETE').length },
+      { id: 'rejected',  label: 'Rejected',  count: orderRows.filter(o => (o.status||'').toUpperCase() === 'REJECTED').length },
+      { id: 'cancelled', label: 'Cancelled', count: orderRows.filter(o => (o.status||'').toUpperCase() === 'CANCELLED').length },
+    ] as f}
+      <button type="button" class="ob-sc" class:ob-sc-on={_activeStatus === f.id}
+        onclick={() => { _internalStatus = f.id; }}>
+        <span class="ob-sc-n">{f.count}</span>
+        <span class="ob-sc-l">{f.label}</span>
+      </button>
+    {/each}
+  </div>
 <div class="ob-scroll">
   {#if filteredOrderRows.length}
     <div class="oc-book-grid">
@@ -362,4 +394,40 @@
   @media (min-width: 1024px) {
     .ob-scroll :global(.oc-book-grid) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
+
+  .ob-status-bar {
+    display: flex;
+    gap: 0.25rem;
+    padding: 0.25rem 0.3rem 0.1rem;
+    flex-wrap: wrap;
+  }
+  .ob-sc {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.05rem;
+    padding: 0.2rem 0.45rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: transparent;
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .ob-sc:hover { background: rgba(255,255,255,0.05); }
+  .ob-sc-on { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.35); }
+  .ob-sc-n {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #e2e8f0;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .ob-sc-on .ob-sc-n { color: #fbbf24; }
+  .ob-sc-l {
+    font-size: 0.55rem;
+    color: rgba(255,255,255,0.4);
+    letter-spacing: 0.03em;
+    line-height: 1;
+  }
+  .ob-sc-on .ob-sc-l { color: rgba(251,191,36,0.7); }
 </style>

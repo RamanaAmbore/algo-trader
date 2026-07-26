@@ -446,6 +446,32 @@
     return evts;
   });
 
+  function _deriveKind(/** @type {string|undefined} */ status) {
+    switch ((status || '').toUpperCase()) {
+      case 'COMPLETE': return 'fill';
+      case 'REJECTED': return 'reject';
+      case 'CANCELLED': return 'cancel';
+      default: return 'placed';
+    }
+  }
+
+  const _derivedOrderEvents = $derived.by(() => {
+    const events = /** @type {Array<{id: any, ts: string, kind: string, message: string}>} */ ([]);
+    for (const o of filteredOrderRows) {
+      const sym  = o.tradingsymbol || o.symbol || '';
+      const side = o.transaction_type || '';
+      const qty  = o.quantity ?? '';
+      const ts   = o.order_timestamp || o.created_at || '';
+      const kind = _deriveKind(o.status);
+      const msg  = `${side} ${qty} ${sym}${o.price ? ' @ ₹' + o.price : ''}${o.status_message ? ' — ' + o.status_message : ''}`;
+      events.push({ id: o.order_id || o.id, ts, kind, message: msg });
+    }
+    const algoIds = new Set(filteredOrderEvents.map(e => String(e.order_id || '')));
+    const brokerOnly = events.filter(e => !algoIds.has(String(e.id || '')));
+    return [...filteredOrderEvents, ...brokerOnly].sort((a, b) =>
+      (Date.parse(b.ts || '') || 0) - (Date.parse(a.ts || '') || 0));
+  });
+
   function _fmtConnDetail(/** @type {any} */ detail) {
     if (detail == null) return '';
     if (typeof detail === 'string') return detail;
@@ -1551,8 +1577,8 @@
     <!-- Account filter moved to the tab row above per operator. -->
   </div>
   <div class="lp-order-scroll {heightClass}">
-    {#if filteredOrderEvents.length}
-      {#each filteredOrderEvents as evt (evt.id)}
+    {#if _derivedOrderEvents.length}
+      {#each _derivedOrderEvents as evt (evt.id)}
         <div class="log-row {_orderEvtCls(evt.kind)}">
           {@html _dualTsHtml(evt.ts)}
           <span class="log-row-tag">{(evt.kind || '').replace(/_/g, ' ').toUpperCase()}</span>
@@ -1560,7 +1586,7 @@
         </div>
       {/each}
     {:else}
-      <div class="log-debug py-2 text-center">No order events.</div>
+      <div class="log-debug py-2 text-center">No orders today.</div>
     {/if}
   </div>
 {:else}
