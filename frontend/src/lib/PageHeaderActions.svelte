@@ -252,6 +252,7 @@
     defaultTab="ticket"
     accounts={_orderPrefill?.accounts ?? _accountsList}
     account={_orderPrefill?.account || _effectiveAccount}
+    showRefresh={true}
     onClose={() => { _orderOpen = false; _orderPrefill = null; }}
     onSubmit={(payload) => {
       const resp = payload?.broker_response;
