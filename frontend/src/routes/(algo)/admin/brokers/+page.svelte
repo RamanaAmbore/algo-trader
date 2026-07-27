@@ -519,8 +519,8 @@
   /** Map event_type to a CSS class suffix for coloring the Event cell. */
   function _connEventCls(/** @type {string} */ evType) {
     if (['login_ok', 'token_ok', 'fetch_ok_recovery', 'circuit_close'].includes(evType)) return 'conn-ev-green';
-    if (['login_fail', 'auth_fail', 'circuit_open', 'rotation_detected'].includes(evType)) return 'conn-ev-red';
-    if (['rate_limited', 'token_expiry'].includes(evType)) return 'conn-ev-amber';
+    if (['login_fail', 'auth_fail', 'circuit_open'].includes(evType)) return 'conn-ev-red';
+    if (['rate_limited', 'token_expiry', 'rotation_detected'].includes(evType)) return 'conn-ev-amber';
     return 'conn-ev-muted';
   }
 
