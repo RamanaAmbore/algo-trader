@@ -187,19 +187,19 @@ describe('navByAccount — mixed sign pos_m2m across accounts', () => {
 
 describe('navByAccount — string numeric fields coercion', () => {
   it('unrealised as string → coerced to number', () => {
-    const positions = [{ account: 'AA', unrealised: '7500' }];
+    const positions = /** @type {any} */ ([{ account: 'AA', unrealised: '7500' }]);
     const rows = navByAccount(['AA'], [], positions, []);
     expect(rows[0].pos_m2m).toBe(7500);
   });
 
   it('cur_val as string → coerced to number', () => {
-    const holdings = [{ account: 'AA', cur_val: '25000' }];
+    const holdings = /** @type {any} */ ([{ account: 'AA', cur_val: '25000' }]);
     const rows = navByAccount(['AA'], [], [], holdings);
     expect(rows[0].holdings_mtm).toBe(25000);
   });
 
   it('cash as string → coerced to number', () => {
-    const funds = [{ account: 'AA', cash: '100000', option_premium: '5000' }];
+    const funds = /** @type {any} */ ([{ account: 'AA', cash: '100000', option_premium: '5000' }]);
     const rows = navByAccount(['AA'], funds, [], []);
     expect(rows[0].cash).toBe(105000);
   });

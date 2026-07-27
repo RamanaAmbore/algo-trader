@@ -29,7 +29,7 @@ async def test_ap_dry_run_margin_success():
 
     mock_broker = MagicMock()
 
-    with patch("backend.brokers.registry.get_broker", return_value=mock_broker), \
+    with patch("backend.brokers.get_broker", return_value=mock_broker), \
          patch("backend.api.algo.actions_paper._basket_margin_validate",
                new=AsyncMock(return_value=(True, "OK"))):
         ok, reason = await _ap_dry_run_margin("ZG0790", "NIFTY25JULFUT", "BUY", 1, 24500.0, "NFO")
@@ -45,7 +45,7 @@ async def test_ap_dry_run_margin_failure():
 
     mock_broker = MagicMock()
 
-    with patch("backend.brokers.registry.get_broker", return_value=mock_broker), \
+    with patch("backend.brokers.get_broker", return_value=mock_broker), \
          patch("backend.api.algo.actions_paper._basket_margin_validate",
                new=AsyncMock(return_value=(False, "insufficient margin"))):
         ok, reason = await _ap_dry_run_margin("ZG0790", "NIFTY25JULFUT", "BUY", 100, 24500.0, "NFO")
@@ -81,7 +81,7 @@ async def test_ap_dry_run_margin_broker_lookup_error():
     """Broker lookup fails → (False, error text)."""
     from backend.api.algo.actions_paper import _ap_dry_run_margin
 
-    with patch("backend.brokers.registry.get_broker", side_effect=RuntimeError("no broker")):
+    with patch("backend.brokers.get_broker", side_effect=RuntimeError("no broker")):
         ok, reason = await _ap_dry_run_margin("ZG0790", "NIFTY25JULFUT", "BUY", 1, 24500.0, "NFO")
 
     assert ok is False
