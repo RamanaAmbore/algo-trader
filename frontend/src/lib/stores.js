@@ -1330,11 +1330,13 @@ function stopMarketStatusPoller() {
  * @returns {'green'|'amber'|'red'}
  */
 function _brokerHealthWorstState(accounts) {
-  if (!accounts || accounts.length === 0) return 'amber';
-  if (accounts.some(a => a.state === 'red'))      return 'red';
-  if (accounts.some(a => a.state === 'amber'))    return 'amber';
-  if (accounts.some(a => a.state === 'inactive')) return 'amber';
-  if (accounts.every(a => a.state === 'green'))   return 'green';
+  if (!accounts || !accounts.length) return 'amber';
+  const active = accounts.filter(a => a.state !== 'inactive');
+  const base = active.length ? active : accounts;
+  if (base.some(a => a.state === 'red'))   return 'red';
+  if (base.some(a => a.state === 'amber')) return 'amber';
+  if (base.every(a => a.state === 'green')) return 'green';
+  // all inactive
   return 'amber';
 }
 

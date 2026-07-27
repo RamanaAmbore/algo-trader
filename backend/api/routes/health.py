@@ -859,7 +859,7 @@ def _hlth_resolve_state(
         return "red", reason, cb_state, cb_count, cb_until_iso
 
     if last_ok == 0.0 and last_fail == 0.0:
-        return "amber", "no fetch attempt recorded yet", cb_state, cb_count, cb_until_iso
+        return "inactive", "no fetch attempt recorded yet", cb_state, cb_count, cb_until_iso
 
     if last_ok == 0.0 and last_fail > 0.0:
         if last_msg:
