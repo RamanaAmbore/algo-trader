@@ -95,9 +95,9 @@
   .ot-lots-row {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 1rem;
     flex-wrap: nowrap;
-    height: 1.7rem;
+    height: 1.9rem;
   }
 
   /* Editable [−][N][+] input — sits between the two stepper buttons.
@@ -105,7 +105,7 @@
      reads as one control. */
   .ot-lots-input {
     width: 3.2rem;
-    height: 1.7rem;
+    height: 1.9rem;
     text-align: center;
     padding: 0 0.25rem;
     -moz-appearance: textfield;
@@ -119,8 +119,8 @@
   }
 
   .ot-lots-step {
-    width: 1.7rem;
-    height: 1.7rem;
+    width: 2rem;
+    height: 1.9rem;
     padding: 0;
     border-radius: 3px;
     border: 1px solid rgba(251,191,36,0.45);
