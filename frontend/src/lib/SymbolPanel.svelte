@@ -61,6 +61,7 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+  import RefreshButton from '$lib/RefreshButton.svelte';
 
   // Pinned anchors: no hardcoded list — SymbolSearchInput's own
   // _autoLoadPins() fires when no `pins` prop is supplied and loads
@@ -2044,19 +2045,7 @@
                title chip (left-aligned). The close X stays anchored right. -->
           <span class="oes-right-group canonical-card-btn-group">
             {#if showRefresh}
-              <button type="button" class="oes-chart-btn oes-refresh-btn"
-                      onclick={_refreshAll}
-                      disabled={_headerRefreshing}
-                      title="Refresh order ticket">
-                <svg viewBox="0 0 16 16" width="13" height="13"
-                     fill="none" stroke="currentColor"
-                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
-                     class:oes-refresh-spinning={_headerRefreshing}
-                     aria-hidden="true">
-                  <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9"/>
-                  <path d="M13.5 3v3h-3"/>
-                </svg>
-              </button>
+              <RefreshButton onClick={_refreshAll} loading={_headerRefreshing} label="order ticket" />
             {/if}
             {#if !inline && _localSymbol}
               <button type="button" class="oes-chart-btn" title="Chart — {_localSymbol}"
@@ -3351,19 +3340,7 @@
     color: #67e8f9;
     border-color: rgba(103, 232, 249, 0.65);
   }
-  .oes-refresh-btn:hover:not(:disabled) {
-    background: rgba(34,211,238,0.14);
-    border-color: rgba(34,211,238,0.65);
-    color: var(--c-info);
-  }
-  @keyframes oes-refresh-spin {
-    to { transform: rotate(360deg); }
-  }
-  .oes-refresh-spinning {
-    animation: oes-refresh-spin 0.65s linear;
-    transform-origin: center;
-  }
-  .oes-chart-btn:disabled {
+.oes-chart-btn:disabled {
     opacity: 0.38;
     cursor: not-allowed;
   }
