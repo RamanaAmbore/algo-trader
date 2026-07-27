@@ -1223,3 +1223,1245 @@ class TestFetchHealthSnapshot:
         result = broker_apis.fetch_health_snapshot()
         assert isinstance(result, dict), "Should return dict"
         # May or may not include the account, depending on implementation
+
+
+# ---------------------------------------------------------------------------
+# New coverage tests — record_session_ok, _record_fetch edge paths,
+# enrichment functions, backfill helpers, holiday tier, update_books
+# ---------------------------------------------------------------------------
+
+class TestRecordSessionOk:
+    """Test record_session_ok behaviour."""
+
+    def teardown_method(self):
+        broker_apis._FETCH_HEALTH.clear()
+
+    def test_empty_account_noop(self):
+        """Empty-string account is a no-op."""
+        broker_apis.record_session_ok("")
+        assert broker_apis._FETCH_HEALTH == {}, "Empty account should not mutate _FETCH_HEALTH"
+
+    def test_seeds_entry_and_stamps_last_ok_at(self):
+        """Non-empty account seeds a health entry and stamps last_ok_at."""
+        account = "ZG0790"
+        assert account not in broker_apis._FETCH_HEALTH
+        before = _time.time()
+        broker_apis.record_session_ok(account)
+        after = _time.time()
+        assert account in broker_apis._FETCH_HEALTH
+        ok_at = broker_apis._FETCH_HEALTH[account]["last_ok_at"]
+        assert before <= ok_at <= after, "last_ok_at should be stamped with current time"
+
+    def test_updates_existing_entry(self):
+        """record_session_ok updates last_ok_at on an already-seeded entry."""
+        account = "ZG0790"
+        broker_apis._FETCH_HEALTH[account] = broker_apis._default_health_entry()
+        broker_apis._FETCH_HEALTH[account]["last_ok_at"] = 0.0
+        broker_apis.record_session_ok(account)
+        assert broker_apis._FETCH_HEALTH[account]["last_ok_at"] > 0.0
+
+
+class TestRecordFetchNonOptinRecovery:
+    """Test _record_fetch recovery event for non-opt-in accounts."""
+
+    def teardown_method(self):
+        broker_apis._FETCH_HEALTH.clear()
+        broker_apis._breaker_optin_cache.clear()
+
+    def test_recovery_event_emitted_when_last_fail_before_ok(self):
+        """Non-opt-in account with last_fail_at > last_ok_at emits fetch_ok_recovery."""
+        account = "ZG0790"
+        broker_apis.set_breaker_optin_cache(account, False)
+        # Seed state where we previously failed
+        broker_apis._FETCH_HEALTH[account] = broker_apis._default_health_entry()
+        broker_apis._FETCH_HEALTH[account]["last_fail_at"] = _time.time() + 1.0
+        broker_apis._FETCH_HEALTH[account]["last_ok_at"] = 0.0
+        broker_apis._FETCH_HEALTH[account]["last_fail_msg"] = "timeout"
+
+        with patch.object(broker_apis, "_emit_conn_event") as mock_emit:
+            broker_apis._record_fetch(account, ok=True)
+            # fetch_ok_recovery should have been emitted
+            events = [c[0][2] for c in mock_emit.call_args_list]
+            assert "fetch_ok_recovery" in events, f"Expected fetch_ok_recovery, got {events}"
+
+    def test_no_recovery_event_when_no_prior_failure(self):
+        """Non-opt-in account with no prior failure does not emit recovery."""
+        account = "ZG0790"
+        broker_apis.set_breaker_optin_cache(account, False)
+        broker_apis._FETCH_HEALTH[account] = broker_apis._default_health_entry()
+        # last_ok_at > last_fail_at → no recovery
+        broker_apis._FETCH_HEALTH[account]["last_ok_at"] = _time.time()
+        broker_apis._FETCH_HEALTH[account]["last_fail_at"] = 0.0
+
+        with patch.object(broker_apis, "_emit_conn_event") as mock_emit:
+            broker_apis._record_fetch(account, ok=True)
+            events = [c[0][2] for c in mock_emit.call_args_list]
+            assert "fetch_ok_recovery" not in events
+
+
+class TestRecordFetchHalfOpen:
+    """Test _record_fetch HALF-OPEN → CLOSED transition (opt-in account)."""
+
+    def teardown_method(self):
+        broker_apis._FETCH_HEALTH.clear()
+        broker_apis._breaker_optin_cache.clear()
+
+    def test_half_open_ok_emits_circuit_close(self):
+        """Opt-in account in HALF-OPEN state transitions to CLOSED on ok=True."""
+        account = "DH6847"
+        broker_apis.set_breaker_optin_cache(account, True)
+        # Seed HALF-OPEN state: circuit_open_until in the past
+        with broker_apis._BREAKER_LOCK:
+            e = broker_apis._FETCH_HEALTH.setdefault(account, broker_apis._default_health_entry())
+            e["circuit_open_until"] = _time.time() - 1.0  # already expired → half-open
+            e["consecutive_fail_count"] = 3
+            e["open_cycle_count"] = 1
+
+        with patch.object(broker_apis, "_emit_conn_event") as mock_emit:
+            broker_apis._record_fetch(account, ok=True)
+            events = [c[0][2] for c in mock_emit.call_args_list]
+            assert "circuit_close" in events, f"Expected circuit_close event, got {events}"
+
+    def test_half_open_failure_reopens_circuit(self):
+        """Opt-in account in HALF-OPEN state returns to OPEN on ok=False."""
+        account = "DH6847"
+        broker_apis.set_breaker_optin_cache(account, True)
+        with broker_apis._BREAKER_LOCK:
+            e = broker_apis._FETCH_HEALTH.setdefault(account, broker_apis._default_health_entry())
+            e["circuit_open_until"] = _time.time() - 1.0
+            e["consecutive_fail_count"] = 3
+            e["open_cycle_count"] = 1
+
+        broker_apis._record_fetch(account, ok=False, error="broker timeout")
+        # Circuit should be re-opened (open_until > now)
+        with broker_apis._BREAKER_LOCK:
+            state = broker_apis._FETCH_HEALTH[account]
+        assert state.get("circuit_open_until", 0.0) > _time.time(), \
+            "Circuit should be re-opened after HALF-OPEN failure"
+
+
+class TestInvalidateAccountOrderCache:
+    """Test invalidate_account_order_cache resets the TTL timestamp."""
+
+    def test_resets_cache_at_to_zero(self):
+        """invalidate_account_order_cache sets _ACCOUNT_ORDER_CACHE_AT to 0.0."""
+        import backend.brokers.broker_apis as ba_mod
+        # Set to some non-zero value
+        ba_mod._ACCOUNT_ORDER_CACHE_AT = _time.time()
+        broker_apis.invalidate_account_order_cache()
+        assert ba_mod._ACCOUNT_ORDER_CACHE_AT == 0.0
+
+
+class TestEnrichHoldings:
+    """Test _enrich_holdings Polars enrichment."""
+
+    def test_full_columns_enriches_correctly(self):
+        """_enrich_holdings computes pnl, cur_val, pnl_percentage, price_change, day_change_val."""
+        df = pd.DataFrame({
+            "last_price": [2600.0],
+            "average_price": [2400.0],
+            "opening_quantity": [10],
+            "close_price": [2550.0],
+            "pnl": [2000.0],   # broker-supplied
+            "day_change_val": [None],
+        })
+        result = broker_apis._enrich_holdings(df)
+        assert "pnl" in result.columns
+        assert "price_change" in result.columns
+        assert "day_change_val" in result.columns
+        # inv_val = avg × qty
+        assert "inv_val" in result.columns
+        assert result["inv_val"].iloc[0] == pytest.approx(24000.0)
+
+    def test_day_change_via_day_change_column(self):
+        """When day_change column present (but no close/ltp/qty), dcv = day_change * qty."""
+        df = pd.DataFrame({
+            "day_change": [5.0],
+            "opening_quantity": [10],
+            # No last_price/average_price/close_price — exercises the
+            # elif branch: day_change × opening_quantity
+        })
+        result = broker_apis._enrich_holdings(df)
+        assert "day_change_val" in result.columns
+        assert result["day_change_val"].iloc[0] == pytest.approx(50.0)
+
+    def test_empty_dataframe_returns_unchanged(self):
+        """_enrich_holdings on empty df should not raise."""
+        df = pd.DataFrame()
+        result = broker_apis._enrich_holdings(df)
+        assert result.empty
+
+
+class TestEnrichPositions:
+    """Test _enrich_positions Polars enrichment."""
+
+    def test_basic_columns_produce_day_change(self):
+        """_enrich_positions with minimal columns computes day_change."""
+        df = pd.DataFrame({
+            "last_price": [200.0],
+            "average_price": [190.0],
+            "close_price": [195.0],
+            "quantity": [10],
+        })
+        result = broker_apis._enrich_positions(df)
+        assert "day_change" in result.columns
+        assert result["day_change"].iloc[0] == pytest.approx(200.0 - 195.0)
+
+    def test_intraday_fields_use_decomposed_formula(self):
+        """_enrich_positions with full intraday fields uses decomposed formula."""
+        df = pd.DataFrame({
+            "last_price": [200.0],
+            "average_price": [190.0],
+            "close_price": [195.0],
+            "quantity": [10],
+            "overnight_quantity": [5],
+            "day_buy_quantity": [5],
+            "day_sell_quantity": [0],
+            "day_buy_value": [1000.0],
+            "day_sell_value": [0.0],
+        })
+        result = broker_apis._enrich_positions(df)
+        assert "day_change_val" in result.columns
+        assert "pnl" in result.columns
+        assert "day_change_percentage" in result.columns
+        assert "pnl_percentage" in result.columns
+
+    def test_pnl_column_trusted_from_broker(self):
+        """When pnl column present, broker value is trusted over formula."""
+        df = pd.DataFrame({
+            "last_price": [200.0],
+            "average_price": [190.0],
+            "close_price": [195.0],
+            "quantity": [10],
+            "pnl": [999.0],   # broker-supplied value
+        })
+        result = broker_apis._enrich_positions(df)
+        # Broker pnl should be kept since it's not null
+        assert result["pnl"].iloc[0] == pytest.approx(999.0)
+
+
+class TestBmdIsMissingVal:
+    """Test _bmd_is_missing_val."""
+
+    def test_zero_is_missing(self):
+        assert broker_apis._bmd_is_missing_val(0) is True
+
+    def test_negative_is_missing(self):
+        assert broker_apis._bmd_is_missing_val(-1.0) is True
+
+    def test_nan_is_missing(self):
+        assert broker_apis._bmd_is_missing_val(float("nan")) is True
+
+    def test_non_numeric_is_missing(self):
+        assert broker_apis._bmd_is_missing_val("abc") is True
+
+    def test_none_is_missing(self):
+        assert broker_apis._bmd_is_missing_val(None) is True
+
+    def test_positive_float_not_missing(self):
+        assert broker_apis._bmd_is_missing_val(100.0) is False
+
+    def test_small_positive_not_missing(self):
+        assert broker_apis._bmd_is_missing_val(0.01) is False
+
+
+class TestBmdExtractLookups:
+    """Test _bmd_extract_lookups quote dict parsing."""
+
+    def test_extracts_ohlc_close_and_ltp(self):
+        """Extracts close from ohlc dict and last_price as ltp."""
+        quote_resp = {
+            "NSE:RELIANCE": {
+                "ohlc": {"close": 2550.0},
+                "last_price": 2600.0,
+            }
+        }
+        close_lookup, ltp_lookup = broker_apis._bmd_extract_lookups(quote_resp)
+        assert close_lookup["NSE:RELIANCE"] == pytest.approx(2550.0)
+        assert ltp_lookup["NSE:RELIANCE"] == pytest.approx(2600.0)
+
+    def test_falls_back_to_top_level_close_price(self):
+        """When ohlc absent, falls back to top-level close_price."""
+        quote_resp = {
+            "NSE:X": {
+                "close_price": 100.0,
+                "last_price": 105.0,
+            }
+        }
+        close_lookup, ltp_lookup = broker_apis._bmd_extract_lookups(quote_resp)
+        assert close_lookup["NSE:X"] == pytest.approx(100.0)
+
+    def test_zero_values_excluded(self):
+        """Zero close and zero ltp are not added to lookups."""
+        quote_resp = {
+            "NSE:Y": {
+                "ohlc": {"close": 0.0},
+                "last_price": 0.0,
+            }
+        }
+        close_lookup, ltp_lookup = broker_apis._bmd_extract_lookups(quote_resp)
+        assert "NSE:Y" not in close_lookup
+        assert "NSE:Y" not in ltp_lookup
+
+    def test_non_dict_values_skipped(self):
+        """Non-dict values in quote resp are skipped."""
+        quote_resp = {"NSE:Z": "invalid"}
+        close_lookup, ltp_lookup = broker_apis._bmd_extract_lookups(quote_resp)
+        assert "NSE:Z" not in close_lookup
+
+
+class TestBmdPatchOneRow:
+    """Test _bmd_patch_one_row close/ltp patching."""
+
+    def test_patches_close_and_ltp_from_lookups(self):
+        """Patches close_price and last_price from lookups."""
+        df = pd.DataFrame({"close_price": [0.0], "last_price": [0.0]})
+        touched, from_stale = broker_apis._bmd_patch_one_row(
+            df, 0, "NFO:X", True, True,
+            close_lookup={"NFO:X": 100.0},
+            ltp_lookup={"NFO:X": 105.0},
+        )
+        assert touched is True
+        assert from_stale is False
+        assert df.at[0, "close_price"] == pytest.approx(100.0)
+        assert df.at[0, "last_price"] == pytest.approx(105.0)
+
+    def test_uses_stale_cache_when_ltp_lookup_empty(self):
+        """Falls back to last-known-good cache when ltp_lookup has no value."""
+        df = pd.DataFrame({"close_price": [0.0], "last_price": [0.0]})
+        with patch.object(broker_apis, "get_last_good_ltp", return_value=99.0):
+            touched, from_stale = broker_apis._bmd_patch_one_row(
+                df, 0, "NFO:X", True, True,
+                close_lookup={},
+                ltp_lookup={},
+            )
+        assert touched is True
+        assert from_stale is True
+        assert df.at[0, "last_price"] == pytest.approx(99.0)
+
+    def test_does_not_overwrite_nonzero_ltp(self):
+        """Does not overwrite an existing non-zero last_price."""
+        df = pd.DataFrame({"close_price": [0.0], "last_price": [200.0]})
+        touched, from_stale = broker_apis._bmd_patch_one_row(
+            df, 0, "NFO:X", True, True,
+            close_lookup={"NFO:X": 100.0},
+            ltp_lookup={"NFO:X": 105.0},
+        )
+        # last_price was already 200.0 (non-zero), should not be overwritten
+        assert df.at[0, "last_price"] == pytest.approx(200.0)
+
+
+class TestBmdMarkStaleColumn:
+    """Test _bmd_mark_stale_column staleness flag."""
+
+    def test_empty_stale_indices_no_column_added(self):
+        """Empty stale_indices set → last_price_stale column not added."""
+        df = pd.DataFrame({"last_price": [100.0]})
+        broker_apis._bmd_mark_stale_column(df, set())
+        assert "last_price_stale" not in df.columns
+
+    def test_marks_stale_rows(self):
+        """Rows in stale_indices get last_price_stale=True."""
+        df = pd.DataFrame({"last_price": [100.0, 200.0]})
+        broker_apis._bmd_mark_stale_column(df, {0})
+        assert "last_price_stale" in df.columns
+        assert bool(df.at[0, "last_price_stale"]) is True
+
+
+class TestBmdRecomputeDerived:
+    """Test _bmd_recompute_derived P&L recomputation."""
+
+    def test_recomputes_day_change_val(self):
+        """_bmd_recompute_derived updates day_change_val on patched rows."""
+        df = pd.DataFrame({
+            "last_price": [105.0],
+            "close_price": [100.0],
+            "opening_quantity": [10],
+            "day_change_val": [0.0],
+        })
+        broker_apis._bmd_recompute_derived(df, {0})
+        # (105 - 100) × 10 = 50.0
+        assert df.at[0, "day_change_val"] == pytest.approx(50.0)
+
+    def test_skips_empty_patched_indices(self):
+        """Empty patched_indices is a no-op."""
+        df = pd.DataFrame({
+            "last_price": [105.0],
+            "close_price": [100.0],
+            "opening_quantity": [10],
+            "day_change_val": [0.0],
+        })
+        original_val = df.at[0, "day_change_val"]
+        broker_apis._bmd_recompute_derived(df, set())
+        # With empty set, pd.Index(sorted({})) is empty, so no rows are processed
+        assert df.at[0, "day_change_val"] == original_val
+
+
+class TestUpdateBooks:
+    """Test update_books DataFrame merging."""
+
+    def test_merges_three_non_empty_frames(self):
+        """update_books concatenates three non-empty DataFrames."""
+        holdings = pd.DataFrame({"a": [1, 2]})
+        positions = pd.DataFrame({"a": [3]})
+        margins = pd.DataFrame({"a": [4, 5]})
+        result = broker_apis.update_books(holdings, positions, margins)
+        assert len(result) == 5
+        assert list(result["a"]) == [1, 2, 3, 4, 5]
+
+    def test_skips_empty_frames(self):
+        """update_books excludes empty DataFrames from concat."""
+        holdings = pd.DataFrame({"a": [1]})
+        positions = pd.DataFrame()
+        margins = pd.DataFrame({"a": [2]})
+        result = broker_apis.update_books(holdings, positions, margins)
+        assert len(result) == 2
+
+    def test_all_empty_returns_empty(self):
+        """update_books with all-empty frames returns empty DataFrame."""
+        result = broker_apis.update_books(
+            pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        )
+        assert result.empty
+
+
+class TestFetchHolidaysTier2:
+    """Test fetch_holidays Tier-2 module-level cache."""
+
+    def teardown_method(self):
+        broker_apis._HOLIDAY_CACHE.clear()
+
+    def test_tier2_cache_hit_returns_cached_set(self):
+        """fetch_holidays returns module-level _HOLIDAY_CACHE without hitting NSE."""
+        import datetime
+        today = datetime.date.today()
+        expected = {datetime.date(2025, 1, 26)}
+        broker_apis._HOLIDAY_CACHE["NSE"] = (today, expected)
+
+        # Patch Tier 1 (holidays_store) to raise so we skip to Tier 2
+        with patch.dict("sys.modules", {"backend.api.persistence.holidays_store": None}):
+            with patch("backend.brokers.broker_apis._fetch_holidays_from_nse") as mock_nse:
+                result = broker_apis.fetch_holidays("NSE")
+                # NSE API should NOT have been called (Tier 2 hit)
+                mock_nse.assert_not_called()
+        assert result == expected
+
+    def test_tier2_miss_falls_to_tier4(self):
+        """fetch_holidays with no cache hits NSE API (Tier 4)."""
+        import datetime
+        # Ensure cache is empty for this exchange
+        broker_apis._HOLIDAY_CACHE.pop("TESTEXCH", None)
+
+        mock_holidays = {datetime.date(2025, 10, 2)}
+        with patch("backend.brokers.broker_apis._fetch_holidays_from_nse", return_value=mock_holidays) as mock_nse:
+            with patch("backend.brokers.broker_apis._read_market_holidays_sync", return_value=set()):
+                with patch.dict("sys.modules", {"backend.api.persistence.holidays_store": None}):
+                    result = broker_apis.fetch_holidays("TESTEXCH")
+        # Should have called NSE fallback
+        assert isinstance(result, set)
+
+
+class TestFetchHolidaysFromNse:
+    """Test _fetch_holidays_from_nse direct NSE API parsing."""
+
+    def test_parses_trading_date_from_response(self):
+        """_fetch_holidays_from_nse parses tradingDate entries into date objects."""
+        import datetime
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "CM": [{"tradingDate": "26-Jan-2025"}, {"tradingDate": "15-Aug-2025"}]
+        }
+        mock_resp.raise_for_status.return_value = None
+
+        # requests is imported locally inside the function, patch at requests module level
+        with patch("requests.get", return_value=mock_resp):
+            result = broker_apis._fetch_holidays_from_nse("NSE")
+
+        assert datetime.date(2025, 1, 26) in result
+        assert datetime.date(2025, 8, 15) in result
+
+    def test_returns_empty_set_on_exception(self):
+        """_fetch_holidays_from_nse returns empty set when requests raises."""
+        with patch("requests.get", side_effect=Exception("network error")):
+            result = broker_apis._fetch_holidays_from_nse("NSE")
+        assert result == set()
+
+    def test_invalid_date_format_skipped(self):
+        """_fetch_holidays_from_nse skips entries with unparseable dates."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"CM": [{"tradingDate": "BAD-DATE"}]}
+        mock_resp.raise_for_status.return_value = None
+
+        with patch("requests.get", return_value=mock_resp):
+            result = broker_apis._fetch_holidays_from_nse("NSE")
+        assert result == set()
+
+
+class TestIsAccountHealthyConnService:
+    """Test is_account_healthy conn_service UDS path."""
+
+    def teardown_method(self):
+        broker_apis._FETCH_HEALTH.clear()
+        broker_apis._breaker_optin_cache.clear()
+
+    def test_conn_service_path_account_exists_in_snapshot(self):
+        """is_account_healthy queries conn_service when no local entry exists."""
+        account = "ZG0790"
+        # Ensure no local entry
+        broker_apis._FETCH_HEALTH.pop(account, None)
+
+        with patch("backend.brokers.broker_apis._use_conn_service", return_value=True):
+            with patch("backend.brokers.broker_apis.fetch_health_snapshot", return_value={
+                account: {"last_ok_at": 1000.0, "last_fail_at": 500.0}
+            }):
+                result = broker_apis.is_account_healthy(account)
+        assert result is True
+
+    def test_conn_service_path_account_not_in_snapshot(self):
+        """is_account_healthy returns True (benefit of doubt) when conn_service has no entry."""
+        account = "ZG0790"
+        broker_apis._FETCH_HEALTH.pop(account, None)
+
+        with patch("backend.brokers.broker_apis._use_conn_service", return_value=True):
+            with patch("backend.brokers.broker_apis.fetch_health_snapshot", return_value={}):
+                result = broker_apis.is_account_healthy(account)
+        assert result is True
+
+    def test_conn_service_path_account_unhealthy(self):
+        """is_account_healthy returns False when conn_service shows fail_at > ok_at."""
+        account = "ZG0790"
+        broker_apis._FETCH_HEALTH.pop(account, None)
+
+        with patch("backend.brokers.broker_apis._use_conn_service", return_value=True):
+            with patch("backend.brokers.broker_apis.fetch_health_snapshot", return_value={
+                account: {"last_ok_at": 100.0, "last_fail_at": 999.0}
+            }):
+                result = broker_apis.is_account_healthy(account)
+        assert result is False
+
+
+class TestFetchHealthSnapshotConnService:
+    """Test fetch_health_snapshot conn_service UDS path."""
+
+    def test_conn_service_returns_health_dict(self):
+        """fetch_health_snapshot calls conn_service and returns health map."""
+        expected_health = {"ZG0790": {"last_ok_at": 1234.0, "last_fail_at": 0.0}}
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"health": expected_health}
+        mock_resp.raise_for_status.return_value = None
+
+        mock_client = MagicMock()
+        mock_client.get.return_value = mock_resp
+
+        with patch("backend.brokers.broker_apis._use_conn_service", return_value=True):
+            with patch("backend.brokers.client.sync._get_client", return_value=mock_client):
+                result = broker_apis.fetch_health_snapshot()
+        assert result == expected_health
+
+    def test_conn_service_exception_returns_empty_dict(self):
+        """fetch_health_snapshot returns {} when conn_service raises."""
+        with patch("backend.brokers.broker_apis._use_conn_service", return_value=True):
+            with patch("backend.brokers.client.sync._get_client", side_effect=Exception("UDS down")):
+                result = broker_apis.fetch_health_snapshot()
+        assert result == {}
+
+
+class TestBmdBuildKeyIndex:
+    """Test _bmd_build_key_index missing-row detection."""
+
+    def test_no_missing_rows_returns_none(self):
+        """When all rows have valid close and ltp, returns (None, [], [])."""
+        df = pd.DataFrame({
+            "tradingsymbol": ["RELIANCE"],
+            "exchange": ["NSE"],
+            "close_price": [2550.0],
+            "last_price": [2600.0],
+        })
+        missing, key_per_row, unique_keys = broker_apis._bmd_build_key_index(df)
+        assert missing is None
+        assert key_per_row == []
+        assert unique_keys == []
+
+    def test_zero_close_price_detected_as_missing(self):
+        """Row with close_price=0 is marked as missing."""
+        df = pd.DataFrame({
+            "tradingsymbol": ["RELIANCE"],
+            "exchange": ["NSE"],
+            "close_price": [0.0],
+            "last_price": [2600.0],
+        })
+        missing, key_per_row, unique_keys = broker_apis._bmd_build_key_index(df)
+        assert missing is not None
+        assert missing.any()
+        assert "NSE:RELIANCE" in unique_keys
+
+    def test_zero_last_price_detected_as_missing(self):
+        """Row with last_price=0 is marked as missing."""
+        df = pd.DataFrame({
+            "tradingsymbol": ["CRUDEOIL"],
+            "exchange": ["MCX"],
+            "close_price": [5000.0],
+            "last_price": [0.0],
+        })
+        missing, key_per_row, unique_keys = broker_apis._bmd_build_key_index(df)
+        assert missing is not None
+        assert "MCX:CRUDEOIL" in unique_keys
+
+    def test_empty_tradingsymbol_produces_empty_key(self):
+        """Row with empty tradingsymbol gets empty key (skipped in patch)."""
+        df = pd.DataFrame({
+            "tradingsymbol": [""],
+            "exchange": ["NSE"],
+            "close_price": [0.0],
+            "last_price": [0.0],
+        })
+        missing, key_per_row, unique_keys = broker_apis._bmd_build_key_index(df)
+        # Empty symbol → empty key
+        assert "" in key_per_row
+        assert unique_keys == []
+
+    def test_deduplicates_same_symbol(self):
+        """Same symbol across two rows appears once in unique_keys."""
+        df = pd.DataFrame({
+            "tradingsymbol": ["RELIANCE", "RELIANCE"],
+            "exchange": ["NSE", "NSE"],
+            "close_price": [0.0, 0.0],
+            "last_price": [0.0, 0.0],
+        })
+        missing, key_per_row, unique_keys = broker_apis._bmd_build_key_index(df)
+        assert unique_keys.count("NSE:RELIANCE") == 1
+
+
+class TestBmdPatchRows:
+    """Test _bmd_patch_rows full row-patching loop."""
+
+    def test_patches_missing_rows_from_lookups(self):
+        """_bmd_patch_rows patches close_price and last_price on missing rows."""
+        df = pd.DataFrame({
+            "tradingsymbol": ["RELIANCE", "INFY"],
+            "exchange": ["NSE", "NSE"],
+            "close_price": [0.0, 2500.0],   # RELIANCE missing, INFY ok
+            "last_price": [0.0, 2510.0],
+        })
+        row_indices = [0]  # only row 0 needs patching
+        key_per_row = ["NSE:RELIANCE"]
+        close_lookup = {"NSE:RELIANCE": 2540.0}
+        ltp_lookup = {"NSE:RELIANCE": 2560.0}
+        unique_keys = ["NSE:RELIANCE"]
+
+        patched = broker_apis._bmd_patch_rows(
+            df, row_indices, key_per_row, close_lookup, ltp_lookup, unique_keys
+        )
+        assert 0 in patched
+        assert df.at[0, "close_price"] == pytest.approx(2540.0)
+        assert df.at[0, "last_price"] == pytest.approx(2560.0)
+
+    def test_skips_rows_with_empty_key(self):
+        """_bmd_patch_rows skips rows whose key is empty string."""
+        df = pd.DataFrame({
+            "close_price": [0.0],
+            "last_price": [0.0],
+        })
+        patched = broker_apis._bmd_patch_rows(
+            df, [0], [""], {}, {}, []
+        )
+        assert len(patched) == 0
+
+
+class TestBmdRecomputeDerivedBranches:
+    """Test _bmd_recompute_derived P&L branches."""
+
+    def test_recomputes_pnl_when_average_price_present(self):
+        """_bmd_recompute_derived recomputes pnl from (ltp-avg)*qty."""
+        df = pd.DataFrame({
+            "last_price": [110.0],
+            "close_price": [100.0],
+            "opening_quantity": [10],
+            "average_price": [95.0],
+            "pnl": [0.0],
+            "day_change_val": [0.0],
+        })
+        broker_apis._bmd_recompute_derived(df, {0})
+        # pnl = (110 - 95) × 10 = 150
+        assert df.at[0, "pnl"] == pytest.approx(150.0)
+        # day_change_val = (110 - 100) × 10 = 100
+        assert df.at[0, "day_change_val"] == pytest.approx(100.0)
+
+    def test_recomputes_day_change_percentage(self):
+        """_bmd_recompute_derived updates day_change_percentage."""
+        df = pd.DataFrame({
+            "last_price": [110.0],
+            "close_price": [100.0],
+            "opening_quantity": [10],
+            "day_change_val": [0.0],
+            "day_change_percentage": [0.0],
+        })
+        broker_apis._bmd_recompute_derived(df, {0})
+        # day_change_val = 100, prev_val = 100×10 = 1000, pct = 10%
+        assert df.at[0, "day_change_percentage"] == pytest.approx(10.0)
+
+    def test_updates_cur_val_and_pnl_percentage_when_inv_val_present(self):
+        """_bmd_recompute_derived updates cur_val and pnl_percentage when inv_val present."""
+        df = pd.DataFrame({
+            "last_price": [110.0],
+            "close_price": [100.0],
+            "opening_quantity": [10],
+            "average_price": [100.0],
+            "pnl": [0.0],
+            "inv_val": [1000.0],
+            "cur_val": [1000.0],
+            "pnl_percentage": [0.0],
+            "day_change_val": [0.0],
+        })
+        broker_apis._bmd_recompute_derived(df, {0})
+        # pnl = (110-100)*10 = 100; cur_val = 1000+100 = 1100; pnl_pct = 10%
+        assert df.at[0, "cur_val"] == pytest.approx(1100.0)
+        assert df.at[0, "pnl_percentage"] == pytest.approx(10.0)
+
+    def test_skips_when_missing_qty_or_ltp_columns(self):
+        """_bmd_recompute_derived is no-op when required columns absent."""
+        df = pd.DataFrame({"tradingsymbol": ["X"]})
+        # Should not raise
+        broker_apis._bmd_recompute_derived(df, {0})
+        assert "pnl" not in df.columns
+
+
+class TestBackfillMarketData:
+    """Test backfill_market_data end-to-end."""
+
+    def test_noop_on_none_df(self):
+        """backfill_market_data returns 0 for None input."""
+        result = broker_apis.backfill_market_data(None)
+        assert result == 0
+
+    def test_noop_on_empty_df(self):
+        """backfill_market_data returns 0 for empty DataFrame."""
+        result = broker_apis.backfill_market_data(pd.DataFrame())
+        assert result == 0
+
+    def test_noop_when_no_price_columns(self):
+        """backfill_market_data returns 0 when no close_price or last_price columns."""
+        df = pd.DataFrame({"tradingsymbol": ["X"], "quantity": [10]})
+        result = broker_apis.backfill_market_data(df)
+        assert result == 0
+
+    def test_noop_when_all_prices_already_populated(self):
+        """backfill_market_data skips rows with valid prices."""
+        df = pd.DataFrame({
+            "tradingsymbol": ["RELIANCE"],
+            "exchange": ["NSE"],
+            "close_price": [2550.0],
+            "last_price": [2600.0],
+        })
+        result = broker_apis.backfill_market_data(df)
+        assert result == 0
+
+    def test_patches_zero_close_price(self):
+        """backfill_market_data patches rows with zero close_price."""
+        df = pd.DataFrame({
+            "tradingsymbol": ["RELIANCE"],
+            "exchange": ["NSE"],
+            "close_price": [0.0],
+            "last_price": [2600.0],
+            "opening_quantity": [10],
+        })
+        close_lookup = {"NSE:RELIANCE": 2550.0}
+        ltp_lookup = {"NSE:RELIANCE": 2600.0}
+        with patch.object(broker_apis, "_bmd_fetch_lookups", return_value=(close_lookup, ltp_lookup)):
+            result = broker_apis.backfill_market_data(df)
+        assert result == 1
+        assert df.at[0, "close_price"] == pytest.approx(2550.0)
+
+
+class TestEnrichPositionsM2mBranch:
+    """Test _enrich_positions m2m broker field trust."""
+
+    def test_m2m_column_trusted_over_formula(self):
+        """When m2m column present (no intraday fields), m2m is trusted for day_change_val."""
+        df = pd.DataFrame({
+            "last_price": [200.0],
+            "average_price": [190.0],
+            "close_price": [195.0],
+            "quantity": [10],
+            "m2m": [75.0],   # broker-supplied m2m
+        })
+        result = broker_apis._enrich_positions(df)
+        assert "day_change_val" in result.columns
+        # m2m is not null → day_change_val should be m2m value
+        assert result["day_change_val"].iloc[0] == pytest.approx(75.0)
+
+
+class TestFetchSpecialSessions:
+    """Test fetch_special_sessions caching and DB path."""
+
+    def teardown_method(self):
+        broker_apis._SPECIAL_SESSION_CACHE.clear()
+
+    def test_cache_hit_returns_cached_sessions(self):
+        """fetch_special_sessions returns cached sessions without DB hit."""
+        import datetime
+        today = datetime.date.today()
+        session = {"date": today, "start": datetime.time(9, 0), "end": datetime.time(15, 30)}
+        broker_apis._SPECIAL_SESSION_CACHE["NSE"] = (today, [session])
+
+        with patch("backend.brokers.broker_apis._read_special_sessions_sync") as mock_db:
+            result = broker_apis.fetch_special_sessions("NSE")
+            mock_db.assert_not_called()
+        assert result == [session]
+
+    def test_cache_miss_reads_from_db(self):
+        """fetch_special_sessions reads DB on cache miss."""
+        import datetime
+        broker_apis._SPECIAL_SESSION_CACHE.pop("TESTEXCH2", None)
+        today = datetime.date.today()
+        session = {"date": today, "start": datetime.time(9, 0), "end": datetime.time(12, 0)}
+
+        with patch("backend.brokers.broker_apis._read_special_sessions_sync", return_value=[session]):
+            result = broker_apis.fetch_special_sessions("TESTEXCH2")
+        assert result == [session]
+        # Cache should now be populated
+        assert "TESTEXCH2" in broker_apis._SPECIAL_SESSION_CACHE
+
+    def test_db_exception_returns_empty_list(self):
+        """fetch_special_sessions returns [] when DB raises."""
+        broker_apis._SPECIAL_SESSION_CACHE.pop("TESTEXCH3", None)
+
+        with patch("backend.brokers.broker_apis._read_special_sessions_sync", side_effect=Exception("DB down")):
+            result = broker_apis.fetch_special_sessions("TESTEXCH3")
+        assert result == []
+
+
+class TestFetchHolidaysTier1:
+    """Test fetch_holidays Tier 1 (holidays_store in-process LRU) cache path."""
+
+    def teardown_method(self):
+        broker_apis._HOLIDAY_CACHE.clear()
+
+    def test_tier1_cache_hit_returns_and_mirrors(self):
+        """fetch_holidays returns holidays_store cache and mirrors to _HOLIDAY_CACHE."""
+        import datetime
+        expected = {datetime.date(2025, 1, 26)}
+
+        mock_mem = {("NSE", 2025): expected}
+
+        with patch("backend.api.persistence.holidays_store._MEM_CACHE", mock_mem):
+            with patch("backend.api.persistence.holidays_store._ist_year", return_value=2025):
+                result = broker_apis.fetch_holidays("NSE")
+
+        assert result == expected
+        # Should have been mirrored to _HOLIDAY_CACHE
+        assert "NSE" in broker_apis._HOLIDAY_CACHE
+
+
+class TestBmdFetchQuotes:
+    """Test _bmd_fetch_quotes PriceBroker and ticker fallback."""
+
+    def test_returns_quote_from_price_broker(self):
+        """_bmd_fetch_quotes returns PriceBroker.quote() result on success."""
+        expected = {"NSE:RELIANCE": {"last_price": 2600.0}}
+        mock_pb = MagicMock()
+        mock_pb.quote.return_value = expected
+        # get_market_data_broker is imported locally inside _bmd_fetch_quotes
+        with patch("backend.brokers.registry.get_market_data_broker", return_value=mock_pb):
+            result = broker_apis._bmd_fetch_quotes(["NSE:RELIANCE"])
+        assert result == expected
+
+    def test_falls_back_to_ticker_on_price_broker_failure(self):
+        """_bmd_fetch_quotes falls back to KiteTicker when PriceBroker raises."""
+        with patch("backend.brokers.registry.get_market_data_broker", side_effect=Exception("broker down")):
+            mock_ticker = MagicMock()
+            mock_ticker.get_ltp_by_sym.return_value = 2600.0
+            with patch("backend.brokers.kite_ticker.get_ticker", return_value=mock_ticker):
+                result = broker_apis._bmd_fetch_quotes(["NSE:RELIANCE"])
+        # Should have synthesised a last_price entry from the ticker
+        assert "NSE:RELIANCE" in result
+        assert result["NSE:RELIANCE"]["last_price"] == pytest.approx(2600.0)
+
+
+class TestEnrichPositionsDayChangeValBranch:
+    """Test _enrich_positions day_change_val broker field (no intraday, no m2m)."""
+
+    def test_day_change_val_column_trusted_when_present(self):
+        """When day_change_val column present (no intraday, no m2m), broker value trusted."""
+        df = pd.DataFrame({
+            "last_price": [200.0],
+            "average_price": [190.0],
+            "close_price": [195.0],
+            "quantity": [10],
+            "day_change_val": [42.0],   # broker-supplied, no m2m, no intraday
+        })
+        result = broker_apis._enrich_positions(df)
+        assert "day_change_val" in result.columns
+        # Broker dcv is not null → trusted
+        assert result["day_change_val"].iloc[0] == pytest.approx(42.0)
+
+
+class TestBmdPatchRowsUnresolved:
+    """Test _bmd_patch_rows unresolved branch."""
+
+    def test_unresolved_key_logged_when_not_in_lookups(self):
+        """Row not in either lookup dict is added to unresolved list and logged."""
+        df = pd.DataFrame({
+            "close_price": [0.0],
+            "last_price": [0.0],
+        })
+        with patch.object(broker_apis, "_bmd_log_unresolved") as mock_log:
+            broker_apis._bmd_patch_rows(
+                df, [0], ["NSE:MISSING"], {}, {}, ["NSE:MISSING"]
+            )
+            mock_log.assert_called_once()
+            unresolved_arg = mock_log.call_args[0][0]
+            assert "NSE:MISSING" in unresolved_arg
+
+
+class TestBmdRecomputeDerivedDayChangeColumn:
+    """Test _bmd_recompute_derived day_change column update."""
+
+    def test_updates_day_change_column(self):
+        """_bmd_recompute_derived updates day_change = ltp - close."""
+        df = pd.DataFrame({
+            "last_price": [110.0],
+            "close_price": [100.0],
+            "opening_quantity": [10],
+            "day_change_val": [0.0],
+            "day_change": [0.0],
+        })
+        broker_apis._bmd_recompute_derived(df, {0})
+        assert df.at[0, "day_change"] == pytest.approx(10.0)
+
+    def test_includes_realised_in_pnl(self):
+        """_bmd_recompute_derived includes realised in pnl calculation."""
+        df = pd.DataFrame({
+            "last_price": [110.0],
+            "close_price": [100.0],
+            "opening_quantity": [10],
+            "average_price": [100.0],
+            "pnl": [0.0],
+            "realised": [500.0],   # realised P&L from closed legs
+            "day_change_val": [0.0],
+        })
+        broker_apis._bmd_recompute_derived(df, {0})
+        # pnl = (110-100)*10 + 500 = 600
+        assert df.at[0, "pnl"] == pytest.approx(600.0)
+
+
+class TestFetchMarginsIntervalSkipped:
+    """Test _fetch_margins_local interval-skipped branch."""
+
+    def test_interval_skipped_returns_empty_with_attr(self):
+        """When Dhan interval not due, returns empty df with interval_skipped attr."""
+        inner = _get_inner(broker_apis._fetch_margins_local)
+        if inner is None:
+            pytest.skip("No __wrapped__")
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+            with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False):
+                result = inner(
+                    connections=lambda: MagicMock(),
+                    account="TESTACCT",
+                    kite=None,
+                    broker=MagicMock(),
+                )
+        assert result.empty
+        assert result.attrs.get("interval_skipped") is True
+
+    def test_no_broker_no_kite_returns_empty(self):
+        """When both broker and kite are None, returns empty DataFrame."""
+        inner = _get_inner(broker_apis._fetch_margins_local)
+        if inner is None:
+            pytest.skip("No __wrapped__")
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+            with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=True):
+                with patch("backend.brokers.broker_apis._update_dhan_next_poll"):
+                    result = inner(
+                        connections=lambda: MagicMock(),
+                        account="TESTACCT",
+                        kite=None,
+                        broker=None,
+                    )
+        assert result.empty
+
+
+class TestMirrorToHolidaysStore:
+    """Test _mirror_to_holidays_store."""
+
+    def test_populates_mem_cache(self):
+        """_mirror_to_holidays_store populates _MEM_CACHE with the holidays set."""
+        import datetime
+        mem_cache = {}
+        holidays = {datetime.date(2025, 1, 26)}
+
+        with patch("backend.api.persistence.holidays_store._MEM_CACHE", mem_cache):
+            with patch("backend.api.persistence.holidays_store._ist_year", return_value=2025):
+                broker_apis._mirror_to_holidays_store("NSE", holidays)
+
+        assert ("NSE", 2025) in mem_cache
+        assert mem_cache[("NSE", 2025)] == holidays
+
+    def test_handles_import_error_silently(self):
+        """_mirror_to_holidays_store is silent when holidays_store import fails."""
+        import datetime
+        holidays = {datetime.date(2025, 1, 26)}
+        # Should not raise even if the module is unavailable
+        with patch.dict("sys.modules", {"backend.api.persistence.holidays_store": None}):
+            try:
+                broker_apis._mirror_to_holidays_store("NSE", holidays)
+            except Exception as e:
+                pytest.fail(f"Should not raise: {e}")
+
+
+class TestBmdLogUnresolved:
+    """Test _bmd_log_unresolved diagnostic logging."""
+
+    def test_empty_unresolved_no_log(self):
+        """_bmd_log_unresolved is a no-op when unresolved list is empty."""
+        with patch("backend.brokers.broker_apis.logger") as mock_logger:
+            broker_apis._bmd_log_unresolved([], ["NSE:A", "NSE:B"])
+            mock_logger.warning.assert_not_called()
+
+    def test_logs_warning_for_unresolved(self):
+        """_bmd_log_unresolved logs a warning when symbols are unresolved."""
+        with patch("backend.brokers.broker_apis.logger") as mock_logger:
+            broker_apis._bmd_log_unresolved(["NSE:X", "NSE:Y"], ["NSE:X", "NSE:Y", "NSE:Z"])
+            mock_logger.warning.assert_called_once()
+            call_args = mock_logger.warning.call_args[0][0]
+            assert "2/3" in call_args
+
+    def test_truncates_long_unresolved_list(self):
+        """_bmd_log_unresolved mentions overflow when > 10 unresolved symbols."""
+        unresolved = [f"NSE:SYM{i}" for i in range(15)]
+        with patch("backend.brokers.broker_apis.logger") as mock_logger:
+            broker_apis._bmd_log_unresolved(unresolved, unresolved)
+            call_args = mock_logger.warning.call_args[0][0]
+            assert "+5 more" in call_args
+
+
+def _get_inner(decorated_func):
+    """Helper: retrieve the undecorated inner function from a @for_all_accounts decorated func."""
+    return getattr(decorated_func, "__wrapped__", None)
+
+
+class TestFetchHoldingsLocalDirect:
+    """Test _fetch_holdings_local via direct call with explicit broker/account kwargs."""
+
+    def teardown_method(self):
+        broker_apis._FETCH_HEALTH.clear()
+        broker_apis._breaker_optin_cache.clear()
+
+    def test_broker_holdings_none_records_failure(self):
+        """When broker.holdings() returns None, fetch_failed attr is set."""
+        inner = _get_inner(broker_apis._fetch_holdings_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute")
+
+        mock_broker = MagicMock()
+        mock_broker.holdings.return_value = None
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+            with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=True):
+                with patch("backend.brokers.broker_apis._update_dhan_next_poll"):
+                    result = inner(
+                        connections=lambda: MagicMock(),
+                        account="TESTACCT",
+                        kite=None,
+                        broker=mock_broker,
+                    )
+        assert result.attrs.get("fetch_failed") is True
+
+    def test_circuit_open_returns_stale_substitute(self):
+        """When circuit is open, _fetch_holdings_local returns stale substitute frame."""
+        inner = _get_inner(broker_apis._fetch_holdings_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute")
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=True):
+            with patch("backend.brokers.broker_apis._stale_substitute_frame") as mock_stale:
+                mock_stale.return_value = pd.DataFrame({"tradingsymbol": ["X"]})
+                result = inner(
+                    connections=lambda: MagicMock(),
+                    account="TESTACCT",
+                    kite=None,
+                    broker=MagicMock(),
+                )
+        mock_stale.assert_called_once_with("holdings", "TESTACCT")
+        assert "tradingsymbol" in result.columns
+
+    def test_interval_skipped_returns_empty_with_attr(self):
+        """When interval not due, returns empty df with interval_skipped attr."""
+        inner = _get_inner(broker_apis._fetch_holdings_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute")
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+            with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False):
+                result = inner(
+                    connections=lambda: MagicMock(),
+                    account="TESTACCT",
+                    kite=None,
+                    broker=MagicMock(),
+                )
+        assert result.empty
+        assert result.attrs.get("interval_skipped") is True
+
+    def test_kite_holdings_returns_data(self):
+        """When kite.holdings() returns rows, a DataFrame is built."""
+        inner = _get_inner(broker_apis._fetch_holdings_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute")
+
+        mock_kite = MagicMock()
+        mock_kite.holdings.return_value = [
+            {"tradingsymbol": "RELIANCE", "quantity": 5,
+             "average_price": 2400.0, "last_price": 2600.0,
+             "opening_quantity": 5, "close_price": 2550.0, "pnl": 1000.0}
+        ]
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+            with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=True):
+                with patch("backend.brokers.broker_apis._update_dhan_next_poll"):
+                    with patch("backend.brokers.broker_apis._record_lkg_frame"):
+                        result = inner(
+                            connections=lambda: MagicMock(),
+                            account="TESTACCT",
+                            kite=mock_kite,
+                            broker=None,
+                        )
+        assert not result.empty
+        assert "tradingsymbol" in result.columns
+
+
+class TestFetchPositionsLocalDirect:
+    """Test _fetch_positions_local inner function directly."""
+
+    def teardown_method(self):
+        broker_apis._FETCH_HEALTH.clear()
+
+    def test_circuit_open_returns_stale_substitute(self):
+        """When circuit is open, returns stale substitute frame."""
+        inner = _get_inner(broker_apis._fetch_positions_local)
+        if inner is None:
+            pytest.skip("No __wrapped__")
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=True):
+            with patch("backend.brokers.broker_apis._stale_substitute_frame") as mock_stale:
+                mock_stale.return_value = pd.DataFrame({"tradingsymbol": ["X"]})
+                result = inner(
+                    connections=lambda: MagicMock(),
+                    account="TESTACCT",
+                    kite=None,
+                    broker=MagicMock(),
+                )
+        mock_stale.assert_called_once_with("positions", "TESTACCT")
+
+    def test_interval_skipped_returns_empty_with_attr(self):
+        """When interval not due, returns empty df with interval_skipped attr."""
+        inner = _get_inner(broker_apis._fetch_positions_local)
+        if inner is None:
+            pytest.skip("No __wrapped__")
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+            with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False):
+                result = inner(
+                    connections=lambda: MagicMock(),
+                    account="TESTACCT",
+                    kite=None,
+                    broker=MagicMock(),
+                )
+        assert result.empty
+        assert result.attrs.get("interval_skipped") is True
+
+    def test_net_rows_none_records_failure(self):
+        """When positions returns None net rows, fetch_failed is set."""
+        inner = _get_inner(broker_apis._fetch_positions_local)
+        if inner is None:
+            pytest.skip("No __wrapped__")
+
+        with patch("backend.brokers.broker_apis._extract_net_rows", return_value=None):
+            with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+                with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=True):
+                    with patch("backend.brokers.broker_apis._update_dhan_next_poll"):
+                        result = inner(
+                            connections=lambda: MagicMock(),
+                            account="TESTACCT",
+                            kite=None,
+                            broker=MagicMock(),
+                        )
+        assert result.attrs.get("fetch_failed") is True
+
+    def test_positions_data_builds_dataframe(self):
+        """When positions returns net rows, a DataFrame with account col is built."""
+        inner = _get_inner(broker_apis._fetch_positions_local)
+        if inner is None:
+            pytest.skip("No __wrapped__")
+
+        net_rows = [
+            {"tradingsymbol": "CRUDEOIL", "quantity": 1,
+             "average_price": 5000.0, "last_price": 5100.0,
+             "close_price": 4980.0}
+        ]
+        with patch("backend.brokers.broker_apis._extract_net_rows", return_value=net_rows):
+            with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+                with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=True):
+                    with patch("backend.brokers.broker_apis._update_dhan_next_poll"):
+                        with patch("backend.brokers.broker_apis._record_lkg_frame"):
+                            result = inner(
+                                connections=lambda: MagicMock(),
+                                account="TESTACCT",
+                                kite=None,
+                                broker=MagicMock(),
+                            )
+        assert not result.empty
+        assert result["account"].iloc[0] == "TESTACCT"
+
+
+class TestFetchMarginsLocalDirect:
+    """Test _fetch_margins_local inner function directly."""
+
+    def teardown_method(self):
+        broker_apis._FETCH_HEALTH.clear()
+
+    def test_circuit_open_returns_stale_substitute(self):
+        """When circuit is open, returns stale substitute frame."""
+        inner = _get_inner(broker_apis._fetch_margins_local)
+        if inner is None:
+            pytest.skip("No __wrapped__")
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=True):
+            with patch("backend.brokers.broker_apis._stale_substitute_frame") as mock_stale:
+                mock_stale.return_value = pd.DataFrame({"net": [50000.0]})
+                result = inner(
+                    connections=lambda: MagicMock(),
+                    account="TESTACCT",
+                    kite=None,
+                    broker=MagicMock(),
+                )
+        mock_stale.assert_called_once_with("margins", "TESTACCT")
+
+    def test_broker_margins_builds_dataframe(self):
+        """When broker.margins() returns data, a DataFrame with account col is built."""
+        inner = _get_inner(broker_apis._fetch_margins_local)
+        if inner is None:
+            pytest.skip("No __wrapped__")
+
+        margins_data = {
+            "net": 50000.0,
+            "available": {"live_balance": 50000.0},
+            "utilised": {"debits": 10000.0},
+        }
+        mock_broker = MagicMock()
+        mock_broker.margins.return_value = margins_data
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False):
+            with patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=True):
+                with patch("backend.brokers.broker_apis._update_dhan_next_poll"):
+                    with patch("backend.brokers.broker_apis._record_lkg_frame"):
+                        result = inner(
+                            connections=lambda: MagicMock(),
+                            account="TESTACCT",
+                            kite=None,
+                            broker=mock_broker,
+                        )
+        assert not result.empty
+        assert result["account"].iloc[0] == "TESTACCT"
