@@ -1012,20 +1012,26 @@ class BrokerHealthController(Controller):
 
         active_ticker_acct = _resolve_active_ticker_account()
 
-        # Ensure every configured account appears even with no fetch history yet.
+        # Build per-account entries. Iterate broker_label_map directly so
+        # stale circuit-breaker entries (loaded from /tmp/ramboq_cb_state.json
+        # at startup for accounts that no longer exist) never appear as extra
+        # popup rows — even when health_map has orphan keys. Falls back to
+        # health_map iteration only when DB failed to return broker_label_map.
         if broker_label_map:
-            for acct in broker_label_map:
-                health_map.setdefault(acct, {})
-
-        # Build per-account entries, skipping orphan entries for accounts
-        # that no longer exist in the DB (deleted rows).
-        accounts: list[BrokerAccountHealth] = [
-            _build_account_health_entry(
-                acct, entry, now, broker_label_map, poll_priority_map, active_ticker_acct
-            )
-            for acct, entry in health_map.items()
-            if not broker_label_map or acct in broker_label_map
-        ]
+            accounts: list[BrokerAccountHealth] = [
+                _build_account_health_entry(
+                    acct, health_map.get(acct, {}), now,
+                    broker_label_map, poll_priority_map, active_ticker_acct
+                )
+                for acct in broker_label_map
+            ]
+        else:
+            accounts = [
+                _build_account_health_entry(
+                    acct, entry, now, broker_label_map, poll_priority_map, active_ticker_acct
+                )
+                for acct, entry in health_map.items()
+            ]
 
         # Sort by canonical display_order so the chip popup always shows
         # accounts in the operator-configured sequence.

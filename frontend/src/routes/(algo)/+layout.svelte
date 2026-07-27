@@ -2418,7 +2418,6 @@
     color: var(--c-action);
     background: rgba(251, 191, 36, 0.12);
     border: 1px solid rgba(251, 191, 36, 0.5);
-    animation: algo-mode-dot 2s ease-in-out infinite;
   }
   .broker-chip-down {
     color: var(--c-short);
@@ -2432,7 +2431,7 @@
     border: 1px solid rgba(148, 163, 184, 0.40);
   }
   @media (prefers-reduced-motion: reduce) {
-    .broker-chip-partial, .broker-chip-down { animation: none; }
+    .broker-chip-down { animation: none; }
     .chase-chip  { animation: none; }
     .persist-chip { animation: none; }
   }
