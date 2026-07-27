@@ -1381,7 +1381,8 @@
         .map(([k, v]) => `<span class="log-chip"><span class="log-chip-key">${k}:</span>${v}</span>`)
         .join(' ') : '';
       const content = `${h.status || ''} ${h.message || ''} ${chips}`.trim();
-      return { ts: h.time, html: _logRow(h.time, content, 'CMD', cls) };
+      const lv = cls === 'log-agent-success' ? 'i' : cls === 'log-agent-failed' ? 'e' : 'd';
+      return { ts: h.time, html: _logRow(h.time, content, 'CMD', cls, lv) };
     });
   }
 
@@ -1399,7 +1400,8 @@
           : '';
         const content = `◆ ${o.transaction_type || '?'} ${o.quantity ?? '?'} ${sym} ${price} · ${o.account || '?'}`;
         const ts = o.created_at || o.order_timestamp;
-        return { ts, html: _logRow(ts, content, 'ORDER', cls) };
+        const lv = cls === 'log-agent-success' ? 'i' : cls === 'log-agent-failed' ? 'e' : cls === 'log-agent-alert' ? 'w' : 'd';
+        return { ts, html: _logRow(ts, content, 'ORDER', cls, lv) };
       });
   }
 
@@ -1412,7 +1414,7 @@
       })
       .map(e => {
         const cond = chipsFromJson(e.trigger_condition) || (e.trigger_condition || '');
-        return { ts: e.timestamp, html: _logRow(e.timestamp, cond, 'AGENT', 'log-agent-default') };
+        return { ts: e.timestamp, html: _logRow(e.timestamp, cond, 'AGENT', 'log-agent-default', 'd') };
       });
   }
 
@@ -1692,8 +1694,8 @@
         {@const _cls = _connEvtCls(ev.event_type)}
         {@const _det = _fmtConnDetail(ev.detail)}
         <div class="lp-conn-row {_cls}" class:row-tint-even={i % 2 === 0} class:row-tint-odd={i % 2 !== 0}>
-          {@html _levelChipHtml(_connEvtLv(ev.event_type))}
           <span class="lp-conn-time">{_fmtConnEvtTime(ev.event_ts)}</span>
+          {@html _levelChipHtml(_connEvtLv(ev.event_type))}
           <span class="lp-conn-acct font-mono">{ev.account || '—'}</span>
           <span class="lp-conn-broker">{ev.broker_id === 'zerodha_kite' ? 'zerodha' : (ev.broker_id || '—')}</span>
           <span class="lp-conn-type">{ev.event_type}</span>

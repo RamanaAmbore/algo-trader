@@ -3326,9 +3326,9 @@
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(34, 211, 238, 0.40);
-    border-radius: 4px;
+    background: rgba(34, 211, 238, 0.08);
+    border: 1px solid rgba(34, 211, 238, 0.30);
+    border-radius: 3px;
     color: var(--c-info);
     cursor: pointer;
     flex-shrink: 0;
