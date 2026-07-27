@@ -93,12 +93,32 @@ Specialized subagents in `~/.claude/agents/` dispatched in parallel by default:
 **Parallel by default** — independent sub-tasks fire together. Sequence only when 
 one output feeds another or when audit finds defects.
 
+## Test Coverage Rules (Hard Gates — No Exceptions)
+
+Every code change must be paired with a test that covers the changed lines. This applies to every file in every commit — no waiver for "small" changes, refactors, or one-liners.
+
+**Per-file test location map:**
+| Changed file | Required test |
+|---|---|
+| `backend/brokers/*.py` | `backend/tests/broker/test_*.py` |
+| `backend/api/**/*.py` | `backend/tests/test_*.py` |
+| `frontend/src/lib/data/*.js` | `frontend/src/lib/__tests__/data/*.test.js` (Vitest) |
+| `frontend/src/lib/*.js` or `*.svelte` | `frontend/tests/*.spec.js` (Playwright) |
+
+**Coverage thresholds (enforced in `/ddev` and `/dprod`):**
+- `backend/brokers/` ≥ **90%** — blocks push/merge if below
+- `backend/api/` ≥ **80%** — blocks push/merge if below
+- Vitest (`npx vitest run`) must pass with 0 failures
+
+**Enforcement:** `/impl` self-audit (Step 4) diffs every changed source file and requires a corresponding test change. If missing, a test agent is dispatched before commit. `/ddev` runs `coverage report --fail-under` gates. Neither step can be skipped.
+
 ## Bug Fix Workflow (Self-Audit Required)
 
 After implementing any bug fix:
 1. Run a self-audit pass — check for structurally unreachable code, overwritten state, SSOT consistency.
 2. For any P&L / NavStrip / market-data fix: grep all consumers (derivatives, dashboard, NavStrip, MarketPulse) and verify the fix propagates to every one of them — not just the primary page.
-3. Only commit after the self-audit passes.
+3. Check `git diff --name-only HEAD` — every changed source file must have a corresponding test change in the same commit. If any are missing, dispatch a test agent before committing.
+4. Only commit after the self-audit passes.
 
 ## Default Workflow
 

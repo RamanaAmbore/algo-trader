@@ -44,16 +44,43 @@ python3 docs/generate_pdf.py
 ```
 Use Monitor to collect output when it completes. Must exit 0. Report file size.
 
-### 4. Complexity gate
-Launch with `run_in_background: true`:
+### 4. Complexity + coverage gate
+Launch all three checks in parallel with `run_in_background: true` in one message:
+
+**Complexity**:
 ```
 venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20
 ```
-Use Monitor to collect output.
-- Any D/E/F grade found → **block prod deploy**. Report hotspots. Stop.
-- Clean → proceed.
 
-Steps 3 and 4 can run in parallel (dispatch both as background Bash in one message).
+**Broker coverage gate (90%)**:
+```
+cd /Users/ramanambore/projects/ramboq && \
+  venv/bin/pytest backend/tests/ -q --tb=no \
+    --cov=backend/brokers --cov-report=term-missing && \
+  venv/bin/coverage report --include="backend/brokers/*" --fail-under=90
+```
+
+**API coverage gate (80%)**:
+```
+cd /Users/ramanambore/projects/ramboq && \
+  venv/bin/pytest backend/tests/ -q --tb=no \
+    --cov=backend/api --cov-report=term-missing && \
+  venv/bin/coverage report --include="backend/api/*" --fail-under=80
+```
+
+**Frontend Vite unit tests**:
+```
+cd /Users/ramanambore/projects/ramboq/frontend && npx vitest run 2>&1
+```
+
+Use Monitor to collect all four results.
+- Any D/E/F CC grade → **block prod deploy**. Report hotspots. Stop.
+- Broker coverage < 90% → **block prod deploy**. Report coverage %. Stop.
+- API coverage < 80% → **block prod deploy**. Report coverage %. Stop.
+- Any Vite test failure → **block prod deploy**. Stop.
+- All green → proceed.
+
+Step 3 (PDF) can run in parallel with these gate checks.
 
 ### 5. Merge and push
 ```

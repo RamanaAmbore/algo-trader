@@ -23,21 +23,35 @@ Run backend tests and frontend type check in parallel background processes. Push
 
 ## Steps
 
-Launch both checks simultaneously with `run_in_background: true` in a single message:
+Launch all checks simultaneously with `run_in_background: true` in a single message:
 
-1. **Backend** — launch in background:
+1. **Backend (tests + coverage)** — launch in background:
    ```
-   cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=line
+   cd /Users/ramanambore/projects/ramboq && \
+     venv/bin/pytest backend/tests/ -q --tb=line \
+       --cov=backend/brokers --cov=backend/api \
+       --cov-report=term-missing && \
+     venv/bin/coverage report --include="backend/brokers/*" --fail-under=90 && \
+     venv/bin/coverage report --include="backend/api/*" --fail-under=80
    ```
-   Use Monitor to collect output when it completes. Capture passed/skipped/failed counts and any FAILED lines.
+   Use Monitor to collect output when it completes. Capture:
+   - passed/skipped/failed counts and any FAILED lines
+   - broker coverage % (must be ≥ 90 — gate fails if below)
+   - api coverage % (must be ≥ 80 — gate fails if below)
 
-2. **Frontend** — launch in background:
+2. **Frontend type check** — launch in background:
    ```
    cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1
    ```
    Use Monitor to collect output when it completes. Capture error count.
 
-Both run in parallel. Wait for both Monitor notifications before evaluating results.
+3. **Frontend Vite unit tests** — launch in background:
+   ```
+   cd /Users/ramanambore/projects/ramboq/frontend && npx vitest run 2>&1
+   ```
+   Use Monitor to collect output when it completes. Capture passed/failed counts.
+
+All three run in parallel. Wait for all Monitor notifications before evaluating results.
 
 ---
 
@@ -66,20 +80,28 @@ After tests complete (pass or fail), check spec coverage. This step runs regardl
 
 ## Decision
 
-- Any backend failures OR any svelte-check errors → **do NOT push**. Report failures clearly. Stop.
-- All green → `git push origin dev`. Report commit hash, test counts, zero errors.
+Block on **any** of the following — do NOT push if any gate fails:
+- Any pytest test failure
+- broker coverage < 90% (`coverage report --include="backend/brokers/*" --fail-under=90` exits non-zero)
+- api coverage < 80% (`coverage report --include="backend/api/*" --fail-under=80` exits non-zero)
+- Any svelte-check errors
+- Any Vite unit test failure
+
+All green → `git push origin dev`. Report commit hash, test counts, coverage %, zero errors.
 
 ## Foreground output format
 
 ```
-ddev: backend 2712 passed, 13 skipped, 0 failed | svelte-check 0 errors
+ddev: backend 2712 passed, 0 failed | broker cov 91% ✓ | api cov 82% ✓ | svelte-check 0 errors | vite 192 passed
 → pushed dev <short-hash>
 ```
 
 On failure:
 ```
-ddev: BLOCKED — <N> test(s) failing: <test names>
-Fix failures before pushing dev.
+ddev: BLOCKED — <reason>
+  broker coverage 87% < 90% threshold  ← example
+  pytest: 3 failing — test_foo, test_bar
+Fix before pushing dev.
 ```
 
 ## Step — Enter plan mode

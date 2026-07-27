@@ -555,3 +555,389 @@ class TestRemoteBrokerIdCacheRefresh:
 
         _refresh_remote_broker_id_cache()
         # Cache should not be cleared (best-effort behavior)
+
+
+# ---------------------------------------------------------------------------
+# New registry coverage tests — PriceBroker._try edge paths, ltp/instruments/
+# holidays/historical_data delegators, get_historical_brokers,
+# get_sparkline_broker, get_market_data_broker cache-hit.
+# ---------------------------------------------------------------------------
+
+class TestPriceBrokerLastEmptyPath:
+    """Test PriceBroker._try last_empty return path when broker returns empty."""
+
+    def setup_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def teardown_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def test_returns_last_empty_when_all_brokers_empty(self):
+        """_try returns the last empty result (not raises) when all brokers soft-fail."""
+        from backend.brokers.registry import PriceBroker
+
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "mock_broker"
+        mock_broker.account = "MOCK01"
+        mock_broker.quote.return_value = {}  # empty but valid
+
+        pb = PriceBroker(brokers=[mock_broker])
+        # _result_ok always False → soft-fail → last_empty path
+        result = pb._try("quote", ["NSE:X"], _result_ok=lambda r: False)
+        assert result == {}  # last_empty returned, no exception
+
+    def test_last_empty_preferred_over_raise_when_some_brokers_empty(self):
+        """When one broker returns empty and another raises, _try returns the empty."""
+        from backend.brokers.registry import PriceBroker
+
+        mock_b1 = MagicMock()
+        mock_b1.broker_id = "mock_primary"
+        mock_b1.account = "MOCK01"
+        mock_b1.quote.return_value = {}
+
+        mock_b2 = MagicMock()
+        mock_b2.broker_id = "mock_secondary"
+        mock_b2.account = "MOCK02"
+        mock_b2.quote.side_effect = Exception("broker down")
+
+        pb = PriceBroker(brokers=[mock_b1, mock_b2])
+        result = pb._try("quote", ["NSE:X"], _result_ok=lambda r: False)
+        # last_empty = {} from mock_b1; mock_b2's exception sets last_exc but last_empty wins
+        assert result == {}
+
+
+class TestPriceBrokerLastExcRaise:
+    """Test PriceBroker._try re-raises last exception when all brokers fail."""
+
+    def setup_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def teardown_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def test_reraises_last_exception_when_all_raise(self):
+        """_try re-raises when every broker raises and no soft-empty was seen."""
+        from backend.brokers.registry import PriceBroker
+
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "mock_broker"
+        mock_broker.account = "MOCK01"
+        mock_broker.quote.side_effect = RuntimeError("broker exploded")
+
+        pb = PriceBroker(brokers=[mock_broker])
+        with pytest.raises(RuntimeError, match="broker exploded"):
+            pb._try("quote", ["NSE:X"])
+
+    def test_raises_value_error_when_brokers_list_empty(self):
+        """PriceBroker constructor raises ValueError for empty brokers list."""
+        from backend.brokers.registry import PriceBroker
+
+        with pytest.raises(ValueError, match="at least one underlying broker"):
+            PriceBroker(brokers=[])
+
+
+class TestPriceBrokerRateLimitMark:
+    """Test PriceBroker._try marks rate-limit on 'too many requests' errors."""
+
+    def setup_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def teardown_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def test_marks_rate_limit_on_too_many_requests(self):
+        """_try calls _mark_rate_limited when broker raises 'too many requests'."""
+        from backend.brokers.registry import PriceBroker, _is_rate_limited
+
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "mock_ratelimit_broker"
+        mock_broker.account = "RLACCT01"
+        mock_broker.quote.side_effect = Exception("too many requests from this IP")
+
+        pb = PriceBroker(brokers=[mock_broker])
+        with pytest.raises(Exception):
+            pb._try("quote", ["NSE:X"])
+
+        broker_key = "mock_ratelimit_broker/RLACCT01"
+        assert _is_rate_limited(broker_key), "Broker key should be marked rate-limited"
+
+
+class TestPriceBrokerDelegators:
+    """Test PriceBroker.ltp, historical_data, instruments, holidays delegators."""
+
+    def setup_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def teardown_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def test_ltp_delegates_to_try(self):
+        """PriceBroker.ltp() delegates to _try with ltp method."""
+        from backend.brokers.registry import PriceBroker
+
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "mock_ltp_broker"
+        mock_broker.account = "LTPACCT01"
+        mock_broker.ltp.return_value = {"NSE:RELIANCE": 2600.0}
+
+        pb = PriceBroker(brokers=[mock_broker])
+        result = pb.ltp(["NSE:RELIANCE"])
+        assert result == {"NSE:RELIANCE": 2600.0}
+        mock_broker.ltp.assert_called_once()
+
+    def test_historical_data_delegates_to_try(self):
+        """PriceBroker.historical_data() delegates to _try."""
+        from backend.brokers.registry import PriceBroker
+
+        candles = [{"date": "2025-01-01", "open": 100, "close": 105}]
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "mock_hist_broker"
+        mock_broker.account = "HISTACCT01"
+        mock_broker.historical_data.return_value = candles
+
+        pb = PriceBroker(brokers=[mock_broker])
+        result = pb.historical_data(738561, "2025-01-01", "2025-01-31", "day")
+        assert result == candles
+
+    def test_instruments_delegates_to_try_with_kite_filter(self):
+        """PriceBroker.instruments() uses _instruments_has_kite_shape as result_ok."""
+        from backend.brokers.registry import PriceBroker
+
+        kite_instruments = [{"instrument_type": "EQ", "name": "RELIANCE", "expiry": ""}]
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "mock_inst_broker"
+        mock_broker.account = "INSTACCT01"
+        mock_broker.instruments.return_value = kite_instruments
+
+        pb = PriceBroker(brokers=[mock_broker])
+        result = pb.instruments("NSE")
+        assert result == kite_instruments
+
+    def test_holidays_delegates_to_try(self):
+        """PriceBroker.holidays() delegates to _try."""
+        from backend.brokers.registry import PriceBroker
+        import datetime
+
+        holiday_set = {datetime.date(2025, 1, 26)}
+        mock_broker = MagicMock()
+        mock_broker.broker_id = "mock_hol_broker"
+        mock_broker.account = "HOLACCT01"
+        mock_broker.holidays.return_value = holiday_set
+
+        pb = PriceBroker(brokers=[mock_broker])
+        result = pb.holidays("NSE")
+        assert result == holiday_set
+
+
+class TestGetHistoricalBrokers:
+    """Test get_historical_brokers account selection and filtering."""
+
+    def teardown_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def test_returns_empty_when_no_accounts(self):
+        """get_historical_brokers returns [] when no accounts loaded."""
+        from backend.brokers.registry import get_historical_brokers
+
+        with patch("backend.brokers.registry._loaded_accounts", return_value=[]):
+            result = get_historical_brokers()
+        assert result == []
+
+    def test_returns_kite_account(self):
+        """get_historical_brokers returns eligible Kite account."""
+        from backend.brokers.registry import get_historical_brokers
+
+        mock_broker = MagicMock()
+        with patch("backend.brokers.registry._loaded_accounts", return_value=["ZG0790"]):
+            with patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"):
+                with patch("backend.brokers.registry._is_hist_enabled", return_value=True):
+                    with patch("backend.brokers.registry.get_broker", return_value=mock_broker):
+                        # get_string is imported locally; patch at the source module
+                        with patch("backend.shared.helpers.settings.get_string", return_value=""):
+                            result = get_historical_brokers()
+        assert len(result) == 1
+        assert result[0] is mock_broker
+
+    def test_excludes_rate_limited_account(self):
+        """get_historical_brokers excludes accounts in rate-limit cool-off."""
+        from backend.brokers.registry import get_historical_brokers, _mark_rate_limited
+
+        _mark_rate_limited("zerodha_kite/ZG0790")
+        mock_broker = MagicMock()
+        with patch("backend.brokers.registry._loaded_accounts", return_value=["ZG0790"]):
+            with patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"):
+                with patch("backend.brokers.registry._is_hist_enabled", return_value=True):
+                    with patch("backend.brokers.registry.get_broker", return_value=mock_broker):
+                        with patch("backend.shared.helpers.settings.get_string", return_value=""):
+                            result = get_historical_brokers()
+        assert result == []
+
+    def test_excludes_non_kite_accounts(self):
+        """get_historical_brokers skips Dhan and Groww accounts."""
+        from backend.brokers.registry import get_historical_brokers
+
+        with patch("backend.brokers.registry._loaded_accounts", return_value=["DH6847"]):
+            with patch("backend.brokers.registry._broker_id_for", return_value="dhan"):
+                with patch("backend.brokers.registry._is_hist_enabled", return_value=True):
+                    with patch("backend.shared.helpers.settings.get_string", return_value=""):
+                        result = get_historical_brokers()
+        assert result == []
+
+    def test_pinned_account_goes_first(self):
+        """Pinned account (connections.price_account) is placed first in the list."""
+        from backend.brokers.registry import get_historical_brokers
+
+        mock_b1 = MagicMock()
+        mock_b2 = MagicMock()
+
+        def _get_broker_side(acct):
+            return mock_b1 if acct == "ZG0790" else mock_b2
+
+        with patch("backend.brokers.registry._loaded_accounts", return_value=["ZG0001", "ZG0790"]):
+            with patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"):
+                with patch("backend.brokers.registry._is_hist_enabled", return_value=True):
+                    with patch("backend.brokers.registry.get_broker", side_effect=_get_broker_side):
+                        with patch("backend.shared.helpers.settings.get_string", return_value="ZG0790"):
+                            result = get_historical_brokers()
+        assert result[0] is mock_b1, "Pinned account should be first"
+
+
+class TestGetSparklineBroker:
+    """Test get_sparkline_broker selection logic."""
+
+    def teardown_method(self):
+        from backend.brokers.registry import _RATE_LIMIT_COOLOFF
+        _RATE_LIMIT_COOLOFF.clear()
+
+    def test_returns_non_chart_pinned_kite_account(self):
+        """get_sparkline_broker prefers a Kite account that's not the chart pin."""
+        from backend.brokers.registry import get_sparkline_broker
+
+        mock_b1 = MagicMock()
+        mock_b2 = MagicMock()
+
+        def _get_broker_side(acct):
+            return mock_b1 if acct == "ZG0001" else mock_b2
+
+        def _get_string(key, default=""):
+            if key == "connections.price_account":
+                return "ZG0790"
+            return ""
+
+        with patch("backend.brokers.registry._loaded_accounts", return_value=["ZG0001", "ZG0790"]):
+            with patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"):
+                with patch("backend.brokers.registry._is_hist_enabled", return_value=True):
+                    with patch("backend.brokers.registry.get_broker", side_effect=_get_broker_side):
+                        with patch("backend.shared.helpers.settings.get_string", side_effect=_get_string):
+                            result = get_sparkline_broker()
+
+        # Should have used ZG0001 (not the chart-pinned ZG0790) as primary
+        assert result is not None
+
+    def test_explicit_sparkline_pin_wins(self):
+        """connections.sparkline_account takes priority over selection logic."""
+        from backend.brokers.registry import get_sparkline_broker, PriceBroker
+
+        mock_broker = MagicMock()
+
+        def _get_string(key, default=""):
+            if key == "connections.sparkline_account":
+                return "ZG0001"
+            return ""
+
+        with patch("backend.brokers.registry._loaded_accounts", return_value=["ZG0001", "ZG0790"]):
+            with patch("backend.brokers.registry._broker_id_for", return_value="zerodha_kite"):
+                with patch("backend.brokers.registry._is_hist_enabled", return_value=True):
+                    with patch("backend.brokers.registry.get_broker", return_value=mock_broker):
+                        with patch("backend.shared.helpers.settings.get_string", side_effect=_get_string):
+                            result = get_sparkline_broker()
+        assert isinstance(result, PriceBroker)
+
+    def test_raises_when_no_accounts(self):
+        """get_sparkline_broker raises KeyError when no accounts configured."""
+        from backend.brokers.registry import get_sparkline_broker
+
+        with patch("backend.brokers.registry._loaded_accounts", return_value=[]):
+            with pytest.raises(KeyError, match="No broker accounts configured"):
+                get_sparkline_broker()
+
+
+class TestGetMarketDataBrokerCacheHit:
+    """Test get_market_data_broker contextvar cache hit path."""
+
+    def test_returns_cached_broker_without_resolving(self):
+        """get_market_data_broker returns _MDB_CTX value when already set."""
+        from backend.brokers.registry import get_market_data_broker, _MDB_CTX
+
+        mock_broker = MagicMock()
+        token = _MDB_CTX.set(mock_broker)
+        try:
+            result = get_market_data_broker()
+            assert result is mock_broker, "Should return the contextvar-cached broker"
+        finally:
+            _MDB_CTX.reset(token)
+
+    def test_sets_contextvar_on_first_call(self):
+        """get_market_data_broker populates _MDB_CTX on first call in context."""
+        from backend.brokers.registry import get_market_data_broker, _MDB_CTX, reset_market_data_broker_ctx
+
+        reset_market_data_broker_ctx()  # ensure clean state
+        mock_broker = MagicMock()
+        mock_broker.account = "ZG0790"
+
+        with patch("backend.brokers.registry.get_price_broker", return_value=mock_broker):
+            # get_string imported locally — patch at source module
+            with patch("backend.shared.helpers.settings.get_string", return_value=""):
+                result = get_market_data_broker()
+
+        assert result is mock_broker
+        # The contextvar should now be set
+        assert _MDB_CTX.get(None) is mock_broker
+        # Reset after test
+        reset_market_data_broker_ctx()
+
+
+class TestIsHistEnabled:
+    """Test _is_hist_enabled function."""
+
+    def test_defaults_true_when_account_not_in_map(self):
+        """_is_hist_enabled returns True when account absent from hist_enabled_map."""
+        from backend.brokers.registry import _is_hist_enabled
+
+        mock_conn = MagicMock()
+        mock_conn._hist_enabled_map = {}  # account not in map
+
+        with patch("backend.brokers.registry.Connections", return_value=mock_conn):
+            result = _is_hist_enabled("UNKNOWN_ACCT")
+        assert result is True, "Missing account should default to True (include all)"
+
+    def test_honours_false_when_in_map(self):
+        """_is_hist_enabled returns False when account explicitly disabled."""
+        from backend.brokers.registry import _is_hist_enabled
+
+        mock_conn = MagicMock()
+        mock_conn._hist_enabled_map = {"DH6847": False}
+
+        with patch("backend.brokers.registry.Connections", return_value=mock_conn):
+            result = _is_hist_enabled("DH6847")
+        assert result is False
+
+    def test_honours_true_when_in_map(self):
+        """_is_hist_enabled returns True when account is explicitly enabled."""
+        from backend.brokers.registry import _is_hist_enabled
+
+        mock_conn = MagicMock()
+        mock_conn._hist_enabled_map = {"ZG0790": True}
+
+        with patch("backend.brokers.registry.Connections", return_value=mock_conn):
+            result = _is_hist_enabled("ZG0790")
+        assert result is True

@@ -743,6 +743,101 @@ def _bg_is_sim_active() -> bool:
         return False
 
 
+async def _preload_db_lkg_cache() -> None:
+    """Preload the DB-backed LKG cache from daily_book at startup.
+
+    Queries the most-recent batch of holdings + positions rows per account
+    (same batch-anchor logic as `_HOLDINGS_SNAPSHOT_SQL` in holdings.py)
+    and seeds `broker_apis.set_db_lkg_frame` for each account.
+
+    This ensures that after a cold restart where Dhan/Groww login is
+    temporarily failing, `_stale_substitute_frame` can serve the previous
+    session's data immediately — without waiting for a successful broker
+    fetch to populate the in-memory LKG.
+
+    Called once at the start of `_task_performance` before the main loop.
+    Errors are swallowed — this is a best-effort preload; the in-memory
+    LKG remains authoritative once the first successful fetch lands.
+    """
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+
+    _SQL = """
+        WITH latest_batch AS (
+            SELECT account, kind, MAX(captured_at) AS max_at
+            FROM daily_book
+            WHERE kind IN ('holdings', 'positions')
+            GROUP BY account, kind
+        )
+        SELECT db.account, db.kind, db.symbol, db.exchange,
+               db.qty, db.avg_cost, db.ltp, db.day_pnl, db.total_pnl,
+               db.captured_at
+        FROM daily_book db
+        JOIN latest_batch lb
+          ON db.account = lb.account
+         AND db.kind    = lb.kind
+         AND db.captured_at = lb.max_at
+        WHERE db.ltp IS NOT NULL
+          AND NOT (db.ltp = 0
+                   AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
+                   AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
+        ORDER BY db.account, db.kind, db.symbol
+    """
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql_text(_SQL))
+            rows = result.all()
+    except Exception as exc:
+        logger.warning(f"[DB-LKG] preload query failed: {exc}")
+        return
+
+    if not rows:
+        logger.debug("[DB-LKG] preload: no daily_book rows found")
+        return
+
+    # Group rows by (account, kind) and build DataFrames.
+    from collections import defaultdict
+    import pandas as pd
+    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        account  = str(row.account or "")
+        kind     = str(row.kind or "")
+        if not account or not kind:
+            continue
+        _avg  = float(row.avg_cost or 0.0)
+        _ltp  = float(row.ltp or 0.0)
+        _qty  = int(row.qty or 0)
+        grouped[(account, kind)].append({
+            "account":          account,
+            "tradingsymbol":    str(row.symbol or ""),
+            "exchange":         str(row.exchange or ""),
+            "quantity":         _qty,
+            "opening_quantity": _qty,
+            "average_price":    _avg,
+            "last_price":       _ltp,
+            "close_price":      _ltp,
+            "day_change_val":   float(row.day_pnl or 0.0),
+            "pnl":              float(row.total_pnl or 0.0),
+            # Pre-compute derived value columns so downstream consumers
+            # (_enrich_holdings / backfill_market_data) never see NaN/zero
+            # on the DB-LKG path when the live broker is unavailable.
+            "inv_val":          _avg * _qty,
+            "cur_val":          _ltp * _qty,
+        })
+
+    from backend.brokers.broker_apis import set_db_lkg_frame
+    n_loaded = 0
+    for (account, kind), acct_rows in grouped.items():
+        df = pd.DataFrame(acct_rows)
+        set_db_lkg_frame(kind, account, df)
+        n_loaded += 1
+
+    logger.info(
+        f"[DB-LKG] preloaded {n_loaded} (account, kind) pairs "
+        f"from daily_book ({len(rows)} rows total)"
+    )
+
+
 async def _task_performance(state: dict) -> None:
     """Refresh performance data every N minutes during market hours."""
     from backend.brokers.broker_apis import fetch_holidays
@@ -768,6 +863,14 @@ async def _task_performance(state: dict) -> None:
     seg_state   = _default_seg_state()
     alert_state = {}
     holiday_cache: dict = {}
+
+    # Preload the DB-backed LKG cache from daily_book so Dhan/Groww accounts
+    # can serve their last-session data immediately after a cold restart,
+    # before the first successful broker fetch populates the in-memory LKG.
+    try:
+        await _preload_db_lkg_cache()
+    except Exception as _pre_exc:
+        logger.warning(f"[DB-LKG] preload failed (non-fatal): {_pre_exc}")
 
     global _PERF_KICK_EVENT
     _PERF_KICK_EVENT = asyncio.Event()

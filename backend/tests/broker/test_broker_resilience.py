@@ -1064,3 +1064,108 @@ class TestGrowwRefreshLockOrdering:
             "refresh() must NOT use composite 'with self._login_lock, "
             "_cross_process_login_lock:' — use nested form instead"
         )
+
+
+# ---------------------------------------------------------------------------
+# Broker health state resolution — _hlth_resolve_state / _derive_account_health
+# ---------------------------------------------------------------------------
+
+class TestBrokerHealthStateResolution:
+    """
+    Quality dimensions:
+      SSOT        — state labels defined once in _hlth_resolve_state
+      Correctness — inactive / green / red / amber mapped correctly
+      Performance — no I/O; pure time-arithmetic functions
+      Reuse       — _derive_account_health is a thin wrapper around _hlth_resolve_state
+      UX          — chip color correct: never-tried accounts must not drive chip amber
+    """
+
+    def test_never_tried_account_is_inactive_not_amber(self):
+        """
+        SSOT + Correctness: an account with no fetch history at all must return
+        state="inactive", NOT "amber".  Bug fix: previously returned "amber",
+        which polluted the navbar chip color even when all real accounts were green.
+        """
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        state, reason, cb_state, cb_count, cb_until = _derive_account_health({}, now)
+
+        assert state == "inactive", (
+            f"Expected 'inactive' for never-tried account, got {state!r}"
+        )
+        assert "no fetch attempt" in reason
+
+    def test_recently_ok_account_is_green(self):
+        """Correctness: last_ok_at within 5 min → green."""
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        entry = {"last_ok_at": now - 60}  # 1 min ago
+        state, reason, cb_state, cb_count, cb_until = _derive_account_health(entry, now)
+
+        assert state == "green", f"Expected 'green', got {state!r}: {reason}"
+
+    def test_recent_fail_after_no_ok_is_red(self):
+        """Correctness: last_fail_at set, last_ok_at absent, with a fail message → red."""
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        entry = {
+            "last_fail_at": now - 10,
+            "last_fail_msg": "Invalid TOTP",
+        }
+        state, reason, cb_state, cb_count, cb_until = _derive_account_health(entry, now)
+
+        assert state == "red", f"Expected 'red', got {state!r}: {reason}"
+
+    def test_stale_ok_is_amber(self):
+        """Correctness: last_ok_at > 5 min ago, no subsequent fail → amber (stale)."""
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        entry = {"last_ok_at": now - 400}  # 6m 40s ago — beyond 5-min window
+        state, reason, cb_state, cb_count, cb_until = _derive_account_health(entry, now)
+
+        assert state == "amber", f"Expected 'amber' for stale account, got {state!r}: {reason}"
+
+    def test_inactive_accounts_do_not_drive_chip_amber(self):
+        """
+        UX regression: when active accounts are all green and some accounts are
+        inactive (never tried), worst-state must be 'green', not 'amber'.
+
+        This is the end-to-end invariant the backend fix (inactive instead of amber)
+        enables.  Verified here at the backend level by checking that two never-tried
+        entries each resolve to 'inactive', which the frontend filter will exclude.
+        """
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        # Simulate one real green account + one never-tried account.
+        green_state, *_ = _derive_account_health({"last_ok_at": now - 30}, now)
+        inactive_state, *_ = _derive_account_health({}, now)
+
+        assert green_state == "green"
+        assert inactive_state == "inactive"
+        # If the frontend filters out inactive before computing worst-state,
+        # the chip stays green — validated here that backend produces correct labels.
+
+    def test_fail_after_ok_is_red(self):
+        """Correctness: most-recent event is a fail (last_fail_at > last_ok_at) → red."""
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        entry = {
+            "last_ok_at": now - 300,
+            "last_fail_at": now - 10,
+            "last_fail_msg": "session expired",
+        }
+        state, reason, *_ = _derive_account_health(entry, now)
+
+        assert state == "red", f"Expected 'red' when fail follows ok, got {state!r}: {reason}"

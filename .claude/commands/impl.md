@@ -72,7 +72,12 @@ For each non-"skip" agent listed under `## Agents`, dispatch the matching subage
 Pass each agent its task text verbatim from PLAN.md, plus the project context it needs (working directory, relevant file paths from the plan).
 
 **Test requirement (standing rule — non-negotiable)**: Every agent brief MUST include the following instruction verbatim:
-> "For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. Backend changes → add/update a pytest test in `backend/tests/`. Frontend changes → add/update a Playwright spec in `frontend/tests/`. No change ships without a test."
+> "For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
+> - `backend/brokers/` change → add/update a pytest test in `backend/tests/broker/` covering the changed lines
+> - `backend/api/` change → add/update a pytest test in `backend/tests/` covering the changed lines
+> - `frontend/src/lib/data/` change → add/update a Vitest test in `frontend/src/lib/__tests__/` covering the changed logic
+> - `frontend/src/` UI change → add/update a Playwright spec in `frontend/tests/` covering the changed flow
+> No change ships without a corresponding test update. If you add a helper function, test it. If you fix a branch, test that branch. The test must exercise the exact lines you changed."
 
 Wait for all agents to complete before proceeding.
 
@@ -84,15 +89,26 @@ Run all flagged test surfaces **in background** simultaneously:
 
 **Backend** (`pytest: yes`) — launch with `run_in_background: true`:
 ```
-cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=short
+cd /Users/ramanambore/projects/ramboq && \
+  venv/bin/pytest backend/tests/ -q --tb=short \
+    --cov=backend/brokers --cov=backend/api \
+    --cov-report=term-missing && \
+  venv/bin/coverage report --include="backend/brokers/*" --fail-under=90 && \
+  venv/bin/coverage report --include="backend/api/*" --fail-under=80
 ```
-Use Monitor to collect output when it completes. Capture: passed / skipped / failed counts + FAILED lines.
+Use Monitor to collect output when it completes. Capture: passed/skipped/failed counts + FAILED lines + broker coverage % + api coverage %.
 
-**Frontend** (`svelte-check: yes`) — launch with `run_in_background: true`:
+**Frontend type check** (`svelte-check: yes`) — launch with `run_in_background: true`:
 ```
 cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1
 ```
 Use Monitor to collect output when it completes. Capture: error count + ERROR lines.
+
+**Frontend Vite unit tests** (always run, regardless of flags) — launch with `run_in_background: true`:
+```
+cd /Users/ramanambore/projects/ramboq/frontend && npx vitest run 2>&1
+```
+Use Monitor to collect output when it completes. Capture: passed/failed counts.
 
 **Playwright** (`playwright: yes`): dispatch `playwright` subagent with the spec path(s) from the plan.
 
@@ -118,14 +134,38 @@ Fix manually, then run /ddev.
 
 ## Step 4 — Self-audit (before commit)
 
-Run the four self-audit checks from CLAUDE.md:
+Run all self-audit checks from CLAUDE.md:
 1. Scan for structurally unreachable code in changed files (`git diff --name-only HEAD`)
 2. For any P&L / NavStrip / market-data fix: grep all consumers and verify fix propagates
 3. If a function was delegated/refactored: verify the called helper contains the original logic
-4. **Test coverage gate** — for every changed file, verify at least one new or updated test exists that exercises the changed behaviour:
-   - Backend files (`backend/`) → check `backend/tests/` for a matching new or modified test
-   - Frontend files (`frontend/src/`) → check `frontend/tests/` for a matching new or modified Playwright spec
-   - If no test was written for a changed file, dispatch a targeted `backend-test` or `playwright` agent to add one before committing. This gate is **non-negotiable** — no change ships without a test.
+4. **Per-file test coverage check (hard gate — no exceptions)**
+
+   Run:
+   ```bash
+   git diff --name-only HEAD
+   ```
+   For every changed source file, confirm a corresponding test change exists in the same commit:
+
+   | Changed file pattern | Required test location |
+   |---|---|
+   | `backend/brokers/*.py` | `backend/tests/broker/test_*.py` |
+   | `backend/api/*.py` or `backend/api/**/*.py` | `backend/tests/test_*.py` |
+   | `frontend/src/lib/data/*.js` | `frontend/src/lib/__tests__/data/*.test.js` |
+   | `frontend/src/lib/*.js` or `*.svelte` | `frontend/tests/*.spec.js` (Playwright) |
+
+   How to check: `git diff --name-only HEAD | grep -E 'backend/brokers|backend/api|frontend/src'` — then for each result, verify `git diff --name-only HEAD` includes at least one corresponding test file.
+
+   If **any** changed source file has no corresponding test change:
+   - Identify which files are missing test coverage
+   - Dispatch a `backend-test`, `broker`, `frontend`, or `playwright` agent with the specific changed lines and instruction to write tests for those exact changes
+   - Wait for the agent and re-run affected tests
+   - Only commit once every changed source file has a test covering it
+   - This gate is **non-negotiable and cannot be waived**
+
+5. **Coverage thresholds** — verify thresholds hold after the change:
+   - Broker layer (backend/brokers/) must remain ≥ 90%
+   - API layer (backend/api/) must remain ≥ 80%
+   - If a change risks dropping below threshold, dispatch a `broker` or `backend-test` agent to add tests before committing.
 
 If audit finds a defect, dispatch one more targeted fix, re-run affected tests, then proceed.
 
@@ -198,7 +238,7 @@ After committing, identify which documentation surfaces are affected and update 
 ```
 impl: <plan title>
 agents: backend ✓ | frontend ✓  (or whichever ran)
-tests: pytest 2712 passed, 0 failed | svelte-check 0 errors
+tests: pytest 2712 passed, 0 failed | broker cov 91% ✓ | api cov 83% ✓ | svelte-check 0 errors | vite 192 passed
 → committed <short-hash> — ready for /ddev
 ```
 

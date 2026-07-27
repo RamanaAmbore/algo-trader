@@ -356,3 +356,196 @@ class TestLkgReuseAcrossKinds:
         assert df_out.attrs.get("stale") is True
         assert bool(df_out["account_stale"].iloc[0]) is True
         _LKG_FRAME_BY_ACCT.pop((kind, self.ACCOUNT), None)
+
+
+# ---------------------------------------------------------------------------
+# 9: DB-backed LKG fallback (cold-restart path — DH3747 / DH6847 fix)
+# ---------------------------------------------------------------------------
+
+class TestDbLkgFallback:
+    """After a cold restart where Dhan login fails, `_LKG_FRAME_BY_ACCT`
+    is empty.  `background.py` preloads `_DB_LKG_CACHE` from daily_book.
+    `_stale_substitute_frame` must serve the DB data when tier-1 is absent.
+
+    Quality dimensions verified:
+      SSOT        — single helper `set_db_lkg_frame` writes the DB cache
+      Correctness — non-zero values served; `stale=True`, `account_stale=True`,
+                    `db_lkg=True` (diagnostic attr); `fetch_failed` NOT set
+      Performance — DB frame is cached in-memory; no re-query on each call
+      Reuse       — same `_stale_substitute_frame` entry-point, same attrs
+      UX          — DH3747 / DH6847 show non-zero holdings in the NavBreakdown
+                    popup instead of blank rows
+    """
+
+    DH3747 = "DH3747"
+    DH6847 = "DH6847"
+
+    def _clear(self, account: str, kind: str) -> None:
+        from backend.brokers import broker_apis
+        broker_apis._LKG_FRAME_BY_ACCT.pop((kind, account), None)
+        broker_apis._DB_LKG_CACHE.pop((kind, account), None)
+
+    def setup_method(self):
+        for acct in (self.DH3747, self.DH6847):
+            for kind in ("holdings", "positions"):
+                self._clear(acct, kind)
+
+    def teardown_method(self):
+        self.setup_method()
+
+    def test_db_lkg_returns_non_empty_when_in_memory_absent(self):
+        """Tier-1 LKG empty, tier-2 DB populated → non-empty substitute."""
+        from backend.brokers.broker_apis import (
+            set_db_lkg_frame, _stale_substitute_frame, _LKG_FRAME_BY_ACCT,
+        )
+        df_db = pd.DataFrame([
+            {"tradingsymbol": "GOLDBEES", "opening_quantity": 100,
+             "average_price": 55.0, "last_price": 60.0, "pnl": 500.0,
+             "day_change_val": 50.0, "account": self.DH3747},
+            {"tradingsymbol": "NIFTYBEES", "opening_quantity": 50,
+             "average_price": 200.0, "last_price": 210.0, "pnl": 500.0,
+             "day_change_val": 25.0, "account": self.DH3747},
+        ])
+        set_db_lkg_frame("holdings", self.DH3747, df_db)
+        # Confirm in-memory LKG is empty for this account.
+        assert _LKG_FRAME_BY_ACCT.get(("holdings", self.DH3747)) is None
+        df = _stale_substitute_frame("holdings", self.DH3747)
+        assert not df.empty
+        assert len(df) == 2
+        assert set(df["tradingsymbol"]) == {"GOLDBEES", "NIFTYBEES"}
+
+    def test_db_lkg_sets_correct_attrs(self):
+        """DB-path substitute sets stale=True, circuit_open=True, db_lkg=True
+        and does NOT set fetch_failed."""
+        from backend.brokers.broker_apis import set_db_lkg_frame, _stale_substitute_frame
+        df_db = pd.DataFrame([
+            {"tradingsymbol": "GOLDBEES", "opening_quantity": 100,
+             "average_price": 55.0, "last_price": 60.0, "pnl": 500.0,
+             "account": self.DH6847},
+        ])
+        set_db_lkg_frame("holdings", self.DH6847, df_db)
+        df = _stale_substitute_frame("holdings", self.DH6847)
+        assert df.attrs.get("stale") is True
+        assert df.attrs.get("circuit_open") is True
+        assert df.attrs.get("db_lkg") is True
+        # CRITICAL: must not trigger the 503-outage gate.
+        assert df.attrs.get("fetch_failed") is not True
+        assert "account_stale" in df.columns
+        assert bool(df["account_stale"].iloc[0]) is True
+
+    def test_in_memory_lkg_takes_priority_over_db(self):
+        """When both tier-1 and tier-2 exist, tier-1 (in-memory) wins and
+        `db_lkg` attr is NOT set (so the diagnostic is accurate)."""
+        from backend.brokers.broker_apis import (
+            set_db_lkg_frame, _record_lkg_frame, _stale_substitute_frame,
+        )
+        df_db = pd.DataFrame([
+            {"tradingsymbol": "FROM_DB", "opening_quantity": 10,
+             "average_price": 50.0, "account": self.DH3747},
+        ])
+        df_mem = pd.DataFrame([
+            {"tradingsymbol": "FROM_MEM", "opening_quantity": 20,
+             "average_price": 60.0, "account": self.DH3747},
+        ])
+        set_db_lkg_frame("holdings", self.DH3747, df_db)
+        _record_lkg_frame("holdings", self.DH3747, df_mem)
+        df = _stale_substitute_frame("holdings", self.DH3747)
+        # Tier-1 wins → row from in-memory, not DB.
+        assert set(df["tradingsymbol"]) == {"FROM_MEM"}
+        # db_lkg attr must NOT be set on the tier-1 path.
+        assert df.attrs.get("db_lkg") is not True
+
+    def test_db_lkg_empty_frame_not_stored(self):
+        """set_db_lkg_frame with an empty DataFrame is a no-op — empty
+        daily_book results should not pollute the cache."""
+        from backend.brokers.broker_apis import (
+            set_db_lkg_frame, _stale_substitute_frame, _DB_LKG_CACHE,
+        )
+        set_db_lkg_frame("holdings", self.DH3747, pd.DataFrame())
+        # Nothing stored.
+        assert _DB_LKG_CACHE.get(("holdings", self.DH3747)) is None
+        df = _stale_substitute_frame("holdings", self.DH3747)
+        assert df.empty
+        assert df.attrs.get("fetch_failed") is True
+
+    def test_db_lkg_ttl_expired_returns_empty(self):
+        """A DB LKG entry older than _LKG_MAX_AGE_S should not be served."""
+        from backend.brokers import broker_apis
+        df_db = pd.DataFrame([
+            {"tradingsymbol": "GOLDBEES", "opening_quantity": 100,
+             "average_price": 55.0, "last_price": 60.0, "pnl": 500.0,
+             "account": self.DH3747},
+        ])
+        # Insert directly with an expired timestamp.
+        past = _time.time() - (broker_apis._LKG_MAX_AGE_S + 60.0)
+        with broker_apis._DB_LKG_CACHE_LOCK:
+            broker_apis._DB_LKG_CACHE[("holdings", self.DH3747)] = (past, df_db)
+        # get_db_lkg_frame should return None due to TTL.
+        result = broker_apis._get_db_lkg_frame("holdings", self.DH3747)
+        assert result is None
+        # _stale_substitute_frame falls through to empty + fetch_failed.
+        df = broker_apis._stale_substitute_frame("holdings", self.DH3747)
+        assert df.empty
+        assert df.attrs.get("fetch_failed") is True
+
+    def test_both_dhan_accounts_serve_non_zero(self):
+        """DH3747 and DH6847 each return non-zero holdings from the DB cache.
+        This is the exact operator scenario: popup shows blank rows for both.
+
+        Includes inv_val / cur_val to mirror the columns written by
+        _preload_db_lkg_cache so that the NavBreakdown 'Value' column is
+        also non-zero (not just the P&L columns).
+        """
+        from backend.brokers.broker_apis import set_db_lkg_frame, _stale_substitute_frame
+        holdings_by_acct = {
+            self.DH3747: [
+                {"tradingsymbol": "GOLDBEES", "opening_quantity": 100,
+                 "average_price": 55.0, "last_price": 60.0,
+                 "pnl": 500.0, "day_change_val": 50.0, "account": self.DH3747,
+                 "inv_val": 55.0 * 100, "cur_val": 60.0 * 100},
+            ],
+            self.DH6847: [
+                {"tradingsymbol": "NIFTYBEES", "opening_quantity": 200,
+                 "average_price": 180.0, "last_price": 190.0,
+                 "pnl": 2000.0, "day_change_val": 200.0, "account": self.DH6847,
+                 "inv_val": 180.0 * 200, "cur_val": 190.0 * 200},
+                {"tradingsymbol": "BANKBEES", "opening_quantity": 50,
+                 "average_price": 100.0, "last_price": 105.0,
+                 "pnl": 250.0, "day_change_val": 25.0, "account": self.DH6847,
+                 "inv_val": 100.0 * 50, "cur_val": 105.0 * 50},
+            ],
+        }
+        for acct, rows in holdings_by_acct.items():
+            set_db_lkg_frame("holdings", acct, pd.DataFrame(rows))
+
+        for acct, rows in holdings_by_acct.items():
+            df = _stale_substitute_frame("holdings", acct)
+            assert not df.empty, f"{acct} returned empty frame"
+            assert len(df) == len(rows), f"{acct}: expected {len(rows)} rows, got {len(df)}"
+            assert df.attrs.get("stale") is True
+            assert df.attrs.get("db_lkg") is True
+            assert df.attrs.get("fetch_failed") is not True
+            # Non-zero pnl AND value columns — the core UX fix.
+            assert df["pnl"].sum() > 0, f"{acct}: pnl should be non-zero"
+            assert df["cur_val"].sum() > 0, f"{acct}: cur_val should be non-zero (NavBreakdown 'Value' column)"
+
+    def test_db_lkg_downstream_mutation_does_not_poison(self):
+        """set_db_lkg_frame stores a shallow copy; mutations on the returned
+        frame must not corrupt the stored cache entry."""
+        from backend.brokers.broker_apis import (
+            set_db_lkg_frame, _stale_substitute_frame, _get_db_lkg_frame,
+        )
+        df_db = pd.DataFrame([
+            {"tradingsymbol": "GOLDBEES", "opening_quantity": 100,
+             "average_price": 55.0, "last_price": 60.0, "pnl": 500.0,
+             "account": self.DH3747},
+        ])
+        set_db_lkg_frame("holdings", self.DH3747, df_db)
+        df1 = _stale_substitute_frame("holdings", self.DH3747)
+        # Mutate the returned frame.
+        df1.attrs["poisoned"] = True
+        # The stored cache should not carry the poisoned attr.
+        entry = _get_db_lkg_frame("holdings", self.DH3747)
+        assert entry is not None
+        _, stored = entry
+        assert stored.attrs.get("poisoned") is not True

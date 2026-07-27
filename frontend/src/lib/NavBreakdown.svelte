@@ -27,6 +27,7 @@
   import { baseDayPnlForPosition } from '$lib/data/nav';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
+  import { connStatus } from '$lib/stores';
 
   /** @type {{
    *   accountFilter?: string[],
@@ -144,13 +145,22 @@
   const _unsubNavOrder = accountDisplayOrder.subscribe(m => { _navOrderMap = m; });
   onDestroy(() => { _unsubNavOrder(); });
 
-  // Page-wide account union — every account with data in any of the
-  // three sources. Sorted by canonical display order.
+  // Bridge connStatus (Svelte writable store) into $state so $derived.by()
+  // below can read it reactively. Do NOT use $derived reading a store directly
+  // — it can stale-cache. $effect keeps the snapshot live.
+  let _connStatusSnap = $state($connStatus);
+  $effect(() => { _connStatusSnap = $connStatus; });
+
+  // Page-wide account union — every account with data in any of the three
+  // sources, plus every configured broker account from connStatus. Accounts
+  // with no holdings/positions data (e.g. disconnected Dhan accounts) are
+  // included so all slots show a row for every known account.
   const _allAccounts = $derived.by(() => {
     const set = new Set();
     for (const r of _funds)     if (r.account && r.account !== 'TOTAL') set.add(String(r.account));
     for (const r of _positions) if (r.account) set.add(String(r.account));
     for (const r of _holdings)  if (r.account) set.add(String(r.account));
+    for (const a of (_connStatusSnap.accounts ?? [])) if (a) set.add(String(a));
     return sortAccountsBy([...set], _navOrderMap);
   });
 
