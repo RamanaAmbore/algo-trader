@@ -468,6 +468,7 @@
   // invoked").
   let _ticketBump = $state(1);
   let _chainBump  = $state(1);
+  let _headerRefreshing = $state(false);
   $effect(() => {
     const t = _activeTab;
     untrack(() => {
@@ -476,7 +477,12 @@
     });
   });
 
-  function _refreshAll() { _ticketBump++; _chainBump++; }
+  function _refreshAll() {
+    _ticketBump++;
+    _chainBump++;
+    _headerRefreshing = true;
+    setTimeout(() => { _headerRefreshing = false; }, 700);
+  }
 
   // Chart modal — opens ChartModal for the current symbol when the
   // operator clicks the chart-icon button in the header. Hidden in
@@ -2038,12 +2044,17 @@
                title chip (left-aligned). The close X stays anchored right. -->
           <span class="oes-right-group canonical-card-btn-group">
             {#if showRefresh}
-              <button type="button" class="oes-chart-btn oes-refresh-btn" onclick={_refreshAll} title="Refresh order ticket">
-                <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-                  <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"
-                    fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                  <path d="M13.5 2v3.5H10"
-                    fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <button type="button" class="oes-chart-btn oes-refresh-btn"
+                      onclick={_refreshAll}
+                      disabled={_headerRefreshing}
+                      title="Refresh order ticket">
+                <svg viewBox="0 0 16 16" width="13" height="13"
+                     fill="none" stroke="currentColor"
+                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                     class:oes-refresh-spinning={_headerRefreshing}
+                     aria-hidden="true">
+                  <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9"/>
+                  <path d="M13.5 3v3h-3"/>
                 </svg>
               </button>
             {/if}
@@ -3339,6 +3350,18 @@
     background: var(--c-info-14);
     color: #67e8f9;
     border-color: rgba(103, 232, 249, 0.65);
+  }
+  .oes-refresh-btn:hover:not(:disabled) {
+    background: rgba(34,211,238,0.14);
+    border-color: rgba(34,211,238,0.65);
+    color: var(--c-info);
+  }
+  @keyframes oes-refresh-spin {
+    to { transform: rotate(360deg); }
+  }
+  .oes-refresh-spinning {
+    animation: oes-refresh-spin 0.65s linear;
+    transform-origin: center;
   }
   .oes-chart-btn:disabled {
     opacity: 0.38;
