@@ -738,7 +738,27 @@ For Snapshot EXP column (MarketPulse Derivatives view):
 - **Open leg** (qty ≠ 0): `expiryPnl(c, spot) + (c.realised || 0)`
 - **Closed leg** (qty = 0): `c.realised || c.pnl` (locked value, not null/empty)
 
-### 17.1 Candidate Leg Row — Pending Qty Chip
+### 17.1 Payoff Chart Spot Price Resolution (liveSpot)
+
+The payoff overlay derives a canonical spot price (`liveSpot`) in a four-tier ladder
+to ensure the chart displays immediately on page load, without waiting for SSE ticks
+or broker polls:
+
+**Resolution order** (first non-null value wins):
+1. **SSE tick on spot-anchor contract** — live tick from WebSocket subscription
+2. **SSE tick on underlying** — live tick if the underlying itself is subscribed
+3. **`candidatePositions[*].underlying_ltp`** (backend-stamped, positions.py Pass 3)
+   — available immediately on page load from broker settlement data; eliminates 
+   "Resolving spot…" placeholder during SSE warmup
+4. **`batchQuote _underlyingQuotes[underlying].ltp`** (30s poll fallback) — broker 
+   quote cycle refresh
+5. **`strategy.spot`** (stale server value) — last-resort static value from page load
+
+**Rationale**: Broker-stamped `underlying_ltp` appears instantly in candidatePositions 
+without waiting for SSE subscription to activate, allowing the payoff chart to render 
+with a real spot estimate on first paint instead of showing a loading state.
+
+### 17.3 Candidate Leg Row — Pending Qty Chip
 
 The Legs grid now displays a qty chip per row that reflects both closed and pending-order 
 states.
@@ -1047,3 +1067,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-24 | §17 `_expiryPnlOffset` fix (71f91aa0): closed legs (qty===0) now use `c.realised \|\| c.pnl \|\| 0` instead of `c.realised \|\| 0` alone; for options settled at expiry, Kite returns `realised=0` with P&L in `pnl` field; open legs still use `c.realised` only to avoid double-counting unrealised MTM; payoff chart expiry curve now shifts to reflect settlement P&L |
 | 2026-07-24 | Derivatives page polling fix (7ed72480): `loadPositions()` switched from `marketAwareInterval` to `visibleInterval` (30s cadence, continues after market close); EOD broker settlement data now picked up after 23:30 IST; `loadStrategy` and `loadUnderlyingQuotes` remain on `marketAwareInterval` |
 | 2026-07-24 | §17 equity candidate expiry P&L display fix (023583f9): `_equityLinearLegs` entries now carry a `key` property; `_eqExpPnlByKey` derived maps each equity candidate key to its beta-adjusted linear expiry P&L at live spot; `_legExpPnlDisplay` now handles `'eq'` candidates returning `_eqExpPnlByKey[enKey(c)] ?? null`; `_legsExpPnlTotal` now single-pass over all candidates calling `_legExpPnlDisplay`, guaranteeing `sum(per-leg rows) == TOTAL` for all candidate types including equity and proxy hedges |
+| 2026-07-26 | §17.1 payoff chart spot price resolution (63262b94): `liveSpot` derived now includes `candidatePositions[*].underlying_ltp` (backend-stamped in positions.py Pass 3) as step 3 in resolution chain, before batchQuote fallback; eliminates "Resolving spot…" during SSE warmup |

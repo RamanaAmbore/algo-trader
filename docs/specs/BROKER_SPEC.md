@@ -132,6 +132,12 @@ Populated by `rebuild_from_db()` — queries `broker_accounts`, decrypts Fernet 
   (100ms retry intervals); raises `BrokerNetworkError` on timeout instead of hanging.
 - Failed `generate_token` cooloff persists to `/tmp/ramboq_dhan_cooloff.json` and survives
   process restarts, preventing tight-retry loops during rate-limit windows.
+- **Token renewal skip on test_conn** (Jul 2026): `_try_renew()` is now gated on 
+  `not test_conn` in `_dhan_conn_under_lock()`. When `test_conn=True` (dead token confirmed), 
+  the code skips lightweight renewal and goes straight to `_mint_and_build()` to re-mint 
+  via TOTP, ensuring fresh credentials.
+- **Login diagnosis logging** (Jul 2026): `_do_login()` now emits a DEBUG log `[DHAN-LOGIN]` 
+  with HTTP status code and 200-char response body after every POST, aiding auth failure diagnosis.
 - IPv6 on both login and runtime sessions
 
 ### GrowwConnection
@@ -726,3 +732,4 @@ designed.
 | 2026-07-25 | v1.3 Production outage fixes: Added §7.2 Instruments & Token-Map Cache covering `_TOKEN_MAP_FETCH_LOCK` double-checked locking (cold-cache serialisation, prevents 6.4GB OOM peak), `_task_instruments` 120s startup delay (stagger with `_task_sparkline_warm`), and removal of `_trigger_instruments_store_populate()` (was causing double OOM storm). Added §9.1 Background Task Early-Return Contract documenting `_supervised()` restart behaviour and requirement for all `_task_*` early-exit paths to include `await asyncio.sleep()` to prevent tight event-loop starvation and port-binding failure. |
 | 2026-07-25 | Groww instruments cache: per-account `@ssot_fetch` key (`groww_instruments_{account}`) prevents cross-account cache collision when multiple Groww accounts are active |
 | 2026-07-26 | v1.4 GTT exchange validation (commit b8b1214c): Added §8.2 documenting `validate_gtt_exchange(exchange)` method on Broker base class; Dhan/Groww override to raise ValueError for MCX/NCO; called at top of apply_plan_live before broker calls; MCX/Dhan fail-fast in apply_template_to_order before lot-size resolution; off-hours GTT note appended to plan.notes when GTT-only template attached while exchange closed |
+| 2026-07-26 | Dhan token renewal fix (commit 63262b94): `_dhan_conn_under_lock()` now gates `_try_renew()` on `not test_conn` to skip lightweight renewal when token is confirmed dead (DH-906); goes straight to full PIN+TOTP re-mint via `_mint_and_build()`. `_do_login()` emits DEBUG log `[DHAN-LOGIN]` with HTTP status + 200-char body for auth failure diagnosis. |
