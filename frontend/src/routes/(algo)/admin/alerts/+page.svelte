@@ -130,6 +130,14 @@
     return 'chip-grey';
   }
 
+  /** D/I/W/E severity level for the lv-chip (from app.css). */
+  function _alertLv(/** @type {string} */ evt) {
+    if (evt === 'action_failed') return 'e';
+    if (evt === 'cooldown' || evt === 'triggered') return 'w';
+    if (evt === 'action_success') return 'i';
+    return 'd';
+  }
+
   /** Human label for an event type string. */
   function _eventLabel(/** @type {string} */ evt) {
     if (evt === 'triggered')      return 'Triggered';
@@ -281,6 +289,7 @@
               {/if}
             </td>
             <td>
+              <span class="lv-chip lv-{_alertLv(r.event_type)}">{_alertLv(r.event_type).toUpperCase()}</span>
               <span class="ev-chip {_eventCls(r.event_type)}">{_eventLabel(r.event_type)}</span>
             </td>
             <td class="td-cond" title={_strList(r.conditions_matched)}>

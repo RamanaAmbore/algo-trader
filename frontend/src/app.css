@@ -1436,6 +1436,19 @@
   opacity: 0.85;
 }
 
+/* D/I/W/E level chips — one per log row, severity indicator */
+.lv-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.1rem; height: 1.1rem; border-radius: 0.2rem;
+  font-size: 0.6rem; font-weight: 700; line-height: 1;
+  flex-shrink: 0; margin-right: 0.3rem; vertical-align: middle;
+  border: 1px solid transparent;
+}
+.lv-d { background: rgba(148,163,184,0.10); border-color: rgba(148,163,184,0.25); color: #64748b; }
+.lv-i { background: rgba(103,232,249,0.10); border-color: rgba(103,232,249,0.25); color: #67e8f9; }
+.lv-w { background: rgba(251,191,36,0.12);  border-color: rgba(251,191,36,0.35);  color: var(--c-action); }
+.lv-e { background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.35); color: var(--c-short); }
+
 /* ── Button design tokens ─────────────────────────────────────────────────── */
 /*
  * Palette + structural rules every button class on the algo platform

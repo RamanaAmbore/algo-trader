@@ -309,9 +309,10 @@
         const cond = chipsFromJson(e.trigger_condition) || '';
         const tag  = (e.event_type || '').replace(/_/g, ' ');
         const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
+        const lv = cls.includes('failed') ? 'e' : cls.includes('cooldown') ? 'w' : cls.includes('success') ? 'i' : 'd';
         return {
           key: e.id != null ? `a${e.id}` : `a${e.timestamp || ''}-${i}`,
-          html: _logRow(e.timestamp, cond, tag, `${cls} ${stripe}`),
+          html: _logRow(e.timestamp, cond, tag, `${cls} ${stripe}`, lv),
           _raw: e,
         };
       })
@@ -345,6 +346,7 @@
         const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
         const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
         const stripe = i % 2 === 0 ? 'row-tint-even' : 'row-tint-odd';
+        const lv = tag === 'ERROR' ? 'e' : tag.startsWith('WARN') ? 'w' : tag === 'DEBUG' ? 'd' : 'i';
         return {
           // System log keys can't use timestamp alone (multiple lines
           // per second possible); compose with line content hash via
@@ -354,7 +356,7 @@
           // same bug applies to System tab when api_log_file emits multiple
           // INFO lines in one second from the same logger.
           key: `y${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
-          html: _logRow(d || null, rest, tag, `${sysClass(l)} ${stripe}`),
+          html: _logRow(d || null, rest, tag, `${sysClass(l)} ${stripe}`, lv),
           _rawLine: l,
         };
       })
@@ -416,6 +418,14 @@
     if (['login_fail','auth_fail','circuit_open'].includes(evType)) return 'conn-ev-red';
     if (['rate_limited','token_expiry','rotation_detected'].includes(evType)) return 'conn-ev-amber';
     return 'conn-ev-muted';
+  }
+
+  function _connEvtLv(/** @type {string} */ evType) {
+    const cls = _connEvtCls(evType);
+    if (cls === 'conn-ev-red')   return 'e';
+    if (cls === 'conn-ev-amber') return 'w';
+    if (cls === 'conn-ev-green') return 'i';
+    return 'd';
   }
 
   function _orderEvtCls(/** @type {string} */ kind) {
@@ -1106,10 +1116,10 @@
   function _renderSimLine(entry) {
     const scen = entry.scenario || '';
     if (entry.kind === 'started') {
-      return _logRow(entry.ts, `▶ ${scen} · ${entry.note || ''}`, 'START', 'log-agent-success');
+      return _logRow(entry.ts, `▶ ${scen} · ${entry.note || ''}`, 'START', 'log-agent-success', 'i');
     }
     if (entry.kind === 'stopped') {
-      return _logRow(entry.ts, `■ ${scen} · ${entry.note || ''}`, 'STOP', 'log-info');
+      return _logRow(entry.ts, `■ ${scen} · ${entry.note || ''}`, 'STOP', 'log-info', 'w');
     }
     if (entry.kind === 'order') {
       const o = entry.order || {};
@@ -1123,6 +1133,7 @@
         `◆ ${o.side || '?'} ${o.qty ?? '?'} ${o.symbol || '?'} ${price} · ${o.account || '?'} · ${o.agent || ''} ${o.action || ''}`,
         'ORDER',
         sideCls,
+        'i',
       );
     }
     const cls = _classifySimLine(entry);
@@ -1134,7 +1145,8 @@
       return `<span class="log-chip"><span class="log-chip-key">${field}:</span>${arrow}${delta}</span>`;
     }).join(' ');
     const head = `tick ${entry.tick_index} · ${scen}`;
-    return _logRow(entry.ts, `${head} ${diffs || '(no changes)'}`, 'TICK', cls);
+    const simLv = _classifySimLine(entry) === 'log-agent-triggered' ? 'w' : 'd';
+    return _logRow(entry.ts, `${head} ${diffs || '(no changes)'}`, 'TICK', cls, simLv);
   }
 
   function stripTs(l) {
@@ -1190,15 +1202,26 @@
   }
 
   /**
-   * Wrap a log row in the unified News-style grid: time on the left,
-   * message content in the middle (flex-grow), optional tag chip on
-   * the right. All four tabs (Agent / Terminal / Ticks / System)
-   * route through this helper so every row reads with the same shape.
+   * Returns a small severity chip as an HTML string.
+   * lv: 'd' | 'i' | 'w' | 'e'
    */
-  function _logRow(timeInput, contentHtml, tagText, rowClass) {
-    const ts  = _simpleTime(timeInput);
-    const tag = tagText ? `<span class="log-row-tag">${_escAttr(String(tagText))}</span>` : '';
-    return `<div class="log-row ${rowClass || ''}">${ts}<span class="log-row-msg">${contentHtml || ''}</span>${tag}</div>`;
+  function _levelChipHtml(/** @type {string} */ lv) {
+    const letter = ({ d: 'D', i: 'I', w: 'W', e: 'E' })[lv] ?? lv.toUpperCase();
+    return `<span class="lv-chip lv-${lv}">${letter}</span>`;
+  }
+
+  /**
+   * Wrap a log row in the unified News-style grid: time on the left,
+   * optional level chip, message content in the middle (flex-grow),
+   * optional tag chip on the right. All four tabs (Agent / Terminal /
+   * Ticks / System) route through this helper so every row reads with
+   * the same shape.
+   */
+  function _logRow(timeInput, contentHtml, tagText, rowClass, lv = '') {
+    const ts   = _simpleTime(timeInput);
+    const chip = lv ? _levelChipHtml(lv) : '';
+    const tag  = tagText ? `<span class="log-row-tag">${_escAttr(String(tagText))}</span>` : '';
+    return `<div class="log-row ${rowClass || ''}">${ts}${chip}<span class="log-row-msg">${contentHtml || ''}</span>${tag}</div>`;
   }
 
   /**
@@ -1624,8 +1647,10 @@
     {#if _derivedOrderEvents.length}
       <div class="log-panel log-rows {multiColumn ? 'lp-multicol' : ''}">
         {#each _derivedOrderEvents as evt (evt.id)}
+          {@const _evtLv = _orderEvtCls(evt.kind) === 'log-row-error' ? 'e' : _orderEvtCls(evt.kind) === 'log-row-warn' ? 'w' : (_orderEvtCls(evt.kind) === 'log-row-ok' || _orderEvtCls(evt.kind) === 'log-row-info') ? 'i' : 'd'}
           <div class="log-row {_orderEvtCls(evt.kind)}">
             {@html _dualTsHtml(evt.ts)}
+            {@html _levelChipHtml(_evtLv)}
             <span class="log-row-tag">{(evt.kind || '').toUpperCase()}</span>
             <span class="log-row-msg">{evt.message || ''}</span>
           </div>
@@ -1667,6 +1692,7 @@
         {@const _cls = _connEvtCls(ev.event_type)}
         {@const _det = _fmtConnDetail(ev.detail)}
         <div class="lp-conn-row {_cls}" class:row-tint-even={i % 2 === 0} class:row-tint-odd={i % 2 !== 0}>
+          {@html _levelChipHtml(_connEvtLv(ev.event_type))}
           <span class="lp-conn-time">{_fmtConnEvtTime(ev.event_ts)}</span>
           <span class="lp-conn-acct font-mono">{ev.account || '—'}</span>
           <span class="lp-conn-broker">{ev.broker_id === 'zerodha_kite' ? 'zerodha' : (ev.broker_id || '—')}</span>

@@ -114,6 +114,7 @@
    *   basketCount?:    number,
    *   showChartButton?: boolean,
    *   showCommonActions?: boolean,
+   *   showRefresh?: boolean,
    *   pickerSuffix?:   import('svelte').Snippet,
    *   initialDraftId?: string | null,
    * }} */
@@ -205,6 +206,11 @@
     // screen) pass false so we don't render an affordance that would
     // open a duplicate ChartModal for the same symbol.
     showChartButton = true,
+    // When true, renders a refresh button in the modal header that
+    // calls _refreshAll() (same action as CardHeader's onRefresh).
+    // The order modal in PageHeaderActions passes showRefresh={true}
+    // so operators can reload the ticket without closing.
+    showRefresh = false,
     // Bindable chase + chase-aggressiveness — surfaced so the /orders
     // page can render the mode/chase cluster inside its OWN bucket
     // header (where SymbolPanel's `.oes-header` is suppressed via
@@ -2031,6 +2037,16 @@
                should be selectable." Cluster sits immediately AFTER the
                title chip (left-aligned). The close X stays anchored right. -->
           <span class="oes-right-group canonical-card-btn-group">
+            {#if showRefresh}
+              <button type="button" class="oes-chart-btn oes-refresh-btn" onclick={_refreshAll} title="Refresh order ticket">
+                <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                  <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"
+                    fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  <path d="M13.5 2v3.5H10"
+                    fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            {/if}
             {#if !inline && _localSymbol}
               <button type="button" class="oes-chart-btn" title="Chart — {_localSymbol}"
                       onclick={() => _chartModalOpen = true}>
