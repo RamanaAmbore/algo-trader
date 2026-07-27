@@ -2623,7 +2623,7 @@
 
   /* ── Open orders strip ───────────────────────────────────────────── */
   .dash-open-orders {
-    margin-bottom: 0.6rem;
+    margin-top: 0.6rem;
     padding: 0.4rem 0.55rem;
     background: rgba(15, 25, 45, 0.55);
     border: 1px solid rgba(126, 151, 184, 0.18);

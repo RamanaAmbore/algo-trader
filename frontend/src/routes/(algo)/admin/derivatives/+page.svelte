@@ -4243,7 +4243,7 @@
     -->
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
-        payoff={strategy ? _mergedPayoff : (_clientPayoffStub ?? [])}
+        payoff={strategy && (!_strategyStale || loading) ? _mergedPayoff : (_clientPayoffStub ?? [])}
         spot={liveSpot}
         prevClose={strategy?.spot_prev_close}
         breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
