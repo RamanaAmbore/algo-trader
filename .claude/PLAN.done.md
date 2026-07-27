@@ -1,148 +1,197 @@
-# Plan: 6D Audit — /orders page, OrderBook, SymbolPanel, LogPanel
+# Plan: Payoff spot SSOT fix + Dhan TOTP wrapping + stepper spacing
 
 ## Context
-6-dimension audit of the orders UI surface: `/orders` page (`+page.svelte`), `OrderBook.svelte`,
-`SymbolPanel.svelte` (order modal), and `LogPanel.svelte` (order tab + tab content).
-Audit dimensions: D1 Correctness · D2 Performance · D3 Dead Code · D4 UX Consistency ·
-D5 Broker API Compliance · D6 Documentation Alignment.
 
----
+### Issue 1 — Payoff "Resolving spot…" / curve never renders
+The `liveSpot` derived (`derivatives/+page.svelte:1787`) resolves the underlying spot through
+this chain:
+  1. `getSnapshot(anchor)` — live SSE tick on the spot-anchor contract
+  2. `getSnapshot(stratUnd)` — live SSE tick on the underlying itself
+  3. `_underlyingQuotes[selectedUnderlying]?.ltp` — batchQuote (30 s poll)
+  4. `strategy?.spot` — stale server-poll value → `undefined`
 
-## Severity-Ranked Punch List
+**The SSOT source is never consulted.** `candidatePositions[*].underlying_ltp` is explicitly
+marked at line 771 with the comment *"SSOT: prefer backend-stamped underlying_ltp
+(positions.py Pass 3)"* and is trusted everywhere else on the page (day-P&L at line 881,
+Snapshot rows), but `liveSpot` skips it entirely. During the loading window — before the first
+SSE tick lands and before batchQuote refreshes — `liveSpot` returns `undefined`, `spot == null`,
+and `OptionsPayoff.svelte:692` shows "Resolving spot…" indefinitely even though
+`candidatePositions.underlying_ltp` already holds the correct value from the initial positions
+fetch.
 
-### P1 — Critical (fix before next push)
+### Issue 2 — Dhan TOTP path blocked by dead-token renewal attempt
+In `_dhan_conn_under_lock` (`connections.py:1153`), `_try_renew()` is called before
+`_mint_and_build()` unconditionally — even when `test_conn=True`. `test_conn=True`
+means a DH-906 "Invalid Token" error was just received from Dhan; the current token is
+**confirmed dead**. Sending that dead token to `/v2/RenewToken` either fails outright or
+returns a token that Dhan immediately rejects again (same invalidated session). Only after
+renewal fails does the code fall through to `_mint_and_build()` → `_do_login()` → TOTP.
 
-**OrderBook.svelte**
-- P1 D1 `OrderBook.svelte:176` — TRIGGER_PENDING underscore variant unhandled in open-status predicate; broker sends `TRIGGER_PENDING` but filter checks only `TRIGGER PENDING` (space)
-- P1 D1 `OrderBook.svelte:140-141` — Date-filter logic inverted: `!(ts && ts !== today && term)` leaks stale non-terminal orders from prior sessions into today's view
-- P1 D1 `OrderBook.svelte:167-169` — Empty-string key poisons cancellation Set; `String(o.order_id || o.id || '')` can insert `''` which is never removed, causing spurious disabled cancel buttons
+The fix: gate `_try_renew()` on `not test_conn`. When the token is known-dead, skip renewal
+entirely and go straight to the full TOTP re-mint. This was introduced in `fcbfd6ff`
+(Jul 23) when `_try_renew()` was wired for the first time — renewal makes sense for the
+normal expiry path (`test_conn=False`) but never for the dead-token recovery path.
 
-**/orders +page.svelte**
-- P1 D4 `+page.svelte:360-375` — Close-action modal missing `account`, `side`, `orderType` props; only place-order path passes them (lines 565-570); close flow opens SymbolPanel without buy/sell context
-
-**SymbolPanel.svelte**
-- P1 D1 `SymbolPanel.svelte:738-747` — Template per-leg isolation bug: `leg.template_id != null` strict inequality fails when `template_id === 0`; first leg silently shares template with unrelated orders
-- P1 D1 `SymbolPanel.svelte:1002` — CE wing `+= offset`, PE wing `-= offset` is backwards for protective wings; CE should subtract, PE should add (direction reversed)
-- P1 D5 `SymbolPanel.svelte:665-668` — lot_size=0/undefined falls through F&O qty gate (`lotSize > 1` check); sends 0-lot margin calc to broker API silently
-
-**LogPanel.svelte**
-- P1 D1 `LogPanel.svelte:505` — `algoIds` Set built from `e.order_id` but algo events use `e.id` as primary key; dedup fails, all algo orders appear twice in merged list
-- P1 D1 `LogPanel.svelte:510` — `Date.parse(b.ts)` on mixed events: algo events may use different timestamp field names; NaN sort produces non-deterministic ordering
-- P1 D4 `LogPanel.svelte:1625` — `.replace(/_/g, ' ')` applied to already-plain-text kinds ('placed', 'fill', 'cancel', 'reject'); produces 'PLACED' correctly but will corrupt any future snake_case addition
-
----
-
-### P2 — High
-
-**OrderBook.svelte**
-- P2 D1 `OrderBook.svelte:113-117` — `_STATUS_PREDICATES.open` only checks `TRIGGER PENDING` (space), misses `TRIGGER_PENDING` (underscore) — partner bug to P1 above
-- P2 D4 `OrderBook.svelte:249` — Status chip counts come from unfiltered `orderRows`; filtered row count (`.length !== 1` pluralization) uses `filteredOrderRows`; counts appear inconsistent when a filter is active
-- P2 D2 `OrderBook.svelte:256-262` — Status bar re-counts all rows 5 times inline (`orderRows.filter(...)` × 5 per render); compute once in a derived
-- P2 D2 `OrderBook.svelte:156-163` — `filteredOrderRows` chains 4 sequential `.filter()` on entire array each render cycle; should short-circuit or memoize by filter key
-- P2 D4 `OrderBook.svelte:330` — Empty state shows "No orders." without distinguishing loading state vs filters-removed-all-rows vs truly empty
-
-**/orders +page.svelte**
-- P2 D4 `+page.svelte:343-345` — Error banner triggers at `_orderLoadFails >= 3` but counter never resets on success; sticky banner shows forever after any 3-failure run
-- P2 D1 `+page.svelte:238` — `Number(o.quantity)` coercion passes 0/falsy qty silently into `orderTicketProps.qty`; no guard before passing to OrderTicket
-- P2 D2 `+page.svelte:145` — `_draftOrdersList` spreads `Map.values()` on every render even when `payoffDrafts` unchanged; should be keyed $derived
-
-**SymbolPanel.svelte**
-- P2 D2 `SymbolPanel.svelte:977` — `_SYMBOL_PARSE_CACHE` Map grows without bound across session lifetime; unbounded memory leak for long-running operators; needs LRU cap or time-based eviction
-- P2 D1 `SymbolPanel.svelte:387` — `activeTab` binding seeded inside `$effect`; host re-bind after mount causes `_activeTabInternal` to diverge, producing tab-switch desync
-- P2 D1 `SymbolPanel.svelte:516-521` — `_modalMargin.blocked[0]` accessed without length guard; throws on empty blocked array
-- P2 D1 `SymbolPanel.svelte:2228` — `bind:chaseAgg={chaseAgg}` dual-binds between shell's `_sharedChaseAgg` derived and OrderTicket; reactivity drift on multi-leg updates
-- P2 D3 `SymbolPanel.svelte:1858-1860` — `handleParsedOrder()` `_props` param received but never used; always forces `activeTab='ticket'` regardless of input
-
-**LogPanel.svelte**
-- P2 D2 `LogPanel.svelte:458-513` — `_derivedOrderEvents` fully re-derives on every `filteredOrderRows` change; rebuilds algoIds Set + filters broker array every tick
-- P2 D3 `LogPanel.svelte:433-447` — `filteredOrderEvents` derived used only inside `_derivedOrderEvents`; the outer derived then re-filters internally, doubling the work
-- P2 D5 `LogPanel.svelte:466` — Uses `o.price` for order price but API field is `initial_price`; fills with wrong value
-- P2 D5 `LogPanel.svelte:480` — Uses `o.average_price` for fill price but `OrderCard` uses `fill_price` first; field precedence inconsistent
-- P2 D5 `LogPanel.svelte:468` — Status comparison doesn't handle `PARTIAL` or `CANCEL_FAILED` statuses used elsewhere (line 650); unhandled statuses fall to 'placed' kind
-
----
-
-### P3 — Medium
-
-**/orders +page.svelte**
-- P3 D3 `+page.svelte:189` — `_ctxQty` state declared, only written at line 549, never read; dead
-- P3 D6 `+page.svelte:95` — Comment says "Default to 'chain'" but `activeTab` defaults to `'ticket'`; stale
-
-**OrderBook.svelte**
-- P3 D3 `OrderBook.svelte:233-237` — `_ctxMenu`, `_ctxSym`, `_ctxExch` state vars declared but line 282 reconstructs `_ctxMenu` inline; declarations are dead
-- P3 D1 `+page.svelte:32` — `_orderLoadFails` never cleared; banner can't dismiss after recovery
-
-**SymbolPanel.svelte**
-- P3 D1 `SymbolPanel.svelte:553-557` — `_lastClearTrigger` never resets after clear fires; rapid re-trigger race condition
-- P3 D3 `SymbolPanel.svelte:2343` — `action === 'open'` comment "action-specific" misleading; `_isDemo` now gates first
-- P3 D4 `SymbolPanel.svelte:2141-2142` — MCX futures (integers) show trailing ".00" from `toLocaleString('en-IN')` 2-fraction default
-- P3 D1 `SymbolPanel.svelte:1392-1396` — `_focusedLeg` resolves via array subscript without bounds check; empty basket returns `undefined`
-
-**LogPanel.svelte**
-- P3 D3 `LogPanel.svelte:2044-2063` — CSS `.lp-order-scroll .oc-book-grid` references grid layout never applied to event rows (rows are `.log-row` divs); orphan rule
-- P3 D4 `LogPanel.svelte:1631` — Empty state "No orders today." conflates date filter with no-data; should distinguish filter-empty vs genuinely empty
-- P3 D6 `LogPanel.svelte:1099` — Comment "Keep colours calm: amber-ish" contradicts code returning orange for negative deltas
-- P3 D6 `LogPanel.svelte:59-62` — Comment claims canonical tab order but simulator tab is at wrong position
+### Issue 3 — Stepper − / + buttons too close
+`QtyInput.svelte:.ot-lots-row { gap: 0.25rem }` leaves almost no breathing room between
+the `−`, input, and `+` buttons. Increase to `0.5rem`.
 
 ---
 
 ## Fix Plan
 
-Prioritize P1s (all 10) + structural P2s in one pass. Skip P3s unless trivially adjacent.
+### Change 1 — liveSpot SSOT fix (frontend)
 
-### Agents
+**File:** `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+
+Insert `candidatePositions.underlying_ltp` as step 3 (before batchQuote) in the `liveSpot`
+derived:
+
+```js
+const liveSpot = $derived.by(() => {
+  void _throttledTick;
+  const stratUnd = String(strategy?.underlying || '').toUpperCase();
+  const stratMatchesSel = stratUnd && stratUnd === selectedUnderlying;
+
+  if (stratMatchesSel) {
+    const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+    if (anchor) {
+      const v = Number(untrack(() => getSnapshot(anchor)?.ltp));
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+    const v = Number(untrack(() => getSnapshot(stratUnd)?.ltp));
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+
+  // ── NEW: SSOT — backend-stamped underlying_ltp from positions (Pass 3).
+  // Trusted everywhere else on the page; consulted before the 30 s
+  // batchQuote so the payoff renders immediately on page load without
+  // waiting for the first SSE tick or a batchQuote cycle.
+  // untrack: candidatePositions changes on leg toggle, not on tick.
+  const posUltp = untrack(() => {
+    for (const p of candidatePositions) {
+      const v = Number(p.underlying_ltp);
+      if (v > 0) return v;
+    }
+    return null;
+  });
+  if (posUltp != null) return posUltp;
+
+  const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
+  if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
+
+  return stratMatchesSel ? strategy?.spot : undefined;
+});
+```
+
+**Why this position in the chain:** SSE ticks are live and always preferred. `underlying_ltp`
+is stamped by the backend positions fetch (on page load + postbacks), so it's available
+immediately — before any SSE tick or batchQuote cycle arrives. batchQuote stays as a fallback
+for pages without positions (e.g., a fresh strategy with no open legs).
+
+### Change 2 — Skip _try_renew when token is known dead (broker)
+
+**File:** `backend/brokers/connections.py`
+
+In `_dhan_conn_under_lock()` around line 1153, gate renewal on `not test_conn`:
+
+```python
+# Before:
+if self._access_token:
+    new_token = self._try_renew()
+    ...
+
+# After:
+# Skip renewal when token is confirmed dead (test_conn=True = DH-906 just fired).
+# Sending a dead token to /v2/RenewToken either fails outright or returns a token
+# that Dhan immediately rejects — both cases waste time before the TOTP re-mint.
+if self._access_token and not test_conn:
+    new_token = self._try_renew()
+    ...
+```
+
+Also add a single log line to `_do_login()` capturing the HTTP response status + body
+truncated to 200 chars, so auth failures are visible in the log without needing a
+debugger:
+```python
+response = session.post(url, params=params, timeout=30)
+logger.debug(
+    "[DHAN-LOGIN] %r: status=%s body=%.200s",
+    self.account, response.status_code,
+    response.text if response.content else '',
+)
+resp = response.json() if response.content else {}
+```
+
+### Change 3 — Stepper gap (frontend)
+
+**File:** `frontend/src/lib/order/QtyInput.svelte`
+
+```css
+/* Before */
+.ot-lots-row { gap: 0.25rem; }
+
+/* After */
+.ot-lots-row { gap: 0.5rem; }
+```
+
+### Change 4 — Dashboard header-to-card gap (frontend)
+
+**File:** `frontend/src/routes/(algo)/dashboard/+page.svelte`
+
+The performance card and nav card (`.dash-row1-split`) have an uneven visual gap relative
+to the page header row. When `.dash-open-orders` is hidden, the cards abut the header
+too closely. Add `margin-top: 0.6rem` to `.dash-row1-split` so the gap is consistent
+whether the open-orders bar is visible or not. Also verify the gap is consistent when
+`.dash-open-orders` is shown (it already has `margin-bottom: 0.6rem`, so the two
+`margin-top` + `margin-bottom` values should together give ~1.2rem total breathing room,
+matching other inter-section gaps on the page).
+
+```css
+/* Before */
+.dash-row1-split {
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+/* After */
+.dash-row1-split {
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+```
+
+---
+
+## Agents
 - backend: skip
-- frontend: Fix all P1 bugs + the structural P2s listed below. Files: `OrderBook.svelte`, `+page.svelte`, `SymbolPanel.svelte`, `LogPanel.svelte`
-- broker: skip
+- frontend: Changes 1 + 3 + 4 (derivatives page liveSpot + QtyInput gap + dashboard card gap)
+- broker: Change 2 (skip _try_renew when test_conn=True + add _do_login response logging)
 - doc: skip
-- backend-test: skip
+- backend-test: Add test verifying that DH-906 → test_conn=True path skips _try_renew() and calls _mint_and_build() directly
 - playwright: skip
 
-### Frontend agent scope
-
-**OrderBook.svelte**
-1. Fix TRIGGER_PENDING predicate — add underscore variant to `_STATUS_PREDICATES.open`
-2. Fix date filter logic — correct the inverted `!(ts && ts !== today && term)` predicate
-3. Fix Set poisoning — guard `String(o.order_id || o.id || '')` with `|| 'noop'` suffix or skip empty
-4. Fix status chip counts — compute all 5 counts once in `$derived` block, not inline
-5. Fix empty state — add loading/filter-empty distinction
-
-**/orders +page.svelte**
-6. Fix close modal — pass `account`, `side`, `orderType` props to SymbolPanel in close-action branch
-7. Fix error banner — reset `_orderLoadFails` to 0 on successful load
-8. Remove dead `_ctxQty` state
-
-**SymbolPanel.svelte**
-9. Fix template isolation — change `!= null` to `!== null && !==  undefined` (or `?? -1` sentinel)
-10. Fix CE/PE wing direction — swap `+=` and `-=` on protective wing strike calculation (line 1002)
-11. Fix `_modalMargin.blocked[0]` — guard with `.length` check
-12. Fix `_SYMBOL_PARSE_CACHE` — cap at 500 entries with Map-rotation eviction
-
-**LogPanel.svelte**
-13. Fix dedup — build algoIds Set from `e.id || e.order_id` (try both fields)
-14. Fix sort — use `e.ts || e.created_at || e.timestamp || ''` with consistent fallback
-15. Fix `o.price` → use `o.initial_price ?? o.price ?? ''` for placed message
-16. Fix `o.average_price` → use `o.fill_price ?? o.average_price ?? ''` for fill message
-17. Add PARTIAL/CANCEL_FAILED to `_deriveKind` switch
-
 ## Tests
-- pytest: no
+- pytest: yes
 - svelte-check: yes
 - playwright: no
 
 ## Commit message
-fix(ui): 6D audit fixes — order modal wing direction, LogPanel dedup/sort, OrderBook filter/Set/date bugs, close modal props, error banner reset
+fix(payoff+broker+ui): liveSpot SSOT from positions; Dhan skip renew on dead token; stepper gap; dashboard card gap
 
 ## Done when
-- `SymbolPanel.svelte:1002` CE/PE wing strikes go the correct direction
-- `LogPanel.svelte` algo/broker events dedup correctly; sort is deterministic
-- `OrderBook.svelte` date filter no longer leaks prior-session orders; TRIGGER_PENDING counted as open; cancel button Set not poisoned
-- Close modal in `/orders` passes account/side/orderType to SymbolPanel
-- Error banner dismisses after successful reload
-- `svelte-check` 0 errors
+- Payoff curve shows spot immediately from `candidatePositions.underlying_ltp` without waiting for SSE tick or batchQuote
+- "Resolving spot…" no longer appears when positions are loaded
+- DH-906 "Invalid Token" path goes directly to TOTP re-mint, not through `_try_renew()` first
+- `_do_login()` logs HTTP status + body on every call at DEBUG level
+- QtyInput stepper buttons have 0.5 rem gap
+- Dashboard performance + nav cards have consistent gap (0.6rem) with the page header row
+- pytest green, svelte-check 0 errors
 
 ## Critical files
-- `frontend/src/routes/(algo)/orders/+page.svelte`
-- `frontend/src/lib/OrderBook.svelte`
-- `frontend/src/lib/SymbolPanel.svelte`
-- `frontend/src/lib/LogPanel.svelte`
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — `liveSpot` derived (~line 1787)
+- `backend/brokers/connections.py` — `DhanConnection._do_login()` (~line 924)
+- `frontend/src/lib/order/QtyInput.svelte` — `.ot-lots-row { gap }` (~line 98)
+- `frontend/src/routes/(algo)/dashboard/+page.svelte` — `.dash-row1-split` margins
+- `backend/tests/broker/` — new Dhan TOTP bad-secret test

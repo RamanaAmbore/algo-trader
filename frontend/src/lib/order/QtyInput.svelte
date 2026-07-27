@@ -95,7 +95,7 @@
   .ot-lots-row {
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.5rem;
     flex-wrap: nowrap;
     height: 1.7rem;
   }

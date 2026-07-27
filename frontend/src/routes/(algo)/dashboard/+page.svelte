@@ -2289,6 +2289,7 @@
     display: grid;
     grid-template-columns: 1fr;
     gap: 0.6rem;
+    margin-top: 0.6rem;
     margin-bottom: 0.75rem;
     /* `align-items: stretch` (grid default) lets each cell's card
        stretch to the row's max height — so the NAV/Capital/Equity

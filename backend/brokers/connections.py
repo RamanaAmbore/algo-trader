@@ -931,6 +931,11 @@ class DhanConnection:
         }
         try:
             response = session.post(url, params=params, timeout=30)
+            logger.debug(
+                "[DHAN-LOGIN] %r: status=%s body=%.200s",
+                self.account, response.status_code,
+                response.text if response.content else '',
+            )
             resp = response.json() if response.content else {}
         except Exception as e:
             raise RuntimeError(
@@ -1150,7 +1155,7 @@ class DhanConnection:
         # Attempt lightweight renewal before full PIN+TOTP re-mint.
         # /v2/RenewToken requires an existing (possibly stale) token and avoids
         # a new TOTP login — no new session is created, existing one rolls forward.
-        if self._access_token:
+        if self._access_token and not test_conn:
             new_token = self._try_renew()
             if new_token:
                 self._access_token    = new_token

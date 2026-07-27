@@ -1799,7 +1799,18 @@
       if (Number.isFinite(v) && v > 0) return v;
     }
 
-    // Third fallback: the Snapshot card's batchQuote result for the
+    // SSOT — backend-stamped underlying_ltp from positions (Pass 3).
+    // Available immediately on page load; no SSE tick or batchQuote cycle needed.
+    const posUltp = untrack(() => {
+      for (const p of candidatePositions) {
+        const v = Number(/** @type {any} */ (p).underlying_ltp);
+        if (v > 0) return v;
+      }
+      return null;
+    });
+    if (posUltp != null) return posUltp;
+
+    // Fourth fallback: the Snapshot card's batchQuote result for the
     // selected underlying. Covers the IDFC-style case where the SSE
     // symbolStore has no live tick yet (first-open, pre-market, or a
     // symbol whose KiteTicker subscription hasn't landed), so
