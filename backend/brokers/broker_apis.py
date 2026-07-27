@@ -491,6 +491,73 @@ _LKG_FRAME_LOCK = threading.Lock()
 # too long to substitute. Downstream sees empty (same as pre-fix behaviour).
 _LKG_MAX_AGE_S: float = 24 * 3600.0
 
+# ---------------------------------------------------------------------------
+# DB-backed LKG cache (cold-restart fallback)
+# ---------------------------------------------------------------------------
+# When the API process restarts (e.g. after a deploy) and Dhan login is
+# temporarily failing, `_LKG_FRAME_BY_ACCT` starts empty — the in-memory
+# LKG cache has no entries yet.  The first breaker-open short-circuit then
+# calls `_stale_substitute_frame` which finds no LKG and returns an empty
+# frame with `fetch_failed=True`, so Dhan rows silently vanish.
+#
+# Fix: `background.py` preloads this dict at startup from `daily_book`
+# (the DB snapshot table which contains the most-recent per-account
+# holdings/positions rows from the previous session).  When
+# `_stale_substitute_frame` finds no in-memory LKG it checks here as
+# a second tier.  Same 24h TTL gate applies.
+#
+# Shape: {(kind, account): (unix_ts, pd.DataFrame)} — same as _LKG_FRAME_BY_ACCT.
+# Populated ONLY by `set_db_lkg_frame` (called from background.py).
+# Intentionally NOT written by the live fetch path to keep the two tiers
+# semantically distinct: in-memory = "last successful broker call this
+# session"; DB = "last persisted snapshot from any prior session".
+_DB_LKG_CACHE: dict[tuple[str, str], tuple[float, "pd.DataFrame"]] = {}
+_DB_LKG_CACHE_LOCK = threading.Lock()
+
+
+def set_db_lkg_frame(kind: str, account: str, df: "pd.DataFrame") -> None:
+    """Populate the DB-backed LKG cache for (kind, account).
+
+    Called from background.py at startup (preload from daily_book) so
+    that `_stale_substitute_frame` can serve Dhan rows immediately after
+    a cold restart, even before the first successful broker fetch.
+
+    Only stores non-None, non-empty frames — an empty daily_book result
+    means "no data available" and should not be substituted.
+    """
+    if not kind or not account:
+        return
+    if df is None or (hasattr(df, "empty") and df.empty):
+        return
+    now = _time.time()
+    try:
+        snapshot = df.copy(deep=False)
+    except Exception:
+        return
+    with _DB_LKG_CACHE_LOCK:
+        _DB_LKG_CACHE[(kind, account)] = (now, snapshot)
+
+
+def _get_db_lkg_frame(kind: str, account: str) -> tuple[float, "pd.DataFrame"] | None:
+    """Return (ts, DataFrame) from the DB-backed LKG cache, or None when
+    absent or older than _LKG_MAX_AGE_S."""
+    if not kind or not account:
+        return None
+    now = _time.time()
+    with _DB_LKG_CACHE_LOCK:
+        entry = _DB_LKG_CACHE.get((kind, account))
+    if entry is None:
+        return None
+    ts, snap = entry
+    if now - ts > _LKG_MAX_AGE_S:
+        return None
+    if snap is None:
+        return None
+    try:
+        return ts, snap.copy(deep=False)
+    except Exception:
+        return None
+
 
 def _record_lkg_frame(kind: str, account: str, df: "pd.DataFrame") -> None:
     """Stash a shallow copy of `df` as the last-known-good frame for
@@ -543,10 +610,18 @@ def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
     per-row `account_stale=True` column marked. Returns an empty frame
     when no LKG exists (falls back to pre-fix behaviour for that cycle).
 
+    Two-tier lookup:
+      1. In-memory LKG (`_LKG_FRAME_BY_ACCT`) — most recent successful
+         broker fetch this session. Preferred when available.
+      2. DB-backed LKG (`_DB_LKG_CACHE`) — preloaded at startup from
+         `daily_book`. Used on cold-restart when tier 1 is empty (e.g.
+         Dhan login failing since restart → no in-memory LKG yet).
+
     Marks:
       • df.attrs['stale']         = True   (response-level flag)
       • df.attrs['stale_since']   = epoch  (unix ts of last success)
       • df.attrs['circuit_open']  = True   (diagnostic — matches pre-fix attr)
+      • df.attrs['db_lkg']        = True   (set only on tier-2 DB path)
       • df['account_stale']       = True   (per-row column; consumed by
                                             schema mapping in routes)
 
@@ -555,8 +630,14 @@ def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
     counts as a SUCCESS (with old data), not a failure.
     """
     result = _get_lkg_frame(kind, account)
+    db_lkg = False
     if result is None:
-        # No LKG yet — same behaviour as before this fix.
+        # Tier 1 empty — try the DB-backed preload cache (cold-restart path).
+        result = _get_db_lkg_frame(kind, account)
+        if result is not None:
+            db_lkg = True
+    if result is None:
+        # No LKG in either tier — same behaviour as before this fix.
         df_empty = pd.DataFrame()
         df_empty.attrs["circuit_open"] = True
         df_empty.attrs["fetch_failed"] = True
@@ -565,6 +646,8 @@ def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
     df.attrs["stale"] = True
     df.attrs["stale_since"] = stale_since
     df.attrs["circuit_open"] = True
+    if db_lkg:
+        df.attrs["db_lkg"] = True
     # DO NOT set fetch_failed — see docstring. Substituted rows are "success
     # with old data", not a fetch failure.
     if not df.empty:
