@@ -648,12 +648,6 @@
   .rf-btn.rf-tick-b {
     animation: rf-tick-pulse-b 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
-  .rf-btn.rf-tick-a:not(.rf-spinning) svg {
-    animation: rf-tick-rotate-a 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .rf-btn.rf-tick-b:not(.rf-spinning) svg {
-    animation: rf-tick-rotate-b 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
   @keyframes rf-tick-pulse-a {
     0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); background-color: rgba(125, 211, 252, 0.14); }
     100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); background-color: transparent; }
@@ -661,14 +655,6 @@
   @keyframes rf-tick-pulse-b {
     0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); background-color: rgba(125, 211, 252, 0.14); }
     100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); background-color: transparent; }
-  }
-  @keyframes rf-tick-rotate-a {
-    from { transform: rotate(0deg); }
-    to   { transform: rotate(180deg); }
-  }
-  @keyframes rf-tick-rotate-b {
-    from { transform: rotate(0deg); }
-    to   { transform: rotate(180deg); }
   }
   /* Poll-pulse — slow slate halo (1.5s) for background broker-data polls
      (positions / holdings / funds / margins). Always fires regardless of
@@ -698,7 +684,6 @@
     .rf-btn.rf-spinning svg { animation: none; }
     .rf-btn.rf-spinning.rf-refiring svg { animation: none; }
     .rf-btn.rf-tick-a, .rf-btn.rf-tick-b { animation: none; }
-    .rf-btn.rf-tick-a svg, .rf-btn.rf-tick-b svg { animation: none; }
     .rf-btn.rf-poll-a, .rf-btn.rf-poll-b { animation: none; }
   }
 

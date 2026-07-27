@@ -11,7 +11,7 @@
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
-  import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
@@ -235,35 +235,6 @@
     // cache restore went stale during the snapshot-zero-capture outage
     // and never recovered; SSOT path is robust to that class of bug.
 
-    // Tick-bus border shimmer — sky-300 border flash on real SSE LTP ticks.
-    // Separate from the amber poll heartbeat; direction ignored (neutral palette).
-    // 300ms unified duration. Throttled to 1 Hz (leading-edge, 1000ms window)
-    // so a 20-symbol burst doesn't animate the border 20 times. Only the FIRST
-    // tick in each 1000ms window triggers the animation; subsequent ticks in
-    // the same window are ignored. Re-arm the 300ms decay timer on each leading
-    // edge so continuous tick flow keeps the border lit, clearing 300ms after
-    // the last window opens. Decay (300ms) < window (1000ms) so the border
-    // returns to idle 700ms before the next pulse — clean gap, no overlap.
-    // Leading-edge pattern: fires immediately (no setTimeout delay), so the
-    // class is visible within one tick of the emit — the 50ms spec assertion
-    // continues to pass. No throttle-timer handle needed; only a timestamp.
-    _tickBusUnsub = tickBus.subscribe(() => {
-      // Do not animate during closed hours — background pollers still emit
-      // on tickBus (sparkline, snapshot refresh, performance) and would give
-      // a false "live data refreshing" impression.
-      if (!isNseOpen() && !isMcxOpen()) return;
-      const _now = performance.now();
-      if (_now < _tickBorderThrottleUntil) return;
-      _tickBorderThrottleUntil = _now + 1000;  // was 250 (4 Hz) → 1000 (1 Hz)
-      // Toggle a↔b so the browser sees a new animation-name and restarts
-      // the keyframe on every leading-edge tick (same pattern as RefreshButton).
-      _tickBorderClass = _tickBorderClass === 'ps-tick-border-a' ? 'ps-tick-border-b' : 'ps-tick-border-a';
-      if (_tickBorderTimer) clearTimeout(_tickBorderTimer);
-      _tickBorderTimer = setTimeout(() => {
-        _tickBorderClass = '';
-        _tickBorderTimer = null;
-      }, 300);
-    });
   });
   onDestroy(() => {
     teardown?.();
@@ -279,8 +250,6 @@
       clearTimeout(_heartbeatTimer);
       _heartbeatTimer = null;
     }
-    _tickBusUnsub?.();
-    if (_tickBorderTimer) { clearTimeout(_tickBorderTimer); _tickBorderTimer = null; }
   });
 
   // P    = positions P&L lifetime (open + closed intraday).
@@ -871,21 +840,9 @@
   // the unified spec. 300ms + cubic-bezier(0.4,0,0.2,1) — same as all
   // other flash surfaces.
   // Uses the same a/b class-toggle pattern as RefreshButton: each emit
-  // alternates between ps-tick-border-a and ps-tick-border-b (distinct
-  // @keyframes names) so the browser restarts the animation on every
-  // tick even during continuous bursts, rather than sitting static.
-  let _tickBorderClass = $state(/** @type {'' | 'ps-tick-border-a' | 'ps-tick-border-b'} */ (''));
-  /** @type {ReturnType<typeof setTimeout> | null} */
-  let _tickBorderTimer = null;
-  // Leading-edge throttle timestamp (performance.now() units). Ticks that arrive
-  // before this time are ignored; resets 1000ms after each leading-edge fire.
-  // Plain number (not $state) — no reactive dep needed, just a gate check.
-  let _tickBorderThrottleUntil = 0;
-  /** @type {(() => void) | null} */
-  let _tickBusUnsub = null;
 </script>
 
-<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
+<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-p" role="button" tabindex="0"
       onclick={(e) => _openBreakdown(e, 'P')}
@@ -1070,33 +1027,9 @@
     background: linear-gradient(180deg, #0a1020 0%, #141c2e 100%);
   }
 
-  /* Tick-border shimmer — per-SSE-tick sky-300 border flash driven by
-     tickBus. Neutral (no direction). 300ms cubic-bezier(0.4,0,0.2,1)
-     easing matches the unified animation spec.
-     Uses the same a/b name-toggle pattern as RefreshButton: each emit
-     alternates between ps-tick-border-a and ps-tick-border-b, which have
-     DISTINCT @keyframes names. The browser sees an animation-name change
-     and restarts the animation even during continuous tick bursts, giving
-     a per-tick pulse rather than a static lit border. */
-  .ps-strip.ps-tick-border-a {
-    animation: ps-tick-border-kf-a 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  .ps-strip.ps-tick-border-b {
-    animation: ps-tick-border-kf-b 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  @keyframes ps-tick-border-kf-a {
-    0%   { border-bottom-color: rgba(125, 211, 252, 0.70); }
-    100% { border-bottom-color: rgba(125, 211, 252, 0); }
-  }
-  @keyframes ps-tick-border-kf-b {
-    0%   { border-bottom-color: rgba(125, 211, 252, 0.70); }
-    100% { border-bottom-color: rgba(125, 211, 252, 0); }
-  }
   @media (prefers-reduced-motion: reduce) {
     .ps-strip.ps-heartbeat { transition: none; }
     .ps-strip.ps-poll-pulse { transition: none; }
-    .ps-strip.ps-tick-border-a,
-    .ps-strip.ps-tick-border-b { animation: none; }
   }
   .ps-strip:hover {
     background: linear-gradient(180deg, #0a1020 0%, #1a2746 100%);
