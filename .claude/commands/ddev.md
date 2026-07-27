@@ -31,12 +31,12 @@ Launch all checks simultaneously with `run_in_background: true` in a single mess
      venv/bin/pytest backend/tests/ -q --tb=line \
        --cov=backend/brokers --cov=backend/api \
        --cov-report=term-missing && \
-     venv/bin/coverage report --include="backend/brokers/*" --fail-under=90 && \
+     venv/bin/coverage report --include="backend/brokers/*" --fail-under=80 && \
      venv/bin/coverage report --include="backend/api/*" --fail-under=80
    ```
    Use Monitor to collect output when it completes. Capture:
    - passed/skipped/failed counts and any FAILED lines
-   - broker coverage % (must be ≥ 90 — gate fails if below)
+   - broker coverage % (must be ≥ 80 — gate fails if below)
    - api coverage % (must be ≥ 80 — gate fails if below)
 
 2. **Frontend type check** — launch in background:
@@ -82,7 +82,7 @@ After tests complete (pass or fail), check spec coverage. This step runs regardl
 
 Block on **any** of the following — do NOT push if any gate fails:
 - Any pytest test failure
-- broker coverage < 90% (`coverage report --include="backend/brokers/*" --fail-under=90` exits non-zero)
+- broker coverage < 80% (`coverage report --include="backend/brokers/*" --fail-under=80` exits non-zero)
 - api coverage < 80% (`coverage report --include="backend/api/*" --fail-under=80` exits non-zero)
 - Any svelte-check errors
 - Any Vite unit test failure

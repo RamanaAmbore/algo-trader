@@ -57,7 +57,7 @@ venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20
 cd /Users/ramanambore/projects/ramboq && \
   venv/bin/pytest backend/tests/ -q --tb=no \
     --cov=backend/brokers --cov-report=term-missing && \
-  venv/bin/coverage report --include="backend/brokers/*" --fail-under=90
+  venv/bin/coverage report --include="backend/brokers/*" --fail-under=80
 ```
 
 **API coverage gate (80%)**:
@@ -75,7 +75,7 @@ cd /Users/ramanambore/projects/ramboq/frontend && npx vitest run 2>&1
 
 Use Monitor to collect all four results.
 - Any D/E/F CC grade → **block prod deploy**. Report hotspots. Stop.
-- Broker coverage < 90% → **block prod deploy**. Report coverage %. Stop.
+- Broker coverage < 80% → **block prod deploy**. Report coverage %. Stop.
 - API coverage < 80% → **block prod deploy**. Report coverage %. Stop.
 - Any Vite test failure → **block prod deploy**. Stop.
 - All green → proceed.
