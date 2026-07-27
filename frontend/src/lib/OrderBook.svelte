@@ -84,8 +84,20 @@
   function _downloadCsv() {
     const rows = filteredOrderRows;
     if (!rows.length) return;
-    const cols = ['order_id','tradingsymbol','exchange','transaction_type','quantity','price','status','order_timestamp'];
-    const csv = [cols.join(','), ...rows.map(r => cols.map(c => JSON.stringify(r[c] ?? '')).join(','))].join('\n');
+    const headers = ['order_id','symbol','exchange','transaction_type','quantity','price','status','timestamp'];
+    const csv = [
+      headers.join(','),
+      ...rows.map(r => [
+        JSON.stringify(r.order_id    ?? r.id           ?? ''),
+        JSON.stringify(r.tradingsymbol ?? r.symbol     ?? ''),
+        JSON.stringify(r.exchange    ?? ''),
+        JSON.stringify(r.transaction_type ?? ''),
+        JSON.stringify(r.quantity    ?? ''),
+        JSON.stringify(r.price       ?? r.fill_price   ?? r.initial_price ?? ''),
+        JSON.stringify(r.status      ?? ''),
+        JSON.stringify(r.order_timestamp ?? r.created_at ?? ''),
+      ].join(','))
+    ].join('\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     a.download = 'orders.csv';
