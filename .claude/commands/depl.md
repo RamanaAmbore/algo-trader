@@ -51,14 +51,23 @@ Do NOT call `EnterPlanMode` here — continue to Phase 2.
 
 Follow all steps from `/ddev` exactly:
 
-1. Run pytest (`venv/bin/pytest backend/tests/ -q --tb=line`) with `run_in_background: true`. Do NOT use `--timeout` flag.
+1. Run pytest + coverage gates with `run_in_background: true`:
+   ```
+   cd /Users/ramanambore/projects/ramboq && \
+     venv/bin/pytest backend/tests/ -q --tb=line \
+       --cov=backend/brokers --cov=backend/api \
+       --cov-report=term-missing && \
+     venv/bin/coverage report --include="backend/brokers/*" --fail-under=90 && \
+     venv/bin/coverage report --include="backend/api/*" --fail-under=80
+   ```
 2. Run svelte-check (`cd frontend && npx svelte-check --output machine 2>&1`) with `run_in_background: true`.
-3. Launch both in one message (parallel). Use Monitor to collect each result when done.
-4. Spec-sync gate: check `git diff origin/dev...HEAD --name-only` for unsynced spec files (warning only, non-blocking).
-5. Decision:
-   - Any failures → report, call `EnterPlanMode`, **stop** (do not proceed to dprod).
+3. Run Vite unit tests (`cd frontend && npx vitest run 2>&1`) with `run_in_background: true`.
+4. Launch all three in one message (parallel). Use Monitor to collect each result when done.
+5. Spec-sync gate: check `git diff origin/dev...HEAD --name-only` for unsynced spec files (warning only, non-blocking).
+6. Decision:
+   - Any pytest failure, broker coverage < 90%, api coverage < 80%, svelte-check error, or Vite failure → report, call `EnterPlanMode`, **stop**.
    - All green → `git push origin dev`.
-6. Report: `ddev: backend <N> passed, 0 failed | svelte-check 0 errors → pushed dev <hash>`.
+7. Report: `ddev: backend <N> passed, 0 failed | broker cov <N>% ✓ | api cov <N>% ✓ | svelte-check 0 errors | vite <N> passed → pushed dev <hash>`.
 
 Do NOT call `EnterPlanMode` here — continue to Phase 3.
 
@@ -70,11 +79,16 @@ Follow all steps from `/dprod` exactly:
 
 1. Prerequisite: `git log main..dev --oneline`. If nothing, report "already up to date", call `EnterPlanMode`, stop.
 2. Identify changed surfaces; dispatch doc agents for affected specs/guides (parallel, background).
-3. Launch PDF regen and CC gate simultaneously with `run_in_background: true`:
+3. Launch PDF regen, CC gate, and coverage gate simultaneously with `run_in_background: true`:
    - PDF: `python3 docs/generate_pdf.py` (only if DESIGN_GUIDE.md was touched)
    - CC gate: `venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20`
-   - Use Monitor for both. Wait for both before proceeding.
+   - Broker cov: `cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=no --cov=backend/brokers && venv/bin/coverage report --include="backend/brokers/*" --fail-under=90`
+   - API cov: `cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=no --cov=backend/api && venv/bin/coverage report --include="backend/api/*" --fail-under=80`
+   - Vite: `cd /Users/ramanambore/projects/ramboq/frontend && npx vitest run 2>&1`
+   - Use Monitor for all. Wait before proceeding.
    - Any D/E/F CC grade → report hotspots, call `EnterPlanMode`, **stop**.
+   - Broker coverage < 90% or API coverage < 80% → report %, call `EnterPlanMode`, **stop**.
+   - Any Vite failure → report, call `EnterPlanMode`, **stop**.
 4. Merge and push:
    ```
    git checkout main && git merge dev --no-edit && git push origin main
@@ -83,7 +97,7 @@ Follow all steps from `/dprod` exactly:
 5. Report:
    ```
    depl: impl ✓ | ddev ✓ | dprod ✓
-   → <N> doc(s) updated | CC clean | PDF <size>MB
+   → <N> doc(s) updated | CC clean | broker cov <N>% ✓ | api cov <N>% ✓ | vite <N> passed | PDF <size>MB
    → merged dev→main <hash> | pushed main + dev
    ```
 

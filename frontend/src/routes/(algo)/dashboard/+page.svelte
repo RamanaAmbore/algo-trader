@@ -2310,6 +2310,13 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* The global `.bucket-card + .bucket-card { margin-top: 0.6rem }`
+       rule adds extra top margin to the second card. Inside a CSS grid
+       the `gap` property already handles spacing between cells — the
+       sibling margin stacks on top and pushes the right card 0.6rem
+       lower than the left card on desktop, creating the unequal gap.
+       Reset it here; gap handles everything in both 1-col and 2-col. */
+    margin-top: 0 !important;
   }
   .dash-row1-split > .bucket-card > .card-body {
     flex: 1 1 auto;
