@@ -114,6 +114,9 @@
    *   slOverride?: number | '',
    *   wingStrikeOffsetOverride?: number | '',
    *   wingPremPctOverride?: number | '',
+   *   slTrailPctOverride?: number | '',
+   *   tpOrderTypeOverride?: 'LIMIT' | 'MARKET' | '',
+   *   tpScalesJsonOverride?: string,
    *   standalone?: boolean,
    *   defaultChase?: boolean,
    *   defaultChaseAgg?: 'low' | 'med' | 'high',
@@ -261,6 +264,9 @@
     slOverride                = $bindable(/** @type {number|''} */ ('')),
     wingStrikeOffsetOverride  = $bindable(/** @type {number|''} */ ('')),
     wingPremPctOverride       = $bindable(/** @type {number|''} */ ('')),
+    slTrailPctOverride        = $bindable(/** @type {number|''} */ ('')),
+    tpOrderTypeOverride       = $bindable(/** @type {'LIMIT'|'MARKET'|''} */ ('')),
+    tpScalesJsonOverride      = $bindable(/** @type {string} */ ('')),
     // When false, OrderTicket is embedded inside another dialog (e.g.
     // SymbolPanel) and must not re-declare role="dialog" (ARIA prohibits
     // nested dialog roles). The overlay backdrop is also suppressed.
@@ -802,7 +808,7 @@
     if (_templates.length === 0) return null;
     const scope = _appliesToFor(_side, symbol);
     return _templates.find(t =>
-      t.is_default && (t.applies_to === scope || t.applies_to === 'both')
+      t.is_active && t.is_default && (t.applies_to === scope || t.applies_to === 'both')
     ) || null;
   });
   const _noneTemplate = $derived(
@@ -848,6 +854,10 @@
   const _isUsingNone = $derived(
     _selectedTemplate?.slug === 'none' || templateId === null
   );
+
+  // #16 — side-flip template change flash. Set to true when _autoSelectTemplate
+  // fires due to a scope mismatch (side/symbol change); auto-clears after 1.2s.
+  let _templateChanged = $state(false);
 
   function _summariseTemplate(t) {
     if (!t) return '';
@@ -896,11 +906,11 @@
     // defaults still works.
     const scope = _appliesToFor(_side, symbol);
     const sideMatch = _templates.find(t =>
-      t.is_default && t.applies_to === scope
+      t.is_active && t.is_default && t.applies_to === scope
     );
     if (sideMatch) { templateId = sideMatch.id; return; }
     const bothMatch = _templates.find(t =>
-      t.is_default && t.applies_to === 'both'
+      t.is_active && t.is_default && t.applies_to === 'both'
     );
     if (bothMatch) { templateId = bothMatch.id; return; }
     const none = _templates.find(t => t.slug === 'none');
@@ -940,6 +950,9 @@
       // correct side-aware default on the next derived re-eval.
       templateId = null;
       _autoSelectTemplate();
+      // #16 — brief amber flash so the operator sees the auto-switch
+      _templateChanged = true;
+      setTimeout(() => { _templateChanged = false; }, 1200);
     });
   });
   // intentional: seeds from productVal once; $effect below re-syncs on symbol kind change
@@ -1514,6 +1527,25 @@
     _validateQtyLots(Number(_qty), Number(_lots), _lotSize, symbol) ??
     _validatePriceTrigger(showLimit, showTrigger, Number(_price), Number(_trigger), _tickSize, _tickDecimals) ??
     _validateOrderContext(_mode, _account) ??
+    // #7 — TemplateBar override validation (blocks submit on invalid override values)
+    (!_isUsingNone && templateId !== null && tpOverride !== '' && tpOverride != null && Number(tpOverride) <= 0
+      ? 'TP% override must be > 0'
+      : null) ??
+    (!_isUsingNone && templateId !== null && slOverride !== '' && slOverride != null && Number(slOverride) <= 0
+      ? 'SL% override must be > 0'
+      : null) ??
+    (!_isUsingNone && templateId !== null && wingPremPctOverride !== '' && wingPremPctOverride != null && Number(wingPremPctOverride) <= 0
+      ? 'Wing prem% override must be > 0'
+      : null) ??
+    // #28 — preview says wing is not feasible (block submit)
+    (!_isUsingNone && templateId !== null && !_previewLoading && _previewPlan !== null && _previewPlan.wing_feasible === false
+      ? 'Wing unavailable — cannot place order'
+      : null) ??
+    // #29 — preview returned GTT trigger errors (block submit)
+    (!_isUsingNone && templateId !== null && !_previewLoading && _previewPlan !== null &&
+     Array.isArray(_previewPlan.gtt_trigger_errors) && _previewPlan.gtt_trigger_errors.length > 0
+      ? _previewPlan.gtt_trigger_errors[0]
+      : null) ??
     ''
   );
 
@@ -2637,6 +2669,59 @@
       </div>
     {/if}
 
+    <!-- #16 — brief amber flash when auto-selection fired due to side/scope flip -->
+    {#if _templateChanged}
+      <div class="ot-tmpl-changed-flash" role="status" aria-live="polite">
+        Template auto-updated for new side
+      </div>
+    {/if}
+
+    <!-- #25 — warn when no default template exists for current scope -->
+    {#if !_isUsingNone && templateId !== null && _defaultTemplate === null && _templates.length > 0}
+      <div class="ot-tmpl-no-default-warn" role="note">
+        No default template for this scope
+      </div>
+    {/if}
+
+    <!-- #15 — show TP/SL trigger prices from preview plan -->
+    {#if !_isUsingNone && !_previewLoading && _previewPlan?.gtts?.length}
+      {@const _tpGtt = _previewPlan.gtts[0]}
+      {@const _twoLeg = _tpGtt?.trigger_type === 'two-leg' && _tpGtt?.trigger_values?.length >= 2}
+      {@const _tpTrig = _tpGtt?.trigger_values?.[0] ?? null}
+      {@const _slTrig = _twoLeg ? (_tpGtt?.trigger_values?.[1] ?? null) : null}
+      {#if _tpTrig != null || _slTrig != null}
+        <div class="ot-preview-trigger-row">
+          {#if _tpTrig != null}
+            <span class="ot-preview-trigger-chip ot-preview-tp">
+              TP {_previewPlan.gtts[0]?.trigger_type === 'two-leg' ? '' : ''}&#8658; {priceFmt(_tpTrig)}
+            </span>
+          {/if}
+          {#if _slTrig != null}
+            <span class="ot-preview-trigger-chip ot-preview-sl">
+              SL &#8658; {priceFmt(_slTrig)}
+            </span>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+
+    <!-- #29 — GTT trigger errors from preview (red chips, blocks submit) -->
+    {#if !_isUsingNone && templateId !== null && !_previewLoading && _previewPlan !== null &&
+         Array.isArray(_previewPlan.gtt_trigger_errors) && _previewPlan.gtt_trigger_errors.length > 0}
+      <div class="ot-preview-errors">
+        {#each _previewPlan.gtt_trigger_errors as _gttErr}
+          <span class="ot-preview-err-chip">{_gttErr}</span>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- #28 — wing infeasible chip (red, blocks submit) -->
+    {#if !_isUsingNone && templateId !== null && !_previewLoading && _previewPlan !== null && _previewPlan.wing_feasible === false}
+      <div class="ot-preview-errors">
+        <span class="ot-preview-err-chip">Wing unavailable — cannot place order</span>
+      </div>
+    {/if}
+
     {#if _shownErr}
       <div class="ot-err">{_shownErr}</div>
     {/if}
@@ -2930,6 +3015,76 @@
   .ot-wing-icon {
     font-size: var(--fs-base);
     opacity: 0.8;
+  }
+
+  /* #16 — template auto-change flash (amber pulse, 1.2s) */
+  @keyframes ot-tmpl-flash {
+    0%   { background: rgba(251, 191, 36, 0.28); border-color: rgba(251, 191, 36, 0.65); }
+    60%  { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); }
+    100% { background: rgba(251, 191, 36, 0.06); border-color: rgba(251, 191, 36, 0.20); }
+  }
+  .ot-tmpl-changed-flash {
+    font-size: var(--fs-xs);
+    color: var(--algo-amber, var(--c-action));
+    background: rgba(251, 191, 36, 0.06);
+    border: 1px solid rgba(251, 191, 36, 0.20);
+    border-radius: 3px;
+    padding: 0.2rem 0.5rem;
+    margin-top: 0.25rem;
+    animation: ot-tmpl-flash 1.2s ease-out forwards;
+  }
+
+  /* #25 — no default template warning (amber, non-blocking) */
+  .ot-tmpl-no-default-warn {
+    font-size: var(--fs-xs);
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    border-radius: 3px;
+    padding: 0.2rem 0.5rem;
+    margin-top: 0.25rem;
+  }
+
+  /* #15 — TP/SL trigger price preview row */
+  .ot-preview-trigger-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.25rem;
+  }
+  .ot-preview-trigger-chip {
+    font-family: var(--font-numeric), monospace;
+    font-size: var(--fs-xs);
+    font-variant-numeric: tabular-nums;
+    padding: 0.12rem 0.4rem;
+    border-radius: 3px;
+  }
+  .ot-preview-tp {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.10);
+    border: 1px solid rgba(74, 222, 128, 0.30);
+  }
+  .ot-preview-sl {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.10);
+    border: 1px solid rgba(248, 113, 113, 0.30);
+  }
+
+  /* #28/#29 — preview error chips (red, blocks submit) */
+  .ot-preview-errors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.25rem;
+  }
+  .ot-preview-err-chip {
+    font-family: monospace;
+    font-size: var(--fs-xs);
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.10);
+    border: 1px solid rgba(248, 113, 113, 0.32);
+    padding: 0.12rem 0.4rem;
+    border-radius: 3px;
   }
 
   .ot-close {

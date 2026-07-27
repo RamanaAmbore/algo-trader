@@ -122,15 +122,20 @@ class AttachResult:
     # Structural note: apply_template_to_order returns None on guard
     # fire — so errors and guard_alert_fired are mutually exclusive in
     # practice. The flag is defensive documentation only.
-    guard_alert_fired: bool = False
+    guard_alert_fired:    bool = False
+    # Set when the wing scan returned no candidate (chain empty, all OI below
+    # threshold, quote failure, etc.). Surfaced in the API response so the
+    # operator and alert channel can see WHY the wing wasn't attached.
+    wing_skipped_reason:  Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
-            "plan":          self.plan.to_dict(),
-            "gtt_ids":       list(self.gtt_ids),
-            "wing_order_id": self.wing_order_id,
-            "sibling_pairs": [list(p) for p in self.sibling_pairs],
-            "errors":        list(self.errors),
+            "plan":               self.plan.to_dict(),
+            "gtt_ids":            list(self.gtt_ids),
+            "wing_order_id":      self.wing_order_id,
+            "sibling_pairs":      [list(p) for p in self.sibling_pairs],
+            "errors":             list(self.errors),
+            "wing_skipped_reason": self.wing_skipped_reason,
         }
 
 
@@ -347,12 +352,21 @@ def _wing_score_candidate(
     return ltp, oi, spread_pct, score
 
 
+class _WingHardRejectError(Exception):
+    """Raised by _wing_scan_candidates when the OI hard-reject threshold is
+    triggered (#10): all scanned candidates have OI below the configured
+    `template.wing_min_oi_hard_reject` floor. Caught by _pick_wing_by_premium
+    and converted to a (None, None, reason) return + ntfy alert."""
+    pass
+
+
 def _wing_scan_candidates(
     candidates: list[dict],
     quote_data: dict,
     target_premium: float,
     min_oi: int,
     max_spread_pct: float,
+    hard_reject_oi: int = 0,
 ) -> tuple[Optional[dict], Optional[dict], int, int, int]:
     """Score every candidate in *candidates* against *target_premium*.
 
@@ -368,6 +382,10 @@ def _wing_scan_candidates(
 
     Score formula: ``abs(ltp − target) + (spread_pct / 100) × target``.
     A lower score is better (closer premium + tighter spread).
+
+    `hard_reject_oi` (#10): when > 0 and ALL scanned candidates have OI
+    below this threshold, raises ``_WingHardRejectError`` so the caller
+    can fire an ntfy alert and skip the fallback path entirely.
     """
     best: Optional[dict] = None
     best_score = float("inf")
@@ -380,6 +398,7 @@ def _wing_scan_candidates(
     fallback: Optional[dict] = None
     fallback_score = float("inf")
     scanned = dropped_oi = dropped_spread = 0
+    max_oi_seen = 0
     for c in candidates:
         key = f"{c['exch']}:{c['ts']}"
         q = quote_data.get(key) or {}
@@ -388,6 +407,8 @@ def _wing_scan_candidates(
             continue
         ltp, oi, spread_pct, score = scored
         scanned += 1
+        if oi > max_oi_seen:
+            max_oi_seen = oi
         # Track best-overall (ignoring filters) for the fallback path.
         if score < fallback_score:
             fallback_score = score
@@ -402,6 +423,14 @@ def _wing_scan_candidates(
         if score < best_score:
             best_score = score
             best = {**c, "ltp": ltp, "oi": oi, "spread_pct": spread_pct}
+    # Hard OI reject (#10): if every candidate's OI is below the hard floor,
+    # refuse the fallback path entirely — a zero-OI wing has no real liquidity
+    # and the order will almost certainly reject or fill at terrible prices.
+    if hard_reject_oi > 0 and scanned > 0 and max_oi_seen < hard_reject_oi:
+        raise _WingHardRejectError(
+            f"wing hard-reject: all {scanned} candidate(s) have OI "
+            f"below hard floor {hard_reject_oi} (max OI seen: {max_oi_seen})"
+        )
     return best, fallback, scanned, dropped_oi, dropped_spread
 
 
@@ -574,6 +603,13 @@ async def _pick_wing_by_premium(
     except Exception:
         min_oi, max_spread_pct, chain_radius = 1000, 10.0, 20
 
+    # #10: hard-reject floor — 0 = disabled (default).
+    try:
+        from backend.shared.helpers.settings import get_int as _get_int2
+        hard_reject_oi = _get_int2("template.wing_min_oi_hard_reject", 0)
+    except Exception:
+        hard_reject_oi = 0
+
     # Resolve the cached instruments dump, filter to matching chain.
     try:
         from backend.api.cache import get_or_fetch
@@ -597,9 +633,30 @@ async def _pick_wing_by_premium(
     if quote_err:
         return None, None, quote_err
 
-    best, fallback, scanned, dropped_oi, dropped_spread = _wing_scan_candidates(
-        candidates, quote_data, target_premium, min_oi, max_spread_pct,
-    )
+    try:
+        best, fallback, scanned, dropped_oi, dropped_spread = _wing_scan_candidates(
+            candidates, quote_data, target_premium, min_oi, max_spread_pct,
+            hard_reject_oi=hard_reject_oi,
+        )
+    except _WingHardRejectError as _hre:
+        # #10: all candidates below hard OI floor — refuse fallback path,
+        # fire ntfy alert, and return a skip reason.
+        _hr_reason = str(_hre)
+        logger.critical(
+            "[WING-HARD-REJECT] %s (parent=%s, exch=%s)",
+            _hr_reason, parent_symbol, parent_exchange,
+        )
+        try:
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert(
+                "Wing scan hard-rejected",
+                f"{_hr_reason} | {parent_symbol} {parent_exchange} "
+                f"target ₹{target_premium:.2f}",
+                priority="urgent",
+            )
+        except Exception as _na:
+            logger.warning("wing hard-reject ntfy alert failed: %s", _na)
+        return None, None, f"wing_premium_pct hard-reject: {_hr_reason}"
 
     used_fallback = False
     if best is None:
@@ -632,26 +689,55 @@ async def _pick_wing_by_premium(
 
 # ── Trigger-price computation ────────────────────────────────────────
 
-def _tp_trigger(parent_side: str, fill_price: float, tp_pct: Optional[float]) -> Optional[float]:
+def _tp_trigger(parent_side: str, fill_price: float, tp_pct: Optional[float],
+                instrument_type: str = "") -> Optional[float]:
     """Convert template's tp_pct into an absolute price.
 
     BUY parent: TP fires above (long unwinds at gain). fill × (1 + tp%/100).
     SELL parent: TP fires below (short unwinds at gain). fill × (1 - tp%/100).
+
+    `fill_price` must be strictly positive — a zero fill price produces a
+    trigger at 0 or below which Kite will reject. (#9)
+    `instrument_type` is informational — logged for MCX futures as a
+    sanity reminder that lot-size translation must already be applied. (#9)
     """
     if tp_pct is None:
         return None
+    assert fill_price > 0, (
+        f"_tp_trigger: fill_price must be positive, got {fill_price!r}"
+    )
+    if instrument_type.upper() == "FUTMCX":
+        logger.debug(
+            "_tp_trigger: FUTMCX instrument — confirm lot-size translation "
+            "applied before this call (fill_price=%.2f, tp_pct=%.2f)",
+            fill_price, tp_pct,
+        )
     sign = 1.0 if parent_side == "BUY" else -1.0
     return round(fill_price * (1.0 + sign * float(tp_pct) / 100.0), 2)
 
 
-def _sl_trigger(parent_side: str, fill_price: float, sl_pct: Optional[float]) -> Optional[float]:
+def _sl_trigger(parent_side: str, fill_price: float, sl_pct: Optional[float],
+                instrument_type: str = "") -> Optional[float]:
     """SL fires opposite side of TP — protects against adverse move.
 
     BUY parent: SL fires below entry. fill × (1 - sl%/100).
     SELL parent: SL fires above entry. fill × (1 + sl%/100).
+
+    `fill_price` must be strictly positive — a zero fill price produces a
+    trigger at 0 or below which Kite will reject. (#9)
+    `instrument_type` is informational — logged for MCX futures. (#9)
     """
     if sl_pct is None:
         return None
+    assert fill_price > 0, (
+        f"_sl_trigger: fill_price must be positive, got {fill_price!r}"
+    )
+    if instrument_type.upper() == "FUTMCX":
+        logger.debug(
+            "_sl_trigger: FUTMCX instrument — confirm lot-size translation "
+            "applied before this call (fill_price=%.2f, sl_pct=%.2f)",
+            fill_price, sl_pct,
+        )
     sign = 1.0 if parent_side == "BUY" else -1.0
     return round(fill_price * (1.0 - sign * float(sl_pct) / 100.0), 2)
 
@@ -740,6 +826,18 @@ def _parse_template_overrides(
     wing_premium_pct = _ta_pick_float_override("wing_premium_pct", _ov, template)
     sl_trail_pct     = _ta_pick_float_override("sl_trail_pct",     _ov, template)
 
+    # wing_premium_pct must be strictly positive — a zero or negative value
+    # produces a nonsensical target premium (≤ 0) and the scan always falls
+    # through with no candidates found, silently placing no wing. Raise 422
+    # so the operator sees the error before submit rather than an ambiguous
+    # silent skip.
+    if wing_premium_pct is not None and wing_premium_pct <= 0:
+        from litestar.exceptions import HTTPException
+        raise HTTPException(
+            status_code=422,
+            detail="wing_premium_pct must be > 0",
+        )
+
     # Audit fix — non-positive % values silently produced an invalid GTT
     # (trigger == fill price on a BUY, immediately rejected by Kite or
     # firing instantly on a SELL). Drop to None + surface a note via
@@ -795,29 +893,62 @@ def _build_scale_out_gtts(
     tp_order_type:     str,
     sl_trig:           Optional[float],
     sl_trail_pct:      Optional[float],
+    lot_size:          int = 1,
+    parent_exchange:   str = "",
 ) -> tuple[list[GttSpec], list[str]]:
     """Build GTT specs + notes for the Phase 3A scale-out path.
 
     Integer qty allocation: floor each phase, add the leftover to the
     LAST phase so allocations always sum to parent_qty. Returns
     (gtts_to_add, notes_to_add).
+
+    `lot_size` (#3): each scale qty is rounded UP to the nearest lot multiple
+    so no sub-lot GTT leg ever reaches the broker. The last entry is trimmed
+    to ensure the cumulative total does not exceed parent_qty. Any remaining
+    qty lost to rounding is noted in plan.notes.
+
+    `parent_exchange` (#1): forwarded to `_leg` so LIMIT TP legs apply the
+    exchange-appropriate tick offset (NFO/BFO/CDS vs futures/others).
     """
     gtts: list[GttSpec] = []
     notes: list[str] = []
 
-    # Integer qty allocation across scales — distribute floor
-    # values then add the leftover to the LAST scale so the
-    # numbers always sum to parent_qty (avoids "1 lot lost to
-    # rounding" surprise).
+    # Lot-size rounding (#3): compute raw floor allocations, then round each
+    # UP to the nearest lot multiple. The last scale absorbs the remainder
+    # (capped at parent_qty so we never over-allocate).
+    _ls = max(1, int(lot_size or 1))
+
+    def _round_up_lots(raw_q: int) -> int:
+        if _ls <= 1 or raw_q <= 0:
+            return max(0, raw_q)
+        remainder = raw_q % _ls
+        if remainder == 0:
+            return raw_q
+        return raw_q + (_ls - remainder)
+
     allocations: list[int] = []
     used = 0
     for i, sc in enumerate(tp_scales):
         if i == len(tp_scales) - 1:
-            allocations.append(parent_qty - used)
+            # Last scale: take the remaining qty, round up to lot multiple,
+            # then cap at parent_qty so we never exceed total.
+            _raw = parent_qty - used
+            _rounded = _round_up_lots(_raw)
+            allocations.append(min(_rounded, parent_qty - used))
         else:
-            _q = int((parent_qty * float(sc["close_pct"])) // 100)
-            allocations.append(_q)
-            used += _q
+            _raw = int((parent_qty * float(sc["close_pct"])) // 100)
+            _rounded = _round_up_lots(_raw)
+            allocations.append(_rounded)
+            used += _rounded
+
+    _total_alloc = sum(allocations)
+    if _total_alloc != parent_qty and _ls > 1:
+        notes.append(
+            f"Scale-out lot rounding: allocated {_total_alloc} of "
+            f"{parent_qty} contracts (lot_size={_ls}); "
+            f"residual {parent_qty - _total_alloc} left open (no auto-exit)."
+        )
+
     for sc, q in zip(tp_scales, allocations):
         if q <= 0:
             continue
@@ -828,7 +959,8 @@ def _build_scale_out_gtts(
         gtts.append(GttSpec(
             trigger_type="single",
             trigger_values=[scale_trig],
-            orders=[_leg(exit_side, q, scale_trig, parent_product, tp_order_type)],
+            orders=[_leg(exit_side, q, scale_trig, parent_product, tp_order_type,
+                         tp_offset_exchange=parent_exchange if tp_order_type == "LIMIT" else "")],
             label=label,
         ))
     if sl_trig is not None:
@@ -867,21 +999,26 @@ def _build_scale_out_gtts(
 
 
 def _build_tp_sl_gtts(
-    tp_trig:        float,
-    sl_trig:        float,
-    exit_side:      str,
-    parent_qty:     int,
-    parent_product: str,
-    tp_order_type:  str,
-    sl_trail_pct:   Optional[float],
-    broker_caps:    Optional[BrokerCapabilities],
+    tp_trig:         float,
+    sl_trig:         float,
+    exit_side:       str,
+    parent_qty:      int,
+    parent_product:  str,
+    tp_order_type:   str,
+    sl_trail_pct:    Optional[float],
+    broker_caps:     Optional[BrokerCapabilities],
+    parent_exchange: str = "",
 ) -> tuple[list[GttSpec], list[str]]:
     """Build GTT specs for the combined TP+SL case.
 
     On Kite/Dhan (broker_caps.gtt_oco=True or caps=None): one two-leg
     OCO. On Groww (gtt_oco=False): two singles + a note. Returns
     (gtts_to_add, notes_to_add).
+
+    `parent_exchange` (#1): forwarded to `_leg` for LIMIT TP legs to apply
+    the exchange-appropriate tick offset.
     """
+    _tp_exch = parent_exchange if tp_order_type == "LIMIT" else ""
     gtts: list[GttSpec] = []
     notes: list[str] = []
     # Operator wants both. On Kite/Dhan we pack as a two-leg OCO.
@@ -892,7 +1029,8 @@ def _build_tp_sl_gtts(
             trigger_type="two-leg",
             trigger_values=[tp_trig, sl_trig],
             orders=[
-                _leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type),
+                _leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type,
+                     tp_offset_exchange=_tp_exch),
                 _leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT"),
             ],
             label="TP+SL",
@@ -904,7 +1042,8 @@ def _build_tp_sl_gtts(
         gtts.append(GttSpec(
             trigger_type="single",
             trigger_values=[tp_trig],
-            orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type)],
+            orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type,
+                         tp_offset_exchange=_tp_exch)],
             label="TP",
         ))
         gtts.append(GttSpec(
@@ -1045,6 +1184,8 @@ def resolve_template_plan(
             tp_scales, parent_side, parent_fill_price, parent_qty,
             exit_side, parent_product, tp_order_type,
             sl_trig, sl_trail_pct,
+            lot_size=plan.parent_lot_size,         # #3: round scale qtys to lot multiples
+            parent_exchange=parent_exchange,        # #1: TP LIMIT offset
         )
         plan.gtts.extend(_gtts)
         plan.notes.extend(_notes)
@@ -1052,14 +1193,17 @@ def resolve_template_plan(
         _gtts, _notes = _build_tp_sl_gtts(
             tp_trig, sl_trig, exit_side, parent_qty,
             parent_product, tp_order_type, sl_trail_pct, broker_caps,
+            parent_exchange=parent_exchange,        # #1: TP LIMIT offset
         )
         plan.gtts.extend(_gtts)
         plan.notes.extend(_notes)
     elif tp_trig is not None:
+        _tp_exch = parent_exchange if tp_order_type == "LIMIT" else ""
         plan.gtts.append(GttSpec(
             trigger_type="single",
             trigger_values=[tp_trig],
-            orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type)],
+            orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type,
+                         tp_offset_exchange=_tp_exch)],  # #1
             label="TP",
         ))
     elif sl_trig is not None:
@@ -1082,8 +1226,43 @@ def resolve_template_plan(
     return plan
 
 
+def _tp_limit_offset(trigger: float, side: str, exchange: str = "") -> float:
+    """Return the adjusted LIMIT price for a TP leg to improve fill probability.
+
+    For a BUY parent, the exit is SELL so we set LIMIT slightly *below* the
+    trigger so the order rests just inside the trigger and fills on the next
+    tick. For a SELL parent, the exit is BUY so we set LIMIT slightly *above*.
+
+    Exchange-specific tick sizes read from settings with a YAML default:
+      template.tp_limit_tick_offset_nfo    (0.05) — options (NFO/MCX)
+      template.tp_limit_tick_offset_default (0.5) — futures + others
+
+    The offset is cosmetic on trigger-linked GTT legs (Kite fires the GTT at
+    the trigger, then places the child LIMIT order); the adjustment protects
+    against rounding edge cases when the trigger and LIMIT price are identical.
+    """
+    try:
+        from backend.shared.helpers.settings import get_float
+        exch_upper = (exchange or "").upper()
+        is_options_exch = exch_upper in ("NFO", "BFO", "CDS")
+        if is_options_exch:
+            offset = get_float("template.tp_limit_tick_offset_nfo", 0.05)
+        else:
+            offset = get_float("template.tp_limit_tick_offset_default", 0.5)
+    except Exception:
+        offset = 0.05
+    # exit side: BUY parent exits SELL → LIMIT below trigger;
+    # SELL parent exits BUY → LIMIT above trigger.
+    # The `side` passed here is the EXIT side (from _close_side), so:
+    # exit=SELL means BUY parent → push LIMIT down; exit=BUY → push up.
+    if side.upper() == "SELL":
+        return round(trigger - offset, 2)
+    return round(trigger + offset, 2)
+
+
 def _leg(side: str, qty: int, price: float, product: str,
-         order_type: str = "LIMIT") -> dict:
+         order_type: str = "LIMIT",
+         tp_offset_exchange: str = "") -> dict:
     """Compose a GTT leg dict — same shape SimGttBook + KiteBroker.place_gtt
     expect.
 
@@ -1092,11 +1271,19 @@ def _leg(side: str, qty: int, price: float, product: str,
     leg dict (the SDK doesn't accept None), so MARKET legs pass the
     trigger value as a placeholder — the broker ignores it and fills
     at LTP. Same convention SimGttBook follows.
+
+    `tp_offset_exchange` — when set for a LIMIT TP leg, applies a small
+    inbound-of-trigger price offset (see `_tp_limit_offset`) so the
+    limit order rests just inside the trigger and has a better fill chance.
+    Set to the parent exchange for TP legs; leave empty for SL legs.
     """
+    leg_price = float(price)
+    if order_type == "LIMIT" and tp_offset_exchange:
+        leg_price = _tp_limit_offset(leg_price, side, tp_offset_exchange)
     return {
         "transaction_type": side,
         "quantity":         int(qty),
-        "price":            float(price),
+        "price":            leg_price,
         "order_type":       order_type,
         "product":          product,
     }
@@ -1698,6 +1885,8 @@ async def _resolve_lot_size_for_order(
             f"{parent_exchange}/{parent_symbol} — instruments cache miss. "
             f"Cannot safely translate qty to lots. Template attach refused."
         )
+        # TODO(#21): write template_attach_error = "lot_size_cache_miss" to
+        # AlgoOrder when AlgoOrder.template_attach_error column exists.
         return 1, result_err
     except Exception as _e:
         logger.error(
@@ -1710,6 +1899,8 @@ async def _resolve_lot_size_for_order(
             f"{parent_exchange}/{parent_symbol}: {_e}. "
             f"Template attach refused to prevent F&O oversize."
         )
+        # TODO(#21): write template_attach_error = "lot_size_lookup_failed" to
+        # AlgoOrder when AlgoOrder.template_attach_error column exists.
         return 1, result_err
 
 
@@ -1820,21 +2011,27 @@ async def _maybe_scan_wing_by_premium(
     parent_symbol:     str,
     parent_exchange:   str,
     parent_fill_price: float,
-) -> tuple[dict, Optional[str]]:
+    parent_order_id:   Optional[int] = None,
+) -> tuple[dict, Optional[str], Optional[str]]:
     """Phase 1B — when the template's wing mode is premium% AND the
     operator has not supplied an explicit wing_strike_offset, run the
     async chain scan and inject the picked symbol into overrides.
 
-    Returns (overrides_possibly_augmented, wing_scan_note_or_None).
-    On any failure, wing_scan_note carries the reason and overrides is
-    returned unchanged — the parent order is never blocked by a scan
-    error.
+    Returns (overrides_possibly_augmented, wing_scan_note_or_None, wing_skipped_reason_or_None).
+    On any failure, wing_scan_note and wing_skipped_reason both carry the reason.
+    On success, wing_skipped_reason is None and the note explains which strike was picked.
+    On scan skipped (not a SELL option etc.), both are None.
+
+    (#6) When the scan ran but returned no winner (wsym is None):
+      - wing_scan_note is set (as before, appended to plan.notes)
+      - wing_skipped_reason is set (new — surfaced in AttachResult.wing_skipped_reason)
+      - ntfy alert fired so operator is notified the wing is unprotected
     """
     wing_pct = _ta_wing_scan_precondition(
         template, overrides, parent_side, parent_symbol, parent_fill_price
     )
     if wing_pct is None:
-        return overrides, None
+        return overrides, None, None
 
     try:
         wsym, wltp, reason = await _pick_wing_by_premium(
@@ -1851,8 +2048,25 @@ async def _maybe_scan_wing_by_premium(
         overrides["_wing_picked_symbol"] = wsym
         if wltp is not None:
             overrides["_wing_picked_ltp"] = wltp
+        # Wing found — no skip reason.
+        return overrides, reason, None
 
-    return overrides, reason
+    # (#6) Wing scan ran but found no candidate — notify operator.
+    logger.warning(
+        "[WING-SKIP] wing scan returned no candidate for order #%s %s: %s",
+        parent_order_id, parent_symbol, reason,
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_ntfy_alert
+        send_ntfy_alert(
+            "Wing attach skipped",
+            f"{reason} | order #{parent_order_id} {parent_symbol} {parent_exchange}",
+            priority="high",
+        )
+    except Exception as _na:
+        logger.warning("wing skip ntfy alert failed: %s", _na)
+
+    return overrides, reason, reason
 
 
 def _mcx_capability_guard(
@@ -2057,9 +2271,10 @@ async def apply_template_to_order(
     # back into the synchronous resolver via the merged overrides dict.
     # Scan failures convert to a plan note + skip wing attach; the
     # parent order is never blocked.
-    overrides, wing_scan_note = await _maybe_scan_wing_by_premium(
+    overrides, wing_scan_note, wing_skipped_reason = await _maybe_scan_wing_by_premium(
         template, overrides, parent_side, parent_symbol,
         parent_exchange, parent_fill_price,
+        parent_order_id=parent_order_id,
     )
 
     plan = resolve_template_plan(
@@ -2080,6 +2295,33 @@ async def apply_template_to_order(
         plan.notes.append(_offhours_note)
 
     result = _route_apply_path(plan, apply_path, parent_account, parent_order_id)
+    # (#6) Propagate wing skip reason into the result so callers and the
+    # API response can surface why the wing wasn't attached.
+    if wing_skipped_reason:
+        result.wing_skipped_reason = wing_skipped_reason
+    # (#28B) When the wing scan failed and no wing was attached, fire an
+    # ntfy alert about the unprotected SELL position. The _maybe_scan_wing_by_premium
+    # call already fired an ntfy, but that's at scan time; this one fires after
+    # apply_plan_live so we know GTTs did/didn't land.
+    if wing_skipped_reason and not result.wing_order_id and result.gtt_ids:
+        # GTTs placed but no wing — operator has partial exits but unhedged position.
+        _wp_msg = (
+            f"GTTs placed (ids: {result.gtt_ids}) but wing failed: "
+            f"{wing_skipped_reason} | order #{parent_order_id} "
+            f"{parent_symbol} {parent_exchange}"
+        )
+        logger.warning("[WING-UNPROTECTED] %s", _wp_msg)
+        try:
+            from backend.shared.helpers.alert_utils import send_ntfy_alert
+            send_ntfy_alert(
+                "Unprotected SELL position",
+                _wp_msg,
+                priority="urgent",
+            )
+        except Exception as _na2:
+            logger.warning("wing unprotected ntfy alert failed: %s", _na2)
+        # TODO(#28B): write wing_failed note to attached_gtts_json when
+        # template_attach_error column exists on AlgoOrder.
     # Fire operational-failure alert on any error that silently
     # prevented exits from attaching. Only fires when the applies_to
     # guard did NOT already send a notification (guard_alert_fired=False,

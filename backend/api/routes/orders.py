@@ -1532,6 +1532,30 @@ class OrdersController(Controller):
         # sizes exit GTTs against the same unit convention it always has.
         _sym = (data.tradingsymbol or "").upper()
         _exch = (data.exchange or "NFO")
+
+        # #5 — MCX GTT capability gate: surface 422 at preview time so the
+        # operator sees the broker limitation before they click Submit.
+        if data.template_id and _exch in ("MCX", "NCO"):
+            _acct = (data.account or "")
+            if _acct:
+                from backend.brokers.capabilities import capabilities_for
+                if not capabilities_for(_acct).gtt_supports_mcx:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            "Selected broker does not support MCX GTT — "
+                            "remove template or switch broker"
+                        ),
+                    )
+
+        # #7 — wing_premium_pct=0 guard at preview boundary.
+        _wpp_preview = getattr(data, "wing_premium_pct_override", None)
+        if _wpp_preview is not None and _wpp_preview <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="wing_premium_pct must be > 0",
+            )
+
         _parent_qty = await _rco_preview_resolve_qty(_exch, _sym, int(data.quantity or 0))
 
         result = await apply_template_to_order(
@@ -1549,7 +1573,29 @@ class OrdersController(Controller):
         )
         if result is None:
             return TicketPreviewResponse(plan=_rco_preview_empty_plan(data))
-        return TicketPreviewResponse(plan=result.plan.to_dict())
+
+        # #29 — GTT trigger direction + circuit-band validation (only when template set)
+        _gtt_errors: list[str] = []
+        if data.template_id:
+            from backend.api.routes.orders_place import _validate_gtt_triggers, _opl_price_from_broker
+            _ltp = await _opl_price_from_broker(_sym) or 0.0
+            _gtt_errors = _validate_gtt_triggers(result.plan, _ltp, _exch)
+
+        # #28A — wing feasibility: if template has a wing but scan failed, flag it
+        _wing_feasible: bool | None = None
+        if data.template_id:
+            _has_wing = any(
+                getattr(g, "kind", "") == "wing" or "wing" in (getattr(g, "label", "") or "").lower()
+                for g in (result.plan.gtts or [])
+            ) or bool(result.wing_skipped_reason)
+            if _has_wing or result.wing_skipped_reason:
+                _wing_feasible = result.wing_skipped_reason is None
+
+        return TicketPreviewResponse(
+            plan=result.plan.to_dict(),
+            wing_feasible=_wing_feasible,
+            gtt_trigger_errors=_gtt_errors,
+        )
 
     @post("/ticket")
     async def ticket_order(self, data: TicketOrderRequest, request: Request) -> TicketOrderResponse:

@@ -38,3 +38,7 @@ class BrokerOrderError(BrokerError):
 
 class BrokerInputError(BrokerError):
     """Bad input — symbol not found, invalid quantity, missing field."""
+
+
+class BrokerCapabilityError(BrokerError):
+    """Broker does not support the requested capability or order type."""
