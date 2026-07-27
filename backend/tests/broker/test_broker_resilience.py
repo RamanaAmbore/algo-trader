@@ -1169,3 +1169,59 @@ class TestBrokerHealthStateResolution:
         state, reason, *_ = _derive_account_health(entry, now)
 
         assert state == "red", f"Expected 'red' when fail follows ok, got {state!r}: {reason}"
+
+
+class TestHealthHeartbeat:
+    """Health heartbeat in conn_service stamps last_ok_at for connected accounts."""
+
+    def test_record_session_ok_stamps_last_ok_at(self):
+        """record_session_ok writes last_ok_at into _FETCH_HEALTH without touching CB counters."""
+        import time
+        from unittest.mock import patch
+        from backend.brokers.broker_apis import record_session_ok, _FETCH_HEALTH
+
+        account = "HBTEST"
+        before = time.time()
+        record_session_ok(account)
+        after = time.time()
+
+        e = _FETCH_HEALTH.get(account, {})
+        assert before <= e.get("last_ok_at", 0) <= after
+        # CB counters untouched — heartbeat must not affect the circuit breaker
+        assert e.get("consecutive_fail_count", 0) == 0
+        assert e.get("circuit_open_until") is None
+
+    def test_record_session_ok_idempotent(self):
+        """Calling record_session_ok twice keeps the latest timestamp."""
+        import time
+        from backend.brokers.broker_apis import record_session_ok, _FETCH_HEALTH
+
+        account = "HBTEST2"
+        record_session_ok(account)
+        t1 = _FETCH_HEALTH[account]["last_ok_at"]
+        record_session_ok(account)
+        t2 = _FETCH_HEALTH[account]["last_ok_at"]
+
+        assert t2 >= t1
+
+    def test_green_within_fresh_window(self):
+        """Account stays green if last_ok_at was stamped < 90s ago (well within 300s window)."""
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        # Simulate heartbeat stamped 89s ago
+        entry = {"last_ok_at": now - 89}
+        state, reason, *_ = _derive_account_health(entry, now)
+        assert state == "green", f"Expected green at 89s, got {state!r}: {reason}"
+
+    def test_amber_beyond_fresh_window(self):
+        """Account goes amber if no stamp for > 5 min (heartbeat would prevent this in practice)."""
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        entry = {"last_ok_at": now - 301}
+        state, reason, *_ = _derive_account_health(entry, now)
+        assert state == "amber", f"Expected amber at 301s, got {state!r}: {reason}"
+        assert "stale" in reason

@@ -251,6 +251,29 @@ async def _start_kite_ticker(app: Litestar) -> None:
     except RuntimeError:
         _loop = _asyncio.get_event_loop()
     _loop.create_task(_ticker_watchdog())
+    _loop.create_task(_health_heartbeat())
+
+
+async def _health_heartbeat() -> None:
+    """Stamp last_ok_at for all connected accounts every 90 s.
+
+    Prevents the navbar chip from going amber ("stale") when the API
+    process is idle (is_engine_idle=True) and not making data fetches.
+    The connection object being present in Connections().conn is
+    sufficient evidence that the session token is established.
+    """
+    import asyncio as _asyncio
+    from backend.brokers.connections import Connections
+    from backend.brokers.broker_apis import record_session_ok
+
+    await _asyncio.sleep(30)  # let startup settle first
+    while True:
+        try:
+            for account in list(Connections().conn.keys()):
+                record_session_ok(account)
+        except Exception:
+            pass
+        await _asyncio.sleep(90)
 
 
 def _watchdog_threshold() -> int:
