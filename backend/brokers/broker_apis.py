@@ -916,6 +916,21 @@ def _record_breaker_state(
     return _new_breaker_open, _was_halfopen, _was_recovering
 
 
+def record_session_ok(account: str) -> None:
+    """Stamp last_ok_at when a broker session token is confirmed valid.
+
+    Called from connections.py after token_ok so the health badge
+    reflects session state even before the first data fetch of the day.
+    Does NOT touch circuit-breaker counters — login success is not a
+    data-fetch probe.
+    """
+    if not account:
+        return
+    with _BREAKER_LOCK:
+        e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
+        e["last_ok_at"] = _time.time()
+
+
 def _record_fetch(account: str, ok: bool, error: str = "") -> None:
     """Record one fetch attempt's outcome and advance the circuit-breaker
     state machine.

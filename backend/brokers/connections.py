@@ -628,6 +628,7 @@ class KiteConnection:
             _save_cached_token(self.account, self._access_token)
             logger.info(f"Token cached for {self.account}")
             _emit_conn_event(self.account, "zerodha_kite", "token_ok")
+            _record_session_ok(self.account)
         except Exception as e:
             logger.error(f"Failed to generate access token for account {self.account}: {e}")
             _emit_conn_event(
@@ -1119,6 +1120,7 @@ class DhanConnection:
             f"Dhan login complete for {self.account} (token cached, valid ~24h)"
         )
         _emit_conn_event(self.account, "dhan", "token_ok")
+        _record_session_ok(self.account)
 
     def _dhan_conn_under_lock(self, now, test_conn: bool):
         """Inner body of get_dhan_conn — runs under both login locks.
@@ -1422,6 +1424,7 @@ class GrowwConnection:
         self._access_token = token
         self._groww = GrowwAPI(token)
         _emit_conn_event(self.account, "groww", "token_ok")
+        _record_session_ok(self.account)
 
     def refresh(self) -> None:
         """Force-evict the cached token + re-mint. Call when an SDK
@@ -2055,6 +2058,20 @@ def _emit_conn_event(
         # lazy import to avoid circular dependency — conn_events → event_queue → database
         from backend.brokers.service.conn_events import _emit_conn_event as _fire
         _fire(account, broker_id, event_type, detail)
+    except Exception:
+        pass
+
+
+def _record_session_ok(account: str) -> None:
+    """Lazy shim: stamp last_ok_at in _FETCH_HEALTH on successful token validation.
+
+    Keeps health badge in sync with session state even before the first
+    data fetch of the day. Lazy to avoid circular import (broker_apis
+    imports Connections at module load time).
+    """
+    try:
+        from backend.brokers.broker_apis import record_session_ok
+        record_session_ok(account)
     except Exception:
         pass
 
