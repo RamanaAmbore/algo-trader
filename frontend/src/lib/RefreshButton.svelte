@@ -453,20 +453,8 @@
   disabled={_showSpinning}
   aria-label={_refireOnly ? `Reconnecting ${label} after idle` : _showSpinning ? `Refreshing ${label}` : `Refresh ${label}`}
   title={_connTitle}>
-  {#if _showSpinning}
-    <!-- Loading state — distinct arc-spinner glyph (NOT the same
-         refresh-arrow rotated). Reads as "working / fetching" rather
-         than "refresh affordance". The arc spins via the rf-spinning
-         keyframe below. Shown during both manual click (loading=true)
-         and post-hibernation refire (_refiring=true). -->
-    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-      <circle cx="8" cy="8" r="5.5"
-        fill="none" stroke="currentColor" stroke-width="2"
-        stroke-linecap="round"
-        stroke-dasharray="9 30" />
-    </svg>
-  {:else}
-    <!-- Idle / refresh affordance — circular-arrow icon. -->
+    <!-- Circular-arrow icon — spins via rf-spin when rf-spinning class
+         is active (manual click or post-hibernation refire). -->
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
       <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"
         fill="none" stroke="currentColor" stroke-width="1.5"
@@ -475,7 +463,6 @@
         fill="none" stroke="currentColor" stroke-width="1.5"
         stroke-linecap="round" stroke-linejoin="round" />
     </svg>
-  {/if}
   <!-- Badge moved to the navbar broker-chip (slice AX). The full
        connection story still lives in this button's native tooltip;
        the visible count digit was redundant once the navbar chip

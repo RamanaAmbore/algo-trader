@@ -1,99 +1,97 @@
-# Plan: Payoff stale-while-revalidate regression + dashboard gap
+# Plan: LogPanel + ActivityHeaderFilters polish
 
-## Context
-
-### Issue 1 — Payoff shows stale NIFTY chart when ABFRL selected
-Commit 539a7e69 introduced stale-while-revalidate: it removed the `!_strategyStale` guard
-so the old chart stays visible during an underlying switch (good UX). But the guard was
-removed unconditionally, so after the switch completes and the backend returns no strategy
-(ABFRL has no options), `strategy` remains the stale NIFTY object forever — payoff never
-clears. The `_strategyStale` flag is already defined correctly (`strategy.underlying ≠
-selectedUnderlying`) but it's no longer consulted at the render site.
-
-The fix: restore the guard only for the post-load case. While `loading=true`, keep the
-old chart (stale-while-revalidate UX preserved). When `loading=false` and `_strategyStale`
-is still true (load completed but new underlying produced no strategy), clear to stub.
-
-**File:** `frontend/src/routes/(algo)/admin/derivatives/+page.svelte:4246`
-
-```svelte
-<!-- Before (539a7e69 — removed guard entirely) -->
-payoff={strategy ? _mergedPayoff : (_clientPayoffStub ?? [])}
-
-<!-- After — stale-while-revalidate only during load window -->
-payoff={strategy && (!_strategyStale || loading) ? _mergedPayoff : (_clientPayoffStub ?? [])}
-```
-
-`loading` is already reactive state on that page; `_strategyStale` (line 1839) is already
-derived. No new state needed.
-
-### Issue 2 — Symbol / expiry dropdown
-Explore agent verified the `expiryChoicesForUnderlying` derived (line 1628) and the
-`$effect` that clears stale selections (line 1646) are both reactive to `selectedUnderlying`
-and working correctly. The apparent "dropdown not updating" is most likely the stale payoff
-chart above giving the impression the underlying switch didn't register. Fixing Issue 1
-should resolve the perception.
-
-### Issue 3 — Dashboard header-to-card gap still uneven
-The previous fix added `margin-top: 0.6rem` to `.dash-row1-split`, which is correct when
-`.dash-open-orders` is absent (page-header → cards = 0.6rem ✓). But when open-orders IS
-present, in a flex column container margins don't collapse — they add up:
-- page-header → open-orders = **0rem** (no margin-top on open-orders)
-- open-orders → cards = **1.2rem** (0.6 margin-bottom + 0.6 margin-top of row1-split)
-
-Fix: give `.dash-open-orders` a `margin-top: 0.6rem` and remove its `margin-bottom: 0.6rem`
-(redundant since row1-split already has margin-top). Both-absent and both-present cases
-then give a uniform 0.6rem gap.
-
-**File:** `frontend/src/routes/(algo)/dashboard/+page.svelte`
-
-```css
-/* Before */
-.dash-open-orders { margin-bottom: 0.6rem; }         /* no margin-top */
-
-/* After */
-.dash-open-orders { margin-top: 0.6rem; }             /* margin-bottom removed */
-```
-
-`.dash-row1-split` keeps `margin-top: 0.6rem` (from previous fix) — no change needed there.
-
-### Issue 4 — Only 2 connections
-Explore agent found only 2 Kite accounts (ZG0790, ZJ6294) in `secrets.yaml`. No Dhan
-accounts configured. "2 connections" is the correct expected count given current config.
-No code change needed.
-
----
-
-## Fix Plan
-
-### Change 1 — Payoff stale guard (derivatives page)
-
-**File:** `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (~line 4246)
-
-Find the `payoff=` prop on `OptionsPayoff` and change:
-```svelte
-payoff={strategy ? _mergedPayoff : (_clientPayoffStub ?? [])}
-```
-to:
-```svelte
-payoff={strategy && (!_strategyStale || loading) ? _mergedPayoff : (_clientPayoffStub ?? [])}
-```
-
-### Change 2 — Dashboard open-orders margin
-
-**File:** `frontend/src/routes/(algo)/dashboard/+page.svelte`
-
-Find `.dash-open-orders` CSS rule. Replace `margin-bottom: 0.6rem` with `margin-top: 0.6rem`.
-
----
+## Task
+Four targeted edits across two files:
+1. **ActivityHeaderFilters** — close the gap between the two dropdowns (flush, not 0.3rem apart).
+2. **LogPanel lp-card-btns reorder** — move Download before Collapse/Fullscreen in the label-based button group.
+3. **LogPanel double-scroll fix** — add `overflow-x: visible` on `.lp-tab-strip-wrap :global(.algo-tabs-strip)` to stop AlgoTabs from absorbing the scroll before the outer wrapper.
+4. **LogPanel JS-applied row stripes** — replace `:nth-child(odd)` with index-based `lp-row-odd/lp-row-even` classes so stripe colour survives search filtering.
 
 ## Agents
 - backend: skip
-- frontend: Changes 1 + 2 (derivatives payoff stale guard + dashboard open-orders margin)
+- frontend: implement all four changes to the two files
 - broker: skip
 - doc: skip
 - backend-test: skip
 - playwright: skip
+
+## Concrete implementation notes
+
+### ActivityHeaderFilters.svelte — TWO gap values to zero
+
+There are two `.act-filters` gap declarations:
+- Line 90 (base rule): `gap: 0.3rem;` → `gap: 0;`
+- Line 145 (mobile media query): `gap: 0.3rem;` → `gap: 0;` (or remove the line — it becomes redundant)
+
+Both must change or the mobile override silently reintroduces the gap at ≤520px.
+
+### LogPanel lp-card-btns reorder (label-based block only, lines ~1433–1469)
+
+Current order inside `{#if label}` → `.lp-card-btns`:
+1. Search button
+2. `{#if context !== 'page'}` → Close OR Collapse+Fullscreen
+3. Download button
+
+Target order:
+1. Search button
+2. Download button
+3. `{#if context !== 'page'}` → Close OR Collapse+Fullscreen
+
+Move the Download `<button>` block (lines ~1458–1468) to sit immediately after the Search button, before the `{#if context !== 'page'}` block.
+
+**Scope**: `lp-card-btns-legacy` block (lines ~1472–1526) is a different branch (mounts without `label` prop) and uses a different button set. Task did NOT ask to touch it. Leave untouched.
+
+### LogPanel overflow-x fix — add in `<style>`
+
+Inside the existing `.lp-tab-strip-wrap` rule (around line 1778), add a sibling rule:
+
+```css
+.lp-tab-strip-wrap :global(.algo-tabs-strip) {
+  overflow-x: visible;
+}
+```
+
+### LogPanel stripe approach — post-filter index injection
+
+**Strategy**: Apply stripe after the search filter, using a second `.map` step on the final array, replacing the html string's class attribute. This avoids changing `_logRow()` or `_renderSimLine()` signatures and correctly re-stripes after rows are dropped by the filter.
+
+Pattern for each derived array (`_agentRows`, `_simRows`, `_sysRows`, `_connRows`):
+```js
+.filter(r => _rowMatchesSearch(r.html))
+.map((r, i) => {
+  const stripe = i % 2 === 0 ? 'lp-row-odd' : 'lp-row-even';
+  return { ...r, html: r.html.replace('<div class="log-row ', `<div class="log-row ${stripe} `) };
+})
+```
+
+For `_terminalHtml()` — apply stripe post-sort+post-search-filter just before `.join('')` (around line 1287):
+```js
+const striped = all.map((x, i) => {
+  const stripe = i % 2 === 0 ? 'lp-row-odd' : 'lp-row-even';
+  return { ...x, html: x.html.replace('<div class="log-row ', `<div class="log-row ${stripe} `) };
+});
+return striped.length
+  ? striped.map(x => x.html).join('')
+  : '<div class="log-row log-debug">...</div>';
+```
+
+**CSS change**: Replace the existing `:nth-child(odd)` rule (line 1956):
+```css
+:global(.log-panel.log-rows .log-row:nth-child(odd)) {
+  background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+}
+```
+with:
+```css
+:global(.log-panel.log-rows .log-row.lp-row-odd) {
+  background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
+}
+:global(.log-panel.log-rows .log-row.lp-row-even) {
+  background: transparent;
+}
+```
+
+**Empty-state rows** (`log-row log-debug`) are always a single solo row — no stripe needed, leave them untouched.
 
 ## Tests
 - pytest: no
@@ -101,14 +99,11 @@ Find `.dash-open-orders` CSS rule. Replace `margin-bottom: 0.6rem` with `margin-
 - playwright: no
 
 ## Commit message
-fix(derivatives+dashboard): clear stale payoff on underlying switch; fix open-orders margin for even header gap
+fix(log-panel): flush filter gap, reorder download btn, fix tab scroll, index-based row stripes
 
 ## Done when
-- Switching to ABFRL (or any equity with no options) clears the payoff chart after the load completes — no stale NIFTY curve lingers
-- Switching to BANKNIFTY/NIFTY still shows old chart during the brief loading window (stale-while-revalidate preserved)
-- Dashboard header-to-card gap is visually consistent (0.6rem) whether or not the open-orders strip is visible
-- svelte-check 0 errors
-
-## Critical files
-- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — `payoff=` prop at ~line 4246; `_strategyStale` at ~line 1839; `loading` state
-- `frontend/src/routes/(algo)/dashboard/+page.svelte` — `.dash-open-orders` CSS rule
+- ActivityHeaderFilters: zero gap between account and level dropdowns on all viewports
+- LogPanel: Download button appears before Collapse/Fullscreen in label-based card button group
+- LogPanel: `.lp-tab-strip-wrap :global(.algo-tabs-strip)` has `overflow-x: visible` in CSS
+- LogPanel: row stripes use `lp-row-odd/lp-row-even` classes applied post-filter; `nth-child(odd)` rule removed
+- `svelte-check` passes

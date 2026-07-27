@@ -157,6 +157,7 @@
 
   let _colEntry    = $state(false);
   let _fsEntry     = $state(false);
+  let _entryRefresh = $state(0);
   let _colActivity = $state(false);
   let _fsActivity  = $state(false);
 
@@ -383,6 +384,7 @@
     label="Order Entry"
     showSearch={false}
     detectOverflow={false}
+    onRefresh={() => _entryRefresh++}
   >
     {#snippet left()}
       <span class="oc-entry-label">
@@ -410,6 +412,7 @@
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
       triggerClearBasket={_triggerClear}
+      triggerRefresh={_entryRefresh}
       bind:chase={_pageChase}
       bind:chaseAgg={_pageChaseAgg}
       bind:basketCount={_pageBasketCount}
