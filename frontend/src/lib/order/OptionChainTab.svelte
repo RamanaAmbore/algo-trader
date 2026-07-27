@@ -1370,7 +1370,7 @@
     cursor: pointer; letter-spacing: 0.04em; transition: background 0.12s;
     line-height: 1.3;
   }
-  .chain-btn-pair { display: inline-flex; gap: 3px; }
+  .chain-btn-pair { display: inline-flex; gap: 10px; }
   .chain-btn-buy  { color: var(--c-long); }
   .chain-btn-sell { color: var(--c-short); }
   .chain-btn-buy:hover  { background: var(--c-long-10); }
