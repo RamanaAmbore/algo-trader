@@ -61,6 +61,7 @@
   import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
   import { rootOf } from '$lib/data/rootOf.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
+  import RefreshButton from '$lib/RefreshButton.svelte';
 
   // Demo-mode detection — used to suppress margin preflight (403) and
   // account self-fetch (401) for anonymous prod visitors.
@@ -1585,6 +1586,7 @@
 
   let submitting = $state(false);
   let _internalRefreshKey = $state(0);
+  let _otRefreshing = $state(false);
   // Demo-mode submit modal — opens when an anonymous prod visitor
   // clicks Submit. Replaces the silent-disable UX with a friendly
   // explanation of demo mode + sign-in CTA + Hire Me CTA.
@@ -2217,19 +2219,10 @@
         {/if}
       {/snippet}
       {#snippet right()}
-        <button type="button" class="ot-refresh-btn"
-                title="Refresh"
-                aria-label="Refresh order data"
-                disabled={submitting}
-                onclick={() => { _internalRefreshKey += 1; }}>
-          <svg width="13" height="13" viewBox="0 0 16 16"
-               fill="none" stroke="currentColor" stroke-width="1.6"
-               stroke-linecap="round" stroke-linejoin="round"
-               aria-hidden="true">
-            <path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.9" />
-            <path d="M13.5 3v3h-3" />
-          </svg>
-        </button>
+        <RefreshButton
+          onClick={() => { _internalRefreshKey += 1; _otRefreshing = true; setTimeout(() => { _otRefreshing = false; }, 700); }}
+          loading={_otRefreshing || submitting}
+          label="order data" />
         <button type="button" class="ot-close" title="Close" aria-label="Close" onclick={_handleClose} disabled={submitting}>×</button>
       {/snippet}
     </CardHeader>
@@ -2960,27 +2953,6 @@
     background: rgba(34,211,238,0.14);
     border-color: rgba(34,211,238,0.65);
   }
-
-  .ot-refresh-btn {
-    width: 1.4rem;
-    height: 1.4rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
-    border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
-    border-radius: 3px;
-    color: var(--c-info, #22d3ee);
-    cursor: pointer;
-    padding: 0;
-    flex-shrink: 0;
-    transition: background 0.08s, border-color 0.08s;
-  }
-  .ot-refresh-btn:hover:not(:disabled) {
-    background: rgba(34,211,238,0.14);
-    border-color: rgba(34,211,238,0.65);
-  }
-  .ot-refresh-btn:disabled { opacity: 0.45; cursor: default; }
 
   .ot-row {
     display: flex;
