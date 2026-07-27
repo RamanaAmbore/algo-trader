@@ -148,7 +148,7 @@ Populated by `rebuild_from_db()` — queries `broker_accounts`, decrypts Fernet 
 
 ## 6. Circuit Breaker & Health
 
-**File**: `backend/brokers/broker_apis.py`
+**File**: `backend/brokers/broker_apis.py` · `backend/api/routes/health.py`
 
 `_FETCH_HEALTH[account]`: `{last_ok_at, last_fail_at, consecutive_fail_count, circuit_open_until, open_cycle_count}`
 
@@ -166,6 +166,12 @@ extracted from `_record_fetch()` to isolate state transitions under `_BREAKER_LO
 `(new_breaker_open, was_halfopen, was_recovering)` so conn events fire OUTSIDE the lock, 
 preventing deadlock with `enqueue_nowait`. Non-opt-in accounts skip the full state machine 
 and update health stamps only (fast path).
+
+**Inactive broker accounts** (Jul 2026): `_hlth_resolve_state()` in `backend/api/routes/health.py` 
+now returns `"inactive"` (not `"amber"`) when `last_ok==0 and last_fail==0` — indicating an 
+account has never been polled. Frontend `_brokerHealthWorstState` in `frontend/src/lib/stores.js` 
+excludes inactive accounts from worst-state calculation when at least one active account 
+exists, preventing amber chips on accounts that have not yet been queried.
 
 Dhan poll priority: `hot` (30s), `warm` (120s), `cold` (600s). Kite/Groww always poll every cycle.
 
@@ -266,7 +272,7 @@ for all callers; lazy population via `get_or_fetch_all_today()` is preferred.
 
 ## 7.2 Market-Data Backfill Pipeline (continued)
 
-**File**: `backend/brokers/broker_apis.py` — `backfill_market_data()` and helpers
+**File**: `backend/brokers/broker_apis.py` · `backend/api/background.py` — `backfill_market_data()` and helpers
 
 When broker APIs return zero or stale `close_price` / `last_price`, the backfill pipeline 
 patches missing values from a PriceBroker quote batch. Pipeline stages (Jul 2026 Polish R6):
@@ -283,8 +289,17 @@ patches missing values from a PriceBroker quote batch. Pipeline stages (Jul 2026
 3. **`backfill_market_data(df)`** — Canonical consolidation (Jul 2026): removed stale alias 
    `backfill_close_prices`. All callers now use `backfill_market_data(df)` directly.
 
-**Fallback chain**: PriceBroker quote → KiteTicker LTP (PriceBroker outage) → last-known-good 
-cache (both sources unavailable). Rows patched via LKG cache marked with `last_price_stale=True`.
+**Dhan two-tier LKG cache** (Jul 2026): Dhan holdings responses frequently arrive with zero 
+`last_price` during market hours. A two-tier last-known-good cache now backs the fallback 
+chain: (1) **In-memory Tier-2**: `_DB_LKG_CACHE` dict, seeded at startup from `daily_book` 
+DB rows for all holdings seen in past 7 days. (2) **DB Tier-3**: `daily_book` query on cache 
+miss. `_stale_substitute_frame()` checks in-memory LKG first, then DB LKG, before returning 
+empty frame. Startup task `_preload_db_lkg_cache()` in `backend/api/background.py` populates 
+the memory cache asynchronously.
+
+**Fallback chain**: PriceBroker quote → KiteTicker LTP (PriceBroker outage) → in-memory LKG 
+(Tier 2) → DB LKG from `daily_book` (Tier 3) → empty frame. Rows patched via LKG cache 
+marked with `last_price_stale=True`.
 
 ---
 
@@ -365,6 +380,11 @@ This enables circuit breaker and PriceBroker failover logic to correctly handle 
 `_ALLOWED_BROKER_METHODS` whitelist (28 methods) — unknown method → 403.
 
 **`api_secret` invariant**: Never leaves conn_service. Main API calls `POST /internal/broker/{account}/verify_postback`; only True/False returned.
+
+**NavBreakdown account display** (Jul 2026): `frontend/src/lib/NavBreakdown.svelte` now 
+includes `connStatus.accounts` (all registered broker accounts) in the account union when 
+building the holdings popup. Previously only accounts with active positions/holdings 
+appeared; now all accounts are visible even if idle or flat.
 
 Key endpoints: `/health`, `/internal/accounts`, `/internal/broker/{account}/call/{method}`, `/internal/rebuild`, `/internal/broker/{account}/verify_postback`
 
@@ -733,3 +753,4 @@ designed.
 | 2026-07-25 | Groww instruments cache: per-account `@ssot_fetch` key (`groww_instruments_{account}`) prevents cross-account cache collision when multiple Groww accounts are active |
 | 2026-07-26 | v1.4 GTT exchange validation (commit b8b1214c): Added §8.2 documenting `validate_gtt_exchange(exchange)` method on Broker base class; Dhan/Groww override to raise ValueError for MCX/NCO; called at top of apply_plan_live before broker calls; MCX/Dhan fail-fast in apply_template_to_order before lot-size resolution; off-hours GTT note appended to plan.notes when GTT-only template attached while exchange closed |
 | 2026-07-26 | Dhan token renewal fix (commit 63262b94): `_dhan_conn_under_lock()` now gates `_try_renew()` on `not test_conn` to skip lightweight renewal when token is confirmed dead (DH-906); goes straight to full PIN+TOTP re-mint via `_mint_and_build()`. `_do_login()` emits DEBUG log `[DHAN-LOGIN]` with HTTP status + 200-char body for auth failure diagnosis. |
+| 2026-07-27 | v1.5 Broker health and account display: Inactive broker accounts (last_ok=0, last_fail=0) now return "inactive" state in health endpoint instead of "amber"; frontend excludes inactive from worst-state calc when active accounts exist. Dhan two-tier LKG cache (in-memory Tier-2 seeded from daily_book at startup + DB Tier-3 fallback) reduces stale holdings during outages via `_DB_LKG_CACHE` and `_preload_db_lkg_cache()`. NavBreakdown holdings popup now includes all registered broker accounts (not just those with active holdings) via `connStatus.accounts` union. |
