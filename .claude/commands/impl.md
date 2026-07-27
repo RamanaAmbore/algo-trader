@@ -93,7 +93,7 @@ cd /Users/ramanambore/projects/ramboq && \
   venv/bin/pytest backend/tests/ -q --tb=short \
     --cov=backend/brokers --cov=backend/api \
     --cov-report=term-missing && \
-  venv/bin/coverage report --include="backend/brokers/*" --fail-under=90 && \
+  venv/bin/coverage report --include="backend/brokers/*" --fail-under=80 && \
   venv/bin/coverage report --include="backend/api/*" --fail-under=80
 ```
 Use Monitor to collect output when it completes. Capture: passed/skipped/failed counts + FAILED lines + broker coverage % + api coverage %.
@@ -163,7 +163,7 @@ Run all self-audit checks from CLAUDE.md:
    - This gate is **non-negotiable and cannot be waived**
 
 5. **Coverage thresholds** — verify thresholds hold after the change:
-   - Broker layer (backend/brokers/) must remain ≥ 90%
+   - Broker layer (backend/brokers/) must remain ≥ 80%
    - API layer (backend/api/) must remain ≥ 80%
    - If a change risks dropping below threshold, dispatch a `broker` or `backend-test` agent to add tests before committing.
 

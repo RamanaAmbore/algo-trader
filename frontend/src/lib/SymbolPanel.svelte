@@ -108,6 +108,7 @@
    *   triggerSubmit?:  number,
    *   triggerBasket?:  number,
    *   triggerClearBasket?: number,
+   *   triggerRefresh?: number,
    *   chase?:          boolean,
    *   chaseAgg?:       'low'|'med'|'high',
    *   basketCount?:    number,
@@ -218,6 +219,7 @@
     // needing a direct callback handle. Same pattern as triggerSubmit
     // / triggerBasket.
     triggerClearBasket = 0,
+    triggerRefresh = 0,
     // Optional snippet rendered inside .oes-picker, immediately after
     // the symbol search input. /orders passes the CHASE cluster here so
     // it appears inline in the same flex row as the symbol input, without
@@ -554,6 +556,17 @@
     if (triggerClearBasket !== _lastClearTrigger) {
       _lastClearTrigger = triggerClearBasket;
       if (triggerClearBasket > 0) clearBasket();
+    }
+  });
+
+  // Parent-driven refresh — bumping triggerRefresh fires _refreshAll().
+  // Same skip-initial-0 pattern as triggerClearBasket.
+  // svelte-ignore state_referenced_locally
+  let _lastRefreshTrigger = $state($state.snapshot(triggerRefresh));
+  $effect(() => {
+    if (triggerRefresh !== _lastRefreshTrigger) {
+      _lastRefreshTrigger = triggerRefresh;
+      if (triggerRefresh > 0) _refreshAll();
     }
   });
 
