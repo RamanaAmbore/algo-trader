@@ -1010,6 +1010,11 @@ class BrokerHealthController(Controller):
 
         active_ticker_acct = _resolve_active_ticker_account()
 
+        # Ensure every configured account appears even with no fetch history yet.
+        if broker_label_map:
+            for acct in broker_label_map:
+                health_map.setdefault(acct, {})
+
         # Build per-account entries, skipping orphan entries for accounts
         # that no longer exist in the DB (deleted rows).
         accounts: list[BrokerAccountHealth] = [
