@@ -112,11 +112,11 @@ class TestEventQueueCustomSessionFactory:
 class TestHlthResolveState:
     """_hlth_resolve_state condition branches."""
 
-    def test_inactive_state_when_last_ok_zero_and_last_fail_nonzero(self):
-        """When last_ok=0 and last_fail>0, state should be 'inactive'."""
+    def test_red_state_when_last_ok_zero_and_last_fail_nonzero_with_msg(self):
+        """When last_ok=0, last_fail>0, and last_fail_msg set → state='red' with actual error."""
         entry = {
             "last_ok_at": 0.0,
-            "last_fail_at": time.time() - 60,  # 1 min ago
+            "last_fail_at": time.time() - 60,
             "last_fail_msg": "Connection refused",
         }
         now = time.time()
@@ -125,10 +125,28 @@ class TestHlthResolveState:
             entry, now, "closed", 0, None, None
         )
 
+        assert state == "red", \
+            f"Expected state='red' when last_ok=0, last_fail>0, msg set; got '{state}'"
+        assert "Connection refused" in reason, \
+            f"Expected actual error in reason, got '{reason}'"
+
+    def test_inactive_state_when_last_ok_zero_and_last_fail_nonzero_no_msg(self):
+        """When last_ok=0, last_fail>0, and no last_fail_msg → state='inactive'."""
+        entry = {
+            "last_ok_at": 0.0,
+            "last_fail_at": time.time() - 60,
+            "last_fail_msg": "",
+        }
+        now = time.time()
+
+        state, reason, cb_state, cb_count, cb_until_iso = _hlth_resolve_state(
+            entry, now, "closed", 0, None, None
+        )
+
         assert state == "inactive", \
-            f"Expected state='inactive' when last_ok=0 and last_fail>0, got state='{state}'"
+            f"Expected state='inactive' when last_ok=0, last_fail>0, no msg; got '{state}'"
         assert "no session established" in reason.lower(), \
-            f"Expected reason to mention 'no session established', got '{reason}'"
+            f"Expected 'no session established' in reason, got '{reason}'"
 
     def test_red_state_when_last_fail_after_last_ok(self):
         """When last_fail > last_ok, state should be 'red'."""

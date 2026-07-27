@@ -862,6 +862,8 @@ def _hlth_resolve_state(
         return "amber", "no fetch attempt recorded yet", cb_state, cb_count, cb_until_iso
 
     if last_ok == 0.0 and last_fail > 0.0:
+        if last_msg:
+            return "red", _derive_fail_reason(last_fail, last_msg), cb_state, cb_count, cb_until_iso
         return "inactive", "no session established", cb_state, cb_count, cb_until_iso
 
     if last_fail > last_ok:
