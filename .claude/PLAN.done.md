@@ -1,187 +1,110 @@
-# Plan: Block template attachment on close/offset orders
+# Plan: Delete orphan positions from daily_book after closed-hours refresh
 
 ## Task
-Templates (TP/SL/Wing GTTs) must not attach when an order reduces or closes an existing
-opposite position — regardless of whether `intent="close"` was explicitly set.
+After market settlement (~16:15 IST), Kite removes closed/squared-off positions from
+`broker.positions()`. The current `snapshot_daily_book()` uses an UPSERT that only
+inserts or updates rows — it never deletes. Positions no longer returned by the broker
+stay in `daily_book` indefinitely. The route's `_positions_snapshot()` has no staleness
+filter, so stale closed positions appear in the UI all night.
 
-A BUY order against an existing SHORT (or SELL against an existing LONG) is a de-facto
-close at the exchange level. Attaching TP/SL to such a fill would protect a position
-that no longer exists.
-
-Gate the template at three layers:
-1. **Ticket submit** — check broker position book; if this order offsets a net position,
-   clear `template_id` silently before persisting the AlgoOrder row
-2. **Postback + reconcile** — skip attach when `is_close_intent=True` OR position-offset
-   detected from lot_ledger (`detect_close_intent`)
-3. **Frontend** — when `action === 'close'` or net position is opposite to order side,
-   hide TemplateBar and clear templateId
+**Fix:** After each per-account positions UPSERT in `snapshot_daily_book()`, delete
+`daily_book` rows for that `(date, account, kind="positions")` whose `symbol` is NOT
+in the current broker response. Fail-open: skip the delete if the broker call failed.
 
 ---
 
-## How the position-offset check works
+## How the code is structured
 
-```python
-async def _is_offsetting_position(sym: str, exchange: str, side: str, account: str) -> bool:
-    """Return True when placing `side` would reduce/close an existing position.
-    Uses cached broker positions (30s TTL) — lightweight, no extra broker call typically.
-    BUY against a net SHORT → True. SELL against a net LONG → True.
-    """
-    try:
-        import asyncio, pandas as pd
-        from backend.brokers.broker_apis import fetch_positions as _fp
-        dfs = await asyncio.to_thread(_fp)
-        for df in dfs:
-            if df is None or df.empty:
-                continue
-            # match on tradingsymbol + account (account col may be named 'user_id' or 'account')
-            acct_col = next((c for c in df.columns if 'account' in c.lower() or 'user' in c.lower()), None)
-            mask = df['tradingsymbol'].str.upper() == sym.upper()
-            if acct_col:
-                mask &= df[acct_col].str.upper() == account.upper()
-            rows = df[mask]
-            if rows.empty:
-                continue
-            net_qty = float(rows['quantity'].iloc[0])
-            if side.upper() == "BUY" and net_qty < 0:
-                return True   # BUY closes a SHORT
-            if side.upper() == "SELL" and net_qty > 0:
-                return True   # SELL closes a LONG
-    except Exception:
-        pass  # fail-open: don't block the order on a position-fetch failure
-    return False
-```
+- **`backend/api/algo/daily_snapshot.py`** — contains all snapshot logic
+  - `_upsert_rows(rows: list[dict]) -> int` (lines 649–659): upserts a batch, commits immediately
+  - `snapshot_daily_book()` (lines 693–783): per-account loop, calls `_fetch_account_data()`,
+    builds row batches via `_positions_rows()`, `_holdings_rows()`, then calls `_upsert_rows()`
+  - `DailyBook` model: unique constraint on `(date, account, kind, symbol)`
+- **`_positions_rows(account, target_date, raw_df, ...)  -> list[dict]`** (lines 509–554):
+  returns `[]` when raw_df is None/empty (auth failure or no positions)
 
 ---
 
 ## Agents
 
-### Agent 1 — backend: orders_place.py + orders_postback.py
-Files: `backend/api/routes/orders_place.py`, `backend/api/routes/orders_postback.py`
+### Agent 1 — backend: daily_snapshot.py
+File: `backend/api/algo/daily_snapshot.py`
 
-**Fix A — `_opl_reconcile_attach_eligible(row)` (orders_place.py ~line 356)**
-Add at the top of the eligibility checks:
+**Add helper `_delete_orphan_positions(date, account, current_symbols)`** near `_upsert_rows`:
+
 ```python
-# Close-intent or explicit close flag → never attach template
-if (row.intent or "").lower() == "close":
-    return False
-if getattr(row, "is_close_intent", False):
-    return False
+async def _delete_orphan_positions(
+    target_date: "date", account: str, current_symbols: set[str]
+) -> int:
+    """Remove daily_book positions rows whose symbol is no longer in the broker response.
+
+    Only called when the broker successfully returned a positions DataFrame (even if empty).
+    An empty set means all positions are closed — that is valid and should clear the table.
+    """
+    from sqlalchemy import delete as _delete
+    async with async_session() as session:
+        stmt = _delete(DailyBook).where(
+            DailyBook.date == target_date,
+            DailyBook.account == account,
+            DailyBook.kind == "positions",
+            ~DailyBook.symbol.in_(current_symbols) if current_symbols
+            else DailyBook.symbol.isnot(None),  # delete all when broker returned nothing
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount
 ```
 
-**Fix B — `_pb_wants_template_attach(_r)` (orders_postback.py ~line 489)**
-Add after the existing guards:
+**Wire into `snapshot_daily_book()`**: In the per-account loop, after
+`await _upsert_rows(p_rows)`, add:
+
 ```python
-# Explicit close flow → skip template
-if (getattr(_r, "intent", None) or "").lower() == "close":
-    return False
-if getattr(_r, "is_close_intent", False):
-    return False
-# Strategy-lot close heuristic (covers strategy-attributed orders)
-# Note: detect_close_intent is async; fire synchronously in the caller context
-# via a small helper if needed, or check strategy_id first
-if _r.strategy_id:
-    # detect_close_intent is called in _pb_dispatch_template_attach body
-    # to avoid blocking the sync return; set a deferred flag instead
-    pass  # handled in _pb_dispatch_template_attach below
+# Delete positions no longer returned by broker (prevents ghost rows post-settlement)
+if raw.get("positions") is not None:   # None = broker call failed → fail-open
+    _p_symbols = {r["symbol"] for r in p_rows}
+    deleted = await _delete_orphan_positions(target_date, account, _p_symbols)
+    if deleted:
+        logger.info("[SNAPSHOT] pruned %d stale position row(s) for %s %s", deleted, account, target_date)
 ```
 
-In `_pb_dispatch_template_attach`, add an async check before creating the task:
-```python
-async def _pb_check_and_fire_template_attach(_r):
-    """Async wrapper: runs position-offset check before firing template attach."""
-    from backend.api.routes.orders_place import _is_offsetting_position
-    if await _is_offsetting_position(
-        sym=str(_r.symbol or ""),
-        exchange=str(_r.exchange or "NFO"),
-        side=str(_r.transaction_type or "BUY"),
-        account=str(_r.account or ""),
-    ):
-        logger.info("[TPL-ATTACH] skipping — order offsets existing position for #%s %s", _r.id, _r.symbol)
-        return
-    from backend.api.routes.orders_place import _fire_template_attach_on_fill
-    await _fire_template_attach_on_fill(...)
-```
-
-**Fix C — ticket submit boundary (orders_place.py ~line 1924, after MCX gate)**
-Add before `_ticket_enforce_lot_and_fat_finger`:
-```python
-# Close/offset gate: if this order would reduce an existing opposite position,
-# strip template_id — a closing fill must not sprout new TP/SL GTTs.
-if data.template_id:
-    _is_close = (getattr(data, "intent", None) or "").lower() == "close"
-    if not _is_close:
-        _is_close = await _is_offsetting_position(sym, data.exchange or "NFO", side, account)
-    if _is_close:
-        logger.info("[TPL-ATTACH] clearing template_id — close/offset order for %s %s", account, sym)
-        data = dataclasses.replace(data, template_id=None)  # or set attribute directly
-```
-
-Add `_is_offsetting_position` helper function near the other position utilities in orders_place.py.
+`raw` here is the dict returned by `_fetch_account_data()`. If it returned a DataFrame
+(even empty), `raw["positions"]` will be a DataFrame, not None. Check how `_fetch_account_data`
+signals failure (None vs exception vs empty DataFrame) and guard accordingly — the goal
+is to NOT delete when we don't have a confirmed fresh response from the broker.
 
 ---
 
-### Agent 2 — frontend: OrderTicket.svelte
-File: `frontend/src/lib/order/OrderTicket.svelte`
+### Agent 2 — backend-test
+File: `backend/tests/test_daily_snapshot.py` (create if not exists) or add to nearest existing test file.
 
-**Fix D — suppress template when action='close' or position-offsetting**
-
-1. Add `$effect` to clear templateId when action changes to 'close':
-```svelte
-$effect(() => {
-  if (action === 'close' && templateId !== null) {
-    templateId = null;
-  }
-});
-```
-
-2. Add derived: `const _isCloseOrder = $derived(action === 'close')`.
-
-3. Wrap the entire template section (wing warning, flash, no-default warning, trigger
-   price chips, wing feasibility error, GTT trigger errors, TemplateBar itself) in
-   `{#if !_isCloseOrder}`.
-
-4. In `_autoSelectTemplate()`, add early return when `action === 'close'`:
-```js
-function _autoSelectTemplate() {
-  if (action === 'close') return;  // close orders never get a template
-  // ... existing logic
-}
-```
-
-5. In the submit payload builder, force `template_id: null` when `action === 'close'`
-   (defence-in-depth, matches backend clearing).
-
----
-
-### Agent 3 — backend-test: add 4 targeted tests
-Add to `backend/tests/test_template_findings.py`:
+Add 3 tests:
 ```python
-def test_close_intent_skips_reconcile_attach():
-    # AlgoOrder row with intent="close" → _opl_reconcile_attach_eligible returns False
+def test_delete_orphan_positions_removes_stale_rows():
+    # daily_book has [NIFTY24JUL, BANKNIFTY24JUL, RELIANCE]; broker now returns only [RELIANCE]
+    # After _delete_orphan_positions(date, account, {"RELIANCE"}), only RELIANCE remains
 
-def test_is_close_intent_flag_skips_reconcile():
-    # AlgoOrder row with is_close_intent=True → same gate
+def test_delete_orphan_positions_empty_set_clears_all():
+    # Broker returned no positions (all closed); current_symbols=set()
+    # All positions rows for that (date, account) should be deleted
 
-def test_close_intent_skips_postback_attach():
-    # _pb_wants_template_attach with intent="close" → False
-
-def test_offsetting_position_clears_template_at_submit():
-    # mock _is_offsetting_position → True; ticket submit → template_id cleared from data
+def test_snapshot_daily_book_prunes_orphans_on_closed_hours_refresh():
+    # Mock _fetch_account_data to return positions=[RELIANCE] (NIFTY no longer there)
+    # Pre-populate daily_book with both NIFTY and RELIANCE positions rows
+    # After snapshot_daily_book(), NIFTY row should be gone, RELIANCE updated
 ```
 
 ---
 
 ## Tests
 - pytest: yes
-- svelte-check: yes
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(templates): block template attachment on close + offset orders — position-book check at submit, postback gate, frontend hide
+fix(snapshot): delete orphan positions from daily_book after broker refresh — stale closed positions no longer shown off-hours
 
 ## Done when
-- `action='close'` in OrderTicket hides TemplateBar and clears templateId
-- Ticket submit with an offsetting order (BUY against SHORT, SELL against LONG) → template_id silently cleared
-- Reconcile and postback skip template attach for `intent="close"` or `is_close_intent=True` rows
-- `_is_offsetting_position` called in postback dispatch path
-- 4 new tests green, no existing tests broken
+- After `snapshot_daily_book()` runs during off-hours, positions no longer returned by Kite are deleted from daily_book
+- `_positions_snapshot()` route returns only currently-open positions
+- 3 new tests green, no existing tests broken
+- Fail-open: if broker call fails, no deletion occurs
