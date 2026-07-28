@@ -91,7 +91,7 @@ describe('isFOSymbol (Dimension 1 + 5)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('buildExpiryMatcher (Dimension 1 + 5)', () => {
   const mockGet = (sym) => {
-    const map = { 'NIFTY26JUN24000CE': { x: '2026-06-26' }, 'NIFTY26JUL24000CE': { x: '2026-07-31' } };
+    const map = { 'NIFTY26JUN24000CE': { x: '2026-09-25' }, 'NIFTY26JUL24000CE': { x: '2026-07-31' } };
     return map[sym] || null;
   };
 
@@ -102,18 +102,18 @@ describe('buildExpiryMatcher (Dimension 1 + 5)', () => {
   });
 
   test('filters to matching expiry', () => {
-    const m = buildExpiryMatcher(['2026-06-26'], mockGet);
+    const m = buildExpiryMatcher(['2026-09-25'], mockGet);
     assert.ok(m('NIFTY26JUN24000CE'));
     assert.ok(!m('NIFTY26JUL24000CE'));
   });
 
   test('unknown symbol does not pass when filter set', () => {
-    const m = buildExpiryMatcher(['2026-06-26'], mockGet);
+    const m = buildExpiryMatcher(['2026-09-25'], mockGet);
     assert.ok(!m('UNKNOWN'));
   });
 
   test('multi-expiry filter', () => {
-    const m = buildExpiryMatcher(['2026-06-26', '2026-07-31'], mockGet);
+    const m = buildExpiryMatcher(['2026-09-25', '2026-07-31'], mockGet);
     assert.ok(m('NIFTY26JUN24000CE'));
     assert.ok(m('NIFTY26JUL24000CE'));
   });
@@ -368,9 +368,9 @@ describe('splitClosedReopened (Dimension 1 + 5)', () => {
 describe('buildCandidatePositions (Dimension 1 + 5)', () => {
   const mockGetInst = (sym) => {
     const map = {
-      'NIFTY26JUN24000CE': { x: '2026-06-26' },
-      'NIFTY26JUN24000PE': { x: '2026-06-26' },
-      'NIFTY26JUNFUT': { x: '2026-06-26' },
+      'NIFTY26JUN24000CE': { x: '2026-09-25' },
+      'NIFTY26JUN24000PE': { x: '2026-09-25' },
+      'NIFTY26JUNFUT': { x: '2026-09-25' },
     };
     return map[sym] || null;
   };
@@ -489,7 +489,7 @@ describe('buildCandidatePositions (Dimension 1 + 5)', () => {
 // buildCleanLegs
 // ─────────────────────────────────────────────────────────────────────────────
 describe('buildCleanLegs (Dimension 1 + 5)', () => {
-  const mockGet = (sym) => sym === 'NIFTY26JUN24000CE' ? { x: '2026-06-26' } : null;
+  const mockGet = (sym) => sym === 'NIFTY26JUN24000CE' ? { x: '2026-09-25' } : null;
 
   test('excludes eq-kind legs', () => {
     const legs = [
@@ -534,7 +534,7 @@ describe('buildCleanLegs (Dimension 1 + 5)', () => {
       { kind: 'opt', symbol: 'NIFTY26JUN24000CE', qty: 50, avg_cost: 100, source: 'live' },
     ];
     const result = buildCleanLegs(legs, mockGet);
-    assert.equal(result[0].expiry, '2026-06-26');
+    assert.equal(result[0].expiry, '2026-09-25');
   });
 });
 
@@ -543,7 +543,7 @@ describe('buildCleanLegs (Dimension 1 + 5)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 describe('computeLegsKey (Dimension 1 + 5)', () => {
   const legs = [
-    { symbol: 'NIFTY26JUN24000CE', qty: 50, avg_cost: 100, ltp: null, expiry: '2026-06-26' },
+    { symbol: 'NIFTY26JUN24000CE', qty: 50, avg_cost: 100, ltp: null, expiry: '2026-09-25' },
   ];
 
   test('same legs → same key', () => {
