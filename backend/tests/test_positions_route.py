@@ -516,3 +516,110 @@ class TestFetchOrderingAndCoexistence:
         assert abs(df.at[1, 'day_change_val']) < 0.005, (
             "Row B day_change_val must remain 0.0 after close-override step"
         )
+
+
+# ---------------------------------------------------------------------------
+# Snapshot query — today's closed (qty=0) positions appear; yesterday's don't
+# ---------------------------------------------------------------------------
+
+def _make_snapshot_session(rows, today_ist_date):
+    """Return (mock_session, mock_ts_indian) pair for _positions_snapshot tests."""
+    from unittest.mock import AsyncMock, MagicMock
+    mock_result = MagicMock()
+    mock_result.all.return_value = rows
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_ts = MagicMock()
+    mock_ts.return_value.date.return_value = today_ist_date
+    return mock_session, mock_ts
+
+
+def _make_pos_row(sym, qty, captured_at):
+    """Minimal daily_book row tuple matching _positions_snapshot SELECT order."""
+    return (
+        "ACC1", sym, "NFO",
+        qty, 100.0, 120.0,   # qty, avg_cost, ltp
+        50.0, 200.0,         # day_pnl, total_pnl
+        None,                # payload_json
+        captured_at,         # captured_at
+        110.0,               # previous_close
+        115.0, 190.0,        # prev_ltp, prev_settlement_pnl
+    )
+
+
+def test_positions_snapshot_includes_todays_closed_qty_zero_rows():
+    """Today's intraday-closed positions (qty=0) must appear in the snapshot.
+
+    The SQL gate is `db.qty != 0 OR db.date = :today_ist`.  When the DB
+    returns a qty=0 row from today's batch, _positions_snapshot must emit it
+    so the frontend can render the 'closed' chip + opacity decoration.
+    """
+    import asyncio
+    from datetime import date, datetime, timezone
+    from unittest.mock import patch
+
+    from backend.api.routes.positions import _positions_snapshot
+
+    today = date(2026, 7, 28)
+    now_dt = datetime(2026, 7, 28, 10, 0, 0, tzinfo=timezone.utc)
+
+    rows = [
+        _make_pos_row("NIFTY26JUL24500CE", 25, now_dt),   # open
+        _make_pos_row("NIFTY26JUL24000PE",  0, now_dt),   # closed today
+    ]
+    mock_session, mock_ts = _make_snapshot_session(rows, today)
+
+    with (
+        patch("backend.api.database.async_session", return_value=mock_session),
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian", mock_ts),
+    ):
+        result = asyncio.run(_positions_snapshot())
+
+    assert result is not None
+    symbols = [r.tradingsymbol for r in result.rows]
+    assert "NIFTY26JUL24500CE" in symbols, "open position must appear"
+    assert "NIFTY26JUL24000PE" in symbols, \
+        "closed (qty=0) position captured today must appear for 'closed' decoration"
+    closed = next(r for r in result.rows if r.tradingsymbol == "NIFTY26JUL24000PE")
+    assert closed.quantity == 0
+
+
+def test_positions_snapshot_excludes_yesterday_closed_qty_zero_rows():
+    """Yesterday's closed positions (qty=0) must NOT appear in today's snapshot.
+
+    The SQL gate `db.qty != 0 OR db.date = :today_ist` excludes qty=0 rows
+    from prior sessions.  When the DB returns a prior-day closed row, the
+    Python layer must not emit it (the DB filters it; mock simulates
+    a DB that already applied the filter, returning only the open row).
+    This documents the expected DB-level filtering contract.
+    """
+    import asyncio
+    from datetime import date, datetime, timezone
+    from unittest.mock import patch
+
+    from backend.api.routes.positions import _positions_snapshot
+
+    today = date(2026, 7, 29)  # Tuesday
+    yesterday_dt = datetime(2026, 7, 28, 10, 0, 0, tzinfo=timezone.utc)  # Monday
+
+    # DB (with the filter applied) returns only the open row; the closed
+    # qty=0 row from Monday is excluded by db.date != today condition.
+    rows = [
+        _make_pos_row("NIFTY26JUL24500CE", 25, yesterday_dt),  # carried overnight
+        # NIFTY26JUL24000PE (qty=0, date=Monday) → filtered by SQL, not in result
+    ]
+    mock_session, mock_ts = _make_snapshot_session(rows, today)
+
+    with (
+        patch("backend.api.database.async_session", return_value=mock_session),
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian", mock_ts),
+    ):
+        result = asyncio.run(_positions_snapshot())
+
+    assert result is not None
+    symbols = [r.tradingsymbol for r in result.rows]
+    assert "NIFTY26JUL24500CE" in symbols, "overnight open position must appear"
+    assert "NIFTY26JUL24000PE" not in symbols, \
+        "yesterday's closed position must be absent (filtered by SQL date gate)"
