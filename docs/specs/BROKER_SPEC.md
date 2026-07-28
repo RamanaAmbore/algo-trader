@@ -309,7 +309,7 @@ marked with `last_price_stale=True`.
 
 ## 7.3 Daily Snapshot Orphan Cleanup
 
-**File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` + `_delete_orphan_positions()`
+**File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` + `_delete_orphan_positions()` + `_delete_prior_orphan_positions()`
 
 After each per-account positions UPSERT in `snapshot_daily_book()`, a new async helper 
 `_delete_orphan_positions(target_date, account, current_symbols)` deletes stale `daily_book` 
@@ -346,17 +346,27 @@ WHERE date = target_date
 If the broker call failed (`raw["positions"] is None`), the cleanup is skipped entirely 
 (fail-open behaviour — no deletion risk if the broker is temporarily unreachable).
 
+### Prior-day orphan cleanup (commit 21d1656a)
+
+After the same-day orphan deletion, a second pass `_delete_prior_orphan_positions(account, 
+current_symbols)` removes stale positions from the **most-recent prior-day snapshot batch**. 
+This addresses settled options (e.g., IDFCFIRST after expiry) that are no longer held but 
+persisted in yesterday's snapshot row.
+
+**Scope**: Past 7 days of daily_book snapshots; scoped to positions `kind='positions'` only.
+
 ### Cleanup timing
 
 - **Execution**: After each `snapshot_daily_book()` run for each account
 - **Scope**: Only `kind='positions'` rows; `kind='holdings'` is unaffected
 - **Idempotency**: Safe to re-run; DELETE is idempotent
+- **Prior-day scope**: Past 7 days (prevents unbounded table scans)
 
 ### Impact
 
-Closed positions no longer appear in the UI after settlement. The `_positions_snapshot()` 
-route query returns only live positions + their prior-session state, providing an accurate 
-real-time view without stale entries.
+Closed positions no longer appear in the UI after settlement, including settled options from 
+prior-day snapshots. The `_positions_snapshot()` route query returns only live positions + 
+their prior-session state, providing an accurate real-time view without stale entries.
 
 ---
 
@@ -558,6 +568,22 @@ never binds the port.
 - `_task_warm_backfill`: empty symbol universe → `await asyncio.sleep(3600); return`
 - `_task_expiry_check`: non-prod branch → `while not is_prod_branch(): await asyncio.sleep(300); return`
 
+### Expiry Task Restart-Blindness Fix (commit cbbe0f23)
+
+**Module-level sentinel**: `backend/api/background.py:_expiry_last_run_date` tracks whether 
+expiry engine has run today. On service restart, `_task_expiry_check` now fires immediately 
+if current time > 09:20 IST and sentinel is None (hasn't run today), then sets sentinel after 
+successful engine completion. Prevents expiry-close loop from being skipped on restart after 
+market open.
+
+**Expiry engine re-scan loop** (commit cbbe0f23): `ExpiryEngine.run()` in `backend/api/algo/expiry.py` 
+now loops after initial `_run_nfo_close()` — sleeps `_rescan_min` (default 30) minutes between scans, 
+runs until 15:25 IST. Picks up newly-ITM NFO positions intraday (when position wasn't ITM at close 
+but ticks ITM during day).
+
+**NSE NIFTY quote key fix**: `_fetch_underlying_ltps()` now uses `NSE:NIFTY 50` (not `NSE:NIFTY`) 
+for Kite quote API calls to match actual tradable symbol.
+
 ---
 
 ## 10. Virtual Root Resolution
@@ -623,7 +649,7 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I13 — RemoteBroker translate_qty delegation**: Any RemoteBroker proxy must override `translate_qty` to delegate via `_call`; the base-class no-op is unsafe for MCX/NCO contracts and sends raw contract qty to the adapter.
 
-**I14 — Closed-hours snapshot query combines latest + prior-session CTEs**: `_positions_snapshot()` in `backend/api/routes/positions.py` uses a single SQL query with `latest_batch` (today's most recent capture per account) and `prev_batch` CTEs (prior-session's most recent row per account/symbol). The `prev_batch` window is anchored on `captured_at < max_at AND captured_at >= max_at - INTERVAL '2 days'` to survive UTC/IST date-column edge cases; `prev_close_val` prefers yesterday's `prev_ltp` (from daily_book) FIRST, falling back to snapshot's `previous_close` only when `prev_ltp` is absent/zero. Rationale: after MCX closes at 23:30 IST the broker sets `previous_close = today_settlement`, which would collapse Day P&L to 0. Using yesterday's LTP preserves the correct close price through the closed window.
+**I14 — Closed-hours snapshot query combines latest + prior-session CTEs and excludes qty=0**: `_positions_snapshot()` in `backend/api/routes/positions.py` uses a single SQL query with `latest_batch` (today's most recent capture per account) and `prev_batch` CTEs (prior-session's most recent row per account/symbol). The `prev_batch` window is anchored on `captured_at < max_at AND captured_at >= max_at - INTERVAL '2 days'` to survive UTC/IST date-column edge cases; `prev_close_val` prefers yesterday's `prev_ltp` (from daily_book) FIRST, falling back to snapshot's `previous_close` only when `prev_ltp` is absent/zero. Rationale: after MCX closes at 23:30 IST the broker sets `previous_close = today_settlement`, which would collapse Day P&L to 0. Using yesterday's LTP preserves the correct close price through the closed window. Off-hours query includes `AND db.qty != 0` guard to exclude flat/expired positions from the off-hours read path (commit 21d1656a).
 
 **I15 — Template attach only on full fill**: Template attach fires when `filled_qty >= qty` (parent order fully filled). Partial fills are logged but do NOT trigger GTT placement. The remaining open qty must be left without premature stops.
 
@@ -905,3 +931,4 @@ designed.
 | 2026-07-27 | v1.6 Template system enhancements: Added §8.3 GTT Template Attachment documenting partial-fill guard (#2), sub-lot scale rounding (#3), LIMIT TP tick offset (#1), wing feasibility flag (#10), wing failure alerting, postback TOCTOU idempotency lock, GTT trigger validation (#9, #29), Kite MARKET GTT rejection via `BrokerCapabilityError`, and full-fill detection. Added §8.4 Broker Postback Fill-Status Mapping documenting `_BROKER_FILLED_STATUSES` dict for per-broker fill-token resolution (Kite: COMPLETE, Dhan: TRADED, Groww: COMPLETE). |
 | 2026-07-27 | v1.7 Template attach blocking on close orders (commit 0a456e9f): Updated §8.3 to document three-layer blocking mechanism for close/offset orders: (1) ticket submit clears `template_id` via `_is_offsetting_position()` position-book check + `intent="close"` guard, (2) reconcile path returns False when close intent detected via `_opl_reconcile_attach_eligible()`, (3) postback path checks both intent flags and runs async position offset via `_pb_check_and_fire_template_attach()`. Frontend also clears TemplateBar and `templateId` when `action === 'close'`. Added I22 invariant: template attach blocked when order closes/reduces existing position at all three attachment layers (ticket/reconcile/postback) + frontend. Prevents nested exit GTTs on close orders. |
 | 2026-07-27 | v1.8 Snapshot orphan deletion (commit 47c49e20): Added §7.3 Daily Snapshot Orphan Cleanup documenting `_delete_orphan_positions()` async helper called after each per-account positions UPSERT in `snapshot_daily_book()`. Removes stale `daily_book` (kind='positions') rows for symbols absent from broker response. Broker response uses sentinel pattern: `positions=None` (call failed, skip cleanup) vs `positions=[]` or `[...]` (call succeeded, proceed). Prevents closed positions from persisting in UI after settlement. Added I23 invariant: orphan deletion enforces SSOT for settled positions; cleanup is fail-open and idempotent. |
+| 2026-07-27 | v1.9 Expiry restart fix + prior-day orphan cleanup (commits cbbe0f23, 21d1656a): Updated §9.1 Background Task Supervisor with expiry task restart-blindness fix (module-level `_expiry_last_run_date` sentinel ensures immediate fire on service restart > 09:20 IST; not run today yet); expiry engine re-scan loop (every 30 min until 15:25 IST, catches newly-ITM positions); NSE NIFTY quote key fix (NSE:NIFTY 50 not NSE:NIFTY). Updated §7.3 to add `_delete_prior_orphan_positions()` pass removing settled options from prior-day snapshots (7-day scope). Updated I14 invariant to note off-hours `_positions_snapshot()` query includes `AND qty != 0` guard (commit 21d1656a) to exclude flat/expired positions. Expiry-day auto-close agents changed from inactive → active status. |

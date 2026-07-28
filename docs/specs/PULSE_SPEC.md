@@ -144,11 +144,12 @@ See Section 5 for DB-first policy and fallback ladder.
 ### 4.4 Positions & Holdings
 
 - Open: live from broker via `closed_hours_or_broker()` → `'live'`
-- Closed: from `daily_book` snapshot → `'snapshot'` with `as_of` timestamp
+- Closed: from `daily_book` snapshot → `'snapshot'` with `as_of` timestamp; includes `AND qty != 0` guard (flat/expired excluded)
 - Day P&L: always via `baseDayPnlForPosition(p)` — NEVER read `day_change_val` directly
 - Do NOT use `positions.close_price` (stale overnight); use `daily_book.ltp`
 - NavStrip P-slot is guarded against zero-flash during live→snapshot transitions
   (when `close_price === ltp`, the guard returns 0 to prevent distortion)
+- Orphan cleanup: after-hours snapshots run `_delete_orphan_positions()` on same-day + `_delete_prior_orphan_positions()` on prior-day to remove settled/closed positions (7-day scope)
 
 ### 4.5 Chase Card Status Columns
 
@@ -303,6 +304,11 @@ Close and settlement snapshots are the only source of truth during closed hours.
 ## 7. Self-Healing Refresh Cycle
 
 The system must recover from any single-tier failure without operator intervention.
+
+**Expiry-day auto-close agent** (commit cbbe0f23): `expiry-day-equity-itm-auto-close` and 
+`expiry-day-commodity-itm-auto-close` agents are now **active** by default. These agents 
+re-scan for newly-ITM expiring positions every 30 minutes (until 15:25 IST), enabling 
+intraday ITM close automation when positions tick ITM after initial close snapshot.
 
 ### Failure modes and expected recovery:
 
@@ -1068,3 +1074,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-24 | Derivatives page polling fix (7ed72480): `loadPositions()` switched from `marketAwareInterval` to `visibleInterval` (30s cadence, continues after market close); EOD broker settlement data now picked up after 23:30 IST; `loadStrategy` and `loadUnderlyingQuotes` remain on `marketAwareInterval` |
 | 2026-07-24 | §17 equity candidate expiry P&L display fix (023583f9): `_equityLinearLegs` entries now carry a `key` property; `_eqExpPnlByKey` derived maps each equity candidate key to its beta-adjusted linear expiry P&L at live spot; `_legExpPnlDisplay` now handles `'eq'` candidates returning `_eqExpPnlByKey[enKey(c)] ?? null`; `_legsExpPnlTotal` now single-pass over all candidates calling `_legExpPnlDisplay`, guaranteeing `sum(per-leg rows) == TOTAL` for all candidate types including equity and proxy hedges |
 | 2026-07-26 | §17.1 payoff chart spot price resolution (63262b94): `liveSpot` derived now includes `candidatePositions[*].underlying_ltp` (backend-stamped in positions.py Pass 3) as step 3 in resolution chain, before batchQuote fallback; eliminates "Resolving spot…" during SSE warmup |
+| 2026-07-27 | v1.3 Expiry re-scan + positions cleanup (commits cbbe0f23, 21d1656a): §4.4 positions/holdings now notes off-hours snapshot includes `AND qty != 0` guard (flat/expired excluded) and runs orphan cleanup (same-day + prior-day, 7-day scope). §7 added expiry-day auto-close agent status change (now active by default) with re-scan loop (every 30 min until 15:25 IST, catches newly-ITM positions). |
