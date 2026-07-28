@@ -698,6 +698,45 @@ async def _delete_orphan_positions(
         return result.rowcount
 
 
+async def _delete_prior_orphan_positions(account: str, current_symbols: set) -> int:
+    """Delete positions rows from the most-recent prior-day snapshot batch
+    that are no longer returned by the broker (e.g. after overnight settlement).
+
+    _positions_snapshot reads by MAX(captured_at) — without this cleanup,
+    settled positions from the prior session persist visible during off-hours
+    until the next trading-day snapshot overwrites them.
+    """
+    from sqlalchemy import bindparam as _bp
+
+    async with async_session() as session:
+        if current_symbols:
+            stmt = text(
+                "DELETE FROM daily_book "
+                "WHERE kind = 'positions' AND account = :account "
+                "AND captured_at < (SELECT MAX(captured_at) FROM daily_book "
+                "                   WHERE kind = 'positions' AND account = :account "
+                "                   AND date >= CURRENT_DATE) "
+                "AND captured_at >= NOW() - INTERVAL '7 days' "
+                "AND symbol NOT IN :symbols"
+            ).bindparams(_bp("symbols", expanding=True))
+            result = await session.execute(
+                stmt,
+                {"account": account, "symbols": list(current_symbols)},
+            )
+        else:
+            stmt = text(
+                "DELETE FROM daily_book "
+                "WHERE kind = 'positions' AND account = :account "
+                "AND captured_at < (SELECT MAX(captured_at) FROM daily_book "
+                "                   WHERE kind = 'positions' AND account = :account "
+                "                   AND date >= CURRENT_DATE) "
+                "AND captured_at >= NOW() - INTERVAL '7 days'"
+            )
+            result = await session.execute(stmt, {"account": account})
+        await session.commit()
+        return result.rowcount
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -811,6 +850,12 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
                     logger.info(
                         "[SNAPSHOT] pruned %d stale position row(s) for %s %s",
                         _pruned, account, target_date,
+                    )
+                _prior_pruned = await _delete_prior_orphan_positions(account, _p_syms)
+                if _prior_pruned:
+                    logger.info(
+                        "[SNAPSHOT] pruned %d stale position row(s) from prior snapshot for %s",
+                        _prior_pruned, account,
                     )
 
             processed.append(account)

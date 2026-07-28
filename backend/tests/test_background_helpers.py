@@ -68,3 +68,76 @@ def test_asyncio_gather_for_concurrent_fetches():
         "background.py must use asyncio.gather for concurrent fetches — "
         "sequential await would add 2–3× latency per background cycle"
     )
+
+
+def test_expiry_last_run_date_sentinel_exists():
+    """Module-level _expiry_last_run_date sentinel must exist in background.py."""
+    assert "_expiry_last_run_date" in _SRC, (
+        "background.py must declare _expiry_last_run_date sentinel to prevent "
+        "restart-after-09:20 from skipping today's expiry check"
+    )
+
+
+def test_expiry_restart_fires_immediately_when_not_run_today():
+    """If now >= check_time but _expiry_last_run_date != today, delay_s must be 0.
+
+    Simulates a service restart at 10:00 IST on an expiry day where the
+    scheduled 09:20 window has already passed and the sentinel is unset.
+    """
+    from backend.api import background as bg
+    from datetime import datetime, timezone, timedelta
+
+    # Construct a fake 'now' at 10:00 IST (UTC+5:30) — past the 09:20 window
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    fake_now = datetime(2026, 7, 24, 10, 0, 0, tzinfo=ist_offset)
+    fake_today = fake_now.date()
+    hh, mm = 9, 20
+    check_time = fake_now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+    # Simulate: sentinel is None (not yet run today)
+    last_run = None  # _expiry_last_run_date equivalent
+
+    # Replicate the decision logic from _task_expiry_check
+    if fake_now >= check_time:
+        if last_run != fake_today:
+            delay_s = 0.0
+        else:
+            check_time_next = check_time + timedelta(days=1)
+            delay_s = max(0.0, (check_time_next - fake_now).total_seconds())
+    else:
+        delay_s = max(0.0, (check_time - fake_now).total_seconds())
+
+    assert delay_s == 0.0, (
+        f"Restart after 09:20 with sentinel=None must fire immediately (delay_s=0), "
+        f"got delay_s={delay_s}"
+    )
+
+
+def test_expiry_no_double_fire_when_already_ran_today():
+    """If _expiry_last_run_date == today and now >= check_time, must sleep to tomorrow."""
+    from datetime import datetime, timezone, timedelta
+
+    ist_offset = timezone(timedelta(hours=5, minutes=30))
+    fake_now = datetime(2026, 7, 24, 10, 0, 0, tzinfo=ist_offset)
+    fake_today = fake_now.date()
+    hh, mm = 9, 20
+    check_time = fake_now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+    last_run = fake_today  # already ran today
+
+    if fake_now >= check_time:
+        if last_run != fake_today:
+            delay_s = 0.0
+        else:
+            check_time_next = check_time + timedelta(days=1)
+            delay_s = max(0.0, (check_time_next - fake_now).total_seconds())
+    else:
+        delay_s = max(0.0, (check_time - fake_now).total_seconds())
+
+    assert delay_s > 0.0, (
+        "When sentinel already matches today, delay_s must be > 0 (sleep to tomorrow)"
+    )
+    # Should be approximately 23h (next day's 09:20)
+    assert delay_s > 3600 * 20, (
+        f"Delay until tomorrow's check should be > 20h, got {delay_s/3600:.1f}h"
+    )

@@ -31,6 +31,20 @@ from backend.api.algo.chase import chase_order, ChaseConfig, ChaseResult, ChaseS
 
 logger = get_logger(__name__)
 
+# Kite quote-API keys differ from the plain underlying name for NSE indices.
+# "NSE:NIFTY" is invalid — the correct key is "NSE:NIFTY 50".
+_NSE_INDEX_QUOTE_KEYS: dict[str, str] = {
+    "NIFTY":       "NSE:NIFTY 50",
+    "BANKNIFTY":   "NSE:NIFTY BANK",
+    "FINNIFTY":    "NSE:NIFTY FIN SERVICE",
+    "MIDCPNIFTY":  "NSE:NIFTY MIDCAP SELECT",
+    "SENSEX":      "BSE:SENSEX",
+}
+# Reverse map: "NIFTY 50" → "NIFTY", "NIFTY BANK" → "BANKNIFTY", etc.
+_KITE_KEY_TO_UNDERLYING: dict[str, str] = {
+    v.split(":", 1)[1]: k for k, v in _NSE_INDEX_QUOTE_KEYS.items()
+}
+
 
 @dataclass
 class OptionPosition:
@@ -430,14 +444,16 @@ class ExpiryEngine:
             return {}
         broker = brokers[0]
 
-        # Map underlying name to its index/futures symbol for LTP
-        # For equity indices: use NSE:NIFTY 50, NSE:NIFTY BANK, etc.
-        # For commodities: use MCX:CRUDE, MCX:GOLD, etc.
+        # Map underlying name to its index/futures symbol for LTP.
+        # For equity indices: use Kite's canonical key (NSE:NIFTY 50,
+        # NSE:NIFTY BANK, etc.) via _NSE_INDEX_QUOTE_KEYS — bare
+        # "NSE:NIFTY" is an invalid Kite key and returns nothing.
+        # For commodities: use MCX:<underlying>.
         symbols = set()
         for p in positions:
             if p.exchange == "NFO":
-                # Try NSE:<underlying> for index
-                symbols.add(f"NSE:{p.underlying}")
+                kite_key = _NSE_INDEX_QUOTE_KEYS.get(p.underlying, f"NSE:{p.underlying}")
+                symbols.add(kite_key)
             else:
                 symbols.add(f"MCX:{p.underlying}")
 
@@ -446,7 +462,12 @@ class ExpiryEngine:
 
         try:
             data = broker.ltp(list(symbols))
-            return {k.split(":")[-1]: v.get("last_price", 0) for k, v in data.items()}
+            ltps: dict[str, float] = {}
+            for kite_k, val in data.items():
+                suffix = kite_k.split(":", 1)[1] if ":" in kite_k else kite_k
+                underlying = _KITE_KEY_TO_UNDERLYING.get(suffix, suffix)
+                ltps[underlying] = val.get("last_price", 0.0)
+            return ltps
         except Exception as e:
             logger.error(f"Expiry: LTP fetch failed: {e}")
             return {}
@@ -714,10 +735,11 @@ class ExpiryEngine:
         1. Morning scan at 09:15
         2. Wait until T-2h before close
         3. Start closing
-        4. Re-scan every 30 min for new ITM positions
-        5. Continue until all closed or market close
+        4. Re-scan every _rescan_min minutes for NFO positions that cross ITM intraday
+        5. Continue until all closed or 15:25 IST (NFO market close - 5 min buffer)
         """
-        today = timestamp_indian().date()
+        now_ist = timestamp_indian()
+        today = now_ist.date()
         equity_close, mcx_close = self._parse_segment_close_times()
 
         # Morning scan
@@ -742,6 +764,26 @@ class ExpiryEngine:
 
         if nfo_positions:
             await self._run_nfo_close(today, equity_close, nfo_positions)
+
+        # Periodic re-scan for NFO positions that cross ITM intraday.
+        # Runs until 15:25 IST (5-min buffer before NFO close) so any
+        # position that moves ITM after the morning scan is still caught.
+        _closed_syms: set[str] = {r.symbol for r in self.state.closed}
+        _nfo_deadline = now_ist.replace(hour=15, minute=25, second=0, microsecond=0)
+        while timestamp_indian() < _nfo_deadline:
+            await asyncio.sleep(self._rescan_min * 60)
+            _fresh = self.scan_positions()
+            _new_itm = [
+                p for p in _fresh
+                if p.exchange == "NFO"
+                and p.moneyness == "ITM"
+                and p.tradingsymbol not in _closed_syms
+            ]
+            if _new_itm:
+                logger.info("[EXPIRY] re-scan: %d newly-ITM NFO position(s)", len(_new_itm))
+                await self._run_nfo_close(today, equity_close, _new_itm)
+                _closed_syms.update(r.symbol for r in self.state.closed)
+
         if mcx_positions:
             await self._run_mcx_close(today, mcx_close)
 

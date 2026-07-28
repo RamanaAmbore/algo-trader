@@ -53,6 +53,11 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ramboq-bg")
 _intraday_equity: deque[tuple[str, float, float, float, float, float, float]] = deque(maxlen=200)
 _intraday_equity_date: date | None = None
 
+# Tracks the last date _task_expiry_check successfully ran its engine pass.
+# Prevents restart-after-09:20 from skipping today entirely by detecting
+# that we have not yet run on today's date.
+_expiry_last_run_date: "date | None" = None
+
 
 # ---------------------------------------------------------------------------
 # Segment config helpers
@@ -1133,8 +1138,10 @@ async def _task_expiry_check() -> None:
     from backend.api.routes.algo import _broadcast_event
 
     from backend.shared.helpers.settings import get_string
+    global _expiry_last_run_date
     while True:
         now = timestamp_indian()
+        today = now.date()
         # Schedule for algo.expiry_check_time IST daily (default 09:20).
         # Operator can update via /admin/settings (e.g. "15:00" for an
         # EOD-only close window) — re-read each loop so changes apply
@@ -1143,10 +1150,16 @@ async def _task_expiry_check() -> None:
         hh, mm = _bg_parse_expiry_check_time(cfg_time)
         check_time = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if now >= check_time:
-            check_time += timedelta(days=1)
-        sleep_s = (check_time - now).total_seconds()
-        logger.info(f"Background: expiry check sleeping {sleep_s/3600:.1f}h until {check_time.strftime('%H:%M')} IST")
-        await asyncio.sleep(sleep_s)
+            if _expiry_last_run_date != today:
+                delay_s = 0.0  # past scheduled time but haven't run today — fire immediately
+            else:
+                check_time += timedelta(days=1)
+                delay_s = max(0.0, (check_time - now).total_seconds())
+        else:
+            delay_s = max(0.0, (check_time - now).total_seconds())
+        if delay_s:
+            logger.info(f"Background: expiry check sleeping {delay_s/3600:.1f}h until {check_time.strftime('%H:%M')} IST")
+            await asyncio.sleep(delay_s)
 
         try:
             engine = ExpiryEngine(on_event=_broadcast_event)
@@ -1162,6 +1175,8 @@ async def _task_expiry_check() -> None:
                 await engine.run()
             else:
                 logger.info("Background: no option positions expiring today")
+
+            _expiry_last_run_date = today
         except Exception as e:
             logger.error(f"Background: expiry check failed: {e}")
 
