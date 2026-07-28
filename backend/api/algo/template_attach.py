@@ -226,6 +226,79 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
     logger.info(f"guard alert dispatched: {summary}")
 
 
+def _check_offhours_wing_gate(
+    apply_path: str,
+    parent_exchange: str,
+    template: dict,
+    parent_lot_size: int,
+    parent_account: str,
+    parent_symbol: str,
+    parent_side: str,
+    parent_qty: int,
+    parent_fill_price: float,
+    parent_order_id,
+) -> "tuple[Optional[AttachResult], Optional[str]]":
+    """(C1/#22) Return (early_result, offhours_note). early_result is non-None only
+    when the template has a wing and exchange is closed — caller returns it immediately."""
+    if apply_path not in ("live", "auto"):
+        return None, None
+    try:
+        from backend.api.algo.agent_engine import _symbol_exchange_open, _build_now_ctx
+        if _symbol_exchange_open(parent_exchange, _build_now_ctx()):
+            return None, None
+        if _template_has_wing(template):
+            _err_msg = (
+                f"Exchange {parent_exchange} closed — "
+                "wing MARKET leg requires open market; attach deferred"
+            )
+            logger.warning("[TEMPLATE-GUARD] %s", _err_msg)
+            _plan = TemplatePlan(
+                template_id=template.get("id"),
+                template_name=template.get("name") or "(unnamed)",
+                template_slug=template.get("slug"),
+                parent_account=parent_account,
+                parent_symbol=parent_symbol,
+                parent_side=parent_side,
+                parent_qty=parent_qty,
+                parent_exchange=parent_exchange,
+                parent_fill_price=float(parent_fill_price),
+                parent_lot_size=parent_lot_size,
+            )
+            _res = AttachResult(plan=_plan)
+            _res.errors.append(_err_msg)
+            _fire_attach_fail_alert(order_id=parent_order_id, symbol=parent_symbol, account=parent_account, errors=[_err_msg])
+            return _res, None
+        note = (
+            f"GTT registered off-hours ({parent_exchange} closed) — "
+            "will activate at next session open"
+        )
+        return None, note
+    except Exception as _e:
+        logger.warning("apply_template_to_order: market-hours check failed: %s", _e)
+        return None, None
+
+
+def _fire_wing_unprotected_alert(
+    wing_skipped_reason: str,
+    result,
+    parent_order_id,
+    parent_symbol: str,
+    parent_exchange: str,
+) -> None:
+    """(#28B) Fire urgent ntfy when GTTs placed but wing failed post-fill."""
+    msg = (
+        f"GTTs placed (ids: {result.gtt_ids}) but wing failed: "
+        f"{wing_skipped_reason} | order #{parent_order_id} "
+        f"{parent_symbol} {parent_exchange}"
+    )
+    logger.warning("[WING-UNPROTECTED] %s", msg)
+    try:
+        from backend.shared.helpers.alert_utils import send_ntfy_alert
+        send_ntfy_alert("Unprotected SELL position", msg, priority="urgent")
+    except Exception as _e:
+        logger.warning("wing unprotected ntfy alert failed: %s", _e)
+
+
 def _fire_attach_fail_alert(
     *,
     order_id: Optional[int],
@@ -2218,52 +2291,15 @@ async def apply_template_to_order(
             )
         return _lot_err
 
-    # C1 — Market-hours guard: wing MARKET legs fail at the broker when the
-    # exchange is closed. GTT-only templates are accepted by Kite 24×7 and
-    # can proceed off-hours. We check HERE — after lot_size resolution but
-    # before plan resolution — to avoid unnecessary computation. Only live
-    # and auto paths enforce the guard; preview/sim are always allowed.
-    _offhours_note: Optional[str] = None
-    if apply_path in ("live", "auto"):
-        try:
-            from backend.api.algo.agent_engine import (  # circular: lazy OK
-                _symbol_exchange_open, _build_now_ctx,
-            )
-            if not _symbol_exchange_open(parent_exchange, _build_now_ctx()):
-                if _template_has_wing(template):
-                    _err_msg = (
-                        f"Exchange {parent_exchange} closed — "
-                        "wing MARKET leg requires open market; attach deferred"
-                    )
-                    logger.warning("[TEMPLATE-GUARD] %s", _err_msg)
-                    _wing_err_plan = TemplatePlan(
-                        template_id=template.get("id"),
-                        template_name=template.get("name") or "(unnamed)",
-                        template_slug=template.get("slug"),
-                        parent_account=parent_account,
-                        parent_symbol=parent_symbol,
-                        parent_side=parent_side,
-                        parent_qty=parent_qty,
-                        parent_exchange=parent_exchange,
-                        parent_fill_price=float(parent_fill_price),
-                        parent_lot_size=parent_lot_size,
-                    )
-                    _wing_err_result = AttachResult(plan=_wing_err_plan)
-                    _wing_err_result.errors.append(_err_msg)
-                    _fire_attach_fail_alert(
-                        order_id=parent_order_id,
-                        symbol=parent_symbol,
-                        account=parent_account,
-                        errors=[_err_msg],
-                    )
-                    return _wing_err_result
-                # GTT-only template — no wing, proceed off-hours (Kite accepts GTTs 24×7)
-                _offhours_note = (
-                    f"GTT registered off-hours ({parent_exchange} closed) — "
-                    "will activate at next session open"
-                )
-        except Exception as _mh_e:
-            logger.warning(f"apply_template_to_order: market-hours check failed: {_mh_e}")
+    # C1 — Market-hours guard: wing MARKET legs fail when exchange closed.
+    # GTT-only templates proceed off-hours (Kite accepts GTTs 24×7).
+    _early, _offhours_note = _check_offhours_wing_gate(
+        apply_path, parent_exchange, template, parent_lot_size,
+        parent_account, parent_symbol, parent_side, parent_qty,
+        parent_fill_price, parent_order_id,
+    )
+    if _early is not None:
+        return _early
 
     # Phase 1B — when the template says "pick wing by premium %" AND
     # no explicit wing_strike_offset overrides it, run the chain scan
@@ -2299,27 +2335,11 @@ async def apply_template_to_order(
     # API response can surface why the wing wasn't attached.
     if wing_skipped_reason:
         result.wing_skipped_reason = wing_skipped_reason
-    # (#28B) When the wing scan failed and no wing was attached, fire an
-    # ntfy alert about the unprotected SELL position. The _maybe_scan_wing_by_premium
-    # call already fired an ntfy, but that's at scan time; this one fires after
-    # apply_plan_live so we know GTTs did/didn't land.
+    # (#28B) When the wing scan failed and GTTs were placed, alert immediately.
     if wing_skipped_reason and not result.wing_order_id and result.gtt_ids:
-        # GTTs placed but no wing — operator has partial exits but unhedged position.
-        _wp_msg = (
-            f"GTTs placed (ids: {result.gtt_ids}) but wing failed: "
-            f"{wing_skipped_reason} | order #{parent_order_id} "
-            f"{parent_symbol} {parent_exchange}"
+        _fire_wing_unprotected_alert(
+            wing_skipped_reason, result, parent_order_id, parent_symbol, parent_exchange
         )
-        logger.warning("[WING-UNPROTECTED] %s", _wp_msg)
-        try:
-            from backend.shared.helpers.alert_utils import send_ntfy_alert
-            send_ntfy_alert(
-                "Unprotected SELL position",
-                _wp_msg,
-                priority="urgent",
-            )
-        except Exception as _na2:
-            logger.warning("wing unprotected ntfy alert failed: %s", _na2)
         # TODO(#28B): write wing_failed note to attached_gtts_json when
         # template_attach_error column exists on AlgoOrder.
     # Fire operational-failure alert on any error that silently

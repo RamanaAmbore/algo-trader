@@ -225,87 +225,63 @@ def _exchange_open_for_attach(exchange: str) -> bool:
         return True  # fail-open — don't block attach on market-hours lookup failure
 
 
-def _validate_gtt_triggers(
-    plan,
-    ltp: float,
-    exchange: str,
-) -> list[str]:
-    """Validate GTT trigger direction vs parent side and circuit band.
+def _gtt_direction_errors(label: str, trig_f: float, fill_price: float, parent_side: str, is_tp: bool, is_sl: bool) -> list[str]:
+    """Return direction-check errors for one trigger value."""
+    errs: list[str] = []
+    if is_tp:
+        if parent_side == "BUY" and trig_f <= fill_price:
+            errs.append(f"{label}: TP trigger {trig_f} must be above fill {fill_price} for BUY parent")
+        elif parent_side == "SELL" and trig_f >= fill_price:
+            errs.append(f"{label}: TP trigger {trig_f} must be below fill {fill_price} for SELL parent")
+    if is_sl:
+        if parent_side == "BUY" and trig_f >= fill_price:
+            errs.append(f"{label}: SL trigger {trig_f} must be below fill {fill_price} for BUY parent")
+        elif parent_side == "SELL" and trig_f <= fill_price:
+            errs.append(f"{label}: SL trigger {trig_f} must be above fill {fill_price} for SELL parent")
+    return errs
 
-    (#29) Called from preview and apply-at-fill paths when template_id is set.
+
+def _gtt_spec_errors(spec, fill_price: float, ltp: float, parent_side: str) -> list[str]:
+    """Return all trigger errors for one GttSpec."""
+    errs: list[str] = []
+    label = spec.label or "?"
+    label_up = label.upper()
+    is_oco = (spec.trigger_type == "two-leg" and "TP" in label_up and "SL" in label_up)
+    for trig_idx, trig in enumerate(spec.trigger_values or []):
+        if trig is None:
+            continue
+        try:
+            trig_f = float(trig)
+        except (TypeError, ValueError):
+            errs.append(f"{label}: trigger value {trig!r} is not a number")
+            continue
+        if trig_f <= 0:
+            errs.append(f"{label}: trigger {trig_f} must be positive")
+            continue
+        if fill_price > 0:
+            is_tp = (trig_idx == 0) if is_oco else ("TP" in label_up)
+            is_sl = (trig_idx == 1) if is_oco else ("SL" in label_up)
+            errs.extend(_gtt_direction_errors(label, trig_f, fill_price, parent_side, is_tp, is_sl))
+        if ltp and ltp > 0:
+            deviation_pct = abs(trig_f - ltp) / ltp * 100.0
+            if deviation_pct > 50.0:
+                errs.append(f"{label}: trigger {trig_f} deviates {deviation_pct:.1f}% from LTP {ltp} — possible misconfiguration (>50% band)")
+    return errs
+
+
+def _validate_gtt_triggers(plan, ltp: float, exchange: str) -> list[str]:
+    """Validate GTT trigger direction vs parent side and circuit band. (#29)
+
     Returns a list of error strings. Caller raises HTTPException(422) on
-    non-empty list (preview path) or logs CRITICAL (apply-at-fill path).
-
-    Checks:
-      1. BUY parent TP trigger must be above fill price.
-         SELL parent TP trigger must be below fill price.
-      2. BUY parent SL trigger must be below fill price.
-         SELL parent SL trigger must be above fill price.
-      3. Trigger must not be zero or negative.
-      4. LTP sanity: trigger must not deviate > 50% from LTP when LTP is known
-         (circuit band guard — catches gross misconfiguration like tp_pct=500).
+    non-empty list (preview) or logs CRITICAL (apply-at-fill path).
     """
     if plan is None:
         return []
-    errors: list[str] = []
     parent_side = (plan.parent_side or "BUY").upper()
     fill_price  = float(plan.parent_fill_price or 0.0)
-
+    errors: list[str] = []
     for spec in (plan.gtts or []):
-        label = spec.label or "?"
-        label_up = label.upper()
-        # For two-leg OCO ("TP+SL"), trigger index 0 = TP, index 1 = SL.
-        # For single-label GTTs, the label drives which check applies to all triggers.
-        _is_oco = (spec.trigger_type == "two-leg" and "TP" in label_up and "SL" in label_up)
-        for trig_idx, trig in enumerate(spec.trigger_values or []):
-            if trig is None:
-                continue
-            try:
-                trig_f = float(trig)
-            except (TypeError, ValueError):
-                errors.append(f"{label}: trigger value {trig!r} is not a number")
-                continue
-            if trig_f <= 0:
-                errors.append(f"{label}: trigger {trig_f} must be positive")
-                continue
-            # Direction check — for OCO, index 0 = TP, index 1 = SL
-            if fill_price > 0:
-                if _is_oco:
-                    is_tp = (trig_idx == 0)
-                    is_sl = (trig_idx == 1)
-                else:
-                    is_tp = "TP" in label_up
-                    is_sl = "SL" in label_up
-                if is_tp:
-                    if parent_side == "BUY" and trig_f <= fill_price:
-                        errors.append(
-                            f"{label}: TP trigger {trig_f} must be above fill "
-                            f"{fill_price} for BUY parent"
-                        )
-                    elif parent_side == "SELL" and trig_f >= fill_price:
-                        errors.append(
-                            f"{label}: TP trigger {trig_f} must be below fill "
-                            f"{fill_price} for SELL parent"
-                        )
-                if is_sl:
-                    if parent_side == "BUY" and trig_f >= fill_price:
-                        errors.append(
-                            f"{label}: SL trigger {trig_f} must be below fill "
-                            f"{fill_price} for BUY parent"
-                        )
-                    elif parent_side == "SELL" and trig_f <= fill_price:
-                        errors.append(
-                            f"{label}: SL trigger {trig_f} must be above fill "
-                            f"{fill_price} for SELL parent"
-                        )
-            # Circuit band guard: triggers > 50% from LTP are almost certainly wrong
-            if ltp and ltp > 0:
-                deviation_pct = abs(trig_f - ltp) / ltp * 100.0
-                if deviation_pct > 50.0:
-                    errors.append(
-                        f"{label}: trigger {trig_f} deviates {deviation_pct:.1f}% "
-                        f"from LTP {ltp} — possible misconfiguration (>50% band)"
-                    )
+        errors.extend(_gtt_spec_errors(spec, fill_price, ltp, parent_side))
     return errors
 
 
