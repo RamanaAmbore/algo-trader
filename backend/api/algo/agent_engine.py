@@ -989,7 +989,7 @@ _EXPIRY_AGENTS = [
          schedule="market_hours",
          fire_at_time="15:00",
          cooldown_minutes=60,
-         status="inactive",
+         status="active",
          actions=[
              {"type": "expiry_auto_close",
               "params": {"exchange": "NFO"}},
@@ -1027,7 +1027,7 @@ _EXPIRY_AGENTS = [
          schedule="market_hours",
          fire_at_time="23:00",
          cooldown_minutes=60,
-         status="inactive",
+         status="active",
          actions=[
              {"type": "expiry_auto_close",
               "params": {"exchange": "MCX"}},
