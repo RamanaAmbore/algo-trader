@@ -351,6 +351,32 @@ Previously, basket placement lacked these guards and sent all legs unconditional
 
 ## 8.3. GTT Template Attachment System Enhancements (Jul 2026)
 
+**Template attach blocked on close/offset orders** (commit 0a456e9f): Template `template_id` is now cleared at three layers when an order would reduce/close an existing position:
+
+1. **Ticket submit layer** — `_is_offsetting_position()` in `orders_place.py` (async helper):
+   - Checks broker position book (30s TTL cache) for the symbol/exchange/account
+   - BUY against net quantity < 0 → closing a SHORT → True
+   - SELL against net quantity > 0 → closing a LONG → True
+   - Fails open (returns False) on any exception — does not block the order on position-fetch failure
+   - When close intent is detected: `template_id` is cleared via `msgspec.structs.replace(data, template_id=None)` before AlgoOrder persistence
+   - Also guards explicit `intent="close"` flow
+
+2. **Reconcile layer** — `_opl_reconcile_attach_eligible()` in `orders_place.py`:
+   - Returns False when `row.intent == "close"` (stored on AlgoOrder)
+   - Also checks `row.is_close_intent` flag for legacy compatibility
+   - Prevents reconcile sweep from firing template attach on close orders
+
+3. **Postback layer** — two-part guard in `orders_postback.py`:
+   - `_pb_wants_template_attach()` returns False when `row.intent == "close"` or `row.is_close_intent == True`
+   - `_pb_check_and_fire_template_attach()` runs async position-offset check (`_is_offsetting_position`) before dispatching the attach
+   - Ensures postback fan-out respects both explicit close intent and detected close via position state
+
+4. **Frontend layer** — `OrderTicket.svelte`:
+   - When `action === 'close'`: TemplateBar is hidden and `templateId` is cleared in the form state
+   - Prevents operators from accidentally attaching templates to close orders
+
+**Rationale**: When an order is closing/reducing an existing position, attaching exit GTTs (TP/SL) to that order is semantically incorrect — the order itself IS the exit. Attaching exits to a close order causes the broker to place nested stops on a hedge leg or second-leg position that may not exist.
+
 **Partial fill guard** (#2): Template attach fires only when a parent order is FULLY filled (`filled_qty >= qty`). Partial fills are logged but do not trigger GTT placement, ensuring the remaining open qty is left without premature stops.
 
 **Sub-lot scale rounding** (#3): Scale-out GTT quantities are rounded up to the nearest lot multiple so no sub-lot GTT leg reaches the broker. The last entry is trimmed if total exceeds parent qty. Qty lost to rounding is noted in `plan.notes`.
@@ -558,6 +584,8 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 **I20 — Scale-out rounding to lot multiple**: Scale-out GTT qtys rounded UP to nearest lot multiple; last entry trimmed to cap total at parent_qty. Qty lost to rounding is noted in `plan.notes`. Ensures no sub-lot GTT leg reaches the broker.
 
 **I21 — Wing feasibility in preview**: `TicketPreviewResponse` includes `wing_feasible=False` when wing template required but no liquid strike found. Operator can adjust settings or skip wing before submit. Prevents silent wing-skip surprises at fill time.
+
+**I22 — Template attach blocked on close/offset orders**: When an order would close or reduce an existing position, `template_id` is cleared at three layers: (1) ticket submit via `_is_offsetting_position()` position-book check + explicit `intent="close"` guard, (2) reconcile via `_opl_reconcile_attach_eligible()` intent/flag check, (3) postback via `_pb_wants_template_attach()` + `_pb_check_and_fire_template_attach()` async position check. Frontend also hides TemplateBar and clears `templateId` when `action === 'close'`. Ensures exit GTTs are never attached to close orders — a close order IS the exit; attaching stops to it creates nested/phantom positions.
 
 ---
 
@@ -819,3 +847,4 @@ designed.
 | 2026-07-26 | Dhan token renewal fix (commit 63262b94): `_dhan_conn_under_lock()` now gates `_try_renew()` on `not test_conn` to skip lightweight renewal when token is confirmed dead (DH-906); goes straight to full PIN+TOTP re-mint via `_mint_and_build()`. `_do_login()` emits DEBUG log `[DHAN-LOGIN]` with HTTP status + 200-char body for auth failure diagnosis. |
 | 2026-07-27 | v1.5 Broker health and account display: Inactive broker accounts (last_ok=0, last_fail=0) now return "inactive" state in health endpoint instead of "amber"; frontend excludes inactive from worst-state calc when active accounts exist. Dhan two-tier LKG cache (in-memory Tier-2 seeded from daily_book at startup + DB Tier-3 fallback) reduces stale holdings during outages via `_DB_LKG_CACHE` and `_preload_db_lkg_cache()`. NavBreakdown holdings popup now includes all registered broker accounts (not just those with active holdings) via `connStatus.accounts` union. |
 | 2026-07-27 | v1.6 Template system enhancements: Added §8.3 GTT Template Attachment documenting partial-fill guard (#2), sub-lot scale rounding (#3), LIMIT TP tick offset (#1), wing feasibility flag (#10), wing failure alerting, postback TOCTOU idempotency lock, GTT trigger validation (#9, #29), Kite MARKET GTT rejection via `BrokerCapabilityError`, and full-fill detection. Added §8.4 Broker Postback Fill-Status Mapping documenting `_BROKER_FILLED_STATUSES` dict for per-broker fill-token resolution (Kite: COMPLETE, Dhan: TRADED, Groww: COMPLETE). |
+| 2026-07-27 | v1.7 Template attach blocking on close orders (commit 0a456e9f): Updated §8.3 to document three-layer blocking mechanism for close/offset orders: (1) ticket submit clears `template_id` via `_is_offsetting_position()` position-book check + `intent="close"` guard, (2) reconcile path returns False when close intent detected via `_opl_reconcile_attach_eligible()`, (3) postback path checks both intent flags and runs async position offset via `_pb_check_and_fire_template_attach()`. Frontend also clears TemplateBar and `templateId` when `action === 'close'`. Added I22 invariant: template attach blocked when order closes/reduces existing position at all three attachment layers (ticket/reconcile/postback) + frontend. Prevents nested exit GTTs on close orders. |
