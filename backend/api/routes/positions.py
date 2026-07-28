@@ -63,6 +63,11 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             # so UTC/IST date-column edge cases can't drop yesterday's rows.
             # prev_batch lookback window is 2 days to cover MCX's 23:30 IST
             # close (captures labelled with next calendar day in UTC).
+            # qty=0 rows (positions closed intraday) are included only when
+            # db.date matches today IST so they show with 'closed' decoration
+            # in the derivatives legs grid.  On the next trading day (before
+            # market opens), yesterday's closed legs are excluded (date !=
+            # today) leaving only the carried-overnight open positions.
             result = await session.execute(_sql_text("""
                 WITH latest_batch AS (
                     SELECT account, MAX(captured_at) AS max_at
@@ -94,10 +99,11 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 LEFT JOIN prev_batch pb
                   ON pb.account = db.account AND pb.symbol = db.symbol
                 WHERE db.kind = 'positions'
+                  AND (db.qty != 0 OR db.date = :today_ist)
                   AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
                            AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
                 ORDER BY db.account, db.symbol
-            """))
+            """).bindparams(today_ist=_today_ist))
             raw_rows = result.all()
     except Exception as exc:
         logger.warning(f"positions snapshot query failed: {exc}")
