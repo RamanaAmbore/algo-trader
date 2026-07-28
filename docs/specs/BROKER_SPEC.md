@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.6 — 2026-07-27  
+**Version**: 1.8 — 2026-07-27  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -20,6 +20,7 @@ Code, tests, and documentation must stay in sync with this file.
 7. [KiteTicker & Mmap Pipeline](#7-kiteticker--mmap-pipeline)
 7.1 [Market-Data Backfill Pipeline](#71-market-data-backfill-pipeline)
 7.2 [Instruments & Token-Map Cache](#72-instruments--token-map-cache)
+7.3 [Daily Snapshot Orphan Cleanup](#73-daily-snapshot-orphan-cleanup)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
@@ -306,6 +307,59 @@ marked with `last_price_stale=True`.
 
 ---
 
+## 7.3 Daily Snapshot Orphan Cleanup
+
+**File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` + `_delete_orphan_positions()`
+
+After each per-account positions UPSERT in `snapshot_daily_book()`, a new async helper 
+`_delete_orphan_positions(target_date, account, current_symbols)` deletes stale `daily_book` 
+rows for that `(date, account, kind="positions")` whose `symbol` is NOT in the current broker 
+response.
+
+### Problem addressed
+
+Kite removes settled/squared-off positions from `broker.positions()` after settlement (~16:15 IST). 
+The prior UPSERT-only pattern left ghost rows indefinitely in the `daily_book` table. Because 
+`_positions_snapshot()` has no staleness filter, closed positions remained visible in the UI 
+all night after market close.
+
+### Solution
+
+**Broker response sentinel** (Jul 2026): `_fetch_account_data()` now initialises 
+`out["positions"] = None` (was `[]`); a successful broker call sets it to a list (possibly 
+empty); failure leaves it `None`. This distinguishes two cases:
+
+- **`positions = []`** — Broker call succeeded; all positions are closed/settled (SSOT)
+- **`positions = None`** — Broker call failed; skip cleanup (fail-open)
+
+**Orphan deletion logic**: After successful positions UPSERT, `_delete_orphan_positions()` is 
+called with the set of symbols from the broker response. It executes:
+
+```sql
+DELETE FROM daily_book 
+WHERE date = target_date 
+  AND account = account 
+  AND kind = 'positions' 
+  AND symbol NOT IN (current_symbols)
+```
+
+If the broker call failed (`raw["positions"] is None`), the cleanup is skipped entirely 
+(fail-open behaviour — no deletion risk if the broker is temporarily unreachable).
+
+### Cleanup timing
+
+- **Execution**: After each `snapshot_daily_book()` run for each account
+- **Scope**: Only `kind='positions'` rows; `kind='holdings'` is unaffected
+- **Idempotency**: Safe to re-run; DELETE is idempotent
+
+### Impact
+
+Closed positions no longer appear in the UI after settlement. The `_positions_snapshot()` 
+route query returns only live positions + their prior-session state, providing an accurate 
+real-time view without stale entries.
+
+---
+
 ## 8. Adapter Implementations
 
 ### KiteBroker
@@ -587,6 +641,8 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I22 — Template attach blocked on close/offset orders**: When an order would close or reduce an existing position, `template_id` is cleared at three layers: (1) ticket submit via `_is_offsetting_position()` position-book check + explicit `intent="close"` guard, (2) reconcile via `_opl_reconcile_attach_eligible()` intent/flag check, (3) postback via `_pb_wants_template_attach()` + `_pb_check_and_fire_template_attach()` async position check. Frontend also hides TemplateBar and clears `templateId` when `action === 'close'`. Ensures exit GTTs are never attached to close orders — a close order IS the exit; attaching stops to it creates nested/phantom positions.
 
+**I23 — Snapshot orphan deletion on broker response**: After each per-account positions UPSERT in `snapshot_daily_book()`, `_delete_orphan_positions()` removes stale `daily_book` rows (kind='positions') whose symbol is absent from the current broker response. Broker response is marked with sentinel: `positions = None` (call failed, skip cleanup) vs `positions = []` or `[...]` (call succeeded, cleanup proceeds). Kite removes settled/squared-off positions from `broker.positions()` after settlement; orphan deletion prevents closed positions from persisting in the UI all night. Cleanup is idempotent and safe to re-run.
+
 ---
 
 ## 12. Test Coverage Map
@@ -848,3 +904,4 @@ designed.
 | 2026-07-27 | v1.5 Broker health and account display: Inactive broker accounts (last_ok=0, last_fail=0) now return "inactive" state in health endpoint instead of "amber"; frontend excludes inactive from worst-state calc when active accounts exist. Dhan two-tier LKG cache (in-memory Tier-2 seeded from daily_book at startup + DB Tier-3 fallback) reduces stale holdings during outages via `_DB_LKG_CACHE` and `_preload_db_lkg_cache()`. NavBreakdown holdings popup now includes all registered broker accounts (not just those with active holdings) via `connStatus.accounts` union. |
 | 2026-07-27 | v1.6 Template system enhancements: Added §8.3 GTT Template Attachment documenting partial-fill guard (#2), sub-lot scale rounding (#3), LIMIT TP tick offset (#1), wing feasibility flag (#10), wing failure alerting, postback TOCTOU idempotency lock, GTT trigger validation (#9, #29), Kite MARKET GTT rejection via `BrokerCapabilityError`, and full-fill detection. Added §8.4 Broker Postback Fill-Status Mapping documenting `_BROKER_FILLED_STATUSES` dict for per-broker fill-token resolution (Kite: COMPLETE, Dhan: TRADED, Groww: COMPLETE). |
 | 2026-07-27 | v1.7 Template attach blocking on close orders (commit 0a456e9f): Updated §8.3 to document three-layer blocking mechanism for close/offset orders: (1) ticket submit clears `template_id` via `_is_offsetting_position()` position-book check + `intent="close"` guard, (2) reconcile path returns False when close intent detected via `_opl_reconcile_attach_eligible()`, (3) postback path checks both intent flags and runs async position offset via `_pb_check_and_fire_template_attach()`. Frontend also clears TemplateBar and `templateId` when `action === 'close'`. Added I22 invariant: template attach blocked when order closes/reduces existing position at all three attachment layers (ticket/reconcile/postback) + frontend. Prevents nested exit GTTs on close orders. |
+| 2026-07-27 | v1.8 Snapshot orphan deletion (commit 47c49e20): Added §7.3 Daily Snapshot Orphan Cleanup documenting `_delete_orphan_positions()` async helper called after each per-account positions UPSERT in `snapshot_daily_book()`. Removes stale `daily_book` (kind='positions') rows for symbols absent from broker response. Broker response uses sentinel pattern: `positions=None` (call failed, skip cleanup) vs `positions=[]` or `[...]` (call succeeded, proceed). Prevents closed positions from persisting in UI after settlement. Added I23 invariant: orphan deletion enforces SSOT for settled positions; cleanup is fail-open and idempotent. |
