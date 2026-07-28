@@ -94,6 +94,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 LEFT JOIN prev_batch pb
                   ON pb.account = db.account AND pb.symbol = db.symbol
                 WHERE db.kind = 'positions'
+                  AND db.qty != 0
                   AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
                            AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
                 ORDER BY db.account, db.symbol

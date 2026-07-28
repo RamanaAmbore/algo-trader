@@ -198,6 +198,9 @@ def test_snapshot_prunes_orphan_on_refresh():
     mock_connections.conn = {ACCOUNT: MagicMock()}
     mock_loop = _make_loop_mock(raw_data)
 
+    async def fake_delete_prior(account, current_symbols):
+        return 0
+
     with (
         patch("backend.api.algo.daily_snapshot._get_connections",
               return_value=mock_connections),
@@ -208,6 +211,8 @@ def test_snapshot_prunes_orphan_on_refresh():
               side_effect=fake_upsert),
         patch("backend.api.algo.daily_snapshot._delete_orphan_positions",
               side_effect=fake_delete_orphan),
+        patch("backend.api.algo.daily_snapshot._delete_prior_orphan_positions",
+              side_effect=fake_delete_prior),
         patch("asyncio.get_running_loop", return_value=mock_loop),
     ):
         result = asyncio.run(snapshot_daily_book(target_date=TARGET_DATE))
@@ -319,4 +324,193 @@ def test_fetch_account_data_positions_empty_list_on_no_open_positions():
 
     assert result["positions"] == [], (
         "positions must be [] (not None) when broker returns empty net list"
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Test: _delete_prior_orphan_positions — removes settled prior-snapshot symbol
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_delete_prior_orphan_positions_removes_settled_symbol():
+    """Prior snapshot has IDFCFIRST; broker now returns only RELIANCE.
+    _delete_prior_orphan_positions must issue a DELETE with the correct
+    subquery anchor and NOT IN :symbols predicate, returning rowcount=1."""
+    from backend.api.algo.daily_snapshot import _delete_prior_orphan_positions
+
+    mock_session = _make_session_mock(rowcount=1)
+
+    with patch("backend.api.algo.daily_snapshot.async_session",
+               return_value=mock_session):
+        pruned = asyncio.run(
+            _delete_prior_orphan_positions(ACCOUNT, {"RELIANCE"})
+        )
+
+    assert pruned == 1, f"Expected 1 row (IDFCFIRST) deleted, got {pruned}"
+
+    mock_session.execute.assert_called_once()
+    stmt_str = str(mock_session.execute.call_args[0][0]).upper()
+    assert "DELETE" in stmt_str, "Must issue a DELETE statement"
+    # Verify the subquery that anchors the prior-snapshot boundary is present.
+    assert "MAX(CAPTURED_AT)" in stmt_str, (
+        "DELETE must use MAX(captured_at) subquery to target prior snapshot batches"
+    )
+    # Symbols param must be passed (non-empty branch)
+    params = mock_session.execute.call_args[0][1]
+    assert "symbols" in params, "Non-empty branch must pass 'symbols' param"
+    assert "RELIANCE" in params["symbols"], (
+        "current_symbols must be forwarded as the NOT IN exclusion list"
+    )
+    mock_session.commit.assert_awaited_once()
+
+
+def test_delete_prior_orphan_positions_empty_set_wipes_prior():
+    """When current_symbols is empty (all positions closed), prior-snapshot
+    rows for this account must be deleted without a NOT IN predicate."""
+    from backend.api.algo.daily_snapshot import _delete_prior_orphan_positions
+
+    mock_session = _make_session_mock(rowcount=3)
+
+    with patch("backend.api.algo.daily_snapshot.async_session",
+               return_value=mock_session):
+        pruned = asyncio.run(
+            _delete_prior_orphan_positions(ACCOUNT, set())
+        )
+
+    assert pruned == 3, f"Expected 3 rows deleted (full prior wipe), got {pruned}"
+
+    call_args = mock_session.execute.call_args
+    stmt_str = str(call_args[0][0]).upper()
+    assert "DELETE" in stmt_str
+    assert "MAX(CAPTURED_AT)" in stmt_str
+    # Empty branch: params dict must NOT contain 'symbols'
+    params = call_args[0][1]
+    assert "symbols" not in params, (
+        "Empty-set branch must not pass 'symbols' to avoid a SQL error"
+    )
+    mock_session.commit.assert_awaited_once()
+
+
+def test_snapshot_calls_prior_orphan_delete_after_orphan_delete():
+    """snapshot_daily_book must call _delete_prior_orphan_positions once
+    per account after the existing _delete_orphan_positions call, passing
+    the same current-symbol set derived from p_rows."""
+    from backend.api.algo.daily_snapshot import snapshot_daily_book
+
+    reliance_pos = {
+        "tradingsymbol": "RELIANCE",
+        "exchange": "NSE",
+        "quantity": 10,
+        "average_price": 2800.0,
+        "last_price": 2850.0,
+        "close_price": 2800.0,
+        "pnl": 500.0,
+        "day_change": 50.0,
+        "day_change_percentage": 1.78,
+        "overnight_quantity": 10,
+        "day_buy_quantity": 0,
+        "day_sell_quantity": 0,
+        "day_buy_value": 0.0,
+        "day_sell_value": 0.0,
+    }
+
+    raw_data = {
+        "holdings": [],
+        "positions": [reliance_pos],
+        "trades": [],
+        "funds": [],
+    }
+
+    fake_broker = MagicMock()
+    fake_broker.account = ACCOUNT
+
+    prior_delete_calls: list[tuple] = []
+
+    async def fake_delete_orphan(target_date, account, current_symbols):
+        return 0
+
+    async def fake_delete_prior(account, current_symbols):
+        prior_delete_calls.append((account, frozenset(current_symbols)))
+        return 1
+
+    async def fake_upsert(rows):
+        return len(rows)
+
+    mock_connections = MagicMock()
+    mock_connections.conn = {ACCOUNT: MagicMock()}
+    mock_loop = _make_loop_mock(raw_data)
+
+    with (
+        patch("backend.api.algo.daily_snapshot._get_connections",
+              return_value=mock_connections),
+        patch("backend.brokers.registry.all_brokers",
+              return_value=[fake_broker]),
+        patch("backend.api.algo.daily_snapshot._upsert_rows",
+              side_effect=fake_upsert),
+        patch("backend.api.algo.daily_snapshot._delete_orphan_positions",
+              side_effect=fake_delete_orphan),
+        patch("backend.api.algo.daily_snapshot._delete_prior_orphan_positions",
+              side_effect=fake_delete_prior),
+        patch("asyncio.get_running_loop", return_value=mock_loop),
+    ):
+        result = asyncio.run(snapshot_daily_book(target_date=TARGET_DATE))
+
+    assert result["errors"] == []
+    assert len(prior_delete_calls) == 1, (
+        f"_delete_prior_orphan_positions must be called once; calls: {prior_delete_calls}"
+    )
+    called_account, called_syms = prior_delete_calls[0]
+    assert called_account == ACCOUNT
+    assert called_syms == frozenset({"RELIANCE"}), (
+        f"Prior-orphan delete must receive current p_rows symbols; got {called_syms}"
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Test: _positions_snapshot SQL contains qty != 0 filter
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_positions_snapshot_excludes_zero_qty():
+    """_positions_snapshot must include AND db.qty != 0 in its WHERE clause
+    so flat/expired positions from prior snapshots are never served during
+    off-market hours.
+
+    Strategy: mock async_session to capture the SQL text passed to
+    session.execute, then assert the qty filter is present.  The mock
+    returns an empty result set so the function returns None — we only
+    care about the SQL shape, not the response body.
+    """
+    import asyncio as _asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = []          # empty result → function returns None
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    captured_sql: list[str] = []
+
+    original_execute = mock_session.execute
+
+    async def capturing_execute(stmt, *args, **kwargs):
+        captured_sql.append(str(stmt))
+        return await original_execute(stmt, *args, **kwargs)
+
+    mock_session.execute = capturing_execute
+
+    # async_session is imported locally inside _positions_snapshot via
+    # `from backend.api.database import async_session`, so patch at source.
+    with patch("backend.api.database.async_session", return_value=mock_session):
+        from backend.api.routes.positions import _positions_snapshot
+        result = _asyncio.run(_positions_snapshot())
+
+    assert result is None, "Empty DB result must return None from _positions_snapshot"
+
+    assert captured_sql, "session.execute must have been called with the snapshot SQL"
+    sql_upper = captured_sql[0].upper()
+    assert "QTY != 0" in sql_upper or "DB.QTY != 0" in sql_upper, (
+        f"_positions_snapshot SQL must contain 'qty != 0' filter to exclude "
+        f"flat/expired positions. SQL was:\n{captured_sql[0]}"
     )
