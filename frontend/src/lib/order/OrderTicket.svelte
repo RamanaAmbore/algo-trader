@@ -380,6 +380,10 @@
   const isOption = $derived(kind === 'CE' || kind === 'PE');
   const isFuture = $derived(kind === 'FUT');
   const isEquity = $derived(kind === 'EQ');
+  // Close orders never get a template attached — suppress TemplateBar
+  // chrome and force template_id: null in the submit payload so the
+  // backend's attach pipeline is bypassed entirely.
+  const _isCloseOrder = $derived(action === 'close');
 
   // Bare-underlying mode — symbol is just the underlying name
   // ("NIFTY") and symType says the operator wants FUT or OPT. We
@@ -893,6 +897,7 @@
   // mount AFTER templates are loaded so the dropdown opens with the
   // right pick already highlighted.
   function _autoSelectTemplate() {
+    if (action === 'close') return;         // close orders never get a template
     if (templateId !== null) return;        // operator already picked
     if (_templates.length === 0) return;
     // Operator (turn N): "Some templates are valid only for sell or
@@ -916,6 +921,15 @@
     const none = _templates.find(t => t.slug === 'none');
     if (none) { templateId = none.id; return; }
   }
+
+  // Close orders must never carry a template — clear templateId
+  // reactively so any previously-selected template doesn't slip through
+  // if the action prop changes to 'close' while the ticket is open.
+  $effect(() => {
+    if (action === 'close' && templateId !== null) {
+      templateId = null;
+    }
+  });
 
   // Side+symbol → template re-validation. The _autoSelectTemplate
   // above only runs ONCE on first paint; if the operator flips side
@@ -1953,7 +1967,7 @@
           lots: _lots,
           lotSize: _lotSize,
           currentQty,
-          templateId,
+          templateId: _isCloseOrder ? null : templateId,
           tpOverride,
           slOverride,
           wingPremPctOverride,
@@ -2650,6 +2664,11 @@
     </div>
     {/if}
 
+    <!-- Template-adjacent UI: wing warning, auto-switch flash, no-default
+         note, TP/SL trigger preview chips, GTT errors, wing-infeasible chip.
+         Suppressed entirely for close orders — template attachment is not
+         applicable when closing a position. -->
+    {#if !_isCloseOrder}
     <!-- D2: wing warning — shown when the selected template has a wing
          component (strike-offset or premium-pct). Contextual reminder
          that a protective wing will be placed alongside the main order.
@@ -2721,6 +2740,7 @@
         <span class="ot-preview-err-chip">Wing unavailable — cannot place order</span>
       </div>
     {/if}
+    {/if}<!-- /{#if !_isCloseOrder} -->
 
     {#if _shownErr}
       <div class="ot-err">{_shownErr}</div>

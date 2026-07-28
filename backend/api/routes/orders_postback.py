@@ -495,6 +495,11 @@ def _pb_wants_template_attach(_r) -> bool:
     would be left without stops. TODO(#2): when template_attach_deferred column
     exists on AlgoOrder, set it on partial fills so we retry on the next fill.
     """
+    # Explicit close flow → skip template
+    if (getattr(_r, "intent", None) or "").lower() == "close":
+        return False
+    if getattr(_r, "is_close_intent", False):
+        return False
     if not (
         _r.template_id
         and _r.parent_order_id is None
@@ -558,6 +563,30 @@ def _pb_dispatch_template_attach(_r) -> None:
     )
 
 
+async def _pb_check_and_fire_template_attach(_r) -> None:
+    """Async wrapper: checks position-offset before firing template attach.
+
+    Runs the offsetting-position guard first so close/reduce orders that
+    somehow carry a template_id (e.g. from an older AlgoOrder row that
+    was re-used for a close) never arm exit GTTs on themselves.
+    """
+    from backend.api.routes.orders_place import _is_offsetting_position
+    if await _is_offsetting_position(
+        sym=str(getattr(_r, "symbol", "") or ""),
+        exchange=str(getattr(_r, "exchange", "NFO") or "NFO"),
+        side=str(getattr(_r, "transaction_type", "BUY") or "BUY"),
+        account=str(getattr(_r, "account", "") or ""),
+    ):
+        logger.info(
+            "[TPL-ATTACH] skipping — order offsets existing position for #%s %s",
+            _r.id,
+            getattr(_r, "symbol", ""),
+        )
+        return
+    # delegate to the original attach path
+    _pb_dispatch_template_attach(_r)
+
+
 def _pb_dispatch_take_profit_and_template(filled_rows: list) -> None:
     """Arm TP on parent fills without a template, else fire template
     attach. Both fan-outs run as detached tasks so postback ack isn't
@@ -573,7 +602,7 @@ def _pb_dispatch_take_profit_and_template(filled_rows: list) -> None:
 
     for _r in filled_rows:
         if _pb_wants_template_attach(_r):
-            _pb_dispatch_template_attach(_r)
+            asyncio.create_task(_pb_check_and_fire_template_attach(_r))
 
     # Emit fill_event to all connected WS clients so the frontend
     # can immediately re-fetch positions after a parent order fills.
