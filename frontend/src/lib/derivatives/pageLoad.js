@@ -12,6 +12,7 @@
  */
 
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
+import { todayIST } from '$lib/dateFormat.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared predicates
@@ -303,6 +304,9 @@ export function buildCandidatePositions({
     const isOpt = /(CE|PE)$/i.test(sym);
     if (!isFut && !isOpt) continue;
     if (!matchExpiry(sym)) continue;
+    // Skip contracts where the expiry date has already passed.
+    const _expiry = getInstrument(sym)?.x;
+    if (_expiry && _expiry < todayIST()) continue;
     real.push({ ...p, kind: isFut ? 'fut' : 'opt' });
   }
 
@@ -333,6 +337,8 @@ export function buildCandidatePositions({
     const isOpt = /(CE|PE)$/i.test(sym);
     if (!isFut && !isOpt) continue;
     if (!matchExpiry(sym)) continue;
+    const _dExpiry = getInstrument(sym)?.x;
+    if (_dExpiry && _dExpiry < todayIST()) continue;
     const qty  = d.qty      === '' || d.qty      == null ? 0    : Number(d.qty);
     const cost = d.avg_cost === '' || d.avg_cost == null ? null : Number(d.avg_cost);
     const ltp  = d.ltp      === '' || d.ltp      == null ? null : Number(d.ltp);
@@ -441,7 +447,7 @@ export function buildCleanLegs(legs, getInstrument) {
         expiry,
       };
     })
-    .filter(l => l.symbol && l.qty);
+    .filter(l => l.symbol && l.qty && !(l.expiry && l.expiry < todayIST()));
 }
 
 /**
