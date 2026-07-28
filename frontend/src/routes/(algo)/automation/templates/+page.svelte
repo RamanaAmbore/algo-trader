@@ -57,10 +57,25 @@
   let formWingStrikeOffset = $state('');
   let formTpOrderType = $state(/** @type {'LIMIT'|'MARKET'} */ ('LIMIT'));
   let formTpScalesJson = $state('');
+  // #8 — enhanced scale-out ladder validation:
+  // - each entry: at_pct > 0, 0 < close_pct <= 100
+  // - sum of close_pct <= 100
+  // Returns '' on valid, error string on first problem.
   const _scalesParseErr = $derived.by(() => {
     if (!formTpScalesJson?.trim()) return '';
-    try { JSON.parse(formTpScalesJson); return ''; }
-    catch (e) { return e.message; }
+    /** @type {any[]} */
+    let arr;
+    try { arr = JSON.parse(formTpScalesJson); } catch (e) { return /** @type {Error} */ (e).message; }
+    if (!Array.isArray(arr)) return 'Must be a JSON array';
+    let sumClose = 0;
+    for (let i = 0; i < arr.length; i++) {
+      const e = arr[i];
+      if (!(e.at_pct > 0)) return `Entry ${i + 1}: at_pct must be > 0`;
+      if (!(e.close_pct > 0 && e.close_pct <= 100)) return `Entry ${i + 1}: close_pct must be 1–100`;
+      sumClose += Number(e.close_pct);
+    }
+    if (sumClose > 100) return `Sum of close_pct is ${sumClose}% — must be ≤ 100`;
+    return '';
   });
   let formSlTrailPct = $state('');
   let formIsDefault = $state(false);
@@ -274,6 +289,12 @@
     }
     return out;
   });
+
+  // #27 — active 'both'-scope default template (applies to all 4 scopes
+  // as a fallback when no scope-specific default is seeded).
+  const _bothDefault = $derived(
+    templates.find(t => t.is_default && t.is_active && t.applies_to === 'both') || null
+  );
 </script>
 
 <svelte:head><title>Order Templates | RamboQuant Analytics</title></svelte:head>
@@ -312,23 +333,36 @@
     <InfoHint popup={true} align="right"
       text="Each (BUY/SELL) × (EQ-FUT / OPTION) combo resolves to one is_default template. The order modal's <b>Default</b> pill picks the right one per leg automatically. ✓ = scope covered; — = unclaimed (Default falls back to None on that scope)." />
   </div>
+  <!-- #27 — info chip when a 'both' template covers all scopes -->
+  {#if _bothDefault}
+    <div class="tpl-matrix-both-info">
+      <span class="tpl-matrix-both-chip">
+        {_bothDefault.name} applies to all scopes — scope-specific defaults take priority
+      </span>
+    </div>
+  {/if}
   <div class="tpl-matrix">
     {#each _SCOPES as s}
       {@const def = _defaultByScope[s.value]}
-      <button class="tpl-matrix-cell {def ? 'tpl-matrix-cell-on' : ''}"
+      <!-- #27: when no scope-specific default, show the 'both' fallback with lighter style -->
+      {@const bothFallback = !def && _bothDefault ? _bothDefault : null}
+      <button class="tpl-matrix-cell {def ? 'tpl-matrix-cell-on' : ''} {bothFallback ? 'tpl-matrix-cell-both' : ''}"
               onclick={() => {
                 filterScope = s.value;
                 if (def) expandedId = def.id;
+                else if (bothFallback) expandedId = bothFallback.id;
               }}
               title={def
                 ? `${def.name} — TP ${fmtPct(def.tp_pct)} · SL ${fmtPct(def.sl_pct)}`
-                : `No default template seeded for ${s.label}`}
+                : bothFallback
+                  ? `${bothFallback.name} (all-scope default) — TP ${fmtPct(bothFallback.tp_pct)} · SL ${fmtPct(bothFallback.sl_pct)}`
+                  : `No default template seeded for ${s.label}`}
               type="button">
         <span class="tpl-matrix-scope">{s.label}</span>
         <span class="tpl-matrix-tpl">
-          {def ? def.name : '— unclaimed'}
+          {def ? def.name : bothFallback ? bothFallback.name : '— unclaimed'}
         </span>
-        <span class="tpl-matrix-mark">{def ? '✓' : '—'}</span>
+        <span class="tpl-matrix-mark">{def ? '✓' : bothFallback ? '~' : '—'}</span>
       </button>
     {/each}
   </div>
@@ -702,6 +736,36 @@
   }
   .tpl-matrix-cell-on .tpl-matrix-mark {
     color: var(--algo-green, var(--c-long));
+  }
+
+  /* #27 — 'both'-scope fallback cell (lighter than on, warmer than unclaimed) */
+  .tpl-matrix-cell-both {
+    background: rgba(251, 191, 36, 0.04);
+    border: 1px dashed rgba(251, 191, 36, 0.28);
+  }
+  .tpl-matrix-cell-both:hover { background: rgba(251, 191, 36, 0.08); }
+  .tpl-matrix-cell-both .tpl-matrix-mark {
+    color: rgba(251, 191, 36, 0.65);
+  }
+  .tpl-matrix-cell-both .tpl-matrix-scope {
+    color: rgba(251, 191, 36, 0.75);
+  }
+  .tpl-matrix-cell-both .tpl-matrix-tpl {
+    color: rgba(200, 216, 240, 0.55);
+    font-style: italic;
+  }
+  /* #27 — info chip row above the matrix */
+  .tpl-matrix-both-info {
+    margin-bottom: 0.4rem;
+  }
+  .tpl-matrix-both-chip {
+    font-family: monospace;
+    font-size: var(--fs-xs);
+    color: #7dd3fc;
+    background: rgba(125, 211, 252, 0.08);
+    border: 1px solid rgba(125, 211, 252, 0.28);
+    padding: 0.15rem 0.5rem;
+    border-radius: 3px;
   }
 
   /* Filter chips */

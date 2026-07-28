@@ -16,7 +16,7 @@ from backend.brokers.base import Broker
 from backend.brokers.connections import KiteConnection
 from backend.brokers.errors import (
     BrokerAuthError, BrokerNetworkError, BrokerOrderError,
-    BrokerInputError, BrokerError,
+    BrokerInputError, BrokerError, BrokerCapabilityError,
 )
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -500,11 +500,10 @@ class KiteBroker(Broker):
                         broker="kite",
                     )
             if _leg_ot == "MARKET":
-                logger.warning(
-                    "GTT leg coerced MARKET→LIMIT (Kite GTT does not support MARKET orders); "
-                    "trigger price used as limit price"
+                raise BrokerCapabilityError(
+                    "Kite GTT does not support MARKET order type; use LIMIT",
+                    broker="zerodha_kite",
                 )
-                _leg["order_type"] = "LIMIT"
         # LAST-LINE DEFENSE (GTT layer) — same ceiling as place_order but
         # applied to each GTT leg. GTT legs arrive with qty already
         # translated to lots (template_attach.apply_plan_live calls

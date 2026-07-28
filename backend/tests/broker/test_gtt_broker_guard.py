@@ -448,7 +448,7 @@ class TestApplyTemplateToOrderPreAttachGuard:
         ) as mock_resolve, patch(
             "backend.api.algo.template_attach._maybe_scan_wing_by_premium",
             new_callable=AsyncMock,
-            return_value=({}, None),
+            return_value=({}, None, None),
         ), patch(
             "backend.api.algo.template_attach._route_apply_path",
             return_value=MagicMock(errors=[], guard_alert_fired=False),
@@ -532,7 +532,7 @@ class TestApplyTemplateToOrderPreAttachGuard:
         ) as mock_resolve, patch(
             "backend.api.algo.template_attach._maybe_scan_wing_by_premium",
             new_callable=AsyncMock,
-            return_value=({}, None),
+            return_value=({}, None, None),
         ), patch(
             "backend.api.algo.template_attach._route_apply_path",
             return_value=MagicMock(errors=[], guard_alert_fired=False),
@@ -632,7 +632,7 @@ class TestOffHoursGttNote:
         ), patch(
             "backend.api.algo.template_attach._maybe_scan_wing_by_premium",
             new_callable=AsyncMock,
-            return_value=({}, None),
+            return_value=({}, None, None),
         ), patch(
             "backend.api.algo.template_attach._route_apply_path",
             return_value=MagicMock(errors=[], guard_alert_fired=False),

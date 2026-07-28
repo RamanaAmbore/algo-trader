@@ -35,6 +35,30 @@
   let _retrying = $state(false);
   let _retryNote = $state('');
 
+  // #26 — re-attach failure history tracked in sessionStorage per order.
+  // Key: 'rbq.reattach-fail.<order_id>'. Value: JSON array of {ts, error}.
+  // Shows 'failed xN' chip when >= 2 recorded failures.
+  /** @returns {{ ts: number; error: string }[]} */
+  function _loadFailHistory(/** @type {number|string|null|undefined} */ orderId) {
+    if (orderId == null || typeof sessionStorage === 'undefined') return [];
+    try { return JSON.parse(sessionStorage.getItem(`rbq.reattach-fail.${orderId}`) || '[]') || []; } catch { return []; }
+  }
+  function _pushFailHistory(/** @type {number|string|null|undefined} */ orderId, /** @type {string} */ errorMsg) {
+    if (orderId == null || typeof sessionStorage === 'undefined') return;
+    try {
+      const key = `rbq.reattach-fail.${orderId}`;
+      const hist = _loadFailHistory(orderId);
+      hist.push({ ts: Date.now(), error: errorMsg });
+      sessionStorage.setItem(key, JSON.stringify(hist));
+    } catch { /* quota exceeded — silently skip */ }
+  }
+  // Reactive fail count — re-reads on _retrying change (post-attempt re-render).
+  const _failCount = $derived.by(() => {
+    // Depend on _retrying so count refreshes after each attempt.
+    void _retrying;
+    return _loadFailHistory(order?.id).length;
+  });
+
   let {
     /** @type {any} */                                   order,
     /** @type {((o:any) => void) | undefined} */         onCardClick   = undefined,
@@ -236,9 +260,13 @@
       {@const _hasWing = !!(_at && _at.some(e => e?.kind === 'wing' && e.id))}
       {@const _gttCount = _at ? _at.filter(e => e?.kind === 'gtt').length : 0}
       {@const _missingId = !!(_at && _at.some(e => e?.kind === 'gtt' && !e.id))}
+      <!-- #17 — build list of missing leg labels for partial-attach chip -->
+      {@const _failedLegs = _at
+        ? _at.filter(e => e?.kind === 'gtt' && !e.id).map(e => e.label ?? e.kind).join(', ')
+        : ''}
       {@const _chipBadge = !_atJson
         ? (order.status === 'FILLED' ? ' ⟳' : '…')
-        : (_missingId ? ' ✓⚠' : (_hasWing ? ' ✓+w' : (_gttCount > 0 ? ' ✓' : ' ✓∅')))}
+        : (_missingId ? ` ✓⚠ missing: ${_failedLegs}` : (_hasWing ? ' ✓+w' : (_gttCount > 0 ? ' ✓' : ' ✓∅')))}
       {@const _atSummary = (() => {
         // Build a human-readable summary of the attached GTT specs instead
         // of dumping raw JSON into the title attribute. Each entry has
@@ -257,15 +285,35 @@
         }
         return lines.join(' | ');
       })()}
+      <!-- #23 — trailing stop chip: any GTT entry with sl_trail_pct set -->
+      {@const _trailEntry = _at ? _at.find(e => e?.kind === 'gtt' && e.sl_trail_pct != null) : null}
+      <!-- #18 — wing params chip from wing entry in the array -->
+      {@const _wingEntry = _at ? _at.find(e => e?.kind === 'wing') : null}
       <span class="log-chip log-chip-template"
             class:log-chip-template-partial={_missingId}
             title={_atJson
-              ? `Template attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? '. ⚠ At least one spec is missing its broker id — partial attach.' : '.'} ${_atSummary}`
+              ? `Template attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? `. ⚠ Partial attach — missing: ${_failedLegs}.` : '.'} ${_atSummary}`
               : (order.status === 'FILLED'
                   ? 'Template was selected but attach did not run — click Re-attach to retry.'
                   : 'Template selected — will attach on fill')}>
         <span class="log-chip-key">tmpl:</span>#{order.template_id}{_chipBadge}
       </span>
+      <!-- #23 — trailing stop chip (amber) -->
+      {#if _trailEntry}
+        <span class="log-chip log-chip-trail"
+              title="Trailing stop is active — SL trigger ratchets toward LTP as it moves favorably.">
+          <span class="log-chip-key">trail:</span>{_trailEntry.sl_trail_pct}%
+        </span>
+      {/if}
+      <!-- #18 — wing params chip when wing entry present -->
+      {#if _wingEntry}
+        {@const _wingStrike = _wingEntry.wing_strike_offset != null ? `+${_wingEntry.wing_strike_offset}` : null}
+        {@const _wingPrem = _wingEntry.wing_premium_pct != null ? `${_wingEntry.wing_premium_pct}%p` : null}
+        <span class="log-chip log-chip-wing-params"
+              title="Protective wing order placed alongside this entry.">
+          <span class="log-chip-key">W:</span>{_wingStrike ?? _wingPrem ?? 'wing'}
+        </span>
+      {/if}
     {/if}
     {#if order.template_id != null && (order.status || '').toUpperCase() === 'FILLED' && !order.attached_gtts_json}
       <button type="button"
@@ -279,10 +327,16 @@
                   if (r?.ok) {
                     _retryNote = 'Re-attach OK' + (r.wing_order_id ? ` · wing #${String(r.wing_order_id).slice(-6)}` : '');
                   } else {
-                    _retryNote = `Re-attach skipped: ${r?.reason || 'unknown'}`;
+                    const reason = r?.reason || 'unknown';
+                    _retryNote = `Re-attach skipped: ${reason}`;
+                    // #26 — record failure (not-ok is a failed attempt)
+                    _pushFailHistory(order.id, reason);
                   }
                 } catch (e) {
-                  _retryNote = `Re-attach failed: ${e?.message || e}`;
+                  const msg = /** @type {any} */ (e)?.message || String(e);
+                  _retryNote = `Re-attach failed: ${msg}`;
+                  // #26 — record exception as a failed attempt
+                  _pushFailHistory(order.id, msg);
                 } finally {
                   _retrying = false;
                 }
@@ -291,6 +345,13 @@
       </button>
     {/if}
     {#if _retryNote}<span class="log-chip log-chip-retry-note">{_retryNote}</span>{/if}
+    <!-- #26 — re-attach failure count chip (shown when >= 2 failed attempts) -->
+    {#if _failCount >= 2}
+      <span class="log-chip log-chip-reattach-fail"
+            title={`Re-attach has failed ${_failCount} time(s) for this order. Check template config or broker availability.`}>
+        ⟳ failed ×{_failCount}
+      </span>
+    {/if}
     {#if order.parent_order_id != null}<span class="log-chip log-chip-parent" title="This row is an auto-attached leg of the listed parent order (typically the protective wing of a SELL option)."><span class="log-chip-key">parent:</span>#{String(order.parent_order_id).slice(-6)}</span>{/if}
     {#if order.child_order_ids && order.child_order_ids.length}
       <span class="log-chip log-chip-child"
@@ -404,5 +465,29 @@
     color: #7dd3fc;
     background: rgba(125, 211, 252, 0.12);
     border: 1px solid rgba(125, 211, 252, 0.40);
+  }
+  /* #17/#18 partial-attach chip — red border signals missing legs */
+  :global(.log-chip-template-partial) {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.10);
+    border: 1px solid rgba(248, 113, 113, 0.35);
+  }
+  /* #23 — trailing stop chip (amber) */
+  :global(.log-chip-trail) {
+    color: var(--c-action);
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.30);
+  }
+  /* #18 — wing params chip (teal) */
+  :global(.log-chip-wing-params) {
+    color: #5eead4;
+    background: rgba(94, 234, 212, 0.10);
+    border: 1px solid rgba(94, 234, 212, 0.28);
+  }
+  /* #26 — re-attach failure count chip (red) */
+  :global(.log-chip-reattach-fail) {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.10);
+    border: 1px solid rgba(248, 113, 113, 0.32);
   }
 </style>

@@ -176,6 +176,18 @@ broker_issue_thresholds:
   total_p2:        20   # total issues per account per day → P2 (warn)
   lookback_days:    7   # days to look back
 
+# Template attachment tunables.
+# tp_limit_tick_offset_nfo    — LIMIT TP price offset applied inbound-of-trigger for NFO/MCX
+#                               options (BUY parent: trigger + offset; SELL: trigger - offset).
+#                               0.05 = one tick for index options. Tune via /admin/settings.
+# tp_limit_tick_offset_default — Same offset for futures and other non-option instruments.
+# wing_min_oi_hard_reject       — When > 0, hard-reject the wing scan when ALL candidates have
+#                                 OI below this threshold (fire ntfy + log CRITICAL). 0 = disabled.
+template:
+  tp_limit_tick_offset_nfo:     0.05
+  tp_limit_tick_offset_default: 0.5
+  wing_min_oi_hard_reject:      0
+
 # Alert channel routing — telegram: ops|info|false, ntfy: urgent|high|default|false, email: true|false
 alert_routing:
   order_failure:        { telegram: ops,   ntfy: urgent,  email: true  }

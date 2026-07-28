@@ -660,7 +660,9 @@ class TicketPreviewRequest(msgspec.Struct):
 
 
 class TicketPreviewResponse(msgspec.Struct):
-    plan: dict     # TemplatePlan.to_dict()
+    plan: dict                          # TemplatePlan.to_dict()
+    wing_feasible: Optional[bool] = None  # None = no wing in template
+    gtt_trigger_errors: list = []         # non-empty → block submit
 
 
 class ModifyOrderRequest(msgspec.Struct):

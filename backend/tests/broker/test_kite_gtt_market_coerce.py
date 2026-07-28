@@ -1,31 +1,35 @@
 """
-Tests for the MARKET→LIMIT coercion guard in KiteBroker.place_gtt.
+Tests for the MARKET order_type guard in KiteBroker.place_gtt.
+
+Behavior change (2026-07-27): place_gtt no longer silently coerces MARKET→LIMIT.
+Instead it raises BrokerCapabilityError so callers see a clear capability error
+rather than having the order type changed under them.
 
 Covers five quality dimensions:
-  SSOT        — coercion lives only in the place_gtt leg-validation loop; no duplicate logic
-  Correctness — MARKET leg is mutated to LIMIT in-place; non-MARKET legs are untouched
-  Performance — coercion emits a warning log but does not raise; call proceeds to SDK
-  Reuse       — mutation propagates into enriched_orders sent to the SDK
-  UX          — no exception surface to the caller; silent auto-correction with log evidence
+  SSOT        — capability guard lives only in the place_gtt leg-validation loop
+  Correctness — MARKET leg raises BrokerCapabilityError; non-MARKET legs proceed
+  Performance — error is raised before the SDK call; no network round-trip wasted
+  Reuse       — BrokerCapabilityError propagates to template_attach plan.notes
+  UX          — operator sees "Kite GTT does not support MARKET" error message
 
 Scenario catalogue:
-  1. Single MARKET leg → coerced to LIMIT; SDK called once.
-  2. Mixed legs (MARKET + LIMIT) → only MARKET leg is mutated; LIMIT leg unchanged.
-  3. Multiple MARKET legs → all coerced to LIMIT.
-  4. Non-MARKET leg (LIMIT) → no coercion; LIMIT unchanged.
-  5. Non-MARKET leg (SL) → no coercion; SL unchanged (with required prices).
-  6. Coercion warning logged at WARNING level.
-  7. Coercion happens before enriched_orders is built → SDK receives LIMIT.
+  1. Single MARKET leg → BrokerCapabilityError raised; SDK never called.
+  2. Mixed legs (MARKET + LIMIT) → BrokerCapabilityError raised on MARKET leg.
+  3. Multiple MARKET legs → BrokerCapabilityError raised on the first MARKET leg.
+  4. Non-MARKET leg (LIMIT) → no error raised; SDK called once.
+  5. Non-MARKET leg (SL) → no error raised; SL passes through unchanged.
+  6. BrokerCapabilityError message mentions "MARKET" and "LIMIT".
+  7. BrokerCapabilityError has broker="zerodha_kite" set correctly.
 """
 
 from __future__ import annotations
 
-import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from backend.brokers.adapters.kite import KiteBroker
+from backend.brokers.errors import BrokerCapabilityError
 
 
 # ---------------------------------------------------------------------------
@@ -69,40 +73,40 @@ def _call_place_gtt(adapter, orders):
 
 class TestGttMarketCoerce:
 
-    def test_market_leg_coerced_to_limit(self, kite_adapter):
-        """MARKET leg is mutated to LIMIT before SDK call; no exception raised."""
+    def test_market_leg_raises_capability_error(self, kite_adapter):
+        """MARKET leg raises BrokerCapabilityError; SDK is never called."""
         leg = {"order_type": "MARKET", "quantity": 1, "price": 22000.0}
-        _call_place_gtt(kite_adapter, [leg])
-        assert leg["order_type"] == "LIMIT"
-        kite_adapter.kite.place_gtt.assert_called_once()
+        with pytest.raises(BrokerCapabilityError):
+            _call_place_gtt(kite_adapter, [leg])
+        kite_adapter.kite.place_gtt.assert_not_called()
 
-    def test_mixed_legs_only_market_coerced(self, kite_adapter):
-        """Only the MARKET leg is mutated; the LIMIT leg is left untouched."""
+    def test_mixed_legs_market_raises_before_sdk(self, kite_adapter):
+        """A mixed-leg GTT with a MARKET leg raises before the SDK call."""
         market_leg = {"order_type": "MARKET", "quantity": 1, "price": 22000.0}
         limit_leg = {"order_type": "LIMIT", "quantity": 1, "price": 22000.0}
-        _call_place_gtt(kite_adapter, [market_leg, limit_leg])
-        assert market_leg["order_type"] == "LIMIT"
-        assert limit_leg["order_type"] == "LIMIT"
+        with pytest.raises(BrokerCapabilityError):
+            _call_place_gtt(kite_adapter, [market_leg, limit_leg])
+        kite_adapter.kite.place_gtt.assert_not_called()
 
-    def test_multiple_market_legs_all_coerced(self, kite_adapter):
-        """All MARKET legs in a multi-leg GTT are coerced to LIMIT."""
+    def test_multiple_market_legs_raise_on_first(self, kite_adapter):
+        """Multiple MARKET legs — BrokerCapabilityError raised on the first one."""
         legs = [
             {"order_type": "MARKET", "quantity": 1, "price": 22000.0},
             {"order_type": "MARKET", "quantity": 2, "price": 22000.0},
         ]
-        _call_place_gtt(kite_adapter, legs)
-        for leg in legs:
-            assert leg["order_type"] == "LIMIT"
+        with pytest.raises(BrokerCapabilityError):
+            _call_place_gtt(kite_adapter, legs)
+        kite_adapter.kite.place_gtt.assert_not_called()
 
     def test_limit_leg_not_mutated(self, kite_adapter):
-        """A LIMIT leg passes through unchanged."""
+        """A LIMIT leg passes through unchanged and SDK is called."""
         leg = {"order_type": "LIMIT", "quantity": 1, "price": 22000.0}
         _call_place_gtt(kite_adapter, [leg])
         assert leg["order_type"] == "LIMIT"
         kite_adapter.kite.place_gtt.assert_called_once()
 
     def test_sl_leg_not_mutated(self, kite_adapter):
-        """An SL leg is not touched by the MARKET coercion guard."""
+        """An SL leg is not touched; SDK is called normally."""
         leg = {
             "order_type": "SL",
             "quantity": 1,
@@ -112,31 +116,20 @@ class TestGttMarketCoerce:
         _call_place_gtt(kite_adapter, [leg])
         assert leg["order_type"] == "SL"
 
-    def test_coercion_emits_warning(self, kite_adapter):
-        """Warning is logged when MARKET is coerced.
-
-        ramboq_logger sets propagate=False on named loggers, so caplog
-        cannot intercept via the root handler. We patch logger.warning
-        directly on the adapter module to verify the call was made with
-        the expected content.
-        """
-        import backend.brokers.adapters.kite as _kite_mod
+    def test_capability_error_message_mentions_market_and_limit(self, kite_adapter):
+        """BrokerCapabilityError message is operator-readable and mentions MARKET/LIMIT."""
         leg = {"order_type": "MARKET", "quantity": 1, "price": 22000.0}
-        with patch.object(_kite_mod.logger, "warning") as mock_warn:
+        with pytest.raises(BrokerCapabilityError) as exc_info:
             _call_place_gtt(kite_adapter, [leg])
-        assert mock_warn.called, "logger.warning must be called for MARKET→LIMIT coercion"
-        warned_text = " ".join(str(a) for a in mock_warn.call_args.args)
-        assert "MARKET" in warned_text and "LIMIT" in warned_text, (
-            f"Warning message did not mention MARKET→LIMIT: {warned_text!r}"
-        )
+        msg = str(exc_info.value)
+        assert "MARKET" in msg, f"Expected 'MARKET' in error message: {msg!r}"
+        assert "LIMIT" in msg, f"Expected 'LIMIT' in error message: {msg!r}"
 
-    def test_sdk_receives_limit_not_market(self, kite_adapter):
-        """The enriched_orders passed to the SDK carry order_type='LIMIT', not 'MARKET'."""
+    def test_capability_error_has_broker_tag(self, kite_adapter):
+        """BrokerCapabilityError carries broker='zerodha_kite'."""
         leg = {"order_type": "MARKET", "quantity": 1, "price": 22000.0}
-        _call_place_gtt(kite_adapter, [leg])
-        _call_args = kite_adapter.kite.place_gtt.call_args
-        enriched = _call_args.kwargs.get("orders") or _call_args.args[-1]
-        for enriched_leg in enriched:
-            assert enriched_leg.get("order_type") != "MARKET", (
-                "SDK must not receive a MARKET order_type leg"
-            )
+        with pytest.raises(BrokerCapabilityError) as exc_info:
+            _call_place_gtt(kite_adapter, [leg])
+        assert exc_info.value.broker == "zerodha_kite", (
+            f"Expected broker='zerodha_kite', got {exc_info.value.broker!r}"
+        )

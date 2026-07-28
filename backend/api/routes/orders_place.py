@@ -205,6 +205,86 @@ async def _enforce_capacity_guard(
         )
 
 
+# ── Template-attach helpers ───────────────────────────────────────────────────
+
+
+def _exchange_open_for_attach(exchange: str) -> bool:
+    """Return True when the exchange is currently open for trading.
+
+    (#22) Used at postback entry to decide whether to proceed with wing-scan
+    attach. GTT-only plans are always allowed (Kite accepts GTTs 24×7);
+    wing MARKET legs require an open exchange. This check is advisory only —
+    the actual enforcement for wing legs lives in apply_plan_live's C2 guard.
+    Returns True on any exception (fail-open: don't block the attach pipeline).
+    """
+    try:
+        from backend.api.algo.agent_engine import _symbol_exchange_open, _build_now_ctx
+        return bool(_symbol_exchange_open(exchange, _build_now_ctx()))
+    except Exception as _e:
+        logger.debug("_exchange_open_for_attach: check failed for %s: %s", exchange, _e)
+        return True  # fail-open — don't block attach on market-hours lookup failure
+
+
+def _gtt_direction_errors(label: str, trig_f: float, fill_price: float, parent_side: str, is_tp: bool, is_sl: bool) -> list[str]:
+    """Return direction-check errors for one trigger value."""
+    errs: list[str] = []
+    if is_tp:
+        if parent_side == "BUY" and trig_f <= fill_price:
+            errs.append(f"{label}: TP trigger {trig_f} must be above fill {fill_price} for BUY parent")
+        elif parent_side == "SELL" and trig_f >= fill_price:
+            errs.append(f"{label}: TP trigger {trig_f} must be below fill {fill_price} for SELL parent")
+    if is_sl:
+        if parent_side == "BUY" and trig_f >= fill_price:
+            errs.append(f"{label}: SL trigger {trig_f} must be below fill {fill_price} for BUY parent")
+        elif parent_side == "SELL" and trig_f <= fill_price:
+            errs.append(f"{label}: SL trigger {trig_f} must be above fill {fill_price} for SELL parent")
+    return errs
+
+
+def _gtt_spec_errors(spec, fill_price: float, ltp: float, parent_side: str) -> list[str]:
+    """Return all trigger errors for one GttSpec."""
+    errs: list[str] = []
+    label = spec.label or "?"
+    label_up = label.upper()
+    is_oco = (spec.trigger_type == "two-leg" and "TP" in label_up and "SL" in label_up)
+    for trig_idx, trig in enumerate(spec.trigger_values or []):
+        if trig is None:
+            continue
+        try:
+            trig_f = float(trig)
+        except (TypeError, ValueError):
+            errs.append(f"{label}: trigger value {trig!r} is not a number")
+            continue
+        if trig_f <= 0:
+            errs.append(f"{label}: trigger {trig_f} must be positive")
+            continue
+        if fill_price > 0:
+            is_tp = (trig_idx == 0) if is_oco else ("TP" in label_up)
+            is_sl = (trig_idx == 1) if is_oco else ("SL" in label_up)
+            errs.extend(_gtt_direction_errors(label, trig_f, fill_price, parent_side, is_tp, is_sl))
+        if ltp and ltp > 0:
+            deviation_pct = abs(trig_f - ltp) / ltp * 100.0
+            if deviation_pct > 50.0:
+                errs.append(f"{label}: trigger {trig_f} deviates {deviation_pct:.1f}% from LTP {ltp} — possible misconfiguration (>50% band)")
+    return errs
+
+
+def _validate_gtt_triggers(plan, ltp: float, exchange: str) -> list[str]:
+    """Validate GTT trigger direction vs parent side and circuit band. (#29)
+
+    Returns a list of error strings. Caller raises HTTPException(422) on
+    non-empty list (preview) or logs CRITICAL (apply-at-fill path).
+    """
+    if plan is None:
+        return []
+    parent_side = (plan.parent_side or "BUY").upper()
+    fill_price  = float(plan.parent_fill_price or 0.0)
+    errors: list[str] = []
+    for spec in (plan.gtts or []):
+        errors.extend(_gtt_spec_errors(spec, fill_price, ltp, parent_side))
+    return errors
+
+
 # ── Template-attach machinery ─────────────────────────────────────────────────
 
 # Phase 3D #4 — per-parent-row in-process lock so the postback
@@ -256,9 +336,11 @@ async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
         for k in _stale:
             _TEMPLATE_ATTACH_LOCKS.pop(k, None)
         if _stale:
-            logger.debug(
-                "[TPL-LOCK] evicted %d stale lock(s): %s",
-                len(_stale), _stale,
+            # #19: warning-level so stale-lock evictions appear in the error
+            # log and are visible without toggling debug. Include per-key age.
+            logger.warning(
+                "[TPL-LOCK] evicted %d stale lock(s) (TTL=%ss): ids=%s",
+                len(_stale), _TPL_LOCK_TTL_S, _stale,
             )
         entry = _TEMPLATE_ATTACH_LOCKS.get(parent_row_id)
         if entry is None:
@@ -294,16 +376,28 @@ def _maybe_fire_template_attach_for_reconcile(row) -> None:
     M11 (intent tagging) — implemented. AlgoOrder.intent column added via
     _migrate_algo_orders_intent; live AlgoOrder rows carry intent from the
     request so recover_live_chases can reinstate intent="close" on restart.
+
+    #2 — only fire template attach when the order is FULLY filled
+    (filled_quantity >= quantity). Partial fills must not trigger the exit
+    GTTs early — the remaining open qty would be left without stops.
+    TODO(#2): when template_attach_deferred column exists on AlgoOrder,
+    set it to True for partial fills so the postback handler retries on
+    subsequent fills.
     """
     try:
         if not _opl_reconcile_attach_eligible(row):
             return
-        # Sprint B (#4) — partial fills get their actual filled qty.
-        _attach_qty = (
-            int(row.filled_quantity)
-            if int(row.filled_quantity or 0) > 0
-            else int(row.quantity or 0)
-        )
+        _order_qty = int(row.quantity or 0)
+        _filled_qty = int(row.filled_quantity or 0)
+        # #2: guard — only attach when fully filled.
+        if _order_qty > 0 and _filled_qty < _order_qty:
+            logger.info(
+                "[TPL-ATTACH] skipping partial fill for parent #%s: "
+                "filled=%s of %s (reconcile path)",
+                row.id, _filled_qty, _order_qty,
+            )
+            return
+        _attach_qty = _filled_qty if _filled_qty > 0 else _order_qty
         asyncio.create_task(_fire_template_attach_on_fill(
             parent_row_id=int(row.id),
             parent_account=str(row.account),
@@ -490,8 +584,50 @@ async def _fire_template_attach_on_fill(
             if result is None:
                 return
 
+            # #11 — compare placed GTT count vs planned GTT count.
+            # A mismatch means a broker call silently failed for one spec
+            # while others succeeded — the position has partial exits only.
+            _planned_gtt_count = len(result.plan.gtts) if result.plan else 0
+            _placed_gtt_count  = len(result.gtt_ids)
+            if _planned_gtt_count > 0 and _placed_gtt_count < _planned_gtt_count:
+                logger.critical(
+                    "[TPL-ATTACH] PARTIAL GTT placement for parent #%s %s: "
+                    "planned %d GTT(s) but only %d placed. "
+                    "Check errors: %s. Exits may be incomplete — "
+                    "arm remaining exits manually.",
+                    parent_row_id, parent_symbol,
+                    _planned_gtt_count, _placed_gtt_count,
+                    result.errors,
+                )
+                try:
+                    from backend.shared.helpers.alert_utils import send_ntfy_alert
+                    send_ntfy_alert(
+                        "Partial GTT placement",
+                        f"parent #{parent_row_id} {parent_symbol}: "
+                        f"{_placed_gtt_count}/{_planned_gtt_count} GTTs placed. "
+                        f"Errors: {'; '.join(str(e) for e in result.errors[:2])}",
+                        priority="urgent",
+                    )
+                except Exception as _na:
+                    logger.warning("partial GTT ntfy alert failed: %s", _na)
+
             attached = _opp_build_attach_entries(result, fill_price, parent_side)
             if attached:
+                # If placement was partial, flag it in the JSON so the UI
+                # can surface a warning chip on the order card.
+                if _planned_gtt_count > 0 and _placed_gtt_count < _planned_gtt_count:
+                    import json as _json_flag
+                    try:
+                        _attach_list = list(attached)
+                        _attach_list.append({
+                            "kind":    "partial_flag",
+                            "partial": True,
+                            "planned": _planned_gtt_count,
+                            "placed":  _placed_gtt_count,
+                        })
+                        attached = _attach_list
+                    except Exception:
+                        pass
                 await _opp_persist_attached_gtts(parent_row_id, attached, fill_price)
 
         except Exception as _e:
@@ -1756,6 +1892,30 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
 
     side, sym, qty, lot_size = await _ticket_validate_input(data, request)
     account = _ticket_validate_account(data)
+
+    # #5 — Dhan MCX gate: reject template attachment on MCX/NCO when the
+    # selected broker does not support GTT on commodity exchanges (Dhan,
+    # Groww). Check here before any broker/DB work so the operator sees a
+    # clear 422 at submit time rather than a silent attach-fail alert later.
+    if data.template_id and (data.exchange or "NFO") in ("MCX", "NCO"):
+        from backend.brokers.capabilities import capabilities_for
+        if not capabilities_for(account).gtt_supports_mcx:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Selected broker does not support MCX GTT — "
+                    "remove template or switch broker"
+                ),
+            )
+
+    # #7 — wing_premium_pct=0 guard at ticket boundary (defence-in-depth;
+    # template_attach._parse_template_overrides also raises 422 on this).
+    _wpp = getattr(data, "wing_premium_pct_override", None)
+    if _wpp is not None and _wpp <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="wing_premium_pct must be > 0",
+        )
 
     await _ticket_enforce_lot_and_fat_finger(data, account, sym, qty, lot_size)
 

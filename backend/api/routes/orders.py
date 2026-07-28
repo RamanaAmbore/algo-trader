@@ -710,6 +710,39 @@ def _rco_preview_empty_plan(data) -> dict:
     }
 
 
+async def _preview_check_broker_gates(data, exch: str) -> None:
+    """Raise 422 early at preview for MCX GTT capability + wing_premium_pct=0. (#5, #7)"""
+    if data.template_id and exch in ("MCX", "NCO"):
+        _acct = (data.account or "")
+        if _acct:
+            from backend.brokers.capabilities import capabilities_for
+            if not capabilities_for(_acct).gtt_supports_mcx:
+                raise HTTPException(status_code=422, detail="Selected broker does not support MCX GTT — remove template or switch broker")
+    _wpp = getattr(data, "wing_premium_pct_override", None)
+    if _wpp is not None and _wpp <= 0:
+        raise HTTPException(status_code=422, detail="wing_premium_pct must be > 0")
+
+
+async def _preview_template_meta(result, data, sym: str, exch: str) -> "tuple[bool | None, list[str]]":
+    """Compute wing_feasible and gtt_trigger_errors for a preview result. (#28A, #29)"""
+    gtt_errors: list[str] = []
+    if data.template_id:
+        from backend.api.routes.orders_place import _validate_gtt_triggers, _opl_price_from_broker
+        ltp = await _opl_price_from_broker(sym) or 0.0
+        gtt_errors = _validate_gtt_triggers(result.plan, ltp, exch)
+
+    wing_feasible: "bool | None" = None
+    if data.template_id:
+        has_wing = any(
+            getattr(g, "kind", "") == "wing" or "wing" in (getattr(g, "label", "") or "").lower()
+            for g in (result.plan.gtts or [])
+        ) or bool(result.wing_skipped_reason)
+        if has_wing or result.wing_skipped_reason:
+            wing_feasible = result.wing_skipped_reason is None
+
+    return wing_feasible, gtt_errors
+
+
 def _rco_parse_dhan_postback_body(body: dict) -> "tuple[str, str, str, str, str, object, object, str, str]":
     """Extract canonical (order_id, account, kite_status, kite_symbol, txn,
     qty, price, kite_exchange, status_message) from a Dhan postback payload.
@@ -1532,8 +1565,9 @@ class OrdersController(Controller):
         # sizes exit GTTs against the same unit convention it always has.
         _sym = (data.tradingsymbol or "").upper()
         _exch = (data.exchange or "NFO")
-        _parent_qty = await _rco_preview_resolve_qty(_exch, _sym, int(data.quantity or 0))
+        await _preview_check_broker_gates(data, _exch)
 
+        _parent_qty = await _rco_preview_resolve_qty(_exch, _sym, int(data.quantity or 0))
         result = await apply_template_to_order(
             template_id=data.template_id,
             template_slug=None,
@@ -1549,7 +1583,13 @@ class OrdersController(Controller):
         )
         if result is None:
             return TicketPreviewResponse(plan=_rco_preview_empty_plan(data))
-        return TicketPreviewResponse(plan=result.plan.to_dict())
+
+        _wing_feasible, _gtt_errors = await _preview_template_meta(result, data, _sym, _exch)
+        return TicketPreviewResponse(
+            plan=result.plan.to_dict(),
+            wing_feasible=_wing_feasible,
+            gtt_trigger_errors=_gtt_errors,
+        )
 
     @post("/ticket")
     async def ticket_order(self, data: TicketOrderRequest, request: Request) -> TicketOrderResponse:

@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.3 — 2026-07-25  
+**Version**: 1.6 — 2026-07-27  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -22,6 +22,9 @@ Code, tests, and documentation must stay in sync with this file.
 7.2 [Instruments & Token-Map Cache](#72-instruments--token-map-cache)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
+8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
+8.3 [GTT Template Attachment System Enhancements](#83-gtt-template-attachment-system-enhancements-jul-2026)
+8.4 [Broker Postback Fill-Status Mapping](#84-broker-postback-fill-status-mapping)
 9. [Remote Broker & Conn Service](#9-remote-broker--conn-service)
 9.1 [Background Task Supervisor](#91-background-task-supervisor)
 10. [Virtual Root Resolution](#10-virtual-root-resolution)
@@ -346,6 +349,38 @@ Close orders may exceed all lot caps without triggering validation errors. Non-c
 
 Previously, basket placement lacked these guards and sent all legs unconditionally.
 
+## 8.3. GTT Template Attachment System Enhancements (Jul 2026)
+
+**Partial fill guard** (#2): Template attach fires only when a parent order is FULLY filled (`filled_qty >= qty`). Partial fills are logged but do not trigger GTT placement, ensuring the remaining open qty is left without premature stops.
+
+**Sub-lot scale rounding** (#3): Scale-out GTT quantities are rounded up to the nearest lot multiple so no sub-lot GTT leg reaches the broker. The last entry is trimmed if total exceeds parent qty. Qty lost to rounding is noted in `plan.notes`.
+
+**GTT LIMIT TP slippage offset** (#1): When `tp_order_type=LIMIT`, a tick offset is applied to the LIMIT price to improve fill probability:
+- **NFO/BFO/CDS options**: `template.tp_limit_tick_offset_nfo` (default 0.05) — 5 paise per contract
+- **Futures / other exchanges**: `template.tp_limit_tick_offset_default` (default 0.5) — 50 paise per contract
+
+For BUY parents (exit is SELL): LIMIT set below trigger.  
+For SELL parents (exit is BUY): LIMIT set above trigger.  
+SL legs always remain LIMIT at trigger with no offset.
+
+**Wing feasibility flag** (#10): Preview endpoint returns `wing_feasible=False` in `TicketPreviewResponse` when a wing template is required but no liquid strike was found (chain empty, all OI below threshold, quote failure). Operator sees this before submit so they can adjust settings or skip the wing.
+
+**Wing failure alerting**: When wing scan fails (hard-reject, chain miss, quote error), `wing_skipped_reason` is set on `AttachResult` and an ntfy alert fires immediately with the skip reason. Operator receives Telegram ping ≤30s so they can decide whether to arm exits manually.
+
+**Postback idempotency lock** (TOCTOU fix): Template-attach idempotency now re-fetches the row INSIDE the critical section (per-parent-order async lock) instead of once before acquiring the lock. Prevents a race where the postback handler and reconcile path both pass the `attached_gtts_json is None` check simultaneously and double-place GTTs.
+
+**GTT trigger validation** (#9, #29): Preview endpoint validates trigger direction vs parent side and circuit band:
+- BUY parent TP trigger must be above fill price; SL must be below.
+- SELL parent TP trigger must be below fill price; SL must be above.
+- Trigger must be > 0.
+- LTP sanity: trigger must not deviate >50% from LTP when known (catches gross misconfiguration).
+
+Returns `gtt_trigger_errors` in `TicketPreviewResponse` (422 on submit if present).
+
+**Kite MARKET GTT rejection** (#6): Orders requesting `tp_order_type=MARKET` for GTT now raise `BrokerCapabilityError` (added to error hierarchy) instead of silently coercing to LIMIT. Operator sees the error at preview time.
+
+**Full fill detection** (#2): AttachResult carries `wing_skipped_reason` field (set when wing scan returns no candidate). Consumed by API response + alert channel so operator knows WHY the wing wasn't attached (hard-reject, no candidates, OI too low, etc.).
+
 ## 8.2. GTT Exchange Validation & MCX Broker Restrictions
 
 **`validate_gtt_exchange(exchange)` method** (commit b8b1214c): New method on the `Broker` base class (`backend/brokers/base.py`, line 222). Default is a no-op (all exchanges allowed). Called at the top of `apply_plan_live` in `template_attach.py` before lot-size resolution, plan resolution, or any broker call.
@@ -359,6 +394,21 @@ Previously, basket placement lacked these guards and sent all legs unconditional
 **MCX/Dhan fail-fast in `apply_template_to_order`** (commit b8b1214c): After resolving `caps = capabilities_for(account)`, if `caps.gtt_supports_mcx=False` and `parent_exchange` is MCX or NCO, the function returns an `AttachResult` with errors immediately — before lot-size resolution, plan resolution, or any broker call. Fires `_fire_attach_fail_alert`. `guard_alert_fired=True` suppresses the duplicate alert at the bottom of the function.
 
 **Off-hours GTT note** (commit b8b1214c): When a GTT-only template (no wing) is attached while the exchange is closed, `AttachResult.plan.notes` now includes: "GTT registered off-hours ({exchange} closed) — will activate at next session open". Only applies when no wing leg exists (wing MARKET legs require open hours). See `apply_template_to_order` line 2026–2030.
+
+## 8.4. Broker Postback Fill-Status Mapping
+
+**File**: `backend/api/routes/orders_postback.py` — `_BROKER_FILLED_STATUSES`
+
+Per-broker mapping of fill-completion status tokens used to gate template-attach fan-out (#13):
+
+| Broker | Fill token | Notes |
+|---|---|---|
+| Zerodha Kite | `COMPLETE` | Canonical fill status via postback webhook |
+| Dhan | `TRADED` | Returned by postback webhook; mapped to FILLED |
+| Groww | `COMPLETE` | Via postback webhook |
+| (default) | `COMPLETE` | Fallback for unknown brokers |
+
+Template attach only fires when `_broker_is_fill_status(broker_id, status)` returns True. Non-fill terminal statuses (CANCELLED, REJECTED, EXPIRED) are blocked even if routed through `_BROKER_STATUS_MAP` to FILLED. This prevents attaching GTT exits on non-fill events.
 
 ---
 
@@ -494,6 +544,20 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 **I13 — RemoteBroker translate_qty delegation**: Any RemoteBroker proxy must override `translate_qty` to delegate via `_call`; the base-class no-op is unsafe for MCX/NCO contracts and sends raw contract qty to the adapter.
 
 **I14 — Closed-hours snapshot query combines latest + prior-session CTEs**: `_positions_snapshot()` in `backend/api/routes/positions.py` uses a single SQL query with `latest_batch` (today's most recent capture per account) and `prev_batch` CTEs (prior-session's most recent row per account/symbol). The `prev_batch` window is anchored on `captured_at < max_at AND captured_at >= max_at - INTERVAL '2 days'` to survive UTC/IST date-column edge cases; `prev_close_val` prefers yesterday's `prev_ltp` (from daily_book) FIRST, falling back to snapshot's `previous_close` only when `prev_ltp` is absent/zero. Rationale: after MCX closes at 23:30 IST the broker sets `previous_close = today_settlement`, which would collapse Day P&L to 0. Using yesterday's LTP preserves the correct close price through the closed window.
+
+**I15 — Template attach only on full fill**: Template attach fires when `filled_qty >= qty` (parent order fully filled). Partial fills are logged but do NOT trigger GTT placement. The remaining open qty must be left without premature stops.
+
+**I16 — GTT trigger direction vs parent side**: GTT trigger validation confirms BUY TP > fill, SELL TP < fill, BUY SL < fill, SELL SL > fill. Triggers must be strictly positive. Circuit band check: trigger must not deviate >50% from LTP when known. Validation fires at preview (422) and logs CRITICAL at apply-at-fill if violated.
+
+**I17 — Per-broker fill-status token resolution**: Template attach gate checks broker-specific fill tokens via `_broker_is_fill_status(broker_id, status)`. Kite: COMPLETE, Dhan: TRADED, Groww: COMPLETE. Non-fill terminal statuses (CANCELLED, REJECTED, EXPIRED) block attach even if routed through `_BROKER_STATUS_MAP` to FILLED.
+
+**I18 — Postback attach TOCTOU protection**: Idempotency check re-fetches `attached_gtts_json` INSIDE the per-parent-order async lock (`_get_template_attach_lock`). Prevents postback handler + reconcile path from both passing the `is None` check simultaneously and double-placing GTTs.
+
+**I19 — LIMIT TP slippage offset per exchange**: LIMIT TP legs apply exchange-specific tick offsets to improve fill probability. NFO/BFO/CDS: 0.05 (default). Futures/others: 0.5 (default). Config keys: `template.tp_limit_tick_offset_nfo`, `template.tp_limit_tick_offset_default`. SL legs always remain at trigger with no offset.
+
+**I20 — Scale-out rounding to lot multiple**: Scale-out GTT qtys rounded UP to nearest lot multiple; last entry trimmed to cap total at parent_qty. Qty lost to rounding is noted in `plan.notes`. Ensures no sub-lot GTT leg reaches the broker.
+
+**I21 — Wing feasibility in preview**: `TicketPreviewResponse` includes `wing_feasible=False` when wing template required but no liquid strike found. Operator can adjust settings or skip wing before submit. Prevents silent wing-skip surprises at fill time.
 
 ---
 
@@ -754,3 +818,4 @@ designed.
 | 2026-07-26 | v1.4 GTT exchange validation (commit b8b1214c): Added §8.2 documenting `validate_gtt_exchange(exchange)` method on Broker base class; Dhan/Groww override to raise ValueError for MCX/NCO; called at top of apply_plan_live before broker calls; MCX/Dhan fail-fast in apply_template_to_order before lot-size resolution; off-hours GTT note appended to plan.notes when GTT-only template attached while exchange closed |
 | 2026-07-26 | Dhan token renewal fix (commit 63262b94): `_dhan_conn_under_lock()` now gates `_try_renew()` on `not test_conn` to skip lightweight renewal when token is confirmed dead (DH-906); goes straight to full PIN+TOTP re-mint via `_mint_and_build()`. `_do_login()` emits DEBUG log `[DHAN-LOGIN]` with HTTP status + 200-char body for auth failure diagnosis. |
 | 2026-07-27 | v1.5 Broker health and account display: Inactive broker accounts (last_ok=0, last_fail=0) now return "inactive" state in health endpoint instead of "amber"; frontend excludes inactive from worst-state calc when active accounts exist. Dhan two-tier LKG cache (in-memory Tier-2 seeded from daily_book at startup + DB Tier-3 fallback) reduces stale holdings during outages via `_DB_LKG_CACHE` and `_preload_db_lkg_cache()`. NavBreakdown holdings popup now includes all registered broker accounts (not just those with active holdings) via `connStatus.accounts` union. |
+| 2026-07-27 | v1.6 Template system enhancements: Added §8.3 GTT Template Attachment documenting partial-fill guard (#2), sub-lot scale rounding (#3), LIMIT TP tick offset (#1), wing feasibility flag (#10), wing failure alerting, postback TOCTOU idempotency lock, GTT trigger validation (#9, #29), Kite MARKET GTT rejection via `BrokerCapabilityError`, and full-fill detection. Added §8.4 Broker Postback Fill-Status Mapping documenting `_BROKER_FILLED_STATUSES` dict for per-broker fill-token resolution (Kite: COMPLETE, Dhan: TRADED, Groww: COMPLETE). |

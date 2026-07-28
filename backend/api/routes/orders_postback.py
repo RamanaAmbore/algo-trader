@@ -35,6 +35,34 @@ _BROKER_STATUS_MAP = {
     "EXPIRED":   "UNFILLED",
 }
 
+# (#13) Per-broker fill-status sets. Kite uses "COMPLETE"; Dhan uses "TRADED".
+# Gate template attach on these broker-specific statuses to avoid attaching on
+# non-fill terminal statuses (CANCELLED/REJECTED) misrouted via _BROKER_STATUS_MAP.
+_BROKER_FILLED_STATUSES: dict[str, set[str]] = {
+    "kite":       {"COMPLETE"},
+    "zerodha":    {"COMPLETE"},
+    "zerodha_kite": {"COMPLETE"},
+    "dhan":       {"TRADED"},
+    "groww":      {"COMPLETE"},
+    # Default: any broker not listed falls back to {"COMPLETE"}.
+    "_default":   {"COMPLETE"},
+}
+
+
+def _broker_is_fill_status(broker_id: str, status: str) -> bool:
+    """Return True when `status` is a broker-specific fill confirmation.
+
+    (#13) Used by both _sync_algo_order_rows (Dhan/Groww path) and the Kite
+    postback path to gate template-attach fan-out. Ensures TRADED → FILLED
+    translation happens correctly for Dhan without widening the gate for
+    other brokers.
+    """
+    _fills = _BROKER_FILLED_STATUSES.get(
+        (broker_id or "").lower(),
+        _BROKER_FILLED_STATUSES["_default"],
+    )
+    return str(status or "").upper() in _fills
+
 # Audit category mapping — pre-fix EXPIRED + unknown statuses fell
 # through to "order.fill" which mislabelled them in /admin/audit.
 _STATUS_AUDIT_CATEGORY: dict[str, str] = {
@@ -157,7 +185,13 @@ async def _sync_algo_order_rows(
     from backend.api.models import AlgoOrder as _AO
     from backend.api.algo.order_events import write_event as _write_event
 
-    _new_status = _BROKER_STATUS_MAP.get(status)
+    # (#13) Per-broker fill-status resolution. Kite uses "COMPLETE"; Dhan
+    # uses "TRADED". _BROKER_STATUS_MAP covers canonical Kite statuses;
+    # for brokers that send different fill tokens we check _broker_is_fill_status
+    # and synthesise "FILLED" so the row transitions correctly.
+    _new_status = _BROKER_STATUS_MAP.get(str(status or "").upper())
+    if _new_status is None and _broker_is_fill_status(broker_id, status):
+        _new_status = "FILLED"
     _filled_rows: list = []
 
     async with _async_s() as _s:
@@ -455,13 +489,30 @@ def _pb_wants_take_profit_arm(_r) -> bool:
 def _pb_wants_template_attach(_r) -> bool:
     """Live parent fill with a template_id wants the template attach
     fan-out dispatched.
+
+    (#2) Only fire when the order is FULLY filled (filled_quantity >= quantity).
+    Partial fills must not trigger the exit GTTs early — the remaining open qty
+    would be left without stops. TODO(#2): when template_attach_deferred column
+    exists on AlgoOrder, set it on partial fills so we retry on the next fill.
     """
-    return bool(
+    if not (
         _r.template_id
         and _r.parent_order_id is None
         and _r.mode == "live"
         and _r.fill_price
-    )
+    ):
+        return False
+    # Full-fill guard (#2)
+    _order_qty  = int(_r.quantity or 0)
+    _filled_qty = int(_r.filled_quantity or 0)
+    if _order_qty > 0 and _filled_qty < _order_qty:
+        logger.info(
+            "[TPL-ATTACH] skipping partial fill for parent #%s: "
+            "filled=%s of %s (postback path)",
+            _r.id, _filled_qty, _order_qty,
+        )
+        return False
+    return True
 
 
 def _pb_dispatch_take_profit_arm(_r) -> None:
@@ -480,6 +531,11 @@ def _pb_dispatch_take_profit_arm(_r) -> None:
 
 
 def _pb_dispatch_template_attach(_r) -> None:
+    """Dispatch template attach for a fully-filled parent order.
+
+    (#2) Caller (_pb_wants_template_attach) already verified full-fill;
+    use filled_quantity as attach_qty when available.
+    """
     from backend.api.routes.orders_place import _fire_template_attach_on_fill
 
     _attach_qty = (
