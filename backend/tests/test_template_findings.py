@@ -172,6 +172,10 @@ class TestFullFillGatePostback:
         r.fill_price = fill_price
         r.mode = mode
         r.parent_order_id = parent_order_id
+        # Explicitly set intent/is_close_intent so MagicMock auto-attrs
+        # don't trigger the new close-intent gate.
+        r.intent = None
+        r.is_close_intent = False
         return r
 
     def test_full_fill_returns_true(self):
@@ -642,3 +646,314 @@ class TestValidateGttTriggers:
     def test_none_plan_returns_empty(self):
         from backend.api.routes.orders_place import _validate_gtt_triggers
         assert _validate_gtt_triggers(None, ltp=100.0, exchange="NFO") == []
+
+
+# ─── Close/offset gate: template attach blocked on close orders ───────────────
+
+class TestCloseOffsetGate:
+    """Close-intent and offsetting-position gate blocks template attach
+    on close/reduce orders across all three touch-points:
+      - _opl_reconcile_attach_eligible (reconcile path)
+      - _pb_wants_template_attach (postback path)
+      - ticket_order_handler (submit-time path, via _is_offsetting_position)
+    """
+
+    # ── shared row factory ────────────────────────────────────────────────────
+
+    def _row(
+        self,
+        intent=None,
+        is_close_intent=False,
+        template_id=1,
+        fill_price=100.0,
+        mode="live",
+        parent_order_id=None,
+        qty=50,
+        filled=50,
+    ):
+        r = MagicMock()
+        r.id = 1
+        r.intent = intent
+        r.is_close_intent = is_close_intent
+        r.template_id = template_id
+        r.fill_price = fill_price
+        r.mode = mode
+        r.parent_order_id = parent_order_id
+        r.quantity = qty
+        r.filled_quantity = filled
+        r.account = "ZG0001"
+        r.symbol = "NIFTY25JUL24000CE"
+        r.exchange = "NFO"
+        r.transaction_type = "SELL"
+        r.product = "NRML"
+        return r
+
+    # ── Fix A: _opl_reconcile_attach_eligible ─────────────────────────────────
+
+    def test_close_intent_skips_reconcile_attach(self):
+        """intent='close' → _opl_reconcile_attach_eligible returns False."""
+        from backend.api.routes.orders_place import _opl_reconcile_attach_eligible
+        row = self._row(intent="close")
+        assert _opl_reconcile_attach_eligible(row) is False
+
+    def test_close_intent_case_insensitive_skips_reconcile(self):
+        """CLOSE (upper-case) also blocked at reconcile gate."""
+        from backend.api.routes.orders_place import _opl_reconcile_attach_eligible
+        row = self._row(intent="CLOSE")
+        assert _opl_reconcile_attach_eligible(row) is False
+
+    def test_is_close_intent_flag_skips_reconcile(self):
+        """is_close_intent=True → _opl_reconcile_attach_eligible returns False."""
+        from backend.api.routes.orders_place import _opl_reconcile_attach_eligible
+        row = self._row(is_close_intent=True)
+        assert _opl_reconcile_attach_eligible(row) is False
+
+    def test_open_intent_does_not_skip_reconcile(self):
+        """intent=None (open order) → reconcile gate passes normally."""
+        from backend.api.routes.orders_place import _opl_reconcile_attach_eligible
+        row = self._row(intent=None, is_close_intent=False)
+        assert _opl_reconcile_attach_eligible(row) is True
+
+    # ── Fix D: _pb_wants_template_attach ─────────────────────────────────────
+
+    def test_close_intent_skips_postback_attach(self):
+        """intent='close' → _pb_wants_template_attach returns False."""
+        from backend.api.routes.orders_postback import _pb_wants_template_attach
+        row = self._row(intent="close")
+        assert _pb_wants_template_attach(row) is False
+
+    def test_close_intent_upper_skips_postback_attach(self):
+        """CLOSE (upper) → _pb_wants_template_attach returns False."""
+        from backend.api.routes.orders_postback import _pb_wants_template_attach
+        row = self._row(intent="CLOSE")
+        assert _pb_wants_template_attach(row) is False
+
+    def test_is_close_intent_flag_skips_postback_attach(self):
+        """is_close_intent=True → _pb_wants_template_attach returns False."""
+        from backend.api.routes.orders_postback import _pb_wants_template_attach
+        row = self._row(is_close_intent=True)
+        assert _pb_wants_template_attach(row) is False
+
+    def test_none_intent_postback_allows_attach(self):
+        """intent=None → postback gate passes; full-fill rule applies normally."""
+        from backend.api.routes.orders_postback import _pb_wants_template_attach
+        row = self._row(intent=None, is_close_intent=False, qty=50, filled=50)
+        assert _pb_wants_template_attach(row) is True
+
+    # ── Fix B: _is_offsetting_position ───────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_sell_against_long_is_offsetting(self):
+        """SELL with net_qty > 0 → _is_offsetting_position returns True."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _is_offsetting_position
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE",
+            "quantity": 50,
+            "account": "ZG0001",
+        }])
+        with patch(
+            "backend.api.routes.orders_place._is_offsetting_position.__module__",
+            create=True,
+        ):
+            with patch(
+                "backend.brokers.broker_apis.fetch_positions",
+                return_value=[df],
+            ):
+                result = await _is_offsetting_position(
+                    sym="NIFTY25JUL24000CE",
+                    exchange="NFO",
+                    side="SELL",
+                    account="ZG0001",
+                )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_buy_against_short_is_offsetting(self):
+        """BUY with net_qty < 0 → _is_offsetting_position returns True."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _is_offsetting_position
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE",
+            "quantity": -50,
+            "account": "ZG0001",
+        }])
+        with patch(
+            "backend.brokers.broker_apis.fetch_positions",
+            return_value=[df],
+        ):
+            result = await _is_offsetting_position(
+                sym="NIFTY25JUL24000CE",
+                exchange="NFO",
+                side="BUY",
+                account="ZG0001",
+            )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_buy_with_no_existing_position_not_offsetting(self):
+        """Symbol not in positions → _is_offsetting_position returns False."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _is_offsetting_position
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "OTHER_SYMBOL",
+            "quantity": 50,
+            "account": "ZG0001",
+        }])
+        with patch(
+            "backend.brokers.broker_apis.fetch_positions",
+            return_value=[df],
+        ):
+            result = await _is_offsetting_position(
+                sym="NIFTY25JUL24000CE",
+                exchange="NFO",
+                side="BUY",
+                account="ZG0001",
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_position_fetch_exception_fails_open(self):
+        """fetch_positions raises → _is_offsetting_position returns False (fail-open)."""
+        from backend.api.routes.orders_place import _is_offsetting_position
+
+        with patch(
+            "backend.brokers.broker_apis.fetch_positions",
+            side_effect=RuntimeError("broker unavailable"),
+        ):
+            result = await _is_offsetting_position(
+                sym="NIFTY25JUL24000CE",
+                exchange="NFO",
+                side="SELL",
+                account="ZG0001",
+            )
+        assert result is False
+
+    # ── Fix C: ticket submit gate clears template_id ──────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_offsetting_position_clears_template_at_submit(self):
+        """When _is_offsetting_position returns True, template_id is stripped
+        before _ticket_enforce_lot_and_fat_finger is called."""
+        import msgspec
+        from backend.api.schemas import TicketOrderRequest
+
+        data = TicketOrderRequest(
+            mode="live",
+            side="SELL",
+            tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1,
+            exchange="NFO",
+            account="ZG0001",
+            template_id=7,
+        )
+
+        captured = {}
+
+        async def _fake_validate(d, req):
+            return "SELL", "NIFTY25JUL24000CE", 50, 50
+
+        def _fake_account(d):
+            return "ZG0001"
+
+        async def _fake_offsetting(sym, exchange, side, account):
+            return True   # simulate offsetting position
+
+        async def _fake_enforce(d, acc, sym, qty, ls):
+            captured["data_at_enforce"] = d  # capture data after gate
+
+        async def _fake_gate(d, sym):
+            pass
+
+        async def _fake_capacity(*a, **kw):
+            pass
+
+        with patch("backend.api.routes.orders_place._ticket_validate_input",
+                   new=_fake_validate), \
+             patch("backend.api.routes.orders_place._ticket_validate_account",
+                   new=_fake_account), \
+             patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=_fake_offsetting), \
+             patch("backend.api.routes.orders_place._ticket_enforce_lot_and_fat_finger",
+                   new=_fake_enforce), \
+             patch("backend.api.routes.orders_place._ticket_gate_market_hours_and_align_price",
+                   new=_fake_gate), \
+             patch("backend.api.routes.orders_place._enforce_capacity_guard",
+                   new=_fake_capacity), \
+             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
+             patch("backend.shared.helpers.utils.config",
+                   {"deploy_branch": "dev"}), \
+             patch("backend.api.routes.orders_place._ticket_place_live",
+                   new_callable=AsyncMock, return_value=None) as mock_live, \
+             patch("backend.api.routes.orders_place._ticket_place_paper",
+                   new_callable=AsyncMock, return_value=None):
+            from backend.api.routes.orders_place import ticket_order_handler
+            await ticket_order_handler(data, MagicMock())
+
+        # template_id must have been cleared before _ticket_enforce_lot_and_fat_finger
+        assert captured.get("data_at_enforce") is not None
+        assert captured["data_at_enforce"].template_id is None
+
+    @pytest.mark.asyncio
+    async def test_close_intent_clears_template_without_position_check(self):
+        """intent='close' → template_id cleared without calling _is_offsetting_position."""
+        from backend.api.schemas import TicketOrderRequest
+
+        data = TicketOrderRequest(
+            mode="live",
+            side="SELL",
+            tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1,
+            exchange="NFO",
+            account="ZG0001",
+            template_id=9,
+            intent="close",
+        )
+
+        captured = {}
+
+        async def _fake_validate(d, req):
+            return "SELL", "NIFTY25JUL24000CE", 50, 50
+
+        def _fake_account(d):
+            return "ZG0001"
+
+        async def _fake_offsetting(sym, exchange, side, account):
+            raise AssertionError("_is_offsetting_position should NOT be called for intent=close")
+
+        async def _fake_enforce(d, acc, sym, qty, ls):
+            captured["data_at_enforce"] = d
+
+        async def _fake_gate(d, sym):
+            pass
+
+        async def _fake_capacity(*a, **kw):
+            pass
+
+        with patch("backend.api.routes.orders_place._ticket_validate_input",
+                   new=_fake_validate), \
+             patch("backend.api.routes.orders_place._ticket_validate_account",
+                   new=_fake_account), \
+             patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=_fake_offsetting), \
+             patch("backend.api.routes.orders_place._ticket_enforce_lot_and_fat_finger",
+                   new=_fake_enforce), \
+             patch("backend.api.routes.orders_place._ticket_gate_market_hours_and_align_price",
+                   new=_fake_gate), \
+             patch("backend.api.routes.orders_place._enforce_capacity_guard",
+                   new=_fake_capacity), \
+             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
+             patch("backend.shared.helpers.utils.config",
+                   {"deploy_branch": "dev"}), \
+             patch("backend.api.routes.orders_place._ticket_place_live",
+                   new_callable=AsyncMock, return_value=None), \
+             patch("backend.api.routes.orders_place._ticket_place_paper",
+                   new_callable=AsyncMock, return_value=None):
+            from backend.api.routes.orders_place import ticket_order_handler
+            await ticket_order_handler(data, MagicMock())
+
+        assert captured.get("data_at_enforce") is not None
+        assert captured["data_at_enforce"].template_id is None

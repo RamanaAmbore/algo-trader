@@ -359,11 +359,49 @@ def _opl_reconcile_attach_eligible(row) -> bool:
     Guards: must be live mode, must be a parent with a template_id,
     and must have a fill_price. Extracted from
     _maybe_fire_template_attach_for_reconcile to reduce CC there."""
+    # Close-intent or explicit close flag → never attach template
+    if (row.intent or "").lower() == "close":
+        return False
+    if getattr(row, "is_close_intent", False):
+        return False
     if (row.mode or "").lower() != "live":
         return False
     if not (row.template_id and row.parent_order_id is None):
         return False
     return bool(row.fill_price)
+
+
+async def _is_offsetting_position(sym: str, exchange: str, side: str, account: str) -> bool:
+    """Return True when placing `side` would reduce/close an existing position.
+
+    Uses cached broker positions (30s TTL) — lightweight, no extra broker call typically.
+    BUY against a net SHORT → True. SELL against a net LONG → True.
+    Fails open (returns False) if position fetch fails.
+    """
+    try:
+        from backend.brokers.broker_apis import fetch_positions as _fp
+        dfs = await asyncio.to_thread(_fp)
+        for df in dfs:
+            if df is None or df.empty:
+                continue
+            acct_col = next(
+                (c for c in df.columns if "account" in c.lower() or "user" in c.lower()),
+                None,
+            )
+            mask = df["tradingsymbol"].str.upper() == sym.upper()
+            if acct_col:
+                mask &= df[acct_col].astype(str).str.upper() == account.upper()
+            rows = df[mask]
+            if rows.empty:
+                continue
+            net_qty = float(rows["quantity"].iloc[0])
+            if side.upper() == "BUY" and net_qty < 0:
+                return True   # BUY closes a SHORT
+            if side.upper() == "SELL" and net_qty > 0:
+                return True   # SELL closes a LONG
+    except Exception:
+        pass  # fail-open: don't block the order on a position-fetch failure
+    return False
 
 
 def _maybe_fire_template_attach_for_reconcile(row) -> None:
@@ -1916,6 +1954,26 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
             status_code=422,
             detail="wing_premium_pct must be > 0",
         )
+
+    # Close/offset gate: strip template_id when this order would reduce an
+    # existing opposite position (close-intent or net-offsetting).
+    if data.template_id:
+        _is_close = (getattr(data, "intent", None) or "").lower() == "close"
+        if not _is_close:
+            _is_close = await _is_offsetting_position(
+                sym=sym,
+                exchange=str(data.exchange or "NFO"),
+                side=side,
+                account=str(account),
+            )
+        if _is_close:
+            logger.info(
+                "[TPL-ATTACH] clearing template_id — close/offset order for %s %s",
+                account,
+                sym,
+            )
+            import msgspec as _ms
+            data = _ms.structs.replace(data, template_id=None)
 
     await _ticket_enforce_lot_and_fat_finger(data, account, sym, qty, lot_size)
 
