@@ -144,7 +144,7 @@ See Section 5 for DB-first policy and fallback ladder.
 ### 4.4 Positions & Holdings
 
 - Open: live from broker via `closed_hours_or_broker()` → `'live'`
-- Closed: from `daily_book` snapshot → `'snapshot'` with `as_of` timestamp; includes `AND qty != 0` guard (flat/expired excluded)
+- Closed: from `daily_book` snapshot → `'snapshot'` with `as_of` timestamp; uses refined filter `AND (qty != 0 OR date = today_ist)` (commits cef00739, 5ac11f56): closed positions from today's IST date appear in snapshot (shown with 'closed' chip + opacity decoration in derivatives legs grid); prior-session closed positions excluded (date != today_ist), only carried-overnight open positions visible
 - Day P&L: always via `baseDayPnlForPosition(p)` — NEVER read `day_change_val` directly
 - Do NOT use `positions.close_price` (stale overnight); use `daily_book.ltp`
 - NavStrip P-slot is guarded against zero-flash during live→snapshot transitions
@@ -974,6 +974,14 @@ from the last market session. The `closed_hours_or_broker()` gate centralizes th
 - Card header shows "as of HH:MM IST" when `as_of` is non-null
 - TOTAL rows recalculate from filtered rows (not persisted independently)
 
+**Off-hours position snapshot filter** (commits cef00739, 5ac11f56):
+- Query uses `AND (db.qty != 0 OR db.date = :today_ist)` to include positions closed intraday
+- Intraday closed positions (qty=0 + date=today IST) → shown with 'closed' chip + opacity:0.45
+  in derivatives legs grid; frontend `buildCleanLegs()` filters these out from payoff POST
+- Prior-session closed positions (qty=0 + date≠today IST) → excluded from snapshot
+- Next trading day before market open: yesterday's closed legs absent, only carried-overnight 
+  open positions visible, matching broker book state at next gate open
+
 **Movers during closed hours**:
 - Snapshot from last NSE close (persisted to `movers_snapshots` table)
 - Both winners and losers rows show; sorted by `peak_pct` rather than live `change_pct`
@@ -1075,3 +1083,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-24 | §17 equity candidate expiry P&L display fix (023583f9): `_equityLinearLegs` entries now carry a `key` property; `_eqExpPnlByKey` derived maps each equity candidate key to its beta-adjusted linear expiry P&L at live spot; `_legExpPnlDisplay` now handles `'eq'` candidates returning `_eqExpPnlByKey[enKey(c)] ?? null`; `_legsExpPnlTotal` now single-pass over all candidates calling `_legExpPnlDisplay`, guaranteeing `sum(per-leg rows) == TOTAL` for all candidate types including equity and proxy hedges |
 | 2026-07-26 | §17.1 payoff chart spot price resolution (63262b94): `liveSpot` derived now includes `candidatePositions[*].underlying_ltp` (backend-stamped in positions.py Pass 3) as step 3 in resolution chain, before batchQuote fallback; eliminates "Resolving spot…" during SSE warmup |
 | 2026-07-27 | v1.3 Expiry re-scan + positions cleanup (commits cbbe0f23, 21d1656a): §4.4 positions/holdings now notes off-hours snapshot includes `AND qty != 0` guard (flat/expired excluded) and runs orphan cleanup (same-day + prior-day, 7-day scope). §7 added expiry-day auto-close agent status change (now active by default) with re-scan loop (every 30 min until 15:25 IST, catches newly-ITM positions). |
+| 2026-07-28 | v1.4 Snapshot intraday-closed position inclusion (commits cef00739, 5ac11f56): §4.4 positions/holdings updated — off-hours snapshot filter refined from `AND qty != 0` to `AND (qty != 0 OR date = :today_ist)`. Intraday closed positions (qty=0, date=today IST) now appear in snapshot with 'closed' chip + opacity:0.45 in derivatives legs grid; prior-session closed excluded. §23 Closed-Hours Snapshot Behavior expanded with detailed off-hours position snapshot filter explanation. Frontend `buildCleanLegs()` filters qty===0 from payoff POST (strategy analytics unchanged); legs grid shows closed legs for intraday history only. |
