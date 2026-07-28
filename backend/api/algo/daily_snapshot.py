@@ -320,14 +320,16 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
     today_ist = timestamp_indian().date()
     is_today = (target_date == today_ist)
 
-    out: dict[str, list[dict]] = {
-        "holdings": [], "positions": [], "trades": [], "funds": [],
+    out: dict = {
+        "holdings": [], "positions": None, "trades": [], "funds": [],
     }
 
     out["holdings"] = _safe_fetch(f"[{account}] holdings", broker.holdings) or []
 
     try:
         raw_pos = broker.positions() or {}
+        # Assign a list on success — leaves None on failure so callers can
+        # distinguish "broker returned nothing" from "broker call failed".
         out["positions"] = raw_pos.get("net", [])
     except Exception as e:
         logger.warning(f"Snapshot [{account}] positions fetch failed: {e}")
@@ -343,7 +345,7 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
     # right after `pd.concat`.
     try:
         n_h = _backfill_market_data_dicts(out["holdings"], qty_col="opening_quantity")
-        n_p = _backfill_market_data_dicts(out["positions"], qty_col="quantity")
+        n_p = _backfill_market_data_dicts(out["positions"] or [], qty_col="quantity")
         if n_h or n_p:
             logger.info(
                 f"Snapshot [{account}] backfilled market data — "
@@ -659,6 +661,43 @@ async def _upsert_rows(rows: list[dict]) -> int:
     return len(rows)
 
 
+async def _delete_orphan_positions(
+    target_date: date, account: str, current_symbols: set
+) -> int:
+    """Delete daily_book positions rows no longer returned by the broker.
+
+    Called only after a confirmed successful broker positions fetch (even if
+    empty). An empty current_symbols set means all positions are closed —
+    deletes all rows for (target_date, account, 'positions').
+
+    Returns the number of rows deleted.
+    """
+    from sqlalchemy import bindparam as _bp
+
+    async with async_session() as session:
+        if current_symbols:
+            stmt = text(
+                "DELETE FROM daily_book "
+                "WHERE date = :date AND account = :account AND kind = 'positions' "
+                "AND symbol NOT IN :symbols"
+            ).bindparams(_bp("symbols", expanding=True))
+            result = await session.execute(
+                stmt,
+                {"date": target_date, "account": account, "symbols": list(current_symbols)},
+            )
+        else:
+            # Broker returned no positions — all closed; wipe today's rows.
+            stmt = text(
+                "DELETE FROM daily_book "
+                "WHERE date = :date AND account = :account AND kind = 'positions'"
+            )
+            result = await session.execute(
+                stmt, {"date": target_date, "account": account}
+            )
+        await session.commit()
+        return result.rowcount
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -678,7 +717,7 @@ def _snap_all_filtered(
     is preserved automatically because _upsert_rows([]) is a no-op.
     """
     raw_h_count = len(raw["holdings"])
-    raw_p_count = len(raw["positions"])
+    raw_p_count = len(raw["positions"] or [])
     if raw_h_count > 0 and len(h_rows) == 0 and raw_p_count > 0 and len(p_rows) == 0:
         logger.warning(
             f"Snapshot [{account}] date={target_date} — ALL "
@@ -748,8 +787,8 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
                 _local_executor, _fetch_account_data, broker, account, target_date
             )
 
-            h_rows = _holdings_rows(account,  target_date, raw["holdings"],  now_ist, settled=settled)
-            p_rows = _positions_rows(account, target_date, raw["positions"], now_ist, settled=settled)
+            h_rows = _holdings_rows(account,  target_date, raw["holdings"],       now_ist, settled=settled)
+            p_rows = _positions_rows(account, target_date, raw["positions"] or [], now_ist, settled=settled)
             t_rows = _trades_rows(account,    target_date, raw["trades"])
             f_rows = _funds_rows(account,     target_date, raw["funds"])
 
@@ -761,6 +800,19 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
             totals["positions_rows"] += await _upsert_rows(p_rows)
             totals["trades_rows"]    += await _upsert_rows(t_rows)
             totals["funds_rows"]     += await _upsert_rows(f_rows)
+
+            # Prune positions rows no longer in broker response (e.g. post-settlement cleanup).
+            # Only fires when the broker positions call succeeded (raw["positions"] is a list,
+            # not None). An empty list means all positions are closed — wipes all today's rows.
+            if raw["positions"] is not None:
+                _p_syms = {r["symbol"] for r in p_rows}
+                _pruned = await _delete_orphan_positions(target_date, account, _p_syms)
+                if _pruned:
+                    logger.info(
+                        "[SNAPSHOT] pruned %d stale position row(s) for %s %s",
+                        _pruned, account, target_date,
+                    )
+
             processed.append(account)
 
             logger.info(
