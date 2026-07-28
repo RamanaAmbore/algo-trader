@@ -516,3 +516,70 @@ class TestFetchOrderingAndCoexistence:
         assert abs(df.at[1, 'day_change_val']) < 0.005, (
             "Row B day_change_val must remain 0.0 after close-override step"
         )
+
+
+# ---------------------------------------------------------------------------
+# Snapshot query — qty=0 closed positions must pass through
+# ---------------------------------------------------------------------------
+
+def test_positions_snapshot_includes_closed_qty_zero_rows():
+    """_positions_snapshot must NOT filter out qty=0 rows.
+
+    Positions closed intraday (qty=0 in the latest snapshot batch) should
+    appear in the off-hours response so the frontend can show the 'closed'
+    chip + opacity decoration.  Previously the SQL had `AND db.qty != 0`
+    which silently dropped these rows.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from datetime import datetime, timezone
+
+    from backend.api.routes.positions import _positions_snapshot
+
+    now_dt = datetime(2026, 7, 28, 10, 0, 0, tzinfo=timezone.utc)
+
+    # Simulate one open row (qty=25) and one closed row (qty=0).
+    open_row = (
+        "ACC1", "NIFTY26JUL24500CE", "NFO",
+        25, 120.0, 130.0,        # qty, avg_cost, ltp
+        250.0, 300.0,            # day_pnl, total_pnl
+        None,                    # payload_json
+        now_dt,                  # captured_at
+        110.0,                   # previous_close
+        115.0, 290.0,            # prev_ltp, prev_settlement_pnl
+    )
+    closed_row = (
+        "ACC1", "NIFTY26JUL24000PE", "NFO",
+        0, 80.0, 5.0,            # qty=0 (closed)
+        0.0, -600.0,             # day_pnl, total_pnl
+        None,
+        now_dt,
+        70.0,
+        75.0, None,
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [open_row, closed_row]
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("backend.api.database.async_session", return_value=mock_session),
+        patch(
+            "backend.shared.helpers.date_time_utils.timestamp_indian",
+            return_value=MagicMock(date=lambda: now_dt.date()),
+        ),
+    ):
+        result = asyncio.run(_positions_snapshot())
+
+    assert result is not None, "snapshot should return a response"
+    symbols = [r.tradingsymbol for r in result.rows]
+    assert "NIFTY26JUL24500CE" in symbols, "open position must appear"
+    assert "NIFTY26JUL24000PE" in symbols, \
+        "closed (qty=0) position must appear so frontend can show 'closed' decoration"
+
+    closed = next(r for r in result.rows if r.tradingsymbol == "NIFTY26JUL24000PE")
+    assert closed.quantity == 0, "closed row must have qty=0"
