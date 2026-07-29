@@ -74,7 +74,7 @@ export function annotateOptionCandidates({
   const annotated = [];
   for (const c of candidates) {
     const qty = Number(c.qty || 0);
-    if (qty === 0 && !expFilter.length) continue;
+    if (qty === 0) continue;
     if (c.source === 'draft') continue;
     const inst = getInstrument(String(c.symbol || '').toUpperCase());
     if (!inst) continue;

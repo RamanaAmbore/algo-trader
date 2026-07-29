@@ -92,11 +92,47 @@ describe('buildCandidatePositions — expired-contract filtering', () => {
     expect(result.filter(r => r.kind === 'opt')).toHaveLength(1);
   });
 
-  it('includes a position when instrument has no expiry in cache (fail-open)', () => {
-    // When getInstrument returns null, _expiry is falsy → guard skipped
+  it('excludes a position when instrument is not in master (removed by Kite after expiry)', () => {
+    // When getInstrument returns null the instrument has been removed from the
+    // master (Kite removes it after settlement). The position must be excluded.
     const positions = [makePos('IDFCFIRSTB26AUG500CE')];
     const result = buildCandidatePositions({ ...BASE_PARAMS, positions, getInstrument: () => null });
-    expect(result.filter(r => r.kind === 'opt')).toHaveLength(1);
+    expect(result.filter(r => r.kind === 'opt')).toHaveLength(0);
+  });
+
+  it('excludes an F&O draft when instrument is not in master (removed by Kite)', () => {
+    const drafts = [
+      { symbol: 'IDFCFIRSTB26AUG500CE', qty: 10, avg_cost: 5, ltp: 3, id: 3 },
+    ];
+    const result = buildCandidatePositions({
+      ...BASE_PARAMS, positions: [], drafts, getInstrument: () => null,
+    });
+    expect(result.filter(r => r.source === 'draft')).toHaveLength(0);
+  });
+
+  it('excludes an equity holding with qty=0 (closed holding should not appear)', () => {
+    const holdings = [
+      { symbol: 'IDFCFIRSTB', account: 'ZG0790', qty: 0, opening_qty: 0 },
+    ];
+    const result = buildCandidatePositions({
+      ...BASE_PARAMS, positions: [], holdings, getInstrument: () => null,
+    });
+    expect(result.filter(r => r.kind === 'eq')).toHaveLength(0);
+  });
+
+  it('excludes a proxy-hedge holding with qty=0', () => {
+    const holdings = [
+      { symbol: 'GOLDBEES', account: 'ZG0790', qty: 0, opening_qty: 0 },
+    ];
+    const result = buildCandidatePositions({
+      ...BASE_PARAMS,
+      target: 'GOLD',
+      positions: [],
+      holdings,
+      proxiesForTarget: () => ['GOLDBEES'],
+      getInstrument: () => null,
+    });
+    expect(result.filter(r => r.kind === 'eq')).toHaveLength(0);
   });
 
   it('excludes expired draft position', () => {
