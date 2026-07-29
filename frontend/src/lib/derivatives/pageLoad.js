@@ -304,9 +304,11 @@ export function buildCandidatePositions({
     const isOpt = /(CE|PE)$/i.test(sym);
     if (!isFut && !isOpt) continue;
     if (!matchExpiry(sym)) continue;
+    // Skip instruments no longer in master (expired and removed by Kite).
+    const _inst = getInstrument(sym);
+    if (!_inst) continue;
     // Skip contracts where the expiry date has already passed.
-    const _expiry = getInstrument(sym)?.x;
-    if (_expiry && _expiry < todayIST()) continue;
+    if (_inst.x && _inst.x < todayIST()) continue;
     real.push({ ...p, kind: isFut ? 'fut' : 'opt' });
   }
 
@@ -315,6 +317,7 @@ export function buildCandidatePositions({
     const sym = String(h.symbol || '').toUpperCase();
     if (sym !== target) continue;
     if (!matchAccount(h.account)) continue;
+    if (!Number(h.qty || 0)) continue;
     real.push({ ...h, source: 'live', kind: 'eq' });
   }
 
@@ -325,6 +328,7 @@ export function buildCandidatePositions({
       const sym = String(h.symbol || '').toUpperCase();
       if (!_allowedProxies.has(sym)) continue;
       if (!matchAccount(h.account)) continue;
+      if (!Number(h.qty || 0)) continue;
       real.push({ ...h, source: 'live', kind: 'eq', proxy_for: target });
     }
   }
@@ -337,8 +341,9 @@ export function buildCandidatePositions({
     const isOpt = /(CE|PE)$/i.test(sym);
     if (!isFut && !isOpt) continue;
     if (!matchExpiry(sym)) continue;
-    const _dExpiry = getInstrument(sym)?.x;
-    if (_dExpiry && _dExpiry < todayIST()) continue;
+    const _dInst = getInstrument(sym);
+    if (!_dInst) continue;
+    if (_dInst.x && _dInst.x < todayIST()) continue;
     const qty  = d.qty      === '' || d.qty      == null ? 0    : Number(d.qty);
     const cost = d.avg_cost === '' || d.avg_cost == null ? null : Number(d.avg_cost);
     const ltp  = d.ltp      === '' || d.ltp      == null ? null : Number(d.ltp);
