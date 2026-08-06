@@ -93,6 +93,9 @@
     // show a small "→ Options" link that deep-links to /admin/options.
     // Only passed as true from the algo /dashboard; never on public pages.
     enableOptionsLink = false,
+    // When false, grid section CardHeaders render title-only with no
+    // search/download/refresh controls. Set false on public /performance.
+    showGridControls  = true,
   } = $props();
   const isDark = $derived(theme === 'ag-theme-algo');
 
@@ -1357,6 +1360,7 @@
   <CardHeader
     title="Summary"
     showSearch={false}
+    showControls={showGridControls}
     onDownload={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
     label="Positions Summary"
     detectOverflow={false}
@@ -1373,6 +1377,7 @@
   <CardHeader
     title="Summary"
     showSearch={false}
+    showControls={showGridControls}
     onDownload={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
     label="Holdings Summary"
     detectOverflow={false}
@@ -1393,6 +1398,7 @@
   <CardHeader
     title="Breakdown"
     bind:filter={_filterPositions}
+    showControls={showGridControls}
     onDownload={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
     label="Positions"
     detectOverflow={false}
@@ -1406,6 +1412,7 @@
   <CardHeader
     title="Breakdown"
     bind:filter={_filterHoldings}
+    showControls={showGridControls}
     onDownload={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
     label="Holdings"
     detectOverflow={false}
