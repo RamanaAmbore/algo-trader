@@ -1,129 +1,93 @@
-# Plan: Pulse/Public UI consistency — flash guard + icon colors + sort fix
+# Plan: Fix positions cache staleness — external broker trades not appearing
 
 ## Context
-Four related UI consistency issues discovered across Pulse and public pages:
+Positions created by trades placed directly at the broker (Kite/Dhan) don't appear in
+the RamboQuant positions view, causing the app to be out of sync.
 
-1. **Pinned card flash (and other MarketPulse stores)** — `$derived(store.value ?? [])` snaps
-   to `[]` when a DataStore reloads (store value transiently goes null). With ag-Grid's
-   default `animateRows: true`, the empty→refill cycle makes rows fade in — card background
-   shows through. Positions/Holdings already have the stale-while-revalidate bridge; three
-   other stores and two persistent strip components do not.
+Root cause confirmed — NOT a filter/exclusion issue. The data flow is architecturally
+correct (all broker positions are included), but the broker-side cache never expires:
 
-2. **Public performance page icon colors** — CardControls icons on the cream-themed public
-   layout use the algo-dark cyan (`#22d3ee`, `--c-info`) which is visually out-of-place on
-   the light cream background. The correct token for the public scheme is champagne gold
-   (`#c8a84b`). Fix is a CSS token override in `.pub-viewport` in the public layout.
+```
+/api/positions/
+  → API-side TTL cache (30s) — expires and calls ↓
+  → _fetch_positions_cached() [ssot_fetch, mode="coalesce", NO TTL]
+      → returns cached result from last broker fetch ← STALE INDEFINITELY
+```
 
-3. **Derivatives page refresh animation** — Investigated. Derivatives uses NO ag-Grid and
-   already uses the CardHeader spinner for loading state. No change needed.
+When a trade is placed externally (directly at Kite web/app):
+- RamboQuant receives no postback webhook → no cache invalidation
+- API-side 30s TTL expires and calls `_fetch_positions_cached()`
+- `ssot_fetch` returns its cached result WITHOUT hitting the broker again
+- Positions never update until operator clicks Refresh (`?fresh=1`)
 
-4. **Pulse card header sort not responding** — `postSortGroups` in `pulseGridSetup.js`
-   reorders all rows after every sort to cluster underlyings together. This nullifies any
-   column sort the user clicked — from the user's perspective the sort "doesn't respond."
-   All 6 bucket grids in MarketPulse are affected. Dashboard, PerformancePage, and
-   Derivatives (no ag-Grid) are confirmed unaffected.
+`ssot_fetch` has no TTL parameter (invalidation-based only by design). The fix is a
+time-based `force_refresh` guard in the public `fetch_positions()` function so the
+ssot_fetch cache is evicted every 30 seconds, ensuring one broker round-trip per TTL
+window regardless of whether a postback arrived.
+
+## Files to change
+
+### `backend/brokers/broker_apis.py`
+Find the public `fetch_positions()` function (called from `positions.py:452`).
+
+Add two module-level constants + one float tracker at the top of the module (near other
+module-level state):
+```python
+_POSITIONS_SSOT_TTL: float = 30.0          # seconds; must match API cache TTL
+_positions_ssot_refresh_at: float = 0.0    # monotonic clock, 0 = never fetched
+```
+
+In `fetch_positions()`, add a TTL guard before calling `_fetch_positions_cached()`:
+```python
+def fetch_positions(force_refresh: bool = False) -> list[pd.DataFrame]:
+    global _positions_ssot_refresh_at
+    now = time.monotonic()
+    if not force_refresh and (now - _positions_ssot_refresh_at) > _POSITIONS_SSOT_TTL:
+        force_refresh = True
+    result = _fetch_positions_cached(force_refresh=force_refresh)
+    if result is not None:
+        _positions_ssot_refresh_at = time.monotonic()
+    return result
+```
+
+`import time` is already in broker_apis.py (verify). The `force_refresh=True` path
+evicts the ssot_fetch result cache and re-runs `_fetch_positions_cached`, hitting the
+broker. Subsequent calls within the 30s window get the cached result as before.
+
+`?fresh=1` already passes `force_refresh=True` into `_raw_cache_invalidate` +
+`fetch_positions` — this still works and also resets `_positions_ssot_refresh_at`.
 
 ## Agents
+- broker: Implement the change in `backend/brokers/broker_apis.py` as described above.
+  Read the file first to find the exact `fetch_positions()` signature and surrounding
+  context before editing. Confirm `import time` is present; add if missing.
 
-### frontend agent task
+  For every file you change or create, you MUST write or update at least one test
+  covering the changed behaviour. This is mandatory.
+  - Add/update a pytest test in `backend/tests/broker/` that:
+    1. Stubs `_fetch_positions_cached` call counter
+    2. Calls `fetch_positions()` twice within 30s → confirms only one broker fetch
+    3. Calls `fetch_positions()` after advancing mock time past 30s → confirms second
+       broker fetch (ssot_fetch evicted)
+    4. Calls with `force_refresh=True` → confirms immediate broker re-fetch regardless
+       of elapsed time
 
-Make all four changes below. Read each target file before editing.
-
----
-
-**Change 1 — Stale-while-revalidate bridges in MarketPulse.svelte**
-(`frontend/src/lib/MarketPulse.svelte`)
-
-Apply the bridge pattern to three stores currently using `$derived(store.value ?? [])`:
-
-- Line ~166: `const activeLists = $derived(activeListsStore.value ?? []);`
-- Line ~565: `const movers = $derived(moversStore.value ?? []);`
-- Line ~755: `const funds = $derived(fundsStore.value ?? []);`
-
-Replace each with:
-```js
-let <name> = $state(<store>.value ?? []);
-$effect(() => {
-  const v = <store>.value;
-  untrack(() => { if (v != null) <name> = v; });
-});
-```
-
-Do NOT touch line ~757 (`sparklines` — feeds cell renderer, not rowData).
-Do NOT touch positions/holdings bridge (lines ~191-200 — already correct).
-`untrack` is already imported in this file.
-
----
-
-**Change 2 — Stale-while-revalidate bridges in persistent strip components**
-(`frontend/src/lib/PositionStrip.svelte` and `frontend/src/lib/NavBreakdown.svelte`)
-
-In each file, find the `$derived(store.value ?? [])` bindings for positions/holdings/funds
-stores (PositionStrip ~lines 27-29; NavBreakdown ~lines 62-66) and apply the same bridge.
-Add `import { untrack } from 'svelte'` if not already imported.
-
----
-
-**Change 3 — Public layout icon colors**
-(`frontend/src/routes/(public)/+layout.svelte`)
-
-In the `.pub-viewport` CSS rule, add these overrides so CardControls icons use champagne
-gold instead of algo-dark cyan on the cream-themed public pages:
-```css
---c-info: #c8a84b;
---algo-cyan-bg: rgba(200, 168, 75, 0.14);
---algo-cyan-border: rgba(200, 168, 75, 0.55);
---algo-cyan-bg-soft: rgba(200, 168, 75, 0.08);
---algo-cyan-text: #d4b85c;
-```
-
----
-
-**Change 4 — Pulse ag-Grid sort fix**
-(`frontend/src/lib/data/pulseGridSetup.js`)
-
-In the `postSortGroups` function, add an early-return guard at the very top that skips
-the underlying-grouping reorder when the user has an active column sort:
-```js
-function postSortGroups(params) {
-  // Respect user's column sort — skip underlying grouping when sort is active.
-  if (params.api.getColumnState().some(col => col.sort != null)) return;
-  // ... rest of existing logic unchanged ...
-}
-```
-
-This means: no user sort active → groups by underlying (existing behaviour); user clicks
-a column header → sort applies cleanly without being overridden by the grouping.
-
----
-
-**Test requirement (mandatory)**
-For every file you change or create, write or update at least one test:
-- `frontend/src/lib/data/pulseGridSetup.js` change → add/update a Vitest test in
-  `frontend/src/lib/__tests__/` covering the `postSortGroups` sort-active early-return
-- `.svelte` changes → verify svelte-check passes 0 errors; add a Playwright smoke in
-  `frontend/tests/` covering the changed behavior if a suitable spec exists
-- No change ships without a corresponding test update.
-
-## Agent list
-- frontend: all four changes above
 - backend: skip
-- broker: skip
+- frontend: skip
 - doc: skip
 - backend-test: skip
 - playwright: skip
 
 ## Tests
-- pytest: no
-- svelte-check: yes
+- pytest: yes
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(ui): stale-while-revalidate for MarketPulse stores + public icon colors + pulse column sort
+fix(positions): 30s TTL auto-refresh for ssot_fetch cache — external trades now sync within one polling cycle
 
 ## Done when
-- Pinned / Winners / Losers / Funds cards no longer flash on MarketPulse refresh
-- PositionStrip and NavBreakdown retain prior values during store reload
-- CardControls icons on public performance page show champagne gold (not cyan)
-- Clicking a column header in any Pulse card applies the column sort cleanly
-- svelte-check exits 0 errors
+- `fetch_positions()` hits the broker at most once per 30s, regardless of postbacks
+- `?fresh=1` still bypasses TTL and forces immediate broker fetch
+- Existing postback invalidation path unchanged
+- pytest passes for the new TTL behaviour test
