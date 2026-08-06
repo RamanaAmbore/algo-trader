@@ -163,7 +163,11 @@
   // sparklines are now three-tier stores (slice AB). $derived reads are
   // reactive and pre-populated from localStorage on module init, so the
   // grids paint with cached data before any network fetch completes.
-  const activeLists = $derived(activeListsStore.value ?? []);
+  let activeLists = $state(activeListsStore.value ?? []);
+  $effect(() => {
+    const v = activeListsStore.value;
+    untrack(() => { if (v != null) activeLists = v; });
+  });
   // BH4: watchQuotesStore is deleted. Per-item LTPs land in symbolStore
   // (via SSE + the inline loadQuotes() fetcher below + every other
   // market-data publisher). buildUnified reads getSnapshot(sym) directly;
@@ -562,7 +566,11 @@
   // row with `_moverDirection: winners|losers`); the Show filter
   // exposes the two directions as separate toggles so the operator
   // can hide one side without losing the other.
-  const movers    = $derived(moversStore.value ?? []);
+  let movers = $state(moversStore.value ?? []);
+  $effect(() => {
+    const v = moversStore.value;
+    untrack(() => { if (v != null) movers = v; });
+  });
   let _moversWarnLast = 0;          // rate-limit movers-fetch warn to once per 60 s
   let showMovers = $state(true);  // legacy umbrella — true iff EITHER direction is on
   let showWinners = $state(true);
@@ -752,7 +760,11 @@
   let positionsSummary = $state(/** @type {any[]} */ ([]));
   let holdingsSummary  = $state(/** @type {any[]} */ ([]));
   // Funds (per-account margins) — loaded only when showFunds is true.
-  const funds     = $derived(fundsStore.value ?? []);
+  let funds = $state(fundsStore.value ?? []);
+  $effect(() => {
+    const v = fundsStore.value;
+    untrack(() => { if (v != null) funds = v; });
+  });
 
   const sparklines = $derived(sparklinesStore.value ?? /** @type {Record<string, number[]>} */ ({}));
   // _firstSparkDone is now tracked inside sparklinesStore's fetcher
