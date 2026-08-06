@@ -18,9 +18,9 @@
   } from '$lib/data/marketDataStores.svelte.js';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
-  import CardHeader from '$lib/CardHeader.svelte';
   import GridDownloadButton from '$lib/GridDownloadButton.svelte';
-  import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import GridSearchButton from '$lib/GridSearchButton.svelte';
+  import { formatSymbol, decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { navByAccount, navTotalRow, aggregateDayPnlForPositions } from '$lib/data/nav';
@@ -71,6 +71,7 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols } from '$lib/data/pulseColumns.js';
+  import { postSortGroups2Level } from '$lib/data/pulseGridSetup.js';
 
   // ModuleRegistry is registered inside onMount after the dynamic import.
 
@@ -223,6 +224,29 @@
   async function _refreshPerf() {
     _perfRefreshing = true;
     try { await loadAll({ fresh: true }); } finally { _perfRefreshing = false; }
+  }
+
+  /**
+   * Enrich position rows with derivative metadata (underlying, opt_type,
+   * expiry, strike) derived from the tradingsymbol via decomposeSymbol.
+   * Only fills missing fields — rows that already carry these fields from
+   * the broker response are left unchanged.  Used to drive
+   * postSortGroups2Level grouping in the Positions Breakdown grid.
+   *
+   * @param {any[]} rows
+   * @returns {any[]}
+   */
+  function _enrichPositionRows(rows) {
+    for (const r of rows) {
+      if (!r.tradingsymbol) continue;
+      if (r.underlying != null) continue;
+      const d = decomposeSymbol(r.tradingsymbol);
+      r.underlying = d.root   || null;
+      r.opt_type   = d.optType || null;
+      r.expiry     = d.month  || null;
+      r.strike     = d.strike || null;
+    }
+    return rows;
   }
 
   // Account-scope filter. Now MultiSelect-backed — empty array =
@@ -709,7 +733,7 @@
     ...mkNavBreakdownCols({ RA: pnlCls, numericHdr, aggFmtGrid }),
   ];
 
-  function makeGrid(el, colDefs, rowData = [], onRowClick = null) {
+  function makeGrid(el, colDefs, rowData = [], onRowClick = null, extraOpts = {}) {
     if (!_createGrid) throw new Error('ag-Grid not yet loaded');
     return _createGrid(el, {
       // ag-Grid v33 changed the default theme to the Theming-API
@@ -753,6 +777,7 @@
         const me = /** @type {MouseEvent} */ (ev.event);
         _ctxMenu = { symbol: sym, exchange: exch, x: me.clientX, y: me.clientY };
       },
+      ...extraOpts,
     });
   }
 
@@ -971,6 +996,7 @@
     holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
     // refreshCells so pnlClsFlash callbacks pick up the new flash state.
     _refreshFlashCells(holdingsAllGrid);
+    _enrichPositionRows(pRows);
     updateGrid(positionsAllGrid, pRows);
     positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
     _refreshFlashCells(positionsAllGrid);
@@ -1095,7 +1121,7 @@
     holdingsSummaryGrid  = makeGrid(holdingsSummaryEl,  holdingsSummaryCols);
     holdingsAllGrid      = makeGrid(holdingsAllEl,      holdingsCols, [], (r) => openOrderTicket(r, 'holdings'));
     positionsSummaryGrid = makeGrid(positionsSummaryEl, positionsSummaryCols);
-    positionsAllGrid     = makeGrid(positionsAllEl,     positionsCols, [], (r) => openOrderTicket(r, 'positions'));
+    positionsAllGrid     = makeGrid(positionsAllEl,     positionsCols, [], (r) => openOrderTicket(r, 'positions'), { postSortRows: postSortGroups2Level });
     fundsGrid            = makeGrid(fundsEl,             fundsCols);
     navGrid              = makeGrid(navEl,               navCols);
 
@@ -1318,12 +1344,6 @@
     onChange={(id) => { fundsNavTab = /** @type {'nav'|'funds'} */ (id); }}
     compact={true}
   />
-  <GridDownloadButton
-    onClick={fundsNavTab === 'nav'
-      ? () => navGrid?.exportDataAsCsv({ fileName: 'nav.csv' })
-      : () => fundsGrid?.exportDataAsCsv({ fileName: 'funds.csv' })}
-    label={fundsNavTab === 'nav' ? 'NAV' : 'Funds'}
-  />
 </div>
 {#if !_agGridReady}
   <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
@@ -1357,16 +1377,13 @@
 
 <!-- Summary (active tab) -->
 <section class:hidden={activeTab !== 'positions'}>
-  <CardHeader
-    title="Summary"
-    showSearch={false}
-    showControls={showGridControls}
-    onDownload={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
-    label="Positions Summary"
-    detectOverflow={false}
-    onRefresh={_refreshPerf}
-    bind:refreshLoading={_perfRefreshing}
-  />
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Summary</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    {#if showGridControls}
+      <GridDownloadButton onClick={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })} label="Positions Summary" />
+    {/if}
+  </div>
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
@@ -1374,16 +1391,13 @@
 </section>
 
 <section class:hidden={activeTab !== 'holdings'}>
-  <CardHeader
-    title="Summary"
-    showSearch={false}
-    showControls={showGridControls}
-    onDownload={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
-    label="Holdings Summary"
-    detectOverflow={false}
-    onRefresh={_refreshPerf}
-    bind:refreshLoading={_perfRefreshing}
-  />
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Summary</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    {#if showGridControls}
+      <GridDownloadButton onClick={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })} label="Holdings Summary" />
+    {/if}
+  </div>
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
@@ -1395,30 +1409,26 @@
 
 <!-- Detail (active tab) — the per-symbol drill-down -->
 <section class:hidden={activeTab !== 'positions'}>
-  <CardHeader
-    title="Breakdown"
-    bind:filter={_filterPositions}
-    showControls={showGridControls}
-    onDownload={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
-    label="Positions"
-    detectOverflow={false}
-    onRefresh={_refreshPerf}
-    bind:refreshLoading={_perfRefreshing}
-  />
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Breakdown</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    {#if showGridControls}
+      <GridSearchButton bind:filter={_filterPositions} label="Positions" />
+      <GridDownloadButton onClick={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })} label="Positions" />
+    {/if}
+  </div>
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
 <section class:hidden={activeTab !== 'holdings'}>
-  <CardHeader
-    title="Breakdown"
-    bind:filter={_filterHoldings}
-    showControls={showGridControls}
-    onDownload={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
-    label="Holdings"
-    detectOverflow={false}
-    onRefresh={_refreshPerf}
-    bind:refreshLoading={_perfRefreshing}
-  />
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Breakdown</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    {#if showGridControls}
+      <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
+      <GridDownloadButton onClick={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })} label="Holdings" />
+    {/if}
+  </div>
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
@@ -1577,6 +1587,18 @@
   }
 
   .hidden { display: none; }
+
+  /* Section headrow — compact flex row used for Summary / Breakdown
+     section headings in place of CardHeader.  Title left, controls
+     right, spacer between them.  Mirrors the card-button-group pattern
+     without the full CardHeader chrome (border, padding, overflow). */
+  .perf-grid-headrow {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.25rem;
+  }
+  .perf-grid-headrow .section-heading { margin-bottom: 0; }
+  .perf-grid-headrow-spacer { flex: 1; }
 
   /* ── Page banners ────────────────────────────────────────────────
      Two flavours, both palette-aware:
