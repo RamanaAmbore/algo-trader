@@ -1264,6 +1264,16 @@ def sort_accounts(accounts: list[str]) -> list[str]:
 # last non-None result. force_refresh=True or _raw_cache_invalidate()
 # evicts the cached result. No TTL — invalidation-based only (postback
 # book_changed events + ?fresh=1 calls).
+#
+# Exception: _fetch_positions_cached has an additional time-based TTL
+# guard applied at the fetch_positions() boundary below.  External trades
+# placed directly at the broker produce no postback webhook, so without
+# a TTL the ssot_fetch indefinitely serves stale cached positions.
+# _POSITIONS_SSOT_TTL (30 s, matching the API-route cache) forces
+# _fetch_positions_cached to re-run after the window expires even without
+# an explicit ?fresh=1 or postback.
+_POSITIONS_SSOT_TTL: float = 30.0          # seconds; matches API-route cache TTL
+_positions_ssot_refresh_at: float = 0.0    # monotonic timestamp; 0 = never fetched
 
 
 def _raw_cache_invalidate(key: str | None = None) -> None:
@@ -1625,7 +1635,7 @@ def _apply_backfill_to_list(
         return frames
 
 
-def fetch_positions(*args, **kwargs):
+def fetch_positions(*args, force_refresh: bool = False, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
     is on, otherwise runs the local @for_all_accounts path.
 
@@ -1636,9 +1646,27 @@ def fetch_positions(*args, **kwargs):
     the cached value is a post-backfill concatenated DataFrame in a
     single-element list. compute_firm_nav reads the same unrealised /
     pnl values as the positions route.
+
+    TTL guard (30 s): external trades placed directly at the broker
+    produce no postback webhook, so without a TTL the ssot_fetch
+    indefinitely serves stale cached positions.  After _POSITIONS_SSOT_TTL
+    seconds since the last successful fetch, force_refresh is set to True
+    so _fetch_positions_cached re-runs against the broker.  force_refresh
+    passed explicitly by the caller always takes effect immediately.
+
+    The `force_refresh` parameter is keyword-only (after *args) so
+    single-account internal calls (`fetch_positions(account=…, kite=…)`)
+    continue to fall through to _fetch_positions_local unchanged.
     """
+    global _positions_ssot_refresh_at
     if not args and not kwargs:
-        return _fetch_positions_cached()
+        now = _time.monotonic()
+        if not force_refresh and (now - _positions_ssot_refresh_at) > _POSITIONS_SSOT_TTL:
+            force_refresh = True
+        result = _fetch_positions_cached(force_refresh=force_refresh)
+        if result is not None:
+            _positions_ssot_refresh_at = _time.monotonic()
+        return result
     return _fetch_positions_local(*args, **kwargs)
 
 
