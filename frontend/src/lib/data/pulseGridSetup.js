@@ -64,11 +64,13 @@ export function summaryRowId({ data }) {
  *      immediately after the anchor.
  *   4. Mutates the `nodes` array in place (ag-Grid contract).
  *
- * Pure: reads only the `nodes` param — no closure over reactive state.
+ * Pure: reads only the `nodes` and `api` params — no closure over reactive state.
  *
- * @param {{ nodes: import('ag-grid-community').IRowNode[] }} param
+ * @param {{ nodes: import('ag-grid-community').IRowNode[], api: import('ag-grid-community').GridApi }} param
  */
-export function postSortGroups({ nodes }) {
+export function postSortGroups({ nodes, api }) {
+  // Respect user's column sort — skip underlying grouping when a sort is active.
+  if (api?.getColumnState().some(col => col.sort != null)) return;
   if (!nodes || nodes.length === 0) return;
 
   /** @type {Map<string, import('ag-grid-community').IRowNode[]>} */

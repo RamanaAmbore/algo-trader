@@ -151,6 +151,12 @@ See Section 5 for DB-first policy and fallback ladder.
   (when `close_price === ltp`, the guard returns 0 to prevent distortion)
 - Orphan cleanup: after-hours snapshots run `_delete_orphan_positions()` on same-day + `_delete_prior_orphan_positions()` on prior-day to remove settled/closed positions (7-day scope)
 
+**Derivatives Legs Grid Candidate Building** (commit 9becba9f):
+- F&O positions: skipped if instrument not found in master (expired contract removed by Kite) — prevents stale expired legs in grid
+- Equity holdings: skipped if qty=0 (no zero-quantity holdings in leg candidates)
+- Proxy-hedge holdings: skipped if qty=0 (no zero-quantity proxy legs in grid)
+- Draft positions: skipped if instrument not found in master (no fallback expiry guard for drafts without master entry)
+
 ### 4.5 Chase Card Status Columns
 
 Active chase rows now display enhanced visual feedback for execution state.
@@ -780,6 +786,29 @@ states.
 **Use case**: Operators tracking partial-close executions see which legs have open 
 cancel/reduce orders queued, preventing accidental double-reduces.
 
+### 17.4 Expiry-Close Analysis — "Exp close" Badge Counts
+
+The derivatives page's expiryCloseAnalysis feature identifies ITM/OTM options approaching 
+expiry and organizes them into bands (close, netted, OTM). Badge counts in the UI reflect 
+the number of ITM positions requiring action.
+
+**Candidate filtering rule** (commit 9becba9f):
+- `annotateOptionCandidates()` now skips all qty=0 (closed) positions before analysis
+- Applies **regardless of whether an expiry filter is selected** — prevents false amber 
+  "Exp close" badge counts from stale closed legs leaking into `computeExpiryBands`
+- Previously: with an expiry filter active, closed positions (qty=0) passed through to 
+  band computation, inflating close/netted/OTM counts with settled-away legs
+- Now: only live, open positions (qty≠0) contribute to expiry-band analysis
+
+**Data flow**:
+1. `buildCandidatePositions()` collects real/provisional/draft F&O positions
+2. `annotateOptionCandidates()` filters qty=0 rows (closed positions)
+3. `computeExpiryBands()` organizes remaining rows into close/netted/OTM bands
+4. UI renders badge counts + band tables from filtered set
+
+**Impact**: Operators see accurate close-action counts; stale in-session closed legs no 
+longer spike the orange "Exp close" badge count after partial closes.
+
 ---
 
 ## 18. Sparklines
@@ -1084,3 +1113,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-26 | §17.1 payoff chart spot price resolution (63262b94): `liveSpot` derived now includes `candidatePositions[*].underlying_ltp` (backend-stamped in positions.py Pass 3) as step 3 in resolution chain, before batchQuote fallback; eliminates "Resolving spot…" during SSE warmup |
 | 2026-07-27 | v1.3 Expiry re-scan + positions cleanup (commits cbbe0f23, 21d1656a): §4.4 positions/holdings now notes off-hours snapshot includes `AND qty != 0` guard (flat/expired excluded) and runs orphan cleanup (same-day + prior-day, 7-day scope). §7 added expiry-day auto-close agent status change (now active by default) with re-scan loop (every 30 min until 15:25 IST, catches newly-ITM positions). |
 | 2026-07-28 | v1.4 Snapshot intraday-closed position inclusion (commits cef00739, 5ac11f56): §4.4 positions/holdings updated — off-hours snapshot filter refined from `AND qty != 0` to `AND (qty != 0 OR date = :today_ist)`. Intraday closed positions (qty=0, date=today IST) now appear in snapshot with 'closed' chip + opacity:0.45 in derivatives legs grid; prior-session closed excluded. §23 Closed-Hours Snapshot Behavior expanded with detailed off-hours position snapshot filter explanation. Frontend `buildCleanLegs()` filters qty===0 from payoff POST (strategy analytics unchanged); legs grid shows closed legs for intraday history only. |
+| 2026-07-29 | §4.4 Derivatives Legs Grid candidate filtering (commit 9becba9f): F&O positions skip missing instruments (expired, not in master), equity holdings and proxy hedges skip qty=0, draft positions skip missing instruments. §17 Expiry-close analysis: qty=0 (closed) positions now always excluded from `annotateOptionCandidates` regardless of expiry filter — prevents false amber "Exp close" badge counts from stale closed legs leaking into `computeExpiryBands`. |

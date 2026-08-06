@@ -619,5 +619,12 @@
     --ch-title-transform: none;
     --ch-ts-size: 0.65rem;
     --ch-ts-color: rgba(26, 39, 68, 0.55);
+    /* CardControls icon tokens — champagne gold replaces the algo-dark
+       cyan (#22d3ee) which is visually jarring against the cream background. */
+    --c-info: #c8a84b;
+    --algo-cyan-bg: rgba(200, 168, 75, 0.14);
+    --algo-cyan-border: rgba(200, 168, 75, 0.55);
+    --algo-cyan-bg-soft: rgba(200, 168, 75, 0.08);
+    --algo-cyan-text: #d4b85c;
   }
 </style>

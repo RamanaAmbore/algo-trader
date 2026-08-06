@@ -55,15 +55,28 @@
     _downloadCsv();
   }
 
-  // Module-level store reads — $derived so the table re-renders
-  // whenever loadHero (or any other surface) writes through the
-  // store singletons.
+  // Module-level store reads — bridged via $effect → $state so that
+  // when a store goes null mid-fetch (revalidation), the prior snapshot
+  // is kept rather than clearing the table. Null = loading/fetching;
+  // [] = explicitly empty; [...data] = loaded.
   /** @type {any[]} */
-  const _funds      = $derived(fundsStore.value     ?? []);
+  let _funds = $state(fundsStore.value ?? []);
+  $effect(() => {
+    const v = fundsStore.value;
+    untrack(() => { if (v != null) _funds = v; });
+  });
   /** @type {any[]} */
-  const _positions  = $derived(positionsStore.value ?? []);
+  let _positions = $state(positionsStore.value ?? []);
+  $effect(() => {
+    const v = positionsStore.value;
+    untrack(() => { if (v != null) _positions = v; });
+  });
   /** @type {any[]} */
-  const _holdings   = $derived(holdingsStore.value  ?? []);
+  let _holdings = $state(holdingsStore.value ?? []);
+  $effect(() => {
+    const v = holdingsStore.value;
+    untrack(() => { if (v != null) _holdings = v; });
+  });
 
   // ── Loading-state machine ────────────────────────────────────────────
   // Three explicit states so the operator never sees a silent perpetual

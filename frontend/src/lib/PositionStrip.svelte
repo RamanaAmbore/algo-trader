@@ -24,9 +24,21 @@
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
-  const positions = $derived(positionsStore.value ?? []);
-  const holdings  = $derived(holdingsStore.value  ?? []);
-  const funds     = $derived(fundsStore.value      ?? []);
+  let positions = $state(positionsStore.value ?? []);
+  $effect(() => {
+    const v = positionsStore.value;
+    untrack(() => { if (v != null) positions = v; });
+  });
+  let holdings = $state(holdingsStore.value ?? []);
+  $effect(() => {
+    const v = holdingsStore.value;
+    untrack(() => { if (v != null) holdings = v; });
+  });
+  let funds = $state(fundsStore.value ?? []);
+  $effect(() => {
+    const v = fundsStore.value;
+    untrack(() => { if (v != null) funds = v; });
+  });
   // Market-state tick — flips between 0/1/2/3 (no markets / NSE / MCX /
   // both) when the session boundary crosses. The _liveDeltaByRow derived
   // reads this to re-run on the boundary even when no other state has
