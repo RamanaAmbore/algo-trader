@@ -33,5 +33,5 @@
 </svelte:head>
 
 <div class="card-theme-cream">
-  <PerformancePage />
+  <PerformancePage showGridControls={false} />
 </div>
