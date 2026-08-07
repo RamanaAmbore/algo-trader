@@ -254,3 +254,219 @@ class TestGrowwHoldingsSurviveSnapshot:
         row = {"average_price": 82.5}
         assert _is_zero_payload_row(row, ltp=0.0, day_pnl=0.0,
                                      total_pnl=0.0) is True
+
+
+# ---------------------------------------------------------------------------
+# Bug A — Dhan close=0 → day_change wrongly equals ltp; must be corrected
+# ---------------------------------------------------------------------------
+
+class TestDhanCloseMissingDayChangeRecompute:
+    """Dhan's holdings API omits previousClosePrice, so the adapter sets
+    close_price=0 and derives day_change = ltp - 0 = ltp (e.g. 3952).
+    The backfill path patches close_price to the real prior close (e.g.
+    3980 from Kite quote).  Before this fix the guard
+    ``not r.get("day_change")`` was False (day_change=3952 is truthy)
+    so day_change was never corrected.  After this fix close_was_missing
+    is detected before patching and forces recompute.
+    """
+
+    def _fn(self):
+        from backend.api.algo.daily_snapshot import _snap_patch_single_price_row
+        return _snap_patch_single_price_row
+
+    def _make_df(self, ltp: float, close: float):
+        import pandas as pd
+        return pd.DataFrame([{"last_price": ltp, "close_price": close}])
+
+    def test_dhan_day_change_corrected_when_close_was_zero(self):
+        """Core regression: Dhan row with ltp=3952, close=0, day_change=3952.
+        After Kite backfill sets close=3980, day_change must become -28."""
+        fn = self._fn()
+        row = {
+            "last_price": 3952.0,
+            "close_price": 0.0,         # Dhan shipped close=0
+            "day_change": 3952.0,       # = ltp - 0 (wrong broker value)
+            "average_price": 3900.0,
+            "opening_quantity": 1,
+            "pnl": 52.0,                # already set by broker
+        }
+        df = self._make_df(ltp=3952.0, close=3980.0)
+        _snap_patch_single_price_row = fn
+        _snap_patch_single_price_row(row, df, 0, "opening_quantity")
+
+        assert row["close_price"] == 3980.0
+        assert row["day_change"] == pytest.approx(-28.0), (
+            f"Expected day_change=-28 (ltp-close), got {row['day_change']}"
+        )
+        # pnl already set by broker — must not be overwritten
+        assert row["pnl"] == 52.0
+
+    def test_normal_broker_day_change_not_overwritten(self):
+        """When close was already non-zero, a valid broker day_change
+        must NOT be overwritten by recompute (Kite/Groww normal case)."""
+        fn = self._fn()
+        row = {
+            "last_price": 1560.0,
+            "close_price": 1540.0,     # broker sent real close
+            "day_change": 20.0,        # broker's correct value
+            "average_price": 1500.0,
+            "opening_quantity": 10,
+            "pnl": 600.0,
+        }
+        # Kite backfill sends the same values (no change needed)
+        df = self._make_df(ltp=1560.0, close=1540.0)
+        fn(row, df, 0, "opening_quantity")
+
+        assert row["day_change"] == 20.0, (
+            "Non-Dhan broker day_change must remain unchanged when close was valid"
+        )
+
+    def test_close_was_missing_detection_uses_old_cls_before_patch(self):
+        """close_was_missing must be captured BEFORE close_price is updated,
+        so that a row where old_cls=0 but new_cls>0 is flagged correctly."""
+        fn = self._fn()
+        row = {
+            "last_price": 500.0,
+            "close_price": 0.0,        # old close — Dhan omitted it
+            "day_change": 500.0,       # = ltp - 0 (wrong)
+            "average_price": 480.0,
+            "opening_quantity": 5,
+            "pnl": 100.0,
+        }
+        df = self._make_df(ltp=500.0, close=490.0)
+        fn(row, df, 0, "opening_quantity")
+
+        assert row["close_price"] == 490.0
+        assert row["day_change"] == pytest.approx(10.0), (
+            "day_change must be ltp(500) - real_close(490) = 10"
+        )
+
+    def test_recompute_derived_close_was_missing_flag(self):
+        """Unit test _backfill_recompute_derived directly with close_was_missing=True."""
+        from backend.api.algo.daily_snapshot import _backfill_recompute_derived
+        row = {
+            "last_price": 200.0,
+            "close_price": 195.0,     # already patched
+            "day_change": 200.0,      # stale Dhan value = ltp - 0
+            "average_price": 180.0,
+            "opening_quantity": 3,
+            "pnl": 60.0,              # already set
+        }
+        _backfill_recompute_derived(row, "opening_quantity", close_was_missing=True)
+        assert row["day_change"] == pytest.approx(5.0), (
+            "With close_was_missing=True, day_change must be recomputed to ltp-close=5"
+        )
+
+    def test_recompute_derived_no_flag_preserves_existing_day_change(self):
+        """Without close_was_missing flag, an existing day_change is preserved."""
+        from backend.api.algo.daily_snapshot import _backfill_recompute_derived
+        row = {
+            "last_price": 200.0,
+            "close_price": 195.0,
+            "day_change": 7.0,        # set by broker (valid)
+            "average_price": 180.0,
+            "opening_quantity": 3,
+            "pnl": 60.0,
+        }
+        _backfill_recompute_derived(row, "opening_quantity", close_was_missing=False)
+        assert row["day_change"] == 7.0, (
+            "Without close_was_missing, existing day_change must not be overwritten"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug B — _snap_holding_eod_vals must store total day P&L (per-share × qty)
+# ---------------------------------------------------------------------------
+
+class TestSnapHoldingEodValsDayPnlQty:
+    """_snap_holding_eod_vals stored per-share day_change as day_pnl_v.
+    _build_holding_row_from_snapshot divides by close_notional = prev_close×qty
+    (expecting total P&L).  For qty=2 this understated the percentage by 50%.
+
+    Fix: day_pnl_v = day_change × qty.
+    """
+
+    def _fn(self):
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        return _snap_holding_eod_vals
+
+    def test_day_pnl_multiplied_by_qty(self):
+        """Core regression: qty=2, day_change=30 → day_pnl_v must be 60."""
+        fn = self._fn()
+        row = {
+            "last_price": 530.0,
+            "day_change": 30.0,
+            "pnl": 120.0,
+            "opening_quantity": 2,
+        }
+        ltp_val, day_pnl_v, total_pnl_v = fn(row, mid_session=False)
+        assert day_pnl_v == pytest.approx(60.0), (
+            f"day_pnl_v must be day_change(30) × qty(2) = 60, got {day_pnl_v}"
+        )
+        assert ltp_val == pytest.approx(530.0)
+        assert total_pnl_v == pytest.approx(120.0)
+
+    def test_day_pnl_qty_one_unchanged(self):
+        """For qty=1, day_pnl_v == day_change (× 1 = no change)."""
+        fn = self._fn()
+        row = {
+            "last_price": 1000.0,
+            "day_change": -15.0,
+            "pnl": -15.0,
+            "opening_quantity": 1,
+        }
+        _, day_pnl_v, _ = fn(row, mid_session=False)
+        assert day_pnl_v == pytest.approx(-15.0)
+
+    def test_day_pnl_uses_opening_quantity_when_quantity_absent(self):
+        """Fallback: when opening_quantity absent, quantity is used."""
+        fn = self._fn()
+        row = {
+            "last_price": 200.0,
+            "day_change": 5.0,
+            "pnl": 50.0,
+            "quantity": 4,          # no opening_quantity key
+        }
+        _, day_pnl_v, _ = fn(row, mid_session=False)
+        assert day_pnl_v == pytest.approx(20.0), (
+            "day_pnl_v must be 5 × 4 = 20 using quantity fallback"
+        )
+
+    def test_mid_session_day_pnl_is_none(self):
+        """During mid-session, day_pnl_v must be None regardless of qty."""
+        fn = self._fn()
+        row = {
+            "last_price": 300.0,
+            "day_change": 10.0,
+            "pnl": 100.0,
+            "opening_quantity": 5,
+        }
+        ltp_val, day_pnl_v, total_pnl_v = fn(row, mid_session=True)
+        assert ltp_val is None
+        assert day_pnl_v is None
+        assert total_pnl_v == pytest.approx(100.0)
+
+    def test_day_change_none_gives_none_day_pnl(self):
+        """When day_change is absent, day_pnl_v must be None (not 0)."""
+        fn = self._fn()
+        row = {
+            "last_price": 100.0,
+            "pnl": 50.0,
+            "opening_quantity": 3,
+        }
+        _, day_pnl_v, _ = fn(row, mid_session=False)
+        assert day_pnl_v is None
+
+    def test_large_qty_proportional_scaling(self):
+        """Spot-check large qty to confirm the × qty is not capped."""
+        fn = self._fn()
+        row = {
+            "last_price": 50.0,
+            "day_change": -2.5,
+            "pnl": -500.0,
+            "opening_quantity": 200,
+        }
+        _, day_pnl_v, _ = fn(row, mid_session=False)
+        assert day_pnl_v == pytest.approx(-500.0), (
+            "day_pnl_v must be -2.5 × 200 = -500"
+        )
