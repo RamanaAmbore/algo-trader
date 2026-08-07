@@ -23,15 +23,15 @@ async def _ap_dry_run_margin(
     account: str, symbol: str, side: str, qty: int, price, exchange: str
 ) -> tuple[bool, str]:
     """Basket-margin dry-run. Returns (ok, reason)."""
+    if not (qty > 0 and price is not None and symbol and exchange):
+        return True, "paper"
     from backend.brokers import get_broker
     try:
         broker = get_broker(account)
-        if qty > 0 and price is not None and symbol and exchange:
-            return await _basket_margin_validate(broker, {
-                "account": account, "symbol": symbol, "side": side,
-                "qty": qty, "price": price, "exchange": exchange,
-            })
-        return True, "paper"
+        return await _basket_margin_validate(broker, {
+            "account": account, "symbol": symbol, "side": side,
+            "qty": qty, "price": price, "exchange": exchange,
+        })
     except Exception as e:
         return False, f"broker lookup failed: {e}"
 
