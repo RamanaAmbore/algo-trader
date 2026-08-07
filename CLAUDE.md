@@ -347,7 +347,8 @@ is canonical new-position override: when `overnight_quantity=0 && pnl≠0`, Kite
 derivatives `_byUnderlyingTotal` F&O loop + `bumpExcluded` equity branch, dashboard 
 `_todayPnl` hero + `_positionsSummary`, NavStrip P slot 1, MarketPulse position card, 
 Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
-**Case 4 (stale close guard)**: when `close <= 0` (broker returned zero/missing prev_close), `baseDayPnlForPosition` returns 0. The `close === ltp` guard was removed (regression 8474a17e) — formula `pnl − oq×(close−avg)` is correct even when close equals ltp. See `frontend/src/lib/data/nav.js:109`.
+**Case 4 (stale close guard)**: when `close <= 0` (broker returned zero/missing prev_close), `baseDayPnlForPosition` returns 0. The `close === ltp` guard was removed (regression 8474a17e) — formula `pnl − oq×(close−avg)` is correct even when close equals ltp. 
+**Short position fix (1769cffc)**: guard condition corrected from `oq > 0` to `oq !== 0` so that short overnight positions (oq < 0) also receive the `day_change_val` fast-path and Case 4 stale-close guard. Previously, short MCX positions during the stale-close window (23:30–09:00 IST) would return an unguarded formula result, causing overstatement by ₹5,00,000+. See `frontend/src/lib/data/nav.js:108`.
 
 ---
 

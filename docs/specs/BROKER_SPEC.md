@@ -295,15 +295,24 @@ patches missing values from a PriceBroker quote batch. Pipeline stages (Jul 2026
 
 **Dhan two-tier LKG cache** (Jul 2026): Dhan holdings responses frequently arrive with zero 
 `last_price` during market hours. A two-tier last-known-good cache now backs the fallback 
-chain: (1) **In-memory Tier-2**: `_DB_LKG_CACHE` dict, seeded at startup from `daily_book` 
-DB rows for all holdings seen in past 7 days. (2) **DB Tier-3**: `daily_book` query on cache 
-miss. `_stale_substitute_frame()` checks in-memory LKG first, then DB LKG, before returning 
-empty frame. Startup task `_preload_db_lkg_cache()` in `backend/api/background.py` populates 
-the memory cache asynchronously.
+chain: (1) **In-memory Tier-1**: `_LKG_FRAME_BY_ACCT` dict, populated by every successful 
+fetch per-account (stores whatever frame is given, **including empty frames**). (2) **DB 
+Tier-2**: `_DB_LKG_CACHE` dict, seeded at startup from `daily_book` rows for all holdings 
+seen in past 7 days. `_stale_substitute_frame()` checks in-memory LKG first, then DB LKG, 
+before returning empty frame. Startup task `_preload_db_lkg_cache()` in `backend/api/background.py` 
+populates the DB-backed cache asynchronously.
+
+**Empty frame handling** (Aug 2026): When an account successfully exits all positions (e.g., 
+all holdings liquidated), the broker returns an empty DataFrame. The LKG cache now stores 
+this empty frame (via `_record_lkg_frame` in `_fetch_holdings_local` and `_fetch_positions_local`), 
+overwriting any prior non-empty LKG. This ensures that on subsequent breaker-open 
+short-circuits, `_stale_substitute_frame` returns an empty frame (no phantom positions) 
+rather than a stale prior-session snapshot. 24-hour TTL gate applies; after 24h offline, 
+the account is considered absent.
 
 **Fallback chain**: PriceBroker quote → KiteTicker LTP (PriceBroker outage) → in-memory LKG 
-(Tier 2) → DB LKG from `daily_book` (Tier 3) → empty frame. Rows patched via LKG cache 
-marked with `last_price_stale=True`.
+(Tier 1, includes empty) → DB LKG from `daily_book` (Tier 2) → empty frame. Rows patched via 
+LKG cache marked with `last_price_stale=True` and `account_stale=True`.
 
 ---
 
@@ -374,6 +383,15 @@ their prior-session state, providing an accurate real-time view without stale en
 
 **File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`
 
+### Snapshot retrieval and `as_of` field
+
+When a daily holdings snapshot is retrieved from the `daily_book` table, `_holdings_snapshot()` 
+returns either a populated `HoldingsResponse` with `as_of=<timestamp>` or an empty response 
+with `as_of=None` (Aug 2026 fix). On first deploy when no DB snapshot exists, `as_of=None` 
+signals to `closed_hours_or_broker()` that no snapshot is available, so the broker fallback 
+fires correctly during closed hours instead of short-circuiting. This prevents empty grids 
+during the first market-close window after deployment.
+
 When a daily holdings snapshot is retrieved, the `day_change_percentage` metric is 
 computed from a snapshot row fetched from the `daily_book` table:
 
@@ -424,10 +442,13 @@ backfill (`_backfill_market_data_dicts`) calls Kite's quote API to patch the mis
 
 When `close_price` is patched from zero, `_backfill_recompute_derived()` now accepts 
 a `close_was_missing: bool` flag. When True, it recomputes `day_change = ltp - 
-real_close` unconditionally, overriding the stale broker value (which erroneously 
-stored `ltp`). Previously, the guard `not r.get("day_change")` prevented recompute 
-because Dhan had already set a (wrong) value; this left `daily_book.day_pnl = ltp` 
-(e.g. 3952) instead of the actual day move (e.g. -28).
+real_close` ONLY when `day_change` is falsy or zero (Aug 2026 fix). This preserves 
+pre-existing non-zero `day_change_val` from brokers like Dhan and Groww that supply 
+decomposed intraday P&L values. Previously, the guard `not r.get("day_change")` prevented 
+recompute because Dhan had already set a (wrong) value; this left `daily_book.day_pnl = ltp` 
+(e.g. 3952) instead of the actual day move (e.g. -28). Now, when Dhan provides a decomposed 
+`day_change` (rare, but correct), it is preserved; naive recompute (ltp - close) × qty 
+only fires on zero/missing.
 
 **Effective timing**: This fix works when the snapshot runs BEFORE Kite updates 
 `ohlc.close` to today's close (window: ~3:30–18:00 IST, depending on market hours). 
