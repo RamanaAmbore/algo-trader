@@ -327,13 +327,14 @@
   {:else}
     <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty }))}</span>
   {/if}
-  <span class="num
+  <span class="num tf-cell leg-ltp
     {typeof ltp === 'number' && typeof cost === 'number' && cost > 0
       ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
       : ''}
     {typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
       ? (ltp > c.prev_close ? 'ltp-vs-prev-up' : ltp < c.prev_close ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat')
-      : ''}">{ltp != null ? priceFmt(ltp) : '—'}</span>
+      : ''}
+    {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
   <span class="num {displayQty > 0 ? 'cell-pos' : displayQty < 0 ? 'cell-neg' : 'cell-flat'}">{cost != null ? priceFmt(cost) : '—'}</span>
   <span class="num tf-cell cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'} {pnl == null ? '' : flash.classOf(`${_legFlashKey}:pnl`)}">
@@ -358,6 +359,12 @@
 </div>
 
 <style>
+  /* ── LTP flash — alpha 0.22 / 450ms, between P&L calm (0.13) and real-time LTP (0.35) ── */
+  @keyframes leg-ltp-up   { 0% { background-color: rgba(74, 222, 128, 0.22); } 100% { background-color: transparent; } }
+  @keyframes leg-ltp-down { 0% { background-color: rgba(248, 113, 113, 0.22); } 100% { background-color: transparent; } }
+  .leg-ltp:global(.tf-up)   { animation: leg-ltp-up   450ms ease-out; }
+  .leg-ltp:global(.tf-down) { animation: leg-ltp-down 450ms ease-out; }
+
   /* ── Row layout — subgrid so columns align with parent .cand-grid ─── */
   /* Single parent grid via subgrid. Each row inherits the parent's
      column tracks — so headers and data cells line up exactly,

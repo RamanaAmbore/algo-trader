@@ -1110,6 +1110,7 @@
         flash.update(`leg:${k}:day`, _dayPnlForLeg(c, spot ?? null));
         flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
         flash.update(`leg:${k}:exp`, _legExpPnlDisplay(c, spot ?? null));
+        flash.update(`leg:${k}:ltp`, c.ltp != null ? Number(c.ltp) : null);
       }
     });
   });

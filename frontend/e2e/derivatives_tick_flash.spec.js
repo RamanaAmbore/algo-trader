@@ -27,6 +27,10 @@ const PAGE_SRC = path.resolve(
   process.cwd(),
   'src/routes/(algo)/admin/derivatives/+page.svelte'
 );
+const LEG_ROW_SRC = path.resolve(
+  process.cwd(),
+  'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte'
+);
 
 // ── SSOT / stale-code static checks ─────────────────────────────────────────
 
@@ -48,15 +52,27 @@ test('SSOT: flash.update key namespaces do not collide', () => {
   expect(src).toContain("flash.update('kv:pop'");
   expect(src).toContain("flash.update('kv:ev'");
 
-  // leg: prefix for per-row cells
+  // leg: prefix for per-row cells (P&L, Day P&L, Exp P&L, LTP)
   expect(src).toContain('flash.update(`leg:${k}:day`');
   expect(src).toContain('flash.update(`leg:${k}:pnl`');
   expect(src).toContain('flash.update(`leg:${k}:exp`');
+  expect(src).toContain('flash.update(`leg:${k}:ltp`');
 
   // total: prefix for TOTAL row (Legs + Snapshot)
   expect(src).toContain("flash.update('total:day'");
   expect(src).toContain("flash.update('total:pnl'");
   expect(src).toContain("flash.update('total:exp'");
+});
+
+test('SSOT: CandidateLegRow LTP span carries tf-cell and flash.classOf ltp key', () => {
+  const src = fs.readFileSync(LEG_ROW_SRC, 'utf8');
+  // The LTP span must include the tf-cell marker so the scoped keyframe fires.
+  expect(src).toContain('tf-cell');
+  // Must consume the ltp flash key via flash.classOf.
+  expect(src).toContain('flash.classOf(`${_legFlashKey}:ltp`)');
+  // Sanity: field fed to parent flash.update is c.ltp (not c.last_price).
+  // The parent passes c.ltp in the $effect; this component reads ltp as a $derived.
+  expect(src).toContain('c.ltp');
 });
 
 test('SSOT: shell guard prevents kv/payoff flash on synth equity-only strategy', () => {
@@ -192,6 +208,36 @@ for (const vp of VIEWPORTS) {
       const count = await tfCells.count();
       // Expect at least 3 (P&L, Day P&L, Exp P&L).
       expect(count).toBeGreaterThanOrEqual(3);
+    });
+
+    test(`Legs grid LTP cell carries tf-cell marker and flash animation fires [${vp.name}]`, async ({ page }) => {
+      // Each candidate leg row has an LTP span with class="num tf-cell ...".
+      const legRows = page.locator('.cand-row:not(.cand-row-total)');
+      const rowCount = await legRows.count();
+      if (rowCount === 0) {
+        test.skip(true, 'No candidate leg rows present (empty book)');
+        return;
+      }
+
+      // The LTP span is the first tf-cell in a non-total cand-row
+      // (P&L cells also carry tf-cell but appear later in the row).
+      const ltpCell = legRows.first().locator('span.tf-cell').first();
+      const ltpExists = await ltpCell.count();
+      if (ltpExists === 0) {
+        test.skip(true, 'No tf-cell span in first cand-row');
+        return;
+      }
+
+      // Verify the scoped animation fires: inject tf-up and check animation-name.
+      const animName = await ltpCell.evaluate((el) => {
+        el.classList.add('tf-up');
+        const name = getComputedStyle(el).animationName;
+        el.classList.remove('tf-up');
+        return name;
+      });
+
+      // Must resolve to the scoped keyframe defined in +page.svelte <style>.
+      expect(animName).toBe('tf-pulse-up');
     });
 
     test(`kv-block Greek values carry tf-cell marker [${vp.name}]`, async ({ page }) => {
