@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { postSortGroups } from '../../data/pulseGridSetup.js';
+import { postSortGroups, postSortGroups2Level } from '../../data/pulseGridSetup.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -175,6 +175,121 @@ describe('postSortGroups — underlying grouping (no sort active)', () => {
     const params = makeParams(nodes, [{ sort: null }]);
 
     expect(() => postSortGroups(params)).not.toThrow();
+    expect(nodes).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// postSortGroups2Level — two-level derivative sort
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a node with derivative fields for postSortGroups2Level tests.
+ */
+function makeDerivNode(tradingsymbol, underlying, opt_type, expiry, strike) {
+  return { data: { tradingsymbol, underlying, opt_type, expiry, strike } };
+}
+
+describe('postSortGroups2Level — user sort active early-return', () => {
+  it('does NOT reorder nodes when a column has an active sort', () => {
+    const fut = makeDerivNode('NIFTY25JUNFUT',     'NIFTY', null, '25JUN', null);
+    const ce  = makeDerivNode('NIFTY25JUN24500CE', 'NIFTY', 'CE', '25JUN', 24500);
+    const pe  = makeDerivNode('NIFTY25JUN24000PE', 'NIFTY', 'PE', '25JUN', 24000);
+    // interleaved CE-first
+    const nodes = [ce, pe, fut];
+    const params = makeParams(nodes, [{ sort: 'asc' }]);
+
+    postSortGroups2Level(params);
+
+    // early-return: no mutation
+    expect(nodes[0]).toBe(ce);
+    expect(nodes[1]).toBe(pe);
+    expect(nodes[2]).toBe(fut);
+  });
+});
+
+describe('postSortGroups2Level — FUT before CE before PE', () => {
+  it('orders FUT first, CE second, PE third within an underlying group', () => {
+    const ce  = makeDerivNode('NIFTY25JUN24500CE', 'NIFTY', 'CE', '25JUN', 24500);
+    const pe  = makeDerivNode('NIFTY25JUN24000PE', 'NIFTY', 'PE', '25JUN', 24000);
+    const fut = makeDerivNode('NIFTY25JUNFUT',     'NIFTY', null, '25JUN', null);
+    // Input: CE, PE, FUT — should become FUT, CE, PE
+    const nodes = [ce, pe, fut];
+    const params = makeParams(nodes, [{ sort: null }]);
+
+    postSortGroups2Level(params);
+
+    expect(nodes[0]).toBe(fut);
+    expect(nodes[1]).toBe(ce);
+    expect(nodes[2]).toBe(pe);
+  });
+
+  it('handles group with only CE and PE (no FUT)', () => {
+    const ce = makeDerivNode('BANKNIFTY25JUN55000CE', 'BANKNIFTY', 'CE', '25JUN', 55000);
+    const pe = makeDerivNode('BANKNIFTY25JUN54000PE', 'BANKNIFTY', 'PE', '25JUN', 54000);
+    const nodes = [pe, ce];
+    const params = makeParams(nodes, [{ sort: null }]);
+
+    postSortGroups2Level(params);
+
+    expect(nodes[0]).toBe(ce);
+    expect(nodes[1]).toBe(pe);
+  });
+});
+
+describe('postSortGroups2Level — CE rows sorted by expiry then strike', () => {
+  it('sorts CE rows by expiry ascending, then strike ascending', () => {
+    const ce1 = makeDerivNode('NIFTY25JUN24500CE', 'NIFTY', 'CE', '25JUN', 24500);
+    const ce2 = makeDerivNode('NIFTY25JUN24000CE', 'NIFTY', 'CE', '25JUN', 24000);
+    const ce3 = makeDerivNode('NIFTY25MAY24000CE', 'NIFTY', 'CE', '25MAY', 24000);
+    // Input: JUN-24500, JUN-24000, MAY-24000 — expected: MAY-24000, JUN-24000, JUN-24500
+    const nodes = [ce1, ce2, ce3];
+    const params = makeParams(nodes, [{ sort: null }]);
+
+    postSortGroups2Level(params);
+
+    expect(nodes[0]).toBe(ce3); // 25MAY sorts before 25JUN
+    expect(nodes[1]).toBe(ce2); // 24000 < 24500 same expiry
+    expect(nodes[2]).toBe(ce1);
+  });
+});
+
+describe('postSortGroups2Level — rows without underlying stay standalone', () => {
+  it('standalone rows (no underlying) retain relative position among groups', () => {
+    const eq  = makeDerivNode('RELIANCE', '', null, null, null);
+    const fut = makeDerivNode('NIFTY25JUNFUT', 'NIFTY', null, '25JUN', null);
+    const ce  = makeDerivNode('NIFTY25JUN24500CE', 'NIFTY', 'CE', '25JUN', 24500);
+    // Input: standalone, fut, ce — standalone appeared before NIFTY group
+    const nodes = [eq, fut, ce];
+    const params = makeParams(nodes, [{ sort: null }]);
+
+    postSortGroups2Level(params);
+
+    // standalone 'eq' appeared first (idx 0) → comes before NIFTY group
+    expect(nodes[0]).toBe(eq);
+    expect(nodes[1]).toBe(fut);
+    expect(nodes[2]).toBe(ce);
+  });
+
+  it('multiple standalone rows preserve their relative order', () => {
+    const eq1 = makeDerivNode('TCS',    '', null, null, null);
+    const eq2 = makeDerivNode('INFY',   '', null, null, null);
+    const eq3 = makeDerivNode('WIPRO',  '', null, null, null);
+    const nodes = [eq1, eq2, eq3];
+    const params = makeParams(nodes, [{ sort: null }]);
+
+    postSortGroups2Level(params);
+
+    expect(nodes[0]).toBe(eq1);
+    expect(nodes[1]).toBe(eq2);
+    expect(nodes[2]).toBe(eq3);
+  });
+
+  it('returns early on empty nodes without throwing', () => {
+    const nodes = [];
+    const params = makeParams(nodes, [{ sort: null }]);
+
+    expect(() => postSortGroups2Level(params)).not.toThrow();
     expect(nodes).toHaveLength(0);
   });
 });

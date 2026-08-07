@@ -127,3 +127,85 @@ export function postSortGroups({ nodes, api }) {
   nodes.length = 0;
   for (const n of out) nodes.push(n);
 }
+
+/**
+ * ag-Grid postSortRows callback for the Positions Breakdown grid —
+ * two-level sort: groups rows by `data.underlying`, then within each
+ * group orders by instrument type (FUT/EQ first, then CE, then PE)
+ * and by expiry+strike ascending.
+ *
+ * Unlike `postSortGroups` (which preserves the intra-group order from
+ * the user's column sort), this variant always enforces a canonical
+ * derivative ladder inside each underlying cluster so F&O legs are
+ * easy to scan. Standalone rows (no underlying) retain their first-
+ * appearance position relative to the groups.
+ *
+ * Pure: reads only the `nodes` and `api` params — no closure over
+ * reactive state.
+ *
+ * @param {{ nodes: import('ag-grid-community').IRowNode[], api: import('ag-grid-community').GridApi }} param
+ */
+export function postSortGroups2Level({ nodes, api }) {
+  // Respect user column sort — skip grouping when a sort is active.
+  if (api?.getColumnState().some(col => col.sort != null)) return;
+  if (!nodes || nodes.length === 0) return;
+
+  const byUnderlying = new Map();
+  const underlyingOrder = [];
+  const standalone = [];
+
+  for (const n of nodes) {
+    const d = n.data || {};
+    const u = String(d.underlying || '').toUpperCase();
+    if (!u) { standalone.push(n); continue; }
+    if (!byUnderlying.has(u)) { byUnderlying.set(u, []); underlyingOrder.push(u); }
+    byUnderlying.get(u).push(n);
+  }
+
+  // Month-name → zero-padded-number map for chronological expiry sort.
+  // Kite monthly tokens: YYMM3L (e.g. "25MAY", "25JUN").  Plain string
+  // comparison puts AUG before JAN alphabetically — unusable.
+  const _MON = { JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',
+                 JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12' };
+
+  function bucketOrder(n) {
+    const t = String((n.data || {}).opt_type || '').toUpperCase();
+    if (t === 'CE') return 1;
+    if (t === 'PE') return 2;
+    return 0; // FUT/EQ first
+  }
+  function sortKey(n) {
+    const d = n.data || {};
+    // Normalise expiry: "25MAY" → "2505", "25JUN" → "2506",
+    // ISO dates ("2025-05-29") and unknown formats pass through as-is.
+    const raw = String(d.expiry || '');
+    const m = /^(\d{2})([A-Z]{3})/.exec(raw);
+    const expSort = m ? `${m[1]}${_MON[m[2]] || m[2]}` : raw;
+    return `${expSort}|${String(d.strike || 0).padStart(10, '0')}`;
+  }
+
+  const firstIdx = new Map();
+  for (const u of underlyingOrder) firstIdx.set(u, nodes.indexOf(byUnderlying.get(u)[0]));
+
+  const seq = [];
+  for (const u of underlyingOrder) seq.push({ first: firstIdx.get(u), kind: 'g', key: u });
+  for (const n of standalone) seq.push({ first: nodes.indexOf(n), kind: 's', node: n });
+  seq.sort((a, b) => a.first - b.first);
+
+  const out = [];
+  for (const entry of seq) {
+    if (entry.kind === 'g') {
+      const rows = byUnderlying.get(entry.key).slice().sort((a, b) => {
+        const bo = bucketOrder(a) - bucketOrder(b);
+        if (bo !== 0) return bo;
+        const ka = sortKey(a), kb = sortKey(b);
+        return ka < kb ? -1 : ka > kb ? 1 : 0;
+      });
+      out.push(...rows);
+    } else {
+      out.push(entry.node);
+    }
+  }
+  nodes.length = 0;
+  for (const n of out) nodes.push(n);
+}
