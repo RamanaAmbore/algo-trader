@@ -412,6 +412,53 @@ SQL query in `_build_holding_row_from_snapshot()` now selects `db.previous_close
 from the `daily_book` table (commit 13ec7c18), ensuring the correct price is 
 available for every holding row.
 
+### Dhan `close_price=0` handling and backfill recompute (Aug 2026)
+
+**File**: `backend/api/algo/daily_snapshot.py` — `_backfill_recompute_derived()` 
+(commit a737b1e2)
+
+Dhan's `holdings()` API does not return `previousClosePrice`. The adapter therefore 
+sets `close_price=0` and `day_change=ltp-0=ltp` (always incorrect). The snapshot 
+backfill (`_backfill_market_data_dicts`) calls Kite's quote API to patch the missing 
+`close_price` with the actual prior-session close. 
+
+When `close_price` is patched from zero, `_backfill_recompute_derived()` now accepts 
+a `close_was_missing: bool` flag. When True, it recomputes `day_change = ltp - 
+real_close` unconditionally, overriding the stale broker value (which erroneously 
+stored `ltp`). Previously, the guard `not r.get("day_change")` prevented recompute 
+because Dhan had already set a (wrong) value; this left `daily_book.day_pnl = ltp` 
+(e.g. 3952) instead of the actual day move (e.g. -28).
+
+**Effective timing**: This fix works when the snapshot runs BEFORE Kite updates 
+`ohlc.close` to today's close (window: ~3:30–18:00 IST, depending on market hours). 
+The canonical EOD snapshot at 15:35 IST sees `ohlc.close` = prior session close and 
+captures correct `day_pnl`.
+
+**Invariant I25 — Dhan `close_price=0` detection and backfill**: Adapter sets 
+`close_price=0` and `day_change=ltp` for Dhan holdings (no `previousClosePrice` in 
+API). Backfill pipeline detects this via `close_was_missing=True` flag after patching 
+from Kite quote; recomputes `day_change` unconditionally to override the stale broker 
+value. Ensures holdings snapshot stores correct day P&L.
+
+### Daily Book `day_pnl` stores total P&L, not per-share change (Aug 2026)
+
+**File**: `backend/api/algo/daily_snapshot.py` — `_snap_holding_eod_vals()` 
+(commit a737b1e2)
+
+The value stored in `daily_book.day_pnl` for `kind='holdings'` rows is the **total 
+day P&L** (`day_change_per_share × qty`), NOT the per-share `day_change`. This is 
+consistent with positions rows, which use the naive formula `(ltp - close) × qty`.
+
+When `_build_holding_row_from_snapshot()` computes `day_change_percentage`, it 
+divides this total by `close_notional = previous_close × qty`:
+
+```python
+day_change_percentage = (daily_book.day_pnl / (previous_close * qty)) * 100
+```
+
+This convention ensures the stored value is directly interpretable as the P&L you 
+would realize if you squared off the position at LTP on that session.
+
 ---
 
 ## 8. Adapter Implementations
@@ -715,6 +762,10 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I24 — Holdings day_change_percentage uses previous_close denominator**: Holdings snapshot metric `day_change_percentage` is computed as `(day_pnl / (previous_close × qty)) × 100`, where `previous_close` is fetched from `daily_book`. Fallback to `avg_cost` when `previous_close` is zero/missing (same-day buys, cold-boot). Using LTP as denominator inflates/understates percentage on down/up moves respectively. SSOT: `_build_holding_row_from_snapshot()` in `backend/api/routes/holdings.py`.
 
+**I25 — Dhan `close_price=0` detection and backfill**: Dhan's `holdings()` API lacks `previousClosePrice`; adapter sets `close_price=0` and `day_change=ltp`. Backfill pipeline patches `close_price` from Kite quote, then `_backfill_recompute_derived()` detects `close_was_missing=True` flag and recomputes `day_change = ltp - real_close` unconditionally, overriding the stale broker value. Ensures `daily_book.day_pnl` stores correct day P&L (not `ltp`). Effective when snapshot runs before Kite updates `ohlc.close` to today's final value (~3:30–18:00 IST); canonical EOD snapshot at 15:35 IST guaranteed correct.
+
+**I26 — Daily book `day_pnl` stores total P&L**: The value stored in `daily_book.day_pnl` for `kind='holdings'` rows is the total day P&L (`day_change_per_share × qty`), consistent with positions rows. When computing `day_change_percentage`, this total is divided by `close_notional = previous_close × qty`. Ensures stored value is directly interpretable as P&L if position were squared at LTP.
+
 ---
 
 ## 12. Test Coverage Map
@@ -980,3 +1031,4 @@ designed.
 | 2026-07-27 | v1.9 Expiry restart fix + prior-day orphan cleanup (commits cbbe0f23, 21d1656a): Updated §9.1 Background Task Supervisor with expiry task restart-blindness fix (module-level `_expiry_last_run_date` sentinel ensures immediate fire on service restart > 09:20 IST; not run today yet); expiry engine re-scan loop (every 30 min until 15:25 IST, catches newly-ITM positions); NSE NIFTY quote key fix (NSE:NIFTY 50 not NSE:NIFTY). Updated §7.3 to add `_delete_prior_orphan_positions()` pass removing settled options from prior-day snapshots (7-day scope). Updated I14 invariant to note off-hours `_positions_snapshot()` query includes `AND qty != 0` guard (commit 21d1656a) to exclude flat/expired positions. Expiry-day auto-close agents changed from inactive → active status. |
 | 2026-07-28 | v1.10 Snapshot intraday-closed position inclusion (commits cef00739, 5ac11f56): Updated §7.3 Daily Snapshot Orphan Cleanup and I14 invariant — off-hours `_positions_snapshot()` query refined from `AND qty != 0` (cef00739) to `AND (qty != 0 OR date = :today_ist)` (5ac11f56). Positions closed intraday (qty=0, captured today IST) now appear in off-hours snapshot with 'closed' chip + opacity:0.45 decoration in derivatives legs grid. Prior-session closed positions (qty=0, date≠today) excluded. Next morning before market opens, yesterday's closed legs absent, only carried-overnight open positions visible, matching broker book when gate opens. Frontend `buildCleanLegs()` filters qty===0 rows from payoff POST (strategy analytics unchanged). Legs grid shows closed legs for intraday history. |
 | 2026-08-06 | v1.11 Holdings snapshot day_change_percentage formula fix (commit 13ec7c18): Added §7.4 Holdings Snapshot Day Change Percentage Formula documenting the corrected formula: `day_pnl / (previous_close × qty) × 100` (uses `previous_close` denominator, not LTP). Fallback to `avg_cost` when `previous_close` is zero/missing. Added I24 invariant. SQL now selects `db.previous_close` from daily_book; fixes distortion where using LTP inflated negatives and understated positives. |
+| 2026-08-06 | v1.12 Dhan holdings day_pnl fix (commit a737b1e2): Added subsection to §7.4 documenting Dhan `close_price=0` handling and backfill recompute. `_backfill_recompute_derived()` now accepts `close_was_missing: bool` flag; when True, recomputes `day_change = ltp - real_close` unconditionally to override stale Dhan adapter value. Added subsection on daily_book `day_pnl` storing total P&L (not per-share change). Added I25 and I26 invariants capturing `close_was_missing` detection and total-P&L storage convention. Fixes Dhan holdings snapshot storing incorrect day_pnl (e.g. 3952 instead of -28) when `close_price` was patched from zero. |
