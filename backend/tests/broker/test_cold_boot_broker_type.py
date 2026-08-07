@@ -108,25 +108,25 @@ class TestColdBootBrokerType:
             f"Expected ZG_TEST in conn after cold-boot; conn={list(instance.conn.keys())}"
         )
 
-    def test_dhan_account_absent_from_conn(self):
-        """A kite_accounts entry with broker=dhan must NOT produce a connection
-        in self.conn — DhanConnection cannot be built from kite_accounts YAML blobs
-        (missing client_id / PIN / TOTP seed in the right fields)."""
+    def test_dhan_account_present_in_conn_as_stub(self):
+        """A kite_accounts entry with broker=dhan gets a KiteConnection stub in
+        self.conn at cold-boot. rebuild_from_db() later overwrites it with the
+        real DhanConnection. The stub keeps @for_all_accounts iterating the
+        account even if rebuild_from_db() falls back to the YAML view."""
         secrets_data = _fake_secrets()
         instance = self._call_rebuild(secrets_data)
-        assert "DH_TEST" not in instance.conn, (
-            f"DH_TEST must NOT be in conn on cold-boot; "
-            f"found {type(instance.conn.get('DH_TEST')).__name__}"
+        assert "DH_TEST" in instance.conn, (
+            f"DH_TEST must be in conn at cold-boot (as KiteConnection stub); "
+            f"conn={list(instance.conn.keys())}"
         )
 
-    def test_groww_account_absent_from_conn(self):
-        """A kite_accounts entry with broker=groww must NOT produce a connection
-        in self.conn."""
+    def test_groww_account_present_in_conn_as_stub(self):
+        """A kite_accounts entry with broker=groww also gets a KiteConnection stub."""
         secrets_data = _fake_secrets()
         instance = self._call_rebuild(secrets_data)
-        assert "GW_TEST" not in instance.conn, (
-            f"GW_TEST must NOT be in conn on cold-boot; "
-            f"found {type(instance.conn.get('GW_TEST')).__name__}"
+        assert "GW_TEST" in instance.conn, (
+            f"GW_TEST must be in conn at cold-boot (as KiteConnection stub); "
+            f"conn={list(instance.conn.keys())}"
         )
 
     def test_broker_id_map_correct_for_dhan(self):
@@ -179,17 +179,17 @@ class TestColdBootBrokerType:
                 f"got {list(instance._hist_enabled_map.keys())}"
             )
 
-    def test_only_kite_accounts_in_conn(self):
-        """self.conn must contain ONLY Kite-typed accounts after cold-boot."""
+    def test_all_accounts_in_conn_at_cold_boot(self):
+        """self.conn must contain ALL accounts (Kite + Dhan + Groww) at cold-boot
+        as KiteConnection stubs. rebuild_from_db() overwrites non-Kite stubs with
+        the correct adapters after startup."""
         secrets_data = _fake_secrets()
         instance = self._call_rebuild(secrets_data)
-        non_kite_in_conn = [
-            acct for acct in instance.conn
-            if instance._broker_id_map.get(acct) not in ("zerodha_kite", "kite", "")
-        ]
-        assert not non_kite_in_conn, (
-            f"Non-Kite accounts found in conn: {non_kite_in_conn}"
-        )
+        for acct in ("ZG_TEST", "DH_TEST", "GW_TEST"):
+            assert acct in instance.conn, (
+                f"Expected {acct} in conn at cold-boot; "
+                f"conn={list(instance.conn.keys())}"
+            )
 
     def test_broker_default_empty_treated_as_kite(self):
         """An account with no 'broker' key (defaults to '') is treated as Kite
