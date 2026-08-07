@@ -929,7 +929,7 @@ async def test_holdings_snapshot_pnl_percentage_populated():
 
     # A fake DB row that represents a holdings snapshot:
     #   account, symbol, exchange, qty, avg_cost, ltp,
-    #   day_pnl, total_pnl, captured_at
+    #   previous_close, day_pnl, total_pnl, captured_at
     captured_ts = datetime.now(timezone.utc) - timedelta(hours=2)
 
     fake_row = (
@@ -939,6 +939,7 @@ async def test_holdings_snapshot_pnl_percentage_populated():
         10,          # qty
         2800.0,      # avg_cost
         2900.0,      # ltp (snapshot LTP)
+        2800.0,      # previous_close (yesterday's close)
         100.0,       # day_pnl
         1000.0,      # total_pnl
         captured_ts, # captured_at
@@ -967,10 +968,11 @@ async def test_holdings_snapshot_pnl_percentage_populated():
     assert abs(row.pnl_percentage - (1000.0 / 28000.0 * 100.0)) < 0.01, (
         f"pnl_percentage expected {1000.0/28000.0*100:.4f}, got {row.pnl_percentage}"
     )
-    # day_change_percentage: day_pnl=100, close_notional=2900*10=29000 → ~0.345 %
+    # day_change_percentage: day_pnl=100, previous_close_notional=2800*10=28000 → ~0.357 %
+    # (using previous_close as denominator, not LTP)
     assert row.day_change_percentage is not None
-    assert abs(row.day_change_percentage - (100.0 / 29000.0 * 100.0)) < 0.01, (
-        f"day_change_percentage expected {100.0/29000.0*100:.4f}, got {row.day_change_percentage}"
+    assert abs(row.day_change_percentage - (100.0 / 28000.0 * 100.0)) < 0.01, (
+        f"day_change_percentage expected {100.0/28000.0*100:.4f}, got {row.day_change_percentage}"
     )
     # last_price_stale must be True for a snapshot (it's not live broker data)
     assert row.last_price_stale is True, "snapshot rows must have last_price_stale=True"
@@ -1079,6 +1081,7 @@ async def test_holdings_snapshot_prefers_good_over_bad():
         10,          # qty
         2800.0,      # avg_cost
         2900.0,      # ltp  — non-zero: good row
+        2800.0,      # previous_close (yesterday's close)
         100.0,       # day_pnl
         1000.0,      # total_pnl
         good_ts,     # captured_at (older timestamp)

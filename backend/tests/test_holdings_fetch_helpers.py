@@ -254,3 +254,134 @@ def test_prepare_raw_frame_calls_backfill_and_override():
     assert ov.called
     # Numeric NaN → 0 fill happens
     assert not out.empty
+
+
+# ---------------------------------------------------------------------------
+# _build_holding_row_from_snapshot — day_change_percentage formula
+# ---------------------------------------------------------------------------
+
+def test_snapshot_day_change_percentage_correct_denominator():
+    """Verify day_change_percentage uses PREVIOUS_CLOSE, not LTP.
+
+    When a stock moves +20% from close to LTP:
+    - day_pnl = (LTP - close) × qty = (1200 - 1000) × 10 = 2000
+    - Correct: day_pct = 2000 / (1000 × 10) × 100 = 20%
+    - Wrong:   day_pct = 2000 / (1200 × 10) × 100 ≈ 16.67%
+
+    This test ensures the snapshot path uses previous_close as the
+    denominator, matching the live-data formula in _enrich_positions.
+    """
+    from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+    # Simulate a snapshot row: (account, symbol, exchange, qty, avg_cost,
+    # ltp, previous_close, day_pnl, total_pnl, captured_at)
+    raw_row = (
+        "ZG0790",      # account
+        "SIEMENS",     # symbol
+        "NSE",         # exchange
+        10,            # qty
+        1000.0,        # avg_cost (also yesterday's opening)
+        1200.0,        # ltp (current price)
+        1000.0,        # previous_close (yesterday's close)
+        2000.0,        # day_pnl = (1200 - 1000) × 10
+        3000.0,        # total_pnl = (1200 - 1000 + prev_gain) × 10
+        None,          # captured_at
+    )
+
+    row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
+
+    # Verify computations
+    assert row.quantity == 10, f"Expected qty 10, got {row.quantity}"
+    assert row.average_price == 1000.0, f"Expected avg 1000, got {row.average_price}"
+    assert row.last_price == 1200.0, f"Expected ltp 1200, got {row.last_price}"
+    assert row.day_change_val == pytest.approx(2000.0), \
+        f"Expected day_pnl 2000, got {row.day_change_val}"
+
+    # Core test: day_change_percentage should be 20.0, not 16.67
+    # (2000 / 10000) × 100 = 20.0
+    assert row.day_change_percentage == pytest.approx(20.0), \
+        f"Expected day_change_percentage 20.0%, got {row.day_change_percentage}%. " \
+        f"Indicates LTP was used as denominator instead of previous_close."
+
+    # Verify inv_val + cur_val are computed correctly
+    assert inv_val == pytest.approx(10000.0), f"inv_val should be 10000, got {inv_val}"
+    assert cur_val == pytest.approx(12000.0), f"cur_val should be 12000, got {cur_val}"
+
+
+def test_snapshot_day_change_percentage_fallback_to_avg_cost():
+    """When previous_close is missing (same-day buy), fall back to avg_cost.
+
+    This tests the guard: use previous_close × qty as denominator; if that's
+    zero, use avg_cost × qty instead (same-day purchase where there's no
+    prior close to measure against).
+    """
+    from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+    raw_row = (
+        "ZG0790",      # account
+        "NEWBUY",      # symbol
+        "NSE",         # exchange
+        10,            # qty
+        1000.0,        # avg_cost
+        1050.0,        # ltp (5% up)
+        0.0,           # previous_close = 0 (no prior session; same-day buy)
+        500.0,         # day_pnl = (1050 - 1000) × 10
+        500.0,         # total_pnl = same (no prior p/l)
+        None,
+    )
+
+    row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
+
+    # When previous_close=0, fall back to avg_cost denominator
+    # (500 / 10000) × 100 = 5.0%
+    assert row.day_change_percentage == pytest.approx(5.0), \
+        f"Expected fallback to avg_cost: 5.0%, got {row.day_change_percentage}"
+
+
+def test_snapshot_day_change_percentage_zero_qty():
+    """When qty=0, day_change_percentage should be 0.0, not crash."""
+    from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+    raw_row = (
+        "ZG0790",      # account
+        "SOLD",        # symbol
+        "NSE",         # exchange
+        0,             # qty = 0 (closed position)
+        1000.0,        # avg_cost
+        1100.0,        # ltp
+        1000.0,        # previous_close
+        0.0,           # day_pnl
+        100.0,         # total_pnl (from yesterday's hold)
+        None,
+    )
+
+    row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
+
+    assert row.day_change_percentage == 0.0, \
+        f"Expected 0.0 for zero qty, got {row.day_change_percentage}"
+    assert row.quantity == 0
+
+
+def test_snapshot_day_change_percentage_negative_move():
+    """Test day_change_percentage when price drops (negative day_pnl)."""
+    from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+    raw_row = (
+        "ZG0790",      # account
+        "WAAREEENER",  # symbol
+        "NSE",         # exchange
+        100,           # qty
+        1000.0,        # avg_cost
+        800.0,         # ltp (20% down)
+        1000.0,        # previous_close
+        -20000.0,      # day_pnl = (800 - 1000) × 100
+        -20000.0,      # total_pnl (same; no prior p/l)
+        None,
+    )
+
+    row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
+
+    # (-20000 / 100000) × 100 = -20.0%
+    assert row.day_change_percentage == pytest.approx(-20.0), \
+        f"Expected -20.0%, got {row.day_change_percentage}"
+    assert row.day_change_val == pytest.approx(-20000.0)

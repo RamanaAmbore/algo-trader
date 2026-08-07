@@ -44,7 +44,7 @@ _HOLDINGS_SNAPSHOT_SQL = """
         GROUP BY account
     )
     SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
-           db.ltp, db.day_pnl, db.total_pnl, db.captured_at
+           db.ltp, db.previous_close, db.day_pnl, db.total_pnl, db.captured_at
     FROM daily_book db
     JOIN latest_batch lb
       ON db.account = lb.account AND db.captured_at = lb.max_at
@@ -86,24 +86,26 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     per-account sums (inv, cur, total_pnl, day_pnl) that the caller
     aggregates into HoldingsSummaryRow.
     """
-    (account, symbol, exchange, qty, avg_cost, ltp,
+    (account, symbol, exchange, qty, avg_cost, ltp, previous_close,
      day_pnl, total_pnl, _captured_at) = raw_row
 
-    avg_cost_f  = float(avg_cost)  if avg_cost  is not None else 0.0
-    ltp_f       = float(ltp)       if ltp        is not None else 0.0
-    total_pnl_f = float(total_pnl) if total_pnl  is not None else 0.0
-    day_pnl_f   = float(day_pnl)   if day_pnl    is not None else 0.0
-    qty_i       = int(qty)         if qty         is not None else 0
-    inv_val     = avg_cost_f * qty_i
-    cur_val     = ltp_f      * qty_i
+    avg_cost_f       = float(avg_cost)       if avg_cost       is not None else 0.0
+    ltp_f            = float(ltp)            if ltp             is not None else 0.0
+    previous_close_f = float(previous_close) if previous_close is not None else 0.0
+    total_pnl_f      = float(total_pnl)      if total_pnl       is not None else 0.0
+    day_pnl_f        = float(day_pnl)        if day_pnl         is not None else 0.0
+    qty_i            = int(qty)              if qty             is not None else 0
+    inv_val          = avg_cost_f * qty_i
+    cur_val          = ltp_f      * qty_i
 
     # pnl_percentage: pnl / |avg × qty| × 100
     # (inv_val = avg_cost_f × qty_i, so use that directly)
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-    # day_change_percentage: day_change_val / |close × qty| × 100
-    # close_price for a holdings snapshot is the last stored LTP.
-    # Use |avg × qty| (inv_val) as the fallback when ltp is zero.
-    close_notional = abs(ltp_f * qty_i)
+    # day_change_percentage: day_change_val / |previous_close × qty| × 100
+    # Use yesterday's close price as the denominator (NOT LTP, which would
+    # understate the move). Fallback to avg_cost when previous_close is
+    # missing/zero (same-day buys / cold-boot).
+    close_notional = abs(previous_close_f * qty_i)
     day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
         day_pnl_f / inv_val * 100.0 if inv_val else 0.0
     )
@@ -179,7 +181,7 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
     if not raw_rows:
         return None
 
-    snap_captured_at: str = raw_rows[0][8].isoformat() if raw_rows[0][8] else ""
+    snap_captured_at: str = raw_rows[0][9].isoformat() if raw_rows[0][9] else ""
 
     inv_by_account: dict[str, float] = {}
     cur_by_account: dict[str, float] = {}
