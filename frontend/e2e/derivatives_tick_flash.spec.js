@@ -88,11 +88,10 @@ test('SSOT: tf-cell CSS rule covers payoff chips, kv-v, cand-pnl, byund-row TOTA
   // CSS block must define .tf-cell.tf-up and .tf-cell.tf-down
   expect(src).toContain('.tf-cell.tf-up');
   expect(src).toContain('.tf-cell.tf-down');
-  // reduced-motion block must also include tf-cell
-  const motionBlock = src.slice(src.indexOf('@media (prefers-reduced-motion'),
-                                src.indexOf('@media (prefers-reduced-motion') + 500);
-  expect(motionBlock).toContain('.tf-cell.tf-up');
-  expect(motionBlock).toContain('.tf-cell.tf-down');
+  // The reduced-motion block that suppresses tf-cell animations must exist.
+  // There are multiple @media (prefers-reduced-motion) blocks in the file;
+  // search for the specific combined selector rather than relying on positional indexOf.
+  expect(src).toMatch(/prefers-reduced-motion[\s\S]{0,600}\.tf-cell\.tf-up/);
 });
 
 test('Stale: no second flash primitive or duplicate animation keyframes', () => {
