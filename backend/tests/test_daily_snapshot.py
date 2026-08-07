@@ -550,3 +550,202 @@ async def test_snapshot_per_account_error_is_tolerated(db_session):
     assert result["positions_rows"] == 1
     assert result["trades_rows"] == 1
     assert result["errors"] == []   # per-kind errors are logged + continue; account doesn't error out
+
+
+# ---------------------------------------------------------------------------
+# Tests for bug fixes: _backfill_recompute_derived + _snap_holding_eod_vals
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillRecomputeDerived:
+    """Tests for _backfill_recompute_derived (close_was_missing flag).
+
+    Validates Fix A: when Dhan ships close_price=0, the broker's existing
+    day_change equals ltp - 0 = ltp (e.g. 3952). After backfill sets the
+    real close_price, we must recompute day_change = ltp - close (e.g. -28).
+    """
+
+    def test_recomputes_day_change_when_close_was_missing(self):
+        """Dhan case: day_change was ltp-0=ltp; after backfill sets close=prev_close, recompute."""
+        from backend.api.algo.daily_snapshot import _backfill_recompute_derived
+        r = {
+            "last_price": 3952.0,
+            "close_price": 3980.0,
+            "day_change": 3952.0,  # Wrong: ltp - 0, from broker
+            "average_price": 3606.0,
+            "opening_quantity": 2,
+        }
+        _backfill_recompute_derived(r, "opening_quantity", close_was_missing=True)
+        assert r["day_change"] == pytest.approx(3952.0 - 3980.0), \
+            f"expected day_change=-28 (ltp-close) but got {r['day_change']}"
+
+    def test_does_not_recompute_when_close_was_present(self):
+        """Kite case: close was non-zero from broker, day_change from broker is trusted."""
+        from backend.api.algo.daily_snapshot import _backfill_recompute_derived
+        r = {
+            "last_price": 3952.0,
+            "close_price": 3980.0,
+            "day_change": -28.0,  # Correct value from broker
+            "average_price": 3606.0,
+            "opening_quantity": 2,
+        }
+        _backfill_recompute_derived(r, "opening_quantity", close_was_missing=False)
+        assert r["day_change"] == pytest.approx(-28.0), \
+            f"expected day_change=-28 (unchanged) but got {r['day_change']}"
+
+    def test_sets_day_change_when_not_present(self):
+        """Groww case: day_change absent; backfill should set it."""
+        from backend.api.algo.daily_snapshot import _backfill_recompute_derived
+        r = {
+            "last_price": 3952.0,
+            "close_price": 3980.0,
+            # day_change intentionally missing
+            "average_price": 3606.0,
+            "opening_quantity": 2,
+        }
+        _backfill_recompute_derived(r, "opening_quantity", close_was_missing=False)
+        assert r["day_change"] == pytest.approx(3952.0 - 3980.0), \
+            f"expected day_change=-28 (ltp-close) but got {r['day_change']}"
+
+    def test_does_not_set_day_change_when_close_zero_and_flag_false(self):
+        """When close_price is zero and close_was_missing=False, day_change is not set.
+        This matches the legacy behavior for brokers where close_price=0 is legitimate."""
+        from backend.api.algo.daily_snapshot import _backfill_recompute_derived
+        r = {
+            "last_price": 3952.0,
+            "close_price": 0,  # Zero close
+            "average_price": 3606.0,
+            "opening_quantity": 2,
+        }
+        _backfill_recompute_derived(r, "opening_quantity", close_was_missing=False)
+        assert "day_change" not in r or r.get("day_change") is None, \
+            f"expected day_change to remain absent, but got {r.get('day_change')}"
+
+    def test_does_not_set_pnl_when_already_present(self):
+        """pnl is only set if not present; existing value is never overwritten."""
+        from backend.api.algo.daily_snapshot import _backfill_recompute_derived
+        r = {
+            "last_price": 3952.0,
+            "close_price": 3980.0,
+            "average_price": 3606.0,
+            "opening_quantity": 2,
+            "pnl": 100.0,  # Broker-provided pnl
+        }
+        _backfill_recompute_derived(r, "opening_quantity", close_was_missing=False)
+        assert r["pnl"] == pytest.approx(100.0), \
+            f"expected pnl=100 (unchanged) but got {r['pnl']}"
+
+    def test_computes_pnl_when_absent(self):
+        """When pnl is absent, compute from (ltp - avg) * qty."""
+        from backend.api.algo.daily_snapshot import _backfill_recompute_derived
+        r = {
+            "last_price": 3952.0,
+            "close_price": 3980.0,
+            "average_price": 3606.0,
+            "opening_quantity": 2,
+            # pnl intentionally missing
+        }
+        _backfill_recompute_derived(r, "opening_quantity", close_was_missing=False)
+        expected_pnl = (3952.0 - 3606.0) * 2
+        assert r["pnl"] == pytest.approx(expected_pnl), \
+            f"expected pnl={expected_pnl} but got {r.get('pnl')}"
+
+
+class TestSnapHoldingEodVals:
+    """Tests for _snap_holding_eod_vals — day_pnl stores total (not per-share).
+
+    Validates Fix B: day_pnl_v is computed as day_change × qty, not just
+    day_change. This allows holdings.py to correctly compute day P&L % by
+    dividing total by close_notional (prev_close × qty).
+    """
+
+    def _make_row(self, ltp, day_change, pnl, qty=1):
+        """Helper to build a holdings row dict with minimal fields."""
+        return {
+            "last_price": ltp,
+            "day_change": day_change,
+            "pnl": pnl,
+            "opening_quantity": qty,
+        }
+
+    def test_day_pnl_is_total_for_multi_qty(self):
+        """day_pnl = day_change × qty, not per-share."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = self._make_row(ltp=3952, day_change=-28.0, pnl=692.0, qty=2)
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session=False)
+        assert day_pnl_v == pytest.approx(-56.0), \
+            f"expected day_pnl=day_change×qty=-56.0 but got {day_pnl_v}"
+
+    def test_day_pnl_for_qty_one(self):
+        """qty=1: day_pnl = day_change (same as before fix, but now internally computed)."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = self._make_row(ltp=3952, day_change=-28.0, pnl=692.0, qty=1)
+        _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
+        assert day_pnl_v == pytest.approx(-28.0), \
+            f"expected day_pnl=-28.0 but got {day_pnl_v}"
+
+    def test_day_pnl_positive_for_multi_qty(self):
+        """Positive day_change: total day_pnl is proportional to qty."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = self._make_row(ltp=1560, day_change=60.0, pnl=600.0, qty=10)
+        _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
+        assert day_pnl_v == pytest.approx(600.0), \
+            f"expected day_pnl=60×10=600.0 but got {day_pnl_v}"
+
+    def test_day_pnl_none_when_mid_session(self):
+        """Mid-session: day_pnl is None to avoid partial-day values."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = self._make_row(ltp=3952, day_change=-28.0, pnl=692.0, qty=2)
+        ltp_val, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=True)
+        assert ltp_val is None, f"expected ltp=None mid-session but got {ltp_val}"
+        assert day_pnl_v is None, f"expected day_pnl=None mid-session but got {day_pnl_v}"
+
+    def test_day_pnl_none_when_day_change_absent(self):
+        """No day_change field → day_pnl is None."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = {
+            "last_price": 3952,
+            "pnl": 692.0,
+            "opening_quantity": 2,
+            # day_change intentionally missing
+        }
+        _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
+        assert day_pnl_v is None, \
+            f"expected day_pnl=None when day_change absent but got {day_pnl_v}"
+
+    def test_total_pnl_unchanged(self):
+        """total_pnl_v is unchanged by Fix B — still just the raw pnl field."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = self._make_row(ltp=3952, day_change=-28.0, pnl=692.0, qty=2)
+        _, _, total_pnl_v = _snap_holding_eod_vals(r, mid_session=False)
+        assert total_pnl_v == pytest.approx(692.0), \
+            f"expected total_pnl=692.0 (unchanged) but got {total_pnl_v}"
+
+    def test_ltp_val_returned_correctly(self):
+        """ltp_val is returned as-is at EOD."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = self._make_row(ltp=3952.0, day_change=-28.0, pnl=692.0, qty=2)
+        ltp_val, _, _ = _snap_holding_eod_vals(r, mid_session=False)
+        assert ltp_val == pytest.approx(3952.0), \
+            f"expected ltp=3952.0 but got {ltp_val}"
+
+    def test_zero_day_change_still_multiplied(self):
+        """Zero day_change is still multiplied by qty (result is 0 × qty = 0)."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = self._make_row(ltp=3000, day_change=0.0, pnl=0.0, qty=5)
+        _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
+        assert day_pnl_v == pytest.approx(0.0), \
+            f"expected day_pnl=0.0 (0×5) but got {day_pnl_v}"
+
+    def test_negative_qty_handled(self):
+        """Negative qty (short positions): day_pnl sign flips with qty sign."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+        r = {
+            "last_price": 3952,
+            "day_change": -28.0,
+            "pnl": 56.0,
+            "opening_quantity": -2,  # Short 2 shares
+        }
+        _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
+        assert day_pnl_v == pytest.approx(56.0), \
+            f"expected day_pnl=-28×(-2)=56.0 but got {day_pnl_v}"

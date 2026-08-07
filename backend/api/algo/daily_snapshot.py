@@ -209,12 +209,13 @@ def _snap_patch_single_price_row(r: dict, df, i: int, qty_col: str) -> int:
     changed = 0
     _old_ltp = float(r.get("last_price") or 0)
     _old_cls = float(r.get("close_price") or 0)
+    close_was_missing = _old_cls <= 0  # broker (e.g. Dhan) shipped close=0
     if _new_ltp > 0 and _new_ltp != _old_ltp:
         r["last_price"] = _new_ltp
         changed = 1
     if _new_cls > 0 and _new_cls != _old_cls:
         r["close_price"] = _new_cls
-    _backfill_recompute_derived(r, qty_col)
+    _backfill_recompute_derived(r, qty_col, close_was_missing=close_was_missing)
     return changed
 
 
@@ -228,19 +229,28 @@ def _snap_safe_avg_qty(r: dict, qty_col: str) -> tuple[float, int]:
         return 0.0, 0
 
 
-def _backfill_recompute_derived(r: dict, qty_col: str) -> None:
+def _backfill_recompute_derived(
+    r: dict, qty_col: str, *, close_was_missing: bool = False
+) -> None:
     """Recompute ``pnl`` / ``day_change`` on a single row after price patch.
 
     Fills in Groww-shape rows where the normaliser derived these from
     ``(ltp - close)`` when both were zero at snapshot time.  Mutates
     *r* in-place; does not affect the caller's ``patched`` count.
+
+    ``close_was_missing`` must be True when the broker (e.g. Dhan)
+    originally shipped ``close_price=0``.  In that case the broker's
+    existing ``day_change`` equals ``ltp - 0 = ltp`` (e.g. 3952) which
+    is wrong; we must recompute it now that we have the real close.
     """
     _avg, _qty = _snap_safe_avg_qty(r, qty_col)
     _cur_ltp = float(r.get("last_price") or 0)
     _cur_cls = float(r.get("close_price") or 0)
     if _cur_ltp > 0 and _avg > 0 and _qty and not r.get("pnl"):
         r["pnl"] = (_cur_ltp - _avg) * _qty
-    if _cur_ltp > 0 and _cur_cls > 0 and not r.get("day_change"):
+    # Recompute day_change when not set, OR when close was originally 0
+    # (meaning broker's existing day_change = ltp - 0 = ltp, which is wrong).
+    if _cur_ltp > 0 and _cur_cls > 0 and (not r.get("day_change") or close_was_missing):
         r["day_change"] = _cur_ltp - _cur_cls
 
 
@@ -393,12 +403,20 @@ def _snap_holding_eod_vals(
 
     Returns None for ltp/day_pnl when mid-session to prevent partial-day
     values from polluting the EOD snapshot.
+
+    ``day_pnl_v`` is total P&L (per-share ``day_change`` × qty) so that
+    ``_build_holding_row_from_snapshot`` in holdings.py can divide by
+    ``close_notional = prev_close × qty`` to get the correct percentage.
+    Storing only the per-share value understated the percentage for qty > 1.
     """
     last_price = r.get("last_price")
     day_change = r.get("day_change")
     total_pnl_raw = r.get("pnl")
+    qty = int(r.get("opening_quantity") or r.get("quantity") or 1)
     ltp_val   = None if mid_session else (float(last_price) if last_price is not None else None)
-    day_pnl_v = None if mid_session else (float(day_change) if day_change is not None else None)
+    day_pnl_v = None if mid_session else (
+        float(day_change) * qty if day_change is not None else None
+    )
     total_pnl_v = float(total_pnl_raw) if total_pnl_raw is not None else None
     return ltp_val, day_pnl_v, total_pnl_v
 
