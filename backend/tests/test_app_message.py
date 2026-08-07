@@ -56,7 +56,7 @@ class TestRetentionRules:
 
         msg = AppMessage(body="high leverage", tags=["system"], level="warning")
         result = _retain_until(msg)
-        expected = (datetime.now(timezone.utc) + timedelta(days=90)).date()
+        expected = date.today() + timedelta(days=90)
         assert result == expected, f"warning should expire in 90 days, got {result}"
 
     def test_retain_until_order_tag_is_30_days(self):
@@ -68,7 +68,7 @@ class TestRetentionRules:
 
         msg = AppMessage(body="order filled", tags=["order"], level="info")
         result = _retain_until(msg)
-        expected = (datetime.now(timezone.utc) + timedelta(days=30)).date()
+        expected = date.today() + timedelta(days=30)
         assert result == expected, f"order tag should expire in 30 days, got {result}"
 
     def test_retain_until_system_tag_is_7_days(self):
@@ -80,7 +80,7 @@ class TestRetentionRules:
 
         msg = AppMessage(body="background sync", tags=["system"], level="info")
         result = _retain_until(msg)
-        expected = (datetime.now(timezone.utc) + timedelta(days=7)).date()
+        expected = date.today() + timedelta(days=7)
         assert result == expected, f"system tag should expire in 7 days, got {result}"
 
     def test_retain_until_uses_shortest_retention_for_multiple_tags(self):
@@ -93,7 +93,7 @@ class TestRetentionRules:
         # order=30, system=7 → min=7
         msg = AppMessage(body="order with system note", tags=["order", "system"], level="info")
         result = _retain_until(msg)
-        expected = (datetime.now(timezone.utc) + timedelta(days=7)).date()
+        expected = date.today() + timedelta(days=7)
         assert result == expected, f"multiple tags should use shortest retention (7 days), got {result}"
 
     def test_retain_until_deploy_tag_is_7_days(self):
@@ -105,7 +105,7 @@ class TestRetentionRules:
 
         msg = AppMessage(body="api deployed", tags=["deploy"], level="info")
         result = _retain_until(msg)
-        expected = (datetime.now(timezone.utc) + timedelta(days=7)).date()
+        expected = date.today() + timedelta(days=7)
         assert result == expected, f"deploy tag should expire in 7 days, got {result}"
 
     def test_retain_until_news_tag_ephemeral(self):

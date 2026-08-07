@@ -138,6 +138,20 @@ test('stale code — BrokerHealthBadge failing hex values removed', async () => 
   );
 });
 
+test('stale code — avgClsWithDir must not apply pnl-* text color to avg column', async () => {
+  const { readFileSync } = await import('fs');
+  const src = readFileSync(new URL('../src/lib/PerformancePage.svelte', import.meta.url).pathname, 'utf8');
+  // Old code pushed 'cell-pos'/'cell-neg' onto the avg column via avgClsWithDir.
+  // This caused green text (#4ade80) on a green-tinted background (ltp-vs-avg-up),
+  // making avg values invisible. The fix strips pnl-* classes in avgClsWithDir.
+  expect(src, 'avgClsWithDir must not push cell-pos/neg/flat').not.toMatch(
+    /avgClsWithDir[\s\S]{0,300}cell-pos.*cell-neg/
+  );
+  expect(src, 'avgClsWithDir must filter pnl- classes').toMatch(
+    /avgClsWithDir[\s\S]{0,300}pnl-/
+  );
+});
+
 // ── 2. CSS-token contrast assertions (no server needed) ───────────────────
 //    Assert the hex values in app.css satisfy the WCAG ratio. The browser
 //    inherits these values, so this is the source of truth.

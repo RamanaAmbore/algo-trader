@@ -402,20 +402,13 @@
     return cls;
   };
 
-  // avgClsWithDir — like avgVsLtpCls but for the Avg column only.
-  // Adds cell-pos/cell-neg from the position/holding quantity so the
-  // Avg cell carries directional tint (long = green, short = red) in
-  // addition to the ltp-vs-avg heat. LTP column keeps avgVsLtpCls
-  // unchanged (no qty-direction class on the price cell).
+  // avgClsWithDir — Avg column styling: ltp-vs-avg bg tint only.
+  // pnl-* text-colour classes are stripped (green text on green bg = invisible).
+  // Row-level pos-long/pos-short already encodes long/short direction.
   const avgClsWithDir = (params) => {
     const base = avgVsLtpCls(params);
-    if (!params?.data || params.data._isTotal ||
-        params.data.tradingsymbol === 'TOTAL' || params.data.account === 'TOTAL') {
-      return base;
-    }
-    const qty = Number(params.data?.quantity);
-    const dirCls = qty > 0 ? 'cell-pos' : qty < 0 ? 'cell-neg' : 'cell-flat';
-    return Array.isArray(base) ? [...base, dirCls] : [base, dirCls].filter(Boolean);
+    if (Array.isArray(base)) return base.filter(c => !c.startsWith('pnl-'));
+    return base;
   };
 
   const defaultCol = { resizable: true, sortable: true, filter: true, suppressHeaderMenuButton: true, flex: 1, minWidth: 55 };
