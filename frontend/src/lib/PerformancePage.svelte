@@ -65,7 +65,6 @@
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import { page } from '$app/state';
-  import { goto } from '$app/navigation';
   import { priceFmt, pctFmt, aggCompact, aggFmtGrid, pctFmtGrid } from '$lib/format';
   import NavCard from '$lib/NavCard.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
@@ -211,9 +210,9 @@
 
   function switchTab(/** @type {string} */ id) {
     activeTab = id;
-    const url = new URL(page.url);
+    const url = new URL(window.location.href);
     url.searchParams.set('tab', id);
-    goto(url.pathname + url.search, { replaceState: true, noScroll: true });
+    history.replaceState(null, '', url.toString());
   }
 
   let lastRefresh = $state('');
@@ -1757,6 +1756,9 @@
        • faint champagne fill on hover for symmetry */
   .funds-nav-tabs {
     display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: nowrap;
   }
   .funds-nav-tabs :global(.algo-tab[aria-selected="true"]) {
     color: var(--card-active-row-text, #1a2744) !important;
