@@ -1,125 +1,76 @@
-# Plan: Real-time tickBus LTP flash + multi-broker holdings fix
+# Plan: Revert cold-boot Dhan exclusion in connections.py
 
 ## Context
 
-Two confirmed gaps from audit:
+The previous commit changed `_rebuild_from_yaml` to exclude Dhan/Groww accounts from
+`self.conn` during cold-boot, assuming `rebuild_from_db()` would always repopulate them.
+That assumption is wrong: if `rebuild_from_db()` fails (silently caught exception in
+`_rebuild_broker_connections`) or falls back to the YAML view (empty DB table), Dhan/Groww
+are permanently absent from `self.conn` and `@for_all_accounts` never iterates them.
 
-**Gap 1 — LTP flash is poll-driven (30 s lag) on PerformancePage and Derivatives**
-MarketPulse already wires LTP cells to `tickBus` (SSE-driven, fires per tick). Every other
-surface — PerformancePage Positions/Holdings ag-Grid + Derivatives Spot + CandidateLegRow
-spans — uses `createTickFlash` poll-diff (30 s cadence). LTP flash on those pages lags
-up to 30 s.
-
-**Gap 2 — Holdings total excludes Dhan/Groww during cold-boot window**
-`_build_kite_conn_map` (`connections.py:~1531`) wraps EVERY account as `KiteConnection`
-regardless of broker type. Until `rebuild_from_db` overwrites `conn`, Dhan account's
-`broker.holdings()` calls `KiteConnection.holdings()` with no valid token → throws →
-empty DataFrame. Dhan/Groww holdings silently zero out in the TOTAL until DB rebuild completes.
-Also: `holdings.py:471` error string hardcoded as "Broker (Kite) returned no holdings data"
-even when the failing account is Dhan.
+Before the commit: Dhan was in `self.conn` as a KiteConnection stub. When `rebuild_from_db()`
+overwrote it with a real DhanConnection, holdings showed correctly. When `rebuild_from_db()`
+fell back to YAML, the stub was still in the iteration (failing quietly but present).
+After the commit: if `rebuild_from_db()` falls back, Dhan is gone entirely — permanent
+zero holdings on the public performance page.
 
 ## Task
 
-**Flash**: Subscribe to `tickBus` on PerformancePage and Derivatives so LTP cells flash
-immediately on each SSE tick. P&L cells keep existing poll-diff — they aggregate multiple
-legs and cannot key to a single symbol.
-
-**Holdings**: Fix `_build_kite_conn_map` to call `_build_conn_for_row` (same as
-`rebuild_from_db`) so Dhan/Groww connections are correct from startup. Fix "Kite" error string.
+Revert the cold-boot filter at `connections.py:1542-1547`. Restore all accounts
+(including Dhan/Groww) to `self.conn` as `KiteConnection` stubs during cold-boot.
+`rebuild_from_db()` remains the authoritative path that overwrites stubs with real
+DhanConnection/GrowwConnection objects — that logic is unchanged and correct.
+Update the docstring to remove the now-incorrect claim.
 
 ## Agents
 
 - backend: skip
-- frontend: **Two surfaces — one agent pass.**
+- frontend: skip
+- broker: Revert `_rebuild_from_yaml` in `backend/brokers/connections.py`.
 
-  **Surface A — PerformancePage (`frontend/src/lib/PerformancePage.svelte`)**
-
-  Read the full `_seedFlash` function and LTP `cellClass` callback on `last_price` column
-  (search `_perfFlash`, `pnlClsFlash`). Also read MarketPulse.svelte lines 1530-1570 and
-  2155-2240 for the existing tickBus pattern (`_ltpFlashUp/Down` Sets, `_ltpFlashTimers`
-  Map, `onMount` subscribe, `onDestroy` unsub, `refreshCells` call).
-
-  Apply the same pattern:
-  1. Add `let _perfLtpFlashUp = $state(new Set()); let _perfLtpFlashDown = $state(new Set());`
-     and `const _perfLtpTimers = new Map();` alongside existing flash state.
-  2. In `onMount`, subscribe to `tickBus`. On each `{ sym, dir }` event, find all rows in
-     `rawPositions` / `rawHoldings` where `tradingsymbol.toUpperCase() === sym`. For each
-     match: add sym to the appropriate Set (clear opposite Set for that sym first), set a
-     300 ms timer to remove it, reassign the Sets (`= new Set(...)`) to trigger reactivity.
-     After updating, call `posGridApi?.refreshCells({ columns: ['last_price'] })` and
-     `holdGridApi?.refreshCells({ columns: ['last_price'] })`. Store unsub; call in `onDestroy`.
-  3. Update the LTP `cellClass` callback: check `_perfLtpFlashUp.has(sym)` → return
-     `'ltp-flash-up'`, check `_perfLtpFlashDown.has(sym)` → return `'ltp-flash-down'`, else
-     fall through to `_perfFlash.classOf`. `sym` = `params.data?.tradingsymbol?.toUpperCase()`.
-  4. Verify `posGridApi` / `holdGridApi` variable names via `onGridReady` in the file.
-
-  **Surface B — Derivatives (`frontend/src/routes/(algo)/admin/derivatives/+page.svelte`)**
-
-  Read lines 1025-1130 (flash + leg $effect + spot batchQuote $effect). Check how
-  `_underlyingQuotes`/`_batchQuotes` is keyed and what `candidates` (or equivalent) holds
-  per-leg rows. Check `symbolStore.svelte.js` lines 100-130 for `getSnapshot` export.
-
-  In `onMount`, add:
-  ```js
-  const _derivTickUnsub = tickBus.subscribe(({ sym }) => {
-    const root = sym.toUpperCase();
-    // 1. Spot LTP cell
-    if (root in _underlyingQuotes || _underlyingRoots?.has(root)) {
-      flash.update(`${root}:ltp`, getSnapshot(root)?.ltp ?? null);
-    }
-    // 2. CandidateLegRow LTP cells
-    for (const c of candidates) {
-      if ((c.symbol ?? '').toUpperCase() === root) {
-        const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
-        flash.update(`leg:${k}:ltp`, getSnapshot(root)?.ltp ?? null);
-      }
-    }
-  });
-  // onDestroy: _derivTickUnsub();
+  **Exact change** — replace lines 1542-1547:
+  ```python
+  # BEFORE (broken — excludes Dhan/Groww from cold-boot YAML view)
+  _KITE_BROKER_IDS = {"zerodha_kite", "kite", ""}
+  self.conn = {
+      account: KiteConnection(account, secrets)
+      for account, blob in accts.items()
+      if str(blob.get("broker") or "").lower() in _KITE_BROKER_IDS
+  }
   ```
-  Adapt variable names to match the file. No CSS changes — existing scoped `leg-ltp-up/down`
-  keyframes (0.22α/450ms) handle the visual; Spot LTP uses global `tf-up/tf-down`.
+  ```python
+  # AFTER (correct — all accounts in YAML view; rebuild_from_db() overwrites with real adapters)
+  self.conn = {
+      account: KiteConnection(account, secrets)
+      for account in accts.keys()
+  }
+  ```
+  Also update the docstring (lines 1526-1540) to remove the claim that Dhan/Groww are
+  intentionally excluded. The correct docstring: used as initial sync seed and fallback;
+  `rebuild_from_db()` overwrites with the correct adapter per broker type.
 
-  For every file you change, you MUST write or update at least one test covering the changed
-  behaviour. Frontend changes → add/update a Playwright spec in `frontend/e2e/`.
+  Update `backend/tests/broker/test_cold_boot_broker_type.py` to match:
+  - `test_dhan_account_absent_from_conn` → flip assertion: Dhan account IS in `conn` at
+    cold-boot (as a KiteConnection stub)
+  - `test_groww_account_absent_from_conn` → same flip
+  - `test_only_kite_accounts_in_conn` → remove or flip: cold-boot conn contains all accounts
 
-- broker: Fix `connections.py` cold-boot and `holdings.py` error string.
-
-  **`backend/brokers/connections.py`**: Read `_build_kite_conn_map` (~line 1531) and
-  `_build_conn_for_row` (used by `rebuild_from_db`). Replace the per-account
-  `KiteConnection(...)` call with `_build_conn_for_row(row)` so Dhan/Groww get the correct
-  adapter from startup. If `_broker_id_map` is not yet seeded when this runs, also seed it
-  from the YAML secrets (check `_load_secrets` or equivalent for Dhan/Groww account entries).
-
-  **`backend/api/routes/holdings.py:471`** (or `broker_apis.py` if the string lives there):
-  Change `"Broker (Kite) returned no holdings data"` → `"Broker returned no holdings data"`.
-
-  Add a pytest test in `backend/tests/broker/` verifying that the cold-boot path produces
-  the correct connection type for a Dhan-typed account (not `KiteConnection`).
+  Keep the `_broker_id_map`, `_priority_map`, `_hist_enabled_map` tests — those are still
+  correct. Keep `TestHoldingsErrorString` — that fix is still valid.
 
 - doc: skip
-- backend-test: skip (broker agent owns its tests)
-- playwright: Write `frontend/e2e/ltp_flash_realtime.spec.js`:
-  1. Stale-code: `PerformancePage.svelte` contains `tickBus.subscribe` and `_perfLtpFlashUp`
-  2. Stale-code: derivatives `+page.svelte` contains `tickBus.subscribe` and
-     `flash.update.*ltp` inside the subscribe block
-  3. Regression guard: `PerformancePage.svelte` still contains `_perfFlash.classOf` or
-     `pnlClsFlash` (poll-diff P&L flash not removed)
-  4. Regression guard: `CandidateLegRow.svelte` still contains `leg-ltp-up` keyframe
-  5. Live DOM: navigate to `dev.ramboq.com/admin/perf`, login via `loginAsAdmin(page)`,
-     verify ag-Grid rows render (`.ag-row` count > 0), skip gracefully if 0.
+- backend-test: skip (broker agent updates the affected tests)
+- playwright: skip
 
 ## Tests
 - pytest: yes
-- svelte-check: yes
-- playwright: yes
+- svelte-check: no
+- playwright: no
 
 ## Commit message
-feat(flash+holdings): real-time tickBus LTP flash on PerformancePage + Derivatives; fix Dhan/Groww cold-boot holdings gap
+fix(broker): revert cold-boot Dhan exclusion — restore KiteConnection stubs for all accounts in YAML view
 
 ## Done when
-- PerformancePage LTP column flashes `ltp-flash-up/down` on each SSE tick
-- Derivatives Spot LTP + CandidateLegRow LTP call `flash.update()` on each tickBus event
-- `_build_kite_conn_map` produces correct connection type for Dhan/Groww accounts from startup
-- `holdings.py` error string no longer says "Kite"
-- svelte-check 0 errors, pytest passing, Playwright stale-code guards passing
+- `_rebuild_from_yaml` includes all accounts in `self.conn` regardless of broker type
+- Existing `test_cold_boot_broker_type.py` assertions updated to match
+- pytest passing
