@@ -370,6 +370,50 @@ their prior-session state, providing an accurate real-time view without stale en
 
 ---
 
+## 7.4 Holdings Snapshot Day Change Percentage Formula
+
+**File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`
+
+When a daily holdings snapshot is retrieved, the `day_change_percentage` metric is 
+computed from a snapshot row fetched from the `daily_book` table:
+
+```python
+day_pnl = (ltp - previous_close) * quantity
+day_change_percentage = (day_pnl / (previous_close * quantity)) * 100
+```
+
+The denominator uses **`previous_close`** (the prior session's close price from 
+`daily_book`), NOT the current LTP.
+
+### Fallback when `previous_close` is zero or missing
+
+When a holding was purchased same-day (no prior session close exists) or when the 
+broker returns zero for `previous_close` (cold-boot), the formula falls back to 
+`avg_cost` (average purchase price):
+
+```python
+day_change_percentage = (day_pnl / (avg_cost * quantity)) * 100
+```
+
+### Rationale
+
+Using `previous_close` as the denominator gives an accurate intraday P&L percentage 
+relative to the session's opening state. Using LTP would distort the metric:
+- **Down-moves**: `(negative_pnl / negative_ltp) × 100` inflates the percentage 
+  magnitude.
+- **Up-moves**: `(positive_pnl / positive_ltp) × 100` understates the percentage gain.
+
+The `avg_cost` fallback ensures same-day purchases show a realistic cost-basis 
+percentage rather than crashing on zero denominator.
+
+### Source data
+
+SQL query in `_build_holding_row_from_snapshot()` now selects `db.previous_close` 
+from the `daily_book` table (commit 13ec7c18), ensuring the correct price is 
+available for every holding row.
+
+---
+
 ## 8. Adapter Implementations
 
 ### KiteBroker
@@ -669,6 +713,8 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I23 — Snapshot orphan deletion on broker response**: After each per-account positions UPSERT in `snapshot_daily_book()`, `_delete_orphan_positions()` removes stale `daily_book` rows (kind='positions') whose symbol is absent from the current broker response. Broker response is marked with sentinel: `positions = None` (call failed, skip cleanup) vs `positions = []` or `[...]` (call succeeded, cleanup proceeds). Kite removes settled/squared-off positions from `broker.positions()` after settlement; orphan deletion prevents closed positions from persisting in the UI all night. Cleanup is idempotent and safe to re-run.
 
+**I24 — Holdings day_change_percentage uses previous_close denominator**: Holdings snapshot metric `day_change_percentage` is computed as `(day_pnl / (previous_close × qty)) × 100`, where `previous_close` is fetched from `daily_book`. Fallback to `avg_cost` when `previous_close` is zero/missing (same-day buys, cold-boot). Using LTP as denominator inflates/understates percentage on down/up moves respectively. SSOT: `_build_holding_row_from_snapshot()` in `backend/api/routes/holdings.py`.
+
 ---
 
 ## 12. Test Coverage Map
@@ -933,3 +979,4 @@ designed.
 | 2026-07-27 | v1.8 Snapshot orphan deletion (commit 47c49e20): Added §7.3 Daily Snapshot Orphan Cleanup documenting `_delete_orphan_positions()` async helper called after each per-account positions UPSERT in `snapshot_daily_book()`. Removes stale `daily_book` (kind='positions') rows for symbols absent from broker response. Broker response uses sentinel pattern: `positions=None` (call failed, skip cleanup) vs `positions=[]` or `[...]` (call succeeded, proceed). Prevents closed positions from persisting in UI after settlement. Added I23 invariant: orphan deletion enforces SSOT for settled positions; cleanup is fail-open and idempotent. |
 | 2026-07-27 | v1.9 Expiry restart fix + prior-day orphan cleanup (commits cbbe0f23, 21d1656a): Updated §9.1 Background Task Supervisor with expiry task restart-blindness fix (module-level `_expiry_last_run_date` sentinel ensures immediate fire on service restart > 09:20 IST; not run today yet); expiry engine re-scan loop (every 30 min until 15:25 IST, catches newly-ITM positions); NSE NIFTY quote key fix (NSE:NIFTY 50 not NSE:NIFTY). Updated §7.3 to add `_delete_prior_orphan_positions()` pass removing settled options from prior-day snapshots (7-day scope). Updated I14 invariant to note off-hours `_positions_snapshot()` query includes `AND qty != 0` guard (commit 21d1656a) to exclude flat/expired positions. Expiry-day auto-close agents changed from inactive → active status. |
 | 2026-07-28 | v1.10 Snapshot intraday-closed position inclusion (commits cef00739, 5ac11f56): Updated §7.3 Daily Snapshot Orphan Cleanup and I14 invariant — off-hours `_positions_snapshot()` query refined from `AND qty != 0` (cef00739) to `AND (qty != 0 OR date = :today_ist)` (5ac11f56). Positions closed intraday (qty=0, captured today IST) now appear in off-hours snapshot with 'closed' chip + opacity:0.45 decoration in derivatives legs grid. Prior-session closed positions (qty=0, date≠today) excluded. Next morning before market opens, yesterday's closed legs absent, only carried-overnight open positions visible, matching broker book when gate opens. Frontend `buildCleanLegs()` filters qty===0 rows from payoff POST (strategy analytics unchanged). Legs grid shows closed legs for intraday history. |
+| 2026-08-06 | v1.11 Holdings snapshot day_change_percentage formula fix (commit 13ec7c18): Added §7.4 Holdings Snapshot Day Change Percentage Formula documenting the corrected formula: `day_pnl / (previous_close × qty) × 100` (uses `previous_close` denominator, not LTP). Fallback to `avg_cost` when `previous_close` is zero/missing. Added I24 invariant. SQL now selects `db.previous_close` from daily_book; fixes distortion where using LTP inflated negatives and understated positives. |
