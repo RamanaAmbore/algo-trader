@@ -469,7 +469,7 @@ def _fetch() -> HoldingsResponse:
     # alone is a legitimate "no holdings" state — not an outage.
     if _is_full_outage(per_acct):
         raise Exception(
-            "Broker (Kite) returned no holdings data — upstream Bad Gateway / outage"
+            "Broker returned no holdings data — upstream Bad Gateway / outage"
         )
     stale_since_by_acct = _stale_since_map(per_acct)
     raw = _prepare_raw_frame(per_acct)

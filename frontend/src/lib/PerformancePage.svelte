@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
+  import { tickBus } from '$lib/data/symbolStore.svelte.js';
   // ag-Grid is lazy-loaded in onMount so it doesn't bloat the initial bundle
   // for public /performance visitors. createGrid is populated after the
   // dynamic import resolves; makeGrid() guards on _agGridReady.
@@ -332,6 +333,15 @@
   // global .tf-up/.tf-down in app.css — lower than LTP flash (0.35).
   const _perfFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
 
+  // Tick-bus directional flash sets — real-time LTP direction (up/down)
+  // from SSE ticks, bypassing the 30 s poll-diff lag. Fed by tickBus.subscribe
+  // in onMount; per-sym timers prevent one symbol's 300ms window clearing another.
+  let _perfLtpFlashUp   = $state(/** @type {Set<string>} */ (new Set()));
+  let _perfLtpFlashDown = $state(/** @type {Set<string>} */ (new Set()));
+  const _perfLtpTimers  = /** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map());
+  /** @type {(() => void) | null} */
+  let _perfTickUnsub = null;
+
   // Stable row key: account|tradingsymbol. Matches updateGrid's key() fn.
   function _perfFlashKey(data) {
     if (!data) return null;
@@ -353,7 +363,11 @@
       if (params.data?.tradingsymbol === 'TOTAL' || params.data?.account === 'TOTAL') return base;
       const k = _perfFlashKey(params.data);
       if (!k) return base;
-      // LTP cascade: if last_price changed this cycle, propagate its
+      // Tick-bus priority: real-time SSE direction propagates to P&L cascade columns.
+      const sym = (params.data?.tradingsymbol ?? '').toUpperCase();
+      if (sym && _perfLtpFlashUp.has(sym))   { base.push('ltp-flash-up');   return base; }
+      if (sym && _perfLtpFlashDown.has(sym)) { base.push('ltp-flash-down'); return base; }
+      // LTP cascade: if last_price changed this poll cycle, propagate its
       // direction to derived columns (source-based, not per-cell-diff).
       const ltpCls = _perfFlash.classOf(`${k}:last_price`);
       if (ltpCls) { base.push(ltpCls === 'tf-up' ? 'ltp-flash-up' : 'ltp-flash-down'); return base; }
@@ -380,10 +394,20 @@
     if (ltp == null) return 'ag-right-aligned-cell';
     const cls = ['ag-right-aligned-cell'];
     // LTP flash on the LTP cell itself.
-    const k = _perfFlashKey(params.data);
-    if (k) {
-      const ltpCls = _perfFlash.classOf(`${k}:last_price`);
-      if (ltpCls) cls.push(ltpCls === 'tf-up' ? 'ltp-flash-up' : 'ltp-flash-down');
+    // Tick-bus priority: real-time SSE direction takes precedence over poll-diff.
+    // Falls through to heat classes (ltp-vs-avg / ltp-vs-prev) so both animate
+    // simultaneously.
+    const sym = (params.data?.tradingsymbol ?? '').toUpperCase();
+    if (sym && _perfLtpFlashUp.has(sym)) {
+      cls.push('ltp-flash-up');
+    } else if (sym && _perfLtpFlashDown.has(sym)) {
+      cls.push('ltp-flash-down');
+    } else {
+      const k = _perfFlashKey(params.data);
+      if (k) {
+        const ltpCls = _perfFlash.classOf(`${k}:last_price`);
+        if (ltpCls) cls.push(ltpCls === 'tf-up' ? 'ltp-flash-up' : 'ltp-flash-down');
+      }
     }
     // Two-axis heat: bg vs avg_cost ("am I up overall?"), left-border
     // vs prev_close ("is it moving my way today?"). Operator scans
@@ -1166,6 +1190,35 @@
         loadAll();
       }
     });
+
+    // Tick-bus subscription — drives _perfLtpFlashUp/Down from real SSE ticks
+    // (sub-250ms per sym) instead of the 30 s poll-diffed _perfFlash.
+    // Per-sym clearance timers prevent one symbol's 300ms window wiping another.
+    _perfTickUnsub = tickBus.subscribe(({ sym, dir }) => {
+      const isPos  = (rawPositions  ?? []).some(r => (r.tradingsymbol ?? '').toUpperCase() === sym);
+      const isHold = (rawHoldings   ?? []).some(r => (r.tradingsymbol ?? '').toUpperCase() === sym);
+      if (!isPos && !isHold) return;
+      if (dir === 'up') {
+        _perfLtpFlashUp   = new Set([..._perfLtpFlashUp, sym]);
+        _perfLtpFlashDown = new Set([..._perfLtpFlashDown].filter(s => s !== sym));
+      } else if (dir === 'down') {
+        _perfLtpFlashDown = new Set([..._perfLtpFlashDown, sym]);
+        _perfLtpFlashUp   = new Set([..._perfLtpFlashUp].filter(s => s !== sym));
+      }
+      // Re-arm clearance timer for this sym.
+      const existing = _perfLtpTimers.get(sym);
+      if (existing) clearTimeout(existing);
+      _perfLtpTimers.set(sym, setTimeout(() => {
+        _perfLtpTimers.delete(sym);
+        _perfLtpFlashUp   = new Set([..._perfLtpFlashUp].filter(s => s !== sym));
+        _perfLtpFlashDown = new Set([..._perfLtpFlashDown].filter(s => s !== sym));
+        try { positionsAllGrid?.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
+        try { holdingsAllGrid?.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
+      }, 300));
+      // Trigger cell repaint immediately so the flash class appears without waiting.
+      try { positionsAllGrid?.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
+      try { holdingsAllGrid?.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
+    });
   });
 
   // book_changed bus — also covers cancel / reject paths where
@@ -1231,6 +1284,9 @@
   onDestroy(() => {
     _unsubPerfOrder();
     unsub?.();
+    _perfTickUnsub?.();
+    _perfLtpTimers.forEach(t => clearTimeout(t));
+    _perfLtpTimers.clear();
     if (_fillToastTimer) { clearTimeout(_fillToastTimer); _fillToastTimer = null; }
     _perfFlash.dispose();
     [fundsGrid, navGrid, holdingsSummaryGrid, holdingsAllGrid,

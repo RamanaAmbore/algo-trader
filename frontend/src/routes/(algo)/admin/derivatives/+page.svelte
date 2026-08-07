@@ -25,7 +25,7 @@
   import { positionsStore, holdingsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
   import { getDraftPositions } from '$lib/data/draftPositions.svelte.js';
-  import { getSnapshot, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import Select        from '$lib/Select.svelte';
@@ -1757,6 +1757,8 @@
   let _tickThrottleTimer = null;
   /** @type {(() => void) | null} */
   let _tickThrottleUnsub = null;
+  /** @type {(() => void) | null} */
+  let _derivTickUnsub = null;
   onMount(() => {
     _tickThrottleUnsub = symbolTickCount.subscribe(() => {
       if (_tickThrottleTimer) return;
@@ -1765,10 +1767,35 @@
         _tickThrottleTimer = null;
       }, 250);
     });
+
+    // Tick-bus subscription — re-arms flash.update for Spot LTP and per-leg
+    // LTP cells on every SSE tick, eliminating the 30 s poll-diff lag.
+    // The underlying-quotes $effect already calls flash.update(`${root}:ltp`, q?.ltp)
+    // on every batch-quote poll; this runs the same call immediately on each SSE tick
+    // so the Spot cell flashes within 250 ms of the real market move.
+    _derivTickUnsub = tickBus.subscribe(({ sym }) => {
+      const root = sym.toUpperCase();
+
+      // 1. Spot (by-underlying) LTP cell — re-arm if this sym is a tracked underlying.
+      if (root in _underlyingQuotes) {
+        const snap = getSnapshot(root);
+        if (snap?.ltp != null) flash.update(`${root}:ltp`, Number(snap.ltp));
+      }
+
+      // 2. CandidateLegRow LTP cells — re-arm for each leg whose symbol matches.
+      for (const c of candidatePositions) {
+        if ((c.symbol ?? '').toUpperCase() === root) {
+          const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
+          const snap = getSnapshot(root);
+          if (snap?.ltp != null) flash.update(`leg:${k}:ltp`, Number(snap.ltp));
+        }
+      }
+    });
   });
   onDestroy(() => {
     if (_tickThrottleTimer) clearTimeout(_tickThrottleTimer);
     _tickThrottleUnsub?.();
+    _derivTickUnsub?.();
   });
 
   // Sum of day_change_val across enabled candidates. Surfaced as the

@@ -1523,14 +1523,27 @@ class Connections(SingletonBase):
             self._singleton_initialized = True
 
     def _rebuild_from_yaml(self) -> None:
-        """Build the per-account KiteConnection map from `secrets.yaml`.
+        """Build the per-account connection map from `secrets.yaml`.
         Used as the initial sync seed AND as the fallback when the DB
         table is empty. Also seeds `_broker_id_map` from the YAML
-        `broker:` key (defaults to "zerodha_kite")."""
+        `broker:` key (defaults to "zerodha_kite").
+
+        Only Kite/zerodha_kite-typed accounts get a KiteConnection here.
+        Dhan and Groww accounts are intentionally left out of self.conn
+        because their constructors require credentials (client_id, PIN,
+        TOTP seed for Dhan; api_key + totp_seed for Groww) that are not
+        present in the kite_accounts YAML blob format.  rebuild_from_db()
+        runs immediately after __init__ on app startup and populates
+        self.conn for those accounts from the DB rows where all required
+        fields are stored.  The sub-second window where Dhan/Groww are
+        absent from self.conn is harmless — no data requests arrive
+        before the async startup completes."""
         accts = secrets.get("kite_accounts") or {}
+        _KITE_BROKER_IDS = {"zerodha_kite", "kite", ""}
         self.conn = {
             account: KiteConnection(account, secrets)
-            for account in accts.keys()
+            for account, blob in accts.items()
+            if str(blob.get("broker") or "").lower() in _KITE_BROKER_IDS
         }
         # Seed broker_id map from YAML so get_broker() works before
         # rebuild_from_db() runs (e.g. during module-level imports).

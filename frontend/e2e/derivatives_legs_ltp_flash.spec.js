@@ -6,39 +6,45 @@ import { loginAsAdmin } from './fixtures/auth.js';
 test.describe('Derivatives Legs — LTP Flash', () => {
   test.setTimeout(60000);
 
-  test('stale-code guard: verify P&L cells have flash wiring (regression check)', async () => {
-    // SSOT: verify that P&L cells in CandidateLegRow.svelte still have the flash
-    // class pattern wired. This ensures the LTP flash refactor doesn't accidentally
-    // remove existing P&L cell flash wiring. Test runs without server.
+  test('stale-code guard: LTP and P&L cells have flash wiring in CandidateLegRow.svelte', async () => {
+    // SSOT: verify that both LTP and P&L cells in CandidateLegRow.svelte have
+    // the flash class pattern wired for tick flash animations.
+    // Test runs without server — pure source code inspection.
     const componentPath = path.join(
       process.cwd(),
       'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte'
     );
     const content = fs.readFileSync(componentPath, 'utf-8');
 
-    // Regression guard: ensure P&L cells still have the flash wiring (verify
-    // they weren't accidentally removed during the LTP refactor).
+    // Primary assertion: LTP cell must have flash wiring
+    // Pattern: flash.classOf(`${_legFlashKey}:ltp`) on the LTP span
+    const ltpFlashPattern = /flash\.classOf\([`'"`].*\$\{_legFlashKey\}:ltp[`'"`]\)/;
+    expect(
+      ltpFlashPattern.test(content),
+      'LTP span must have flash.classOf(`${_legFlashKey}:ltp`) for tick flash'
+    ).toBe(true);
+
+    // Regression guard: ensure P&L cells still have the flash wiring
+    // Patterns: flash.classOf on pnl, day, and exp P&L cells
     const pnlFlashPattern = /flash\.classOf\([`'"`].*\$\{_legFlashKey\}:(pnl|day|exp)[`'"`]\)/;
     expect(
       pnlFlashPattern.test(content),
-      'P&L cells must have flash.classOf wiring intact to prevent regression'
+      'P&L cells (pnl, day, exp) must have flash.classOf wiring intact'
     ).toBe(true);
 
-    // After the LTP flash change is applied, also verify LTP cell has flash wiring.
-    // The pattern should be: flash.classOf(`${_legFlashKey}:ltp`)
-    // If this pattern exists, the refactor is complete.
-    const ltpFlashPattern = /flash\.classOf\([`'"`].*\$\{_legFlashKey\}:ltp[`'"`]\)/;
-    const ltpFlashWired = ltpFlashPattern.test(content);
+    // Verify the LTP span has both tf-cell class (for flash registration)
+    // and the dynamic flash class
+    const ltpSpanWithTfCell = /span class="num tf-cell.*?flash\.classOf\([`'"`].*\$\{_legFlashKey\}:ltp[`'"`]\)/s;
+    expect(
+      ltpSpanWithTfCell.test(content),
+      'LTP span must have both tf-cell class and flash.classOf pattern'
+    ).toBe(true);
 
-    // Log status for test review (helpful when reviewing the change)
-    console.log(`LTP flash wiring status: ${ltpFlashWired ? 'APPLIED' : 'PENDING'}`);
-
-    // If LTP flash is already wired, verify it's on a numeric span element
-    if (ltpFlashWired) {
-      // Find the context: should be on a span with class "num" showing LTP data
-      const ltpSpanContext = /\{.*?flash\.classOf\([`'"`].*\$\{_legFlashKey\}:ltp[`'"`]\).*?\}/;
-      expect(ltpSpanContext.test(content)).toBe(true);
-    }
+    // Verify the component exports the flash prop (passed from parent)
+    expect(
+      /flash.*?:.*?any/.test(content),
+      'Component must accept flash prop for tick flash instance'
+    ).toBe(true);
   });
 
   test.skip('live DOM: LTP cell has flash-ready classes when leg rows render', async ({ page }) => {
