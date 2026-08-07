@@ -105,8 +105,8 @@ export function baseDayPnlForPosition(p) {
   const dcv   = Number(p?.day_change_val ?? 0);
   const close = Number(p?.close_price ?? p?.prev_close ?? 0);
   const avg   = Number(p?.average_price ?? p?.avg_cost ?? 0);
-  if (oq > 0 && dcv !== 0) return dcv;
-  if (oq > 0 && dcv === 0) {
+  if (oq !== 0 && dcv !== 0) return dcv;
+  if (oq !== 0 && dcv === 0) {
     // Case 4: close_price is 0 (broker hasn't populated prev_close yet for this
     // symbol). Backend _positions_snapshot() sets close_price from prev_ltp
     // (yesterday's settlement via daily_book) when available, falling back to

@@ -120,11 +120,21 @@ def _fetch_margins_direct() -> pd.DataFrame:
 
 
 def _bg_holdings_add_pct(frame: "pd.DataFrame") -> None:
-    """Mutate *frame* in-place: add pnl_percentage and day_change_percentage columns."""
+    """Mutate *frame* in-place: add pnl_percentage and day_change_percentage columns.
+
+    day_change_percentage denominator is the opening value (cur_val − day_change_val),
+    i.e. yesterday's closing value.  This matches _compute_summary_df in holdings.py
+    which uses ``prev = cur - dcv`` as the denominator for day_change_percentage.
+    Using cur_val as denominator would understate the move for positive days.
+    """
     if 'pnl' in frame.columns and 'inv_val' in frame.columns:
         frame['pnl_percentage'] = frame['pnl'] / frame['inv_val'] * 100
     if 'day_change_val' in frame.columns and 'cur_val' in frame.columns:
-        frame['day_change_percentage'] = frame['day_change_val'] / frame['cur_val'] * 100
+        open_val = frame['cur_val'] - frame['day_change_val']
+        # Guard against zero denominator (all-zero or new position row).
+        frame['day_change_percentage'] = frame['day_change_val'].where(
+            open_val == 0, frame['day_change_val'] / open_val.where(open_val != 0, 1) * 100
+        ).where(open_val != 0, 0)
 
 
 def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -152,10 +162,24 @@ def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
 def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.brokers import broker_apis
     from backend.api.algo.pnl_math import apply_day_change_backstop
+    from backend.api.routes.positions import _override_stale_ltp_from_ticker
     raw = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
     if raw.empty or 'account' not in raw.columns:
         empty = pd.DataFrame(columns=['account', 'pnl', 'day_change_val'])
         return raw, empty
+    # Mirror the ordering of _patch_raw_positions in positions.py:
+    #   1. _override_stale_ltp_from_ticker — patch last_price + day_change_val
+    #      from the live KiteTicker tick_map for rows where Kite's REST lags.
+    #      (Sync function — safe to call from a ThreadPoolExecutor worker.)
+    #   2. apply_day_change_backstop — rescue Case 1 + Case 3 where Kite
+    #      omits day_change_val for new / fully-closed positions.
+    # NOTE: _override_stale_close_from_snapshot is async (opens async_session)
+    # and cannot be called from this sync thread-pool worker.  The background
+    # task's NavStrip P value does NOT get the stale-close override; that
+    # override only applies to the /api/positions route which runs in the
+    # async event loop.  This is an accepted limitation — the fix would
+    # require refactoring _fetch_positions_direct to be async.
+    _override_stale_ltp_from_ticker(raw)
     # Apply the shared Case 1 + Case 3 Day P&L backstop so this task's
     # summary agrees with the /api/positions route (both go through
     # `apply_day_change_backstop`). Without this, the NavStrip P "today"

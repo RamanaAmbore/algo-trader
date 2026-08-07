@@ -162,12 +162,19 @@ def resolve_snapshot_day_pct(
     qty_i: int,
     inv_val: float,
     extras: dict,
+    close_price_f: float | None = None,
 ) -> float:
     """Return the effective day_change_percentage for a snapshot row.
 
     Prefers ``snapshot_extras.day_change_pct`` when the column was NULL
     (same condition as ``resolve_snapshot_day_pnl``).  Falls back to
     computed value when extras don't have the key.
+
+    ``close_price_f`` — the prior-session settlement price to use as the
+    denominator for day-change percentage.  When provided and > 0, used
+    instead of ``ltp_f`` so the denominator is the correct opening value
+    (not today's LTP, which would understate the move).  Falls back to
+    ``ltp_f`` when close_price_f is None or zero (same-day buys / cold-boot).
     """
     ex_pct = extras.get("day_change_pct") if day_pnl_col is None else None
     if ex_pct is not None:
@@ -175,7 +182,14 @@ def resolve_snapshot_day_pct(
             return float(ex_pct)
         except (TypeError, ValueError):
             pass
-    close_notional = abs(ltp_f * qty_i)
+    # Use the prior-session close as denominator when available (prevents
+    # understating the move when LTP has moved significantly from close).
+    denom_price = (
+        close_price_f
+        if close_price_f is not None and close_price_f > 0
+        else ltp_f
+    )
+    close_notional = abs(denom_price * qty_i)
     if close_notional:
         return day_pnl_f / close_notional * 100.0
     return day_pnl_f / inv_val * 100.0 if inv_val else 0.0
@@ -194,6 +208,7 @@ def build_snapshot_position_row(
     *,
     previous_close: float | None = None,
     prev_settlement_pnl: float | None = None,
+    product: str = "NRML",
 ) -> PositionRow:
     """Construct a PositionRow from raw daily_book snapshot columns.
 
@@ -212,6 +227,10 @@ def build_snapshot_position_row(
     the frontend's ``baseDayPnlForPosition`` Branch A fires: day-P&L =
     total_pnl - prev_settlement_pnl (authoritative). When None, Branch B
     (fallback) computes: day-P&L = total_pnl - oq×(close_price - avg_price).
+
+    ``product`` — the Kite product type (NRML / MIS / CNC). Extracted from
+    ``payload_json.get("product", "NRML")`` at the call site. Defaults to
+    "NRML" so existing callers without payload_json access are unaffected.
     """
     avg_cost_f  = float(avg_cost)  if avg_cost  is not None else 0.0
     ltp_f       = float(ltp)       if ltp       is not None else 0.0
@@ -223,9 +242,10 @@ def build_snapshot_position_row(
 
     inv_val = abs(avg_cost_f * qty_i)
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-    day_pct = resolve_snapshot_day_pct(day_pnl, day_pnl_f, ltp_f, qty_i, inv_val, extras)
 
     # Use the frozen prior-session settlement as close_price when available.
+    # Must be computed BEFORE resolve_snapshot_day_pct so the correct
+    # denominator (prior-session close × qty, not LTP × qty) is used.
     # Without this, close_price = LTP and baseDayPnlForPosition computes
     # total_pnl - oq×(ltp-ltp) = total_pnl - 0 which collapses correctly
     # only for new positions; for overnight positions the day-P&L becomes 0.
@@ -235,11 +255,16 @@ def build_snapshot_position_row(
         else ltp_f
     )
 
+    day_pct = resolve_snapshot_day_pct(
+        day_pnl, day_pnl_f, ltp_f, qty_i, inv_val, extras,
+        close_price_f=close_price_f,
+    )
+
     return PositionRow(
         account=str(account),
         tradingsymbol=str(symbol),
         exchange=str(exchange or ""),
-        product="NRML",
+        product=product,
         quantity=qty_i,
         average_price=avg_cost_f,
         close_price=close_price_f,

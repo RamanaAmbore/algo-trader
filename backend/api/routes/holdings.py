@@ -109,6 +109,11 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
         day_pnl_f / inv_val * 100.0 if inv_val else 0.0
     )
+    # Use yesterday's close as close_price (same pattern as
+    # build_snapshot_position_row in positions_helpers.py lines 232-236).
+    # Fallback to ltp_f when previous_close is zero/missing (same-day
+    # buys / cold-boot where no prior-session close exists).
+    close_price_f = previous_close_f if previous_close_f > 0 else ltp_f
     row = HoldingRow(
         account=str(account),
         tradingsymbol=str(symbol),
@@ -116,7 +121,7 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
         quantity=qty_i,
         opening_quantity=qty_i,
         average_price=avg_cost_f,
-        close_price=ltp_f,
+        close_price=close_price_f,
         last_price=ltp_f,
         inv_val=inv_val,
         cur_val=cur_val,
@@ -553,9 +558,13 @@ class HoldingsController(Controller):
             async def _snapshot_fn() -> HoldingsResponse:
                 snap = await _holdings_snapshot()
                 if snap is None:
+                    # as_of=None signals "no snapshot yet" so the gate at
+                    # line ~604 does NOT short-circuit on first deploy when
+                    # the DB is empty.  The gate only short-circuits when
+                    # as_of is truthy (a genuine persisted snapshot exists).
                     return HoldingsResponse(rows=[], summary=[],
                                             refreshed_at=timestamp_display(),
-                                            as_of=timestamp_display())
+                                            as_of=None)
                 return snap
 
             async def _broker_fn() -> HoldingsResponse:

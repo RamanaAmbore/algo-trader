@@ -563,13 +563,11 @@ def _record_lkg_frame(kind: str, account: str, df: "pd.DataFrame") -> None:
     """Stash a shallow copy of `df` as the last-known-good frame for
     (kind, account). Called from every successful `_fetch_*_local`.
 
-    Only records non-empty frames — an empty successful fetch (legitimate
-    "no positions" state) does not overwrite a prior LKG copy. This means
-    an account that had positions on Monday, exited them Tuesday, will
-    keep serving Monday's frame on Wednesday if it goes breaker-open —
-    which is wrong. Guard: only overwrite on non-empty; empty successful
-    fetches poison the cache to an empty frame via the timestamp so the
-    stale-substitute path returns an empty frame with the fresh timestamp.
+    Stores whatever frame is given, including empty frames. An empty
+    successful fetch (account has legitimately exited all positions)
+    correctly overwrites any prior LKG copy so that the stale-substitute
+    path returns an empty frame (no phantom positions) rather than a
+    stale prior-session frame.
     """
     if not account or not kind:
         return
@@ -1421,9 +1419,10 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
 
     df_holdings = _enrich_holdings(df_holdings)
     # Stash a shallow copy for the stale-substitute path when this
-    # account's breaker opens on a future cycle. Non-empty only —
-    # legitimate "no holdings" returns don't overwrite a prior LKG.
-    if account and not df_holdings.empty:
+    # account's breaker opens on a future cycle. Empty frames are also
+    # stored so a "no holdings" state overwrites a prior LKG and prevents
+    # phantom holdings from being served by _stale_substitute_frame.
+    if account:
         _record_lkg_frame("holdings", account, df_holdings)
     return df_holdings
 
@@ -1694,6 +1693,7 @@ def _maybe_log_kite_mcx_diag(df: "pd.DataFrame") -> None:
     lot-units or absolute ₹.  Idempotent — sets _KITE_VALUE_UNIT_LOGGED
     so subsequent calls are a cheap boolean check.
     """
+    global _KITE_VALUE_UNIT_LOGGED
     if _KITE_VALUE_UNIT_LOGGED:
         return
     if df.empty or 'multiplier' not in df.columns:
@@ -1718,7 +1718,7 @@ def _maybe_log_kite_mcx_diag(df: "pd.DataFrame") -> None:
         f"if≈{_expected_lot_units:.2f} → LOT-UNITS (5b995ccb correct), "
         f"if≈{_expected_abs_rupees:.2f} → ABSOLUTE ₹ (5b995ccb overcounts {_mult_v}×)"
     )
-    globals()['_KITE_VALUE_UNIT_LOGGED'] = True
+    _KITE_VALUE_UNIT_LOGGED = True
 
 
 def _apply_mcx_multiplier(df: "pd.DataFrame") -> None:
@@ -1794,9 +1794,10 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
 
     df_positions = _enrich_positions(df_positions)
     # Stash a shallow copy for the stale-substitute path when this
-    # account's breaker opens on a future cycle. Non-empty only —
-    # legitimate "no positions" returns don't overwrite a prior LKG.
-    if account and not df_positions.empty:
+    # account's breaker opens on a future cycle. Empty frames are also
+    # stored so a "no positions" state overwrites a prior LKG and prevents
+    # phantom positions from being served by _stale_substitute_frame.
+    if account:
         _record_lkg_frame("positions", account, df_positions)
     return df_positions
 
@@ -1885,22 +1886,6 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
             .then(_pnl_calc)
             .otherwise(pl.lit(0.0))
         )
-
-    # ── day_change_percentage ─────────────────────────────────────────
-    _prev_val = (_cls * _qty).abs()
-    _dcp_expr = (
-        pl.when(_prev_val != 0.0)
-        .then(pl.col("day_change_val") / _prev_val * 100.0)
-        .otherwise(pl.lit(0.0))
-    )
-
-    # ── pnl_percentage ────────────────────────────────────────────────
-    _cost_basis = (_avg * _qty).abs()
-    _pnl_pct_expr = (
-        pl.when(_cost_basis != 0.0)
-        .then(pl.col("pnl") / _cost_basis * 100.0)
-        .otherwise(pl.lit(0.0))
-    )
 
     # First pass: day_change, pnl, day_change_val (independent of each other).
     lf = lf.with_columns([
@@ -2263,8 +2248,16 @@ def _bmd_recompute_derived(df, patched_indices: set) -> None:
     _dcv_p = (_ltp_p - _cls_p) * _qty_p
     _valid_p = (_ltp_p > 0) & (_cls_p > 0)
     if 'day_change_val' in df.columns:
+        # Only overwrite when the broker did not supply a decomposed intraday
+        # P&L value (i.e. the existing value is zero or NaN/None). Dhan/Groww
+        # rows that already carry the correct decomposed value (accounting for
+        # day buys/sells) must not be clobbered by this naive formula.
+        _existing_dcv = pd.to_numeric(
+            df.loc[_idx_array, 'day_change_val'], errors='coerce'
+        )
+        _should_overwrite = _valid_p & (_existing_dcv.isna() | (_existing_dcv == 0.0))
         df.loc[_idx_array, 'day_change_val'] = _dcv_p.where(
-            _valid_p, df.loc[_idx_array, 'day_change_val']
+            _should_overwrite, df.loc[_idx_array, 'day_change_val']
         )
     else:
         df.loc[_idx_array, 'day_change_val'] = _dcv_p.where(_valid_p, 0.0)
@@ -2375,10 +2368,12 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch margins: {e}")
         _record_fetch(account, ok=False, error=str(e))
+        df_margins.attrs['fetch_failed'] = True
 
     # Stash a shallow copy for the stale-substitute path when this
-    # account's breaker opens on a future cycle. Non-empty only.
-    if account and not df_margins.empty:
+    # account's breaker opens on a future cycle. Empty frames are also
+    # stored so a "no margins" state overwrites a prior LKG.
+    if account:
         _record_lkg_frame("margins", account, df_margins)
     return df_margins
 

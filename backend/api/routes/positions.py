@@ -157,11 +157,23 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             else (float(previous_close) if previous_close and float(previous_close) > 0 else None)
         )
         prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
+        # Extract product from the raw broker payload so MIS / CNC positions
+        # are reflected accurately during closed hours.  "NRML" is the safe
+        # default for any row where payload_json is missing or unparseable.
+        pj_product = "NRML"
+        if payload_json:
+            try:
+                _pj = payload_json if isinstance(payload_json, dict) else __import__('json').loads(payload_json)
+                if isinstance(_pj, dict):
+                    pj_product = _pj.get("product", "NRML") or "NRML"
+            except Exception:
+                pass
         rows.append(build_snapshot_position_row(
             account, symbol, exchange, effective_qty, avg_cost, ltp,
             day_pnl, total_pnl, extras,
             previous_close=prev_close_val,
             prev_settlement_pnl=prev_pnl_val,
+            product=pj_product,
         ))
 
     summary = build_summary_from_rows(rows)

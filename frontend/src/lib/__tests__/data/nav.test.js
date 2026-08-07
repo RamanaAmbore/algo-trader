@@ -73,6 +73,30 @@ describe('baseDayPnlForPosition', () => {
     const p = { pnl: 1000, prev_settlement_pnl: NaN, overnight_quantity: 2, day_change_val: 500 };
     expect(baseDayPnlForPosition(p)).toBe(500);
   });
+
+  // ── Short position correctness (oq < 0) ────────────────────────────────────
+
+  it('short overnight, valid dcv → fast-path returns dcv directly', () => {
+    // oq = -5 (short), dcv = -2000 (valid non-zero), close > 0
+    // Expected: -2000 (dcv returned directly, guard now oq !== 0)
+    const p = { pnl: -2000, overnight_quantity: -5, day_change_val: -2000, close_price: 100, average_price: 110 };
+    expect(baseDayPnlForPosition(p)).toBe(-2000);
+  });
+
+  it('short overnight, stale close (close = 0) → Case 4 guard returns 0', () => {
+    // oq = -100, close = 0, pnl = 50000, avg = 5000
+    // Without fix: 50000 - (-100)*(0 - 5000) = 50000 + 500000 = 550000
+    // With fix: Case 4 fires (oq !== 0 && dcv === 0 && close <= 0) → 0
+    const p = { pnl: 50000, overnight_quantity: -100, day_change_val: 0, close_price: 0, average_price: 5000 };
+    expect(baseDayPnlForPosition(p)).toBe(0);
+  });
+
+  it('short overnight, dcv = 0 and close > 0 → falls through to formula', () => {
+    // oq = -5, dcv = 0, pnl = -1000, close = 150, avg = 160
+    // Expected: pnl - oq*(close - avg) = -1000 - (-5)*(150 - 160) = -1000 - 50 = -1050
+    const p = { pnl: -1000, overnight_quantity: -5, day_change_val: 0, close_price: 150, average_price: 160 };
+    expect(baseDayPnlForPosition(p)).toBe(-1050);
+  });
 });
 
 // ── aggregateDayPnlForPositions ──────────────────────────────────────────────
@@ -143,6 +167,23 @@ describe('livePositionDayPnl', () => {
     const fields = makeFields();
     const result = livePositionDayPnl(fields, 0, { marketOpen: true });
     expect(result).toBe(10);
+  });
+
+  it('short overnight (qty < 0) + live tick → ticker-rescue computes correctly', () => {
+    // Short 5 contracts: oq = -5, closePx = 100, pollLtp = 98, liveLtp = 97
+    // dcvRow: oq = -5, dcv = 10 (non-zero) → baseDayPnlForPosition returns 10
+    // brokerDcv = 10
+    // realisedToday = 10 - (98 - 100)*(-5) = 10 - 10 = 0
+    // result = 0 + (97 - 100)*(-5) = 0 + 15 = 15
+    const fields = {
+      closePx: 100,
+      pollLtp: 98,
+      qty: -5,
+      avg: 105,
+      dcvRow: { pnl: -10, overnight_quantity: -5, day_change_val: 10, close_price: 100 },
+    };
+    const result = livePositionDayPnl(fields, 97, { marketOpen: true });
+    expect(result).toBe(15);
   });
 });
 

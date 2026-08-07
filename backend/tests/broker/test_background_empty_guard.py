@@ -284,13 +284,18 @@ class TestHoldingsDayChangePercentage:
     """Verify day_change_percentage = day_change_val / cur_val * 100 in normal path."""
 
     def test_day_change_percentage_computed_correctly(self):
-        """day_change_percentage reflects intraday price movement."""
+        """day_change_percentage reflects intraday price movement.
+
+        Denominator is the OPENING value (cur_val − day_change_val), matching
+        _compute_summary_df in holdings.py.  Using cur_val would understate
+        the move on positive days.
+        """
         from backend.api.background import _fetch_holdings_direct
 
         with patch('backend.brokers.broker_apis.fetch_holdings') as mock_fetch:
             mock_fetch.return_value = [
                 pd.DataFrame([
-                    # Position: cur_val=1000, day_change_val=50 → 5%
+                    # cur_val=1000, day_change_val=50 → open_val=950 → 50/950*100 ≈ 5.263%
                     _make_holdings_row('ZG0790', 900.0, 1000.0, 100.0, 50.0),
                 ]),
             ]
@@ -299,27 +304,37 @@ class TestHoldingsDayChangePercentage:
 
             acct_row = summary.iloc[0]
             assert acct_row['account'] == 'ZG0790'
-            # day_change_percentage = 50 / 1000 * 100 = 5
-            assert abs(acct_row['day_change_percentage'] - 5.0) < 0.01, \
-                f"day_change_percentage mismatch. Expected 5.0, got {acct_row['day_change_percentage']}"
+            # Formula: day_change_val / (cur_val - day_change_val) * 100
+            # = 50 / (1000 - 50) * 100 = 50 / 950 * 100 ≈ 5.263
+            expected = 50.0 / (1000.0 - 50.0) * 100.0
+            assert abs(acct_row['day_change_percentage'] - expected) < 0.01, \
+                f"day_change_percentage mismatch. Expected {expected:.4f}, got {acct_row['day_change_percentage']}"
 
     def test_multiple_accounts_day_change_aggregation(self):
-        """day_change_percentage for TOTAL row aggregates correctly."""
+        """day_change_percentage for TOTAL row aggregates correctly.
+
+        Denominator is the OPENING value (cur_val − day_change_val) for the
+        aggregated TOTAL row, not raw cur_val.
+        """
         from backend.api.background import _fetch_holdings_direct
 
         with patch('backend.brokers.broker_apis.fetch_holdings') as mock_fetch:
             mock_fetch.return_value = [
                 pd.DataFrame([
-                    _make_holdings_row('ZG0790', 5000.0, 10000.0, 5000.0, 500.0),  # 5% day chg
-                    _make_holdings_row('ZJ6294', 4000.0, 10000.0, 6000.0, 1000.0),  # 10% day chg
+                    _make_holdings_row('ZG0790', 5000.0, 10000.0, 5000.0, 500.0),
+                    _make_holdings_row('ZJ6294', 4000.0, 10000.0, 6000.0, 1000.0),
                 ]),
             ]
 
             raw, summary = _fetch_holdings_direct()
 
-            # TOTAL row: day_change_val=1500, cur_val=20000 → 7.5%
+            # TOTAL row: sum day_change_val=1500, sum cur_val=20000
+            # open_val = 20000 - 1500 = 18500
+            # day_change_percentage = 1500 / 18500 * 100 ≈ 8.108%
             total_row = summary.iloc[-1]
             assert total_row['account'] == 'TOTAL'
-            expected_day_change_pct = (500.0 + 1000.0) / (10000.0 + 10000.0) * 100  # 7.5
+            total_dcv = 500.0 + 1000.0    # 1500
+            total_cur = 10000.0 + 10000.0  # 20000
+            expected_day_change_pct = total_dcv / (total_cur - total_dcv) * 100.0
             assert abs(total_row['day_change_percentage'] - expected_day_change_pct) < 0.01, \
-                f"TOTAL day_change_percentage mismatch. Expected {expected_day_change_pct}, got {total_row['day_change_percentage']}"
+                f"TOTAL day_change_percentage mismatch. Expected {expected_day_change_pct:.4f}, got {total_row['day_change_percentage']}"
