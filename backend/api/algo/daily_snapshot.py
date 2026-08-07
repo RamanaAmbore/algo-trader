@@ -443,7 +443,7 @@ def _holdings_rows(
             "ltp":            ltp_val,
             "day_pnl":        day_pnl_v,
             "total_pnl":      total_pnl_v,
-            "previous_close": None,
+            "previous_close": float(r["close_price"]) if r.get("close_price") else None,
             "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:

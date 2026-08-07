@@ -210,6 +210,103 @@ class TestRowBuilders:
         assert r["total_pnl"] == 600.0
         assert json.loads(r["payload_json"])["tradingsymbol"] == "INFY"
 
+    def test_holdings_previous_close_populated(self):
+        """Test that previous_close is populated from close_price when present."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+        holding_with_close = {
+            "tradingsymbol": "SIEMENS",
+            "exchange": "NSE",
+            "opening_quantity": 5,
+            "average_price": 3000.0,
+            "last_price": 7500.0,
+            "day_change": 150.0,
+            "pnl": 10000.0,
+            "close_price": 7350.0,  # Previous close price
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding_with_close], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] == 7350.0, \
+            f"expected previous_close=7350.0 but got {rows[0]['previous_close']}"
+
+    def test_holdings_previous_close_none_when_absent(self):
+        """Test that previous_close is None when close_price is absent."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+        holding_no_close = {
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "opening_quantity": 10,
+            "average_price": 1500.0,
+            "last_price": 1560.0,
+            "day_change": 60.0,
+            "pnl": 600.0,
+            # close_price intentionally missing
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding_no_close], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] is None, \
+            f"expected previous_close=None when close_price missing, got {rows[0]['previous_close']}"
+
+    def test_holdings_previous_close_none_when_zero(self):
+        """Test that previous_close is None when close_price is zero."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+        holding_zero_close = {
+            "tradingsymbol": "FOO",
+            "exchange": "NSE",
+            "opening_quantity": 5,
+            "average_price": 1000.0,
+            "last_price": 1100.0,
+            "day_change": 100.0,
+            "pnl": 500.0,
+            "close_price": 0,  # Zero close price
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding_zero_close], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] is None, \
+            f"expected previous_close=None when close_price=0, got {rows[0]['previous_close']}"
+
+    def test_holdings_previous_close_none_when_none(self):
+        """Test that previous_close is None when close_price is explicitly None."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+        holding_none_close = {
+            "tradingsymbol": "BAR",
+            "exchange": "BSE",
+            "opening_quantity": 2,
+            "average_price": 2000.0,
+            "last_price": 2100.0,
+            "day_change": 100.0,
+            "pnl": 200.0,
+            "close_price": None,  # Explicitly None
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding_none_close], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] is None, \
+            f"expected previous_close=None when close_price is None, got {rows[0]['previous_close']}"
+
+    def test_holdings_previous_close_stored_in_payload(self):
+        """Test that previous_close is also captured in snapshot_extras for downstream readers."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+        holding_with_close = {
+            "tradingsymbol": "RELIANCE",
+            "exchange": "NSE",
+            "opening_quantity": 1,
+            "average_price": 2500.0,
+            "last_price": 2600.0,
+            "day_change": 100.0,
+            "pnl": 100.0,
+            "close_price": 2550.0,
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding_with_close], self._NOW_EOD)
+        assert len(rows) == 1
+
+        # Verify previous_close is in the row
+        assert rows[0]["previous_close"] == 2550.0
+
+        # Verify prev_close is also in the payload snapshot_extras
+        payload = json.loads(rows[0]["payload_json"])
+        assert "snapshot_extras" in payload, "snapshot_extras missing from payload"
+        assert payload["snapshot_extras"]["prev_close"] == 2550.0, \
+            f"expected prev_close=2550.0 in snapshot_extras, got {payload['snapshot_extras'].get('prev_close')}"
+
     def test_positions_row_shape(self):
         from backend.api.algo.daily_snapshot import _positions_rows
         rows = _positions_rows("ZG0790", self._D, _POSITIONS, self._NOW_EOD)
@@ -218,6 +315,58 @@ class TestRowBuilders:
         assert r["kind"] == "positions"
         assert r["segment"] == "derivatives"
         assert r["qty"] == -50
+
+    def test_positions_previous_close_populated(self):
+        """Test that positions previous_close is populated from close_price when present."""
+        from backend.api.algo.daily_snapshot import _positions_rows
+        pos_with_close = {
+            "traditionsymbol": "NIFTY25APRFUT",
+            "exchange": "NFO",
+            "quantity": -50,
+            "average_price": 22500.0,
+            "last_price": 22400.0,
+            "pnl": 5000.0,
+            "close_price": 22450.0,  # Prior session settlement
+            "tradingsymbol": "NIFTY25APRFUT",  # Override above
+        }
+        rows = _positions_rows("ZG0790", self._D, [pos_with_close], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] == 22450.0, \
+            f"expected previous_close=22450.0 but got {rows[0]['previous_close']}"
+
+    def test_positions_previous_close_none_when_absent(self):
+        """Test that positions previous_close is None when close_price is absent."""
+        from backend.api.algo.daily_snapshot import _positions_rows
+        pos_no_close = {
+            "tradingsymbol": "BANKNIFTY25APRFUT",
+            "exchange": "NFO",
+            "quantity": 10,
+            "average_price": 52000.0,
+            "last_price": 52100.0,
+            "pnl": 1000.0,
+            # close_price intentionally missing
+        }
+        rows = _positions_rows("ZG0790", self._D, [pos_no_close], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] is None, \
+            f"expected previous_close=None when close_price missing, got {rows[0]['previous_close']}"
+
+    def test_positions_previous_close_none_when_zero(self):
+        """Test that positions previous_close is None when close_price is zero."""
+        from backend.api.algo.daily_snapshot import _positions_rows
+        pos_zero_close = {
+            "tradingsymbol": "CRUDEOIL26JULFUT",
+            "exchange": "MCX",
+            "quantity": 1,
+            "average_price": 245.0,
+            "last_price": 264.5,
+            "pnl": 19.5,
+            "close_price": 0,  # Zero close price
+        }
+        rows = _positions_rows("ZG0790", self._D, [pos_zero_close], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] is None, \
+            f"expected previous_close=None when close_price=0, got {rows[0]['previous_close']}"
 
     def test_positions_mid_session_mcx_emits_none(self):
         """MCX position snapshotted at 15:35 IST (mid-MCX-session) must
