@@ -304,13 +304,44 @@ async def _fetch_positions_phase(accounts_in: list[str], errors: list[str]) -> f
         return 0.0
 
 
+def _overlay_closed_exchange_ltp(
+    df: "pd.DataFrame",
+    snap_map: "dict[tuple[str, str], float]",
+) -> "pd.DataFrame":
+    """Override cur_val with snapshot LTP×qty for holdings on closed exchanges.
+
+    Mirrors _overlay_snapshot_for_closed_exchanges in holdings.py so both
+    compute_firm_nav and the /api/holdings route use the same cur_val when
+    an exchange has closed for the session.
+    """
+    from backend.api.helpers.snapshot_gate import is_exchange_closed_now
+
+    if df.empty or not snap_map:
+        return df
+    df = df.copy()
+    for idx, row in df.iterrows():
+        exchange = str(row.get("exchange", "NSE") or "NSE")
+        if not is_exchange_closed_now(exchange):
+            continue
+        account = str(row.get("account", "") or "")
+        symbol = str(row.get("tradingsymbol", "") or "")
+        snap_ltp = snap_map.get((account, symbol))
+        if snap_ltp and snap_ltp > 0:
+            qty = float(row.get("quantity", 0) or 0)
+            df.at[idx, "cur_val"] = snap_ltp * qty
+    return df
+
+
 async def _fetch_holdings_phase(accounts_in: list[str], errors: list[str], ticker) -> float:
     """Fetch holdings data and return holdings_mtm; mutates accounts_in and errors."""
     from backend.brokers.broker_apis import fetch_holdings
+    from backend.api.helpers.snapshot_gate import latest_snapshot_ltp_map
     try:
         hold_dfs = await asyncio.to_thread(fetch_holdings)
+        snap_map = await latest_snapshot_ltp_map("holdings")
         total = 0.0
         for df in hold_dfs or []:
+            df = _overlay_closed_exchange_ltp(df, snap_map)
             chunk, accts = _holdings_from_df(df, ticker)
             total += chunk
             _merge_accounts(accounts_in, accts)

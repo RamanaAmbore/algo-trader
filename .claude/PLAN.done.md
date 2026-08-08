@@ -1,100 +1,84 @@
-# Plan: Holdings + Positions SSOT — correctness, closure, stale-code cleanup
+# Plan: firm NAV snapshot overlay — sync with holdings grid cur_val
 
 ## Context
 
-Three parallel audit agents reviewed holdings.py, positions.py, broker_apis.py, background.py,
-snapshot_gate.py, pnl_math.py, nav.js, and PerformancePage.svelte against six dimensions:
-market closure, snapshot/LKG behavior, prev-close accuracy, closed-position persistence,
-day P&L formula correctness, and stale code. Six correctness defects found (3 P1, 3 P2),
-three robustness gaps (P2), and six cleanup items (P3). All fixes are mechanical — no
-architectural change.
+`compute_firm_nav()` calls raw `fetch_holdings()` which uses broker REST `cur_val`
+(pre-session/stale prices). The `/api/holdings` route applies
+`_overlay_snapshot_for_closed_exchanges()` which replaces `cur_val` with
+`DB snapshot LTP × qty` for currently-closed exchanges. Result: firm NAV shows
+~6L lower than the holdings grid during pre-open / post-close windows — a visible
+SSOT break on the performance page.
+
+Root cause confirmed by audit: `latest_snapshot_ltp_map()` and
+`is_exchange_closed_now()` exist in `backend/api/helpers/snapshot_gate.py` but
+are NOT used by `nav.py`. The route layer uses them; the algo layer doesn't.
 
 ---
 
 ## Task
 
-Fix all P1 defects, all P2 robustness gaps, and the P3 cleanup items flagged in the audit.
+Apply the same closed-exchange LTP overlay to `compute_firm_nav()` so firm NAV
+and the holdings grid read the same `cur_val` for each holding when an exchange
+is closed.
+
+Also fix two secondary issues found by the audit:
+- `_funds_from_df` dead primary column paths (stale pre-rename names never hit)
+- `_positions_from_df` structural inconsistency vs frontend (qty != 0 gate)
 
 ---
 
 ## Agents
 
-- broker: Fix `backend/brokers/broker_apis.py`:
-  (a) Line 2263-2268 `_bmd_recompute_derived` — only overwrite `day_change_val` when the
-      existing value is zero or NaN; do NOT overwrite pre-existing Dhan/Groww decomposed values.
-      Guard: `if row['day_change_val'] == 0 or pd.isna(row['day_change_val'])` (or polars
-      equivalent) before applying `(ltp - close) * opening_quantity`.
-  (b) Lines 562-582 `_record_lkg_frame` + callers — remove the `not df.empty` guard at call
-      sites (broker_apis.py ~1426 and ~1799). Allow writing an empty frame to the LKG cache
-      with a fresh timestamp, so `_stale_substitute_frame` can detect "account has no positions"
-      vs "account was never fetched". Update the misleading docstring at lines 562-572 to
-      describe what the function actually does.
-  (c) Lines 2375-2377 `_fetch_margins_local` exception handler — add
-      `df_margins.attrs['fetch_failed'] = True` after the exception is caught, matching the
-      pattern in holdings (line ~1409) and positions.
-  (d) Lines 1891-1903 — remove dead variables `_dcp_expr` and `_pnl_pct_expr` (assigned but
-      never referenced in any subsequent `with_columns()` call).
-  (e) Line 1721 — replace `globals()['_KITE_VALUE_UNIT_LOGGED'] = True` with the direct module-
-      level assignment `_KITE_VALUE_UNIT_LOGGED = True`.
-  Write/update tests in `backend/tests/broker/` covering (a) and (b): one test verifying that
-  a row with an existing non-zero day_change_val is NOT overwritten by _bmd_recompute_derived,
-  and one test verifying that writing an empty LKG frame allows _stale_substitute_frame to
-  return empty rather than the prior session frame.
+- backend: In `backend/api/algo/nav.py`:
 
-- backend: Fix three files:
-  1. `backend/api/routes/holdings.py` line 555-558 `_snapshot_fn` — set `as_of=None` (not
-     `as_of=timestamp_display()`) when `_holdings_snapshot()` returns None. The correct pattern
-     is in positions.py line ~955-959. Also fix line 119 `_build_holding_row_from_snapshot`:
-     set `close_price` from the `previous_close` column in the snapshot query result, not from
-     `ltp_f`.
-  2. `backend/api/background.py` line 127 `_bg_holdings_add_pct` — change denominator from
-     `cur_val` to `cur_val - day_change_val` (matching the route formula in
-     `holdings.py:_compute_summary_df`). Also fix lines 152-179 `_fetch_positions_direct`:
-     call `_override_stale_close_from_snapshot(raw)` and `_override_stale_ltp_from_ticker(raw)`
-     BEFORE `apply_day_change_backstop(raw)`, matching the order in
-     `positions.py:_patch_raw_positions`.
-  3. `backend/api/routes/positions_helpers.py` line 178 `resolve_snapshot_day_pct` — compute
-     `close_price_f` before passing it as the denominator (currently uses `ltp_f`, which diverges
-     from prev-close for F&O). Also line 242 — extract `product` from `payload_json` dict
-     instead of hardcoding `"NRML"`.
-  Write/update tests in `backend/tests/` covering: (1) holdings _snapshot_fn returns no as_of
-  when DB is empty; (2) _build_holding_row_from_snapshot uses previous_close not ltp for
-  close_price; (3) _bg_holdings_add_pct uses correct denominator.
+  **Primary fix — `_fetch_holdings_phase`** (line ~307):
+  1. Add import at top of `_fetch_holdings_phase`: `from backend.api.helpers.snapshot_gate import is_exchange_closed_now, latest_snapshot_ltp_map`
+  2. Before iterating dfs, call `snap_map = await latest_snapshot_ltp_map("holdings")`
+  3. For each df, before calling `_holdings_from_df(df, ticker)`, call a new private helper
+     `_overlay_closed_exchange_ltp(df, snap_map)` that:
+     - Iterates rows of the df (pandas)
+     - For each row: if `is_exchange_closed_now(row["exchange"])` is True, look up
+       `snap_map.get((str(row["account"]), str(row["tradingsymbol"])))` → if found and > 0,
+       set `df.at[idx, "cur_val"] = snap_ltp * float(row["quantity"] or 0)`
+     - Returns the modified df (copy first to avoid mutating the original)
+     - Guard: return df unchanged if `df.empty` or `not snap_map`
 
-- frontend: Fix `frontend/src/lib/data/nav.js` line 108 — change `oq > 0` to `oq !== 0` in
-  `baseDayPnlForPosition` so that short overnight positions (oq < 0) also get the dcv fast-path
-  and the Case 4 stale-close guard (close <= 0 → return 0). The formula at line 126
-  (`pnl - oq*(close-avg)`) is already sign-correct for negaitve oq; only the guard predicates
-  need updating. Also update the `livePositionDayPnl` function — it mirrors the same `oq > 0`
-  guard for the ticker-rescue path; change to `oq !== 0` there too.
-  Do NOT change PerformancePage snapshot indicator — scope excluded (requires backend as_of
-  field plumbing which is a separate task).
+  **Secondary fix — `_funds_from_df`** (line ~72):
+  Read the function. The primary column names (`avail opening_balance`,
+  `util option_premium`) are dead code since `_COL_MAP` in funds.py renamed them.
+  Only the fallback branch (`cash`, `option_premium`) executes. Remove the stale
+  primary names; keep only the fallback branch, simplifying the function.
 
-- backend-test: skip (tests handled inline by broker and backend agents above)
+  Write/update tests in `backend/tests/test_firm_nav_overlay.py` (new file):
+  - Test 1: `_overlay_closed_exchange_ltp` replaces `cur_val` with `snap_ltp × qty`
+    when exchange is closed (mock `is_exchange_closed_now` → True)
+  - Test 2: `_overlay_closed_exchange_ltp` does NOT replace `cur_val` when exchange
+    is open (mock `is_exchange_closed_now` → False)
+  - Test 3: `_overlay_closed_exchange_ltp` is a no-op when `snap_map` is empty
+  - Test 4: `_overlay_closed_exchange_ltp` is a no-op when df is empty
 
+- broker: skip
+- frontend: skip
+- doc: skip
+- backend-test: skip
 - playwright: skip
 
 ---
 
 ## Tests
 - pytest: yes
-- svelte-check: yes
+- svelte-check: no
 - playwright: no
 
 ---
 
 ## Commit message
-fix(ssot): short-position day P&L guard, LKG phantom positions, snapshot as_of, bmd overwrite, bg pct denominator, stale-close overrides
+fix(nav): apply closed-exchange snapshot overlay in compute_firm_nav to match holdings grid cur_val
 
 ## Done when
-- `nav.js` `baseDayPnlForPosition` and `livePositionDayPnl`: predicate is `oq !== 0`
-- `broker_apis.py` `_bmd_recompute_derived`: does not overwrite pre-existing non-zero day_change_val
-- `broker_apis.py` LKG callers: empty frames written to cache; phantom positions eliminated
-- `broker_apis.py` margins: `fetch_failed` flag set on exception
-- `holdings.py` `_snapshot_fn`: `as_of=None` when snapshot is None
-- `holdings.py` `_build_holding_row_from_snapshot`: `close_price` from `previous_close`
-- `background.py` `_bg_holdings_add_pct`: denominator is `cur_val - day_change_val`
-- `background.py` `_fetch_positions_direct`: stale-close + stale-ltp overrides applied before backstop
-- `positions_helpers.py` `resolve_snapshot_day_pct`: `close_price_f` as denominator
-- Dead vars `_dcp_expr`, `_pnl_pct_expr` removed; `globals()` pattern replaced
-- pytest green, svelte-check 0 errors, coverage ≥ 80%
+- `_fetch_holdings_phase` calls `latest_snapshot_ltp_map("holdings")` and applies
+  `_overlay_closed_exchange_ltp` before summing `cur_val`
+- `_overlay_closed_exchange_ltp` exists as a private function in nav.py
+- `_funds_from_df` dead primary column names removed
+- 4 new pytest tests pass for overlay behavior
+- pytest green overall, broker cov ≥ 80%
