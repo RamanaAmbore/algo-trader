@@ -101,13 +101,18 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     # pnl_percentage: pnl / |avg × qty| × 100
     # (inv_val = avg_cost_f × qty_i, so use that directly)
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
+    # Recompute from frozen previous_close (write-once, always yesterday's settlement)
+    # because Kite overwrites close_price to today's OCP post-settlement, making
+    # stored day_pnl = 0. Use formula only when previous_close is available.
+    day_change_val = (ltp_f - previous_close_f) * qty_i if previous_close_f > 0 else day_pnl_f
     # day_change_percentage: day_change_val / |previous_close × qty| × 100
     # Use yesterday's close price as the denominator (NOT LTP, which would
     # understate the move). Fallback to avg_cost when previous_close is
     # missing/zero (same-day buys / cold-boot).
-    close_notional = abs(previous_close_f * qty_i)
-    day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
-        day_pnl_f / inv_val * 100.0 if inv_val else 0.0
+    day_change_percentage = (
+        (day_change_val / (previous_close_f * abs(qty_i)) * 100)
+        if previous_close_f > 0 and qty_i != 0
+        else 0.0
     )
     # Use yesterday's close as close_price (same pattern as
     # build_snapshot_position_row in positions_helpers.py lines 232-236).
@@ -127,14 +132,14 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
         cur_val=cur_val,
         pnl=total_pnl_f,
         pnl_percentage=pnl_pct,
-        day_change_val=day_pnl_f,
-        day_change_percentage=day_pct,
+        day_change_val=day_change_val,
+        day_change_percentage=day_change_percentage,
         last_price_stale=True,
         price_source="snapshot_settled",
         current_price=ltp_f,
         is_animating=False,
     )
-    return row, inv_val, cur_val, total_pnl_f, day_pnl_f
+    return row, inv_val, cur_val, total_pnl_f, day_change_val
 
 
 def _build_holdings_summary(

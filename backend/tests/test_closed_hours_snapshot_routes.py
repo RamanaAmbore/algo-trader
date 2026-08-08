@@ -968,11 +968,15 @@ async def test_holdings_snapshot_pnl_percentage_populated():
     assert abs(row.pnl_percentage - (1000.0 / 28000.0 * 100.0)) < 0.01, (
         f"pnl_percentage expected {1000.0/28000.0*100:.4f}, got {row.pnl_percentage}"
     )
-    # day_change_percentage: day_pnl=100, previous_close_notional=2800*10=28000 → ~0.357 %
-    # (using previous_close as denominator, not LTP)
+    # day_change_val recomputed from (ltp - previous_close) * qty:
+    # (2900 - 2800) * 10 = 1000 (not stored day_pnl=100 — recomputed from price move)
+    # day_change_percentage = 1000 / (2800 * 10) * 100 ≈ 3.571%
+    expected_dcv = (2900.0 - 2800.0) * 10  # 1000.0
+    expected_pct = expected_dcv / (2800.0 * 10) * 100  # ~3.571%
     assert row.day_change_percentage is not None
-    assert abs(row.day_change_percentage - (100.0 / 28000.0 * 100.0)) < 0.01, (
-        f"day_change_percentage expected {100.0/28000.0*100:.4f}, got {row.day_change_percentage}"
+    assert abs(row.day_change_percentage - expected_pct) < 0.01, (
+        f"day_change_percentage expected {expected_pct:.4f}, got {row.day_change_percentage}. "
+        f"day_change_val recomputed as (ltp-prev_close)*qty={expected_dcv}"
     )
     # last_price_stale must be True for a snapshot (it's not live broker data)
     assert row.last_price_stale is True, "snapshot rows must have last_price_stale=True"
@@ -1224,4 +1228,114 @@ async def test_positions_snapshot_sql_excludes_bad_payload_rows():
     assert "captured_at < :today_open" not in snap_body, (
         "_positions_snapshot reader must not use captured_at < today_open — "
         "that filter pulled stale months-old rows for closed-out symbols"
+    )
+
+
+@pytest.mark.asyncio
+async def test_holdings_snapshot_day_change_val_uses_previous_close_not_stored_day_pnl():
+    """_holdings_snapshot() computes day_change_val from (ltp - previous_close) * qty,
+    not from the stored day_pnl column which Kite zeroes after settlement.
+
+    Scenario: After MCX settlement (23:30 IST close), Kite returns day_pnl=0.0
+    but previous_close and ltp are still valid. The snapshot must recompute
+    day_change_val using the formula to show the real intraday move.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    captured_ts = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    # Post-settlement row: day_pnl=0.0 (zeroed by Kite) but previous_close and ltp are valid
+    fake_row = (
+        "ZG0790",        # account
+        "GOLDM",         # symbol
+        "MCX",           # exchange
+        10,              # qty
+        6800.0,          # avg_cost
+        7000.0,          # ltp (snapshot LTP)
+        6980.0,          # previous_close (yesterday's close)
+        0.0,             # day_pnl (zeroed post-settlement)
+        2000.0,          # total_pnl
+        captured_ts,     # captured_at
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [fake_row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.database.async_session", return_value=mock_session):
+        from backend.api.routes.holdings import _holdings_snapshot
+        resp = await _holdings_snapshot()
+
+    assert resp is not None, "_holdings_snapshot must return a response"
+    assert len(resp.rows) == 1
+    row = resp.rows[0]
+
+    # day_change_val must be recomputed: (7000.0 - 6980.0) * 10 = 200.0
+    # NOT the stored day_pnl=0.0
+    expected_dcv = (7000.0 - 6980.0) * 10
+    assert abs(row.day_change_val - expected_dcv) < 0.1, (
+        f"day_change_val should be {expected_dcv} (from ltp-previous_close formula), "
+        f"not 0.0 (stored zeroed day_pnl), got {row.day_change_val}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_positions_snapshot_recomputes_day_pnl_from_prev_ltp():
+    """_positions_snapshot() recomputes day_pnl from (ltp - prev_ltp) * qty
+    when prev_ltp is available, ensuring correct day delta even after settlement.
+
+    The recomputation happens in _positions_snapshot loop at lines 171-172,
+    not in build_snapshot_position_row. This ensures the formula-based day_pnl
+    propagates through the entire snapshot instead of relying on possibly-stale
+    stored Kite day_pnl values (which may be zeroed post-settlement).
+    """
+    from datetime import date, datetime, timezone
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    today_ist = date(2026, 8, 8)
+    today_dt = datetime(2026, 8, 8, 16, 15, 0, tzinfo=timezone.utc)
+
+    # Today's latest batch: prev_ltp=98.0 from yesterday's snapshot
+    row = (
+        "ACC1", "NIFTY26AUG24500CE", "NFO",
+        10, 80.0, 100.0,      # qty, avg_cost, ltp
+        200.0, 200.0,         # day_pnl (stored, may be stale), total_pnl
+        None,                 # payload_json
+        today_dt,             # captured_at
+        98.0,                 # previous_close (today's settlement, stale)
+        98.0, 0.0,            # prev_ltp (yesterday's LTP), prev_settlement_pnl
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with (
+        patch("backend.api.database.async_session", return_value=mock_session),
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian") as mock_ts,
+    ):
+        mock_ts_obj = MagicMock()
+        mock_ts_obj.date.return_value = today_ist
+        mock_ts_obj.replace.return_value = datetime(2026, 8, 8, 0, 0, 0, tzinfo=timezone.utc)
+        mock_ts.return_value = mock_ts_obj
+        from backend.api.routes.positions import _positions_snapshot
+        result = await _positions_snapshot()
+
+    assert result is not None
+    row = result.rows[0]
+
+    # day_change_val is recomputed as (100 - 98) * 10 = 20.0 (not stored 200.0)
+    # This is correct — the formula uses yesterday's LTP as the baseline.
+    expected_dcv = (100.0 - 98.0) * 10
+    assert abs(row.day_change_val - expected_dcv) < 0.1, (
+        f"day_change_val should be recomputed as (ltp-prev_ltp)*qty={expected_dcv}, "
+        f"not the stale stored value 200.0, got {row.day_change_val}"
     )

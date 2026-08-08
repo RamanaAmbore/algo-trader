@@ -54,6 +54,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     from backend.shared.helpers.date_time_utils import timestamp_indian as _ts_indian
 
     _today_ist = _ts_indian().date()
+    _today_ist_midnight = _ts_indian().replace(hour=0, minute=0, second=0, microsecond=0)
 
     try:
         async with async_session() as session:
@@ -87,6 +88,8 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                       AND db.total_pnl IS NOT NULL
                       AND db.captured_at < lb.max_at
                       AND db.captured_at >= lb.max_at - INTERVAL '2 days'
+                      AND db.ltp IS NOT NULL AND db.ltp > 0
+                      AND db.captured_at < :today_ist_midnight
                     ORDER BY db.account, db.symbol, db.captured_at DESC
                 )
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
@@ -103,7 +106,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                   AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
                            AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
                 ORDER BY db.account, db.symbol
-            """).bindparams(today_ist=_today_ist))
+            """).bindparams(today_ist=_today_ist, today_ist_midnight=_today_ist_midnight))
             raw_rows = result.all()
     except Exception as exc:
         logger.warning(f"positions snapshot query failed: {exc}")
@@ -157,6 +160,19 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             else (float(previous_close) if previous_close and float(previous_close) > 0 else None)
         )
         prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
+        # Recompute day_pnl from yesterday's EOD close when available,
+        # so grid rows show correct day delta after Kite's post-settlement
+        # close_price update zeroes out stored day_pnl.
+        # Priority:
+        #   1. Formula (ltp - prev_close) × qty when prev_close is trusted
+        #   2. Stored day_pnl column (passes None through to extras fallback
+        #      in build_snapshot_position_row when day_pnl column is NULL)
+        if prev_close_val and float(prev_close_val) > 0 and ltp:
+            computed_day_pnl: object = (float(ltp) - float(prev_close_val)) * effective_qty
+        else:
+            # Preserve None so resolve_snapshot_day_pnl / resolve_snapshot_day_pct
+            # can still apply the extras fallback when the column was NULL.
+            computed_day_pnl = day_pnl
         # Extract product from the raw broker payload so MIS / CNC positions
         # are reflected accurately during closed hours.  "NRML" is the safe
         # default for any row where payload_json is missing or unparseable.
@@ -170,7 +186,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 pass
         rows.append(build_snapshot_position_row(
             account, symbol, exchange, effective_qty, avg_cost, ltp,
-            day_pnl, total_pnl, extras,
+            computed_day_pnl, total_pnl, extras,
             previous_close=prev_close_val,
             prev_settlement_pnl=prev_pnl_val,
             product=pj_product,

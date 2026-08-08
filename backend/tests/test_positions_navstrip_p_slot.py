@@ -798,39 +798,45 @@ class TestIntegrationDayChangeNotCollapsed:
 
     @pytest.mark.asyncio
     async def test_snapshot_day_pnl_not_collapsed_after_market_close(self):
-        """Verify that day_change_val (stored from daily_book) is preserved
-        and NOT collapsed to 0 by the close-price fix.
+        """Verify that day_change_val is recomputed from (ltp - prev_close) × qty
+        and is NOT collapsed to 0 after NSE settlement.
 
         Before fix: close_price = settlement_price, so frontend formula
           day_pnl = total_pnl - oq * (ltp - settlement) = total_pnl - 0 = total_pnl
         (collapsed to lifetime P&L)
 
-        After fix: close_price = yesterday_settlement, so formula works correctly:
-          day_pnl = total_pnl - oq * (ltp - yesterday_settlement) = correct value
+        After fix (NSE settlement fix): _positions_snapshot recomputes day_pnl
+        in the row-mapping loop as (ltp - prev_ltp) × effective_qty using
+        yesterday's EOD LTP as the baseline, yielding the true intraday move.
+
+        Scenario: yesterday_settlement=5400, today_ltp=5500, qty=10
+        Expected: day_change_val = (5500-5400)*10 = 1000 (NOT stored 500, NOT 0)
         """
         from backend.api.routes.positions import _positions_snapshot
 
         captured_ts = datetime(2026, 7, 13, 10, 30, tzinfo=timezone.utc)
 
-        # Position: opened yesterday with lifetime P&L = 4000,
-        # today's intraday gain = 500
         YESTERDAY_TOTAL_PNL = 4000.0
-        TODAY_INTRADAY_GAIN = 500.0
-        TODAY_TOTAL_PNL = YESTERDAY_TOTAL_PNL + TODAY_INTRADAY_GAIN  # 4500
+        TODAY_TOTAL_PNL = 4500.0
+        QTY = 10
+        LTP = 5500.0
+        PREV_LTP = 5400.0
+        # Recomputed: (ltp - prev_ltp) * qty = (5500 - 5400) * 10 = 1000
+        EXPECTED_DAY_PNL = (LTP - PREV_LTP) * QTY  # 1000.0
 
         snapshot_row = (
             "ZG0790",
             "NIFTY26JULFUT",
             "NFO",
-            10,
+            QTY,
             Decimal("5000.00"),              # avg_cost
-            Decimal("5500.00"),              # ltp (today's settlement price)
-            Decimal(str(TODAY_INTRADAY_GAIN)),  # day_pnl = 500 (stored value)
+            Decimal(str(LTP)),               # ltp (today's settlement price)
+            Decimal("500.00"),               # day_pnl stored (stale — will be overridden)
             Decimal(str(TODAY_TOTAL_PNL)),   # total_pnl = 4500
             "{}",
             captured_ts,
-            Decimal("5500.00"),              # previous_close = today's settlement (BAD if used)
-            Decimal("5400.00"),              # prev_ltp = yesterday's settlement (GOOD)
+            Decimal("5500.00"),              # previous_close = today's settlement (stale)
+            Decimal(str(PREV_LTP)),          # prev_ltp = yesterday's settlement (good)
             Decimal(str(YESTERDAY_TOTAL_PNL)),  # prev_settlement_pnl = 4000
         )
 
@@ -849,15 +855,16 @@ class TestIntegrationDayChangeNotCollapsed:
 
         row = resp.rows[0]
 
-        # With the fix, close_price = yesterday's settlement (5400)
+        # close_price = yesterday's settlement (5400), not today's (5500)
         assert row.close_price == pytest.approx(5400.0, rel=1e-6), (
             "close_price should be yesterday's LTP=5400 (fix applied)"
         )
 
-        # day_change_val must preserve the stored intraday gain (NOT collapse to 0)
-        assert row.day_change_val == pytest.approx(TODAY_INTRADAY_GAIN, rel=1e-6), (
-            f"day_change_val={row.day_change_val} should preserve stored "
-            f"day_pnl={TODAY_INTRADAY_GAIN}, not collapse to 0"
+        # day_change_val recomputed from (ltp - prev_ltp) * qty = 1000, not stored 500
+        assert row.day_change_val == pytest.approx(EXPECTED_DAY_PNL, rel=1e-6), (
+            f"day_change_val={row.day_change_val} should be recomputed as "
+            f"(ltp-prev_ltp)*qty=({LTP}-{PREV_LTP})*{QTY}={EXPECTED_DAY_PNL}, "
+            f"not the stale stored value 500 and not 0"
         )
 
         # total_pnl should remain as is

@@ -474,41 +474,46 @@ async def test_positions_snapshot_multiple_accounts_and_symbols():
 
 @pytest.mark.asyncio
 async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
-    """End-to-end: verify that day_change_val (stored from daily_book) is
-    preserved and NOT collapsed to 0 by the close-price fix.
+    """End-to-end: verify that day_change_val is recomputed from (ltp - prev_close)×qty
+    and is NOT collapsed to 0 after NSE settlement.
 
-    The bug was: close_price = settlement_price, so frontend formula
-      day_pnl = total_pnl - oq * (ltp - close_price) = total_pnl - 0 = total_pnl
-    This gave lifetime P&L instead of day P&L.
+    Root cause (NSE settlement, ~15:45 IST): Kite updates close_price to today's OCP.
+    Previously, stored day_pnl was returned as-is — which could be 0 because the
+    snapshot writer saw close_price == ltp after settlement. Now _positions_snapshot
+    recomputes day_pnl in the row-mapping loop as (ltp - prev_ltp) × effective_qty
+    using yesterday's EOD LTP as the baseline.
 
-    After fix: close_price = yesterday_settlement, so frontend formula
-      day_pnl = total_pnl - oq * (ltp - yesterday_settlement) ≠ total_pnl
-    The actual day_pnl comes from day_change_val column (stored from daily_book).
+    Scenario:
+    - yesterday_settlement = 5400, today_ltp = 5500, qty = 10
+    - Recomputed day_pnl = (5500 - 5400) × 10 = 1000 (NOT the stored 500)
+    - close_price = 5400 (yesterday's settlement, not today's 5500)
     """
     from backend.api.routes.positions import _positions_snapshot
 
     captured_ts = datetime(2026, 7, 13, 10, 30, tzinfo=timezone.utc)
 
-    # Position: opened yesterday with lifetime P&L = 4000,
-    # today's intraday gain = 500
     YESTERDAY_TOTAL_PNL = 4000.0
-    TODAY_INTRADAY_GAIN = 500.0  # What we want to see after close
-    TODAY_TOTAL_PNL = YESTERDAY_TOTAL_PNL + TODAY_INTRADAY_GAIN  # 4500
+    TODAY_TOTAL_PNL = 4500.0
+    QTY = 10
+    LTP = 5500.0
+    PREV_LTP = 5400.0
+    # Recomputed formula: (ltp - prev_ltp) * qty = (5500 - 5400) * 10 = 1000
+    EXPECTED_DAY_PNL = (LTP - PREV_LTP) * QTY  # 1000.0
 
     snapshot_row = (
         "ZG0790",
         "NIFTY26JULFUT",
         "NFO",
-        10,
+        QTY,
         Decimal("5000.00"),              # avg_cost
-        Decimal("5500.00"),              # ltp (today's settlement)
-        Decimal(str(TODAY_INTRADAY_GAIN)),  # day_pnl = 500 (stored value)
+        Decimal(str(LTP)),               # ltp (today's settlement)
+        Decimal("500.00"),               # day_pnl stored value (may be stale)
         Decimal(str(TODAY_TOTAL_PNL)),   # total_pnl = 4500
         "{}",                            # payload_json (empty)
         captured_ts,
-        Decimal("5500.00"),              # previous_close = today's settlement (BAD)
-        Decimal("5400.00"),              # prev_ltp = yesterday's settlement (GOOD)
-        Decimal(str(YESTERDAY_TOTAL_PNL)),  # prev_settlement_pnl = yesterday's total
+        Decimal("5500.00"),              # previous_close = today's settlement (stale)
+        Decimal(str(PREV_LTP)),          # prev_ltp = yesterday's settlement (good baseline)
+        Decimal(str(YESTERDAY_TOTAL_PNL)),  # prev_settlement_pnl
     )
 
     mock_result = MagicMock()
@@ -526,17 +531,131 @@ async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
 
     row = resp.rows[0]
 
-    # With the fix, close_price = yesterday's settlement (5400)
+    # close_price = yesterday's settlement (5400), not today's (5500)
     assert row.close_price == pytest.approx(5400.0, rel=1e-6), (
-        "close_price should be yesterday's LTP=5400 (fix applied)"
+        "close_price should be yesterday's LTP=5400, not today's settlement=5500"
     )
 
-    # day_change_val must preserve the stored intraday gain
-    # (not collapse to 0)
-    assert row.day_change_val == pytest.approx(TODAY_INTRADAY_GAIN, rel=1e-6), (
-        f"day_change_val={row.day_change_val} should preserve stored day_pnl={TODAY_INTRADAY_GAIN}, "
-        f"not collapse to 0"
+    # day_change_val recomputed from (ltp - prev_ltp) * qty = 1000, not stored 500
+    assert row.day_change_val == pytest.approx(EXPECTED_DAY_PNL, rel=1e-6), (
+        f"day_change_val={row.day_change_val} should be recomputed as "
+        f"(ltp-prev_ltp)*qty=({LTP}-{PREV_LTP})*{QTY}={EXPECTED_DAY_PNL}, "
+        f"not the stale stored value 500 and not 0"
     )
 
-    # total_pnl stays as is (comes from live broker or stored)
+    # total_pnl stays as-is (lifetime P&L, not day P&L)
     assert row.pnl == pytest.approx(TODAY_TOTAL_PNL, rel=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# NSE settlement fix — prev_batch boundary guards (today_ist_midnight)
+# ---------------------------------------------------------------------------
+
+def test_positions_snapshot_prev_batch_sql_has_ltp_not_null_guard():
+    """prev_batch CTE must filter ltp IS NOT NULL AND ltp > 0 so that
+    mid-session snapshots (where ltp=NULL) are excluded from the baseline.
+    """
+    import inspect
+    from backend.api.routes import positions as _pos_module
+
+    src = inspect.getsource(_pos_module._positions_snapshot)
+    assert "db.ltp IS NOT NULL AND db.ltp > 0" in src, (
+        "prev_batch CTE must guard against NULL/zero ltp rows "
+        "so mid-session snapshots don't contaminate the prev_close baseline"
+    )
+
+
+def test_positions_snapshot_prev_batch_sql_has_today_ist_midnight_boundary():
+    """prev_batch CTE must include `captured_at < :today_ist_midnight` to
+    exclude any same-day rows from prev_batch — they must never serve as
+    yesterday's EOD baseline.
+    """
+    import inspect
+    from backend.api.routes import positions as _pos_module
+
+    src = inspect.getsource(_pos_module._positions_snapshot)
+    assert "captured_at < :today_ist_midnight" in src, (
+        "prev_batch CTE must exclude same-day rows with "
+        "`AND db.captured_at < :today_ist_midnight` boundary"
+    )
+
+
+def test_positions_snapshot_bindparams_includes_today_ist_midnight():
+    """The bindparams call must pass today_ist_midnight as a named parameter."""
+    import inspect
+    from backend.api.routes import positions as _pos_module
+
+    src = inspect.getsource(_pos_module._positions_snapshot)
+    # Accept either variable name form: today_ist_midnight= or _today_ist_midnight=
+    has_param = (
+        "today_ist_midnight=today_ist_midnight" in src
+        or "today_ist_midnight=_today_ist_midnight" in src
+    )
+    assert has_param, (
+        "bindparams must include today_ist_midnight= (bound to the computed "
+        "midnight datetime) to enforce the date-boundary parameter in SQL"
+    )
+
+
+def test_positions_snapshot_today_ist_midnight_computed_from_ts_indian():
+    """The midnight boundary is derived from _ts_indian().replace(hour=0, ...).
+    Verify the pattern is present (uses the aliased import already in scope,
+    not a new unaliased import that would NameError).
+    """
+    import inspect
+    from backend.api.routes import positions as _pos_module
+
+    src = inspect.getsource(_pos_module._positions_snapshot)
+    assert "_ts_indian().replace(hour=0, minute=0, second=0, microsecond=0)" in src, (
+        "The midnight boundary must use _ts_indian() (the aliased import) "
+        "not timestamp_indian() which is not in scope inside _positions_snapshot"
+    )
+
+
+@pytest.mark.asyncio
+async def test_positions_snapshot_computed_day_pnl_no_fallback_to_extras_when_column_present():
+    """When day_pnl column is non-NULL and prev_close is unavailable,
+    computed_day_pnl uses the stored column value — NOT extras.
+
+    Regression guard: the fallback priority is formula > column > extras.
+    When the formula path is skipped (no prev_close), the column wins.
+    Extras (which may carry stale/decoy values) must NOT override the column.
+    """
+    import json as _json
+    fake_captured = datetime(2026, 8, 8, 10, 0, tzinfo=timezone.utc)
+
+    payload = {
+        "snapshot_extras": {
+            "day_change_val": -999.99,  # decoy — must NOT be used
+            "day_change_pct": -1.11,
+        }
+    }
+    # day_pnl=2500 (column present), prev_ltp=None (no prev_batch), previous_close=None
+    row_data = (
+        "ACC1", "NIFTY26JULFUT", "NFO",
+        50, Decimal("23000.00"), Decimal("23150.00"),
+        Decimal("2500.00"), Decimal("7500.00"),
+        _json.dumps(payload),
+        fake_captured,
+        None,   # previous_close
+        None,   # prev_ltp
+        None,   # prev_settlement_pnl
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [row_data]
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.database.async_session", return_value=mock_session):
+        from backend.api.routes.positions import _positions_snapshot
+        resp = await _positions_snapshot()
+
+    assert resp is not None
+    row = resp.rows[0]
+    assert pytest.approx(row.day_change_val, rel=1e-6) == 2500.0, (
+        f"day_change_val={row.day_change_val} — stored column 2500 must win "
+        f"over extras decoy -999.99 when prev_close is unavailable"
+    )

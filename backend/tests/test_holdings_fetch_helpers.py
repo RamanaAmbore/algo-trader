@@ -309,11 +309,13 @@ def test_snapshot_day_change_percentage_correct_denominator():
 
 
 def test_snapshot_day_change_percentage_fallback_to_avg_cost():
-    """When previous_close is missing (same-day buy), fall back to avg_cost.
+    """When previous_close is missing (same-day buy), day_change_val uses
+    stored day_pnl_f and day_change_percentage is 0.0 (no prior close to
+    compute a meaningful percentage against).
 
-    This tests the guard: use previous_close × qty as denominator; if that's
-    zero, use avg_cost × qty instead (same-day purchase where there's no
-    prior close to measure against).
+    With the NSE-settlement fix, when previous_close=0 the code falls back
+    to the stored day_pnl column for the value, and yields 0.0 for the
+    percentage since there is no valid denominator.
     """
     from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
@@ -325,17 +327,19 @@ def test_snapshot_day_change_percentage_fallback_to_avg_cost():
         1000.0,        # avg_cost
         1050.0,        # ltp (5% up)
         0.0,           # previous_close = 0 (no prior session; same-day buy)
-        500.0,         # day_pnl = (1050 - 1000) × 10
+        500.0,         # day_pnl = (1050 - 1000) × 10 (stored value)
         500.0,         # total_pnl = same (no prior p/l)
         None,
     )
 
     row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
 
-    # When previous_close=0, fall back to avg_cost denominator
-    # (500 / 10000) × 100 = 5.0%
-    assert row.day_change_percentage == pytest.approx(5.0), \
-        f"Expected fallback to avg_cost: 5.0%, got {row.day_change_percentage}"
+    # When previous_close=0, day_change_val falls back to stored day_pnl (500)
+    assert row.day_change_val == pytest.approx(500.0), \
+        f"Expected stored day_pnl 500.0, got {row.day_change_val}"
+    # day_change_percentage = 0.0 when no valid previous_close denominator
+    assert row.day_change_percentage == pytest.approx(0.0), \
+        f"Expected 0.0% (no prior close), got {row.day_change_percentage}"
 
 
 def test_snapshot_day_change_percentage_zero_qty():
@@ -385,3 +389,108 @@ def test_snapshot_day_change_percentage_negative_move():
     assert row.day_change_percentage == pytest.approx(-20.0), \
         f"Expected -20.0%, got {row.day_change_percentage}"
     assert row.day_change_val == pytest.approx(-20000.0)
+
+
+# ---------------------------------------------------------------------------
+# NSE settlement fix — day_change_val recomputed from previous_close
+# ---------------------------------------------------------------------------
+
+def test_build_holding_row_recomputes_day_change_val_when_stored_is_zero():
+    """After NSE settlement (~15:45 IST), Kite sets close_price to today's OCP.
+    A snapshot captured before settlement may have day_pnl=0.0 stored because
+    the broker's `day_change` field was 0 at that moment. But previous_close
+    holds the true yesterday's settlement. The fix: recompute from
+    (ltp - previous_close) * qty.
+
+    Scenario: RELIANCE, previous_close=2900, ltp=2950, qty=10, stored day_pnl=0.
+    Expected: day_change_val = (2950-2900)*10 = 500, not 0.
+    """
+    from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+    raw_row = (
+        "ZG0790", "RELIANCE", "NSE",
+        10, 2800.0, 2950.0,    # qty, avg_cost, ltp
+        2900.0,                # previous_close (yesterday's settlement)
+        0.0,                   # day_pnl (zeroed post-settlement)
+        1500.0,                # total_pnl
+        None,
+    )
+
+    row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
+
+    expected_dcv = (2950.0 - 2900.0) * 10  # 500.0
+    assert row.day_change_val == pytest.approx(expected_dcv), (
+        f"day_change_val={row.day_change_val} must be recomputed as "
+        f"(ltp-previous_close)*qty={expected_dcv}, not stored 0"
+    )
+    # 5th return value must also be the recomputed value (for summary aggregation)
+    assert day_pnl_f == pytest.approx(expected_dcv), (
+        f"5th return value={day_pnl_f} must match recomputed day_change_val={expected_dcv} "
+        "so the summary dcv_by_account also uses the correct value"
+    )
+
+
+def test_build_holding_row_day_change_percentage_uses_recomputed_val():
+    """day_change_percentage denominator uses previous_close × qty (not LTP).
+    Verify both numerator (recomputed) and denominator (previous_close-based).
+    """
+    from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+    raw_row = (
+        "ZG0790", "INFY", "NSE",
+        50, 1400.0, 1500.0,   # qty, avg_cost, ltp
+        1450.0,               # previous_close
+        0.0,                  # day_pnl (stale)
+        5000.0,               # total_pnl
+        None,
+    )
+
+    row, *_ = _build_holding_row_from_snapshot(raw_row)
+
+    expected_dcv = (1500.0 - 1450.0) * 50  # 2500.0
+    expected_pct = expected_dcv / (1450.0 * 50) * 100  # ~3.448%
+    assert row.day_change_val == pytest.approx(expected_dcv, rel=1e-6)
+    assert row.day_change_percentage == pytest.approx(expected_pct, rel=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_holdings_snapshot_summary_uses_recomputed_day_change_val():
+    """_holdings_snapshot summary dcv_by_account must use recomputed
+    day_change_val, not the stored (stale) day_pnl column.
+
+    Root cause: _build_holding_row_from_snapshot previously returned day_pnl_f
+    as the 5th element, which went into dcv_by_account. After fix the 5th
+    element is the recomputed day_change_val so the summary TOTAL is correct.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from datetime import datetime, timezone
+
+    captured_ts = datetime(2026, 8, 8, 10, 0, tzinfo=timezone.utc)
+    # Two holdings, both with stored day_pnl=0 but valid previous_close
+    fake_rows = [
+        ("ACC1", "RELIANCE", "NSE", 10, 2800.0, 2950.0, 2900.0, 0.0, 1500.0, captured_ts),
+        ("ACC1", "INFY",     "NSE", 50, 1400.0, 1500.0, 1450.0, 0.0, 5000.0, captured_ts),
+    ]
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = fake_rows
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.database.async_session", return_value=mock_session):
+        from backend.api.routes.holdings import _holdings_snapshot
+        resp = await _holdings_snapshot()
+
+    assert resp is not None
+    # Expected recomputed values
+    dcv_reliance = (2950.0 - 2900.0) * 10   # 500.0
+    dcv_infy     = (1500.0 - 1450.0) * 50   # 2500.0
+    expected_total_dcv = dcv_reliance + dcv_infy  # 3000.0
+
+    total_row = next(s for s in resp.summary if s.account == "TOTAL")
+    assert total_row.day_change_val == pytest.approx(expected_total_dcv, rel=1e-6), (
+        f"TOTAL day_change_val={total_row.day_change_val} must equal "
+        f"sum of recomputed per-row values={expected_total_dcv}, not 0"
+    )

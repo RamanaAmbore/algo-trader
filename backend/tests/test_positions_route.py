@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 import math
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pandas as pd
@@ -623,3 +623,109 @@ def test_positions_snapshot_excludes_yesterday_closed_qty_zero_rows():
     assert "NIFTY26JUL24500CE" in symbols, "overnight open position must appear"
     assert "NIFTY26JUL24000PE" not in symbols, \
         "yesterday's closed position must be absent (filtered by SQL date gate)"
+
+
+@pytest.mark.asyncio
+async def test_prev_batch_excludes_todays_snapshots_uses_yesterday_ltp():
+    """Verify that close_price uses yesterday's LTP (prev_ltp), not today's LTP.
+
+    When daily_book has both today's and yesterday's rows, _positions_snapshot
+    must pick yesterday's prev_ltp as close_price (not today's ltp), so that
+    day_change_val is computed as (today_ltp - yesterday_ltp) * qty, not
+    (today_ltp - today_ltp) * qty = 0.
+    """
+    import asyncio
+
+    today = date(2026, 8, 8)
+    now_dt = datetime(2026, 8, 8, 16, 15, 0, tzinfo=timezone.utc)
+
+    # Today's latest batch row: ltp=100.0, qty=10
+    today_row = (
+        "ACC1", "NIFTY26AUG24500CE", "NFO",
+        10, 80.0, 100.0,   # qty, avg_cost, ltp (today's snapshot)
+        20.0, 200.0,       # day_pnl, total_pnl
+        None,              # payload_json
+        now_dt,            # captured_at
+        98.0,              # previous_close (yesterday's settlement, frozen)
+        98.0, 180.0,       # prev_ltp, prev_settlement_pnl (from prev_batch)
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [today_row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with (
+        patch("backend.api.database.async_session", return_value=mock_session),
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian") as mock_ts,
+    ):
+        mock_ts_obj = MagicMock()
+        mock_ts_obj.date.return_value = today
+        mock_ts_obj.replace.return_value = datetime(2026, 8, 8, 0, 0, 0, tzinfo=timezone.utc)
+        mock_ts.return_value = mock_ts_obj
+        from backend.api.routes.positions import _positions_snapshot
+        result = await _positions_snapshot()
+
+    assert result is not None, "snapshot must not return None"
+    assert len(result.rows) == 1
+    row = result.rows[0]
+
+    # close_price must come from prev_ltp (98.0), not ltp (100.0)
+    assert abs(row.close_price - 98.0) < 0.001, (
+        f"close_price should be 98.0 (prev_ltp), got {row.close_price}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_prev_batch_null_ltp_rows_excluded():
+    """Verify that when prev_ltp is NULL, close_price falls back to previous_close.
+
+    When the only prior daily_book row has ltp=NULL (or prev_batch finds no row),
+    the fallback is previous_close from the main row. This guards against
+    zero-valued prev_ltp collapsing day_change_val.
+    """
+    import asyncio
+
+    today = date(2026, 8, 8)
+    now_dt = datetime(2026, 8, 8, 16, 15, 0, tzinfo=timezone.utc)
+
+    # Row with prev_ltp=NULL; previous_close=97.0 should be fallback
+    row = (
+        "ACC1", "NIFTY26AUG24500CE", "NFO",
+        5, 85.0, 100.0,    # qty, avg_cost, ltp
+        75.0, 75.0,        # day_pnl, total_pnl
+        None,              # payload_json
+        now_dt,            # captured_at
+        97.0,              # previous_close (fallback target)
+        None, None,        # prev_ltp=NULL, prev_settlement_pnl=NULL
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with (
+        patch("backend.api.database.async_session", return_value=mock_session),
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian") as mock_ts,
+    ):
+        mock_ts_obj = MagicMock()
+        mock_ts_obj.date.return_value = today
+        mock_ts_obj.replace.return_value = datetime(2026, 8, 8, 0, 0, 0, tzinfo=timezone.utc)
+        mock_ts.return_value = mock_ts_obj
+        from backend.api.routes.positions import _positions_snapshot
+        result = await _positions_snapshot()
+
+    assert result is not None
+    row = result.rows[0]
+
+    # close_price must fall back to previous_close (97.0)
+    assert abs(row.close_price - 97.0) < 0.001, (
+        f"close_price should fall back to 97.0 (previous_close), got {row.close_price}"
+    )
