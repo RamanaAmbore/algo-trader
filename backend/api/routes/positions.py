@@ -20,6 +20,7 @@ from backend.api.helpers.snapshot_gate import (
 )
 from backend.api.routes.positions_helpers import (
     apply_scope_and_mask,
+    build_row_from_snapshot_raw,
     build_snapshot_position_row,
     build_summary_from_rows,
     extract_snapshot_extras,
@@ -126,71 +127,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             f"from {snap_captured_at_dt.date()}"
         )
 
-    rows: list[PositionRow] = []
-    for (account, symbol, exchange, qty, avg_cost, ltp,
-         day_pnl, total_pnl, payload_json, captured_at, previous_close,
-         prev_ltp, prev_settlement_pnl) in raw_rows:
-        # ------------------------------------------------------------------
-        # `snapshot_extras` fallback — the top-level `day_pnl` column is set
-        # to NULL by daily_snapshot._positions_rows when the row was captured
-        # mid-session (the writer's `_is_exchange_open_at` gate is time-of-day
-        # only, so on a Saturday 15:35 IST snapshot MCX rows land as NULL
-        # even though the market is actually closed). The 15:35 IST batch
-        # then UPSERTs and clobbers Friday's good MCX day_pnl values. Reader
-        # falls back to `payload_json.snapshot_extras.day_change_val` — the
-        # raw Kite `day_change` field captured at snapshot time — so the
-        # frozen close-time value surfaces during closed hours instead of a
-        # blanket zero. See test_snapshot_day_change_extras_fallback.
-        # ------------------------------------------------------------------
-        extras = extract_snapshot_extras(payload_json)
-        # The snapshot writer (daily_snapshot._positions_rows) stores qty
-        # from raw broker.positions() — for MCX/NCO Kite ships quantity in
-        # LOTS (e.g. 1 for 1-lot CRUDEOIL).  The live path (broker_apis.
-        # fetch_positions) multiplies by `multiplier` to produce contracts
-        # before returning rows.  Apply the same factor here so snapshot
-        # and live paths are consistent (qty=100 contracts for 1-lot MCX).
-        multiplier = extract_snapshot_multiplier(payload_json)
-        effective_qty = (qty or 0) * multiplier
-        # Prefer yesterday's LTP (from daily_book prev_batch) as close_price —
-        # using snapshot's previous_close is wrong after MCX close when the
-        # broker sets it to today's settlement price, collapsing day P&L to 0.
-        # Fallback to previous_close only when prev_ltp is absent/zero.
-        prev_close_val = (
-            float(prev_ltp) if prev_ltp and float(prev_ltp) > 0
-            else (float(previous_close) if previous_close and float(previous_close) > 0 else None)
-        )
-        prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
-        # Recompute day_pnl from yesterday's EOD close when available,
-        # so grid rows show correct day delta after Kite's post-settlement
-        # close_price update zeroes out stored day_pnl.
-        # Priority:
-        #   1. Formula (ltp - prev_close) × qty when prev_close is trusted
-        #   2. Stored day_pnl column (passes None through to extras fallback
-        #      in build_snapshot_position_row when day_pnl column is NULL)
-        if prev_close_val and float(prev_close_val) > 0 and ltp:
-            computed_day_pnl: object = (float(ltp) - float(prev_close_val)) * effective_qty
-        else:
-            # Preserve None so resolve_snapshot_day_pnl / resolve_snapshot_day_pct
-            # can still apply the extras fallback when the column was NULL.
-            computed_day_pnl = day_pnl
-        # Extract product from the raw broker payload so MIS / CNC positions
-        # are reflected accurately during closed hours.  "NRML" is the safe
-        # default for any row where payload_json is missing or unparseable.
-        pj_product = "NRML"
-        if payload_json:
-            try:
-                _pj = payload_json if isinstance(payload_json, dict) else __import__('json').loads(payload_json)
-                if isinstance(_pj, dict):
-                    pj_product = _pj.get("product", "NRML") or "NRML"
-            except Exception:
-                pass
-        rows.append(build_snapshot_position_row(
-            account, symbol, exchange, effective_qty, avg_cost, ltp,
-            computed_day_pnl, total_pnl, extras,
-            previous_close=prev_close_val,
-            prev_settlement_pnl=prev_pnl_val,
-            product=pj_product,
-        ))
+    rows: list[PositionRow] = [build_row_from_snapshot_raw(r) for r in raw_rows]
 
     summary = build_summary_from_rows(rows)
 

@@ -282,6 +282,56 @@ def build_snapshot_position_row(
     )
 
 
+def extract_snapshot_product(payload_json: object) -> str:
+    """Return the Kite product type (NRML/MIS/CNC) from payload_json."""
+    if not payload_json:
+        return "NRML"
+    try:
+        pj = payload_json if isinstance(payload_json, dict) else _json.loads(payload_json)
+        if isinstance(pj, dict):
+            return pj.get("product", "NRML") or "NRML"
+    except Exception:
+        pass
+    return "NRML"
+
+
+def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
+    """Build a PositionRow from a 13-column daily_book raw snapshot tuple.
+
+    Column order: account, symbol, exchange, qty, avg_cost, ltp,
+    day_pnl, total_pnl, payload_json, captured_at, previous_close,
+    prev_ltp, prev_settlement_pnl.
+
+    Extracted from ``_positions_snapshot`` to reduce that function's CC.
+    """
+    (account, symbol, exchange, qty, avg_cost, ltp,
+     day_pnl, total_pnl, payload_json, _captured_at, previous_close,
+     prev_ltp, prev_settlement_pnl) = raw_row
+
+    extras = extract_snapshot_extras(payload_json)
+    multiplier = extract_snapshot_multiplier(payload_json)
+    effective_qty = (qty or 0) * multiplier
+
+    prev_close_val = (
+        float(prev_ltp) if prev_ltp and float(prev_ltp) > 0
+        else (float(previous_close) if previous_close and float(previous_close) > 0 else None)
+    )
+    prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
+    computed_day_pnl: object = (
+        (float(ltp) - float(prev_close_val)) * effective_qty
+        if prev_close_val and ltp
+        else day_pnl
+    )
+
+    return build_snapshot_position_row(
+        account, symbol, exchange, effective_qty, avg_cost, ltp,
+        computed_day_pnl, total_pnl, extras,
+        previous_close=prev_close_val,
+        prev_settlement_pnl=prev_pnl_val,
+        product=extract_snapshot_product(payload_json),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3. Response shaping (get_positions seams)
 # ---------------------------------------------------------------------------

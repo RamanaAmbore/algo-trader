@@ -200,16 +200,19 @@ def test_build_snapshot_position_row_accepts_previous_close_kwarg():
 
 
 def test_positions_snapshot_select_includes_previous_close():
-    """_positions_snapshot SQL includes db.previous_close and passes it to builder."""
+    """_positions_snapshot SQL includes db.previous_close; builder uses it via prev_close_val."""
     import inspect
     from backend.api.routes import positions as _pos_module
+    from backend.api.routes import positions_helpers as _helpers
 
     src = inspect.getsource(_pos_module._positions_snapshot)
     assert "db.previous_close" in src, (
         "_positions_snapshot SELECT must include db.previous_close"
     )
-    assert "previous_close=prev_close_val" in src, (
-        "_positions_snapshot must pass previous_close=prev_close_val "
+    # After CC-reduction refactor, prev_close_val preference lives in the helper
+    helper_src = inspect.getsource(_helpers.build_row_from_snapshot_raw)
+    assert "previous_close=prev_close_val" in helper_src, (
+        "build_row_from_snapshot_raw must pass previous_close=prev_close_val "
         "(with yesterday-ltp fallback) to build_snapshot_position_row"
     )
 

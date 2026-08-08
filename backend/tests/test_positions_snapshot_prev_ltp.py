@@ -172,41 +172,41 @@ async def test_positions_snapshot_prev_ltp_preference_over_previous_close():
 
 @pytest.mark.asyncio
 async def test_positions_snapshot_loop_unpacks_prev_ltp_and_prev_settlement_pnl():
-    """The loop in _positions_snapshot must unpack 13 columns (not 11).
-    Verify the tuple unpacking includes prev_ltp and prev_settlement_pnl.
+    """The per-row builder must unpack 13 columns including prev_ltp and prev_settlement_pnl.
+
+    After the CC-reduction refactor, the 13-tuple unpacking moved from the
+    _positions_snapshot loop into build_row_from_snapshot_raw (positions_helpers).
     """
     import inspect
-    from backend.api.routes import positions as _pos_module
+    from backend.api.routes import positions_helpers as _helpers
 
-    src = inspect.getsource(_pos_module._positions_snapshot)
-    # Find the loop over raw_rows
-    assert "for (account, symbol, exchange, qty, avg_cost, ltp," in src, (
-        "Loop must unpack from raw_rows"
+    src = inspect.getsource(_helpers.build_row_from_snapshot_raw)
+    # Must unpack the 13-column tuple
+    assert "account, symbol, exchange, qty, avg_cost, ltp," in src, (
+        "build_row_from_snapshot_raw must unpack 13-column tuple"
     )
-    # Must unpack prev_ltp and prev_settlement_pnl (columns 11 and 12)
-    assert "prev_ltp, prev_settlement_pnl) in raw_rows:" in src, (
-        "Loop tuple unpacking must include prev_ltp and prev_settlement_pnl"
+    assert "prev_ltp, prev_settlement_pnl" in src, (
+        "Unpacking must include prev_ltp and prev_settlement_pnl (columns 11 and 12)"
     )
 
 
 @pytest.mark.asyncio
 async def test_positions_snapshot_prev_close_val_prefers_prev_ltp():
-    """The preference logic in _positions_snapshot must prefer prev_ltp > 0
-    over snapshot's previous_close.
+    """The preference logic must prefer prev_ltp > 0 over snapshot's previous_close.
+
+    After the CC-reduction refactor, this logic lives in build_row_from_snapshot_raw
+    (positions_helpers) rather than _positions_snapshot.
     """
     import inspect
-    from backend.api.routes import positions as _pos_module
+    from backend.api.routes import positions_helpers as _helpers
 
-    src = inspect.getsource(_pos_module._positions_snapshot)
-    # Find the prev_close_val computation
+    src = inspect.getsource(_helpers.build_row_from_snapshot_raw)
     assert "prev_close_val = (" in src, (
-        "_positions_snapshot must compute prev_close_val"
+        "build_row_from_snapshot_raw must compute prev_close_val"
     )
-    # Must check prev_ltp first
     assert "float(prev_ltp) if prev_ltp and float(prev_ltp) > 0" in src, (
         "prev_close_val must prefer prev_ltp > 0 as primary choice"
     )
-    # Must use previous_close as fallback
     assert "else (float(previous_close)" in src, (
         "prev_close_val must fallback to previous_close when prev_ltp is absent/zero"
     )
