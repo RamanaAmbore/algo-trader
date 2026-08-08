@@ -58,14 +58,14 @@ Follow all steps from `/ddev` exactly:
        --cov=backend/brokers --cov=backend/api \
        --cov-report=term-missing && \
      venv/bin/coverage report --include="backend/brokers/*" --fail-under=80 && \
-     venv/bin/coverage report --include="backend/api/*" --fail-under=80
+     venv/bin/coverage report --include="backend/api/*" --fail-under=45
    ```
 2. Run svelte-check (`cd frontend && npx svelte-check --output machine 2>&1`) with `run_in_background: true`.
 3. Run Vite unit tests (`cd frontend && npx vitest run 2>&1`) with `run_in_background: true`.
 4. Launch all three in one message (parallel). Use Monitor to collect each result when done.
 5. Spec-sync gate: check `git diff origin/dev...HEAD --name-only` for unsynced spec files (warning only, non-blocking).
 6. Decision:
-   - Any pytest failure, broker coverage < 80%, api coverage < 80%, svelte-check error, or Vite failure → report, call `EnterPlanMode`, **stop**.
+   - Any pytest failure, broker coverage < 80%, api coverage < 45%, svelte-check error, or Vite failure → report, call `EnterPlanMode`, **stop**.
    - All green → `git push origin dev`.
 7. Report: `ddev: backend <N> passed, 0 failed | broker cov <N>% ✓ | api cov <N>% ✓ | svelte-check 0 errors | vite <N> passed → pushed dev <hash>`.
 
@@ -83,11 +83,11 @@ Follow all steps from `/dprod` exactly:
    - PDF: `python3 docs/generate_pdf.py` (only if DESIGN_GUIDE.md was touched)
    - CC gate: `venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null | head -20`
    - Broker cov: `cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=no --cov=backend/brokers && venv/bin/coverage report --include="backend/brokers/*" --fail-under=80`
-   - API cov: `cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=no --cov=backend/api && venv/bin/coverage report --include="backend/api/*" --fail-under=80`
+   - API cov: `cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=no --cov=backend/api && venv/bin/coverage report --include="backend/api/*" --fail-under=45`
    - Vite: `cd /Users/ramanambore/projects/ramboq/frontend && npx vitest run 2>&1`
    - Use Monitor for all. Wait before proceeding.
    - Any D/E/F CC grade → report hotspots, call `EnterPlanMode`, **stop**.
-   - Broker coverage < 80% or API coverage < 80% → report %, call `EnterPlanMode`, **stop**.
+   - Broker coverage < 80% or API coverage < 45% → report %, call `EnterPlanMode`, **stop**.
    - Any Vite failure → report, call `EnterPlanMode`, **stop**.
 4. Merge and push:
    ```

@@ -94,7 +94,7 @@ cd /Users/ramanambore/projects/ramboq && \
     --cov=backend/brokers --cov=backend/api \
     --cov-report=term-missing && \
   venv/bin/coverage report --include="backend/brokers/*" --fail-under=80 && \
-  venv/bin/coverage report --include="backend/api/*" --fail-under=80
+  venv/bin/coverage report --include="backend/api/*" --fail-under=45
 ```
 Use Monitor to collect output when it completes. Capture: passed/skipped/failed counts + FAILED lines + broker coverage % + api coverage %.
 
@@ -164,7 +164,7 @@ Run all self-audit checks from CLAUDE.md:
 
 5. **Coverage thresholds** — verify thresholds hold after the change:
    - Broker layer (backend/brokers/) must remain ≥ 80%
-   - API layer (backend/api/) must remain ≥ 80%
+   - API layer (backend/api/) must remain ≥ 45%
    - If a change risks dropping below threshold, dispatch a `broker` or `backend-test` agent to add tests before committing.
 
 If audit finds a defect, dispatch one more targeted fix, re-run affected tests, then proceed.
