@@ -21,6 +21,7 @@ Code, tests, and documentation must stay in sync with this file.
 7.1 [Market-Data Backfill Pipeline](#71-market-data-backfill-pipeline)
 7.2 [Instruments & Token-Map Cache](#72-instruments--token-map-cache)
 7.3 [Daily Snapshot Orphan Cleanup](#73-daily-snapshot-orphan-cleanup)
+7.3.1 [Firm NAV Computation & Closed-Exchange LTP Overlay](#731-firm-nav-computation--closed-exchange-ltp-overlay)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
@@ -376,6 +377,48 @@ persisted in yesterday's snapshot row.
 Closed positions no longer appear in the UI after settlement, including settled options from 
 prior-day snapshots. The `_positions_snapshot()` route query returns only live positions + 
 their prior-session state, providing an accurate real-time view without stale entries.
+
+---
+
+## 7.3.1 Firm NAV Computation & Closed-Exchange LTP Overlay
+
+**File**: `backend/api/algo/nav.py` — `compute_firm_nav()` + `_fetch_holdings_phase()`
+
+Firm NAV calculation (v4 formula: `cash_total + positions_mtm + holdings_mtm`) ensures
+that when an exchange closes, both the `/api/holdings` route and the daily NAV snapshot
+use **the same LTP** — a DB snapshot LTP captured at last market close, not a stale
+broker response.
+
+### Holdings phase with snapshot overlay
+
+`_fetch_holdings_phase()` (called by `compute_firm_nav()`):
+
+1. Fetches holdings from all broker accounts via `fetch_holdings()`
+2. **NEW (Aug 2026)**: Calls `latest_snapshot_ltp_map("holdings")` to fetch the DB-backed
+   LTP map for all holdings symbols (captures snapshots across all exchanges from the
+   most recent `daily_book` row per account/symbol)
+3. **NEW (Aug 2026)**: Applies `_overlay_closed_exchange_ltp(df, snap_map)` to each
+   holdings DataFrame before summing `cur_val`
+
+### Overlay logic
+
+`_overlay_closed_exchange_ltp()` iterates each row in the holdings DataFrame:
+- If the exchange is **open now**, use broker `cur_val` (live LTP × qty)
+- If the exchange is **closed now**, look up `(account, symbol)` in the snapshot map
+  - If a snapshot LTP exists and is positive, **recalculate** `cur_val = snapshot_ltp × qty`
+  - Otherwise, fall back to broker `cur_val` (may be stale, but fail-open)
+
+This mirrors the same overlay applied in `_overlay_snapshot_for_closed_exchanges()` in
+`backend/api/routes/holdings.py` (the `/api/holdings` route). Both now use the
+identical snapshot LTP when an exchange is closed.
+
+### Impact
+
+**Pre-session divergence eliminated (Aug 2026)**: Before market open, the firm NAV
+calculation and the holdings grid now show the same values, eliminating the ~6L
+(60-lakh) pre-session NAV divergence that occurred when firm NAV used live broker LTPs
+(which had not yet updated to the new session's opening levels) while the holdings route
+used frozen DB snapshots.
 
 ---
 
