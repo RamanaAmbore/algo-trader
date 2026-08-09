@@ -1,53 +1,3 @@
-# Plan: doc(orders): ORDER_LIFECYCLE.md — stages, reconciliation, gaps
-
-## Context
-
-Comprehensive audit of the RamboQuant order system across placement, template attachment,
-broker synchronisation, reconciliation, and the open/close (intent) convention. Three
-explore agents mapped every entry point, validation step, state transition, event emission,
-and broker adapter path. Two critical reconciliation gaps were found — documented below.
-
-The deliverable is `docs/audits/ORDER_LIFECYCLE.md` — a durable reference for the full
-order lifecycle so operators and developers can reason about where an order is at any stage.
-
----
-
-## Task
-
-Create `docs/audits/ORDER_LIFECYCLE.md` with the content specified in this plan (section
-"Document Content"). No source code changes. No test changes.
-
-## Agents
-
-- doc: Write `docs/audits/ORDER_LIFECYCLE.md` using the full content in the "Document
-  Content" section below. Do not truncate or restructure. Copy faithfully.
-- backend: skip
-- frontend: skip
-- broker: skip
-- backend-test: skip
-- playwright: skip
-
-## Tests
-
-- pytest: no
-- svelte-check: no
-- playwright: no
-
-## Commit message
-
-docs: add ORDER_LIFECYCLE.md — full order lifecycle audit with reconciliation gap analysis
-
-## Done when
-
-`docs/audits/ORDER_LIFECYCLE.md` exists and contains all sections through Gap Analysis.
-
----
-
-## Document Content
-
-Paste verbatim into `docs/audits/ORDER_LIFECYCLE.md`:
-
-```markdown
 # RamboQuant Order Lifecycle Reference
 
 **Audit date:** 2026-08-09  
@@ -184,6 +134,7 @@ Both paper fills (paper engine detect bid/ask cross) and live fills (broker post
    priority="urgent" (`orders_place.py:625`).
 
 ### Template attach guards
+
 | Guard | Location | Action |
 |---|---|---|
 | Off-hours wing gate | `template_attach.py:229` | Defer wing; GTT-only plans allowed 24×7 |
@@ -191,6 +142,7 @@ Both paper fills (paper engine detect bid/ask cross) and live fills (broker post
 | GTT trigger direction | `orders_place.py:228` | Warn if TP/SL deviate > 50% from fill |
 
 ### GTT background tracking
+
 | Task | Cycle | File |
 |---|---|---|
 | OCO watcher (`_task_oco_pair_watcher`) | Every 15s | `background.py:2920` |
@@ -225,6 +177,7 @@ lag is up to 30s.
 | CANCEL_FAILED | No | Failed kill attempt |
 
 ### AlgoOrder event kinds
+
 `placed · chase_modify · fill · unfill · reject · cancel · postback · margin_check ·
 preflight_ok · preflight_block · error`
 
@@ -317,6 +270,7 @@ requires the 15s cache to expire or a forced refresh.
 ## 12. Gap Analysis
 
 ### GAP-1 ⚠️ CRITICAL — No scheduled reconciliation for non-chased OPEN orders
+
 **Risk:** An OPEN order that fills at the broker but whose postback is lost will remain OPEN
 indefinitely. This means: wrong position sizing on subsequent orders (capacity guard uses
 stale open_notional), GTT/template never fires (exits not armed), P&L mismatch.
@@ -324,7 +278,7 @@ stale open_notional), GTT/template never fires (exits not armed), P&L mismatch.
 **Affected path:** Any LIVE order placed without chase=True, or a chase that completes before
 the postback arrives.
 
-**Current coverage:** chase polling (20s), chase inline reconcile, manual admin reconcile.
+**Current coverage:** chase polling (20s), chase inline reconcile, manual admin reconcile.  
 **Gap:** No automatic reconciliation for rows where chase is not active.
 
 **Recommended fix:** Background task that every 5 minutes queries all OPEN rows with
@@ -334,16 +288,18 @@ applies any fill/cancel. Write to `_task_open_order_watchdog` in `background.py`
 ---
 
 ### GAP-2 ⚠️ HIGH — GTT fire detection lag (up to 30s)
+
 **Risk:** Between a GTT trigger firing at Kite and RamboQuant detecting it via polling, the
 position can move significantly (especially MCX futures after sharp moves).
 
-**Current:** OCO watcher (15s), trail updater (30s).
-**Gap:** No webhook for GTT events from Kite. 30s worst-case window.
+**Current:** OCO watcher (15s), trail updater (30s).  
+**Gap:** No webhook for GTT events from Kite. 30s worst-case window.  
 **Mitigation possible:** Reduce OCO watcher to 5s; add optional user-triggered GTT refresh.
 
 ---
 
 ### GAP-3 — No alert on order cancellation
+
 **Risk:** If a live order is cancelled by the broker (e.g., IOC expired, day order at EOD),
 the operator has no notification. They discover it on the next manual refresh.
 
@@ -353,6 +309,7 @@ ntfy/Telegram alert.
 ---
 
 ### GAP-4 — Frontend order status is polling-based (15s lag)
+
 **Risk:** After a fill, the operator may see OPEN status for up to 15s. The `position_filled`
 WS event patches position P&L but does NOT update the order row in the orders page.
 
@@ -363,6 +320,7 @@ the orders table cell without a full page reload.
 ---
 
 ### GAP-5 — No "submitted to broker" event before broker response
+
 **Risk:** If the HTTP connection to Kite times out mid-submit, no `AlgoOrderEvent` records
 the submission attempt. The AlgoOrder row is created with `status=OPEN` but no "placed"
 event if the broker call throws before `write_event("placed")` fires.
@@ -373,28 +331,23 @@ is called (even in a try/finally) so the event log shows what happened.
 ---
 
 ### GAP-6 — Agent-driven order events not visible in per-order event log
+
 **Context:** `actions.py` logs to `AgentEvent` table (agent engine), not `AlgoOrderEvent`.
 So `/api/orders/{id}/events` won't show the agent context (which agent, which condition, which
 strategy) that triggered the order.
 
-**Impact:** Debugging agent-fired orders requires cross-referencing two tables.
+**Impact:** Debugging agent-fired orders requires cross-referencing two tables.  
 **Recommended fix:** On agent-driven order placement, write one `AlgoOrderEvent(kind="agent_trigger",
 message=agent.slug + condition.label)` linked to the AlgoOrder row.
 
 ---
 
 ### GAP-7 (Low) — Missed GTT cancellation on manual position close
+
 **Risk:** Operator manually closes a position via ticket; the attached GTTs are supposed to
 be cancelled but `cancel_gtt()` call can fail silently. `attached_gtts_json` still shows
 the GTT IDs as active.
 
-**Current:** Logged but no background cleanup or retry.
+**Current:** Logged but no background cleanup or retry.  
 **Recommended fix:** On failed GTT cancel, write a "gtt_cancel_failed" AlgoOrderEvent and
 schedule one retry via background task.
-```
-
----
-
-## Done when
-
-`docs/audits/ORDER_LIFECYCLE.md` is created with all 12 sections (§1–§12 + Gap Analysis).
