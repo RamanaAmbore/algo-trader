@@ -1707,6 +1707,54 @@ being silently truncated to 50 lots after a restart.
 - `backend/api/background.py::recover_live_chases()` — recovery handler
 - `backend/api/background.py::on_startup()` — calls recovery on app boot (line ~4953)
 
+### 7.2 Order lifecycle events — audit trail per order
+
+`backend/api/algo/order_events.py` exports `write_event(order_id, kind, detail)` — a
+fire-and-forget journal entry for every significant order event. Four event kinds fire
+automatically on the live path:
+
+| Kind | When | Caller | Detail example |
+|---|---|---|---|
+| `placed` | After live broker.place_order succeeds | `_opp_live_handle_success` in `orders_place.py` | `"LIVE placed as order_id=12345"` |
+| `agent_trigger` | After live agent action fires (cancel, modify, etc.) | `_write_live_order` in `actions.py` | `"loss-alert: cancel at -₹5K"` |
+| `reconcile` | During open-order watchdog reconcile (if status changed) | `_rco_reconcile_account` in `orders.py` | `"reconciled: broker returned FILLED"` |
+| (implicit via audit log) | On postback / chase terminal / manual cancel | Postback/chase/UI | Captured by audit_log middleware |
+
+Events live in the `algo_order_events` table (per-order timeline, 90-day retention) and
+surface in the Order Activity panel and `/admin/history` drill-through. Kind `"agent_trigger"`
+is valued for post-mortem — "why did this agent fire when it did?" — and links `agent.slug`
+to the trigger event for compliance.
+
+**Implementation:** All writers use `backend/api/audit.py::write_event` (async fire-and-forget);
+failures swallow to logger.warning, never block the request.
+
+**Files:**
+- `backend/api/algo/order_events.py::write_event` — journal writer
+- `backend/api/models.py::AlgoOrderEvent` — schema
+- `backend/api/routes/orders.py` — postback / reconcile event callers
+- `backend/api/routes/orders_place.py::_opp_live_handle_success` — placed event for live orders
+
+### 7.3 Cancel alert on postback
+
+`backend/api/routes/orders.py::_opp_send_cancel_alert` fires fire-and-forget on every
+postback with `status='CANCELLED'`. Sends ntfy alert (Telegram / ntfy.sh) with masked
+account, side (BUY/SELL), qty, symbol, and status reason.
+
+Pre-fix: operator could see an order silently cancel at the broker (e.g., Kite GTT
+rejection, Dhan order kill) with no notification. Now every cancel surfaces immediately.
+
+Alert payload masks the account number (e.g., `ZG***`) and includes readable fields:
+```
+Order cancelled — symbol=NIFTY50 side=BUY qty=1 account=ZG*** reason=GTT_REJECTED
+```
+
+Called from `_postback_broadcast_fanout` (inside `order_postback` route) with no latency
+added to the broker ack path (async dispatch via `asyncio.create_task`).
+
+**Files:**
+- `backend/api/routes/orders.py::_opp_send_cancel_alert` — alert sender
+- `backend/api/routes/orders.py::_postback_broadcast_fanout` — invocation point
+
 ---
 
 ## 8. The order/chase/template tripod
@@ -2822,8 +2870,9 @@ gantt
 
 **Tasks that touch operator orders:**
 - `_task_performance` (5min) — fetches positions/holdings/funds; runs `agent_engine.run_cycle`
-- `_task_oco_pair_watcher` (15s) — Groww emulated OCO sibling cancel
+- `_task_oco_pair_watcher` (5s) — Groww emulated OCO sibling cancel
 - `_task_trail_stop` (30s) — Dhan + Kite trail SL ratchet
+- `_task_open_order_watchdog` (5min) — reconcile stale OPEN live orders; fire template attach on fills
 - `_task_ticker_watchdog` (30s) — KiteTicker reconnect on disconnect
 
 **Tasks that update closed-hours snapshots:**
@@ -2928,6 +2977,33 @@ second).
 - `backend/api/background.py::_task_closed_hours_refresh`
 - `backend/api/algo/daily_snapshot.py::snapshot_daily_book` — broker data collection
 - `backend/api/cache.py::invalidate_batch` — cache clear
+
+### 20.5 Open order watchdog — reconcile stale OPEN orders
+
+`backend/api/background.py::_task_open_order_watchdog` runs every 5 minutes (configurable:
+`orders.open_order_watchdog_seconds`, default 300) to reconcile OPEN live orders that were
+never chased — typically due to a service restart or broker error during order placement.
+
+**Query:** Every 5 min, fetch all AlgoOrder rows where `status='OPEN'`, `mode='live'`,
+`created_at < 5 minutes ago` (cutoff guards against false reconcile during initial chase).
+
+**Reconcile per account:** Group rows by account, then call `_rco_reconcile_account(account, rows)`
+for each. The function queries broker order book, compares against local state, and updates rows:
+- **FILLED**: appended to attach queue for template-attach fire (take-profit / stop-loss seeder)
+- **CANCELLED**: marked `status='CANCELLED'` in DB
+- **UNFILLED**: no change (still OPEN; will retry on next 5-min tick)
+
+**Template attach flow:** After DB commit, rows marked FILLED are passed to
+`_maybe_fire_template_attach_for_reconcile`, which fires GTT legs asynchronously
+(same path as live-postback attach).
+
+**Best-effort shape:** Any iteration error is logged at WARNING and skipped; the next
+5-min tick retries. A single account error doesn't block other accounts.
+
+**Files:**
+- `backend/api/background.py::_task_open_order_watchdog` — poller + orchestration
+- `backend/api/routes/orders.py::_rco_reconcile_account` — broker reconcile + DB update
+- `backend/api/routes/orders_place.py::_maybe_fire_template_attach_for_reconcile` — template fire
 
 ---
 
