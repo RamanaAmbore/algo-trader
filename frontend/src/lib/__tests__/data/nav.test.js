@@ -5,6 +5,7 @@ import {
   livePositionDayPnl,
   navTotalRow,
   navByAccount,
+  positionsPnlFiltered,
 } from '$lib/data/nav.js';
 
 // ── baseDayPnlForPosition ────────────────────────────────────────────────────
@@ -243,5 +244,43 @@ describe('navByAccount', () => {
     const rows = navByAccount(['ZZ'], [], [], []);
     expect(rows[0].cash).toBe(0);
     expect(rows[0].nav).toBe(0);
+  });
+});
+
+// ── positionsPnlFiltered ─────────────────────────────────────────────────────
+
+describe('positionsPnlFiltered', () => {
+  it('is exported as a function', () => {
+    expect(typeof positionsPnlFiltered).toBe('function');
+  });
+
+  it('sums pnl + dayTotal for F&O exchanges only (NFO, BFO, MCX, CDS)', () => {
+    const positions = [
+      { exchange: 'NFO', pnl: 3000, prev_settlement_pnl: 1000 }, // dayTotal = 3000 - 1000 = 2000
+      { exchange: 'MCX', pnl: 1500, prev_settlement_pnl: 500 },  // dayTotal = 1500 - 500 = 1000
+      { exchange: 'NSE', pnl: 999,  prev_settlement_pnl: 0 },    // excluded (equity)
+    ];
+    const { pnlTotal, dayTotal } = positionsPnlFiltered(positions);
+    expect(pnlTotal).toBe(4500);  // 3000 + 1500
+    expect(dayTotal).toBe(3000);  // 2000 + 1000
+  });
+
+  it('excludes NSE/BSE (equity) exchanges entirely', () => {
+    const positions = [
+      { exchange: 'NSE', pnl: 10000, prev_settlement_pnl: 0 },
+      { exchange: 'BSE', pnl: 5000,  prev_settlement_pnl: 0 },
+    ];
+    const { pnlTotal, dayTotal } = positionsPnlFiltered(positions);
+    expect(pnlTotal).toBe(0);
+    expect(dayTotal).toBe(0);
+  });
+
+  it('null / undefined positions → zeros', () => {
+    expect(positionsPnlFiltered(null)).toEqual({ pnlTotal: 0, dayTotal: 0 });
+    expect(positionsPnlFiltered(undefined)).toEqual({ pnlTotal: 0, dayTotal: 0 });
+  });
+
+  it('empty array → zeros', () => {
+    expect(positionsPnlFiltered([])).toEqual({ pnlTotal: 0, dayTotal: 0 });
   });
 });

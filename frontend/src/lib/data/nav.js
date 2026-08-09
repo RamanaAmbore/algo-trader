@@ -203,7 +203,7 @@ export function livePositionDayPnl({ closePx, pollLtp, qty, avg, dcvRow }, liveL
  * @param {Array<{exchange?: string, pnl?: number, day_change_val?: number, overnight_quantity?: number}>} positions
  * @returns {{ pnlTotal: number, dayTotal: number }}
  */
-function positionsPnlFiltered(positions) {
+export function positionsPnlFiltered(positions) {
   let pnlTotal = 0;
   let dayTotal  = 0;
   for (const p of (positions ?? [])) {

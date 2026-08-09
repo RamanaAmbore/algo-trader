@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.9 — 2026-08-08  
+**Version**: 1.10 — 2026-08-09  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -317,7 +317,37 @@ LKG cache marked with `last_price_stale=True` and `account_stale=True`.
 
 ---
 
-## 7.3 Daily Snapshot Orphan Cleanup
+## 7.3 Daily Snapshot — MCX Lot-Scale Day P&L Fix
+
+**File**: `backend/api/algo/daily_snapshot.py` — `_snap_compute_day_pnl()`
+
+When computing day P&L for intraday positions, `_snap_compute_day_pnl()` now accepts 
+an optional `multiplier` parameter (default=1). When a multiplier is provided (as for MCX 
+positions with `lot_size > 1`), the function scales `overnight_quantity`, 
+`day_buy_quantity`, and `day_sell_quantity` by the lot_size before computing the decomposed 
+intraday P&L formula:
+
+```python
+def _snap_compute_day_pnl(row, multiplier=1):
+  oq = row.get("overnight_quantity", 0) * multiplier
+  dbq = row.get("day_buy_quantity", 0) * multiplier
+  dsq = row.get("day_sell_quantity", 0) * multiplier
+  return decomposed_intraday_pnl(oq, dbq, dsq, row["ltp"], row.get("avg_price"))
+```
+
+**Impact**: For MCX positions with large lot sizes (CRUDEOIL lot=100, etc.), the stored 
+`daily_book.day_pnl` is now correct in ₹ terms on first appearance. Previously, when a 
+brand-new MCX position had no prior `daily_book` row, the snapshot would compute day P&L 
+using the raw contract quantity (e.g. 1 contract) without scaling by lot size, resulting 
+in a value off by 100× (₹50 instead of ₹5000). This fix ensures the formula always 
+operates in the correct unit (lots, not raw contracts).
+
+**Caller responsibility**: Snapshot writers must read `multiplier` from broker response 
+(mapped from `lot_size` field) and pass it via `r.get("multiplier", 1)` to the function.
+
+---
+
+## 7.3a Daily Snapshot Orphan Cleanup
 
 **File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` + `_delete_orphan_positions()` + `_delete_prior_orphan_positions()`
 
@@ -1127,3 +1157,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-08 | v1.11 Closed-hours snapshot consolidation (commit TBD): Added §16 Closed-Hours Cache Refresh Pattern documenting consolidation of per-30m closed-hours writes into `_task_daily_snapshot()` settlement passes only. `_task_closed_hours_refresh()` no longer calls `snapshot_daily_book()` — daily book writes happen exclusively at NSE (16:15 IST) and MCX (00:15 IST) settlement passes, plus startup snapshot when both markets closed. Broker cache busting still active during closed hours to ensure fresh data on next open, separate from snapshot persistence. Rationale: settlement writes are meaningful only when broker settlement prices available; mid-session writes dilute snapshots with stale LTPs. |
 | 2026-08-06 | v1.11 Holdings snapshot day_change_percentage formula fix (commit 13ec7c18): Added §7.4 Holdings Snapshot Day Change Percentage Formula documenting the corrected formula: `day_pnl / (previous_close × qty) × 100` (uses `previous_close` denominator, not LTP). Fallback to `avg_cost` when `previous_close` is zero/missing. Added I24 invariant. SQL now selects `db.previous_close` from daily_book; fixes distortion where using LTP inflated negatives and understated positives. |
 | 2026-08-06 | v1.12 Dhan holdings day_pnl fix (commit a737b1e2): Added subsection to §7.4 documenting Dhan `close_price=0` handling and backfill recompute. `_backfill_recompute_derived()` now accepts `close_was_missing: bool` flag; when True, recomputes `day_change = ltp - real_close` unconditionally to override stale Dhan adapter value. Added subsection on daily_book `day_pnl` storing total P&L (not per-share change). Added I25 and I26 invariants capturing `close_was_missing` detection and total-P&L storage convention. Fixes Dhan holdings snapshot storing incorrect day_pnl (e.g. 3952 instead of -28) when `close_price` was patched from zero. |
+| 2026-08-09 | v1.10 MCX lot-scale day P&L fix (commit TBD): Added §7.3 Daily Snapshot — MCX Lot-Scale Day P&L Fix documenting `_snap_compute_day_pnl()` `multiplier` parameter (default=1). When provided, scales `overnight_quantity`, `day_buy_quantity`, `day_sell_quantity` by lot_size before computing decomposed intraday P&L formula. Fixes brand-new MCX positions (CRUDEOIL lot=100) showing day_pnl off by 100× (₹50 instead of ₹5000) on first snapshot appearance. Caller responsibility: snapshot writers pass `r.get("multiplier", 1)` via lot_size field. Holdings snapshot day_change now computed from price diff × qty via `prev_batch` CTE (same as positions). |
