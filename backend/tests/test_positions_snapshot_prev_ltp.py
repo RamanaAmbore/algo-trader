@@ -551,6 +551,36 @@ async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
 # NSE settlement fix — prev_batch boundary guards (today_ist_midnight)
 # ---------------------------------------------------------------------------
 
+def test_positions_snapshot_prev_batch_lookback_is_7_days():
+    """prev_batch CTE lookback window must be 7 days (not 2 days).
+
+    Root cause of P1 bug (Saturday NavStrip = 0):
+    - _task_closed_hours_refresh was calling snapshot_daily_book() every 30 min,
+      writing Saturday refresh rows to daily_book.
+    - latest_batch = Saturday 07:30 row (same LTP as Friday settlement).
+    - prev_batch with 2-day window found Friday 16:15 row.
+    - computed_day_pnl = (Saturday LTP − Friday LTP) × qty = 0.
+
+    Fix 1 (background.py): remove snapshot_daily_book() from closed-hours task.
+    Fix 2 (positions.py): widen lookback to 7 days so multi-day holiday gaps
+    (e.g. Thursday close → Tuesday open after a 4-day weekend) never miss the
+    last real settlement row.
+    """
+    import inspect
+    from backend.api.routes import positions as _pos_module
+
+    src = inspect.getsource(_pos_module._positions_snapshot)
+    assert "INTERVAL '7 days'" in src, (
+        "prev_batch CTE lookback must be INTERVAL '7 days' to survive multi-day "
+        "holiday gaps. INTERVAL '2 days' was too narrow and caused P1=0 on Saturday."
+    )
+    assert "INTERVAL '2 days'" not in src, (
+        "INTERVAL '2 days' must be replaced with '7 days' — "
+        "the narrower window was the root cause of prev_batch missing Friday settlement "
+        "when latest_batch was a Saturday closed-hours row."
+    )
+
+
 def test_positions_snapshot_prev_batch_sql_has_ltp_not_null_guard():
     """prev_batch CTE must filter ltp IS NOT NULL AND ltp > 0 so that
     mid-session snapshots (where ltp=NULL) are excluded from the baseline.

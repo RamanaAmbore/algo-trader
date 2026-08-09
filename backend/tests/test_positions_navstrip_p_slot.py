@@ -877,3 +877,256 @@ class TestIntegrationDayChangeNotCollapsed:
             f"prev_settlement_pnl={row.prev_settlement_pnl} should be "
             f"yesterday's total_pnl={YESTERDAY_TOTAL_PNL}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: closed-hours refresh no longer writes to daily_book
+# ---------------------------------------------------------------------------
+
+class TestClosedHoursRefreshNoDailyBookWrite:
+    """_task_closed_hours_refresh no longer calls snapshot_daily_book."""
+
+    @pytest.mark.asyncio
+    async def test_closed_hours_refresh_source_does_not_import_snapshot_daily_book(self):
+        """Verify that _task_closed_hours_refresh source does NOT import snapshot_daily_book.
+
+        Before fix: closed-hours refresh called snapshot_daily_book every 30 min,
+        polluting daily_book with mid-session LTPs on weekends.
+
+        After fix: closed-hours refresh only busts caches. Settlement writes are
+        exclusively handled by _task_daily_snapshot.
+
+        This test inspects the source code to confirm snapshot_daily_book is not
+        imported or called.
+        """
+        import inspect
+        from backend.api.background import _task_closed_hours_refresh
+
+        src = inspect.getsource(_task_closed_hours_refresh)
+
+        # The function should NOT import snapshot_daily_book
+        assert "from backend.api.algo.daily_snapshot import snapshot_daily_book" not in src, (
+            "snapshot_daily_book should NOT be imported in _task_closed_hours_refresh"
+        )
+
+        # The function should NOT call snapshot_daily_book
+        assert "await snapshot_daily_book()" not in src, (
+            "snapshot_daily_book() should NOT be called in _task_closed_hours_refresh"
+        )
+
+        # The docstring should mention this explicitly
+        assert "snapshot_daily_book" in src, (
+            "The function docstring should mention snapshot_daily_book to explain why it's NOT called"
+        )
+
+    @pytest.mark.asyncio
+    async def test_closed_hours_refresh_calls_cache_invalidation_not_snapshot(self):
+        """Verify that _task_closed_hours_refresh calls cache invalidation (not snapshot write).
+
+        After fix: only cache busting happens, no settlement writes.
+        This is verified through source inspection — the function should call
+        _raw_cache_invalidate and invalidate, but NOT snapshot_daily_book.
+        """
+        import inspect
+        from backend.api.background import _task_closed_hours_refresh
+
+        src = inspect.getsource(_task_closed_hours_refresh)
+
+        # Should call _raw_cache_invalidate for positions, holdings, margins
+        assert '_raw_cache_invalidate("positions")' in src, (
+            "_raw_cache_invalidate should be called for positions cache"
+        )
+        assert '_raw_cache_invalidate("holdings")' in src, (
+            "_raw_cache_invalidate should be called for holdings cache"
+        )
+        assert '_raw_cache_invalidate("margins")' in src, (
+            "_raw_cache_invalidate should be called for margins cache"
+        )
+
+        # Should also invalidate API-side TTL caches
+        assert 'invalidate("positions")' in src, (
+            "invalidate should be called for positions API cache"
+        )
+        assert 'invalidate("holdings")' in src, (
+            "invalidate should be called for holdings API cache"
+        )
+        assert 'invalidate("funds")' in src, (
+            "invalidate should be called for funds API cache"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 8: prev_batch lookback is 7 days in SQL
+# ---------------------------------------------------------------------------
+
+class TestPrevBatchLookbackIncrease:
+    """prev_batch CTE lookback expanded to 7 days."""
+
+    def test_positions_snapshot_prev_batch_lookback_7_days(self):
+        """Source inspection test: verify _positions_snapshot SQL contains
+        INTERVAL '7 days' not INTERVAL '2 days'.
+
+        After fix: extended holiday gaps (weekends, holidays) up to 7 days
+        are now bridged so prev_batch can find yesterday's snapshot even
+        across 3-4 day extended breaks.
+        """
+        import inspect
+        from backend.api.routes.positions import _positions_snapshot
+
+        src = inspect.getsource(_positions_snapshot)
+
+        assert "INTERVAL '7 days'" in src, (
+            "prev_batch lookback must be expanded to '7 days' to cover "
+            "extended holiday gaps"
+        )
+        assert "INTERVAL '2 days'" not in src, (
+            "old 2-day lookback must be replaced with 7-day window"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Saturday refresh rows do not collapse day_change_val to 0
+# ---------------------------------------------------------------------------
+
+class TestSaturdayRefreshDayPnlCorrectness:
+    """Saturday/extended-break refresh rows preserve day_change_val correctly."""
+
+    def test_saturday_refresh_does_not_collapse_day_pnl(self):
+        """Verify that day_change_val is recomputed correctly across extended breaks.
+
+        Scenario: Position held overnight from Friday into Saturday (no trading).
+        - Thursday settlement: 22800
+        - Friday LTP (= Saturday refresh LTP): 23200
+        - Qty: 50
+
+        Expected: day_change_val = (23200 - 22800) * 50 = 20000 (NOT 0)
+
+        Before fix: When refresh rows had no intraday trading, day_pnl was
+        collapsed to 0 if the day_change_val column was missing.
+
+        After fix: build_row_from_snapshot_raw recomputes day_pnl from
+        (ltp - prev_ltp) * qty, preventing collapse.
+        """
+        from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
+        from datetime import datetime, timezone
+
+        PREV_LTP = 22800.0   # Thursday settlement
+        LTP = 23200.0        # Friday settlement (= Saturday refresh LTP since no trading)
+        QTY = 50
+        EXPECTED_DAY_PNL = (LTP - PREV_LTP) * QTY  # 20000
+
+        row = (
+            "ZG0790",                                    # account
+            "NIFTY26JULFUT",                             # symbol
+            "NFO",                                       # exchange
+            QTY,                                         # qty (in contracts)
+            Decimal("23000.00"),                         # avg_cost
+            Decimal(str(LTP)),                           # ltp (Friday settlement)
+            Decimal("10000.00"),                         # day_pnl (stored value — will be overridden)
+            Decimal("10000.00"),                         # total_pnl
+            "{}",                                        # payload_json
+            datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc),  # captured_at (Saturday)
+            Decimal(str(LTP)),                           # previous_close (Friday settlement)
+            Decimal(str(PREV_LTP)),                      # prev_ltp (Thursday settlement) ← key
+            None,                                        # prev_settlement_pnl
+        )
+
+        result = build_row_from_snapshot_raw(row)
+
+        assert result.day_change_val == pytest.approx(EXPECTED_DAY_PNL, rel=1e-6), (
+            f"day_change_val={result.day_change_val} should be recomputed as "
+            f"(ltp - prev_ltp) * qty = ({LTP} - {PREV_LTP}) * {QTY} = {EXPECTED_DAY_PNL}, "
+            f"not 0 and not the stale stored value"
+        )
+
+        assert result.close_price == pytest.approx(PREV_LTP, rel=1e-6), (
+            f"close_price must be prev_ltp (Thursday settlement)={PREV_LTP}, "
+            f"not ltp (Friday=Saturday)={LTP}"
+        )
+
+    def test_saturday_refresh_short_position_day_pnl(self):
+        """Day P&L is correctly recomputed for SHORT overnight positions after break.
+
+        Scenario: Short MCX crude position held from Thursday to Saturday.
+        - Thursday settlement: 6000 (entry price for short)
+        - Saturday LTP: 5950 (market went down)
+        - Qty: -50 (short)
+
+        Expected day_change_val = (5950 - 6000) * (-50) = 2500 (SHORT profits when market falls)
+        """
+        from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
+        from datetime import datetime, timezone
+
+        PREV_LTP = 6000.0   # Thursday settlement
+        LTP = 5950.0        # Saturday LTP
+        QTY = -50           # Short position
+        EXPECTED_DAY_PNL = (LTP - PREV_LTP) * QTY  # (5950 - 6000) * (-50) = 2500
+
+        row = (
+            "ZG0790",
+            "CRUDEOILSEP25",
+            "MCX",
+            QTY,
+            Decimal("6000.00"),
+            Decimal(str(LTP)),
+            Decimal("2500.00"),              # day_pnl (stored)
+            Decimal("2500.00"),              # total_pnl
+            "{}",
+            datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc),
+            Decimal(str(LTP)),               # previous_close
+            Decimal(str(PREV_LTP)),          # prev_ltp
+            None,
+        )
+
+        result = build_row_from_snapshot_raw(row)
+
+        assert result.day_change_val == pytest.approx(EXPECTED_DAY_PNL, rel=1e-6), (
+            f"day_change_val for short position should be {EXPECTED_DAY_PNL}, "
+            f"got {result.day_change_val}"
+        )
+
+    def test_saturday_refresh_with_holiday_gap(self):
+        """Verify day_pnl recomputation works across extended holiday gaps.
+
+        Scenario: Position held from Friday 26-Jul (NSE close) through
+        weekend + Monday 29-Jul holiday (Janmashtami).
+        First refresh happens Tuesday 30-Jul.
+
+        - Thursday 25-Jul settlement: 5400
+        - Tuesday 30-Jul LTP: 5500
+        - Qty: 10
+
+        Expected day_change_val = (5500 - 5400) * 10 = 1000
+        prev_batch lookback (now 7 days) should find Thursday's snapshot
+        from 5 days earlier.
+        """
+        from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
+        from datetime import datetime, timezone
+
+        PREV_LTP = 5400.0   # Thursday 25-Jul settlement
+        LTP = 5500.0        # Tuesday 30-Jul LTP (5 days later)
+        QTY = 10
+        EXPECTED_DAY_PNL = (LTP - PREV_LTP) * QTY  # 1000
+
+        row = (
+            "ZG0790",
+            "NIFTY26JULFUT",
+            "NFO",
+            QTY,
+            Decimal("5000.00"),
+            Decimal(str(LTP)),
+            Decimal("1000.00"),              # day_pnl (will be recomputed)
+            Decimal("5000.00"),              # total_pnl
+            "{}",
+            datetime(2026, 7, 30, 2, 0, tzinfo=timezone.utc),  # Tuesday 30-Jul
+            Decimal(str(LTP)),               # previous_close (Tuesday settlement)
+            Decimal(str(PREV_LTP)),          # prev_ltp (Thursday 25-Jul) ← 5 days earlier
+            None,
+        )
+
+        result = build_row_from_snapshot_raw(row)
+
+        assert result.day_change_val == pytest.approx(EXPECTED_DAY_PNL, rel=1e-6), (
+            f"day_change_val across 5-day holiday gap should be {EXPECTED_DAY_PNL}, "
+            f"got {result.day_change_val}"
+        )

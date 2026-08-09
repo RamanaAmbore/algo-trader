@@ -4275,24 +4275,24 @@ async def _task_funds_offhours() -> None:
 
 
 async def _task_closed_hours_refresh() -> None:
-    """Low-cadence positions/holdings/funds snapshot during closed-market hours.
+    """Bust broker and API caches every 30 min while all market segments are closed.
 
-    Post-settlement, brokers update position close prices and realised P&L
-    values that are only available after the exchange publishes them (up to
-    ~30–60 min after segment close). This task refreshes daily_book every
-    30 min when NO segment is open so snapshot routes always serve fresh
-    post-settlement data rather than the last live-session write.
+    Invalidates the 30s broker raw cache (positions/holdings/margins) and the
+    API-side TTL cache (positions/holdings/funds) so the next inbound request
+    gets fresh data rather than a stale memoised response.
+
+    Intentionally does NOT call snapshot_daily_book().  Closed-hours snapshot
+    writes caused Saturday refresh rows to become the latest_batch in
+    _positions_snapshot(), which made (Saturday LTP − Friday LTP) = 0 and
+    collapsed NavStrip P1 to zero.  Settlement writes belong exclusively to
+    _task_daily_snapshot.
 
     Complements ``_task_funds_offhours`` (funds-only, 30 min) and
-    ``_task_daily_snapshot`` (settlement pass at 16:15 / 00:15) — this is
-    a rolling backstop for the in-between windows.
-
-    When any segment opens, the iteration is skipped (the live
-    ``_task_performance`` poller runs at the standard 5-min cadence and
-    ``snapshot_daily_book`` would pollute daily_book with mid-session LTPs).
+    ``_task_daily_snapshot`` (settlement pass at 16:15 / 00:15).
+    When any segment opens the iteration is skipped; the live
+    ``_task_performance`` poller resumes its 5-min cadence.
     """
     from backend.shared.helpers.date_time_utils import is_any_segment_open
-    from backend.api.algo.daily_snapshot import snapshot_daily_book
     from backend.api.cache import invalidate
     from backend.brokers.broker_apis import _raw_cache_invalidate
 
@@ -4306,11 +4306,13 @@ async def _task_closed_hours_refresh() -> None:
         try:
             now_ist = timestamp_indian()
             if not is_any_segment_open(now_ist):
-                # Bust the 30s broker raw cache so snapshot_daily_book
-                # polls the broker, not the in-memory memoisation tier.
-                # (snapshot_daily_book calls broker.holdings/positions
-                # directly, but raw cache busting keeps API routes coherent
-                # for the next inbound request after the snapshot lands.)
+                # Bust the 30s broker raw cache and API-side TTL cache so
+                # routes serve fresh data on the next inbound request.
+                # snapshot_daily_book() is intentionally NOT called here —
+                # writing closed-hours snapshots caused Saturday refresh rows
+                # to appear as the latest_batch in _positions_snapshot(), which
+                # set (Saturday LTP − Friday LTP) = 0 for NavStrip P1.
+                # Settlement writes belong exclusively to _task_daily_snapshot.
                 try:
                     _raw_cache_invalidate("positions")
                     _raw_cache_invalidate("holdings")
@@ -4318,23 +4320,10 @@ async def _task_closed_hours_refresh() -> None:
                 except Exception as _ce:
                     logger.debug(f"Background: closed-hours cache invalidate warning: {_ce}")
 
-                try:
-                    result = await snapshot_daily_book()
-                    # Invalidate the API-side TTL cache so routes serve the
-                    # freshly-written daily_book rows on the next request.
-                    invalidate("positions")
-                    invalidate("holdings")
-                    invalidate("funds")
-                    logger.info(
-                        f"Background: closed-hours refresh complete "
-                        f"at {now_ist.isoformat()} — "
-                        f"accounts={result['accounts']} "
-                        f"h={result['holdings_rows']} "
-                        f"p={result['positions_rows']} "
-                        f"errors={result['errors']}"
-                    )
-                except Exception as e:
-                    logger.warning(f"Background: closed-hours refresh snapshot failed: {e}")
+                invalidate("positions")
+                invalidate("holdings")
+                invalidate("funds")
+                logger.info(f"Background: closed-hours cache bust at {now_ist.isoformat()}")
         except asyncio.CancelledError:
             logger.info("Background: closed-hours refresh loop exiting (cancelled)")
             raise

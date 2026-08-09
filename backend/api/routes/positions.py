@@ -63,8 +63,8 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             # snapshot, prev_batch finds the most-recent prior row per
             # (account, symbol) using captured_at < max_at (not date < today)
             # so UTC/IST date-column edge cases can't drop yesterday's rows.
-            # prev_batch lookback window is 2 days to cover MCX's 23:30 IST
-            # close (captures labelled with next calendar day in UTC).
+            # prev_batch lookback window is 7 days to cover MCX's 23:30 IST
+            # close and multi-day holiday gaps.
             # qty=0 rows (positions closed intraday) are included only when
             # db.date matches today IST so they show with 'closed' decoration
             # in the derivatives legs grid.  On the next trading day (before
@@ -88,7 +88,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                     WHERE db.kind = 'positions'
                       AND db.total_pnl IS NOT NULL
                       AND db.captured_at < lb.max_at
-                      AND db.captured_at >= lb.max_at - INTERVAL '2 days'
+                      AND db.captured_at >= lb.max_at - INTERVAL '7 days'
                       AND db.ltp IS NOT NULL AND db.ltp > 0
                       AND db.captured_at < :today_ist_midnight
                     ORDER BY db.account, db.symbol, db.captured_at DESC

@@ -141,3 +141,92 @@ def test_expiry_no_double_fire_when_already_ran_today():
     assert delay_s > 3600 * 20, (
         f"Delay until tomorrow's check should be > 20h, got {delay_s/3600:.1f}h"
     )
+
+
+# ---------------------------------------------------------------------------
+# _task_closed_hours_refresh — no snapshot_daily_book calls (P1 fix)
+# ---------------------------------------------------------------------------
+
+def test_closed_hours_refresh_does_not_call_snapshot_daily_book():
+    """_task_closed_hours_refresh must NOT invoke snapshot_daily_book().
+
+    Root cause of P1 bug: closed-hours snapshot writes produced Saturday rows
+    in daily_book with the same LTP as Friday settlement. When _positions_snapshot
+    picked these as latest_batch, the prev_batch (Friday settlement) produced
+    (Saturday LTP - Friday LTP) = 0 → NavStrip P1 showed 0.
+
+    Fix: settlement writes belong exclusively to _task_daily_snapshot.
+    _task_closed_hours_refresh only busts caches.
+
+    Strategy: use dis.get_instructions to inspect bytecode LOAD_GLOBAL/LOAD_ATTR
+    calls so docstrings and comments (which legitimately mention the function name
+    to explain the rationale) do not cause false positives.
+    """
+    import dis
+    from backend.api import background as bg
+
+    fn = bg._task_closed_hours_refresh
+    # Collect all names loaded at the LOAD_GLOBAL / LOAD_ATTR level
+    called_names = {
+        instr.argval
+        for instr in dis.get_instructions(fn.__code__)
+        if instr.opname in ("LOAD_GLOBAL", "LOAD_ATTR", "LOAD_DEREF")
+        and instr.argval is not None
+    }
+    assert "snapshot_daily_book" not in called_names, (
+        "_task_closed_hours_refresh must not call snapshot_daily_book() — "
+        "settlement writes belong to _task_daily_snapshot only. "
+        "Closed-hours snapshot writes were the root cause of NavStrip P1=0 on Saturday."
+    )
+
+
+def test_closed_hours_refresh_still_busts_raw_cache():
+    """_task_closed_hours_refresh must still call _raw_cache_invalidate for
+    positions, holdings, and margins so broker data is fresh on next request.
+    """
+    import inspect
+    from backend.api import background as bg
+
+    src = inspect.getsource(bg._task_closed_hours_refresh)
+    assert '_raw_cache_invalidate("positions")' in src, (
+        "_task_closed_hours_refresh must bust the raw broker cache for positions"
+    )
+    assert '_raw_cache_invalidate("holdings")' in src, (
+        "_task_closed_hours_refresh must bust the raw broker cache for holdings"
+    )
+    assert '_raw_cache_invalidate("margins")' in src, (
+        "_task_closed_hours_refresh must bust the raw broker cache for margins"
+    )
+
+
+def test_closed_hours_refresh_still_invalidates_api_cache():
+    """_task_closed_hours_refresh must still call invalidate() for
+    positions, holdings, and funds so API-side TTL cache is cleared.
+    """
+    import inspect
+    from backend.api import background as bg
+
+    src = inspect.getsource(bg._task_closed_hours_refresh)
+    assert 'invalidate("positions")' in src, (
+        "_task_closed_hours_refresh must invalidate the API cache for positions"
+    )
+    assert 'invalidate("holdings")' in src, (
+        "_task_closed_hours_refresh must invalidate the API cache for holdings"
+    )
+    assert 'invalidate("funds")' in src, (
+        "_task_closed_hours_refresh must invalidate the API cache for funds"
+    )
+
+
+def test_closed_hours_refresh_does_not_import_snapshot_daily_book():
+    """The daily_snapshot import must be absent from _task_closed_hours_refresh
+    source — removing the import was part of the P1 fix to prevent accidental
+    re-introduction.
+    """
+    import inspect
+    from backend.api import background as bg
+
+    src = inspect.getsource(bg._task_closed_hours_refresh)
+    assert "from backend.api.algo.daily_snapshot import snapshot_daily_book" not in src, (
+        "The snapshot_daily_book import must be removed from _task_closed_hours_refresh"
+    )
