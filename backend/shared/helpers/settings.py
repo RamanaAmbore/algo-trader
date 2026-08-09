@@ -368,7 +368,7 @@ SEEDS: list[tuple] = [
      "broker.modify_gtt round-trips. Defaults to 30s (industry "
      "convention — IBKR Trail polls at this cadence on retail tier).",
      "s", {"min": 5, "max": 600, "step": 5}),
-    ("templates", "templates.oco_pair_poll_seconds", "int", 15,
+    ("templates", "templates.oco_pair_poll_seconds", "int", 5,
      "How often the OCO pair-watcher checks broker GTT state to cancel "
      "the surviving sibling after one leg fires. Tighter than the trail "
      "poller because a fired-but-not-cancelled sibling can produce a "

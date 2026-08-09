@@ -61,6 +61,7 @@ from backend.shared.helpers.utils import mask_account, mask_account_in_text, sec
 
 logger = get_logger(__name__)
 
+
 # ── Re-exports from split sub-modules ─────────────────────────────────────────
 # Symbols below were extracted in the RED-zone split (orders.py 4322→<1500 LOC).
 # They are imported here so that:
@@ -526,6 +527,12 @@ async def _positions_refresh_after_fill(
         logger.debug("[FILL-POLL] outer error: %s", _outer)
 
 
+async def _opp_send_cancel_alert(account: str, symbol: str, txn: str, qty: object, status_message: str) -> None:
+    from backend.shared.helpers.alert_utils import send_ntfy_alert
+    msg = f"Order cancelled: {mask_account(account)} {txn} {qty} {symbol} — {status_message}"
+    await asyncio.to_thread(send_ntfy_alert, msg)
+
+
 def _postback_broadcast_fanout(
     *,
     status: str,
@@ -592,6 +599,9 @@ def _postback_broadcast_fanout(
                 "tradingsymbol": symbol, "reason": status,
                 "ts": int(_time.time() * 1000),
             }))
+
+        if str(status).upper() == "CANCELLED":
+            asyncio.create_task(_opp_send_cancel_alert(account, symbol, txn, qty, status_message or ""))
     except Exception as _be:
         logger.warning(f"postback fan-out failed: {_be}")
 

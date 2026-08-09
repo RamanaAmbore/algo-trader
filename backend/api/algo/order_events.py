@@ -38,7 +38,7 @@ def _make_order_event_queue() -> _EventQueue:
 order_event_queue: _EventQueue = _make_order_event_queue()
 
 VALID_KINDS = frozenset({
-    "placed", "chase_modify", "fill", "unfill", "reject", "cancel",
+    "placed", "agent_trigger", "chase_modify", "fill", "unfill", "reject", "cancel",
     "postback", "margin_check", "preflight_ok", "preflight_block", "error",
 })
 

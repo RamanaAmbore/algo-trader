@@ -16,6 +16,8 @@ Module layout (split from the original 2580-line file):
   actions_live.py      — live broker handlers (mode-3)
 """
 
+import asyncio
+
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -523,7 +525,16 @@ async def _write_live_order(agent, action_type: str, resolved: dict,
             )
             s.add(row)
             await s.commit()
-            return row.id
+            row_id = row.id
+        try:
+            from backend.api.algo.order_events import write_event
+            asyncio.create_task(write_event(
+                row_id, "agent_trigger",
+                f"{getattr(agent, 'slug', '?')}: {action_type}",
+            ))
+        except Exception:
+            pass
+        return row_id
     except Exception as e:
         logger.error(f"[LIVE] AlgoOrder write failed for {action_type}: {e}")
         return None

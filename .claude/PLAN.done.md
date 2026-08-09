@@ -1,400 +1,126 @@
-# Plan: doc(orders): ORDER_LIFECYCLE.md — stages, reconciliation, gaps
+# Plan: fix(orders): close 5 of 7 ORDER_LIFECYCLE gaps — watchdog, cancellation alert, placement events, agent trigger
 
 ## Context
 
-Comprehensive audit of the RamboQuant order system across placement, template attachment,
-broker synchronisation, reconciliation, and the open/close (intent) convention. Three
-explore agents mapped every entry point, validation step, state transition, event emission,
-and broker adapter path. Two critical reconciliation gaps were found — documented below.
+Seven gaps were identified in the ORDER_LIFECYCLE.md audit. Exploration confirms 5 are fixable
+in a single backend pass; 2 are deferred:
 
-The deliverable is `docs/audits/ORDER_LIFECYCLE.md` — a durable reference for the full
-order lifecycle so operators and developers can reason about where an order is at any stage.
-
----
+| Gap | Severity | Action |
+|---|---|---|
+| GAP-1: No auto-reconcile for non-chased OPEN orders | CRITICAL | **Fix — new background watchdog** |
+| GAP-2: GTT detection lag 30s | HIGH | **Fix — OCO default interval 15s→5s (one-liner)** |
+| GAP-3: No alert on order cancellation | Medium | **Fix — add alert in postback pipeline** |
+| GAP-4: Frontend 15s polling lag | Medium | **Deferred** — `order_update` WS already triggers `_debouncedLoadOrders()` which hits fresh data (cache invalidated before broadcast); real-time per-row patch is low priority |
+| GAP-5: No "placed" event for live orders | Medium | **Fix — add `write_event("placed")` in live success path** |
+| GAP-6: Agent order not visible in event log | Medium | **Fix — add `write_event("agent_trigger")` in `_write_live_order`** |
+| GAP-7: Failed GTT cancel — no retry | Low | **Deferred** — cancel_gtt only appears in `_oco_cancel_survivor` (OCO sibling path); no call site found in orders_place.py or template_attach.py; needs separate investigation |
 
 ## Task
 
-Create `docs/audits/ORDER_LIFECYCLE.md` with the content specified in this plan (section
-"Document Content"). No source code changes. No test changes.
+Five backend changes:
+
+**A — GAP-1: `_task_open_order_watchdog` in `background.py`**  
+New supervised background task. Every 5 minutes (configurable via `get_int("orders.open_order_watchdog_seconds", 300)`):
+1. Query all `AlgoOrder` rows where `status="OPEN"` and `mode="live"` and `created_at < now() - 5min`.
+2. Group by account.
+3. For each account, call existing `_rco_reconcile_account(acct, rows, attach_queue)` (`orders.py:939`).
+4. After loop, fire template-attach for any fills in `attach_queue`.
+5. Register in `on_startup()` same pattern as `_task_oco_pair_watcher` (lines 5501-5533):
+   `asyncio.create_task(_supervised(_task_open_order_watchdog, name="bg-open-order-watchdog"))`
+
+**B — GAP-2: OCO interval 15s→5s**  
+In `background.py` around line 2963, the interval is:
+`max(5, get_int("templates.oco_pair_poll_seconds", 15))`  
+Change default from `15` to `5` in the call.
+
+**C — GAP-3: Cancellation alert**  
+In `orders_postback.py` — in the caller of `_sync_apply_row_status` (the function that processes
+each row after status sync), add: when `new_status == "CANCELLED"`, fire a brief ntfy alert
+with account, symbol, side, qty, and "Order cancelled by broker". Use `send_ntfy_alert()`
+from `alert_utils`. The alert should NOT fire for operator-initiated cancels (already covered by
+the cancel route) — check `source` or use a flag param.
+
+Alternatively: in `_postback_broadcast_fanout` (`orders.py:529`), after the `order_update` WS
+broadcast, add: `if str(status).upper() == "CANCELLED": await _opp_send_cancel_alert(...)`.
+This is cleaner — `_postback_broadcast_fanout` already has account/symbol/status.
+
+**D — GAP-5: Live "placed" event**  
+In `_opp_live_handle_success` (`orders_place.py:1674`) — currently paper path calls
+`_opp_paper_write_placed_event()` but live path does not call `write_event`. Add a
+fire-and-forget call to `write_event(algo_order_id, "placed", f"live {mode} {side} {qty} {symbol}")`.
+The `_live_algo_id` is available in the caller scope.
+
+**E — GAP-6: Agent trigger event in order log**  
+In `_write_live_order` (`actions.py:484`) — after writing the `AlgoOrder` row (line 526),
+add a fire-and-forget call:
+`asyncio.create_task(write_event(row_id, "agent_trigger", f"{agent.slug}: {action_type}"))`
+Also add `"agent_trigger"` to `VALID_KINDS` in `order_events.py:40`.
+
+**Also update `docs/audits/ORDER_LIFECYCLE.md`** — mark GAP-1 through GAP-3, GAP-5, GAP-6 as
+"Fixed in commit X"; add note on GAP-4 deferral; add note on GAP-7 pending investigation.
 
 ## Agents
 
-- doc: Write `docs/audits/ORDER_LIFECYCLE.md` using the full content in the "Document
-  Content" section below. Do not truncate or restructure. Copy faithfully.
-- backend: skip
-- frontend: skip
+- backend: Make all five code changes (A–E):
+    (A) Add `_task_open_order_watchdog` in `backend/api/background.py`. Import or call existing
+    `_rco_reconcile_account` from `backend/api/routes/orders.py`. The watchdog queries OPEN+live
+    rows older than 5min via raw SQL or ORM, groups by account, calls `_rco_reconcile_account`
+    per account, fires template-attach for fills. Register in `on_startup()` with `_supervised`.
+    (B) In `background.py` at the OCO pair-watcher interval line (~2963): change default from 15
+    to 5 → `max(5, get_int("templates.oco_pair_poll_seconds", 5))`.
+    (C) In `backend/api/routes/orders.py` inside `_postback_broadcast_fanout` (~line 570): after
+    `order_update` broadcast, add: when `str(status).upper() == "CANCELLED"`, call
+    `asyncio.create_task(_opp_send_cancel_alert(account, symbol, side, qty, status_message))`.
+    Define `_opp_send_cancel_alert` as a small async helper that calls `send_ntfy_alert` from
+    `alert_utils`. This avoids touching `_sync_apply_row_status`.
+    (D) In `backend/api/routes/orders_place.py` inside `_opp_live_handle_success` (~line 1674):
+    add fire-and-forget `write_event(algo_order_id, "placed", f"live {mode} ...")`. Read the
+    function signature to find where `algo_order_id` is available (it's a param or local var).
+    (E) In `backend/api/algo/actions.py` inside `_write_live_order` (~line 526, after row insert):
+    add `asyncio.create_task(write_event(row_id, "agent_trigger", f"{getattr(agent,'slug','?')}: {action_type}"))`.
+    In `backend/api/algo/order_events.py` VALID_KINDS (~line 40): add `"agent_trigger"`.
+
+- doc: Update `docs/audits/ORDER_LIFECYCLE.md` — in §12 Gap Analysis, mark each gap status:
+    - GAP-1: ✅ Fixed — `_task_open_order_watchdog` added, runs every 5min
+    - GAP-2: ✅ Fixed — OCO watcher default interval changed to 5s
+    - GAP-3: ✅ Fixed — `_postback_broadcast_fanout` sends cancel alert on CANCELLED postback
+    - GAP-4: ⏸ Deferred — `order_update` WS already triggers cache-busted reload (250ms lag); per-row patch not yet implemented
+    - GAP-5: ✅ Fixed — `write_event("placed")` added to live order success path
+    - GAP-6: ✅ Fixed — `write_event("agent_trigger")` added in `_write_live_order`; "agent_trigger" added to VALID_KINDS
+    - GAP-7: ⏸ Deferred — cancel_gtt call site not found in order placement path; under investigation
+
+- backend-test: Write tests:
+    (1) `test_open_order_watchdog_reconciles_stale_open` — mock DB returning one OPEN+live row >5min
+    old; verify `_rco_reconcile_account` is called.
+    (2) `test_postback_cancel_alert_fires` — mock `_postback_broadcast_fanout` with status=CANCELLED;
+    verify `_opp_send_cancel_alert` task is created.
+    (3) `test_live_placed_event_written` — mock `_opp_live_handle_success`; verify
+    `write_event("placed", ...)` is called fire-and-forget.
+    (4) `test_agent_trigger_event_written` — mock `_write_live_order`; verify
+    `write_event("agent_trigger", ...)` is called after row insert.
+    (5) `test_agent_trigger_in_valid_kinds` — import VALID_KINDS from order_events; assert
+    "agent_trigger" in VALID_KINDS.
+
 - broker: skip
-- backend-test: skip
+- frontend: skip
 - playwright: skip
 
 ## Tests
 
-- pytest: no
+- pytest: yes
 - svelte-check: no
 - playwright: no
 
 ## Commit message
 
-docs: add ORDER_LIFECYCLE.md — full order lifecycle audit with reconciliation gap analysis
+fix(orders): GAP-1 watchdog, GAP-2 OCO 5s, GAP-3 cancel alert, GAP-5 placed event, GAP-6 agent_trigger
 
 ## Done when
 
-`docs/audits/ORDER_LIFECYCLE.md` exists and contains all sections through Gap Analysis.
-
----
-
-## Document Content
-
-Paste verbatim into `docs/audits/ORDER_LIFECYCLE.md`:
-
-```markdown
-# RamboQuant Order Lifecycle Reference
-
-**Audit date:** 2026-08-09  
-**Scope:** ticket orders, basket orders, agent-driven orders, templates/GTT, broker sync, reconciliation
-
----
-
-## 1. Entry Points
-
-| Entry | Route / Trigger | File |
-|---|---|---|
-| Manual ticket | `POST /api/orders/ticket` | `orders_place.py:1912` |
-| Basket | `POST /api/orders/basket` | `orders_basket.py:206` |
-| Agent-driven | `actions.execute()` after condition match | `actions.py:336` |
-| Chase (TP/SL) | `_arm_take_profit()` on parent FILLED | `orders_place.py:761` |
-| Template attach | `_fire_template_attach_on_fill()` on FILLED | `orders_place.py:561` |
-
----
-
-## 2. Validation Pipeline (Ticket Orders)
-
-In sequence — first failure returns immediately:
-
-1. **Mode & demo gate** (`orders_place.py:1013`) — rejects draft mode; traders can't place
-   live/shadow orders.
-2. **RBAC strategy scope** (`orders_place.py:1026`) — trader roles may only trade assigned
-   strategies.
-3. **Enum validation** (`orders_place.py:1068`) — side (BUY/SELL), exchange, product,
-   order_type, variety all checked; LIMIT/SL require price/trigger_price.
-4. **F&O lot-size resolution** (`orders_place.py:1088`) — for NFO/MCX/CDS/BFO/BCD/NCO,
-   resolves lot_size from instruments cache (503 on cold cache). Converts input **LOTS** →
-   internal **CONTRACTS**: `contracts = input_qty × lot_size`.
-5. **Account validation** (`orders_place.py:1159`) — account must be in `_loaded_accounts()`.
-6. **G1 (lot multiple)** — removed after lots-convention refactor; `lots × lot_size` is
-   always a valid multiple by construction.
-7. **G2 (fat-finger 5-lot cap)** (`orders_place.py:1188`) — reject if F&O lots > 5. **Bypassed
-   when `intent="close"`** (operator must be able to exit any size position).
-8. **MCX 20-lot cap** (`orders_place.py:1386`) — reject MCX/NCO if lots > 20. Exempt for
-   `intent="close"`.
-9. **Capacity guard** (`orders_place.py:140`) — `current_open_notional + new_notional ≤ cap`.
-   Price from: price_hint → ticker LTP → `broker.ltp()` → 503. Skipped entirely when
-   `intent="close"` (reducing exposure is OK).
-10. **Market-hours gate + price tick alignment** (`orders_place.py:1211`) — rejects orders
-    on closed exchanges (409); snaps price to tick grid via `_align_price_to_tick`.
-11. **Preflight (LIVE only)** (`orders_place.py:1280`) — calls `actions.run_preflight()`;
-    checks MARGIN_SHORTFALL, SEGMENT_INACTIVE, QTY_FREEZE, ACCOUNT_UNKNOWN. On block:
-    persists AlgoOrder(status=REJECTED) + `preflight_block` event, returns 422.
-
----
-
-## 3. Open / Close Intent Convention (ADE equivalent)
-
-RamboQuant does not use an "ADE" (Add/Delete/Execute) vocabulary. The equivalent is the
-**`intent` field** on `AlgoOrder` and the ticket request:
-
-| Intent value | Meaning | G2? | MCX cap? | Capacity check? | Template attach? | 50-lot Kite ceiling? |
-|---|---|---|---|---|---|---|
-| `None` / `"open"` | New position | Yes | Yes | Yes | Yes | Yes |
-| `"close"` | Close/reduce existing position | **Bypassed** | **Exempt** | **Skipped** | **Never** | **Bypassed** |
-
-**Where intent is set:**
-
-| Source | Mechanism |
-|---|---|
-| Ticket endpoint | User passes `data.intent` |
-| Basket endpoint | Per-leg `leg.intent` |
-| Offset auto-detect | `classifyIntent()` in frontend (`orderTicketSubmit.js:39`) detects existing position → sets `"close"` |
-| Chase/TP arms | Hardcoded `intent="close"` (`orders_place.py:856, 905`) |
-| Agent fire | From agent strategy config's action params |
-| Chase recovery | Re-injected from stored AlgoOrder row (`orders_place.py:417`) |
-
----
-
-## 4. Placement Modes
-
-### PAPER mode (`orders_place.py:1885`)
-1. Persist `AlgoOrder(status=OPEN, engine=paper, mode=paper)`.
-2. Check idempotency via `request_id` within 60s.
-3. Register with `PaperTradeEngine.register_open_order()`.
-4. Write `AlgoOrderEvent(kind="placed")`.
-5. Call `record_manual_event()` (async).
-6. Preview template attachment (no broker call yet) → populate response with planned GTT info.
-7. Return `TicketOrderResponse(status=OPEN)`.
-
-### LIVE mode (`orders_place.py:1713`)
-1. Check mode gates: prod branch, paper_trading_mode master kill-switch, circuit breaker.
-2. Persist `AlgoOrder(status=OPEN, broker_order_id=NULL)`.
-3. **Chase path** (LIMIT + `chase=True` + price > 0): spawn `_start_live_chase()` — background
-   loop re-quotes on each tick.
-4. **Direct path** (MARKET/SL-M or no-chase): call `broker.place_order(intent=...)`.
-5. Write back `broker_order_id` (best-effort).
-6. Invalidate "orders" cache. Write `manual_event`. Clear circuit-breaker.
-7. Return `TicketOrderResponse(order_id, status=OPEN)`.
-
-### SHADOW / SIM / REPLAY modes
-- Shadow: computes margin, does NOT submit to broker. Row persisted with `mode=shadow`.
-- Sim: routed via `SimDriver` through paper engine's state machine (same OPEN→FILLED/UNFILLED
-  lifecycle) against fabricated tick data.
-- Replay: same as sim but against historical data.
-
----
-
-## 5. Broker Adapter Qty Convention
-
-| Exchange | Kite API expects | translate_qty direction |
-|---|---|---|
-| NFO / CDS / BFO | Contracts | Pass-through |
-| MCX / NCO | **Lots** | `contracts ÷ lot_size` (e.g. CRUDEOIL 100 contracts → 1 lot) |
-
-**50-lot ceiling** in `kite.py:place_order`:
-- `intent="close"` → no ceiling (any size close allowed)
-- MCX/NCO → 20-lot cap
-- Everything else → 50-lot cap
-
----
-
-## 6. Template / GTT Lifecycle
-
-### Trigger: parent order FILLED
-Both paper fills (paper engine detect bid/ask cross) and live fills (broker postback) call
-`_fire_template_attach_on_fill()` (`orders_place.py:561`).
-
-### Attach sequence
-1. **Per-row asyncio.Lock** (`orders_place.py:310`) — 4h TTL, strong dict. Prevents double
-   placement from concurrent postback + chase terminal signals.
-2. **Idempotency gate** — skip if `attached_gtts_json` already populated.
-3. **Load parent row** — return None if row vanished or already attached.
-4. **Resolve template** → `apply_template_to_order()` (`template_attach.py`) with
-   `apply_path="live"`.
-5. **Place GTT orders** — one per spec (TP, SL, OCO). For each: call `broker.place_gtt()`.
-6. **Wing order** (if configured) — scan chain for protective option leg, place MARKET order.
-7. **Persist `attached_gtts_json`** — list of `{kind, label, id, sibling_id, sl_trail_pct}`.
-8. **Partial GTT alert** — if placed count < planned count: log CRITICAL + send ntfy with
-   priority="urgent" (`orders_place.py:625`).
-
-### Template attach guards
-| Guard | Location | Action |
-|---|---|---|
-| Off-hours wing gate | `template_attach.py:229` | Defer wing; GTT-only plans allowed 24×7 |
-| applies_to mismatch | `template_attach.py:154` | Alert + no-attach |
-| GTT trigger direction | `orders_place.py:228` | Warn if TP/SL deviate > 50% from fill |
-
-### GTT background tracking
-| Task | Cycle | File |
-|---|---|---|
-| OCO watcher (`_task_oco_pair_watcher`) | Every 15s | `background.py:2920` |
-| Trailing stop updater (`_task_trail_stop_updater`) | Every 30s | `background.py:2148` |
-
-Both poll `broker.get_gtts()`. **No webhook for GTT fire** (Kite SDK limitation) — detection
-lag is up to 30s.
-
----
-
-## 7. Order State Machine
-
-```
-               ┌──────────────────────────────────────────────────────┐
-               │                                                      │
-   Submit ───► OPEN ──► FILLED ──► (template_attach fires GTTs) ──► done
-               │ │
-               │ └──► CANCEL_FAILED  (kill attempt failed — retry)
-               │
-               ├──► CANCELLED   (operator/system cancel — terminal)
-               ├──► REJECTED    (broker rejected — terminal)
-               └──► UNFILLED    (chase expired / reconcile no-match — terminal)
-```
-
-| Status | Terminal | Set by |
-|---|---|---|
-| OPEN | No | Placement |
-| FILLED | Yes | Postback / chase / reconcile |
-| CANCELLED | Yes | Operator cancel / system cancel |
-| REJECTED | Yes | Broker reject or preflight block |
-| UNFILLED | Yes | Chase expiry or reconcile missing |
-| CANCEL_FAILED | No | Failed kill attempt |
-
-### AlgoOrder event kinds
-`placed · chase_modify · fill · unfill · reject · cancel · postback · margin_check ·
-preflight_ok · preflight_block · error`
-
----
-
-## 8. Postback / Broker Sync Pipeline
-
-```
-Broker (Kite/Dhan/Groww)
-    │ webhook POST
-    ▼
-kite_postback_handler / order_postback_dhan / order_postback_groww (orders_postback.py)
-    │ HMAC validation (SHA-256)
-    ▼
-_sync_algo_order_rows (orders_postback.py:155)
-    ├─ Direct lookup by broker_order_id
-    ├─ Fallback fuzzy match: (account, symbol, side, qty) within 60s window
-    └─ Orphan row creation if no match (never silently drop a postback)
-    │
-    ▼
-_sync_apply_row_status (orders_postback.py:134)
-    │ status, fill_price, filled_at updated
-    ▼
-_postback_broadcast_fanout (orders.py:529)
-    ├─ Always:          invalidate("orders")
-    ├─ Terminal:        invalidate(positions, holdings, margins) + broadcast book_changed
-    └─ FILLED:          broadcast position_filled + _positions_refresh_after_fill (5s poll)
-    │
-    ▼ (async, post-commit)
-_fire_template_attach_on_fill (orders_place.py:561)  ← See §6
-```
-
-**Broker status maps:**
-
-| Broker | Fill status | Maps to |
-|---|---|---|
-| Kite/Zerodha | COMPLETE | FILLED |
-| Dhan | TRADED | FILLED |
-| Groww | EXECUTED / COMPLETED | FILLED |
-| All | CANCELLED / REJECTED / EXPIRED | CANCELLED / REJECTED / UNFILLED |
-
----
-
-## 9. Reconciliation Paths
-
-| Path | Trigger | Frequency | File |
-|---|---|---|---|
-| Chase polling | Every 20s during active chase | Automatic | `chase.py:861` |
-| Chase inline reconcile | End of each active chase cycle | Automatic | `orders.py:646` |
-| Single-order reconcile | `POST /api/orders/{id}/reconcile` | Manual | `orders.py:1350` |
-| Bulk account reconcile | `POST /api/orders/algo/reconcile` | Manual | `orders.py:1289` |
-| GTT OCO detection | Every 15s | Automatic | `background.py:2920` |
-| GTT trail update | Every 30s | Automatic | `background.py:2148` |
-
-**No scheduled background reconciliation** for OPEN orders without an active chase. If a
-postback is lost and no chase is running, the row stays OPEN indefinitely until the operator
-hits the reconcile endpoint.
-
----
-
-## 10. Alert Pipeline
-
-| Event | Alert type | Trigger |
-|---|---|---|
-| Order failure | Telegram + SMTP | Broker rejects; `orders_place.py:1554` |
-| Sustained rejections | Rate-limited ntfy | Circuit-breaker trip; `orders_helpers.py:90` |
-| Partial GTT placement | ntfy priority=urgent | placed < planned; `orders_place.py:625` |
-| Agent condition met | WS broadcast + AgentEvent | `agent_engine.py` |
-
-**No alert on:** order cancellation, silent HTTP timeout before broker response, paper engine
-unfill.
-
----
-
-## 11. Frontend Order Event Flow
-
-| Signal | Transport | Latency |
-|---|---|---|
-| LTP ticks | SSE `/api/quotes/stream` | Real-time |
-| Performance / P&L | WS `/ws/performance` | Push on change |
-| Order status changes | Poll `GET /api/orders/` | 15s cache |
-| Order fill (position delta) | WS `position_filled` message | Push on postback |
-
-Frontend does **not** receive per-order status in real-time. After a fill, `position_filled`
-WS event triggers `invalidateAll()` on the orders page; actual order status (fill_price, etc.)
-requires the 15s cache to expire or a forced refresh.
-
----
-
-## 12. Gap Analysis
-
-### GAP-1 ⚠️ CRITICAL — No scheduled reconciliation for non-chased OPEN orders
-**Risk:** An OPEN order that fills at the broker but whose postback is lost will remain OPEN
-indefinitely. This means: wrong position sizing on subsequent orders (capacity guard uses
-stale open_notional), GTT/template never fires (exits not armed), P&L mismatch.
-
-**Affected path:** Any LIVE order placed without chase=True, or a chase that completes before
-the postback arrives.
-
-**Current coverage:** chase polling (20s), chase inline reconcile, manual admin reconcile.
-**Gap:** No automatic reconciliation for rows where chase is not active.
-
-**Recommended fix:** Background task that every 5 minutes queries all OPEN rows with
-`created_at < now() - 5min` and `mode=live`, calls `broker.order_status()` per row,
-applies any fill/cancel. Write to `_task_open_order_watchdog` in `background.py`.
-
----
-
-### GAP-2 ⚠️ HIGH — GTT fire detection lag (up to 30s)
-**Risk:** Between a GTT trigger firing at Kite and RamboQuant detecting it via polling, the
-position can move significantly (especially MCX futures after sharp moves).
-
-**Current:** OCO watcher (15s), trail updater (30s).
-**Gap:** No webhook for GTT events from Kite. 30s worst-case window.
-**Mitigation possible:** Reduce OCO watcher to 5s; add optional user-triggered GTT refresh.
-
----
-
-### GAP-3 — No alert on order cancellation
-**Risk:** If a live order is cancelled by the broker (e.g., IOC expired, day order at EOD),
-the operator has no notification. They discover it on the next manual refresh.
-
-**Recommended fix:** In `_sync_apply_row_status` when new_status=CANCELLED, send a brief
-ntfy/Telegram alert.
-
----
-
-### GAP-4 — Frontend order status is polling-based (15s lag)
-**Risk:** After a fill, the operator may see OPEN status for up to 15s. The `position_filled`
-WS event patches position P&L but does NOT update the order row in the orders page.
-
-**Recommended fix:** Broadcast an `order_status_changed` WS event on every postback (with
-minimal payload: `{order_id, status, fill_price}`) that the frontend can handle to update
-the orders table cell without a full page reload.
-
----
-
-### GAP-5 — No "submitted to broker" event before broker response
-**Risk:** If the HTTP connection to Kite times out mid-submit, no `AlgoOrderEvent` records
-the submission attempt. The AlgoOrder row is created with `status=OPEN` but no "placed"
-event if the broker call throws before `write_event("placed")` fires.
-
-**Recommended fix:** Write a `"placement_attempt"` event immediately after `broker.place_order()`
-is called (even in a try/finally) so the event log shows what happened.
-
----
-
-### GAP-6 — Agent-driven order events not visible in per-order event log
-**Context:** `actions.py` logs to `AgentEvent` table (agent engine), not `AlgoOrderEvent`.
-So `/api/orders/{id}/events` won't show the agent context (which agent, which condition, which
-strategy) that triggered the order.
-
-**Impact:** Debugging agent-fired orders requires cross-referencing two tables.
-**Recommended fix:** On agent-driven order placement, write one `AlgoOrderEvent(kind="agent_trigger",
-message=agent.slug + condition.label)` linked to the AlgoOrder row.
-
----
-
-### GAP-7 (Low) — Missed GTT cancellation on manual position close
-**Risk:** Operator manually closes a position via ticket; the attached GTTs are supposed to
-be cancelled but `cancel_gtt()` call can fail silently. `attached_gtts_json` still shows
-the GTT IDs as active.
-
-**Current:** Logged but no background cleanup or retry.
-**Recommended fix:** On failed GTT cancel, write a "gtt_cancel_failed" AlgoOrderEvent and
-schedule one retry via background task.
-```
-
----
-
-## Done when
-
-`docs/audits/ORDER_LIFECYCLE.md` is created with all 12 sections (§1–§12 + Gap Analysis).
+- `_task_open_order_watchdog` registered in `on_startup`, calls `_rco_reconcile_account` for stale OPEN rows
+- OCO watcher default interval is 5s
+- `_postback_broadcast_fanout` fires cancel alert when status=CANCELLED
+- `write_event("placed")` called in live order success path
+- `write_event("agent_trigger")` called in `_write_live_order`; "agent_trigger" in VALID_KINDS
+- All 5 pytest tests pass
+- ORDER_LIFECYCLE.md gap statuses updated

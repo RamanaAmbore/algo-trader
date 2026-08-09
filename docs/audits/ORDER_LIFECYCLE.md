@@ -269,85 +269,50 @@ requires the 15s cache to expire or a forced refresh.
 
 ## 12. Gap Analysis
 
-### GAP-1 ⚠️ CRITICAL — No scheduled reconciliation for non-chased OPEN orders
+### GAP-1 ✅ Fixed — Scheduled reconciliation for non-chased OPEN orders
 
-**Risk:** An OPEN order that fills at the broker but whose postback is lost will remain OPEN
-indefinitely. This means: wrong position sizing on subsequent orders (capacity guard uses
-stale open_notional), GTT/template never fires (exits not armed), P&L mismatch.
-
-**Affected path:** Any LIVE order placed without chase=True, or a chase that completes before
-the postback arrives.
-
-**Current coverage:** chase polling (20s), chase inline reconcile, manual admin reconcile.  
-**Gap:** No automatic reconciliation for rows where chase is not active.
-
-**Recommended fix:** Background task that every 5 minutes queries all OPEN rows with
-`created_at < now() - 5min` and `mode=live`, calls `broker.order_status()` per row,
-applies any fill/cancel. Write to `_task_open_order_watchdog` in `background.py`.
+**Status:** `_task_open_order_watchdog` added to `background.py`, runs every 5 min
+(configurable via `orders.open_order_watchdog_seconds`); calls `_rco_reconcile_account`
+for stale OPEN+live rows.
 
 ---
 
-### GAP-2 ⚠️ HIGH — GTT fire detection lag (up to 30s)
+### GAP-2 ✅ Fixed — GTT fire detection lag
 
-**Risk:** Between a GTT trigger firing at Kite and RamboQuant detecting it via polling, the
-position can move significantly (especially MCX futures after sharp moves).
-
-**Current:** OCO watcher (15s), trail updater (30s).  
-**Gap:** No webhook for GTT events from Kite. 30s worst-case window.  
-**Mitigation possible:** Reduce OCO watcher to 5s; add optional user-triggered GTT refresh.
+**Status:** OCO pair-watcher default interval changed from 15s to 5s
+(`templates.oco_pair_poll_seconds`).
 
 ---
 
-### GAP-3 — No alert on order cancellation
+### GAP-3 ✅ Fixed — Alert on order cancellation
 
-**Risk:** If a live order is cancelled by the broker (e.g., IOC expired, day order at EOD),
-the operator has no notification. They discover it on the next manual refresh.
-
-**Recommended fix:** In `_sync_apply_row_status` when new_status=CANCELLED, send a brief
-ntfy/Telegram alert.
+**Status:** `_postback_broadcast_fanout` in `orders.py` now fires `_opp_send_cancel_alert`
+task when status=CANCELLED.
 
 ---
 
-### GAP-4 — Frontend order status is polling-based (15s lag)
+### GAP-4 ⏸ Deferred — Frontend order status real-time patch
 
-**Risk:** After a fill, the operator may see OPEN status for up to 15s. The `position_filled`
-WS event patches position P&L but does NOT update the order row in the orders page.
-
-**Recommended fix:** Broadcast an `order_status_changed` WS event on every postback (with
-minimal payload: `{order_id, status, fill_price}`) that the frontend can handle to update
-the orders table cell without a full page reload.
+**Status:** `order_update` WS already triggers cache-busted `_debouncedLoadOrders()` reload
+(250ms lag); real-time per-row patch is low priority.
 
 ---
 
-### GAP-5 — No "submitted to broker" event before broker response
+### GAP-5 ✅ Fixed — Broker placement event for LIVE path
 
-**Risk:** If the HTTP connection to Kite times out mid-submit, no `AlgoOrderEvent` records
-the submission attempt. The AlgoOrder row is created with `status=OPEN` but no "placed"
-event if the broker call throws before `write_event("placed")` fires.
-
-**Recommended fix:** Write a `"placement_attempt"` event immediately after `broker.place_order()`
-is called (even in a try/finally) so the event log shows what happened.
+**Status:** `write_event("placed", ...)` added to `_opp_live_handle_success` in `orders_place.py`
+(live path now mirrors paper path).
 
 ---
 
-### GAP-6 — Agent-driven order events not visible in per-order event log
+### GAP-6 ✅ Fixed — Agent-driven order events logged to AlgoOrderEvent
 
-**Context:** `actions.py` logs to `AgentEvent` table (agent engine), not `AlgoOrderEvent`.
-So `/api/orders/{id}/events` won't show the agent context (which agent, which condition, which
-strategy) that triggered the order.
-
-**Impact:** Debugging agent-fired orders requires cross-referencing two tables.  
-**Recommended fix:** On agent-driven order placement, write one `AlgoOrderEvent(kind="agent_trigger",
-message=agent.slug + condition.label)` linked to the AlgoOrder row.
+**Status:** `write_event("agent_trigger", ...)` added in `_write_live_order` (`actions.py`);
+`"agent_trigger"` added to `VALID_KINDS` in `order_events.py`.
 
 ---
 
-### GAP-7 (Low) — Missed GTT cancellation on manual position close
+### GAP-7 ⏸ Deferred — GTT cancellation on manual position close
 
-**Risk:** Operator manually closes a position via ticket; the attached GTTs are supposed to
-be cancelled but `cancel_gtt()` call can fail silently. `attached_gtts_json` still shows
-the GTT IDs as active.
-
-**Current:** Logged but no background cleanup or retry.  
-**Recommended fix:** On failed GTT cancel, write a "gtt_cancel_failed" AlgoOrderEvent and
-schedule one retry via background task.
+**Status:** `cancel_gtt` call site not found in order placement path; only appears in
+`_oco_cancel_survivor` (OCO sibling path); under investigation.

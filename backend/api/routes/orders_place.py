@@ -1674,6 +1674,7 @@ def _opp_live_check_mode_gates(account: str, sym: str, side: str, qty: int) -> s
 async def _opp_live_handle_success(
     data, account: str, sym: str, side: str, qty: int,
     order_id, chase_eligible: bool, bk_key: str,
+    algo_order_id: int | None = None,
 ) -> "object":
     """Post-place success bookkeeping: invalidate cache, log, record event,
     clear circuit-breaker. Returns TicketOrderResponse."""
@@ -1681,6 +1682,7 @@ async def _opp_live_handle_success(
     from backend.api.cache import invalidate
     from backend.api.routes.orders_helpers import _clear_rejections
     from backend.shared.helpers.utils import mask_account
+    from backend.api.algo.order_events import write_event
 
     chase_tag = (f" CHASE[{(data.chase_aggressiveness or 'low').lower()}]"
                  if chase_eligible else "")
@@ -1688,6 +1690,18 @@ async def _opp_live_handle_success(
     masked = mask_account(account)
     logger.info(f"Ticket LIVE order: {order_id} [{masked}] "
                 f"{side} {qty} {sym}{chase_tag}")
+
+    # Record the "placed" event in the order lifecycle event log using the
+    # AlgoOrder DB PK (algo_order_id), not the broker order ID.
+    if algo_order_id is not None:
+        try:
+            asyncio.create_task(write_event(
+                algo_order_id, "placed",
+                f"live ticket {side} {qty} {sym}",
+            ))
+        except Exception:
+            pass
+
     try:
         from backend.api.algo.agent_engine import record_manual_event
         asyncio.create_task(record_manual_event(
@@ -1761,6 +1775,7 @@ async def _ticket_place_live(
             await _ticket_seed_broker_order_id(_live_algo_id, order_id)
         return await _opp_live_handle_success(
             data, account, sym, side, qty, order_id, chase_eligible, _bk_key,
+            algo_order_id=_live_algo_id,
         )
     except HTTPException:
         raise

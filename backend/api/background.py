@@ -2927,7 +2927,7 @@ async def _task_oco_pair_watcher() -> None:
     this task cancels the surviving sibling so the operator doesn't
     end up with a naked stop or take-profit on the book.
 
-    Polling cadence: `templates.oco_pair_poll_seconds`, default 15s
+    Polling cadence: `templates.oco_pair_poll_seconds`, default 5s
     (faster than trail-stop's 30s because the OCO race window
     matters more — a fired-but-not-cancelled sibling can produce a
     second unwanted fill). Source of truth is `broker.get_gtts()`
@@ -2967,9 +2967,9 @@ async def _task_oco_pair_watcher() -> None:
             # can produce a second fill within seconds of the first.
             # Matches the poll_only GTT detection lag documented in
             # BrokerCapabilities.oco_pair_poll_seconds.
-            interval = max(5, get_int("templates.oco_pair_poll_seconds", 15))
+            interval = max(5, get_int("templates.oco_pair_poll_seconds", 5))
         except Exception:
-            interval = 15
+            interval = 5
         await asyncio.sleep(interval)
         try:
             async with async_session() as s:
@@ -2988,6 +2988,52 @@ async def _task_oco_pair_watcher() -> None:
             await _oco_flush_updates(pending_oco_updates, async_session, AlgoOrder, _update)
         except Exception as e:
             logger.debug(f"[OCO-WATCH] poll iteration failed: {e}")
+
+
+async def _task_open_order_watchdog() -> None:
+    """Reconcile stale OPEN live orders that were never chased.
+
+    Polling cadence: `orders.open_order_watchdog_seconds`, default 300s (5 min).
+    Cutoff: orders created more than 5 minutes ago. Accounts are reconciled
+    individually against the broker order book; FILLED rows trigger template
+    attach; UNFILLED/CANCELLED rows are updated in the same session + commit.
+
+    Failure shape: best-effort. Any single iteration error is logged at
+    WARNING and retried next cycle.
+    """
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.api.routes.orders import _rco_reconcile_account
+    from backend.api.routes.orders_place import _maybe_fire_template_attach_for_reconcile
+    from sqlalchemy import select as _sel
+
+    interval = max(60, get_int("orders.open_order_watchdog_seconds", 300))
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+            attach_queue: list = []
+            async with async_session() as sess:
+                result = await sess.execute(
+                    _sel(AlgoOrder).where(
+                        AlgoOrder.status == "OPEN",
+                        AlgoOrder.mode == "live",
+                        AlgoOrder.created_at < cutoff,
+                    )
+                )
+                rows = result.scalars().all()
+                if not rows:
+                    continue
+                by_account: dict[str, list] = {}
+                for r in rows:
+                    by_account.setdefault(r.account, []).append(r)
+                for acct, acct_rows in by_account.items():
+                    await _rco_reconcile_account(acct, acct_rows, attach_queue)
+                await sess.commit()
+            for item in attach_queue:
+                _maybe_fire_template_attach_for_reconcile(item)
+        except Exception as exc:
+            logger.warning("open_order_watchdog error: %s", exc)
 
 
 async def _snapshot_book_symbols(days: int = 7) -> list[tuple[str, str]]:
@@ -5514,6 +5560,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(_task_hedge_proxy_regression,          name="bg-hedge-proxy-regression"), name="bg-hedge-proxy-regression"),
         asyncio.create_task(_supervised(_task_trail_stop,                      name="bg-trail-stop"),      name="bg-trail-stop"),
         asyncio.create_task(_supervised(_task_oco_pair_watcher,                name="bg-oco-pair-watcher"), name="bg-oco-pair-watcher"),
+        asyncio.create_task(_supervised(_task_open_order_watchdog,              name="bg-open-order-watchdog"), name="bg-open-order-watchdog"),
         # _task_post_market_cron consolidates: close summary, NAV snapshot,
         # strategy snapshot, monthly statement, and late-night app_messages
         # cleanup — all in one poll-and-debounce loop (30 s cadence).
