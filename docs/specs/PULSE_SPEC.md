@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.2 — 2026-07-11  
+**Version**: 1.3 — 2026-08-08  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py`
 
@@ -148,7 +148,7 @@ See Section 5 for DB-first policy and fallback ladder.
 
 **Day P&L computation in snapshot mode** (`_positions_snapshot()` and `_build_holding_row_from_snapshot()`):
 - Snapshot readers recompute `day_change_val` from prior-session EOD LTP to ensure correct day P&L after market settlement
-- **Positions**: `prev_batch` CTE filters `AND db.ltp IS NOT NULL AND db.ltp > 0 AND db.captured_at < :today_ist_midnight` to resolve yesterday's EOD LTP (not today's intraday snapshots); row mapping loop recomputes `day_change_val = (ltp − prev_ltp) × qty` from the frozen prior-session LTP
+- **Positions**: `prev_batch` CTE filters `AND db.ltp IS NOT NULL AND db.ltp > 0 AND db.captured_at < :today_ist_midnight` within a 7-day lookback window (`db.captured_at >= lb.max_at - INTERVAL '7 days'`) to handle multi-day holiday gaps and MCX's 23:30 IST close-to-open window. Resolves yesterday's EOD LTP (not today's intraday snapshots); row mapping loop recomputes `day_change_val = (ltp − prev_ltp) × qty` from the frozen prior-session LTP
 - **Holdings**: `day_change_val` computed as `(ltp − previous_close) × qty` where `previous_close` is write-once and never overwritten (unlike the mutable `day_pnl` column which Kite clobbers to 0 at 16:15 IST)
 - Day P&L: always via `baseDayPnlForPosition(p)` — NEVER read `day_change_val` directly. Formula applies canonical fast-path (`day_change_val` guard) for ALL overnight positions (both longs and shorts). Short position guard corrected in commit 1769cffc: overnight quantity check is now `oq !== 0` (not `oq > 0`), ensuring short MCX positions receive the stale-close guard during the 23:30–09:00 IST window and avoiding catastrophic ₹5,00,000+ overstatement in day P&L.
 - Do NOT use `positions.close_price` (stale overnight); use `daily_book.ltp`
@@ -1017,10 +1017,18 @@ from the last market session. The `closed_hours_or_broker()` gate centralizes th
   open positions visible, matching broker book state at next gate open
 
 **Day P&L recomputation in snapshot mode**:
-- `_positions_snapshot()` CTE `prev_batch` filters `AND db.ltp IS NOT NULL AND db.ltp > 0 AND db.captured_at < :today_ist_midnight` to resolve yesterday's EOD LTP (ensures snapshot resolves to prior-session closed price, not today's intraday rows)
-- Row mapping loop recomputes `day_change_val = (ltp − prev_ltp) × qty` from the frozen prior-session LTP for all rows, not relying on Kite's mutable `day_pnl` field which gets reset to 0 at settlement
-- `_build_holding_row_from_snapshot()` similarly recomputes `day_change_val = (ltp − previous_close) × qty` where `previous_close` is write-once (never overwritten like the broker's `day_pnl`)
-- NavStrip P-slot and Pulse page grids show correct day P&L immediately after NSE/MCX settlement (16:15 IST, ~23:30 IST) since snapshot readers don't depend on the broker's zero-flash field
+- `_positions_snapshot()` CTE `prev_batch` filters within a 7-day lookback window
+  (`db.captured_at >= lb.max_at - INTERVAL '7 days'`) to handle holiday gaps, then resolves
+  yesterday's EOD LTP via `AND db.ltp IS NOT NULL AND db.ltp > 0 AND db.captured_at < :today_ist_midnight`
+  (ensures snapshot uses prior-session closed price, not today's intraday rows)
+- Row mapping loop recomputes `day_change_val = (ltp − prev_ltp) × qty` from the frozen
+  prior-session LTP for all rows, not relying on Kite's mutable `day_pnl` field which gets
+  reset to 0 at settlement
+- `_build_holding_row_from_snapshot()` similarly recomputes `day_change_val = (ltp − previous_close) × qty`
+  where `previous_close` is write-once (never overwritten like the broker's `day_pnl`)
+- NavStrip P-slot and Pulse page grids show correct day P&L immediately after NSE/MCX
+  settlement (16:15 IST, ~23:30 IST) since snapshot readers don't depend on the
+  broker's zero-flash field
 
 **Movers during closed hours**:
 - Snapshot from last NSE close (persisted to `movers_snapshots` table)
@@ -1126,4 +1134,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-07-28 | v1.4 Snapshot intraday-closed position inclusion (commits cef00739, 5ac11f56): §4.4 positions/holdings updated — off-hours snapshot filter refined from `AND qty != 0` to `AND (qty != 0 OR date = :today_ist)`. Intraday closed positions (qty=0, date=today IST) now appear in snapshot with 'closed' chip + opacity:0.45 in derivatives legs grid; prior-session closed excluded. §23 Closed-Hours Snapshot Behavior expanded with detailed off-hours position snapshot filter explanation. Frontend `buildCleanLegs()` filters qty===0 from payoff POST (strategy analytics unchanged); legs grid shows closed legs for intraday history only. |
 | 2026-07-29 | §4.4 Derivatives Legs Grid candidate filtering (commit 9becba9f): F&O positions skip missing instruments (expired, not in master), equity holdings and proxy hedges skip qty=0, draft positions skip missing instruments. §17 Expiry-close analysis: qty=0 (closed) positions now always excluded from `annotateOptionCandidates` regardless of expiry filter — prevents false amber "Exp close" badge counts from stale closed legs leaking into `computeExpiryBands`. |
 | 2026-08-07 | §4.4 Short position day P&L fix (commit 1769cffc): `baseDayPnlForPosition` overnight quantity guard corrected from `oq > 0` to `oq !== 0`. Short MCX positions (oq < 0) now receive the `day_change_val` fast-path and Case 4 stale-close guard during the 23:30–09:00 IST window. Previously, shorts would return an unguarded formula result, causing catastrophic ₹5,00,000+ day-P&L overstatement when `close_price=0` (broker stale data between sessions). |
-| 2026-08-08 | §4.4 + §23 Snapshot day P&L recomputation: `_positions_snapshot()` now filters `prev_batch` CTE with `AND db.ltp IS NOT NULL AND db.ltp > 0 AND db.captured_at < :today_ist_midnight` to resolve yesterday's EOD LTP; row loop recomputes `day_change_val = (ltp − prev_ltp) × qty` from frozen prior-session LTP instead of trusting broker's mutable `day_pnl` field. Holdings snapshot similarly recomputes from write-once `previous_close` instead of zeroed `day_pnl`. NavStrip P and Pulse grids now show correct day P&L immediately after settlement. |
+| 2026-08-08 | v1.3 Snapshot day P&L recomputation + prev_batch 7-day lookback (commit TBD): §4.4 + §23 updated — `_positions_snapshot()` CTE `prev_batch` now includes 7-day lookback window (`db.captured_at >= lb.max_at - INTERVAL '7 days'`) before the time-of-day filter to handle multi-day holiday gaps and MCX's 23:30 IST close-to-open window. Row loop recomputes `day_change_val = (ltp − prev_ltp) × qty` from frozen prior-session LTP instead of trusting broker's mutable `day_pnl` field. Holdings snapshot similarly recomputes from write-once `previous_close` instead of zeroed `day_pnl`. NavStrip P and Pulse grids now show correct day P&L immediately after settlement without stale-price errors. |

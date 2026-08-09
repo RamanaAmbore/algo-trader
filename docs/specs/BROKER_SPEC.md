@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.8 — 2026-07-27  
+**Version**: 1.9 — 2026-08-08  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -1072,6 +1072,36 @@ designed.
 
 ---
 
+## 16. Closed-Hours Cache Refresh Pattern
+
+**File**: `backend/api/background.py` — `_task_closed_hours_refresh()` (deprecated pattern)
+
+Prior implementation: `_task_closed_hours_refresh()` ran every 30 minutes during closed hours,
+calling `snapshot_daily_book()` to write fresh snapshots. This pattern has been **consolidated
+into `_task_daily_snapshot()`**.
+
+### New pattern (Aug 2026 consolidation)
+
+`_task_daily_snapshot()` now exclusively owns all daily book writes:
+
+1. **Startup snapshot** — fires once when both NSE and MCX are closed (skipped if markets open)
+2. **NSE settlement pass** — fires at 16:15 IST daily (after OCP settlement)
+3. **MCX settlement pass** — fires at 00:15 IST daily (after MCX settlement, ~7h45m after
+   MCX closes at 23:30 IST previous day)
+
+**Rationale**: Daily book writes are meaningful only when broker settlement prices are
+available (post-settlement). Mid-session writes during closed hours dilute the data with
+stale broker LTPs that have not yet updated to the new session's open levels.
+
+### Broker cache management during closed hours
+
+During closed-hours windows, broker raw-data cache (`_RAW_CACHE`) is actively busted by
+background tasks to ensure fresh broker data on next market open. This is separate from
+daily book snapshot writes (which only happen at settlement). Cache busting allows the
+broker to prefetch during the quiet window without polluting snapshots.
+
+---
+
 ## Change log
 
 | Date | Change |
@@ -1094,5 +1124,6 @@ designed.
 | 2026-07-27 | v1.8 Snapshot orphan deletion (commit 47c49e20): Added §7.3 Daily Snapshot Orphan Cleanup documenting `_delete_orphan_positions()` async helper called after each per-account positions UPSERT in `snapshot_daily_book()`. Removes stale `daily_book` (kind='positions') rows for symbols absent from broker response. Broker response uses sentinel pattern: `positions=None` (call failed, skip cleanup) vs `positions=[]` or `[...]` (call succeeded, proceed). Prevents closed positions from persisting in UI after settlement. Added I23 invariant: orphan deletion enforces SSOT for settled positions; cleanup is fail-open and idempotent. |
 | 2026-07-27 | v1.9 Expiry restart fix + prior-day orphan cleanup (commits cbbe0f23, 21d1656a): Updated §9.1 Background Task Supervisor with expiry task restart-blindness fix (module-level `_expiry_last_run_date` sentinel ensures immediate fire on service restart > 09:20 IST; not run today yet); expiry engine re-scan loop (every 30 min until 15:25 IST, catches newly-ITM positions); NSE NIFTY quote key fix (NSE:NIFTY 50 not NSE:NIFTY). Updated §7.3 to add `_delete_prior_orphan_positions()` pass removing settled options from prior-day snapshots (7-day scope). Updated I14 invariant to note off-hours `_positions_snapshot()` query includes `AND qty != 0` guard (commit 21d1656a) to exclude flat/expired positions. Expiry-day auto-close agents changed from inactive → active status. |
 | 2026-07-28 | v1.10 Snapshot intraday-closed position inclusion (commits cef00739, 5ac11f56): Updated §7.3 Daily Snapshot Orphan Cleanup and I14 invariant — off-hours `_positions_snapshot()` query refined from `AND qty != 0` (cef00739) to `AND (qty != 0 OR date = :today_ist)` (5ac11f56). Positions closed intraday (qty=0, captured today IST) now appear in off-hours snapshot with 'closed' chip + opacity:0.45 decoration in derivatives legs grid. Prior-session closed positions (qty=0, date≠today) excluded. Next morning before market opens, yesterday's closed legs absent, only carried-overnight open positions visible, matching broker book when gate opens. Frontend `buildCleanLegs()` filters qty===0 rows from payoff POST (strategy analytics unchanged). Legs grid shows closed legs for intraday history. |
+| 2026-08-08 | v1.11 Closed-hours snapshot consolidation (commit TBD): Added §16 Closed-Hours Cache Refresh Pattern documenting consolidation of per-30m closed-hours writes into `_task_daily_snapshot()` settlement passes only. `_task_closed_hours_refresh()` no longer calls `snapshot_daily_book()` — daily book writes happen exclusively at NSE (16:15 IST) and MCX (00:15 IST) settlement passes, plus startup snapshot when both markets closed. Broker cache busting still active during closed hours to ensure fresh data on next open, separate from snapshot persistence. Rationale: settlement writes are meaningful only when broker settlement prices available; mid-session writes dilute snapshots with stale LTPs. |
 | 2026-08-06 | v1.11 Holdings snapshot day_change_percentage formula fix (commit 13ec7c18): Added §7.4 Holdings Snapshot Day Change Percentage Formula documenting the corrected formula: `day_pnl / (previous_close × qty) × 100` (uses `previous_close` denominator, not LTP). Fallback to `avg_cost` when `previous_close` is zero/missing. Added I24 invariant. SQL now selects `db.previous_close` from daily_book; fixes distortion where using LTP inflated negatives and understated positives. |
 | 2026-08-06 | v1.12 Dhan holdings day_pnl fix (commit a737b1e2): Added subsection to §7.4 documenting Dhan `close_price=0` handling and backfill recompute. `_backfill_recompute_derived()` now accepts `close_was_missing: bool` flag; when True, recomputes `day_change = ltp - real_close` unconditionally to override stale Dhan adapter value. Added subsection on daily_book `day_pnl` storing total P&L (not per-share change). Added I25 and I26 invariants capturing `close_was_missing` detection and total-P&L storage convention. Fixes Dhan holdings snapshot storing incorrect day_pnl (e.g. 3952 instead of -28) when `close_price` was patched from zero. |
