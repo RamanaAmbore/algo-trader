@@ -21,6 +21,7 @@ from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
     closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
 )
+from backend.api.routes.positions_helpers import _is_broker_outage
 from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
@@ -42,12 +43,27 @@ _HOLDINGS_SNAPSHOT_SQL = """
         FROM daily_book
         WHERE kind = 'holdings' AND ltp IS NOT NULL
         GROUP BY account
+    ),
+    prev_batch AS (
+        SELECT DISTINCT ON (db.account, db.symbol)
+               db.account, db.symbol, db.ltp AS prev_ltp
+        FROM daily_book db
+        JOIN latest_batch lb
+          ON db.account = lb.account
+        WHERE db.kind = 'holdings'
+          AND db.ltp IS NOT NULL AND db.ltp > 0
+          AND db.captured_at < lb.max_at
+          AND db.captured_at >= lb.max_at - INTERVAL '7 days'
+        ORDER BY db.account, db.symbol, db.captured_at DESC
     )
     SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
-           db.ltp, db.previous_close, db.day_pnl, db.total_pnl, db.captured_at
+           db.ltp, db.previous_close, db.day_pnl, db.total_pnl, db.captured_at,
+           pb.prev_ltp
     FROM daily_book db
     JOIN latest_batch lb
       ON db.account = lb.account AND db.captured_at = lb.max_at
+    LEFT JOIN prev_batch pb
+      ON db.account = pb.account AND db.symbol = pb.symbol
     WHERE db.kind = 'holdings'
       AND db.ltp IS NOT NULL
       AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
@@ -87,7 +103,7 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     aggregates into HoldingsSummaryRow.
     """
     (account, symbol, exchange, qty, avg_cost, ltp, previous_close,
-     day_pnl, total_pnl, _captured_at) = raw_row
+     day_pnl, total_pnl, _captured_at, prev_ltp) = raw_row
 
     avg_cost_f       = float(avg_cost)       if avg_cost       is not None else 0.0
     ltp_f            = float(ltp)            if ltp             is not None else 0.0
@@ -101,10 +117,19 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     # pnl_percentage: pnl / |avg × qty| × 100
     # (inv_val = avg_cost_f × qty_i, so use that directly)
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-    # Recompute from frozen previous_close (write-once, always yesterday's settlement)
-    # because Kite overwrites close_price to today's OCP post-settlement, making
-    # stored day_pnl = 0. Use formula only when previous_close is available.
-    day_change_val = (ltp_f - previous_close_f) * qty_i if previous_close_f > 0 else day_pnl_f
+    # day_change_val: prefer computing from two consecutive batch LTPs when
+    # prev_ltp is available (most accurate — reflects the actual price move
+    # between the two most-recent snapshots within a 7-day window).
+    # Fall back to (ltp - previous_close) × qty when previous_close is set
+    # (frozen prior-session settlement, write-once). Final fallback: stored
+    # day_pnl_f from the snapshot write path.
+    prev_ltp_f = float(prev_ltp) if prev_ltp is not None and float(prev_ltp) > 0 else None
+    if prev_ltp_f is not None:
+        day_change_val = (ltp_f - prev_ltp_f) * qty_i
+    elif previous_close_f > 0:
+        day_change_val = (ltp_f - previous_close_f) * qty_i
+    else:
+        day_change_val = day_pnl_f
     # day_change_percentage: day_change_val / |previous_close × qty| × 100
     # Use yesterday's close price as the denominator (NOT LTP, which would
     # understate the move). Fallback to avg_cost when previous_close is
@@ -222,15 +247,6 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
         as_of=snap_captured_at,
     )
 
-
-def _is_broker_outage(err: Exception) -> bool:
-    """Detect Kite (Zerodha) upstream HTTP gateway errors. See
-    funds.py for the rationale — same helper, same patterns."""
-    s = str(err).lower()
-    return any(needle in s for needle in (
-        'bad gateway', '502', '503', '504',
-        'service unavailable', 'gateway timeout',
-    ))
 
 _ROW_COLS = [
     'account', 'tradingsymbol', 'exchange', 'quantity', 'opening_quantity',

@@ -388,6 +388,24 @@ async def apply_scope_and_mask(
     return resp
 
 
+def _is_broker_outage(err: Exception) -> bool:
+    """Detect Kite (Zerodha) upstream HTTP gateway errors.
+
+    Returns True when the error message contains any of the well-known
+    upstream-gateway strings.  Used as a guard before falling back to a
+    stale snapshot so transient 502/503/504 conditions don't surface blank
+    data to the frontend.
+
+    SSOT: imported by positions.py, holdings.py, and funds.py — do NOT
+    define locally in those modules.
+    """
+    s = str(err).lower()
+    return any(needle in s for needle in (
+        "bad gateway", "502", "503", "504",
+        "service unavailable", "gateway timeout",
+    ))
+
+
 def merge_paper_into_live(
     live_resp: PositionsResponse,
     paper_resp: PositionsResponse,

@@ -119,6 +119,7 @@ def test_build_holding_row_close_price_is_previous_close():
         2000.0,     # day_pnl = (1800 - 1600) × 10
         3000.0,     # total_pnl
         None,       # captured_at
+        None,       # prev_ltp (none — fallback to previous_close)
     )
     row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
 
@@ -144,7 +145,8 @@ def test_build_holding_row_close_price_fallback_to_ltp_when_no_prev_close():
         0.0,     # previous_close = 0 (same-day buy, no prior session)
         250.0,   # day_pnl
         250.0,   # total_pnl
-        None,
+        None,    # captured_at
+        None,    # prev_ltp
     )
     row, *_ = _build_holding_row_from_snapshot(raw_row)
 
@@ -170,7 +172,8 @@ def test_build_holding_row_close_price_not_ltp_when_prev_close_present():
         previous_close, # previous_close
         500.0,          # day_pnl = (200 - 150) × 10
         600.0,          # total_pnl
-        None,
+        None,           # captured_at
+        None,           # prev_ltp
     )
     row, *_ = _build_holding_row_from_snapshot(raw_row)
 

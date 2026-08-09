@@ -286,6 +286,7 @@ def test_snapshot_day_change_percentage_correct_denominator():
         2000.0,        # day_pnl = (1200 - 1000) × 10
         3000.0,        # total_pnl = (1200 - 1000 + prev_gain) × 10
         None,          # captured_at
+        None,          # prev_ltp (no prior batch — fallback to previous_close)
     )
 
     row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
@@ -329,7 +330,8 @@ def test_snapshot_day_change_percentage_fallback_to_avg_cost():
         0.0,           # previous_close = 0 (no prior session; same-day buy)
         500.0,         # day_pnl = (1050 - 1000) × 10 (stored value)
         500.0,         # total_pnl = same (no prior p/l)
-        None,
+        None,          # captured_at
+        None,          # prev_ltp (none — both absent, fallback to stored day_pnl)
     )
 
     row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
@@ -356,7 +358,8 @@ def test_snapshot_day_change_percentage_zero_qty():
         1000.0,        # previous_close
         0.0,           # day_pnl
         100.0,         # total_pnl (from yesterday's hold)
-        None,
+        None,          # captured_at
+        None,          # prev_ltp
     )
 
     row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
@@ -380,7 +383,8 @@ def test_snapshot_day_change_percentage_negative_move():
         1000.0,        # previous_close
         -20000.0,      # day_pnl = (800 - 1000) × 100
         -20000.0,      # total_pnl (same; no prior p/l)
-        None,
+        None,          # captured_at
+        None,          # prev_ltp
     )
 
     row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
@@ -413,7 +417,8 @@ def test_build_holding_row_recomputes_day_change_val_when_stored_is_zero():
         2900.0,                # previous_close (yesterday's settlement)
         0.0,                   # day_pnl (zeroed post-settlement)
         1500.0,                # total_pnl
-        None,
+        None,                  # captured_at
+        None,                  # prev_ltp (none — fallback to previous_close)
     )
 
     row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
@@ -442,7 +447,8 @@ def test_build_holding_row_day_change_percentage_uses_recomputed_val():
         1450.0,               # previous_close
         0.0,                  # day_pnl (stale)
         5000.0,               # total_pnl
-        None,
+        None,                 # captured_at
+        None,                 # prev_ltp (none — fallback to previous_close)
     )
 
     row, *_ = _build_holding_row_from_snapshot(raw_row)
@@ -468,8 +474,8 @@ async def test_holdings_snapshot_summary_uses_recomputed_day_change_val():
     captured_ts = datetime(2026, 8, 8, 10, 0, tzinfo=timezone.utc)
     # Two holdings, both with stored day_pnl=0 but valid previous_close
     fake_rows = [
-        ("ACC1", "RELIANCE", "NSE", 10, 2800.0, 2950.0, 2900.0, 0.0, 1500.0, captured_ts),
-        ("ACC1", "INFY",     "NSE", 50, 1400.0, 1500.0, 1450.0, 0.0, 5000.0, captured_ts),
+        ("ACC1", "RELIANCE", "NSE", 10, 2800.0, 2950.0, 2900.0, 0.0, 1500.0, captured_ts, None),
+        ("ACC1", "INFY",     "NSE", 50, 1400.0, 1500.0, 1450.0, 0.0, 5000.0, captured_ts, None),
     ]
 
     mock_result = MagicMock()

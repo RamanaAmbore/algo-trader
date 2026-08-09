@@ -13,6 +13,7 @@ from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection, normalise_role,
 )
 from backend.api.cache import get_or_fetch, invalidate
+from backend.api.routes.positions_helpers import _is_broker_outage
 from backend.api.schemas import FundsResponse, FundsRow
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
@@ -23,22 +24,6 @@ logger = get_logger(__name__)
 
 _TTL = 30
 _IST = ZoneInfo("Asia/Kolkata")
-
-_OUTAGE_NEEDLES = (
-    "bad gateway", "502", "503", "504",
-    "service unavailable", "gateway timeout",
-)
-
-
-def _is_broker_outage(err: Exception) -> bool:
-    """Detect Kite (Zerodha) upstream HTTP gateway errors so we can
-    surface a more specific message than the generic "Server busy".
-    Kite returns plain 502/503/504 HTML pages during their periodic
-    backend wobbles; the broker_apis helper logs them verbatim, so
-    the resulting Exception string carries the marker text."""
-    s = str(err).lower()
-    return any(needle in s for needle in _OUTAGE_NEEDLES)
-
 
 _COL_MAP = {
     'avail opening_balance': 'cash',

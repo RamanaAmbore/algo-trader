@@ -478,48 +478,60 @@ _INTRADAY_FIELDS = frozenset({
 })
 
 
-def _snap_compute_day_pnl(r: dict, ltp_val: float, close_price, qty) -> Optional[float]:
+def _snap_compute_day_pnl(r: dict, ltp_val: float, close_price, qty, multiplier: int = 1) -> Optional[float]:
     """Compute day P&L for one position row using decomposed formula when available.
 
     Uses decomposed_intraday_pnl when all intraday split fields are present
     (Kite / Dhan / Groww adapters); falls back to naive_day_pnl otherwise.
     Returns None when ltp_val is None or close_price is unavailable.
+
+    ``multiplier`` — the Kite lot_size for MCX/NCO contracts. Kite ships
+    overnight_quantity, day_buy_quantity, day_sell_quantity in LOTS while
+    ltp/cls are per-unit prices and day_buy_value/day_sell_value are
+    absolute ₹. Scaling the qty fields by multiplier converts them to
+    contracts so the decomposed formula computes the correct ₹ P&L.
+    For equity/NFO multiplier=1, so the formula is unchanged.
     """
     from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
     if ltp_val is None or close_price is None:
         return None
     cls = float(close_price)
     qty_f = float(qty)
+    m = int(multiplier) if multiplier and int(multiplier) > 1 else 1
     if _INTRADAY_FIELDS.issubset(r.keys()):
         try:
             return float(decomposed_intraday_pnl(
-                oq=float(r.get("overnight_quantity") or 0),
+                oq=float(r.get("overnight_quantity") or 0) * m,
                 ltp=ltp_val,
                 cls=cls,
-                bq=float(r.get("day_buy_quantity")  or 0),
+                bq=float(r.get("day_buy_quantity")  or 0) * m,
                 bv=float(r.get("day_buy_value")     or 0),
                 sv=float(r.get("day_sell_value")    or 0),
-                sq=float(r.get("day_sell_quantity") or 0),
+                sq=float(r.get("day_sell_quantity") or 0) * m,
             ))
         except Exception:
             pass
-    return float(naive_day_pnl(ltp_val, cls, qty_f))
+    return float(naive_day_pnl(ltp_val, cls, qty_f * m))
 
 
 def _snap_position_eod_vals(
-    r: dict, mid_session: bool, qty
+    r: dict, mid_session: bool, qty, multiplier: int = 1
 ) -> tuple[Optional[float], Optional[float], Optional[float], bool]:
     """Return (ltp_val, day_pnl, total_pnl_v, skip) for one position row.
 
     `skip=True` when the bad-payload guard fires (all-zero fingerprint).
     ltp_val and day_pnl are None when mid-session to prevent partial-day
     values from polluting the EOD snapshot.
+
+    ``multiplier`` — forwarded to ``_snap_compute_day_pnl`` so MCX/NCO
+    overnight/buy/sell quantities (in lots) are scaled to contracts before
+    the day P&L formula runs.
     """
     if mid_session:
         return None, None, None, False
     ltp_val = r.get("last_price")
     ltp_val = float(ltp_val) if ltp_val is not None else None
-    day_pnl = _snap_compute_day_pnl(r, ltp_val, r.get("close_price"), qty)
+    day_pnl = _snap_compute_day_pnl(r, ltp_val, r.get("close_price"), qty, multiplier)
     total_pnl_raw = r.get("pnl")
     total_pnl_v   = float(total_pnl_raw) if total_pnl_raw is not None else None
     skip = _is_zero_payload_row(r, ltp_val, day_pnl, total_pnl_v)
@@ -538,11 +550,19 @@ def _positions_rows(
             continue
         exchange = r.get("exchange", "NFO")
         qty = r.get("quantity") or 0
+        # MCX/NCO rows carry a multiplier (lot_size) from Kite. Overnight /
+        # buy / sell quantities in those rows are in LOTS; ltp/cls are
+        # per-unit prices. We must scale qty fields by the multiplier before
+        # running the day P&L formula. Guard: treat any value < 1 as 1.
+        raw_mult = r.get("multiplier")
+        multiplier = int(float(raw_mult)) if raw_mult else 1
+        if multiplier < 1:
+            multiplier = 1
         mid_session = _is_exchange_open_at(exchange, now_ist)
         # Captured AT EOD (after the exchange closes) this is the correct
         # day_pnl. Captured MID-SESSION it's a partial-day value — skip.
         ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
-            r, mid_session, qty
+            r, mid_session, qty, multiplier
         )
         if skip:
             skipped += 1

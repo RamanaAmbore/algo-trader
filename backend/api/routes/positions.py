@@ -19,6 +19,7 @@ from backend.api.helpers.snapshot_gate import (
     closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
 )
 from backend.api.routes.positions_helpers import (
+    _is_broker_outage,
     apply_scope_and_mask,
     build_row_from_snapshot_raw,
     build_snapshot_position_row,
@@ -163,16 +164,6 @@ _TTL = 30
 # Fields that must remain None when absent rather than being coerced to 0
 # by the general None-guard in the row-building comprehension.
 _NULLABLE_COLS: frozenset[str] = frozenset({'prev_settlement_pnl'})
-
-
-def _is_broker_outage(err: Exception) -> bool:
-    """Detect Kite (Zerodha) upstream HTTP gateway errors. See
-    funds.py for the rationale — same helper, same patterns."""
-    s = str(err).lower()
-    return any(needle in s for needle in (
-        'bad gateway', '502', '503', '504',
-        'service unavailable', 'gateway timeout',
-    ))
 
 
 def _replace_row_price(r, live_ltp: float, exchange_open: bool, snap_ltp: "float | None"):
@@ -370,6 +361,11 @@ def _apply_flat_row_hygiene(raw: "pd.DataFrame") -> None:
         return
     if 'day_change' in raw.columns:
         raw.loc[_flat_mask, 'day_change'] = 0.0
+    # day_change_val: the absolute ₹ move for a flat intraday position is
+    # zero by definition; leaving it non-zero would cause phantom P&L in
+    # the NavStrip performance slot.
+    if 'day_change_val' in raw.columns:
+        raw.loc[_flat_mask, 'day_change_val'] = 0.0
     # day_change_percentage: denominator collapses to 0 when qty=0;
     # undefined percentage — zero it rather than show a spurious value.
     if 'day_change_percentage' in raw.columns:

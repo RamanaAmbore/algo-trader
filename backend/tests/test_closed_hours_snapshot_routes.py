@@ -943,6 +943,7 @@ async def test_holdings_snapshot_pnl_percentage_populated():
         100.0,       # day_pnl
         1000.0,      # total_pnl
         captured_ts, # captured_at
+        None,        # prev_ltp (no prior batch — fallback to previous_close)
     )
 
     mock_result = MagicMock()
@@ -1089,6 +1090,7 @@ async def test_holdings_snapshot_prefers_good_over_bad():
         100.0,       # day_pnl
         1000.0,      # total_pnl
         good_ts,     # captured_at (older timestamp)
+        None,        # prev_ltp (no prior batch)
     )
 
     # The DB layer (after Fix 2 SQL) would exclude the bad row and return only
@@ -1256,6 +1258,7 @@ async def test_holdings_snapshot_day_change_val_uses_previous_close_not_stored_d
         0.0,             # day_pnl (zeroed post-settlement)
         2000.0,          # total_pnl
         captured_ts,     # captured_at
+        None,            # prev_ltp (no prior batch — fallback to previous_close)
     )
 
     mock_result = MagicMock()

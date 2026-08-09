@@ -402,6 +402,114 @@ class TestRowBuilders:
         assert r["ltp"] is None
         assert r["total_pnl"] is None
 
+    # ------------------------------------------------------------------
+    # Change A: MCX day_pnl lot-scale fix
+    # ------------------------------------------------------------------
+
+    def test_snap_compute_day_pnl_mcx_lot_scale(self):
+        """MCX new position: oq/bq/sq in lots must be scaled by multiplier=100.
+
+        CRUDEOIL: lot_size=100, oq=1 lot, ltp=6900, cls=6800 → correct day
+        P&L = (6900-6800) × 100 = 10_000. Without the fix the result was
+        100× too small: (6900-6800) × 1 = 100.
+        """
+        from backend.api.algo.daily_snapshot import _snap_compute_day_pnl
+        r = {
+            "overnight_quantity":  1,    # in LOTS
+            "day_buy_quantity":    0,
+            "day_sell_quantity":   0,
+            "day_buy_value":       0.0,
+            "day_sell_value":      0.0,
+        }
+        result = _snap_compute_day_pnl(r, ltp_val=6900.0, close_price=6800.0, qty=1, multiplier=100)
+        assert result == pytest.approx(10_000.0), \
+            f"MCX day_pnl should be 10000 (oq×m=100 contracts), got {result}"
+
+    def test_snap_compute_day_pnl_equity_unaffected(self):
+        """Equity (multiplier=1) must be unchanged after lot-scale addition."""
+        from backend.api.algo.daily_snapshot import _snap_compute_day_pnl
+        r = {
+            "overnight_quantity":  10,
+            "day_buy_quantity":    0,
+            "day_sell_quantity":   0,
+            "day_buy_value":       0.0,
+            "day_sell_value":      0.0,
+        }
+        result = _snap_compute_day_pnl(r, ltp_val=2600.0, close_price=2500.0, qty=10, multiplier=1)
+        assert result == pytest.approx(1000.0), \
+            f"Equity day_pnl = (2600-2500)×10 = 1000, got {result}"
+
+    def test_snap_compute_day_pnl_mcx_intraday_bv_sv_not_scaled(self):
+        """day_buy_value / day_sell_value are absolute ₹ — must NOT be
+        scaled by multiplier. Only oq/bq/sq are in lots."""
+        from backend.api.algo.daily_snapshot import _snap_compute_day_pnl
+        # 1 lot CRUDEOIL bought intraday at 6800 (bv=6800×100=680000), sold at
+        # 6900 (sv=6900×100=690000). Net = sv - bv = 10000.
+        r = {
+            "overnight_quantity":  0,
+            "day_buy_quantity":    1,    # 1 lot
+            "day_sell_quantity":   1,    # 1 lot
+            "day_buy_value":  680_000.0, # absolute ₹ — already in rupees
+            "day_sell_value": 690_000.0, # absolute ₹ — already in rupees
+        }
+        result = _snap_compute_day_pnl(r, ltp_val=6900.0, close_price=6800.0, qty=0, multiplier=100)
+        # decomposed: oq×(ltp-cls) + (sv - bv) - sq×ltp + bq×ltp  (simplified for flat intraday)
+        # = 0 + (690000 - 680000) - 100×6900 + 100×6900 = 10000
+        assert result == pytest.approx(10_000.0), \
+            f"MCX intraday bv/sv should not be scaled; expected 10000, got {result}"
+
+    def test_positions_rows_mcx_reads_multiplier(self):
+        """_positions_rows must read multiplier from raw row and pass through.
+
+        CRUDEOIL overnight position: multiplier=100, oq=1 lot.
+        Expected day_pnl = (ltp - cls) × oq × 100 = (6900 - 6800) × 100 = 10000.
+        """
+        from backend.api.algo.daily_snapshot import _positions_rows
+        mcx_pos = [{
+            "tradingsymbol": "CRUDEOIL26AUGFUT",
+            "exchange": "MCX",
+            "quantity": 100,            # contracts (qty = lots × lot_size)
+            "average_price": 6800.0,
+            "last_price": 6900.0,
+            "close_price": 6800.0,
+            "pnl": 10_000.0,
+            "multiplier": 100,          # lot_size field Kite ships
+            "overnight_quantity":  1,   # in LOTS
+            "day_buy_quantity":    0,
+            "day_sell_quantity":   0,
+            "day_buy_value":       0.0,
+            "day_sell_value":      0.0,
+        }]
+        # Use EOD time (after MCX close) so the snapshot captures day_pnl
+        rows = _positions_rows("ZG0790", self._D, mcx_pos, self._NOW_EOD)
+        assert len(rows) == 1, "expected one row"
+        assert rows[0]["day_pnl"] == pytest.approx(10_000.0), \
+            f"MCX day_pnl via _positions_rows: expected 10000, got {rows[0]['day_pnl']}"
+
+    def test_positions_rows_mcx_multiplier_guard_lt1(self):
+        """multiplier < 1 must be clamped to 1 (bad broker data guard)."""
+        from backend.api.algo.daily_snapshot import _positions_rows
+        pos = [{
+            "tradingsymbol": "CRUDEOIL26AUGFUT",
+            "exchange": "MCX",
+            "quantity": 1,
+            "average_price": 6800.0,
+            "last_price": 6900.0,
+            "close_price": 6800.0,
+            "pnl": 100.0,
+            "multiplier": 0,            # pathological value → should clamp to 1
+            "overnight_quantity":  1,
+            "day_buy_quantity":    0,
+            "day_sell_quantity":   0,
+            "day_buy_value":       0.0,
+            "day_sell_value":      0.0,
+        }]
+        rows = _positions_rows("ZG0790", self._D, pos, self._NOW_EOD)
+        assert len(rows) == 1
+        # With multiplier clamped to 1: (6900-6800)×1 = 100
+        assert rows[0]["day_pnl"] == pytest.approx(100.0), \
+            f"multiplier=0 should clamp to 1; expected day_pnl=100, got {rows[0]['day_pnl']}"
+
 
 # ---------------------------------------------------------------------------
 # Integration tests — against in-memory SQLite
