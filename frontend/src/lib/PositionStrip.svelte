@@ -447,16 +447,16 @@
   // which computes `(liveHold − avg) × qty` when a live LTP is available.
   // A recent MarketPulse fix changed the TOTAL row to use this live formula
   // instead of the broker-snapshot `r.pnl`, so the H pill slot 3 must do the
-  // same to stay in sync during market hours. Falls back to broker `h.pnl`
-  // when no live LTP is available (closed hours, cold-cache, missing symbol).
-  // Gates on _throttledTick (250 ms max) — same pattern as _livePositionsToday
-  // — so the loop runs at most 4 Hz during SSE bursts.
+  // same to stay in sync. Falls back to broker `h.pnl` when no live LTP is
+  // available (cold-cache or missing symbol). Reads getSnapshot() directly so
+  // Svelte 5 tracks symbolStore as a reactive dependency — no _throttledTick
+  // gate here, because holdings counts are small (<20) and untrack() was
+  // preventing reactivity entirely (causing stale values outside market hours).
   const _liveHoldingsTotal = $derived.by(() => {
-    void _throttledTick;
     let s = 0;
     for (const h of holdings) {
       const sym      = String(h?.tradingsymbol || '').toUpperCase();
-      const liveHold = untrack(() => getSnapshot(sym)?.ltp);
+      const liveHold = getSnapshot(sym)?.ltp;
       const avgCost  = Number(h?.average_price || 0);
       const qty      = Number(h?.opening_quantity || h?.quantity || 0);
       if (liveHold != null && liveHold > 0 && avgCost > 0 && qty !== 0) {

@@ -233,3 +233,91 @@ describe('mkResolveCellLtp — quote_symbol takes precedence over tradingsymbol'
     expect(resolveCellLtp(p)).toBeNull();
   });
 });
+
+// ── _liveHoldingsTotal formula invariant ─────────────────────────────────────
+//
+// PositionStrip._liveHoldingsTotal was refactored to read getSnapshot(sym)?.ltp
+// directly (removing untrack() + _throttledTick) so Svelte 5 tracks symbolStore
+// as a reactive dependency. These tests exercise the underlying formula logic in
+// isolation — the same arithmetic the component evaluates per holding row.
+//
+// Formula:
+//   if (liveHold != null && liveHold > 0 && avgCost > 0 && qty !== 0)
+//     s += (liveHold - avgCost) * qty
+//   else
+//     s += h.pnl
+
+describe('_liveHoldingsTotal formula invariant', () => {
+  /**
+   * Pure replication of the _liveHoldingsTotal loop for unit testing.
+   * @param {Array<{tradingsymbol:string,average_price:number,opening_quantity?:number,quantity?:number,pnl:number}>} holdings
+   * @param {(sym: string) => {ltp: number} | null | undefined} snapOf
+   * @returns {number}
+   */
+  function computeHoldingsTotal(holdings, snapOf) {
+    let s = 0;
+    for (const h of holdings) {
+      const sym      = String(h?.tradingsymbol || '').toUpperCase();
+      const snap     = snapOf(sym);
+      const liveHold = snap?.ltp;
+      const avgCost  = Number(h?.average_price || 0);
+      const qty      = Number(h?.opening_quantity ?? h?.quantity ?? 0);
+      if (liveHold != null && liveHold > 0 && avgCost > 0 && qty !== 0) {
+        s += (liveHold - avgCost) * qty;
+      } else {
+        s += Number(h?.pnl || 0);
+      }
+    }
+    return s;
+  }
+
+  const baseHolding = {
+    tradingsymbol: 'RELIANCE',
+    average_price: 2800,
+    opening_quantity: 10,
+    quantity: 10,
+    pnl: 1000,
+  };
+
+  it('uses (ltp - avg) * qty when live LTP is positive and avgCost > 0', () => {
+    // liveHold=2950, avg=2800, qty=10 → (2950-2800)*10 = 1500 (not broker pnl=1000)
+    const total = computeHoldingsTotal([baseHolding], (sym) => sym === 'RELIANCE' ? { ltp: 2950 } : null);
+    expect(total).toBeCloseTo(1500, 1);
+  });
+
+  it('falls back to h.pnl when snap is absent (no live LTP)', () => {
+    const total = computeHoldingsTotal([baseHolding], () => null);
+    expect(total).toBeCloseTo(1000, 1);
+  });
+
+  it('falls back to h.pnl when liveHold is 0 (cold-cache guard)', () => {
+    // ltp=0 must never produce a large negative P&L like (0-2800)*10 = -28000
+    const total = computeHoldingsTotal([baseHolding], (sym) => sym === 'RELIANCE' ? { ltp: 0 } : null);
+    expect(total).toBeCloseTo(1000, 1);
+  });
+
+  it('falls back to h.pnl when avgCost is 0', () => {
+    const h = { ...baseHolding, average_price: 0 };
+    const total = computeHoldingsTotal([h], (sym) => sym === 'RELIANCE' ? { ltp: 2950 } : null);
+    // avgCost=0 fails the > 0 guard → fall back to h.pnl=1000
+    expect(total).toBeCloseTo(1000, 1);
+  });
+
+  it('falls back to h.pnl when qty is 0', () => {
+    const h = { ...baseHolding, opening_quantity: 0, quantity: 0 };
+    const total = computeHoldingsTotal([h], (sym) => sym === 'RELIANCE' ? { ltp: 2950 } : null);
+    // qty=0 fails the !== 0 guard → fall back to h.pnl=1000
+    expect(total).toBeCloseTo(1000, 1);
+  });
+
+  it('sums multiple holdings — live path for one, pnl fallback for another', () => {
+    const holdings = [
+      baseHolding,  // RELIANCE — has live LTP
+      { tradingsymbol: 'TCS', average_price: 3500, opening_quantity: 5, quantity: 5, pnl: 750 },
+    ];
+    const snapOf = (sym) => sym === 'RELIANCE' ? { ltp: 2950 } : null;
+    // RELIANCE: (2950-2800)*10 = 1500; TCS: no snap → 750; total = 2250
+    const total = computeHoldingsTotal(holdings, snapOf);
+    expect(total).toBeCloseTo(2250, 1);
+  });
+});
