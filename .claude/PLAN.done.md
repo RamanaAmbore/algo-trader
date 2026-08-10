@@ -1,182 +1,69 @@
-# Plan: docs: add §12 Sparkline Lifecycle to DATA_LIFECYCLE.md
-
-## Context
-
-DATA_LIFECYCLE.md (docs/audits/DATA_LIFECYCLE.md) was just created covering tick, positions,
-holdings, NAV, NavStrip, and MarketPulse refresh. Sparklines are a distinct tri-layer
-persistence system (snapshot write → ohlcv_store/intraday_store → frontend cache) that was
-not covered. The operator needs to know when sparklines are written, what they contain, how
-they're served closed-hours, and why the frontend shows stale bars.
+# Plan: Fix 9 defects — Dhan, LTP flash sync, NavStrip SSOT, lot-size, conn log
 
 ## Task
 
-Append **§12 — Sparkline Lifecycle** to `docs/audits/DATA_LIFECYCLE.md`.
-Also update §11 (Cache Layer Reference table) to add the 4 sparkline-specific cache rows
-that were missing: ohlcv_store tiers, intraday_store, frontend sparklinesStore, daily_book
-sparkline rows.
+Nine confirmed bugs across broker and frontend layers. Template orders fix deferred per operator.
+The offset-position grouping (close + cancel template chain as one unit) is agreed in principle
+but is a separate plan — requires a new data model (group_id), close-path extension, and UI grouping.
 
-Do NOT modify any other section.
+**Broker layer (dhan.py / broker_apis.py):**
+1. **Dhan holdings = 0**: `_unwrap` returns `[]` when dhanhq v2.2.0 error response has `data=""` (not a list); never detected as a failure.
+2. **Dhan chip wrong status**: `_record_fetch(ok=True)` fires even when rows=[] → `last_ok_at` updates → chip stays green when data is bad.
+3. **Connection log missing success**: `_record_fetch` emits `fetch_ok_recovery` only when recovering from a prior failure. Normal healthy fetches emit nothing → log is silent when broker connects successfully. Fix: emit `fetch_ok` event on every healthy (non-recovery) successful fetch.
+
+**Frontend layer:**
+4. **LTP flash not showing + pinned/other grid desync across all pages**: `is_animating` is correctly `True` for live rows (set by `resolve_current_price` when exchange is open). Root cause is purely timing: MarketPulse tickBus subscriber calls `refreshCells` via a 250ms-throttled idle path (up to 750ms delay), while flash clearance fires at 300ms → flash already gone when grid updates. Pinned grid gets immediate `refreshCells` in tickBus (correct); all other grids don't → visible desync. Fix: add immediate `refreshCells` for ALL non-pinned grids (positions, holdings, win, lose in MarketPulse; audit other pages with LTP grids).
+5. **NavStrip H slot out of sync with MarketPulse holdings TOTAL**: `_accumTotalsRow` (~line 1952 of MarketPulse.svelte) uses `r._broker_pnl` (frozen broker snapshot) for the TOTAL row while individual rows show live-LTP-recomputed `r.pnl`. TOTAL doesn't update with ticks.
+6. **NavStrip / Pulse / Dashboard not on same SSOT for positions + holdings**: NavStrip and Dashboard share `positionsStore` / `holdingsStore` (key='md.positions'). MarketPulse uses separate `pulsePositionsStore` / `pulseHoldingsStore` (key='md.pulse.positions') — independent cached copies, up to 30s lag between pages. Margins + cash already use shared `fundsStore` (no change needed). Fix: remove `pulsePositionsStore` / `pulseHoldingsStore`; make MarketPulse use `positionsStore` / `holdingsStore` directly. Verify `MarketDataStore.load()` deduplicates concurrent calls so removing the isolation is safe.
+7. **CRUDEOIL add-buy lot size resets to 1**: `orders/+page.svelte` `place-order` branch (~line 567–573) doesn't pass `currentQty` to SymbolPanel; OrderTicket's lot-size `$effect` guards on `currentQty === 0` → `_lots` stays at 1. Close-buy branch correctly passes `currentQty={_ctxQty}`.
+8. **Cost shows wrong qty**: same root cause as #7 — `_qty = 1 × lotSize` instead of actual position qty.
+9. **NavStrip H slot reads raw holdingsStore (not live-recomputed)**: `PositionStrip._liveHoldingsTotal` (~line 452) = Σ holdingsStore `h.pnl` (broker snapshot). After SSOT fix (#6), both Pulse and NavStrip read the same store. Item #5 fix makes `_accumTotalsRow` use live-recomputed pnl; NavStrip H slot should derive its value the same way.
 
 ## Agents
 
-- doc: Edit `docs/audits/DATA_LIFECYCLE.md`. Two changes:
-
-  **Change 1 — Append §12 at end of file:**
-
-  ```
-  ## §12 — Sparkline Lifecycle
-
-  ### 12.1 Overview
-
-  Sparklines are a tri-layer system:
-  1. **Write path** — `snapshot_sparkline()` persists 5-day close-bar series to `daily_book`
-     (kind='sparkline') on market close and close_settled events.
-  2. **Store caches** — `ohlcv_store` (daily bars, 3-tier: memory→DB→broker) and
-     `intraday_store` (30-min bars, 3-tier: memory 5min TTL→DB→broker) pre-warmed at startup
-     and market-open boundaries.
-  3. **Frontend cache** — `sparklinesStore` (1-day TTL, chunked 100 symbols/request, stale-
-     while-valid).
-
-  ### 12.2 Write Path
-
-  **Trigger** — market_lifecycle_handlers.py:90:
-  - `<exch>:close` event (NSE 15:30 IST, MCX 23:30 IST) → `snapshot_sparkline(settled=False)`
-  - `<exch>:close_settled` event (~15 min later) → `snapshot_sparkline(settled=True)` re-upserts
-    with broker's adjusted settlement close. Both write to `daily_book` (kind='sparkline').
-
-  **Symbol universe** (daily_snapshot.py:945, cap 500):
-  1. All watchlist_items (tradingsymbol + exchange)
-  2. Live holdings (equity)
-  3. Live positions (F&O + commodity)
-  4. daily_book 7-day backstop (stale accounts)
-  5. Mover universe (NSE indices + F&O largecap)
-  Virtual MCX/CDS roots resolved to front-month contracts via `resolve_virtual_roots()`.
-
-  **Bar series** — last 10 calendar days of daily closes, fetched from `ohlcv_store` via
-  `get_or_fetch_daily()` (daily_snapshot.py:997). Converted to `[{"t": "YYYY-MM-DD", "ltp": float}]`
-  oldest-first by `_snap_bars_to_points()` (daily_snapshot.py:926).
-
-  **daily_book row shape** (kind='sparkline'):
-  ```
-  account:      "__firm__"   (market-wide sentinel, not per-account)
-  symbol:       tradingsymbol
-  exchange:     exchange
-  ltp:          points[-1]["ltp"]  (latest close price)
-  payload_json: {"points": [{"t": "YYYY-MM-DD", "ltp": float}, ...],
-                 "settled": bool, "captured_at": <iso>}
-  ```
-
-  ### 12.3 Store Caches (Backend)
-
-  **ohlcv_store** (backend/api/persistence/ohlcv_store.py):
-  - Tier 1: in-process memory dict — no TTL (persistent until process restart)
-  - Tier 2: PostgreSQL `ohlcv_daily` table — permanent
-  - Tier 3: broker `historical_data()` on miss → write-back to Tier 1 only
-  - Gap rule: gaps ≤ 6 calendar days treated as market closure (no re-fetch)
-
-  **intraday_store** (backend/api/persistence/intraday_store.py):
-  - Tier 1: in-process LRU dict — **5-min TTL for today's bars** (`_TODAY_TTL_S = 300`);
-    historical bars have no TTL
-  - Tier 2: PostgreSQL `intraday_bars` table — permanent
-  - Tier 3: broker historical_data (round-robin via `get_historical_brokers()`)
-  - Completeness: today's bars are partial during session; historical must span session-close hour
-
-  ### 12.4 Sparkline Warm (Background Task)
-
-  `_task_sparkline_warm()` (background.py:3224) fires at:
-  - Service startup
-  - 00:30 IST (midnight pre-warm)
-  - 09:00 IST (MCX open)
-  - 09:15 IST (NSE open)
-
-  What it does:
-  1. Builds symbol universe (same 5 sources as §12.2; book symbols always included, movers
-     fill up to 300-symbol ceiling)
-  2. Calls `warm_sparkline_cache(symbols, days=5)` (quote.py:1960) — parallel fetch of daily
-     bars → ohlcv_store and 30-min intraday bars → intraday_store
-  3. Seeds KiteTicker token-to-symbol map early (`_ticker_seed_early()`) so SSE ticks have
-     valid `sym` before historical fetch completes
-  4. Registers all universe tokens with `subscribe_with_sym()` for real-time tick coverage
-
-  **300-symbol cap logic**: book_pairs (watchlist + holdings + positions + snapshot backstop)
-  are never truncated; movers fill remaining slots up to 300 ceiling.
-
-  ### 12.5 Serving Sparklines (/api/quotes/sparkline)
-
-  **Route:** POST /api/quotes/sparkline (quote.py:1701)
-  **Request:** `{"symbols": [{"tradingsymbol": str, "exchange": str}], "days": int}` (days: 1–90, default 5)
-  **Response:** `{"data": {"SYM": [close1, ..., ltpTail], ...}, "refreshed_at": ISO, "as_of": ISO|null}`
-
-  **Market open path** (4-stage pipeline):
-  1. Fetch past daily closes (days-1) from ohlcv_store + today's 30-min intraday bars from
-     intraday_store (parallel via `_fetch_bars_parallel()`)
-  2. Build token map, subscribe to ticker
-  3. LTP from ticker tick-map (zero Kite quota); fallback to broker.ltp() on miss
-  4. Compose final series via `compose_sparkline_series()`; stale=False
-
-  **Market closed path** (db_only=True when all exchanges closed):
-  - Skip broker calls entirely (Tier 1+2 only)
-  - Fallback to daily_book sparkline rows via `_fill_from_daily_book_sparkline()` (quote.py:1693)
-  - `as_of` timestamp set; stale labeling shown to operator
-
-  ### 12.6 Frontend Cache
-
-  **sparklinesStore** (frontend/src/lib/data/marketDataStores.svelte.js:610):
-  - TTL: 1 day
-  - Chunked: 100 symbols per request
-  - Stale-while-valid: keeps cached version on empty response (`keepStaleOnEmpty: true`)
-  - Per-symbol merge: prefers fresh series if it has variation, else keeps cached (`_mergeSparkSeries()`)
-
-  **Consumers** — MarketPulse.svelte: positions, holdings, movers, watchlist grids all display
-  sparkline cells via AG-Grid.
-
-  **Fetch trigger:** `sparklinesStore.load(pairs)` (MarketPulse.svelte:1295) on universe
-  change; batched, not polled.
-
-  **Data shape:** Array of finite numbers oldest→newest (length ≥ 2). Validated by
-  `assertSparklineSeries()` (sparklineShape.js:38) in dev builds.
-
-  ### 12.7 Sparkline Timing Table
-
-  | Time (IST) | Event | Component | Operator impact |
-  |---|---|---|---|
-  | 00:30 | Midnight warm | _task_sparkline_warm | ohlcv_store + intraday_store pre-filled; universe tokens registered with ticker |
-  | 09:00 | MCX open warm | _task_sparkline_warm | MCX commodity universe added to warm set |
-  | 09:15 | NSE open warm | _task_sparkline_warm | NSE equity universe added; sparkline cache ready before first operator request |
-  | 15:30 | NSE close | snapshot_sparkline(settled=False) | 5-day bar series written to daily_book; closed-hours sparklines now served from DB |
-  | ~15:45 | NSE close_settled | snapshot_sparkline(settled=True) | Re-upsert with adjusted settlement close; settled=true flag set |
-  | 23:30 | MCX close | snapshot_sparkline(settled=False) then settled=True | MCX commodity sparklines written |
-  | On demand | Frontend grid load | sparklinesStore.load() → /api/quotes/sparkline | 100-symbol chunks, 1-day TTL cache |
-  ```
-
-  **Change 2 — Update §11 Cache Layer Reference table:**
-
-  Add these 4 rows to the existing table (after the `intraday_store` and `ohlcv_store` rows
-  if already present, or append at end):
-
-  | `ohlcv_store` (daily bars) | Backend in-process memory + `ohlcv_daily` DB table | Tier 1: none; Tier 2: permanent | `warm_sparkline_cache()`, broker `historical_data()` on miss | `batch_sparkline()`, `snapshot_sparkline()` | Tier 1+2 served; no broker calls |
-  | `intraday_store` (30-min bars) | Backend in-process LRU + `intraday_bars` DB table | Tier 1: 5 min (today only); Tier 2: permanent | `warm_sparkline_cache()`, broker `historical_data()` on miss | `batch_sparkline()` | Tier 1+2 served; today's bars may lag by ≤ 5 min |
-  | `daily_book` sparkline rows | PostgreSQL `daily_book` (kind='sparkline') | Perpetual (idempotent upsert) | `snapshot_sparkline()` at close + close_settled | `/api/quotes/sparkline` closed-hours fallback | Primary fallback source for closed-hours sparklines |
-  | `sparklinesStore` | Frontend in-memory (Svelte store) | 1 day | `/api/quotes/sparkline` response | MarketPulse.svelte sparkline cells | Stale-while-valid; per-symbol variation-based merge |
+- broker: Fix items 1+2+3.
+  - `backend/brokers/adapters/dhan.py` `_unwrap` (~line 1528): detect `resp["data"]` is not a list (error shape `data=""`) and raise a distinct named error instead of returning `[]`.
+  - `backend/brokers/adapters/dhan.py` `holdings()` (~line 1009): check `_safe_call` return for `{"status":"failure"}` shape before calling `_normalise_holdings`; call `_record_fetch(account, ok=False, ...)` on failure shape.
+  - `backend/brokers/broker_apis.py` `_fetch_holdings_local` (~line 1404): gate `_record_fetch(account, ok=True)` to only fire when `rows` is non-empty.
+  - `backend/brokers/broker_apis.py` `_record_fetch` non-recovery `ok=True` path (~line 1048): emit `"fetch_ok"` event on every healthy (non-recovering) success.
+  - `frontend/src/lib/LogPanel.svelte` (~line 417): add `fetch_ok` to the green event_type list alongside `fetch_ok_recovery`.
+  - For every file changed, write or update a test in `backend/tests/broker/` covering the changed lines.
 
 - backend: skip
-- frontend: skip
-- broker: skip
-- backend-test: skip
+
+- frontend: Fix items 4+5+6+7+8+9.
+  Files: `MarketPulse.svelte`, `PositionStrip.svelte`, `marketDataStores.svelte.js`, `orders/+page.svelte`.
+  - (4) MarketPulse tickBus subscriber (~line 1542–1558): add immediate `refreshCells` for `gridPositions`, `gridHoldings`, `gridWin`, `gridLose` right after setting flash state — same pattern as PerformancePage.svelte (~line 1197–1221). Also grep for other pages with LTP grids and apply same pattern.
+  - (5) MarketPulse `_accumTotalsRow` (~line 1952): change `const rowPnl = (r._broker_pnl != null) ? r._broker_pnl : r.pnl` to use `r.pnl` (live-recomputed) instead of `r._broker_pnl`.
+  - (6) SSOT: remove `pulsePositionsStore` / `pulseHoldingsStore` from `marketDataStores.svelte.js`; update MarketPulse imports to use `positionsStore` / `holdingsStore`; verify `MarketDataStore.load()` has dedup/coalesce so concurrent calls from multiple subscribers don't race.
+  - (7+8) `orders/+page.svelte` place-order SymbolPanel block (~line 567–573): add `currentQty={_ctxQty}` prop.
+  - (9) `PositionStrip._liveHoldingsTotal` (~line 452): after SSOT unification, derive the H-slot value from the same live-recomputed `baseDayPnlForPosition` path used by MarketPulse (not raw `h.pnl`).
+  - For every file changed, write or update a Playwright spec in `frontend/tests/` covering the changed flow.
+
+- backend-test: Add pytest tests:
+  - (a) `test_dhan_holdings_error_shape` — mock `_safe_call` returning `{"status":"failure","data":"","remarks":{}}` → assert returns `[]` AND `_record_fetch(ok=False)` called.
+  - (b) `test_fetch_holdings_local_empty_rows` — mock broker returning `[]` → assert `_record_fetch(ok=False)` (not ok=True).
+  - (c) `test_record_fetch_emits_fetch_ok` — mock normal non-recovering success → assert `"fetch_ok"` event emitted.
+  Tests in `backend/tests/broker/` for a+b+c.
+
 - playwright: skip
+- doc: skip
 
 ## Tests
-
-- pytest: no
-- svelte-check: no
+- pytest: yes
+- svelte-check: yes
 - playwright: no
 
 ## Commit message
-
-docs: add §12 sparkline lifecycle to DATA_LIFECYCLE.md
+fix(multi): Dhan holdings/chip/log, LTP flash sync, NavStrip SSOT, lot-size
 
 ## Done when
-
-- §12 Sparkline Lifecycle appended to docs/audits/DATA_LIFECYCLE.md (7 subsections)
-- §11 cache table updated with 4 sparkline-specific rows
-- No other sections modified
+- Dhan holdings returns rows OR logs ok=False (never silently empty on API error shape)
+- Dhan chip shows amber/red when holdings returns error/empty
+- Connection log shows green `fetch_ok` on every healthy broker fetch (not only recovery)
+- LTP flash appears immediately and in sync on ALL grids across all pages — pinned, positions, holdings, win, lose flash at the same time on the same tick
+- MarketPulse holdings TOTAL row updates with live-LTP-recomputed pnl (not frozen broker snapshot)
+- NavStrip, MarketPulse, and Dashboard all read from the same `positionsStore` / `holdingsStore` (single SSOT)
+- NavStrip H slot pnl matches MarketPulse holdings TOTAL live-recomputed pnl
+- CRUDEOIL add-buy opens ticket with correct lot size (not 1); cost shows correct qty
+- All pytest pass, svelte-check 0 errors

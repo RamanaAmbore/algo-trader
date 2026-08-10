@@ -1547,6 +1547,25 @@
         _ltpFlashDown = new Set([..._ltpFlashDown, sym]);
         _ltpFlashUp = new Set([..._ltpFlashUp].filter(s => s !== sym));
       }
+      // Immediate refreshCells so the LTP/cascade columns repaint with
+      // flash classes before the 300ms clearance timer fires. The
+      // _liveLtpSnap $effect path (250ms throttle + requestIdleCallback
+      // up to 500ms) is too slow — flash clears at 300ms, so the cell
+      // never shows the colour. Pinned/watch grids are refreshed inside
+      // their own $effect; positions/holdings/win/lose need this call.
+      const _flashCols = ['ltp', 'sparkline', 'day_pnl', 'pnl'];
+      if (gridPositionsReady && gridPositions && showPositions) {
+        try { gridPositions.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
+      }
+      if (gridHoldingsReady && gridHoldings && showHoldings) {
+        try { gridHoldings.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
+      }
+      if (gridWinReady && gridWin && showWinners) {
+        try { gridWin.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
+      }
+      if (gridLoseReady && gridLose && showLosers) {
+        try { gridLose.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
+      }
       // Clear existing timer for this sym (re-arm on each tick).
       const existing = _ltpFlashTimers.get(sym);
       if (existing) clearTimeout(existing);
@@ -1554,6 +1573,20 @@
         _ltpFlashTimers.delete(sym);
         _ltpFlashUp   = new Set([..._ltpFlashUp].filter(s => s !== sym));
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
+        // Repaint once more after clearing flash so cells revert to
+        // their non-flash colour without waiting for the next tick.
+        if (gridPositionsReady && gridPositions && showPositions) {
+          try { gridPositions.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
+        }
+        if (gridHoldingsReady && gridHoldings && showHoldings) {
+          try { gridHoldings.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
+        }
+        if (gridWinReady && gridWin && showWinners) {
+          try { gridWin.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
+        }
+        if (gridLoseReady && gridLose && showLosers) {
+          try { gridLose.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
+        }
       }, 300));
     });
   });
@@ -1946,11 +1979,15 @@
   }
 
   // Accumulate one row into acc (mutates in place).
-  // Prefers broker raw values so the TOTAL matches PositionStrip exactly.
+  // Prefers live-recomputed r.pnl / r.day_pnl so the TOTAL tracks SSE ticks.
   // anyDayPnl/anyPnl/anyInv/anyCur flags decide null vs 0 in the return.
   function _accumTotalsRow(/** @type {ReturnType<typeof _blankTotalsAcc>} */ acc, /** @type {any} */ r) {
-    const rowPnl    = (r._broker_pnl     != null) ? r._broker_pnl     : r.pnl;
-    const rowDayPnl = (r._broker_day_pnl != null) ? r._broker_day_pnl : r.day_pnl;
+    // Prefer live-recomputed r.pnl / r.day_pnl over the frozen broker
+    // snapshot (_broker_pnl / _broker_day_pnl). Individual rows track
+    // live LTP via (ltp - avg) × qty; using _broker_pnl for the TOTAL
+    // means the TOTAL row stays frozen while individual rows update.
+    const rowPnl    = r.pnl     ?? r._broker_pnl;
+    const rowDayPnl = r.day_pnl ?? r._broker_day_pnl;
     if (rowDayPnl != null) { acc.day_pnl += Number(rowDayPnl) || 0; acc.anyDayPnl = true; }
     if (rowPnl    != null) { acc.pnl     += Number(rowPnl)    || 0; acc.anyPnl    = true; }
     acc.cost       += Math.abs(Number(r._cost_basis)        || 0);

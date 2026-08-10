@@ -568,6 +568,7 @@
   <SymbolPanel
     symbol={_ctxSym}
     exchange={_ctxExch}
+    currentQty={_ctxQty}
     onSubmit={() => {}}
     onClose={() => { _ctxAction = null; }}
   />

@@ -1527,11 +1527,27 @@ class DhanBroker(Broker):
 
 def _unwrap(resp: Any) -> list[dict]:
     """Dhan responses wrap the payload in {status, data} envelopes —
-    unwrap to the list inside `data` (or [] on shape mismatch)."""
+    unwrap to the list inside `data`.
+
+    Raises ``RuntimeError`` when the response explicitly signals a
+    non-auth API failure (``status=="failure"`` with non-list ``data``).
+    Auth failures are already caught upstream by ``_safe_call`` before
+    this function is reached, so the raise here targets non-auth errors
+    that slip through (e.g. ``data=""`` with remarks about invalid params).
+
+    Returns ``[]`` on any other shape mismatch (missing ``data`` key, or
+    a non-dict response) to keep the callers that do their own fallback
+    (e.g. ``_extract_dhan_status_rows``) working unchanged.
+    """
     if isinstance(resp, dict):
         data = resp.get("data")
         if isinstance(data, list):
             return data
+        if resp.get("status") == "failure":
+            remarks = resp.get("remarks", "")
+            raise RuntimeError(
+                f"Dhan API failure: status=failure data={data!r} remarks={remarks!r}"
+            )
     return []
 
 

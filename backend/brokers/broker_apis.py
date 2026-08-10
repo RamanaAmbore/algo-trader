@@ -1052,6 +1052,8 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
                     account, _broker_id_safe(account), "fetch_ok_recovery",
                     {"after_fail_msg": e.get("last_fail_msg", "")[:200]},
                 )
+            else:
+                _emit_conn_event(account, _broker_id_safe(account), "fetch_ok")
         else:
             e["last_fail_at"] = now
             e["last_fail_msg"] = str(error)[:200]
@@ -1072,6 +1074,8 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
     if ok:
         if _was_recovering:
             _emit_conn_event(account, _bid, "fetch_ok_recovery")
+        elif not _was_halfopen:
+            _emit_conn_event(account, _bid, "fetch_ok")
         if _was_halfopen:
             _emit_conn_event(account, _bid, "circuit_close")
     else:
