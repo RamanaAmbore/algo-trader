@@ -443,15 +443,28 @@
     for (const h of holdings)  s += Number(h?.day_change_val || 0) + _delta(h, 'H');
     return s;
   });
-  // NO SSE delta on _liveHoldingsTotal / _liveHoldingsValue — mirrors the
-  // same rationale as _livePositionsPnl: MarketPulse Holdings TOTAL uses
-  // _broker_pnl (= Σ r.pnl) and liveHold-recomputed cur_val per-row, but
-  // the TOTAL row falls back to broker snapshot for cross-surface sync. Pure
-  // broker-snapshot sums here keep H pill slots 2 + 3 consistent with the
-  // Holdings grid TOTAL.
+  // Live-LTP-recomputed holdings P&L — matches MarketPulse mergeHoldingRows
+  // which computes `(liveHold − avg) × qty` when a live LTP is available.
+  // A recent MarketPulse fix changed the TOTAL row to use this live formula
+  // instead of the broker-snapshot `r.pnl`, so the H pill slot 3 must do the
+  // same to stay in sync during market hours. Falls back to broker `h.pnl`
+  // when no live LTP is available (closed hours, cold-cache, missing symbol).
+  // Gates on _throttledTick (250 ms max) — same pattern as _livePositionsToday
+  // — so the loop runs at most 4 Hz during SSE bursts.
   const _liveHoldingsTotal = $derived.by(() => {
+    void _throttledTick;
     let s = 0;
-    for (const h of holdings)  s += Number(h?.pnl || 0);
+    for (const h of holdings) {
+      const sym      = String(h?.tradingsymbol || '').toUpperCase();
+      const liveHold = untrack(() => getSnapshot(sym)?.ltp);
+      const avgCost  = Number(h?.average_price || 0);
+      const qty      = Number(h?.opening_quantity || h?.quantity || 0);
+      if (liveHold != null && liveHold > 0 && avgCost > 0 && qty !== 0) {
+        s += (liveHold - avgCost) * qty;
+      } else {
+        s += Number(h?.pnl || 0);
+      }
+    }
     return s;
   });
   const _liveHoldingsValue = $derived.by(() => {

@@ -204,7 +204,11 @@ function _ltpHeatClasses(ltp, avg, prev) {
 // the current live-snap map at render time (not a frozen snapshot).
 function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
   if (!p.data || p.data._isTotal) return RA;
-  const sym  = String(p.data.tradingsymbol || '').toUpperCase();
+  // Prefer quote_symbol over tradingsymbol so MCX mover rows (where
+  // tradingsymbol is the bare commodity root e.g. "CRUDEOIL") look up
+  // the flash Set using the full contract key "CRUDEOIL25AUGFUT" that
+  // tickBus emits. Mirrors the same fallback in mkResolveCellLtp.
+  const sym  = String(p.data.quote_symbol || p.data.tradingsymbol || '').toUpperCase();
   const ltp  = resolveCellLtp(p);
   const cls  = [RA];
   // Animation gate — tick-flash only when the row's exchange is

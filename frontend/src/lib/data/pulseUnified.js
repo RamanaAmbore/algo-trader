@@ -430,6 +430,13 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     const row = get(sym, 'positions');
     row.exchange      = row.exchange || exch;
     row.tradingsymbol = sym;
+    // quote_symbol carries the full contract key (e.g. CRUDEOIL25AUGFUT)
+    // so _ltpCellClass can look up the flash Set using the same key that
+    // tickBus emits, rather than falling through to tradingsymbol (which
+    // for mover rows is the bare root). Position rows already use the full
+    // tradingsymbol as their key — we propagate it explicitly so the field
+    // is always present for consumers that prefer quote_symbol over tradingsymbol.
+    if (!row.quote_symbol) row.quote_symbol = sym;
     row.src.p = true;
     const q   = Number(r.quantity) || 0;
     const avg = Number(r.average_price) || 0;
@@ -506,6 +513,11 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     const row = get(sym, 'holdings');
     row.exchange      = row.exchange || exch;
     row.tradingsymbol = sym;
+    // Propagate quote_symbol explicitly — same rationale as mergePositionRows.
+    // Holdings use equity symbols which are identical in both fields, but
+    // having quote_symbol present ensures _ltpCellClass uses the consistent
+    // lookup path (quote_symbol || tradingsymbol) for all row types.
+    if (!row.quote_symbol) row.quote_symbol = sym;
     row.src.h = true;
     const heldQty = Number(r.opening_quantity) || Number(r.quantity) || 0;
     row.qty_hold += heldQty;
