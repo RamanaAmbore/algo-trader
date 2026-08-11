@@ -102,29 +102,34 @@ class TestSourceChecks:
             "so the Contract A branch can be gated during closed hours"
         )
 
-    def test_marketpulse_contract_a_gated_on_market_open(self):
-        """Contract A branch is gated on isMarketOpen().
+    def test_marketpulse_positions_direct_formula_no_market_gate(self):
+        """mergePositionRows uses direct (ltp-close)*qty formula — no isMarketOpen gate.
 
-        After the pulseUnified refactor (f378ce53), the gate lives in two
-        places rather than one inline block in MarketPulse.svelte:
+        As of ffff74af, positions day P&L mirrors the holdings formula:
+        symbolStore LTP first, no market-open gate, falls back to
+        baseDayPnlForPosition when LTP unavailable. The old _mktOpen gate
+        in mergePositionRows was removed so after-close P&L is preserved.
 
-          1. pulseUnified.js  — `_mktOpen = isMarketOpen()` guards legLiveLtp
-             so positions only receive a live LTP during open hours.
-          2. nav.js           — `livePositionDayPnl` checks `marketOpen &&
-             live != null && closePx === 0` for the Contract A branch
-             (new position opened today, no prior close_price).
-
-        Both checks must survive future refactors.
+        Contract A branch (new position, no prior close) still lives in
+        livePositionDayPnl in nav.js for callers that use it (derivatives
+        page). mergePositionRows itself uses the simpler direct formula.
         """
         unified_src = _src(_PULSE_UNIFIED_SRC)
         nav_src     = _src(_NAV_SRC)
 
-        mkt_open_idx = unified_src.find("_mktOpen")
-        assert mkt_open_idx != -1 and "isMarketOpen" in unified_src, (
-            "_mktOpen (isMarketOpen gate) not found in pulseUnified.js — "
-            "positions live-LTP gate removed"
+        # mergePositionRows must NOT have the old _mktOpen LTP gate
+        merge_start = unified_src.find("export function mergePositionRows")
+        merge_end   = unified_src.find("export function mergeHoldingRows", merge_start)
+        merge_body  = unified_src[merge_start:merge_end] if merge_end != -1 else unified_src[merge_start:merge_start + 2000]
+        assert "_mktOpen" not in merge_body, (
+            "mergePositionRows must not gate LTP on _mktOpen — "
+            "positions day P&L uses direct formula without market-open gate"
+        )
+        assert "close_price" in merge_body, (
+            "mergePositionRows must reference close_price for the day P&L formula"
         )
 
+        # livePositionDayPnl in nav.js still has Contract A branch (used by derivatives)
         contract_a_guard = nav_src.find("marketOpen && live != null && closePx === 0")
         assert contract_a_guard != -1, (
             "Contract A branch (`marketOpen && live != null && closePx === 0`) "
