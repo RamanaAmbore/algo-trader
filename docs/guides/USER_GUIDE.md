@@ -477,6 +477,18 @@ You see a margin strip above the pills: Required / Avail / After (post-trade) fo
 
 Submit fails (400) with a clear message if any account has insufficient margin. Edit the basket and retry.
 
+### Option chain tab — expiry picker populated from API
+
+The **Chain** tab in the Orders card no longer requires the full instruments cache to load before displaying. When you open the tab:
+
+1. A request fires to `/api/options/chain-quotes?symbol=<sym>&exchange=<exch>` (without `expiry` parameter)
+2. The API returns `{expiries: [...], rows: []}` — a list of available expiry dates + an empty row set
+3. The expiry dropdown populates immediately (~1s, no broker round-trip)
+4. You click an expiry → the API fetches the chain strikes for that expiry
+5. Symbol resolution uses the API-sourced data when placing the order
+
+**Behind the scenes**: The chain-quotes endpoint accepts an optional `expiry` parameter. When omitted, it returns only the expiry list. When provided, it returns the full strike chain. Rows carry new fields: `ce_sym`, `pe_sym` (resolved call/put symbols), `ce_ls`, `pe_ls` (lot sizes), and `exchange` — all sourced from the broker's instruments data and cached for 3 seconds.
+
 ---
 
 ## Auto profit target on every order

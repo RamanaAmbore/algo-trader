@@ -1643,6 +1643,57 @@ sequenceDiagram
 
 **Template isolation:** legs with explicit `template_id` ignore shell overrides. Legs with no `template_id` inherit shell defaults.
 
+### 6.1 Option chain API and expiry picker
+
+**Endpoint:** `GET /api/options/chain-quotes?symbol=<sym>&exchange=<exch>&expiry=<YYYY-MM-DD>` (optional expiry)
+
+The chain-quotes endpoint powers the **Chain tab** option-chain strike picker. Two modes of operation:
+
+**Mode 1 — Expiry list only (no expiry param)**
+```
+GET /api/options/chain-quotes?symbol=NIFTY&exchange=NFO
+→ {expiries: ["2026-08-14", "2026-08-21", "2026-08-28"], rows: []}
+```
+Response time: ~1s (API scan of instruments table, no broker call). Used when the tab first loads — populates the expiry dropdown without waiting for the full instruments cache.
+
+**Mode 2 — Full chain (with expiry param)**
+```
+GET /api/options/chain-quotes?symbol=NIFTY&exchange=NFO&expiry=2026-08-14
+→ {
+    expiries: [...],
+    rows: [
+      {strike, ce_sym, ce_ls, pe_sym, pe_ls, exchange, ce_bid, ce_ask, pe_bid, pe_ask, ...},
+      ...
+    ]
+  }
+```
+Response time: ~1–2s (backend calls broker for quotes on resolved symbols). Results cached for 3 seconds per symbol/expiry pair.
+
+**Response shape** (`ChainQuoteRow`):
+- `strike` — strike price (e.g., 24500)
+- `ce_sym`, `pe_sym` — resolved call/put tradingsymbols (e.g., `NIFTY26AUG24500CE`)
+- `ce_ls`, `pe_ls` — call/put lot sizes (used for order quantity validation)
+- `exchange` — which exchange these contracts trade on
+- `ce_bid`, `ce_ask`, `pe_bid`, `pe_ask` — live quotes for each leg
+- Plus standard fields: `ce_oi`, `pe_oi`, `ce_iv`, `pe_iv`, etc.
+
+**Frontend flow (OptionChainTab.svelte)**:
+1. Tab opens → calls `chain-quotes` without `expiry` → expiry dropdown populates
+2. User clicks expiry → calls `chain-quotes` with `expiry` → strikes populate
+3. User clicks strike → prepopulates Ticket form with resolved symbols + qty from row
+
+**Backend implementation** (`backend/api/routes/options.py::chain_quotes`):
+- When `expiry` is None: scans instruments table for unique expiries on symbol/exchange, returns sorted list
+- When `expiry` is set: resolves CE/PE symbols via instruments map, fetches quotes via broker.quote(), applies OI/bid-ask filters
+- All broker calls wrapped in `asyncio.to_thread` with 3s TTL cache via `@get_or_fetch`
+
+**Invariant**: Symbol resolution (instrument lookup) happens at the backend. Frontend never calls broker APIs directly; it builds forms from backend-resolved data.
+
+**Files:**
+- `backend/api/routes/options.py::chain_quotes` — API handler
+- `frontend/src/lib/order/OptionChainTab.svelte` — UI + expiry/strike selection
+- `backend/api/models.py::ChainQuoteRow` — response schema
+
 ---
 
 ## 7. Chase loop lifecycle
