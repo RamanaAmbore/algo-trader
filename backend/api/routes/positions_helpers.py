@@ -312,21 +312,33 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     multiplier = extract_snapshot_multiplier(payload_json)
     effective_qty = (qty or 0) * multiplier
 
+    # `previous_close` is frozen by COALESCE on the first daily UPSERT and
+    # never overwritten — it is the official prior-session settlement price.
+    # `prev_ltp` is the most-recent batch LTP and converges toward the current
+    # LTP during a session, which would make day_change ≈ 0.  Use
+    # `actual_previous_close` as the primary reference and fall back to
+    # `prev_ltp` only when `previous_close` is absent or zero.
+    actual_previous_close = (
+        float(previous_close) if previous_close and float(previous_close) > 0 else None
+    )
     prev_close_val = (
-        float(prev_ltp) if prev_ltp and float(prev_ltp) > 0
-        else (float(previous_close) if previous_close and float(previous_close) > 0 else None)
+        actual_previous_close
+        or (float(prev_ltp) if prev_ltp and float(prev_ltp) > 0 else None)
     )
     prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
+    # Use actual_previous_close (not prev_close_val) so that a valid prev_ltp
+    # fallback doesn't contaminate the day-P&L formula when previous_close IS
+    # available but we still want to forward only the authoritative close.
     computed_day_pnl: object = (
-        (float(ltp) - float(prev_close_val)) * effective_qty
-        if prev_close_val and ltp
+        (float(ltp) - actual_previous_close) * effective_qty
+        if actual_previous_close and ltp
         else day_pnl
     )
 
     return build_snapshot_position_row(
         account, symbol, exchange, effective_qty, avg_cost, ltp,
         computed_day_pnl, total_pnl, extras,
-        previous_close=prev_close_val,
+        previous_close=actual_previous_close,
         prev_settlement_pnl=prev_pnl_val,
         product=extract_snapshot_product(payload_json),
     )

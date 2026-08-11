@@ -245,18 +245,18 @@ class TestLivePathCloseOverride:
 # ---------------------------------------------------------------------------
 
 class TestSnapshotPathClosePreference:
-    """_positions_snapshot prefers yesterday's prev_ltp over today's previous_close."""
+    """_positions_snapshot prefers previous_close (official settlement) over prev_ltp (batch LTP)."""
 
     @pytest.mark.asyncio
-    async def test_snapshot_prefers_prev_ltp_over_previous_close(self):
-        """Core fix: when prev_ltp is present and > 0, use it as close_price.
-        Do NOT use snapshot's previous_close (which may be today's settlement).
+    async def test_snapshot_prefers_previous_close_over_prev_ltp(self):
+        """Core fix: when previous_close is present and > 0, use it as close_price.
+        Do NOT use prev_ltp (stale batch LTP that converges toward current LTP).
 
         Scenario (MCX after close):
-        - Latest snapshot: ltp=5500, previous_close=5500 (today's settlement — BAD)
-        - Prior snapshot: prev_ltp=5400 (yesterday's settlement — GOOD)
+        - previous_close=5400 (official prior-session settlement — GOOD, frozen by COALESCE)
+        - prev_ltp=5500 (stale recent batch LTP — BAD, same as today's LTP)
 
-        Expected: close_price = 5400
+        Expected: close_price = 5400 (uses previous_close)
         """
         from backend.api.routes.positions import _positions_snapshot
 
@@ -273,8 +273,8 @@ class TestSnapshotPathClosePreference:
             Decimal("5000.00"),             # total_pnl
             "{}",                           # payload_json
             captured_ts,                    # captured_at
-            Decimal("5500.00"),             # previous_close (today's settlement — BAD)
-            Decimal("5400.00"),             # prev_ltp (yesterday's settlement — GOOD)
+            Decimal("5400.00"),             # previous_close (official settlement — GOOD)
+            Decimal("5500.00"),             # prev_ltp (stale batch LTP — BAD)
             Decimal("4000.00"),             # prev_settlement_pnl
         )
 
@@ -293,10 +293,11 @@ class TestSnapshotPathClosePreference:
 
         row = resp.rows[0]
 
-        # The core fix: close_price should use yesterday's LTP (5400), not today's settlement
+        # The core fix: close_price should use previous_close=5400 (official settlement),
+        # not prev_ltp=5500 (stale recent batch LTP)
         assert row.close_price == pytest.approx(5400.0, rel=1e-6), (
-            f"close_price={row.close_price} should prefer prev_ltp=5400, "
-            f"not today's settlement (previous_close)=5500"
+            f"close_price={row.close_price} should prefer previous_close=5400 "
+            f"(official settlement), not prev_ltp=5500 (stale batch LTP)"
         )
 
     @pytest.mark.asyncio
@@ -351,14 +352,15 @@ class TestSnapshotPathClosePreference:
 
         snapshot_rows = [
             # Position 1: ZG0790 / NIFTY — has yesterday snapshot
+            # previous_close=5400 (official settlement — GOOD), prev_ltp=5500 (stale batch — BAD)
             (
                 "ZG0790", "NIFTY26JULFUT", "NFO", 10,
                 Decimal("5000.00"), Decimal("5500.00"),
                 Decimal("500.00"), Decimal("5000.00"), "{}",
-                captured_ts, Decimal("5500.00"),
-                Decimal("5400.00"), Decimal("4000.00"),
+                captured_ts, Decimal("5400.00"),
+                Decimal("5500.00"), Decimal("4000.00"),
             ),
-            # Position 2: ZJ6294 / CRUDEOIL — new (no yesterday snapshot)
+            # Position 2: ZJ6294 / CRUDEOIL — new (no prev_ltp; falls back to previous_close)
             (
                 "ZJ6294", "CRUDEOIL26AUGFUT", "MCX", 100,
                 Decimal("5000.00"), Decimal("5550.00"),
@@ -367,12 +369,13 @@ class TestSnapshotPathClosePreference:
                 None, None,
             ),
             # Position 3: ZG0790 / GOLDM — has yesterday snapshot
+            # previous_close=6810 (official settlement — GOOD), prev_ltp=6850 (stale batch — BAD)
             (
                 "ZG0790", "GOLDM26AUGFUT", "MCX", 1,
                 Decimal("6800.00"), Decimal("6900.00"),
                 Decimal("100.00"), Decimal("100.00"), "{}",
-                captured_ts, Decimal("6850.00"),
-                Decimal("6810.00"), Decimal("10.00"),
+                captured_ts, Decimal("6810.00"),
+                Decimal("6850.00"), Decimal("10.00"),
             ),
         ]
 
@@ -389,22 +392,22 @@ class TestSnapshotPathClosePreference:
         assert resp is not None
         assert len(resp.rows) == 3
 
-        # Position 1: ZG0790 / NIFTY
+        # Position 1: ZG0790 / NIFTY — uses previous_close (official settlement)
         nifty_row = next(r for r in resp.rows if r.tradingsymbol == "NIFTY26JULFUT")
         assert nifty_row.close_price == pytest.approx(5400.0, rel=1e-6), (
-            "NIFTY close_price should use prev_ltp=5400"
+            "NIFTY close_price should use previous_close=5400 (official settlement)"
         )
 
-        # Position 2: ZJ6294 / CRUDEOIL (new)
+        # Position 2: ZJ6294 / CRUDEOIL (new, no prev_ltp — uses previous_close directly)
         crudeoil_row = next(r for r in resp.rows if r.tradingsymbol == "CRUDEOIL26AUGFUT")
         assert crudeoil_row.close_price == pytest.approx(5400.0, rel=1e-6), (
-            "CRUDEOIL close_price should fallback to previous_close=5400"
+            "CRUDEOIL close_price should use previous_close=5400 (no prev_ltp available)"
         )
 
-        # Position 3: ZG0790 / GOLDM
+        # Position 3: ZG0790 / GOLDM — uses previous_close (official settlement)
         goldm_row = next(r for r in resp.rows if r.tradingsymbol == "GOLDM26AUGFUT")
         assert goldm_row.close_price == pytest.approx(6810.0, rel=1e-6), (
-            "GOLDM close_price should use prev_ltp=6810"
+            "GOLDM close_price should use previous_close=6810 (official settlement)"
         )
 
 
@@ -820,23 +823,23 @@ class TestIntegrationDayChangeNotCollapsed:
         TODAY_TOTAL_PNL = 4500.0
         QTY = 10
         LTP = 5500.0
-        PREV_LTP = 5400.0
-        # Recomputed: (ltp - prev_ltp) * qty = (5500 - 5400) * 10 = 1000
-        EXPECTED_DAY_PNL = (LTP - PREV_LTP) * QTY  # 1000.0
+        PREV_CLOSE = 5400.0  # Official prior-session settlement (frozen by COALESCE)
+        # Recomputed: (ltp - previous_close) * qty = (5500 - 5400) * 10 = 1000
+        EXPECTED_DAY_PNL = (LTP - PREV_CLOSE) * QTY  # 1000.0
 
         snapshot_row = (
             "ZG0790",
             "NIFTY26JULFUT",
             "NFO",
             QTY,
-            Decimal("5000.00"),              # avg_cost
-            Decimal(str(LTP)),               # ltp (today's settlement price)
-            Decimal("500.00"),               # day_pnl stored (stale — will be overridden)
-            Decimal(str(TODAY_TOTAL_PNL)),   # total_pnl = 4500
+            Decimal("5000.00"),               # avg_cost
+            Decimal(str(LTP)),                # ltp (today's LTP)
+            Decimal("500.00"),                # day_pnl stored (stale — will be overridden)
+            Decimal(str(TODAY_TOTAL_PNL)),    # total_pnl = 4500
             "{}",
             captured_ts,
-            Decimal("5500.00"),              # previous_close = today's settlement (stale)
-            Decimal(str(PREV_LTP)),          # prev_ltp = yesterday's settlement (good)
+            Decimal(str(PREV_CLOSE)),         # previous_close = yesterday's settlement (GOOD)
+            Decimal(str(LTP)),                # prev_ltp = stale recent batch LTP (BAD)
             Decimal(str(YESTERDAY_TOTAL_PNL)),  # prev_settlement_pnl = 4000
         )
 
@@ -855,15 +858,15 @@ class TestIntegrationDayChangeNotCollapsed:
 
         row = resp.rows[0]
 
-        # close_price = yesterday's settlement (5400), not today's (5500)
+        # close_price = previous_close=5400 (official settlement), not LTP=5500
         assert row.close_price == pytest.approx(5400.0, rel=1e-6), (
-            "close_price should be yesterday's LTP=5400 (fix applied)"
+            "close_price should be previous_close=5400 (official settlement, fix applied)"
         )
 
-        # day_change_val recomputed from (ltp - prev_ltp) * qty = 1000, not stored 500
+        # day_change_val recomputed from (ltp - previous_close) * qty = 1000, not stored 500
         assert row.day_change_val == pytest.approx(EXPECTED_DAY_PNL, rel=1e-6), (
             f"day_change_val={row.day_change_val} should be recomputed as "
-            f"(ltp-prev_ltp)*qty=({LTP}-{PREV_LTP})*{QTY}={EXPECTED_DAY_PNL}, "
+            f"(ltp-previous_close)*qty=({LTP}-{PREV_CLOSE})*{QTY}={EXPECTED_DAY_PNL}, "
             f"not the stale stored value 500 and not 0"
         )
 
@@ -1026,8 +1029,8 @@ class TestSaturdayRefreshDayPnlCorrectness:
             Decimal("10000.00"),                         # total_pnl
             "{}",                                        # payload_json
             datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc),  # captured_at (Saturday)
-            Decimal(str(LTP)),                           # previous_close (Friday settlement)
-            Decimal(str(PREV_LTP)),                      # prev_ltp (Thursday settlement) ← key
+            Decimal(str(PREV_LTP)),                      # previous_close (Thursday settlement) ← key
+            Decimal(str(LTP)),                           # prev_ltp (Friday=Saturday LTP, stale)
             None,                                        # prev_settlement_pnl
         )
 
@@ -1035,12 +1038,12 @@ class TestSaturdayRefreshDayPnlCorrectness:
 
         assert result.day_change_val == pytest.approx(EXPECTED_DAY_PNL, rel=1e-6), (
             f"day_change_val={result.day_change_val} should be recomputed as "
-            f"(ltp - prev_ltp) * qty = ({LTP} - {PREV_LTP}) * {QTY} = {EXPECTED_DAY_PNL}, "
+            f"(ltp - previous_close) * qty = ({LTP} - {PREV_LTP}) * {QTY} = {EXPECTED_DAY_PNL}, "
             f"not 0 and not the stale stored value"
         )
 
         assert result.close_price == pytest.approx(PREV_LTP, rel=1e-6), (
-            f"close_price must be prev_ltp (Thursday settlement)={PREV_LTP}, "
+            f"close_price must be previous_close (Thursday settlement)={PREV_LTP}, "
             f"not ltp (Friday=Saturday)={LTP}"
         )
 
@@ -1073,8 +1076,8 @@ class TestSaturdayRefreshDayPnlCorrectness:
             Decimal("2500.00"),              # total_pnl
             "{}",
             datetime(2026, 8, 9, 2, 0, tzinfo=timezone.utc),
-            Decimal(str(LTP)),               # previous_close
-            Decimal(str(PREV_LTP)),          # prev_ltp
+            Decimal(str(PREV_LTP)),          # previous_close (Thursday settlement) ← key
+            Decimal(str(LTP)),               # prev_ltp (Saturday LTP, stale)
             None,
         )
 
@@ -1119,8 +1122,8 @@ class TestSaturdayRefreshDayPnlCorrectness:
             Decimal("5000.00"),              # total_pnl
             "{}",
             datetime(2026, 7, 30, 2, 0, tzinfo=timezone.utc),  # Tuesday 30-Jul
-            Decimal(str(LTP)),               # previous_close (Tuesday settlement)
-            Decimal(str(PREV_LTP)),          # prev_ltp (Thursday 25-Jul) ← 5 days earlier
+            Decimal(str(PREV_LTP)),          # previous_close (Thursday 25-Jul) ← 5 days earlier
+            Decimal(str(LTP)),               # prev_ltp (Tuesday LTP, stale)
             None,
         )
 

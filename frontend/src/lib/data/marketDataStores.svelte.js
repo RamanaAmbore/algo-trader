@@ -723,6 +723,7 @@ async function _tickBookPollers() {
     await Promise.allSettled([
       positionsStore.load(),
       holdingsStore.load(),
+      pulseHoldingsStore.load(),
       fundsStore.load(),
     ]);
     // Signal completion so PositionStrip's flash animation fires at

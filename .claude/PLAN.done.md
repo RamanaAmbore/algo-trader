@@ -1,146 +1,64 @@
-# Plan: Option B — Chain tab driven by API (no instruments dependency)
+# Plan: Fix positions day P&L after market hours + Holdings NavStrip SSOT
+
+## Context
+Two SSOT bugs observed after MCX market close:
+
+1. **Holdings NavStrip H:1 = 0**: `pulseHoldingsStore` is NOT included in `_tickBookPollers()`. After market close, `marketAwareInterval` in PositionStrip.svelte pauses `_load()`, so `pulseHoldingsStore` goes stale. The book poller loads `holdingsStore` but NOT `pulseHoldingsStore`. NavStrip reads `pulseHoldingsStore.value` for `_liveHoldingsToday` → shows 0.
+
+2. **Positions day P&L = 0 after market hours**: `build_row_from_snapshot_raw` in `positions_helpers.py` resolves `prev_close_val` with wrong priority — `prev_ltp` first (the most recent batch LTP, which during a live session ≈ current LTP → day_change ≈ 0). `previous_close` (official Kite settlement, frozen on first UPSERT via COALESCE) is the correct reference but is currently the fallback only. DATA_LIFECYCLE.md §4.4 line 184 documents this wrong priority.
+
+Holdings work correctly because their snapshot uses `previous_close` as primary (written once and frozen, so it holds yesterday's settlement price throughout the session).
 
 ## Task
-Remove the `loadInstruments()` blocking dependency from OptionChainTab. The chain
-tab currently freezes because it gates the entire options grid on a 156K-row
-instruments cache load, and the backend `_chain_quotes_build_sym_map` scans those
-same 156K rows synchronously on the event loop on every 5s poll.
 
-Three changes fix this end-to-end:
+**Fix 1 — Frontend** (`frontend/src/lib/data/marketDataStores.svelte.js`):
+Add `pulseHoldingsStore.load()` to `_tickBookPollers()` (the `Promise.allSettled` array, around line 718). This ensures NavStrip H:1 slot (`dispHoldingsToday` from `_liveHoldingsToday` computed over `pulseHoldingsStore.value`) stays in sync with Pulse Holdings TOTAL after market close.
 
-1. **Backend** — extend the `/api/options/chain-quotes` endpoint:
-   - Make `expiry` optional. When omitted, do a fast scan and return only the
-     `expiries` list for the underlying (no Kite quote call). This bootstraps the
-     expiry dropdown before the operator picks one.
-   - When `expiry` is provided, also return the expiries list + `ce_sym`, `pe_sym`,
-     `ce_ls`, `pe_ls`, `exchange` per row so the frontend can resolve symbols
-     without touching the instruments cache.
-   - Wrap the 156K-row scan (`_chain_quotes_build_sym_map`) in `asyncio.to_thread`
-     (it currently blocks the event loop).
-   - Add a 3s in-process cache keyed by `(underlying, expiry)`.
+```javascript
+// In _tickBookPollers():
+await Promise.allSettled([
+  positionsStore.load(),
+  holdingsStore.load(),
+  pulseHoldingsStore.load(),   // ← ADD THIS
+  fundsStore.load(),
+]);
+```
 
-2. **Frontend** — rewrite OptionChainTab to drive from API only:
-   - Remove `await loadInstruments()` from `onMount`; remove `instrumentsReady` state.
-   - Replace `chainExpiries = $derived.by(() => listExpiries(...))` with
-     `$state([])` + an `$effect` that calls a new `fetchChainExpiries(underlying)`
-     API helper (hits `chain-quotes` with no expiry).
-   - Replace `chainStrikes = $derived.by(() => listStrikes(...))` with a `$derived`
-     that reads sorted numeric keys from `chainQuotesMap`.
-   - In `addOptionToBasket`: replace `findOption(...)` with
-     `chainQuotesMap[String(strike)][optType.toLowerCase()]` which now carries
-     `{sym, ls, exchange, bid, ask}` from the API response.
-   - Remove `listExpiries`, `listStrikes`, `findOption` imports (dead after above).
-   - The `chainFutures` derived and `suggestUnderlyings` in the underlying search
-     are NOT removed — SymbolPanel already loads instruments in a background
-     `$effect` when the chain tab is opened, so those still work when available;
-     they simply don't block the options grid any more.
+**Fix 2 — Backend** (`backend/api/routes/positions_helpers.py`):
+In `build_row_from_snapshot_raw` (~line 298), swap `prev_close_val` priority to prefer `previous_close` (official settlement, frozen by COALESCE on first UPSERT) over `prev_ltp` (recent batch LTP, which ≈ current LTP during a session). Also pass `actual_previous_close` (not `prev_ltp`) as the `previous_close` kwarg to `build_snapshot_position_row`.
 
-3. **Tests** — at every layer before ship:
-   - pytest: new tests for the enhanced chain-quotes endpoint and the expiries-only
-     code path.
-   - Playwright: chain tab opens and populates the expiry dropdown and strike grid
-     without waiting for instruments; switching expiry refreshes strikes; clicking
-     a CE/PE button opens the order ticket with the correct symbol + exchange +
-     lot size.
+```python
+# NEW priority: official settlement first, recent batch LTP as fallback only
+actual_previous_close = (
+    float(previous_close) if previous_close and float(previous_close) > 0 else None
+)
+prev_close_val = (
+    actual_previous_close
+    or (float(prev_ltp) if prev_ltp and float(prev_ltp) > 0 else None)
+)
+computed_day_pnl = (
+    (float(ltp) - actual_previous_close) * effective_qty
+    if actual_previous_close and ltp
+    else day_pnl
+)
+return build_snapshot_position_row(
+    ..., computed_day_pnl, ...,
+    previous_close=actual_previous_close,   # real settlement, not prev_ltp
+    ...
+)
+```
 
 ## Agents
-- backend: In `backend/api/routes/options.py`:
-  (a) Refactor `_chain_quotes_build_sym_map` to accept an optional `exp` arg. In
-  one pass collect (i) all expiries for `und` into a sorted list and (ii) the
-  sym/ls/exchange map for `und+exp` when `exp` is non-empty. Return
-  `(sym_by_strike, all_expiries)`. Wrap the call in `asyncio.to_thread`.
-  (b) Add a 3s cache: a module-level `dict[tuple, tuple[float, any]]` keyed by
-  `(und, exp)` storing `(timestamp, result)`. In `chain_quotes`, skip the thread
-  call when a fresh entry exists.
-  (c) Extend `ChainQuoteRow` (msgspec.Struct) with nullable-default fields:
-  `ce_sym: str | None = None`, `pe_sym: str | None = None`,
-  `ce_ls: int | None = None`, `pe_ls: int | None = None`,
-  `exchange: str | None = None`. Populate them from the sym_by_strike map.
-  (d) Extend `ChainQuotesResponse` with `expiries: list[str] = []`.
-  (e) Make `expiry` query param default to `""` in `chain_quotes`. When empty:
-  call the sym_map builder with `exp=""` (collects expiries only, no sym_by_strike
-  entries since expiry filter never matches), return
-  `ChainQuotesResponse(underlying=und, expiry="", expiries=all_expiries, rows=[])`.
-  No Kite quote call when expiry is empty.
-
-- frontend: In `frontend/src/lib/api.js`:
-  (a) Add `fetchChainExpiries(underlying)` → calls
-  `GET /api/options/chain-quotes?underlying=X` (no expiry param) → returns
-  `{ expiries: string[] }`.
-
-  In `frontend/src/lib/order/OptionChainTab.svelte`:
-  (b) Remove `loadInstruments` import and the `await loadInstruments()` call in
-  `onMount`. Remove `instrumentsReady = $state(false)` and ALL guards that check
-  `instrumentsReady` for the options-specific derived values (`chainExpiries`,
-  `chainStrikes`).
-  (c) Remove `listExpiries`, `listStrikes`, `findOption` from the instruments.js
-  import (keep `loadInstruments`, `suggestUnderlyings`, `listFutures`,
-  `getInstrument` which are still used by the underlying search and futures
-  dropdown — they just no longer block).
-  (d) Replace `chainExpiries = $derived.by(...)` with:
-    ```javascript
-    let chainExpiries = $state([]);
-    let _chainExpiriesLoading = $state(false);
-    $effect(() => {
-      const u = chainUnderlying;
-      if (!u) { chainExpiries = []; return; }
-      _chainExpiriesLoading = true;
-      fetchChainExpiries(u).then(d => {
-        chainExpiries = d.expiries ?? [];
-        _chainExpiriesLoading = false;
-      }).catch(() => { chainExpiries = []; _chainExpiriesLoading = false; });
-    });
-    ```
-  (e) Replace `chainStrikes = $derived.by(...)` with:
-    ```javascript
-    const chainStrikes = $derived(
-      Object.keys(chainQuotesMap ?? {}).map(Number).filter(Boolean).sort((a,b)=>a-b)
-    );
-    ```
-  (f) Update `chainQuotesMap` data shape: the `_refreshChainQuotes` function already
-  stores the API rows keyed by strike string. Now each value must carry
-  `{ce: {bid, ask, sym, ls, exchange}, pe: {...}}`. Update the mapping in
-  `_refreshChainQuotes` to include `sym`, `ls`, `exchange` from the API rows
-  (`row.ce_sym`, `row.ce_ls`, `row.exchange`).
-  (g) In `addOptionToBasket`: replace `const inst = findOption(...)` with:
-    ```javascript
-    const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
-    if (!q?.sym) { basketError = 'Quote not loaded yet — wait for chain refresh.'; return; }
-    ```
-    Then use `q.sym` for `symbol`, `q.exchange || 'NFO'` for `exchange`, `q.ls || 1`
-    for `qty` and `lotSize`. The existing `q?.ask` / `q?.bid` limit-price logic
-    already reads from the same map — no other change needed there.
-  (h) Add a loading placeholder in the expiry dropdown area: when
-  `_chainExpiriesLoading && !chainExpiries.length`, show a small `Fetching
-  expiries…` spinner inline (same style as the instruments loading spinner).
-  (i) The expiry default-pick `$effect` (currently lines ~351-369) already watches
-  `chainExpiries` reactively, so it will fire correctly when `chainExpiries`
-  transitions from `[]` to the loaded list — no change needed there.
-
-- backend-test: Add `backend/tests/test_chain_quotes.py`:
-  (a) Test `GET /chain-quotes?underlying=NIFTY` (no expiry) → 200, `expiries` is
-  a non-empty list of date strings, `rows` is `[]`.
-  (b) Test `GET /chain-quotes?underlying=NIFTY&expiry=<first_expiry>` → 200,
-  `rows` is non-empty, each row has `ce_sym` / `pe_sym` (non-empty string),
-  `ce_ls` (positive int), `exchange` (e.g. `"NFO"`).
-  (c) Test unknown underlying → 200, `expiries=[]`, `rows=[]`.
-  (d) Test cache: two consecutive calls to the same (und, expiry) should not call
-  `_chain_quotes_build_sym_map` a second time within 3s (mock the function and
-  assert call count == 1).
-  Mock `get_or_fetch` to return a minimal InstrumentsResponse fixture with 4
-  contracts (NIFTY CE 24000 + 24500, PE 24000 + 24500) covering two expiries.
-
-- playwright: Add `frontend/tests/chain_tab_api_driven.spec.js`:
-  (a) Navigate to /admin/derivatives, open NIFTY SymbolPanel, switch to Chain tab.
-  Assert expiry dropdown has at least one option within 3000ms — WITHOUT waiting
-  for `instrumentsReady` or any instruments endpoint.
-  (b) Switch the expiry dropdown to the second expiry (if available). Assert strike
-  rows update (grid row count changes or first strike value changes).
-  (c) Click the CE "Buy" button on any strike row. Assert the Ticket tab opens and
-  the symbol field contains a non-empty string matching NFO/MCX pattern
-  (e.g. `NIFTY\d+[CP]E\d+` or `CRUDEOIL\d+[CP]E\d+`).
-  (d) Run MCX path: CRUDEOIL underlying (if market open). Assert exchange in ticket
-  is `MCX`.
+- backend: Fix `build_row_from_snapshot_raw` in `backend/api/routes/positions_helpers.py` around line 298. Swap `prev_close_val` priority: (a) `actual_previous_close = float(previous_close) if previous_close and float(previous_close) > 0 else None`; (b) `prev_close_val = actual_previous_close or (float(prev_ltp) if prev_ltp and float(prev_ltp) > 0 else None)`; (c) `computed_day_pnl = (float(ltp) - actual_previous_close) * effective_qty if actual_previous_close and ltp else day_pnl`; (d) pass `previous_close=actual_previous_close` to `build_snapshot_position_row`. Add a pytest test in `backend/tests/` that calls `build_row_from_snapshot_raw` directly with a simulated multi-batch scenario where `prev_ltp` equals current `ltp` (so day_pnl would be ~0 with old code) and `previous_close` equals yesterday's settlement — assert `day_change_val` is non-zero (reflects the correct overnight move). For every file you change or create, you MUST write or update at least one test covering the changed behaviour.
+- frontend: Fix `_tickBookPollers()` in `frontend/src/lib/data/marketDataStores.svelte.js` — add `pulseHoldingsStore.load()` to the `Promise.allSettled([...])` array so `pulseHoldingsStore` is refreshed on every book-poller tick (every 5s live, 30min closed). This keeps NavStrip H:1 slot in sync with Pulse Holdings TOTAL after market close. For every file you change or create, you MUST write or update at least one test covering the changed behaviour.
+- broker: skip
+- doc: Update three documentation surfaces after the backend/frontend fixes are committed:
+  1. `docs/guides/DATA_LIFECYCLE.md` §4.4 "Row reconstruction" — fix line 184 close_price resolution order: change "prev_ltp (if > 0) → previous_close (if > 0) → ltp" to "previous_close (if > 0) → prev_ltp (if > 0) → ltp". Update lines 185–187 to reflect that computed_day_pnl now uses actual_previous_close (official settlement) when available. Add a one-line note that this fixes positions showing 0 day P&L during closed hours when daily_book had multiple intraday captures. Add a changelog entry.
+  2. `docs/specs/PULSE_SPEC.md` — update the positions closed-hours section (around line 151) to document the corrected priority: `previous_close` (frozen settlement) takes precedence over `prev_ltp` (recent batch). Correct any reference to `(ltp − prev_ltp)` for positions that is wrong post-fix. Add an SSOT note: positions TOTAL day P&L in Pulse and NavStrip P:1 converge via `positionsStore` (book-poller loaded). Update NAVSTRIP_SPEC.md §H:1 (around line 152–153) — add a note that `pulseHoldingsStore` is now included in `_tickBookPollers()` so H:1 (`dispHoldingsToday`) stays in sync with Pulse Holdings TOTAL during closed hours; the store is no longer dependent on `marketAwareInterval` alone.
+- backend-test: skip (backend agent handles tests inline)
+- playwright: Write two Playwright specs in `frontend/e2e/`:
+  1. `pnl_positions_closed_hours_ssot.spec.js` — Verifies that after market close, the positions snapshot uses `previous_close` (not `prev_ltp`) as the close-price basis. Three test dimensions: (a) Source-scan `backend/api/routes/positions_helpers.py` — assert `actual_previous_close` variable exists and appears before `prev_ltp` in the `prev_close_val` computation; (b) Source-scan — assert `build_row_from_snapshot_raw` passes `previous_close=actual_previous_close` to `build_snapshot_position_row`; (c) API-level smoke — login as admin on `dev.ramboq.com`, fetch `/api/positions?fresh=1`, check that any rows returned have a non-null `day_change_val` when `previous_close` > 0. Pattern: follow `frontend/e2e/navstrip_pslot_closed_hours.spec.js` (source-scan + readFileSync approach for static assertions; Playwright page login for API smoke).
+  2. `holdings_navstrip_ssot.spec.js` — Verifies that `pulseHoldingsStore` is included in `_tickBookPollers()` so NavStrip H:1 stays in sync with Pulse Holdings TOTAL. Three dimensions: (a) Source-scan `frontend/src/lib/data/marketDataStores.svelte.js` — assert `pulseHoldingsStore.load()` appears inside `_tickBookPollers`; (b) Source-scan `frontend/src/lib/PositionStrip.svelte` — assert `_liveHoldingsToday` reads from `pulseHoldingsStore.value`; (c) Source-scan — assert PositionStrip renders `dispHoldingsToday` in the H:1 slot.
 
 ## Tests
 - pytest: yes
@@ -148,12 +66,13 @@ Three changes fix this end-to-end:
 - playwright: yes
 
 ## Commit message
-feat(chain): drive OptionChainTab from API — expiries + sym resolution no longer require instruments cache
+fix(ssot): positions snapshot uses previous_close for day P&L; pulseHoldingsStore in book poller
 
 ## Done when
-- Chain tab expiry dropdown populates within ~1s of tab open (no instruments wait)
-- Strike grid appears as soon as first chain-quotes response arrives (~1-2s)
-- Clicking CE/PE Buy opens order ticket with correct symbol, exchange, and lot size
-- `addOptionToBasket` uses API-sourced sym/ls/exchange (no findOption call)
-- Backend scan is in asyncio.to_thread, cached 3s per (underlying, expiry)
-- pytest green (including new chain_quotes tests), svelte-check 0 errors, Playwright chain spec passes
+- After MCX close, Pulse page Positions TOTAL day P&L shows non-zero (uses official previous_close)
+- NavStrip P:1 slot matches Pulse positions TOTAL (both from positionsStore, book-poller loaded)
+- NavStrip H:1 slot matches Pulse Holdings TOTAL (pulseHoldingsStore now in book poller)
+- pytest passes including new `build_row_from_snapshot_raw` priority test
+- svelte-check 0 errors
+- Both new Playwright specs pass
+- DATA_LIFECYCLE.md §4.4 priority corrected; PULSE_SPEC.md + NAVSTRIP_SPEC.md updated

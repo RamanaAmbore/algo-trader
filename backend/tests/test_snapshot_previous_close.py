@@ -200,7 +200,7 @@ def test_build_snapshot_position_row_accepts_previous_close_kwarg():
 
 
 def test_positions_snapshot_select_includes_previous_close():
-    """_positions_snapshot SQL includes db.previous_close; builder uses it via prev_close_val."""
+    """_positions_snapshot SQL includes db.previous_close; builder passes actual_previous_close."""
     import inspect
     from backend.api.routes import positions as _pos_module
     from backend.api.routes import positions_helpers as _helpers
@@ -209,11 +209,13 @@ def test_positions_snapshot_select_includes_previous_close():
     assert "db.previous_close" in src, (
         "_positions_snapshot SELECT must include db.previous_close"
     )
-    # After CC-reduction refactor, prev_close_val preference lives in the helper
+    # After the prev_close_val priority fix, the authoritative settlement
+    # (actual_previous_close) is passed directly — not the prev_ltp fallback.
     helper_src = inspect.getsource(_helpers.build_row_from_snapshot_raw)
-    assert "previous_close=prev_close_val" in helper_src, (
-        "build_row_from_snapshot_raw must pass previous_close=prev_close_val "
-        "(with yesterday-ltp fallback) to build_snapshot_position_row"
+    assert "previous_close=actual_previous_close" in helper_src, (
+        "build_row_from_snapshot_raw must pass previous_close=actual_previous_close "
+        "(the frozen prior-session settlement, not the prev_ltp) "
+        "to build_snapshot_position_row"
     )
 
 
@@ -392,3 +394,104 @@ async def test_positions_snapshot_passes_previous_close_to_builder():
     assert row.last_price == pytest.approx(23200.0, rel=1e-6), (
         "last_price must remain LTP=23200.0 (unchanged by close_price logic)"
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. Priority fix — previous_close beats prev_ltp for day_change_val
+# ---------------------------------------------------------------------------
+
+def test_build_row_from_snapshot_raw_previous_close_beats_prev_ltp():
+    """When prev_ltp == ltp (intraday re-capture), previous_close must be used.
+
+    Bug scenario (pre-fix): prev_close_val = prev_ltp = ltp = 5200.0 → day P&L ≈ 0.
+    Fix: actual_previous_close (5044.0) is the primary reference; computed_day_pnl
+    uses it so day_change_val reflects the real session move.
+
+    13-tuple column order:
+        account, symbol, exchange, qty, avg_cost, ltp,
+        day_pnl, total_pnl, payload_json, captured_at,
+        previous_close, prev_ltp, prev_settlement_pnl
+    """
+    from decimal import Decimal
+    from datetime import datetime, timezone
+    from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
+
+    LTP = 5200.0
+    PREV_CLOSE = 5044.0          # yesterday's MCX settlement (3% lower)
+    PREV_LTP = LTP               # most recent daily_book write = current LTP
+    QTY = 100                    # 100 contracts (multiplier=1 for this test)
+
+    captured_ts = datetime(2026, 8, 11, 17, 0, tzinfo=timezone.utc)
+    raw_row = (
+        "ZG0790",                # account
+        "CRUDEOIL26AUGFUT",      # symbol
+        "MCX",                   # exchange
+        QTY,                     # qty
+        Decimal("5100.00"),      # avg_cost
+        Decimal(str(LTP)),       # ltp
+        Decimal("0.00"),         # day_pnl  (stale — would be used by old code)
+        Decimal("10000.00"),     # total_pnl
+        "{}",                    # payload_json (no multiplier override)
+        captured_ts,             # captured_at
+        PREV_CLOSE,              # previous_close ← frozen settlement
+        PREV_LTP,                # prev_ltp = ltp (old code would give 0 day P&L)
+        None,                    # prev_settlement_pnl
+    )
+
+    row = build_row_from_snapshot_raw(raw_row)
+
+    expected_day_pnl = (LTP - PREV_CLOSE) * QTY   # (5200 - 5044) * 100 = 15600
+    assert row.day_change_val == pytest.approx(expected_day_pnl, rel=1e-4), (
+        f"day_change_val={row.day_change_val} must equal "
+        f"(ltp - previous_close) * qty = {expected_day_pnl}; "
+        "old code (prev_ltp priority) would return ≈ 0 when prev_ltp == ltp"
+    )
+    assert abs(row.day_change_val) > 0, "day_change_val must be non-zero"
+
+    # close_price must use the frozen settlement, not LTP
+    assert row.close_price == pytest.approx(PREV_CLOSE, rel=1e-6), (
+        f"close_price={row.close_price} must equal previous_close={PREV_CLOSE}"
+    )
+
+
+def test_build_row_from_snapshot_raw_fallback_to_prev_ltp_when_no_previous_close():
+    """When previous_close is None but prev_ltp is a valid prior reference,
+    day_change_val comes from the stored day_pnl column (not the formula).
+
+    When actual_previous_close is None, computed_day_pnl falls back to the
+    stored day_pnl value.  The stored day_pnl must be non-zero for the test
+    to be meaningful.
+    """
+    from decimal import Decimal
+    from datetime import datetime, timezone
+    from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
+
+    LTP = 5200.0
+    STORED_DAY_PNL = 8000.0     # non-zero stored value
+
+    captured_ts = datetime(2026, 8, 11, 17, 0, tzinfo=timezone.utc)
+    raw_row = (
+        "ZG0790",
+        "CRUDEOIL26AUGFUT",
+        "MCX",
+        100,                         # qty
+        Decimal("5100.00"),          # avg_cost
+        Decimal(str(LTP)),           # ltp
+        Decimal(str(STORED_DAY_PNL)),# day_pnl
+        Decimal("10000.00"),         # total_pnl
+        "{}",
+        captured_ts,
+        None,                        # previous_close — absent (new position)
+        5100.0,                      # prev_ltp — valid but different from ltp
+        None,
+    )
+
+    row = build_row_from_snapshot_raw(raw_row)
+
+    # With actual_previous_close=None the formula branch is skipped; stored
+    # day_pnl passes through resolve_snapshot_day_pnl unchanged.
+    assert row.day_change_val == pytest.approx(STORED_DAY_PNL, rel=1e-4), (
+        f"day_change_val={row.day_change_val} must equal stored day_pnl "
+        f"({STORED_DAY_PNL}) when previous_close is None"
+    )
+    assert abs(row.day_change_val) > 0, "day_change_val must be non-zero"

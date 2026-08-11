@@ -192,10 +192,12 @@ async def test_positions_snapshot_loop_unpacks_prev_ltp_and_prev_settlement_pnl(
 
 @pytest.mark.asyncio
 async def test_positions_snapshot_prev_close_val_prefers_prev_ltp():
-    """The preference logic must prefer prev_ltp > 0 over snapshot's previous_close.
+    """The preference logic now uses actual_previous_close (frozen settlement) as the
+    primary reference, with prev_ltp as the fallback when previous_close is absent/zero.
 
-    After the CC-reduction refactor, this logic lives in build_row_from_snapshot_raw
-    (positions_helpers) rather than _positions_snapshot.
+    After the prev_close_val priority fix (2026-08-11), this logic lives in
+    build_row_from_snapshot_raw (positions_helpers). actual_previous_close is
+    computed first; prev_ltp fills in only when actual_previous_close is None.
     """
     import inspect
     from backend.api.routes import positions_helpers as _helpers
@@ -204,11 +206,17 @@ async def test_positions_snapshot_prev_close_val_prefers_prev_ltp():
     assert "prev_close_val = (" in src, (
         "build_row_from_snapshot_raw must compute prev_close_val"
     )
-    assert "float(prev_ltp) if prev_ltp and float(prev_ltp) > 0" in src, (
-        "prev_close_val must prefer prev_ltp > 0 as primary choice"
+    assert "actual_previous_close" in src, (
+        "build_row_from_snapshot_raw must compute actual_previous_close "
+        "(the frozen prior-session settlement) as the primary reference"
     )
-    assert "else (float(previous_close)" in src, (
-        "prev_close_val must fallback to previous_close when prev_ltp is absent/zero"
+    assert "float(prev_ltp) if prev_ltp and float(prev_ltp) > 0" in src, (
+        "prev_close_val must fall back to prev_ltp when actual_previous_close is None"
+    )
+    # Priority: actual_previous_close first, prev_ltp second
+    assert "actual_previous_close\n        or (float(prev_ltp)" in src or \
+           "actual_previous_close or" in src, (
+        "prev_close_val must prefer actual_previous_close over prev_ltp"
     )
 
 
@@ -284,23 +292,27 @@ def test_build_snapshot_position_row_prev_settlement_pnl_none_when_absent():
 
 @pytest.mark.asyncio
 async def test_positions_snapshot_end_to_end_prev_ltp_preference():
-    """Integration: _positions_snapshot with mocked DB returns rows where
-    close_price prefers yesterday's LTP over today's settlement.
+    """Integration: _positions_snapshot returns rows where close_price uses the
+    frozen prior-session settlement (previous_close) as the primary reference.
+
+    Priority fix (2026-08-11): previous_close (COALESCE-frozen in the first daily
+    UPSERT = yesterday's settlement) now takes precedence over prev_ltp (which is
+    the LTP of the most-recent daily_book batch — it converges toward today's LTP
+    during a session, making day_change ≈ 0 if used as the baseline).
 
     Scenario (MCX after close):
-    - Today's snapshot (captured_at=now): ltp=5500, previous_close=5500, qty=10, avg=5000, total_pnl=5000, day_pnl=500
-    - Yesterday's snapshot (captured_at=now-1h): prev_ltp=5400, prev_settlement_pnl=4000
+    - previous_close = 5400 (frozen yesterday's settlement — authoritative)
+    - prev_ltp = 5500 (latest daily_book batch LTP ≈ today's LTP — stale-ish)
+    - ltp = 5500 (today's last price from snapshot)
 
-    Expected result:
-    - close_price = 5400 (yesterday's LTP, not today's settlement)
+    Expected:
+    - close_price = 5400 (frozen settlement wins)
+    - day_change_val = (5500 - 5400) * 10 = 1000 (non-zero)
     - prev_settlement_pnl = 4000 (yesterday's total P&L)
-    - last_price = 5500 (unchanged, still today's LTP from snapshot)
+    - last_price = 5500 (unchanged)
     """
     from backend.api.routes.positions import _positions_snapshot
 
-    # Build 13-tuple per the SQL SELECT:
-    # account, symbol, exchange, qty, avg_cost, ltp, day_pnl, total_pnl,
-    # payload_json, captured_at, previous_close, prev_ltp, prev_settlement_pnl
     captured_ts = datetime(2026, 7, 13, 10, 30, tzinfo=timezone.utc)
     snapshot_row = (
         "ZG0790",                       # account
@@ -309,12 +321,12 @@ async def test_positions_snapshot_end_to_end_prev_ltp_preference():
         10,                             # qty
         Decimal("5000.00"),             # avg_cost
         Decimal("5500.00"),             # ltp (today's LTP)
-        Decimal("500.00"),              # day_pnl
+        Decimal("500.00"),              # day_pnl (stored, may be stale)
         Decimal("5000.00"),             # total_pnl (lifetime P&L)
         "{}",                           # payload_json
         captured_ts,                    # captured_at
-        Decimal("5500.00"),             # previous_close (today's settlement — BAD)
-        Decimal("5400.00"),             # prev_ltp (yesterday's settlement — GOOD)
+        Decimal("5400.00"),             # previous_close (frozen prior-session settlement)
+        Decimal("5500.00"),             # prev_ltp (latest batch LTP ≈ today's LTP)
         Decimal("4000.00"),             # prev_settlement_pnl (yesterday's total P&L)
     )
 
@@ -333,10 +345,10 @@ async def test_positions_snapshot_end_to_end_prev_ltp_preference():
 
     row = resp.rows[0]
 
-    # The core fix: close_price should use yesterday's LTP (5400), not today's settlement (5500)
+    # Core fix: close_price = frozen prior-session settlement (5400), not prev_ltp (5500)
     assert row.close_price == pytest.approx(5400.0, rel=1e-6), (
-        f"close_price={row.close_price} should prefer prev_ltp=5400, "
-        f"not today's settlement (previous_close)=5500"
+        f"close_price={row.close_price} must use frozen previous_close=5400, "
+        f"not prev_ltp=5500 (which ≈ today's LTP and would give day_change≈0)"
     )
 
     # last_price unchanged — still today's LTP
@@ -451,42 +463,46 @@ async def test_positions_snapshot_multiple_accounts_and_symbols():
     assert len(resp.rows) == 3
 
     # Position 1: ZG0790 / NIFTY
+    # previous_close=5500 (frozen settlement) wins over prev_ltp=5400
     nifty_row = next(r for r in resp.rows if r.tradingsymbol == "NIFTY26JULFUT")
-    assert nifty_row.close_price == pytest.approx(5400.0, rel=1e-6), (
-        "NIFTY close_price should use prev_ltp=5400"
+    assert nifty_row.close_price == pytest.approx(5500.0, rel=1e-6), (
+        "NIFTY close_price should use frozen previous_close=5500 (not prev_ltp=5400)"
     )
     assert nifty_row.prev_settlement_pnl == pytest.approx(4000.0, rel=1e-6)
 
-    # Position 2: ZJ6294 / CRUDEOIL (new)
+    # Position 2: ZJ6294 / CRUDEOIL (new, prev_ltp=None)
+    # previous_close=5400 is the sole reference (prev_ltp=NULL → fallback to previous_close)
     crudeoil_row = next(r for r in resp.rows if r.tradingsymbol == "CRUDEOIL26AUGFUT")
     assert crudeoil_row.close_price == pytest.approx(5400.0, rel=1e-6), (
-        "CRUDEOIL close_price should fallback to previous_close=5400"
+        "CRUDEOIL close_price should use previous_close=5400 (prev_ltp=NULL)"
     )
     assert crudeoil_row.prev_settlement_pnl is None, "CRUDEOIL is new"
 
     # Position 3: ZG0790 / GOLDM
+    # previous_close=6850 (frozen settlement) wins over prev_ltp=6810
     goldm_row = next(r for r in resp.rows if r.tradingsymbol == "GOLDM26AUGFUT")
-    assert goldm_row.close_price == pytest.approx(6810.0, rel=1e-6), (
-        "GOLDM close_price should use prev_ltp=6810"
+    assert goldm_row.close_price == pytest.approx(6850.0, rel=1e-6), (
+        "GOLDM close_price should use frozen previous_close=6850 (not prev_ltp=6810)"
     )
     assert goldm_row.prev_settlement_pnl == pytest.approx(10.0, rel=1e-6)
 
 
 @pytest.mark.asyncio
 async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
-    """End-to-end: verify that day_change_val is recomputed from (ltp - prev_close)×qty
-    and is NOT collapsed to 0 after NSE settlement.
+    """End-to-end: verify that day_change_val is recomputed from (ltp - previous_close)×qty
+    and is NOT collapsed to 0 after MCX close.
 
-    Root cause (NSE settlement, ~15:45 IST): Kite updates close_price to today's OCP.
-    Previously, stored day_pnl was returned as-is — which could be 0 because the
-    snapshot writer saw close_price == ltp after settlement. Now _positions_snapshot
-    recomputes day_pnl in the row-mapping loop as (ltp - prev_ltp) × effective_qty
-    using yesterday's EOD LTP as the baseline.
+    Priority fix (2026-08-11): previous_close (COALESCE-frozen prior-session settlement)
+    is the primary baseline. When prev_ltp ≈ today's LTP (intraday re-capture), using
+    prev_ltp as baseline would give day_change ≈ 0. Using previous_close (yesterday's
+    real settlement) gives the correct non-zero day P&L.
 
     Scenario:
-    - yesterday_settlement = 5400, today_ltp = 5500, qty = 10
-    - Recomputed day_pnl = (5500 - 5400) × 10 = 1000 (NOT the stored 500)
-    - close_price = 5400 (yesterday's settlement, not today's 5500)
+    - previous_close = 5400 (frozen yesterday's settlement — correct baseline)
+    - prev_ltp = 5500 (latest batch LTP ≈ today's LTP — wrong baseline)
+    - ltp = 5500, qty = 10
+    - Recomputed day_pnl = (5500 - 5400) × 10 = 1000 (NOT 0)
+    - close_price = 5400 (frozen settlement, not prev_ltp)
     """
     from backend.api.routes.positions import _positions_snapshot
 
@@ -496,24 +512,25 @@ async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
     TODAY_TOTAL_PNL = 4500.0
     QTY = 10
     LTP = 5500.0
-    PREV_LTP = 5400.0
-    # Recomputed formula: (ltp - prev_ltp) * qty = (5500 - 5400) * 10 = 1000
-    EXPECTED_DAY_PNL = (LTP - PREV_LTP) * QTY  # 1000.0
+    PREVIOUS_CLOSE = 5400.0      # frozen settlement (correct baseline)
+    PREV_LTP = 5500.0            # latest batch LTP ≈ today's LTP (wrong if used as baseline)
+    # Recomputed formula uses previous_close: (5500 - 5400) * 10 = 1000
+    EXPECTED_DAY_PNL = (LTP - PREVIOUS_CLOSE) * QTY  # 1000.0
 
     snapshot_row = (
         "ZG0790",
         "NIFTY26JULFUT",
         "NFO",
         QTY,
-        Decimal("5000.00"),              # avg_cost
-        Decimal(str(LTP)),               # ltp (today's settlement)
-        Decimal("500.00"),               # day_pnl stored value (may be stale)
-        Decimal(str(TODAY_TOTAL_PNL)),   # total_pnl = 4500
-        "{}",                            # payload_json (empty)
+        Decimal("5000.00"),               # avg_cost
+        Decimal(str(LTP)),                # ltp
+        Decimal("500.00"),                # day_pnl stored (stale)
+        Decimal(str(TODAY_TOTAL_PNL)),    # total_pnl = 4500
+        "{}",                             # payload_json
         captured_ts,
-        Decimal("5500.00"),              # previous_close = today's settlement (stale)
-        Decimal(str(PREV_LTP)),          # prev_ltp = yesterday's settlement (good baseline)
-        Decimal(str(YESTERDAY_TOTAL_PNL)),  # prev_settlement_pnl
+        Decimal(str(PREVIOUS_CLOSE)),     # previous_close = frozen settlement (5400)
+        Decimal(str(PREV_LTP)),           # prev_ltp = latest batch LTP (5500 ≈ today's)
+        Decimal(str(YESTERDAY_TOTAL_PNL)),# prev_settlement_pnl
     )
 
     mock_result = MagicMock()
@@ -531,16 +548,17 @@ async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
 
     row = resp.rows[0]
 
-    # close_price = yesterday's settlement (5400), not today's (5500)
-    assert row.close_price == pytest.approx(5400.0, rel=1e-6), (
-        "close_price should be yesterday's LTP=5400, not today's settlement=5500"
+    # close_price = frozen settlement (5400), not prev_ltp (5500)
+    assert row.close_price == pytest.approx(PREVIOUS_CLOSE, rel=1e-6), (
+        f"close_price={row.close_price} should be frozen previous_close={PREVIOUS_CLOSE}, "
+        f"not prev_ltp={PREV_LTP} (which ≈ today's LTP and would give day_change=0)"
     )
 
-    # day_change_val recomputed from (ltp - prev_ltp) * qty = 1000, not stored 500
+    # day_change_val recomputed from (ltp - previous_close) * qty = 1000, not 0 or stored 500
     assert row.day_change_val == pytest.approx(EXPECTED_DAY_PNL, rel=1e-6), (
         f"day_change_val={row.day_change_val} should be recomputed as "
-        f"(ltp-prev_ltp)*qty=({LTP}-{PREV_LTP})*{QTY}={EXPECTED_DAY_PNL}, "
-        f"not the stale stored value 500 and not 0"
+        f"(ltp-previous_close)*qty=({LTP}-{PREVIOUS_CLOSE})*{QTY}={EXPECTED_DAY_PNL}; "
+        f"old code (prev_ltp priority) would give 0 when prev_ltp≈ltp"
     )
 
     # total_pnl stays as-is (lifetime P&L, not day P&L)
