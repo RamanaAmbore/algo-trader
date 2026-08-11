@@ -132,7 +132,7 @@ Formula: three slots displaying holding value and profit from three perspectives
 | Slot | Value | Formula |
 |---|---|---|
 | 1 | Today's MTM move | `Σ holdings.day_change_val + live-tick delta` |
-| 2 | Current value | `Σ holdings.cur_val + live-tick delta` |
+| 2 | Current value | `Σ (ltp × qty)` from symbolStore, fallback to `holdings.cur_val + live-tick delta` |
 | 3 | Lifetime P&L | `Σ holdings.pnl + live-tick delta` |
 
 ---
@@ -150,7 +150,7 @@ Every value must match a canonical source to stay in sync with other surfaces.
 | C:1 | Broker's live cash (CA) | `fundsStore.load()` → `funds[].live_cash` |
 | C:2 | Option premium tied up in long positions | Derived from `positions[]` CE/PE rows |
 | H:1 | MarketPulse Holdings grid TOTAL row, Day P&L column | `Σ holdings.day_change_val + delta` |
-| H:2 | MarketPulse Holdings grid TOTAL row, Value column | `Σ holdings.cur_val + delta` |
+| H:2 | MarketPulse Holdings grid TOTAL row, Value column | `pulseHoldingsStore` (shared with MarketPulse); formula: `ltp × qty` from symbolStore, fallback to `h.cur_val` |
 | H:3 | MarketPulse Holdings grid TOTAL row, P&L column | `Σ holdings.pnl + delta` |
 
 ---
@@ -332,7 +332,7 @@ Slot hint content by position:
 | C:1 Cash Available | "Cash Available (CA)" | Live deployable cash. Nets realised P&L + premium debits from long options already paid. |
 | C:2 Total Cash | "Total Cash (C)" | CA + premium tied up in long options (recoverable if closed). Full liquid wealth excluding positions. |
 | H:1 Holdings Today MTM | "Holdings Today MTM" | Live LTP − prev close × qty for all long-term holdings. Intraday MTM only; excludes overnight positions. |
-| H:2 Holdings Value | "Holdings Value" | Broker-reported current market value of all holdings across all accounts. |
+| H:2 Holdings Value | "Holdings Value" | Current market value of all holdings (ltp × qty from live feed; same cache as MarketPulse). Falls back to broker cur_val when LTP unavailable. |
 | H:3 Holdings Lifetime P&L | "Holdings Lifetime P&L" | Cumulative P&L since purchase. (current price − avg cost) × qty, all holdings. |
 
 ### Slot differentiation within pills
@@ -514,3 +514,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-07-18 | Color coding: per-pill label accents (P=amber, M=violet, C=sky, H=cyan); slot bright/dim differentiation for M, C, H pills; mobile trailing-clip padding note |
 | 2026-07-19 | Round 6: InfoHint `panel` mode spec (gradient bg, accent left border, titled header); per-slot ⓘ hover hints for all 10 slots; corrected M and C accent hex values; font-size upgrade for `.ps-agg-k` (xs→sm desktop, 2xs→xs mobile/380px); `frontend/src/lib/InfoHint.svelte` + `PositionStrip.svelte` updated |
 | 2026-07-22 | Pill label click-to-breakdown: clicking any P/M/C/H label opens NavBreakdown panel overlay (fixed below NavStrip, min(28rem, 100vw) width); dismiss via Escape or click-outside; typography note: `.ps-agg-k` uses `var(--fs-md)` (desktop) / `var(--fs-sm)` (mobile) |
+| 2026-08-11 | H slot 2 (Holdings Value): now reads from `pulseHoldingsStore` (shared SSOT with MarketPulse); formula: `ltp × qty` from symbolStore, fallback to `h.cur_val` (matches `finalizeRows` in `pulseUnified.js:697`); NavStrip and MarketPulse never diverge on holdings value |

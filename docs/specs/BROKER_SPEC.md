@@ -687,6 +687,100 @@ Template attach only fires when `_broker_is_fill_status(broker_id, status)` retu
 
 ---
 
+## 8.5 Orders Fetching Resilience & Chase Timeouts
+
+**File**: `backend/api/routes/orders_helpers.py` · `backend/api/routes/orders.py`
+
+### Orders list with per-broker timeout
+
+`_fetch_orders()` in `orders_helpers.py` fetches `broker.orders()` from all active 
+broker accounts in parallel using `ThreadPoolExecutor`. Each broker call is wrapped 
+in an explicit future with a **8-second timeout** (`_BROKER_ORDERS_TIMEOUT = 8`):
+
+```python
+_BROKER_ORDERS_TIMEOUT = 8
+
+for fut, account in futs:
+    try:
+        results.append(fut.result(timeout=_BROKER_ORDERS_TIMEOUT))
+    except concurrent.futures.TimeoutError:
+        logger.warning(f"orders list timed out for {account} after {_BROKER_ORDERS_TIMEOUT}s")
+        results.append([])
+```
+
+A timed-out broker:
+- Logs a warning (account ID + timeout threshold)
+- Contributes an empty list `[]` to the response
+- Does NOT block other brokers' results
+- Does NOT raise or return a 500 error
+
+The pool is shut down with `cancel_futures=True` to prevent stale futures from 
+re-blocking after the timeout expires.
+
+**Impact**: GET `/api/orders/` (used by orders panel + chase reconcile) never blocks 
+on a single slow/hung broker account. If Dhan hangs, Kite/Groww orders appear 
+immediately; Dhan row is omitted from the list.
+
+### Chase active endpoint with 10-second snapshot timeout
+
+`/api/chases/active` (list in-flight chase orders) calls `_chase_snapshot_broker_status_by_id()` 
+to snapshot the broker order book. This function wraps the orders cache fetch in 
+`asyncio.wait_for(timeout=10.0)`:
+
+```python
+async def _chase_snapshot_broker_status_by_id() -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    try:
+        _ord_resp = await asyncio.wait_for(
+            get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL),
+            timeout=10.0,
+        )
+        for _o in (_ord_resp.rows or []):
+            out[_bid] = {"status": <UPPER>, "average_price": <float>}
+    except asyncio.TimeoutError:
+        logger.warning("chases/active broker snapshot timed out after 10s")
+    except Exception as _oe:
+        logger.debug(f"chases/active broker snapshot failed: {_oe}")
+    return out
+```
+
+On timeout:
+- Returns an empty `{}` immediately (no hanging)
+- Logs a warning (no exception raised)
+- Chase reconcile treats missing order IDs as "keep row as OPEN"
+- Prevents `/chases/active` panel from lock-starving when broker order fetch hangs
+
+**Impact**: Chase panel never blocks the operator even if the broker order list fetch 
+exceeds 10 seconds. Operator sees in-flight orders (cached state) rather than a blank 
+grid or spinner lock. The next poll (3s default) attempts fresh data.
+
+### Frontend polling guard
+
+**File**: `frontend/src/lib/order/ChaseCard.svelte`
+
+Chase card now includes an in-flight polling guard:
+
+```javascript
+let _fetching = false;
+
+async function _poll() {
+  if (_fetching) return;  // Silently drop concurrent polls
+  _fetching = true;
+  try {
+    // fetch active chases
+  } finally {
+    _fetching = false;
+  }
+}
+```
+
+The recurring `visibleInterval` callback (default 3s) now calls `_poll()` instead of 
+calling `_load()` directly. When a poll is in-flight, concurrent `visibleInterval` 
+ticks are silently dropped. This prevents request starvation when the browser is 
+polling faster than the API responds (e.g., `fetch timeout > visibleInterval`).
+
+---
+
 ## 9. Remote Broker & Conn Service
 
 `RemoteBroker` proxies every `Broker` ABC method via `POST /internal/broker/{account}/call/{method}` over UDS.
@@ -859,6 +953,12 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 **I25 — Dhan `close_price=0` detection and backfill**: Dhan's `holdings()` API lacks `previousClosePrice`; adapter sets `close_price=0` and `day_change=ltp`. Backfill pipeline patches `close_price` from Kite quote, then `_backfill_recompute_derived()` detects `close_was_missing=True` flag and recomputes `day_change = ltp - real_close` unconditionally, overriding the stale broker value. Ensures `daily_book.day_pnl` stores correct day P&L (not `ltp`). Effective when snapshot runs before Kite updates `ohlc.close` to today's final value (~3:30–18:00 IST); canonical EOD snapshot at 15:35 IST guaranteed correct.
 
 **I26 — Daily book `day_pnl` stores total P&L**: The value stored in `daily_book.day_pnl` for `kind='holdings'` rows is the total day P&L (`day_change_per_share × qty`), consistent with positions rows. When computing `day_change_percentage`, this total is divided by `close_notional = previous_close × qty`. Ensures stored value is directly interpretable as P&L if position were squared at LTP.
+
+**I27 — Orders fetch per-broker 8-second timeout**: `_fetch_orders()` wraps each broker's `orders()` call with an explicit 8-second timeout (`_BROKER_ORDERS_TIMEOUT = 8`). A timed-out broker logs a warning and contributes an empty list; other brokers' results are unaffected. GET `/api/orders/` never blocks on a single hung account. Pool is shut down with `cancel_futures=True` to prevent stale-future re-blocking.
+
+**I28 — Chase active 10-second snapshot timeout**: `_chase_snapshot_broker_status_by_id()` wraps the orders cache fetch in `asyncio.wait_for(timeout=10.0)`. On timeout, returns empty dict `{}`; chase reconcile treats missing order IDs as "keep OPEN". Prevents `/chases/active` panel from lock-starving when broker fetch hangs. Next poll (3s default) attempts fresh snapshot.
+
+**I29 — Frontend chase polling guard**: `ChaseCard.svelte` includes in-flight `_fetching` flag. `visibleInterval` callback calls `_poll()` which silently drops concurrent polls while one is in-flight. Prevents request starvation when browser polls faster than API responds (e.g., when fetch timeout > polling interval).
 
 ---
 
@@ -1158,3 +1258,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-06 | v1.11 Holdings snapshot day_change_percentage formula fix (commit 13ec7c18): Added §7.4 Holdings Snapshot Day Change Percentage Formula documenting the corrected formula: `day_pnl / (previous_close × qty) × 100` (uses `previous_close` denominator, not LTP). Fallback to `avg_cost` when `previous_close` is zero/missing. Added I24 invariant. SQL now selects `db.previous_close` from daily_book; fixes distortion where using LTP inflated negatives and understated positives. |
 | 2026-08-06 | v1.12 Dhan holdings day_pnl fix (commit a737b1e2): Added subsection to §7.4 documenting Dhan `close_price=0` handling and backfill recompute. `_backfill_recompute_derived()` now accepts `close_was_missing: bool` flag; when True, recomputes `day_change = ltp - real_close` unconditionally to override stale Dhan adapter value. Added subsection on daily_book `day_pnl` storing total P&L (not per-share change). Added I25 and I26 invariants capturing `close_was_missing` detection and total-P&L storage convention. Fixes Dhan holdings snapshot storing incorrect day_pnl (e.g. 3952 instead of -28) when `close_price` was patched from zero. |
 | 2026-08-09 | v1.10 MCX lot-scale day P&L fix (commit TBD): Added §7.3 Daily Snapshot — MCX Lot-Scale Day P&L Fix documenting `_snap_compute_day_pnl()` `multiplier` parameter (default=1). When provided, scales `overnight_quantity`, `day_buy_quantity`, `day_sell_quantity` by lot_size before computing decomposed intraday P&L formula. Fixes brand-new MCX positions (CRUDEOIL lot=100) showing day_pnl off by 100× (₹50 instead of ₹5000) on first snapshot appearance. Caller responsibility: snapshot writers pass `r.get("multiplier", 1)` via lot_size field. Holdings snapshot day_change now computed from price diff × qty via `prev_batch` CTE (same as positions). |
+| 2026-08-11 | v1.13 Orders fetching resilience and chase timeouts (commit 5ec9afec): Added §8.5 Orders Fetching Resilience & Chase Timeouts documenting per-broker 8-second timeout in `_fetch_orders()` with early-exit on timeout + empty-list fallback (pool shutdown with `cancel_futures=True`), 10-second `asyncio.wait_for` timeout in `_chase_snapshot_broker_status_by_id()` to prevent `/chases/active` lock starvation, and frontend `ChaseCard.svelte` polling guard (`_fetching` flag) to drop concurrent polls. Added I27, I28, I29 invariants capturing timeout semantics and fallback behaviour for orders list + chase snapshot + frontend polling. |
