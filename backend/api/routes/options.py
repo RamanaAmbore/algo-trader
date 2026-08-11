@@ -2096,7 +2096,7 @@ def _best_depth_price(book: list) -> "float | None":
 # while the sym-map stays stable across the option chain's life.
 # ---------------------------------------------------------------------------
 _CHAIN_SYM_CACHE: dict[tuple, tuple[float, tuple]] = {}
-_CHAIN_SYM_TTL = 3.0
+_CHAIN_SYM_TTL = 30.0
 
 
 def _chain_sym_cache_clear() -> None:
@@ -2545,7 +2545,9 @@ class OptionsController(Controller):
         from backend.api.routes.instruments import _fetch_instruments
         try:
             inst_resp = await get_or_fetch(
-                "instruments", _fetch_instruments, ttl_seconds=86400)
+                "instruments", _fetch_instruments, ttl_seconds=86400,
+                timeout_seconds=20,
+            )
         except Exception as e:
             logger.warning(f"chain-quotes instruments fetch failed: {e}")
             return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])

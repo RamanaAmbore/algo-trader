@@ -24,13 +24,18 @@ def _lock(key: str) -> asyncio.Lock:
     return _locks[key]
 
 
-async def get_or_fetch(key: str, fetcher, ttl_seconds: int = 30):
+async def get_or_fetch(key: str, fetcher, ttl_seconds: int = 30,
+                       timeout_seconds: int | None = None):
     """
     Return cached value for `key` if still fresh, otherwise call `fetcher()`
     (an async or sync callable), cache the result, and return it.
 
     Uses per-key locking so concurrent requests for the same key only trigger
     one fetch — others wait and then receive the cached result (request coalescing).
+
+    If `timeout_seconds` is set, wraps the fetch with asyncio.wait_for. On timeout,
+    asyncio.TimeoutError propagates out of the lock block — releasing the lock so the
+    next request can retry immediately.
     """
     now = time.monotonic()
     entry = _store.get(key)
@@ -44,7 +49,7 @@ async def get_or_fetch(key: str, fetcher, ttl_seconds: int = 30):
             return entry[1]
 
         if asyncio.iscoroutinefunction(fetcher):
-            value = await fetcher()
+            coro = fetcher()
         else:
             # Sync fetchers (Kite SDK calls, urllib3 fetches) historically
             # ran inline on the event loop. On a cold cache hit that
@@ -52,7 +57,12 @@ async def get_or_fetch(key: str, fetcher, ttl_seconds: int = 30):
             # (instruments dump = ~90k rows × N exchanges; orders =
             # one HTTP round-trip per account). Offload to the default
             # threadpool so other requests in flight keep moving.
-            value = await asyncio.to_thread(fetcher)
+            coro = asyncio.to_thread(fetcher)
+
+        if timeout_seconds is not None:
+            value = await asyncio.wait_for(coro, timeout=timeout_seconds)
+        else:
+            value = await coro
 
         _store[key] = (now + ttl_seconds, value)
         return value

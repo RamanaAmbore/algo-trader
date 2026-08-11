@@ -10,7 +10,6 @@
 
   import { onMount, onDestroy, untrack } from 'svelte';
   import { visibleInterval, withGuard } from '$lib/stores';
-  import { isMarketOpen } from '$lib/marketHours';
   import {
     fetchOptionsSpot, fetchChainQuotes, fetchChainExpiries,
     placeTicketOrder,
@@ -297,6 +296,8 @@
   //    can reference it before the polling $effect below.
   /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null}}>|null} */
   let chainQuotesMap = $state(null);
+  let _chainQuotesLoading = $state(false);
+  let _chainQuotesError = $state('');
   const chainStrikes = $derived(
     Object.keys(chainQuotesMap ?? {}).map(Number).filter(Boolean).sort((a, b) => a - b)
   );
@@ -427,8 +428,10 @@
   let chainQuotesKey = '';
   let chainQuotesPoll = /** @type {any} */ (null);
   async function _refreshChainQuotes() {
-    if (!chainUnderlying || !chainExpiry || !isMarketOpen()) return;
+    if (!chainUnderlying || !chainExpiry) return;
     const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
+    _chainQuotesLoading = true;
+    _chainQuotesError = '';
     try {
       const r = await fetchChainQuotes(u, e);
       // Discard if the underlying/expiry changed while the fetch was in-flight.
@@ -454,7 +457,11 @@
         };
       }
       chainQuotesMap = map;
-    } catch { /* keep last-good */ }
+    } catch {
+      _chainQuotesError = 'Failed to load quotes — retrying…';
+    } finally {
+      _chainQuotesLoading = false;
+    }
   }
   $effect(() => {
     void chainUnderlying; void chainExpiry;
@@ -862,6 +869,13 @@
         </div>
       {/each}
     </div>
+  {/if}
+
+  {#if _chainQuotesError}
+    <div class="oct-empty" style="color:var(--c-short)">{_chainQuotesError}</div>
+  {/if}
+  {#if _chainQuotesLoading && chainKinds.includes('opt') && !chainStrikes.length}
+    <div class="oct-empty">Fetching quotes…</div>
   {/if}
 
   <!-- Strike grid -->
