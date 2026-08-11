@@ -135,6 +135,12 @@ SEEDS: list[tuple] = [
      "720+/hr backend hits. Auto-restores to book_live_ms on market open.",
      "ms", {"min": 60000, "max": 7200000, "step": 60000}),
 
+    # ── UI tuning ───────────────────────────────────────────────────────
+    ("ui", "ui.ltp_flash_pct", "float", 0.1,
+     "Minimum LTP percentage change required to trigger the background flash animation "
+     "on Pulse, Dashboard, and Derivatives grid cells. 0 = flash on any tick change.",
+     "%", {"min": 0.0, "max": 5.0, "step": 0.05}),
+
     # ── Performance refresh ─────────────────────────────────────────────
     ("performance", "performance.refresh_interval",        "int", 5,
      "Minutes between live broker refreshes during market hours.",

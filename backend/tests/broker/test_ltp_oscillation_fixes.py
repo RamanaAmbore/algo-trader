@@ -405,3 +405,243 @@ class TestApplyLtpPatchZeroGuard:
         assert df.at[0, "last_price"] == 152.0, (
             f"Expected override to 152.0; got {df.at[0, 'last_price']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 4. Dhan interval-skip — LKG fallback (Fix 2, Aug 2026)
+# ---------------------------------------------------------------------------
+
+def _inner(decorated_func):
+    """Return the undecorated inner function from a @for_all_accounts decorated func."""
+    return getattr(decorated_func, "__wrapped__", None)
+
+
+class TestDhanIntervalSkipLkgFallback:
+    """When a Dhan poll interval hasn't elapsed AND a last-known-good (LKG)
+    frame exists, the fetch functions must return the LKG frame (with
+    interval_skipped=True) rather than an empty DataFrame.  When no LKG
+    exists (first-poll-after-restart), the existing empty-frame behaviour
+    is preserved.
+
+    Quality dimensions:
+      * SSOT — one fix point per function (_fetch_holdings_local,
+        _fetch_positions_local, _fetch_margins_local).
+      * Perf — no broker round-trip occurs in either branch; the LKG
+        path adds only a dict lookup.
+      * Stale-code grep — interval_skipped=True still set on LKG frame so
+        downstream ssot_fetch(mode='coalesce') can detect the skip.
+      * Reuse — shares _stale_substitute_frame with the circuit-breaker
+        path; no new LKG logic added.
+      * UX — rows no longer disappear on every page that concatenates
+        per-account DataFrames during the throttle window.
+    """
+
+    # -- holdings ------------------------------------------------------------
+
+    def test_interval_skipped_holdings_returns_lkg_when_available(self):
+        """When interval not due + LKG non-empty: return LKG with interval_skipped=True."""
+        import pandas as pd
+        from unittest.mock import patch, MagicMock
+        from backend.brokers import broker_apis
+
+        inner = _inner(broker_apis._fetch_holdings_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute on _fetch_holdings_local")
+
+        lkg_frame = pd.DataFrame([{
+            "tradingsymbol": "RELIANCE",
+            "quantity": 10,
+            "average_price": 2800.0,
+        }])
+
+        broker = MagicMock()
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False), \
+             patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False), \
+             patch("backend.brokers.broker_apis._stale_substitute_frame",
+                   return_value=lkg_frame) as mock_ssf:
+            result = inner(
+                connections=lambda: MagicMock(),
+                account="DH1234", kite=None, broker=broker,
+            )
+
+        mock_ssf.assert_called_once_with("holdings", "DH1234")
+        assert not result.empty, "Expected non-empty LKG frame when LKG is available"
+        assert result.attrs.get("interval_skipped") is True
+        assert "circuit_open" not in result.attrs, (
+            "circuit_open attr must NOT be set on an interval-skip LKG frame"
+        )
+
+    def test_interval_skipped_holdings_returns_empty_when_no_lkg(self):
+        """When interval not due + no LKG: return empty frame with interval_skipped=True."""
+        import pandas as pd
+        from unittest.mock import patch, MagicMock
+        from backend.brokers import broker_apis
+
+        inner = _inner(broker_apis._fetch_holdings_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute on _fetch_holdings_local")
+
+        broker = MagicMock()
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False), \
+             patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False), \
+             patch("backend.brokers.broker_apis._stale_substitute_frame",
+                   return_value=pd.DataFrame()):
+            result = inner(
+                connections=lambda: MagicMock(),
+                account="DH1234", kite=None, broker=broker,
+            )
+
+        assert result.empty, "Expected empty frame when no LKG exists"
+        assert result.attrs.get("interval_skipped") is True
+
+    # -- positions -----------------------------------------------------------
+
+    def test_interval_skipped_positions_returns_lkg_when_available(self):
+        """Positions variant: LKG rows survive the interval-skip throttle window."""
+        import pandas as pd
+        from unittest.mock import patch, MagicMock
+        from backend.brokers import broker_apis
+
+        inner = _inner(broker_apis._fetch_positions_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute on _fetch_positions_local")
+
+        lkg_frame = pd.DataFrame([{
+            "tradingsymbol": "NIFTY26AUG25000CE",
+            "quantity": 50,
+            "last_price": 120.0,
+            "pnl": 5000.0,
+        }])
+
+        broker = MagicMock()
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False), \
+             patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False), \
+             patch("backend.brokers.broker_apis._stale_substitute_frame",
+                   return_value=lkg_frame) as mock_ssf:
+            result = inner(
+                connections=lambda: MagicMock(),
+                account="DH1234", kite=None, broker=broker,
+            )
+
+        mock_ssf.assert_called_once_with("positions", "DH1234")
+        assert not result.empty
+        assert result.attrs.get("interval_skipped") is True
+        assert "circuit_open" not in result.attrs
+
+    def test_interval_skipped_positions_returns_empty_when_no_lkg(self):
+        """Positions variant: empty frame returned when no LKG exists."""
+        import pandas as pd
+        from unittest.mock import patch, MagicMock
+        from backend.brokers import broker_apis
+
+        inner = _inner(broker_apis._fetch_positions_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute on _fetch_positions_local")
+
+        broker = MagicMock()
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False), \
+             patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False), \
+             patch("backend.brokers.broker_apis._stale_substitute_frame",
+                   return_value=pd.DataFrame()):
+            result = inner(
+                connections=lambda: MagicMock(),
+                account="DH1234", kite=None, broker=broker,
+            )
+
+        assert result.empty
+        assert result.attrs.get("interval_skipped") is True
+
+    # -- margins -------------------------------------------------------------
+
+    def test_interval_skipped_margins_returns_lkg_when_available(self):
+        """Margins variant: LKG funds row survives the interval-skip throttle window."""
+        import pandas as pd
+        from unittest.mock import patch, MagicMock
+        from backend.brokers import broker_apis
+
+        inner = _inner(broker_apis._fetch_margins_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute on _fetch_margins_local")
+
+        lkg_frame = pd.DataFrame([{
+            "net": 50000.0,
+        }])
+
+        broker = MagicMock()
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False), \
+             patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False), \
+             patch("backend.brokers.broker_apis._stale_substitute_frame",
+                   return_value=lkg_frame) as mock_ssf:
+            result = inner(
+                connections=lambda: MagicMock(),
+                account="DH1234", kite=None, broker=broker,
+            )
+
+        mock_ssf.assert_called_once_with("margins", "DH1234")
+        assert not result.empty
+        assert result.attrs.get("interval_skipped") is True
+        assert "circuit_open" not in result.attrs
+
+    def test_interval_skipped_margins_returns_empty_when_no_lkg(self):
+        """Margins variant: empty frame returned when no LKG exists."""
+        import pandas as pd
+        from unittest.mock import patch, MagicMock
+        from backend.brokers import broker_apis
+
+        inner = _inner(broker_apis._fetch_margins_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute on _fetch_margins_local")
+
+        broker = MagicMock()
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False), \
+             patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False), \
+             patch("backend.brokers.broker_apis._stale_substitute_frame",
+                   return_value=pd.DataFrame()):
+            result = inner(
+                connections=lambda: MagicMock(),
+                account="DH1234", kite=None, broker=broker,
+            )
+
+        assert result.empty
+        assert result.attrs.get("interval_skipped") is True
+
+    # -- circuit_open attr cleared on LKG path ------------------------------
+
+    def test_lkg_circuit_open_attr_is_cleared(self):
+        """_stale_substitute_frame sets circuit_open=True on every LKG frame.
+        The interval-skip path must pop that attr so the consuming ssot_fetch
+        layer doesn't mistake a throttle event for a breaker event."""
+        import pandas as pd
+        from unittest.mock import patch, MagicMock
+        from backend.brokers import broker_apis
+
+        inner = _inner(broker_apis._fetch_holdings_local)
+        if inner is None:
+            pytest.skip("No __wrapped__ attribute on _fetch_holdings_local")
+
+        lkg_with_circuit_open = pd.DataFrame([{"tradingsymbol": "INFY", "quantity": 5}])
+        lkg_with_circuit_open.attrs["stale"] = True
+        lkg_with_circuit_open.attrs["circuit_open"] = True  # set by _stale_substitute_frame
+
+        broker = MagicMock()
+
+        with patch("backend.brokers.broker_apis._is_circuit_open", return_value=False), \
+             patch("backend.brokers.broker_apis._is_dhan_interval_due", return_value=False), \
+             patch("backend.brokers.broker_apis._stale_substitute_frame",
+                   return_value=lkg_with_circuit_open):
+            result = inner(
+                connections=lambda: MagicMock(),
+                account="DH9999", kite=None, broker=broker,
+            )
+
+        assert "circuit_open" not in result.attrs, (
+            "circuit_open must be cleared on the interval-skip LKG path — "
+            "only the breaker path should carry this attr"
+        )
+        assert result.attrs.get("interval_skipped") is True

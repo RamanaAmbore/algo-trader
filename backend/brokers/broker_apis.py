@@ -1380,6 +1380,16 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     # returns True for non-Dhan brokers). Manual ?fresh=1 calls bypass
     # by calling fetch_holdings() directly which skips @for_all_accounts.
     if account and not _is_dhan_interval_due(account, broker):
+        lkg = _stale_substitute_frame("holdings", account)
+        if not lkg.empty:
+            lkg.attrs["interval_skipped"] = True
+            lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event
+            logger.debug(
+                f"[INTERVAL] account={account} holdings poll skipped — serving stale LKG "
+                f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
+            )
+            return lkg
+        # No LKG yet — return empty (first-poll-after-restart behaviour preserved)
         df_holdings.attrs["interval_skipped"] = True
         logger.debug(
             f"[INTERVAL] account={account} holdings poll skipped "
@@ -1763,6 +1773,16 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
         return _stale_substitute_frame("positions", account)
     # Interval gate (Dhan-only) — same pattern as holdings.
     if account and not _is_dhan_interval_due(account, broker):
+        lkg = _stale_substitute_frame("positions", account)
+        if not lkg.empty:
+            lkg.attrs["interval_skipped"] = True
+            lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event
+            logger.debug(
+                f"[INTERVAL] account={account} positions poll skipped — serving stale LKG "
+                f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
+            )
+            return lkg
+        # No LKG yet — return empty (first-poll-after-restart behaviour preserved)
         df_positions.attrs["interval_skipped"] = True
         logger.debug(
             f"[INTERVAL] account={account} positions poll skipped "
@@ -2334,6 +2354,16 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
         return _stale_substitute_frame("margins", account)
     # Interval gate (Dhan-only) — same pattern as holdings.
     if account and not _is_dhan_interval_due(account, broker):
+        lkg = _stale_substitute_frame("margins", account)
+        if not lkg.empty:
+            lkg.attrs["interval_skipped"] = True
+            lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event
+            logger.debug(
+                f"[INTERVAL] account={account} margins poll skipped — serving stale LKG "
+                f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
+            )
+            return lkg
+        # No LKG yet — return empty (first-poll-after-restart behaviour preserved)
         df_margins.attrs["interval_skipped"] = True
         logger.debug(
             f"[INTERVAL] account={account} margins poll skipped "

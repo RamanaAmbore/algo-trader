@@ -600,3 +600,44 @@ class TestRealWorldExamples:
         with patch.object(settings, "yaml_config", yaml_cfg):
             result = settings.get_bool("notifications.telegram_enabled", default=True)
             assert result is True
+
+    def test_ui_ltp_flash_pct_is_seeded(self):
+        """Fix 1 (Aug 2026): ui.ltp_flash_pct must be present in SEEDS with correct
+        shape — category 'ui', value_type 'float', default 0.1, schema min/max/step."""
+        from backend.shared.helpers.settings import SEEDS
+
+        entry = next((s for s in SEEDS if s[1] == "ui.ltp_flash_pct"), None)
+        assert entry is not None, (
+            "ui.ltp_flash_pct missing from SEEDS — "
+            "GET /api/admin/settings/ will not expose the LTP flash threshold"
+        )
+        category, key, value_type, default, description, units, schema = entry
+        assert category == "ui"
+        assert value_type == "float"
+        assert default == 0.1
+        assert units == "%"
+        assert schema is not None
+        assert schema.get("min") == 0.0
+        assert schema.get("max") == 5.0
+        assert schema.get("step") == 0.05
+
+    def test_ui_ltp_flash_pct_read_chain(self):
+        """ui.ltp_flash_pct is readable via get_float() with correct default fallback."""
+        settings._CACHE.clear()
+        yaml_cfg = {}
+
+        # In-code default path (no cache, no YAML entry)
+        with patch.object(settings, "yaml_config", yaml_cfg):
+            result = settings.get_float("ui.ltp_flash_pct", default=0.1)
+            assert result == 0.1, f"Expected default 0.1, got {result}"
+
+        # Cache-hit path
+        settings._CACHE["ui.ltp_flash_pct"] = "0.25"
+        assert settings.get_float("ui.ltp_flash_pct") == 0.25
+
+        # Cache clear, YAML nested path
+        settings._CACHE.clear()
+        yaml_cfg = {"ui": {"ltp_flash_pct": 0.5}}
+        with patch.object(settings, "yaml_config", yaml_cfg):
+            result = settings.get_float("ui.ltp_flash_pct")
+            assert result == 0.5
