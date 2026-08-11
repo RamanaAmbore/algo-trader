@@ -1453,7 +1453,13 @@
           sortable: true },
         { field: 'ltp', headerName: 'LTP', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: 'ag-right-aligned-cell',
+          cellClass: (p) => {
+            const base = 'ag-right-aligned-cell';
+            const sym = p.data?.symbol;
+            if (!sym) return base;
+            const fc = _dashFlash.classOf(`wl:${sym}:ltp`);
+            return fc ? `${base} ${fc}` : base;
+          },
           valueFormatter: _agNumFmt },
         { field: 'pct', headerName: 'Day %', minWidth: 64, flex: 0.9,
           type: 'numericColumn', headerClass: _numericHdr,
@@ -1606,11 +1612,19 @@
   });
   $effect(() => {
     if (!_winReady || !_winGrid) return;
+    for (const r of _winRowsAg) {
+      if (r.symbol && r.ltp) _dashFlash.update(`wl:${r.symbol}:ltp`, r.ltp);
+    }
     _winGrid.setGridOption('rowData', _winRowsAg);
+    try { _winGrid.refreshCells({ columns: ['ltp'], force: true }); } catch (_) {}
   });
   $effect(() => {
     if (!_losReady || !_losGrid) return;
+    for (const r of _losRowsAg) {
+      if (r.symbol && r.ltp) _dashFlash.update(`wl:${r.symbol}:ltp`, r.ltp);
+    }
     _losGrid.setGridOption('rowData', _losRowsAg);
+    try { _losGrid.refreshCells({ columns: ['ltp'], force: true }); } catch (_) {}
   });
 
   // Equity card — Positions Summary + Holdings Summary feeds.
