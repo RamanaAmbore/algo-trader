@@ -40,6 +40,12 @@ import time
 
 from litestar import Litestar
 
+# Module-level set for heartbeat warning dedup — tracks accounts whose tokens
+# are currently expired so the WARNING fires only on the first expiry (not
+# every 90s tick). Cleared when the token becomes valid again so the warning
+# fires afresh on the next expiry cycle.
+_heartbeat_warned: set[str] = set()
+
 from backend.brokers.service.routes import (
     BrokerDispatchController,
     HealthController,
@@ -252,6 +258,7 @@ async def _start_kite_ticker(app: Litestar) -> None:
         _loop = _asyncio.get_event_loop()
     _loop.create_task(_ticker_watchdog())
     _loop.create_task(_health_heartbeat())
+    _loop.create_task(_task_prewarm_tokens())
 
 
 async def _health_heartbeat() -> None:
@@ -259,17 +266,52 @@ async def _health_heartbeat() -> None:
 
     Prevents the navbar chip from going amber ("stale") when the API
     process is idle (is_engine_idle=True) and not making data fetches.
-    The connection object being present in Connections().conn is
-    sufficient evidence that the session token is established.
+
+    Token validity gate: accounts whose connection object reports an
+    expired token (via `_is_token_expired()`) are SKIPPED — last_ok_at
+    is NOT stamped for them. This lets the timestamp age past
+    _BROKER_HEALTH_FRESH_WINDOW_S naturally so the chip goes amber/red,
+    giving the operator an accurate signal instead of perpetual
+    false-green.
+
+    DhanConnection._is_token_expired takes a `now` positional arg
+    (unlike the no-arg GrowwConnection version). Handled by catching
+    TypeError and retrying with the current timestamp.
     """
     import asyncio as _asyncio
     from backend.brokers.connections import Connections
     from backend.brokers.broker_apis import record_session_ok
+    from backend.shared.helpers.date_time_utils import timestamp_indian
 
     await _asyncio.sleep(30)  # let startup settle first
     while True:
         try:
-            for account in list(Connections().conn.keys()):
+            for account, conn_obj in list(Connections().conn.items()):
+                if hasattr(conn_obj, '_is_token_expired'):
+                    try:
+                        expired = conn_obj._is_token_expired()
+                    except TypeError:
+                        # DhanConnection._is_token_expired(now) requires a
+                        # positional arg; GrowwConnection and future no-arg
+                        # variants don't. Pass the current timestamp.
+                        expired = conn_obj._is_token_expired(timestamp_indian())
+                    if expired:
+                        if account not in _heartbeat_warned:
+                            _heartbeat_warned.add(account)
+                            logger.warning(
+                                "[HEARTBEAT] %s token expired — skipping green stamp; "
+                                "chip will go amber in %ss",
+                                account, 660,
+                            )
+                        continue
+                    # Token now valid — clear the warning dedup so the WARNING
+                    # fires again on the next expiry cycle.
+                    if account in _heartbeat_warned:
+                        _heartbeat_warned.discard(account)
+                        logger.info(
+                            "[HEARTBEAT] %s: token valid again — resuming green stamps",
+                            account,
+                        )
                 record_session_ok(account)
         except Exception:
             pass
@@ -555,6 +597,121 @@ def _write_ticker_swap_audit(prev_account: str, next_account: str, ok: bool) -> 
     except Exception:
         # Audit write must never break the watchdog — never even warn.
         pass
+
+
+async def _task_prewarm_tokens() -> None:
+    """Hourly token pre-warm — prevents cold TOTP auth in the hot path at market open.
+
+    Kite: pre-warm only in the 05:45–05:59 IST window (tokens expire at 06:00 IST).
+    Dhan: pre-warm if token age > 22 h (expiry is at 23 h from mint; co-expiry risk
+          when two accounts are minted at the same time).
+    Groww: pre-warm if _is_token_expired() returns True (no fixed clock time).
+
+    Errors are caught per-account so one failure cannot abort the loop for other accounts.
+    """
+    import asyncio as _asyncio
+    import time as _time
+    from datetime import datetime, timezone, timedelta
+    from backend.brokers.connections import (
+        Connections, KiteConnection, DhanConnection, GrowwConnection,
+    )
+
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    await _asyncio.sleep(60)  # let startup settle
+
+    while True:
+        now_ist = datetime.now(_IST)
+        for account, conn in list(Connections().conn.items()):
+            try:
+                if isinstance(conn, KiteConnection):
+                    # Pre-warm only in the 05:45–05:59 IST window — tokens
+                    # expire at 06:00 IST sharp; minting before that prevents
+                    # the first market-open call from hitting a cold TOTP flow.
+                    if now_ist.hour == 5 and now_ist.minute >= 45:
+                        logger.info(
+                            "[PREWARM] %s (kite): token age check — refreshing "
+                            "before 06:00 cutoff", account,
+                        )
+                        try:
+                            conn.get_kite_conn(test_conn=True)
+                            logger.info(
+                                "[PREWARM] %s: token renewed OK "
+                                "(new expiry at 06:00 IST tomorrow)", account,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                "[PREWARM] %s: mint failed — %s; "
+                                "chip will go amber in 660s", account, e,
+                            )
+                    else:
+                        logger.debug(
+                            "[PREWARM] %s (kite): token fresh, skipping "
+                            "(not in 05:45 window)", account,
+                        )
+
+                elif isinstance(conn, DhanConnection):
+                    created = conn._conn_created_at
+                    if created is not None:
+                        # _conn_created_at is a datetime for Dhan (timezone-aware)
+                        from datetime import datetime as _dt, timezone as _tz
+                        if hasattr(created, 'timestamp'):
+                            age_s = _time.time() - created.timestamp()
+                        else:
+                            age_s = float('inf')
+                    else:
+                        age_s = float('inf')
+                    if age_s == float('inf') or age_s > 22 * 3600:
+                        age_h = int(age_s // 3600) if age_s != float('inf') else -1
+                        logger.info(
+                            "[PREWARM] %s (dhan): token age %dh — refreshing",
+                            account, age_h,
+                        )
+                        try:
+                            conn.get_dhan_conn(test_conn=True)
+                            logger.info(
+                                "[PREWARM] %s: token renewed OK "
+                                "(new expiry in ~23h)", account,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                "[PREWARM] %s: mint failed — %s; "
+                                "chip will go amber", account, e,
+                            )
+                    else:
+                        logger.debug(
+                            "[PREWARM] %s (dhan): token fresh (age %dh), skipping",
+                            account, int(age_s // 3600),
+                        )
+
+                elif isinstance(conn, GrowwConnection):
+                    if conn._is_token_expired():
+                        logger.info(
+                            "[PREWARM] %s (groww): token expired — refreshing",
+                            account,
+                        )
+                        try:
+                            conn.refresh()
+                            logger.info(
+                                "[PREWARM] %s: token renewed OK "
+                                "(new expiry in ~23h)", account,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                "[PREWARM] %s: mint failed — %s; "
+                                "chip will go amber", account, e,
+                            )
+                    else:
+                        logger.debug(
+                            "[PREWARM] %s (groww): token fresh, skipping", account,
+                        )
+
+            except Exception as e:
+                logger.warning(
+                    "[PREWARM] %s: unexpected error during pre-warm check: %s",
+                    account, e,
+                )
+
+        await _asyncio.sleep(3600)  # check hourly
 
 
 async def _init_connections_on_startup(app: Litestar) -> None:

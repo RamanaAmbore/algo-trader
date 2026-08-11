@@ -403,6 +403,13 @@ async def _task_market(state: dict) -> None:
 
 async def _task_token_refresh() -> None:
     """Pre-warm Kite tokens at 05:45 IST before 06:00 AM expiry."""
+    import os as _os
+    if _os.environ.get("RAMBOQ_USE_CONN_SERVICE"):
+        logger.warning(
+            "_task_token_refresh: no-op under conn_service — "
+            "token pre-warm is handled by service/app.py _task_prewarm_tokens"
+        )
+        return
     _TARGET = "05:45"
     last_fired: str | None = None
     while True:

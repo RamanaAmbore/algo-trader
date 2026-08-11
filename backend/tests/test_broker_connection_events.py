@@ -185,11 +185,12 @@ class TestHlthResolveState:
             f"Expected reason to mention health/good status, got '{reason}'"
 
     def test_amber_state_when_last_ok_is_stale(self):
-        """When last_ok > last_fail but older than fresh window, state should be 'amber'."""
+        """When last_ok > last_fail but older than fresh window, state should be 'amber'.
+        _BROKER_HEALTH_FRESH_WINDOW_S = 660s; use 700s to be safely beyond the threshold."""
         now = time.time()
         entry = {
-            "last_ok_at": now - 600,      # 10 min ago (beyond 5-min fresh window)
-            "last_fail_at": now - 900,    # 15 min ago (older)
+            "last_ok_at": now - 700,      # 11m 40s ago — beyond 660s fresh window
+            "last_fail_at": now - 900,    # 15 min ago (older than last_ok)
             "last_fail_msg": "",
         }
 

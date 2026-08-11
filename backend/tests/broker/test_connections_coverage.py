@@ -532,6 +532,9 @@ class TestGrowwConnGetConn:
         obj._groww        = None
         obj._import_error = None
         obj._login_lock   = threading.Lock()
+        # New fields added by the token-expiry + rate-limit hardening:
+        obj._conn_created_at    = 0.0   # 0.0 → _is_token_expired() returns False (not-yet-built)
+        obj._login_blocked_until = 0.0  # 0.0 → not in cooloff
         return obj
 
     def test_raises_when_groww_is_none(self):

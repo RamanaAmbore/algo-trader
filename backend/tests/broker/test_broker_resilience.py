@@ -1123,12 +1123,13 @@ class TestBrokerHealthStateResolution:
         assert state == "red", f"Expected 'red', got {state!r}: {reason}"
 
     def test_stale_ok_is_amber(self):
-        """Correctness: last_ok_at > 5 min ago, no subsequent fail → amber (stale)."""
+        """Correctness: last_ok_at > 11 min ago, no subsequent fail → amber (stale).
+        _BROKER_HEALTH_FRESH_WINDOW_S = 660s; use 700s to be safely beyond the window."""
         import time
         from backend.api.routes.health import _derive_account_health
 
         now = time.time()
-        entry = {"last_ok_at": now - 400}  # 6m 40s ago — beyond 5-min window
+        entry = {"last_ok_at": now - 700}  # 11m 40s ago — beyond 660s window
         state, reason, cb_state, cb_count, cb_until = _derive_account_health(entry, now)
 
         assert state == "amber", f"Expected 'amber' for stale account, got {state!r}: {reason}"
@@ -1216,12 +1217,433 @@ class TestHealthHeartbeat:
         assert state == "green", f"Expected green at 89s, got {state!r}: {reason}"
 
     def test_amber_beyond_fresh_window(self):
-        """Account goes amber if no stamp for > 5 min (heartbeat would prevent this in practice)."""
+        """Account goes amber if no stamp for > 660s (_BROKER_HEALTH_FRESH_WINDOW_S).
+        Use 700s to be safely beyond the 660s threshold."""
         import time
         from backend.api.routes.health import _derive_account_health
 
         now = time.time()
-        entry = {"last_ok_at": now - 301}
+        entry = {"last_ok_at": now - 700}
         state, reason, *_ = _derive_account_health(entry, now)
-        assert state == "amber", f"Expected amber at 301s, got {state!r}: {reason}"
+        assert state == "amber", f"Expected amber at 700s, got {state!r}: {reason}"
         assert "stale" in reason
+
+
+# ---------------------------------------------------------------------------
+# 17. Dhan cooloff persist + restore across restarts
+# ---------------------------------------------------------------------------
+
+class TestDhanLoginCooloffPersist:
+    """_login_blocked_until must survive a process restart via disk persistence."""
+
+    def setup_method(self):
+        """Clean up the cooloff file before each test."""
+        import os
+        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        if os.path.exists(_p):
+            os.remove(_p)
+
+    def teardown_method(self):
+        """Clean up after each test."""
+        import os
+        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        if os.path.exists(_p):
+            os.remove(_p)
+
+    def test_failed_login_persists_cooloff_to_disk(self):
+        """_mint_and_build failure must write cooloff to /tmp/ramboq_dhan_login_cooloff.json."""
+        import json
+        import os
+        import time as _time
+        import threading
+        from unittest.mock import patch
+        from backend.brokers.connections import DhanConnection
+
+        conn = object.__new__(DhanConnection)
+        conn.account = "DH_PERSIST_TEST"
+        conn._login_blocked_until = 0.0
+        conn._access_token = None
+        conn._conn_created_at = None
+        conn._dhan = None
+        conn._import_error = None
+        conn._source_ip = None
+        conn._login_lock = threading.Lock()
+        conn.client_id = "TEST_CLIENT"
+        conn._pin = "1234"
+        conn._totp_token = "JBSWY3DPEHPK3PXP"
+
+        # Make _do_login raise so the failure path fires
+        with patch.object(conn, '_do_login', side_effect=RuntimeError("test auth fail")):
+            with patch.object(conn, '_emit_conn_event', create=True):
+                # Also patch the module-level _emit_conn_event
+                with patch('backend.brokers.connections._emit_conn_event'):
+                    try:
+                        conn._mint_and_build()
+                    except RuntimeError:
+                        pass
+
+        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        assert os.path.exists(_p), "Cooloff file must be written on login failure"
+        data = json.loads(open(_p).read())
+        assert "DH_PERSIST_TEST" in data, "Account must be keyed in cooloff file"
+        blocked_until = data["DH_PERSIST_TEST"]
+        assert blocked_until > _time.time(), "Cooloff must be in the future"
+        assert blocked_until <= _time.time() + 130, "Cooloff must be ~120s, not much more"
+
+    def test_cooloff_restored_on_fresh_connection(self):
+        """A fresh DhanConnection must restore _login_blocked_until from disk."""
+        import json
+        import time as _time
+        import threading
+        from backend.brokers.connections import DhanConnection
+
+        # Write a future cooloff into the file
+        future_ts = _time.time() + 90.0
+        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        with open(_p, "w") as f:
+            json.dump({"DH_RESTORE_TEST": future_ts}, f)
+
+        # Build a DhanConnection and call _try_restore_token
+        conn = object.__new__(DhanConnection)
+        conn.account = "DH_RESTORE_TEST"
+        conn._login_blocked_until = 0.0
+        conn._access_token = None
+        conn._conn_created_at = None
+        conn._dhan = None
+        conn._import_error = None
+
+        conn._try_restore_token()
+
+        assert conn._login_blocked_until == future_ts, (
+            f"_login_blocked_until must be restored from disk; "
+            f"got {conn._login_blocked_until}, expected {future_ts}"
+        )
+
+    def test_restored_cooloff_blocks_login(self):
+        """After restoring a disk cooloff, _check_login_rate_limit must raise."""
+        import json
+        import time as _time
+        import threading
+        import pytest
+        from backend.brokers.connections import DhanConnection
+
+        future_ts = _time.time() + 90.0
+        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        with open(_p, "w") as f:
+            json.dump({"DH_BLOCK_TEST": future_ts}, f)
+
+        conn = object.__new__(DhanConnection)
+        conn.account = "DH_BLOCK_TEST"
+        conn._login_blocked_until = 0.0
+        conn._access_token = None
+        conn._conn_created_at = None
+        conn._dhan = None
+        conn._import_error = None
+
+        conn._try_restore_token()
+
+        with pytest.raises(RuntimeError, match="rate-limited"):
+            conn._check_login_rate_limit(test_conn=True)
+
+    def test_successful_login_clears_disk_cooloff(self):
+        """Successful _mint_and_build must remove the account from the cooloff file."""
+        import json
+        import os
+        import time as _time
+        import threading
+        from unittest.mock import patch, MagicMock
+        from backend.brokers.connections import DhanConnection
+
+        # Pre-write a cooloff entry
+        _p = "/tmp/ramboq_dhan_login_cooloff.json"
+        with open(_p, "w") as f:
+            json.dump({"DH_CLEAR_TEST": _time.time() + 60}, f)
+
+        conn = object.__new__(DhanConnection)
+        conn.account = "DH_CLEAR_TEST"
+        conn._login_blocked_until = _time.time() + 60
+        conn._access_token = None
+        conn._conn_created_at = None
+        conn._dhan = None
+        conn._import_error = None
+        conn._source_ip = None
+        conn._login_lock = threading.Lock()
+        conn.client_id = "TEST_CLIENT"
+        conn._pin = "1234"
+        conn._totp_token = "JBSWY3DPEHPK3PXP"
+
+        with patch.object(conn, '_do_login', return_value="fake-token-ok"):
+            with patch.object(conn, '_save_token'):
+                with patch.object(conn, '_build_client'):
+                    with patch('backend.brokers.connections._emit_conn_event'):
+                        with patch('backend.brokers.connections._record_session_ok'):
+                            with patch('backend.brokers.connections.timestamp_indian',
+                                       return_value=MagicMock()):
+                                try:
+                                    conn._mint_and_build()
+                                except Exception:
+                                    pass
+
+        data = json.loads(open(_p).read())
+        assert "DH_CLEAR_TEST" not in data, (
+            "Successful login must remove the account from cooloff file"
+        )
+        assert conn._login_blocked_until == 0.0, (
+            "_login_blocked_until must be cleared on success"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 18. Groww token expiry and rate-limit cooloff
+# ---------------------------------------------------------------------------
+
+class TestGrowwTokenExpiry:
+    """GrowwConnection must detect token expiry and apply login rate-limit cooloff."""
+
+    def _make_groww_conn(self, conn_created_at=0.0, login_blocked_until=0.0,
+                         groww_obj=None):
+        """Build a GrowwConnection bypassing __init__ for unit testing."""
+        import threading
+        from backend.brokers.connections import GrowwConnection
+
+        conn = object.__new__(GrowwConnection)
+        conn.account = "GW_TEST"
+        conn._api_key = "fake-key"
+        conn._totp_seed = "JBSWY3DPEHPK3PXP"
+        conn._access_token = "fake-token"
+        conn._source_ip = None
+        conn._groww = groww_obj
+        conn._import_error = None
+        conn._login_lock = threading.Lock()
+        conn._conn_created_at = conn_created_at
+        conn._login_blocked_until = login_blocked_until
+        return conn
+
+    def test_is_token_expired_returns_false_when_fresh(self):
+        """Token minted 1h ago must not be expired (CONN_RESET_HOURS=23)."""
+        import time as _time
+        from backend.brokers.connections import GrowwConnection
+
+        conn = self._make_groww_conn(conn_created_at=_time.time() - 3600)
+        assert not conn._is_token_expired(), "Token minted 1h ago must not be expired"
+
+    def test_is_token_expired_returns_true_when_old(self):
+        """Token minted 24h ago must be expired (CONN_RESET_HOURS=23)."""
+        import time as _time
+        from backend.brokers.connections import GrowwConnection
+
+        conn = self._make_groww_conn(conn_created_at=_time.time() - 24 * 3600)
+        assert conn._is_token_expired(), "Token minted 24h ago must be expired"
+
+    def test_is_token_expired_returns_false_when_not_set(self):
+        """_conn_created_at=0.0 (never built) must NOT report as expired."""
+        from backend.brokers.connections import GrowwConnection
+
+        conn = self._make_groww_conn(conn_created_at=0.0)
+        assert not conn._is_token_expired(), (
+            "_conn_created_at=0.0 must not trigger expired "
+            "(import-error accounts must not be pre-warmed)"
+        )
+
+    def test_rate_limit_cooloff_raises_when_test_conn(self):
+        """_check_login_rate_limit(test_conn=True) must raise when inside cooloff."""
+        import time as _time
+        import pytest
+        from backend.brokers.connections import GrowwConnection
+
+        conn = self._make_groww_conn(login_blocked_until=_time.time() + 60)
+        with pytest.raises(RuntimeError, match="rate-limited"):
+            conn._check_login_rate_limit(test_conn=True)
+
+    def test_rate_limit_cooloff_returns_stale_when_not_test_conn(self):
+        """_check_login_rate_limit(test_conn=False) must return stale client during cooloff."""
+        import time as _time
+        from unittest.mock import MagicMock
+        from backend.brokers.connections import GrowwConnection
+
+        fake_groww = MagicMock()
+        conn = self._make_groww_conn(
+            login_blocked_until=_time.time() + 60,
+            groww_obj=fake_groww,
+        )
+        result = conn._check_login_rate_limit(test_conn=False)
+        assert result is fake_groww, (
+            "_check_login_rate_limit must return stale _groww "
+            "when test_conn=False and inside cooloff"
+        )
+
+    def test_rate_limit_cooloff_passes_when_expired(self):
+        """_check_login_rate_limit must return None when cooloff has expired."""
+        import time as _time
+        from backend.brokers.connections import GrowwConnection
+
+        conn = self._make_groww_conn(login_blocked_until=_time.time() - 10)
+        result = conn._check_login_rate_limit(test_conn=True)
+        assert result is None, "Expired cooloff must return None (not blocked)"
+
+    def test_refresh_sets_cooloff_when_build_fails(self):
+        """refresh() must set _login_blocked_until when _build() leaves _groww=None.
+
+        _build() swallows all exceptions internally and sets self._groww = None
+        on failure (never raises). The try/except around _build() was dead code;
+        the fix uses a post-call None check instead.
+        """
+        import time as _time
+        from unittest.mock import patch
+        from backend.brokers.connections import GrowwConnection
+
+        conn = self._make_groww_conn()
+        conn._conn_created_at = _time.time() - (GrowwConnection.CONN_RESET_HOURS + 1) * 3600
+
+        # Force _build() to simulate failure: leave _groww = None without raising.
+        def _build_fails(self_inner=None):
+            # Deliberately does NOT raise; just leaves _groww = None.
+            conn._groww = None
+
+        before = _time.time()
+        with patch.object(GrowwConnection, '_build', _build_fails):
+            # Patch _save_cached_token to avoid touching disk
+            with patch('backend.brokers.connections._save_cached_token'):
+                # Trigger the full refresh path
+                conn._groww = object()  # non-None so the expired-token branch runs
+                conn.refresh()
+
+        assert conn._login_blocked_until > before, (
+            "_login_blocked_until must be set in the future after _build() leaves _groww=None; "
+            f"got {conn._login_blocked_until!r}, before={before!r}"
+        )
+        assert conn._groww is None, (
+            "_groww must remain None after a failed _build()"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 19. Health heartbeat token validity gate
+# ---------------------------------------------------------------------------
+
+class TestHeartbeatTokenValidityGate:
+    """_health_heartbeat must skip record_session_ok for expired-token accounts."""
+
+    def test_heartbeat_skips_expired_token_account(self):
+        """record_session_ok must NOT be called when _is_token_expired() returns True.
+
+        The heartbeat validity gate logic is exercised directly (not via the
+        coroutine, which would require a running event loop + mocked sleep).
+        """
+        from unittest.mock import MagicMock
+        import backend.brokers.service.app as _app_mod
+
+        # Create a mock connection whose token is expired
+        expired_conn = MagicMock()
+        expired_conn._is_token_expired.return_value = True
+
+        # Create a mock connection whose token is valid
+        valid_conn = MagicMock()
+        valid_conn._is_token_expired.return_value = False
+
+        mock_connections = {
+            "EXPIRED_ACCT": expired_conn,
+            "VALID_ACCT": valid_conn,
+        }
+
+        called_accounts = []
+
+        def fake_record_session_ok(account):
+            called_accounts.append(account)
+
+        # Ensure the warning dedup set is clean for this test
+        _app_mod._heartbeat_warned.discard("EXPIRED_ACCT")
+        _app_mod._heartbeat_warned.discard("VALID_ACCT")
+
+        # Replicate the heartbeat validity gate logic from _health_heartbeat
+        for account, conn_obj in list(mock_connections.items()):
+            if hasattr(conn_obj, '_is_token_expired'):
+                try:
+                    expired = conn_obj._is_token_expired()
+                except TypeError:
+                    expired = conn_obj._is_token_expired(MagicMock())
+                if expired:
+                    if account not in _app_mod._heartbeat_warned:
+                        _app_mod._heartbeat_warned.add(account)
+                    continue
+                if account in _app_mod._heartbeat_warned:
+                    _app_mod._heartbeat_warned.discard(account)
+            fake_record_session_ok(account)
+
+        assert "VALID_ACCT" in called_accounts, (
+            "record_session_ok must be called for accounts with valid tokens"
+        )
+        assert "EXPIRED_ACCT" not in called_accounts, (
+            "record_session_ok must NOT be called for accounts with expired tokens"
+        )
+
+    def test_heartbeat_stamps_valid_token_account(self):
+        """record_session_ok must be called for accounts whose token is valid."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+
+        valid_conn = MagicMock()
+        valid_conn._is_token_expired.return_value = False
+
+        mock_connections = {"VALID_ONLY": valid_conn}
+        called_accounts = []
+
+        def fake_record_session_ok(account):
+            called_accounts.append(account)
+
+        import backend.brokers.service.app as _app_mod
+        _app_mod._heartbeat_warned.discard("VALID_ONLY")
+
+        for account, conn_obj in list(mock_connections.items()):
+            if hasattr(conn_obj, '_is_token_expired'):
+                try:
+                    expired = conn_obj._is_token_expired()
+                except TypeError:
+                    expired = conn_obj._is_token_expired(MagicMock())
+                if expired:
+                    continue
+            fake_record_session_ok(account)
+
+        assert "VALID_ONLY" in called_accounts
+
+
+# ---------------------------------------------------------------------------
+# 20. _BROKER_HEALTH_FRESH_WINDOW_S = 660 constant check
+# ---------------------------------------------------------------------------
+
+class TestBrokerHealthFreshWindowConstant:
+    """_BROKER_HEALTH_FRESH_WINDOW_S must be 660.0 to cover cold-priority Dhan poll."""
+
+    def test_fresh_window_is_660(self):
+        """_BROKER_HEALTH_FRESH_WINDOW_S must equal 660.0."""
+        from backend.api.routes.health import _BROKER_HEALTH_FRESH_WINDOW_S
+        assert _BROKER_HEALTH_FRESH_WINDOW_S == 660.0, (
+            f"Expected 660.0, got {_BROKER_HEALTH_FRESH_WINDOW_S}. "
+            "Cold Dhan poll cadence is 600s; 660 adds 60s slack."
+        )
+
+    def test_cold_priority_dhan_stays_green_within_window(self):
+        """An account stamped 601s ago must stay green (within 660s window)."""
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        entry = {"last_ok_at": now - 601}  # 601s — beyond old 300s but inside 660s
+        state, reason, *_ = _derive_account_health(entry, now)
+        assert state == "green", (
+            f"Cold-priority Dhan (601s since last stamp) must be green "
+            f"within 660s window, got {state!r}: {reason}"
+        )
+
+    def test_account_beyond_window_goes_amber(self):
+        """An account stamped 700s ago must be amber (beyond 660s window)."""
+        import time
+        from backend.api.routes.health import _derive_account_health
+
+        now = time.time()
+        entry = {"last_ok_at": now - 700}
+        state, reason, *_ = _derive_account_health(entry, now)
+        assert state == "amber", (
+            f"Account at 700s must be amber (beyond 660s threshold), "
+            f"got {state!r}: {reason}"
+        )

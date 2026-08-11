@@ -728,7 +728,7 @@ class PersistenceAdminController(Controller):
 # Broker auth-health endpoint
 # ---------------------------------------------------------------------------
 
-_BROKER_HEALTH_FRESH_WINDOW_S: float = 300.0   # 5 min — "green" threshold
+_BROKER_HEALTH_FRESH_WINDOW_S: float = 660.0   # 11 min — covers Dhan 600s cold-priority poll + 60s slack
 
 
 class BrokerAccountHealth(msgspec.Struct):

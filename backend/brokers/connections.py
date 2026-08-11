@@ -762,6 +762,35 @@ class DhanConnection:
             self._build_client(token)
             logger.info(f"Restored cached Dhan token for {self.account} "
                         f"(age: {(datetime.now(timezone.utc) - created).seconds // 3600}h)")
+        # Restore persisted login cooloff (survives process restarts so a
+        # restarted service doesn't immediately re-hammer Dhan's rate-limited
+        # generate_token endpoint).
+        _DHAN_LOGIN_COOLOFF_PATH = "/tmp/ramboq_dhan_login_cooloff.json"
+        try:
+            import json as _json_mod, os as _os_mod
+            if _os_mod.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
+                with open(_DHAN_LOGIN_COOLOFF_PATH) as _cf:
+                    _cd = _json_mod.load(_cf)
+                _blocked = float(_cd.get(self.account, 0.0))
+                if _blocked > _time_mod.time():
+                    self._login_blocked_until = _blocked
+                    _wait_s = int(_blocked - _time_mod.time())
+                    _until_str = datetime.fromtimestamp(_blocked).strftime('%H:%M:%S')
+                    logger.warning(
+                        "[DHAN-COOLOFF] %r: login rate-limit cooloff restored from "
+                        "disk — %ds remaining; auth blocked until %s",
+                        self.account, _wait_s, _until_str,
+                    )
+                else:
+                    logger.debug(
+                        "[DHAN-COOLOFF] %r: prior cooloff expired, cleared",
+                        self.account,
+                    )
+        except Exception as _e:
+            logger.warning(
+                "[DHAN-COOLOFF] %r: failed to read login cooloff file: %s",
+                self.account, _e,
+            )
 
     def _save_token(self, token: str) -> None:
         _save_cached_token(self._cache_key(), token)
@@ -1091,10 +1120,35 @@ class DhanConnection:
             # across multiple restarts; using exactly 120 s matches Dhan's
             # actual limit and avoids unnecessary extra delay.
             self._login_blocked_until = _time_mod.time() + 120.0
+            _next_retry = datetime.fromtimestamp(
+                self._login_blocked_until
+            ).strftime('%H:%M:%S')
             logger.error(
-                f"Dhan _do_login failed for {self.account!r}: {e!s:.200} — "
-                f"blocking re-login attempts for 120 s"
+                "[DHAN-LOGIN] %r: login failed — cooloff active for 120s "
+                "(persisted to disk). Next retry at %s. Cause: %s",
+                self.account, _next_retry, str(e)[:200],
             )
+            # Persist the cooloff to disk so a process restart during the
+            # cool-off window doesn't reset the counter, which would allow
+            # immediate re-hammering of Dhan's rate-limited endpoint.
+            _DHAN_LOGIN_COOLOFF_PATH = "/tmp/ramboq_dhan_login_cooloff.json"
+            try:
+                import json as _json_mod, os as _os_mod
+                _cooloff_data: dict = {}
+                if _os_mod.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
+                    try:
+                        with open(_DHAN_LOGIN_COOLOFF_PATH) as _cf:
+                            _cooloff_data = _json_mod.load(_cf)
+                    except Exception:
+                        _cooloff_data = {}
+                _cooloff_data[self.account] = self._login_blocked_until
+                with open(_DHAN_LOGIN_COOLOFF_PATH, "w") as _cf:
+                    _json_mod.dump(_cooloff_data, _cf)
+            except Exception as _persist_err:
+                logger.warning(
+                    "[DHAN-COOLOFF] %r: failed to persist login cooloff: %s",
+                    self.account, _persist_err,
+                )
             _emit_conn_event(
                 self.account, "dhan", "auth_fail",
                 {"error": str(e)[:200], "stage": "_do_login"},
@@ -1102,6 +1156,23 @@ class DhanConnection:
             raise
         # Success — clear any prior cool-off.
         self._login_blocked_until = 0.0
+        logger.info(
+            "[DHAN-LOGIN] %r: login succeeded — cooloff cleared, token valid ~24h",
+            self.account,
+        )
+        # Clear persisted cooloff so the next process restart doesn't
+        # restore a now-stale block.
+        _DHAN_LOGIN_COOLOFF_PATH = "/tmp/ramboq_dhan_login_cooloff.json"
+        try:
+            import json as _json_mod, os as _os_mod
+            if _os_mod.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
+                with open(_DHAN_LOGIN_COOLOFF_PATH) as _cf:
+                    _cd = _json_mod.load(_cf)
+                _cd.pop(self.account, None)
+                with open(_DHAN_LOGIN_COOLOFF_PATH, "w") as _cf:
+                    _json_mod.dump(_cd, _cf)
+        except Exception:
+            pass
         self._access_token = access_token
         self._conn_created_at = timestamp_indian()
         self._save_token(access_token)
@@ -1141,8 +1212,9 @@ class DhanConnection:
         self._try_restore_token()
         if not (self._is_token_expired(now) or test_conn) and self._dhan is not None:
             return self._dhan
-        if not self._access_token:
-            self._try_restore_token()
+        # Redundant second call removed: _try_restore_token() was called
+        # unconditionally above; a second call here is a no-op (reads the
+        # same file that just returned nothing). Removed per plan item 6.
         if self._access_token and self._dhan is not None and not test_conn:
             return self._dhan
         if self._check_recency_guard(now, test_conn):
@@ -1243,6 +1315,11 @@ class GrowwConnection:
     enforces, but this proactively closes the gap.
     """
 
+    # Groww tokens are valid for ~23 h from mint. Pre-warm fires when
+    # the token age exceeds this threshold so the next market session
+    # never opens on an expired token.
+    CONN_RESET_HOURS: int = 23
+
     def __init__(
         self,
         account: str,
@@ -1269,6 +1346,14 @@ class GrowwConnection:
         # (waste + rate-limit exposure). The cross-process file lock
         # keeps the prod + dev services from racing each other too.
         self._login_lock   = threading.Lock()
+        # Track when the current token was minted — used by
+        # _is_token_expired() to trigger a refresh before the 23 h
+        # validity window closes.
+        self._conn_created_at: float = 0.0
+        # Login rate-limit cooloff — mirrors DhanConnection. After a
+        # failed _build(), rapid retries are blocked for 120 s to avoid
+        # hammering Groww's mint endpoint.
+        self._login_blocked_until: float = 0.0
         # IPv6 source binding install — patches the `requests` module
         # inside `growwapi.groww.client`'s namespace so module-level
         # `requests.get/post/put` calls go through a source-bound
@@ -1423,8 +1508,49 @@ class GrowwConnection:
             return
         self._access_token = token
         self._groww = GrowwAPI(token)
+        self._conn_created_at = _time_mod.time()
+        self._login_blocked_until = 0.0
         _emit_conn_event(self.account, "groww", "token_ok")
         _record_session_ok(self.account)
+        logger.info(
+            "[GROWW-LOGIN] %r: auth succeeded — token valid ~%dh",
+            self.account, self.CONN_RESET_HOURS,
+        )
+
+    def _is_token_expired(self) -> bool:
+        """True when the Groww token is older than CONN_RESET_HOURS or
+        was never minted in this process (e.g. import-error on startup)."""
+        return (
+            self._conn_created_at > 0
+            and _time_mod.time() > self._conn_created_at + self.CONN_RESET_HOURS * 3600
+        )
+
+    def _check_login_rate_limit(self, *, test_conn: bool = False):
+        """Enforce a 120 s rate-limit cool-off after a failed _build().
+
+        Mirrors DhanConnection._check_login_rate_limit:
+          - If inside the cool-off window AND test_conn=True: raise so the
+            broker layer surfaces the failure immediately.
+          - If inside the cool-off window AND test_conn=False: return the
+            stale client handle (may be None) so the caller can degrade
+            gracefully instead of blocking.
+          - Not in cool-off: return None (caller proceeds to mint).
+        """
+        now = _time_mod.time()
+        if now >= self._login_blocked_until:
+            return None  # not blocked — proceed to mint
+        wait_s = int(self._login_blocked_until - now)
+        mode = "raising" if test_conn else "returning stale client"
+        logger.warning(
+            "[GROWW-LOGIN] %r: rate-limit active, %ds remaining — %s",
+            self.account, wait_s, mode,
+        )
+        if test_conn:
+            raise RuntimeError(
+                f"Groww login rate-limited for {self.account!r} — "
+                f"wait {wait_s}s before retrying"
+            )
+        return self._groww  # may be None
 
     def refresh(self) -> None:
         """Force-evict the cached token + re-mint. Call when an SDK
@@ -1436,6 +1562,12 @@ class GrowwConnection:
         already re-minted while we were waiting for the lock will have
         written a fresh token to the file cache — the inner check uses
         that token instead of running another HTTP mint."""
+        # Rate-limit gate — must be checked before acquiring the lock to
+        # avoid blocking other threads while we wait out the cool-off.
+        blocked = self._check_login_rate_limit(test_conn=False)
+        if blocked is not None:
+            return  # cooloff active; caller gets stale client via get_groww_conn
+
         cache_key = f"groww:{self.account}"
         with self._login_lock:
             with _cross_process_login_lock(cache_key):
@@ -1448,6 +1580,8 @@ class GrowwConnection:
                     try:
                         from growwapi import GrowwAPI  # type: ignore[import-not-found]
                         self._groww = GrowwAPI(cached)
+                        self._conn_created_at = _time_mod.time()
+                        self._login_blocked_until = 0.0
                         return
                     except Exception:
                         # Fall through to a full re-mint if the SDK rejects.
@@ -1458,9 +1592,28 @@ class GrowwConnection:
                     _save_cached_token(cache_key, "")
                 except Exception:
                     pass
+                # _build() swallows all exceptions internally (sets
+                # self._groww = None on failure, never raises). Check the
+                # result via a None test rather than try/except.
                 self._build()
+                if self._groww is None:
+                    self._login_blocked_until = _time_mod.time() + 120.0
+                    _next_retry = datetime.fromtimestamp(
+                        self._login_blocked_until
+                    ).strftime('%H:%M:%S')
+                    logger.error(
+                        "[GROWW-LOGIN] %r: auth failed — cooloff 120s. "
+                        "Next retry at %s.",
+                        self.account, _next_retry,
+                    )
 
     def get_groww_conn(self):
+        if self._groww is not None and self._is_token_expired():
+            logger.info(
+                "[GROWW-LOGIN] %r: token expired (age >%dh) — triggering refresh",
+                self.account, self.CONN_RESET_HOURS,
+            )
+            self.refresh()
         if self._groww is None:
             raise RuntimeError(
                 f"GrowwConnection for {self.account!r} is not initialised "
