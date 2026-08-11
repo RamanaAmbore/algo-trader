@@ -17,7 +17,7 @@
  * noise). For 30 s polling this is less acute, but a threshold still
  * suppresses re-renders that don't move the operator's number.
  */
-export function createTickFlash({ threshold = 0, durationMs = 350 } = {}) {
+export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 350 } = {}) {
   /** @type {Record<string, number>} */
   const prev = {};
   /** @type {Record<string, any>} */
@@ -36,6 +36,10 @@ export function createTickFlash({ threshold = 0, durationMs = 350 } = {}) {
     // mount would flash every cell from null → value.
     if (last == null) return;
     if (Math.abs(v - last) < threshold) return;
+    if (pctThreshold > 0 && last > 0) {
+      const changePct = Math.abs((v - last) / last * 100);
+      if (changePct < pctThreshold) return;
+    }
     // Tab-hidden guard: state (prev[key]) is always updated above so we
     // track the latest value even when hidden. But we skip the CSS class
     // write + timer — the animation won't run in a hidden tab, and setting
@@ -167,7 +171,7 @@ export function createFreshnessShimmer({ durationMs = 700 } = {}) {
 export function createTickBus({ throttleMs = 250 } = {}) {
   /** @type {Map<string, number>} — last-emit epoch per sym (for throttle) */
   const _lastAt = new Map();
-  /** @type {Set<(e: {sym: string, dir: 'up'|'down'|'flat', at: number}) => void>} */
+  /** @type {Set<(e: {sym: string, dir: 'up'|'down'|'flat', pct: number, at: number}) => void>} */
   const _subs = new Set();
 
   /**
@@ -181,8 +185,9 @@ export function createTickBus({ throttleMs = 250 } = {}) {
    *
    * @param {string} sym
    * @param {'up'|'down'|'flat'} dir
+   * @param {number} [pct] - absolute percentage change (0 if unknown)
    */
-  function emit(sym, dir) {
+  function emit(sym, dir, pct = 0) {
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     if (!sym) return;
     const key = String(sym).toUpperCase();
@@ -190,7 +195,7 @@ export function createTickBus({ throttleMs = 250 } = {}) {
     const last = _lastAt.get(key) ?? 0;
     if (now - last < throttleMs) return;
     _lastAt.set(key, now);
-    const event = { sym: key, dir, at: now };
+    const event = { sym: key, dir, pct, at: now };
     for (const fn of _subs) {
       try { fn(event); } catch { /* subscriber errors must not break the bus */ }
     }
@@ -198,7 +203,7 @@ export function createTickBus({ throttleMs = 250 } = {}) {
 
   /**
    * Subscribe to tick events. Returns an unsub function.
-   * @param {(e: {sym: string, dir: 'up'|'down'|'flat', at: number}) => void} fn
+   * @param {(e: {sym: string, dir: 'up'|'down'|'flat', pct: number, at: number}) => void} fn
    * @returns {() => void}
    */
   function subscribe(fn) {

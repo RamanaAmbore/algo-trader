@@ -13,7 +13,7 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
-  import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols, ltpFlashPct, loadLtpFlashPct } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { bookChanged } from '$lib/data/bookChanged';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
@@ -72,6 +72,14 @@
   // card's Day P&L and P&L cells. Keyed as `account:field`. TOTAL rows
   // (account === 'TOTAL') excluded. Alpha 0.13 via global .tf-up/.tf-down.
   const _dashFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
+
+  // Separate flash instance for W/L grid LTP cells — initialized in onMount
+  // after subscribing to ltpFlashPct. Using a separate instance lets the P&L
+  // flash (_dashFlash) keep its fixed absolute threshold while the LTP flash
+  // applies the operator-configured pct gate.
+  let _wlLtpFlash = $state(/** @type {ReturnType<typeof createTickFlash>|null} */ (null));
+  /** @type {(() => void) | null} */
+  let _wlFlashUnsub = null;
 
   // Flash-augmented cellClass for the equity summary grids.
   // `field` is the column field name used as part of the per-cell key.
@@ -1311,6 +1319,19 @@
     // moved to /pulse (where MarketPulse owns its own movers fetch).
     // Removing the dashboard poll stops the 60s batchQuote round-trip
     // that was driving the now-deleted cards.
+
+    // W/L LTP flash — subscribe to ltpFlashPct so _wlLtpFlash tracks any
+    // in-session changes. loadLtpFlashPct is called asynchronously; the
+    // subscription fires immediately with the default value so the flash
+    // instance is always non-null before the first tick arrives.
+    // Unsub handle is stored at module level so onDestroy can clean it up.
+    _wlFlashUnsub = ltpFlashPct.subscribe(pct => {
+      _wlLtpFlash?.dispose();
+      _wlLtpFlash = createTickFlash({ pctThreshold: pct, durationMs: 300 });
+    });
+    // Fire-and-forget: load the admin setting; the subscribe above will
+    // receive the updated value and recreate _wlLtpFlash automatically.
+    loadLtpFlashPct();
   });
 
   // Persist per-card filter changes — sessionStorage so the intent
@@ -1457,7 +1478,7 @@
             const base = 'ag-right-aligned-cell';
             const sym = p.data?.symbol;
             if (!sym) return base;
-            const fc = _dashFlash.classOf(`wl:${sym}:ltp`);
+            const fc = _wlLtpFlash?.classOf(`wl:${sym}:ltp`) ?? '';
             return fc ? `${base} ${fc}` : base;
           },
           valueFormatter: _agNumFmt },
@@ -1612,19 +1633,37 @@
   });
   $effect(() => {
     if (!_winReady || !_winGrid) return;
-    for (const r of _winRowsAg) {
-      if (r.symbol && r.ltp) _dashFlash.update(`wl:${r.symbol}:ltp`, r.ltp);
-    }
-    _winGrid.setGridOption('rowData', _winRowsAg);
-    try { _winGrid.refreshCells({ columns: ['ltp'], force: true }); } catch (_) {}
+    const rows = _winRowsAg;
+    untrack(() => {
+      for (const r of rows) {
+        if (r.symbol && r.ltp) _wlLtpFlash?.update(`wl:${r.symbol}:ltp`, r.ltp);
+      }
+      _winGrid.setGridOption('rowData', rows);
+      try { _winGrid.refreshCells({ columns: ['ltp'], force: true }); } catch (_) {}
+      if (_winRefreshHandle != null) { clearTimeout(_winRefreshHandle); _winRefreshHandle = null; }
+      _winRefreshHandle = setTimeout(() => {
+        _winRefreshHandle = null;
+        try { _winGrid.refreshCells({ columns: ['ltp'], force: true }); } catch (_) {}
+      }, 400);
+    });
+    return () => { if (_winRefreshHandle != null) { clearTimeout(_winRefreshHandle); _winRefreshHandle = null; } };
   });
   $effect(() => {
     if (!_losReady || !_losGrid) return;
-    for (const r of _losRowsAg) {
-      if (r.symbol && r.ltp) _dashFlash.update(`wl:${r.symbol}:ltp`, r.ltp);
-    }
-    _losGrid.setGridOption('rowData', _losRowsAg);
-    try { _losGrid.refreshCells({ columns: ['ltp'], force: true }); } catch (_) {}
+    const rows = _losRowsAg;
+    untrack(() => {
+      for (const r of rows) {
+        if (r.symbol && r.ltp) _wlLtpFlash?.update(`wl:${r.symbol}:ltp`, r.ltp);
+      }
+      _losGrid.setGridOption('rowData', rows);
+      try { _losGrid.refreshCells({ columns: ['ltp'], force: true }); } catch (_) {}
+      if (_losRefreshHandle != null) { clearTimeout(_losRefreshHandle); _losRefreshHandle = null; }
+      _losRefreshHandle = setTimeout(() => {
+        _losRefreshHandle = null;
+        try { _losGrid.refreshCells({ columns: ['ltp'], force: true }); } catch (_) {}
+      }, 400);
+    });
+    return () => { if (_losRefreshHandle != null) { clearTimeout(_losRefreshHandle); _losRefreshHandle = null; } };
   });
 
   // Equity card — Positions Summary + Holdings Summary feeds.
@@ -1636,6 +1675,10 @@
   // on each re-fire. Without clearing, every 15 s poll queues a new
   // deferred task; after 10 min that's 40 dangling tasks per grid
   // firing in a burst after each data update — visible as lag spikes.
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let _winRefreshHandle = null;
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let _losRefreshHandle = null;
   /** @type {ReturnType<typeof setTimeout>|null} */
   let _eqPosRefreshHandle = null;
   /** @type {ReturnType<typeof setTimeout>|null} */
@@ -1705,6 +1748,8 @@
   onDestroy(() => {
     _heroTeardown?.(); _equityPollStop?.();
     _dashFlash.dispose();
+    _wlFlashUnsub?.();
+    _wlLtpFlash?.dispose();
     _fundsGrid?.destroy();  _marginGrid?.destroy();
     _eqPosGrid?.destroy();  _eqHoldGrid?.destroy();
     _winGrid?.destroy();    _losGrid?.destroy();

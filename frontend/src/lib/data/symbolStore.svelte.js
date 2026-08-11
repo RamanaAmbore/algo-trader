@@ -290,7 +290,8 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
   const _newLtp = next.ltp;
   if (_prevLtp != null && _newLtp != null && _newLtp !== _prevLtp) {
     const dir = _newLtp > _prevLtp ? 'up' : _newLtp < _prevLtp ? 'down' : 'flat';
-    tickBus.emit(key, dir);
+    const _pct = _prevLtp > 0 ? Math.abs((_newLtp - _prevLtp) / _prevLtp * 100) : 0;
+    tickBus.emit(key, dir, _pct);
   }
 
   return true;

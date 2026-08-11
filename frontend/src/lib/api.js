@@ -509,6 +509,7 @@ export const fetchPerfRegressions = (days = 7, threshold_pct = 10) =>
 
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });
+export const fetchSetting      = (key) => _get(`/admin/settings/${encodeURIComponent(key)}`, { auth: true });
 export const updateSetting     = (key, value) =>
   _patch(`/admin/settings/${encodeURIComponent(key)}`,
          { value: String(value) },

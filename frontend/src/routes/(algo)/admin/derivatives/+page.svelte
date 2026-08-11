@@ -6,9 +6,10 @@
   // EV. Strategy analytics auto-refreshes whenever the leg set changes.
 
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { get } from 'svelte/store';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt } from '$lib/stores';
+  import { authStore, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, brokerHealthStore, lastRefreshAt, ltpFlashPct, loadLtpFlashPct } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -1028,7 +1029,11 @@
   // 350 ms decay so the operator sees the pulse without it competing
   // with the next poll cycle. Keyed as `<root>:<field>` so each cell
   // has its own timer (Spot moves but Day % may not on the same tick).
-  const flash = createTickFlash({ threshold: 0, durationMs: 300 });
+  // pctThreshold seeded from the admin setting at page-mount time.
+  // loadLtpFlashPct() is called in onMount (fire-and-forget) so the
+  // store is primed for the next mount; get() reads the current value
+  // which is either the default (0.1) or a previously-loaded value.
+  const flash = createTickFlash({ threshold: 0, pctThreshold: get(ltpFlashPct), durationMs: 300 });
 
   // Drive the flash off the polled data. Two effects — one for the
   // F&O rollup (Day / P&L / Day Net / P&L Net) and one for the live
@@ -1760,6 +1765,11 @@
   /** @type {(() => void) | null} */
   let _derivTickUnsub = null;
   onMount(() => {
+    // Prime the ltpFlashPct store from admin settings — fire-and-forget.
+    // Any value loaded here applies on the next page mount (flash instance
+    // is created at script-init time using get(ltpFlashPct) above).
+    loadLtpFlashPct();
+
     _tickThrottleUnsub = symbolTickCount.subscribe(() => {
       if (_tickThrottleTimer) return;
       _tickThrottleTimer = setTimeout(() => {

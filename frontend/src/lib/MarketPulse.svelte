@@ -24,7 +24,7 @@
     fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
     fetchWatchlistQuotes,
   } from '$lib/api';
-  import { visibleInterval, marketAwareInterval, withGuard, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { visibleInterval, marketAwareInterval, withGuard, connStatus, authStore, selectedStrategyId, strategyOpenSymbols, ltpFlashPct, loadLtpFlashPct } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
@@ -1534,12 +1534,19 @@
     // instances on the same page share one connection.
     startQuoteStream();
 
+    // Subscribe to the ltpFlashPct store so the threshold stays in sync
+    // if the admin changes the setting (e.g. /admin/settings) in this session.
+    _pctUnsub = ltpFlashPct.subscribe(v => { _pctThreshold = v; });
+
     // Tick-bus subscription — drives _ltpFlashUp/Down from real SSE ticks
     // (sub-250ms per sym) instead of the poll-diffed $effect. Direction
     // comes from tickBus (computed in symbolStore._mergeSymbolWrite where
     // prev and next LTP are both available). Per-sym clearance timers
     // prevent one sym's 300ms window from wiping another sym's flash.
-    _tickBusUnsub = tickBus.subscribe(({ sym, dir }) => {
+    _tickBusUnsub = tickBus.subscribe(({ sym, dir, pct }) => {
+      // Skip flashes below the operator-configured percentage threshold.
+      // pctThreshold === 0 means "no gate" (same as before this feature).
+      if (_pctThreshold > 0 && pct < _pctThreshold) return;
       if (dir === 'up') {
         _ltpFlashUp = new Set([..._ltpFlashUp, sym]);
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
@@ -2210,6 +2217,12 @@
   const _ltpFlashTimers = /** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map());
   /** @type {(() => void) | null} */
   let _tickBusUnsub = null;
+  /** @type {(() => void) | null} */
+  let _pctUnsub = null;
+  // Tracks the current ltpFlashPct threshold for the tickBus callback.
+  // Updated via a store subscription in onMount; plain let (not $state)
+  // because it is only read inside the tickBus callback, not in the template.
+  let _pctThreshold = 0.1;
 
   const _scheduleIdle = (cb) => {
     if (typeof window !== 'undefined'
@@ -2507,6 +2520,7 @@
     // but the paint + prefetch timers weren't).
     if (_ltpPaintTimer) { clearTimeout(_ltpPaintTimer); _ltpPaintTimer = null; }
     _tickBusUnsub?.();
+    _pctUnsub?.();
     for (const t of _ltpFlashTimers.values()) clearTimeout(t);
     _ltpFlashTimers.clear();
     _mpFlash.dispose();

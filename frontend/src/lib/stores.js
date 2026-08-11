@@ -1373,6 +1373,28 @@ let _bhPollerStarted = false;
 /** @type {(() => void) | null} */
 let _bhPollerTeardown = null;
 
+// ── LTP flash percentage threshold ─────────────────────────────────────
+//
+// Admin setting `ui.ltp_flash_pct` controls the minimum percentage move
+// required for a tick-flash animation to fire in the W/L grids and
+// MarketPulse. Default 0.1 (0.1%) so sub-tick noise doesn't strobe.
+// Non-admin users and offline scenarios keep the default silently.
+
+/** LTP flash percentage threshold — reads from admin settings, defaults to 0.1 */
+export const ltpFlashPct = writable(0.1);
+
+/** Fetch and apply the ltp flash threshold from admin settings. Call once on load. */
+export async function loadLtpFlashPct() {
+  try {
+    const { fetchSetting } = await import('$lib/api.js');
+    const data = await fetchSetting('ui.ltp_flash_pct');
+    const v = parseFloat(data?.value ?? data?.default_value ?? '0.1');
+    if (isFinite(v) && v >= 0) ltpFlashPct.set(v);
+  } catch {
+    // Admin setting unavailable (non-admin user or network) — keep default 0.1
+  }
+}
+
 export function startBrokerHealthPoller() {
   if (!browser || _bhPollerStarted) return;
   _bhPollerStarted = true;
