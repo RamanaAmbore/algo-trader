@@ -10,10 +10,17 @@
  *   - New: pulseHoldingsStore.load() is called in _tickBookPollers polling cycle
  *   - Guard: dispHoldingsToday is derived from pulseHoldingsStore and rendered in PositionStrip
  *
- * Three quality dimensions:
+ * Also verifies the formula-parity fix (2026-08-11):
+ *   - _liveHoldingsToday uses (ltp - close_price) × qty — same as holdings in mergeHoldingRows
+ *   - _livePositionsToday uses the same direct formula, no isMarketOpen() gate on the LTP
+ *   - Neither _livePositionsToday nor mergePositionRows day_pnl path has an isMarketOpen gate
+ *
+ * Five quality dimensions:
  *  1. SSOT    — frontend SSOT: pulseHoldingsStore is polled in _tickBookPollers
  *  2. SSOT    — PositionStrip derives _liveHoldingsToday from pulseHoldingsStore
- *  3. UX     — dispHoldingsToday is rendered in PositionStrip template
+ *  3. UX      — dispHoldingsToday is rendered in PositionStrip template
+ *  4. Stale   — _liveHoldingsToday and _livePositionsToday use close_price formula
+ *  5. Stale   — no isMarketOpen gate on LTP in the day P&L paths
  *
  * Run:
  *   PLAYWRIGHT_USER=rambo PLAYWRIGHT_PASS=admin1234 \
@@ -123,5 +130,58 @@ test.describe('Holdings NavStrip sync SSOT', () => {
     expect(hasFormatting, 'PositionStrip should format holdings value for display').toBe(true);
 
     console.log('[holdings_navstrip_ssot] 3-UX dispHoldingsToday rendering verified');
+  });
+
+  // ── Test 4: Source-scan — _liveHoldingsToday uses close_price formula ────
+  test('4-Stale: _liveHoldingsToday in PositionStrip uses close_price (holdings formula)', () => {
+    const positionStripPath = '/Users/ramanambore/projects/ramboq/frontend/src/lib/PositionStrip.svelte';
+    let source = '';
+    try {
+      source = readFileSync(positionStripPath, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read PositionStrip.svelte: ${e.message}`);
+      return;
+    }
+
+    // Extract the _liveHoldingsToday definition block
+    const holdingsTodayIdx = source.indexOf('const _liveHoldingsToday');
+    expect(holdingsTodayIdx, '_liveHoldingsToday must exist in PositionStrip.svelte').toBeGreaterThan(-1);
+
+    // Extract block: from definition start to the next top-level const declaration.
+    // Note: we cannot use '$derived.by' as end-marker because it appears on the same
+    // definition line. Instead look for the next '\n  const ' (next sibling derived).
+    const blockEnd = source.indexOf('\n  const ', holdingsTodayIdx + 20);
+    const block = blockEnd > -1 ? source.slice(holdingsTodayIdx, blockEnd) : source.slice(holdingsTodayIdx, holdingsTodayIdx + 600);
+    expect(block, '_liveHoldingsToday block should reference close_price').toContain('close_price');
+
+    console.log('[holdings_navstrip_ssot] 4-Stale _liveHoldingsToday close_price formula verified');
+  });
+
+  // ── Test 5: Source-scan — _livePositionsToday uses close_price formula, no market gate ──
+  test('5-Stale: _livePositionsToday in PositionStrip uses close_price and has no isMarketOpen gate on LTP', () => {
+    const positionStripPath = '/Users/ramanambore/projects/ramboq/frontend/src/lib/PositionStrip.svelte';
+    let source = '';
+    try {
+      source = readFileSync(positionStripPath, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read PositionStrip.svelte: ${e.message}`);
+      return;
+    }
+
+    // Find _livePositionsToday definition block
+    const posTodayIdx = source.indexOf('const _livePositionsToday');
+    expect(posTodayIdx, '_livePositionsToday must exist in PositionStrip.svelte').toBeGreaterThan(-1);
+
+    // Extract block: from definition start to next top-level const declaration.
+    const blockEnd = source.indexOf('\n  const ', posTodayIdx + 20);
+    const block = blockEnd > -1 ? source.slice(posTodayIdx, blockEnd) : source.slice(posTodayIdx, posTodayIdx + 800);
+
+    // Must reference close_price
+    expect(block, '_livePositionsToday block should reference close_price').toContain('close_price');
+
+    // Must NOT gate ltp on isMarketOpen / _mktOpen
+    expect(block, '_livePositionsToday block should not have _mktOpen gate on LTP').not.toMatch(/_mktOpen\s*\?.*ltp|isNseOpen.*ltp|ltp.*_mktOpen/);
+
+    console.log('[holdings_navstrip_ssot] 5-Stale _livePositionsToday close_price formula verified, no market-open gate');
   });
 });

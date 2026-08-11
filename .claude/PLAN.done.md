@@ -1,78 +1,151 @@
-# Plan: Fix positions day P&L after market hours + Holdings NavStrip SSOT
+# Plan: Fix NavStrip H:1 + P:1 = 0 — positions day P&L mirrors holdings logic
 
 ## Context
-Two SSOT bugs observed after MCX market close:
 
-1. **Holdings NavStrip H:1 = 0**: `pulseHoldingsStore` is NOT included in `_tickBookPollers()`. After market close, `marketAwareInterval` in PositionStrip.svelte pauses `_load()`, so `pulseHoldingsStore` goes stale. The book poller loads `holdingsStore` but NOT `pulseHoldingsStore`. NavStrip reads `pulseHoldingsStore.value` for `_liveHoldingsToday` → shows 0.
+NavStrip H:1 (holdings day P&L) = 0 while Pulse Holdings TOTAL = −5K.  
+NavStrip P:1 (positions day P&L) = 0 after market close; Pulse positions TOTAL also = 0 after close.
 
-2. **Positions day P&L = 0 after market hours**: `build_row_from_snapshot_raw` in `positions_helpers.py` resolves `prev_close_val` with wrong priority — `prev_ltp` first (the most recent batch LTP, which during a live session ≈ current LTP → day_change ≈ 0). `previous_close` (official Kite settlement, frozen on first UPSERT via COALESCE) is the correct reference but is currently the fallback only. DATA_LIFECYCLE.md §4.4 line 184 documents this wrong priority.
+**Root cause — H:1:**  
+`_liveHoldingsToday` in `PositionStrip.svelte` sums `day_change_val + _delta`. Broker returns `day_change_val = 0` early in session and after close. Pulse Holdings TOTAL (`mergeHoldingRows` in pulseUnified.js line 553) uses `(ltp − close_price) × qty` from symbolStore — no market-open gate.
 
-Holdings work correctly because their snapshot uses `previous_close` as primary (written once and frozen, so it holds yesterday's settlement price throughout the session).
+**Root cause — P:1 / Pulse positions = 0 after close:**  
+`mergePositionRows` (pulseUnified) and `_livePositionsToday` (PositionStrip) both gate LTP by `isMarketOpen()` and delegate to `livePositionDayPnl`. After close: `liveLtp = null` → falls back to broker `day_change_val = 0`. Holdings has no such gate — that's why holdings shows −5K but positions shows 0.
+
+**Fix (operator direction):**  
+Positions day P&L uses the **identical formula** as holdings: `(ltp − close_price) × qty` from symbolStore, unconditionally. Fallback to `baseDayPnlForPosition(r)` only when no LTP available. This replaces the `livePositionDayPnl` call in the positions day P&L path for both Pulse and NavStrip.
+
+## Holdings formula (SSOT — do not change)
+
+`mergeHoldingRows` in `pulseUnified.js` lines 549-558:
+```javascript
+const liveHold = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
+               : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
+const holdClose = Number(r.close_price) || 0;
+if (liveHold != null && holdClose > 0 && heldQty !== 0) {
+  row.day_pnl = (row.day_pnl ?? 0) + (liveHold - holdClose) * heldQty;
+} else {
+  row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+}
+```
+
+Positions day P&L must match this pattern exactly.
 
 ## Task
 
-**Fix 1 — Frontend** (`frontend/src/lib/data/marketDataStores.svelte.js`):
-Add `pulseHoldingsStore.load()` to `_tickBookPollers()` (the `Promise.allSettled` array, around line 718). This ensures NavStrip H:1 slot (`dispHoldingsToday` from `_liveHoldingsToday` computed over `pulseHoldingsStore.value`) stays in sync with Pulse Holdings TOTAL after market close.
+Four edits, positions day P&L path replaces `livePositionDayPnl` with direct `(ltp − close) × qty`:
+
+### Edit 1 — `frontend/src/lib/PositionStrip.svelte` lines 446-450 (`_liveHoldingsToday`)
+
+Replace `day_change_val + _delta` with holdings-style formula:
 
 ```javascript
-// In _tickBookPollers():
-await Promise.allSettled([
-  positionsStore.load(),
-  holdingsStore.load(),
-  pulseHoldingsStore.load(),   // ← ADD THIS
-  fundsStore.load(),
-]);
+const _liveHoldingsToday = $derived.by(() => {
+  let s = 0;
+  for (const h of holdings) {
+    const sym   = String(h?.tradingsymbol || '').toUpperCase();
+    const ltp   = getSnapshot(sym)?.ltp;
+    const close = Number(h?.close_price || 0);
+    const qty   = Number(h?.opening_quantity || h?.quantity || 0);
+    if (ltp != null && Number(ltp) > 0 && close > 0 && qty !== 0) {
+      s += (Number(ltp) - close) * qty;
+    } else {
+      s += Number(h?.day_change_val || 0) + _delta(h, 'H');
+    }
+  }
+  return s;
+});
 ```
 
-**Fix 2 — Backend** (`backend/api/routes/positions_helpers.py`):
-In `build_row_from_snapshot_raw` (~line 298), swap `prev_close_val` priority to prefer `previous_close` (official settlement, frozen by COALESCE on first UPSERT) over `prev_ltp` (recent batch LTP, which ≈ current LTP during a session). Also pass `actual_previous_close` (not `prev_ltp`) as the `previous_close` kwarg to `build_snapshot_position_row`.
+Notes: no `_throttledTick` / `untrack()` — matches `_liveHoldingsTotal` pattern. `opening_quantity || quantity` for qty matches `mergeHoldingRows` line 522.
 
-```python
-# NEW priority: official settlement first, recent batch LTP as fallback only
-actual_previous_close = (
-    float(previous_close) if previous_close and float(previous_close) > 0 else None
-)
-prev_close_val = (
-    actual_previous_close
-    or (float(prev_ltp) if prev_ltp and float(prev_ltp) > 0 else None)
-)
-computed_day_pnl = (
-    (float(ltp) - actual_previous_close) * effective_qty
-    if actual_previous_close and ltp
-    else day_pnl
-)
-return build_snapshot_position_row(
-    ..., computed_day_pnl, ...,
-    previous_close=actual_previous_close,   # real settlement, not prev_ltp
-    ...
-)
+### Edit 2 — `frontend/src/lib/PositionStrip.svelte` lines 417-445 (`_livePositionsToday`)
+
+Replace `livePositionDayPnl` call with direct `(ltp − close_price) × qty` — mirror of `_liveHoldingsToday`:
+
+```javascript
+const _livePositionsToday = $derived.by(() => {
+  void _throttledTick;
+  let dayTotal = 0;
+  for (const p of positions) {
+    const sym   = String(p?.tradingsymbol || '').toUpperCase();
+    const ltp   = untrack(() => getSnapshot(sym)?.ltp);
+    const close = Number(p?.close_price ?? 0);
+    const qty   = Number(p?.quantity    ?? 0);
+    if (ltp != null && Number(ltp) > 0 && close > 0 && qty !== 0) {
+      dayTotal += (Number(ltp) - close) * qty;
+    } else {
+      dayTotal += baseDayPnlForPosition(p);
+    }
+  }
+  return dayTotal;
+});
+```
+
+Notes: `untrack()` preserved (throttle). `baseDayPnlForPosition` as fallback handles the `overnight_quantity=0, pnl≠0` new-position edge case when no LTP available. Remove unused `const _mktOpen` and `livePositionDayPnl` from this block (but keep the `livePositionDayPnl` import if still used elsewhere — check first).
+
+### Edit 3 — `frontend/src/lib/data/pulseUnified.js` lines 453-468 (`mergePositionRows`)
+
+Replace `livePositionDayPnl` call with direct `(ltp − close_price) × qty` — identical pattern to `mergeHoldingRows`:
+
+```javascript
+// Day P&L — same formula as mergeHoldingRows: (ltp − close) × qty.
+// symbolStore LTP first; no isMarketOpen() gate — last tick persists after close.
+const _snapLtp   = snap?.ltp;
+const posLiveLtp = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
+                 : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
+const posCls     = Number(r.close_price) || 0;
+if (posLiveLtp != null && posCls > 0 && q !== 0) {
+  row.day_pnl = (row.day_pnl ?? 0) + (posLiveLtp - posCls) * q;
+} else {
+  row.day_pnl = (row.day_pnl ?? 0) + baseDayPnlForPosition(r);
+}
+```
+
+Remove the old `const _mktOpen = isMarketOpen();` and `livePositionDayPnl(...)` call lines.
+
+### Edit 4 — `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` line 1973-1984 (`_dayPnlForLeg`)
+
+Align derivatives leg day P&L with same pattern — use symbolStore LTP unconditionally:
+
+```javascript
+function _dayPnlForLeg(c, spot) {
+  const legLiveLtp = untrack(() => getSnapshot(String(c.symbol || '').toUpperCase())?.ltp);
+  const close = Number(c.prev_close ?? 0);
+  const qty   = Number(c.qty ?? 0);
+  if (legLiveLtp != null && Number(legLiveLtp) > 0 && close > 0 && qty !== 0) {
+    return (Number(legLiveLtp) - close) * qty;
+  }
+  return baseDayPnlForPosition(c);
+}
 ```
 
 ## Agents
-- backend: Fix `build_row_from_snapshot_raw` in `backend/api/routes/positions_helpers.py` around line 298. Swap `prev_close_val` priority: (a) `actual_previous_close = float(previous_close) if previous_close and float(previous_close) > 0 else None`; (b) `prev_close_val = actual_previous_close or (float(prev_ltp) if prev_ltp and float(prev_ltp) > 0 else None)`; (c) `computed_day_pnl = (float(ltp) - actual_previous_close) * effective_qty if actual_previous_close and ltp else day_pnl`; (d) pass `previous_close=actual_previous_close` to `build_snapshot_position_row`. Add a pytest test in `backend/tests/` that calls `build_row_from_snapshot_raw` directly with a simulated multi-batch scenario where `prev_ltp` equals current `ltp` (so day_pnl would be ~0 with old code) and `previous_close` equals yesterday's settlement — assert `day_change_val` is non-zero (reflects the correct overnight move). For every file you change or create, you MUST write or update at least one test covering the changed behaviour.
-- frontend: Fix `_tickBookPollers()` in `frontend/src/lib/data/marketDataStores.svelte.js` — add `pulseHoldingsStore.load()` to the `Promise.allSettled([...])` array so `pulseHoldingsStore` is refreshed on every book-poller tick (every 5s live, 30min closed). This keeps NavStrip H:1 slot in sync with Pulse Holdings TOTAL after market close. For every file you change or create, you MUST write or update at least one test covering the changed behaviour.
+- frontend: Make all 4 edits above. Read each file carefully before editing (use Read tool first).
+  - Check whether `livePositionDayPnl` import is still needed in PositionStrip.svelte after Edit 2 — remove if unused.
+  - Run `npx svelte-check --output machine 2>&1`. Fix any type errors.
+  - Add Vitest tests in `frontend/src/lib/__tests__/data/`:
+    - New file `positions_holdings_ssot.test.js`: test `mergePositionRows` with `snap.ltp=1005, close_price=1000, qty=10, isMarketOpen()=false` → `row.day_pnl = 50`. Test `mergePositionRows` with no LTP → falls back to `baseDayPnlForPosition`. Test `mergeHoldingRows` and `mergePositionRows` return same formula result for same inputs (ltp, close, qty).
+  - Update `frontend/e2e/holdings_navstrip_ssot.spec.js`: add source-scan assertions that `_liveHoldingsToday` uses `close_price` and `_livePositionsToday` uses `close_price` (same formula in both).
+  - Update `frontend/e2e/pnl_positions_closed_hours_ssot.spec.js`: assert neither `_livePositionsToday` nor `mergePositionRows` day_pnl path calls `livePositionDayPnl` (replaced by direct formula).
+  
+  For every file you change or create, you MUST write or update at least one test covering the changed behaviour. This is mandatory — not optional.
+- backend: skip
 - broker: skip
-- doc: Update three documentation surfaces after the backend/frontend fixes are committed:
-  1. `docs/guides/DATA_LIFECYCLE.md` §4.4 "Row reconstruction" — fix line 184 close_price resolution order: change "prev_ltp (if > 0) → previous_close (if > 0) → ltp" to "previous_close (if > 0) → prev_ltp (if > 0) → ltp". Update lines 185–187 to reflect that computed_day_pnl now uses actual_previous_close (official settlement) when available. Add a one-line note that this fixes positions showing 0 day P&L during closed hours when daily_book had multiple intraday captures. Add a changelog entry.
-  2. `docs/specs/PULSE_SPEC.md` — update the positions closed-hours section (around line 151) to document the corrected priority: `previous_close` (frozen settlement) takes precedence over `prev_ltp` (recent batch). Correct any reference to `(ltp − prev_ltp)` for positions that is wrong post-fix. Add an SSOT note: positions TOTAL day P&L in Pulse and NavStrip P:1 converge via `positionsStore` (book-poller loaded). Update NAVSTRIP_SPEC.md §H:1 (around line 152–153) — add a note that `pulseHoldingsStore` is now included in `_tickBookPollers()` so H:1 (`dispHoldingsToday`) stays in sync with Pulse Holdings TOTAL during closed hours; the store is no longer dependent on `marketAwareInterval` alone.
-- backend-test: skip (backend agent handles tests inline)
-- playwright: Write two Playwright specs in `frontend/e2e/`:
-  1. `pnl_positions_closed_hours_ssot.spec.js` — Verifies that after market close, the positions snapshot uses `previous_close` (not `prev_ltp`) as the close-price basis. Three test dimensions: (a) Source-scan `backend/api/routes/positions_helpers.py` — assert `actual_previous_close` variable exists and appears before `prev_ltp` in the `prev_close_val` computation; (b) Source-scan — assert `build_row_from_snapshot_raw` passes `previous_close=actual_previous_close` to `build_snapshot_position_row`; (c) API-level smoke — login as admin on `dev.ramboq.com`, fetch `/api/positions?fresh=1`, check that any rows returned have a non-null `day_change_val` when `previous_close` > 0. Pattern: follow `frontend/e2e/navstrip_pslot_closed_hours.spec.js` (source-scan + readFileSync approach for static assertions; Playwright page login for API smoke).
-  2. `holdings_navstrip_ssot.spec.js` — Verifies that `pulseHoldingsStore` is included in `_tickBookPollers()` so NavStrip H:1 stays in sync with Pulse Holdings TOTAL. Three dimensions: (a) Source-scan `frontend/src/lib/data/marketDataStores.svelte.js` — assert `pulseHoldingsStore.load()` appears inside `_tickBookPollers`; (b) Source-scan `frontend/src/lib/PositionStrip.svelte` — assert `_liveHoldingsToday` reads from `pulseHoldingsStore.value`; (c) Source-scan — assert PositionStrip renders `dispHoldingsToday` in the H:1 slot.
+- doc: Update `docs/specs/NAVSTRIP_SPEC.md` — H:1 and P:1 both use `(ltp − close_price) × qty` (symbolStore-first, no market-open gate, identical formula for holdings and positions).
+- backend-test: skip
+- playwright: skip
 
 ## Tests
-- pytest: yes
+- pytest: no
 - svelte-check: yes
-- playwright: yes
+- playwright: yes — run `npx playwright test e2e/holdings_navstrip_ssot.spec.js e2e/pnl_positions_closed_hours_ssot.spec.js --reporter=line 2>&1` and print full output (pass/fail counts + any assertion errors)
 
 ## Commit message
-fix(ssot): positions snapshot uses previous_close for day P&L; pulseHoldingsStore in book poller
+fix(navstrip): positions day P&L mirrors holdings formula — `(ltp − close) × qty` no market-open gate
 
 ## Done when
-- After MCX close, Pulse page Positions TOTAL day P&L shows non-zero (uses official previous_close)
-- NavStrip P:1 slot matches Pulse positions TOTAL (both from positionsStore, book-poller loaded)
-- NavStrip H:1 slot matches Pulse Holdings TOTAL (pulseHoldingsStore now in book poller)
-- pytest passes including new `build_row_from_snapshot_raw` priority test
+- NavStrip H:1 = Pulse Holdings TOTAL (e.g. −5K)
+- NavStrip P:1 = Pulse Positions TOTAL (non-zero after close for overnight positions)
+- Pulse Positions TOTAL non-zero after market close
 - svelte-check 0 errors
-- Both new Playwright specs pass
-- DATA_LIFECYCLE.md §4.4 priority corrected; PULSE_SPEC.md + NAVSTRIP_SPEC.md updated
+- Vitest `positions_holdings_ssot.test.js` passes

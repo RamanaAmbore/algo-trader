@@ -18,7 +18,7 @@
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
-  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
+  import { baseDayPnlForPosition } from '$lib/data/nav';
   import NavBreakdown from '$lib/NavBreakdown.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
 
@@ -422,30 +422,36 @@
     // page. The throttle ensures the loop runs at most 4 times/sec even
     // during a burst of SSE ticks for a large position book.
     void _throttledTick;
-    const _mktOpen = isNseOpen() || isMcxOpen();
     let dayTotal = 0;
     for (const p of positions) {
-      const sym = String(p?.tradingsymbol || '').toUpperCase();
-      // Live tick — use untrack so we don't register per-symbol reactive
-      // deps (the _throttledTick gate above already controls re-derive cadence).
-      const liveLtp = _mktOpen ? untrack(() => getSnapshot(sym)?.ltp) : null;
-      dayTotal += livePositionDayPnl(
-        {
-          closePx: Number(p?.close_price ?? 0),
-          pollLtp: Number(p?.last_price ?? 0),
-          qty:     Number(p?.quantity ?? 0),
-          avg:     Number(p?.average_price ?? 0),
-          dcvRow:  p,
-        },
-        liveLtp ?? null,
-        { marketOpen: _mktOpen },
-      );
+      const sym   = String(p?.tradingsymbol || '').toUpperCase();
+      // Direct formula matching mergeHoldingRows: (ltp − close) × qty.
+      // No isMarketOpen() gate — last tick persists after close, giving
+      // the same end-of-session P&L as holdings does.
+      const ltp   = untrack(() => getSnapshot(sym)?.ltp);
+      const close = Number(p?.close_price ?? 0);
+      const qty   = Number(p?.quantity    ?? 0);
+      if (ltp != null && Number(ltp) > 0 && close > 0 && qty !== 0) {
+        dayTotal += (Number(ltp) - close) * qty;
+      } else {
+        dayTotal += baseDayPnlForPosition(p);
+      }
     }
     return dayTotal;
   });
   const _liveHoldingsToday = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.day_change_val || 0) + _delta(h, 'H');
+    for (const h of holdings) {
+      const sym   = String(h?.tradingsymbol || '').toUpperCase();
+      const ltp   = getSnapshot(sym)?.ltp;
+      const close = Number(h?.close_price || 0);
+      const qty   = Number(h?.opening_quantity || h?.quantity || 0);
+      if (ltp != null && Number(ltp) > 0 && close > 0 && qty !== 0) {
+        s += (Number(ltp) - close) * qty;
+      } else {
+        s += Number(h?.day_change_val || 0) + _delta(h, 'H');
+      }
+    }
     return s;
   });
   // Live-LTP-recomputed holdings P&L — matches MarketPulse mergeHoldingRows

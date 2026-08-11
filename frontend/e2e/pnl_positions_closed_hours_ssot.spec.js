@@ -10,10 +10,16 @@
  *   - New: actual_previous_close is set via COALESCE; frozen until market open
  *   - Guard: computed_day_pnl uses actual_previous_close, not raw prev_ltp
  *
- * Three quality dimensions:
+ * Also verifies the frontend formula fix (2026-08-11):
+ *   - mergePositionRows in pulseUnified.js no longer calls livePositionDayPnl
+ *   - Instead uses direct (ltp - close) × qty matching mergeHoldingRows
+ *   - No isMarketOpen() or _mktOpen gate on the day P&L LTP path
+ *
+ * Four quality dimensions:
  *  1. SSOT    — backend SSOT: actual_previous_close is defined before prev_ltp
  *  2. Stale   — stale-guard: actual_previous_close used in day P&L computation
  *  3. API-smoke — positions response has correct day_change_val structure
+ *  4. SSOT    — frontend mergePositionRows does not call livePositionDayPnl (replaced)
  *
  * Run:
  *   PLAYWRIGHT_USER=rambo PLAYWRIGHT_PASS=admin1234 \
@@ -155,5 +161,33 @@ test.describe('Positions day P&L closed-hours SSOT', () => {
     }
 
     console.log('[pnl_positions_closed_hours_ssot] 3-API-smoke /api/positions day_change_val verified');
+  });
+
+  // ── Test 4: Source-scan — mergePositionRows does not call livePositionDayPnl ──
+  test('4-SSOT: mergePositionRows in pulseUnified.js does not call livePositionDayPnl', () => {
+    const pulseUnifiedPath = '/Users/ramanambore/projects/ramboq/frontend/src/lib/data/pulseUnified.js';
+    let source = '';
+    try {
+      source = readFileSync(pulseUnifiedPath, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read pulseUnified.js: ${e.message}`);
+      return;
+    }
+
+    // Assertion 1: livePositionDayPnl must not be called in the file
+    expect(source, 'pulseUnified.js must not call livePositionDayPnl (replaced by direct formula)').not.toContain('livePositionDayPnl(');
+
+    // Assertion 2: mergePositionRows must use close_price (the direct formula basis)
+    const mergeStart = source.indexOf('export function mergePositionRows');
+    expect(mergeStart, 'mergePositionRows must be defined in pulseUnified.js').toBeGreaterThan(-1);
+    const mergeEnd   = source.indexOf('export function mergeHoldingRows', mergeStart);
+    const mergeBody  = mergeEnd > -1 ? source.slice(mergeStart, mergeEnd) : source.slice(mergeStart, mergeStart + 2000);
+    expect(mergeBody, 'mergePositionRows should reference close_price for day P&L').toContain('close_price');
+
+    // Assertion 3: the day_pnl path in mergePositionRows must not have an isMarketOpen() gate
+    expect(mergeBody, 'mergePositionRows day_pnl path must not call isMarketOpen()').not.toContain('isMarketOpen()');
+    expect(mergeBody, 'mergePositionRows day_pnl path must not use _mktOpen').not.toContain('_mktOpen');
+
+    console.log('[pnl_positions_closed_hours_ssot] 4-SSOT mergePositionRows direct formula verified');
   });
 });

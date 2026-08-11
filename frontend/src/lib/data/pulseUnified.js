@@ -20,7 +20,7 @@
 // Shared utilities (also exported for unit tests):
 //   parseSymbolFallback, parseSymbol, fillSymbolMeta, makeRowFactory
 
-import { livePositionDayPnl } from './nav.js';
+// (livePositionDayPnl removed — mergePositionRows now uses direct formula)
 
 // ── Shared constants ─────────────────────────────────────────────────────────
 
@@ -415,14 +415,13 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
  * @param {{
  *   snapOf: (sym: string) => any,
  *   getInst: ((s: string) => any) | null,
- *   isMarketOpen: () => boolean,
  *   baseDayPnlForPosition: (r: any) => number,
  * }} ctx
  */
 export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
   if (includePos === false) return;
   const get = makeRowFactory(byKey);
-  const { snapOf, getInst, isMarketOpen, baseDayPnlForPosition } = ctx;
+  const { snapOf, getInst, baseDayPnlForPosition } = ctx;
   for (const r of pos) {
     const exch = r.exchange || 'NFO';
     const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
@@ -450,25 +449,21 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     if (!_hadLtp && row.ltp == null) {
       row.ltp = r.last_price ?? null;
     }
-    // Day P&L recompute — delegates to livePositionDayPnl (nav.js SSOT).
-    // Normalise raw broker field names to the canonical param bag so the
-    // helper works identically for both Pulse and Derivatives consumers.
-    const _mktOpen  = isMarketOpen();
-    const legLiveLtp = (_mktOpen && Number(liveQ?.ltp) > 0) ? Number(liveQ.ltp) : null;
-    row.day_pnl = (row.day_pnl ?? 0) + livePositionDayPnl(
-      {
-        closePx: Number(r.close_price) || 0,
-        pollLtp: Number(r.last_price)  || 0,
-        qty:     q,
-        avg,
-        dcvRow:  r,
-      },
-      legLiveLtp,
-      { marketOpen: _mktOpen },
-    );
+    // Day P&L — same formula as mergeHoldingRows: (ltp − close) × qty.
+    // symbolStore LTP first; no market-open gate — last tick persists
+    // after close, giving the same end-of-session P&L as holdings does.
+    const _snapLtp   = snap?.ltp;
+    const posLiveLtp = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
+                     : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
+    const posCls     = Number(r.close_price) || 0;
+    if (posLiveLtp != null && posCls > 0 && q !== 0) {
+      row.day_pnl = (row.day_pnl ?? 0) + (posLiveLtp - posCls) * q;
+    } else {
+      row.day_pnl = (row.day_pnl ?? 0) + baseDayPnlForPosition(r);
+    }
     // Total P&L live recompute.
-    if (legLiveLtp != null && avg > 0 && q !== 0) {
-      row.pnl = (row.pnl ?? 0) + (legLiveLtp - avg) * q + (Number(r.realised) || 0);
+    if (posLiveLtp != null && avg > 0 && q !== 0) {
+      row.pnl = (row.pnl ?? 0) + (posLiveLtp - avg) * q + (Number(r.realised) || 0);
     } else {
       row.pnl = (row.pnl ?? 0) + (Number(r.pnl) || 0);
     }

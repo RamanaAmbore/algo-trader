@@ -56,7 +56,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
-  import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
+  import { baseDayPnlForPosition, FO_EXCHANGES } from '$lib/data/nav';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -1963,25 +1963,17 @@
    *  @param {any} c
    *  @param {number|null} spot */
   function _dayPnlForLeg(c, spot) {
-    // livePositionDayPnl is the SSOT for Day P&L with live-tick rescue.
-    // It wraps baseDayPnlForPosition and additionally rescues the MCX
-    // stale-ticker fingerprint (last_price === close_price → dcv = 0)
-    // by recomputing via (liveLtp − close) × qty when an SSE tick is
-    // available — the same logic Pulse uses in mergePositionRows.
-    // untrack() on getSnapshot prevents the 4 Hz _throttledTick gate
-    // from being bypassed (mirrors the pattern at candidatesDayPnl line).
+    // Direct formula matching mergeHoldingRows / mergePositionRows:
+    // (ltp − close) × qty. No isMarketOpen() gate — last tick persists
+    // after close, giving the same end-of-session P&L as holdings.
+    // untrack() on getSnapshot prevents bypassing the 4 Hz throttle.
     const legLiveLtp = untrack(() => getSnapshot(String(c.symbol || '').toUpperCase())?.ltp);
-    return livePositionDayPnl(
-      {
-        closePx: Number(c.prev_close ?? 0),
-        pollLtp: Number(c.ltp ?? 0),
-        qty:     Number(c.qty ?? 0),
-        avg:     Number(c.avg_cost ?? 0),
-        dcvRow:  c,
-      },
-      legLiveLtp,
-      { marketOpen: isMarketOpen() },
-    );
+    const close = Number(c.prev_close ?? 0);
+    const qty   = Number(c.qty ?? 0);
+    if (legLiveLtp != null && Number(legLiveLtp) > 0 && close > 0 && qty !== 0) {
+      return (Number(legLiveLtp) - close) * qty;
+    }
+    return baseDayPnlForPosition(c);
   }
 
   /** @param {any} c - candidate row
