@@ -980,6 +980,17 @@ export async function fetchChainQuotes(underlying, expiry) {
               { auth: true });
 }
 
+/** GET /api/options/chain-quotes (no expiry) — returns the list of
+ *  available expiries for the given underlying without any strike rows.
+ *  Used by OptionChainTab to populate the expiry dropdown without
+ *  blocking on the 156K-row instruments cache.
+ *  Returns `{underlying, expiry: "", expiries: string[], rows: []}`. */
+/** @param {string} underlying */
+export async function fetchChainExpiries(underlying) {
+  const params = new URLSearchParams({ underlying });
+  return _get(`/options/chain-quotes?${params}`, { auth: true });
+}
+
 /** GET /api/options/historical — Kite OHLCV candles for any symbol.
  *  Backs the SymbolChartModal so the operator can chart any symbol
  *  from any list. Returns `{symbol, instrument_token, interval,

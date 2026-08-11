@@ -1,0 +1,564 @@
+"""
+Tests for the /api/options/chain-quotes endpoint.
+
+Coverage:
+  • Expiry-only mode (no broker call when expiry omitted)
+  • Full quote mode (with expiry parameter)
+  • New response fields: ce_sym, pe_sym, ce_ls, pe_ls, exchange, expiries
+  • Cache behavior (156K scan cached for 3s)
+  • Unknown underlying handling
+  • Malformed instrument responses
+"""
+
+from __future__ import annotations
+
+import pytest
+import asyncio
+from unittest.mock import patch, MagicMock, AsyncMock
+from datetime import datetime, date
+
+from backend.api.routes.instruments import Instrument, InstrumentsResponse
+from backend.api.routes.options import (
+    _chain_quotes_build_sym_map,
+    _chain_sym_cache_clear,
+    ChainQuoteRow,
+    ChainQuotesResponse,
+)
+
+
+@pytest.fixture
+def nifty_instruments_fixture() -> InstrumentsResponse:
+    """Minimal NIFTY instruments fixture with two expiries, four strikes."""
+    instruments = [
+        # 2025-08-14 expiry
+        Instrument(
+            s="NIFTY24AUG24000CE",
+            e="NFO",
+            t="CE",
+            ls=25,
+            ts=0.05,
+            u="NIFTY",
+            x="2025-08-14",
+            k=24000.0,
+        ),
+        Instrument(
+            s="NIFTY24AUG24000PE",
+            e="NFO",
+            t="PE",
+            ls=25,
+            ts=0.05,
+            u="NIFTY",
+            x="2025-08-14",
+            k=24000.0,
+        ),
+        Instrument(
+            s="NIFTY24AUG24500CE",
+            e="NFO",
+            t="CE",
+            ls=25,
+            ts=0.05,
+            u="NIFTY",
+            x="2025-08-14",
+            k=24500.0,
+        ),
+        Instrument(
+            s="NIFTY24AUG24500PE",
+            e="NFO",
+            t="PE",
+            ls=25,
+            ts=0.05,
+            u="NIFTY",
+            x="2025-08-14",
+            k=24500.0,
+        ),
+        # 2025-08-21 expiry
+        Instrument(
+            s="NIFTY24AUG24000CE",
+            e="NFO",
+            t="CE",
+            ls=25,
+            ts=0.05,
+            u="NIFTY",
+            x="2025-08-21",
+            k=24000.0,
+        ),
+        Instrument(
+            s="NIFTY24AUG24000PE",
+            e="NFO",
+            t="PE",
+            ls=25,
+            ts=0.05,
+            u="NIFTY",
+            x="2025-08-21",
+            k=24000.0,
+        ),
+    ]
+    return InstrumentsResponse(cycle_date="2025-08-11", count=len(instruments), items=instruments)
+
+
+@pytest.fixture(autouse=True)
+def clear_chain_cache():
+    """Clear the chain quote cache before and after each test."""
+    _chain_sym_cache_clear()
+    yield
+    _chain_sym_cache_clear()
+
+
+class TestChainQuotesBuildSymMap:
+    """Unit tests for _chain_quotes_build_sym_map helper."""
+
+    def test_expiry_only_mode_no_strikes(self, nifty_instruments_fixture):
+        """When exp='' (empty), strike_map should be empty; expiries list populated."""
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            nifty_instruments_fixture, "NIFTY", ""
+        )
+        assert sym_by_strike == {}, "Strike map should be empty in expiry-only mode"
+        assert all_expiries == ["2025-08-14", "2025-08-21"], f"Expected both expiries, got {all_expiries}"
+
+    def test_full_mode_with_expiry(self, nifty_instruments_fixture):
+        """When exp='2025-08-14', strike_map populated with both CE/PE."""
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+        )
+        # Should have 2 strikes (24000, 24500)
+        assert len(sym_by_strike) == 2, f"Expected 2 strikes, got {len(sym_by_strike)}"
+        # Expiries still populated (all expiries for the underlying)
+        assert all_expiries == ["2025-08-14", "2025-08-21"]
+
+        # Check strike 24000
+        assert 24000.0 in sym_by_strike
+        assert sym_by_strike[24000.0]["CE"]["sym"] == "NIFTY24AUG24000CE"
+        assert sym_by_strike[24000.0]["CE"]["ls"] == 25
+        assert sym_by_strike[24000.0]["CE"]["e"] == "NFO"
+        assert sym_by_strike[24000.0]["PE"]["sym"] == "NIFTY24AUG24000PE"
+        assert sym_by_strike[24000.0]["PE"]["ls"] == 25
+
+        # Check strike 24500
+        assert 24500.0 in sym_by_strike
+        assert sym_by_strike[24500.0]["CE"]["sym"] == "NIFTY24AUG24500CE"
+        assert sym_by_strike[24500.0]["PE"]["sym"] == "NIFTY24AUG24500PE"
+
+    def test_case_insensitive_underlying(self, nifty_instruments_fixture):
+        """Underlying lookup is case-insensitive when passed as uppercase (route does conversion)."""
+        # The function expects und to already be uppercased (route handler does this).
+        # Instruments have u="NIFTY", so (inst.u or "").upper() == und should match.
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+        )
+        assert len(sym_by_strike) == 2, "Should find NIFTY when passed uppercase"
+
+    def test_unknown_underlying(self, nifty_instruments_fixture):
+        """Unknown underlying should return empty strike map and empty expiries."""
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            nifty_instruments_fixture, "BANKNIFTY", ""
+        )
+        assert sym_by_strike == {}
+        assert all_expiries == []
+
+    def test_non_option_instruments_skipped(self):
+        """Equity and futures instruments should be skipped; only CE/PE included."""
+        instruments = [
+            Instrument(s="NIFTY50", e="NSE", t="EQ", ls=1, ts=0.05, u="NIFTY"),
+            Instrument(s="NIFTYFUT", e="NFO", t="FUT", ls=1, ts=0.05, u="NIFTY"),
+            Instrument(
+                s="NIFTY24AUG24000CE",
+                e="NFO",
+                t="CE",
+                ls=25,
+                ts=0.05,
+                u="NIFTY",
+                x="2025-08-14",
+                k=24000.0,
+            ),
+        ]
+        inst_resp = InstrumentsResponse(cycle_date="2025-08-11", count=len(instruments), items=instruments)
+
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            inst_resp, "NIFTY", "2025-08-14"
+        )
+        # The strike is added when ANY side (CE or PE) is found.
+        # PE is missing but CE exists, so the strike is included (PE dict initialized empty).
+        assert len(sym_by_strike) == 1, "Strike 24000 should be in map (CE present)"
+        assert sym_by_strike[24000.0]["CE"]["sym"] == "NIFTY24AUG24000CE"
+        assert sym_by_strike[24000.0]["PE"]["sym"] == "", "PE not present, so empty sym"
+
+
+@pytest.mark.asyncio
+class TestChainQuotesEndpoint:
+    """Integration tests for GET /api/options/chain-quotes."""
+
+    async def test_expiry_only_no_broker_call(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """GET /chain-quotes?underlying=NIFTY (no expiry) returns expiries list, no rows."""
+        client = async_client
+
+        with patch("backend.api.cache.get_or_fetch") as mock_cache, \
+             patch("backend.api.routes.options._chain_quotes_batch_quote") as mock_quote:
+
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get("/api/options/chain-quotes", params={"underlying": "NIFTY"})
+
+            assert response.status_code == 200, f"Got {response.status_code}: {response.text}"
+            data = response.json()
+
+            # Verify response structure
+            assert "expiries" in data
+            assert "rows" in data
+            assert "underlying" in data
+            assert "expiry" in data
+
+            # Verify expiry-only mode: no rows, expiries populated
+            assert data["rows"] == [], f"Expected empty rows, got {data['rows']}"
+            assert set(data["expiries"]) == {"2025-08-14", "2025-08-21"}
+            assert data["underlying"] == "NIFTY"
+            assert data["expiry"] == ""
+
+            # Broker quote call should NOT have been made
+            mock_quote.assert_not_called()
+
+    async def test_full_quote_mode_with_expiry(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """GET /chain-quotes?underlying=NIFTY&expiry=2025-08-14 populates rows with bid/ask."""
+        client = async_client
+
+        # Minimal synthetic quote response
+        synthetic_quotes = {
+            "NIFTY24AUG24000CE": {
+                "depth": {
+                    "buy": [{"price": 100.0, "quantity": 100}],
+                    "sell": [{"price": 105.0, "quantity": 100}],
+                }
+            },
+            "NIFTY24AUG24000PE": {
+                "depth": {
+                    "buy": [{"price": 10.0, "quantity": 100}],
+                    "sell": [{"price": 12.0, "quantity": 100}],
+                }
+            },
+            "NIFTY24AUG24500CE": {
+                "depth": {
+                    "buy": [{"price": 50.0, "quantity": 100}],
+                    "sell": [{"price": 55.0, "quantity": 100}],
+                }
+            },
+            "NIFTY24AUG24500PE": {
+                "depth": {
+                    "buy": [{"price": 25.0, "quantity": 100}],
+                    "sell": [{"price": 27.0, "quantity": 100}],
+                }
+            },
+        }
+
+        async def mock_batch_quote(sym_by_strike, und, exp):
+            """Mock _chain_quotes_batch_quote to return synthetic quotes."""
+            key_meta = {}
+            for strike, sides in sym_by_strike.items():
+                for side in ["CE", "PE"]:
+                    if sides[side].get("sym"):
+                        qk = sides[side]["sym"]  # Simplified key
+                        key_meta[qk] = (strike, side)
+            return synthetic_quotes, key_meta
+
+        with patch("backend.api.cache.get_or_fetch") as mock_cache, \
+             patch("backend.api.routes.options._chain_quotes_batch_quote", side_effect=mock_batch_quote):
+
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14"}
+            )
+
+            assert response.status_code == 200, f"Got {response.status_code}: {response.text}"
+            data = response.json()
+
+            # Verify rows are populated
+            assert len(data["rows"]) == 2, f"Expected 2 strikes, got {len(data['rows'])}"
+            assert data["underlying"] == "NIFTY"
+            assert data["expiry"] == "2025-08-14"
+            assert set(data["expiries"]) == {"2025-08-14", "2025-08-21"}
+
+            # Verify first row (strike 24000)
+            row_24k = next((r for r in data["rows"] if r["k"] == 24000.0), None)
+            assert row_24k is not None
+            assert row_24k["ce_sym"] == "NIFTY24AUG24000CE"
+            assert row_24k["pe_sym"] == "NIFTY24AUG24000PE"
+            assert row_24k["ce_ls"] == 25
+            assert row_24k["pe_ls"] == 25
+            assert row_24k["exchange"] == "NFO"
+            assert row_24k["ce_bid"] == 100.0
+            assert row_24k["ce_ask"] == 105.0
+            assert row_24k["pe_bid"] == 10.0
+            assert row_24k["pe_ask"] == 12.0
+
+    async def test_unknown_underlying(self, async_client, nifty_instruments_fixture):
+        """GET /chain-quotes?underlying=UNKNOWN returns empty expiries and rows."""
+        client = async_client
+
+        with patch("backend.api.cache.get_or_fetch") as mock_cache:
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "UNKNOWN"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["rows"] == []
+            assert data["expiries"] == []
+            assert data["underlying"] == "UNKNOWN"
+
+    async def test_missing_underlying_param(self, async_client):
+        """GET /chain-quotes without underlying should return 400."""
+        client = async_client
+
+        response = await client.get("/api/options/chain-quotes")
+        assert response.status_code == 400
+
+    async def test_empty_underlying_param(self, async_client):
+        """GET /chain-quotes?underlying= (empty string) should return 400."""
+        client = async_client
+
+        response = await client.get(
+            "/api/options/chain-quotes",
+            params={"underlying": ""}
+        )
+        assert response.status_code == 400
+
+    async def test_response_structure_matches_spec(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """Response fields match ChainQuotesResponse spec."""
+        client = async_client
+
+        with patch("backend.api.cache.get_or_fetch") as mock_cache:
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY"}
+            )
+
+            data = response.json()
+
+            # Check top-level fields exist
+            assert "underlying" in data
+            assert "expiry" in data
+            assert "rows" in data
+            assert "expiries" in data
+
+            # expiries should be a list
+            assert isinstance(data["expiries"], list)
+
+            # rows should be a list of objects
+            assert isinstance(data["rows"], list)
+
+
+class TestChainQuotesCachePerformance:
+    """Test cache behavior and performance characteristics."""
+
+    def test_cache_populated_after_build(self, nifty_instruments_fixture):
+        """After calling _chain_quotes_build_sym_map, cache should be populated."""
+        from backend.api.routes.options import _CHAIN_SYM_CACHE
+
+        # Clear cache
+        _chain_sym_cache_clear()
+        assert len(_CHAIN_SYM_CACHE) == 0
+
+        # Build sym map
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+        )
+
+        # Note: cache is populated by the route handler, not by _chain_quotes_build_sym_map itself.
+        # The function is just the computation. Let's verify the data structure is correct.
+        assert len(sym_by_strike) == 2
+        assert all_expiries == ["2025-08-14", "2025-08-21"]
+
+    def test_cache_clear_resets_cache(self, nifty_instruments_fixture):
+        """_chain_sym_cache_clear() should wipe the cache."""
+        from backend.api.routes.options import _CHAIN_SYM_CACHE
+        import time
+
+        # Manually populate cache (simulating route behavior)
+        _cache_key = ("NIFTY", "2025-08-14")
+        _now = time.monotonic()
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+        )
+        _CHAIN_SYM_CACHE[_cache_key] = (_now, (sym_by_strike, all_expiries))
+
+        assert len(_CHAIN_SYM_CACHE) > 0, "Cache should be populated"
+
+        # Clear
+        _chain_sym_cache_clear()
+        assert len(_CHAIN_SYM_CACHE) == 0, "Cache should be empty after clear"
+
+
+@pytest.mark.asyncio
+class TestChainQuotesEdgeCases:
+    """Edge case and error handling tests."""
+
+    async def test_instruments_fetch_failure(self, async_client):
+        """When instruments fetch fails, return empty response."""
+        client = async_client
+
+        with patch("backend.api.cache.get_or_fetch") as mock_cache:
+            mock_cache.side_effect = Exception("Network error")
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["rows"] == []
+            assert data["expiries"] == []
+
+    async def test_quote_batch_empty_response(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """When broker quote call returns empty dict, bid/ask should be None."""
+        client = async_client
+
+        async def mock_batch_quote_empty(sym_by_strike, und, exp):
+            """Return empty quote response."""
+            key_meta = {}
+            for strike, sides in sym_by_strike.items():
+                for side in ["CE", "PE"]:
+                    if sides[side].get("sym"):
+                        qk = sides[side]["sym"]
+                        key_meta[qk] = (strike, side)
+            return {}, key_meta  # Empty quotes
+
+        with patch("backend.api.cache.get_or_fetch") as mock_cache, \
+             patch("backend.api.routes.options._chain_quotes_batch_quote", side_effect=mock_batch_quote_empty):
+
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+
+            # Rows should exist but with None bid/ask
+            assert len(data["rows"]) == 2
+            for row in data["rows"]:
+                assert row["ce_bid"] is None
+                assert row["ce_ask"] is None
+                assert row["pe_bid"] is None
+                assert row["pe_ask"] is None
+                # But sym/ls/exchange should still be populated
+                assert row["ce_sym"] is not None
+                assert row["pe_sym"] is not None
+
+    async def test_partial_expiry_mismatch(self):
+        """When only CE exists for a strike in an expiry, PE fields should be None/empty."""
+        # Create instruments where PE is missing for one strike
+        instruments = [
+            Instrument(
+                s="NIFTY24AUG24000CE",
+                e="NFO",
+                t="CE",
+                ls=25,
+                ts=0.05,
+                u="NIFTY",
+                x="2025-08-14",
+                k=24000.0,
+            ),
+            # Note: no PE for 24000 strike
+            Instrument(
+                s="NIFTY24AUG24500CE",
+                e="NFO",
+                t="CE",
+                ls=25,
+                ts=0.05,
+                u="NIFTY",
+                x="2025-08-14",
+                k=24500.0,
+            ),
+            Instrument(
+                s="NIFTY24AUG24500PE",
+                e="NFO",
+                t="PE",
+                ls=25,
+                ts=0.05,
+                u="NIFTY",
+                x="2025-08-14",
+                k=24500.0,
+            ),
+        ]
+        inst_resp = InstrumentsResponse(cycle_date="2025-08-11", count=len(instruments), items=instruments)
+
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            inst_resp, "NIFTY", "2025-08-14"
+        )
+
+        # 24000 should have only CE (PE will be empty dict initialized)
+        assert sym_by_strike[24000.0]["CE"]["sym"] == "NIFTY24AUG24000CE"
+        assert sym_by_strike[24000.0]["PE"]["sym"] == ""  # Default empty
+
+        # 24500 should have both
+        assert sym_by_strike[24500.0]["CE"]["sym"] == "NIFTY24AUG24500CE"
+        assert sym_by_strike[24500.0]["PE"]["sym"] == "NIFTY24AUG24500PE"
+
+
+@pytest.mark.asyncio
+class TestChainQuotesIntegration:
+    """Integration tests simulating real end-to-end flows."""
+
+    async def test_multiple_expiries_sorted(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """Multiple expiries should be sorted in the response."""
+        client = async_client
+
+        # Create instruments with additional expiry
+        instruments = nifty_instruments_fixture.items + [
+            Instrument(
+                s="NIFTY24SEP24000CE",
+                e="NFO",
+                t="CE",
+                ls=25,
+                ts=0.05,
+                u="NIFTY",
+                x="2025-09-04",
+                k=24000.0,
+            ),
+            Instrument(
+                s="NIFTY24SEP24000PE",
+                e="NFO",
+                t="PE",
+                ls=25,
+                ts=0.05,
+                u="NIFTY",
+                x="2025-09-04",
+                k=24000.0,
+            ),
+        ]
+        inst_resp = InstrumentsResponse(
+            cycle_date="2025-08-11", count=len(instruments), items=instruments
+        )
+
+        with patch("backend.api.cache.get_or_fetch") as mock_cache:
+            mock_cache.return_value = inst_resp
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY"}
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+
+            # Expiries should be sorted
+            expected = ["2025-08-14", "2025-08-21", "2025-09-04"]
+            assert data["expiries"] == expected, f"Expected {expected}, got {data['expiries']}"

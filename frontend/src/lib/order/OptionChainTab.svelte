@@ -12,7 +12,7 @@
   import { visibleInterval, withGuard } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
-    fetchOptionsSpot, fetchChainQuotes,
+    fetchOptionsSpot, fetchChainQuotes, fetchChainExpiries,
     placeTicketOrder,
     fetchAccounts,
   } from '$lib/api';
@@ -20,8 +20,7 @@
   import Select from '$lib/Select.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import {
-    loadInstruments, suggestUnderlyings,
-    listExpiries, listStrikes, findOption,
+    suggestUnderlyings,
     listFutures, getInstrument,
   } from '$lib/data/instruments';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
@@ -94,9 +93,6 @@
   // Whether basket state is lifted to the shell or owned locally.
   const _externalBasket = $derived(basketLegs !== undefined && !!onAddLeg);
 
-  // ── Instruments cache ─────────────────────────────────────────────
-  let instrumentsReady = $state(false);
-
   // Curated priority list (indices + top NSE F&O stocks + MCX) imported
   // from `$lib/data/popularUnderlyings` — single source shared with the
   // in-page chain picker on /admin/options. Without RELIANCE et al. in
@@ -129,7 +125,7 @@
   // (the near-month default) — operator clicking "close this position"
   // lands on the position's own contract month, not nearest-future.
   const seedExpiry = $derived.by(() => {
-    if (!instrumentsReady || !symbol) return null;
+    if (!symbol) return null;
     const inst = getInstrument(String(symbol).toUpperCase());
     return inst?.x || null;
   });
@@ -238,7 +234,6 @@
 
   // Underlying choices — common indices first, then everything else.
   const underlyingChoices = $derived.by(() => {
-    if (!instrumentsReady) return [];
     const seen = new Set();
     /** @type {string[]} */ const out = [];
     const push = (/** @type {string|null|undefined} */ u) => {
@@ -257,9 +252,18 @@
     return out;
   });
 
-  const chainExpiries = $derived.by(() => {
-    if (!instrumentsReady || !chainUnderlying) return [];
-    return listExpiries(chainUnderlying.toUpperCase(), 'CE');
+  let chainExpiries = $state(/** @type {string[]} */ ([]));
+  let _chainExpiriesLoading = $state(false);
+  $effect(() => {
+    const u = chainUnderlying;
+    if (!u) { chainExpiries = []; return; }
+    _chainExpiriesLoading = true;
+    fetchChainExpiries(u)
+      .then(/** @param {any} d */ (d) => {
+        chainExpiries = Array.isArray(d?.expiries) ? d.expiries : [];
+        _chainExpiriesLoading = false;
+      })
+      .catch(() => { chainExpiries = []; _chainExpiriesLoading = false; });
   });
   // Human-readable expiry label for the picker. Input is YYYY-MM-DD;
   // output is e.g. "26 Jun 2026" / "26 Jun 2026 (Thu)" so the
@@ -289,12 +293,15 @@
   const _chainExpiryOptions = $derived(
     chainExpiries.map(e => ({ value: e, label: _humanExpiry(e) }))
   );
-  const chainStrikes = $derived.by(() => {
-    if (!instrumentsReady || !chainUnderlying || !chainExpiry) return [];
-    return listStrikes(chainUnderlying.toUpperCase(), 'CE', chainExpiry);
-  });
+  // ── Chain quotes (bid/ask per strike) — declared here so chainStrikes
+  //    can reference it before the polling $effect below.
+  /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null}}>|null} */
+  let chainQuotesMap = $state(null);
+  const chainStrikes = $derived(
+    Object.keys(chainQuotesMap ?? {}).map(Number).filter(Boolean).sort((a, b) => a - b)
+  );
   const chainFutures = $derived.by(() => {
-    if (!instrumentsReady || !chainUnderlying) return [];
+    if (!chainUnderlying) return [];
     const all = listFutures(chainUnderlying.toUpperCase()) || [];
     if (!chainExpiry) return all.slice(0, 3);
     const exact = all.filter(f => f.x === chainExpiry);
@@ -416,9 +423,7 @@
     }
   });
 
-  // ── Chain quotes (bid/ask per strike) ─────────────────────────────
-  /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>|null} */
-  let chainQuotesMap = $state(null);
+  // ── Chain quotes polling ───────────────────────────────────────────
   let chainQuotesKey = '';
   let chainQuotesPoll = /** @type {any} */ (null);
   async function _refreshChainQuotes() {
@@ -428,12 +433,24 @@
       const r = await fetchChainQuotes(u, e);
       // Discard if the underlying/expiry changed while the fetch was in-flight.
       if (chainQuotesKey !== `${u}|${e}`) return;
-      /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>} */
+      /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null}}>} */
       const map = {};
       for (const row of (r?.rows || [])) {
         map[String(row.k)] = {
-          ce: { bid: row.ce_bid == null ? null : Number(row.ce_bid), ask: row.ce_ask == null ? null : Number(row.ce_ask) },
-          pe: { bid: row.pe_bid == null ? null : Number(row.pe_bid), ask: row.pe_ask == null ? null : Number(row.pe_ask) },
+          ce: {
+            bid: row.ce_bid == null ? null : Number(row.ce_bid),
+            ask: row.ce_ask == null ? null : Number(row.ce_ask),
+            sym: row.ce_sym || null,
+            ls:  row.ce_ls  == null ? null : Number(row.ce_ls),
+            exchange: row.exchange || null,
+          },
+          pe: {
+            bid: row.pe_bid == null ? null : Number(row.pe_bid),
+            ask: row.pe_ask == null ? null : Number(row.pe_ask),
+            sym: row.pe_sym || null,
+            ls:  row.pe_ls  == null ? null : Number(row.pe_ls),
+            exchange: row.exchange || null,
+          },
         };
       }
       chainQuotesMap = map;
@@ -547,13 +564,15 @@
 
   function addOptionToBasket(/** @type {number} */ strike, /** @type {'CE'|'PE'} */ optType, /** @type {'long'|'short'} */ side) {
     if (!chainUnderlying || !chainExpiry) return;
-    const inst = findOption(chainUnderlying.toUpperCase(), optType, strike, chainExpiry);
-    if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
-    const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
-    // Audit fix — eliminate the _account='' race. The $effect at line
-    // 166 auto-picks the single account but only after the first paint;
-    // a fast click on +CE in that window used to silently no-op (basket
-    // never appears, operator confused). Re-derive synchronously here:
+    const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
+    if (!q?.sym) { basketError = 'Quote not loaded — wait for chain refresh.'; return; }
+    const sym      = q.sym;
+    const exchange = q.exchange || 'NFO';
+    const lotSize  = q.ls || 1;
+    const sideTag  = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
+    // Audit fix — eliminate the _account='' race. The $effect auto-picks
+    // the single account but only after the first paint; a fast click on
+    // +CE in that window used to silently no-op. Re-derive synchronously:
     // single account → pick it; multiple → ask the operator to choose.
     if (!_account) {
       if (_allAccounts.length === 1) { _account = _allAccounts[0]; }
@@ -565,11 +584,10 @@
     // Place-mode short-circuit: route directly to the Ticket tab
     // pre-filled with this leg, bypassing the basket entirely.
     if (_placeMode && onPlaceLeg) {
-      const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
       const limit = sideTag === 'BUY' ? (q?.ask ?? q?.bid ?? 0) : (q?.bid ?? q?.ask ?? 0);
       onPlaceLeg({
-        symbol: String(inst.s), exchange: inst.e || 'NFO', side: sideTag,
-        qty: Number(inst.ls || 1), lotSize: Number(inst.ls || 1),
+        symbol: sym, exchange, side: sideTag,
+        qty: lotSize, lotSize,
         price: Number(limit) || 0,
         orderType: limit > 0 ? 'LIMIT' : 'MARKET',
         product: 'NRML', variety: 'regular', account: _account,
@@ -577,16 +595,15 @@
       _flashToast(_quickKeyOpt(strike, optType), '→ ticket');
       return;
     }
-    if (_mergeIntoBasket({ sym: String(inst.s), side: sideTag, lots: 1 })) {
+    if (_mergeIntoBasket({ sym, side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '+1 lot'); return;
     }
-    const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
     const limit = sideTag === 'BUY' ? (q?.ask ?? q?.bid ?? 0) : (q?.bid ?? q?.ask ?? 0);
     _pushToBasket({
       key:      `${sideTag}|${_quickKeyOpt(strike, optType)}|${Date.now()}`,
-      side:     sideTag, sym: String(inst.s), exchange: inst.e || 'NFO',
+      side:     sideTag, sym, exchange,
       account:  _account,
-      lots: 1, lotSize: Number(inst.ls || 1), product: 'NRML',
+      lots: 1, lotSize, product: 'NRML',
       limit: Number(limit) || 0, chaseAgg: 'low',
     });
     basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '✓ added');
@@ -758,18 +775,7 @@
     _finalizeBasket(failures, total);
   }
 
-  let _instLoading = $state(true);
-  let _instError   = $state(false);
-
   onMount(async () => {
-    try {
-      await loadInstruments();
-      instrumentsReady = true;
-    } catch (_) {
-      _instError = true;
-    } finally {
-      _instLoading = false;
-    }
     // Self-fetch accounts when the prop didn't supply any.
     if (!accounts.length && !_isRealAcct(account)) {
       fetchAccounts()
@@ -787,18 +793,8 @@
 </script>
 
 <div class="oct-root">
-  {#if _instLoading}
-    <div class="oct-empty">Loading instruments…</div>
-  {:else if _instError}
-    <div class="oct-empty oct-inst-err">
-      Could not load instruments — broker may be unreachable.
-      <button type="button" class="oct-retry-btn" onclick={async () => {
-        _instError = false; _instLoading = true;
-        try { await loadInstruments({ forceRefresh: true }); instrumentsReady = true; }
-        catch (_) { _instError = true; }
-        finally { _instLoading = false; }
-      }}>Retry</button>
-    </div>
+  {#if _chainExpiriesLoading && !chainExpiries.length}
+    <div class="oct-empty">Fetching expiries…</div>
   {/if}
   <!-- Account / Underlying / Expiry / Kind / Mode pickers retired per
        operator request — Account lives in the modal header's Account

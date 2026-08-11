@@ -567,15 +567,22 @@ class ChainQuoteRow(msgspec.Struct):
     ce_ask:   float | None
     pe_bid:   float | None
     pe_ask:   float | None
+    ce_sym:   str | None = None
+    pe_sym:   str | None = None
+    ce_ls:    int | None = None
+    pe_ls:    int | None = None
+    exchange: str | None = None
 
 
 class ChainQuotesResponse(msgspec.Struct):
     """Per-strike CE / PE bid / ask map for the chain picker — one
     round-trip populates the inline quote cells next to every Buy /
-    Sell / (i) button on both sides of the strike grid."""
-    underlying:  str
-    expiry:      str
-    rows:        list[ChainQuoteRow]
+    Sell / (i) button on both sides of the strike grid.
+    When expiry is omitted only the expiries list is returned (no broker call)."""
+    underlying: str
+    expiry:     str
+    rows:       list[ChainQuoteRow]
+    expiries:   list[str] = []
 
 
 class ChainSnapshotLeg(msgspec.Struct):
@@ -2083,26 +2090,54 @@ def _best_depth_price(book: list) -> "float | None":
     return None
 
 
+# ---------------------------------------------------------------------------
+# Chain-quotes sym-map cache — avoids re-scanning 156K instruments on every
+# poll tick.  TTL is intentionally short (3 s) so quote refreshes are cheap
+# while the sym-map stays stable across the option chain's life.
+# ---------------------------------------------------------------------------
+_CHAIN_SYM_CACHE: dict[tuple, tuple[float, tuple]] = {}
+_CHAIN_SYM_TTL = 3.0
+
+
+def _chain_sym_cache_clear() -> None:
+    """Test helper — reset the sym-map cache between test runs."""
+    _CHAIN_SYM_CACHE.clear()
+
+
 def _chain_quotes_build_sym_map(
     inst_resp, und: str, exp: str
-) -> dict[float, dict[str, str]]:
-    """Build strike → {CE: sym, PE: sym} from the instruments response."""
-    sym_by_strike: dict[float, dict[str, str]] = {}
+) -> tuple[dict[float, dict[str, dict]], list[str]]:
+    """Build (strike_map, all_expiries) in one pass.
+
+    strike_map:   {strike: {"CE": {"sym": s, "ls": n, "e": exchange},
+                             "PE": {"sym": s, "ls": n, "e": exchange}}}
+    all_expiries: sorted list of all CE/PE expiry dates for this underlying.
+
+    When exp is empty the strike_map is empty (expiry-only mode — caller
+    skips the broker quote call entirely).
+    """
+    sym_by_strike: dict[float, dict[str, dict]] = {}
+    expiry_set: set[str] = set()
     for inst in inst_resp.items:
         if (inst.u or "").upper() != und:
             continue
-        if inst.x != exp:
-            continue
         if inst.t not in ("CE", "PE"):
+            continue
+        if inst.x:
+            expiry_set.add(inst.x)
+        if not exp or inst.x != exp:
             continue
         if inst.k is None:
             continue
-        sym_by_strike.setdefault(float(inst.k), {"CE": "", "PE": ""})[inst.t] = inst.s
-    return sym_by_strike
+        sym_by_strike.setdefault(float(inst.k), {
+            "CE": {"sym": "", "ls": 1, "e": ""},
+            "PE": {"sym": "", "ls": 1, "e": ""},
+        })[inst.t] = {"sym": inst.s, "ls": int(inst.ls or 1), "e": inst.e or ""}
+    return sym_by_strike, sorted(expiry_set)
 
 
 async def _chain_quotes_batch_quote(
-    sym_by_strike: dict[float, dict[str, str]],
+    sym_by_strike: dict[float, dict[str, dict]],
     und: str,
     exp: str,
 ) -> tuple[dict, dict[str, tuple[float, str]]]:
@@ -2110,10 +2145,10 @@ async def _chain_quotes_batch_quote(
     keys: list[str] = []
     key_meta: dict[str, tuple[float, str]] = {}
     for strike, sides in sym_by_strike.items():
-        for side, sym in sides.items():
-            if not sym:
+        for side, meta in sides.items():
+            if not meta.get("sym"):
                 continue
-            qk = option_quote_key(sym)
+            qk = option_quote_key(meta["sym"])
             keys.append(qk)
             key_meta[qk] = (strike, side)
 
@@ -2146,16 +2181,21 @@ def _chain_quotes_bid_ask_from_q(q: dict) -> tuple["float | None", "float | None
 
 
 def _chain_quotes_build_book(
-    sym_by_strike: dict[float, dict[str, str]],
+    sym_by_strike: dict[float, dict[str, dict]],
     quote_resp: dict,
     key_meta: dict[str, tuple[float, str]],
-) -> dict[float, dict[str, dict[str, "float | None"]]]:
-    """Populate bid/ask per strike+side from the broker quote response."""
-    book_by_strike: dict[float, dict[str, dict[str, "float | None"]]] = {
-        k: {"CE": {"bid": None, "ask": None},
-            "PE": {"bid": None, "ask": None}}
-        for k in sym_by_strike
-    }
+) -> dict[float, dict[str, dict]]:
+    """Populate bid/ask per strike+side from the broker quote response.
+    Pre-seeds sym/ls/exchange from sym_by_strike so row construction
+    can read all fields from one dict."""
+    book_by_strike: dict[float, dict[str, dict]] = {}
+    for k, sides in sym_by_strike.items():
+        book_by_strike[k] = {
+            "CE": {"bid": None, "ask": None,
+                   "sym": sides["CE"]["sym"], "ls": sides["CE"]["ls"], "e": sides["CE"]["e"]},
+            "PE": {"bid": None, "ask": None,
+                   "sym": sides["PE"]["sym"], "ls": sides["PE"]["ls"], "e": sides["PE"]["e"]},
+        }
     for qk, (strike, side) in key_meta.items():
         q = quote_resp.get(qk) or {}
         bid, ask = _chain_quotes_bid_ask_from_q(q)
@@ -2489,15 +2529,17 @@ class OptionsController(Controller):
         broker `quote()` call covering both sides of every strike. The
         chain picker on /admin/options renders the LTPs inline next to
         each Buy / Sell / (i) button so the operator can size legs
-        without leaving the chain view."""
+        without leaving the chain view.
+
+        When expiry is omitted the response contains only `expiries`
+        (the available expiry dates for the underlying) with an empty
+        `rows` list — no broker quote call is made."""
         und = (underlying or "").upper().strip()
         exp = (expiry or "").strip()
         if not und:
             raise HTTPException(status_code=400,
                                 detail="underlying is required")
-        if not exp:
-            raise HTTPException(status_code=400,
-                                detail="expiry is required")
+        # expiry is now optional — omit to get just the expiries list
 
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments
@@ -2508,15 +2550,33 @@ class OptionsController(Controller):
             logger.warning(f"chain-quotes instruments fetch failed: {e}")
             return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
 
-        # Map (strike, side) → tradingsymbol for the matching contracts.
-        sym_by_strike = _chain_quotes_build_sym_map(inst_resp, und, exp)
+        # Cache + thread the 156K instrument scan.
+        _cache_key = (und, exp)
+        _now = time.monotonic()
+        _entry = _CHAIN_SYM_CACHE.get(_cache_key)
+        if _entry and (_now - _entry[0]) < _CHAIN_SYM_TTL:
+            sym_by_strike, all_expiries = _entry[1]
+        else:
+            sym_by_strike, all_expiries = await asyncio.to_thread(
+                _chain_quotes_build_sym_map, inst_resp, und, exp
+            )
+            _CHAIN_SYM_CACHE[_cache_key] = (_now, (sym_by_strike, all_expiries))
+
+        # Expiry-only mode: return just the expiries list, no broker call.
+        if not exp:
+            return ChainQuotesResponse(
+                underlying=und, expiry="", expiries=all_expiries, rows=[]
+            )
+
         if not sym_by_strike:
-            return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
+            return ChainQuotesResponse(
+                underlying=und, expiry=exp, expiries=all_expiries, rows=[]
+            )
 
         # Build quote keys, fire one broker.quote() call.
         quote_resp, key_meta = await _chain_quotes_batch_quote(sym_by_strike, und, exp)
 
-        # Populate bid/ask per strike+side.
+        # Populate bid/ask + sym/ls/exchange per strike+side.
         book_by_strike = _chain_quotes_build_book(sym_by_strike, quote_resp, key_meta)
 
         rows = [
@@ -2526,10 +2586,17 @@ class OptionsController(Controller):
                 ce_ask=sides["CE"]["ask"],
                 pe_bid=sides["PE"]["bid"],
                 pe_ask=sides["PE"]["ask"],
+                ce_sym=sides["CE"]["sym"] or None,
+                pe_sym=sides["PE"]["sym"] or None,
+                ce_ls=int(sides["CE"]["ls"]) if sides["CE"]["ls"] else None,
+                pe_ls=int(sides["PE"]["ls"]) if sides["PE"]["ls"] else None,
+                exchange=sides["CE"]["e"] or sides["PE"]["e"] or None,
             )
             for strike, sides in sorted(book_by_strike.items())
         ]
-        return ChainQuotesResponse(underlying=und, expiry=exp, rows=rows)
+        return ChainQuotesResponse(
+            underlying=und, expiry=exp, expiries=all_expiries, rows=rows
+        )
 
     @get("/chain-snapshot")
     async def chain_snapshot(
