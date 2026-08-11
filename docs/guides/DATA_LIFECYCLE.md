@@ -181,10 +181,13 @@ payload_json, captured_at, previous_close, prev_ltp, prev_settlement_pnl
    - 1 for NSE/NFO
    - actual lot_size for MCX/NCO
 3. `effective_qty = qty × multiplier`
-4. close_price resolution order: prev_ltp (if > 0) → previous_close (if > 0) → ltp
+4. close_price resolution order: previous_close (if > 0) → prev_ltp (if > 0) → ltp
 5. Computed day_pnl:
-   - If prev_ltp available: `(ltp - close_price) × effective_qty`
+   - If previous_close available: `(ltp - previous_close) × effective_qty`
+   - Else if prev_ltp available: `(ltp - prev_ltp) × effective_qty`
    - Else: use stored day_pnl
+
+   Note: this priority was corrected in Aug 2026 — `previous_close` (COALESCE-frozen at first write, holds yesterday's settlement) is now primary. `prev_ltp` is fallback only, so multi-batch intraday captures no longer collapse `day_change_val` to ~0 after market close.
 6. Day percentage: `resolve_snapshot_day_pct()` — denominator =
    `prev_close × qty` (not LTP × qty)
 7. Flat-row hygiene: qty=0 rows set `day_change_val=0`
@@ -523,3 +526,12 @@ Steps:
 | ~15:45 | NSE close_settled | `snapshot_sparkline(settled=True)` | Re-upsert with adjusted settlement close; `settled=true` |
 | 23:30 | MCX close | `snapshot_sparkline` (both passes) | MCX commodity sparklines written |
 | On demand | Frontend grid load | `sparklinesStore.load()` | 100-symbol chunks; 1-day TTL frontend cache |
+
+---
+
+## Changelog
+
+| Date | Version | Change |
+|---|---|---|
+| 2026-08-09 | v1.4 | Holdings snapshot prev_batch CTE + MCX lot-scale day P&L — §4.4 updated with prev_batch 7-day lookback finding most-recent prior-day LTP per (account, symbol); `_build_holding_row_from_snapshot()` computes `day_change_val = (ltp - prev_ltp) × qty` when `prev_ltp > 0`, matching positions closed-hours pattern; fallback to `(ltp - previous_close) × qty` when `prev_ltp` unavailable/zero |
+| 2026-08-11 | v1.5 | Positions close-price priority fix + pulseHoldingsStore in book poller — §4.4 updated: `build_row_from_snapshot_raw` now prefers `previous_close` (frozen settlement) over `prev_ltp` (recent batch LTP) for `computed_day_pnl`, fixing positions showing day_change_val ≈ 0 after market close when daily_book had multiple intraday captures. Frontend: `_tickBookPollers()` now includes `pulseHoldingsStore.load()` so NavStrip H:1 stays in sync with Pulse Holdings TOTAL during closed hours |

@@ -149,7 +149,7 @@ Every value must match a canonical source to stay in sync with other surfaces.
 | M:1, M:2 | `/api/funds` response margin fields | `funds[].avail_margin`, `funds[].used_margin` |
 | C:1 | Broker's live cash (CA) | `fundsStore.load()` → `funds[].live_cash` |
 | C:2 | Option premium tied up in long positions | Derived from `positions[]` CE/PE rows |
-| H:1 | MarketPulse Holdings grid TOTAL row, Day P&L column | `Σ holdings.day_change_val + delta` |
+| H:1 | MarketPulse Holdings grid TOTAL row, Day P&L column | `Σ holdings.day_change_val + delta`; `pulseHoldingsStore` loaded by `_tickBookPollers()` every 5s live / 30min closed, so NavStrip H:1 stays in sync with Pulse Holdings TOTAL even after market close |
 | H:2 | MarketPulse Holdings grid TOTAL row, Value column | `pulseHoldingsStore` (shared with MarketPulse); formula: `ltp × qty` from symbolStore, fallback to `h.cur_val` |
 | H:3 | MarketPulse Holdings grid TOTAL row, P&L column | `Σ holdings.pnl + delta` |
 
@@ -515,3 +515,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-07-19 | Round 6: InfoHint `panel` mode spec (gradient bg, accent left border, titled header); per-slot ⓘ hover hints for all 10 slots; corrected M and C accent hex values; font-size upgrade for `.ps-agg-k` (xs→sm desktop, 2xs→xs mobile/380px); `frontend/src/lib/InfoHint.svelte` + `PositionStrip.svelte` updated |
 | 2026-07-22 | Pill label click-to-breakdown: clicking any P/M/C/H label opens NavBreakdown panel overlay (fixed below NavStrip, min(28rem, 100vw) width); dismiss via Escape or click-outside; typography note: `.ps-agg-k` uses `var(--fs-md)` (desktop) / `var(--fs-sm)` (mobile) |
 | 2026-08-11 | H slot 2 (Holdings Value): now reads from `pulseHoldingsStore` (shared SSOT with MarketPulse); formula: `ltp × qty` from symbolStore, fallback to `h.cur_val` (matches `finalizeRows` in `pulseUnified.js:697`); NavStrip and MarketPulse never diverge on holdings value |
+| 2026-08-11 | H:1 SSOT fix: `pulseHoldingsStore` added to `_tickBookPollers()` — NavStrip H:1 (`dispHoldingsToday`) now refreshed every book-poller tick (5s live / 30min closed), eliminating the closed-hours divergence from Pulse Holdings TOTAL |
