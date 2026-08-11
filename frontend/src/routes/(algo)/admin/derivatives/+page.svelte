@@ -3753,7 +3753,7 @@
       // previous session. The fetches below repopulate from the
       // backend within one tick.
       positions = [];
-      loadPositions();
+      loadPositions({ fresh: true });
       loadRealAccounts();
     });
   });

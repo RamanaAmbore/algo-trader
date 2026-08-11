@@ -758,9 +758,18 @@
     _finalizeBasket(failures, total);
   }
 
+  let _instLoading = $state(true);
+  let _instError   = $state(false);
+
   onMount(async () => {
-    await loadInstruments();
-    instrumentsReady = true;
+    try {
+      await loadInstruments();
+      instrumentsReady = true;
+    } catch (_) {
+      _instError = true;
+    } finally {
+      _instLoading = false;
+    }
     // Self-fetch accounts when the prop didn't supply any.
     if (!accounts.length && !_isRealAcct(account)) {
       fetchAccounts()
@@ -778,6 +787,19 @@
 </script>
 
 <div class="oct-root">
+  {#if _instLoading}
+    <div class="oct-empty">Loading instruments…</div>
+  {:else if _instError}
+    <div class="oct-empty oct-inst-err">
+      Could not load instruments — broker may be unreachable.
+      <button type="button" class="oct-retry-btn" onclick={async () => {
+        _instError = false; _instLoading = true;
+        try { await loadInstruments({ forceRefresh: true }); instrumentsReady = true; }
+        catch (_) { _instError = true; }
+        finally { _instLoading = false; }
+      }}>Retry</button>
+    </div>
+  {/if}
   <!-- Account / Underlying / Expiry / Kind / Mode pickers retired per
        operator request — Account lives in the modal header's Account
        dropdown; Underlying is derived from the symbol the operator
@@ -1197,6 +1219,14 @@
 
   .oct-spot-row { margin-bottom: 0.25rem; }
   .oct-empty { font-size: var(--fs-sm); color: var(--text-muted); font-style: italic; margin-top: 0.5rem; }
+  .oct-inst-err { color: var(--c-short); font-style: normal; display: flex; align-items: center; gap: 0.5rem; }
+  .oct-retry-btn {
+    padding: 0.15rem 0.5rem; border-radius: 2px;
+    border: 1px solid var(--c-short); background: transparent; color: var(--c-short);
+    font-family: var(--font-numeric); font-size: var(--fs-xs); font-weight: 700;
+    cursor: pointer; letter-spacing: 0.04em;
+  }
+  .oct-retry-btn:hover { background: rgba(248,113,113,0.12); }
 
   /* ── chain grid (mirrors admin/options styles) ────────────────── */
   .chain-futures {
