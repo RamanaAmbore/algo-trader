@@ -4292,6 +4292,70 @@ during open hours due to SSE delta.
 
 ---
 
+## 22.18a. NavStrip H slot 2 — SSOT switch to pulseHoldingsStore + live ltp×qty formula
+
+**Problem:** NavStrip H slot 2 (Holdings Value) showed a different value than
+MarketPulse TOTAL Holdings Value column (e.g. 1.55c vs 1.72c). Two independent
+root causes:
+
+1. **Wrong data store:** NavStrip read from `holdingsStore` (`md.holdings` cache key,
+   separate TTL timer) while MarketPulse uses `pulseHoldingsStore` (`md.pulse.holdings`).
+   Even with identical data, the TTL timers are independent, so the stores can hold data
+   fetched at different times.
+
+2. **Stale value formula:** `_liveHoldingsValue` summed `h.cur_val` — a broker-computed
+   field frozen at fetch time. MarketPulse's `finalizeRows` in `pulseUnified.js:697`
+   instead computes `live_ltp × qty_hold` per tick, reacting to every LTP update.
+
+**Fix:**
+- Switched `holdings` state in `PositionStrip.svelte` from `holdingsStore.value` to
+  `pulseHoldingsStore.value` (same store used by MarketPulse). Both the existing
+  `_liveHoldingsTotal` and the fixed `_liveHoldingsValue` now iterate from this single
+  source.
+- `_liveHoldingsValue` rewritten to compute `getSnapshot(sym)?.ltp × qty` (matching
+  `finalizeRows`), falling back to `h.cur_val` when LTP is unavailable.
+
+**SSOT invariant:** NavStrip H slot 2 ≡ MarketPulse TOTAL Holdings Value (within tick
+timing, < 0.1%).
+
+**Files:**
+- `frontend/src/lib/PositionStrip.svelte` — `holdings` state assignment +
+  `_liveHoldingsValue` `$derived.by` block
+
+---
+
+## 22.19a. Orders fetch timeout + Chase hang prevention
+
+**Problem:** `_fetch_orders()` in `orders_helpers.py` used `ThreadPoolExecutor.pool.map()`
+which blocks the entire map until the slowest broker finishes. A hanging Dhan `orders()`
+call blocks indefinitely. `get_or_fetch` holds a per-key lock, so all subsequent
+`/chases/active` polls queue behind it — ChaseCard polls every 3s → 10+ coroutines pile up
+→ event loop saturated → entire site unresponsive.
+
+**Fix — three layers:**
+
+1. **Per-broker 8s timeout** (`orders_helpers.py`): Replaced `pool.map()` with explicit
+   `fut.result(timeout=8)` per broker. On timeout, logs a warning and contributes empty
+   list for that account. `pool.shutdown(wait=False, cancel_futures=True)` ensures
+   abandoned futures don't block exit.
+
+2. **Chase snapshot 10s timeout** (`orders.py`): Wrapped `get_or_fetch("orders", ...)`
+   in `asyncio.wait_for(timeout=10.0)` in `_chase_snapshot_broker_status_by_id`. On
+   `asyncio.TimeoutError`, returns `{}` immediately so the route always responds within 10s.
+
+3. **ChaseCard in-flight guard** (`ChaseCard.svelte`): Added `let _fetching = false` +
+   `_poll()` wrapper. If a prior fetch is still in flight when the 3s interval fires, the
+   new invocation returns immediately without issuing a second request. Prevents
+   coroutine pile-up even under slow-network conditions.
+
+**Files:**
+- `backend/api/routes/orders_helpers.py` — `_BROKER_ORDERS_TIMEOUT = 8`, explicit
+  futures loop
+- `backend/api/routes/orders.py` — `asyncio.wait_for` in `_chase_snapshot_broker_status_by_id`
+- `frontend/src/lib/order/ChaseCard.svelte` — `_poll()` in-flight guard
+
+---
+
 ## 22.19. CSV export button — all ag-Grid card headers
 
 Every data card across the app now has a one-click CSV download button.
@@ -4861,6 +4925,7 @@ chmod +x .git/hooks/pre-commit
 | **CSV export: all ag-Grid cards** | No download button on Dashboard, PerformancePage, NavBreakdown, Derivatives Legs/Snapshot | §22.19; `GridDownloadButton.svelte` + `CardControls.svelte` + `csvExport.js` |
 | **Docs: reorganise + 21 spec files** | All .md docs moved to `docs/`; 21 exhaustive behavioral contract specs added | §22.20; `docs/specs/*.md`, `docs/guides/*.md` |
 | **Specs v2.0: Orders, Activity, Chart** | v1.0 specs lacked modal/page surface split, state machine, audit cases, and test map | §22.21; `docs/specs/ORDERS_SPEC.md`, `ACTIVITY_SPEC.md`, `CHART_SPEC.md` |
+| **NavStrip H slot 2 SSOT + Orders timeout** | NavStrip H Holdings Value now uses pulseHoldingsStore + live ltp×qty formula (matches MarketPulse); orders fetch 8s per-broker timeout + chase 10s asyncio guard + ChaseCard in-flight guard | §22.18a, §22.19a |
 
 ---
 
