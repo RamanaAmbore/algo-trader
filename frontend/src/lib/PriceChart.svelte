@@ -8,7 +8,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { fetchChartPriceHistory } from '$lib/api';
   import { priceFmt } from '$lib/format';
-  import { visibleInterval } from '$lib/stores';
+  import { visibleInterval, withGuard } from '$lib/stores';
   import LegLabel from '$lib/LegLabel.svelte';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
 
@@ -122,7 +122,7 @@
     stopPolling();
     // visibleInterval: pauses when hidden, fires load() immediately on
     // tab return so the chart refreshes as soon as the operator returns.
-    timer = visibleInterval(load, pollMs);
+    timer = visibleInterval(withGuard(load), pollMs);
   }
   function stopPolling() {
     if (timer) { timer(); timer = null; }

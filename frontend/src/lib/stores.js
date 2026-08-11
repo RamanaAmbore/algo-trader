@@ -546,6 +546,30 @@ export function marketAwareInterval(fn, ms, hiddenMs = 0) {
   };
 }
 
+/**
+ * Wraps an async function with an in-flight guard — if the function is
+ * already executing, the next call returns immediately (undefined) without
+ * starting a second concurrent invocation.
+ *
+ * Each `withGuard(fn)` call creates its own independent `_running` flag so
+ * two polling sites that both call `withGuard` never block each other.
+ *
+ * Intended use: replace `visibleInterval(fn, ms)` with
+ * `visibleInterval(withGuard(fn), ms)` for any async fn whose execution
+ * time may exceed the poll interval on a slow network.
+ *
+ * @template {(...args: any[]) => Promise<any>} T
+ * @param {T} fn
+ * @returns {T}
+ */
+export function withGuard(fn) {
+  let _running = false;
+  return /** @type {T} */ (async function _guarded() {
+    if (_running) return;
+    _running = true;
+    try { return await fn(); } finally { _running = false; }
+  });
+}
 
 /** Display label for a git branch name. The `main` branch is the
  *  prod deployment target — operators think in "prod / dev" terms,

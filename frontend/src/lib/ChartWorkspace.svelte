@@ -66,7 +66,7 @@
   import { resolveUnderlying, MCX_COMMODITIES, CDS_CURRENCIES, INDEX_LTP_KEY } from '$lib/data/resolveUnderlying';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { displaySymbol } from '$lib/data/displaySymbol.js';
-  import { visibleInterval } from '$lib/stores';
+  import { visibleInterval, withGuard } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';
@@ -881,7 +881,7 @@
 
   function _startTickPoll() {
     _stopTickPoll();
-    _tickTimer = visibleInterval(_loadIntraday, 3000);
+    _tickTimer = visibleInterval(withGuard(_loadIntraday), 3000);
   }
   function _stopTickPoll() {
     if (_tickTimer) { _tickTimer(); _tickTimer = null; }
@@ -1592,7 +1592,7 @@
     await _loadHistorical();
     if (!_isDemo) {
       await _pollStatus();
-      _statusTimer = visibleInterval(_pollStatus, 5000);
+      _statusTimer = visibleInterval(withGuard(_pollStatus), 5000);
     }
     // Defer Greeks fetch until after the chart first-paints.
     // Greeks are supplemental (shown in the strip below the chart);

@@ -251,6 +251,36 @@ def for_all_accounts(func):
     return wrapper
 
 
+def with_guard(fn):
+    """Decorator: skip/drop concurrent invocations of an async function.
+
+    If *fn* is already executing, the second call returns ``None`` immediately
+    without queuing.  Correct for background tasks where a stale concurrent
+    run wastes resources.  For API routes prefer ``@ssot_fetch(mode='coalesce')``
+    so callers share the in-flight result instead of being silently dropped.
+
+    Thread-safety note: the ``_running`` flag is a plain Python bool protected
+    only by the GIL.  This is sufficient for asyncio tasks on a single-threaded
+    event loop (the only consumer), but do NOT use this decorator on functions
+    called from ``ThreadPoolExecutor`` workers.
+    """
+    _running = False
+
+    @functools.wraps(fn)
+    async def _guarded(*args, **kwargs):
+        nonlocal _running
+        if _running:
+            logger.debug("%s: skipped — already in-flight", fn.__qualname__)
+            return None
+        _running = True
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            _running = False
+
+    return _guarded
+
+
 def debug_wrapper(function):
     @functools.wraps(function)
     def wrapper(*args, **kwargs):

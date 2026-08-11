@@ -9,7 +9,7 @@
   // via placeTicketOrder() without a new backend route.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval } from '$lib/stores';
+  import { visibleInterval, withGuard } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
     fetchOptionsSpot, fetchChainQuotes,
@@ -421,10 +421,12 @@
   let chainQuotesMap = $state(null);
   let chainQuotesKey = '';
   let chainQuotesPoll = /** @type {any} */ (null);
-  function _refreshChainQuotes() {
+  async function _refreshChainQuotes() {
     if (!chainUnderlying || !chainExpiry || !isMarketOpen()) return;
     const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
-    fetchChainQuotes(u, e).then((r) => {
+    try {
+      const r = await fetchChainQuotes(u, e);
+      // Discard if the underlying/expiry changed while the fetch was in-flight.
       if (chainQuotesKey !== `${u}|${e}`) return;
       /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>} */
       const map = {};
@@ -435,7 +437,7 @@
         };
       }
       chainQuotesMap = map;
-    }).catch(() => {});
+    } catch { /* keep last-good */ }
   }
   $effect(() => {
     void chainUnderlying; void chainExpiry;
@@ -445,7 +447,7 @@
       const key = `${chainUnderlying.toUpperCase()}|${chainExpiry}`;
       if (key !== chainQuotesKey) { chainQuotesMap = null; chainQuotesKey = key; }
       _refreshChainQuotes();
-      chainQuotesPoll = visibleInterval(_refreshChainQuotes, 5000);
+      chainQuotesPoll = visibleInterval(withGuard(_refreshChainQuotes), 5000);
     });
   });
   onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } });

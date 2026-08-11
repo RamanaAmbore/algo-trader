@@ -1,199 +1,154 @@
-# Plan: fix(brokers): chip status all accounts + NavStrip SSOT + Chase hang + workflow hardening
+# Plan: fix(frontend+backend): withGuard() double-valve — in-flight guard at both layers
 
 ## Context
 
-**Issue 1 — Connection chip shows wrong state (all broker accounts):**
-`_record_fetch(account, ok=True)` is called unconditionally in `_fetch_holdings_local()`
-(broker_apis.py:1408) and `_fetch_positions_local()` (broker_apis.py:1781) even when the
-broker returned an empty/error-shaped response (rows=[]). This applies to ALL configured
-broker accounts (Kite, Dhan, Groww) — any broker returning empty rows silently records
-ok=True. Dhan account 1's IPv6 (`source_ip: 2a02:4780:12:9e1d::1`) exposes this most often,
-but the gate is missing for every account. A prior commit (f3fc8aeb) claimed this fix was
-added but the code never actually implemented it.
+ChaseCard introduced a `_fetching` boolean that prevents a second poll from firing while the
+first is still in-flight. The same problem exists across 6+ other frontend components AND their
+backend counterparts: when network is slow and `visibleInterval` fires faster than the fetch
+resolves, concurrent requests pile up → event-loop saturation → unresponsive page.
 
-**Issue 2 — NavStrip H slot 2 shows 1.55c, MarketPulse shows 1.72c:**
-NavStrip computes `_liveHoldingsValue` from `holdingsStore` (cache key `md.holdings`) while
-MarketPulse uses `pulseHoldingsStore` (cache key `md.pulse.holdings`). The two stores have
-independent TTL timers and can hold data fetched at different times. More critically,
-`_liveHoldingsValue` sums `h.cur_val` — a broker-computed field frozen at fetch time —
-while MarketPulse's TOTAL Holdings `cur_val` = `live_ltp × qty_hold` recomputed every tick
-via `finalizeRows` in `pulseUnified.js:697`. The correct SSOT fix is to make NavStrip use
-`pulseHoldingsStore` as its holdings source (same as MarketPulse). Any Dhan connectivity fix
-that makes MarketPulse correct then automatically makes NavStrip correct with no additional
-code. `_liveHoldingsValue` must also switch from summing stale `h.cur_val` to computing
-`getSnapshot(sym)?.ltp × qty` (matching MarketPulse's finalizeRows formula).
+**Double-valve architecture:**
+- **Valve 1 (frontend):** `withGuard(fn)` HOF — prevents redundant HTTP requests from being
+  sent at all. Best-effort UX optimization.
+- **Valve 2 (backend):** `@with_guard` Python decorator — ensures even if duplicate requests
+  arrive (concurrent tabs, retry logic, frontend bug), the handler does not execute concurrently.
+  This is the reliability guarantee.
 
-**Issue 3 — Chase tab hang / website unresponsive:**
-`_fetch_orders()` (orders_helpers.py:358) uses `ThreadPoolExecutor.pool.map()` with no
-per-broker timeout. A hanging Dhan (or any broker) `orders()` call blocks the entire map
-indefinitely. `get_or_fetch` holds a per-key lock, so all subsequent `/chases/active` polls
-queue behind it. ChaseCard polls every 3s → 10+ coroutines pile up → event loop saturated →
-entire site unresponsive.
+**Why `@with_guard` is distinct from `@ssot_fetch`:**
+- `@ssot_fetch(mode='coalesce')` — multiple callers wait for one in-flight result (queue)
+- `@ssot_fetch(mode='serialize')` — runs calls one at a time (queue)
+- `@with_guard` — DROP/skip if already in-flight (no queueing)
+
+For **background tasks**, drop is correct: queueing a stale run wastes resources. For
+**route handlers**, coalesce (`@ssot_fetch`) is better UX; `@with_guard` on routes returns
+a 429 to protect against burst — apply only where backend fetch is genuinely expensive and
+has no cache layer.
+
+---
 
 ## Agents
 
-- frontend: Fix `frontend/src/lib/PositionStrip.svelte` — make NavStrip use `pulseHoldingsStore`
-  as SSOT for holdings (same store MarketPulse uses) and fix `_liveHoldingsValue` formula.
+### frontend agent
 
-  **(1) Switch holdings source to `pulseHoldingsStore`:**
-  Find where `holdings` is assigned from `holdingsStore.value` in PositionStrip. Change it to
-  read from `pulseHoldingsStore.value` instead. Import `pulseHoldingsStore` from
-  `$lib/data/marketDataStores.svelte.js` (it's already exported there). Both `_liveHoldingsValue`
-  and `_liveHoldingsTotal` iterate `holdings`, so both benefit from this single change.
+Add `withGuard(fn)` to `frontend/src/lib/stores.js` and apply to HIGH-risk polling surfaces.
 
-  **(2) Fix `_liveHoldingsValue` formula (~line 470):**
-  Replace the stale `h.cur_val` sum with `ltp × qty` from symbolStore (matching `finalizeRows`
-  in `pulseUnified.js:697`):
-  ```javascript
-  const _liveHoldingsValue = $derived.by(() => {
-    let s = 0;
-    for (const h of holdings) {
-      const sym = String(h?.tradingsymbol || '').toUpperCase();
-      const ltp = getSnapshot(sym)?.ltp;
-      const qty = Number(h?.opening_quantity || h?.quantity || 0);
-      if (ltp != null && ltp > 0 && qty !== 0) {
-        s += ltp * qty;
-      } else {
-        s += Number(h?.cur_val || 0);
-      }
-    }
-    return s;
-  });
-  ```
-  `getSnapshot` is already imported (used by `_liveHoldingsTotal` directly above). No other
-  changes — logic for `_liveHoldingsTotal`, `dispHoldingsToday`, flash keys all stay identical.
+**(1) Add `withGuard(fn)` to `stores.js`** (after `marketAwareInterval` export, ~line 550):
+```javascript
+export function withGuard(fn) {
+  let _running = false;
+  return async function _guarded() {
+    if (_running) return;
+    _running = true;
+    try { return await fn(); } finally { _running = false; }
+  };
+}
+```
+Export alongside `visibleInterval` and `marketAwareInterval`. Each `withGuard(fn)` call
+creates its own independent `_running` flag.
 
-  For every file you change or create, you MUST write or update at least one test that covers the
-  changed behaviour. This is mandatory — not optional. Add/update a Vitest test in
-  `frontend/src/lib/__tests__/data/pulseRowsAndFlash.test.js` verifying:
-  - `_liveHoldingsValue` formula uses live LTP × qty when LTP available, falls back to `h.cur_val`
-  - The formula matches `finalizeRows` (same inputs → same output)
-  Extend the existing `_liveHoldingsTotal formula invariant` suite with parallel tests for
-  `_liveHoldingsValue`.
+**(2) Apply to HIGH-risk components:**
 
-- broker: Fix `backend/brokers/broker_apis.py` — gate `_record_fetch(ok=True)` to non-empty rows.
+| File | Function | Interval | Change |
+|---|---|---|---|
+| `frontend/src/lib/MarketPulse.svelte` | `_runTick` | 5s `marketAwareInterval` | `marketAwareInterval(withGuard(_runTick), _tickMs, _HIDDEN_TICK_MS)` |
+| `frontend/src/lib/charts/ChartWorkspace.svelte` | `_loadIntraday` | 3s `visibleInterval` | `visibleInterval(withGuard(_loadIntraday), 3000)` |
+| `frontend/src/lib/charts/ChartWorkspace.svelte` | `_pollStatus` | 5s `visibleInterval` | `visibleInterval(withGuard(_pollStatus), 5000)` |
+| `frontend/src/lib/LogPanel.svelte` | `_loadOrders`, `_loadAgents`, `_loadSystem`, `_loadConn`, `_loadSim` | 3s via `_every()` | Wrap each fn: `_every(withGuard(_loadOrders), ms)` — or modify `_every(fn, ms)` to apply `withGuard` internally |
+| `frontend/src/lib/UnifiedLog.svelte` | `_fetch` | 3s `visibleInterval` | `visibleInterval(withGuard(_fetch), pollMs)` |
+| `frontend/src/lib/charts/PriceChart.svelte` | `load` | 3s `visibleInterval` | `visibleInterval(withGuard(load), pollMs)` |
+| `frontend/src/lib/OptionChainTab.svelte` | `_refreshChainQuotes` | 5s `visibleInterval` | `visibleInterval(withGuard(_refreshChainQuotes), 5000)` |
 
-  **(1) `_fetch_holdings_local()` (~line 1408):**
-  Replace `_record_fetch(account, ok=True)` with:
-  ```python
-  if not df_holdings.empty:
-      _record_fetch(account, ok=True)
-  else:
-      _record_fetch(account, ok=False, error="empty holdings response")
-  ```
+Import `withGuard` from `$lib/stores.js` in each changed file.
 
-  **(2) `_fetch_positions_local()` (~line 1781):**
-  Replace `_record_fetch(account, ok=True)` with:
-  ```python
-  if not df_positions.empty:
-      _record_fetch(account, ok=True)
-  else:
-      _record_fetch(account, ok=False, error="empty positions response")
-  ```
+**Do NOT touch** components that call `createDataStore.load()` — already deduped internally.
+**Do NOT touch** `derivatives/+page.svelte` `_refreshChainQuotes` — already has `if (_refreshing) return` guard.
 
-  For every file you change, you MUST write or update at least one test covering the changed
-  behaviour. Add/update a pytest test in `backend/tests/broker/` that mocks a broker returning
-  an empty holdings list and asserts `_FETCH_HEALTH[account]['last_fail_at']` is updated and
-  `last_ok_at` is NOT updated. Mirror for positions.
+For every file you change, you MUST write or update at least one test. This is mandatory.
 
-- backend: Fix `backend/api/routes/orders_helpers.py` and `backend/api/routes/orders.py`.
+---
 
-  **(1) `orders_helpers.py:_fetch_orders()` (~line 358):**
-  Replace `pool.map(_one_account, brokers)` with per-broker `future.result(timeout=8)`:
-  ```python
-  import concurrent.futures as _cf
-  _BROKER_ORDERS_TIMEOUT = 8
-  results = []
-  with ThreadPoolExecutor(max_workers=min(len(brokers), 4)) as pool:
-      futs = [(pool.submit(_one_account, b), b.account) for b in brokers]
-      for fut, account in futs:
-          try:
-              results.append(fut.result(timeout=_BROKER_ORDERS_TIMEOUT))
-          except _cf.TimeoutError:
-              logger.warning(f"orders list timed out for {account} after {_BROKER_ORDERS_TIMEOUT}s")
-              results.append([])
-  ```
+### backend agent
 
-  **(2) `orders.py:_chase_snapshot_broker_status_by_id()` (~line 158):**
-  Wrap `get_or_fetch` with `asyncio.wait_for(..., timeout=10.0)`:
-  ```python
-  try:
-      _ord_resp = await asyncio.wait_for(
-          get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL),
-          timeout=10.0,
-      )
-  except asyncio.TimeoutError:
-      logger.warning("chases/active broker snapshot timed out after 10s")
-      return {}
-  except Exception as _oe:
-      logger.debug(f"chases/active broker snapshot failed: {_oe}")
-      return {}
-  ```
+Add `with_guard` decorator to the backend and apply to background tasks.
 
-  For every file changed, write tests. Add pytest test mocking a slow `broker.orders()` (sleep
-  > 8s) and assert `_fetch_orders()` returns within the timeout with empty list for that
-  account. Add test that mocks `get_or_fetch` raising `asyncio.TimeoutError` and asserts
-  `_chase_snapshot_broker_status_by_id()` returns `{}`.
+**(1) Add `with_guard` to `backend/shared/helpers/utils.py`** (or create
+`backend/shared/helpers/guards.py` if `utils.py` is too large):
 
-- frontend: Fix `frontend/src/lib/order/ChaseCard.svelte`.
+```python
+import asyncio
+import functools
+import logging
 
-  Add an in-flight guard — find the `fetchActiveChases()` call in the poll/interval callback
-  (~lines 112-129) and wrap:
-  ```javascript
-  let _fetching = false;
-  async function _poll() {
-    if (_fetching) return;
-    _fetching = true;
-    try { /* existing fetch logic */ } finally { _fetching = false; }
-  }
-  ```
-  Replace the direct call in the interval with `_poll()`.
+logger = logging.getLogger(__name__)
 
-  Write a Vitest unit test in `frontend/src/lib/__tests__/` verifying that a second call to
-  `_poll()` while the first is in flight does not issue a second fetch.
+def with_guard(fn):
+    """Decorator: skip/drop concurrent invocations of async fn.
+    
+    If fn is already running, the second call returns None immediately.
+    Correct for background tasks where a stale run should not queue.
+    For API routes prefer @ssot_fetch(mode='coalesce') instead.
+    """
+    _running = False
 
-- doc: Update impl/ddev/dprod/depl pipeline skills with two workflow fixes.
+    @functools.wraps(fn)
+    async def _guarded(*args, **kwargs):
+        nonlocal _running
+        if _running:
+            logger.debug("%s: skipped — already in-flight", fn.__qualname__)
+            return None
+        _running = True
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            _running = False
 
-  **(1) Commit message from diff, not from plan (impl Step 5):**
-  Find the impl skill file (check `.claude/commands/impl.md` or `~/.claude/commands/impl.md` or
-  the project-level skill path returned by `ls .claude/skills/` or `ls ~/.claude/commands/`).
-  In the commit step (Step 5 — "Archive plan + Commit"), add the following verification before
-  the `git commit` call:
-  - After all agents finish and tests are green, run `git diff --name-only --cached` to list
-    every staged file.
-  - Verify the commit message draft (from `PLAN.md`) matches the actual staged changes — every
-    claim in the message must map to a staged file change. If the draft is stale or misleading,
-    rewrite it from the diff.
-  - For each claim in the commit message (e.g. "gate _record_fetch ok=True"), grep the staged
-    diff for the specific line that implements it. If not found, the message is wrong — fix it
-    before committing.
-  - The PLAN.md `## Commit message` is a DRAFT only. Actual message = derived from diff.
-  Update depl skill to apply the same rule at its commit step.
+    return _guarded
+```
 
-  **(2) No permission prompt on plan→bypass transition (impl/depl Step 0-1):**
-  Create two helper scripts in `.claude/`:
-  - `.claude/set-bypass.sh`:
-    ```bash
-    #!/bin/bash
-    python3 -c "import json,os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='bypassPermissions'; json.dump(d,open(p,'w'),indent=2)"
-    ```
-  - `.claude/set-plan.sh`:
-    ```bash
-    #!/bin/bash
-    python3 -c "import json,os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='plan'; json.dump(d,open(p,'w'),indent=2)"
-    ```
-  Make both executable: `chmod +x .claude/set-bypass.sh .claude/set-plan.sh`.
-  Then update `.claude/settings.json` — add to `permissions.allow`:
-  ```json
-  "Bash(.claude/set-bypass.sh)",
-  "Bash(.claude/set-plan.sh)"
-  ```
-  Finally update the impl, depl, ddev, dprod skill files: replace the inline Python
-  `python3 -c "import json..."` bypass-mode lines with `.claude/set-bypass.sh` and
-  `.claude/set-plan.sh` calls respectively.
+**(2) Apply to background task functions in `backend/api/background.py`:**
+Find every `async def _task_*` or scheduled background function that:
+- Calls broker APIs (holdings, positions, orders, instruments)
+- Runs on a short interval (< 60s)
+- Lacks an existing `@ssot_fetch` or per-function `asyncio.Lock`
 
-- backend-test: skip
-- playwright: skip
+Apply `@with_guard` to each. Example targets (verify line numbers before editing):
+- `_fetch_positions_direct` / `_fetch_holdings_direct` if called from a tight loop
+- Any task that is supervised and could be re-fired while still running
+- `_task_instruments_store_populate` if it lacks a guard (recent commit added 120s delay
+  but not a concurrent-execution guard)
+
+**Do NOT apply to:**
+- Functions already decorated with `@ssot_fetch` — they have their own concurrency control
+- Route handlers — use `get_or_fetch` / `@ssot_fetch(mode='coalesce')` there instead
+- Functions that hold `asyncio.Lock` internally
+
+**(3) Apply `@with_guard` to `orders_helpers._fetch_orders`** as a second-valve complement
+to the 8s per-broker timeout already added. The timeout stops a slow broker; `@with_guard`
+stops a concurrent invocation if the previous fetch hasn't returned yet.
+
+For every file you change, you MUST write or update at least one test covering the guard
+behaviour (mock the guarded function, call it twice concurrently, assert second call returned
+None and the underlying function was called only once).
+
+---
+
+### frontend-test agent
+
+Write Vitest tests for `withGuard()` in `frontend/src/lib/__tests__/withGuard.test.js`:
+- Second call while first is in-flight: skips (returns undefined, fn called once)
+- After first resolves: second call executes (fn called again)
+- Error path: fn throws → `_running` resets, next call executes normally
+- Independent state: two `withGuard(fn)` wrappers have separate `_running` flags
+- Async correctness: fn is awaited, not fire-and-forget
+
+---
+
+### backend-test agent: skip
+### broker agent: skip
+### doc agent: skip
+### playwright agent: skip
+
+---
 
 ## Tests
 - pytest: yes
@@ -201,16 +156,14 @@ entire site unresponsive.
 - vitest: yes
 - playwright: no
 
-## Commit message (DRAFT — final written from git diff after implementation)
-fix(navstrip+brokers): _liveHoldingsValue SSOT; chip gate all accounts; 8s orders timeout; chase guard; workflow scripts
+## Commit message
+fix(guards): withGuard() double-valve — frontend HOF + backend @with_guard for 7 polling surfaces
 
 ## Done when
-- NavStrip H slot 2 matches MarketPulse TOTAL Holdings cur_val (both use live LTP × qty from pulseHoldingsStore)
-- Connection chip goes red when any broker account (Kite/Dhan/Groww) returns empty holdings/positions
-- `_fetch_orders()` always returns within 8s regardless of broker hang
-- `/api/orders/chases/active` always responds within 10s
-- ChaseCard never queues more than one in-flight request
-- `.claude/set-bypass.sh` and `.claude/set-plan.sh` exist, are executable, and are pre-authorized in `.claude/settings.json`
-- impl/depl skill files updated: commit message derived from git diff, inline Python replaced with scripts
-- pytest passes including new timeout and empty-response health tests (negative-case: empty rows → last_ok_at NOT updated)
-- svelte-check 0 errors, vitest 0 failures
+- `withGuard(fn)` exported from `stores.js` with Vitest tests green
+- `with_guard` Python decorator in `backend/shared/helpers/`
+- MarketPulse, ChartWorkspace (×2), LogPanel, UnifiedLog, PriceChart, OptionChainTab all
+  wrapped on frontend
+- Background tasks with tight intervals wrapped with `@with_guard` on backend
+- `_fetch_orders` has `@with_guard` as second valve alongside the 8s timeout
+- svelte-check 0 errors, vitest 0 failures, pytest 0 failures

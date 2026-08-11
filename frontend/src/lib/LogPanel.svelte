@@ -1,6 +1,6 @@
 <script>
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz, executionMode, visibleInterval } from '$lib/stores';
+  import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz, executionMode, visibleInterval, withGuard } from '$lib/stores';
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchBrokerConnectionEvents, fetchAlgoOrdersRecent,
@@ -379,11 +379,15 @@
   /** @type {Array<() => void>} */
   const _intervals = [];
   function _every(/** @type {() => Promise<void> | void} */ fn) {
-    fn();
+    // Wrap with an in-flight guard so rapid re-entrancy (tab return + tick
+    // overlap, slow network) never stacks concurrent fetches for the same log.
+    // The immediate call and every interval tick share the same _running flag.
+    const _guarded = withGuard(/** @type {() => Promise<void>} */ (fn));
+    _guarded();
     if (pollMs > 0 && typeof document !== 'undefined') {
       // visibleInterval pauses while hidden and fires fn immediately on
       // tab return — log tabs stay fresh without background polling.
-      const teardown = visibleInterval(() => { fn(); }, pollMs);
+      const teardown = visibleInterval(() => { _guarded(); }, pollMs);
       _intervals.push(teardown);
     }
   }

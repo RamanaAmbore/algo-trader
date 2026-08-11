@@ -24,7 +24,7 @@
     fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
     fetchWatchlistQuotes,
   } from '$lib/api';
-  import { visibleInterval, marketAwareInterval, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { visibleInterval, marketAwareInterval, withGuard, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
@@ -1456,7 +1456,7 @@
       return _tickMs;
     }
     _tickMs = await _readTickSetting();
-    stopPulseTick = marketAwareInterval(_runTick, _tickMs, _HIDDEN_TICK_MS);
+    stopPulseTick = marketAwareInterval(withGuard(_runTick), _tickMs, _HIDDEN_TICK_MS);
 
     // Re-read the tick setting every 60s. When the operator changes
     // pulse.tick_interval_ms in /admin/settings, the new value lands on
@@ -1469,7 +1469,7 @@
       if (next !== _tickMs) {
         _tickMs = next;
         stopPulseTick?.();
-        stopPulseTick = marketAwareInterval(_runTick, _tickMs, _HIDDEN_TICK_MS);
+        stopPulseTick = marketAwareInterval(withGuard(_runTick), _tickMs, _HIDDEN_TICK_MS);
       }
     }, 60_000);
 

@@ -22,7 +22,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { fetchUnifiedLog } from '$lib/api';
-  import { logTimeIst, formatDualTz, visibleInterval } from '$lib/stores';
+  import { logTimeIst, formatDualTz, visibleInterval, withGuard } from '$lib/stores';
 
   /** @type {{
    *   filter?:       { kinds?: string[], accounts?: string[], since?: string, simMode?: boolean | null },
@@ -132,7 +132,7 @@
     if (pollMs > 0 && typeof document !== 'undefined') {
       // visibleInterval pauses while hidden and fires an immediate _fetch
       // on tab return — no stale data after switching back.
-      _intervalTeardown = visibleInterval(_fetch, pollMs);
+      _intervalTeardown = visibleInterval(withGuard(_fetch), pollMs);
     }
   }
 
