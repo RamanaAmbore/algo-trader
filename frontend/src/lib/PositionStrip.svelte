@@ -13,7 +13,7 @@
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
   import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
-  import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
@@ -29,9 +29,11 @@
     const v = positionsStore.value;
     untrack(() => { if (v != null) positions = v; });
   });
-  let holdings = $state(holdingsStore.value ?? []);
+  // NavStrip H slot SSOT: read from pulseHoldingsStore (cache key md.pulse.holdings)
+  // so NavStrip and MarketPulse share the same holdings data source and never diverge.
+  let holdings = $state(pulseHoldingsStore.value ?? []);
   $effect(() => {
-    const v = holdingsStore.value;
+    const v = pulseHoldingsStore.value;
     untrack(() => { if (v != null) holdings = v; });
   });
   let funds = $state(fundsStore.value ?? []);
@@ -97,6 +99,9 @@
     try {
       await Promise.allSettled([
         positionsStore.load(),
+        // pulseHoldingsStore is the SSOT for the holdings array (H slot SSOT fix).
+        // holdingsStore is still loaded to preserve error tracking (_staleFailCount).
+        pulseHoldingsStore.load(),
         holdingsStore.load(),
         fundsStore.load(),
       ]);
@@ -467,9 +472,20 @@
     }
     return s;
   });
+  // Live LTP × qty from symbolStore, matching finalizeRows in pulseUnified.js:697.
+  // Falls back to broker h.cur_val when ltp is unavailable or zero.
   const _liveHoldingsValue = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.cur_val || 0);
+    for (const h of holdings) {
+      const sym = String(h?.tradingsymbol || '').toUpperCase();
+      const ltp = getSnapshot(sym)?.ltp;
+      const qty = Number(h?.opening_quantity || h?.quantity || 0);
+      if (ltp != null && ltp > 0 && qty !== 0) {
+        s += ltp * qty;
+      } else {
+        s += Number(h?.cur_val || 0);
+      }
+    }
     return s;
   });
 

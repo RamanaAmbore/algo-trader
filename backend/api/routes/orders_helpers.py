@@ -355,7 +355,11 @@ def _row_from_dict(d: dict, account: str) -> OrderRow:
     )
 
 
+_BROKER_ORDERS_TIMEOUT = 8
+
+
 def _fetch_orders() -> OrdersResponse:
+    import concurrent.futures as _cf
     from backend.brokers.registry import all_brokers
 
     brokers = list(all_brokers())
@@ -370,8 +374,21 @@ def _fetch_orders() -> OrdersResponse:
             logger.error(f"Orders list failed for {account}: {e}")
             return []
 
-    with ThreadPoolExecutor(max_workers=min(len(brokers), 4)) as pool:
-        results = list(pool.map(_one_account, brokers))
+    results: list[list[OrderRow]] = []
+    pool = ThreadPoolExecutor(max_workers=min(len(brokers), 4))
+    futs = [(pool.submit(_one_account, b), b.account) for b in brokers]
+    for fut, account in futs:
+        try:
+            results.append(fut.result(timeout=_BROKER_ORDERS_TIMEOUT))
+        except _cf.TimeoutError:
+            logger.warning(
+                f"orders list timed out for {account} after {_BROKER_ORDERS_TIMEOUT}s"
+            )
+            results.append([])
+        except Exception as exc:
+            logger.error(f"orders list failed for {account}: {exc}")
+            results.append([])
+    pool.shutdown(wait=False, cancel_futures=True)
 
     rows: list[OrderRow] = [row for chunk in results for row in chunk]
     return OrdersResponse(rows=rows, refreshed_at=timestamp_display())

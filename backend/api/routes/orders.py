@@ -155,8 +155,10 @@ async def _chase_snapshot_broker_status_by_id() -> dict[str, dict]:
     """
     out: dict[str, dict] = {}
     try:
-        _ord_resp = await get_or_fetch("orders", _fetch_orders,
-                                       ttl_seconds=_ORDERS_TTL)
+        _ord_resp = await asyncio.wait_for(
+            get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL),
+            timeout=10.0,
+        )
         for _o in (_ord_resp.rows or []):
             _bid = str(getattr(_o, "order_id", "") or "")
             if _bid:
@@ -164,6 +166,8 @@ async def _chase_snapshot_broker_status_by_id() -> dict[str, dict]:
                     "status": str(getattr(_o, "status", "") or "").upper(),
                     "average_price": float(getattr(_o, "average_price", 0) or 0),
                 }
+    except asyncio.TimeoutError:
+        logger.warning("chases/active broker snapshot timed out after 10s")
     except Exception as _oe:
         logger.debug(f"chases/active broker snapshot failed: {_oe}")
     return out

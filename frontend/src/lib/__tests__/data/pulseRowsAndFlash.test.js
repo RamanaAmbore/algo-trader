@@ -321,3 +321,88 @@ describe('_liveHoldingsTotal formula invariant', () => {
     expect(total).toBeCloseTo(2250, 1);
   });
 });
+
+// ── _liveHoldingsValue formula invariant ─────────────────────────────────────
+//
+// PositionStrip._liveHoldingsValue computes live portfolio value using
+// ltp × qty from symbolStore, falling back to broker h.cur_val when ltp
+// is unavailable or zero. This matches finalizeRows in pulseUnified.js:697.
+//
+// Formula:
+//   if (ltp != null && ltp > 0 && qty !== 0)
+//     s += ltp * qty
+//   else
+//     s += h.cur_val
+
+describe('_liveHoldingsValue formula invariant', () => {
+  /**
+   * Pure replication of the _liveHoldingsValue loop for unit testing.
+   * @param {Array<{tradingsymbol:string,opening_quantity?:number,quantity?:number,cur_val:number}>} holdings
+   * @param {(sym: string) => {ltp: number} | null | undefined} snapOf
+   * @returns {number}
+   */
+  function computeHoldingsValue(holdings, snapOf) {
+    let s = 0;
+    for (const h of holdings) {
+      const sym = String(h?.tradingsymbol || '').toUpperCase();
+      const snap = snapOf(sym);
+      const ltp = snap?.ltp;
+      const qty = Number(h?.opening_quantity || h?.quantity || 0);
+      if (ltp != null && ltp > 0 && qty !== 0) {
+        s += ltp * qty;
+      } else {
+        s += Number(h?.cur_val || 0);
+      }
+    }
+    return s;
+  }
+
+  const baseHolding = {
+    tradingsymbol: 'RELIANCE',
+    opening_quantity: 10,
+    quantity: 10,
+    cur_val: 29000,  // stale broker value (last_price × qty at poll time)
+  };
+
+  it('live path: ltp available → result = ltp × qty (NOT h.cur_val)', () => {
+    // ltp=3100, qty=10 → live value = 31000 (not stale cur_val=29000)
+    const total = computeHoldingsValue([baseHolding], (sym) => sym === 'RELIANCE' ? { ltp: 3100 } : null);
+    expect(total).toBeCloseTo(31000, 1);
+    // Regression: must NOT return stale cur_val=29000
+    expect(total).not.toBeCloseTo(29000, 1);
+  });
+
+  it('fallback path: ltp null/missing → result = h.cur_val', () => {
+    const total = computeHoldingsValue([baseHolding], () => null);
+    expect(total).toBeCloseTo(29000, 1);
+  });
+
+  it('ltp=0 guard: ltp=0 → result = h.cur_val (not 0 × qty)', () => {
+    // ltp=0 must never produce 0 × qty = 0 instead of the stale cur_val.
+    const total = computeHoldingsValue([baseHolding], (sym) => sym === 'RELIANCE' ? { ltp: 0 } : null);
+    expect(total).toBeCloseTo(29000, 1);
+    // Regression: must NOT return 0
+    expect(total).not.toBe(0);
+  });
+
+  it('qty=0 guard: qty=0 → contributes 0 (not ltp × 0), cur_val also 0 on empty position', () => {
+    const h = { ...baseHolding, opening_quantity: 0, quantity: 0, cur_val: 0 };
+    const total = computeHoldingsValue([h], (sym) => sym === 'RELIANCE' ? { ltp: 3100 } : null);
+    // qty=0 → live path skipped → cur_val=0 → contributes 0
+    expect(total).toBe(0);
+  });
+
+  it('multi-holding: mix of live + fallback → correct sum', () => {
+    const holdings = [
+      baseHolding,  // RELIANCE — live LTP available
+      { tradingsymbol: 'TCS', opening_quantity: 5, quantity: 5, cur_val: 17500 },
+    ];
+    const snapOf = (sym) => {
+      if (sym === 'RELIANCE') return { ltp: 3100 };
+      return null;  // TCS — no live LTP, falls back to cur_val
+    };
+    // RELIANCE: 3100 × 10 = 31000; TCS: no snap → cur_val = 17500; total = 48500
+    const total = computeHoldingsValue(holdings, snapOf);
+    expect(total).toBeCloseTo(48500, 1);
+  });
+});

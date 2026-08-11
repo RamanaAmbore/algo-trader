@@ -108,6 +108,9 @@
   let _idle = $state(false);
   /** @type {(() => void) | null} */
   let _timer = null;
+  // In-flight guard: prevents concurrent fetches when a poll fires
+  // before the previous one has resolved (e.g. slow network + 3s interval).
+  let _fetching = false;
 
   async function _load() {
     try {
@@ -128,6 +131,20 @@
     if (wasIdle !== _idle) _rescheduleTimer();
   }
 
+  // _poll — in-flight-guarded wrapper for the recurring interval.
+  // Direct callers (_reconcile, onMount) bypass the guard intentionally:
+  // those are single-shot, not recurring. Only the recurring timer path
+  // needs the guard to prevent pile-up.
+  async function _poll() {
+    if (_fetching) return;
+    _fetching = true;
+    try {
+      await _load();
+    } finally {
+      _fetching = false;
+    }
+  }
+
   function _rescheduleTimer() {
     // Audit fix — `visibleInterval` pauses on `document.hidden`, so
     // when the operator switches away from the tab the polling stops
@@ -135,7 +152,7 @@
     // 3 s even on a hidden tab, generating background network noise).
     if (_timer) { _timer(); _timer = null; }
     const ms = _idle ? Math.max(15000, pollMs * 10) : Math.max(1000, pollMs);
-    _timer = visibleInterval(_load, ms);
+    _timer = visibleInterval(_poll, ms);
   }
 
   async function _reconcile() {

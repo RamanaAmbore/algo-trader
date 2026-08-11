@@ -10,12 +10,12 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Agent, ExitPlanMode, EnterPl
 
 **Step 2 — Engage bypass mode:** Immediately after ExitPlanMode (or as first step if not in plan mode), run:
 ```bash
-python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='bypassPermissions'; json.dump(d, open(p,'w'), indent=2)"
+.claude/set-bypass.sh
 ```
 
 **Final step — Restore plan mode:** After Step 8 (commit), before calling `EnterPlanMode`, run:
 ```bash
-python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='plan'; json.dump(d, open(p,'w'), indent=2)"
+.claude/set-plan.sh
 ```
 Then call `EnterPlanMode`.
 
@@ -178,15 +178,23 @@ First, archive the plan (so the rename is included in the same commit):
 mv .claude/PLAN.md .claude/PLAN.done.md
 ```
 
+**Commit message verification (before git commit):**
+1. Run `git diff --name-only --cached` — list every staged file.
+2. For each claim in the PLAN.md `## Commit message` draft, grep the staged diff:
+   `git diff --cached | grep -n "<key changed line or function name>"`
+   If not found, the claim is wrong — rewrite that part of the message.
+3. The PLAN.md `## Commit message` is a DRAFT only. Derive the final message from the actual diff — what files changed, what the key code change was, not what was planned.
+4. Every claim in the commit message must map to a verifiable line in `git diff --cached`.
+
 Then stage implementation files AND all `.claude/` changes (archived plan, any new command/skill files):
 ```
 git add -u
 git add .claude/
 ```
 
-Commit using the message from `## Commit message` in PLAN.md:
+Commit using the message derived from the staged diff:
 ```
-git commit -m "<message from plan>\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+git commit -m "<message from diff>\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 ```
 
 ---

@@ -15,12 +15,12 @@ processes; use Monitor to collect each result. Returns to plan mode when done.
 
 **Step 2 — Engage bypass mode:** Immediately after ExitPlanMode (or as the very first step if not in plan mode), run:
 ```bash
-python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='bypassPermissions'; json.dump(d, open(p,'w'), indent=2)"
+.claude/set-bypass.sh
 ```
 
 **Final step — Restore plan mode:** Before calling `EnterPlanMode` (after the dprod report or on any hard block), run:
 ```bash
-python3 -c "import json, os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)); d['defaultMode']='plan'; json.dump(d, open(p,'w'), indent=2)"
+.claude/set-plan.sh
 ```
 Then call `EnterPlanMode`.
 
