@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.10 — 2026-08-09  
+**Version**: 1.14 — 2026-08-11  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -135,8 +135,11 @@ Populated by `rebuild_from_db()` — queries `broker_accounts`, decrypts Fernet 
   attempt simultaneous login.
 - **File lock timeout** (Jul 2026): `fcntl.flock(LOCK_EX | LOCK_NB)` with 30s poll loop
   (100ms retry intervals); raises `BrokerNetworkError` on timeout instead of hanging.
-- Failed `generate_token` cooloff persists to `/tmp/ramboq_dhan_cooloff.json` and survives
-  process restarts, preventing tight-retry loops during rate-limit windows.
+- **Login cooloff persistence** (Aug 2026): Failed `generate_token` cooloff (`_login_blocked_until`)
+  now persists to `/tmp/ramboq_dhan_login_cooloff.json` (per-account) and survives process
+  restarts. Prevents immediate rate-limit hammering when ramboq_api/conn_service restarts
+  during a failure window. Logs with `[DHAN-COOLOFF]` prefix on load; `[DHAN-LOGIN]` on
+  each attempt.
 - **Token renewal skip on test_conn** (Jul 2026): `_try_renew()` is now gated on 
   `not test_conn` in `_dhan_conn_under_lock()`. When `test_conn=True` (dead token confirmed), 
   the code skips lightweight renewal and goes straight to `_mint_and_build()` to re-mint 
@@ -148,6 +151,12 @@ Populated by `rebuild_from_db()` — queries `broker_accounts`, decrypts Fernet 
 ### GrowwConnection
 - TOTP token refresh via `GrowwAPI.get_access_token`
 - Module-level `requests` monkey-patch for source-bound HTTP
+- **Connection resilience** (Aug 2026): Now includes:
+  - `CONN_RESET_HOURS = 23` expiry constant
+  - `_is_token_expired()` method — proactive token age check
+  - `_check_login_rate_limit()` — 120s cooloff on auth failure (mirrors Dhan)
+  - Proactive refresh in `get_groww_conn()` when `_is_token_expired()` returns True
+  - Logs with `[GROWW-LOGIN]` prefix on auth failure
 
 ---
 
@@ -179,6 +188,18 @@ excludes inactive accounts from worst-state calculation when at least one active
 exists, preventing amber chips on accounts that have not yet been queried.
 
 Dhan poll priority: `hot` (30s), `warm` (120s), `cold` (600s). Kite/Groww always poll every cycle.
+
+**Health heartbeat validity gate** (Aug 2026): `_health_heartbeat` in `service/app.py`
+now checks `_is_token_expired()` before stamping `record_session_ok`. Expired tokens
+are skipped — chip goes amber naturally instead of showing false-green. Warning fires
+once per expiry cycle via `_heartbeat_warned` dedup set. Logs with `[HEARTBEAT]`
+prefix.
+
+**False-amber threshold fix** (Aug 2026): `_BROKER_HEALTH_FRESH_WINDOW_S` raised from
+300s to 660s in `backend/api/routes/health.py`. Dhan cold-priority poll interval is
+600s; the old 300s window caused perpetual amber on cold-priority accounts even when
+healthy. New 660s window (1.1×) allows one full cold poll cycle to complete without
+the account flipping amber mid-cycle.
 
 Health surface: `GET /api/admin/broker-health`
 
@@ -841,6 +862,24 @@ never binds the port.
 **Rule**: Any `_task_*` function that exits before its main `while True:` loop MUST include an 
 `await asyncio.sleep(N)` before the `return` to yield control and prevent tight looping.
 
+### Token Refresh No-Op Warning
+
+**File**: `backend/api/background.py` — `_task_token_refresh()`
+
+When `RAMBOQ_USE_CONN_SERVICE=1` is set, `_task_token_refresh()` in the main API is a 
+no-op — all token management is delegated to the conn-service. This task now logs a 
+WARNING at startup to make the no-op visible to operators, preventing confusion if they 
+expect this background task to do token work on the main process:
+
+```
+WARNING: _task_token_refresh called but RAMBOQ_USE_CONN_SERVICE=1 — skipping (conn-service owns token management)
+```
+
+**Rationale**: Token refresh happens in conn-service background tasks (`_task_prewarm_tokens`, 
+`_task_health_heartbeat`, etc.). The main API background task is kept as a guard rail; 
+when active (non-conn-service mode), it refreshes Kite/Dhan/Groww tokens synchronously. 
+With conn-service mode enabled, it correctly exits early with a diagnostic log.
+
 **Canonical examples in the codebase**:
 - `_task_ticker_watchdog`: cutover mode exit → `while is_cutover_on(): await asyncio.sleep(300); return`
 - `_task_warm_backfill`: already-fired guard → `await asyncio.sleep(86400); return`
@@ -862,6 +901,33 @@ but ticks ITM during day).
 
 **NSE NIFTY quote key fix**: `_fetch_underlying_ltps()` now uses `NSE:NIFTY 50` (not `NSE:NIFTY`) 
 for Kite quote API calls to match actual tradable symbol.
+
+---
+
+## 9.2 Token Pre-Warm Task & Expiry Prevention
+
+**File**: `backend/brokers/service/app.py` — `_task_prewarm_tokens()`
+
+Conn-service runs an hourly background task to pre-warm broker tokens before they
+expire, preventing mid-session auth failures when operators rely on long-lived
+credentials.
+
+### Pre-warm schedule by broker
+
+| Broker | Window | Condition | Logs |
+|---|---|---|---|
+| Kite | 05:45–05:59 IST | Daily before 06:00 expiry | `[PREWARM]` |
+| Dhan | On-demand hourly | `token_age > 22h` (expiry=23h) | `[PREWARM]` |
+| Groww | On-demand hourly | `_is_token_expired()` returns True | `[PREWARM]` |
+
+**Dhan co-expiry prevention**: Multiple Dhan accounts minted at similar times could
+expire together, causing a cluster of auth failures. The 22-hour threshold ensures
+at least one fresh token is available before expiry; staggered account startups mean
+pre-warms fire at different times, spreading the refresh load.
+
+**Groww proactive refresh**: `GrowwConnection.get_groww_conn()` now calls
+`_is_token_expired()` synchronously on every session request and proactively
+refreshes if True, preventing expired-credential exceptions on the critical path.
 
 ---
 
@@ -1259,3 +1325,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-06 | v1.12 Dhan holdings day_pnl fix (commit a737b1e2): Added subsection to §7.4 documenting Dhan `close_price=0` handling and backfill recompute. `_backfill_recompute_derived()` now accepts `close_was_missing: bool` flag; when True, recomputes `day_change = ltp - real_close` unconditionally to override stale Dhan adapter value. Added subsection on daily_book `day_pnl` storing total P&L (not per-share change). Added I25 and I26 invariants capturing `close_was_missing` detection and total-P&L storage convention. Fixes Dhan holdings snapshot storing incorrect day_pnl (e.g. 3952 instead of -28) when `close_price` was patched from zero. |
 | 2026-08-09 | v1.10 MCX lot-scale day P&L fix (commit TBD): Added §7.3 Daily Snapshot — MCX Lot-Scale Day P&L Fix documenting `_snap_compute_day_pnl()` `multiplier` parameter (default=1). When provided, scales `overnight_quantity`, `day_buy_quantity`, `day_sell_quantity` by lot_size before computing decomposed intraday P&L formula. Fixes brand-new MCX positions (CRUDEOIL lot=100) showing day_pnl off by 100× (₹50 instead of ₹5000) on first snapshot appearance. Caller responsibility: snapshot writers pass `r.get("multiplier", 1)` via lot_size field. Holdings snapshot day_change now computed from price diff × qty via `prev_batch` CTE (same as positions). |
 | 2026-08-11 | v1.13 Orders fetching resilience and chase timeouts (commit 5ec9afec): Added §8.5 Orders Fetching Resilience & Chase Timeouts documenting per-broker 8-second timeout in `_fetch_orders()` with early-exit on timeout + empty-list fallback (pool shutdown with `cancel_futures=True`), 10-second `asyncio.wait_for` timeout in `_chase_snapshot_broker_status_by_id()` to prevent `/chases/active` lock starvation, and frontend `ChaseCard.svelte` polling guard (`_fetching` flag) to drop concurrent polls. Added I27, I28, I29 invariants capturing timeout semantics and fallback behaviour for orders list + chase snapshot + frontend polling. |
+| 2026-08-11 | v1.14 Broker resilience fixes (commit fd4e9ae6): Added §9.2 Token Pre-Warm Task & Expiry Prevention documenting hourly `_task_prewarm_tokens()` in conn-service pre-warming Kite (05:45–05:59 IST), Dhan (token_age > 22h), and Groww (expired check). Updated §5 DhanConnection with login cooloff persistence to `/tmp/ramboq_dhan_login_cooloff.json` surviving restarts + `[DHAN-COOLOFF]` / `[DHAN-LOGIN]` logs. Updated §5 GrowwConnection with hardening: `CONN_RESET_HOURS = 23`, `_is_token_expired()` method, `_check_login_rate_limit()` 120s cooloff, proactive refresh in `get_groww_conn()`, `[GROWW-LOGIN]` logs. Updated §6 Circuit Breaker & Health with health heartbeat validity gate (skip expired tokens, once-per-cycle warning via `_heartbeat_warned` dedup), false-amber threshold fix (`_BROKER_HEALTH_FRESH_WINDOW_S` 300s→660s, accommodates 600s Dhan cold poll). Added subsection to §9.1 documenting `_task_token_refresh()` no-op warning when `RAMBOQ_USE_CONN_SERVICE=1`. |
