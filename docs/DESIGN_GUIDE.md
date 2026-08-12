@@ -4195,7 +4195,7 @@ def market_status(self, exchange: str) -> bool | None:
     if status_fn is None:
         return None
     try:
-        resp = self._safe_call(lambda c: status_fn())
+        resp = self._sdk.status_fn()
     except Exception as e:
         logger.debug(f"{self.broker_id}.market_status failed: {e}")
         return None

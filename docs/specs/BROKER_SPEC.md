@@ -586,10 +586,10 @@ would realize if you squared off the position at LTP on that session.
 
 ### DhanBroker
 - Instruments CSV from `images.dhan.co` once per IST day; F&O symbol: Dhan format → Kite format
-- **429 → BrokerRateLimitError** (Jul 2026): `_safe_call()` checks `resp.get("code") == "DH-904"`
+- **429 → BrokerRateLimitError** (Jul 2026): `_DhanSDKProxy` checks `resp.get("code") == "DH-904"`
   and raises `BrokerRateLimitError` instead of returning the dict as-is. Allows PriceBroker
   failover and registry retry-cooloff to activate correctly.
-- **5xx → BrokerNetworkError** (Jul 2026): `_safe_call()` raises `BrokerNetworkError` on HTTP
+- **5xx → BrokerNetworkError** (Jul 2026): `_DhanSDKProxy` raises `BrokerNetworkError` on HTTP
   502/503/504 responses, enabling transient retry logic upstream.
 - `historical_data()` returns `[]` by design — excluded from `get_historical_brokers()`
 - `place_gtt()` raises `NotImplementedError` for MCX/NCO
