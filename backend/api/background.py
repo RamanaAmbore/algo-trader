@@ -3409,13 +3409,16 @@ async def _task_sparkline_warm(state: dict) -> None:
     # before any operator has picked a mode.
     from backend.shared.helpers.utils import is_engine_idle
 
-    # ── Fire immediately at startup ──────────────────────────────────────────
-    # fire-and-forget so subsequent task startup (scheduled-warm loop below)
-    # is not blocked for the 50-90 s the warm cycle takes. The operator's
-    # first request may still pay a cold-cache miss for the first ~30 s but
-    # the rest of app startup completes without waiting.
+    # ── Fire after a 600 s startup delay ─────────────────────────────────────
+    # Delay avoids concurrent NFO instrument downloads with other startup tasks
+    # (bg-instruments was removed for the same reason — see 2026-08-12 fix).
+    # The operator's first sparkline request may pay a cold-cache miss on fresh
+    # deploy, but the rest of startup completes without memory pressure.
     if not is_engine_idle():
-        asyncio.create_task(_do_warm_with_retry("startup"))
+        async def _spark_delayed_startup():
+            await asyncio.sleep(600)
+            await _do_warm_with_retry("startup")
+        asyncio.create_task(_spark_delayed_startup())
     else:
         logger.info("sparkline warm: skipped startup — engine idle (dev)")
 

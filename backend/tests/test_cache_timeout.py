@@ -101,3 +101,24 @@ def test_bg_instruments_not_in_on_startup():
         "it causes concurrent NFO download OOM on prod (see fix 2026-08-12). "
         "Use on-demand loading via get_or_fetch instead."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — sparkline warm must NOT fire immediately at startup (OOM guard)
+# ---------------------------------------------------------------------------
+
+def test_sparkline_warm_has_startup_delay():
+    """Guard: sparkline startup warm must be delayed, not immediate (OOM risk on prod)."""
+    import re
+    src = open("backend/api/background.py").read()
+    # Find the _task_sparkline_warm function body
+    m = re.search(r'async def _task_sparkline_warm\b.*?(?=\nasync def |\Z)', src, re.DOTALL)
+    assert m is not None, "_task_sparkline_warm not found in background.py"
+    body = m.group(0)
+    # The fire-immediately pattern must be gone: no bare create_task(_do_warm_with_retry("startup"))
+    # Instead, there must be an asyncio.sleep before the startup warm.
+    assert '_spark_delayed_startup' in body or 'asyncio.sleep(600)' in body, (
+        "sparkline startup warm must include a delay (asyncio.sleep) — "
+        "immediate startup warm causes concurrent NFO download OOM with other tasks "
+        "(see fix 2026-08-12). Remove this guard only if instruments store is warm at boot."
+    )
