@@ -870,6 +870,12 @@ class _DhanSDKProxy:
     JSON auth-failure inspection, and remint+retry via __getattr__ interception.
     Source-IP binding is handled at construction time in DhanConnection._build_client();
     no ContextVar is needed here.
+
+    Uses __slots__ with object.__setattr__/__getattribute__ to avoid infinite
+    recursion: a normal self.x = x in __init__ would call __setattr__ if defined,
+    and __getattr__ is only invoked when normal attribute lookup fails — so reading
+    slot values inside __getattr__ must go through object.__getattribute__ to
+    bypass the descriptor search and prevent recursing into __getattr__ itself.
     """
     __slots__ = ("_broker", "_bucket")
 
@@ -886,21 +892,26 @@ class _DhanSDKProxy:
                 _DHAN_RATE_LIMITER.throttle(bucket)
             broker._last_req = {"broker": "dhan", "account": broker.account,
                                  "endpoint_group": bucket}
+
+            def _raw_call(handle):
+                try:
+                    result = getattr(handle, name)(*args, **kwargs)
+                except Exception as _exc:
+                    _raw_resp = getattr(_exc, "response", None)
+                    _status = getattr(_raw_resp, "status_code", None)
+                    if _status in (502, 503, 504):
+                        raise BrokerNetworkError(
+                            f"Dhan HTTP {_status} for {broker.account!r}: {_exc}"
+                        ) from _exc
+                    raise
+                if isinstance(result, dict) and result.get("code") == "DH-904":
+                    raise BrokerRateLimitError(
+                        f"Dhan rate limit (DH-904) for {broker.account!r}: {result}"
+                    )
+                return result
+
             d = broker._conn.get_dhan_conn()
-            try:
-                resp = getattr(d, name)(*args, **kwargs)
-            except Exception as _exc:
-                _raw = getattr(_exc, "response", None)
-                _status = getattr(_raw, "status_code", None)
-                if _status in (502, 503, 504):
-                    raise BrokerNetworkError(
-                        f"Dhan HTTP {_status} for {broker.account!r}: {_exc}"
-                    ) from _exc
-                raise
-            if isinstance(resp, dict) and resp.get("code") == "DH-904":
-                raise BrokerRateLimitError(
-                    f"Dhan rate limit (DH-904) for {broker.account!r}: {resp}"
-                )
+            resp = _raw_call(d)
             broker._last_resp = {
                 "shape": type(resp).__name__,
                 "status_hint": "auth_fail" if _looks_like_auth_failure(resp) else "ok",
@@ -933,7 +944,9 @@ class _DhanSDKProxy:
                     pass
                 _check_dhan_rotation_pattern(broker.account, created)
                 fresh = broker._conn.get_dhan_conn(test_conn=True)
-                resp = getattr(fresh, name)(*args, **kwargs)
+                resp = _raw_call(fresh)
+                if not _looks_like_auth_failure(resp):
+                    broker._last_resp = {"shape": type(resp).__name__, "status_hint": "ok"}
                 if _looks_like_auth_failure(resp):
                     remarks = resp.get("remarks", "auth failure")
                     raise RuntimeError(
@@ -1412,7 +1425,7 @@ class DhanBroker(Broker):
             order0, orders, trigger_values, trigger_type,
             security_id, _dhan_exchange(exchange), tradingsymbol, corr,
         )
-        resp = self._sdk.place_forever(**kw)
+        resp = self._sdk_orders.place_forever(**kw)
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan place_gtt rejected: {resp}")
         return _dhan_gtt_order_id(resp)
@@ -1427,7 +1440,7 @@ class DhanBroker(Broker):
         tgt_kw = _dhan_modify_forever_leg(
             orders[1], _dhan_num(trigger_values[1]), "OCO", "TARGET_LEG"
         )
-        resp1 = self._sdk.modify_forever(order_id=gtt_id, **tgt_kw)
+        resp1 = self._sdk_orders.modify_forever(order_id=gtt_id, **tgt_kw)
         if not isinstance(resp1, dict) or resp1.get("status") != "success":
             _dhan_raise_asymmetric_gtt(gtt_id, resp1)
 
@@ -1452,7 +1465,7 @@ class DhanBroker(Broker):
         order0    = orders[0] if orders else {}
         trig0     = _dhan_num(trigger_values[0]) if trigger_values else 0.0
         entry_kw  = _dhan_modify_forever_leg(order0, trig0, order_flag, "ENTRY_LEG")
-        resp = self._sdk.modify_forever(order_id=gtt_id, **entry_kw)
+        resp = self._sdk_orders.modify_forever(order_id=gtt_id, **entry_kw)
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan modify_gtt rejected (entry leg): {resp}")
         if trigger_type == "two-leg" and len(orders) > 1 and len(trigger_values) > 1:
@@ -1469,14 +1482,14 @@ class DhanBroker(Broker):
         exchange=sib_exchange)`, leaving one leg of an emulated OCO
         alive on the book."""
         del exchange  # unused on Dhan
-        resp = self._sdk.cancel_forever(order_id=gtt_id)
+        resp = self._sdk_orders.cancel_forever(order_id=gtt_id)
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan cancel_gtt rejected: {resp}")
         return gtt_id
 
     def get_gtts(self) -> list[dict]:
         """List all active Dhan Forever Orders, normalised to Kite GTT shape."""
-        resp = self._sdk.get_forever()
+        resp = self._sdk_orders.get_forever()
         rows = _unwrap(resp)
         if not isinstance(rows, list):
             rows = []

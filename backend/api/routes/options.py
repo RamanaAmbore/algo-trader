@@ -561,17 +561,20 @@ class SpotResponse(msgspec.Struct):
 class ChainQuoteRow(msgspec.Struct):
     """One strike's CE + PE top-of-book bid / ask. Any side may be null
     when the broker quote came back empty for that contract or the
-    depth book was uncovered."""
-    k:        float
-    ce_bid:   float | None
-    ce_ask:   float | None
-    pe_bid:   float | None
-    pe_ask:   float | None
-    ce_sym:   str | None = None
-    pe_sym:   str | None = None
-    ce_ls:    int | None = None
-    pe_ls:    int | None = None
-    exchange: str | None = None
+    depth book was uncovered. depth_available flags indicate whether the
+    bid/ask came from real market depth (True) or fell back to last_price (False)."""
+    k:                  float
+    ce_bid:             float | None
+    ce_ask:             float | None
+    pe_bid:             float | None
+    pe_ask:             float | None
+    ce_sym:             str | None = None
+    pe_sym:             str | None = None
+    ce_ls:              int | None = None
+    pe_ls:              int | None = None
+    exchange:           str | None = None
+    ce_depth_available: bool = False
+    pe_depth_available: bool = False
 
 
 class ChainQuotesResponse(msgspec.Struct):
@@ -2097,6 +2100,15 @@ def _best_depth_price(book: list) -> "float | None":
 # ---------------------------------------------------------------------------
 _CHAIN_SYM_CACHE: dict[tuple, tuple[float, tuple]] = {}
 _CHAIN_SYM_TTL = 30.0
+_CHAIN_SYM_CACHE_MAX_SIZE = 64
+_CHAIN_SYM_CACHE_LOCK: asyncio.Lock | None = None
+
+
+def _get_chain_sym_cache_lock() -> asyncio.Lock:
+    global _CHAIN_SYM_CACHE_LOCK
+    if _CHAIN_SYM_CACHE_LOCK is None:
+        _CHAIN_SYM_CACHE_LOCK = asyncio.Lock()
+    return _CHAIN_SYM_CACHE_LOCK
 
 
 def _chain_sym_cache_clear() -> None:
@@ -2162,14 +2174,17 @@ async def _chain_quotes_batch_quote(
     return quote_resp, key_meta
 
 
-def _chain_quotes_bid_ask_from_q(q: dict) -> tuple["float | None", "float | None"]:
-    """Return (bid, ask) from a Kite quote dict.
+def _chain_quotes_bid_ask_from_q(q: dict) -> tuple["float | None", "float | None", bool]:
+    """Return (bid, ask, depth_available) from a Kite quote dict.
     Falls back to last_price for both sides when the depth array is empty
     (illiquid PE strikes outside the front 5 strikes often have no depth).
-    last_price > 0 is the gate — a true no-quote still returns (None, None)."""
+    last_price > 0 is the gate — a true no-quote still returns (None, None, False).
+    depth_available is True only when both bid and ask came from real depth entries,
+    False when either side fell back to last_price (or both were absent)."""
     depth = q.get("depth") or {}
     bid = _best_depth_price(depth.get("buy"))
     ask = _best_depth_price(depth.get("sell"))
+    depth_available = bool(bid is not None and ask is not None)
     if bid is None or ask is None:
         lp = float(q.get("last_price") or 0.0)
         if lp > 0:
@@ -2177,7 +2192,7 @@ def _chain_quotes_bid_ask_from_q(q: dict) -> tuple["float | None", "float | None
                 bid = lp
             if ask is None:
                 ask = lp
-    return bid, ask
+    return bid, ask, depth_available
 
 
 def _chain_quotes_build_book(
@@ -2191,16 +2206,17 @@ def _chain_quotes_build_book(
     book_by_strike: dict[float, dict[str, dict]] = {}
     for k, sides in sym_by_strike.items():
         book_by_strike[k] = {
-            "CE": {"bid": None, "ask": None,
+            "CE": {"bid": None, "ask": None, "depth_available": False,
                    "sym": sides["CE"]["sym"], "ls": sides["CE"]["ls"], "e": sides["CE"]["e"]},
-            "PE": {"bid": None, "ask": None,
+            "PE": {"bid": None, "ask": None, "depth_available": False,
                    "sym": sides["PE"]["sym"], "ls": sides["PE"]["ls"], "e": sides["PE"]["e"]},
         }
     for qk, (strike, side) in key_meta.items():
         q = quote_resp.get(qk) or {}
-        bid, ask = _chain_quotes_bid_ask_from_q(q)
+        bid, ask, depth_available = _chain_quotes_bid_ask_from_q(q)
         book_by_strike[strike][side]["bid"] = bid
         book_by_strike[strike][side]["ask"] = ask
+        book_by_strike[strike][side]["depth_available"] = depth_available
     return book_by_strike
 
 
@@ -2551,16 +2567,25 @@ class OptionsController(Controller):
             return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
 
         # Cache + thread the 156K instrument scan.
+        # Double-checked locking coalesces concurrent cache misses so only
+        # one coroutine runs the expensive scan; LRU cap prevents unbounded
+        # growth on expiry day when many (underlying, expiry) keys are queried.
         _cache_key = (und, exp)
         _now = time.monotonic()
         _entry = _CHAIN_SYM_CACHE.get(_cache_key)
-        if _entry and (_now - _entry[0]) < _CHAIN_SYM_TTL:
-            sym_by_strike, all_expiries = _entry[1]
-        else:
-            sym_by_strike, all_expiries = await asyncio.to_thread(
-                _chain_quotes_build_sym_map, inst_resp, und, exp
-            )
-            _CHAIN_SYM_CACHE[_cache_key] = (_now, (sym_by_strike, all_expiries))
+        if not (_entry and (_now - _entry[0]) < _CHAIN_SYM_TTL):
+            async with _get_chain_sym_cache_lock():
+                _entry = _CHAIN_SYM_CACHE.get(_cache_key)
+                _now = time.monotonic()
+                if not (_entry and (_now - _entry[0]) < _CHAIN_SYM_TTL):
+                    sym_by_strike, all_expiries = await asyncio.to_thread(
+                        _chain_quotes_build_sym_map, inst_resp, und, exp
+                    )
+                    if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
+                        _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
+                    _CHAIN_SYM_CACHE[_cache_key] = (time.monotonic(), (sym_by_strike, all_expiries))
+                _entry = _CHAIN_SYM_CACHE[_cache_key]
+        sym_by_strike, all_expiries = _entry[1]
 
         # Expiry-only mode: return just the expiries list, no broker call.
         if not exp:
@@ -2591,6 +2616,8 @@ class OptionsController(Controller):
                 ce_ls=int(sides["CE"]["ls"]) if sides["CE"]["ls"] else None,
                 pe_ls=int(sides["PE"]["ls"]) if sides["PE"]["ls"] else None,
                 exchange=sides["CE"]["e"] or sides["PE"]["e"] or None,
+                ce_depth_available=sides["CE"].get("depth_available", False),
+                pe_depth_available=sides["PE"].get("depth_available", False),
             )
             for strike, sides in sorted(book_by_strike.items())
         ]

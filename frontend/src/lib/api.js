@@ -968,11 +968,15 @@ export async function fetchOptionsSpot(underlying, expiry = null) {
   return _get(`/options/spot?underlying=${u}${e}`, { auth: true });
 }
 
-/** GET /api/options/chain-quotes — per-strike CE + PE LTPs for the
- *  chain picker's grid. One round-trip drives every LTP cell on the
- *  page. Returns `{underlying, expiry, rows: [{k, ce_ltp, pe_ltp}]}`;
- *  empty rows when the broker is unreachable so callers render the
- *  grid without LTPs rather than failing. */
+/** GET /api/options/chain-quotes — per-strike CE + PE bid/ask for the
+ *  chain picker's grid. One round-trip drives every quote cell on the
+ *  page. Returns `{underlying, expiry, rows: [{k: string,
+ *  ce_bid: number, ce_ask: number, pe_bid: number, pe_ask: number,
+ *  ce_depth_available: boolean, pe_depth_available: boolean}]}`.
+ *  `depth_available: false` means the broker returned no real market
+ *  depth for that side; bid/ask reflects the last traded price instead.
+ *  Empty rows when the broker is unreachable so callers render the
+ *  grid without quotes rather than failing. */
 export async function fetchChainQuotes(underlying, expiry) {
   const u = encodeURIComponent(String(underlying || '').toUpperCase());
   const e = encodeURIComponent(String(expiry || ''));

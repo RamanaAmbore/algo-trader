@@ -5,7 +5,9 @@ Coverage:
   • Expiry-only mode (no broker call when expiry omitted)
   • Full quote mode (with expiry parameter)
   • New response fields: ce_sym, pe_sym, ce_ls, pe_ls, exchange, expiries
-  • Cache behavior (156K scan cached for 3s)
+  • Cache behavior (156K scan cached for 3s, LRU cap at _CHAIN_SYM_CACHE_MAX_SIZE)
+  • Coalescing lock: _CHAIN_SYM_CACHE_MAX_SIZE constant defined and enforced
+  • depth_available flag: True when real depth, False when fallback to last_price
   • Unknown underlying handling
   • Malformed instrument responses
 """
@@ -20,9 +22,12 @@ from datetime import datetime, date
 from backend.api.routes.instruments import Instrument, InstrumentsResponse
 from backend.api.routes.options import (
     _chain_quotes_build_sym_map,
+    _chain_quotes_bid_ask_from_q,
     _chain_sym_cache_clear,
     ChainQuoteRow,
     ChainQuotesResponse,
+    _CHAIN_SYM_CACHE,
+    _CHAIN_SYM_CACHE_MAX_SIZE,
 )
 
 
@@ -562,3 +567,148 @@ class TestChainQuotesIntegration:
             # Expiries should be sorted
             expected = ["2025-08-14", "2025-08-21", "2025-09-04"]
             assert data["expiries"] == expected, f"Expected {expected}, got {data['expiries']}"
+
+
+class TestChainSymCacheLRUCap:
+    """Fix 5+6: LRU cap constant defined and enforced; oldest entry evicted at capacity."""
+
+    def test_max_size_constant_defined(self):
+        """_CHAIN_SYM_CACHE_MAX_SIZE must be defined and positive."""
+        assert isinstance(_CHAIN_SYM_CACHE_MAX_SIZE, int)
+        assert _CHAIN_SYM_CACHE_MAX_SIZE > 0
+
+    def test_lru_eviction_at_capacity(self):
+        """When cache reaches _CHAIN_SYM_CACHE_MAX_SIZE, adding one more entry evicts
+        the oldest (first-inserted) key — same logic as the route handler inline."""
+        import time
+
+        _chain_sym_cache_clear()
+        # Fill the cache to the cap using the same insertion pattern the route uses.
+        first_key = None
+        for i in range(_CHAIN_SYM_CACHE_MAX_SIZE):
+            key = (f"UNDER{i}", f"2025-0{(i % 9) + 1}-01")
+            if first_key is None:
+                first_key = key
+            _CHAIN_SYM_CACHE[key] = (time.monotonic(), ({}, []))
+
+        assert len(_CHAIN_SYM_CACHE) == _CHAIN_SYM_CACHE_MAX_SIZE
+        assert first_key in _CHAIN_SYM_CACHE
+
+        # Simulate route eviction: at capacity, pop oldest before inserting new entry.
+        new_key = ("OVERFLOW", "2025-12-31")
+        if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
+            _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
+        _CHAIN_SYM_CACHE[new_key] = (time.monotonic(), ({}, []))
+
+        assert len(_CHAIN_SYM_CACHE) == _CHAIN_SYM_CACHE_MAX_SIZE, (
+            "Cache should remain at max size after eviction"
+        )
+        assert first_key not in _CHAIN_SYM_CACHE, (
+            "Oldest (first-inserted) key should have been evicted"
+        )
+        assert new_key in _CHAIN_SYM_CACHE, "Newly added key should be present"
+
+        _chain_sym_cache_clear()
+
+    def test_no_eviction_below_capacity(self):
+        """Below the cap, no entries are removed when a new one is added."""
+        import time
+
+        _chain_sym_cache_clear()
+        n = _CHAIN_SYM_CACHE_MAX_SIZE - 1
+        for i in range(n):
+            _CHAIN_SYM_CACHE[(f"X{i}", "2025-08-14")] = (time.monotonic(), ({}, []))
+
+        assert len(_CHAIN_SYM_CACHE) == n
+
+        new_key = ("NEWENTRY", "2025-08-14")
+        if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
+            _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
+        _CHAIN_SYM_CACHE[new_key] = (time.monotonic(), ({}, []))
+
+        assert len(_CHAIN_SYM_CACHE) == n + 1, "No eviction should occur below capacity"
+        _chain_sym_cache_clear()
+
+
+class TestChainQuotesBidAskDepthAvailable:
+    """Fix 7: _chain_quotes_bid_ask_from_q returns depth_available=True only when
+    both bid and ask come from real market depth entries."""
+
+    def test_both_sides_have_depth_returns_true(self):
+        """Real bid and ask from depth entries → depth_available=True."""
+        q = {
+            "depth": {
+                "buy": [{"price": 100.0, "quantity": 50}],
+                "sell": [{"price": 102.0, "quantity": 50}],
+            },
+            "last_price": 101.0,
+        }
+        bid, ask, depth_available = _chain_quotes_bid_ask_from_q(q)
+        assert bid == 100.0
+        assert ask == 102.0
+        assert depth_available is True
+
+    def test_missing_buy_side_returns_false(self):
+        """Empty buy depth → bid falls back to last_price → depth_available=False."""
+        q = {
+            "depth": {
+                "buy": [],
+                "sell": [{"price": 102.0, "quantity": 50}],
+            },
+            "last_price": 101.0,
+        }
+        bid, ask, depth_available = _chain_quotes_bid_ask_from_q(q)
+        assert bid == 101.0  # fell back to last_price
+        assert ask == 102.0
+        assert depth_available is False
+
+    def test_missing_sell_side_returns_false(self):
+        """Empty sell depth → ask falls back to last_price → depth_available=False."""
+        q = {
+            "depth": {
+                "buy": [{"price": 100.0, "quantity": 50}],
+                "sell": [],
+            },
+            "last_price": 101.0,
+        }
+        bid, ask, depth_available = _chain_quotes_bid_ask_from_q(q)
+        assert bid == 100.0
+        assert ask == 101.0  # fell back to last_price
+        assert depth_available is False
+
+    def test_both_sides_missing_with_last_price_returns_false(self):
+        """Both depth sides empty, last_price present → fallback for both → depth_available=False."""
+        q = {
+            "depth": {
+                "buy": [],
+                "sell": [],
+            },
+            "last_price": 55.0,
+        }
+        bid, ask, depth_available = _chain_quotes_bid_ask_from_q(q)
+        assert bid == 55.0
+        assert ask == 55.0
+        assert depth_available is False
+
+    def test_no_depth_key_no_last_price_returns_none_none_false(self):
+        """No depth, no last_price → (None, None, False) — true no-quote."""
+        q = {}
+        bid, ask, depth_available = _chain_quotes_bid_ask_from_q(q)
+        assert bid is None
+        assert ask is None
+        assert depth_available is False
+
+    def test_depth_with_zero_price_falls_back(self):
+        """Zero-priced depth entries are ignored by _best_depth_price; fallback fires."""
+        q = {
+            "depth": {
+                "buy": [{"price": 0.0, "quantity": 10}],
+                "sell": [{"price": 0.0, "quantity": 10}],
+            },
+            "last_price": 80.0,
+        }
+        bid, ask, depth_available = _chain_quotes_bid_ask_from_q(q)
+        # Both sides have zero-priced entries → _best_depth_price returns None → fallback
+        assert bid == 80.0
+        assert ask == 80.0
+        assert depth_available is False

@@ -22,6 +22,7 @@
     suggestUnderlyings,
     listFutures, getInstrument,
   } from '$lib/data/instruments';
+  import { parseChainQuoteRow } from '$lib/data/chainQuotes';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT } from '$lib/data/resolveUnderlying.js';
   import { priceFmt } from '$lib/format';
@@ -294,7 +295,7 @@
   );
   // ── Chain quotes (bid/ask per strike) — declared here so chainStrikes
   //    can reference it before the polling $effect below.
-  /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null}}>|null} */
+  /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean}}>|null} */
   let chainQuotesMap = $state(null);
   let _chainQuotesLoading = $state(false);
   let _chainQuotesError = $state('');
@@ -436,25 +437,11 @@
       const r = await fetchChainQuotes(u, e);
       // Discard if the underlying/expiry changed while the fetch was in-flight.
       if (chainQuotesKey !== `${u}|${e}`) return;
-      /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null}}>} */
+      /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean}}>} */
       const map = {};
       for (const row of (r?.rows || [])) {
-        map[String(row.k)] = {
-          ce: {
-            bid: row.ce_bid == null ? null : Number(row.ce_bid),
-            ask: row.ce_ask == null ? null : Number(row.ce_ask),
-            sym: row.ce_sym || null,
-            ls:  row.ce_ls  == null ? null : Number(row.ce_ls),
-            exchange: row.exchange || null,
-          },
-          pe: {
-            bid: row.pe_bid == null ? null : Number(row.pe_bid),
-            ask: row.pe_ask == null ? null : Number(row.pe_ask),
-            sym: row.pe_sym || null,
-            ls:  row.pe_ls  == null ? null : Number(row.pe_ls),
-            exchange: row.exchange || null,
-          },
-        };
+        const [k, q] = parseChainQuoteRow(row);
+        map[k] = q;
       }
       chainQuotesMap = map;
     } catch {
@@ -903,14 +890,17 @@
             {@const activeCe = activeOptionRow?.strike === k && activeOptionRow?.optType === 'CE'}
             {@const activePe = activeOptionRow?.strike === k && activeOptionRow?.optType === 'PE'}
             {@const activeRow = activeCe || activePe}
+            {@const ceQ = chainQuotesMap?.[String(k)]?.ce}
+            {@const peQ = chainQuotesMap?.[String(k)]?.pe}
             {#if isAtm}
               <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} class:chain-row-active-ce={activeCe} class:chain-row-active-pe={activePe} use:chainAtmRow>
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
                     <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.bid)}</span><span
+                      <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.ask)}</span>
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span
+                            class="chain-cell-no-depth" title="No depth available — using last traded price">(L)</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -944,9 +934,10 @@
                       {/if}
                     </span>
                     <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.bid)}</span><span
+                      <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.ask)}</span>
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span
+                            class="chain-cell-no-depth" title="No depth available — using last traded price">(L)</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -956,9 +947,10 @@
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
                     <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.bid)}</span><span
+                      <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.ce?.ask)}</span>
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span
+                            class="chain-cell-no-depth" title="No depth available — using last traded price">(L)</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -992,9 +984,10 @@
                       {/if}
                     </span>
                     <span class="chain-cell-quote">
-                      <span class="chain-cell-bid">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.bid)}</span><span
+                      <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(chainQuotesMap?.[String(k)]?.pe?.ask)}</span>
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span
+                            class="chain-cell-no-depth" title="No depth available — using last traded price">(L)</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -1351,6 +1344,8 @@
   .chain-cell-bid { color: var(--algo-green, var(--c-long)); }
   .chain-cell-ask { color: var(--algo-red, var(--c-short)); }
   .chain-cell-sep { color: var(--algo-muted); opacity: 0.7; margin: 0 0.18rem; }
+  /* "(L)" suffix shown when depth is absent — using last traded price as bid/ask proxy. */
+  .chain-cell-no-depth { font-size: 0.6rem; color: var(--algo-muted); opacity: 0.5; margin-left: 0.15rem; cursor: default; }
   .chain-side-action { display: inline-flex; align-items: center; }
   /* Audit fix — align ITM row tints to CE/PE palette. Pre-fix ITM
      calls were sky-blue (rgba 56,189,248) and ITM puts were orange

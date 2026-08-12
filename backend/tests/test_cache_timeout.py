@@ -111,7 +111,8 @@ def test_task_instruments_has_120s_startup_delay():
 
 
 def test_options_chain_instruments_no_timeout():
-    """Guard: instruments get_or_fetch in options.py must not use timeout_seconds.
+    """Guard: instruments get_or_fetch in options.py and options_helpers.py
+    must not use timeout_seconds.
 
     Adding timeout_seconds=N to the instruments fetch causes zombie threads: when the
     download takes > N seconds, asyncio.wait_for releases the lock but the underlying
@@ -120,20 +121,36 @@ def test_options_chain_instruments_no_timeout():
     accumulate and OOM the process.  Root cause of the 2026-08-11 prod OOM kill loop.
     """
     import re
-    src = open("backend/api/routes/options.py").read()
-    # Find the get_or_fetch("instruments", ...) call
-    m = re.search(
+
+    # Check options.py
+    src_options = open("backend/api/routes/options.py").read()
+    m_options = re.search(
         r'get_or_fetch\s*\(\s*["\']instruments["\'].*?\)',
-        src, re.DOTALL,
+        src_options, re.DOTALL,
     )
-    assert m is not None, "get_or_fetch('instruments', ...) not found in options.py"
-    call_text = m.group(0)
-    assert "timeout_seconds" not in call_text, (
+    assert m_options is not None, "get_or_fetch('instruments', ...) not found in options.py"
+    call_text_options = m_options.group(0)
+    assert "timeout_seconds" not in call_text_options, (
         "instruments get_or_fetch in options.py must not have timeout_seconds — "
         "a timeout releases the lock while the thread keeps downloading, causing zombie "
         "threads that accumulate GB of instrument data and OOM prod (see 2026-08-11 fix). "
         "Use coalescing (no timeout) so concurrent callers wait for the same download."
     )
+
+    # Check options_helpers.py
+    src_helpers = open("backend/api/routes/options_helpers.py").read()
+    m_helpers = re.search(
+        r'get_or_fetch\s*\(\s*["\']instruments["\'].*?\)',
+        src_helpers, re.DOTALL,
+    )
+    if m_helpers is not None:
+        call_text_helpers = m_helpers.group(0)
+        assert "timeout_seconds" not in call_text_helpers, (
+            "instruments get_or_fetch in options_helpers.py must not have timeout_seconds — "
+            "a timeout releases the lock while the thread keeps downloading, causing zombie "
+            "threads that accumulate GB of instrument data and OOM prod (see 2026-08-11 fix). "
+            "Use coalescing (no timeout) so concurrent callers wait for the same download."
+        )
 
 
 def test_token_refresh_parks_under_conn_service():
