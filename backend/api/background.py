@@ -3409,19 +3409,18 @@ async def _task_sparkline_warm(state: dict) -> None:
     # before any operator has picked a mode.
     from backend.shared.helpers.utils import is_engine_idle
 
-    # ── Delayed 600s startup warm ─────────────────────────────────────────────
-    # Delayed 600s so the sparkline warm does not compete with startup instrument
-    # downloads (NFO token map = ~70k rows). Immediate warm caused OOM kill loop
-    # on prod (2026-08-12): _do_warm_with_retry at T=0 downloads 6 exchanges;
-    # count==0 retry at T+60s triggers a second download — combined RSS reaches
-    # 5-6GB before port 8000 binds. 10-minute cold window at boot is acceptable.
-    if not is_engine_idle():
-        async def _spark_delayed_startup():
-            await asyncio.sleep(600)
-            await _do_warm_with_retry("startup")
-        asyncio.create_task(_spark_delayed_startup())
-    else:
+    # ── Startup warm intentionally skipped (OOM guard) ───────────────────────
+    # Downloading the sparkline token map (6 exchanges, NFO = ~70k rows) at
+    # startup pushes RSS to 5-6 GB before port 8000 binds — OOM kill loop on
+    # prod (2026-08-12). Even a 600s delay doesn't help: at T+600s the process
+    # hits the same peak. Scheduled warms at 09:00/09:15 IST and 00:30 IST
+    # handle cache population. Users making sparkline requests during the cold
+    # window pay a single per-symbol lazy fetch — acceptable vs. OOM kill loop.
+    if is_engine_idle():
         logger.info("sparkline warm: skipped startup — engine idle (dev)")
+    else:
+        logger.info("sparkline warm: startup warm skipped (OOM guard) — "
+                    "cache warms at 09:00/09:15 IST market-open boundaries")
 
     # ── Then at each market-segment open boundary + daily IST midnight ───────
     #

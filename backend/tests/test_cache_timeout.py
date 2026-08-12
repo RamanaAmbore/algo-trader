@@ -137,22 +137,23 @@ def test_options_chain_instruments_no_timeout():
     )
 
 
-def test_sparkline_warm_has_startup_delay():
-    """Guard: sparkline startup warm must NOT fire immediately (OOM risk on prod).
+def test_sparkline_warm_no_startup_download():
+    """Guard: sparkline startup warm must NOT download at boot (OOM risk on prod).
 
-    Without a startup delay, _do_warm_with_retry fires at T=0 and downloads 6 exchanges
-    (NFO = ~70k instruments). If count==0 it retries at T+60s (second full download).
-    Combined RSS reaches 5-6GB before port 8000 binds → OOM kill loop.
-    600s delay lets the process stabilise before sparkline warm fires.
-    Root cause of 2026-08-12 prod OOM.
+    Downloading the token map (6 exchanges, NFO = ~70k rows) at startup — even
+    with a 600s delay — pushes RSS to 5-6 GB before port 8000 binds, causing an
+    OOM kill loop (2026-08-12). The startup warm is skipped entirely; cache warms
+    at the scheduled 09:00/09:15 IST market-open boundaries instead.
     """
     import re
     src = open("backend/api/background.py").read()
     m = re.search(r'async def _task_sparkline_warm\b.*?(?=\nasync def |\Z)', src, re.DOTALL)
     assert m is not None, "_task_sparkline_warm not found in background.py"
     body = m.group(0)
-    assert '_spark_delayed_startup' in body or 'asyncio.sleep(600)' in body, (
-        "sparkline startup warm must include a 600s delay — "
-        "immediate startup warm causes concurrent NFO download OOM with other tasks "
-        "(see fix 2026-08-12). Remove this guard only if instruments store is warm at boot."
+    assert '_do_warm_with_retry("startup")' not in body, (
+        "_task_sparkline_warm must NOT call _do_warm_with_retry at startup — "
+        "downloading the token map (6 exchanges, NFO ~70k rows) at boot causes "
+        "OOM kill loop even with a delay (peak RSS 5-6 GB, port 8000 never binds). "
+        "Cache warms at 09:00/09:15 IST market-open boundaries instead. "
+        "See 2026-08-12 OOM fix."
     )
