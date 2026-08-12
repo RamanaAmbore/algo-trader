@@ -88,6 +88,29 @@ def test_chain_sym_ttl_is_30():
 # Test 5 — options chain instruments fetch must NOT use timeout_seconds (OOM guard)
 # ---------------------------------------------------------------------------
 
+def test_bg_instruments_not_in_on_startup():
+    """Guard: bg-instruments must NOT be started in on_startup.
+
+    Starting _task_instruments at startup causes a double-NFO-peak OOM:
+    at T+120s, _fetch_instruments (5 exchanges) runs concurrently with
+    sparkline warm_backfill (which keeps the 6-exchange token_map in RAM).
+    Combined peak exceeds 7.8GB server RAM → OOM kill loop.
+    Instruments load on-demand via options.py get_or_fetch (coalesced, no timeout).
+    """
+    import re
+    src = open("backend/api/background.py").read()
+    # Extract on_startup body (from def on_startup up to next top-level def)
+    m = re.search(r'async def on_startup\(.*?\n(?=async def |\Z)', src, re.DOTALL)
+    assert m is not None, "on_startup function not found in background.py"
+    body = m.group(0)
+    assert "bg-instruments" not in body, (
+        "bg-instruments must NOT be in on_startup — starting _task_instruments at "
+        "startup causes double-NFO-peak OOM (token_map + _fetch_instruments both "
+        "downloading simultaneously at T+120s). Instruments load on-demand via "
+        "options.py get_or_fetch instead. See 2026-08-11 OOM kill loop fix."
+    )
+
+
 def test_options_chain_instruments_no_timeout():
     """Guard: instruments get_or_fetch in options.py must not use timeout_seconds.
 
