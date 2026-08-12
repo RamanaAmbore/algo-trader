@@ -1513,6 +1513,23 @@ class TestMarketStatusAndNormalizers:
             result = self.broker._call_market_status_sdk("NSE")
             assert result is None
 
+    def test_extract_dhan_status_rows_no_match_returns_none(self):
+        """When resp is a dict but no target codes match, must return None not []."""
+        from backend.brokers.adapters.dhan import _extract_dhan_status_rows
+        result = _extract_dhan_status_rows({"NSE_EQ": {"status": True}}, ("MCX_COMM",))
+        assert result is None, (
+            f"Expected None when no target codes match, got {result!r}. "
+            "Returning [] causes market_status() to return False (closed) instead of None (unknown)."
+        )
+
+    def test_extract_dhan_status_rows_matching_code_returns_list(self):
+        """When a matching code is found, must return a non-empty list."""
+        from backend.brokers.adapters.dhan import _extract_dhan_status_rows
+        result = _extract_dhan_status_rows({"NSE_EQ": {"status": True}}, ("NSE_EQ",))
+        assert isinstance(result, list) and len(result) > 0, (
+            f"Expected non-empty list when code matches, got {result!r}"
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Part J: Line Range 1493-1590 Tests — Parsing & Normalization Branches

@@ -195,13 +195,14 @@ def _extract_dhan_status_rows(resp: Any, target_codes: tuple[str, ...]) -> list[
     if rows:
         return rows
     if isinstance(resp, dict):
+        rows = []   # fresh list — not _unwrap's empty reference
         for code in target_codes:
             v = resp.get(code) or resp.get(code.lower())
             if isinstance(v, dict):
                 rows.append({"exchangeSegment": code, **v})
             elif isinstance(v, (str, bool)):
                 rows.append({"exchangeSegment": code, "status": v})
-        return rows
+        return rows if rows else None
     return None
 
 
