@@ -186,9 +186,13 @@ async def test_startup_hook_calls_backfill_with_universe():
     try:
         # Patch is_any_segment_open at its definition site so the intraday
         # branch also fires (otherwise the task skips intraday when closed).
+        # Also patch Tier 1 guard so the OOM-guard early-return is bypassed.
         with patch(
             "backend.shared.helpers.date_time_utils.is_any_segment_open",
             return_value=True,
+        ), patch(
+            "backend.api.routes.quote._qt_read_instr_store_tier1",
+            return_value={"NIFTY": 1},
         ):
             await _task_warm_backfill()
     finally:

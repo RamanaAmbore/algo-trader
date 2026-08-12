@@ -90,11 +90,13 @@ async def test_warm_backfill_one_shot_guard(reset_warm_backfill_fired_flag):
     """_task_warm_backfill runs only once per process lifetime via _fired flag."""
     from backend.api.background import _task_warm_backfill
 
-    # First call should proceed
+    # First call should proceed — simulate instruments_store Tier 1 warm so the
+    # OOM guard passes and the task continues to the _fired flag setter.
     with patch("asyncio.sleep", new_callable=AsyncMock), \
          patch("backend.api.persistence.backfill.backfill_ohlcv_daily", new_callable=AsyncMock), \
          patch("backend.api.persistence.backfill.backfill_intraday_today", new_callable=AsyncMock), \
-         patch("backend.api.database.async_session") as mock_session:
+         patch("backend.api.database.async_session") as mock_session, \
+         patch("backend.api.routes.quote._qt_read_instr_store_tier1", return_value={"NIFTY": 1}):
 
         # Mock empty watchlist for simplicity
         mock_async_ctx = AsyncMock()

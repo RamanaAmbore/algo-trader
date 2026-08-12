@@ -3367,6 +3367,24 @@ async def _task_sparkline_warm(state: dict) -> None:
 
     async def _do_warm(label: str) -> int:
         logger.info(f"sparkline warm: starting ({label})")
+        # OOM guard: instruments_store Tier 1 must be warm before calling
+        # warm_sparkline_cache. When Tier 1 is cold, _qt_warm_build_token_map
+        # falls through to _qt_broker_token_map (Tier 3: 6-exchange sequential
+        # broker download, 5-6GB peak RSS) → OOM kill. Skip the warm and return
+        # 0 so the retry loop can decide whether to attempt again. Tier 1 is
+        # populated when a user visits the options chain or when instruments_store
+        # is seeded from DB after a prior-run write-back.
+        try:
+            from backend.api.routes.quote import _qt_read_instr_store_tier1
+            today_str = timestamp_indian().strftime("%Y-%m-%d")
+            if _qt_read_instr_store_tier1(today_str) is None:
+                logger.info(
+                    f"sparkline warm: {label} — instruments_store Tier 1 cold, "
+                    "deferring to avoid OOM"
+                )
+                return 0
+        except Exception:
+            pass
         try:
             symbols = await _collect_symbols()
             # Register all universe symbols in the ticker's sym→token map
@@ -3404,23 +3422,13 @@ async def _task_sparkline_warm(state: dict) -> None:
                 "symbols — leaving cache cold until next boundary"
             )
 
-    # Dev-idle gate (see _task_performance) — skip the startup warm on
-    # dev when engine is idle so dev doesn't burn historical_data calls
-    # before any operator has picked a mode.
-    from backend.shared.helpers.utils import is_engine_idle
-
-    # ── Fire immediately at startup ──────────────────────────────────────────
-    # fire-and-forget so subsequent task startup (scheduled-warm loop below)
-    # is not blocked for the 50-90 s the warm cycle takes. The operator's
-    # first request may still pay a cold-cache miss for the first ~30 s but
-    # the rest of app startup completes without waiting.
-    # NOTE: this also primes the token-map cache (_get_today_token_map) so
-    # _task_warm_backfill (fires at T+60s) can reuse it instead of triggering
-    # its own 6-exchange instruments download.
-    if not is_engine_idle():
-        asyncio.create_task(_do_warm_with_retry("startup"))
-    else:
-        logger.info("sparkline warm: skipped startup — engine idle (dev)")
+    # Startup warm removed 2026-08-12: fire-and-forget _do_warm_with_retry at T+0
+    # triggered _qt_broker_token_map (6-exchange sequential broker download,
+    # 5-6GB peak RSS) → OOM kill loop before on_startup completed and port bound.
+    # Sparklines warm lazily: _do_warm guards on instruments_store Tier 1 so
+    # the broker download only fires after a user visit populates the cache
+    # from DB, never at raw process startup.
+    logger.info("sparkline warm: startup warm disabled (OOM guard)")
 
     # ── Then at each market-segment open boundary + daily IST midnight ───────
     #
@@ -4582,6 +4590,24 @@ async def _task_warm_backfill() -> None:
     # Startup settle — wait for conn_service token mint.
     await asyncio.sleep(60)
 
+    # OOM guard: backfill_ohlcv_daily calls ohlcv_store.get_or_fetch_daily →
+    # _get_today_token_map. When instruments_store Tier 1 is cold this falls
+    # through to Tier 3 (6-exchange broker download, 5-6GB peak) → OOM kill.
+    # Skip the backfill if Tier 1 is not yet warm; historical bars are already
+    # in DB from prior-session writes, so skipping causes no data loss.
+    try:
+        from backend.api.routes.quote import _qt_read_instr_store_tier1
+        today_str = timestamp_indian().strftime("%Y-%m-%d")
+        if _qt_read_instr_store_tier1(today_str) is None:
+            logger.info(
+                "backfill warm: instruments_store Tier 1 cold — "
+                "skipping to prevent OOM (bars already in DB from prior session)"
+            )
+            await asyncio.sleep(86400)
+            return
+    except Exception:
+        pass
+
     # Build the same symbol universe as _task_sparkline_warm (300-symbol cap).
     symbols: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -5549,11 +5575,14 @@ async def _supervised(coro_fn, *, name: str, restart_delay: int = 60) -> None:
 
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
+    logger.info("Background: on_startup entered")
     state: dict = {}
     # Kick the batched WebSocket-event persist loop — collapses bursts of
     # agent fires into one-commit-per-second instead of one-task-per-event.
     from backend.api.routes.algo import start_persist_flush
+    logger.info("Background: calling start_persist_flush")
     start_persist_flush()
+    logger.info("Background: start_persist_flush done, creating tasks")
     app.state.bg_tasks = [
         asyncio.create_task(_supervised(lambda: _task_market(state),          name="bg-market"),          name="bg-market"),
         asyncio.create_task(_supervised(_task_token_refresh,                   name="bg-token-refresh"),   name="bg-token-refresh"),

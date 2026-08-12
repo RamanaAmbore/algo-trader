@@ -136,25 +136,29 @@ def test_options_chain_instruments_no_timeout():
     )
 
 
-def test_sparkline_startup_warm_is_fire_and_forget():
-    """Guard: sparkline startup warm must use asyncio.create_task (fire-and-forget).
+def test_sparkline_startup_warm_is_disabled():
+    """Guard: _task_sparkline_warm must NOT fire asyncio.create_task at startup.
 
-    The startup warm downloads the 6-exchange token map and warms sparklines for
-    ~300 symbols.  It must NOT block on_startup (which would delay port 8000 from
-    binding for 50-90s).  asyncio.create_task schedules it as a background
-    coroutine so on_startup continues immediately while the warm runs concurrently.
-    Also primes the token-map cache so _task_warm_backfill (T+60s) reuses it
-    instead of triggering its own instruments download.
+    The T+0 startup warm calls _qt_broker_token_map which downloads all 6 sparkline
+    exchanges' instruments (NSE, NFO, BSE, BFO, MCX, CDS) sequentially. With NFO
+    having 300K+ rows, this peaks at 5-6GB RSS → OOM kill before port 8000 binds.
+
+    _do_warm now guards on instruments_store Tier 1 — it returns 0 immediately if
+    Tier 1 is cold, preventing the Tier 3 broker download at any call site.
+    Sparklines warm lazily once a user visit populates instruments_store from DB.
+
+    Root cause of 2026-08-12 OOM kill loop. Fix: remove the fire-and-forget
+    asyncio.create_task at startup; rely on the _do_warm Tier 1 guard for all
+    subsequent warm attempts (segment open, midnight boundary).
     """
     import re
     src = open("backend/api/background.py").read()
     m = re.search(r'async def _task_sparkline_warm\b.*?(?=\nasync def |\Z)', src, re.DOTALL)
     assert m is not None, "_task_sparkline_warm not found in background.py"
     body = m.group(0)
-    assert 'asyncio.create_task(_do_warm_with_retry("startup"))' in body, (
-        "_task_sparkline_warm must fire the startup warm via asyncio.create_task "
-        "(fire-and-forget) — not awaited and not skipped. "
-        "Skipping the startup warm leaves the token map uncached; _task_warm_backfill "
-        "then triggers its own 6-exchange instruments download at T+60s, causing the "
-        "same 6GB OOM that removing the startup warm was meant to prevent."
+    assert 'asyncio.create_task(_do_warm_with_retry("startup"))' not in body, (
+        "_task_sparkline_warm must NOT fire asyncio.create_task(_do_warm_with_retry) "
+        "at startup — the T+0 6-exchange instruments download peaks at 5-6GB RSS "
+        "and OOM-kills the process before port 8000 binds (2026-08-12 incident). "
+        "_do_warm now guards on instruments_store Tier 1; startup warm is disabled."
     )
