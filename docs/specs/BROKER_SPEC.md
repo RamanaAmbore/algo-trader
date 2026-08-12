@@ -591,6 +591,10 @@ would realize if you squared off the position at LTP on that session.
   failover and registry retry-cooloff to activate correctly.
 - **5xx → BrokerNetworkError** (Jul 2026): `_DhanSDKProxy` raises `BrokerNetworkError` on HTTP
   502/503/504 responses, enabling transient retry logic upstream.
+- **GTT operations rate limiting** (Aug 2026): GTT mutations (`place_forever`, `modify_forever`,
+  `cancel_forever`, `get_forever`) now use the `"orders"` rate-limit bucket (`_sdk_orders`)
+  instead of the default no-bucket category (`_sdk`). This aligns GTT operations with
+  regular order placement under the same rate-limit ceiling (20 orders/s).
 - `historical_data()` returns `[]` by design — excluded from `get_historical_brokers()`
 - `place_gtt()` raises `NotImplementedError` for MCX/NCO
 
