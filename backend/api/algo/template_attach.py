@@ -1673,6 +1673,15 @@ def apply_plan_live(
         result.errors.append(str(_ve))
         return result
 
+    # Pre-flight: confirm broker supports GTT at all before any placement work.
+    _bcaps = broker.capabilities
+    if not _bcaps.gtt_single:
+        result.errors.append(
+            f"{broker.broker_id} does not support GTT (gtt_single=False) — "
+            "template attach skipped"
+        )
+        return result
+
     # C2 — Market-hours guard: GTT registration itself is accepted by Kite
     # 24×7 so GTT-only plans are allowed off-hours. Only plans with a wing
     # MARKET leg need an open exchange — the wing order is rejected
@@ -2258,8 +2267,13 @@ async def apply_template_to_order(
         try:
             from backend.brokers.capabilities import capabilities_for
             caps = capabilities_for(parent_account)
-        except Exception:
-            caps = None
+        except Exception as _caps_err:
+            from backend.brokers.capabilities import UNKNOWN_CAPS
+            caps = UNKNOWN_CAPS
+            logger.warning(
+                "capabilities_for(%s) failed (%s) — using UNKNOWN_CAPS (no GTT)",
+                parent_account, _caps_err,
+            )
 
     # Pre-attach MCX guard — reject before lot-size resolution and plan resolution
     # so no work is wasted on an unsupported broker/exchange combination.
