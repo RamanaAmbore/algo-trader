@@ -1,73 +1,50 @@
-# Plan: GTT audit fixes — stale code cleanup + two correctness gaps
+# Plan: Remove dead imports + stale comment
 
 ## Context
 
-Audit covered:
-- Stale code across broker adapters and template layer
-- GTT method implementations across Kite / Dhan / Groww
-- Whether the template layer correctly gates on broker capabilities
+Full stale/dead code audit ran across broker layer, API layer, frontend, and tests.
+Overall the codebase is clean. Two actionable findings:
 
-**Overall picture**: GTT is fully implemented across all three brokers and capability
-claims match implementations. The template layer correctly uses `BrokerCapabilities`
-for OCO-vs-two-singles dispatch, translate_qty per leg, and MCX guard. No stale code
-found (no dead imports, no `_safe_call` remnants, no orphaned tests).
+1. **Dead imports in two API route files** — symbols imported but never referenced
+   in the file body. They accumulated when basket-order logic was split into
+   `orders_basket.py` (the schema imports) and when HMAC postback signing was moved
+   to `orders_postback.py` (hashlib/hmac). `is_authenticated_request` was imported
+   as a guard candidate but the route uses `auth_or_demo_guard` instead. In
+   `health.py`, `delete` was pulled in speculatively, `mask_account` was an
+   unrealised refactor stub — neither is referenced.
 
-Two correctness gaps found that need fixing:
+2. **Stale comment in `base.py:58`** — references `_safe_call` which was removed in
+   the `_DhanSDKProxy` refactor (commit ae006393). Should point to `_DhanSDKProxy`,
+   `@_retry_groww_auth`, and `@retry_kite_conn` as the current dispatch paths.
 
-**P1 — `_extract_dhan_status_rows()` returns `[]` instead of `None`**
-`dhan.py:194-204`: `rows = _unwrap(resp)` returns `[]` on shape mismatch. When
-`if rows:` is False, the function falls into the dict-fallback branch but reuses
-the same `rows = []` reference. If no target codes match, it returns `[]` — not
-`None` as documented. The caller `market_status()` checks `if rows is None:` and
-treats `[]` as "parsed but closed" → returns `False` instead of `None` (unknown).
-Silent correctness bug: Dhan market status incorrectly reports "closed" when the
-SDK returns an unrecognised shape.
-
-**P2 — `capabilities_for()` exception falls back to `None`, not `UNKNOWN_CAPS`**
-`template_attach.py:2256-2262`: on any exception from `capabilities_for()`, `caps`
-stays `None`. At line 1100, `if broker_caps is None or broker_caps.gtt_oco:` treats
-`None` as "OCO supported" — sends a two-leg GTT to a broker that may not support
-it. `UNKNOWN_CAPS` has `gtt_oco=False`, `gtt_single=False` (safe conservative
-fallback). The fix also logs a warning so operators can diagnose the lookup failure.
-
-**P2 — `apply_plan_live` has no pre-flight for `gtt_single=False`**
-Currently the only capability check before placement is `validate_gtt_exchange()`
-(exchange-level). If a new broker declares `gtt_single=False`, `broker.place_gtt()`
-raises `NotImplementedError` which is caught and turned into a generic error string.
-Adding an explicit pre-flight using `broker.capabilities.gtt_single` gives a clear
-operator-visible message and skips all the GTT loop work immediately.
+One flagged item was a false positive: `rate_limiter.py:85-91` looks like
+`sleep_time` could be unbound, but the `else: return` at line 88 exits the entire
+method — line 91 is only ever reached via the `if refill_rate > 0` branch which
+sets `sleep_time` first. Code is correct.
 
 ## Agents
 
-- backend: skip
+- backend: Remove dead imports in `backend/api/routes/orders.py` and
+  `backend/api/routes/health.py`. Exact changes:
+  - `orders.py:20-21` — remove `import hashlib` and `import hmac`
+  - `orders.py:33` — remove `is_authenticated_request` from the `auth_guard` import
+    (keep `jwt_guard`, `auth_or_demo_guard`, `admin_guard`, `is_admin_request`)
+  - `orders.py:39-42` — remove the 4-name basket-schema import block
+    (`BasketGroup`, `BasketGroupResult`, `BasketLegResult`, `BasketMarginGroupResult`)
+  - `health.py:17` — remove `delete` from the `from litestar import ...` line
+    (keep `Controller`, `get`, `post`)
+  - `health.py:34` — remove `mask_account` from the `from ... utils import ...` line
+    (keep `config`)
+  No new tests needed — import removal is validated by the existing test suite
+  passing unchanged.
+- broker: Update stale comment in `backend/brokers/base.py:58`.
+  Change: `_last_req / _last_resp before / after each HTTP call so operator debugging
+  doesn't require log-diving:` ... `Adapters update these dicts in their HTTP dispatch
+  path (_safe_call, etc.)` → replace `(_safe_call, etc.)` with
+  `(_DhanSDKProxy, @_retry_groww_auth, @retry_kite_conn)`.
 - frontend: skip
-- broker: Fix P1 `_extract_dhan_status_rows()` in `backend/brokers/adapters/dhan.py:187-205`
-  — initialize `rows = []` inside the `isinstance(resp, dict)` branch (not reusing
-  `_unwrap`'s empty list), and return `rows if rows else None` instead of bare `rows`.
-  Add a test in `backend/tests/test_dhan_adapter_coverage.py` that calls
-  `_extract_dhan_status_rows({"NSE_EQ": {"other": 1}}, ("MCX_COMM",))` directly and
-  asserts the return is `None`, not `[]`.
 - doc: skip
-- backend-test: Fix P2a + P2b in `backend/api/algo/template_attach.py`:
-  1. `template_attach.py:2256-2262` — change the exception fallback from `caps = None`
-     to `caps = UNKNOWN_CAPS` (imported from `backend.brokers.capabilities`), and add
-     `logger.warning(...)` so operators can see the lookup failure in logs.
-  2. `template_attach.py:1669` — after `broker.validate_gtt_exchange()`, add:
-     ```python
-     _bcaps = broker.capabilities
-     if not _bcaps.gtt_single:
-         result.errors.append(
-             f"{broker.broker_id} does not support GTT (gtt_single=False) — "
-             "template attach skipped"
-         )
-         return result
-     ```
-  Add tests in `backend/tests/test_broker_client.py` or a new
-  `backend/tests/broker/test_template_gtt_preflight.py`:
-  - Test that `apply_plan_live` returns early with a clear error when broker caps
-    have `gtt_single=False` (mock `broker.capabilities` to return UNKNOWN_CAPS).
-  - Test that the caps fallback to `UNKNOWN_CAPS` on `capabilities_for()` exception
-    (patch `capabilities_for` to raise, verify `caps` ends up as `UNKNOWN_CAPS`).
+- backend-test: skip
 
 ## Tests
 
@@ -76,28 +53,35 @@ operator-visible message and skips all the GTT loop work immediately.
 - playwright: no
 
 ## Commit message
-fix(broker+template): _extract_dhan_status_rows None contract, UNKNOWN_CAPS fallback, gtt_single preflight
+chore(cleanup): remove dead imports in orders.py + health.py; fix stale _safe_call comment in base.py
 
 ## Done when
 
-- `_extract_dhan_status_rows({"X": {"other": 1}}, ("MCX_COMM",))` returns `None`
-- `capabilities_for()` exception falls back to `UNKNOWN_CAPS`, not `None`
-- `apply_plan_live` returns immediately with clear message when `gtt_single=False`
-- All existing GTT adapter tests continue to pass
+- `from litestar import Controller, get, post` in health.py (no `delete`)
+- `from backend.shared.helpers.utils import config` in health.py (no `mask_account`)
+- No `hashlib`, `hmac`, `is_authenticated_request`, `BasketGroup*` in orders.py
+- `base.py:58` references `_DhanSDKProxy` not `_safe_call`
 - `pytest backend/tests/ -q` green
+
+## Masking audit (demo→signin) — no action needed
+
+Separate deep audit of demo mode → signed-in account masking transition:
+- All data endpoints (`/api/orders/`, `/api/accounts/`, `/api/positions/`, `/api/holdings/`, `/api/funds/`)
+  mask account codes via `is_admin_request()` for demo users ✓
+- Cache poisoning bug ("demo→signin lag bug") was already fixed — orders.py uses
+  `msgspec.structs.replace()` (copy-not-mutate) so the shared TTL cache keeps unmasked
+  data while demo requests receive masked copies ✓
+- Frontend `authStore.login()` wipes all `rbq.cache.*` localStorage keys on signin to
+  prevent masked→unmasked visual flash ✓
+- `is_authenticated_request()` accepts stale JWTs for masking decisions only; full
+  `token_version` gate fires on next request → P3 theoretical only, no action needed ✓
+
+**Conclusion**: Masking system is correct. No items added to this plan.
 
 ## Critical files
 
 | File | Change |
 |---|---|
-| `backend/brokers/adapters/dhan.py:187-205` | P1 fix: init fresh `rows = []` in dict branch, `return rows if rows else None` |
-| `backend/api/algo/template_attach.py:2256-2262` | P2a fix: `caps = UNKNOWN_CAPS` + warning log on exception |
-| `backend/api/algo/template_attach.py:1669-1674` | P2b fix: add `gtt_single` pre-flight check using `broker.capabilities` |
-| `backend/tests/test_dhan_adapter_coverage.py` | New test for `_extract_dhan_status_rows` null-return contract |
-| `backend/tests/broker/test_template_gtt_preflight.py` (new) | Tests for caps fallback + gtt_single preflight |
-
-## Reuse
-
-- `UNKNOWN_CAPS` from `backend/brokers/capabilities.py:178` — already defined, conservative all-False
-- `broker.capabilities` property from `backend/brokers/base.py:84-90` — returns via `capabilities_for_broker_id`
-- `AttachResult` from `backend/api/algo/template_attach.py` — existing result type, use `.errors.append()`
+| `backend/api/routes/orders.py:20-21,33,39-42` | Remove 7 dead imports |
+| `backend/api/routes/health.py:17,34` | Remove `delete` and `mask_account` |
+| `backend/brokers/base.py:58` | Update `_safe_call` → `_DhanSDKProxy`/`@_retry_groww_auth`/`@retry_kite_conn` |

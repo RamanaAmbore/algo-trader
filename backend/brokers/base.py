@@ -55,7 +55,7 @@ class Broker(ABC):
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
 
-    # Populated by adapters in their HTTP dispatch path (_safe_call, etc.)
+    # Populated by adapters in their HTTP dispatch path (_DhanSDKProxy, @_retry_groww_auth, @retry_kite_conn).
     _last_req: dict
     _last_resp: dict
 

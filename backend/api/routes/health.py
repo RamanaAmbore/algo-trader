@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import msgspec
-from litestar import Controller, get, post, delete
+from litestar import Controller, get, post
 from litestar.params import Parameter as _LP
 from litestar.exceptions import HTTPException
 from sqlalchemy import and_, func, select
@@ -31,7 +31,7 @@ from backend.api.models import (
     User,
 )
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import config, mask_account
+from backend.shared.helpers.utils import config
 
 
 logger = get_logger(__name__)

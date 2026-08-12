@@ -17,8 +17,6 @@ GET  /api/accounts/           — list accounts (masked display + unmasked ID fo
 """
 
 import asyncio
-import hashlib
-import hmac
 import json
 from datetime import datetime, timezone
 
@@ -30,16 +28,12 @@ from litestar.exceptions import HTTPException
 from litestar.params import Parameter
 from litestar.status_codes import HTTP_200_OK
 
-from backend.api.auth_guard import jwt_guard, auth_or_demo_guard, admin_guard, is_admin_request, is_authenticated_request
+from backend.api.auth_guard import jwt_guard, auth_or_demo_guard, admin_guard, is_admin_request
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.routes.ws import broadcast
 from backend.api.schemas import (
     AccountInfo,
     AccountsResponse,
-    BasketGroup,
-    BasketGroupResult,
-    BasketLegResult,
-    BasketMarginGroupResult,
     BasketMarginResponse,
     BasketOrderRequest,
     BasketOrderResponse,
