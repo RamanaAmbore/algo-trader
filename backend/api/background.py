@@ -5556,7 +5556,6 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(_task_token_refresh,                   name="bg-token-refresh"),   name="bg-token-refresh"),
         asyncio.create_task(_supervised(lambda: _task_performance(state),      name="bg-performance"),     name="bg-performance"),
         asyncio.create_task(_supervised(_task_expiry_check,                    name="bg-expiry"),          name="bg-expiry"),
-        asyncio.create_task(_supervised(_task_instruments,                     name="bg-instruments"),     name="bg-instruments"),
         asyncio.create_task(_supervised(_task_daily_snapshot,                  name="bg-daily-snapshot"),  name="bg-daily-snapshot"),
         asyncio.create_task(_supervised(_task_sim_cleanup,                     name="bg-sim-cleanup"),     name="bg-sim-cleanup"),
         asyncio.create_task(_supervised(_task_mcp_audit_cleanup,               name="bg-mcp-audit-cleanup"), name="bg-mcp-audit-cleanup"),
@@ -5618,7 +5617,7 @@ async def on_startup(app) -> None:
                             name="bg-paper-chase")
     )
     logger.info("Background: all tasks started (market, performance, post-market-cron, "
-                "expiry, instruments, daily-snapshot, visitor-log, sparkline-warm, "
+                "expiry, daily-snapshot, visitor-log, sparkline-warm, "
                 "ticker-watchdog, paper-chase)")
 
 

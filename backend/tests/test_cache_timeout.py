@@ -82,3 +82,22 @@ async def test_sync_fetcher_timeout():
 def test_chain_sym_ttl_is_30():
     from backend.api.routes.options import _CHAIN_SYM_TTL
     assert _CHAIN_SYM_TTL == 30.0
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — bg-instruments must not be auto-started in on_startup (OOM guard)
+# ---------------------------------------------------------------------------
+
+def test_bg_instruments_not_in_on_startup():
+    """Guard: bg-instruments must not be auto-started at startup (causes OOM on prod)."""
+    import re
+    src = open("backend/api/background.py").read()
+    # Extract on_startup function body
+    m = re.search(r'async def on_startup\(.*?\).*?(?=\nasync def |\Z)', src, re.DOTALL)
+    assert m is not None, "on_startup function not found in background.py"
+    body = m.group(0)
+    assert "bg-instruments" not in body, (
+        "bg-instruments task must not be created in on_startup — "
+        "it causes concurrent NFO download OOM on prod (see fix 2026-08-12). "
+        "Use on-demand loading via get_or_fetch instead."
+    )
