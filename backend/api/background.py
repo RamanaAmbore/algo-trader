@@ -3409,18 +3409,18 @@ async def _task_sparkline_warm(state: dict) -> None:
     # before any operator has picked a mode.
     from backend.shared.helpers.utils import is_engine_idle
 
-    # ── Startup warm intentionally skipped (OOM guard) ───────────────────────
-    # Downloading the sparkline token map (6 exchanges, NFO = ~70k rows) at
-    # startup pushes RSS to 5-6 GB before port 8000 binds — OOM kill loop on
-    # prod (2026-08-12). Even a 600s delay doesn't help: at T+600s the process
-    # hits the same peak. Scheduled warms at 09:00/09:15 IST and 00:30 IST
-    # handle cache population. Users making sparkline requests during the cold
-    # window pay a single per-symbol lazy fetch — acceptable vs. OOM kill loop.
-    if is_engine_idle():
-        logger.info("sparkline warm: skipped startup — engine idle (dev)")
+    # ── Fire immediately at startup ──────────────────────────────────────────
+    # fire-and-forget so subsequent task startup (scheduled-warm loop below)
+    # is not blocked for the 50-90 s the warm cycle takes. The operator's
+    # first request may still pay a cold-cache miss for the first ~30 s but
+    # the rest of app startup completes without waiting.
+    # NOTE: this also primes the token-map cache (_get_today_token_map) so
+    # _task_warm_backfill (fires at T+60s) can reuse it instead of triggering
+    # its own 6-exchange instruments download.
+    if not is_engine_idle():
+        asyncio.create_task(_do_warm_with_retry("startup"))
     else:
-        logger.info("sparkline warm: startup warm skipped (OOM guard) — "
-                    "cache warms at 09:00/09:15 IST market-open boundaries")
+        logger.info("sparkline warm: skipped startup — engine idle (dev)")
 
     # ── Then at each market-segment open boundary + daily IST midnight ───────
     #
@@ -5559,6 +5559,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(_task_token_refresh,                   name="bg-token-refresh"),   name="bg-token-refresh"),
         asyncio.create_task(_supervised(lambda: _task_performance(state),      name="bg-performance"),     name="bg-performance"),
         asyncio.create_task(_supervised(_task_expiry_check,                    name="bg-expiry"),          name="bg-expiry"),
+        asyncio.create_task(_supervised(_task_instruments,                     name="bg-instruments"),     name="bg-instruments"),
         asyncio.create_task(_supervised(_task_daily_snapshot,                  name="bg-daily-snapshot"),  name="bg-daily-snapshot"),
         asyncio.create_task(_supervised(_task_sim_cleanup,                     name="bg-sim-cleanup"),     name="bg-sim-cleanup"),
         asyncio.create_task(_supervised(_task_mcp_audit_cleanup,               name="bg-mcp-audit-cleanup"), name="bg-mcp-audit-cleanup"),
@@ -5620,7 +5621,7 @@ async def on_startup(app) -> None:
                             name="bg-paper-chase")
     )
     logger.info("Background: all tasks started (market, performance, post-market-cron, "
-                "expiry, daily-snapshot, visitor-log, sparkline-warm, "
+                "expiry, instruments, daily-snapshot, visitor-log, sparkline-warm, "
                 "ticker-watchdog, paper-chase)")
 
 
