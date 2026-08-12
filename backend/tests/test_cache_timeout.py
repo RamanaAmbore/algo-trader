@@ -135,3 +135,24 @@ def test_options_chain_instruments_no_timeout():
         "threads that accumulate GB of instrument data and OOM prod (see 2026-08-11 fix). "
         "Use coalescing (no timeout) so concurrent callers wait for the same download."
     )
+
+
+def test_sparkline_warm_has_startup_delay():
+    """Guard: sparkline startup warm must NOT fire immediately (OOM risk on prod).
+
+    Without a startup delay, _do_warm_with_retry fires at T=0 and downloads 6 exchanges
+    (NFO = ~70k instruments). If count==0 it retries at T+60s (second full download).
+    Combined RSS reaches 5-6GB before port 8000 binds → OOM kill loop.
+    600s delay lets the process stabilise before sparkline warm fires.
+    Root cause of 2026-08-12 prod OOM.
+    """
+    import re
+    src = open("backend/api/background.py").read()
+    m = re.search(r'async def _task_sparkline_warm\b.*?(?=\nasync def |\Z)', src, re.DOTALL)
+    assert m is not None, "_task_sparkline_warm not found in background.py"
+    body = m.group(0)
+    assert '_spark_delayed_startup' in body or 'asyncio.sleep(600)' in body, (
+        "sparkline startup warm must include a 600s delay — "
+        "immediate startup warm causes concurrent NFO download OOM with other tasks "
+        "(see fix 2026-08-12). Remove this guard only if instruments store is warm at boot."
+    )

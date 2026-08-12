@@ -1,157 +1,100 @@
-# Plan: Option chain hang fix — timeout + TTL + market-gate removal + loading feedback
+# Plan: Restore 600s sparkline startup delay to fix prod OOM
 
 ## Context
 
-Two distinct bugs cause the option chain to be unusable:
+Prod API is in an OOM kill loop — `ramboq_api` is manually stopped to prevent restart damage.
+Service has been stopped since ~2026-08-11 evening.
 
-**Bug 1 — "Fetching expiries…" hangs forever (post-restart)**
-`fetchChainExpiries(u)` → `GET /options/chain-quotes?underlying=NIFTY` (no expiry)
-→ `get_or_fetch("instruments", _fetch_instruments, ttl_seconds=86400)` with **no timeout**
-→ on cold cache post-restart, `asyncio.to_thread(_fetch_instruments)` holds `asyncio.Lock` indefinitely
-→ all concurrent callers block → `_chainExpiriesLoading = true` never clears
-→ `OptionChainTab.svelte:797` renders "Fetching expiries…" permanently.
+**Root cause trace** (from git log diff between last good deploy and HEAD):
 
-**Bug 2 — Strike grid empty + orders unplaceable outside market hours**
-`_refreshChainQuotes()` at `OptionChainTab.svelte:430` has guard:
-`if (!chainUnderlying || !chainExpiry || !isMarketOpen()) return;`
-Outside market hours `isMarketOpen()` → false → `chainQuotesMap` stays null → `chainStrikes` empty → no grid.
-`addOptionToBasket()` at line 568 reads `q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()]` and
-checks `if (!q?.sym)` → null → shows "Quote not loaded — wait for chain refresh." — order blocked.
+1. `6332e592` — removed `bg-instruments` from `on_startup` (correct fix, still in HEAD)
+2. `09ef3bad` — added 600s sparkline startup delay (correct fix, independently needed)
+3. `e34dc2c9` — REVERTED both fixes, assuming removing `timeout_seconds=20` from instruments
+   fetch was sufficient — this theory was wrong
+4. `d88ec85d` — re-removed `bg-instruments` but did NOT restore the 600s sparkline delay
 
-The backend already handles closed-hours gracefully: `_chain_quotes_build_book` pre-seeds `sym`, `ls`, and
-`exchange` from instruments data (line 2193-2198) BEFORE looking up broker quotes. So even with no live quotes,
-every row has `ce_sym`/`pe_sym`/`exchange`/`ce_ls`/`pe_ls` set. Orders placed outside market hours get
-`limit: 0` (fallback when bid/ask are null) → MARKET order at placement time.
+**Missing fix**: `_task_sparkline_warm` in `background.py` line 3418 fires `_do_warm_with_retry("startup")` immediately at T=0. This downloads 6 exchanges (NSE/NFO/BSE/BFO/MCX/CDS) — NFO alone is ~70k instruments. If the count is 0, `_do_warm_with_retry` retries at T+60s, triggering a second 6-exchange download. Combined RSS reaches 5-6GB before port 8000 ever binds → OOM kill → restart loop.
 
-The frontend just needs to stop blocking the quotes fetch — this unblocks both rendering and order placement.
+The 600s delay lets startup settle (paper engine recover, chase recovery, all 28 background tasks start) before the sparkline warm fires. Sparkline data is served from cache; a 10-minute cold window at boot is acceptable.
 
-**Secondary**
-- `_CHAIN_SYM_TTL = 3.0s` — too short, re-triggers 156K-instrument scan on every rapid change
-- No loading indicator or error feedback on quote fetch
+`timeout_seconds=20` was already removed from `options.py` instruments call (done in `e34dc2c9`). That fix is correctly in HEAD. The startup delay is an independent, additive fix.
 
----
+## Task
 
-## Critical files
+In `backend/api/background.py` line 3418: wrap the sparkline startup warm in a 600s delay
+helper so it fires 10 minutes after startup instead of immediately.
 
-| File | Line | What changes |
-|---|---|---|
-| `backend/api/cache.py` | 27 | Add `timeout_seconds: int \| None = None` param + `asyncio.wait_for` |
-| `backend/api/routes/options.py` | 2099 | `_CHAIN_SYM_TTL = 3.0` → `30.0` |
-| `backend/api/routes/options.py` | 2547 | Add `timeout_seconds=20` to instruments `get_or_fetch` call |
-| `frontend/src/lib/order/OptionChainTab.svelte` | 299 | Add `_chainQuotesLoading` + `_chainQuotesError` state |
-| `frontend/src/lib/order/OptionChainTab.svelte` | 429–458 | Remove `!isMarketOpen()` gate; wrap with loading/error |
-| `frontend/src/lib/order/OptionChainTab.svelte` | ~867 | Insert loading row + error banner before strike grid |
-| `backend/tests/test_cache_timeout.py` | new | 3 pytest-asyncio tests for timeout behavior |
-
----
+Add a regression test to `backend/tests/test_cache_timeout.py` to guard against this being
+removed again.
 
 ## Agents
 
-### backend
-File scope: `backend/api/cache.py`, `backend/api/routes/options.py`
+- backend: In `backend/api/background.py`, find the block at line ~3417-3418:
+  ```python
+  if not is_engine_idle():
+      asyncio.create_task(_do_warm_with_retry("startup"))
+  ```
+  Replace with:
+  ```python
+  if not is_engine_idle():
+      async def _spark_delayed_startup():
+          await asyncio.sleep(600)
+          await _do_warm_with_retry("startup")
+      asyncio.create_task(_spark_delayed_startup())
+  ```
+  Update the comment block above (lines 3412-3416) to reflect the 600s delay rationale:
+  "Delayed 600s so the sparkline warm does not compete with startup instrument downloads
+  (NFO token map = ~70k rows). Immediate warm caused OOM kill loop on prod (2026-08-12)."
+  No other changes.
 
-**Fix 1 — `cache.py:27`**: Replace function signature:
-```python
-async def get_or_fetch(key: str, fetcher, ttl_seconds: int = 30,
-                       timeout_seconds: int | None = None):
-```
-Inside `async with _lock(key)`, build the coroutine then wrap conditionally:
-```python
-if asyncio.iscoroutinefunction(fetcher):
-    coro = fetcher()
-else:
-    coro = asyncio.to_thread(fetcher)
+- frontend: skip
+- broker: skip
+- doc: skip
 
-if timeout_seconds is not None:
-    value = await asyncio.wait_for(coro, timeout=timeout_seconds)
-else:
-    value = await coro
-```
-`asyncio.TimeoutError` propagates out of the lock block, releasing the lock so the next caller can retry.
-Update the docstring to mention the timeout behaviour.
+- backend-test: In `backend/tests/test_cache_timeout.py`, add the following test after the
+  existing `test_options_chain_instruments_no_timeout` test:
+  ```python
+  def test_sparkline_warm_has_startup_delay():
+      """Guard: sparkline startup warm must NOT fire immediately (OOM risk on prod).
 
-**Fix 2 — `options.py:2547`**: Add `timeout_seconds=20`:
-```python
-inst_resp = await get_or_fetch(
-    "instruments", _fetch_instruments, ttl_seconds=86400,
-    timeout_seconds=20,
-)
-```
-The existing `except Exception as e` at line 2549 already catches `TimeoutError` and returns
-`ChainQuotesResponse(underlying=und, expiry=exp, rows=[])`. No additional handling needed.
+      Without a startup delay, _do_warm_with_retry fires at T=0 and downloads 6 exchanges
+      (NFO = ~70k instruments). If count==0 it retries at T+60s (second full download).
+      Combined RSS reaches 5-6GB before port 8000 binds → OOM kill loop.
+      600s delay lets the process stabilise before sparkline warm fires.
+      Root cause of 2026-08-12 prod OOM.
+      """
+      import re
+      src = open("backend/api/background.py").read()
+      m = re.search(r'async def _task_sparkline_warm\b.*?(?=\nasync def |\Z)', src, re.DOTALL)
+      assert m is not None, "_task_sparkline_warm not found in background.py"
+      body = m.group(0)
+      assert '_spark_delayed_startup' in body or 'asyncio.sleep(600)' in body, (
+          "sparkline startup warm must include a 600s delay — "
+          "immediate startup warm causes concurrent NFO download OOM with other tasks "
+          "(see fix 2026-08-12). Remove this guard only if instruments store is warm at boot."
+      )
+  ```
 
-**Fix 3 — `options.py:2099`**:
-```python
-_CHAIN_SYM_TTL = 30.0
-```
-
-For every file changed, write or update at least one test covering the changed behaviour.
-
-### frontend
-File scope: `frontend/src/lib/order/OptionChainTab.svelte`
-
-**Fix 4** — After `let chainQuotesMap = $state(null);` (line 299) add:
-```javascript
-let _chainQuotesLoading = $state(false);
-let _chainQuotesError = $state('');
-```
-
-**Fix 5** — Replace `_refreshChainQuotes()` (lines 429–458). Remove `!isMarketOpen()` guard.
-Add `_chainQuotesLoading = true` at entry, `finally { _chainQuotesLoading = false; }`,
-`_chainQuotesError = ''` at top of try, `catch { _chainQuotesError = 'Failed to load quotes — retrying…'; }`.
-Preserve all existing map-building logic and the stale-discard guard (`if (chainQuotesKey !== ...) return`).
-
-**Fix 6** — In template before `<!-- Strike grid -->` (~line 867), insert:
-```svelte
-{#if _chainQuotesError}
-  <div class="oct-empty" style="color:var(--c-short)">{_chainQuotesError}</div>
-{/if}
-{#if _chainQuotesLoading && chainKinds.includes('opt') && !chainStrikes.length}
-  <div class="oct-empty">Fetching quotes…</div>
-{/if}
-```
-
-For every file changed, write or update at least one test covering the changed behaviour.
-
-### broker: skip
-
-### backend-test
-File: `backend/tests/test_cache_timeout.py` (new)
-
-Three `@pytest.mark.asyncio` tests. Call `backend.api.cache.invalidate_all()` in setup.
-
-1. **timeout raises and releases lock** — slow async fetcher (asyncio.sleep 5s) with `timeout_seconds=1`:
-   assert `asyncio.TimeoutError`; then immediately call `get_or_fetch` with fast fetcher + `timeout_seconds=5`
-   → assert succeeds (proves lock released, not deadlocked).
-
-2. **succeeds within timeout** — fast async fetcher returning `"ok"` with `timeout_seconds=5`:
-   assert `"ok"` returned; call again → same value from cache (fetcher called only once).
-
-3. **sync fetcher timeout** — slow sync fetcher (time.sleep 5s) in `asyncio.to_thread` with `timeout_seconds=1`:
-   assert `asyncio.TimeoutError`.
-
-### doc: skip
-### playwright: skip
-
----
+- playwright: skip
 
 ## Tests
+
 - pytest: yes
-- svelte-check: yes
+- svelte-check: no
 - playwright: no
 
----
-
 ## Commit message
-fix(chain): instruments fetch timeout + 30s sym-map TTL + remove market-gate + loading/error feedback
 
----
+fix(background): restore 600s sparkline startup delay to prevent OOM on prod
 
 ## Done when
-- Cold instruments cache raises `asyncio.TimeoutError` after 20s (caught → empty response) instead of hanging
-- `_CHAIN_SYM_TTL = 30.0`
-- Strike grid loads outside market hours; bid/ask show as "—" when broker returns nothing
-- "Fetching quotes…" shown while `_chainQuotesLoading && !chainStrikes.length`
-- "Failed to load quotes — retrying…" shown in `--c-short` on fetch error
-- All 3 cache timeout tests pass under `pytest-asyncio`
-- `svelte-check` 0 errors
+
+- `backend/api/background.py` line ~3418 wraps `_do_warm_with_retry("startup")` in `_spark_delayed_startup()` with `asyncio.sleep(600)`
+- `venv/bin/pytest backend/tests/test_cache_timeout.py -v` passes (7 tests, including new guard)
+- Full pytest suite green
+- Deployed to prod — `systemctl status ramboq_api` shows active, port 8000 binds within 30s, no OOM in journal for 10 min after start
+
+## Critical files
+
+- `backend/api/background.py` — lines 3412-3418 (sparkline startup warm block)
+- `backend/tests/test_cache_timeout.py` — add `test_sparkline_warm_has_startup_delay`
