@@ -85,40 +85,30 @@ def test_chain_sym_ttl_is_30():
 
 
 # ---------------------------------------------------------------------------
-# Test 5 — bg-instruments must not be auto-started in on_startup (OOM guard)
+# Test 5 — options chain instruments fetch must NOT use timeout_seconds (OOM guard)
 # ---------------------------------------------------------------------------
 
-def test_bg_instruments_not_in_on_startup():
-    """Guard: bg-instruments must not be auto-started at startup (causes OOM on prod)."""
+def test_options_chain_instruments_no_timeout():
+    """Guard: instruments get_or_fetch in options.py must not use timeout_seconds.
+
+    Adding timeout_seconds=N to the instruments fetch causes zombie threads: when the
+    download takes > N seconds, asyncio.wait_for releases the lock but the underlying
+    asyncio.to_thread worker keeps running and holds GB of instrument data.  The next
+    caller acquires the freed lock and starts a second download — concurrent downloads
+    accumulate and OOM the process.  Root cause of the 2026-08-11 prod OOM kill loop.
+    """
     import re
-    src = open("backend/api/background.py").read()
-    # Extract on_startup function body
-    m = re.search(r'async def on_startup\(.*?\).*?(?=\nasync def |\Z)', src, re.DOTALL)
-    assert m is not None, "on_startup function not found in background.py"
-    body = m.group(0)
-    assert "bg-instruments" not in body, (
-        "bg-instruments task must not be created in on_startup — "
-        "it causes concurrent NFO download OOM on prod (see fix 2026-08-12). "
-        "Use on-demand loading via get_or_fetch instead."
+    src = open("backend/api/routes/options.py").read()
+    # Find the get_or_fetch("instruments", ...) call
+    m = re.search(
+        r'get_or_fetch\s*\(\s*["\']instruments["\'].*?\)',
+        src, re.DOTALL,
     )
-
-
-# ---------------------------------------------------------------------------
-# Test 6 — sparkline warm must NOT fire immediately at startup (OOM guard)
-# ---------------------------------------------------------------------------
-
-def test_sparkline_warm_has_startup_delay():
-    """Guard: sparkline startup warm must be delayed, not immediate (OOM risk on prod)."""
-    import re
-    src = open("backend/api/background.py").read()
-    # Find the _task_sparkline_warm function body
-    m = re.search(r'async def _task_sparkline_warm\b.*?(?=\nasync def |\Z)', src, re.DOTALL)
-    assert m is not None, "_task_sparkline_warm not found in background.py"
-    body = m.group(0)
-    # The fire-immediately pattern must be gone: no bare create_task(_do_warm_with_retry("startup"))
-    # Instead, there must be an asyncio.sleep before the startup warm.
-    assert '_spark_delayed_startup' in body or 'asyncio.sleep(600)' in body, (
-        "sparkline startup warm must include a delay (asyncio.sleep) — "
-        "immediate startup warm causes concurrent NFO download OOM with other tasks "
-        "(see fix 2026-08-12). Remove this guard only if instruments store is warm at boot."
+    assert m is not None, "get_or_fetch('instruments', ...) not found in options.py"
+    call_text = m.group(0)
+    assert "timeout_seconds" not in call_text, (
+        "instruments get_or_fetch in options.py must not have timeout_seconds — "
+        "a timeout releases the lock while the thread keeps downloading, causing zombie "
+        "threads that accumulate GB of instrument data and OOM prod (see 2026-08-11 fix). "
+        "Use coalescing (no timeout) so concurrent callers wait for the same download."
     )

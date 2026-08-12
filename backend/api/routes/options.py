@@ -2545,9 +2545,7 @@ class OptionsController(Controller):
         from backend.api.routes.instruments import _fetch_instruments
         try:
             inst_resp = await get_or_fetch(
-                "instruments", _fetch_instruments, ttl_seconds=86400,
-                timeout_seconds=20,
-            )
+                "instruments", _fetch_instruments, ttl_seconds=86400)
         except Exception as e:
             logger.warning(f"chain-quotes instruments fetch failed: {e}")
             return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
