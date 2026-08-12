@@ -2946,6 +2946,8 @@ gantt
 2. **Watchlist symbols** — from `WatchlistItem` table (TRADES, key: `tradingsymbol` + `exchange`)
 3. **Virtual root resolution** — MCX/CDS symbols resolved to active contract (e.g. `CRUDEOIL` → `CRUDEOIL26JULFUT`)
 
+⚙ **TECH — Delayed startup warm via `_spark_delayed_startup()`** — `WHY` Immediate startup warm downloads 6 exchanges (NFO ~70k instruments) at T=0; if token count is 0, retries at T+60s — combined RSS reached 5-6GB before port 8000 bound, causing OOM kill loop. `WHAT` `_spark_delayed_startup()` wraps the task entry with `await asyncio.sleep(600)` (10 minutes). Application starts, port 8000 binds, then after 600s the sparkline fetch begins with breathing room. `HOW` At startup, `_task_sparkline_warm` is dispatched immediately; it sleeps first. At 00:30 IST and segment opens, the fetch runs immediately (no delay). `WHERE` `backend/api/background.py:_spark_delayed_startup`, `on_startup` wiring in `backend/api/app.py`.
+
 **Three-part defect fix:**
 
 - **MCX/CDS watchlist symbols get correct exchange** — `_sparkline_universe_symbols` now queries `(tradingsymbol, exchange)` pair instead of loose `tradingsymbol` lookup
@@ -2959,12 +2961,27 @@ gantt
 **Sparkline gradient fill** — sparkline SVG cells now render a gradient area fill beneath each curve. Color is trend-aware: up-trend = teal `rgba(91,142,149,0.3)` tapering to 0% at bottom, down-trend = amber `rgba(196,122,61,0.3)`, flat = slate `rgba(126,151,184,0.3)`. SVG uses `<defs><linearGradient>` with 30% opacity at the curve tapering to 0% at the cell bottom; `<polygon>` fills the area, `<polyline>` draws the line on top. Implemented in `frontend/src/lib/components/SparklineCell.svelte`.
 
 **Files:**
-- `backend/api/background.py::_task_sparkline_warm`
+- `backend/api/background.py::_task_sparkline_warm`, `_spark_delayed_startup`
 - `backend/api/routes/sparkline.py::snapshot_sparkline`, `batch_sparkline`
 - `backend/api/algo/symbol_resolver.py::resolve_symbol`
 - `frontend/src/lib/PerformancePage.svelte::_mergeSparkSeries`
 - `frontend/src/lib/MarketPulse.svelte::loadSparklines` — grace-window logic + `_prevMoverSparkPairs`
 - `frontend/src/lib/components/SparklineCell.svelte` — gradient fill rendering
+
+### 20.1.1 Instruments background task — on-demand load (not startup-warmed)
+
+The `bg-instruments` task (option chains + MCX contracts) is intentionally **NOT** started in `on_startup`. Reason: instruments data is bulky (6 exchanges, NFO alone ~70k contracts), and immediate parallel load with sparkline warm caused OOM kill loop on 2026-08-12.
+
+**Loading model:**
+- **On-demand via routes** — `backend/api/routes/options.py::get_or_fetch` calls the instruments store when the operator clicks into the derivatives page
+- **No timeout set** — the `get_or_fetch` call in `options.py` has no `timeout_seconds` parameter, allowing the fetch to complete without premature cancellation even if the initial load takes 15–30s
+- **Lazy benefits** — most operators never touch option chains; skipping the startup warm saves 500+MB at boot
+
+**Trade-off:** First visit to `/admin/derivatives` may see a 5–15s load spinner while instruments load from broker. Subsequent visits hit the in-memory cache.
+
+**Files:**
+- `backend/api/routes/options.py::get_or_fetch` — on-demand load (no timeout set)
+- `backend/api/algo/symbol_resolver.py::InstrumentsStore` — lazy singleton
 
 ### 20.2 Background task async safety — broker API calls in to_thread
 
