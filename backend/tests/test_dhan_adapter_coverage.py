@@ -30,6 +30,7 @@ from backend.brokers.adapters.dhan import (
     _ist_today,
     # Adapter class
     DhanBroker,
+    _DhanSDKProxy,
     # Error map
     _DHAN_ERROR_MAP,
     # Rate limiter
@@ -589,143 +590,146 @@ class TestDhanBrokerAdapter:
 
     def test_profile_success(self):
         """profile() returns Kite-shape dict."""
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {
-                "status": "success",
-                "data": {
-                    "availableBalance": 100000.0,
-                },
-            }
-            result = self.broker.profile()
-            assert result["user_id"] == "TEST_CLIENT"
-            assert result["broker"] == "DHAN"
-            mock_safe.assert_called_once()
+        mock_sdk = MagicMock()
+        mock_sdk.get_fund_limits.return_value = {
+            "status": "success",
+            "data": {
+                "availableBalance": 100000.0,
+            },
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+        result = self.broker.profile()
+        assert result["user_id"] == "TEST_CLIENT"
+        assert result["broker"] == "DHAN"
+        mock_sdk.get_fund_limits.assert_called_once()
 
     def test_holdings_via_safe_call(self):
-        """holdings() calls _safe_call and normalizes response."""
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {
-                "status": "success",
-                "data": [{
-                    "tradingSymbol": "INFY",
-                    "exchange": "NSE_EQ",
-                    "totalQty": 5,
-                    "securityId": 123,
-                    "avgCostPrice": 1500.0,
-                    "lastTradedPrice": 1600.0,
-                    "previousClosePrice": 1550.0,
-                }],
-            }
-            result = self.broker.holdings()
-            assert len(result) == 1
-            assert result[0]["tradingsymbol"] == "INFY"
-            assert result[0]["quantity"] == 5
+        """holdings() calls _DhanSDKProxy and normalizes response."""
+        mock_sdk = MagicMock()
+        mock_sdk.get_holdings.return_value = {
+            "status": "success",
+            "data": [{
+                "tradingSymbol": "INFY",
+                "exchange": "NSE_EQ",
+                "totalQty": 5,
+                "securityId": 123,
+                "avgCostPrice": 1500.0,
+                "lastTradedPrice": 1600.0,
+                "previousClosePrice": 1550.0,
+            }],
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+        result = self.broker.holdings()
+        assert len(result) == 1
+        assert result[0]["tradingsymbol"] == "INFY"
+        assert result[0]["quantity"] == 5
 
     def test_positions_via_safe_call(self):
-        """positions() calls _safe_call and returns {net, day}."""
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {
-                "status": "success",
-                "data": [{
-                    "tradingSymbol": "TCS",
-                    "exchange": "NSE",
-                    "exchangeSegment": "NSE_EQ",
-                    "netQty": 2,
-                    "multiplier": 1,
-                    "securityId": 456,
-                    "costPrice": 3000.0,
-                    "lastTradedPrice": 3100.0,
-                    "previousClosePrice": 3050.0,
-                }],
-            }
-            result = self.broker.positions()
-            assert isinstance(result, dict)
-            assert "net" in result
-            assert "day" in result
-            assert len(result["net"]) == 1
-            assert result["net"][0]["tradingsymbol"] == "TCS"
+        """positions() calls _DhanSDKProxy and returns {net, day}."""
+        mock_sdk = MagicMock()
+        mock_sdk.get_positions.return_value = {
+            "status": "success",
+            "data": [{
+                "tradingSymbol": "TCS",
+                "exchange": "NSE",
+                "exchangeSegment": "NSE_EQ",
+                "netQty": 2,
+                "multiplier": 1,
+                "securityId": 456,
+                "costPrice": 3000.0,
+                "lastTradedPrice": 3100.0,
+                "previousClosePrice": 3050.0,
+            }],
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+        result = self.broker.positions()
+        assert isinstance(result, dict)
+        assert "net" in result
+        assert "day" in result
+        assert len(result["net"]) == 1
+        assert result["net"][0]["tradingsymbol"] == "TCS"
 
     def test_orders_via_safe_call(self):
-        """orders() calls _safe_call and normalizes."""
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {
-                "status": "success",
-                "data": [{
-                    "orderId": "ORD001",
-                    "tradingSymbol": "RELIANCE",
-                    "exchange": "NSE",
-                    "orderStatus": "COMPLETE",
-                    "transactionType": "BUY",
-                    "orderType": "LIMIT",
-                    "quantity": 10,
-                    "filledQty": 10,
-                    "price": 2500.0,
-                }],
-            }
-            result = self.broker.orders()
-            assert len(result) == 1
-            assert result[0]["order_id"] == "ORD001"
+        """orders() calls _DhanSDKProxy and normalizes."""
+        mock_sdk = MagicMock()
+        mock_sdk.get_order_list.return_value = {
+            "status": "success",
+            "data": [{
+                "orderId": "ORD001",
+                "tradingSymbol": "RELIANCE",
+                "exchange": "NSE",
+                "orderStatus": "COMPLETE",
+                "transactionType": "BUY",
+                "orderType": "LIMIT",
+                "quantity": 10,
+                "filledQty": 10,
+                "price": 2500.0,
+            }],
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+        result = self.broker.orders()
+        assert len(result) == 1
+        assert result[0]["order_id"] == "ORD001"
 
     def test_margins_via_safe_call(self):
-        """margins() calls _safe_call with endpoint_group='margins'."""
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {
-                "status": "success",
-                "data": {
-                    "availableBalance": 500000.0,
-                    "utilizedAmount": 100000.0,
-                },
-            }
-            result = self.broker.margins()
-            assert "available" in result
-            assert "utilised" in result
-            # Verify endpoint_group was passed
-            call_kwargs = mock_safe.call_args[1]
-            assert call_kwargs.get("endpoint_group") == "margins"
+        """margins() calls _DhanSDKProxy with margins bucket."""
+        mock_sdk = MagicMock()
+        mock_sdk.get_fund_limits.return_value = {
+            "status": "success",
+            "data": {
+                "availableBalance": 500000.0,
+                "utilizedAmount": 100000.0,
+            },
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+        result = self.broker.margins()
+        assert "available" in result
+        assert "utilised" in result
+        # Verify the margins endpoint was called via get_fund_limits
+        mock_sdk.get_fund_limits.assert_called_once()
 
     def test_trades_via_safe_call(self):
-        """trades() calls _safe_call and returns normalized list."""
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {
-                "status": "success",
-                "data": [{
-                    "tradeId": "T001",
-                    "orderId": "ORD001",
-                    "tradingSymbol": "INFY",
-                    "exchange": "NSE",
-                    "transactionType": "BUY",
-                    "tradedQuantity": 10,
-                    "tradedPrice": 1500.0,
-                }],
-            }
-            result = self.broker.trades()
-            assert len(result) == 1
-            assert result[0]["trade_id"] == "T001"
+        """trades() calls _DhanSDKProxy and returns normalized list."""
+        mock_sdk = MagicMock()
+        mock_sdk.get_trade_book.return_value = {
+            "status": "success",
+            "data": [{
+                "tradeId": "T001",
+                "orderId": "ORD001",
+                "tradingSymbol": "INFY",
+                "exchange": "NSE",
+                "transactionType": "BUY",
+                "tradedQuantity": 10,
+                "tradedPrice": 1500.0,
+            }],
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+        result = self.broker.trades()
+        assert len(result) == 1
+        assert result[0]["trade_id"] == "T001"
 
     @patch("backend.brokers.adapters.dhan._resolve_security_id")
     def test_place_order_equity(self, mock_resolve):
         """place_order() builds Dhan call with resolved security_id."""
         mock_resolve.return_value = "SEC123"
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {
-                "status": "success",
-                "data": {"orderId": "NEW001"},
-            }
-            result = self.broker.place_order(
-                tradingsymbol="RELIANCE",
-                exchange="NSE",
-                transaction_type="BUY",
-                quantity=10,
-                order_type="LIMIT",
-                product="CNC",
-                price=2500.0,
-            )
-            assert result == "NEW001"
-            # Verify security_id was resolved and passed
-            mock_safe.assert_called_once()
-            call_lambda = mock_safe.call_args[0][0]
-            # The lambda should be callable (it's the SDK call wrapper)
-            assert callable(call_lambda)
+        mock_sdk = MagicMock()
+        mock_sdk.place_order.return_value = {
+            "status": "success",
+            "data": {"orderId": "NEW001"},
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+        result = self.broker.place_order(
+            tradingsymbol="RELIANCE",
+            exchange="NSE",
+            transaction_type="BUY",
+            quantity=10,
+            order_type="LIMIT",
+            product="CNC",
+            price=2500.0,
+        )
+        assert result == "NEW001"
+        # Verify place_order was called on SDK
+        mock_sdk.place_order.assert_called_once()
 
     def test_place_order_rejects_amo(self):
         """place_order() raises NotImplementedError for AMO orders."""
@@ -742,25 +746,17 @@ class TestDhanBrokerAdapter:
         """last_request_debug() returns {request, response}."""
         # Set up the connection so holdings can work
         mock_sdk = MagicMock()
+        mock_sdk.get_holdings.return_value = {"status": "success", "data": []}
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
 
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {"status": "success", "data": []}
-            # Ensure _safe_call populates _last_req and _last_resp
-            def side_effect_safe_call(sdk_call, **kwargs):
-                self.broker._last_req = {"broker": "dhan", "account": "TEST_ACCOUNT"}
-                self.broker._last_resp = {"status_hint": "ok"}
-                return {"status": "success", "data": []}
-
-            mock_safe.side_effect = side_effect_safe_call
-            self.broker.holdings()
-            debug = self.broker.last_request_debug()
-            assert isinstance(debug, dict)
-            assert "request" in debug
-            assert "response" in debug
-            assert debug["request"]["broker"] == "dhan"
-            assert debug["request"]["account"] == "TEST_ACCOUNT"
-            assert debug["response"]["status_hint"] == "ok"
+        self.broker.holdings()
+        debug = self.broker.last_request_debug()
+        assert isinstance(debug, dict)
+        assert "request" in debug
+        assert "response" in debug
+        assert debug["request"]["broker"] == "dhan"
+        assert debug["request"]["account"] == "TEST_ACCOUNT"
+        assert debug["response"]["status_hint"] == "ok"
 
 
 class TestSafeCallMethod:
@@ -775,51 +771,56 @@ class TestSafeCallMethod:
         self.broker = DhanBroker(self.mock_conn)
 
     def test_safe_call_returns_response(self):
-        """_safe_call returns SDK call result."""
+        """_DhanSDKProxy returns SDK call result."""
         mock_sdk = MagicMock()
+        mock_sdk.get_holdings.return_value = {"status": "success", "data": []}
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
 
-        def sdk_call(dhan):
-            return {"status": "success", "data": []}
-
-        result = self.broker._safe_call(sdk_call)
+        proxy = _DhanSDKProxy(self.broker)
+        result = proxy.get_holdings()
         assert result == {"status": "success", "data": []}
 
     def test_safe_call_sets_last_req_resp(self):
-        """_safe_call populates _last_req and _last_resp."""
+        """_DhanSDKProxy populates _last_req and _last_resp."""
         mock_sdk = MagicMock()
+        mock_sdk.get_order_list.return_value = {"status": "success"}
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
 
-        def sdk_call(dhan):
-            return {"status": "success"}
-
-        self.broker._safe_call(sdk_call, endpoint_group="orders")
+        proxy = _DhanSDKProxy(self.broker, bucket="orders")
+        proxy.get_order_list()
         assert self.broker._last_req["broker"] == "dhan"
         assert self.broker._last_req["endpoint_group"] == "orders"
         assert self.broker._last_resp["status_hint"] == "ok"
 
     @patch("backend.brokers.adapters.dhan._DHAN_RATE_LIMIT_ENABLED", True)
     def test_safe_call_rate_limit_throttle(self):
-        """When rate limiting enabled, _safe_call throttles."""
+        """When rate limiting enabled, _DhanSDKProxy throttles."""
         mock_sdk = MagicMock()
+        mock_sdk.get_order_list.return_value = {"status": "success"}
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
 
-        def sdk_call(dhan):
-            return {"status": "success"}
-
         with patch.object(_DHAN_RATE_LIMITER, "throttle") as mock_throttle:
-            self.broker._safe_call(sdk_call, endpoint_group="orders")
+            proxy = _DhanSDKProxy(self.broker, bucket="orders")
+            proxy.get_order_list()
             mock_throttle.assert_called_once_with("orders")
 
     def test_safe_call_auth_failure_detection(self):
-        """_safe_call detects auth failure and retries."""
+        """_DhanSDKProxy detects auth failure and retries."""
         mock_sdk = MagicMock()
         mock_sdk_fresh = MagicMock()
-        self.mock_conn.get_dhan_conn.side_effect = [mock_sdk, mock_sdk_fresh]
         self.mock_conn._conn_created_at = None
 
+        # First get_dhan_conn() call: returns initial SDK that fails auth
+        # Second get_dhan_conn(test_conn=True) call: returns fresh SDK that succeeds
+        def get_dhan_conn_side_effect(test_conn=False):
+            if test_conn:
+                return mock_sdk_fresh
+            return mock_sdk
+
+        self.mock_conn.get_dhan_conn.side_effect = get_dhan_conn_side_effect
+
         call_count = [0]
-        def sdk_call(dhan):
+        def get_holdings_side_effect(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
                 # First call returns auth failure
@@ -828,25 +829,29 @@ class TestSafeCallMethod:
                 # Second call (after retry) succeeds
                 return {"status": "success", "data": []}
 
+        mock_sdk.get_holdings.side_effect = get_holdings_side_effect
+        mock_sdk_fresh.get_holdings.side_effect = get_holdings_side_effect
+
         with patch("backend.brokers.adapters.dhan._check_dhan_rotation_pattern"):
-            result = self.broker._safe_call(sdk_call)
+            proxy = _DhanSDKProxy(self.broker)
+            result = proxy.get_holdings()
             assert result["status"] == "success"
-            # get_dhan_conn called twice: once for initial, once for fresh
+            # get_dhan_conn should be called twice (once initial, once for test_conn=True)
             assert self.mock_conn.get_dhan_conn.call_count == 2
 
     def test_safe_call_persistent_auth_failure_raises(self):
-        """_safe_call raises if auth failure persists after retry."""
+        """_DhanSDKProxy raises if auth failure persists after retry."""
         mock_sdk = MagicMock()
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
         self.mock_conn._conn_created_at = None
 
-        def sdk_call(dhan):
-            # Always return auth failure
-            return {"status": "failure", "remarks": "Invalid Token"}
+        # Both calls return auth failure
+        mock_sdk.get_holdings.return_value = {"status": "failure", "remarks": "Invalid Token"}
 
         with patch("backend.brokers.adapters.dhan._check_dhan_rotation_pattern"):
+            proxy = _DhanSDKProxy(self.broker)
             with pytest.raises(RuntimeError, match="persisted after re-login"):
-                self.broker._safe_call(sdk_call)
+                proxy.get_holdings()
 
 
 class TestRateLimiterIntegration:
@@ -896,31 +901,20 @@ class TestOrderStatusMethod:
         })
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
 
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {
-                "status": "success",
-                "data": {
-                    "orderId": "12345",
-                    "tradingSymbol": "RELIANCE",
-                    "orderStatus": "COMPLETE",
-                }
-            }
-            result = self.broker.order_status("12345")
-            assert isinstance(result, dict)
-            # Should call get_order_by_id via _safe_call
-            mock_safe.assert_called_once()
+        result = self.broker.order_status("12345")
+        assert isinstance(result, dict)
+        # Should call get_order_by_id via _DhanSDKProxy
+        mock_sdk.get_order_by_id.assert_called_once()
 
     def test_order_status_missing_returns_empty(self):
         """order_status() returns {} when order not found."""
         mock_sdk = MagicMock()
-        mock_sdk.get_order_by_id = None
+        mock_sdk.get_order_by_id = MagicMock(return_value={"status": "success", "data": []})
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
 
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {"status": "success", "data": []}
-            result = self.broker.order_status("99999")
-            # Empty data list → no order found → {}
-            assert result == {}
+        result = self.broker.order_status("99999")
+        # Empty data list → no order found → {}
+        assert result == {}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -1372,40 +1366,44 @@ class TestDhanLtpAndQuote:
 
     def test_ltp_ohlc_call_success(self):
         """ltp makes ohlc_data call when instruments available."""
+        mock_sdk = MagicMock()
+        mock_sdk.ohlc_data.return_value = {
+            "data": {
+                "NSE_EQ": {
+                    "123": {"last_price": 2500.0}
+                }
+            }
+        }
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+
         with patch("backend.brokers.adapters.dhan._ensure_dhan_instruments"):
             with patch("backend.brokers.adapters.dhan._resolve_dhan_ltp_symbols") as mock_resolve:
-                with patch.object(self.broker, "_safe_call") as mock_safe:
-                    mock_resolve.return_value = (
-                        {"NSE_EQ": ["123"]},
-                        {("NSE_EQ", "123"): "NSE:RELIANCE"}
-                    )
-                    mock_safe.return_value = {
-                        "data": {
-                            "NSE_EQ": {
-                                "123": {"last_price": 2500.0}
-                            }
-                        }
-                    }
+                mock_resolve.return_value = (
+                    {"NSE_EQ": ["123"]},
+                    {("NSE_EQ", "123"): "NSE:RELIANCE"}
+                )
 
-                    result = self.broker.ltp(["NSE:RELIANCE"])
+                result = self.broker.ltp(["NSE:RELIANCE"])
 
-                    assert "NSE:RELIANCE" in result
-                    assert result["NSE:RELIANCE"]["last_price"] == 2500.0
+                assert "NSE:RELIANCE" in result
+                assert result["NSE:RELIANCE"]["last_price"] == 2500.0
 
     def test_ltp_ohlc_call_failure_returns_empty(self):
         """ltp returns {} when ohlc_data call fails."""
+        mock_sdk = MagicMock()
+        mock_sdk.ohlc_data.side_effect = Exception("API error")
+        self.mock_conn.get_dhan_conn.return_value = mock_sdk
+
         with patch("backend.brokers.adapters.dhan._ensure_dhan_instruments"):
             with patch("backend.brokers.adapters.dhan._resolve_dhan_ltp_symbols") as mock_resolve:
-                with patch.object(self.broker, "_safe_call") as mock_safe:
-                    mock_resolve.return_value = (
-                        {"NSE_EQ": ["123"]},
-                        {("NSE_EQ", "123"): "NSE:RELIANCE"}
-                    )
-                    mock_safe.side_effect = Exception("API error")
+                mock_resolve.return_value = (
+                    {"NSE_EQ": ["123"]},
+                    {("NSE_EQ", "123"): "NSE:RELIANCE"}
+                )
 
-                    with patch("backend.brokers.adapters.dhan.logger"):
-                        result = self.broker.ltp(["NSE:RELIANCE"])
-                        assert result == {}
+                with patch("backend.brokers.adapters.dhan.logger"):
+                    result = self.broker.ltp(["NSE:RELIANCE"])
+                    assert result == {}
 
     def test_quote_returns_empty_dict(self):
         """quote() always returns {} (not yet wired)."""
@@ -1501,23 +1499,19 @@ class TestMarketStatusAndNormalizers:
         mock_sdk.get_market_status = MagicMock(return_value={"status": "success"})
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
 
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.return_value = {"status": "success"}
+        result = self.broker._call_market_status_sdk("NSE")
 
-            result = self.broker._call_market_status_sdk("NSE")
-
-            assert result is not None
+        assert result is not None
 
     def test_call_market_status_sdk_returns_none_on_failure(self):
         """_call_market_status_sdk returns None on SDK error."""
         mock_sdk = MagicMock()
+        mock_sdk.get_market_status = MagicMock(side_effect=Exception("API error"))
         self.mock_conn.get_dhan_conn.return_value = mock_sdk
 
-        with patch.object(self.broker, "_safe_call") as mock_safe:
-            mock_safe.side_effect = Exception("API error")
-            with patch("backend.brokers.adapters.dhan.logger"):
-                result = self.broker._call_market_status_sdk("NSE")
-                assert result is None
+        with patch("backend.brokers.adapters.dhan.logger"):
+            result = self.broker._call_market_status_sdk("NSE")
+            assert result is None
 
 
 # ─────────────────────────────────────────────────────────────────────────

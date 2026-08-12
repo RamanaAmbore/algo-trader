@@ -63,23 +63,29 @@ class TestBrokerHealthFreshWindow:
 # ---------------------------------------------------------------------------
 
 class TestTaskTokenRefreshConnServiceGuard:
-    """Verify _task_token_refresh exits immediately when RAMBOQ_USE_CONN_SERVICE is set."""
+    """Verify _task_token_refresh parks and exits when RAMBOQ_USE_CONN_SERVICE is set."""
 
     def test_returns_early_when_conn_service_set(self):
-        """With RAMBOQ_USE_CONN_SERVICE=1, _task_token_refresh must return without entering the loop."""
+        """With RAMBOQ_USE_CONN_SERVICE=1, _task_token_refresh must park (sleep 86400) then return.
+
+        The 86400s park prevents _supervised from restarting the task in a tight loop.
+        Without the park, _supervised saw ~23K restarts/min → 97% CPU → event-loop
+        starvation → port 8000 never bound → OOM kill (2026-08-12 prod incident).
+        """
         from backend.api.background import _task_token_refresh
 
         sleep_called = []
 
-        async def _mock_sleep(delay: float) -> None:  # pragma: no cover
+        async def _mock_sleep(delay: float) -> None:
             sleep_called.append(delay)
 
         with patch.dict(os.environ, {"RAMBOQ_USE_CONN_SERVICE": "1"}):
             with patch("asyncio.sleep", side_effect=_mock_sleep):
                 asyncio.run(_task_token_refresh())
 
-        assert sleep_called == [], (
-            "asyncio.sleep must NOT be called when conn_service guard fires; "
+        assert sleep_called == [86400], (
+            "_task_token_refresh must park with asyncio.sleep(86400) under conn_service — "
+            "returning without parking causes _supervised tight-loop OOM (2026-08-12 incident). "
             f"got calls: {sleep_called}"
         )
 

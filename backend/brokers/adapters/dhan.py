@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Callable
+from typing import Any
 from urllib.request import urlopen
 
 from backend.brokers.base import Broker
@@ -538,16 +538,17 @@ def _resolve_security_id(tradingsymbol: str, kite_exchange: str) -> str:
 # instead. To match the "cache → use → re-mint on failure" lifecycle
 # Kite (@retry_kite_conn) and Groww (@_retry_groww_auth) already use,
 # every broker method that touches the SDK runs its call through
-# DhanBroker._safe_call(...).
+# _DhanSDKProxy.__getattr__ (transparent proxy; one instance per call
+# via the self._sdk / self._sdk_orders / self._sdk_margins /
+# self._sdk_history properties on DhanBroker).
 #
-# _safe_call passes the live SDK handle into the operator's lambda
-# and inspects the raw response BEFORE normalisation. If the response
-# carries an auth-error shape (status=failure + auth-keyword remarks),
-# it forces a re-login via get_dhan_conn(test_conn=True) — which
-# re-runs _do_login() with the stored PIN + TOTP seed — and retries
-# once with the new SDK handle. If the account isn't configured for
-# headless re-login, _do_login raises and the original auth-failure
-# response propagates to the caller unchanged.
+# The proxy intercepts each SDK method call and inspects the raw
+# response BEFORE normalisation. If the response carries an auth-error
+# shape (status=failure + auth-keyword remarks), it forces a re-login
+# via get_dhan_conn(test_conn=True) — which re-runs _do_login() with
+# the stored PIN + TOTP seed — and retries once with the fresh handle.
+# If the account isn't configured for headless re-login, _do_login
+# raises and the original auth-failure response propagates unchanged.
 _AUTH_ERROR_HINTS = (
     "invalid access token",
     "invalid token",   # ← primary signal — Dhan's DH-906 always
@@ -803,10 +804,12 @@ def _dhan_modify_forever_leg(order: dict, trigger: float, order_flag: str, leg_n
 
 
 def _call_dhan_ledger_raw(sdk_handle: Any, method_name: str, from_date: str, to_date: str) -> Any:
-    """Invoke the Dhan ledger SDK method on a live SDK handle.
+    """Invoke the Dhan ledger SDK method on a live SDK handle or proxy.
 
-    Tries kwarg form first (documented v2 signature); falls back to
-    positional if SDK raises TypeError. Returns raw response or None."""
+    Accepts both the raw dhanhq SDK handle and a _DhanSDKProxy — both
+    respond to __getattr__ and return a callable. Tries kwarg form first
+    (documented v2 signature); falls back to positional if the SDK raises
+    TypeError. Returns raw response or None."""
     fn = getattr(sdk_handle, method_name)
     try:
         return fn(from_date=from_date, to_date=to_date)
@@ -860,6 +863,88 @@ def _dhan_ledger_aggregate(entries: list) -> list:
     return out
 
 
+class _DhanSDKProxy:
+    """Transparent proxy around the live dhanhq SDK handle.
+
+    Applies rate-limiting, 5xx→BrokerNetworkError translation, DH-904→BrokerRateLimitError,
+    JSON auth-failure inspection, and remint+retry via __getattr__ interception.
+    Source-IP binding is handled at construction time in DhanConnection._build_client();
+    no ContextVar is needed here.
+    """
+    __slots__ = ("_broker", "_bucket")
+
+    def __init__(self, broker: "DhanBroker", bucket: str = "") -> None:
+        object.__setattr__(self, "_broker", broker)
+        object.__setattr__(self, "_bucket", bucket)
+
+    def __getattr__(self, name: str):
+        broker = object.__getattribute__(self, "_broker")
+        bucket = object.__getattribute__(self, "_bucket")
+
+        def _invoke(*args, **kwargs):
+            if _DHAN_RATE_LIMIT_ENABLED and bucket:
+                _DHAN_RATE_LIMITER.throttle(bucket)
+            broker._last_req = {"broker": "dhan", "account": broker.account,
+                                 "endpoint_group": bucket}
+            d = broker._conn.get_dhan_conn()
+            try:
+                resp = getattr(d, name)(*args, **kwargs)
+            except Exception as _exc:
+                _raw = getattr(_exc, "response", None)
+                _status = getattr(_raw, "status_code", None)
+                if _status in (502, 503, 504):
+                    raise BrokerNetworkError(
+                        f"Dhan HTTP {_status} for {broker.account!r}: {_exc}"
+                    ) from _exc
+                raise
+            if isinstance(resp, dict) and resp.get("code") == "DH-904":
+                raise BrokerRateLimitError(
+                    f"Dhan rate limit (DH-904) for {broker.account!r}: {resp}"
+                )
+            broker._last_resp = {
+                "shape": type(resp).__name__,
+                "status_hint": "auth_fail" if _looks_like_auth_failure(resp) else "ok",
+            }
+            if _looks_like_auth_failure(resp):
+                from datetime import datetime as _dt, timezone as _tz
+                created = broker._conn._conn_created_at
+                age_s = "unknown"
+                if created is not None:
+                    age_s = f"{(_dt.now(_tz.utc) - created).total_seconds():.0f}s"
+                logger.warning(
+                    f"DhanBroker for {broker.account!r} got auth failure "
+                    f"(remarks={resp.get('remarks')!r}, token_age={age_s}). "
+                    f"Forcing re-login via PIN+TOTP and retrying once."
+                )
+                try:
+                    import base64 as _b64, json as _json
+                    _raw_tok = getattr(broker._conn, "_access_token", "") or ""
+                    _parts = _raw_tok.split(".")
+                    if len(_parts) >= 2:
+                        _claims = _json.loads(_b64.urlsafe_b64decode(_parts[1] + "=="))
+                        _iat, _exp = _claims.get("iat", 0), _claims.get("exp", 0)
+                        _validity_h = f"{(_exp - _iat) / 3600:.1f}h" if (_exp and _iat) else "?"
+                        logger.warning(
+                            f"  JWT claims: iat={_iat} exp={_exp} "
+                            f"validity={_validity_h} "
+                            f"consumer={_claims.get('tokenConsumerType')!r}"
+                        )
+                except Exception:
+                    pass
+                _check_dhan_rotation_pattern(broker.account, created)
+                fresh = broker._conn.get_dhan_conn(test_conn=True)
+                resp = getattr(fresh, name)(*args, **kwargs)
+                if _looks_like_auth_failure(resp):
+                    remarks = resp.get("remarks", "auth failure")
+                    raise RuntimeError(
+                        f"Dhan auth failure for {broker.account!r} persisted after re-login: "
+                        f"{remarks!r}"
+                    )
+            return resp
+
+        return _invoke
+
+
 class DhanBroker(Broker):
     """Dhan adapter. See module docstring for the auth + normalisation
     contract."""
@@ -867,6 +952,24 @@ class DhanBroker(Broker):
     def __init__(self, conn: "DhanConnection") -> None:  # type: ignore[name-defined]
         super().__init__()
         self._conn = conn
+
+    # ── SDK proxy properties ──────────────────────────────────────────
+
+    @property
+    def _sdk(self) -> "_DhanSDKProxy":
+        return _DhanSDKProxy(self)
+
+    @property
+    def _sdk_margins(self) -> "_DhanSDKProxy":
+        return _DhanSDKProxy(self, "margins")
+
+    @property
+    def _sdk_history(self) -> "_DhanSDKProxy":
+        return _DhanSDKProxy(self, "history")
+
+    @property
+    def _sdk_orders(self) -> "_DhanSDKProxy":
+        return _DhanSDKProxy(self, "orders")
 
     # ── Identity + escape hatch ───────────────────────────────────────
 
@@ -885,108 +988,6 @@ class DhanBroker(Broker):
         hatch for SDK features not lifted into the Broker ABC."""
         return self._conn.get_dhan_conn()
 
-    def _safe_call(self, sdk_call: Callable[[Any], Any],
-                   *, endpoint_group: str = "") -> Any:
-        """Invoke an SDK call with auto re-login on auth failure.
-
-        `sdk_call` is a one-arg lambda receiving the live SDK handle —
-        e.g. `lambda d: d.get_holdings()`. If the raw response carries
-        an auth-failure shape, we evict the cached token (via
-        get_dhan_conn(test_conn=True)) and retry once with the freshly
-        minted SDK handle. Network / 5xx / param exceptions propagate
-        immediately — only auth-shaped failures trigger the retry.
-
-        `endpoint_group` — optional rate-limit bucket name ("orders",
-        "history", "margins", "auth"). When provided and
-        _DHAN_RATE_LIMIT_ENABLED is True, throttles before the call."""
-        if _DHAN_RATE_LIMIT_ENABLED and endpoint_group:
-            _DHAN_RATE_LIMITER.throttle(endpoint_group)
-        self._last_req = {"broker": "dhan", "account": self.account,
-                          "endpoint_group": endpoint_group}
-        # P1-2: wrap the SDK call to catch underlying HTTP exceptions.
-        # The dhanhq SDK surfaces 5xx responses as exceptions whose
-        # `response` attribute holds the requests.Response object.
-        try:
-            resp = sdk_call(self.dhan)
-        except Exception as _sdk_exc:
-            _raw_resp = getattr(_sdk_exc, "response", None)
-            _status = getattr(_raw_resp, "status_code", None)
-            if _status in (502, 503, 504):
-                raise BrokerNetworkError(
-                    f"Dhan HTTP {_status} for {self.account!r}: {_sdk_exc}"
-                ) from _sdk_exc
-            raise
-        # P1-1: Dhan's DH-904 (rate-limit) comes back as a JSON dict
-        # with code="DH-904" rather than an HTTP exception. Raise early
-        # so the circuit breaker and caller see a typed BrokerRateLimitError
-        # instead of the auth-failure retry path consuming the error.
-        if isinstance(resp, dict) and resp.get("code") == "DH-904":
-            raise BrokerRateLimitError(
-                f"Dhan rate limit (DH-904) for {self.account!r}: {resp}"
-            )
-        self._last_resp = {"shape": type(resp).__name__,
-                           "status_hint": "auth_fail" if _looks_like_auth_failure(resp) else "ok"}
-        if _looks_like_auth_failure(resp):
-            # Capture token age at invalidation time — critical signal
-            # for "why are these tokens dying so fast?" investigations.
-            # If the operator's Dhan dashboard has token validity set
-            # to 5 min, every token dies at ~5 min. If the dashboard
-            # is set to 24 h but tokens die in 3 min, something else
-            # is invalidating them (probably another Dhan account
-            # logging in from the same source IP — Dhan's "one active
-            # session per partner-app per IP" semantic). Cross-check
-            # against `Dhan rotation` log line below to confirm.
-            from datetime import datetime as _dt, timezone as _tz
-            created = self._conn._conn_created_at
-            age_s = "unknown"
-            if created is not None:
-                age = _dt.now(_tz.utc) - created
-                age_s = f"{age.total_seconds():.0f}s"
-            logger.warning(
-                f"DhanBroker for {self.account!r} got auth failure "
-                f"(remarks={resp.get('remarks')!r}, token_age={age_s}). "
-                f"Forcing re-login via PIN+TOTP and retrying once."
-            )
-            # Decode JWT iat/exp without crypto — confirms whether Dhan's
-            # reported token validity matches what's actually in the token.
-            try:
-                import base64 as _b64, json as _json
-                _raw = getattr(self._conn, "_access_token", "") or ""
-                _parts = _raw.split(".")
-                if len(_parts) >= 2:
-                    _claims = _json.loads(_b64.urlsafe_b64decode(_parts[1] + "=="))
-                    _iat, _exp = _claims.get("iat", 0), _claims.get("exp", 0)
-                    _validity_h = f"{(_exp - _iat) / 3600:.1f}h" if (_exp and _iat) else "?"
-                    logger.warning(
-                        f"  JWT claims: iat={_iat} exp={_exp} "
-                        f"validity={_validity_h} consumer={_claims.get('tokenConsumerType')!r}"
-                    )
-            except Exception:
-                pass
-            # Cross-account rotation signal — if another Dhan account
-            # logged in within the recent past (≤ this token's lifetime),
-            # the timing strongly suggests Dhan invalidated THIS token
-            # when the other account's session opened. Surfacing this
-            # so the operator can confirm via the `dhan_tokens.json`
-            # cache mtime + `Dhan login complete for ...` events.
-            _check_dhan_rotation_pattern(self.account, created)
-            fresh = self._conn.get_dhan_conn(test_conn=True)
-            resp = sdk_call(fresh)
-        # D2 — persistent-auth-failure guard: if the retry still
-        # returns an auth-failure dict, raise so _record_fetch(ok=False)
-        # fires in the per-account broker wrappers (fetch_holdings /
-        # fetch_positions / fetch_margins). Without this, _unwrap() on
-        # the auth-failure dict produces an empty list, the route returns
-        # empty panels, and the navbar badge never learns the account is
-        # unhealthy — it stays "5/5" instead of reflecting the real state.
-        if _looks_like_auth_failure(resp):
-            remarks = resp.get("remarks", "auth failure")
-            raise RuntimeError(
-                f"Dhan auth failure for {self.account!r} persisted after re-login: "
-                f"{remarks!r}"
-            )
-        return resp
-
     # ── Account state ─────────────────────────────────────────────────
 
     def profile(self) -> dict:
@@ -995,7 +996,7 @@ class DhanBroker(Broker):
         Synthesise a Kite-shape dict so the /admin/brokers test button
         gets a recognisable success message."""
         try:
-            funds = self._safe_call(lambda d: d.get_fund_limits(), endpoint_group="margins")
+            funds = self._sdk_margins.get_fund_limits()
             data = funds.get("data") if isinstance(funds, dict) else None
             return {
                 "user_id":   self._conn.client_id,
@@ -1007,15 +1008,15 @@ class DhanBroker(Broker):
             raise RuntimeError(f"Dhan auth check failed: {e}") from e
 
     def holdings(self) -> list[dict]:
-        resp = self._safe_call(lambda d: d.get_holdings())
+        resp = self._sdk.get_holdings()
         return _normalise_holdings(resp)
 
     def positions(self) -> dict:
-        resp = self._safe_call(lambda d: d.get_positions())
+        resp = self._sdk.get_positions()
         return _normalise_positions(resp)
 
     def margins(self, segment: str | None = None) -> dict:
-        resp = self._safe_call(lambda d: d.get_fund_limits(), endpoint_group="margins")
+        resp = self._sdk_margins.get_fund_limits()
         # Audit cycle 8 — log the raw Dhan fund_limits response ONCE per
         # account so we can confirm which fields actually arrive in prod
         # (Dhan v2 documentation is incomplete on the realized-P&L +
@@ -1034,7 +1035,7 @@ class DhanBroker(Broker):
         return _normalise_margins(resp, segment)
 
     def orders(self) -> list[dict]:
-        resp = self._safe_call(lambda d: d.get_order_list())
+        resp = self._sdk.get_order_list()
         return _normalise_orders(resp)
 
     def order_status(self, order_id: str) -> dict:
@@ -1052,19 +1053,22 @@ class DhanBroker(Broker):
         Returns the matched order dict in Kite-shape via the existing
         `_normalise_orders` envelope, or {} on miss (matches ABC
         contract)."""
-        sdk = self.dhan
+        sdk = self.dhan  # raw handle for method-name discovery only
         # Prefer the most-specific Dhan SDK method when present.
         # `get_order_by_id` is the canonical name in v2; some forks use
         # `get_order_status`. Both return the same Dhan envelope.
-        single_fn = (getattr(sdk, "get_order_by_id", None)
-                     or getattr(sdk, "get_order_status", None))
-        if single_fn is None:
+        method_name = next(
+            (n for n in ("get_order_by_id", "get_order_status")
+             if getattr(sdk, n, None) is not None),
+            None,
+        )
+        if method_name is None:
             # SDK version doesn't expose a per-id endpoint — fall back
             # to the ABC default (full-book filter) so behaviour stays
             # correct even if accuracy drops.
             return super().order_status(order_id)
         try:
-            resp = self._safe_call(lambda d: single_fn(str(order_id)))
+            resp = getattr(self._sdk, method_name)(str(order_id))
         except Exception as e:
             logger.debug(f"DhanBroker.order_status({order_id}) failed: {e}")
             return {}
@@ -1075,7 +1079,7 @@ class DhanBroker(Broker):
         return rows[0] if rows else {}
 
     def trades(self) -> list[dict]:
-        resp = self._safe_call(lambda d: d.get_trade_book())
+        resp = self._sdk.get_trade_book()
         return _normalise_trades(resp)
 
     def funds_ledger(self, from_date: str, to_date: str) -> list[dict]:
@@ -1092,9 +1096,7 @@ class DhanBroker(Broker):
             )
             return []
         try:
-            resp = self._safe_call(
-                lambda d: _call_dhan_ledger_raw(d, ledger_method_name, from_date, to_date)
-            )
+            resp = _call_dhan_ledger_raw(self._sdk, ledger_method_name, from_date, to_date)
         except Exception as e:
             logger.warning(f"DhanBroker.funds_ledger SDK call failed: {e}")
             return []
@@ -1138,7 +1140,7 @@ class DhanBroker(Broker):
             return {}
         # Single SDK call covers every segment in one batch.
         try:
-            resp = self._safe_call(lambda d: d.ohlc_data(securities=seg_to_sids), endpoint_group="history")
+            resp = self._sdk_history.ohlc_data(securities=seg_to_sids)
         except Exception as e:
             logger.debug(f"DhanBroker.ltp ohlc_data failed: {e}")
             return {}
@@ -1222,11 +1224,10 @@ class DhanBroker(Broker):
         return False
 
     def _call_market_status_sdk(self, exchange: str) -> Any | None:
-        """Discover the SDK method by name (so _safe_call's retry path
-        picks up the FRESH SDK handle — same stale-handle pattern as
-        funds_ledger above) and invoke. Returns raw response or None
-        on miss/failure."""
-        sdk = self.dhan
+        """Discover the SDK method by name (raw handle for discovery only)
+        and invoke via proxy so the auth-retry path picks up a fresh handle.
+        Returns raw response or None on miss/failure."""
+        sdk = self.dhan  # raw handle for method-name discovery only
         status_method_name = next(
             (n for n in ("get_market_status", "market_status", "get_exchange_status")
              if getattr(sdk, n, None) is not None),
@@ -1235,9 +1236,7 @@ class DhanBroker(Broker):
         if status_method_name is None:
             return None
         try:
-            return self._safe_call(
-                lambda d: getattr(d, status_method_name)()
-            )
+            return getattr(self._sdk, status_method_name)()
         except Exception as e:
             logger.debug(f"DhanBroker.market_status({exchange}) SDK call failed: {e}")
             return None
@@ -1247,7 +1246,7 @@ class DhanBroker(Broker):
     def _margin_for_order(self, o: dict) -> dict:
         """Call Dhan margin_calculator for a single order dict.
         Returns a Kite-shape margin dict or raises on failure."""
-        sdk = self.dhan
+        sdk = self.dhan  # raw handle for capability discovery only
         if not hasattr(sdk, "margin_calculator"):
             raise RuntimeError("dhanhq SDK missing margin_calculator method")
         ex_seg  = _dhan_exchange(o.get("exchange", ""))
@@ -1255,14 +1254,14 @@ class DhanBroker(Broker):
                    or _resolve_security_id(
                        str(o.get("tradingsymbol", "")),
                        str(o.get("exchange", ""))))
-        resp = self._safe_call(lambda d: d.margin_calculator(
+        resp = self._sdk.margin_calculator(
             security_id=sid,
             exchange_segment=ex_seg,
             transaction_type=o.get("transaction_type", "BUY"),
             quantity=_dhan_int(o.get("quantity")),
             product_type=_PRODUCT_TO_DHAN.get(o.get("product", "MIS"), "INTRADAY"),
             price=_dhan_num(o.get("price")),
-        ))
+        )
         data = resp.get("data") if isinstance(resp, dict) else {}
         return {
             "total":     _dhan_num((data or {}).get("totalMargin")),
@@ -1320,7 +1319,7 @@ class DhanBroker(Broker):
         if tag is not None:
             tag = str(tag)[:_DHAN_CORR_MAX]
 
-        resp = self._safe_call(lambda d: d.place_order(
+        resp = self._sdk_orders.place_order(
             security_id=security_id,
             exchange_segment=ex_seg,
             transaction_type=kwargs.get("transaction_type", "BUY"),
@@ -1331,26 +1330,26 @@ class DhanBroker(Broker):
             trigger_price=_dhan_num(kwargs.get("trigger_price")),
             validity=kwargs.get("validity", "DAY"),
             **({"tag": tag} if tag else {}),
-        ), endpoint_group="orders")
+        )
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan place_order rejected: {resp}")
         return str(resp.get("data", {}).get("orderId", ""))
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
-        resp = self._safe_call(lambda d: d.modify_order(
+        resp = self._sdk.modify_order(
             order_id=order_id,
             quantity=int(kwargs.get("quantity", 0)) if kwargs.get("quantity") else None,
             price=float(kwargs.get("price") or 0) if kwargs.get("price") else None,
             trigger_price=(float(kwargs.get("trigger_price") or 0)
                            if kwargs.get("trigger_price") else None),
             order_type=_ORDER_TYPE_TO_DHAN.get(kwargs.get("order_type", ""), None),
-        ))
+        )
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan modify_order rejected: {resp}")
         return order_id
 
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:
-        resp = self._safe_call(lambda d: d.cancel_order(order_id=order_id))
+        resp = self._sdk.cancel_order(order_id=order_id)
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan cancel_order rejected: {resp}")
         return order_id
@@ -1413,7 +1412,7 @@ class DhanBroker(Broker):
             order0, orders, trigger_values, trigger_type,
             security_id, _dhan_exchange(exchange), tradingsymbol, corr,
         )
-        resp = self._safe_call(lambda d: d.place_forever(**kw))
+        resp = self._sdk.place_forever(**kw)
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan place_gtt rejected: {resp}")
         return _dhan_gtt_order_id(resp)
@@ -1428,7 +1427,7 @@ class DhanBroker(Broker):
         tgt_kw = _dhan_modify_forever_leg(
             orders[1], _dhan_num(trigger_values[1]), "OCO", "TARGET_LEG"
         )
-        resp1 = self._safe_call(lambda d: d.modify_forever(order_id=gtt_id, **tgt_kw))
+        resp1 = self._sdk.modify_forever(order_id=gtt_id, **tgt_kw)
         if not isinstance(resp1, dict) or resp1.get("status") != "success":
             _dhan_raise_asymmetric_gtt(gtt_id, resp1)
 
@@ -1453,7 +1452,7 @@ class DhanBroker(Broker):
         order0    = orders[0] if orders else {}
         trig0     = _dhan_num(trigger_values[0]) if trigger_values else 0.0
         entry_kw  = _dhan_modify_forever_leg(order0, trig0, order_flag, "ENTRY_LEG")
-        resp = self._safe_call(lambda d: d.modify_forever(order_id=gtt_id, **entry_kw))
+        resp = self._sdk.modify_forever(order_id=gtt_id, **entry_kw)
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan modify_gtt rejected (entry leg): {resp}")
         if trigger_type == "two-leg" and len(orders) > 1 and len(trigger_values) > 1:
@@ -1470,14 +1469,14 @@ class DhanBroker(Broker):
         exchange=sib_exchange)`, leaving one leg of an emulated OCO
         alive on the book."""
         del exchange  # unused on Dhan
-        resp = self._safe_call(lambda d: d.cancel_forever(order_id=gtt_id))
+        resp = self._sdk.cancel_forever(order_id=gtt_id)
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan cancel_gtt rejected: {resp}")
         return gtt_id
 
     def get_gtts(self) -> list[dict]:
         """List all active Dhan Forever Orders, normalised to Kite GTT shape."""
-        resp = self._safe_call(lambda d: d.get_forever())
+        resp = self._sdk.get_forever()
         rows = _unwrap(resp)
         if not isinstance(rows, list):
             rows = []
@@ -1531,7 +1530,7 @@ def _unwrap(resp: Any) -> list[dict]:
 
     Raises ``RuntimeError`` when the response explicitly signals a
     non-auth API failure (``status=="failure"`` with non-list ``data``).
-    Auth failures are already caught upstream by ``_safe_call`` before
+    Auth failures are already caught upstream by ``_DhanSDKProxy`` before
     this function is reached, so the raise here targets non-auth errors
     that slip through (e.g. ``data=""`` with remarks about invalid params).
 

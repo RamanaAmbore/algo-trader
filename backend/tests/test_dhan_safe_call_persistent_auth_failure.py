@@ -36,9 +36,8 @@ def _make_auth_failure_dict(remarks: str = "Invalid Token") -> dict:
 def _make_dhan_broker(account: str = "DH3747") -> "DhanBroker":
     """Build a minimal DhanBroker with a stub DhanConnection."""
     from backend.brokers.adapters.dhan import DhanBroker
-    from backend.brokers.connections import DhanConnection
 
-    conn = DhanConnection.__new__(DhanConnection)
+    conn = MagicMock()
     conn.account = account
     conn._login_lock = threading.Lock()
     conn._login_blocked_until = 0.0       # not blocked
@@ -46,13 +45,13 @@ def _make_dhan_broker(account: str = "DH3747") -> "DhanBroker":
     conn._conn_created_at = None
 
     mock_sdk = MagicMock()
-    conn._dhan = mock_sdk
 
     # get_dhan_conn(test_conn=False) → cached sdk; (test_conn=True) → fresh sdk
-    conn.get_dhan_conn = MagicMock(return_value=mock_sdk)
+    def get_dhan_conn_side_effect(test_conn=False):
+        return mock_sdk
+    conn.get_dhan_conn = MagicMock(side_effect=get_dhan_conn_side_effect)
 
-    broker = DhanBroker.__new__(DhanBroker)
-    broker._conn = conn
+    broker = DhanBroker(conn)
     return broker
 
 
@@ -65,12 +64,15 @@ class TestSafeCallPersistentAuthFailure:
         broker = _make_dhan_broker()
         auth_dict = _make_auth_failure_dict("Invalid Token")
 
-        # sdk_call always returns auth failure
-        sdk_call = MagicMock(return_value=auth_dict)
+        # Mock SDK method always returns auth failure
+        broker._conn.get_dhan_conn().get_holdings.return_value = auth_dict
 
         with patch("backend.brokers.adapters.dhan._check_dhan_rotation_pattern"):
             with pytest.raises(RuntimeError, match="persisted after re-login"):
-                broker._safe_call(sdk_call)
+                # Test via proxy calling a method
+                from backend.brokers.adapters.dhan import _DhanSDKProxy
+                proxy = _DhanSDKProxy(broker)
+                proxy.get_holdings()
 
     def test_record_fetch_fires_on_persistent_auth_failure(self):
         """The _fetch_holdings_local / _fetch_positions_local wrappers call
@@ -104,16 +106,21 @@ class TestSafeCallPersistentAuthFailure:
             )
 
     def test_first_attempt_success_does_not_raise(self):
-        """When the first call succeeds (no auth failure), _safe_call must
+        """When the first call succeeds (no auth failure), proxy must
         return the response without raising."""
         broker = _make_dhan_broker()
         success_resp = {"status": "success", "data": [{"holding": 1}]}
-        sdk_call = MagicMock(return_value=success_resp)
 
-        result = broker._safe_call(sdk_call)
+        # Mock SDK method returns success
+        mock_sdk = broker._conn.get_dhan_conn()
+        mock_sdk.get_holdings.return_value = success_resp
+
+        from backend.brokers.adapters.dhan import _DhanSDKProxy
+        proxy = _DhanSDKProxy(broker)
+        result = proxy.get_holdings()
         assert result is success_resp
-        # Must only have been called once (no retry needed)
-        sdk_call.assert_called_once()
+        # Must only have been called once for the method (no retry needed)
+        mock_sdk.get_holdings.assert_called_once()
 
     def test_retry_succeeds_returns_response(self):
         """First attempt → auth failure; second attempt (after re-login) → success.
@@ -123,25 +130,31 @@ class TestSafeCallPersistentAuthFailure:
         success_resp = {"status": "success", "data": []}
 
         # First call: auth failure. Second call: success.
-        sdk_call = MagicMock(side_effect=[auth_dict, success_resp])
+        broker._conn.get_dhan_conn().get_holdings.side_effect = [auth_dict, success_resp]
 
         with patch("backend.brokers.adapters.dhan._check_dhan_rotation_pattern"):
-            result = broker._safe_call(sdk_call)
+            from backend.brokers.adapters.dhan import _DhanSDKProxy
+            proxy = _DhanSDKProxy(broker)
+            result = proxy.get_holdings()
 
         assert result is success_resp, (
             "Should return the success response when retry succeeds"
         )
-        assert sdk_call.call_count == 2
+        assert broker._conn.get_dhan_conn().get_holdings.call_count == 2
 
     def test_non_auth_failure_dict_does_not_raise(self):
         """A dict with status=failure but non-auth remarks must pass through
         (e.g. a business-logic error like 'no positions found')."""
         broker = _make_dhan_broker()
         biz_error = {"status": "failure", "remarks": "No positions found today"}
-        sdk_call = MagicMock(return_value=biz_error)
+
+        # Mock SDK returns non-auth failure
+        broker._conn.get_dhan_conn().get_holdings.return_value = biz_error
 
         # Must NOT raise — not an auth error
-        result = broker._safe_call(sdk_call)
+        from backend.brokers.adapters.dhan import _DhanSDKProxy
+        proxy = _DhanSDKProxy(broker)
+        result = proxy.get_holdings()
         assert result is biz_error
 
     def test_error_message_includes_account_and_remarks(self):
@@ -149,11 +162,15 @@ class TestSafeCallPersistentAuthFailure:
         so the log line is immediately actionable."""
         broker = _make_dhan_broker(account="DH3747")
         auth_dict = _make_auth_failure_dict("dh-906: Invalid Token")
-        sdk_call = MagicMock(return_value=auth_dict)
+
+        # Mock SDK returns auth failure
+        broker._conn.get_dhan_conn().get_holdings.return_value = auth_dict
 
         with patch("backend.brokers.adapters.dhan._check_dhan_rotation_pattern"):
             with pytest.raises(RuntimeError) as exc_info:
-                broker._safe_call(sdk_call)
+                from backend.brokers.adapters.dhan import _DhanSDKProxy
+                proxy = _DhanSDKProxy(broker)
+                proxy.get_holdings()
 
         msg = str(exc_info.value)
         assert "DH3747" in msg, f"Account name missing from error: {msg}"
@@ -188,14 +205,14 @@ class TestLooksLikeAuthFailureSSoT:
 
     def test_function_used_twice_in_safe_call_source(self):
         """Grep-style SSOT check: _looks_like_auth_failure appears at least
-        twice in _safe_call's source — once for initial check, once post-retry.
+        twice in _DhanSDKProxy's source — once for initial check, once post-retry.
         This guards against the check being inlined with a different predicate."""
         import inspect
-        from backend.brokers.adapters.dhan import DhanBroker
-        src = inspect.getsource(DhanBroker._safe_call)
+        from backend.brokers.adapters.dhan import _DhanSDKProxy
+        src = inspect.getsource(_DhanSDKProxy.__getattr__)
         count = src.count("_looks_like_auth_failure")
         assert count >= 2, (
             f"Expected _looks_like_auth_failure to appear at least 2× in "
-            f"_safe_call (initial + post-retry). Found {count}×.\n"
+            f"_DhanSDKProxy.__getattr__ (initial + post-retry). Found {count}×.\n"
             f"Source:\n{src}"
         )

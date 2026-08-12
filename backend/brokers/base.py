@@ -25,7 +25,7 @@ class Broker(ABC):
     Diagnostics — every adapter populates _last_req / _last_resp before /
     after each HTTP call so operator debugging doesn't require log-diving:
       broker.last_request_debug() → {"request": {...}, "response": {...}}
-    Adapters update these dicts in their HTTP dispatch path (_safe_call,
+    Adapters update these dicts in their HTTP dispatch path (_DhanSDKProxy,
     _retry_groww_auth, etc.). Base initialises them to empty dicts.
 
     Conventions shared by every adapter:

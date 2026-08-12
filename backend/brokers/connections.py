@@ -1179,7 +1179,7 @@ class DhanConnection:
         self._build_client(access_token)
         # Side-channel: stamp this account's login moment in the
         # cross-account ledger so the rotation-pattern detector in
-        # DhanBroker._safe_call can correlate "this account's token
+        # _DhanSDKProxy can correlate "this account's token
         # died" with "that other account's recent login". Imported
         # lazily to avoid the connections ↔ brokers circular import.
         try:

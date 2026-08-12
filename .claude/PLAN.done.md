@@ -1,80 +1,76 @@
-# Plan: Restore 600s sparkline startup delay to fix prod OOM
-
-## Context
-
-Prod API is in an OOM kill loop — `ramboq_api` is manually stopped to prevent restart damage.
-Service has been stopped since ~2026-08-11 evening.
-
-**Root cause trace** (from git log diff between last good deploy and HEAD):
-
-1. `6332e592` — removed `bg-instruments` from `on_startup` (correct fix, still in HEAD)
-2. `09ef3bad` — added 600s sparkline startup delay (correct fix, independently needed)
-3. `e34dc2c9` — REVERTED both fixes, assuming removing `timeout_seconds=20` from instruments
-   fetch was sufficient — this theory was wrong
-4. `d88ec85d` — re-removed `bg-instruments` but did NOT restore the 600s sparkline delay
-
-**Missing fix**: `_task_sparkline_warm` in `background.py` line 3418 fires `_do_warm_with_retry("startup")` immediately at T=0. This downloads 6 exchanges (NSE/NFO/BSE/BFO/MCX/CDS) — NFO alone is ~70k instruments. If the count is 0, `_do_warm_with_retry` retries at T+60s, triggering a second 6-exchange download. Combined RSS reaches 5-6GB before port 8000 ever binds → OOM kill → restart loop.
-
-The 600s delay lets startup settle (paper engine recover, chase recovery, all 28 background tasks start) before the sparkline warm fires. Sparkline data is served from cache; a 10-minute cold window at boot is acceptable.
-
-`timeout_seconds=20` was already removed from `options.py` instruments call (done in `e34dc2c9`). That fix is correctly in HEAD. The startup delay is an independent, additive fix.
+# Plan: Dhan _DhanSDKProxy — centralize retry/remint/rate-limit
 
 ## Task
 
-In `backend/api/background.py` line 3418: wrap the sparkline startup warm in a 600s delay
-helper so it fires 10 minutes after startup instead of immediately.
+Replace `DhanBroker._safe_call(lambda d: d.xxx())` pattern with a transparent
+`_DhanSDKProxy` class that intercepts every SDK attribute access via `__getattr__`
+and applies rate-limiting, 5xx translation, JSON auth-failure inspection, and
+remint+retry in one place — exactly as `@_retry_groww_auth` does for Groww and
+`@retry_kite_conn` does for Kite.
 
-Add a regression test to `backend/tests/test_cache_timeout.py` to guard against this being
-removed again.
+Source-IP binding is already correctly centralized in `DhanConnection._build_client()`,
+which mounts `_IPv6SourceAdapter` on the SDK's internal `requests.Session` at
+construction time. No ContextVar is needed; the adapter persists for all runtime calls
+on that handle. No change required for IP binding.
+
+**Before** (every method):
+```python
+resp = self._safe_call(lambda d: d.get_holdings())
+resp = self._safe_call(lambda d: d.place_order(...), endpoint_group="orders")
+```
+
+**After** (clean, proxy-intercepted):
+```python
+resp = self._sdk.get_holdings()
+resp = self._sdk_orders.place_order(...)
+```
+
+All retry/remint/rate-limit logic lives in `_DhanSDKProxy.__getattr__` only.
 
 ## Agents
 
-- backend: In `backend/api/background.py`, find the block at line ~3417-3418:
-  ```python
-  if not is_engine_idle():
-      asyncio.create_task(_do_warm_with_retry("startup"))
-  ```
-  Replace with:
-  ```python
-  if not is_engine_idle():
-      async def _spark_delayed_startup():
-          await asyncio.sleep(600)
-          await _do_warm_with_retry("startup")
-      asyncio.create_task(_spark_delayed_startup())
-  ```
-  Update the comment block above (lines 3412-3416) to reflect the 600s delay rationale:
-  "Delayed 600s so the sparkline warm does not compete with startup instrument downloads
-  (NFO token map = ~70k rows). Immediate warm caused OOM kill loop on prod (2026-08-12)."
-  No other changes.
+- broker: Create `_DhanSDKProxy` class in `backend/brokers/adapters/dhan.py`.
+  Add 4 proxy properties to `DhanBroker`: `_sdk` (no rate limit), `_sdk_margins`
+  (bucket="margins"), `_sdk_history` (bucket="history"), `_sdk_orders` (bucket="orders").
+  Refactor all ~30 `_safe_call` call sites to use the appropriate proxy property.
+  Refactor `_call_dhan_ledger_raw` to accept the proxy instead of the raw handle
+  (transparent since proxy's `__getattr__` returns a callable for any name, lets
+  AttributeError from non-existent SDK methods propagate naturally).
+  Remove `_safe_call` method entirely.
+  Preserve in `_DhanSDKProxy.__getattr__`:
+  - Rate throttle via `_DHAN_RATE_LIMITER.throttle(self._bucket)` if bucket set
+  - `self._broker._last_req` / `self._broker._last_resp` tracking
+  - 5xx SDK exception → BrokerNetworkError (status 502/503/504)
+  - DH-904 dict → BrokerRateLimitError
+  - `_looks_like_auth_failure(resp)` → log JWT token age + rotation pattern →
+    `self._broker._conn.get_dhan_conn(test_conn=True)` → retry once →
+    if still auth failure → raise RuntimeError
+
+  Exact `_safe_call` call-site mapping (endpoint_group → proxy property):
+  - `endpoint_group="margins"` → `self._sdk_margins` (profile, margins)
+  - `endpoint_group="history"` → `self._sdk_history` (ltp/ohlc)
+  - `endpoint_group="orders"` → `self._sdk_orders` (place_order)
+  - no endpoint_group → `self._sdk` (holdings, positions, orders, trades, cancel,
+    modify, gtt operations, market_status, margin_calculator, basket_order_margins,
+    get_forever, cancel_forever, modify_forever, funds_ledger)
 
 - frontend: skip
-- broker: skip
+- backend-test: Add tests in `backend/tests/broker/test_dhan_proxy.py`:
+  - `test_proxy_passthrough`: mock SDK handle, verify method called and response returned
+  - `test_proxy_auth_failure_remint_retry`: first call returns auth-failure dict, verify
+    `get_dhan_conn(test_conn=True)` called + method retried + clean response returned
+  - `test_proxy_persistent_auth_failure_raises`: both calls return auth-failure, verify
+    RuntimeError raised
+  - `test_proxy_5xx_raises_network_error`: SDK raises exception with response.status_code=503,
+    verify BrokerNetworkError raised
+  - `test_proxy_dh904_raises_rate_limit_error`: SDK returns dict with code="DH-904",
+    verify BrokerRateLimitError raised
+  - `test_proxy_rate_throttle_called`: mock `_DHAN_RATE_LIMITER.throttle`, verify called
+    when bucket is set and `_DHAN_RATE_LIMIT_ENABLED` is True
+  - `test_proxy_no_throttle_without_bucket`: verify throttle NOT called when bucket=""
+  - `test_safe_call_removed`: verify `DhanBroker` has no `_safe_call` attribute
+
 - doc: skip
-
-- backend-test: In `backend/tests/test_cache_timeout.py`, add the following test after the
-  existing `test_options_chain_instruments_no_timeout` test:
-  ```python
-  def test_sparkline_warm_has_startup_delay():
-      """Guard: sparkline startup warm must NOT fire immediately (OOM risk on prod).
-
-      Without a startup delay, _do_warm_with_retry fires at T=0 and downloads 6 exchanges
-      (NFO = ~70k instruments). If count==0 it retries at T+60s (second full download).
-      Combined RSS reaches 5-6GB before port 8000 binds → OOM kill loop.
-      600s delay lets the process stabilise before sparkline warm fires.
-      Root cause of 2026-08-12 prod OOM.
-      """
-      import re
-      src = open("backend/api/background.py").read()
-      m = re.search(r'async def _task_sparkline_warm\b.*?(?=\nasync def |\Z)', src, re.DOTALL)
-      assert m is not None, "_task_sparkline_warm not found in background.py"
-      body = m.group(0)
-      assert '_spark_delayed_startup' in body or 'asyncio.sleep(600)' in body, (
-          "sparkline startup warm must include a 600s delay — "
-          "immediate startup warm causes concurrent NFO download OOM with other tasks "
-          "(see fix 2026-08-12). Remove this guard only if instruments store is warm at boot."
-      )
-  ```
-
 - playwright: skip
 
 ## Tests
@@ -85,16 +81,13 @@ removed again.
 
 ## Commit message
 
-fix(background): restore 600s sparkline startup delay to prevent OOM on prod
+refactor(broker): replace DhanBroker._safe_call with _DhanSDKProxy transparent interceptor
 
 ## Done when
 
-- `backend/api/background.py` line ~3418 wraps `_do_warm_with_retry("startup")` in `_spark_delayed_startup()` with `asyncio.sleep(600)`
-- `venv/bin/pytest backend/tests/test_cache_timeout.py -v` passes (7 tests, including new guard)
-- Full pytest suite green
-- Deployed to prod — `systemctl status ramboq_api` shows active, port 8000 binds within 30s, no OOM in journal for 10 min after start
-
-## Critical files
-
-- `backend/api/background.py` — lines 3412-3418 (sparkline startup warm block)
-- `backend/tests/test_cache_timeout.py` — add `test_sparkline_warm_has_startup_delay`
+- `_safe_call` method no longer exists on `DhanBroker`
+- All ~30 SDK call sites use `self._sdk*` proxy properties
+- `_DhanSDKProxy` handles rate-limit, 5xx, DH-904, auth-failure-remint-retry in `__getattr__`
+- All 8 proxy unit tests pass
+- All existing broker tests pass (no regressions)
+- Source-IP binding unchanged (no ContextVar changes)

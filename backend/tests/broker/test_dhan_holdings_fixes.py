@@ -155,7 +155,7 @@ class TestDhanHoldingsErrorPropagation:
     """
 
     def test_holdings_raises_on_api_failure_shape(self):
-        """_safe_call returns failure shape → holdings() raises RuntimeError."""
+        """SDK returns failure shape → holdings() raises RuntimeError via _DhanSDKProxy."""
         conn_mock = MagicMock()
         broker = DhanBroker(conn=conn_mock)
 
@@ -164,12 +164,16 @@ class TestDhanHoldingsErrorPropagation:
             "data": "",
             "remarks": {"error_code": "900", "error_message": "Something went wrong"},
         }
-        with patch.object(broker, "_safe_call", return_value=error_resp):
-            with pytest.raises(RuntimeError, match="Dhan API failure"):
-                broker.holdings()
+        sdk_mock = MagicMock()
+        sdk_mock.get_holdings.return_value = error_resp
+        conn_mock.get_dhan_conn.return_value = sdk_mock
+        conn_mock._conn_created_at = None
+
+        with pytest.raises(RuntimeError, match="Dhan API failure"):
+            broker.holdings()
 
     def test_holdings_returns_empty_list_on_success_empty_data(self):
-        """_safe_call returns success + data=[] → holdings() returns [] (not raises).
+        """SDK returns success + data=[] → holdings() returns [] (not raises).
 
         A zero-holdings account is a valid healthy state; holdings() must
         not raise for this shape so the caller records ok=True.
@@ -178,12 +182,15 @@ class TestDhanHoldingsErrorPropagation:
         broker = DhanBroker(conn=conn_mock)
 
         empty_resp = {"status": "success", "data": []}
-        with patch.object(broker, "_safe_call", return_value=empty_resp):
-            result = broker.holdings()
+        sdk_mock = MagicMock()
+        sdk_mock.get_holdings.return_value = empty_resp
+        conn_mock.get_dhan_conn.return_value = sdk_mock
+
+        result = broker.holdings()
         assert result == []
 
     def test_positions_raises_on_api_failure_shape(self):
-        """_normalise_positions also calls _unwrap — same raise behaviour."""
+        """_normalise_positions also calls _unwrap — same raise behaviour via _DhanSDKProxy."""
         conn_mock = MagicMock()
         broker = DhanBroker(conn=conn_mock)
 
@@ -192,9 +199,13 @@ class TestDhanHoldingsErrorPropagation:
             "data": "",
             "remarks": {"error_code": "902"},
         }
-        with patch.object(broker, "_safe_call", return_value=error_resp):
-            with pytest.raises(RuntimeError, match="Dhan API failure"):
-                broker.positions()
+        sdk_mock = MagicMock()
+        sdk_mock.get_positions.return_value = error_resp
+        conn_mock.get_dhan_conn.return_value = sdk_mock
+        conn_mock._conn_created_at = None
+
+        with pytest.raises(RuntimeError, match="Dhan API failure"):
+            broker.positions()
 
 
 # ---------------------------------------------------------------------------
