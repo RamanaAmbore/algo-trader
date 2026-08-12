@@ -409,6 +409,7 @@ async def _task_token_refresh() -> None:
             "_task_token_refresh: no-op under conn_service — "
             "token pre-warm is handled by service/app.py _task_prewarm_tokens"
         )
+        await asyncio.sleep(86400)  # park — returning immediately causes _supervised tight loop
         return
     _TARGET = "05:45"
     last_fired: str | None = None

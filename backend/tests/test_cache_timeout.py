@@ -136,6 +136,30 @@ def test_options_chain_instruments_no_timeout():
     )
 
 
+def test_token_refresh_parks_under_conn_service():
+    """Guard: _task_token_refresh must sleep 86400s (park) under conn_service.
+
+    Under RAMBOQ_USE_CONN_SERVICE=1 the function has no work to do. Returning
+    immediately causes _supervised to restart it in a tight loop — 23,651+
+    invocations per minute logged on 2026-08-12, starving the event loop at 97%
+    CPU. Port 8000 never bound; process OOM-killed at 5.56GB.
+
+    Fix: await asyncio.sleep(86400) before return so _supervised sees a long-lived
+    coroutine. Same park pattern as commit 80b9c4b6.
+    """
+    import re
+    src = open("backend/api/background.py").read()
+    m = re.search(r'async def _task_token_refresh\b.*?(?=\nasync def |\Z)', src, re.DOTALL)
+    assert m is not None, "_task_token_refresh not found in background.py"
+    body = m.group(0)
+    assert 'await asyncio.sleep(86400)' in body, (
+        "_task_token_refresh must contain `await asyncio.sleep(86400)` in the "
+        "RAMBOQ_USE_CONN_SERVICE branch — returning immediately causes _supervised "
+        "to restart it thousands of times per minute, starving the event loop and "
+        "causing OOM kill (2026-08-12 prod incident). Park the task instead."
+    )
+
+
 def test_sparkline_startup_warm_is_disabled():
     """Guard: _task_sparkline_warm must NOT fire asyncio.create_task at startup.
 
