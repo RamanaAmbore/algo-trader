@@ -1364,6 +1364,7 @@
         Built by
         <a class="algo-footer-link"
            href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana R. Ambore</a>
+        &amp; Gopi Podicheti
       </span>
     </footer>
   </div>

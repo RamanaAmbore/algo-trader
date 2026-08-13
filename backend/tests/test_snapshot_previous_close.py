@@ -495,3 +495,71 @@ def test_build_row_from_snapshot_raw_fallback_to_prev_ltp_when_no_previous_close
         f"({STORED_DAY_PNL}) when previous_close is None"
     )
     assert abs(row.day_change_val) > 0, "day_change_val must be non-zero"
+
+
+# ---------------------------------------------------------------------------
+# 7. MCX post-close day_pnl guard — COALESCE(NULLIF(EXCLUDED.day_pnl, 0), ...)
+# ---------------------------------------------------------------------------
+
+def test_upsert_sql_day_pnl_coalesce_nullif_guard():
+    """_UPSERT_SQL must use COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)
+    to preserve a real non-zero day_pnl when a subsequent NULL or zero write arrives.
+
+    Root cause: the 16:15 NSE settlement snapshot writes day_pnl=NULL for MCX
+    positions (mid_session=True at 16:15).  Without this guard, the NULL/0
+    overwrites the last valid EOD value, causing positions ΔP to show 0 from
+    23:30 until the 00:15 MCX settlement pass.
+
+    This SQL-text assertion is the authoritative SSOT check — the actual
+    runtime guard is in the PostgreSQL ON CONFLICT clause.
+    """
+    from backend.api.algo.daily_snapshot import _UPSERT_SQL
+
+    sql = _UPSERT_SQL.text.lower()
+    assert "coalesce(nullif(excluded.day_pnl, 0), daily_book.day_pnl)" in sql, (
+        "_UPSERT_SQL must use COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl) "
+        "to preserve the last non-zero day_pnl when a NULL or 0 upsert arrives "
+        "(e.g. mid-session NSE settlement snapshot writing NULL for open MCX positions)"
+    )
+
+
+def test_upsert_sql_day_pnl_guard_preserves_existing_on_null():
+    """Verify the SQL expression text structure: NULLIF turns 0 into NULL so
+    COALESCE can fall back to the existing daily_book.day_pnl value.
+
+    This test checks the correct operand order — EXCLUDED first (new value),
+    daily_book second (existing value) — matching the 'prefer new, keep old'
+    semantics when new is NULL/0.
+    """
+    from backend.api.algo.daily_snapshot import _UPSERT_SQL
+
+    sql = _UPSERT_SQL.text
+
+    # Verify the column assignment line contains the full guard expression
+    # (case-insensitive, same as DB would parse it)
+    assert "COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)" in sql, (
+        "day_pnl assignment must read: "
+        "COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl) "
+        "— EXCLUDED first so a real new value wins; daily_book second as fallback"
+    )
+
+
+def test_upsert_sql_day_pnl_guard_not_plain_excluded():
+    """The plain `day_pnl = EXCLUDED.day_pnl` assignment must not exist in
+    the ON CONFLICT clause — that form would overwrite a good EOD value with
+    a NULL/0 mid-session write.
+    """
+    from backend.api.algo.daily_snapshot import _UPSERT_SQL
+
+    sql = _UPSERT_SQL.text
+
+    # The ON CONFLICT ... DO UPDATE block starts after the first INSERT.
+    # Split on DO UPDATE to isolate the conflict clause.
+    do_update_part = sql.split("DO UPDATE SET", 1)[-1] if "DO UPDATE SET" in sql else sql
+    # Strip leading/trailing whitespace per line and check for the plain form
+    lines = [ln.strip() for ln in do_update_part.splitlines()]
+    plain_assignment = "day_pnl        = EXCLUDED.day_pnl,"
+    assert plain_assignment not in lines, (
+        "day_pnl must NOT use plain `= EXCLUDED.day_pnl` in the ON CONFLICT clause — "
+        "that overwrites a non-NULL existing value with NULL/0 on mid-session writes"
+    )

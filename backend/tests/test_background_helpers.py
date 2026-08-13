@@ -230,3 +230,67 @@ def test_closed_hours_refresh_does_not_import_snapshot_daily_book():
     assert "from backend.api.algo.daily_snapshot import snapshot_daily_book" not in src, (
         "The snapshot_daily_book import must be removed from _task_closed_hours_refresh"
     )
+
+
+# ---------------------------------------------------------------------------
+# MCX post-close snapshot trigger (23:31 IST)
+# ---------------------------------------------------------------------------
+
+def test_mcx_close_snapshot_trigger_exists():
+    """background.py must contain the 23:31 IST MCX-close snapshot trigger.
+
+    Without it, the 16:15 NSE settlement snapshot writes ltp=NULL/day_pnl=NULL
+    for MCX positions (mid_session=True at 16:15).  No snapshot fires again
+    until 00:15, so the positions route serves NULL->0 for the entire
+    23:30–00:15 window.  The 23:31 trigger closes that gap.
+    """
+    assert "_MCX_CLOSE_H" in _SRC and "_mcx_close_done" in _SRC, (
+        "MCX post-close snapshot trigger missing — positions day_pnl will be NULL "
+        "from 23:30 until 00:15 MCX settlement.  Add _MCX_CLOSE_H/_MCX_CLOSE_M "
+        "constants + _mcx_close_done deduplication sentinel to _task_daily_snapshot."
+    )
+
+
+def test_mcx_close_snapshot_fires_at_2331_not_later():
+    """The MCX-close window must start at exactly 23:31 IST and end before 23:40.
+
+    The window must be narrow ([23:31, 23:40)) to avoid overlapping with the
+    overnight polling period.  A start time later than 23:35 would leave a gap
+    during which the 30s poll might not fire before 00:00.
+    """
+    assert "_MCX_CLOSE_H,      _MCX_CLOSE_M      = 23, 31" in _SRC or (
+        "_MCX_CLOSE_H" in _SRC and "23, 31" in _SRC
+    ), (
+        "_MCX_CLOSE_H/_MCX_CLOSE_M must be set to (23, 31) — "
+        "start any later and a 30s poll boundary may miss the window before midnight"
+    )
+    assert "dtime(_MCX_CLOSE_H, _MCX_CLOSE_M) <= now.time() < dtime(23, 40)" in _SRC, (
+        "MCX-close guard must be [23:31, 23:40) — upper bound keeps the window "
+        "narrow and prevents overlap with the overnight polling period"
+    )
+
+
+def test_mcx_close_dedup_uses_today_not_adjusted():
+    """MCX close deduplication uses `today` (same calendar date as MCX close),
+    NOT `today - timedelta(days=1)` — that adjustment belongs only to the
+    00:15 MCX *settlement* block which fires on D+1.
+    """
+    # The mcx-close block fires at 23:31 on the same calendar day as the
+    # trade-date.  The settlement block fires at 00:15 D+1 and adjusts.
+    # Verify the close block does NOT contain the timedelta adjustment.
+    import re
+
+    # Extract just the mcx-close block from the source
+    close_block_match = re.search(
+        r"MCX close: 23:31.*?_mcx_close_done = today",
+        _SRC,
+        re.DOTALL,
+    )
+    assert close_block_match is not None, (
+        "Could not find MCX-close block ending with '_mcx_close_done = today'"
+    )
+    block_text = close_block_match.group(0)
+    assert "timedelta(days=1)" not in block_text, (
+        "MCX-close block must NOT use timedelta(days=1) adjustment — "
+        "that adjustment is only for the 00:15 settlement block (D+1 calendar)"
+    )

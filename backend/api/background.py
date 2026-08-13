@@ -1806,9 +1806,11 @@ async def _task_daily_snapshot() -> None:
     # ── settlement pass deduplication (date | None) ────────────────────
     _nse_settlement_done: Optional[date] = None
     _mcx_settlement_done: Optional[date] = None
+    _mcx_close_done:      Optional[date] = None
 
     _NSE_SETTLEMENT_H, _NSE_SETTLEMENT_M = 16, 15
     _MCX_SETTLEMENT_H, _MCX_SETTLEMENT_M =  0, 15
+    _MCX_CLOSE_H,      _MCX_CLOSE_M      = 23, 31
     _POLL_INTERVAL_S = 30
 
     # ── main loop ──────────────────────────────────────────────────────
@@ -1823,6 +1825,18 @@ async def _task_daily_snapshot() -> None:
             logger.info("Background: 16:15 IST — firing NSE settlement snapshot")
             await _fire_snapshot("nse-settlement")
             _nse_settlement_done = today
+
+        # ---- MCX close: 23:31 IST (same calendar/trade-date) -----------
+        # Fires just after MCX closes so MCX positions get their EOD
+        # snapshot while mid_session=False — same pattern as NSE 16:15.
+        # Without this, the 16:15 NSE settlement snapshot writes
+        # ltp=NULL/day_pnl=NULL for MCX (still mid-session at 16:15),
+        # leaving positions ΔP=0 until the 00:15 MCX settlement pass.
+        if dtime(_MCX_CLOSE_H, _MCX_CLOSE_M) <= now.time() < dtime(23, 40):
+            if _mcx_close_done != today:
+                logger.info("Background: 23:31 IST — firing MCX close snapshot")
+                await _fire_snapshot("mcx-close")
+                _mcx_close_done = today
 
         # ---- MCX settlement: 00:15 IST (calendar D+1, trade-date D) ---
         # Guard to [00:15, 02:00) IST prevents a daytime restart from
