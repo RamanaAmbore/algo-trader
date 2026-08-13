@@ -768,7 +768,7 @@ class GrowwBroker(Broker):
             )
         return out
 
-    @ssot_fetch(mode="coalesce", key=lambda self, *a, **kw: f"groww_instruments_{self.account}")
+    @ssot_fetch(mode="coalesce", key=lambda self, *a, **kw: f"groww_instruments_{self.account}_{(a[0] if a else kw.get('exchange')) or 'all'}")
     @_retry_groww_auth
     def instruments(self, exchange: str | None = None) -> list[dict]:
         """Groww's `get_all_instruments()` returns the master CSV as a

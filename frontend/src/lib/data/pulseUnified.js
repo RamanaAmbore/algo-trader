@@ -509,7 +509,7 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
 export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
   if (includeHold === false) return;
   const get = makeRowFactory(byKey);
-  const { snapOf, getInst, isMarketOpen } = ctx;
+  const { snapOf, getInst, isMarketOpen } = ctx;  // isMarketOpen: explicit interface contract; no closed-hours gate by design (snapshot LTP is valid post-close)
   for (const r of hold) {
     const exch = r.exchange || 'NSE';
     const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();

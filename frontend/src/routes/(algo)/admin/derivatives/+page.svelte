@@ -1983,10 +1983,18 @@
     // (ltp − close) × qty. No isMarketOpen() gate — last tick persists
     // after close, giving the same end-of-session P&L as holdings.
     // untrack() on getSnapshot prevents bypassing the 4 Hz throttle.
+    //
+    // Guard: oq !== 0 prevents close-based formula firing for new intraday
+    // F&O positions where overnight_quantity=0 but prev_close > 0 (the
+    // instrument has a yesterday close even though THIS position was opened
+    // today). Without the guard the formula returns overnight drift P&L
+    // instead of entry-based P&L. Falls through to baseDayPnlForPosition
+    // which handles the new-position case correctly (oq=0, pnl→day_pnl).
     const legLiveLtp = untrack(() => getSnapshot(String(c.symbol || '').toUpperCase())?.ltp);
     const close = Number(c.prev_close ?? 0);
     const qty   = Number(c.qty ?? 0);
-    if (legLiveLtp != null && Number(legLiveLtp) > 0 && close > 0 && qty !== 0) {
+    const oq    = Number(c.overnight_quantity ?? c.opening_quantity ?? 0);
+    if (oq !== 0 && legLiveLtp != null && Number(legLiveLtp) > 0 && close > 0 && qty !== 0) {
       return (Number(legLiveLtp) - close) * qty;
     }
     return baseDayPnlForPosition(c);

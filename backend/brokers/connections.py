@@ -2120,7 +2120,11 @@ class Connections(SingletonBase):
         Also populates the breaker opt-in cache for every broker type.
         """
         try:
-            from backend.brokers.broker_apis import set_dhan_priority_cache, set_breaker_optin_cache
+            from backend.brokers.broker_apis import (
+                set_dhan_priority_cache,
+                set_breaker_optin_cache,
+                _prune_fetch_health,
+            )
             for r in rows:
                 if r.account in new_conn:
                     broker_id_val = (r.broker_id or "zerodha_kite").lower()
@@ -2130,6 +2134,8 @@ class Connections(SingletonBase):
                     # Populate breaker opt-in cache for all broker types.
                     cb_enabled = bool(getattr(r, "circuit_breaker_enabled", False))
                     set_breaker_optin_cache(r.account, cb_enabled)
+            # Prune _FETCH_HEALTH ghost entries for decommissioned accounts.
+            _prune_fetch_health(set(new_conn.keys()))
         except Exception as _pp_err:
             logger.warning(f"poll_priority cache refresh failed: {_pp_err}")
 

@@ -10,8 +10,8 @@
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
-  import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
-  import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
+  import { cachedDelete } from '$lib/data/persistentCache';
+  import { getSnapshot, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';

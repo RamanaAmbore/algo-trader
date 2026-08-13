@@ -22,10 +22,7 @@ from backend.api.routes.positions_helpers import (
     _is_broker_outage,
     apply_scope_and_mask,
     build_row_from_snapshot_raw,
-    build_snapshot_position_row,
     build_summary_from_rows,
-    extract_snapshot_extras,
-    extract_snapshot_multiplier,
     merge_paper_into_live,
 )
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow

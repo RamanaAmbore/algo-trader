@@ -222,11 +222,10 @@ def build_snapshot_position_row(
     The frontend's ``baseDayPnlForPosition`` reads ``close_price`` to
     compute day-P&L; without this fix overnight positions always show 0.
 
-    ``prev_settlement_pnl`` — yesterday's total_pnl from the most-recent
-    daily_book snapshot captured before today's midnight IST. When set,
-    the frontend's ``baseDayPnlForPosition`` Branch A fires: day-P&L =
-    total_pnl - prev_settlement_pnl (authoritative). When None, Branch B
-    (fallback) computes: day-P&L = total_pnl - oq×(close_price - avg_price).
+    ``prev_settlement_pnl`` — frozen yesterday's total_pnl from the
+    most-recent daily_book snapshot captured before midnight IST. When set,
+    day P&L = total_pnl − prev_settlement_pnl (authoritative). When None,
+    the frontend falls back to reconstructing day P&L from price data.
 
     ``product`` — the Kite product type (NRML / MIS / CNC). Extracted from
     ``payload_json.get("product", "NRML")`` at the call site. Defaults to

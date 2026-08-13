@@ -432,19 +432,33 @@ class TickerManager:
 
     def unsubscribe(self, tokens: Iterable[int]) -> None:
         """Remove tokens from the live subscription."""
-        drop = {int(t) for t in tokens} & self._subscribed
-        if not drop:
+        all_tokens = {int(t) for t in tokens}
+        drop = all_tokens & self._subscribed
+        if not drop and not (all_tokens & self._pending):
             return
         with self._lock:
-            if self._connected and self._kws is not None:
+            # Always prune _pending regardless of connected state — tokens
+            # queued pre-connect must not linger after an explicit unsubscribe.
+            self._pending -= all_tokens
+            if drop and self._connected and self._kws is not None:
                 try:
                     self._kws.unsubscribe(list(drop))
                     self._subscribed -= drop
-                    # Prune _tick_age so unsubscribed tokens don't
-                    # accumulate in memory indefinitely (monotonic
-                    # growth in a long-running process).
+                    # Prune auxiliary maps so unsubscribed tokens don't
+                    # accumulate in memory indefinitely (monotonic growth
+                    # in a long-running process — ghost entries were the
+                    # original defect: P1-A audit finding 2026-08).
                     for tok in drop:
                         self._tick_age.pop(tok, None)
+                        self._tick_map.pop(tok, None)
+                    # _sym_to_token is keyed by symbol, valued by token —
+                    # scan for any symbol that resolves to a dropped token.
+                    ghost_syms = [
+                        sym for sym, t in self._sym_to_token.items()
+                        if t in drop
+                    ]
+                    for sym in ghost_syms:
+                        self._sym_to_token.pop(sym, None)
                 except Exception:
                     logger.exception("KiteTicker: unsubscribe() failed")
 

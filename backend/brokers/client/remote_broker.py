@@ -58,6 +58,7 @@ class RemoteBroker(Broker):
     """Proxy every Broker ABC method through conn_service UDS."""
 
     def __init__(self, account: str, broker_id: str = "zerodha_kite"):
+        super().__init__()   # initialises _last_req / _last_resp from Broker ABC
         self._account = account
         self._broker_id = broker_id
 

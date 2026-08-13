@@ -911,6 +911,41 @@ def _persist_cb_state() -> None:
         logger.debug("_persist_cb_state: write failed (non-fatal)", exc_info=True)
 
 
+def _prune_fetch_health(live_accounts: set[str]) -> None:
+    """Remove _FETCH_HEALTH entries for accounts no longer in the registry.
+
+    Ghost entries accumulate when broker accounts are decommissioned — the
+    account's row is deleted from DB and removed from Connections.conn, but
+    its _FETCH_HEALTH entry is never cleaned up.  Called from
+    Connections._refresh_dhan_priority_caches() (which runs at the end of
+    every rebuild_from_db()) so pruning happens at the only sync point where
+    the live account set is authoritative.
+
+    live_accounts: the set of account codes present in the newly-rebuilt
+    Connections.conn — keyed identically to _FETCH_HEALTH.
+
+    Thread safety: mutations are performed under _BREAKER_LOCK, matching the
+    same lock discipline used by _persist_cb_state().
+    """
+    if not live_accounts:
+        # Defensive: never prune when called with an empty set (would wipe
+        # everything on a DB-down cold-boot where conn is empty).
+        return
+    with _BREAKER_LOCK:
+        ghost_keys = [k for k in _FETCH_HEALTH if k not in live_accounts]
+    if not ghost_keys:
+        return
+    with _BREAKER_LOCK:
+        for k in ghost_keys:
+            _FETCH_HEALTH.pop(k, None)
+    logger.info(
+        "broker_apis: pruned %d ghost _FETCH_HEALTH entr%s: %s",
+        len(ghost_keys),
+        "y" if len(ghost_keys) == 1 else "ies",
+        ghost_keys,
+    )
+
+
 def _record_breaker_state(
     account: str, ok: bool, error: str, now: float
 ) -> tuple[bool, bool, bool]:
