@@ -24,6 +24,7 @@
     batchQuote,
   } from '$lib/api';
   import { positionsStore, holdingsStore, pulsePositionsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
+  import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
   import { getDraftPositions } from '$lib/data/draftPositions.svelte.js';
   import { getSnapshot, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
@@ -1475,7 +1476,22 @@
       seen.add(u);
       out.push({ value: u, label: u, hint: 'holdings' });
     }
-    // Tier 4 — Popular/liquid F&O underlyings (NIFTY, BANKNIFTY,
+    // Tier 4 — Pinned watchlist F&O underlying roots. Comes before regular
+    // watchlists so operator-curated pinned symbols surface above ordinary lists.
+    // Populated by loadDefaultWatchlist() → _extractFOUnderlyingRoots(pinnedSyms).
+    for (const u of _pinnedWatchlistRoots) {
+      if (!u || seen.has(u)) continue;
+      seen.add(u);
+      out.push({ value: u, label: u, hint: 'pinned' });
+    }
+    // Tier 5 — Non-pinned watchlist F&O underlying roots. Populated from
+    // regularSyms; appears after pinned watchlist and before popular fallback.
+    for (const u of _regularWatchlistRoots) {
+      if (!u || seen.has(u)) continue;
+      seen.add(u);
+      out.push({ value: u, label: u, hint: 'watchlist' });
+    }
+    // Tier 6 — Popular/liquid F&O underlyings (NIFTY, BANKNIFTY,
     // RELIANCE, …). Always emitted — the operator sees the popular
     // list appended below their own book so switching to any liquid
     // symbol is one click, even when they already hold positions.
@@ -1514,6 +1530,8 @@
     void _rootsWithOptions;
     void _rootsWithFuturesOnly;
     void _positionsLoaded;
+    void _pinnedWatchlistRoots;
+    void _regularWatchlistRoots;
     const opts = underlyingOptionsForPicker;
     const cur  = untrack(() => selectedUnderlying);
     // Standard case: nothing selected yet — pick the first picker entry.
@@ -3329,14 +3347,15 @@
    *  list with zero extra clicks. Stays null on demo / unauthenticated
    *  sessions and the button hides. */
   let defaultWatchlistId = $state(/** @type {number | null} */ (null));
-  /** F&O-eligible underlying roots extracted from the operator's default
-   *  watchlist. Drives the Tier-2 (Watchlist) group in the underlying
-   *  picker so the page has a sensible pre-selected default even when
-   *  the operator's book is empty (pre-market, weekend, broker down).
-   *  Stays [] until instruments are ready (getOptionUnderlyingLot needs
-   *  the instruments cache). */
-  /** @type {string[]} */
-  let _watchlistSyms = $state([]);
+  /** F&O-eligible underlying roots extracted from pinned (is_pinned / is_global)
+   *  watchlists. Drives Tier 4 in the underlying picker — pinned lists come before
+   *  regular lists so the operator's curated symbols appear first. Stays [] until
+   *  instruments are ready (getOptionUnderlyingLot needs the instruments cache). */
+  let _pinnedWatchlistRoots = $state(/** @type {string[]} */ ([]));
+  /** F&O-eligible underlying roots from non-pinned operator watchlists.
+   *  Drives Tier 5 in the underlying picker — appears after pinned watchlist
+   *  roots and before the static POPULAR_UNDERLYINGS fallback. */
+  let _regularWatchlistRoots = $state(/** @type {string[]} */ ([]));
   /** Per-strike|optType toast confirming the watchlist add. Keyed
    *  by `${strike}|${CE|PE}` so each chain row tracks its own. */
   let watchToast = $state(/** @type {{ key: string, msg: string } | null} */ (null));
@@ -3355,37 +3374,32 @@
     }
   }
 
+  /** Extract F&O-eligible underlying roots from a list of tradingsymbols.
+   *  Bare equity/index symbols (NIFTY, RELIANCE) are checked directly via
+   *  getOptionUnderlyingLot. Derivative symbols (CRUDEOIL26JUNFUT) are
+   *  decomposed and their root is checked. Requires instruments cache to be
+   *  warm — call only after loadInstruments() has resolved.
+   * @param {string[]} syms */
+  function _extractFOUnderlyingRoots(syms) {
+    const roots = new Set();
+    for (const sym of syms) {
+      const s = sym.toUpperCase().replace(/\s+/g, '');
+      if (!s) continue;
+      if (getOptionUnderlyingLot(s) > 0) { roots.add(s); continue; }
+      const d = decomposeSymbol(s);
+      if (d?.root && getOptionUnderlyingLot(d.root) > 0) roots.add(d.root);
+    }
+    return Array.from(roots).sort();
+  }
+
   async function loadDefaultWatchlist() {
     try {
-      const lists = await fetchWatchlists();
-      const def = (lists || []).find(/** @param {any} l */ (l) => l?.is_default)
-                ?? (lists || [])[0];
-      if (def) {
-        defaultWatchlistId = Number(def.id);
-        // Extract F&O-eligible underlying roots from the default watchlist's
-        // items so the picker has a Tier-2 fallback even when the book is
-        // empty. Requires instruments cache (getOptionUnderlyingLot) — we
-        // call this after loadInstruments() has already resolved on mount,
-        // so the cache is warm. Each item's tradingsymbol may be a bare
-        // equity (RELIANCE), an expanded future (CRUDEOIL26JUNFUT), an
-        // index (NIFTY 50), or an option — extract the root via
-        // decomposeSymbol and keep only roots with lot-size > 0.
-        try {
-          const wl = await fetchWatchlist(def.id);
-          const roots = new Set();
-          for (const it of (wl?.items || [])) {
-            const sym = String(it.tradingsymbol || '').toUpperCase().replace(/\s+/g, '');
-            if (!sym) continue;
-            // Equity-style symbol (no digits after first char cluster) or
-            // index stripped of spaces: try the bare sym first.
-            if (getOptionUnderlyingLot(sym) > 0) { roots.add(sym); continue; }
-            // Derivative symbol: extract root (CRUDEOIL26JUNFUT → CRUDEOIL).
-            const d = decomposeSymbol(sym);
-            if (d?.root && getOptionUnderlyingLot(d.root) > 0) roots.add(d.root);
-          }
-          _watchlistSyms = Array.from(roots).sort();
-        } catch (_) { /* watchlist items unreachable — leave _watchlistSyms [] */ }
-      }
+      const result = await loadWatchlistSymbols();
+      const lists = result.lists ?? [];
+      const def = lists.find(/** @param {any} l */ (l) => l?.is_default) ?? lists[0];
+      if (def) defaultWatchlistId = Number(def.id);
+      _pinnedWatchlistRoots  = _extractFOUnderlyingRoots(result.pinnedSyms ?? []);
+      _regularWatchlistRoots = _extractFOUnderlyingRoots(result.regularSyms ?? []);
     } catch (_) {
       // Demo / unauthenticated — leave null; the "+W" button hides.
       defaultWatchlistId = null;
@@ -3827,7 +3841,8 @@
     // NIFTY provisional seed with the correct tier-1/tier-2 entry. When the
     // store is cold, the $effect fires with an empty book and NIFTY is the
     // correct fallback — same end-state, no flash.
-    if (!selectedUnderlying && !(positionsStore.value?.length) && !(pulsePositionsStore.value?.length)) {
+    if (!selectedUnderlying && !(positionsStore.value?.length) && !(pulsePositionsStore.value?.length)
+        && !_pinnedWatchlistRoots.length && !_regularWatchlistRoots.length) {
       selectedUnderlying = POPULAR_UNDERLYINGS[0]; // 'NIFTY' provisional
     }
     // Load the instruments cache so the option-chain picker has data.

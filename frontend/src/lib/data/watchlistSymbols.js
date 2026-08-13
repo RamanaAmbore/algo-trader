@@ -8,7 +8,7 @@
 
 import { fetchWatchlists, fetchWatchlist } from '$lib/api';
 
-let _cache = /** @type {{ syms: string[]; lists: any[]; loadedAt: number } | null} */ (null);
+let _cache = /** @type {{ syms: string[]; pinnedSyms: string[]; regularSyms: string[]; lists: any[]; loadedAt: number } | null} */ (null);
 const _TTL_MS = 30_000;
 
 /** Force-refresh on next call. */
@@ -33,32 +33,40 @@ export async function loadWatchlistSymbols() {
     const raw = await fetchWatchlists();
     const lists = Array.isArray(raw) ? raw : (raw?.watchlists ?? []);
     if (!lists.length) {
-      _cache = { syms: [], lists: [], loadedAt: now };
+      _cache = { syms: [], pinnedSyms: [], regularSyms: [], lists: [], loadedAt: now };
       return _cache;
     }
     // Pinned + global first so the order matches Pulse's `pinned` major.
-    const pinnedFirst = [
-      ...lists.filter(l => l?.is_pinned || l?.is_global),
-      ...lists.filter(l => !(l?.is_pinned || l?.is_global)),
-    ];
+    const pinnedLists  = lists.filter(l => l?.is_pinned || l?.is_global);
+    const regularLists = lists.filter(l => !(l?.is_pinned || l?.is_global));
+    const pinnedFirst  = [...pinnedLists, ...regularLists];
     const details = await Promise.all(
       pinnedFirst.map(l => fetchWatchlist(l.id).catch(() => null))
     );
+    const pinnedDetails  = details.slice(0, pinnedLists.length);
+    const regularDetails = details.slice(pinnedLists.length);
+
+    /** @type {string[]} */ const pinnedSyms = [];
+    /** @type {string[]} */ const regularSyms = [];
     /** @type {string[]} */ const syms = [];
     const seen = new Set();
-    for (const d of details) {
+
+    for (const d of pinnedDetails) {
       for (const it of (d?.items ?? [])) {
         const sym = String(it?.tradingsymbol ?? '').trim().toUpperCase();
-        if (sym && !seen.has(sym)) {
-          seen.add(sym);
-          syms.push(sym);
-        }
+        if (sym && !seen.has(sym)) { seen.add(sym); syms.push(sym); pinnedSyms.push(sym); }
       }
     }
-    _cache = { syms, lists, loadedAt: now };
+    for (const d of regularDetails) {
+      for (const it of (d?.items ?? [])) {
+        const sym = String(it?.tradingsymbol ?? '').trim().toUpperCase();
+        if (sym && !seen.has(sym)) { seen.add(sym); syms.push(sym); regularSyms.push(sym); }
+      }
+    }
+    _cache = { syms, pinnedSyms, regularSyms, lists, loadedAt: now };
     return _cache;
   } catch (_) {
-    _cache = { syms: [], lists: [], loadedAt: now };
+    _cache = { syms: [], pinnedSyms: [], regularSyms: [], lists: [], loadedAt: now };
     return _cache;
   }
 }
