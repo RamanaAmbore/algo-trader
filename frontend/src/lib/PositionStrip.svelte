@@ -18,7 +18,7 @@
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
-  import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
   import NavBreakdown from '$lib/NavBreakdown.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
 
@@ -424,18 +424,25 @@
     void _throttledTick;
     let dayTotal = 0;
     for (const p of positions) {
-      const sym   = String(p?.tradingsymbol || '').toUpperCase();
-      // Direct formula matching mergeHoldingRows: (ltp − close) × qty.
-      // No isMarketOpen() gate — last tick persists after close, giving
-      // the same end-of-session P&L as holdings does.
-      const ltp   = untrack(() => getSnapshot(sym)?.ltp);
-      const close = Number(p?.close_price ?? 0);
-      const qty   = Number(p?.quantity    ?? 0);
-      if (ltp != null && Number(ltp) > 0 && close > 0 && qty !== 0) {
-        dayTotal += (Number(ltp) - close) * qty;
-      } else {
-        dayTotal += baseDayPnlForPosition(p);
-      }
+      const sym     = String(p?.tradingsymbol || '').toUpperCase();
+      const liveLtp = untrack(() => getSnapshot(sym)?.ltp);
+      // livePositionDayPnl correctly handles mixed overnight+intraday
+      // positions (e.g. adding new shorts on top of overnight carry).
+      // The naive (ltp−close)×qty baseline used qty=total which applied
+      // prev_close to today's new lots instead of their fill price.
+      // marketOpen:true preserves the "no gate" behavior — last tick
+      // persists after close giving the correct EOD day P&L.
+      dayTotal += livePositionDayPnl(
+        {
+          closePx: Number(p?.close_price   ?? 0),
+          pollLtp: Number(p?.last_price    ?? 0),
+          qty:     Number(p?.quantity      ?? 0),
+          avg:     Number(p?.average_price ?? 0),
+          dcvRow:  p,
+        },
+        liveLtp,
+        { marketOpen: true },
+      );
     }
     return dayTotal;
   });

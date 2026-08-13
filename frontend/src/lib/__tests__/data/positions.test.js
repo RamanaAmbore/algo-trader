@@ -73,6 +73,73 @@ describe('livePositionDayPnl — short position', () => {
   });
 });
 
+// ── livePositionDayPnl — mixed overnight + intraday adds ────────────────────
+// Exercises the bug fixed in PositionStrip._livePositionsToday: naive
+// (ltp−close)×qty incorrectly applied prev_close as baseline for NEW intraday
+// lots (e.g. selling extra CRUDEOIL calls on top of overnight position).
+
+describe('livePositionDayPnl — mixed overnight + intraday sell adds', () => {
+  it('overnight short (-10) + 5 new sells today: realised P&L from fills included', () => {
+    // Scenario: overnight short 10 contracts at avg=200, prev_close=210.
+    //   Today: sold 5 more at fill=220. Total qty=-15.
+    //   Backend decomposed dcv at pollLtp=215:
+    //     oq*(pollLtp-close) + (sv - sq*pollLtp)
+    //     = (-10)*(215-210) + (5*220 - 5*215)
+    //     = -50 + (1100-1075) = -50+25 = -25
+    //
+    // livePositionDayPnl with liveLtp=220:
+    //   realisedToday = -25 - (215-210)*(-15) = -25+75 = 50
+    //   result        = 50 + (220-210)*(-15)  = 50-150 = -100
+    //
+    // Naive formula (the bug): (220-210)*(-15) = -150 (wrong by ₹50)
+    // The ₹50 gap = 5 sells * (fill 220 - prev_close 210) that the naive
+    // formula loses because it applies prev_close to ALL qty incl today's adds.
+    const fields = {
+      closePx: 210,
+      pollLtp: 215,
+      qty:     -15,
+      avg:     206.67,  // blended (10*200+5*220)/15
+      dcvRow: {
+        pnl:                -125,   // (215-206.67)*(-15)
+        overnight_quantity: -10,
+        day_change_val:     -25,    // decomposed dcv at pollLtp=215
+        close_price:        210,
+        average_price:      206.67,
+      },
+    };
+    expect(livePositionDayPnl(fields, 220, { marketOpen: true })).toBe(-100);
+  });
+
+  it('naive (ltp−close)×qty differs from livePositionDayPnl for mixed position', () => {
+    // Proves the bug: naive formula = (220-210)*(-15) = -150; correct = -100.
+    const fields = {
+      closePx: 210, pollLtp: 215, qty: -15, avg: 206.67,
+      dcvRow: { pnl: -125, overnight_quantity: -10, day_change_val: -25, close_price: 210, average_price: 206.67 },
+    };
+    const correct = livePositionDayPnl(fields, 220, { marketOpen: true });
+    const naive   = (220 - 210) * (-15);
+    expect(correct).toBe(-100);
+    expect(naive).toBe(-150);
+    expect(correct).not.toBe(naive);
+  });
+
+  it('pure overnight (no intraday adds): livePositionDayPnl matches naive formula', () => {
+    // For a pure overnight position (no new adds today), both formulas agree.
+    // overnight qty=-10, no new sells, dcv = oq*(pollLtp-close) = (-10)*(215-210) = -50
+    // livePositionDayPnl: realisedToday = -50 - (215-210)*(-10) = -50+50 = 0
+    //                     result = 0 + (220-210)*(-10) = -100
+    // Naive: (220-210)*(-10) = -100 ← same ✓
+    const fields = {
+      closePx: 210, pollLtp: 215, qty: -10, avg: 200,
+      dcvRow: { pnl: -150, overnight_quantity: -10, day_change_val: -50, close_price: 210, average_price: 200 },
+    };
+    const correct = livePositionDayPnl(fields, 220, { marketOpen: true });
+    const naive   = (220 - 210) * (-10);
+    expect(correct).toBe(-100);
+    expect(correct).toBe(naive);
+  });
+});
+
 // ── livePositionDayPnl — pollLtp = 0 (broker hasn't populated last_price) ───
 
 describe('livePositionDayPnl — pollLtp=0 edge', () => {
