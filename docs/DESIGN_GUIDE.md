@@ -2700,6 +2700,7 @@ classDiagram
 |---|---|
 | `createDataStore` factory | `frontend/src/lib/data/dataStore.svelte.js` |
 | `positionsStore` / `holdingsStore` / `fundsStore` / `moversStore` / `activeListsStore` / `sparklinesStore` | `frontend/src/lib/data/marketDataStores.svelte.js` |
+| `positionsDayPnlStore` | `frontend/src/lib/data/positionsDayPnlStore.svelte.js` |
 | `persistentCache` | `frontend/src/lib/data/persistentCache.js` |
 | `symbolStore` + `publishPulseQuotes` | `frontend/src/lib/data/symbolStore.svelte.js` |
 | `liveLtp` + `quoteStream` | `frontend/src/lib/data/quoteStream.js` |
@@ -2708,6 +2709,34 @@ classDiagram
 | `createPerformanceSocket` / `createAlgoSocket` (WsPool) | `frontend/src/lib/ws.js` |
 | `bookChanged` counter | `frontend/src/lib/stores.js` |
 | `RefreshButton` / `CollapseButton` / `PageHeaderActions` | `frontend/src/lib/*.svelte` |
+
+### 18.0a positionsDayPnlStore — aggregated per-position intraday P&L
+
+Module-level singleton in `frontend/src/lib/data/positionsDayPnlStore.svelte.js`. Aggregates
+`livePositionDayPnl` across all positions from `positionsStore` to provide a single source
+of truth for intraday portfolio P&L.
+
+**Features:**
+- **4Hz throttle**: cadence driven by `symbolTickCount` events (KiteTicker ticks)
+- **250ms debounce**: buffers rapid ticks to avoid wasteful re-aggregations
+- **Exports `{ total, byKey }`**: `total` is the sum across all positions; `byKey` is a
+  per-symbol map for fine-grained consumption
+- **SSE delta included**: wraps `livePositionDayPnl(r, liveLtp, pollLtp)` which applies
+  live LTP adjustments on top of the settled Day P&L baseline
+
+**Consuming layers:**
+- **PositionStrip P pill (slot 1)**: NavStrip intraday P&L badge
+- **MarketPulse per-row override**: Individual position Day P&L in the grid
+- **Dashboard hero P&L**: Top-of-page portfolio summary
+
+**Consistency guarantee:** By sharing a single computed value across NavStrip + MarketPulse +
+Dashboard, the operator sees a single canonical intraday P&L figure without drift between
+surfaces (compare to pre-fix where each surface computed independently).
+
+**Files:**
+- `frontend/src/lib/data/positionsDayPnlStore.svelte.js` — singleton store
+- `frontend/src/lib/data/nav.js` — `livePositionDayPnl()` computation
+- Callers: PositionStrip, MarketPulse, Dashboard
 
 ### 18.1 Why no global store for order state?
 
@@ -2932,9 +2961,11 @@ gantt
   routes serve updated snapshots (positions, holdings, funds, trades)
 
 **Token lifecycle tasks:**
-- `_task_token_refresh` (05:45 IST daily) — fires before the 06:00 IST Kite token expiry 
-  window; calls `get_kite_conn(test_conn=True)` for all Kite accounts to pre-warm tokens 
-  and detect auth issues early. Prevents token-expiry 401 errors during market hours.
+- `_task_token_refresh` (05:45 IST daily, parked under `conn_service` guard) — fires before 
+  the 06:00 IST Kite token expiry window; calls `get_kite_conn(test_conn=True)` for all 
+  Kite accounts to pre-warm tokens and detect auth issues early. Prevents token-expiry 401 
+  errors during market hours. When `RAMBOQ_USE_CONN_SERVICE=1`, the task is not scheduled 
+  to avoid tight-loop polling when the conn service is not running; skipped at startup.
 
 ⚙ **TECH — Why poll-based + not event-based** — `WHY` Vendor postbacks are unreliable (Dhan + Groww have no inbound webhook; Kite drops 0.5-2% in our experience). Polling is the conservative floor. `WHAT` Each task runs on its own asyncio cadence; no scheduler library. `HOW` Pick interval based on operator latency tolerance: trail-stop = 30s (slow ratchet OK), OCO watcher = 15s (faster because both legs settling within window means double-fire). `WHERE` `backend/api/background.py`.
 
@@ -2946,7 +2977,7 @@ gantt
 2. **Watchlist symbols** — from `WatchlistItem` table (TRADES, key: `tradingsymbol` + `exchange`)
 3. **Virtual root resolution** — MCX/CDS symbols resolved to active contract (e.g. `CRUDEOIL` → `CRUDEOIL26JULFUT`)
 
-⚙ **TECH — Delayed startup warm via `_spark_delayed_startup()`** — `WHY` Immediate startup warm downloads 6 exchanges (NFO ~70k instruments) at T=0; if token count is 0, retries at T+60s — combined RSS reached 5-6GB before port 8000 bound, causing OOM kill loop. `WHAT` `_spark_delayed_startup()` wraps the task entry with `await asyncio.sleep(600)` (10 minutes). Application starts, port 8000 binds, then after 600s the sparkline fetch begins with breathing room. `HOW` At startup, `_task_sparkline_warm` is dispatched immediately; it sleeps first. At 00:30 IST and segment opens, the fetch runs immediately (no delay). `WHERE` `backend/api/background.py:_spark_delayed_startup`, `on_startup` wiring in `backend/api/app.py`.
+⚙ **TECH — Delayed startup warm via `_spark_delayed_startup()`** — `WHY` Immediate startup warm downloads 6 exchanges (NFO ~70k instruments) at T=0; if token count is 0, retries at T+60s — combined RSS reached 5-6GB before port 8000 bound, causing OOM kill loop. `WHAT` `_spark_delayed_startup()` wraps the task entry with `await asyncio.sleep(600)` (10 minutes, configurable `sparkline.startup_delay_seconds`). Application starts, port 8000 binds, then after the delay window the sparkline fetch begins with breathing room. `HOW` At startup, `_task_sparkline_warm` is dispatched immediately; it sleeps first. At 00:30 IST and segment opens, the fetch runs immediately (no delay). `WHERE` `backend/api/background.py:_spark_delayed_startup`, `on_startup` wiring in `backend/api/app.py`.
 
 **Three-part defect fix:**
 
@@ -2968,12 +2999,42 @@ gantt
 - `frontend/src/lib/MarketPulse.svelte::loadSparklines` — grace-window logic + `_prevMoverSparkPairs`
 - `frontend/src/lib/components/SparklineCell.svelte` — gradient fill rendering
 
+### 20.1.1a MarketPulse data refresh cadences
+
+MarketPulse (PositionStrip positions/holdings grid + movers/sparklines) coordinates five distinct 
+refresh cadences to balance responsiveness with network load:
+
+| Cadence | Interval | Data | Triggers | Notes |
+|---|---|---|---|---|
+| **Book poller** | 5 seconds | Positions, holdings, funds via `/api/positions` etc | `marketAwareInterval` | Live-session updates; pauses on tab-hidden; post-market becomes `_task_performance` background tick |
+| **Quotes poller** | 30 seconds | Symbol snapshots via `/api/quotes` + `/api/pulse/quotes` | `quoteStream.startMarketGatedQuoteStream()` | LTP + OHLC for all grid cells; SSE fallback; throttled during closed hours |
+| **Movers rotation** | 30 seconds | Top 10 gainers/losers via `/api/pulse/movers` | `loadMovers()` in MarketPulse | Sparkline fetch deferred until next rotation (grace window for departing symbols) |
+| **Sparklines refresh** | 30 seconds + grace | 7-day OHLCV per mover symbol via `/api/sparkline` batch | `loadSparklines()` defer + grace window | One-rotation (30s) grace period for symbols leaving top-10 list before cache prune |
+| **Settings audit** | 60 seconds | Chart self-heal threshold + UI prefs via `/api/admin/settings` | `loadSettings()` | Used for indicator refresh gate + column visibility toggles |
+
+**Rationalization (7 cadences → 5):** Eliminated 4s (too aggressive; TCP overhead), 10s 
+(ambiguous; split between 5s and 30s), 15s (superseded by 30s for movers/sparklines). The 5s 
+book poller is the fastest-moving piece; 30s aligns quotes + movers + sparklines to reduce 
+network churn.
+
+**Market-close gate:** All pollers respect `isMarketOpen()`. After segment close, the 5s 
+book poller becomes the background `_task_performance` 5min loop; front-end pollers pause. 
+SSE tick stream continues at reduced cadence (5–15min between updates) to surface settlement 
+changes.
+
+**Files:**
+- `frontend/src/lib/MarketPulse.svelte` — `loadPositions()`, `loadMovers()`, `loadSparklines()`, `visibleInterval` setup
+- `frontend/src/lib/PositionStrip.svelte` — book poller 5s cadence
+- `frontend/src/lib/data/quoteStream.js` — 30s quotes cadence
+- `backend/api/routes/pulse.py` — `/api/pulse/movers`, `/api/pulse/quotes` endpoints
+
 ### 20.1.1 Instruments background task — on-demand load (not startup-warmed)
 
 The `bg-instruments` task (option chains + MCX contracts) is intentionally **NOT** started in `on_startup`. Reason: instruments data is bulky (6 exchanges, NFO alone ~70k contracts), and immediate parallel load with sparkline warm caused OOM kill loop on 2026-08-12.
 
 **Loading model:**
 - **On-demand via routes** — `backend/api/routes/options.py::get_or_fetch` calls the instruments store when the operator clicks into the derivatives page
+- **120s startup delay guard** — if a route accidentally triggers instruments fetch at boot (before broker session warming), the fetch uses `await asyncio.sleep(120)` to defer execution and avoid resource contention with sparkline warm and token refresh
 - **No timeout set** — the `get_or_fetch` call in `options.py` has no `timeout_seconds` parameter, allowing the fetch to complete without premature cancellation even if the initial load takes 15–30s
 - **Lazy benefits** — most operators never touch option chains; skipping the startup warm saves 500+MB at boot
 
@@ -3349,17 +3410,22 @@ each row, ensuring closed and open hours show identical contract quantities.
 
 ### 21.5.7 Holdings snapshot `close_price` fix — preserves prior-session close
 
-`_overlay_snapshot_for_closed_exchanges` in `backend/api/routes/holdings.py`
-was overwriting `close_price` with the snapshot LTP value. During closed hours,
-this zeroed the day P&L formula: `(snapLtp − close_price) × qty = 0` when both
-fields held the same snapshot value, masking actual overnight price changes.
+`_build_holding_row_from_snapshot` in `backend/api/routes/holdings_helpers.py`
+now uses `previous_close` as the primary reference (frozen via COALESCE on the
+first intraday snapshot), falling back to `prev_ltp` only when `previous_close`
+is unavailable. During closed hours, this prevents the day P&L formula from
+zeroing when both LTP and close_price hold the same snapshot value.
 
-**Fix:** `close_price` is no longer overwritten. It preserves the broker's
-prior-session close, so the formula remains correct: `(snapLtp − prior_close) ×
-qty` computes legitimate overnight P&L.
+**Implementation:**
+- `previous_close` column in `daily_book` freezes yesterday's official close at
+  first snapshot of each trading day
+- Holdings snapshot builder uses: `close_price = previous_close ?? prev_ltp ?? close_price`
+- Formula remains correct: `(snapLtp − prior_close) × qty` computes legitimate overnight P&L
 
 **Files:**
-- `backend/api/routes/holdings.py::_overlay_snapshot_for_closed_exchanges` — preserves close_price field
+- `backend/api/routes/holdings_helpers.py::_build_holding_row_from_snapshot` — COALESCE logic
+- `backend/api/algo/daily_snapshot.py` — writes `previous_close` at first snapshot
+- `backend/api/routes/holdings.py` — caller
 
 ---
 

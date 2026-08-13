@@ -341,14 +341,23 @@ and Case 3 (flat intraday, `quantity=0, day_change_val=0, pnl≠0`) where Kite o
 value. Applied in `routes/positions.py` + `background.py:_fetch_positions_direct` (now sums 
 both `day_change_val` AND `pnl` before applying the backstop).
 
-**Frontend Day P&L SSOT** — `baseDayPnlForPosition(p)` in `frontend/src/lib/data/nav.js` 
-is canonical new-position override: when `overnight_quantity=0 && pnl≠0`, Kite returns 
-`day_change_val=0` and real value is in `pnl`. Used by PerformancePage TOTAL row, 
-derivatives `_byUnderlyingTotal` F&O loop + `bumpExcluded` equity branch, dashboard 
-`_todayPnl` hero + `_positionsSummary`, NavStrip P slot 1, MarketPulse position card, 
-Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
-**Case 4 (stale close guard)**: when `close <= 0` (broker returned zero/missing prev_close), `baseDayPnlForPosition` returns 0. The `close === ltp` guard was removed (regression 8474a17e) — formula `pnl − oq×(close−avg)` is correct even when close equals ltp. 
-**Short position fix (1769cffc)**: guard condition corrected from `oq > 0` to `oq !== 0` so that short overnight positions (oq < 0) also receive the `day_change_val` fast-path and Case 4 stale-close guard. Previously, short MCX positions during the stale-close window (23:30–09:00 IST) would return an unguarded formula result, causing overstatement by ₹5,00,000+. See `frontend/src/lib/data/nav.js:108`.
+**Frontend Day P&L SSOT** — Module-level singleton 
+`positionsDayPnlStore.svelte.js` (4Hz throttled) is the canonical positions Day P&L 
+cache, exporting `{ total, byKey }`. PositionStrip P slot 1 reads `store.total`; 
+MarketPulse uses `store.byKey[symbol]` per-row override. Legacy `baseDayPnlForPosition(p)` 
+in `nav.js` handles new-position override (when `overnight_quantity=0 && pnl≠0`, 
+Kite returns `day_change_val=0` and real value is in `pnl`). **Case 4 (stale close guard)**: 
+when `close <= 0`, return 0. The `close === ltp` guard was removed (regression 8474a17e) — 
+formula `pnl − oq×(close−avg)` is correct even when close equals ltp. 
+**Short position fix (1769cffc)**: guard condition corrected from `oq > 0` to `oq !== 0` 
+so short overnight positions (oq < 0) receive the `day_change_val` fast-path and Case 4 
+stale-close guard. See `frontend/src/lib/data/nav.js:108`.
+
+**Holdings Day P&L fix** — `_build_holding_row_from_snapshot` in `holdings.py` now 
+prioritizes `previous_close` (frozen COALESCE) over `prev_ltp` (intraday, near-zero 
+post-settlement). Frontend `_liveHoldingsToday` falls back to `h.last_price` for 
+unwatched symbols. Post-settlement guard `|ltp − close| ≤ 0.005` routes to 
+`day_change_val` instead of formula to prevent 0 H slot values after NSE settlement.
 
 ---
 
@@ -376,6 +385,7 @@ Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
 | Tune MCP audit | `/admin/settings` |
 | Update macro data | `backend/config/backend_config.yaml` |
 | Day P&L formula | `backend/api/algo/pnl_math.py` + `frontend/src/lib/data/nav.js` |
+| Day P&L store (positions) | `frontend/src/lib/data/positionsDayPnlStore.svelte.js` |
 | F&O order qty convention | `backend/api/routes/orders_place.py:_ticket_validate_input` + `frontend/src/lib/order/orderTicketSubmit.js` |
 | NAV breakdown | `frontend/src/lib/data/nav.js` + `backend/api/algo/nav.py:compute_firm_nav` |
 | LTP-override scaffold | `backend/api/helpers/ltp_patch.py` |

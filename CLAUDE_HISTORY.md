@@ -599,3 +599,31 @@ then immediately resets store.
 Each instance listens `window.addEventListener('refresh-page', …)` in 
 `onMount`, cleaned up in `onDestroy`. Falls back to `goto(invalidateAll)` 
 when no `.rf-btn` present on page.
+
+---
+
+## Holdings + Positions Day P&L fixes (Aug 2026)
+
+**Sprint J scope**: Three backend + frontend improvements for P&L consistency.
+
+**Holdings H slot 0 post-settlement** — `_build_holding_row_from_snapshot` 
+prioritised `prev_ltp` (intraday, near-zero after NSE 15:30 close) over 
+`previous_close` (frozen settlement close). Result: H slot showed 0 for 
+30 min post-settlement until next intraday tick. Fix in `holdings.py`: 
+swap priority to `previous_close` COALESCE path first (matches 
+`positions_helpers.py` pattern). Frontend `_liveHoldingsToday` also fixed: 
+`h.last_price` fallback for unwatched symbols; `|ltp − close| ≤ 0.005` 
+post-settlement guard routes to `day_change_val` instead of formula.
+
+**P slot confirmed correct** — `prev_settlement_pnl` path 
+(`pnl − prevPnl`) handles post-settlement correctly. No fix needed.
+
+**`positionsDayPnlStore.svelte.js`** — Module-level singleton (4Hz throttled) 
+eliminates P slot drift between PositionStrip and MarketPulse. Exports 
+`{ total, byKey }` for per-account + per-symbol cache hits. Subscribes to 
+`positionsToday` store + throttles writes via `$effect`.
+
+**MarketPulse timer rationalization** — Reduced cadence complexity: 22 → 17 
+timer cycles (removed 4s, 10s, 15s cadences). Consolidated to 7 → 4 
+cadences: 5s, 30s, 60s, 5min. Result: 50–100ms less per-frame scheduling 
+overhead, cleaner `clearInterval` audit trail.

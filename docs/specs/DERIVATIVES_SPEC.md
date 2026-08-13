@@ -4,7 +4,7 @@ Single source of truth for options and futures analytics on the `/admin/derivati
 dashboard. Covers symbol parsing, Greeks calculation, payoff curves, and multi-leg
 strategy aggregation.
 
-**Version**: 1.0 — 2026-07-11  
+**Version**: 1.1 — 2026-08-13  
 **Owner**: Platform  
 **Linked files**: `backend/api/routes/options.py` · `backend/api/routes/options_helpers.py` · 
 `backend/api/algo/derivatives.py` · `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` · 
@@ -20,8 +20,10 @@ strategy aggregation.
 4. [Payoff Curves](#4-payoff-curves)
 5. [Multi-Leg Strategy](#5-multi-leg-strategy)
 6. [LTP Resolution Chain](#6-ltp-resolution-chain)
-7. [Edge Cases](#7-edge-cases)
-8. [Test Coverage Map](#8-test-coverage-map)
+7. [Underlying Picker](#7-underlying-picker)
+8. [Data Loading](#8-data-loading)
+9. [Edge Cases](#9-edge-cases)
+10. [Test Coverage Map](#10-test-coverage-map)
 
 ---
 
@@ -239,7 +241,94 @@ affect Greeks scale + expected value calibration.
 
 ---
 
-## 7. Edge Cases
+## 7. Underlying Picker
+
+**Six-tier candidate source ordering** (`underlyingOptionsForPicker` derived):
+
+The underlying picker populates from multiple data sources to surface both
+operator holdings and curated watchlist symbols in a single dropdown, ranked
+by relevance:
+
+1. **Options positions** (cyan 'options' hint): Roots where the operator holds
+   at least one CE or PE contract. Highest priority — active derivatives holdings
+   sort first alphabetically within the tier.
+
+2. **Futures-only positions** (default color, 'futures' hint): Roots where the
+   operator holds futures but no options. Sorted alphabetically.
+
+3. **Holdings** ('holdings' hint): Roots from cash-equity holdings (`holdings`
+   store). Extracted from the bare symbol of each holding. Same account filter
+   as tiers 1-2 so account selection narrows this tier too.
+
+4. **Pinned watchlist** (hint: 'pinned'): F&O-eligible underlying roots from
+   pinned watchlists (flagged as `is_pinned` or `is_global` in the DB).
+   Populated by `loadDefaultWatchlist()` → `_extractFOUnderlyingRoots(pinnedSyms)`.
+   Appears before regular watchlists so operator-curated symbols surface above
+   ordinary lists.
+
+5. **Regular watchlist** (hint: 'watchlist'): F&O-eligible underlying roots from
+   non-pinned operator watchlists. Populated from `regularSyms` in
+   `loadDefaultWatchlist()`. Appears after pinned watchlist and before popular
+   fallback.
+
+6. **Popular underlyings** (hint: 'popular'): Static hardcoded whitelist
+   (`POPULAR_UNDERLYINGS`) of liquid F&O instruments. Always emitted —
+   the operator sees NIFTY, BANKNIFTY, RELIANCE etc. available even when they
+   have no positions or holdings. No gate on `instrumentsReady` — the list is
+   immediately available on cold start.
+
+**Deduplication**: First occurrence wins. If a root appears in multiple tiers
+(e.g., held in positions AND on a pinned watchlist), only the highest-priority
+tier's entry is shown.
+
+**Account filter**: Tiers 1-5 respect `selectedAccounts` multi-select (empty =
+show all). Tier 6 (popular) is never filtered by account.
+
+**Auto-select**: When the page lands without a cached `selectedUnderlying` or
+when positions load after a cold start, the first entry in the picker list
+(options > futures > holdings > pinned > regular > popular) is auto-selected.
+Cold-start with no book lands on `POPULAR_UNDERLYINGS[0]`.
+
+**Watchlist extraction** (`_extractFOUnderlyingRoots`): Bare equity/index
+symbols (NIFTY, RELIANCE) are checked directly via `getOptionUnderlyingLot`.
+Derivative symbols (CRUDEOIL26JUNFUT) are decomposed via `decomposeSymbol`
+and their root is checked. Requires instruments cache to be warm — call only
+after `loadInstruments()` resolves. Returns an alphabetically-sorted array of
+eligible roots.
+
+---
+
+## 8. Data Loading
+
+**Positions source** (`loadPositions`):
+- Primary: `positionsStore.load({ fresh })` (live broker F&O positions)
+- **Fallback**: `pulsePositionsStore.value` (MarketPulse positions data)
+  When `positionsStore.value` is empty or unavailable, the page uses positions
+  cached in `pulsePositionsStore` so the underlying picker and legs panel
+  populate from cached data while a broker retry is pending. Stale-while-error:
+  always process the available data (broker snapshot or cached) rather than
+  going blank.
+- Equity intraday positions are excluded from the F&O analysis but captured
+  in `_excludedByAccount` for TOTAL row reconciliation with NavStrip.
+
+**Sim positions** (when simulator is active):
+- Fetched via `fetchSimStatus()` alongside broker positions
+- Inline LTP included so strategy endpoint can compute analytics without
+  an extra broker round-trip
+
+**Holdings** (equity positions):
+- Skipped in simulator mode (sim doesn't model equity book)
+- Loaded via `holdingsStore.load()` when not simulating
+- Derivative holdings are filtered out and excluded; only EQ rows appear
+  in the holdings layer
+
+**Load timing**: Positions load on mount and refresh via `visibleInterval` at
+shared store cadence (typically 30s). Holdings load with positions. Strategy
+analytics auto-refresh when the leg set changes (driven by candidate selection).
+
+---
+
+## 9. Edge Cases
 
 ### Spot parameter API flexibility
 `annotateOptionCandidates` in `frontend/src/lib/data/derivativesMath.js` accepts `spot` as either:
@@ -329,7 +418,7 @@ implementation paths, identical visual output.
 
 ---
 
-## 8. Test Coverage Map
+## 10. Test Coverage Map
 
 ### Backend — covered
 
@@ -363,5 +452,5 @@ implementation paths, identical visual output.
 
 | Date | Change |
 |---|---|
-| 2026-07-11 | v1.1 add Exp Close spot resolver (function-type) + TOTAL row CSS convention |
+| 2026-08-13 | v1.1 add Underlying Picker (6 tiers: options/futures/holdings/pinned/watchlist/popular) + Data Loading (positions fallback to pulsePositionsStore) |
 | 2026-07-11 | v1.0 initial spec from codebase audit |
