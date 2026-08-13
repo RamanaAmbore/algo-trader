@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.14 — 2026-08-11  
+**Version**: 1.15 — 2026-08-13  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -171,9 +171,11 @@ State machine (opt-in per account via `circuit_breaker_enabled`):
 - Cooloff: 5 min → doubles per cycle → 30 min max
 - HALF-OPEN: one probe after cooloff
 
-**Circuit breaker persistence** (Jul 2026): `circuit_open_until` state persists to
-`/tmp/ramboq_cb_state.json`; non-expired entries are loaded on startup. Prevents
-redundant probe loops when main API restarts during an active cooloff window.
+**Circuit breaker persistence** (Aug 2026): CB state (open/half-open/closed transitions)
+persists to `broker_accounts.cb_state_json` on each state change via `_record_breaker_state()`.
+File-based fallback at `/tmp/ramboq_cb_state.json` loads on startup for non-expired entries.
+Prevents redundant probe loops when main API restarts during an active cooloff window; cool-off
+windows survive process restarts.
 
 **State machine extraction** (Jul 2026): `_record_breaker_state(account, ok, error, now)` 
 extracted from `_record_fetch()` to isolate state transitions under `_BREAKER_LOCK`. Returns 
@@ -226,15 +228,33 @@ BroadcastBus → SSE → frontend ltpMap
 **TickerManager failover**: `_consecutive_unhealthy` watchdog; per-account 5-min cooloff prevents
 ping-ponging. `_swap_history` 128-entry rolling log.
 
+**Watchdog via asyncio.to_thread** (Aug 2026): `_task_ticker_watchdog()` now runs via
+`asyncio.to_thread` (non-blocking I/O, doesn't starve event loop). Watchdog detects stuck
+KiteTicker connections and triggers account swap without blocking the main API's asyncio loop.
+
+**Unsubscribe cleanup** (Aug 2026): Unsubscribe path now correctly prunes three data structures:
+- `_pending` — set of tokens awaiting subscription ACK
+- `_token_to_sym` — token → symbol reverse map
+- `_sym_to_token` — symbol → token forward map
+
+Previously, only the mmap writer was updated; lingering stale entries in memory maps caused
+duplicate subscription attempts or silent failures on re-register. Cleanup is now complete.
+
 **Re-subscription on reconnect** (Jul 2026): `_on_connect` now re-subscribes all
 previously-subscribed tokens (not just tokens added during the disconnect window). Ensures
 market data resumes immediately after network transients.
 
 **Universe registration**: startup + segment opens + daily_book past-7d union (backstop survives conn_service restart).
 
-**MMAP missing-symbol suppression** (Jul 2026): `_known_absent_tokens: set[int]` replaces the
-60s-TTL dict. Warning fires once per token per process lifetime; subsequent lookups for that
-token are silent. Reduces log spam when Dhan lacks certain F&O contracts.
+**MMAP missing-symbol suppression** (Aug 2026): `_known_absent_tokens: set[int]` persistent set
+(replaces 60s-TTL dict). Warning fires once per token per process lifetime; subsequent lookups 
+for that token are silent. Re-registration of already-subscribed tokens now checked against 
+this set first to suppress redundant broker subscription attempts.
+
+**MMAP ticker re-registration suppression** (Aug 2026): `TickBufferWriter` now checks if a 
+token is already registered in `_token_to_sym` before calling the broker to subscribe. Prevents 
+duplicate broker subscription requests when the same token is re-registered (e.g., on 
+reconnect or stale data retries).
 
 ---
 
@@ -595,6 +615,12 @@ would realize if you squared off the position at LTP on that session.
   `cancel_forever`, `get_forever`) now use the `"orders"` rate-limit bucket (`_sdk_orders`)
   instead of the default no-bucket category (`_sdk`). This aligns GTT operations with
   regular order placement under the same rate-limit ceiling (20 orders/s).
+- **Request stagger to avoid 429s** (Aug 2026): `_DhanSDKProxy` stagger delay (50ms per request)
+  built into SDK call retry logic to avoid triggering Dhan's 429 rate-limit during burst periods.
+- **Order type UNKNOWN_CAPS fallback** (Aug 2026): `_dhan_normalise_one_order()` now has a
+  fallback for unrecognised `order_type` field values: when the `orderType` field from Dhan's
+  response is unrecognised, the adapter returns `"UNKNOWN_CAPS"` string instead of raising.
+  Allows order-book grids to display unknown order types gracefully rather than crashing.
 - `historical_data()` returns `[]` by design — excluded from `get_historical_brokers()`
 - `place_gtt()` raises `NotImplementedError` for MCX/NCO
 
@@ -680,6 +706,24 @@ Returns `gtt_trigger_errors` in `TicketPreviewResponse` (422 on submit if presen
 **Kite MARKET GTT rejection** (#6): Orders requesting `tp_order_type=MARKET` for GTT now raise `BrokerCapabilityError` (added to error hierarchy) instead of silently coercing to LIMIT. Operator sees the error at preview time.
 
 **Full fill detection** (#2): AttachResult carries `wing_skipped_reason` field (set when wing scan returns no candidate). Consumed by API response + alert channel so operator knows WHY the wing wasn't attached (hard-reject, no candidates, OI too low, etc.).
+
+## 8.3.1 GTT Pre-flight Lot-Size Validation (Aug 2026)
+
+**File**: `backend/api/routes/template_attach.py` — `apply_plan_live()`
+
+**G1 lot-size check in `apply_plan_live`**: A synchronous G1 guard now fires at the TOP of 
+`apply_plan_live` (before `broker.translate_qty`, plan resolution, or any broker call) to 
+catch misconfigured template plans immediately:
+
+- **Check scope**: Every GTT leg qty + wing leg qty verified against `plan.parent_lot_size`
+- **Condition**: G1 fires when raw qty is not a multiple of lot_size (e.g., qty=15 for MCX 
+  where lot_size=100)
+- **Return on failure**: `AttachResult.errors` populated immediately; function returns without 
+  calling the broker
+
+This gate prevents misconfigured GTT templates from reaching the exchange. The per-lot cap 
+(50-lot adapter ceiling in `kite.py:place_order`) provides last-line defence; this pre-flight 
+check stops obviously broken plans early with a diagnostic message.
 
 ## 8.2. GTT Exchange Validation & MCX Broker Restrictions
 
@@ -1330,3 +1374,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-09 | v1.10 MCX lot-scale day P&L fix (commit TBD): Added §7.3 Daily Snapshot — MCX Lot-Scale Day P&L Fix documenting `_snap_compute_day_pnl()` `multiplier` parameter (default=1). When provided, scales `overnight_quantity`, `day_buy_quantity`, `day_sell_quantity` by lot_size before computing decomposed intraday P&L formula. Fixes brand-new MCX positions (CRUDEOIL lot=100) showing day_pnl off by 100× (₹50 instead of ₹5000) on first snapshot appearance. Caller responsibility: snapshot writers pass `r.get("multiplier", 1)` via lot_size field. Holdings snapshot day_change now computed from price diff × qty via `prev_batch` CTE (same as positions). |
 | 2026-08-11 | v1.13 Orders fetching resilience and chase timeouts (commit 5ec9afec): Added §8.5 Orders Fetching Resilience & Chase Timeouts documenting per-broker 8-second timeout in `_fetch_orders()` with early-exit on timeout + empty-list fallback (pool shutdown with `cancel_futures=True`), 10-second `asyncio.wait_for` timeout in `_chase_snapshot_broker_status_by_id()` to prevent `/chases/active` lock starvation, and frontend `ChaseCard.svelte` polling guard (`_fetching` flag) to drop concurrent polls. Added I27, I28, I29 invariants capturing timeout semantics and fallback behaviour for orders list + chase snapshot + frontend polling. |
 | 2026-08-11 | v1.14 Broker resilience fixes (commit fd4e9ae6): Added §9.2 Token Pre-Warm Task & Expiry Prevention documenting hourly `_task_prewarm_tokens()` in conn-service pre-warming Kite (05:45–05:59 IST), Dhan (token_age > 22h), and Groww (expired check). Updated §5 DhanConnection with login cooloff persistence to `/tmp/ramboq_dhan_login_cooloff.json` surviving restarts + `[DHAN-COOLOFF]` / `[DHAN-LOGIN]` logs. Updated §5 GrowwConnection with hardening: `CONN_RESET_HOURS = 23`, `_is_token_expired()` method, `_check_login_rate_limit()` 120s cooloff, proactive refresh in `get_groww_conn()`, `[GROWW-LOGIN]` logs. Updated §6 Circuit Breaker & Health with health heartbeat validity gate (skip expired tokens, once-per-cycle warning via `_heartbeat_warned` dedup), false-amber threshold fix (`_BROKER_HEALTH_FRESH_WINDOW_S` 300s→660s, accommodates 600s Dhan cold poll). Added subsection to §9.1 documenting `_task_token_refresh()` no-op warning when `RAMBOQ_USE_CONN_SERVICE=1`. |
+| 2026-08-13 | v1.15 KiteTicker + Dhan resilience + GTT pre-flight enhancements: Updated §7 KiteTicker & Mmap Pipeline with watchdog `asyncio.to_thread` non-blocking path, unsubscribe cleanup (prunes `_pending`, `_token_to_sym`, `_sym_to_token` maps), and MMAP re-registration suppression to check `_token_to_sym` before broker subscribe. Added §8.3.1 GTT Pre-flight Lot-Size Validation documenting synchronous G1 check at top of `apply_plan_live` before `broker.translate_qty` or any broker call; fails fast on misconfigured templates. Updated §8 DhanBroker with request stagger (50ms per request to avoid 429s) and order_type UNKNOWN_CAPS fallback (returns neutral string instead of raising on unrecognised `orderType` field). Updated §6 Circuit Breaker & Health to clarify persistence to `broker_accounts.cb_state_json` on each transition (open/half-open/closed) with fallback to `/tmp/ramboq_cb_state.json` on startup. |

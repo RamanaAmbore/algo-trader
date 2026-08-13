@@ -3,9 +3,9 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.4 — 2026-08-09  
+**Version**: 1.5 — 2026-08-13  
 **Owner**: Platform  
-**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
+**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
 ---
 
@@ -335,6 +335,17 @@ intraday ITM close automation when positions tick ITM after initial close snapsh
 | KiteTicker stale (30s watchdog) | Auto-failover to next Kite account with 5-min cooloff |
 | conn_service restart | Main API reads mmap directly; ticker auto-reconnects |
 
+### Refresh cadence (MarketPulse timer rationalization):
+
+MarketPulse reduced from 7 distinct cadences to 4:
+
+| Cadence | Task | Interval |
+|---|---|---|
+| Book poller | Positions/Holdings refresh | 5s |
+| Quotes + movers + sparklines | Market data, top % change | 30s |
+| Settings audit | Capability-flag reconciliation | 60s |
+| Tick-driven | SSE updates, LTP flash | Sub-second |
+
 ### Warm task schedule (self-healing checkpoints):
 
 | Task | Schedule |
@@ -487,6 +498,30 @@ option underlyings, and movers into a single row array. Every row carries accoun
 - Closed: `daily_book` snapshot LTP + zero day P&L (no intraday MTM)
 
 **Throttle** — `_throttledTick` 4 Hz (250ms) max; SSE ticks can fire 100/sec under load
+
+### 11.1 Position Day P&L SSOT (`positionsDayPnlStore`)
+
+Module-level singleton in `frontend/src/lib/data/positionsDayPnlStore.svelte.js` is the 
+canonical source of truth for live position day P&L across all Pulse surfaces. It exports 
+`{ total, byKey }` where:
+- `total` — sum of all position day P&L (₹ value, real-time)
+- `byKey` — symbol-to-day_pnl map, keyed by plain uppercase tradingsymbol (no exchange prefix)
+
+**Update schedule**:
+- Polled at 4Hz throttle (250ms debounce per tick count change)
+- Calls `livePositionDayPnl(ctx)` from `nav.js` for each position row
+- Context always passes `marketOpen: true` (live LTP branch unconditional; snap LTP from 
+  `symbolStore` preferred over `liveQ` LTP)
+
+**Consumers**:
+- **PositionStrip P pill** (nav): reads `store.total` for hero nav badge
+- **MarketPulse per-row day P&L** (gridPositions): reads `store.byKey[symbol]` to override 
+  grid-computed value with live-calculated day P&L
+- **Dashboard hero** (if applicable): reads `store.total` for quick-scan P&L
+
+**Rationale**: Decoupling day P&L calculation from grid renders prevents stale re-renders 
+and ensures all surfaces (nav, grid cells, dashboard) stay synchronized on the same 
+calculation logic without re-running the formula on every tick.
 
 ---
 
@@ -1137,3 +1172,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-08-08 | v1.3 Snapshot day P&L recomputation + prev_batch 7-day lookback (commit TBD): §4.4 + §23 updated — `_positions_snapshot()` CTE `prev_batch` now includes 7-day lookback window (`db.captured_at >= lb.max_at - INTERVAL '7 days'`) before the time-of-day filter to handle multi-day holiday gaps and MCX's 23:30 IST close-to-open window. Row loop recomputes `day_change_val = (ltp − prev_ltp) × qty` from frozen prior-session LTP instead of trusting broker's mutable `day_pnl` field. Holdings snapshot similarly recomputes from write-once `previous_close` instead of zeroed `day_pnl`. NavStrip P and Pulse grids now show correct day P&L immediately after settlement without stale-price errors. |
 | 2026-08-09 | v1.4 Holdings snapshot prev_batch CTE + MCX lot-scale day P&L (commit TBD): §4.4 updated — `_HOLDINGS_SNAPSHOT_SQL` now includes `prev_batch` CTE (same pattern as positions) finding most-recent prior-day LTP per (account, symbol) within 7-day lookback. `_build_holding_row_from_snapshot()` computes `day_change_val = (ltp - prev_ltp) × qty` when `prev_ltp > 0`, matching positions closed-hours pattern. Holdings day P&L during closed hours now derived from price diff, not stale stored value. Fallback to `(ltp - previous_close) × qty` when `prev_ltp` unavailable/zero. Related: MCX day_pnl lot-scale fix in BROKER_SPEC.md §7.3 — `_snap_compute_day_pnl()` now scales intraday quantities by lot_size before formula evaluation, fixing brand-new MCX positions showing day_pnl off by 100× on first snapshot. |
 | 2026-08-11 | v1.5 Positions close-price priority fix: §4.4 updated — `build_row_from_snapshot_raw` now prefers `previous_close` (frozen settlement) over `prev_ltp` (recent batch LTP) for `computed_day_pnl`, fixing positions showing day_change_val ≈ 0 after market close when daily_book had multiple intraday captures. Frontend: `_tickBookPollers()` now includes `pulseHoldingsStore.load()` so NavStrip H:1 stays in sync with Pulse Holdings TOTAL during closed hours. |
+| 2026-08-13 | v1.5 Position day P&L store + timer rationalization: §7 updated — MarketPulse reduced from 22 active timers across 7 cadences to 17 timers across 4 cadences (5s book poller, 30s quotes/movers/sparklines, 60s settings audit, tick-driven SSE). §11.1 new subsection documents `positionsDayPnlStore.svelte.js` module-level singleton (SSOT for live day P&L); exports `{ total, byKey }` at 4Hz throttle; consumed by PositionStrip P pill, MarketPulse grid cells, and Dashboard hero. `mergePositionRows` calls `livePositionDayPnl(ctx)` with `marketOpen: true` unconditionally, preferring snap LTP from `symbolStore` over `liveQ` LTP. |
