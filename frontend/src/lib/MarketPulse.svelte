@@ -97,7 +97,7 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
   import { getProvisionalPositions, applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
@@ -2931,7 +2931,7 @@
 
     // Context bags passed to each helper.
     const wlCtx  = { snapOf, getInst };
-    const posCtx = { snapOf, getInst, isMarketOpen, baseDayPnlForPosition };
+    const posCtx = { snapOf, getInst, isMarketOpen, baseDayPnlForPosition, livePositionDayPnl };
     const holdCtx = { snapOf, getInst, isMarketOpen };
     const anchCtx = { getInst };
     const movCtx  = { snapOf };

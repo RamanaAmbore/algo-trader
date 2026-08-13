@@ -20,7 +20,7 @@
 // Shared utilities (also exported for unit tests):
 //   parseSymbolFallback, parseSymbol, fillSymbolMeta, makeRowFactory
 
-// (livePositionDayPnl removed — mergePositionRows now uses direct formula)
+// livePositionDayPnl injected via ctx bag — see mergePositionRows ctx param.
 
 // ── Shared constants ─────────────────────────────────────────────────────────
 
@@ -416,12 +416,13 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
  *   snapOf: (sym: string) => any,
  *   getInst: ((s: string) => any) | null,
  *   baseDayPnlForPosition: (r: any) => number,
+ *   livePositionDayPnl: (fields: any, liveLtp: number|null, opts: {marketOpen: boolean}) => number,
  * }} ctx
  */
 export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
   if (includePos === false) return;
   const get = makeRowFactory(byKey);
-  const { snapOf, getInst, baseDayPnlForPosition } = ctx;
+  const { snapOf, getInst, baseDayPnlForPosition, livePositionDayPnl } = ctx;
   for (const r of pos) {
     const exch = r.exchange || 'NFO';
     const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
@@ -449,18 +450,26 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     if (!_hadLtp && row.ltp == null) {
       row.ltp = r.last_price ?? null;
     }
-    // Day P&L — same formula as mergeHoldingRows: (ltp − close) × qty.
-    // symbolStore LTP first; no market-open gate — last tick persists
-    // after close, giving the same end-of-session P&L as holdings does.
+    // Day P&L — livePositionDayPnl correctly handles mixed overnight +
+    // intraday adds. The naive (ltp−close)×qty formula applied prev_close
+    // as baseline for ALL qty including new lots sold today, understating
+    // realised fill P&L by new_qty×(fill−prev_close). No market-open gate
+    // — last tick persists after close, same as holdings EOD behaviour.
     const _snapLtp   = snap?.ltp;
     const posLiveLtp = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
                      : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
     const posCls     = Number(r.close_price) || 0;
-    if (posLiveLtp != null && posCls > 0 && q !== 0) {
-      row.day_pnl = (row.day_pnl ?? 0) + (posLiveLtp - posCls) * q;
-    } else {
-      row.day_pnl = (row.day_pnl ?? 0) + baseDayPnlForPosition(r);
-    }
+    row.day_pnl = (row.day_pnl ?? 0) + livePositionDayPnl(
+      {
+        closePx: posCls,
+        pollLtp: Number(r.last_price) || 0,
+        qty:     q,
+        avg:     avg,
+        dcvRow:  r,
+      },
+      posLiveLtp,
+      { marketOpen: true },
+    );
     // Total P&L live recompute.
     if (posLiveLtp != null && avg > 0 && q !== 0) {
       row.pnl = (row.pnl ?? 0) + (posLiveLtp - avg) * q + (Number(r.realised) || 0);

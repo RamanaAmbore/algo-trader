@@ -30,20 +30,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mergePositionRows, mergeHoldingRows, makeRowFactory } from '../../data/pulseUnified.js';
 import { mkResolveCellLtp } from '../../data/pulseColumns.js';
+import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Minimal ctx bag for mergePositionRows.
- * livePositionDayPnl is imported inside pulseUnified.js from nav.js so we
- * supply a no-op baseDayPnlForPosition here — the test is not about day P&L.
- */
 function makePositionCtx(snapMap = {}) {
   return {
     snapOf: (sym) => snapMap[sym] ?? null,
     getInst: null,
     isMarketOpen: () => true,
-    baseDayPnlForPosition: (r) => Number(r.day_change_val || 0),
+    baseDayPnlForPosition,
+    livePositionDayPnl,
   };
 }
 
@@ -404,5 +401,54 @@ describe('_liveHoldingsValue formula invariant', () => {
     // RELIANCE: 3100 × 10 = 31000; TCS: no snap → cur_val = 17500; total = 48500
     const total = computeHoldingsValue(holdings, snapOf);
     expect(total).toBeCloseTo(48500, 1);
+  });
+});
+
+// ── mergePositionRows — day_pnl mixed overnight + intraday ───────────────────
+
+describe('mergePositionRows — day_pnl with mixed overnight + intraday sell adds', () => {
+  it('live tick + overnight+intraday: uses livePositionDayPnl not naive formula', () => {
+    // overnight short -10 at avg=200, prev_close=210, sold 5 more today at fill=220
+    // total qty=-15, blended avg=206.67, dcv=-25 (at pollLtp=215)
+    // live SSE tick = 220
+    // livePositionDayPnl: realisedToday=50, result=50+(220-210)*(-15)=-100
+    // naive (wrong): (220-210)*(-15)=-150
+    const row = {
+      tradingsymbol: 'CRUDEOIL25AUGCE7800',
+      exchange: 'MCX',
+      quantity: -15,
+      last_price: 215,
+      close_price: 210,
+      average_price: 206.67,
+      overnight_quantity: -10,
+      day_change_val: -25,
+      pnl: -125,
+    };
+    const byKey = {};
+    const ctx = makePositionCtx({ CRUDEOIL25AUGCE7800: { ltp: 220, ltp_ts: 1 } });
+    mergePositionRows(byKey, [row], true, {}, ctx);
+    const merged = Object.values(byKey)[0];
+    expect(merged.day_pnl).toBeCloseTo(-100, 1);
+    expect(merged.day_pnl).not.toBeCloseTo(-150, 1);
+  });
+
+  it('no live tick: falls back to baseDayPnlForPosition (dcv path)', () => {
+    const row = {
+      tradingsymbol: 'CRUDEOIL25AUGCE7800',
+      exchange: 'MCX',
+      quantity: -15,
+      last_price: 215,
+      close_price: 210,
+      average_price: 206.67,
+      overnight_quantity: -10,
+      day_change_val: -25,
+      pnl: -125,
+    };
+    const byKey = {};
+    const ctx = makePositionCtx({});  // no live tick
+    mergePositionRows(byKey, [row], true, {}, ctx);
+    const merged = Object.values(byKey)[0];
+    // baseDayPnlForPosition: oq!==0 && dcv!=0 → returns dcv=-25
+    expect(merged.day_pnl).toBeCloseTo(-25, 1);
   });
 });
