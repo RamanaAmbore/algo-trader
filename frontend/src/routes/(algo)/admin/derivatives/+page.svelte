@@ -23,7 +23,7 @@
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
     batchQuote,
   } from '$lib/api';
-  import { positionsStore, holdingsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, holdingsStore, pulsePositionsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
   import { getDraftPositions } from '$lib/data/draftPositions.svelte.js';
   import { getSnapshot, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
@@ -3494,7 +3494,10 @@
       _posLoadFails = 0;
       positionsLoadErr = '';
     }
-    for (const p of (positionsStore.value ?? [])) {
+    const _posSource = positionsStore.value?.length
+      ? positionsStore.value
+      : (pulsePositionsStore.value ?? []);
+    for (const p of _posSource) {
       const sym = p?.tradingsymbol || p?.symbol;
       if (!sym) continue;
       if (!isFOSymbol(sym)) {
@@ -3824,7 +3827,7 @@
     // NIFTY provisional seed with the correct tier-1/tier-2 entry. When the
     // store is cold, the $effect fires with an empty book and NIFTY is the
     // correct fallback — same end-state, no flash.
-    if (!selectedUnderlying && !(positionsStore.value?.length)) {
+    if (!selectedUnderlying && !(positionsStore.value?.length) && !(pulsePositionsStore.value?.length)) {
       selectedUnderlying = POPULAR_UNDERLYINGS[0]; // 'NIFTY' provisional
     }
     // Load the instruments cache so the option-chain picker has data.
