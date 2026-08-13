@@ -117,17 +117,17 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     # pnl_percentage: pnl / |avg × qty| × 100
     # (inv_val = avg_cost_f × qty_i, so use that directly)
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-    # day_change_val: prefer computing from two consecutive batch LTPs when
-    # prev_ltp is available (most accurate — reflects the actual price move
-    # between the two most-recent snapshots within a 7-day window).
-    # Fall back to (ltp - previous_close) × qty when previous_close is set
-    # (frozen prior-session settlement, write-once). Final fallback: stored
-    # day_pnl_f from the snapshot write path.
+    # `previous_close` is frozen by COALESCE on the first daily UPSERT and
+    # never overwritten — it is the official prior-session settlement price.
+    # `prev_ltp` is the most-recent batch LTP and converges toward the current
+    # LTP during a session, which would make day_change ≈ 0. Use
+    # `previous_close` as the primary reference and fall back to `prev_ltp`
+    # only when `previous_close` is absent or zero. Mirrors positions_helpers.py.
     prev_ltp_f = float(prev_ltp) if prev_ltp is not None and float(prev_ltp) > 0 else None
-    if prev_ltp_f is not None:
-        day_change_val = (ltp_f - prev_ltp_f) * qty_i
-    elif previous_close_f > 0:
+    if previous_close_f > 0:
         day_change_val = (ltp_f - previous_close_f) * qty_i
+    elif prev_ltp_f is not None:
+        day_change_val = (ltp_f - prev_ltp_f) * qty_i
     else:
         day_change_val = day_pnl_f
     # day_change_percentage: day_change_val / |previous_close × qty| × 100

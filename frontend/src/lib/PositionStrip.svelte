@@ -426,14 +426,20 @@
   const _liveHoldingsToday = $derived.by(() => {
     let s = 0;
     for (const h of holdings) {
-      const sym   = String(h?.tradingsymbol || '').toUpperCase();
-      const ltp   = getSnapshot(sym)?.ltp;
-      const close = Number(h?.close_price || 0);
-      const qty   = Number(h?.opening_quantity || h?.quantity || 0);
-      if (ltp != null && Number(ltp) > 0 && close > 0 && qty !== 0) {
-        s += (Number(ltp) - close) * qty;
+      const sym     = String(h?.tradingsymbol || '').toUpperCase();
+      const snapLtp = getSnapshot(sym)?.ltp;
+      // Use h.last_price as fallback when symbolStore has no tick for this holding
+      // (equity holdings not on watchlist won't be subscribed to the ticker).
+      const holdLtp = (snapLtp != null && snapLtp > 0) ? snapLtp : Number(h?.last_price ?? 0);
+      const close   = Number(h?.close_price || 0);
+      const qty     = Number(h?.opening_quantity || h?.quantity || 0);
+      const dcv     = Number(h?.day_change_val ?? 0);
+      if (holdLtp > 0 && close > 0 && qty !== 0 && Math.abs(holdLtp - close) > 0.005) {
+        // Guard: skip formula when ltp ≈ close (post-settlement: Kite resets
+        // last_price = close_price = settlement_price → (ltp−close)×qty = 0).
+        s += (holdLtp - close) * qty;
       } else {
-        s += Number(h?.day_change_val || 0) + _delta(h, 'H');
+        s += dcv;
       }
     }
     return s;
