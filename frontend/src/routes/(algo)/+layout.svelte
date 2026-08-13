@@ -859,9 +859,9 @@
     pollPaper();
     pollReplay();
     simTeardown    = _adaptiveInterval(pollSim,
-      () => !!(simStatus?.active || simStatus?.run_active), 4000, 30000);
+      () => !!(simStatus?.active || simStatus?.run_active), 5000, 30000);
     paperTeardown  = _adaptiveInterval(pollPaper,
-      () => !!(paperStatus?.open_order_count > 0), 4000, 30000);
+      () => !!(paperStatus?.open_order_count > 0), 5000, 30000);
     replayTeardown = _adaptiveInterval(pollReplay,
       () => !!replayStatus?.active, 5000, 30000);
     loadMode();   modeTeardown   = visibleInterval(loadMode,  30000);

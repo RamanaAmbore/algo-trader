@@ -6,7 +6,7 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { marketAwareInterval, visibleInterval, executionMode } from '$lib/stores';
+  import { visibleInterval, executionMode } from '$lib/stores';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
@@ -14,11 +14,12 @@
   import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
-  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
+  // baseDayPnlForPosition + livePositionDayPnl removed — now in positionsDayPnlStore
   import NavBreakdown from '$lib/NavBreakdown.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
 
@@ -75,9 +76,6 @@
   // poll of the new session lands (_pollCycleStamp > the snapshot).
   let _openTransitionStamp = $state(-1);
 
-  /** @type {ReturnType<typeof marketAwareInterval> | null} */
-  let teardown = null;
-
   // _load — fires the three-tier refresh via marketDataStores. All
   // caching (Tier 1 memory / Tier 2 localStorage / Tier 3 broker fetch)
   // is handled inside each store. Concurrent calls are deduped by the
@@ -123,6 +121,16 @@
   $effect(() => {
     void bookPollerTick.value;
     untrack(() => { _pollCycleStamp += 1; });
+  });
+
+  // Refresh underlying spot quotes at book-poller cadence (5s) now that
+  // the 30s `_load` timer has been removed. _expiryProfit needs fresh
+  // spot prices for options (NIFTY 50, CRUDEOIL futures, etc.) to compute
+  // intrinsic value correctly. Fire-and-forget — a batchQuote failure
+  // should never delay strip rendering.
+  $effect(() => {
+    void bookPollerTick.value;
+    untrack(() => { _loadUnderlyingSpots().catch(() => {}); });
   });
 
   // Fetch underlying spot quotes for every F&O option position.
@@ -233,10 +241,9 @@
     loadInstruments()
       .catch(() => { /* fallback — per-leg spot resolution handles misses */ })
       .then(() => _loadUnderlyingSpots().catch(() => {}));
-    // Option A (operator-approved, supersedes Option B): fully pause on hidden.
-    // Telegram + email cover fills / losses; WS delivers position_filled on return.
-    // Immediate refire on tab visible ensures fresh numbers within one tick.
-    teardown = marketAwareInterval(_load, 30000);
+    // Fix 4: 30s _load timer removed — book poller (5s) drives positions/holdings/funds.
+    // _loadUnderlyingSpots fires via bookPollerTick $effect above. Event-driven _load()
+    // calls (onMount, mode-change, boundary-trigger, bookChanged) still fire as before.
     // Watch the market-session boundary so _liveDeltaByRow can drop
     // the stale-tick delta immediately on close (not 30s late).
     // visibleInterval: pauses when hidden, fires immediately on tab return.
@@ -254,7 +261,6 @@
 
   });
   onDestroy(() => {
-    teardown?.();
     flash.dispose();
     _mktTimer?.();   // visibleInterval teardown
     if (_tickThrottleTimer) { clearTimeout(_tickThrottleTimer); _tickThrottleTimer = null; }
@@ -414,38 +420,9 @@
     for (const p of positions) pnlTotal += Number(p?.pnl || 0);
     return pnlTotal;
   });
-  const _livePositionsToday = $derived.by(() => {
-    // Gate: re-run at 4 Hz max via the throttled-tick mirror. getSnapshot
-    // calls below are wrapped in untrack() so they don't register
-    // per-symbol reactive deps that would defeat the throttle — same
-    // pattern as _liveDeltaByRow and candidatesDayPnl on the derivatives
-    // page. The throttle ensures the loop runs at most 4 times/sec even
-    // during a burst of SSE ticks for a large position book.
-    void _throttledTick;
-    let dayTotal = 0;
-    for (const p of positions) {
-      const sym     = String(p?.tradingsymbol || '').toUpperCase();
-      const liveLtp = untrack(() => getSnapshot(sym)?.ltp);
-      // livePositionDayPnl correctly handles mixed overnight+intraday
-      // positions (e.g. adding new shorts on top of overnight carry).
-      // The naive (ltp−close)×qty baseline used qty=total which applied
-      // prev_close to today's new lots instead of their fill price.
-      // marketOpen:true preserves the "no gate" behavior — last tick
-      // persists after close giving the correct EOD day P&L.
-      dayTotal += livePositionDayPnl(
-        {
-          closePx: Number(p?.close_price   ?? 0),
-          pollLtp: Number(p?.last_price    ?? 0),
-          qty:     Number(p?.quantity      ?? 0),
-          avg:     Number(p?.average_price ?? 0),
-          dcvRow:  p,
-        },
-        liveLtp,
-        { marketOpen: true },
-      );
-    }
-    return dayTotal;
-  });
+  // Day P&L SSOT: positionsDayPnlStore is the module-level singleton
+  // that aggregates at 4 Hz via symbolTickCount throttle. All references
+  // to the former _livePositionsToday $derived now read positionsDayPnlStore.total.
   const _liveHoldingsToday = $derived.by(() => {
     let s = 0;
     for (const h of holdings) {
@@ -517,7 +494,7 @@
   $effect(() => {
     void _mktTick;
     void _execMode;
-    void _livePositionsToday;
+    void positionsDayPnlStore.total;
     void _liveHoldingsToday;
     const open = isNseOpen() || isMcxOpen();
     const modeChanged = _execMode !== _prevExecMode;
@@ -553,8 +530,8 @@
     // meaningful — prevents a zero flash during the brief live→snapshot
     // gap at market close when positions briefly clear before the snapshot
     // arrives. The last non-zero value from the in-session poll is retained.
-    if (positions.length > 0 || _livePositionsToday !== 0) {
-      dispPositionsToday = _livePositionsToday;
+    if (positions.length > 0 || positionsDayPnlStore.total !== 0) {
+      dispPositionsToday = positionsDayPnlStore.total;
     }
     if (holdings.length > 0 || _liveHoldingsToday !== 0) {
       dispHoldingsToday = _liveHoldingsToday;

@@ -82,6 +82,7 @@
     moversStore, moversSnapshotAt, activeListsStore, sparklinesStore,
     publishWatchQuotes, publishPulseQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   // resolveUnderlying helpers used by loadPulse are imported via pulseLoad.js.
   import CardControls from '$lib/CardControls.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
@@ -951,7 +952,6 @@
   // pulse.tick_interval_ms setting (default 5000 ms). Heavier ops
   // piggy-back every Nth tick.
   let stopPulseTick;
-  let stopTickSettingPoll;
   // Closed-hours sparkline safety net: fires every 5 min regardless of market
   // state. During open hours it defers to the runTick path (_TICK_SPARK every
   // 60 s) which is already running — no duplicate call is made. During closed
@@ -970,9 +970,14 @@
   //   movers    — every 6 ticks
   //   sparklines — every 12 ticks (daily-closes don't change intraday;
   //                rare refresh is fine, cosmetic only)
+  //   settings   — every 12 ticks (60 s at 5s cadence). Same as sparklines;
+  //                operator changes to pulse.tick_interval_ms land within a
+  //                minute without a separate 60s visibleInterval.
   const _TICK_PULSE = 2;
   const _TICK_MOVERS = 6;
   const _TICK_SPARK = 12;
+  const _TICK_SETTINGS = 12;
+  let _tickSettings = 0;
   // When the SSE stream is healthy, loadQuotes only runs every N ticks
   // (5s × 6 = 30s). When the stream is down it runs every tick (5s)
   // so LTP freshness is maintained through the polling fallback.
@@ -985,6 +990,25 @@
     return unsub;
   });
   let _refreshing = $state(false);
+  // Visibility throttle for the main tick interval — Option B hybrid.
+  // Positions / holdings / funds are critical; 30 s hidden cadence keeps
+  // data alive so the operator returns to current numbers on tab return.
+  const _HIDDEN_TICK_MS = 30_000;
+  // Read pulse.tick_interval_ms from /admin/settings. Hoisted to component
+  // scope so _runTick (which fires the periodic re-read) can call it.
+  async function _readTickSetting() {
+    // R2: skip settings poll for anonymous / demo users — they have
+    // no auth token and would generate repeated 401 responses.
+    if (!$authStore.user) return _tickMs;
+    try {
+      const rows = await fetchSettings();
+      const all = Array.isArray(rows) ? rows : (rows?.settings || []);
+      const row = all.find?.(s => s?.key === 'pulse.tick_interval_ms');
+      const v = Number(row?.value ?? row?.default_value);
+      if (Number.isFinite(v) && v >= 500 && v <= 60000) return v;
+    } catch (_) { /* keep current */ }
+    return _tickMs;
+  }
   async function _runTick() {
     _tickCount++;
     // When the SSE stream is live, LTP ticks arrive in real time so we
@@ -1022,6 +1046,18 @@
     // genuinely-new mover symbols pay a historical_data fetch (paced
     // at 3 req/sec by the endpoint).
     if (moversChanged || _tickCount % _TICK_SPARK === 0) loadSparklines();
+    // Settings re-read — absorbs the separate stopTickSettingPoll interval.
+    // Every 12 ticks (60 s at default 5s cadence) re-reads tick_interval_ms
+    // from /admin/settings so cadence changes land without a page reload.
+    if (++_tickSettings >= _TICK_SETTINGS) {
+      _tickSettings = 0;
+      const next = await _readTickSetting();
+      if (next !== _tickMs) {
+        _tickMs = next;
+        stopPulseTick?.();
+        stopPulseTick = marketAwareInterval(withGuard(_runTick), _tickMs, _HIDDEN_TICK_MS);
+      }
+    }
   }
   /** Operator-initiated "refresh everything now" — bound to the
    *  RefreshButton in the toolbar. Drains the spinner state after the
@@ -1435,43 +1471,11 @@
     // (so the session-open boundary re-engages naturally) but no-ops the
     // tick body when no segment is open.
     //
-    // Visibility throttle (Option B hybrid): positions / holdings / funds
-    // are critical data — we keep them alive at 30 s on hidden rather
-    // than pausing entirely, so the operator returns to current numbers
-    // without waiting for a full 5 s warm-up cycle. The WS `position_filled`
-    // channel fires loadPulse() immediately on a fill regardless of this
-    // cadence (that path is not gated by the interval).
-    const _HIDDEN_TICK_MS = 30_000;
-    async function _readTickSetting() {
-      // R2: skip settings poll for anonymous / demo users — they have
-      // no auth token and would generate repeated 401 responses.
-      if (!$authStore.user) return _tickMs;
-      try {
-        const rows = await fetchSettings();
-        const all = Array.isArray(rows) ? rows : (rows?.settings || []);
-        const row = all.find?.(s => s?.key === 'pulse.tick_interval_ms');
-        const v = Number(row?.value ?? row?.default_value);
-        if (Number.isFinite(v) && v >= 500 && v <= 60000) return v;
-      } catch (_) { /* keep current */ }
-      return _tickMs;
-    }
     _tickMs = await _readTickSetting();
     stopPulseTick = marketAwareInterval(withGuard(_runTick), _tickMs, _HIDDEN_TICK_MS);
 
-    // Re-read the tick setting every 60s. When the operator changes
-    // pulse.tick_interval_ms in /admin/settings, the new value lands on
-    // the next 60s read without a page reload — previously the cadence
-    // froze at whatever was set on mount.
-    // Non-critical poller — pause entirely on hidden (no need to reload
-    // a UI setting while the operator is not watching).
-    stopTickSettingPoll = visibleInterval(async () => {
-      const next = await _readTickSetting();
-      if (next !== _tickMs) {
-        _tickMs = next;
-        stopPulseTick?.();
-        stopPulseTick = marketAwareInterval(withGuard(_runTick), _tickMs, _HIDDEN_TICK_MS);
-      }
-    }, 60_000);
+    // Settings re-read is now absorbed into _runTick every _TICK_SETTINGS
+    // ticks (60 s at default cadence) — stopTickSettingPoll removed (Fix 9).
 
     // Closed-hours sparkline safety net — 60 s cadence, visible-only.
     // When the market is open, runTick already fires loadSparklines every
@@ -2511,7 +2515,7 @@
   onDestroy(() => {
     _unsubMpOrder();
     _unsubBook();
-    stopPulseTick?.(); stopTickSettingPoll?.(); _stopClosedSparkPoll?.(); stopWS?.();
+    stopPulseTick?.(); _stopClosedSparkPoll?.(); stopWS?.();
     if (_deferredSparkTimer) { clearTimeout(_deferredSparkTimer); _deferredSparkTimer = null; }
     stopQuoteStream();
     // Clear any in-flight throttle timers so their setTimeout
@@ -2939,6 +2943,14 @@
 
     mergeWatchlistRows(byKey, actLists, wlCtx);
     mergePositionRows(byKey, pos, includePos, cq, posCtx);
+    // SSOT override: positionsDayPnlStore wins for day_pnl on every position
+    // row. positionsDayPnlStore.byKey is keyed "EXCHANGE:SYMBOL"; pulseUnified
+    // byKey is keyed "SYMBOL__pos" — strip the exchange prefix before lookup.
+    for (const [exSym, val] of Object.entries(positionsDayPnlStore.byKey)) {
+      const sym = exSym.split(':').pop();
+      const row = byKey[`${sym}__pos`];
+      if (row) row.day_pnl = val;
+    }
     mergeHoldingRows(byKey, hold, includeHold, cq, holdCtx);
     mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, includeHold, anchCtx);
     mergeMoverRows(byKey, moverRows, includeMovers, includePos, includeHold, includeWatch, movCtx);

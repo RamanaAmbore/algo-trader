@@ -723,6 +723,7 @@ async function _tickBookPollers() {
     await Promise.allSettled([
       positionsStore.load(),
       holdingsStore.load(),
+      pulsePositionsStore.load({ skipLtp: true }),
       pulseHoldingsStore.load(),
       fundsStore.load(),
     ]);

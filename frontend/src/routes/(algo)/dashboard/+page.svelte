@@ -1094,7 +1094,7 @@
   // the Capital/Equity card lost its refresh chip — there's no UI
   // surface for it anymore. The chart-refresh cadence is still 15 s
   // via visibleInterval below.
-  let _equityPollStop;
+
 
   // Operator-initiated full-page refresh — drives the RefreshButton in
   // the page header. Fires every loader the dashboard owns so a click
@@ -1167,13 +1167,11 @@
 
   async function loadHero() {
     try {
-      // Positions + holdings flow through the module-level store singletons.
-      // _positionsRaw / _holdingsRaw are $derived from the stores so they
-      // update reactively once each load() resolves — no manual assignment.
+      // Positions + holdings are kept fresh by the book poller (5s cadence).
+      // _positionsRaw / _holdingsRaw are $derived from positionsStore /
+      // holdingsStore so they update reactively — no load() call needed here.
       // funds also flows through fundsStore; _funds + _margins are $derived.
-      const [, , events] = await Promise.all([
-        positionsStore.load().catch(() => null),
-        holdingsStore.load().catch(() => null),
+      const [events] = await Promise.all([
         fetchRecentAgentEvents(100).catch(() => []),
       ]);
 
@@ -1288,33 +1286,21 @@
     // Signal that onMount's synchronous restore has completed so the
     // $effect below skips the empty-registry window on first fire.
     _mountRestoreDone = true;
-    // PRIMARY — positions, holdings, funds, agent events. These drive the
-    // dashboard's main snapshot grids; the operator needs them before
-    // anything else paints. Kick off immediately so the first network
-    // round-trip starts in this microtask.
+    // PRIMARY — funds, agent events + equity-curve. Positions + holdings
+    // are now kept fresh by the book poller (5 s cadence) so loadHero no
+    // longer fetches them. Kick off immediately for first paint.
     loadHero();
-    // Match the equity-curve cadence (15 s). The earlier 30 s rate
-    // left the Capital card visibly stale next to the chart that
-    // ticked twice between hero refreshes. Backend cycle is 60 s
-    // anyway so 15 s polling is comfortably within the freshness
-    // window without hammering the broker.
-    // Throttle to 30 s on hidden (Option B hybrid): funds/NAV/positions
-    // are critical — keep a slow heartbeat so the operator returns to
-    // current numbers without a full cold-start wait.
-    _heroTeardown = visibleInterval(loadHero, 15000, 'throttle:30000');
-    // SECONDARY — equity-curve points + NAV chip. The equity SVG sits
-    // below the snapshot grids (below the fold on mobile); the NAV chip
-    // is supplementary header decoration. Deferring via setTimeout(0)
-    // yields one task to the event loop so the primary loadHero() fetch
-    // gets its network priority before these requests fire. Pattern
-    // mirrors ChartWorkspace._loadGreeks (Tier 1 reference).
-    setTimeout(() => {
-      _fetchEquity();
-      _equityPollStop = visibleInterval(_fetchEquity, 15000, 'throttle:30000');
-      // NAV chip — single fetch, no polling. NAV moves on the 16:00 IST
-      // snapshot + operator recompute; nothing changes minute-to-minute.
-      _fetchNav();
-    }, 0);
+    _fetchEquity();
+    // Single 30 s combined timer replaces two 15 s timers.
+    // Throttle to 30 s on hidden so funds/equity data stays available
+    // when the operator returns after a long background window.
+    _heroTeardown = visibleInterval(
+      () => Promise.allSettled([loadHero(), _fetchEquity()]),
+      30000, 'throttle:30000',
+    );
+    // NAV chip — single fetch, no polling. NAV moves on the 16:00 IST
+    // snapshot + operator recompute; nothing changes minute-to-minute.
+    setTimeout(() => { _fetchNav(); }, 0);
     // loadMarketMovers retired — the Top Winners / Top Losers cards
     // moved to /pulse (where MarketPulse owns its own movers fetch).
     // Removing the dashboard poll stops the 60s batchQuote round-trip
@@ -1746,7 +1732,7 @@
   const _losAcctDisabled = $derived(!_USER_TABS.has(_losTab));
 
   onDestroy(() => {
-    _heroTeardown?.(); _equityPollStop?.();
+    _heroTeardown?.();
     _dashFlash.dispose();
     _wlFlashUnsub?.();
     _wlLtpFlash?.dispose();

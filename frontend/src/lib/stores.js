@@ -1272,7 +1272,7 @@ export function startConnStatusPoller() {
   // health must stay monitored even in the background, but a 15 s
   // cadence when the operator isn't looking is wasteful. On tab
   // return the immediate refire restores the live chip without lag.
-  _connPollerTeardown = visibleInterval(poll, 15000, 'throttle:60000');
+  _connPollerTeardown = visibleInterval(poll, 30000, 'throttle:60000');
   // Re-fire on every authStore transition so the chip updates in
   // lock-step with the user / role pill on login, impersonation,
   // and impersonation-end — instead of waiting for the next 15 s
