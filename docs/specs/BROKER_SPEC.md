@@ -451,7 +451,38 @@ their prior-session state, providing an accurate real-time view without stale en
 
 ---
 
-## 7.3.1 Firm NAV Computation & Closed-Exchange LTP Overlay
+## 7.3.1 Daily Snapshot UPSERT Idempotency & LTP Coalesce Fix (Aug 2026)
+
+**File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` UPSERT
+
+The daily_book UPSERT now guards against mid-session NSE passes overwriting MCX 
+settlement LTPs with NULL values:
+
+```sql
+ON CONFLICT (date, account, kind, symbol) DO UPDATE SET
+  ltp = COALESCE(EXCLUDED.ltp, daily_book.ltp),
+  payload_json = CASE 
+    WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json 
+    ELSE daily_book.payload_json 
+  END,
+  ...
+```
+
+**Problem addressed**: Mid-session NSE data passes (during MCX close, 00:00–08:00 IST) 
+can capture NULL LTP values when broker quote fails. The UPSERT would overwrite a valid 
+prior-session MCX LTP (from settlement snapshot) with NULL, causing grids to show blank 
+cells and NAV to collapse.
+
+**Solution**: `COALESCE(EXCLUDED.ltp, daily_book.ltp)` preserves the existing LTP when 
+the incoming row has NULL. `payload_json` (OHLC data) is similarly preserved when LTP is 
+NULL, maintaining EOD snapshot data integrity across polling cycles.
+
+**Impact**: Off-hours grids (positions, holdings, sparklines) now display frozen prices 
+correctly throughout closed windows without blank cells from mid-session NULL overwrites.
+
+---
+
+## 7.3.2 Firm NAV Computation & Closed-Exchange LTP Overlay
 
 **File**: `backend/api/algo/nav.py` — `compute_firm_nav()` + `_fetch_holdings_phase()`
 
@@ -493,7 +524,7 @@ used frozen DB snapshots.
 
 ---
 
-## 7.4 Holdings Snapshot Day Change Percentage Formula
+## 7.3.3 Holdings Snapshot Day Change Percentage Formula
 
 **File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`
 
@@ -950,6 +981,26 @@ but ticks ITM during day).
 **NSE NIFTY quote key fix**: `_fetch_underlying_ltps()` now uses `NSE:NIFTY 50` (not `NSE:NIFTY`) 
 for Kite quote API calls to match actual tradable symbol.
 
+### Market-Data Spot-Price Auto-Subscription (Aug 2026)
+
+**File**: `backend/api/background.py` — `_perf_subscribe_book_symbols()`
+
+The background payoff performance subscription task now auto-subscribes to anchor contract 
+LTPs to ensure real-time spot pricing for derivatives positions:
+
+- **MCX options**: Auto-subscribes MCX front-month futures (via `resolve_symbol('CRUDEOIL', 'MCX')`) 
+  for all MCX option positions. Ensures payoff chart spot price gets live KiteTicker ticks instead 
+  of 30-second REST polls.
+  
+- **NFO/BFO equity underlyings**: Auto-subscribes NSE/BSE spot contracts (NIFTY, BANKNIFTY, 
+  stock names, etc.) for all NSE option positions. Ensures option payoff derives spot from 
+  live SSE feed.
+
+**Rationale**: Options payoff curves depend critically on spot price. Without live subscription, 
+the chart recomputes spot from broker quote REST polls (30s cadence), causing stale payoff 
+curves when spot moves rapidly. Auto-subscription ensures spot is always current, improving 
+payoff accuracy during volatile intraday windows.
+
 ---
 
 ## 9.2 Token Pre-Warm Task & Expiry Prevention
@@ -1375,3 +1426,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-11 | v1.13 Orders fetching resilience and chase timeouts (commit 5ec9afec): Added §8.5 Orders Fetching Resilience & Chase Timeouts documenting per-broker 8-second timeout in `_fetch_orders()` with early-exit on timeout + empty-list fallback (pool shutdown with `cancel_futures=True`), 10-second `asyncio.wait_for` timeout in `_chase_snapshot_broker_status_by_id()` to prevent `/chases/active` lock starvation, and frontend `ChaseCard.svelte` polling guard (`_fetching` flag) to drop concurrent polls. Added I27, I28, I29 invariants capturing timeout semantics and fallback behaviour for orders list + chase snapshot + frontend polling. |
 | 2026-08-11 | v1.14 Broker resilience fixes (commit fd4e9ae6): Added §9.2 Token Pre-Warm Task & Expiry Prevention documenting hourly `_task_prewarm_tokens()` in conn-service pre-warming Kite (05:45–05:59 IST), Dhan (token_age > 22h), and Groww (expired check). Updated §5 DhanConnection with login cooloff persistence to `/tmp/ramboq_dhan_login_cooloff.json` surviving restarts + `[DHAN-COOLOFF]` / `[DHAN-LOGIN]` logs. Updated §5 GrowwConnection with hardening: `CONN_RESET_HOURS = 23`, `_is_token_expired()` method, `_check_login_rate_limit()` 120s cooloff, proactive refresh in `get_groww_conn()`, `[GROWW-LOGIN]` logs. Updated §6 Circuit Breaker & Health with health heartbeat validity gate (skip expired tokens, once-per-cycle warning via `_heartbeat_warned` dedup), false-amber threshold fix (`_BROKER_HEALTH_FRESH_WINDOW_S` 300s→660s, accommodates 600s Dhan cold poll). Added subsection to §9.1 documenting `_task_token_refresh()` no-op warning when `RAMBOQ_USE_CONN_SERVICE=1`. |
 | 2026-08-13 | v1.15 KiteTicker + Dhan resilience + GTT pre-flight enhancements: Updated §7 KiteTicker & Mmap Pipeline with watchdog `asyncio.to_thread` non-blocking path, unsubscribe cleanup (prunes `_pending`, `_token_to_sym`, `_sym_to_token` maps), and MMAP re-registration suppression to check `_token_to_sym` before broker subscribe. Added §8.3.1 GTT Pre-flight Lot-Size Validation documenting synchronous G1 check at top of `apply_plan_live` before `broker.translate_qty` or any broker call; fails fast on misconfigured templates. Updated §8 DhanBroker with request stagger (50ms per request to avoid 429s) and order_type UNKNOWN_CAPS fallback (returns neutral string instead of raising on unrecognised `orderType` field). Updated §6 Circuit Breaker & Health to clarify persistence to `broker_accounts.cb_state_json` on each transition (open/half-open/closed) with fallback to `/tmp/ramboq_cb_state.json` on startup. |
+| 2026-08-14 | v1.16 Daily snapshot UPSERT idempotency fix + background task auto-subscription (commit 43771b98): Added §7.3.1 Daily Snapshot UPSERT Idempotency & LTP Coalesce Fix documenting `COALESCE(EXCLUDED.ltp, daily_book.ltp)` + `payload_json` CASE guard preventing mid-session NSE passes from overwriting MCX settlement LTPs with NULL (fixes blank grid cells + NAV collapse). Renumbered subsequent sections (7.3.2 Firm NAV, 7.3.3 Holdings formula). Added subsection to §9.1 Background Task Supervisor documenting MCX options auto-subscription of front-month futures (via `resolve_symbol('CRUDEOIL', 'MCX')`) and NFO/BFO equity options auto-subscription of NSE/BSE spot underlyings (NIFTY, BANKNIFTY, stock names) in `_perf_subscribe_book_symbols()` to ensure real-time spot pricing for payoff charts via live KiteTicker ticks instead of 30s REST polls. |

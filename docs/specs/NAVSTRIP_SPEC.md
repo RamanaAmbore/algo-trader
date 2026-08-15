@@ -160,10 +160,21 @@ settlement_price`. The `|ltp − close| ≤ 0.005` gate detects this reset (pric
 and skips the formula, falling back to snapshot `day_change_val` to avoid spurious zero-deltas 
 during the stale-close window (15:30–next open for NSE; 23:30–next open for MCX).
 
+**realisedToday fallback fix** (Aug 2026): When `pollLtp` is zero (no live LTP available), 
+the fallback now uses `brokerDcv` (broker `day_change_val`) instead of hardcoded `0`. This 
+ensures closed-hours grids display the correct day P&L snapshot instead of zeroing the value 
+when SSE subscription is stale.
+
 **Backend snapshot consistency** (closed-hours path): `backend/api/routes/holdings.py:_build_holding_row_from_snapshot` 
 mirrors the frontend formula and uses `previous_close` as the primary reference when reconstructing 
 `day_change_val` from snapshot. This ensures day P&L is identical whether the holding is read during 
 market open (live recomputation) or after close (snapshot path).
+
+**SSOT for holdings day P&L**: Module-level `holdingsDayPnlStore.svelte.js` (Aug 2026) exports 
+`{ total, byKey }` — canonical source for all holdings day P&L values (nav strip, grids, dashboard). 
+Updated on 5s book-poll cadence (live) or 30min closed-hours interval. Per-row grid Day P&L column 
+reads from `store.byKey[symbol]` instead of computing independently, ensuring all surfaces show 
+identical values.
 
 ---
 
@@ -173,13 +184,13 @@ Every value must match a canonical source to stay in sync with other surfaces.
 
 | Slot | SSOT Surface | Implementation |
 |---|---|---|
-| P:1 | MarketPulse Positions grid TOTAL row, Day P&L column | `baseDayPnlForPosition(p)` summed + live delta |
+| P:1 | `positionsDayPnlStore` (module-level singleton) | `livePositionDayPnl()` from `nav.js`; 4Hz throttle; exports `total` + `byKey[symbol]` |
 | P:2 | MarketPulse Positions grid TOTAL row, P&L column | `Σ p.pnl` summed + live delta |
 | P:3 | `/admin/derivatives` TOTAL row at expiry | `expiryPnl()` helper, F&O only |
 | M:1, M:2 | `/api/funds` response margin fields | `funds[].avail_margin`, `funds[].used_margin` |
 | C:1 | Broker's live cash (CA) | `fundsStore.load()` → `funds[].live_cash` |
 | C:2 | Option premium tied up in long positions | Derived from `positions[]` CE/PE rows |
-| H:1 | MarketPulse Holdings grid TOTAL row, Day P&L column | `_liveHoldingsToday` ($derived); recomputed live via `(ltp − previous_close) × qty` when `ltp` from SSE or fallback `h.last_price`; post-settlement guard skips formula when price delta < 0.5 paise; fallback to snapshot `day_change_val` when unavailable |
+| H:1 | `holdingsDayPnlStore` (module-level singleton, Aug 2026) | `_liveHoldingsToday` ($derived); recomputed live via `(ltp − previous_close) × qty` when `ltp` from SSE or fallback `h.last_price`; post-settlement guard skips formula when price delta < 0.5 paise; realisedToday fallback uses `brokerDcv` not hardcoded 0; exports `total` + `byKey[symbol]`; 5s live / 30min closed cadence |
 | H:2 | MarketPulse Holdings grid TOTAL row, Value column | `pulseHoldingsStore` (shared with MarketPulse); formula: `ltp × qty` from symbolStore, fallback to `h.cur_val` |
 | H:3 | MarketPulse Holdings grid TOTAL row, P&L column | `_liveHoldingsTotal` ($derived); `(ltp − avg_cost) × qty` from symbolStore, fallback to `h.pnl` |
 
@@ -550,3 +561,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-08-11 | H slot 2 (Holdings Value): now reads from `pulseHoldingsStore` (shared SSOT with MarketPulse); formula: `ltp × qty` from symbolStore, fallback to `h.cur_val` (matches `finalizeRows` in `pulseUnified.js:697`); NavStrip and MarketPulse never diverge on holdings value |
 | 2026-08-11 | H:1 SSOT fix: `pulseHoldingsStore` added to `_tickBookPollers()` — NavStrip H:1 (`dispHoldingsToday`) now refreshed every book-poller tick (5s live / 30min closed), eliminating the closed-hours divergence from Pulse Holdings TOTAL |
 | 2026-08-13 | H:1 day P&L formula: frontend `_liveHoldingsToday` now uses SSE-tick LTP via `symbolStore` OR fallback to `h.last_price` (for unwatched equities); post-settlement guard (`|ltp − close| ≤ 0.005`) skips formula and uses snapshot `day_change_val`; backend `_build_holding_row_from_snapshot` mirrors formula using `previous_close` as primary reference; ensures closed-hours snapshot path parity |
+| 2026-08-14 | v1.2 Holdings day P&L SSOT + realisedToday fix (commit 43771b98): §1 EXP Slot updated — closed-leg formula now uses `leg.realised \|\| leg.pnl` to capture Kite settlement behavior. §2 Data Sources SSOT table refactored — P:1 now references `positionsDayPnlStore` canonical source; H:1 now references `holdingsDayPnlStore` (Aug 2026 new) exporting `{ total, byKey }` at 5s/30min cadence. §3 Live-Tick Delta Correction unchanged. §4 Snapshot Freeze updated. Updated H:1 Holdings Today MTM detailed subsection — realisedToday fallback changed from hardcoded `0` to `brokerDcv` (Aug 2026 fix) ensuring closed-hours grids show correct snapshot day P&L; SSOT section notes `holdingsDayPnlStore` canonical source for nav + grid + dashboard consumption. |
