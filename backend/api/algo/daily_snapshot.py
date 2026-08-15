@@ -677,11 +677,11 @@ _UPSERT_SQL = text("""
         exchange       = EXCLUDED.exchange,
         qty            = EXCLUDED.qty,
         avg_cost       = EXCLUDED.avg_cost,
-        ltp            = EXCLUDED.ltp,
+        ltp            = COALESCE(EXCLUDED.ltp, daily_book.ltp),
         day_pnl        = COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl),
         total_pnl      = EXCLUDED.total_pnl,
         previous_close = COALESCE(daily_book.previous_close, EXCLUDED.previous_close),
-        payload_json   = EXCLUDED.payload_json,
+        payload_json   = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json ELSE daily_book.payload_json END,
         captured_at    = EXCLUDED.captured_at
 """)
 

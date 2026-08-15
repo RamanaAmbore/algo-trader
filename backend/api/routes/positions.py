@@ -102,8 +102,8 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                   ON pb.account = db.account AND pb.symbol = db.symbol
                 WHERE db.kind = 'positions'
                   AND (db.qty != 0 OR db.date = :today_ist)
-                  AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
-                           AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
+                  AND (db.ltp IS NULL OR NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
+                           AND db.avg_cost IS NOT NULL AND db.avg_cost > 0))
                 ORDER BY db.account, db.symbol
             """).bindparams(today_ist=_today_ist, today_ist_midnight=_today_ist_midnight))
             raw_rows = result.all()
@@ -653,18 +653,22 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     if not pairs:
         return
 
-    # Filter to snapshots captured BEFORE today's market open (00:00 IST
-    # today). Without this filter, a mid-session deploy's startup
-    # snapshot would land in daily_book labelled as "most recent" and
-    # the close-override would patch close_price to TODAY's mid-session
-    # LTP — collapsing day_change_val to zero. Observed on 2026-06-22
-    # ~09:38 IST: today's 09:38 IST snapshot returned LTP=264.5 for
-    # CRUDEOIL26JUL6900PE, but yesterday's 23:59 IST snapshot (the true
-    # MCX EOD) had LTP=220.
+    # Filter to snapshots captured BEFORE 08:00 IST today. The cutoff is
+    # 08:00 IST (not midnight) for two reasons:
+    #   1. MCX closes at 23:30 IST; the snapshot daemon can land the row
+    #      at 00:05 IST the next calendar day. A midnight cutoff would
+    #      exclude that valid EOD snapshot.
+    #   2. 08:00 IST is still safely before any mid-session deploy snapshot
+    #      (market opens at 09:00-09:15 IST). Without this upper bound a
+    #      mid-session startup snapshot would land as "most recent" and
+    #      patch close_price to today's mid-session LTP — collapsing
+    #      day_change_val to zero. Observed 2026-06-22 ~09:38 IST.
+    from datetime import timedelta
     from backend.shared.helpers.date_time_utils import timestamp_indian
     today_ist_midnight = timestamp_indian().replace(
         hour=0, minute=0, second=0, microsecond=0,
     )
+    today_ist_cutoff = today_ist_midnight + timedelta(hours=8)
 
     snapshot_map: dict[tuple[str, str], float] = {}
     prev_pnl_map: dict[tuple[str, str], float] = {}
@@ -676,7 +680,7 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
                 WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
                   AND captured_at < :today_open
                 ORDER BY account, symbol, captured_at DESC
-            """), {"today_open": today_ist_midnight})
+            """), {"today_open": today_ist_cutoff})
             for account, symbol, ltp, total_pnl in result.all():
                 key = (str(account), str(symbol))
                 snapshot_map[key] = float(ltp)

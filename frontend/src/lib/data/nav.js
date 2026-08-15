@@ -182,7 +182,7 @@ export function livePositionDayPnl({ closePx, pollLtp, qty, avg, dcvRow }, liveL
     // residual, so adding the live residual gives the full intraday P&L.
     const realisedToday = (pollLtp > 0 && closePx > 0)
       ? brokerDcv - (pollLtp - closePx) * qty
-      : 0;
+      : brokerDcv;
     return realisedToday + (live - closePx) * qty;
   }
   if (marketOpen && live != null && closePx === 0 && avg > 0 && qty !== 0) {

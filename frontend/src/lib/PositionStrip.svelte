@@ -15,6 +15,7 @@
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
+  import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
@@ -66,7 +67,7 @@
   // the counter to 0 on every poll start, making the threshold unreachable.
   let _staleFailCount = $state(0);
   // Snapshot of _pollCycleStamp at the moment of the closed→open
-  // session transition. _livePositionsToday / _liveHoldingsToday read
+  // session transition. positionsDayPnlStore / holdingsDayPnlStore read
   // from positions[].day_change_val which is whatever the LAST poll
   // returned — and `marketAwareInterval` pauses overnight, so that
   // last poll is from yesterday's session close, carrying yesterday's
@@ -420,30 +421,10 @@
     for (const p of positions) pnlTotal += Number(p?.pnl || 0);
     return pnlTotal;
   });
-  // Day P&L SSOT: positionsDayPnlStore is the module-level singleton
-  // that aggregates at 4 Hz via symbolTickCount throttle. All references
-  // to the former _livePositionsToday $derived now read positionsDayPnlStore.total.
-  const _liveHoldingsToday = $derived.by(() => {
-    let s = 0;
-    for (const h of holdings) {
-      const sym     = String(h?.tradingsymbol || '').toUpperCase();
-      const snapLtp = getSnapshot(sym)?.ltp;
-      // Use h.last_price as fallback when symbolStore has no tick for this holding
-      // (equity holdings not on watchlist won't be subscribed to the ticker).
-      const holdLtp = (snapLtp != null && snapLtp > 0) ? snapLtp : Number(h?.last_price ?? 0);
-      const close   = Number(h?.close_price || 0);
-      const qty     = Number(h?.opening_quantity || h?.quantity || 0);
-      const dcv     = Number(h?.day_change_val ?? 0);
-      if (holdLtp > 0 && close > 0 && qty !== 0 && Math.abs(holdLtp - close) > 0.005) {
-        // Guard: skip formula when ltp ≈ close (post-settlement: Kite resets
-        // last_price = close_price = settlement_price → (ltp−close)×qty = 0).
-        s += (holdLtp - close) * qty;
-      } else {
-        s += dcv;
-      }
-    }
-    return s;
-  });
+  // Holdings day P&L SSOT: holdingsDayPnlStore is the module-level singleton
+  // that aggregates at 4 Hz via symbolTickCount throttle, mirroring the
+  // positionsDayPnlStore pattern. Replaces the former inline _liveHoldingsToday
+  // $derived so MarketPulse and PositionStrip share one computation path.
   // Live-LTP-recomputed holdings P&L — matches MarketPulse mergeHoldingRows
   // which computes `(liveHold − avg) × qty` when a live LTP is available.
   // A recent MarketPulse fix changed the TOTAL row to use this live formula
@@ -501,7 +482,7 @@
     void _mktTick;
     void _execMode;
     void positionsDayPnlStore.total;
-    void _liveHoldingsToday;
+    void holdingsDayPnlStore.total;
     const open = isNseOpen() || isMcxOpen();
     const modeChanged = _execMode !== _prevExecMode;
     if ((open && !_prevMktOpen) || modeChanged) {
@@ -539,8 +520,8 @@
     if (positions.length > 0 || positionsDayPnlStore.total !== 0) {
       dispPositionsToday = positionsDayPnlStore.total;
     }
-    if (holdings.length > 0 || _liveHoldingsToday !== 0) {
-      dispHoldingsToday = _liveHoldingsToday;
+    if (holdings.length > 0 || holdingsDayPnlStore.total !== 0) {
+      dispHoldingsToday = holdingsDayPnlStore.total;
     }
     if (!open) return;
   });

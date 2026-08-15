@@ -741,6 +741,50 @@ async def _perf_subscribe_book_symbols(
                     _book_pairs.append(_k)
         except Exception as _se:
             logger.debug(f"Background: snapshot book symbols skipped in perf: {_se}")
+        # Subscribe underlying spot anchors for all option positions so liveSpot
+        # updates at tick cadence instead of the 30s batchQuote fallback.
+        # MCX options use the front-month future as the spot anchor (e.g.
+        # CRUDEOIL25AUGCE → CRUDEOIL25AUGFUT on MCX).
+        # NFO/BFO options use the underlying equity/index on NSE (e.g.
+        # NIFTY24500CE → NIFTY on NSE, RELIANCE24AUG3000CE → RELIANCE on NSE).
+        try:
+            import re as _re
+            from backend.api.algo.symbol_resolver import list_active_futures as _laf
+            _mcx_option_roots = {
+                _re.match(r'^([A-Z]+)', sym).group(1)
+                for sym, exch in _book_pairs
+                if exch == 'MCX' and sym and _re.search(r'(CE|PE)$', sym)
+                and _re.match(r'^([A-Z]+)', sym)
+            }
+            for _root in _mcx_option_roots:
+                _futs = await _laf(_root, 'MCX', limit=1)
+                if _futs:
+                    _fut_key = (_futs[0], 'MCX')
+                    if _fut_key not in _book_seen:
+                        _book_seen.add(_fut_key)
+                        _book_pairs.append(_fut_key)
+        except Exception as _mcx_e:
+            logger.debug(f"Background: MCX spot-anchor subscribe skipped: {_mcx_e}")
+        # NFO/BFO options: subscribe the underlying equity/index on NSE so
+        # liveSpot for NIFTY, BANKNIFTY, stock options, etc. runs from the
+        # real-time tick stream. Root is the leading alpha prefix of the
+        # option symbol (e.g. NIFTY from NIFTY24500CE, RELIANCE from
+        # RELIANCE24AUG3000CE). Skip roots already in the subscription set.
+        try:
+            import re as _re2
+            _already_subscribed = {s.upper() for s, _ in _book_pairs}
+            _nfo_option_roots = {
+                _m.group(1)
+                for sym, exch in _book_pairs
+                if exch in ('NFO', 'BFO') and sym and _re2.search(r'(CE|PE)$', sym)
+                for _m in [_re2.match(r'^([A-Z]+)', sym)]
+                if _m
+            }
+            for _root in _nfo_option_roots:
+                if _root not in _already_subscribed:
+                    _book_pairs.append((_root, 'NSE'))
+        except Exception as _nfo_e:
+            logger.debug(f"Background: NFO/BFO spot-anchor subscribe skipped: {_nfo_e}")
         # Resolve tokens for symbols not yet in the ticker.
         # O(1) check via has_sym() — avoids rebuilding the full set each cycle.
         _need_resolve = [

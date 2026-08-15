@@ -170,6 +170,19 @@ describe('livePositionDayPnl', () => {
     expect(result).toBe(10);
   });
 
+  it('pollLtp=0 (snapshot row): realisedToday falls back to brokerDcv, not 0', () => {
+    // Change A regression test: pollLtp=0 must not drop brokerDcv.
+    // Before fix: realisedToday = 0   → result = 0 + (6450-6400)*1 = 50 (wrong)
+    // After fix:  realisedToday = 200 → result = 200 + (6450-6400)*1 = 250 (correct)
+    const dcvRow = { pnl: 800, overnight_quantity: 1, day_change_val: 200, close_price: 6400 };
+    // baseDayPnlForPosition: oq=1, dcv=200 (non-zero) → 200
+    const fields = { closePx: 6400, pollLtp: 0, qty: 1, avg: 6200, dcvRow };
+    const result = livePositionDayPnl(fields, 6450, { marketOpen: true });
+    // realisedToday = 200 (brokerDcv fallback because pollLtp=0)
+    // result = 200 + (6450-6400)*1 = 250
+    expect(result).toBeCloseTo(250, 4);
+  });
+
   it('short overnight (qty < 0) + live tick → ticker-rescue computes correctly', () => {
     // Short 5 contracts: oq = -5, closePx = 100, pollLtp = 98, liveLtp = 97
     // dcvRow: oq = -5, dcv = 10 (non-zero) → baseDayPnlForPosition returns 10

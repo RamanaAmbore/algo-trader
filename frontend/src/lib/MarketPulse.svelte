@@ -83,6 +83,7 @@
     publishWatchQuotes, publishPulseQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
+  import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   // resolveUnderlying helpers used by loadPulse are imported via pulseLoad.js.
   import CardControls from '$lib/CardControls.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
@@ -2952,6 +2953,13 @@
       if (row) row.day_pnl = val;
     }
     mergeHoldingRows(byKey, hold, includeHold, cq, holdCtx);
+    // SSOT override: holdingsDayPnlStore wins for day_pnl on every holding
+    // row. holdingsDayPnlStore.byKey is keyed by plain uppercase tradingsymbol;
+    // pulseUnified byKey is keyed "SYMBOL__hold" — append the suffix directly.
+    for (const [sym, val] of Object.entries(holdingsDayPnlStore.byKey)) {
+      const row = byKey[`${sym}__hold`];
+      if (row) row.day_pnl = val;
+    }
     mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, includeHold, anchCtx);
     mergeMoverRows(byKey, moverRows, includeMovers, includePos, includeHold, includeWatch, movCtx);
     tagWatchedIndices(byKey);

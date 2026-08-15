@@ -143,9 +143,10 @@ describe('livePositionDayPnl — mixed overnight + intraday sell adds', () => {
 // ── livePositionDayPnl — pollLtp = 0 (broker hasn't populated last_price) ───
 
 describe('livePositionDayPnl — pollLtp=0 edge', () => {
-  it('pollLtp=0: realisedToday falls back to 0, result uses live-close delta only', () => {
-    // pollLtp=0, closePx=100 → pollLtp > 0 is false → realisedToday = 0
-    // result = 0 + (105 - 100)*5 = 25
+  it('pollLtp=0: realisedToday falls back to brokerDcv (Change A fix)', () => {
+    // pollLtp=0, closePx=100 → pollLtp > 0 is false → realisedToday = brokerDcv
+    // brokerDcv = baseDayPnlForPosition: oq=5, dcv=50 (non-zero) → 50
+    // result = 50 + (105 - 100)*5 = 75
     const fields = {
       closePx: 100,
       pollLtp: 0,
@@ -153,13 +154,14 @@ describe('livePositionDayPnl — pollLtp=0 edge', () => {
       avg: 90,
       dcvRow: { pnl: 200, overnight_quantity: 5, day_change_val: 50, close_price: 100 },
     };
-    expect(livePositionDayPnl(fields, 105, { marketOpen: true })).toBe(25);
+    expect(livePositionDayPnl(fields, 105, { marketOpen: true })).toBe(75);
   });
 
-  it('pollLtp=0 with short qty: result = (live - close) * qty = negative', () => {
+  it('pollLtp=0 with short qty: realisedToday = brokerDcv, result includes live delta', () => {
     // closePx=200, pollLtp=0, qty=-4, liveLtp=210
-    // realisedToday = 0 (pollLtp not > 0)
-    // result = 0 + (210 - 200)*(-4) = -40
+    // brokerDcv = baseDayPnlForPosition: oq=4, dcv=-40 (non-zero) → -40
+    // realisedToday = brokerDcv = -40 (pollLtp not > 0)
+    // result = -40 + (210 - 200)*(-4) = -40 + (-40) = -80
     const fields = {
       closePx: 200,
       pollLtp: 0,
@@ -167,7 +169,7 @@ describe('livePositionDayPnl — pollLtp=0 edge', () => {
       avg: 205,
       dcvRow: { pnl: -400, overnight_quantity: 4, day_change_val: -40, close_price: 200 },
     };
-    expect(livePositionDayPnl(fields, 210, { marketOpen: true })).toBe(-40);
+    expect(livePositionDayPnl(fields, 210, { marketOpen: true })).toBe(-80);
   });
 });
 
