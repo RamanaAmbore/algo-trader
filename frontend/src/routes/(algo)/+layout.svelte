@@ -1356,8 +1356,10 @@
     <ToastContainer />
 
     <footer class="algo-footer">
-      <span class="algo-footer-text">RamboQuant Analytics</span>
-      <span class="algo-footer-sep">·</span>
+      <span class="algo-footer-brand">
+        <span class="algo-footer-text">RamboQuant Analytics</span>
+        <span class="algo-footer-sep">·</span>
+      </span>
       <span class="algo-footer-text">{pageLabel}</span>
       <span class="algo-footer-sep">·</span>
       <span class="algo-footer-text">
@@ -2095,6 +2097,8 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
+  @media (max-width: 639px) { .algo-footer-brand { display: none; } }
+
   @media (max-width: 640px) {
     /* Mobile chrome — keep all three sticky bands (navbar / ps-strip /
        footer) at the same 0.25rem horizontal padding so their inner

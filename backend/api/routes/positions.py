@@ -34,6 +34,54 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# AlgoOrder map helper
+# ---------------------------------------------------------------------------
+
+async def _fetch_open_order_map(session) -> "dict[tuple[str, str], dict]":
+    """Return {(account, symbol): {id, parent_order_id}} for all OPEN AlgoOrders.
+
+    Used to annotate PositionRow with `is_orphan` and `pair_group_key`.
+    A position is an orphan when no OPEN AlgoOrder exists for its
+    (account, tradingsymbol) pair.  pair_group_key is the root parent id
+    (as string) so parent + child positions can be grouped in the UI.
+    """
+    from sqlalchemy import text as _sql_text
+    rows = await session.execute(_sql_text(
+        "SELECT id, account, symbol, parent_order_id FROM algo_orders WHERE status = 'OPEN'"
+    ))
+    result: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        key = (r.account, r.symbol)
+        result[key] = {"id": r.id, "parent_order_id": r.parent_order_id}
+    return result
+
+
+def _apply_order_map_to_rows(
+    rows: "list[PositionRow]",
+    order_map: "dict[tuple[str, str], dict]",
+) -> "list[PositionRow]":
+    """Return a new list of PositionRow structs with is_orphan and pair_group_key set.
+
+    is_orphan  — True when (account, tradingsymbol) has no matching OPEN AlgoOrder.
+    pair_group_key — str(root parent AlgoOrder id) when matched; None otherwise.
+      Root parent = the AlgoOrder itself when parent_order_id is None,
+      or the parent_order_id value when it is set.
+    """
+    import msgspec as _msc
+    out: list[PositionRow] = []
+    for r in rows:
+        matched = order_map.get((r.account, r.tradingsymbol))
+        is_orphan = matched is None
+        if matched is not None:
+            root = matched["parent_order_id"] if matched["parent_order_id"] is not None else matched["id"]
+            pair_group_key: Optional[str] = str(root)
+        else:
+            pair_group_key = None
+        out.append(_msc.structs.replace(r, is_orphan=is_orphan, pair_group_key=pair_group_key))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Closed-hours snapshot helpers
 # ---------------------------------------------------------------------------
 
@@ -125,7 +173,18 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             f"from {snap_captured_at_dt.date()}"
         )
 
+    # Fetch the OPEN AlgoOrder map while we still have the session open.
+    # This is the snapshot path — we query once and reuse it below to
+    # annotate every PositionRow with is_orphan + pair_group_key.
+    try:
+        async with async_session() as _om_session:
+            _order_map = await _fetch_open_order_map(_om_session)
+    except Exception as _om_exc:
+        logger.warning(f"positions snapshot: order_map fetch failed: {_om_exc}")
+        _order_map = {}
+
     rows: list[PositionRow] = [build_row_from_snapshot_raw(r) for r in raw_rows]
+    rows = _apply_order_map_to_rows(rows, _order_map)
 
     summary = build_summary_from_rows(rows)
 
@@ -461,6 +520,19 @@ async def _fetch() -> PositionsResponse:
     summary_df = _build_polars_summary(df)
 
     rows = [_dict_to_position_row(r) for r in df_rows.to_dicts()]
+
+    # Annotate each row with is_orphan + pair_group_key from OPEN AlgoOrders.
+    # Fetched fresh per request so the live path reflects order state at
+    # call time without a separate TTL — query is a cheap table scan on a
+    # small indexed set (status='OPEN').
+    try:
+        from backend.api.database import async_session as _async_session
+        async with _async_session() as _om_session:
+            _live_order_map = await _fetch_open_order_map(_om_session)
+        rows = _apply_order_map_to_rows(rows, _live_order_map)
+    except Exception as _om_exc:
+        logger.warning(f"positions live: order_map fetch failed: {_om_exc}")
+
     # Thread account_stale_since into stale rows so the frontend can
     # render "STALE @ HH:MM" next to the account name without a separate
     # endpoint. _acct_stale_since is built before concat (attrs survive).

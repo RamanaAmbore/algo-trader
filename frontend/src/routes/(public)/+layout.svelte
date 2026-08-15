@@ -205,8 +205,6 @@
         Built by <a class="pub-footer-link" href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana R. Ambore</a> &amp; <span class="pub-footer-link">Gopi Podicheti</span>
       </p>
       <p class="md:hidden text-center leading-none pub-footer-text">
-        © RamboQuant Analytics LLP
-        <span class="pub-sep">|</span>
         ACU-5195
         <span class="pub-sep">|</span>
         Built by <a class="pub-footer-link" href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana R. Ambore</a> &amp; <span class="pub-footer-link">Gopi Podicheti</span>

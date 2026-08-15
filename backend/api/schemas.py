@@ -184,6 +184,16 @@ class PositionRow(msgspec.Struct):
     # static (no green/red pulse on the frozen close_price). Frontend's
     # tick-flash cellClass reads this to gate the flash primitive.
     is_animating: bool = True
+    # True when no AlgoOrder with status='OPEN' matches this position's
+    # (account, tradingsymbol). Orphan positions have no active chase in
+    # flight — surfaced in the UI so the operator can decide whether to
+    # create an order or close the position manually.
+    is_orphan: bool = False
+    # Shared key for positions linked via an AlgoOrder parent-child
+    # relationship. Set to the ROOT parent AlgoOrder id (as string) for
+    # both parent and child positions; None when no AlgoOrder matches.
+    # Lets the frontend group paired legs under the same visual card.
+    pair_group_key: Optional[str] = None
 
 
 class PositionsSummaryRow(msgspec.Struct):

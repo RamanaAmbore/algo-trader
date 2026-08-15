@@ -93,6 +93,10 @@
     }
     return out;
   });
+  // Set of all order IDs that exist in the active-chase list. Used in the
+  // template to detect orphan children — children whose parent_order_id
+  // doesn't resolve to any currently-active chase row.
+  const _parentIdsPresent = $derived(new Set(_chases.map(r => r.id)));
   let _loading = $state(false);
   let _err     = $state('');
   let _killing = $state(/** @type {Set<number>} */ (new Set()));
@@ -310,6 +314,9 @@
             <span class="cc-pulse cc-pulse-{(row.transaction_type || '').toLowerCase()}" aria-hidden="true"></span>
           {/if}
           {formatSymbol(row.symbol)}
+          {#if row.parent_order_id != null && !_parentIdsPresent.has(row.parent_order_id)}
+            <span class="cc-chip cc-chip-o" title="Orphan — parent order not in active chases">O</span>
+          {/if}
         </span>
         <!-- Audit fix (M-6) — show current_limit (live re-quoted) when
              the chase has moved off initial_price; otherwise fall back
@@ -587,6 +594,16 @@
     color: rgba(192, 132, 252, 0.85);
     font-weight: 700;
     margin-right: 0.25rem;
+  }
+  .cc-chip-o {
+    background: rgba(251,113,133,0.18);
+    color: #fb7185;
+    border: 1px solid rgba(251,113,133,0.4);
+    font-size: 0.65rem;
+    padding: 0 0.3rem;
+    border-radius: 3px;
+    font-weight: 600;
+    margin-left: 0.2rem;
   }
   .cc-row-h {
     color: var(--algo-muted);

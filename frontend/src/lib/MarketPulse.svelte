@@ -98,6 +98,7 @@
   import { openActivityModal } from '$lib/stores';
   import ChartModal from '$lib/ChartModal.svelte';
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
+  import OrderPairModal from '$lib/order/OrderPairModal.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
   import { getProvisionalPositions, applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
@@ -3224,6 +3225,9 @@
       const label = pct != null ? fmtPctScaled(pct, 2, true) : '';
       badges.push(`<span class="sym-badge badge-m badge-m-${dir}" title="Top mover ${label}${sticky}">M${arrow}</span>`);
     }
+    if (row.src?.p && row.is_orphan) {
+      badges.push(`<span class="sym-badge badge-o" title="No active order tracking this position">O</span>`);
+    }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
     return { lotChip, badgeHtml };
   }
@@ -3536,10 +3540,43 @@
     // without F&O coverage) keep their post-sort position individually.
     // postSortGroups imported from $lib/data/pulseGridSetup — pure fn, no closure.
 
+    // Pair-group post-sort: keeps rows that share the same `pair_group_key`
+    // clustered together. Within each group the relative order coming in is
+    // preserved; the first group member encountered anchors the cluster's
+    // position and subsequent members of the same key are spliced in right
+    // after it. Rows without a key keep their individual post-sort position.
+    function _pairGroupPostSort(params) {
+      const nodes = params.nodes;
+      const groups = new Map();
+      for (const n of nodes) {
+        const k = n.data?.pair_group_key;
+        if (k) {
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(n);
+        }
+      }
+      const order = [];
+      const seen  = new Set();
+      for (const n of nodes) {
+        if (seen.has(n)) continue;
+        seen.add(n);
+        order.push(n);
+        const k = n.data?.pair_group_key;
+        if (k) {
+          for (const m of groups.get(k) ?? []) {
+            if (!seen.has(m)) { seen.add(m); order.push(m); }
+          }
+        }
+      }
+      nodes.length = 0;
+      nodes.push(...order);
+    }
+
     // Factory: every per-bucket grid shares the same shape (height
     // tracks, getRowClass, sort + resize defaults, click handlers).
-    // Only columnDefs / emptyMsg / pinnedBottom vary per bucket.
-    function makeBucketGrid(el, columnDefs, emptyMsg, pinnedBottom = []) {
+    // Only columnDefs / emptyMsg / pinnedBottom / extraOpts vary per bucket.
+    // extraOpts is spread last so callers can override any default.
+    function makeBucketGrid(el, columnDefs, emptyMsg, pinnedBottom = [], extraOpts = {}) {
       return createGrid(el, {
         theme: 'legacy',
         columnDefs,
@@ -3562,6 +3599,7 @@
         onCellContextMenu: (ev) => {
           if (ev.data) openContextMenu(ev.event, ev.data);
         },
+        ...extraOpts,
       });
     }
 
@@ -3593,7 +3631,7 @@
     // pinnedBottomRowData semantics).
     if (gridPositionsEl) {
       gridPositions = makeBucketGrid(gridPositionsEl, rightColDefs,
-        'No positions in the active book.');
+        'No positions in the active book.', [], { postSortRows: _pairGroupPostSort });
       gridPositionsReady = true;
     }
     if (gridHoldingsEl) {
@@ -3837,6 +3875,9 @@
     // layout's. Duplication-audit P1 fix.
     openActivityModal();
   }
+
+  // Pair-orders modal state — opened by the "Pair" button in the Positions header.
+  let _pairModalOpen = $state(false);
 
   // Chart modal state — opened by the "Chart →" context-menu item.
   // Does NOT go through SymbolPanel (the chart tab was retired from
@@ -4213,6 +4254,9 @@
                     ariaLabel="Filter Positions by broker account" />
                 </div>
               {/if}
+              <span class="mp-head-sep" aria-hidden="true"></span>
+              <button class="mp-pair-btn" onclick={() => _pairModalOpen = true}
+                title="Pair parent/child orders">⟷ Pair</button>
             {/snippet}
           </CardHeader>
           <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
@@ -4308,6 +4352,10 @@
 <!-- ActivityLogModal singleton lives in the (algo) layout via the
      activityModal store — ctxOpenLog above opens it via the store. -->
 
+
+{#if _pairModalOpen}
+  <OrderPairModal bind:open={_pairModalOpen} />
+{/if}
 
 {#if _chartModalOpen}
   <ChartModal
@@ -4485,6 +4533,11 @@
   :global(.badge-u) { color: #c084fc; background: rgba(192,132,252,0.14); }
   :global(.badge-m-pos) { color: var(--c-long); background: var(--algo-green-bg); }
   :global(.badge-m-neg) { color: var(--c-short); background: var(--algo-red-bg);   }
+  :global(.badge-o) {
+    background: rgba(251,113,133,0.18);
+    color: #fb7185;
+    border: 1px solid rgba(251,113,133,0.4);
+  }
   /* Covered-call lot-count badge — green pill with the number of whole
      lots the operator holds. Same pill family as the H/P/W/U badges so
      the row's badge strip reads as one consistent set. Bolder
@@ -5161,6 +5214,17 @@
     width: 7rem;
     min-width: 0;
   }
+  .mp-pair-btn {
+    font-size: var(--fs-xs, 0.7rem);
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    border: 1px solid rgba(160,185,220,0.3);
+    background: rgba(160,185,220,0.08);
+    color: rgba(160,185,220,0.8);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .mp-pair-btn:hover { border-color: rgba(160,185,220,0.6); color: rgba(210,225,255,0.9); }
   /* Universe tabs (Underlying / Large Cap / Midcap / Smallcap)
      inline in the Winners / Losers bucket-head. Sits BETWEEN the
      label and the spacer so it reads as "Winners → which universe

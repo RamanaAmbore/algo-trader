@@ -61,6 +61,7 @@
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
+  import OrderPairModal from '$lib/order/OrderPairModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
@@ -91,6 +92,9 @@
     _chartModalSym  = String(symbol  || '').toUpperCase();
     _chartModalExch = String(exchange || '');
   }
+
+  // Pair-orders modal state — opened by the "Pair" button in the Drafts leg-headrow.
+  let _legPairModalOpen = $state(false);
 
   // Context menu state — right-click / long-press on any candidate symbol.
   /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
@@ -4157,7 +4161,8 @@
         <span>Avg cost</span>
         <span>LTP</span>
         <span>Source</span>
-        <span></span>
+        <button class="leg-pair-btn" onclick={() => _legPairModalOpen = true}
+          title="Pair parent/child orders">Pair</button>
       </div>
       {#each drafts as _d, i (drafts[i].id)}
         <div class="leg-row">
@@ -5033,6 +5038,9 @@
   <ActivityLogModal onClose={() => { _ctxAction = null; }} />
 {/if}
 
+{#if _legPairModalOpen}
+  <OrderPairModal bind:open={_legPairModalOpen} />
+{/if}
 
 <style>
   /* Page-header title + (i) + optional SIM badge as a single inline
@@ -5512,6 +5520,16 @@
     padding-bottom: 0.15rem;
     border-bottom: 1px solid rgba(251,191,36,0.18);
   }
+  .leg-pair-btn {
+    font-size: 0.68rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    border: 1px solid rgba(160,185,220,0.3);
+    background: rgba(160,185,220,0.08);
+    color: rgba(160,185,220,0.8);
+    cursor: pointer;
+  }
+  .leg-pair-btn:hover { border-color: rgba(160,185,220,0.5); }
   :global(.leg-row .field-input) {
     font-size: var(--fs-sm);
     padding: 0.25rem 0.4rem;

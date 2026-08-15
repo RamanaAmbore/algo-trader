@@ -17,6 +17,7 @@ GET  /api/accounts/           — list accounts (masked display + unmasked ID fo
 """
 
 import asyncio
+import dataclasses
 import json
 from datetime import datetime, timezone
 
@@ -116,6 +117,17 @@ from backend.api.routes.orders_postback import (  # noqa: E402
 )
 
 import time as _time  # used by _postback_broadcast_fanout for ts fields
+
+
+# ---------------------------------------------------------------------------
+# Input schemas
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class PairOrdersInput:
+    """Body for POST /api/orders/pair — link a child AlgoOrder to a parent."""
+    parent_id: int
+    child_id: int
 
 
 # ── Chase-reconcile helpers (extracted from list_active_chases, reconcile_algo_orders, retry_template) ─
@@ -1791,6 +1803,38 @@ class OrdersController(Controller):
         except Exception as e:
             logger.error(f"Cancel order failed [{masked}] {order_id}: {e}")
             raise HTTPException(status_code=400, detail=str(e))
+
+    @post("/pair", guards=[admin_guard])
+    async def pair_orders(
+        self,
+        data: PairOrdersInput,
+    ) -> dict:
+        """Link a child AlgoOrder to a parent via parent_order_id.
+
+        POST /api/orders/pair
+        Body: {"parent_id": <int>, "child_id": <int>}
+
+        Sets child.parent_order_id = parent_id so position rows can be
+        grouped by their shared pair_group_key (the root parent id).
+        Raises 404 when either order is not found; 400 when the child
+        already has a parent or when parent_id == child_id.
+        """
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+
+        if data.parent_id == data.child_id:
+            raise HTTPException(status_code=400, detail="parent and child must be different orders")
+
+        async with async_session() as session:
+            parent = await session.get(AlgoOrder, data.parent_id)
+            child  = await session.get(AlgoOrder, data.child_id)
+            if not parent or not child:
+                raise HTTPException(status_code=404, detail="order not found")
+            if child.parent_order_id is not None:
+                raise HTTPException(status_code=400, detail="child already has a parent — unpair first")
+            child.parent_order_id = data.parent_id
+            await session.commit()
+        return {"ok": True, "child_id": data.child_id, "parent_id": data.parent_id}
 
 
 class AccountsController(Controller):
