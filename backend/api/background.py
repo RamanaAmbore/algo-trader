@@ -1829,9 +1829,9 @@ async def _task_daily_snapshot() -> None:
         ) if mcx_segs else False
         return nse_open, mcx_open
 
-    async def _fire_snapshot(label: str) -> None:
+    async def _fire_snapshot(label: str, *, market_open: bool = True) -> None:
         try:
-            result = await snapshot_daily_book()
+            result = await snapshot_daily_book(market_open=market_open)
             logger.info(
                 f"Background: daily snapshot [{label}] — "
                 f"accounts={result['accounts']} "
@@ -1850,7 +1850,10 @@ async def _task_daily_snapshot() -> None:
             f"(NSE={_nse_open}, MCX={_mcx_open}). Settlement passes still fire."
         )
     else:
-        await _fire_snapshot("startup")
+        # market_open=False: holiday or off-hours restart — force EOD mode so
+        # _is_exchange_open_at's time-of-day check (which has no holiday
+        # awareness) cannot suppress ltp capture for Dhan accounts.
+        await _fire_snapshot("startup", market_open=False)
 
     # ── settlement pass deduplication (date | None) ────────────────────
     _nse_settlement_done: Optional[date] = None

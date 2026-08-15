@@ -423,7 +423,7 @@ def _snap_holding_eod_vals(
 
 def _holdings_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
-    *, settled: bool = False,
+    *, settled: bool = False, market_open: bool = True,
 ) -> list[dict]:
     rows = []
     skipped = 0
@@ -432,7 +432,8 @@ def _holdings_rows(
         if not symbol:
             continue
         exchange = r.get("exchange", "NSE")
-        mid_session = _is_exchange_open_at(exchange, now_ist)
+        # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
+        mid_session = False if not market_open else _is_exchange_open_at(exchange, now_ist)
         ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session)
 
         # Bad-payload guard: broker returned all zeros for a real holding.
@@ -540,7 +541,7 @@ def _snap_position_eod_vals(
 
 def _positions_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
-    *, settled: bool = False,
+    *, settled: bool = False, market_open: bool = True,
 ) -> list[dict]:
     rows = []
     skipped = 0
@@ -558,7 +559,8 @@ def _positions_rows(
         multiplier = int(float(raw_mult)) if raw_mult else 1
         if multiplier < 1:
             multiplier = 1
-        mid_session = _is_exchange_open_at(exchange, now_ist)
+        # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
+        mid_session = False if not market_open else _is_exchange_open_at(exchange, now_ist)
         # Captured AT EOD (after the exchange closes) this is the correct
         # day_pnl. Captured MID-SESSION it's a partial-day value — skip.
         ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
@@ -807,7 +809,7 @@ def _snap_all_filtered(
 
 
 async def snapshot_daily_book(target_date: Optional[date] = None,
-                              *, settled: bool = False) -> dict:
+                              *, settled: bool = False, market_open: bool = True) -> dict:
     """
     Capture every loaded account's holdings + positions + trades for
     target_date (defaults to today IST). Upserts into daily_book.
@@ -818,6 +820,11 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
     ``market_lifecycle_handlers._handle_close_settled`` when the
     ``<exch>:close_settled`` event fires ~15 min after close and the
     broker has published its adjusted (weighted-avg-last-30-min) close.
+
+    ``market_open=False`` forces EOD mode unconditionally, overriding the
+    time-of-day check from `_is_exchange_open_at`. Used during holiday
+    startups to ensure snapshots capture non-NULL ltp even if called during
+    normal session hours (e.g. 09:15–15:30 IST on a holiday).
 
     Returns:
         {
@@ -864,8 +871,8 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
                 _local_executor, _fetch_account_data, broker, account, target_date
             )
 
-            h_rows = _holdings_rows(account,  target_date, raw["holdings"],       now_ist, settled=settled)
-            p_rows = _positions_rows(account, target_date, raw["positions"] or [], now_ist, settled=settled)
+            h_rows = _holdings_rows(account,  target_date, raw["holdings"],       now_ist, settled=settled, market_open=market_open)
+            p_rows = _positions_rows(account, target_date, raw["positions"] or [], now_ist, settled=settled, market_open=market_open)
             t_rows = _trades_rows(account,    target_date, raw["trades"])
             f_rows = _funds_rows(account,     target_date, raw["funds"])
 

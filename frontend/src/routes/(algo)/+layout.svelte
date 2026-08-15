@@ -1357,7 +1357,7 @@
 
     <footer class="algo-footer">
       <span class="algo-footer-brand">
-        <span class="algo-footer-text">RamboQuant Analytics</span>
+        <span class="algo-footer-text"><span class="algo-brand-full">RamboQuant Analytics</span><span class="algo-brand-short">RamboQuant</span></span>
         <span class="algo-footer-sep">·</span>
       </span>
       <span class="algo-footer-text">{pageLabel}</span>
@@ -2097,7 +2097,12 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
-  @media (max-width: 639px) { .algo-footer-brand { display: none; } }
+  .algo-brand-short { display: none; }
+  @media (max-width: 639px) {
+    .algo-footer-brand { display: inline; }
+    .algo-brand-full  { display: none; }
+    .algo-brand-short { display: inline; }
+  }
 
   @media (max-width: 640px) {
     /* Mobile chrome — keep all three sticky bands (navbar / ps-strip /
