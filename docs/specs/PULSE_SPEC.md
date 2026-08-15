@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.5 — 2026-08-13  
+**Version**: 1.7 — 2026-08-14  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -145,6 +145,10 @@ See Section 5 for DB-first policy and fallback ladder.
 
 - Open: live from broker via `closed_hours_or_broker()` → `'live'`
 - Closed: from `daily_book` snapshot → `'snapshot'` with `as_of` timestamp; uses refined filter `AND (qty != 0 OR date = today_ist)` (commits cef00739, 5ac11f56): closed positions from today's IST date appear in snapshot (shown with 'closed' chip + opacity decoration in derivatives legs grid); prior-session closed positions excluded (date != today_ist), only carried-overnight open positions visible
+
+**PositionRow schema (additions Aug 2026)**:
+- `is_orphan: bool` — True when no open AlgoOrder (status=OPEN) matches this position's (account, tradingsymbol). Positions without a parent order are considered orphaned; shown with coral "O" badge in MarketPulse grid
+- `pair_group_key: str | None` — shared root AlgoOrder ID for positions linked via parent-child relationship. When two orders are paired via `POST /api/orders/pair`, child rows share the same `pair_group_key` as the parent. Null when no AlgoOrder matches this position. Used by `postSortRows` callback to keep paired positions (parent + child) adjacent in sort order regardless of column sort direction
 
 **Day P&L computation in snapshot mode** (`_positions_snapshot()` and `_build_holding_row_from_snapshot()`):
 - Snapshot readers recompute `day_change_val` from prior-session EOD reference to ensure correct day P&L after market settlement
@@ -657,25 +661,39 @@ the accessors so cells see current $state values on every redraw (not stale bind
 - Green for CE (call, bullish), Red for PE (put, bearish) when visible in symbol display
 - Implemented in symbol cell renderer via `mkSymColRight` / `mkSymColLeft`
 
+**Orphan badge** (Aug 2026):
+- Coral "O" badge (class `badge-o`) shown in symbol or status column when `is_orphan=true`
+- Indicates position has no matching open AlgoOrder (status=OPEN) for its (account, tradingsymbol)
+- Visual cue for operators to establish a parent-child relationship via the OrderPairModal if needed
+
 **Numeric header style** — `numericHdr` CSS class for right-aligned headers matching data cells
 
 ---
 
-## 15. Row Grouping (postSortGroups)
+## 15. Row Grouping (postSortRows)
 
-After ag-Grid's per-column sort, the component re-arranges rows so option contracts stay grouped 
-with their underlying (NIFTY + all NIFTY calls + all NIFTY puts in one contiguous block).
+After ag-Grid's per-column sort, the component applies two grouping strategies:
 
-**Algorithm**:
+**Option underlyings grouping**:
 1. Scan `unifiedRows` and identify every underlying (from `row.underlying` field)
 2. For each underlying, collect all CE/PE rows that reference it
 3. Within each group, preserve ag-Grid's sort order (already applied)
 4. Rows without an underlying (cash equity, indices) remain individually sorted
 5. Detached symbols (operator drag-to-separate) sort individually at end of bucket
 
+**Order-pair grouping** (Aug 2026):
+- Rows with matching `pair_group_key` are kept adjacent: parent row immediately followed by all 
+  child rows. This grouping applies AFTER option-underlying grouping and is independent of 
+  column sort direction
+- When a user sorts by any column (P&L, qty, etc.), paired rows stay visually grouped, ensuring 
+  operators see related positions together
+- Rationale: parent-child order relationships should remain visible on the grid regardless 
+  of operator sort preferences
+
 **Preserve order of** — ag-Grid's per-column sorts (Day P&L, P&L %, volume, etc.) apply BEFORE 
 regrouping; no re-sort happens inside groups. If the operator sorted by P&L descending, 
-the highest-P&L option contract remains highest within its underlying block.
+the highest-P&L option contract remains highest within its underlying block, and paired 
+child rows remain adjacent to their parent.
 
 **Pinned-bottom rows** (TOTAL) — outside the sortable body; not affected by regrouping
 
@@ -1173,4 +1191,5 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-08-09 | v1.4 Holdings snapshot prev_batch CTE + MCX lot-scale day P&L (commit TBD): §4.4 updated — `_HOLDINGS_SNAPSHOT_SQL` now includes `prev_batch` CTE (same pattern as positions) finding most-recent prior-day LTP per (account, symbol) within 7-day lookback. `_build_holding_row_from_snapshot()` computes `day_change_val = (ltp - prev_ltp) × qty` when `prev_ltp > 0`, matching positions closed-hours pattern. Holdings day P&L during closed hours now derived from price diff, not stale stored value. Fallback to `(ltp - previous_close) × qty` when `prev_ltp` unavailable/zero. Related: MCX day_pnl lot-scale fix in BROKER_SPEC.md §7.3 — `_snap_compute_day_pnl()` now scales intraday quantities by lot_size before formula evaluation, fixing brand-new MCX positions showing day_pnl off by 100× on first snapshot. |
 | 2026-08-11 | v1.5 Positions close-price priority fix: §4.4 updated — `build_row_from_snapshot_raw` now prefers `previous_close` (frozen settlement) over `prev_ltp` (recent batch LTP) for `computed_day_pnl`, fixing positions showing day_change_val ≈ 0 after market close when daily_book had multiple intraday captures. Frontend: `_tickBookPollers()` now includes `pulseHoldingsStore.load()` so NavStrip H:1 stays in sync with Pulse Holdings TOTAL during closed hours. |
 | 2026-08-13 | v1.5 Position day P&L store + timer rationalization: §7 updated — MarketPulse reduced from 22 active timers across 7 cadences to 17 timers across 4 cadences (5s book poller, 30s quotes/movers/sparklines, 60s settings audit, tick-driven SSE). §11.1 new subsection documents `positionsDayPnlStore.svelte.js` module-level singleton (SSOT for live day P&L); exports `{ total, byKey }` at 4Hz throttle; consumed by PositionStrip P pill, MarketPulse grid cells, and Dashboard hero. `mergePositionRows` calls `livePositionDayPnl(ctx)` with `marketOpen: true` unconditionally, preferring snap LTP from `symbolStore` over `liveQ` LTP. |
+| 2026-08-14 | v1.7 Order-pair feature + orphan position tracking (commit 6f374a1a): §4.4 PositionRow added `is_orphan: bool` (True when no open AlgoOrder matches position's account/tradingsymbol) and `pair_group_key: str\|None` (shared root AlgoOrder ID for parent-child linked positions). §15 Row Grouping expanded — `postSortRows` callback now keeps paired positions (same `pair_group_key`) adjacent regardless of column sort. §14 Column Definitions added orphan badge documentation (coral "O" badge when `is_orphan=true` shown in symbol column). Frontend MarketPulse position rows show orphan badge; dangling child orders in ChaseCard show "O" chip. New `OrderPairModal.svelte` accessible from Pulse positions/legs headers; fetches recent orders, links parent + unlinked-child pickers, calls `POST /api/orders/pair` endpoint on submit. |
 | 2026-08-14 | v1.6 Snapshot WHERE NULL fix + holdings day P&L store (commit 43771b98): §4.4 Positions & Holdings updated — `_positions_snapshot()` WHERE filter fixed from `AND db.ltp IS NOT NULL AND db.ltp > 0` to `AND (db.ltp IS NULL OR NOT (db.ltp = 0 ...))` to include NULL LTP rows captured during mid-session NSE passes (prevents grid blanks when broker quote fails). `_override_stale_close_from_snapshot` cutoff extended from 00:00 IST to 08:00 IST — MCX post-midnight snapshots (00:00–08:00 IST) now included in stale-close override for continuous Day P&L visibility. Added §11.2 Holdings Day P&L SSOT (`holdingsDayPnlStore.svelte.js`, Aug 2026) documenting module-level singleton exporting `{ total, byKey }` at 5s live / 30min closed cadence; consumed by PositionStrip H pill, MarketPulse grid, and Dashboard. |

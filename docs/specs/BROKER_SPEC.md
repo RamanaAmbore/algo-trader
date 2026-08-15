@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.15 — 2026-08-13  
+**Version**: 1.17 — 2026-08-14  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -27,6 +27,8 @@ Code, tests, and documentation must stay in sync with this file.
 8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
 8.3 [GTT Template Attachment System Enhancements](#83-gtt-template-attachment-system-enhancements-jul-2026)
 8.4 [Broker Postback Fill-Status Mapping](#84-broker-postback-fill-status-mapping)
+8.5 [Orders Fetching Resilience & Chase Timeouts](#85-orders-fetching-resilience--chase-timeouts)
+8.6 [Order Pairing — Parent-Child Relationship Linking](#86-order-pairing--parent-child-relationship-linking)
 9. [Remote Broker & Conn Service](#9-remote-broker--conn-service)
 9.1 [Background Task Supervisor](#91-background-task-supervisor)
 10. [Virtual Root Resolution](#10-virtual-root-resolution)
@@ -879,6 +881,51 @@ calling `_load()` directly. When a poll is in-flight, concurrent `visibleInterva
 ticks are silently dropped. This prevents request starvation when the browser is 
 polling faster than the API responds (e.g., `fetch timeout > visibleInterval`).
 
+## 8.6 Order Pairing — Parent-Child Relationship Linking
+
+**File**: `backend/api/routes/orders.py` — `POST /api/orders/pair`
+
+Establishes a parent-child relationship between two AlgoOrder rows, enabling operators 
+to track which orders are related (e.g., entry + exit legs, multi-leg strategies).
+
+**Endpoint**: `POST /api/orders/pair`
+
+**Request body**:
+```json
+{
+  "parent_id": "<UUID>",
+  "child_id": "<UUID>"
+}
+```
+
+**Validation**:
+- Both `parent_id` and `child_id` must reference existing AlgoOrders (404 if not found)
+- `child_id` must not have an existing parent (`parent_order_id` must be None; 400 if occupied)
+- `parent_id` ≠ `child_id` (400 if same order used twice)
+
+**Effect**:
+- Updates `AlgoOrder.parent_order_id` on child row to `parent.id`
+- Child order is now considered "linked" to the parent strategy
+
+**Response**: 200 OK with updated child AlgoOrder record, or 4xx on validation failure
+
+**PositionRow schema impact** (Aug 2026):
+- New field `pair_group_key: str | None` set to `parent.id` when this position is linked to an 
+  open AlgoOrder (status=OPEN) with `parent_order_id=parent.id`. Null when no matching order exists
+- New field `is_orphan: bool` is True when position (account, tradingsymbol) has no matching 
+  open AlgoOrder
+
+**UI access** (`OrderPairModal.svelte`):
+- Accessible from MarketPulse positions grid header and Derivatives legs header
+- Fetches `/api/orders/recent` to populate parent + unlinked-child pickers
+- On submit, calls `POST /api/orders/pair` to establish relationship
+
+**Frontend side effects**:
+- MarketPulse position rows show coral "O" badge when `is_orphan=true`
+- `postSortRows` callback keeps positions with matching `pair_group_key` adjacent in grid (parent row 
+  immediately followed by child rows)
+- ChaseCard shows "O" chip for dangling child orders (parent not in active chase list)
+
 ---
 
 ## 9. Remote Broker & Conn Service
@@ -1427,3 +1474,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-11 | v1.14 Broker resilience fixes (commit fd4e9ae6): Added §9.2 Token Pre-Warm Task & Expiry Prevention documenting hourly `_task_prewarm_tokens()` in conn-service pre-warming Kite (05:45–05:59 IST), Dhan (token_age > 22h), and Groww (expired check). Updated §5 DhanConnection with login cooloff persistence to `/tmp/ramboq_dhan_login_cooloff.json` surviving restarts + `[DHAN-COOLOFF]` / `[DHAN-LOGIN]` logs. Updated §5 GrowwConnection with hardening: `CONN_RESET_HOURS = 23`, `_is_token_expired()` method, `_check_login_rate_limit()` 120s cooloff, proactive refresh in `get_groww_conn()`, `[GROWW-LOGIN]` logs. Updated §6 Circuit Breaker & Health with health heartbeat validity gate (skip expired tokens, once-per-cycle warning via `_heartbeat_warned` dedup), false-amber threshold fix (`_BROKER_HEALTH_FRESH_WINDOW_S` 300s→660s, accommodates 600s Dhan cold poll). Added subsection to §9.1 documenting `_task_token_refresh()` no-op warning when `RAMBOQ_USE_CONN_SERVICE=1`. |
 | 2026-08-13 | v1.15 KiteTicker + Dhan resilience + GTT pre-flight enhancements: Updated §7 KiteTicker & Mmap Pipeline with watchdog `asyncio.to_thread` non-blocking path, unsubscribe cleanup (prunes `_pending`, `_token_to_sym`, `_sym_to_token` maps), and MMAP re-registration suppression to check `_token_to_sym` before broker subscribe. Added §8.3.1 GTT Pre-flight Lot-Size Validation documenting synchronous G1 check at top of `apply_plan_live` before `broker.translate_qty` or any broker call; fails fast on misconfigured templates. Updated §8 DhanBroker with request stagger (50ms per request to avoid 429s) and order_type UNKNOWN_CAPS fallback (returns neutral string instead of raising on unrecognised `orderType` field). Updated §6 Circuit Breaker & Health to clarify persistence to `broker_accounts.cb_state_json` on each transition (open/half-open/closed) with fallback to `/tmp/ramboq_cb_state.json` on startup. |
 | 2026-08-14 | v1.16 Daily snapshot UPSERT idempotency fix + background task auto-subscription (commit 43771b98): Added §7.3.1 Daily Snapshot UPSERT Idempotency & LTP Coalesce Fix documenting `COALESCE(EXCLUDED.ltp, daily_book.ltp)` + `payload_json` CASE guard preventing mid-session NSE passes from overwriting MCX settlement LTPs with NULL (fixes blank grid cells + NAV collapse). Renumbered subsequent sections (7.3.2 Firm NAV, 7.3.3 Holdings formula). Added subsection to §9.1 Background Task Supervisor documenting MCX options auto-subscription of front-month futures (via `resolve_symbol('CRUDEOIL', 'MCX')`) and NFO/BFO equity options auto-subscription of NSE/BSE spot underlyings (NIFTY, BANKNIFTY, stock names) in `_perf_subscribe_book_symbols()` to ensure real-time spot pricing for payoff charts via live KiteTicker ticks instead of 30s REST polls. |
+| 2026-08-14 | v1.17 Order-pair feature (commit 6f374a1a): Added §8.6 Order Pairing — Parent-Child Relationship Linking documenting `POST /api/orders/pair` endpoint (validation: parent + child must exist and be distinct, child cannot have existing parent); updates `AlgoOrder.parent_order_id` on child row. PositionRow schema additions: `is_orphan: bool` (True when no open AlgoOrder matches position's account/tradingsymbol), `pair_group_key: str\|None` (shared root AlgoOrder ID for linked positions). Frontend: `OrderPairModal.svelte` for establishing pairs; MarketPulse shows coral "O" badge on orphan positions; `postSortRows` keeps paired positions adjacent in grid; ChaseCard shows "O" chip for dangling children. |
