@@ -17,7 +17,7 @@ import asyncio
 import subprocess
 from datetime import date as dt_date
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import msgspec
 from litestar import Controller, Request, delete, get, post, put
@@ -937,6 +937,7 @@ def _benchmark_cache_key(symbol: str, from_str: str, to_str: str) -> tuple[str, 
 
 class SnapshotRequest(msgspec.Struct):
     date: str  # ISO format: YYYY-MM-DD or 'today'
+    market_open: Optional[bool] = None  # override market-open flag; None = auto-detect via is_market_open()
 
 
 class SnapshotResponse(msgspec.Struct):
@@ -1705,7 +1706,7 @@ class AdminController(Controller):
         date captures holdings + positions only; trades rows will be zero.
         """
         from datetime import date as dt_date
-        from backend.api.algo.daily_snapshot import snapshot_daily_book, _is_exchange_open_at
+        from backend.api.algo.daily_snapshot import snapshot_daily_book
         from backend.shared.helpers.date_time_utils import timestamp_indian
 
         date_str = (data.date or "").strip()
@@ -1717,8 +1718,15 @@ class AdminController(Controller):
             except ValueError:
                 raise HTTPException(status_code=422, detail=f"Invalid date: {date_str!r} — use YYYY-MM-DD")
 
-        now_ist = timestamp_indian()
-        _market_open = _is_exchange_open_at("NSE", now_ist) or _is_exchange_open_at("MCX", now_ist)
+        if data.market_open is not None:
+            _market_open = data.market_open
+        else:
+            from backend.shared.helpers.date_time_utils import (
+                is_any_segment_open, timestamp_indian as _ts_indian,
+            )
+            _market_open = await asyncio.to_thread(
+                lambda: is_any_segment_open(_ts_indian())
+            )
 
         try:
             result = await snapshot_daily_book(target_date=target, market_open=_market_open)

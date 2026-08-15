@@ -412,3 +412,226 @@ async def test_snapshot_prior_snapshot_untouched_on_bad_payload():
         f"No holdings upsert expected when all rows are bad-payload; "
         f"got {len(holdings_writes)} calls with holdings rows"
     )
+
+
+# ---------------------------------------------------------------------------
+# Bug 2 — _snap_holding_eod_vals: Dhan zero ltp falls back to close_price
+# ---------------------------------------------------------------------------
+
+class TestSnapHoldingEodValsDhanFallback:
+    """Bug 2: when last_price=0 (Dhan weekend/holiday), use close_price as ltp.
+
+    Without this fix the row passes to _is_zero_payload_row with ltp=0 and
+    day_pnl=0 — which is the bad-payload fingerprint — so the entire Dhan
+    account is dropped from daily_book and Pulse shows nothing after restarts.
+    """
+    _D = date(2026, 8, 16)  # Saturday
+    _NOW_EOD = datetime(2026, 8, 16, 23, 35)  # after MCX close
+
+    def test_dhan_zero_last_price_uses_close_price_as_ltp(self):
+        """When last_price=0 and close_price>0, ltp_val should equal close_price."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        r = {
+            "last_price": 0.0,      # Dhan returns 0 on non-trading days
+            "close_price": 1520.0,  # prior session close
+            "day_change": 0.0,
+            "pnl": 600.0,
+            "opening_quantity": 10,
+        }
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session=False)
+        assert ltp_val == pytest.approx(1520.0), (
+            f"Expected ltp_val=1520.0 (close_price fallback), got {ltp_val}"
+        )
+
+    def test_dhan_zero_last_price_uses_previous_close_when_no_close_price(self):
+        """When last_price=0 and close_price absent, fall back to previous_close."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        r = {
+            "last_price": 0.0,
+            "previous_close": 1510.0,
+            "day_change": 0.0,
+            "pnl": 400.0,
+            "opening_quantity": 10,
+        }
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session=False)
+        assert ltp_val == pytest.approx(1510.0), (
+            f"Expected ltp_val=1510.0 (previous_close fallback), got {ltp_val}"
+        )
+
+    def test_zero_ltp_fallback_does_not_apply_when_mid_session(self):
+        """Mid-session: ltp_val stays None regardless of close_price presence."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        r = {
+            "last_price": 0.0,
+            "close_price": 1520.0,
+            "day_change": 0.0,
+            "pnl": 600.0,
+            "opening_quantity": 10,
+        }
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session=True)
+        assert ltp_val is None, (
+            "Mid-session must still return None ltp even when close_price is available"
+        )
+
+    def test_normal_nonzero_last_price_not_overridden(self):
+        """When last_price is non-zero, close_price fallback must NOT override it."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        r = {
+            "last_price": 1560.0,
+            "close_price": 1500.0,
+            "day_change": 60.0,
+            "pnl": 600.0,
+            "opening_quantity": 10,
+        }
+        ltp_val, _day_pnl, _total_pnl = _snap_holding_eod_vals(r, mid_session=False)
+        assert ltp_val == pytest.approx(1560.0), (
+            f"Non-zero last_price must not be overridden by close_price; got {ltp_val}"
+        )
+
+    def test_dhan_zero_ltp_row_survives_zero_payload_guard(self):
+        """End-to-end: Dhan EOD row with last_price=0 + close_price>0 must not be filtered."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        dhan_holding = {
+            "tradingsymbol": "HDFCBANK",
+            "exchange": "NSE",
+            "opening_quantity": 5,
+            "average_price": 1700.0,
+            "last_price": 0.0,       # Dhan returns 0 on weekends
+            "close_price": 1720.0,   # prior session close
+            "day_change": 0.0,
+            "pnl": 100.0,
+        }
+        now = datetime(2026, 8, 16, 23, 35)  # Saturday post-close
+        rows = _holdings_rows(
+            "DH1234", self._D, [dhan_holding], now, market_open=False
+        )
+        assert len(rows) == 1, (
+            "Dhan holding row with close_price fallback must survive the zero-payload guard"
+        )
+        assert rows[0]["ltp"] == pytest.approx(1720.0), (
+            f"ltp in DB row should be close_price=1720.0, got {rows[0]['ltp']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug 3 — _snap_all_filtered: split guards (holdings-only / positions-only)
+# ---------------------------------------------------------------------------
+
+class TestSnapAllFilteredSplitGuard:
+    """Bug 3: the old combined guard required BOTH h_count>0 and p_count>0.
+
+    On weekends/holidays Dhan typically has holdings but NO positions.
+    The old guard would require raw_p_count > 0 to fire, so it never fired
+    and the filtered holdings rows were silently dropped (upserted as empty).
+    The fix separates the two checks so a holdings-only failure fires the guard.
+    """
+    _D = date(2026, 8, 16)
+
+    def _make_raw(self, n_holdings=1, n_positions=0):
+        """Build a minimal raw dict that mimics _fetch_account_data output."""
+        holdings = [
+            {
+                "tradingsymbol": f"STOCK{i}",
+                "exchange": "NSE",
+                "opening_quantity": 10,
+                "average_price": 1500.0,
+                "last_price": 0.0,
+                "day_change": 0.0,
+                "pnl": 0.0,
+            }
+            for i in range(n_holdings)
+        ]
+        positions = [
+            {
+                "tradingsymbol": f"FUT{i}",
+                "exchange": "NFO",
+                "quantity": 50,
+                "average_price": 23000.0,
+                "last_price": 0.0,
+                "close_price": 0.0,
+                "pnl": 0.0,
+            }
+            for i in range(n_positions)
+        ]
+        return {"holdings": holdings, "positions": positions}
+
+    def test_holdings_only_filtered_triggers_guard(self):
+        """Holdings filtered + no positions → _snap_all_filtered returns True."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        raw = self._make_raw(n_holdings=2, n_positions=0)
+        # h_rows empty (all filtered), p_rows empty (no positions)
+        result = _snap_all_filtered("DH1234", self._D, raw, h_rows=[], p_rows=[])
+        assert result is True, (
+            "_snap_all_filtered must return True when all holdings rows are filtered, "
+            "even if there are no positions (weekend/holiday scenario)"
+        )
+
+    def test_positions_only_filtered_triggers_guard(self):
+        """Positions filtered (no holdings) → _snap_all_filtered returns True."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        raw = self._make_raw(n_holdings=0, n_positions=1)
+        result = _snap_all_filtered("ZG0790", self._D, raw, h_rows=[], p_rows=[])
+        assert result is True, (
+            "_snap_all_filtered must return True when all positions rows are filtered"
+        )
+
+    def test_both_holdings_and_positions_filtered_triggers_guard(self):
+        """Both filtered → guard returns True (original case still works)."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        raw = self._make_raw(n_holdings=1, n_positions=1)
+        result = _snap_all_filtered("ZG0790", self._D, raw, h_rows=[], p_rows=[])
+        assert result is True
+
+    def test_guard_false_when_some_holdings_pass(self):
+        """Guard does NOT fire when at least one holdings row passes through."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        raw = self._make_raw(n_holdings=2, n_positions=0)
+        good_h_row = [{"symbol": "INFY", "kind": "holdings"}]
+        result = _snap_all_filtered("ZG0790", self._D, raw, h_rows=good_h_row, p_rows=[])
+        assert result is False, (
+            "_snap_all_filtered must return False when at least one holdings row passes"
+        )
+
+    def test_guard_false_when_no_raw_holdings_and_no_raw_positions(self):
+        """Empty account (no holdings, no positions) → guard returns False (nothing to protect)."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        raw = {"holdings": [], "positions": []}
+        result = _snap_all_filtered("ZG0790", self._D, raw, h_rows=[], p_rows=[])
+        assert result is False, (
+            "Guard must not fire when broker returned zero holdings AND zero positions "
+            "(newly-opened / empty account — nothing to protect)"
+        )
+
+    def test_old_combined_guard_would_have_passed_weekend_case_incorrectly(self):
+        """Regression: the old combined guard (h>0 AND p>0) fails on weekend.
+
+        On weekends Dhan returns holdings but no positions.
+        raw_p_count=0 → old guard never fires → bad rows written to DB.
+        The new split guard catches this: raw_h_count > 0 AND len(h_rows) == 0.
+        """
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        # Weekend scenario: 2 holdings (all filtered), 0 positions
+        raw = {"holdings": [{"tradingsymbol": "X"}, {"tradingsymbol": "Y"}], "positions": []}
+        # Old combined guard logic (manually simulated):
+        old_guard_fires = (
+            len(raw["holdings"]) > 0
+            and len([]) == 0
+            and len(raw["positions"] or []) > 0  # <-- this was False → bug
+            and len([]) == 0
+        )
+        assert old_guard_fires is False, "This confirms the old bug (combined guard never fires without positions)"
+
+        # New split guard correctly catches the case:
+        new_guard_fires = _snap_all_filtered("DH1234", self._D, raw, h_rows=[], p_rows=[])
+        assert new_guard_fires is True, "New split guard must fire for the weekend case"

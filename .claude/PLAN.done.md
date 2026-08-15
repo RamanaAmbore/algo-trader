@@ -1,74 +1,100 @@
-# Plan: Fix _is_exchange_open_at holiday blindness → Dhan holdings NULL ltp on holiday startup
+# Plan: Fix snapshot so Dhan holdings appear after weekend/holiday restarts
 
 ## Context
 
-Today is Aug 15, 2026 (Independence Day). Operator observed Dhan account holdings not appearing
-in the Holdings grid while Kite holdings are visible.
+The `market_open=False` startup fix landed correctly in `background.py`. After a server restart on Sat Aug 15, the startup snapshot fires with `market_open=False`. But two bugs downstream still prevent Dhan from appearing in Pulse:
 
-Root cause: `daily_snapshot.py:_is_exchange_open_at()` (line 44) checks time-of-day only — no
-holiday awareness. When the server restarts on a holiday between 09:15–15:30 IST:
+**Bug 1 — Admin trigger uses time-only `_is_exchange_open_at`**
+`trigger_pnl_snapshot` in `admin.py:1721` computes:
+```python
+_market_open = _is_exchange_open_at("NSE", now_ist) or _is_exchange_open_at("MCX", now_ist)
+```
+On Saturday at 14:00 IST this returns `True` (time falls inside trading window even though markets are closed). Operator can't manually re-trigger a correct snapshot from the admin panel.
 
-1. Startup snapshot correctly detects markets closed via `is_market_open()` (which uses the
-   holiday calendar) and fires `snapshot_daily_book()`.
-2. Inside `_holdings_rows`, `_is_exchange_open_at("NSE", now_ist)` returns **True** (time only,
-   no holiday check) → `mid_session=True` → `ltp_val = None`.
-3. UPSERT stores `ltp = NULL`. `COALESCE(EXCLUDED.ltp, daily_book.ltp)` preserves prior non-NULL
-   values for Kite (Aug 14 EOD snapshot was good). Dhan accounts with no prior non-NULL row stay NULL.
-4. `_HOLDINGS_SNAPSHOT_SQL` filters `ltp IS NOT NULL` → Dhan accounts excluded → not shown.
+**Bug 2 — Dhan returns `last_price=0` on non-trading days; no fallback**
+Dhan's API sometimes returns `last_price=0` on weekends when its market-data cache is cold. The backfill (`_backfill_market_data_dicts`) attempts to fix this but may also return 0 on non-trading days (no live quotes). With `market_open=False` → `mid_session=False`, `_snap_holding_eod_vals` returns `ltp_val=0`. `_is_zero_payload_row(avg_cost>0, ltp=0, pnl=0)` fires → all Dhan rows filtered → empty upsert (no-op) → prior NULL rows preserved → `ltp IS NOT NULL` filter still excludes Dhan.
 
-Kite is unaffected because its Aug 14 15:35 IST snapshot (`mid_session=False` since 15:35 > 15:30)
-wrote non-NULL ltp, which COALESCE preserved.
+**Gap in `_snap_all_filtered`**: only protects when BOTH holdings AND positions are filtered. On weekends `raw_p_count=0`, so the condition is always False → no warning emitted when all holdings silently drop.
 
-## Task
+## Files
 
-Add a `market_open: bool` parameter to `snapshot_daily_book()` (and propagate to `_holdings_rows`
-and `_positions_rows`) so callers that KNOW markets are closed can override `_is_exchange_open_at`.
-
-When `market_open=False`, skip the `_is_exchange_open_at` call and treat `mid_session=False`
-unconditionally — holidays and weekends then correctly capture ltp instead of emitting NULL.
+- `backend/api/routes/admin.py` — `trigger_pnl_snapshot` + `SnapshotRequest`
+- `backend/api/algo/daily_snapshot.py` — `_snap_holding_eod_vals`, `_snap_all_filtered`
+- `backend/tests/test_snapshot_market_open.py` — extend with new tests
+- `backend/tests/test_snapshot_holiday_fix.py` — extend with new tests
 
 ## Agents
 
-- backend: In `backend/api/algo/daily_snapshot.py`:
-  1. Add `market_open: bool = True` param to `snapshot_daily_book()`, `_holdings_rows()`, `_positions_rows()`.
-  2. In `_holdings_rows` and `_positions_rows`, change:
-     `mid_session = _is_exchange_open_at(exchange, now_ist)`
-     to:
-     `mid_session = market_open and _is_exchange_open_at(exchange, now_ist)`
-  3. In `snapshot_daily_book()`, pass `market_open` down to the two row builders.
-  4. In `background.py:_task_daily_snapshot` (and the startup path at line ~1853):
-     - For the startup snapshot (fires when `not (_nse_open or _mcx_open)`): pass `market_open=False`
-     - For the 15:35 settlement snapshot: derive `market_open` from the probe result and pass it
-     - For `POST /api/admin/pnl/snapshot` endpoint: compute `market_open` from `is_market_open()` and pass it
-  5. Do NOT change `_is_exchange_open_at` itself — it's correct for the mid-session guard; only
-     the override path bypasses it.
-
-- backend-test: Add/update tests in `backend/tests/test_daily_snapshot.py`:
-  - Test that `_holdings_rows` with `market_open=False` sets `mid_session=False` even at 10:00 IST
-  - Test that `_holdings_rows` with `market_open=True` (default) still sets `mid_session=True` at 10:00 IST
-  - Test that `snapshot_daily_book(market_open=False)` produces non-NULL ltp for holdings during
-    normal-session time on a holiday
-
-- broker: skip
-- frontend: skip
+- backend: Fix Bug 1 + Bug 2 + `_snap_all_filtered` gap
+- backend-test: Add tests for all three fixes
 - doc: skip
+- frontend: skip
 - playwright: skip
+
+## Detailed changes
+
+### backend/api/routes/admin.py
+
+1. Add `market_open: Optional[bool] = None` to `SnapshotRequest` (msgspec Struct).
+2. In `trigger_pnl_snapshot`: replace the `_is_exchange_open_at` block with:
+   ```python
+   import asyncio
+   from backend.shared.helpers.date_time_utils import is_market_open
+   if data.market_open is not None:
+       _market_open = data.market_open
+   else:
+       _market_open = await asyncio.to_thread(is_market_open)
+   ```
+   This is holiday+weekend aware (not time-only). Operator can also force override via body `{"date":"today","market_open":false}`.
+
+### backend/api/algo/daily_snapshot.py — `_snap_holding_eod_vals`
+
+Add close_price fallback when `mid_session=False` and Dhan returns `last_price=0`:
+```python
+# existing: ltp_val = r.get("last_price")
+# add after:
+if not ltp_val:  # 0, None, or missing
+    ltp_val = r.get("close_price") or r.get("previous_close")
+```
+This ensures the DB row gets a non-zero ltp (previous-session close), passes both `ltp IS NOT NULL` and the `NOT (ltp=0 AND ...)` guard, and is correct semantics for non-trading day display.
+
+### backend/api/algo/daily_snapshot.py — `_snap_all_filtered`
+
+Extend condition to also warn+protect when holdings are all filtered regardless of positions (weekend case):
+```python
+# Current:
+if raw_h_count > 0 and len(h_rows) == 0 and raw_p_count > 0 and len(p_rows) == 0:
+# Change to:
+if raw_h_count > 0 and len(h_rows) == 0:
+    logger.warning(
+        f"Snapshot [{account}] date={target_date} — ALL "
+        f"{raw_h_count} holdings rows filtered (bad payload / zero ltp). "
+        f"Prior snapshot preserved. No upsert performed."
+    )
+    return True
+if raw_p_count > 0 and len(p_rows) == 0:
+    logger.warning(...)
+    return True
+return False
+```
 
 ## Tests
 
+- Admin endpoint: verify `market_open=None` uses `is_market_open()` (weekend → False), verify explicit `market_open=False` override works
+- `_snap_holding_eod_vals`: when `last_price=0` and `close_price=1500.0`, `ltp_val` resolves to `1500.0`
+- `_snap_all_filtered`: returns True when all holdings filtered + no positions (weekend scenario)
+
+## Tests
 - pytest: yes
 - svelte-check: no
 - playwright: no
 
 ## Commit message
-
-fix(snapshot): pass market_open flag to row builders so holiday startup captures non-NULL ltp for Dhan holdings
+fix(snapshot): admin trigger uses is_market_open(); close_price fallback when last_price=0
 
 ## Done when
-
-- `_holdings_rows` and `_positions_rows` accept `market_open` param
-- Startup snapshot passes `market_open=False` when `not (_nse_open or _mcx_open)`
-- Settlement snapshot passes `market_open=(nse_open or mcx_open)` 
-- pytest passes with new tests covering the holiday path
-- Manually triggering `POST /api/admin/pnl/snapshot` should now write non-NULL ltp for all accounts
-  regardless of time of day
+- `POST /api/admin/pnl/snapshot {}` auto-detects weekend/holiday via `is_market_open()` → captures non-NULL ltp
+- `POST /api/admin/pnl/snapshot {"market_open": false}` explicit override works
+- Dhan holdings with `last_price=0` use `close_price` as ltp → appear in Pulse on non-trading days
+- `_snap_all_filtered` emits warning and skips upsert when all holdings are zero-filtered (weekend, no positions)
+- All new tests green

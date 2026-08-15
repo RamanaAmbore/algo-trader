@@ -674,5 +674,304 @@ class TestMarketOpenPayloadIntegrity:
         assert payload["snapshot_extras"]["settled"] is True
 
 
+# ---------------------------------------------------------------------------
+# Test 2: _snap_holding_eod_vals close_price fallback when last_price=0
+# ---------------------------------------------------------------------------
+
+class TestSnapHoldingEodValsClosePriceFallback:
+    """Verify _snap_holding_eod_vals uses close_price when last_price=0."""
+
+    def test_ltp_zero_closes_price_nonzero_uses_close_price(self):
+        """When last_price=0 but close_price > 0, should fallback to close_price for ltp_val."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        row = {
+            "last_price": 0,  # Zero ltp (Dhan returns 0 when cache cold)
+            "close_price": 1500.0,  # Non-zero close
+            "day_change": 60.0,
+            "pnl": 300.0,
+            "opening_quantity": 10,
+        }
+
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(row, mid_session=False)
+
+        # With close_price fallback fix, should use close_price when last_price=0
+        assert ltp_val == pytest.approx(1500.0), (
+            f"When last_price=0 but close_price=1500.0, ltp_val should fallback to close_price, "
+            f"got {ltp_val}"
+        )
+
+    def test_ltp_zero_close_price_zero_returns_zero(self):
+        """When both last_price=0 and close_price=0, ltp_val should be 0.0."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        row = {
+            "last_price": 0,
+            "close_price": 0,
+            "day_change": None,
+            "pnl": 0.0,
+            "opening_quantity": 10,
+        }
+
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(row, mid_session=False)
+
+        # With both prices zero, will fallback through: last_price=0 → close_price=0 → 0.0
+        assert ltp_val == 0.0, (
+            f"When both last_price=0 and close_price=0, ltp_val should be 0.0, got {ltp_val}"
+        )
+
+    def test_snap_holding_eod_vals_mid_session_suppresses_prices(self):
+        """mid_session=True suppresses ltp/day_pnl regardless of prices."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        row = {
+            "last_price": 1560.0,
+            "close_price": 1500.0,
+            "day_change": 60.0,
+            "pnl": 600.0,
+            "opening_quantity": 10,
+        }
+
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(row, mid_session=True)
+
+        # Both should be None when mid_session=True
+        assert ltp_val is None, "ltp_val must be None during mid-session"
+        assert day_pnl_v is None, "day_pnl_v must be None during mid-session"
+        # total_pnl_v is always captured (not suppressed)
+        assert total_pnl_v == 600.0
+
+    def test_snap_holding_eod_vals_computes_day_pnl_from_day_change(self):
+        """day_pnl_v = day_change × qty when mid_session=False."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        row = {
+            "last_price": 1560.0,
+            "close_price": 1500.0,
+            "day_change": 60.0,
+            "pnl": 600.0,
+            "opening_quantity": 10,
+        }
+
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(row, mid_session=False)
+
+        expected_day_pnl = 60.0 * 10  # 600.0
+        assert day_pnl_v == pytest.approx(expected_day_pnl), (
+            f"day_pnl_v should be day_change × qty = {expected_day_pnl}, got {day_pnl_v}"
+        )
+
+    def test_snap_holding_eod_vals_missing_day_change_returns_none(self):
+        """When day_change is missing/None, day_pnl_v is None."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        row = {
+            "last_price": 1560.0,
+            "close_price": 1500.0,
+            "day_change": None,  # Missing
+            "pnl": 600.0,
+            "opening_quantity": 10,
+        }
+
+        ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(row, mid_session=False)
+
+        assert day_pnl_v is None, "day_pnl_v should be None when day_change is None"
+
+
+# ---------------------------------------------------------------------------
+# Test 3: _snap_all_filtered returns True when all holdings filtered + no positions
+# ---------------------------------------------------------------------------
+
+class TestSnapAllFiltered:
+    """Test _snap_all_filtered function for weekend/holiday scenarios."""
+
+    def test_snap_all_filtered_returns_true_when_holdings_filtered_and_no_positions(self):
+        """Weekend scenario: Dhan returns holdings but all filtered, no positions."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        account = "DH3747"
+        target_date = date(2026, 8, 16)  # Saturday
+
+        # Raw broker response has 3 holdings, but all were filtered
+        raw = {
+            "holdings": [
+                {"tradingsymbol": "RELIANCE", "exchange": "NSE", "last_price": 0},
+                {"tradingsymbol": "INFY", "exchange": "NSE", "last_price": 0},
+                {"tradingsymbol": "TCS", "exchange": "NSE", "last_price": 0},
+            ],
+            "positions": []  # No positions on weekend
+        }
+
+        h_rows = []  # All 3 holdings were filtered
+        p_rows = []  # No positions
+
+        result = _snap_all_filtered(account, target_date, raw, h_rows, p_rows)
+
+        assert result is True, (
+            "Should return True when broker returned holdings but all were filtered + no positions "
+            "(indicates bad payload, prior snapshot should be preserved)"
+        )
+
+    def test_snap_all_filtered_returns_false_when_some_holdings_pass(self):
+        """Normal scenario: some holdings are not filtered."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        account = "ZG0790"
+        target_date = date(2026, 8, 14)
+
+        raw = {
+            "holdings": [
+                {"tradingsymbol": "RELIANCE", "exchange": "NSE"},
+                {"tradingsymbol": "INFY", "exchange": "NSE"},
+            ],
+            "positions": []
+        }
+
+        h_rows = [{"symbol": "RELIANCE", "ltp": 2850.0}]  # 1 of 2 passed
+        p_rows = []
+
+        result = _snap_all_filtered(account, target_date, raw, h_rows, p_rows)
+
+        assert result is False, (
+            "Should return False when at least one holding row passes the filter"
+        )
+
+    def test_snap_all_filtered_returns_true_when_all_positions_filtered(self):
+        """All positions were filtered: broker returned them but they didn't pass."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        account = "ZG0790"
+        target_date = date(2026, 8, 14)
+
+        raw = {
+            "holdings": [],  # No holdings
+            "positions": [
+                {"tradingsymbol": "NIFTY25AUGFUT", "exchange": "NFO", "last_price": 0},
+                {"tradingsymbol": "BANKNIFTY25AUGFUT", "exchange": "NFO", "last_price": 0},
+            ]
+        }
+
+        h_rows = []
+        p_rows = []  # All 2 positions were filtered
+
+        result = _snap_all_filtered(account, target_date, raw, h_rows, p_rows)
+
+        assert result is True, (
+            "Should return True when broker returned positions but all were filtered"
+        )
+
+    def test_snap_all_filtered_returns_true_when_holdings_filtered_even_if_positions_pass(self):
+        """Holdings filtered but positions passed: should still return True (bad holdings)."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        account = "ZG0790"
+        target_date = date(2026, 8, 14)
+
+        raw = {
+            "holdings": [{"tradingsymbol": "RELIANCE", "exchange": "NSE"}],
+            "positions": [{"tradingsymbol": "NIFTY25AUGFUT", "exchange": "NFO"}]
+        }
+
+        h_rows = []  # All 1 holding filtered (bad payload)
+        p_rows = [{"symbol": "NIFTY25AUGFUT", "ltp": 25100.0}]  # 1 position passed
+
+        result = _snap_all_filtered(account, target_date, raw, h_rows, p_rows)
+
+        # Returns True because holdings were all filtered (bad payload signal)
+        # This protects the snapshot — holdings won't be updated, positions will be
+        assert result is True, (
+            "Should return True when holdings are all filtered, even if positions passed "
+            "(indicates holdings bad payload, protects snapshot)"
+        )
+
+    def test_snap_all_filtered_returns_false_when_both_holdings_and_positions_pass(self):
+        """Both holdings and positions have some rows pass the filter."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        account = "ZG0790"
+        target_date = date(2026, 8, 14)
+
+        raw = {
+            "holdings": [
+                {"tradingsymbol": "RELIANCE", "exchange": "NSE"},
+                {"tradingsymbol": "INFY", "exchange": "NSE"},
+            ],
+            "positions": [{"tradingsymbol": "NIFTY25AUGFUT", "exchange": "NFO"}]
+        }
+
+        h_rows = [{"symbol": "RELIANCE", "ltp": 2850.0}]  # 1 of 2 passed
+        p_rows = [{"symbol": "NIFTY25AUGFUT", "ltp": 25100.0}]  # 1 of 1 passed
+
+        result = _snap_all_filtered(account, target_date, raw, h_rows, p_rows)
+
+        assert result is False, (
+            "Should return False when at least one row passes from both holdings and positions"
+        )
+
+    def test_snap_all_filtered_returns_false_when_no_raw_holdings(self):
+        """Empty raw holdings (broker returned nothing)."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        account = "ZG0790"
+        target_date = date(2026, 8, 14)
+
+        raw = {
+            "holdings": [],  # Broker returned no holdings
+            "positions": []
+        }
+
+        h_rows = []
+        p_rows = []
+
+        result = _snap_all_filtered(account, target_date, raw, h_rows, p_rows)
+
+        assert result is False, (
+            "Should return False when broker returned no holdings (not a filtering issue, just empty account)"
+        )
+
+    def test_snap_all_filtered_returns_false_when_no_raw_positions(self):
+        """Empty raw positions (broker returned nothing — no filtering)."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        account = "ZG0790"
+        target_date = date(2026, 8, 14)
+
+        raw = {
+            "holdings": [{"tradingsymbol": "RELIANCE", "exchange": "NSE"}],
+            "positions": []  # Broker returned no positions (account has no open positions)
+        }
+
+        h_rows = [{"symbol": "RELIANCE", "ltp": 2850.0}]
+        p_rows = []
+
+        result = _snap_all_filtered(account, target_date, raw, h_rows, p_rows)
+
+        assert result is False, (
+            "Should return False when broker returned no positions (no filtering happened)"
+        )
+
+    def test_snap_all_filtered_returns_false_when_raw_positions_none(self):
+        """raw['positions'] is None (broker call failed, not filtering)."""
+        from backend.api.algo.daily_snapshot import _snap_all_filtered
+
+        account = "ZG0790"
+        target_date = date(2026, 8, 14)
+
+        raw = {
+            "holdings": [{"tradingsymbol": "RELIANCE", "exchange": "NSE"}],
+            "positions": None  # Broker positions call failed
+        }
+
+        h_rows = [{"symbol": "RELIANCE", "ltp": 2850.0}]
+        p_rows = []
+
+        result = _snap_all_filtered(account, target_date, raw, h_rows, p_rows)
+
+        # When positions is None, len(None or []) = len([]) = 0 (no raw positions)
+        # raw_p_count = 0, so the "all positions filtered" check doesn't fire
+        # Only holdings check matters: raw_h_count=1 > 0, len(h_rows)=1, so NOT all filtered
+        assert result is False, (
+            "Should return False when positions call failed (None) but holdings passed"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

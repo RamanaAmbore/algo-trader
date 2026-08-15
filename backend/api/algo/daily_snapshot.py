@@ -414,6 +414,13 @@ def _snap_holding_eod_vals(
     total_pnl_raw = r.get("pnl")
     qty = int(r.get("opening_quantity") or r.get("quantity") or 1)
     ltp_val   = None if mid_session else (float(last_price) if last_price is not None else None)
+    # Dhan and some brokers return last_price=0 on non-trading days (weekends,
+    # holidays). Fall back to close_price / previous_close so the row survives
+    # the _is_zero_payload_row guard and Pulse shows prior-session prices.
+    if not mid_session and not ltp_val:
+        _fallback = r.get("close_price") or r.get("previous_close")
+        if _fallback:
+            ltp_val = float(_fallback)
     day_pnl_v = None if mid_session else (
         float(day_change) * qty if day_change is not None else None
     )
@@ -797,11 +804,17 @@ def _snap_all_filtered(
     """
     raw_h_count = len(raw["holdings"])
     raw_p_count = len(raw["positions"] or [])
-    if raw_h_count > 0 and len(h_rows) == 0 and raw_p_count > 0 and len(p_rows) == 0:
+    if raw_h_count > 0 and len(h_rows) == 0:
         logger.warning(
             f"Snapshot [{account}] date={target_date} — ALL "
-            f"{raw_h_count} holdings + {raw_p_count} positions rows "
-            f"filtered (bad payload / invalid token). "
+            f"{raw_h_count} holdings rows filtered (bad payload / zero ltp). "
+            f"Prior snapshot preserved. No upsert performed."
+        )
+        return True
+    if raw_p_count > 0 and len(p_rows) == 0:
+        logger.warning(
+            f"Snapshot [{account}] date={target_date} — ALL "
+            f"{raw_p_count} positions rows filtered. "
             f"Prior snapshot preserved. No upsert performed."
         )
         return True
