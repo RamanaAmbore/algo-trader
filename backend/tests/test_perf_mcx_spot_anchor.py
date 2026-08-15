@@ -227,22 +227,27 @@ async def test_empty_list_active_futures_no_crash():
 
 @pytest.mark.asyncio
 async def test_spot_anchor_code_present_in_source():
-    """Both MCX and NFO/BFO spot-anchor blocks must be present in
-    _perf_subscribe_book_symbols source."""
+    """Spot-anchor helper functions must contain the MCX/NFO subscription logic."""
     import inspect
-    from backend.api.background import _perf_subscribe_book_symbols
-    src = inspect.getsource(_perf_subscribe_book_symbols)
-    # MCX path: must call list_active_futures
-    assert "list_active_futures" in src or "_laf" in src, (
-        "_perf_subscribe_book_symbols must call list_active_futures for MCX spot anchors"
+    from backend.api.background import _add_mcx_spot_anchors, _add_nfo_spot_anchors, _perf_subscribe_book_symbols
+    mcx_src = inspect.getsource(_add_mcx_spot_anchors)
+    nfo_src = inspect.getsource(_add_nfo_spot_anchors)
+    sub_src = inspect.getsource(_perf_subscribe_book_symbols)
+    # MCX helper: must call list_active_futures and match CE/PE options
+    assert "list_active_futures" in mcx_src or "_laf" in mcx_src, (
+        "_add_mcx_spot_anchors must call list_active_futures"
     )
-    assert "MCX" in src and "(CE|PE)" in src, (
-        "MCX option pattern (CE|PE) must be present in the subscription logic"
+    assert "MCX" in mcx_src and "(CE|PE)" in mcx_src, (
+        "MCX option pattern (CE|PE) must be present in _add_mcx_spot_anchors"
     )
-    # NFO/BFO path: must handle NFO and BFO exchanges and append NSE root
-    assert "NFO" in src and "BFO" in src, (
-        "NFO and BFO exchange checks must be present for equity-option spot anchors"
+    # NFO helper: must handle NFO and BFO exchanges and append NSE root
+    assert "NFO" in nfo_src and "BFO" in nfo_src, (
+        "NFO and BFO exchange checks must be present in _add_nfo_spot_anchors"
     )
-    assert "'NSE'" in src or '"NSE"' in src, (
-        "NSE exchange must be appended as the spot anchor for NFO/BFO options"
+    assert "'NSE'" in nfo_src or '"NSE"' in nfo_src, (
+        "NSE exchange must be appended in _add_nfo_spot_anchors"
+    )
+    # Main function must delegate to both helpers
+    assert "_add_mcx_spot_anchors" in sub_src and "_add_nfo_spot_anchors" in sub_src, (
+        "_perf_subscribe_book_symbols must call both spot-anchor helpers"
     )
