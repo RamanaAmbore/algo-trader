@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.17 — 2026-08-14  
+**Version**: 1.18 — 2026-08-15  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -21,7 +21,12 @@ Code, tests, and documentation must stay in sync with this file.
 7.1 [Market-Data Backfill Pipeline](#71-market-data-backfill-pipeline)
 7.2 [Instruments & Token-Map Cache](#72-instruments--token-map-cache)
 7.3 [Daily Snapshot Orphan Cleanup](#73-daily-snapshot-orphan-cleanup)
-7.3.1 [Firm NAV Computation & Closed-Exchange LTP Overlay](#731-firm-nav-computation--closed-exchange-ltp-overlay)
+7.3.1 [Daily Snapshot UPSERT Idempotency & LTP Coalesce Fix](#731-daily-snapshot-upsert-idempotency--ltp-coalesce-fix-aug-2026)
+7.3.2 [Admin Snapshot Trigger — Holiday-Aware Market-Open Detection](#732-admin-snapshot-trigger--holiday-aware-market-open-detection-aug-2026)
+7.3.3 [Dhan `last_price=0` Fallback in EOD Snapshots](#733-dhan-last_price0-fallback-in-eod-snapshots-aug-2026)
+7.3.4 [Weekend Guard for Filtered Holdings & Positions](#734-weekend-guard-for-filtered-holdings--positions-aug-2026)
+7.3.5 [Firm NAV Computation & Closed-Exchange LTP Overlay](#735-firm-nav-computation--closed-exchange-ltp-overlay)
+7.3.6 [Holdings Snapshot Day Change Percentage Formula](#736-holdings-snapshot-day-change-percentage-formula)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
@@ -484,7 +489,108 @@ correctly throughout closed windows without blank cells from mid-session NULL ov
 
 ---
 
-## 7.3.2 Firm NAV Computation & Closed-Exchange LTP Overlay
+## 7.3.2 Admin Snapshot Trigger — Holiday-Aware Market-Open Detection (Aug 2026)
+
+**File**: `backend/api/routes/admin.py` — `POST /api/admin/pnl/snapshot`
+
+The admin snapshot trigger endpoint allows operators to manually capture daily book snapshots (holdings, positions, trades) for a given date. The endpoint now correctly detects market-open status using holiday-aware logic and allows explicit overrides.
+
+### Request schema
+
+```json
+{
+  "date": "YYYY-MM-DD or 'today'",
+  "market_open": boolean | null
+}
+```
+
+**`date`** — ISO format date string or `"today"` (resolved to IST). Trades are only available for today's IST date; historical dates capture holdings + positions only.
+
+**`market_open`** — Optional override. When provided (true/false), forces EOD mode (`false`) or live mode (`true`) regardless of actual exchange status. When `null` or omitted, auto-detects via `is_any_segment_open()`.
+
+### Market-open detection (Aug 2026 fix)
+
+Prior behaviour: `_is_exchange_open_at()` checked time-of-day only, ignoring holidays. Snapshot triggered on a weekend would capture holdings at stale broker LTPs (not settlement prices).
+
+**New behaviour**: `is_any_segment_open(_ts_indian())` checks both:
+- Time of day (each exchange's session hours)
+- Holiday calendar (NSE/BSE/MCX/NCDEX/CDSL/USDINR closed dates)
+
+Result: Triggering snapshot on a weekend or holiday correctly detects closed state and writes EOD prices to `daily_book`.
+
+### Explicit override pattern
+
+Operator can force EOD mode on any date:
+
+```json
+POST /api/admin/pnl/snapshot
+{"date": "2026-08-15", "market_open": false}
+```
+
+Regardless of the time-of-day or holiday status, the snapshot captures with settlement/close prices instead of live LTPs.
+
+### Response schema
+
+```json
+{
+  "accounts": ["ZG0790", "DH3747"],
+  "holdings_rows": 42,
+  "positions_rows": 18,
+  "trades_rows": 0,
+  "errors": []
+}
+```
+
+**`accounts`** — List of broker accounts that contributed data.
+
+**`holdings_rows`**, **`positions_rows`**, **`trades_rows`** — Rows written to `daily_book` per kind. Trades only present for today's IST date.
+
+**`errors`** — List of per-account capture failures (account name + error message). Snapshot completes partially (other accounts' data written) even if some fail.
+
+---
+
+## 7.3.3 Dhan `last_price=0` Fallback in EOD Snapshots (Aug 2026)
+
+**File**: `backend/api/algo/daily_snapshot.py` — `_snap_holding_eod_vals()`
+
+When capturing holdings snapshots on non-trading days (weekends, holidays), Dhan's market-data cache is often cold and returns `last_price=0` for all holdings. This causes holdings rows to disappear from the Pulse grid during closed windows.
+
+### Fallback chain in `_snap_holding_eod_vals()`
+
+When `last_price=0` AND `mid_session=False` (i.e., snapshot is capturing EOD prices):
+
+1. Try `close_price` (broker's prior-session close, if available)
+2. Fall back to `previous_close` (from daily_book, if available)
+3. Only use `last_price=0` if both above are missing/zero
+
+**Impact**: Dhan holdings appear in Pulse on non-trading days even when Dhan's quote API is cold. Holdings show prior-session close prices (visually stale but correct) instead of disappearing.
+
+**Example**: On Sunday morning, operator checks Pulse → Dhan holdings visible with Saturday's close prices (not live LTPs). After market open Monday, holdings refresh to live LTPs.
+
+---
+
+## 7.3.4 Weekend Guard for Filtered Holdings & Positions (Aug 2026)
+
+**File**: `backend/api/algo/daily_snapshot.py` — `_snap_all_filtered()`
+
+When a broker returns all-zero quantities for holdings or positions (e.g., weekend when no positions open), the snapshot upsert skips to protect stale data. The guard now operates independently for holdings and positions.
+
+### Prior behaviour
+
+If ANY rows were filtered (holdings=0 or positions=0), but the OTHER category had data, the function would still skip upsert. Example: Weekend snapshot with zero positions but active holdings → holdings were silently dropped.
+
+### New behaviour (Aug 2026)
+
+The guard fires per-category:
+
+- **Holdings filtered entirely** → skip holdings UPSERT, but still UPSERT positions if present
+- **Positions filtered entirely** → skip positions UPSERT, but still UPSERT holdings if present
+
+**Impact**: On weekends, Dhan holdings (which remain even when positions flatten) are now captured. Weekend snapshots no longer lose active holdings when open positions drop to zero.
+
+---
+
+## 7.3.5 Firm NAV Computation & Closed-Exchange LTP Overlay
 
 **File**: `backend/api/algo/nav.py` — `compute_firm_nav()` + `_fetch_holdings_phase()`
 
@@ -526,7 +632,7 @@ used frozen DB snapshots.
 
 ---
 
-## 7.3.3 Holdings Snapshot Day Change Percentage Formula
+## 7.3.6 Holdings Snapshot Day Change Percentage Formula
 
 **File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`
 
@@ -1475,3 +1581,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-13 | v1.15 KiteTicker + Dhan resilience + GTT pre-flight enhancements: Updated §7 KiteTicker & Mmap Pipeline with watchdog `asyncio.to_thread` non-blocking path, unsubscribe cleanup (prunes `_pending`, `_token_to_sym`, `_sym_to_token` maps), and MMAP re-registration suppression to check `_token_to_sym` before broker subscribe. Added §8.3.1 GTT Pre-flight Lot-Size Validation documenting synchronous G1 check at top of `apply_plan_live` before `broker.translate_qty` or any broker call; fails fast on misconfigured templates. Updated §8 DhanBroker with request stagger (50ms per request to avoid 429s) and order_type UNKNOWN_CAPS fallback (returns neutral string instead of raising on unrecognised `orderType` field). Updated §6 Circuit Breaker & Health to clarify persistence to `broker_accounts.cb_state_json` on each transition (open/half-open/closed) with fallback to `/tmp/ramboq_cb_state.json` on startup. |
 | 2026-08-14 | v1.16 Daily snapshot UPSERT idempotency fix + background task auto-subscription (commit 43771b98): Added §7.3.1 Daily Snapshot UPSERT Idempotency & LTP Coalesce Fix documenting `COALESCE(EXCLUDED.ltp, daily_book.ltp)` + `payload_json` CASE guard preventing mid-session NSE passes from overwriting MCX settlement LTPs with NULL (fixes blank grid cells + NAV collapse). Renumbered subsequent sections (7.3.2 Firm NAV, 7.3.3 Holdings formula). Added subsection to §9.1 Background Task Supervisor documenting MCX options auto-subscription of front-month futures (via `resolve_symbol('CRUDEOIL', 'MCX')`) and NFO/BFO equity options auto-subscription of NSE/BSE spot underlyings (NIFTY, BANKNIFTY, stock names) in `_perf_subscribe_book_symbols()` to ensure real-time spot pricing for payoff charts via live KiteTicker ticks instead of 30s REST polls. |
 | 2026-08-14 | v1.17 Order-pair feature (commit 6f374a1a): Added §8.6 Order Pairing — Parent-Child Relationship Linking documenting `POST /api/orders/pair` endpoint (validation: parent + child must exist and be distinct, child cannot have existing parent); updates `AlgoOrder.parent_order_id` on child row. PositionRow schema additions: `is_orphan: bool` (True when no open AlgoOrder matches position's account/tradingsymbol), `pair_group_key: str\|None` (shared root AlgoOrder ID for linked positions). Frontend: `OrderPairModal.svelte` for establishing pairs; MarketPulse shows coral "O" badge on orphan positions; `postSortRows` keeps paired positions adjacent in grid; ChaseCard shows "O" chip for dangling children. |
+| 2026-08-15 | v1.18 Admin snapshot trigger + Dhan EOD fallback + weekend guard (commit TBD): Added §7.3.2 Admin Snapshot Trigger documenting `POST /api/admin/pnl/snapshot` endpoint with `market_open` override. Changed holiday-aware detection from time-only `_is_exchange_open_at()` to full `is_any_segment_open()` (checks both hours + holiday calendar). Added §7.3.3 Dhan `last_price=0` Fallback in EOD Snapshots documenting `_snap_holding_eod_vals()` fallback chain: `close_price` → `previous_close` → `last_price=0` when mid_session=False. Ensures Dhan holdings appear in Pulse on non-trading days. Added §7.3.4 Weekend Guard for Filtered Holdings & Positions documenting per-category upsert skip: holdings filtered → skip holdings only, positions filtered → skip positions only (prior: filtered either → skip both). Fixes weekend Dhan holdings disappearing when open positions flatten. Renumbered subsequent sections (7.3.5 Firm NAV). |
