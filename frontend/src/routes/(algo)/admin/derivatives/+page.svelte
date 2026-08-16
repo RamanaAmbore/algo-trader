@@ -669,6 +669,15 @@
       const q = _filterLegs.toUpperCase();
       rows = rows.filter(c => String(c.symbol || '').toUpperCase().includes(q));
     }
+    // Pair-group sort (legs tab only — expiry tab preserves its band ordering).
+    // P1 cluster → P2 → … → orphan / ungrouped last. Stable within each group.
+    if (legsTab !== 'expiry') {
+      rows = rows.slice().sort((a, b) => {
+        const ka = a.pair_group_key ?? 'ZZZZ_orphan';
+        const kb = b.pair_group_key ?? 'ZZZZ_orphan';
+        return ka < kb ? -1 : ka > kb ? 1 : 0;
+      });
+    }
     return rows;
   });
 

@@ -833,6 +833,30 @@
   background: rgba(34,211,238,0.75);
 }
 
+/* Pair / orphan chips in symbol cell */
+.pair-chip {
+  background: rgba(34,211,238,0.18);
+  color: #67e8f9;
+  border: 1px solid rgba(34,211,238,0.40);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.orphan-chip {
+  background: rgba(251,191,36,0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(251,191,36,0.35);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
 /* Long/short cues for the light-theme ramboq grid on the public
    /performance page. Earth-tone tints chosen to harmonise with the
    cream+champagne-gold public palette rather than fight it:

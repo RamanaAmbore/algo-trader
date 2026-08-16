@@ -72,6 +72,7 @@
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols } from '$lib/data/pulseColumns.js';
   import { postSortGroups2Level } from '$lib/data/pulseGridSetup.js';
+  import { pairGroupSort, pairChipHtml } from '$lib/data/pairGroupSort.js';
 
   // ModuleRegistry is registered inside onMount after the dynamic import.
 
@@ -649,6 +650,13 @@
         a.addEventListener('click', (e) => e.stopPropagation());
         span.appendChild(a);
       }
+      // Pair / orphan chips — inject HTML after text node
+      const chips = pairChipHtml(params.data);
+      if (chips) {
+        const chipWrap = document.createElement('span');
+        chipWrap.innerHTML = chips;
+        span.appendChild(chipWrap);
+      }
     }
     return span;
   }
@@ -1137,7 +1145,9 @@
     holdingsSummaryGrid  = makeGrid(holdingsSummaryEl,  holdingsSummaryCols);
     holdingsAllGrid      = makeGrid(holdingsAllEl,      holdingsCols, [], (r) => openOrderTicket(r, 'holdings'));
     positionsSummaryGrid = makeGrid(positionsSummaryEl, positionsSummaryCols);
-    positionsAllGrid     = makeGrid(positionsAllEl,     positionsCols, [], (r) => openOrderTicket(r, 'positions'), { postSortRows: postSortGroups2Level });
+    positionsAllGrid     = makeGrid(positionsAllEl,     positionsCols, [], (r) => openOrderTicket(r, 'positions'), {
+      postSortRows: (params) => { pairGroupSort(params.nodes); postSortGroups2Level(params); },
+    });
     fundsGrid            = makeGrid(fundsEl,             fundsCols);
     navGrid              = makeGrid(navEl,               navCols);
 

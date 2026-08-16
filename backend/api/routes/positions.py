@@ -1,5 +1,6 @@
 """Positions endpoint — returns per-account rows and summary."""
 
+import re
 import pandas as pd
 import polars as pl
 from litestar import Controller, Request, get
@@ -34,51 +35,141 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# AlgoOrder map helper
+# Lot-waterfall auto-pairing
 # ---------------------------------------------------------------------------
 
-async def _fetch_open_order_map(session) -> "dict[tuple[str, str], dict]":
-    """Return {(account, symbol): {id, parent_order_id}} for all OPEN AlgoOrders.
+# Matches the expiry/strike/type block at the end of a trading symbol.
+# Two alternatives (applied left-to-right):
+#   1. Month-code expiry: 24AUG + optional suffix → BANKNIFTY24AUGFUT, CRUDEOIL24AUGFUT
+#   2. Numeric strike + type suffix → NIFTY24800CE
+_EXPIRY_RE = re.compile(
+    r'\d{2}[A-Z]{3,}\d*(CE|PE|FUT|OPT|BE|BEF)?$'
+    r'|\d+(CE|PE|FUT|OPT|BE|BEF)$',
+    re.IGNORECASE,
+)
 
-    Used to annotate PositionRow with `is_orphan` and `pair_group_key`.
-    A position is an orphan when no OPEN AlgoOrder exists for its
-    (account, tradingsymbol) pair.  pair_group_key is the root parent id
-    (as string) so parent + child positions can be grouped in the UI.
+
+def _root_symbol(tradingsymbol: str) -> str:
+    """Strip expiry / strike / type suffixes to get the underlying root name.
+
+    Examples:
+        NIFTY24800CE    → NIFTY
+        BANKNIFTY24AUGFUT → BANKNIFTY
+        CRUDEOIL24AUGFUT  → CRUDEOIL
+        GOLDM24AUGFUT     → GOLDM
+        INFY              → INFY
     """
-    from sqlalchemy import text as _sql_text
-    rows = await session.execute(_sql_text(
-        "SELECT id, account, symbol, parent_order_id FROM algo_orders WHERE status = 'OPEN'"
-    ))
-    result: dict[tuple[str, str], dict] = {}
-    for r in rows:
-        key = (r.account, r.symbol)
-        result[key] = {"id": r.id, "parent_order_id": r.parent_order_id}
-    return result
+    s = tradingsymbol.upper()
+    # Step 1 — strip month-code expiry blocks (BANKNIFTY24AUGFUT → BANKNIFTY)
+    #           and numeric-strike+type blocks (NIFTY24800CE → NIFTY).
+    s = _EXPIRY_RE.sub('', s)
+    # Step 2 — mop up any remaining trailing digits.
+    s = re.sub(r'\d+$', '', s)
+    return s or tradingsymbol.upper()
 
 
-def _apply_order_map_to_rows(
-    rows: "list[PositionRow]",
-    order_map: "dict[tuple[str, str], dict]",
-) -> "list[PositionRow]":
-    """Return a new list of PositionRow structs with is_orphan and pair_group_key set.
+def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
+    """Lot-waterfall auto-pairing.
 
-    is_orphan  — True when (account, tradingsymbol) has no matching OPEN AlgoOrder.
-    pair_group_key — str(root parent AlgoOrder id) when matched; None otherwise.
-      Root parent = the AlgoOrder itself when parent_order_id is None,
-      or the parent_order_id value when it is set.
+    Groups rows by (account, root_symbol). Within each group, waterfall-matches
+    longs vs shorts by quantity (largest first). Each matched pair gets a
+    sequential key "P1", "P2" etc. Unmatched remainder → is_orphan=True.
+
+    paired_qty = lots matched into the pair
+    orphan_qty = abs(quantity) - paired_qty (unmatched lots on this row)
     """
     import msgspec as _msc
-    out: list[PositionRow] = []
-    for r in rows:
-        matched = order_map.get((r.account, r.tradingsymbol))
-        is_orphan = matched is None
-        if matched is not None:
-            root = matched["parent_order_id"] if matched["parent_order_id"] is not None else matched["id"]
-            pair_group_key: Optional[str] = str(root)
-        else:
-            pair_group_key = None
-        out.append(_msc.structs.replace(r, is_orphan=is_orphan, pair_group_key=pair_group_key))
-    return out
+
+    if not rows:
+        return rows
+
+    # Group rows by (account, root_symbol). We work on indices so we can
+    # accumulate replacements without mutating the original list.
+    from collections import defaultdict
+    groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for i, r in enumerate(rows):
+        key = (r.account, _root_symbol(r.tradingsymbol))
+        groups[key].append(i)
+
+    # Build the result list pre-populated with the originals; we will
+    # replace individual entries as we go.
+    result: list[PositionRow] = list(rows)
+
+    for (_account, _root), indices in groups.items():
+        # Partition into longs, shorts, and flat (quantity == 0).
+        longs: list[tuple[int, int]] = []   # (original_index, abs_qty)
+        shorts: list[tuple[int, int]] = []
+        for i in indices:
+            q = rows[i].quantity
+            if q > 0:
+                longs.append((i, q))
+            elif q < 0:
+                shorts.append((i, abs(q)))
+            # q == 0: no action — defaults (is_orphan=False, pair_group_key=None,
+            # paired_qty=0, orphan_qty=0) are already correct.
+
+        # Sort each side largest-first.
+        longs.sort(key=lambda t: t[1], reverse=True)
+        shorts.sort(key=lambda t: t[1], reverse=True)
+
+        # Waterfall matching.
+        pair_n = 1
+        # Use mutable lists of [index, remaining_qty] for in-place reduction.
+        longs_q: list[list] = [[i, q] for i, q in longs]
+        shorts_q: list[list] = [[i, q] for i, q in shorts]
+
+        while longs_q and shorts_q:
+            li, lq = longs_q[0]
+            si, sq = shorts_q[0]
+            match_qty = min(lq, sq)
+            key_label = f"P{pair_n}"
+
+            result[li] = _msc.structs.replace(
+                rows[li],
+                is_orphan=False,
+                pair_group_key=key_label,
+                paired_qty=match_qty,
+                orphan_qty=lq - match_qty,
+            )
+            result[si] = _msc.structs.replace(
+                rows[si],
+                is_orphan=False,
+                pair_group_key=key_label,
+                paired_qty=match_qty,
+                orphan_qty=sq - match_qty,
+            )
+
+            longs_q[0][1] -= match_qty
+            shorts_q[0][1] -= match_qty
+            if longs_q[0][1] == 0:
+                longs_q.pop(0)
+            if shorts_q[0][1] == 0:
+                shorts_q.pop(0)
+            pair_n += 1
+
+        # Remaining entries in longs_q / shorts_q after the waterfall
+        # are either:
+        #   a) rows that were NEVER matched (pair_group_key still None on
+        #      result[i]) → mark is_orphan=True.
+        #   b) rows that were PARTIALLY matched and have leftover qty
+        #      (pair_group_key already set on result[i]) → already written
+        #      correctly with the right orphan_qty; only need to touch
+        #      is_orphan which is already False — leave them alone.
+        for entry in longs_q + shorts_q:
+            i, rem_qty = entry
+            if result[i].pair_group_key is None:
+                # Never matched — full orphan.
+                result[i] = _msc.structs.replace(
+                    rows[i],
+                    is_orphan=True,
+                    pair_group_key=None,
+                    paired_qty=0,
+                    orphan_qty=rem_qty,
+                )
+            # else: already written in the waterfall loop with the correct
+            # paired_qty / orphan_qty; is_orphan is False (correct).
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -173,18 +264,8 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             f"from {snap_captured_at_dt.date()}"
         )
 
-    # Fetch the OPEN AlgoOrder map while we still have the session open.
-    # This is the snapshot path — we query once and reuse it below to
-    # annotate every PositionRow with is_orphan + pair_group_key.
-    try:
-        async with async_session() as _om_session:
-            _order_map = await _fetch_open_order_map(_om_session)
-    except Exception as _om_exc:
-        logger.warning(f"positions snapshot: order_map fetch failed: {_om_exc}")
-        _order_map = {}
-
     rows: list[PositionRow] = [build_row_from_snapshot_raw(r) for r in raw_rows]
-    rows = _apply_order_map_to_rows(rows, _order_map)
+    rows = _auto_pair_positions(rows)
 
     summary = build_summary_from_rows(rows)
 
@@ -521,17 +602,8 @@ async def _fetch() -> PositionsResponse:
 
     rows = [_dict_to_position_row(r) for r in df_rows.to_dicts()]
 
-    # Annotate each row with is_orphan + pair_group_key from OPEN AlgoOrders.
-    # Fetched fresh per request so the live path reflects order state at
-    # call time without a separate TTL — query is a cheap table scan on a
-    # small indexed set (status='OPEN').
-    try:
-        from backend.api.database import async_session as _async_session
-        async with _async_session() as _om_session:
-            _live_order_map = await _fetch_open_order_map(_om_session)
-        rows = _apply_order_map_to_rows(rows, _live_order_map)
-    except Exception as _om_exc:
-        logger.warning(f"positions live: order_map fetch failed: {_om_exc}")
+    # Auto-pair positions by lot-waterfall within (account, root_symbol) groups.
+    rows = _auto_pair_positions(rows)
 
     # Thread account_stale_since into stale rows so the frontend can
     # render "STALE @ HH:MM" next to the account name without a separate

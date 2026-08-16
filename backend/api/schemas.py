@@ -194,6 +194,12 @@ class PositionRow(msgspec.Struct):
     # both parent and child positions; None when no AlgoOrder matches.
     # Lets the frontend group paired legs under the same visual card.
     pair_group_key: Optional[str] = None
+    # Lots matched into a pair by the lot-waterfall auto-pairing algorithm.
+    # 0 for unmatched (orphan) rows and quantity==0 rows.
+    paired_qty: int = 0
+    # Unmatched lots on this position: abs(quantity) - paired_qty.
+    # 0 for fully-paired rows and quantity==0 rows.
+    orphan_qty: int = 0
 
 
 class PositionsSummaryRow(msgspec.Struct):

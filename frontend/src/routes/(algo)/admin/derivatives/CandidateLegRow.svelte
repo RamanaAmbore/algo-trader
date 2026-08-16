@@ -288,6 +288,16 @@
         <span class="expiry-id-chip expiry-id-netted" title={c._reason ?? ''}>{c._pairId}</span>
       {/if}
     {/if}
+    {#if c.pair_group_key}
+      <!-- Pair-group chip — lot-based pairing key from the backend (P1, P2, …).
+           Shows which option legs share the same underlying lot-count pair. -->
+      <span class="pair-chip" title="Lot pair group: {c.pair_group_key}">{c.pair_group_key}</span>
+    {/if}
+    {#if c.orphan_qty > 0 && c.paired_qty > 0}
+      <!-- Orphan-qty chip — row has both paired and orphaned lots.
+           Shows the count of un-paired lots so the operator can close them. -->
+      <span class="orphan-chip" title="{c.orphan_qty} lot(s) unpaired in this position">{c.orphan_qty}L orphan</span>
+    {/if}
   </span>
   <!-- Expiry cell removed — the hyphenated symbol shows it. -->
   <span class="font-mono">{c.account}</span>

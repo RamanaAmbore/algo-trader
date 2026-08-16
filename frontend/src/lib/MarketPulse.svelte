@@ -123,6 +123,7 @@
     PULSE_DEFAULT_COL_DEF, PULSE_SORTING_ORDER,
     pulseRowId, summaryRowId, postSortGroups,
   } from '$lib/data/pulseGridSetup';
+  import { pairGroupSort, pairChipHtml } from '$lib/data/pairGroupSort';
 
   let {
     title              = 'Pulse',
@@ -3363,7 +3364,8 @@
     const provChip = row._provisional
       ? '<span class="sym-provisional" title="Provisional — awaiting broker confirmation">~</span>'
       : '';
-    return `${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+    const pairChips = row.src?.p ? pairChipHtml(row) : '';
+    return `${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${pairChips}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
   }
 
   /**
@@ -3551,30 +3553,7 @@
     // position and subsequent members of the same key are spliced in right
     // after it. Rows without a key keep their individual post-sort position.
     function _pairGroupPostSort(params) {
-      const nodes = params.nodes;
-      const groups = new Map();
-      for (const n of nodes) {
-        const k = n.data?.pair_group_key;
-        if (k) {
-          if (!groups.has(k)) groups.set(k, []);
-          groups.get(k).push(n);
-        }
-      }
-      const order = [];
-      const seen  = new Set();
-      for (const n of nodes) {
-        if (seen.has(n)) continue;
-        seen.add(n);
-        order.push(n);
-        const k = n.data?.pair_group_key;
-        if (k) {
-          for (const m of groups.get(k) ?? []) {
-            if (!seen.has(m)) { seen.add(m); order.push(m); }
-          }
-        }
-      }
-      nodes.length = 0;
-      nodes.push(...order);
+      pairGroupSort(params.nodes);
     }
 
     // Factory: every per-bucket grid shares the same shape (height
