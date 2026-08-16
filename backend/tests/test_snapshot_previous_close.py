@@ -563,3 +563,378 @@ def test_upsert_sql_day_pnl_guard_not_plain_excluded():
         "day_pnl must NOT use plain `= EXCLUDED.day_pnl` in the ON CONFLICT clause — "
         "that overwrites a non-NULL existing value with NULL/0 on mid-session writes"
     )
+
+
+# ---------------------------------------------------------------------------
+# 8. NEW: prev_ltp_map SSOT fix — _holdings_rows uses prior daily_book ltp
+#    instead of broker close_price for previous_close field
+# ---------------------------------------------------------------------------
+
+def test_holdings_rows_accepts_prev_ltp_map_kwarg():
+    """_holdings_rows accepts optional prev_ltp_map parameter."""
+    from backend.api.algo.daily_snapshot import _holdings_rows
+    import inspect
+
+    sig = inspect.signature(_holdings_rows)
+    params = sig.parameters
+    assert "prev_ltp_map" in params, (
+        "_holdings_rows must accept optional 'prev_ltp_map' parameter"
+    )
+    param = params["prev_ltp_map"]
+    assert param.default is None, "prev_ltp_map must default to None"
+
+
+def test_holdings_rows_previous_close_uses_prev_ltp_map_when_present():
+    """When prev_ltp_map has entry for (account, symbol, 'holdings'),
+    previous_close uses it instead of broker close_price."""
+    from backend.api.algo.daily_snapshot import _holdings_rows
+    from datetime import date, datetime, timezone
+
+    holding = {
+        "tradingsymbol": "RELIANCE",
+        "exchange": "NSE",
+        "opening_quantity": 10,
+        "average_price": 2500.0,
+        "last_price": 2550.0,
+        "day_change": 50.0,
+        "close_price": 2520.0,  # broker's first-cut close (may be stale)
+        "pnl": 500.0,
+    }
+
+    # Prior-day ltp from daily_book
+    prev_ltp_map = {
+        ("ACC1", "RELIANCE", "holdings"): 2500.0
+    }
+
+    now_ist = datetime(2026, 8, 15, 15, 35, 0)
+    rows = _holdings_rows(
+        "ACC1", date(2026, 8, 15), [holding], now_ist,
+        prev_ltp_map=prev_ltp_map
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == 2500.0, (
+        f"previous_close should use prev_ltp_map value (2500.0), "
+        f"not broker close_price (2520.0), got {rows[0]['previous_close']}"
+    )
+
+
+def test_holdings_rows_previous_close_falls_back_to_close_price():
+    """When prev_ltp_map has no entry, fallback to broker close_price."""
+    from backend.api.algo.daily_snapshot import _holdings_rows
+    from datetime import date, datetime, timezone
+
+    holding = {
+        "tradingsymbol": "INFY",
+        "exchange": "NSE",
+        "opening_quantity": 5,
+        "average_price": 1500.0,
+        "last_price": 1560.0,
+        "day_change": 60.0,
+        "close_price": 1500.0,
+        "pnl": 300.0,
+    }
+
+    prev_ltp_map = {}  # Empty map
+
+    now_ist = datetime(2026, 8, 15, 15, 35, 0)
+    rows = _holdings_rows(
+        "ACC1", date(2026, 8, 15), [holding], now_ist,
+        prev_ltp_map=prev_ltp_map
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == 1500.0, (
+        f"previous_close should fallback to broker close_price (1500.0), "
+        f"got {rows[0]['previous_close']}"
+    )
+
+
+def test_holdings_rows_previous_close_multi_account_symbol_isolation():
+    """prev_ltp_map uses (account, symbol, kind) as key;
+    entries for different accounts/symbols must not cross."""
+    from backend.api.algo.daily_snapshot import _holdings_rows
+    from datetime import date, datetime, timezone
+
+    acc1_reliance = {
+        "tradingsymbol": "RELIANCE",
+        "exchange": "NSE",
+        "opening_quantity": 10,
+        "average_price": 2500.0,
+        "last_price": 2550.0,
+        "day_change": 50.0,
+        "close_price": 2520.0,
+        "pnl": 500.0,
+    }
+
+    acc1_infy = {
+        "tradingsymbol": "INFY",
+        "exchange": "NSE",
+        "opening_quantity": 5,
+        "average_price": 1500.0,
+        "last_price": 1560.0,
+        "day_change": 60.0,
+        "close_price": 1500.0,
+        "pnl": 300.0,
+    }
+
+    prev_ltp_map = {
+        ("ACC1", "RELIANCE", "holdings"): 2475.0,
+        ("ACC1", "INFY", "holdings"): 1450.0,
+    }
+
+    now_ist = datetime(2026, 8, 15, 15, 35, 0)
+
+    # Test RELIANCE
+    rows = _holdings_rows(
+        "ACC1", date(2026, 8, 15), [acc1_reliance], now_ist,
+        prev_ltp_map=prev_ltp_map
+    )
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == 2475.0, (
+        f"RELIANCE should use map value 2475.0, got {rows[0]['previous_close']}"
+    )
+
+    # Test INFY
+    rows = _holdings_rows(
+        "ACC1", date(2026, 8, 15), [acc1_infy], now_ist,
+        prev_ltp_map=prev_ltp_map
+    )
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == 1450.0, (
+        f"INFY should use map value 1450.0, got {rows[0]['previous_close']}"
+    )
+
+
+def test_holdings_rows_previous_close_map_priority_over_broker_close():
+    """prev_ltp_map entry takes priority over broker close_price even
+    when they differ significantly (e.g., broker close is stale)."""
+    from backend.api.algo.daily_snapshot import _holdings_rows
+    from datetime import date, datetime, timezone
+
+    holding = {
+        "tradingsymbol": "TCS",
+        "exchange": "NSE",
+        "opening_quantity": 10,
+        "average_price": 3400.0,
+        "last_price": 3450.0,
+        "day_change": 50.0,
+        "close_price": 3400.0,  # broker's first-cut (early capture)
+        "pnl": 500.0,
+    }
+
+    # Actual prior-day settlement is different
+    prev_ltp_map = {
+        ("ACC1", "TCS", "holdings"): 3350.0
+    }
+
+    now_ist = datetime(2026, 8, 15, 15, 35, 0)
+    rows = _holdings_rows(
+        "ACC1", date(2026, 8, 15), [holding], now_ist,
+        prev_ltp_map=prev_ltp_map
+    )
+
+    assert len(rows) == 1
+    # Map value (3350) should win, not broker close_price (3400)
+    assert rows[0]["previous_close"] == 3350.0, (
+        f"prev_ltp_map should take priority: expected 3350.0, "
+        f"got {rows[0]['previous_close']}"
+    )
+
+
+def test_holdings_rows_previous_close_both_absent_becomes_none():
+    """When both prev_ltp_map and broker close_price are absent,
+    previous_close becomes None."""
+    from backend.api.algo.daily_snapshot import _holdings_rows
+    from datetime import date, datetime, timezone
+
+    holding = {
+        "tradingsymbol": "UNKNOWN",
+        "exchange": "NSE",
+        "opening_quantity": 10,
+        "average_price": 1000.0,
+        "last_price": 1050.0,
+        "day_change": 50.0,
+        # no close_price
+        "pnl": 500.0,
+    }
+
+    prev_ltp_map = {}
+
+    now_ist = datetime(2026, 8, 15, 15, 35, 0)
+    rows = _holdings_rows(
+        "ACC1", date(2026, 8, 15), [holding], now_ist,
+        prev_ltp_map=prev_ltp_map
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] is None, (
+        f"previous_close should be None when both map and close_price absent, "
+        f"got {rows[0]['previous_close']}"
+    )
+
+
+def test_positions_rows_previous_close_basic():
+    """_positions_rows stores broker close_price as previous_close
+    (no prev_ltp_map for positions in current design)."""
+    from backend.api.algo.daily_snapshot import _positions_rows
+    from datetime import date, datetime, timezone
+
+    position = {
+        "tradingsymbol": "NIFTY25AUGFUT",
+        "exchange": "NFO",
+        "quantity": 50,
+        "average_price": 25000.0,
+        "last_price": 25100.0,
+        "close_price": 25050.0,  # broker's prior-session close
+        "pnl": 2500.0,
+        "overnight_quantity": 50,
+        "day_buy_quantity": 0,
+        "day_sell_quantity": 0,
+        "day_buy_value": 0.0,
+        "day_sell_value": 0.0,
+    }
+
+    now_ist = datetime(2026, 8, 15, 15, 35, 0)
+    rows = _positions_rows(
+        "ACC1", date(2026, 8, 15), [position], now_ist
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == 25050.0, (
+        f"positions previous_close should store broker close_price, "
+        f"got {rows[0]['previous_close']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 9. NEW: prev_ltp_map for positions — writer SSOT fix
+# ---------------------------------------------------------------------------
+
+def _make_position_row(symbol="NIFTY26JULFUT", exchange="NFO", qty=50,
+                       last_price=23200.0, close_price=22800.0, pnl=10000.0,
+                       overnight_quantity=50, multiplier=1):
+    return {
+        "tradingsymbol": symbol,
+        "exchange": exchange,
+        "quantity": qty,
+        "average_price": 23000.0,
+        "last_price": last_price,
+        "close_price": close_price,
+        "pnl": pnl,
+        "day_change": last_price - close_price,
+        "day_change_value": (last_price - close_price) * qty,
+        "m2m": (last_price - close_price) * qty,
+        "unrealised": pnl,
+        "realised": 0.0,
+        "value": last_price * qty,
+        "buy_quantity": 0, "sell_quantity": 0,
+        "buy_value": 0.0, "sell_value": 0.0,
+        "buy_m2m": 0.0, "sell_m2m": 0.0,
+        "overnight_quantity": overnight_quantity,
+        "multiplier": multiplier,
+        "instrument_token": 12345,
+        "product": "NRML",
+    }
+
+
+def test_positions_rows_prev_ltp_map_priority_over_close_price():
+    """When prev_ltp_map has entry for (account, symbol, 'positions'),
+    it wins over broker close_price for both previous_close and day_pnl."""
+    from backend.api.algo.daily_snapshot import _positions_rows
+    from datetime import date, datetime, timezone
+
+    PRIOR_LTP = 22500.0
+    BROKER_CLOSE = 22800.0
+    LTP = 23200.0
+    QTY = 50
+
+    raw = [_make_position_row(last_price=LTP, close_price=BROKER_CLOSE, qty=QTY,
+                              overnight_quantity=QTY)]
+    now_ist = datetime(2026, 8, 15, 16, 0, 0, tzinfo=timezone.utc)
+    prev_ltp_map = {("ZG0790", "NIFTY26JULFUT", "positions"): PRIOR_LTP}
+
+    rows = _positions_rows("ZG0790", date(2026, 8, 15), raw, now_ist,
+                           settled=True, prev_ltp_map=prev_ltp_map)
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == pytest.approx(PRIOR_LTP), (
+        f"previous_close={rows[0]['previous_close']} must equal prev_ltp_map "
+        f"value ({PRIOR_LTP}), not broker close_price ({BROKER_CLOSE})"
+    )
+    # day_pnl must also use prior_ltp as the close reference
+    expected = (LTP - PRIOR_LTP) * QTY  # 35000
+    wrong = (LTP - BROKER_CLOSE) * QTY   # 20000
+    assert rows[0]["day_pnl"] == pytest.approx(expected, rel=1e-4), (
+        f"day_pnl={rows[0]['day_pnl']} must use prev_ltp ({PRIOR_LTP}), "
+        f"not broker close_price ({BROKER_CLOSE}); expected={expected}, wrong={wrong}"
+    )
+
+
+def test_positions_rows_prev_ltp_map_fallback_to_close_price_for_new_position():
+    """When prev_ltp_map has no entry (new position, first day), falls back to close_price."""
+    from backend.api.algo.daily_snapshot import _positions_rows
+    from datetime import date, datetime, timezone
+
+    BROKER_CLOSE = 22800.0
+
+    raw = [_make_position_row(close_price=BROKER_CLOSE)]
+    now_ist = datetime(2026, 8, 15, 16, 0, 0, tzinfo=timezone.utc)
+    prev_ltp_map = {}  # new position — no prior row
+
+    rows = _positions_rows("ZG0790", date(2026, 8, 15), raw, now_ist,
+                           settled=True, prev_ltp_map=prev_ltp_map)
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == pytest.approx(BROKER_CLOSE), (
+        f"previous_close={rows[0]['previous_close']} must fall back to broker "
+        f"close_price ({BROKER_CLOSE}) when prev_ltp_map has no entry"
+    )
+
+
+def test_positions_rows_monday_after_weekend_uses_friday_ltp():
+    """Monday snapshot must use Friday's daily_book.ltp as previous_close.
+
+    Weekend gap: Friday LTP=22500 is in prev_ltp_map; Monday broker returns
+    close_price=22800 (stale). previous_close must be 22500 (Friday socket LTP).
+    """
+    from backend.api.algo.daily_snapshot import _positions_rows
+    from datetime import date, datetime, timezone
+
+    FRIDAY_LTP = 22500.0
+    MONDAY_BROKER_CLOSE = 22800.0
+
+    raw = [_make_position_row(last_price=23100.0, close_price=MONDAY_BROKER_CLOSE)]
+    now_ist = datetime(2026, 8, 17, 16, 0, 0, tzinfo=timezone.utc)
+    # prev_ltp_map contains Friday's entry (date < Monday enforced by SQL)
+    prev_ltp_map = {("ZG0790", "NIFTY26JULFUT", "positions"): FRIDAY_LTP}
+
+    rows = _positions_rows("ZG0790", date(2026, 8, 17), raw, now_ist,
+                           settled=True, prev_ltp_map=prev_ltp_map)
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == pytest.approx(FRIDAY_LTP), (
+        f"Monday previous_close={rows[0]['previous_close']} must equal "
+        f"Friday daily_book.ltp ({FRIDAY_LTP}), not broker close_price ({MONDAY_BROKER_CLOSE})"
+    )
+
+
+def test_positions_rows_prev_ltp_map_key_isolation_between_accounts():
+    """Keys are (account, symbol, kind) — ACC2 must not inherit ACC1's map entry."""
+    from backend.api.algo.daily_snapshot import _positions_rows
+    from datetime import date, datetime, timezone
+
+    PRIOR_LTP_ACC1 = 22500.0
+    BROKER_CLOSE = 22800.0
+
+    raw = [_make_position_row(close_price=BROKER_CLOSE)]
+    now_ist = datetime(2026, 8, 15, 16, 0, 0, tzinfo=timezone.utc)
+    # Only ACC1 has a prev_ltp_map entry
+    prev_ltp_map = {("ACC1", "NIFTY26JULFUT", "positions"): PRIOR_LTP_ACC1}
+
+    # Running for ACC2 — must not pick up ACC1's entry
+    rows = _positions_rows("ACC2", date(2026, 8, 15), raw, now_ist,
+                           settled=True, prev_ltp_map=prev_ltp_map)
+    assert len(rows) == 1
+    assert rows[0]["previous_close"] == pytest.approx(BROKER_CLOSE), (
+        f"ACC2 must not inherit ACC1's prev_ltp_map entry; "
+        f"expected fallback to broker close_price ({BROKER_CLOSE}), "
+        f"got {rows[0]['previous_close']}"
+    )

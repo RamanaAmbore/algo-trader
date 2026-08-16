@@ -817,6 +817,22 @@
   background-color: rgba(251,191,36,0.18) !important;
 }
 
+/* Orphan position — no template / GTT / manual pair */
+.ag-theme-algo .ag-row.row-pos-orphan .ag-col-sym {
+  background-color: rgba(251,191,36,0.08) !important;
+}
+.ag-theme-algo .ag-row.row-pos-orphan .ag-col-sym::after {
+  background: rgba(251,191,36,0.80);
+}
+
+/* Paired / managed position — has active AlgoOrder */
+.ag-theme-algo .ag-row.row-pos-paired .ag-col-sym {
+  background-color: rgba(34,211,238,0.07) !important;
+}
+.ag-theme-algo .ag-row.row-pos-paired .ag-col-sym::after {
+  background: rgba(34,211,238,0.75);
+}
+
 /* Long/short cues for the light-theme ramboq grid on the public
    /performance page. Earth-tone tints chosen to harmonise with the
    cream+champagne-gold public palette rather than fight it:

@@ -3275,6 +3275,11 @@
       if (q < 0) out.push('pos-short');
       else if (q > 0) out.push('pos-long');
       else out.push('row-pos');
+      if (r.is_orphan) {
+        out.push('row-pos-orphan');
+      } else if (r.pair_group_key) {
+        out.push('row-pos-paired');
+      }
     } else if (s.h) {
       const pnl = Number(r.pnl);
       if (Number.isFinite(pnl) && pnl > 0) out.push('row-hold-up');

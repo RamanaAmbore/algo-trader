@@ -431,6 +431,7 @@ def _snap_holding_eod_vals(
 def _holdings_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
     *, settled: bool = False, market_open: bool = True,
+    prev_ltp_map: dict | None = None,
 ) -> list[dict]:
     rows = []
     skipped = 0
@@ -469,7 +470,10 @@ def _holdings_rows(
             "ltp":            ltp_val,
             "day_pnl":        day_pnl_v,
             "total_pnl":      total_pnl_v,
-            "previous_close": float(r["close_price"]) if r.get("close_price") else None,
+            "previous_close": (
+                (prev_ltp_map or {}).get((account, symbol, "holdings"))
+                or (float(r["close_price"]) if r.get("close_price") else None)
+            ),
             "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:
@@ -523,7 +527,8 @@ def _snap_compute_day_pnl(r: dict, ltp_val: float, close_price, qty, multiplier:
 
 
 def _snap_position_eod_vals(
-    r: dict, mid_session: bool, qty, multiplier: int = 1
+    r: dict, mid_session: bool, qty, multiplier: int = 1,
+    close_ref=None,
 ) -> tuple[Optional[float], Optional[float], Optional[float], bool]:
     """Return (ltp_val, day_pnl, total_pnl_v, skip) for one position row.
 
@@ -534,12 +539,16 @@ def _snap_position_eod_vals(
     ``multiplier`` — forwarded to ``_snap_compute_day_pnl`` so MCX/NCO
     overnight/buy/sell quantities (in lots) are scaled to contracts before
     the day P&L formula runs.
+
+    ``close_ref`` — preferred prior-session close; falls back to
+    ``r.get("close_price")`` when None (first-day / no prior daily_book row).
     """
     if mid_session:
         return None, None, None, False
     ltp_val = r.get("last_price")
     ltp_val = float(ltp_val) if ltp_val is not None else None
-    day_pnl = _snap_compute_day_pnl(r, ltp_val, r.get("close_price"), qty, multiplier)
+    effective_close = close_ref if close_ref is not None else r.get("close_price")
+    day_pnl = _snap_compute_day_pnl(r, ltp_val, effective_close, qty, multiplier)
     total_pnl_raw = r.get("pnl")
     total_pnl_v   = float(total_pnl_raw) if total_pnl_raw is not None else None
     skip = _is_zero_payload_row(r, ltp_val, day_pnl, total_pnl_v)
@@ -549,6 +558,7 @@ def _snap_position_eod_vals(
 def _positions_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
     *, settled: bool = False, market_open: bool = True,
+    prev_ltp_map: dict | None = None,
 ) -> list[dict]:
     rows = []
     skipped = 0
@@ -568,10 +578,13 @@ def _positions_rows(
             multiplier = 1
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
         mid_session = False if not market_open else _is_exchange_open_at(exchange, now_ist)
+        # Prior-session daily_book.ltp is the SSOT for close reference.
+        # Falls back to broker close_price for first-day rows (no prior daily_book row).
+        pos_close_ref = (prev_ltp_map or {}).get((account, symbol, "positions")) or None
         # Captured AT EOD (after the exchange closes) this is the correct
         # day_pnl. Captured MID-SESSION it's a partial-day value — skip.
         ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
-            r, mid_session, qty, multiplier
+            r, mid_session, qty, multiplier, close_ref=pos_close_ref,
         )
         if skip:
             skipped += 1
@@ -588,11 +601,13 @@ def _positions_rows(
             "ltp":            ltp_val,
             "day_pnl":        day_pnl,
             "total_pnl":      float(r["pnl"]) if r.get("pnl") is not None else None,
-            # Kite's close_price = prior-session official settlement.
-            # Stored with a COALESCE freeze in the UPSERT so only the
-            # first write of the day lands here; subsequent intraday
-            # refreshes never overwrite a non-NULL value.
-            "previous_close": float(r["close_price"]) if r.get("close_price") else None,
+            # Prior daily_book.ltp (socket-derived) is the SSOT for previous_close.
+            # Falls back to broker close_price for first-day rows (no prior daily_book row).
+            # COALESCE freeze in the UPSERT ensures only the first write lands.
+            "previous_close": (
+                pos_close_ref
+                or (float(r["close_price"]) if r.get("close_price") else None)
+            ),
             "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:
@@ -876,6 +891,27 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
     errors: list[str] = []
     processed: list[str] = []
 
+    # Pre-fetch prior-session daily_book.ltp for every (account, symbol, kind)
+    # so we can use socket-derived LTP as previous_close instead of broker's
+    # volatile close_price REST field.
+    prev_ltp_map: dict[tuple[str, str, str], float] = {}
+    try:
+        async with async_session() as _sess:
+            _prev_result = await _sess.execute(text("""
+                SELECT DISTINCT ON (account, symbol, kind)
+                    account, symbol, kind, ltp
+                FROM daily_book
+                WHERE date < :today
+                  AND ltp IS NOT NULL AND ltp > 0
+                ORDER BY account, symbol, kind, date DESC
+            """), {"today": target_date})
+            prev_ltp_map = {
+                (row.account, row.symbol, row.kind): float(row.ltp)
+                for row in _prev_result
+            }
+    except Exception as _e:
+        logger.warning("Snapshot: prev_ltp_map query failed (%s) — falling back to broker close_price", _e)
+
     from backend.brokers.registry import all_brokers
     for broker in all_brokers():
         account = broker.account
@@ -884,8 +920,8 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
                 _local_executor, _fetch_account_data, broker, account, target_date
             )
 
-            h_rows = _holdings_rows(account,  target_date, raw["holdings"],       now_ist, settled=settled, market_open=market_open)
-            p_rows = _positions_rows(account, target_date, raw["positions"] or [], now_ist, settled=settled, market_open=market_open)
+            h_rows = _holdings_rows(account,  target_date, raw["holdings"],       now_ist, settled=settled, market_open=market_open, prev_ltp_map=prev_ltp_map)
+            p_rows = _positions_rows(account, target_date, raw["positions"] or [], now_ist, settled=settled, market_open=market_open, prev_ltp_map=prev_ltp_map)
             t_rows = _trades_rows(account,    target_date, raw["trades"])
             f_rows = _funds_rows(account,     target_date, raw["funds"])
 

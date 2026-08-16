@@ -1,100 +1,182 @@
-# Plan: Fix snapshot so Dhan holdings appear after weekend/holiday restarts
+# Plan: Kite socket LTP SSOT — fix previous_close in snapshot writer + orphan/paired coloring
 
 ## Context
 
-The `market_open=False` startup fix landed correctly in `background.py`. After a server restart on Sat Aug 15, the startup snapshot fires with `market_open=False`. But two bugs downstream still prevent Dhan from appearing in Pulse:
+### Architecture intent (operator confirmed)
 
-**Bug 1 — Admin trigger uses time-only `_is_exchange_open_at`**
-`trigger_pnl_snapshot` in `admin.py:1721` computes:
+- **LTP SSOT = Kite socket (mmap tick buffer)** — all books (holdings, positions, watchlist)
+- **Broker APIs = inventory only** — qty, avg_cost, symbol, lot_size, account
+- **Day P&L formula = (socket_ltp − daily_book.previous_close) × qty** — uniform everywhere
+- **previous_close SSOT = prior daily_book.ltp** — not broker's volatile `close_price`
+
+### What is already correct
+
+The **live positions path** already does this correctly:
+- `positions.py:449` — `_override_stale_ltp_from_ticker()` patches `last_price` from mmap socket
+- `positions.py:449` — `_override_stale_close_from_snapshot()` patches `close_price` from yesterday's daily_book.ltp (queried `captured_at < today_open_ist`)
+- `positions.py:635` — `day_change = ltp − cls` recomputed from socket LTP + daily_book close
+
+The **frontend stores** already do this correctly:
+- `positionsDayPnlStore.svelte.js:62` — `closePx = r.close_price` (already patched to daily_book)
+- `holdingsDayPnlStore.svelte.js:77–81` — `(liveLtp − closePx) × qty` from socket
+
+### The single root cause
+
+`backend/api/algo/daily_snapshot.py:472` (holdings) and `:595` (positions):
 ```python
-_market_open = _is_exchange_open_at("NSE", now_ist) or _is_exchange_open_at("MCX", now_ist)
+"previous_close": float(r["close_price"]) if r.get("close_price") else None
 ```
-On Saturday at 14:00 IST this returns `True` (time falls inside trading window even though markets are closed). Operator can't manually re-trigger a correct snapshot from the admin panel.
+`r["close_price"]` = broker's REST field. For positions, Kite's `close_price` lags prior-session EOD between MCX close (23:30) and next open. For both books, the broker field can diverge across Dhan/Groww/Kite.
 
-**Bug 2 — Dhan returns `last_price=0` on non-trading days; no fallback**
-Dhan's API sometimes returns `last_price=0` on weekends when its market-data cache is cold. The backfill (`_backfill_market_data_dicts`) attempts to fix this but may also return 0 on non-trading days (no live quotes). With `market_open=False` → `mid_session=False`, `_snap_holding_eod_vals` returns `ltp_val=0`. `_is_zero_payload_row(avg_cost>0, ltp=0, pnl=0)` fires → all Dhan rows filtered → empty upsert (no-op) → prior NULL rows preserved → `ltp IS NOT NULL` filter still excludes Dhan.
+Because the UPSERT freezes `previous_close` on first write:
+```sql
+previous_close = COALESCE(daily_book.previous_close, EXCLUDED.previous_close)
+```
+…this wrong value is frozen for the entire day. All downstream computations that use `daily_book.previous_close` inherit the error.
 
-**Gap in `_snap_all_filtered`**: only protects when BOTH holdings AND positions are filtered. On weekends `raw_p_count=0`, so the condition is always False → no warning emitted when all holdings silently drop.
+### Cascade fix
+
+Fix `previous_close` in the snapshot writer → fixes cascade:
+1. Holdings reader: `(ltp_f − previous_close_f) × qty` — correct once previous_close is correct
+2. Positions reader `build_row_from_snapshot_raw:331`: `(ltp − actual_previous_close) × qty` — same
+3. Frontend `holdingsDayPnlStore.svelte.js:72`: `closePx = h.close_price` which comes from `previous_close_f` — same
+4. No frontend formula changes needed
+
+### Fix B — Color-code orphan vs paired positions (independent, frontend-only)
+
+`is_orphan: bool` and `pair_group_key: Optional[str]` already on every PositionRow.
+Need CSS class wiring in `_sourceRowClasses()` + CSS rules.
+
+---
 
 ## Files
 
-- `backend/api/routes/admin.py` — `trigger_pnl_snapshot` + `SnapshotRequest`
-- `backend/api/algo/daily_snapshot.py` — `_snap_holding_eod_vals`, `_snap_all_filtered`
-- `backend/tests/test_snapshot_market_open.py` — extend with new tests
-- `backend/tests/test_snapshot_holiday_fix.py` — extend with new tests
+- `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()`, `_holdings_rows()`, `_positions_rows()`
+- `frontend/src/lib/MarketPulse.svelte` — `_sourceRowClasses()` ≈ line 3271 (Fix B)
+- `frontend/src/app.css` — row tint rules ≈ line 678 (Fix B)
+
+---
 
 ## Agents
 
-- backend: Fix Bug 1 + Bug 2 + `_snap_all_filtered` gap
-- backend-test: Add tests for all three fixes
+- backend: Fix A — snapshot writer `previous_close` SSOT
+- frontend: Fix B — orphan/paired CSS classes
+- backend-test: Tests for Fix A
 - doc: skip
-- frontend: skip
 - playwright: skip
+
+---
 
 ## Detailed changes
 
-### backend/api/routes/admin.py
+### backend — Fix A: Snapshot writer uses prior daily_book.ltp as `previous_close`
 
-1. Add `market_open: Optional[bool] = None` to `SnapshotRequest` (msgspec Struct).
-2. In `trigger_pnl_snapshot`: replace the `_is_exchange_open_at` block with:
-   ```python
-   import asyncio
-   from backend.shared.helpers.date_time_utils import is_market_open
-   if data.market_open is not None:
-       _market_open = data.market_open
-   else:
-       _market_open = await asyncio.to_thread(is_market_open)
-   ```
-   This is holiday+weekend aware (not time-only). Operator can also force override via body `{"date":"today","market_open":false}`.
+In `snapshot_daily_book()` (daily_snapshot.py), before calling `_holdings_rows()` and
+`_positions_rows()`, add a batch query to fetch the most recent prior-day LTP from
+daily_book per (account, symbol, kind):
 
-### backend/api/algo/daily_snapshot.py — `_snap_holding_eod_vals`
-
-Add close_price fallback when `mid_session=False` and Dhan returns `last_price=0`:
 ```python
-# existing: ltp_val = r.get("last_price")
-# add after:
-if not ltp_val:  # 0, None, or missing
-    ltp_val = r.get("close_price") or r.get("previous_close")
+prev_ltp_result = await session.execute(text("""
+    SELECT DISTINCT ON (account, symbol, kind)
+        account, symbol, kind, ltp
+    FROM daily_book
+    WHERE date < :today
+      AND ltp IS NOT NULL AND ltp > 0
+    ORDER BY account, symbol, kind, date DESC
+"""), {"today": target_date})
+prev_ltp_map: dict[tuple[str, str, str], float] = {
+    (r.account, r.symbol, r.kind): float(r.ltp)
+    for r in prev_ltp_result
+}
 ```
-This ensures the DB row gets a non-zero ltp (previous-session close), passes both `ltp IS NOT NULL` and the `NOT (ltp=0 AND ...)` guard, and is correct semantics for non-trading day display.
 
-### backend/api/algo/daily_snapshot.py — `_snap_all_filtered`
+Pass `prev_ltp_map` to `_holdings_rows()` and `_positions_rows()`.
 
-Extend condition to also warn+protect when holdings are all filtered regardless of positions (weekend case):
+In the row dict for both (lines 472 and 595), replace:
 ```python
-# Current:
-if raw_h_count > 0 and len(h_rows) == 0 and raw_p_count > 0 and len(p_rows) == 0:
-# Change to:
-if raw_h_count > 0 and len(h_rows) == 0:
-    logger.warning(
-        f"Snapshot [{account}] date={target_date} — ALL "
-        f"{raw_h_count} holdings rows filtered (bad payload / zero ltp). "
-        f"Prior snapshot preserved. No upsert performed."
-    )
-    return True
-if raw_p_count > 0 and len(p_rows) == 0:
-    logger.warning(...)
-    return True
-return False
+"previous_close": float(r["close_price"]) if r.get("close_price") else None,
 ```
+With:
+```python
+"previous_close": (
+    prev_ltp_map.get((account, symbol, "holdings"))  # or "positions"
+    or (float(r["close_price"]) if r.get("close_price") else None)
+),
+```
+
+`prev_ltp_map` lookup (prior session's socket LTP from daily_book) takes priority.
+`r["close_price"]` fallback applies only for new positions/holdings with no prior daily_book
+row (first day) — in that case broker's close_price is the only reference available.
+
+**Also update `_snap_compute_day_pnl` call** for positions: pass `prev_ltp_map_val` as
+`close_price` when available, so the `day_pnl` STORED in daily_book is also correct
+(not just the reader's recompute):
+```python
+close_ref = prev_ltp_map.get((account, symbol, "positions")) or r.get("close_price")
+day_pnl = _snap_compute_day_pnl(r, ltp_val, close_ref, qty, multiplier)
+```
+
+This covers: MCX mid-session (15:30–23:30), weekends, holidays, cold restarts —
+all scenarios where broker's `close_price` is stale or zero.
+
+### frontend — Fix B: Orphan/paired color-coding
+
+**MarketPulse.svelte `_sourceRowClasses()`** — inside the `if (s.p)` branch, after
+existing `pos-long` / `pos-short` push:
+
+```javascript
+if (r.is_orphan) {
+    out.push('row-pos-orphan');
+} else {
+    out.push('row-pos-paired');
+}
+```
+
+**app.css** — after existing `row-hold-*` block:
+
+```css
+/* Orphan position — no template / GTT / manual pair */
+.ag-theme-algo .ag-row.row-pos-orphan .ag-col-sym {
+  background-color: rgba(251,191,36,0.08) !important;
+}
+.ag-theme-algo .ag-row.row-pos-orphan .ag-col-sym::after {
+  background: rgba(251,191,36,0.80);
+}
+
+/* Paired / managed position — has active AlgoOrder */
+.ag-theme-algo .ag-row.row-pos-paired .ag-col-sym {
+  background-color: rgba(34,211,238,0.07) !important;
+}
+.ag-theme-algo .ag-row.row-pos-paired .ag-col-sym::after {
+  background: rgba(34,211,238,0.75);
+}
+```
+
+---
 
 ## Tests
 
-- Admin endpoint: verify `market_open=None` uses `is_market_open()` (weekend → False), verify explicit `market_open=False` override works
-- `_snap_holding_eod_vals`: when `last_price=0` and `close_price=1500.0`, `ltp_val` resolves to `1500.0`
-- `_snap_all_filtered`: returns True when all holdings filtered + no positions (weekend scenario)
-
-## Tests
 - pytest: yes
-- svelte-check: no
+- svelte-check: yes
 - playwright: no
 
+### Backend tests (backend-test agent)
+
+- `snapshot_daily_book` with prior daily_book row present → positions `previous_close` = prior_ltp, NOT broker `close_price`
+- `snapshot_daily_book` with NO prior daily_book row (new position) → falls back to `r.get("close_price")`
+- `_snap_compute_day_pnl` receives corrected `close_ref` (prior daily_book LTP) → `day_pnl = (ltp - prior_ltp) × qty`
+- Monday-after-weekend scenario: prior row is Friday's, `previous_close` = Friday's LTP ✓
+- Regression: UPSERT COALESCE freeze still works (second write of same day keeps first-write value)
+
+---
+
 ## Commit message
-fix(snapshot): admin trigger uses is_market_open(); close_price fallback when last_price=0
+fix(snapshot): previous_close from prior daily_book.ltp (not broker close_price); orphan/paired coloring
 
 ## Done when
-- `POST /api/admin/pnl/snapshot {}` auto-detects weekend/holiday via `is_market_open()` → captures non-NULL ltp
-- `POST /api/admin/pnl/snapshot {"market_open": false}` explicit override works
-- Dhan holdings with `last_price=0` use `close_price` as ltp → appear in Pulse on non-trading days
-- `_snap_all_filtered` emits warning and skips upsert when all holdings are zero-filtered (weekend, no positions)
-- All new tests green
+- Positions and holdings Day P&L shows `(today_socket_ltp − yesterday_socket_ltp) × qty` from snapshot
+- MCX mid-session window (15:30–23:30): NSE Day P&L correct, not dependent on stale Kite close_price
+- Weekend restart: `previous_close` = Friday's socket LTP; Day P&L = Friday change
+- Broker REST used only for qty, avg_cost, symbol — no day_change_val or close_price dependency
+- Orphan positions: amber left-border; Paired: cyan left-border
+- svelte-check 0 errors, pytest green
