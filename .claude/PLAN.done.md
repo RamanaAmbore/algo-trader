@@ -1,130 +1,104 @@
-# Plan: Skip startup snapshot on weekends/holidays to prevent Day P&L = 0
+# Plan: Fix navbar text visibility — algo pages + public Rambo Terminal button
 
 ## Context
 
-### Root cause (confirmed)
+Two separate visibility issues on desktop:
 
-After the `previous_close` SSOT deploy (00:30 IST Saturday 2026-08-16), the service
-restarted and `_task_daily_snapshot` fired its startup snapshot. The startup snapshot
-ran `snapshot_daily_book(market_open=False)` with `target_date = today_indian() =
-2026-08-16` (Saturday). This created 139 `daily_book` rows for `date = 2026-08-16`
-with stale prices (LTP ≈ Friday close, `day_pnl ≈ 0`).
+### Issue 1 — Algo pages navbar items (`.algo-nav-btn`)
+File: `frontend/src/routes/(algo)/+layout.svelte` (lines ~1552–1590)
 
-The `_POSITIONS_SNAPSHOT_SQL`'s `latest_batch` CTE picks `MAX(captured_at)` globally.
-Saturday's rows (captured 00:32 IST) are 6 minutes newer than Friday's MCX-close rows
-(captured 23:56 IST). So `latest_batch` → Saturday stale data. `prev_batch` →
-Friday EOD. `Day P&L = Saturday_pnl - Friday_pnl ≈ 0` (prices unchanged).
+`color: rgba(180, 200, 230, 0.75)` — only 75% opacity muted blue-gray. On the dark
+algo app background this is noticeably dim. Font-size is `var(--fs-md)` (compact).
 
-### Immediate mitigation (already done)
-`DELETE FROM daily_book WHERE date = '2026-08-16'` — 139 rows deleted on prod.
-Day P&L is now live showing Friday's correct values.
+Fix: raise opacity to ~92%, slightly brighter base color. **Desktop only** — `.algo-nav-btn`
+has no separate mobile CSS class, so the change must be wrapped in `@media (min-width: 768px)`
+to avoid affecting the mobile navbar.
 
-### Recurrence scenarios
+### Issue 2 — Public page "Rambo Terminal ↗" button (`.pub-nav-algo-btn`)
+File: `frontend/src/routes/(public)/+layout.svelte` (lines ~432–451)
 
-1. **Service restart on any Saturday/Sunday** — startup snapshot fires, creates
-   stale weekend rows, Day P&L = 0 for the entire weekend.
-2. **Service restart on a weekday NSE holiday** — same pattern, affects that
-   holiday's data.
-3. **MCX Saturdays** — MCX IS open Saturday 09:00–23:30. The 23:31 snapshot
-   creates correct Saturday MCX rows. The startup snapshot at restart time (before
-   MCX opens) creates stale rows that pollute `latest_batch` until 23:31.
+`color: #b27908` = dark amber-brown, ~2.5:1 contrast against `#0c1830` navy — WCAG
+fail, barely readable. `border: rgba(200,168,75,0.32)` = invisible. `font-size: 0.88rem`
+= small.
+
+Fix: bright gold text, stronger border, slightly larger font. **Already desktop-only** —
+mobile uses a separate class `.pub-mobile-algo` with separate HTML element (Tailwind
+`hidden md:flex` controls visibility). Changes to `.pub-nav-algo-btn` never affect mobile.
 
 ---
 
 ## Files to change
 
-- `backend/api/background.py` — `_task_daily_snapshot()` startup snapshot logic
-  (lines ~1844–1856)
+- `frontend/src/routes/(algo)/+layout.svelte` — `.algo-nav-btn` CSS
+- `frontend/src/routes/(public)/+layout.svelte` — `.pub-nav-algo-btn` CSS
 
 ---
 
-## Detailed change
+## Detailed changes
 
-In `_task_daily_snapshot`, after the `_probe_nse_mcx()` call but BEFORE the
-`if _nse_open or _mcx_open` branch, add a weekend check:
+### algo/+layout.svelte — `.algo-nav-btn` (desktop only via media query)
 
-```python
-# Skip startup snapshot on weekends — the previous trading day's EOD data
-# already lives in daily_book. Creating today's date rows with stale prices
-# displaces the EOD rows in latest_batch (MAX captured_at), making Day P&L = 0.
-_today_d = timestamp_indian().date()
-if _today_d.weekday() >= 5:
-    logger.info(
-        "Background: skipping startup snapshot — weekend "
-        "(existing EOD data serves closed-hours Pulse correctly)"
-    )
-else:
-    # Optional: also check NSE holiday list to block weekday-holiday restarts.
-    # For now, weekend-only guard covers the most common case (Saturday MCX
-    # pre-session, Sunday NSE/MCX). Weekday holidays are less frequent.
-    if _nse_open or _mcx_open:
-        logger.info(
-            f"Background: skipping startup daily snapshot — markets open "
-            f"(NSE={_nse_open}, MCX={_mcx_open}). Settlement passes still fire."
-        )
-    else:
-        await _fire_snapshot("startup", market_open=False)
+Leave the existing top-level rule untouched (mobile keeps `rgba(180, 200, 230, 0.75)`).
+Add a desktop override after the existing rule block:
+
+```css
+/* ADDED — desktop-only brightness boost */
+@media (min-width: 768px) {
+  :global(.algo-nav-btn) {
+    color: rgba(200, 218, 242, 0.92);
+  }
+}
 ```
 
-Replace the existing block (lines ~1844–1856):
-```python
-_nse_open, _mcx_open = await _probe_nse_mcx(_now_ist)
-if _nse_open or _mcx_open:
-    logger.info(...)
-else:
-    await _fire_snapshot("startup", market_open=False)
+That single change — from 75% to 92% opacity and a slightly cooler/brighter blue-white — will significantly improve readability without changing the visual design language. Mobile is unaffected.
+
+### public/+layout.svelte — `.pub-nav-algo-btn` default state
+
+```css
+/* BEFORE */
+font-size: 0.88rem;
+font-weight: 500;
+color: #b27908;
+border: 1px solid rgba(200,168,75,0.32);
+background: rgba(200,168,75,0.10);
+
+/* AFTER */
+font-size: 0.95rem;
+font-weight: 600;
+color: #e8c03a;              /* bright gold — clearly visible on dark navy */
+border: 1px solid rgba(200,168,75,0.60);   /* visible border */
+background: rgba(200,168,75,0.15);          /* slightly more filled */
 ```
 
-With:
-```python
-_today_d = _now_ist.date()
-_nse_open, _mcx_open = await _probe_nse_mcx(_now_ist)
-if _today_d.weekday() >= 5:
-    logger.info(
-        "Background: skipping startup snapshot — weekend "
-        "(existing EOD data serves closed-hours Pulse correctly)"
-    )
-elif _nse_open or _mcx_open:
-    logger.info(
-        f"Background: skipping startup daily snapshot — markets open "
-        f"(NSE={_nse_open}, MCX={_mcx_open}). Settlement passes still fire."
-    )
-else:
-    await _fire_snapshot("startup", market_open=False)
+### public/+layout.svelte — `.pub-nav-algo-btn:hover`
+
+```css
+/* BEFORE */
+color: #b27908;   /* same dark amber — no change on hover */
+
+/* AFTER */
+color: #f0d070;   /* brighter gold on hover */
+border-color: rgba(200,168,75,0.75);
+background: rgba(200,168,75,0.22);
 ```
 
 ---
 
 ## Agents
-
-- backend: Fix `_task_daily_snapshot` in `backend/api/background.py` as above
-- frontend: skip
-- broker: skip
-- doc: skip
-- backend-test: Add pytest test — startup snapshot skipped when `today.weekday() >= 5`
+- frontend: apply both CSS changes above
+- backend: skip
+- backend-test: skip
 - playwright: skip
 
----
-
 ## Tests
-
-- pytest: yes
-- svelte-check: no
+- pytest: no
+- svelte-check: yes
 - playwright: no
 
-### Required test cases
-- Mock `timestamp_indian()` to return a Saturday → verify `_fire_snapshot` NOT called
-- Mock to return a Sunday → same
-- Mock to return a weekday (non-holiday, market closed) → verify `_fire_snapshot` IS called
-- Mock to return a weekday with market open → verify `_fire_snapshot` NOT called (existing guard)
-
----
-
 ## Commit message
-fix(background): skip startup snapshot on weekends to prevent Day P&L = 0 after off-day restart
+fix(public-algo-nav): improve navbar text opacity and Rambo Terminal button contrast on desktop
 
 ## Done when
-- `_task_daily_snapshot` does NOT create daily_book rows for Saturday or Sunday on service restart
-- Weekday non-holiday off-hours restarts still fire the startup snapshot (unchanged)
-- Existing NSE/MCX settlement passes (16:15, 23:31, 00:15) unaffected
-- pytest green
+- Algo pages nav items clearly readable (0.92 opacity blue-white vs 0.75 before)
+- Rambo Terminal button shows bright gold (#e8c03a) not dark amber (#b27908)
+- svelte-check 0 errors

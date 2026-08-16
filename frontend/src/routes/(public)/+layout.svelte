@@ -431,12 +431,12 @@
      read with equal visual weight. */
   .pub-nav-algo-btn {
     padding: 0.18rem 0.55rem;
-    font-size: 0.88rem;
-    font-weight: 500;
+    font-size: 0.95rem;
+    font-weight: 600;
     border-radius: 0.25rem;
-    background: rgba(200,168,75,0.10);
-    color: #b27908;
-    border: 1px solid rgba(200,168,75,0.32);
+    background: rgba(200,168,75,0.15);
+    color: #e8c03a;
+    border: 1px solid rgba(200,168,75,0.60);
     cursor: pointer;
     letter-spacing: 0.02em;
     transition: background-color 0.08s, border-color 0.08s, color 0.08s;
@@ -445,9 +445,9 @@
     margin-right: 0.25rem;
   }
   .pub-nav-algo-btn:hover {
-    background: rgba(200,168,75,0.20);
-    border-color: rgba(200,168,75,0.5);
-    color: #b27908;
+    background: rgba(200,168,75,0.22);
+    border-color: rgba(200,168,75,0.75);
+    color: #f0d070;
   }
 
   /* Sign-in button */

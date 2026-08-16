@@ -1588,6 +1588,11 @@
     font-weight: 700;
     border-left-color: var(--c-action);
   }
+  @media (min-width: 768px) {
+    :global(.algo-nav-btn) {
+      color: rgba(200, 218, 242, 0.92);
+    }
+  }
 
   /* Back-to-investor-site link — amber-pill emphasis on dark, mirroring
      the gold-pill "Algo Site" button on the public side. Both context-
