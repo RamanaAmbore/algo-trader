@@ -1,119 +1,105 @@
-# Plan: Lot-based position auto-pairing with waterfall matching
+# Plan: Pair/Orphan/GTT color column + Lots before LTP + remove chips
 
 ## Context
 
-Current pairing is manual and order-based: `pair_group_key` = `str(root AlgoOrder id)`, set only when an OPEN AlgoOrder explicitly links positions via `POST /api/orders/pair`. This means positions that are natural hedges (long 3 lots NIFTY CE + short 2 lots NIFTY PE) show no pairing unless the operator manually wires them.
+Replace the chip-in-symbol approach with a dedicated first column that uses colored cell backgrounds to communicate position state: paired (cyan), orphan (amber), GTT (green). Also move Lots column before LTP for faster F&O scanning. Remove all existing chip DOM from symbol cells.
 
-New requirement: **automatic lot-waterfall pairing** at the position level —
-- Group positions by underlying (root symbol, e.g. NIFTY from NIFTY24800CE)
-- Long + short on the same underlying → pair candidate
-- Match by min(long_qty, short_qty); remainder → orphan
-- Each pair gets a sequential ID: "P1", "P2" (distinguishes multiple pairs on same underlying)
-- `is_orphan = True` when a position has zero paired lots
+Three position states:
+- **Paired** — has a lot-matched peer (`pair_group_key` set, `is_orphan=False`)
+- **Orphan** — no peer (`is_orphan=True`)
+- **GTT** — has an active GTT order in DB (`has_gtt=True`); takes visual priority over paired/orphan
 
 ---
 
-## Algorithm
-
-For each (account, root_symbol) group:
-```
-pair_n = 1
-longs = sorted([r for r if qty > 0], by abs(qty) desc)
-shorts = sorted([r for r if qty < 0], by abs(qty) desc)
-
-while longs and shorts remain:
-    l, s = longs[0], shorts[0]
-    match_qty = min(abs(l.quantity), abs(s.quantity))
-    assign pair_group_key = "P{pair_n}" to l and s
-    assign paired_qty = match_qty, orphan_qty = abs(qty) - match_qty
-    is_orphan = (paired_qty == 0)
-    decrement remaining qty; evict exhausted sides
-    pair_n++
-
-remaining unmatched positions → is_orphan=True, pair_group_key=None, orphan_qty=abs(qty)
-```
-
-Root symbol extraction: strip trailing digits + CE/PE/FUT/OPT suffix.
-e.g. `NIFTY24800CE → NIFTY`, `CRUDEOIL24AUGFUT → CRUDEOIL`, `INFY → INFY`.
-
----
-
-## Files to change
+## Backend changes
 
 ### 1. `backend/api/schemas.py`
-Add two fields to `PositionRow` (after `pair_group_key`):
+Add to `PositionRow` after `orphan_qty`:
 ```python
-paired_qty: int = 0    # lots matched into a pair
-orphan_qty: int = 0    # unmatched lots on this position
+has_gtt: bool = False   # True when an OPEN AlgoOrder with a GTT id exists for this (account, symbol)
 ```
 
 ### 2. `backend/api/routes/positions.py`
-- Replace `_fetch_open_order_map` + `_apply_order_map_to_rows` with new function:
-  ```python
-  def _auto_pair_positions(rows: list[PositionRow]) -> list[PositionRow]
-  ```
-- Add helper `_root_symbol(tradingsymbol: str) -> str`
-- Both call sites (snapshot path ~line 178, live path ~line 524) call `_auto_pair_positions` instead of `_apply_order_map_to_rows`
-- Remove `_fetch_open_order_map` and the DB round-trip it required (pure in-memory computation now)
+Add lightweight GTT query (runs once per request, cheap indexed scan):
+```python
+async def _fetch_gtt_set(session) -> set[tuple[str, str]]:
+    """Return {(account, symbol)} for OPEN AlgoOrders that have a gtt_order_id."""
+    rows = await session.execute(_sql_text(
+        "SELECT account, symbol FROM algo_orders "
+        "WHERE status = 'OPEN' AND gtt_order_id IS NOT NULL"
+    ))
+    return {(r.account, r.symbol) for r in rows}
 
-### 3. `frontend/src/app.css`
-Keep existing `.row-pos-orphan` / `.row-pos-paired` row color rules unchanged.
-
-### 4. SSOT — shared sort function (new file or extend `pulseGridSetup.js`)
-
-Extract pair-group sort into a shared helper used by ALL positions grids:
-
-```js
-// pairGroupSort(rowNodes) — SSOT for all positions grids
-// Sort order: P1 group, P2 group, …, orphan group last.
-// Sort key: pair_group_key ?? "ZZZZ" (sorts orphans after all Pn keys).
-// Within each group: preserve original broker row order.
+def _annotate_gtt(rows: list[PositionRow], gtt_set: set) -> list[PositionRow]:
+    return [_msc.structs.replace(r, has_gtt=(r.account, r.tradingsymbol) in gtt_set) for r in rows]
 ```
+
+In both snapshot path (~line 178) and live path (~line 524): after `_auto_pair_positions`, call `_annotate_gtt`. Wrap the DB call in try/except (warn + use empty set on failure, never block positions).
+
+---
+
+## Frontend changes
+
+### 3. `frontend/src/lib/data/pulseColumns.js`
+
+**New pair/state column** — insert as first element in `mkRightColDefs()` (before `symColRight`):
+```js
+{
+  headerName: '', field: 'pair_group_key', colId: 'pos_state',
+  width: 38, minWidth: 38, maxWidth: 38,
+  pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
+  headerTooltip: 'Position state: Paired (cyan) / Orphan (amber) / GTT (green)',
+  cellStyle: (p) => {
+    const d = p.data;
+    if (!d || d._isTotal) return {};
+    if (d.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
+    if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
+    if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
+    return {};
+  },
+  cellRenderer: (p) => {
+    const d = p.data;
+    if (!d || d._isTotal) return '';
+    if (d.has_gtt)        return 'GTT';
+    if (d.pair_group_key) return d.pair_group_key;   // P1, P2, …
+    if (d.is_orphan)      return '○';
+    return '';
+  },
+  cellClass: 'ag-cell-pair-state',   // for shared font/size CSS
+}
+```
+
+**Move Lots column** — cut `lotsCol` definition from its current position (after Qty, line ~512) and paste it immediately after `sparkCol` (before `ltpCol`). New order: Symbol → Sparkline → **Lots** → LTP → Avg → …
+
+### 4. `frontend/src/app.css`
+- Add `.ag-cell-pair-state` rule: `font-size: 9px; font-weight: 700; text-align: center; letter-spacing: 0.02em;`
+- Remove `.pair-chip` and `.orphan-chip` CSS rules (no longer used)
 
 ### 5. `frontend/src/lib/MarketPulse.svelte`
-- Replace `_pairGroupPostSort` (lines ~3548–3569) with call to shared `pairGroupSort`
-- Chip display in symbol cell renderer (`.ag-col-sym`):
-  - If `pair_group_key` set: `<span class="pair-chip">P1</span>`
-  - If `orphan_qty > 0 && paired_qty > 0`: also `<span class="orphan-chip">{orphan_qty}L orphan</span>`
-  - If fully orphaned: existing amber indicator unchanged
-- Apply same `_sourceRowClasses` orphan/paired logic already present
+- Remove `pairChipHtml` import and the `pairChips` injection at line ~3367 in `symRenderer`
+- Keep `pairGroupSort` import + `_pairGroupPostSort` wiring (still needed for row grouping)
 
 ### 6. `frontend/src/lib/PerformancePage.svelte`
-- `positionsAllGrid`: replace/compose `postSortGroups2Level` with `pairGroupSort` as primary, then two-level contract-type sub-sort within each pair group
-- Add pair/orphan chip cell renderer to symbol column
+- `positionsAllGrid`: prepend the same `pos_state` column definition as first element
+- Remove `pairChipHtml` import and chip injection (lines ~654-658 in `_posSymRenderer`)
 
-### 7. `frontend/src/routes/(algo)/dashboard/+page.svelte`
-- `_eqPosGrid`: add `pairGroupSort` as `postSortRows`; add chip renderer to symbol column
+### 7. `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+- Remove the `pair_group_key` chip block (lines ~291-294)
+- Remove the `orphan_qty` chip block (lines ~296-299)
+- Add a colored pair-state indicator in the first cell position of the CSS grid row
 
 ### 8. `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-- `cand-grid` (candidates/legs panel — shows live positions with full analytics): add `pairGroupSort` as `postSortRows`; add chip renderer to symbol column
-- `leg-grid` (draft leg editor — hypothetical legs, not from positions API): **skip** — no `pair_group_key` from API
-- `byund-grid` (by-underlying rollup — already grouped by underlying): **skip** — aggregate view, pairing redundant
+- Update `.cand-grid` CSS `grid-template-columns` to add a 38px leading column for the state indicator
 
-### Surfaces summary
-| Grid | File | Include | Reason |
-|---|---|---|---|
-| `gridPositions` | MarketPulse.svelte | ✓ | Primary positions surface |
-| `positionsAllGrid` | PerformancePage.svelte | ✓ | Detailed position rows |
-| `_eqPosGrid` | dashboard/+page.svelte | ✓ | Equity positions detail |
-| `cand-grid` | derivatives/+page.svelte | ✓ | Live positions for analysis |
-| `leg-grid` | derivatives/+page.svelte | ✗ | Hypothetical drafts, no API pairing |
-| `byund-grid` | derivatives/+page.svelte | ✗ | Aggregate rollup, already grouped |
-| Summary grids, holdings, funds | various | ✗ | Not individual position rows |
-
-### 5. `frontend/src/app.css`
-Add chip styles:
-```css
-.pair-chip   { background: rgba(34,211,238,0.18); color: #67e8f9; border: 1px solid rgba(34,211,238,0.4); padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; }
-.orphan-chip { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.35); padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 600; }
-```
+### 9. `frontend/src/lib/data/pairGroupSort.js`
+- Remove `pairChipHtml` export (no longer needed; `pairGroupSort` stays)
 
 ---
 
 ## Agents
-- backend: implement `_root_symbol` + `_auto_pair_positions` in `positions.py`; add `paired_qty`/`orphan_qty` to `schemas.py`; remove `_fetch_open_order_map`
-- frontend: (1) extract `pairGroupSort` shared helper; (2) apply chip renderer + `pairGroupSort` to all 4 included grids: MarketPulse `gridPositions`, PerformancePage `positionsAllGrid`, Dashboard `_eqPosGrid`, Derivatives `cand-grid`; add chip CSS to `app.css`
-- backend-test: update `backend/tests/test_order_pair.py` for new lot-waterfall algorithm; add lot-split scenarios (3 long + 2 short → P1 + 1 orphan)
+- backend: add `has_gtt` to `schemas.py`; add `_fetch_gtt_set` + `_annotate_gtt` to `positions.py`; wire in both paths
+- frontend: apply all CSS/column changes across pulseColumns.js, app.css, MarketPulse.svelte, PerformancePage.svelte, CandidateLegRow.svelte, derivatives/+page.svelte, pairGroupSort.js
+- backend-test: add tests for `_fetch_gtt_set` + `_annotate_gtt`; update existing pair tests for `has_gtt` default field
 - broker: skip
 - doc: skip
 - playwright: skip
@@ -124,12 +110,10 @@ Add chip styles:
 - playwright: no
 
 ## Commit message
-feat(positions): lot-waterfall auto-pairing — replace order-based with qty-matched pair chips
+feat(positions): Pair/Orphan/GTT state column + Lots before LTP + remove symbol chips
 
 ## Done when
-- NIFTY 3-lot long + 2-lot short → P1 chip on both rows, "1L orphan" chip on long row
-- Two distinct pairs (NIFTY + BANKNIFTY hedges) → P1 chip on each pair, correctly grouped
-- Fully unmatched position → amber orphan indicator, no pair chip
-- Grid row order in ALL 4 surfaces: P1 group → P2 → … → orphans as one trailing group
-- Pair chips visible in: MarketPulse, PerformancePage, Dashboard, Derivatives cand-grid
-- pytest green, svelte-check 0 errors
+- First column shows: `P1`/`P2` cyan for paired, `○` amber for orphan, `GTT` green for GTT
+- Lots column appears immediately before LTP in all positions grids
+- No pair/orphan chips remain in symbol cells
+- svelte-check 0 errors, pytest green

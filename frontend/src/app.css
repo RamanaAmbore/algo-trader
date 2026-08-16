@@ -833,28 +833,17 @@
   background: rgba(34,211,238,0.75);
 }
 
-/* Pair / orphan chips in symbol cell */
-.pair-chip {
-  background: rgba(34,211,238,0.18);
-  color: #67e8f9;
-  border: 1px solid rgba(34,211,238,0.40);
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  margin-left: 4px;
-  vertical-align: middle;
-}
-.orphan-chip {
-  background: rgba(251,191,36,0.15);
-  color: #fbbf24;
-  border: 1px solid rgba(251,191,36,0.35);
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  margin-left: 4px;
-  vertical-align: middle;
+/* Position state column — ag-Grid dedicated cell (38px pinned left).
+   Three states: GTT (green), Paired (cyan), Orphan (amber).
+   Background + color set inline by cellStyle; this rule handles typography. */
+.ag-theme-algo .ag-cell.ag-cell-pair-state {
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Long/short cues for the light-theme ramboq grid on the public

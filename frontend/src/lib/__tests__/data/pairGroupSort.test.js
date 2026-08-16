@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pairGroupSort, pairChipHtml } from '../../data/pairGroupSort.js';
+import { pairGroupSort } from '../../data/pairGroupSort.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -128,66 +128,104 @@ describe('pairGroupSort — stable within-group ordering', () => {
 });
 
 // ---------------------------------------------------------------------------
-// pairChipHtml — chip generation
+// pos_state cell logic — mirrors the cellStyle / cellRenderer used in
+// pulseColumns.js mkRightColDefs and PerformancePage positionsCols.
+// Extracted here as pure functions so they can be unit-tested without
+// importing ag-Grid or mounting a Svelte component.
 // ---------------------------------------------------------------------------
 
-describe('pairChipHtml — pair-chip span', () => {
-  it('returns pair-chip span when pair_group_key is set', () => {
-    const html = pairChipHtml({ pair_group_key: 'P1', orphan_qty: 0, paired_qty: 2 });
-    expect(html).toContain('class="pair-chip"');
-    expect(html).toContain('P1');
+/**
+ * Mirror of the pos_state cellStyle function used in pulseColumns.js and
+ * PerformancePage.svelte.
+ * @param {any} data  — row data object
+ * @returns {{ background?: string, color?: string }}
+ */
+function posStateCellStyle(data) {
+  if (!data || data._isTotal) return {};
+  if (data.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
+  if (data.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
+  if (data.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
+  return {};
+}
+
+/**
+ * Mirror of the pos_state cellRenderer function used in pulseColumns.js and
+ * PerformancePage.svelte.
+ * @param {any} data  — row data object
+ * @returns {string}
+ */
+function posStateCellRenderer(data) {
+  if (!data || data._isTotal) return '';
+  if (data.has_gtt)        return 'GTT';
+  if (data.pair_group_key) return data.pair_group_key;
+  if (data.is_orphan)      return '○';
+  return '';
+}
+
+describe('pos_state — cellStyle priority order', () => {
+  it('returns green GTT style when has_gtt is truthy', () => {
+    const style = posStateCellStyle({ has_gtt: true, pair_group_key: 'P1', is_orphan: false });
+    expect(style.color).toBe('#4ade80');
+    expect(style.background).toContain('74,222,128');
   });
 
-  it('includes the pair_group_key text in the span', () => {
-    const html = pairChipHtml({ pair_group_key: 'P3', orphan_qty: 0, paired_qty: 4 });
-    expect(html).toContain('>P3<');
+  it('returns cyan paired style when pair_group_key is set and has_gtt is false', () => {
+    const style = posStateCellStyle({ has_gtt: false, pair_group_key: 'P1', is_orphan: false });
+    expect(style.color).toBe('#67e8f9');
+    expect(style.background).toContain('34,211,238');
+  });
+
+  it('returns amber orphan style when is_orphan is true and no key/gtt', () => {
+    const style = posStateCellStyle({ has_gtt: false, pair_group_key: null, is_orphan: true });
+    expect(style.color).toBe('#fbbf24');
+    expect(style.background).toContain('251,191,36');
+  });
+
+  it('returns empty style when no state flags are set', () => {
+    const style = posStateCellStyle({ has_gtt: false, pair_group_key: null, is_orphan: false });
+    expect(style).toEqual({});
+  });
+
+  it('returns empty style for _isTotal rows', () => {
+    const style = posStateCellStyle({ _isTotal: true, has_gtt: true, pair_group_key: 'P1' });
+    expect(style).toEqual({});
+  });
+
+  it('returns empty style for null data', () => {
+    expect(posStateCellStyle(null)).toEqual({});
+    expect(posStateCellStyle(undefined)).toEqual({});
+  });
+
+  it('GTT takes priority over pair_group_key (both set)', () => {
+    // has_gtt wins in the priority chain
+    const style = posStateCellStyle({ has_gtt: true, pair_group_key: 'P1', is_orphan: true });
+    expect(style.color).toBe('#4ade80');
   });
 });
 
-describe('pairChipHtml — orphan-chip span', () => {
-  it('returns both chips when orphan_qty > 0 and paired_qty > 0', () => {
-    const html = pairChipHtml({ pair_group_key: 'P1', orphan_qty: 1, paired_qty: 2 });
-    expect(html).toContain('class="pair-chip"');
-    expect(html).toContain('class="orphan-chip"');
-    expect(html).toContain('1L orphan');
+describe('pos_state — cellRenderer text', () => {
+  it('returns "GTT" for has_gtt rows', () => {
+    expect(posStateCellRenderer({ has_gtt: true })).toBe('GTT');
   });
 
-  it('does NOT return orphan chip when orphan_qty is 0', () => {
-    const html = pairChipHtml({ pair_group_key: 'P1', orphan_qty: 0, paired_qty: 2 });
-    expect(html).not.toContain('orphan-chip');
+  it('returns pair_group_key text for paired rows', () => {
+    expect(posStateCellRenderer({ has_gtt: false, pair_group_key: 'P2' })).toBe('P2');
   });
 
-  it('does NOT return orphan chip when paired_qty is 0', () => {
-    const html = pairChipHtml({ pair_group_key: 'P1', orphan_qty: 2, paired_qty: 0 });
-    expect(html).not.toContain('orphan-chip');
+  it('returns ○ for orphan rows', () => {
+    expect(posStateCellRenderer({ has_gtt: false, pair_group_key: null, is_orphan: true })).toBe('○');
   });
 
-  it('does NOT return orphan chip when both orphan_qty and paired_qty are 0', () => {
-    const html = pairChipHtml({ pair_group_key: 'P1', orphan_qty: 0, paired_qty: 0 });
-    expect(html).not.toContain('orphan-chip');
-  });
-});
-
-describe('pairChipHtml — empty cases', () => {
-  it('returns empty string when no pair_group_key and no orphan_qty', () => {
-    const html = pairChipHtml({ pair_group_key: null, orphan_qty: 0, paired_qty: 0 });
-    expect(html).toBe('');
+  it('returns empty string for plain rows with no state', () => {
+    expect(posStateCellRenderer({ has_gtt: false, pair_group_key: null, is_orphan: false })).toBe('');
   });
 
-  it('returns empty string when pair_group_key is undefined', () => {
-    const html = pairChipHtml({ orphan_qty: 0, paired_qty: 0 });
-    expect(html).toBe('');
+  it('returns empty string for _isTotal rows', () => {
+    expect(posStateCellRenderer({ _isTotal: true, has_gtt: true, pair_group_key: 'P1' })).toBe('');
   });
 
-  it('returns empty string when data is null', () => {
-    expect(pairChipHtml(null)).toBe('');
-  });
-
-  it('returns empty string when data is undefined', () => {
-    expect(pairChipHtml(undefined)).toBe('');
-  });
-
-  it('returns empty string when data is an empty object', () => {
-    expect(pairChipHtml({})).toBe('');
+  it('returns empty string for null/undefined data', () => {
+    expect(posStateCellRenderer(null)).toBe('');
+    expect(posStateCellRenderer(undefined)).toBe('');
   });
 });

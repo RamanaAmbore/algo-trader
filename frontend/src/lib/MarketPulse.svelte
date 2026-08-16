@@ -123,7 +123,7 @@
     PULSE_DEFAULT_COL_DEF, PULSE_SORTING_ORDER,
     pulseRowId, summaryRowId, postSortGroups,
   } from '$lib/data/pulseGridSetup';
-  import { pairGroupSort, pairChipHtml } from '$lib/data/pairGroupSort';
+  import { pairGroupSort } from '$lib/data/pairGroupSort';
 
   let {
     title              = 'Pulse',
@@ -3364,8 +3364,7 @@
     const provChip = row._provisional
       ? '<span class="sym-provisional" title="Provisional — awaiting broker confirmation">~</span>'
       : '';
-    const pairChips = row.src?.p ? pairChipHtml(row) : '';
-    return `${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${pairChips}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+    return `${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
   }
 
   /**

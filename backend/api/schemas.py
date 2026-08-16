@@ -200,6 +200,11 @@ class PositionRow(msgspec.Struct):
     # Unmatched lots on this position: abs(quantity) - paired_qty.
     # 0 for fully-paired rows and quantity==0 rows.
     orphan_qty: int = 0
+    # True when an OPEN AlgoOrder with a gtt_order_id exists for this
+    # (account, tradingsymbol). Lets the frontend surface a GTT chip on
+    # position rows that already have an active GTT attached, so the
+    # operator doesn't accidentally create a duplicate.
+    has_gtt: bool = False
 
 
 class PositionsSummaryRow(msgspec.Struct):

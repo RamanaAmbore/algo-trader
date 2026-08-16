@@ -468,8 +468,36 @@ export function mkRightColDefs({
   lotsForRow, fmtLots,
 }) {
   return /** @type {any[]} */ ([
+    { headerName: '', field: 'pair_group_key', colId: 'pos_state',
+      width: 38, minWidth: 38, maxWidth: 38,
+      pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
+      headerTooltip: 'Position state: Paired (cyan) / Orphan (amber) / GTT (green)',
+      cellStyle: (p) => {
+        const d = p.data;
+        if (!d || d._isTotal) return {};
+        if (d.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
+        if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
+        if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
+        return {};
+      },
+      cellRenderer: (p) => {
+        const d = p.data;
+        if (!d || d._isTotal) return '';
+        if (d.has_gtt)        return 'GTT';
+        if (d.pair_group_key) return d.pair_group_key;
+        if (d.is_orphan)      return '○';
+        return '';
+      },
+      cellClass: 'ag-cell-pair-state',
+    },
     symColRight,
     sparkCol,
+    { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA,
+      valueGetter: (p) => lotsForRow(p.data),
+      valueFormatter: ({ value }) => fmtLots(value),
+      headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },
     ltpCol,
     { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
       width: 68, minWidth: 60, maxWidth: 90,
@@ -509,12 +537,6 @@ export function mkRightColDefs({
       cellClass: RA,
       valueGetter: _qtyNetValueGetter,
       valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-    { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
-      type: 'numericColumn', headerClass: numericHdr,
-      cellClass: RA,
-      valueGetter: (p) => lotsForRow(p.data),
-      valueFormatter: ({ value }) => fmtLots(value),
-      headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },
     { field: 'inv_val', headerName: 'Invested', colId: 'inv_val',
       width: 78, type: 'numericColumn', headerClass: numericHdr,
       cellClass: `${RA} cell-muted`,

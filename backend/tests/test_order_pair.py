@@ -3,6 +3,7 @@ Tests for order-pair feature:
   - _root_symbol helper
   - _auto_pair_positions lot-waterfall algorithm
   - POST /api/orders/pair handler (pair_orders)
+  - _annotate_gtt GTT annotation helper
 
 Coverage:
 1. _root_symbol: NIFTY24800CE→NIFTY, BANKNIFTY24AUGFUT→BANKNIFTY, INFY→INFY
@@ -15,6 +16,10 @@ Coverage:
 8. pair_orders raises 404 when either order not found
 9. pair_orders raises 400 when child already has a parent
 10. pair_orders raises 400 when parent_id == child_id
+11. _annotate_gtt: matching (account, symbol) → has_gtt=True
+12. _annotate_gtt: no match → has_gtt=False
+13. _annotate_gtt: empty gtt_set → all rows has_gtt=False
+14. PositionRow default has_gtt=False (schema backward compat)
 """
 
 from __future__ import annotations
@@ -368,3 +373,77 @@ async def test_pair_orders_same_id():
 
     assert exc_info.value.status_code == 400
     assert "different" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# 11-14. _annotate_gtt and has_gtt field
+# ---------------------------------------------------------------------------
+
+def test_annotate_gtt_match():
+    """Row whose (account, tradingsymbol) is in gtt_set gets has_gtt=True."""
+    from backend.api.routes.positions import _annotate_gtt
+
+    rows = [_make_row("ZG0790", "NIFTY24AUGFUT", "NFO", 1)]
+    gtt_set = {("ZG0790", "NIFTY24AUGFUT")}
+    result = _annotate_gtt(rows, gtt_set)
+
+    assert result[0].has_gtt is True
+
+
+def test_annotate_gtt_no_match():
+    """Row whose (account, tradingsymbol) is NOT in gtt_set keeps has_gtt=False."""
+    from backend.api.routes.positions import _annotate_gtt
+
+    rows = [_make_row("ZG0790", "INFY", "NSE", 10)]
+    gtt_set = {("ZG0790", "NIFTY24AUGFUT")}
+    result = _annotate_gtt(rows, gtt_set)
+
+    assert result[0].has_gtt is False
+
+
+def test_annotate_gtt_empty_set():
+    """Empty gtt_set → all rows have has_gtt=False."""
+    from backend.api.routes.positions import _annotate_gtt
+
+    rows = [
+        _make_row("ZG0790", "NIFTY24AUGFUT", "NFO", 1),
+        _make_row("ZG0790", "INFY", "NSE", 10),
+    ]
+    result = _annotate_gtt(rows, set())
+
+    assert all(r.has_gtt is False for r in result)
+
+
+def test_annotate_gtt_partial_match():
+    """Only the matching row gets has_gtt=True; the other stays False."""
+    from backend.api.routes.positions import _annotate_gtt
+
+    rows = [
+        _make_row("ZG0790", "NIFTY24AUGFUT", "NFO", 1),
+        _make_row("ZG0790", "INFY", "NSE", 10),
+    ]
+    gtt_set = {("ZG0790", "NIFTY24AUGFUT")}
+    result = _annotate_gtt(rows, gtt_set)
+
+    nifty_r = next(r for r in result if r.tradingsymbol == "NIFTY24AUGFUT")
+    infy_r = next(r for r in result if r.tradingsymbol == "INFY")
+
+    assert nifty_r.has_gtt is True
+    assert infy_r.has_gtt is False
+
+
+def test_position_row_default_has_gtt():
+    """PositionRow default value for has_gtt is False (backward compat)."""
+    from backend.api.schemas import PositionRow
+
+    row = PositionRow(
+        account="ZG0790",
+        tradingsymbol="INFY",
+        exchange="NSE",
+        product="CNC",
+        quantity=10,
+        average_price=1500.0,
+        close_price=1505.0,
+        pnl=50.0,
+    )
+    assert row.has_gtt is False

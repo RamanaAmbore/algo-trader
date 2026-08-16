@@ -173,6 +173,25 @@ def _auto_pair_positions(rows: "list[PositionRow]") -> "list[PositionRow]":
 
 
 # ---------------------------------------------------------------------------
+# GTT annotation helpers
+# ---------------------------------------------------------------------------
+
+async def _fetch_gtt_set(session) -> "set[tuple[str, str]]":
+    """Return {(account, symbol)} for OPEN AlgoOrders that have a gtt_order_id."""
+    from sqlalchemy import text as _sql_text
+    rows = await session.execute(_sql_text(
+        "SELECT account, symbol FROM algo_orders "
+        "WHERE status = 'OPEN' AND gtt_order_id IS NOT NULL"
+    ))
+    return {(r.account, r.symbol) for r in rows}
+
+
+def _annotate_gtt(rows: "list[PositionRow]", gtt_set: "set[tuple[str, str]]") -> "list[PositionRow]":
+    import msgspec as _msc
+    return [_msc.structs.replace(r, has_gtt=(r.account, r.tradingsymbol) in gtt_set) for r in rows]
+
+
+# ---------------------------------------------------------------------------
 # Closed-hours snapshot helpers
 # ---------------------------------------------------------------------------
 
@@ -266,6 +285,12 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
 
     rows: list[PositionRow] = [build_row_from_snapshot_raw(r) for r in raw_rows]
     rows = _auto_pair_positions(rows)
+    try:
+        async with async_session() as _gtt_session:
+            _gtt_set = await _fetch_gtt_set(_gtt_session)
+        rows = _annotate_gtt(rows, _gtt_set)
+    except Exception as _gtt_exc:
+        logger.warning(f"positions snapshot: gtt_set fetch failed: {_gtt_exc}")
 
     summary = build_summary_from_rows(rows)
 
@@ -604,6 +629,13 @@ async def _fetch() -> PositionsResponse:
 
     # Auto-pair positions by lot-waterfall within (account, root_symbol) groups.
     rows = _auto_pair_positions(rows)
+    try:
+        from backend.api.database import async_session as _async_session
+        async with _async_session() as _gtt_session:
+            _gtt_set = await _fetch_gtt_set(_gtt_session)
+        rows = _annotate_gtt(rows, _gtt_set)
+    except Exception as _gtt_exc:
+        logger.warning(f"positions live: gtt_set fetch failed: {_gtt_exc}")
 
     # Thread account_stale_since into stale rows so the frontend can
     # render "STALE @ HH:MM" next to the account name without a separate

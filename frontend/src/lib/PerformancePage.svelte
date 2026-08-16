@@ -72,7 +72,7 @@
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols } from '$lib/data/pulseColumns.js';
   import { postSortGroups2Level } from '$lib/data/pulseGridSetup.js';
-  import { pairGroupSort, pairChipHtml } from '$lib/data/pairGroupSort.js';
+  import { pairGroupSort } from '$lib/data/pairGroupSort.js';
 
   // ModuleRegistry is registered inside onMount after the dynamic import.
 
@@ -650,13 +650,6 @@
         a.addEventListener('click', (e) => e.stopPropagation());
         span.appendChild(a);
       }
-      // Pair / orphan chips — inject HTML after text node
-      const chips = pairChipHtml(params.data);
-      if (chips) {
-        const chipWrap = document.createElement('span');
-        chipWrap.innerHTML = chips;
-        span.appendChild(chipWrap);
-      }
     }
     return span;
   }
@@ -672,6 +665,30 @@
   // broken by the position-Greeks columns. Qty remains trailing.
   // Action-first column order (matches holdingsCols).
   const positionsCols = $derived([
+    // Position state column — first pinned column (38px).
+    // Three states: GTT (green), Paired (cyan), Orphan (amber).
+    { headerName: '', field: 'pair_group_key', colId: 'pos_state',
+      width: 38, minWidth: 38, maxWidth: 38,
+      pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
+      headerTooltip: 'Position state: Paired (cyan) / Orphan (amber) / GTT (green)',
+      cellStyle: (p) => {
+        const d = p.data;
+        if (!d || d._isTotal) return {};
+        if (d.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
+        if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
+        if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
+        return {};
+      },
+      cellRenderer: (p) => {
+        const d = p.data;
+        if (!d || d._isTotal) return '';
+        if (d.has_gtt)        return 'GTT';
+        if (d.pair_group_key) return d.pair_group_key;
+        if (d.is_orphan)      return '○';
+        return '';
+      },
+      cellClass: 'ag-cell-pair-state',
+    },
     // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
     // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,

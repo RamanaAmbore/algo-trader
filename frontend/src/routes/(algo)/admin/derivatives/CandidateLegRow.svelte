@@ -182,6 +182,20 @@
          _handleRowActivate();
        }
      }}>
+  <!-- Position state indicator — first column (38px state track).
+       Three states: GTT (green) / Paired (cyan) / Orphan (amber).
+       Maps to the new first grid-template-columns track. -->
+  <span class="cand-state-cell" style:background={
+    c.has_gtt ? 'rgba(74,222,128,0.20)' :
+    c.pair_group_key ? 'rgba(34,211,238,0.18)' :
+    c.is_orphan ? 'rgba(251,191,36,0.15)' : 'transparent'
+  } style:color={
+    c.has_gtt ? '#4ade80' :
+    c.pair_group_key ? '#67e8f9' :
+    c.is_orphan ? '#fbbf24' : 'transparent'
+  }>
+    {c.has_gtt ? 'GTT' : c.pair_group_key ?? (c.is_orphan ? '○' : '')}
+  </span>
   <input type="checkbox"
          checked={enabled}
          onclick={(e) => e.stopPropagation()}
@@ -288,16 +302,6 @@
         <span class="expiry-id-chip expiry-id-netted" title={c._reason ?? ''}>{c._pairId}</span>
       {/if}
     {/if}
-    {#if c.pair_group_key}
-      <!-- Pair-group chip — lot-based pairing key from the backend (P1, P2, …).
-           Shows which option legs share the same underlying lot-count pair. -->
-      <span class="pair-chip" title="Lot pair group: {c.pair_group_key}">{c.pair_group_key}</span>
-    {/if}
-    {#if c.orphan_qty > 0 && c.paired_qty > 0}
-      <!-- Orphan-qty chip — row has both paired and orphaned lots.
-           Shows the count of un-paired lots so the operator can close them. -->
-      <span class="orphan-chip" title="{c.orphan_qty} lot(s) unpaired in this position">{c.orphan_qty}L orphan</span>
-    {/if}
   </span>
   <!-- Expiry cell removed — the hyphenated symbol shows it. -->
   <span class="font-mono">{c.account}</span>
@@ -374,6 +378,19 @@
   @keyframes leg-ltp-down { 0% { background-color: rgba(248, 113, 113, 0.22); } 100% { background-color: transparent; } }
   .leg-ltp:global(.tf-up)   { animation: leg-ltp-up   450ms ease-out; }
   .leg-ltp:global(.tf-down) { animation: leg-ltp-down 450ms ease-out; }
+
+  /* ── Position state indicator — first column (38px) ─────────────── */
+  .cand-state-cell {
+    font-size: 9px;
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 2px;
+    min-height: 1.2rem;
+  }
 
   /* ── Row layout — subgrid so columns align with parent .cand-grid ─── */
   /* Single parent grid via subgrid. Each row inherits the parent's

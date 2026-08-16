@@ -29,29 +29,3 @@ export function pairGroupSort(rowNodes) {
   });
 }
 
-/**
- * pairChipHtml(data) — Returns HTML string for pair/orphan chips.
- *
- * Renders:
- *   - A `.pair-chip` span when `data.pair_group_key` is set.
- *   - An `.orphan-chip` span when `orphan_qty > 0 && paired_qty > 0`
- *     (mixed row: some lots are paired, some are orphaned).
- *
- * Returns '' when neither condition is met (watchlist / holdings rows,
- * positions without a pair key, or pure orphan rows that don't carry
- * a split).
- *
- * @param {any} data  — ag-Grid row data object (params.data)
- * @returns {string}
- */
-export function pairChipHtml(data) {
-  if (!data) return '';
-  const parts = [];
-  if (data.pair_group_key) {
-    parts.push(`<span class="pair-chip">${data.pair_group_key}</span>`);
-  }
-  if (data.orphan_qty > 0 && data.paired_qty > 0) {
-    parts.push(`<span class="orphan-chip">${data.orphan_qty}L orphan</span>`);
-  }
-  return parts.join(' ');
-}

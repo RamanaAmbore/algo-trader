@@ -4445,6 +4445,8 @@
                page). Stops click propagation so the surrounding
                grid-row toggle handlers don't double-fire. -->
           <div class="cand-headrow">
+            <!-- State column header — matches new first grid-template-columns track (38px). -->
+            <span title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)"></span>
             <input type="checkbox"
                    class="cand-check cand-check-master"
                    aria-label="Toggle all positions"
@@ -5967,6 +5969,7 @@
        via formatSymbol(). Operator no longer needs a separate column;
        saves ~58 px of horizontal real estate per row. */
     grid-template-columns:
+      38px                                 /* pos state (GTT / paired / orphan) */
       auto                                 /* checkbox */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(max-content, max-content)     /* account */
