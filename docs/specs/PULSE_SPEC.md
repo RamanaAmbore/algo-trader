@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.8 — 2026-08-16  
+**Version**: 1.9 — 2026-08-16  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -165,6 +165,9 @@ See Section 5 for DB-first policy and fallback ladder.
 - Equity holdings: skipped if qty=0 (no zero-quantity holdings in leg candidates)
 - Proxy-hedge holdings: skipped if qty=0 (no zero-quantity proxy legs in grid)
 - Draft positions: skipped if instrument not found in master (no fallback expiry guard for drafts without master entry)
+
+**Broker-specific Day P&L notes**:
+- **Groww**: `_normalise_positions()` in `groww.py` pre-computes `day_change_val = (ltp - close) × qty` (guarded: `ltp > 0 and close > 0 and qty != 0`). Groww API does not return `day_change_val` or `day_pnl`, so this computation ensures Day P&L displays correctly on cold-cache page loads instead of showing 0
 
 ### 4.5 Chase Card Status Columns
 
@@ -594,24 +597,39 @@ with account-scoped filters and a pinned TOTAL row at bottom.
 - **Note**: St (pos_state) column is filtered out of holdings grid; only visible in positions grid
 
 **Right-grid column order** (via `mkRightColDefs()`):
+
+Positions grid:
 - Symbol (168px, pinned) — account-tinted background (color per lead account)
-- **St** (30px, positions only) — pos_state indicator; displays '○' for open positions with
-  defined qty; fallback rendering for unenriched rows. Not shown in holdings grid.
+- **St** (30px) — pos_state indicator; displays '○' for all position rows with `quantity` defined;
+  fallback rendering for unenriched rows. Not shown in holdings grid.
 - 5d sparkline (44px)
+- Lots (52px) — qty in F&O lot units; via `lotsForRow()` helper; null hidden
 - LTP (77px) — SSE tick + vs-avg/vs-prev heat; snapshot-frozen when is_animating=false
 - Avg (68px) — weighted average entry (directional tint: long green, short red, flat gray)
 - Day P&L (78px) — today's profit/loss; tick-flash on poll cycles (300ms)
-- Day % (64px) — day P&L as % of yesterday's market value (close × qty)
 - Close (68px) — previous close (muted)
 - P&L (78px) — lifetime profit/loss; directional + tick-flash
 - P&L % (64px) — P&L as % of cost basis
 - Qty (56px) — net qty; aggregated across accounts; null hidden
-- **Lots** (52px, immediately before Invested in holdings) — qty in F&O lot units; via
-  `lotsForRow()` helper. Positioned immediately before Invested column in holdings grid for
-  better UX flow (contract quantity → invested basis).
-- Invested (78px) — cost basis (avg × held qty) for holdings
-- Value (78px) — current value (LTP × held qty) for holdings
 - Account (86px) — lead account + "+N" for multi-account rows; STALE@HH:MM badge on circuit-breaker rows
+- Exp P&L (78px, F&O only) — expected P&L at expiry for open option legs
+
+Holdings grid (St column filtered out):
+- Symbol (168px, pinned) — account-tinted background
+- 5d sparkline (44px)
+- LTP (77px)
+- Avg (68px)
+- Day % (64px)
+- Close (68px)
+- Day P&L (78px)
+- P&L % (64px)
+- P&L (78px)
+- Qty (56px)
+- **Lots** (52px, immediately before Invested) — qty in F&O lot units; via `lotsForRow()` helper.
+  Positioned immediately before Invested column for better UX flow (contract quantity → invested basis).
+- Invested (78px) — cost basis (avg × held qty)
+- Value (78px) — current value (LTP × held qty)
+- Account (86px)
 
 **Day P&L recompute** — via `livePositionDayPnl()` helper (shared with derivatives):
 - When market open: `(liveLtp − closePx) × qty + realisedToday`
@@ -672,9 +690,10 @@ the accessors so cells see current $state values on every redraw (not stale bind
 - Visual cue for operators to establish a parent-child relationship via the OrderPairModal if needed
 
 **Position state (St) column renderer** (Aug 2026):
-- Displays `'○'` (hollow circle, UTF-8 U+25CB) for all position rows with `qty_pos !== undefined`
+- Displays `'○'` (hollow circle, UTF-8 U+25CB) for all position rows with `quantity !== undefined`
 - Defensive fallback: renders `'○'` even if `is_orphan`, `pair_group_key`, or `has_gtt` fields are
-  missing (handles unenriched/partially-loaded rows gracefully)
+  missing (handles unenriched/partially-loaded rows gracefully). Every position row carries a
+  `quantity` field, so '○' will appear in St column for every data row in the grid
 - Column is visible in positions grid only; hidden in holdings grid
 - Used in derivatives Legs grid (CandidateLegRow) with checkbox rendering before St cell for proper
   accessibility and tab order
@@ -1222,3 +1241,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-08-14 | v1.7 Order-pair feature + orphan position tracking (commit 6f374a1a): §4.4 PositionRow added `is_orphan: bool` (True when no open AlgoOrder matches position's account/tradingsymbol) and `pair_group_key: str\|None` (shared root AlgoOrder ID for parent-child linked positions). §15 Row Grouping expanded — `postSortRows` callback now keeps paired positions (same `pair_group_key`) adjacent regardless of column sort. §14 Column Definitions added orphan badge documentation (coral "O" badge when `is_orphan=true` shown in symbol column). Frontend MarketPulse position rows show orphan badge; dangling child orders in ChaseCard show "O" chip. New `OrderPairModal.svelte` accessible from Pulse positions/legs headers; fetches recent orders, links parent + unlinked-child pickers, calls `POST /api/orders/pair` endpoint on submit. |
 | 2026-08-14 | v1.6 Snapshot WHERE NULL fix + holdings day P&L store (commit 43771b98): §4.4 Positions & Holdings updated — `_positions_snapshot()` WHERE filter fixed from `AND db.ltp IS NOT NULL AND db.ltp > 0` to `AND (db.ltp IS NULL OR NOT (db.ltp = 0 ...))` to include NULL LTP rows captured during mid-session NSE passes (prevents grid blanks when broker quote fails). `_override_stale_close_from_snapshot` cutoff extended from 00:00 IST to 08:00 IST — MCX post-midnight snapshots (00:00–08:00 IST) now included in stale-close override for continuous Day P&L visibility. Added §11.2 Holdings Day P&L SSOT (`holdingsDayPnlStore.svelte.js`, Aug 2026) documenting module-level singleton exporting `{ total, byKey }` at 5s live / 30min closed cadence; consumed by PositionStrip H pill, MarketPulse grid, and Dashboard. |
 | 2026-08-16 | v1.8 Position state column + derivatives grid improvements (commit e6656b7e): §13 Holdings grid updated — St (pos_state) column filtered out of holdings (visible only in positions grid); Lots column repositioned immediately before Invested. §14 added pos_state cellRenderer fallback documentation — renders '○' for any row with `qty_pos !== undefined` even if enrichment fields missing. §17.2 (renamed from 17.4) new subsection documents Candidate Leg Row DOM order: checkbox now renders BEFORE St cell for better accessibility; `underlyingOptionsForPicker` Tier 1/2 now sort by position-count descending (then alphabetical) instead of purely alphabetical. PerformancePage St column hidden via `hide: true`. |
+| 2026-08-16 | v1.9 St column fallback + derivatives column order + Groww day P&L (commits 0e0a3a78, b424077d): §14 Position state renderer updated — fallback field corrected from `qty_pos !== undefined` to `quantity !== undefined` (every position row carries `quantity` so '○' appears for all data rows); CandidateLegRow updated with same fallback. §13 Derivatives column order now matches positions for common fields: `St → sym → lots → ltp → avg → day_pnl → close → pnl → qty → account → exp_pnl`. Holdings Lots column confirmed positioned before Invested. §4.4 Broker-specific notes added — Groww `_normalise_positions()` pre-computes `day_change_val = (ltp - close) × qty` (guarded: ltp > 0, close > 0, qty ≠ 0) to resolve Groww Day P&L showing 0 on cold-cache page load (Groww API omits this field). |
