@@ -62,6 +62,7 @@
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
   import OrderPairModal from '$lib/order/OrderPairModal.svelte';
+  import { computePairEnabled } from '$lib/order/pairModalUtils.js';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
@@ -1729,6 +1730,14 @@
       draftStorePositions:  getDraftPositions(),
     });
   });
+
+  // Derived pair-button state — recomputes when enabledSymbols or candidatePositions change.
+  const _pairState = $derived.by(() =>
+    computePairEnabled(candidatePositions, _isLegEnabled)
+  );
+  const _pairEnabled        = $derived(_pairState.pairEnabled);
+  const _pairedCandidates   = $derived(_pairState.pairedCandidates);
+  const _firstCheckedSymbol = $derived(_pairState.firstCheckedSymbol);
 
   /** Count of opt/fut/eq rows that would have matched the underlying +
    *  expiry filter but are hidden by the account filter. Surfaces a
@@ -4182,7 +4191,8 @@
         <span>LTP</span>
         <span>Source</span>
         <button class="leg-pair-btn" onclick={() => _legPairModalOpen = true}
-          title="Pair parent/child orders">Pair</button>
+          disabled={!_pairEnabled}
+          title={_pairEnabled ? 'Pair selected positions' : 'Select 2 positions from the same account to pair'}>⟷ Pair</button>
       </div>
       {#each drafts as _d, i (drafts[i].id)}
         <div class="leg-row">
@@ -5061,7 +5071,7 @@
 {/if}
 
 {#if _legPairModalOpen}
-  <OrderPairModal bind:open={_legPairModalOpen} />
+  <OrderPairModal bind:open={_legPairModalOpen} symbolHint={_firstCheckedSymbol} pairedCandidates={_pairedCandidates} />
 {/if}
 
 <style>
@@ -5543,15 +5553,16 @@
     border-bottom: 1px solid rgba(251,191,36,0.18);
   }
   .leg-pair-btn {
-    font-size: 0.68rem;
-    padding: 0.1rem 0.4rem;
+    font-size: 0.75rem;
+    padding: 0.18rem 0.55rem;
     border-radius: 3px;
-    border: 1px solid rgba(160,185,220,0.3);
+    border: 1px solid rgba(190,210,240,0.55);
     background: rgba(160,185,220,0.08);
-    color: rgba(160,185,220,0.8);
+    color: rgba(190,210,240,0.95);
     cursor: pointer;
   }
-  .leg-pair-btn:hover { border-color: rgba(160,185,220,0.5); }
+  .leg-pair-btn:hover { border-color: rgba(160,185,220,0.5); color: #e2eeff; }
+  .leg-pair-btn:disabled { opacity: 0.35; cursor: not-allowed; }
   :global(.leg-row .field-input) {
     font-size: var(--fs-sm);
     padding: 0.25rem 0.4rem;

@@ -92,6 +92,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 - §11. [Template override merge](#11-template-override-merge)
 - §12. [Chase loop invariants](#12-chase-loop-invariants)
 - §13. [Trail-stop subsystem](#13-trail-stop-subsystem)
+- §13.2. [Pair system architecture](#132-pair-system-architecture)
 
 **Part IV — Brokers**
 
@@ -2028,6 +2029,108 @@ The OrderTicket modal now displays rich market context for every order:
 - `frontend/src/lib/order/OrderTicket.svelte` — component logic
 - `frontend/src/lib/order/orderTicketSubmit.js` — submission handler
 - `backend/api/routes/orders_place.py` — backend validation + market-hours checks
+
+---
+
+## 13.2 Pair system architecture
+
+Two disconnected pair concepts operate in RamboQuant: **position pairing** (waterfall
+grouping for hedging display) and **order pairing** (parent-child linking for
+TP/SL hierarchies). Understanding the distinction prevents routing one through
+the wrong pipeline.
+
+### Position pair groups
+
+`pair_group_key` ("P1", "P2"…) is computed server-side by the lot-waterfall
+algorithm in `_auto_pair_positions()` at
+[backend/api/routes/positions.py:71-172](backend/api/routes/positions.py#L71-L172).
+These are ephemeral — recomputed on every positions fetch, never persisted to
+DB. Operator has **no control** over which positions are paired; the algorithm
+matches them automatically by symbol + exchange within each account.
+
+**Waterfall fields:**
+- `pair_group_key`: "P1", "P2"… (sequential) or `None` for unpaired legs
+- `paired_qty`: quantity matched with the counterpart leg
+- `orphan_qty`: unmatched remainder (`total_qty − paired_qty`)
+- `is_orphan`: `True` when `orphan_qty > 0` (position has unmatched portion)
+
+**UI display (Pulse → Positions grid, St column):**
+- GTT green label
+- P1/P2 cyan labels (paired group identifier)
+- ○ orphan amber circle (position has unmatched quantity)
+
+**Account constraint (hard invariant):** Pairing is always intra-account. The
+waterfall groups by `(account, root_symbol)` — cross-account pairing is never
+valid and never occurs. The UI enforces this at the button-enable level: the
+`⟷ Pair` button is disabled unless ≥2 checked candidates share the same account
+value. Rationale: broker position offsets are settled per-account; cross-account
+hedges are not recognized by Kite/Dhan/Groww.
+
+### Order parent-child linking
+
+`parent_order_id` field on `AlgoOrder` model, set via `POST /api/orders/pair`
+([backend/api/routes/orders.py:1807-1837](backend/api/routes/orders.py#L1807-L1837)).
+Used for TP/SL child linking — when a child stop-loss or take-profit order is
+attached to a parent entry order. The `⟷ Pair` button in the Derivatives page
+opens `OrderPairModal` which implements THIS — not position pairing. These two
+systems are completely disconnected.
+
+### Current OrderPairModal
+
+`frontend/src/routes/(algo)/admin/derivatives/OrderPairModal.svelte` — opens
+when the `⟷ Pair` button is clicked with ≥2 same-account positions selected.
+Shows:
+
+- **Lot-size preview panel (top):** both selected positions' symbols +
+  quantities, computed `Matched: N lots` and `Orphan: N lots`
+- **Parent order dropdown:** filtered by symbol + account of the selected
+  positions
+- **Child order dropdown:** order to link as a child
+- **On submit:** calls `POST /api/orders/pair` to set `parent_order_id` on
+  the child order
+
+The modal performs **TP/SL order hierarchy linking**, NOT position waterfall
+group assignment.
+
+### Future integration path
+
+To support dual-leg template placement (operator selects a paired position and
+fires a hedged GTT on both legs atomically), the following data model changes
+are needed:
+
+1. **`pair_group_id: Optional[str]` on `AlgoOrder`** — separate from
+   `parent_order_id`, identifies which position pair group this order belongs
+   to. Allows cross-linking orders placed on paired positions.
+
+2. **`TemplatePlan` extension** — add `sibling_account: Optional[str]`,
+   `sibling_symbol: Optional[str]`, `sibling_qty: Optional[int]` fields
+   ([backend/api/algo/template_attach.py:78-94](backend/api/algo/template_attach.py#L78-L94)
+   — currently single-leg only).
+
+3. **`apply_plan_live()` coordination** — extend to accept a counterpart fill
+   event and coordinate GTT placement on both legs atomically (e.g., one order
+   fills on NIFTY 50, child GTT fires on the paired BANKNIFTY position
+   simultaneously).
+
+4. **`POST /api/positions/pair` endpoint (new)** — lets operator manually
+   override waterfall pair assignments and persist them to a new
+   `position_pair_groups` DB table (currently all pairing is ephemeral).
+
+5. **`position_pair_groups` DB table** — `(account, symbol_a, symbol_b,
+   paired_qty, created_at)` — persists operator-defined pairs across fetches.
+   Operator can edit to rebalance or un-pair positions.
+
+**Key files:**
+- [backend/api/routes/positions.py:71-172](backend/api/routes/positions.py#L71-L172)
+  — position waterfall algorithm
+- [backend/api/routes/orders.py:1807-1837](backend/api/routes/orders.py#L1807-L1837)
+  — order pairing endpoint
+- [backend/api/algo/template_attach.py:78-94](backend/api/algo/template_attach.py#L78-L94)
+  — TemplatePlan definition
+- `frontend/src/routes/(algo)/admin/derivatives/OrderPairModal.svelte` —
+  order linking UI
+- `backend/api/models.py::AlgoOrder` — parent_order_id field (future:
+  pair_group_id)
 
 ---
 
