@@ -523,3 +523,358 @@ class TestBrokerHealthEntitlement:
         data = {"GR87DF": {"FNO": 3, "CASH": 1}}
         resp = BrokerHealthResponse(accounts=[], groww_entitlement_denied=data)
         assert resp.groww_entitlement_denied == data
+
+
+# ---------------------------------------------------------------------------
+# 11. _normalise_positions() — day_change_val computation
+# ---------------------------------------------------------------------------
+
+class TestNormalisePositionsDayChangeVal:
+    """_normalise_positions() must correctly compute day_change_val field.
+
+    day_change_val = (ltp - close) * qty when all three are valid (ltp > 0,
+    close > 0, qty != 0). Otherwise, day_change_val = 0.0.
+
+    Five quality dimensions:
+      SSOT        — single _normalise_positions function; no duplicates
+      Correctness — each gate condition (ltp=0, close=0, qty=0) routes correctly
+      Performance — inline arithmetic; no unnecessary branches
+      Reuse       — _gi, _gf helpers used consistently
+      UX          — clear numeric output; no NaN or inf
+    """
+
+    def test_normal_position_day_change_val(self):
+        """Normal case: ltp=100, close=95, qty=50 → day_change_val=250.0"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "RELIANCE",
+                        "exchange": "NSE",
+                        "last_price": 100.0,
+                        "close_price": 95.0,
+                        "quantity": 50,
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        assert len(result["net"]) == 1, "Expected 1 position in net"
+        pos = result["net"][0]
+        assert pos["last_price"] == 100.0
+        assert pos["close_price"] == 95.0
+        assert pos["quantity"] == 50
+        assert pos["day_change_val"] == 250.0, (
+            f"expected (100-95)*50=250 but got {pos['day_change_val']}"
+        )
+
+    def test_cold_cache_ltp_zero(self):
+        """Cold cache (ltp=0): day_change_val = 0.0"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "SBIN",
+                        "exchange": "NSE",
+                        "last_price": 0,  # cold cache
+                        "close_price": 500.0,
+                        "quantity": 10,
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        assert pos["last_price"] == 0
+        assert pos["close_price"] == 500.0
+        assert pos["quantity"] == 10
+        assert pos["day_change_val"] == 0.0, (
+            f"expected 0 when ltp=0 but got {pos['day_change_val']}"
+        )
+
+    def test_missing_close_price_zero(self):
+        """Missing close (close=0): day_change_val = 0.0"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "INFY",
+                        "exchange": "NSE",
+                        "last_price": 1800.0,
+                        "close_price": 0,  # missing
+                        "quantity": 5,
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        assert pos["last_price"] == 1800.0
+        assert pos["close_price"] == 0
+        assert pos["quantity"] == 5
+        assert pos["day_change_val"] == 0.0, (
+            f"expected 0 when close=0 but got {pos['day_change_val']}"
+        )
+
+    def test_short_position_negative_qty(self):
+        """Short position (negative qty): day_change_val = (ltp-close)*qty"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "HDFCBANK",
+                        "exchange": "NSE",
+                        "last_price": 1500.0,
+                        "close_price": 1600.0,
+                        "quantity": -50,  # short
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        assert pos["last_price"] == 1500.0
+        assert pos["close_price"] == 1600.0
+        assert pos["quantity"] == -50
+        # (1500-1600)*(-50) = (-100)*(-50) = 5000.0
+        assert pos["day_change_val"] == 5000.0, (
+            f"expected (1500-1600)*(-50)=5000 but got {pos['day_change_val']}"
+        )
+
+    def test_flat_position_zero_qty(self):
+        """Flat position (qty=0): day_change_val = 0.0"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "TCS",
+                        "exchange": "NSE",
+                        "last_price": 3500.0,
+                        "close_price": 3400.0,
+                        "quantity": 0,  # flat
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        assert pos["last_price"] == 3500.0
+        assert pos["close_price"] == 3400.0
+        assert pos["quantity"] == 0
+        assert pos["day_change_val"] == 0.0, (
+            f"expected 0 when qty=0 but got {pos['day_change_val']}"
+        )
+
+    def test_negative_day_change_val(self):
+        """Negative day change: ltp < close → negative day_change_val"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "MARUTI",
+                        "exchange": "NSE",
+                        "last_price": 8000.0,
+                        "close_price": 8500.0,
+                        "quantity": 20,
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        # (8000-8500)*20 = -500*20 = -10000
+        assert pos["day_change_val"] == -10000.0, (
+            f"expected (8000-8500)*20=-10000 but got {pos['day_change_val']}"
+        )
+
+    def test_both_ltp_and_close_zero(self):
+        """Both ltp and close = 0: day_change_val = 0.0"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "UNKNOWN",
+                        "exchange": "NSE",
+                        "last_price": 0,
+                        "close_price": 0,
+                        "quantity": 100,
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        assert pos["day_change_val"] == 0.0, (
+            f"expected 0 when both ltp and close are 0 but got {pos['day_change_val']}"
+        )
+
+    def test_multiple_positions_each_computes_independently(self):
+        """Multiple positions: each day_change_val computed independently"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "RELIANCE",
+                        "exchange": "NSE",
+                        "last_price": 2500.0,
+                        "close_price": 2400.0,
+                        "quantity": 10,
+                    },
+                    {
+                        "trading_symbol": "TCS",
+                        "exchange": "NSE",
+                        "last_price": 3600.0,
+                        "close_price": 3500.0,
+                        "quantity": -5,
+                    },
+                    {
+                        "trading_symbol": "INFY",
+                        "exchange": "NSE",
+                        "last_price": 1950.0,
+                        "close_price": 0,  # missing close
+                        "quantity": 20,
+                    },
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        assert len(result["net"]) == 3
+
+        pos1 = result["net"][0]
+        assert pos1["tradingsymbol"] == "RELIANCE"
+        # (2500-2400)*10 = 1000
+        assert pos1["day_change_val"] == 1000.0
+
+        pos2 = result["net"][1]
+        assert pos2["tradingsymbol"] == "TCS"
+        # (3600-3500)*(-5) = 100*(-5) = -500
+        assert pos2["day_change_val"] == -500.0
+
+        pos3 = result["net"][2]
+        assert pos3["tradingsymbol"] == "INFY"
+        # close=0 → day_change_val=0
+        assert pos3["day_change_val"] == 0.0
+
+    def test_field_name_aliases_close_price(self):
+        """close_price field fallback: previous_close alias should work"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "MARUTI",
+                        "exchange": "NSE",
+                        "last_price": 9000.0,
+                        "previous_close": 8900.0,  # alias for close_price
+                        "quantity": 15,
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        # (9000-8900)*15 = 100*15 = 1500
+        assert pos["day_change_val"] == 1500.0
+
+    def test_field_name_aliases_last_price(self):
+        """last_price field fallback: ltp alias should work"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "HDFC",
+                        "exchange": "NSE",
+                        "ltp": 2900.0,  # alias for last_price
+                        "close_price": 2850.0,
+                        "quantity": 25,
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        # (2900-2850)*25 = 50*25 = 1250
+        assert pos["day_change_val"] == 1250.0
+
+    def test_missing_position_fields_defaults_handled(self):
+        """Missing position fields: _gi/_gf defaults ensure safe computation"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "TEST",
+                        "exchange": "NSE",
+                        # No last_price, close_price, or quantity keys
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        # All default to 0.0 or 0 → (0-0)*0 = 0
+        assert pos["day_change_val"] == 0.0
+
+    def test_day_change_val_with_fractional_prices(self):
+        """Fractional prices: day_change_val computed with full precision"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {
+            "data": {
+                "positions": [
+                    {
+                        "trading_symbol": "ADANIPORTS",
+                        "exchange": "NSE",
+                        "last_price": 125.75,
+                        "close_price": 124.50,
+                        "quantity": 100,
+                    }
+                ]
+            }
+        }
+
+        result = _normalise_positions(resp)
+        pos = result["net"][0]
+        # (125.75-124.50)*100 = 1.25*100 = 125.0
+        assert pos["day_change_val"] == 125.0
+
+    def test_empty_positions_list(self):
+        """Empty positions list: returns dict with empty net and day lists"""
+        from backend.brokers.adapters.groww import _normalise_positions
+
+        resp = {"data": {"positions": []}}
+
+        result = _normalise_positions(resp)
+        assert result["net"] == []
+        assert result["day"] == []

@@ -1522,12 +1522,15 @@ def _normalise_positions(resp: Any) -> dict:
     net: list[dict] = []
     day: list[dict] = []
     for p in rows:
+        _ltp_g   = _gf(p, "last_price", "ltp")
+        _close_g = _gf(p, "close_price", "previous_close")
+        _qty_g   = _gi(p, "quantity")
         row = {
             "tradingsymbol":   p.get("trading_symbol") or p.get("tradingsymbol") or "",
             "exchange":        p.get("exchange") or "",
             "instrument_token": p.get("exchange_token") or p.get("instrument_token"),
             "product":         p.get("product", "NRML"),
-            "quantity":        _gi(p, "quantity"),
+            "quantity":        _qty_g,
             "overnight_quantity": _gi(p, "net_carry_forward_quantity", "overnight_quantity"),
             "day_buy_quantity":   _gi(p, "day_buy_quantity"),
             "day_sell_quantity":  _gi(p, "day_sell_quantity"),
@@ -1551,9 +1554,9 @@ def _normalise_positions(resp: Any) -> dict:
             # makes the broker_apis multiply a safe no-op for Groww
             # regardless of what's in Groww's positions payload.
             "multiplier":      1,
-            "close_price":     _gf(p, "close_price", "previous_close"),
+            "close_price":     _close_g,
             "average_price":   _gf(p, "average_price", "net_price"),
-            "last_price":      _gf(p, "last_price", "ltp"),
+            "last_price":      _ltp_g,
             "buy_price":       _gf(p, "buy_price", "buy_avg_price"),
             "sell_price":      _gf(p, "sell_price", "sell_avg_price"),
             "buy_quantity":    _gi(p, "buy_quantity"),
@@ -1561,6 +1564,14 @@ def _normalise_positions(resp: Any) -> dict:
             "pnl":             _gf(p, "pnl", "unrealised_pnl"),
             "realised":        _gf(p, "realised_pnl"),
             "unrealised":      _gf(p, "unrealised_pnl"),
+            # Mirrors Dhan adapter (dhan.py:1876). Groww uses multiplier=1 so
+            # qty_contracts == qty — no lot-size adjustment needed. Guards ltp>0
+            # and close>0 so a cold LTP cache or missing previous_close does not
+            # produce a spurious non-zero value that overwrites the backend's
+            # polars enrichment formula result.
+            "day_change_val":  (_ltp_g - _close_g) * _qty_g
+                               if _ltp_g > 0 and _close_g > 0 and _qty_g != 0
+                               else 0.0,
             "_raw":            p,
         }
         # Groww splits intraday vs CF via product/quantity context — for
