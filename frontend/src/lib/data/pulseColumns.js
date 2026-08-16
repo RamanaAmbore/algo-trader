@@ -468,10 +468,11 @@ export function mkRightColDefs({
   lotsForRow, fmtLots,
 }) {
   return /** @type {any[]} */ ([
-    { headerName: '', field: 'pair_group_key', colId: 'pos_state',
+    { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
+      hide: false,
       width: 38, minWidth: 38, maxWidth: 38,
       pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
-      headerTooltip: 'Position state: Paired (cyan) / Orphan (amber) / GTT (green)',
+      headerTooltip: 'Position state: Paired (P1/P2 cyan) · Orphan (○ amber) · GTT (green)',
       cellStyle: (p) => {
         const d = p.data;
         if (!d || d._isTotal) return {};
@@ -494,7 +495,10 @@ export function mkRightColDefs({
     sparkCol,
     { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: RA,
+      cellClass: (p) => {
+        const d = p.data;
+        return d?.qty_pos !== undefined ? [RA, 'lots-left-sep'] : [RA];
+      },
       valueGetter: (p) => lotsForRow(p.data),
       valueFormatter: ({ value }) => fmtLots(value),
       headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },

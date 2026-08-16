@@ -3612,13 +3612,16 @@
     // Right-column buckets (operator's book — rightColDefs + TOTAL
     // pinned at the bottom edge, sort-stable by ag-Grid native
     // pinnedBottomRowData semantics).
+    // Holdings grid omits the pos_state column (pair/orphan/GTT state
+    // is a positions-only concept; showing it on holdings rows misleads).
+    const holdingsColDefs = rightColDefs.filter(c => c.colId !== 'pos_state');
     if (gridPositionsEl) {
       gridPositions = makeBucketGrid(gridPositionsEl, rightColDefs,
         'No positions in the active book.', [], { postSortRows: _pairGroupPostSort });
       gridPositionsReady = true;
     }
     if (gridHoldingsEl) {
-      gridHoldings = makeBucketGrid(gridHoldingsEl, rightColDefs,
+      gridHoldings = makeBucketGrid(gridHoldingsEl, holdingsColDefs,
         'No holdings in the active book.');
       gridHoldingsReady = true;
     }

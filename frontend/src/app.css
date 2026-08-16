@@ -614,6 +614,14 @@
 .ag-theme-ramboq .ltp-vs-prev-down { box-shadow: inset 1px 0 0 0 rgba(196,122,61,0.85); }
 .ag-theme-ramboq .ltp-vs-prev-flat { box-shadow: inset 1px 0 0 0 rgba(112,99,76,0.50); }
 
+/* Lots column left separator — positions only */
+.ag-theme-algo .ag-cell.lots-left-sep {
+  box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.40);
+}
+.ag-theme-ramboq .ag-cell.lots-left-sep {
+  box-shadow: inset 1px 0 0 0 rgba(112,99,76,0.40);
+}
+
 /* TOTAL row — clear both axes so the amber stratum reads uniformly.
    Audit defect: the box-shadow stripe was leaking onto TOTAL cells
    that carried any `.ltp-vs-prev-*` class. */

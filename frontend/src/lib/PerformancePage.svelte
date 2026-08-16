@@ -667,10 +667,11 @@
   const positionsCols = $derived([
     // Position state column — first pinned column (38px).
     // Three states: GTT (green), Paired (cyan), Orphan (amber).
-    { headerName: '', field: 'pair_group_key', colId: 'pos_state',
+    { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
+      hide: false,
       width: 38, minWidth: 38, maxWidth: 38,
       pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
-      headerTooltip: 'Position state: Paired (cyan) / Orphan (amber) / GTT (green)',
+      headerTooltip: 'Position state: Paired (P1/P2 cyan) · Orphan (○ amber) · GTT (green)',
       cellStyle: (p) => {
         const d = p.data;
         if (!d || d._isTotal) return {};

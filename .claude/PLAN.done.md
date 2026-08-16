@@ -1,119 +1,96 @@
-# Plan: Pair/Orphan/GTT color column + Lots before LTP + remove chips
+# Plan: Fix pos_state column visibility + holdings revert + Lots left separator
 
 ## Context
 
-Replace the chip-in-symbol approach with a dedicated first column that uses colored cell backgrounds to communicate position state: paired (cyan), orphan (amber), GTT (green). Also move Lots column before LTP for faster F&O scanning. Remove all existing chip DOM from symbol cells.
-
-Three position states:
-- **Paired** — has a lot-matched peer (`pair_group_key` set, `is_orphan=False`)
-- **Orphan** — no peer (`is_orphan=True`)
-- **GTT** — has an active GTT order in DB (`has_gtt=True`); takes visual priority over paired/orphan
+Three regressions from the previous commit:
+1. `pos_state` column appeared on **holdings** grid (wrong — positions only)
+2. `pos_state` column is invisible — `headerName: ''` empty string + narrow 38px width
+3. LTP's left-side `inset box-shadow` separator still on LTP; should move to Lots since Lots is now the first data column
 
 ---
 
-## Backend changes
+## Fix 1 — Remove pos_state from holdings grid
 
-### 1. `backend/api/schemas.py`
-Add to `PositionRow` after `orphan_qty`:
-```python
-has_gtt: bool = False   # True when an OPEN AlgoOrder with a GTT id exists for this (account, symbol)
-```
+**Root cause**: `mkRightColDefs()` is called once and its result (`rightColDefs`) is shared between `gridPositions` and `gridHoldings` in `MarketPulse.svelte` (~lines 3616 and 3621).
 
-### 2. `backend/api/routes/positions.py`
-Add lightweight GTT query (runs once per request, cheap indexed scan):
-```python
-async def _fetch_gtt_set(session) -> set[tuple[str, str]]:
-    """Return {(account, symbol)} for OPEN AlgoOrders that have a gtt_order_id."""
-    rows = await session.execute(_sql_text(
-        "SELECT account, symbol FROM algo_orders "
-        "WHERE status = 'OPEN' AND gtt_order_id IS NOT NULL"
-    ))
-    return {(r.account, r.symbol) for r in rows}
-
-def _annotate_gtt(rows: list[PositionRow], gtt_set: set) -> list[PositionRow]:
-    return [_msc.structs.replace(r, has_gtt=(r.account, r.tradingsymbol) in gtt_set) for r in rows]
-```
-
-In both snapshot path (~line 178) and live path (~line 524): after `_auto_pair_positions`, call `_annotate_gtt`. Wrap the DB call in try/except (warn + use empty set on failure, never block positions).
-
----
-
-## Frontend changes
-
-### 3. `frontend/src/lib/data/pulseColumns.js`
-
-**New pair/state column** — insert as first element in `mkRightColDefs()` (before `symColRight`):
+**Fix in `frontend/src/lib/MarketPulse.svelte`**: after `mkRightColDefs()` call, derive a holdings-specific array that excludes the state column:
 ```js
-{
-  headerName: '', field: 'pair_group_key', colId: 'pos_state',
-  width: 38, minWidth: 38, maxWidth: 38,
-  pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
-  headerTooltip: 'Position state: Paired (cyan) / Orphan (amber) / GTT (green)',
-  cellStyle: (p) => {
-    const d = p.data;
-    if (!d || d._isTotal) return {};
-    if (d.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
-    if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
-    if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
-    return {};
-  },
-  cellRenderer: (p) => {
-    const d = p.data;
-    if (!d || d._isTotal) return '';
-    if (d.has_gtt)        return 'GTT';
-    if (d.pair_group_key) return d.pair_group_key;   // P1, P2, …
-    if (d.is_orphan)      return '○';
-    return '';
-  },
-  cellClass: 'ag-cell-pair-state',   // for shared font/size CSS
+const holdingsColDefs = rightColDefs.filter(c => c.colId !== 'pos_state');
+```
+Use `holdingsColDefs` when initialising `gridHoldings`, keep `rightColDefs` for `gridPositions`.
+
+**Also check `frontend/src/lib/PerformancePage.svelte`**: if `holdingsAllGrid` or `holdingsSummaryGrid` share `positionsCols` (which now has `pos_state` prepended), filter it out for those grids too.
+
+---
+
+## Fix 2 — Make pos_state column visible
+
+**Root cause**: `headerName: ''` (empty) and `width: 38` make the column invisible unless the user knows to look for it.
+
+**Fix in `frontend/src/lib/data/pulseColumns.js`** — update the `pos_state` column definition:
+- Change `headerName: ''` → `headerName: 'St'`
+- Add `headerTooltip: 'Position state: Paired (P1/P2 cyan) · Orphan (○ amber) · GTT (green)'`
+- Add `hide: false` explicitly to prevent ag-Grid column-state cache from hiding it
+
+Same fix in `frontend/src/lib/PerformancePage.svelte` where the identical column object is inlined.
+
+---
+
+## Fix 3 — Move left separator from LTP to Lots
+
+**Root cause**: `.ltp-vs-prev-up/down/flat` add `box-shadow: inset 1px 0 0 0 rgba(...)` to every LTP cell. This creates a left visual separator. Lots is now the first data column so the separator should be there.
+
+**Fix in `frontend/src/lib/data/pulseColumns.js`** — Lots column currently has `cellClass: RA`. Change to also add a static separator class **for position rows only** (not holdings, watchlist, etc.):
+```js
+cellClass: (p) => {
+  const d = p.data;
+  // separator only on position rows (they have qty_pos); holdings/watch rows skip it
+  return d?.qty_pos !== undefined ? [RA, 'lots-left-sep'] : [RA];
+},
+```
+
+**Fix in `frontend/src/app.css`** — add after `.ltp-vs-prev-flat` rules:
+```css
+/* Lots column left separator — positions only (matches LTP inset-shadow pattern) */
+.ag-theme-algo .ag-cell.lots-left-sep {
+  box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.40);
+}
+.ag-theme-ramboq .ag-cell.lots-left-sep {
+  box-shadow: inset 1px 0 0 0 rgba(112,99,76,0.40);
 }
 ```
 
-**Move Lots column** — cut `lotsCol` definition from its current position (after Qty, line ~512) and paste it immediately after `sparkCol` (before `ltpCol`). New order: Symbol → Sparkline → **Lots** → LTP → Avg → …
+---
 
-### 4. `frontend/src/app.css`
-- Add `.ag-cell-pair-state` rule: `font-size: 9px; font-weight: 700; text-align: center; letter-spacing: 0.02em;`
-- Remove `.pair-chip` and `.orphan-chip` CSS rules (no longer used)
+## Files to change
 
-### 5. `frontend/src/lib/MarketPulse.svelte`
-- Remove `pairChipHtml` import and the `pairChips` injection at line ~3367 in `symRenderer`
-- Keep `pairGroupSort` import + `_pairGroupPostSort` wiring (still needed for row grouping)
-
-### 6. `frontend/src/lib/PerformancePage.svelte`
-- `positionsAllGrid`: prepend the same `pos_state` column definition as first element
-- Remove `pairChipHtml` import and chip injection (lines ~654-658 in `_posSymRenderer`)
-
-### 7. `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
-- Remove the `pair_group_key` chip block (lines ~291-294)
-- Remove the `orphan_qty` chip block (lines ~296-299)
-- Add a colored pair-state indicator in the first cell position of the CSS grid row
-
-### 8. `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-- Update `.cand-grid` CSS `grid-template-columns` to add a 38px leading column for the state indicator
-
-### 9. `frontend/src/lib/data/pairGroupSort.js`
-- Remove `pairChipHtml` export (no longer needed; `pairGroupSort` stays)
+| File | Change |
+|---|---|
+| `frontend/src/lib/MarketPulse.svelte` | Derive `holdingsColDefs` (filter pos_state); pass it to `gridHoldings` |
+| `frontend/src/lib/PerformancePage.svelte` | Filter pos_state from holdings grids; not from positionsAllGrid |
+| `frontend/src/lib/data/pulseColumns.js` | `pos_state`: `headerName: 'St'`, `hide: false`; Lots: add `lots-left-sep` cellClass for position rows |
+| `frontend/src/app.css` | Add `.lots-left-sep` CSS rules (both themes) |
 
 ---
 
 ## Agents
-- backend: add `has_gtt` to `schemas.py`; add `_fetch_gtt_set` + `_annotate_gtt` to `positions.py`; wire in both paths
-- frontend: apply all CSS/column changes across pulseColumns.js, app.css, MarketPulse.svelte, PerformancePage.svelte, CandidateLegRow.svelte, derivatives/+page.svelte, pairGroupSort.js
-- backend-test: add tests for `_fetch_gtt_set` + `_annotate_gtt`; update existing pair tests for `has_gtt` default field
+- frontend: apply all four file changes above
+- backend: skip
+- backend-test: skip
 - broker: skip
 - doc: skip
 - playwright: skip
 
 ## Tests
-- pytest: yes
+- pytest: no
 - svelte-check: yes
 - playwright: no
 
 ## Commit message
-feat(positions): Pair/Orphan/GTT state column + Lots before LTP + remove symbol chips
+fix(positions): visible St column header + revert holdings pos_state + Lots left separator
 
 ## Done when
-- First column shows: `P1`/`P2` cyan for paired, `○` amber for orphan, `GTT` green for GTT
-- Lots column appears immediately before LTP in all positions grids
-- No pair/orphan chips remain in symbol cells
-- svelte-check 0 errors, pytest green
+- "St" column header visible as first column in positions grid only (not holdings)
+- Holdings grid has no St/pos_state column
+- Lots column shows left inset-shadow separator on position rows
+- svelte-check 0 errors
