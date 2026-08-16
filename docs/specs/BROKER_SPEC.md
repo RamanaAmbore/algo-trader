@@ -683,6 +683,46 @@ SQL query in `_build_holding_row_from_snapshot()` now selects `db.previous_close
 from the `daily_book` table (commit 13ec7c18), ensuring the correct price is 
 available for every holding row.
 
+### `previous_close` SSOT: Prior-Day Socket-Derived LTP (Aug 2026)
+
+**File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` + 
+`_holdings_rows()` / `_positions_rows()`
+
+The `previous_close` field in daily_book snapshot rows now sources from prior-day 
+`daily_book.ltp` (socket-derived LTP frozen by the UPSERT), NOT the broker's 
+REST `close_price` field. This ensures Day P&L is computed against the actual 
+last-traded price from the previous session, not the broker's potentially stale 
+or recalculated close price.
+
+**Lookup chain** (per call site):
+
+1. **Primary (Aug 2026)**: Query prior-day `daily_book` rows where 
+   `date < :today AND ltp IS NOT NULL AND ltp > 0`, grouped by 
+   `(account, symbol, kind)` descending by date. Build `prev_ltp_map` dict 
+   keyed `(account, symbol, kind) → float(ltp)`.
+
+2. **Fallback**: If no prior-day row exists or LTP lookup fails, use broker's 
+   REST `close_price` field (applies only to new positions/holdings with no 
+   prior snapshot).
+
+```python
+"previous_close": (
+    (prev_ltp_map or {}).get((account, symbol, "holdings"))
+    or (float(r["close_price"]) if r.get("close_price") else None)
+)
+```
+
+**Impact**:
+
+- Day P&L formula `(socket_ltp − previous_close) × qty` now uses uniform 
+  socket-frozen LTPs across all sessions (intraday, weekend, holidays, 
+  mid-session edges).
+- Eliminates overnight, weekend, and holiday distortion from broker's 
+  recalculated `close_price` that may reflect settlement adjustments or 
+  corporate actions.
+- Ensures Day P&L consistency when exchanges close mid-session (MCX during 
+  NSE close, NCDEX holidays, etc.).
+
 ### Dhan `close_price=0` handling and backfill recompute (Aug 2026)
 
 **File**: `backend/api/algo/daily_snapshot.py` — `_backfill_recompute_derived()` 

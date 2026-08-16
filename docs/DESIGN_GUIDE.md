@@ -3325,7 +3325,7 @@ day_delta = pnl − overnight_quantity × (close_price − average_price)
 
 Kite overwrites `positions.close_price` to today's settlement price after market close,
 breaking the day P&L fallback formula during closed-hours snapshot reads. The `daily_book`
-table now includes a `previous_close` column that freezes yesterday's official settlement
+table includes a `previous_close` column that freezes yesterday's official settlement
 price at the first intraday snapshot of each trading day, providing a stable reference.
 
 **Problem it solves:**
@@ -3337,18 +3337,22 @@ price at the first intraday snapshot of each trading day, providing a stable ref
 
 **Solution:**
 - `DailyBook.previous_close: Optional[float]` column (DOUBLE PRECISION)
+- **Source**: prior-day `daily_book.ltp` (socket-derived, via `prev_ltp_map` batch query in
+  `snapshot_daily_book`), with broker REST `close_price` as fallback for first-day rows
+  (no prior daily_book entry)
 - Written once per (date, account, kind, symbol) at first snapshot via COALESCE UPSERT
 - COALESCE ensures subsequent snapshots don't overwrite the frozen value
 - `_positions_snapshot` reads and passes this to `build_snapshot_position_row`, which uses it
   as PositionRow `close_price` when available (> 0)
 
 **Implementation details:**
-- **Capture point:** `backend/api/algo/daily_snapshot.py::_positions_rows()` writes
-  `previous_close = position.close_price` at first snapshot of each IST date
+- **Capture point:** `backend/api/algo/daily_snapshot.py::_positions_rows()` populates
+  `previous_close` from `prev_ltp_map[(account, symbol, "positions")]` (prior-day socket LTP)
+  or falls back to broker `close_price` for first-day rows
 - **Persistence:** `backend/api/database.py::init_db()` creates column via idempotent
   `ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS previous_close DOUBLE PRECISION`
-- **Read point:** `backend/api/routes/positions.py::_positions_snapshot()` SELECTs
-  `db.previous_close` and passes to builder
+- **Read point:** `backend/api/routes/positions.py::_positions_snapshot()` queries prior-day
+  `daily_book` for each (account, symbol) and builds `prev_ltp_map` to pass to row builders
 - **Use:** `backend/api/routes/positions_helpers.py::build_snapshot_position_row()` uses
   `previous_close` as `close_price` in the PositionRow response when `previous_close > 0`
 
@@ -3358,10 +3362,10 @@ price at the first intraday snapshot of each trading day, providing a stable ref
 - NavStrip P pill, Dashboard hero, Performance TOTAL all stay in sync during overnight hours
 
 **Files:**
-- `backend/api/models.py::DailyBook` — new column definition
+- `backend/api/models.py::DailyBook` — column definition
 - `backend/api/database.py::init_db` — migration via ALTER TABLE
-- `backend/api/algo/daily_snapshot.py::_positions_rows` — write at first snapshot
-- `backend/api/routes/positions.py::_positions_snapshot` — read + pass to builder
+- `backend/api/algo/daily_snapshot.py::_positions_rows`, `_holdings_rows` — populate from prev_ltp_map
+- `backend/api/routes/positions.py::_positions_snapshot`, `_backfill_prev_settlement_pnl` — build prev_ltp_map
 - `backend/api/routes/positions_helpers.py::build_snapshot_position_row` — use as close_price
 - Frontend: no changes (uses existing PositionRow.close_price)
 
