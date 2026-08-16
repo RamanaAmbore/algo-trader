@@ -1563,6 +1563,24 @@ def _build_holdings_dcv_expr(
     )
 
 
+def _apply_holdings_dcv_fallback(df: pd.DataFrame) -> None:
+    """Fallback: when polars pass left day_change_val==0 but the broker supplied
+    a scalar day_change (ltp−close) with a valid close, multiply by opening_quantity.
+    Handles Dhan/Groww rows where backfill symbol resolution failed so the main
+    formula could not fire. Mutates df in place; no-op when required columns absent.
+    """
+    _cols = ("day_change", "day_change_val", "close_price", "opening_quantity")
+    if not all(c in df.columns for c in _cols):
+        return
+    _f_dcv = pd.to_numeric(df["day_change_val"],   errors="coerce").fillna(0)
+    _f_dc  = pd.to_numeric(df["day_change"],        errors="coerce").fillna(0)
+    _f_cls = pd.to_numeric(df["close_price"],       errors="coerce").fillna(0)
+    _f_oq  = pd.to_numeric(df["opening_quantity"],  errors="coerce").fillna(0)
+    _mask  = (_f_dcv == 0) & (_f_dc != 0) & (_f_cls > 0) & (_f_oq != 0)
+    if _mask.any():
+        df.loc[_mask, "day_change_val"] = (_f_dc * _f_oq)[_mask]
+
+
 def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     """Polars-vectorized computed-column enrichment for holdings DataFrames.
 
@@ -1640,21 +1658,7 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
             if c in lf.columns:
                 df[c] = lf[c].to_pandas()
 
-    # ── Dhan holdings day_change_val fallback ───────────────────────────
-    # When the polars pass leaves day_change_val == 0 (e.g. broker_dcv was
-    # 0.0 not null, so is_not_null() preserved it), but the broker supplied
-    # a scalar `day_change = ltp − close`, multiply by opening_quantity to
-    # recover the total session change. Only fires when dcv is still zero
-    # after the polars pass, so it never overwrites a valid computed value.
-    _dcv_fallback_cols = ("day_change", "day_change_val", "close_price", "opening_quantity")
-    if all(c in df.columns for c in _dcv_fallback_cols):
-        _f_dcv  = pd.to_numeric(df["day_change_val"],    errors="coerce").fillna(0)
-        _f_dc   = pd.to_numeric(df["day_change"],        errors="coerce").fillna(0)
-        _f_cls  = pd.to_numeric(df["close_price"],       errors="coerce").fillna(0)
-        _f_oq   = pd.to_numeric(df["opening_quantity"],  errors="coerce").fillna(0)
-        _fb_mask = (_f_dcv == 0) & (_f_dc != 0) & (_f_cls > 0) & (_f_oq != 0)
-        if _fb_mask.any():
-            df.loc[_fb_mask, "day_change_val"] = (_f_dc * _f_oq)[_fb_mask]
+    _apply_holdings_dcv_fallback(df)
 
     # authorised_date — keep in pandas (datetime parse + strftime is
     # one line; not worth a polars round-trip for a rarely-present column).

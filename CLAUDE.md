@@ -336,9 +336,11 @@ prior-session EOD between MCX close + next open. Use `daily_book.ltp` instead.
 Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: 
 `broker.pnl − (close − cost) × opening_qty`. MCX guard: apply lot_size to intraday qty too. 
 Backend SSOT: `backend/api/algo/pnl_math.py:apply_day_change_backstop(raw: pd.DataFrame)` 
-rescues two edge cases — Case 1 (new position, `overnight_quantity=0, day_change_val=0, pnl≠0`) 
-and Case 3 (flat intraday, `quantity=0, day_change_val=0, pnl≠0`) where Kite omits the day 
-value. Applied in `routes/positions.py` + `background.py:_fetch_positions_direct` (now sums 
+rescues three edge cases — Case 1 (new position, `overnight_quantity=0, day_change_val=0, pnl≠0`) 
+where Kite computes on their side; Case 2 (overnight position, `oq>0, dcv==0, pnl≠0, close>0, avg>0`) 
+where LTP gate zeroed dcv but broker pnl is valid, recovered via `pnl − (close − avg) × oq`; 
+and Case 3 (flat intraday, `quantity=0, day_change_val=0, pnl≠0`) for MCX round-trip quirks. 
+Applied in `routes/positions.py` + `background.py:_fetch_positions_direct` (now sums 
 both `day_change_val` AND `pnl` before applying the backstop).
 
 **Frontend Day P&L SSOT** — Module-level singleton 
