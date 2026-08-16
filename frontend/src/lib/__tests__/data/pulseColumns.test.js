@@ -37,7 +37,7 @@ function makeOpts() {
 // Fix 1 — pos_state cellRenderer qty_pos fallback (defensive orphan marker)
 // ---------------------------------------------------------------------------
 
-describe('mkRightColDefs — pos_state cellRenderer qty_pos fallback (Fix 1)', () => {
+describe('mkRightColDefs — pos_state cellRenderer quantity fallback (Fix 1)', () => {
   function getPosStateCol() {
     const cols = mkRightColDefs(makeOpts());
     const col = cols.find(c => c.colId === 'pos_state');
@@ -45,39 +45,40 @@ describe('mkRightColDefs — pos_state cellRenderer qty_pos fallback (Fix 1)', (
     return col;
   }
 
-  it('returns "○" when qty_pos is defined but has_gtt/pair_group_key/is_orphan are all falsy', () => {
+  // cellRenderer tests
+  it('returns "○" when quantity is defined but has_gtt/pair_group_key/is_orphan are all falsy', () => {
     const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { qty_pos: 10 } });
+    const result = col.cellRenderer({ data: { quantity: 10 } });
     expect(result).toBe('○');
   });
 
-  it('returns "○" when qty_pos is 0 (defined but zero)', () => {
+  it('returns "○" when quantity is 0 (defined but zero)', () => {
     const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { qty_pos: 0 } });
+    const result = col.cellRenderer({ data: { quantity: 0 } });
     expect(result).toBe('○');
   });
 
-  it('returns "" when qty_pos is undefined (non-position row)', () => {
+  it('returns "" when quantity is undefined (non-position row)', () => {
     const col = getPosStateCol();
     const result = col.cellRenderer({ data: { qty_hold: 5 } });
     expect(result).toBe('');
   });
 
-  it('qty_pos fallback does NOT fire when is_orphan is true (is_orphan takes priority)', () => {
+  it('quantity fallback does NOT fire when is_orphan is true (is_orphan takes priority)', () => {
     const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { is_orphan: true, qty_pos: 10 } });
+    const result = col.cellRenderer({ data: { is_orphan: true, quantity: 10 } });
     expect(result).toBe('○'); // same output, but via the is_orphan branch
   });
 
-  it('qty_pos fallback does NOT fire when pair_group_key is set (pair takes priority)', () => {
+  it('quantity fallback does NOT fire when pair_group_key is set (pair takes priority)', () => {
     const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { pair_group_key: 'P1', qty_pos: 10 } });
+    const result = col.cellRenderer({ data: { pair_group_key: 'P1', quantity: 10 } });
     expect(result).toBe('P1');
   });
 
-  it('returns "" for _isTotal rows regardless of qty_pos', () => {
+  it('returns "" for _isTotal rows regardless of quantity', () => {
     const col = getPosStateCol();
-    const result = col.cellRenderer({ data: { _isTotal: true, qty_pos: 10 } });
+    const result = col.cellRenderer({ data: { _isTotal: true, quantity: 10 } });
     expect(result).toBe('');
   });
 
@@ -85,6 +86,44 @@ describe('mkRightColDefs — pos_state cellRenderer qty_pos fallback (Fix 1)', (
     const col = getPosStateCol();
     const result = col.cellRenderer({ data: null });
     expect(result).toBe('');
+  });
+
+  // qty_pos (old field) must NOT trigger the fallback — backend never sends it
+  it('does NOT return "○" for qty_pos (old field — not in backend response)', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { qty_pos: 10 } });
+    expect(result).toBe('');
+  });
+
+  // cellStyle tests — amber background when quantity is defined
+  it('cellStyle returns amber background when quantity is defined and no other flags', () => {
+    const col = getPosStateCol();
+    const result = col.cellStyle({ data: { quantity: 5 } });
+    expect(result).toEqual({ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' });
+  });
+
+  it('cellStyle returns {} when quantity is undefined (non-position row)', () => {
+    const col = getPosStateCol();
+    const result = col.cellStyle({ data: { qty_hold: 5 } });
+    expect(result).toEqual({});
+  });
+
+  it('cellStyle amber does NOT fire when is_orphan is true (is_orphan takes priority)', () => {
+    const col = getPosStateCol();
+    const result = col.cellStyle({ data: { is_orphan: true, quantity: 10 } });
+    expect(result).toEqual({ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' });
+  });
+
+  it('cellStyle returns green when has_gtt is true regardless of quantity', () => {
+    const col = getPosStateCol();
+    const result = col.cellStyle({ data: { has_gtt: true, quantity: 10 } });
+    expect(result).toEqual({ background: 'rgba(74,222,128,0.20)', color: '#4ade80' });
+  });
+
+  it('cellStyle returns {} for _isTotal rows regardless of quantity', () => {
+    const col = getPosStateCol();
+    const result = col.cellStyle({ data: { _isTotal: true, quantity: 10 } });
+    expect(result).toEqual({});
   });
 });
 

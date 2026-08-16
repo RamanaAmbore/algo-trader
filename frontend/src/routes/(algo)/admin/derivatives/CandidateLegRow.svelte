@@ -195,13 +195,15 @@
   <span class="cand-state-cell" style:background={
     c.has_gtt ? 'rgba(74,222,128,0.20)' :
     c.pair_group_key ? 'rgba(34,211,238,0.18)' :
-    c.is_orphan ? 'rgba(251,191,36,0.15)' : 'transparent'
+    c.is_orphan ? 'rgba(251,191,36,0.15)' :
+    c.quantity !== undefined ? 'rgba(251,191,36,0.15)' : 'transparent'
   } style:color={
     c.has_gtt ? '#4ade80' :
     c.pair_group_key ? '#67e8f9' :
-    c.is_orphan ? '#fbbf24' : 'transparent'
+    c.is_orphan ? '#fbbf24' :
+    c.quantity !== undefined ? '#fbbf24' : 'transparent'
   }>
-    {c.has_gtt ? 'GTT' : c.pair_group_key ?? (c.is_orphan ? '○' : '')}
+    {c.has_gtt ? 'GTT' : c.pair_group_key ?? (c.is_orphan ? '○' : (c.quantity !== undefined ? '○' : ''))}
   </span>
   <!-- svelte-ignore a11y_interactive_supports_focus -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -303,19 +305,6 @@
       {/if}
     {/if}
   </span>
-  <!-- Expiry cell removed — the hyphenated symbol shows it. -->
-  <span class="font-mono">{c.account}</span>
-  {#if isClosed}
-    <span class="cand-status-chip cand-closed-chip">closed</span>
-  {:else if pendingQty > 0}
-    <span class="num kv-pos">{pendingQty}</span>
-    <span class="cand-status-chip cand-open-chip">open</span>
-    {#if Math.abs(displayQty) - pendingQty > 0}
-      <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{Math.abs(displayQty) - pendingQty}</span>
-    {/if}
-  {:else}
-    <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
-  {/if}
   <!-- Lots column. For proxy eq rows the lot count is in
        TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
        so the math derives from the same market_value /
@@ -349,15 +338,27 @@
       ? (ltp > c.prev_close ? 'ltp-vs-prev-up' : ltp < c.prev_close ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat')
       : ''}
     {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
-  <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
   <span class="num {displayQty > 0 ? 'cell-pos' : displayQty < 0 ? 'cell-neg' : 'cell-flat'}">{cost != null ? priceFmt(cost) : '—'}</span>
-  <span class="num tf-cell cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'} {pnl == null ? '' : flash.classOf(`${_legFlashKey}:pnl`)}">
-    {pnl == null ? '—' : aggCompact(pnl)}
-  </span>
   <span class="num tf-cell cand-pnl {_dayPnl == null ? 'cell-flat' : _dayPnl > 0 ? 'cell-pos' : _dayPnl < 0 ? 'cell-neg' : 'cell-flat'} {_dayPnl == null ? '' : flash.classOf(`${_legFlashKey}:day`)}"
         title={_legExp ? 'Day P&L promoted to Exp P&L on expiry day — settlement realized today.' : "Day P&L = today's intraday move × qty"}>
     {_dayPnl == null ? '—' : aggCompact(Number(_dayPnl))}
   </span>
+  <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
+  <span class="num tf-cell cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'} {pnl == null ? '' : flash.classOf(`${_legFlashKey}:pnl`)}">
+    {pnl == null ? '—' : aggCompact(pnl)}
+  </span>
+  {#if isClosed}
+    <span class="cand-status-chip cand-closed-chip">closed</span>
+  {:else if pendingQty > 0}
+    <span class="num kv-pos">{pendingQty}</span>
+    <span class="cand-status-chip cand-open-chip">open</span>
+    {#if Math.abs(displayQty) - pendingQty > 0}
+      <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{Math.abs(displayQty) - pendingQty}</span>
+    {/if}
+  {:else}
+    <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
+  {/if}
+  <span class="font-mono">{c.account}</span>
   <span class="num tf-cell cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'} {_expPnlLeg == null ? '' : flash.classOf(`${_legFlashKey}:exp`)}"
         title="P&L if expired now at spot. Intrinsic value minus cost basis × qty.">
     {_expPnlLeg == null ? '—' : aggCompact(_expPnlLeg)}

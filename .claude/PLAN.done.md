@@ -1,129 +1,119 @@
-# Plan: Fix standalone St column + holdings Lots revert + derivatives fixes
+# Plan: St column fallback fix + derivatives column sync + Groww Day P&L
 
 ## Context
 
-Keep the standalone `pos_state` St column as-is in positions grids. Fix five issues:
-1. **St column shows no values** — backend infinite-loop bug (`longs.pop(0)` should be `longs_q.pop(0)`) + frontend defensive fallback for unenriched position rows
-2. **Holdings has St column + Lots in wrong position** — filter pos_state from holdingsColDefs AND reorder Lots back to after LTP (original position for holdings)
-3. **Derivatives St cell before checkbox** — should be AFTER checkbox (swap tracks in grid-template-columns + element order in CandidateLegRow)
-4. **Derivatives St values empty** — same root cause as #1 (backend bug)
-5. **Public PerformancePage** — hide St column (already there inline, just change `hide: false → true`)
-6. **Derivatives default root** — COPPER shown instead of CRUDEOIL; fix alphabetical tier sort to position-count-descending
+Three issues found after the St column deploy:
+1. **St column still empty everywhere** — the `qty_pos` fallback in `pulseColumns.js` (commit e6656b7e) is ineffective because `qty_pos` is never in the backend response. The correct field to check is `quantity` (always present on position rows). `CandidateLegRow.svelte` has no fallback at all.
+2. **Derivatives legs/exp-close column order out of sync with pulse positions** — qty and account appear early (pos 4/5), lots/ltp/avg/day_pnl/close/pnl appear in wrong relative order vs pulse positions.
+3. **Groww Day P&L = 0 on initial load** — `_normalise_positions()` in `groww.py` never computes `day_change_val`. When LTP cache is cold on startup, `last_price=0` → backend formula returns 0 → frontend shows 0 until refresh warms the cache. Adding a pre-computed `day_change_val` (mirroring Dhan's line 1876) gives a concrete fallback.
 
 ---
 
-## Fix 1 — backend/api/routes/positions.py: fix longs_q pop bug
+## Fix 1 — pulseColumns.js: fix ineffective fallback
 
-**Line 144-147** — `longs.pop(0)` should be `longs_q.pop(0)`. The mutable waterfall queue is `longs_q`, not `longs`. When a long is fully matched, failing to pop from `longs_q` leaves a zero-qty entry at the head, causing an infinite loop for any portfolio with both long and short positions:
+**File:** `frontend/src/lib/data/pulseColumns.js`
+
+**cellRenderer** (line 490) — change `qty_pos` to `quantity`:
+```js
+// Before:
+if (d.qty_pos !== undefined) return '○';
+// After:
+if (d.quantity !== undefined) return '○';
+```
+
+**cellStyle** (line 481-482) — add matching fallback before final `return {}`:
+```js
+if (d.quantity !== undefined) return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
+return {};
+```
+
+---
+
+## Fix 2 — CandidateLegRow.svelte: add St fallback
+
+**File:** `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+
+Line 204 — change the render expression from:
+```svelte
+{c.has_gtt ? 'GTT' : c.pair_group_key ?? (c.is_orphan ? '○' : '')}
+```
+to:
+```svelte
+{c.has_gtt ? 'GTT' : c.pair_group_key ?? (c.is_orphan ? '○' : (c.quantity !== undefined ? '○' : ''))}
+```
+
+---
+
+## Fix 3 — derivatives column reorder (matches pulse positions)
+
+Both the **Legs tab** and **Exp Close tab** share the same `.cand-grid` CSS class and `CandidateLegRow` component — fixing the grid layout and row order once fixes both tabs.
+
+Pulse positions order (common columns):
+`St → sym → lots → ltp → avg → day_pnl → close → pnl → qty → account`
+
+### 3a. CSS grid-template-columns in +page.svelte (lines 5982-6000)
+
+New order:
+```css
+auto                                 /* checkbox */
+38px                                 /* pos state */
+minmax(max-content, max-content)     /* symbol */
+minmax(44px, max-content)            /* lots ← moved up (was pos 6) */
+minmax(62px, max-content)            /* ltp ← moved up (was pos 7) */
+minmax(62px, max-content)            /* avg ← moved up (was pos 9) */
+minmax(72px, max-content)            /* day pnl ← moved up (was pos 11) */
+minmax(62px, max-content)            /* prev close ← (was pos 8) */
+minmax(72px, max-content)            /* pnl ← (was pos 10) */
+minmax(48px, max-content)            /* qty ← moved down (was pos 5) */
+minmax(max-content, max-content)     /* account ← moved down (was pos 4) */
+minmax(72px, max-content)            /* exp pnl */
+minmax(52px, max-content)            /* iv */
+minmax(56px, max-content)            /* delta */
+minmax(56px, max-content)            /* gamma */
+minmax(62px, max-content)            /* theta */
+minmax(56px, max-content)            /* vega */
+minmax(62px, max-content);           /* ev */
+```
+
+### 3b. cand-headrow labels in +page.svelte (lines 4458-4502)
+
+New label order (after checkbox + state span):
+`Symbol → Lots → LTP → Avg → Day P&L → Close → P&L → Qty → Acct → Exp P&L → IV → Δ → Γ → Θ → 𝒱 → EV`
+
+### 3c. CandidateLegRow.svelte cell render order (lines 306-372)
+
+New cell order after the symbol block (line 305):
+1. lots span (currently lines 319-343)
+2. ltp span (currently line 344-351)
+3. avg/cost span (currently line 353)
+4. day_pnl span (currently lines 357-360)
+5. prev_close span (currently line 352)
+6. pnl span (currently lines 354-356)
+7. qty/displayQty span (currently lines 307-318) — account first removed to here
+8. account span (currently line 307)
+9. exp_pnl + Greeks (unchanged)
+
+---
+
+## Fix 4 — groww.py: add day_change_val to _normalise_positions
+
+**File:** `backend/brokers/adapters/groww.py`
+
+In `_normalise_positions()` (line 1519-1571), before the `"_raw": p` entry, add computed `day_change_val`:
 
 ```python
-# Current (buggy):
-if longs_q[0][1] == 0:
-    longs.pop(0)       # ← wrong list
-
-# Fixed:
-if longs_q[0][1] == 0:
-    longs_q.pop(0)     # ← correct
+# Add these two local vars after the existing field extractions:
+_ltp   = _gf(p, "last_price", "ltp")
+_close = _gf(p, "close_price", "previous_close")
+_qty   = _gi(p, "quantity")
 ```
 
-The existing orphan-marking pass (lines 158-168) is already correct — no change needed there.
-
----
-
-## Fix 2 — frontend/src/lib/data/pulseColumns.js: defensive cellRenderer fallback
-
-In the `pos_state` column `cellRenderer` (line 483-490), add a defensive fallback so any position row that isn't enriched by the backend (all three flags false/null) still shows `'○'`:
-
-```js
-cellRenderer: (p) => {
-  const d = p.data;
-  if (!d || d._isTotal) return '';
-  if (d.has_gtt)        return 'GTT';
-  if (d.pair_group_key) return d.pair_group_key;
-  if (d.is_orphan)      return '○';
-  if (d.qty_pos !== undefined) return '○';   // ← add this line
-  return '';
-},
+Then add to the row dict (after line 1563):
+```python
+"day_change_val": (_ltp - _close) * _qty if _ltp > 0 and _close > 0 and _qty != 0 else 0.0,
 ```
 
-Same fix in `PerformancePage.svelte` inline cellRenderer (line 683-690) — add `if (d.qty_pos !== undefined) return '○';` before the final `return ''`.
-
----
-
-## Fix 3 — frontend/src/lib/MarketPulse.svelte: holdingsColDefs — filter St + reorder Lots
-
-Original column order (from `git show 897baee0^` — before the lots-move commit):
-`sym → spark → ltp → avg → day_pnl → day_pnl_pct → prev → pnl → pnl_pct → qty_net → **lots** → inv_val → cur_val → …`
-
-Current order has Lots moved to position 4 (before LTP). For holdings, revert Lots to its original position: **after `qty_net`** (between Qty and Invested).
-
-Update line 3617:
-```js
-const holdingsColDefs = (() => {
-  const cols = rightColDefs.filter(c => c.colId !== 'pos_state');
-  // Revert Lots to original position: immediately before inv_val (Invested)
-  const lotsIdx   = cols.findIndex(c => c.colId === 'lots');
-  const invValIdx = cols.findIndex(c => c.colId === 'inv_val');
-  if (lotsIdx !== -1 && invValIdx !== -1 && lotsIdx !== invValIdx - 1) {
-    const [lotsCol] = cols.splice(lotsIdx, 1);
-    const newInvValIdx = cols.findIndex(c => c.colId === 'inv_val');
-    cols.splice(newInvValIdx, 0, lotsCol);
-  }
-  return cols;
-})();
-```
-
----
-
-## Fix 4 — PerformancePage.svelte: hide St column
-
-`PerformancePage.svelte` is used **only** in the public `/performance` route (confirmed by audit). In `positionsCols` (line 671), change:
-```js
-hide: false,   →   hide: true,
-```
-
-No prop needed — the entire component is public-only.
-
----
-
-## Fix 5 — CandidateLegRow.svelte: move cand-state-cell after checkbox
-
-Current order in component (line 188-205): `cand-state-cell span → checkbox input → symbol`  
-Required order: `checkbox input → cand-state-cell span → symbol`
-
-Move the `<span class="cand-state-cell">` block (lines 188-198) to AFTER the `<input type="checkbox">` block (lines 199-205).
-
----
-
-## Fix 6 — derivatives +page.svelte: swap grid track order + fix default root sort
-
-**Grid track order** — swap the first two tracks in `.cand-grid` grid-template-columns (lines 5971-5973):
-```css
-/* Current: */
-38px   /* pos state */
-auto   /* checkbox */
-
-/* Fixed: */
-auto   /* checkbox */
-38px   /* pos state */
-```
-
-**Default root sort** — in `underlyingOptionsForPicker` (lines 1457-1517), replace alphabetical `.sort()` in Tier 1 (line 1462) and Tier 2 (line 1469) with position-count-descending sort:
-
-```js
-// Compute position count per root (before tiers loop):
-const _rootPosCount = new Map();
-for (const c of candidatePositions) {
-  const r = _rootSymbol(c.tradingsymbol || c.symbol || '');
-  _rootPosCount.set(r, (_rootPosCount.get(r) || 0) + 1);
-}
-
-// Tier 1 sort (line 1462) — replace [..._rootsWithOptions].sort() with:
-[..._rootsWithOptions].sort((a, b) =>
-  (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) || a.localeCompare(b))
-
-// Tier 2 sort (line 1469) — same pattern for _rootsWithFuturesOnly
-```
+Note: Groww uses `multiplier=1` (line 1553), so `qty_contracts = qty`. No lot-size adjustment needed.
 
 ---
 
@@ -131,20 +121,18 @@ for (const c of candidatePositions) {
 
 | File | Change |
 |---|---|
-| `backend/api/routes/positions.py` | Line 145: `longs.pop(0)` → `longs_q.pop(0)` |
-| `frontend/src/lib/data/pulseColumns.js` | pos_state cellRenderer: add `qty_pos !== undefined` fallback |
-| `frontend/src/lib/MarketPulse.svelte` | holdingsColDefs: filter pos_state + splice Lots before inv_val (original position) |
-| `frontend/src/lib/PerformancePage.svelte` | pos_state column: `hide: false` → `hide: true`; same cellRenderer fallback |
-| `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` | Move cand-state-cell after checkbox |
-| `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` | Swap `auto / 38px` tracks; position-count sort for tiers 1+2 |
+| `frontend/src/lib/data/pulseColumns.js` | Fix fallback: `qty_pos` → `quantity` in cellRenderer + add to cellStyle |
+| `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` | Add `c.quantity !== undefined` fallback + reorder cells |
+| `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` | Reorder grid-template-columns + headrow labels |
+| `backend/brokers/adapters/groww.py` | Add `day_change_val` computation in `_normalise_positions()` |
 
 ---
 
 ## Agents
-- backend: fix `longs.pop(0)` → `longs_q.pop(0)` in `backend/api/routes/positions.py:145`
-- backend-test: add test for long+short portfolio (verifies waterfall terminates, P1 assigned; all-long verifies is_orphan=True for unmatched)
-- frontend: all five frontend file changes above
-- broker: skip
+- frontend: Fix 1 (pulseColumns.js fallback), Fix 2 (CandidateLegRow fallback), Fix 3 (column reorder in +page.svelte + CandidateLegRow)
+- broker: Fix 4 (groww.py day_change_val)
+- backend: skip
+- backend-test: add test for Groww _normalise_positions verifying day_change_val is computed when ltp+close are valid
 - doc: skip
 - playwright: skip
 
@@ -154,13 +142,12 @@ for (const c of candidatePositions) {
 - playwright: no
 
 ## Commit message
-fix(positions): St column values + holdings revert + derivatives checkbox order + default root sort
+fix(positions): St fallback quantity field + derivatives column sync + Groww day_change_val
 
 ## Done when
-- Position rows in MarketPulse all show P1/P2/○/GTT in standalone St column
-- Holdings grid: no St column, Lots appears immediately before the Invested (inv_val) column
-- Derivatives legs: St cell appears AFTER checkbox, shows P1/P2/○/GTT values
-- Derivatives default root picks highest-position-count root (CRUDEOIL before COPPER)
-- Public PerformancePage: St column hidden
-- Long+short portfolio waterfall terminates correctly
+- Pulse positions St column shows '○' for all position rows (paired, orphan, and plain)
+- Derivatives legs St column shows '○' for all rows
+- Derivatives exp-close St column shows '○' for all rows
+- Derivatives legs column order: lots → ltp → avg → day_pnl → close → pnl → qty → account → exp_pnl → Greeks
+- Groww positions show non-zero Day P&L on first page load (not just after refresh)
 - svelte-check 0 errors, pytest green
