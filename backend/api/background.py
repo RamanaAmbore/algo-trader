@@ -1843,8 +1843,19 @@ async def _task_daily_snapshot() -> None:
 
     # ── startup snapshot (closed hours only) ───────────────────────────
     _now_ist = timestamp_indian()
+    _today_d = _now_ist.date()
     _nse_open, _mcx_open = await _probe_nse_mcx(_now_ist)
-    if _nse_open or _mcx_open:
+    if _today_d.weekday() >= 5:
+        # Weekend (Saturday=5, Sunday=6): the previous trading day's EOD snapshot
+        # already lives in daily_book. Creating today's date rows with stale prices
+        # (LTP ≈ prior close, day_pnl ≈ 0) displaces the EOD rows in latest_batch
+        # (positions route uses MAX(captured_at)) making Day P&L = 0 all weekend.
+        # MCX Saturday sessions are handled by the 23:31 MCX-close settlement pass.
+        logger.info(
+            "Background: skipping startup snapshot — weekend "
+            "(existing EOD data serves closed-hours Pulse correctly)"
+        )
+    elif _nse_open or _mcx_open:
         logger.info(
             f"Background: skipping startup daily snapshot — markets open "
             f"(NSE={_nse_open}, MCX={_mcx_open}). Settlement passes still fire."

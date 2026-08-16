@@ -1,182 +1,130 @@
-# Plan: Kite socket LTP SSOT — fix previous_close in snapshot writer + orphan/paired coloring
+# Plan: Skip startup snapshot on weekends/holidays to prevent Day P&L = 0
 
 ## Context
 
-### Architecture intent (operator confirmed)
+### Root cause (confirmed)
 
-- **LTP SSOT = Kite socket (mmap tick buffer)** — all books (holdings, positions, watchlist)
-- **Broker APIs = inventory only** — qty, avg_cost, symbol, lot_size, account
-- **Day P&L formula = (socket_ltp − daily_book.previous_close) × qty** — uniform everywhere
-- **previous_close SSOT = prior daily_book.ltp** — not broker's volatile `close_price`
+After the `previous_close` SSOT deploy (00:30 IST Saturday 2026-08-16), the service
+restarted and `_task_daily_snapshot` fired its startup snapshot. The startup snapshot
+ran `snapshot_daily_book(market_open=False)` with `target_date = today_indian() =
+2026-08-16` (Saturday). This created 139 `daily_book` rows for `date = 2026-08-16`
+with stale prices (LTP ≈ Friday close, `day_pnl ≈ 0`).
 
-### What is already correct
+The `_POSITIONS_SNAPSHOT_SQL`'s `latest_batch` CTE picks `MAX(captured_at)` globally.
+Saturday's rows (captured 00:32 IST) are 6 minutes newer than Friday's MCX-close rows
+(captured 23:56 IST). So `latest_batch` → Saturday stale data. `prev_batch` →
+Friday EOD. `Day P&L = Saturday_pnl - Friday_pnl ≈ 0` (prices unchanged).
 
-The **live positions path** already does this correctly:
-- `positions.py:449` — `_override_stale_ltp_from_ticker()` patches `last_price` from mmap socket
-- `positions.py:449` — `_override_stale_close_from_snapshot()` patches `close_price` from yesterday's daily_book.ltp (queried `captured_at < today_open_ist`)
-- `positions.py:635` — `day_change = ltp − cls` recomputed from socket LTP + daily_book close
+### Immediate mitigation (already done)
+`DELETE FROM daily_book WHERE date = '2026-08-16'` — 139 rows deleted on prod.
+Day P&L is now live showing Friday's correct values.
 
-The **frontend stores** already do this correctly:
-- `positionsDayPnlStore.svelte.js:62` — `closePx = r.close_price` (already patched to daily_book)
-- `holdingsDayPnlStore.svelte.js:77–81` — `(liveLtp − closePx) × qty` from socket
+### Recurrence scenarios
 
-### The single root cause
-
-`backend/api/algo/daily_snapshot.py:472` (holdings) and `:595` (positions):
-```python
-"previous_close": float(r["close_price"]) if r.get("close_price") else None
-```
-`r["close_price"]` = broker's REST field. For positions, Kite's `close_price` lags prior-session EOD between MCX close (23:30) and next open. For both books, the broker field can diverge across Dhan/Groww/Kite.
-
-Because the UPSERT freezes `previous_close` on first write:
-```sql
-previous_close = COALESCE(daily_book.previous_close, EXCLUDED.previous_close)
-```
-…this wrong value is frozen for the entire day. All downstream computations that use `daily_book.previous_close` inherit the error.
-
-### Cascade fix
-
-Fix `previous_close` in the snapshot writer → fixes cascade:
-1. Holdings reader: `(ltp_f − previous_close_f) × qty` — correct once previous_close is correct
-2. Positions reader `build_row_from_snapshot_raw:331`: `(ltp − actual_previous_close) × qty` — same
-3. Frontend `holdingsDayPnlStore.svelte.js:72`: `closePx = h.close_price` which comes from `previous_close_f` — same
-4. No frontend formula changes needed
-
-### Fix B — Color-code orphan vs paired positions (independent, frontend-only)
-
-`is_orphan: bool` and `pair_group_key: Optional[str]` already on every PositionRow.
-Need CSS class wiring in `_sourceRowClasses()` + CSS rules.
+1. **Service restart on any Saturday/Sunday** — startup snapshot fires, creates
+   stale weekend rows, Day P&L = 0 for the entire weekend.
+2. **Service restart on a weekday NSE holiday** — same pattern, affects that
+   holiday's data.
+3. **MCX Saturdays** — MCX IS open Saturday 09:00–23:30. The 23:31 snapshot
+   creates correct Saturday MCX rows. The startup snapshot at restart time (before
+   MCX opens) creates stale rows that pollute `latest_batch` until 23:31.
 
 ---
 
-## Files
+## Files to change
 
-- `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()`, `_holdings_rows()`, `_positions_rows()`
-- `frontend/src/lib/MarketPulse.svelte` — `_sourceRowClasses()` ≈ line 3271 (Fix B)
-- `frontend/src/app.css` — row tint rules ≈ line 678 (Fix B)
+- `backend/api/background.py` — `_task_daily_snapshot()` startup snapshot logic
+  (lines ~1844–1856)
+
+---
+
+## Detailed change
+
+In `_task_daily_snapshot`, after the `_probe_nse_mcx()` call but BEFORE the
+`if _nse_open or _mcx_open` branch, add a weekend check:
+
+```python
+# Skip startup snapshot on weekends — the previous trading day's EOD data
+# already lives in daily_book. Creating today's date rows with stale prices
+# displaces the EOD rows in latest_batch (MAX captured_at), making Day P&L = 0.
+_today_d = timestamp_indian().date()
+if _today_d.weekday() >= 5:
+    logger.info(
+        "Background: skipping startup snapshot — weekend "
+        "(existing EOD data serves closed-hours Pulse correctly)"
+    )
+else:
+    # Optional: also check NSE holiday list to block weekday-holiday restarts.
+    # For now, weekend-only guard covers the most common case (Saturday MCX
+    # pre-session, Sunday NSE/MCX). Weekday holidays are less frequent.
+    if _nse_open or _mcx_open:
+        logger.info(
+            f"Background: skipping startup daily snapshot — markets open "
+            f"(NSE={_nse_open}, MCX={_mcx_open}). Settlement passes still fire."
+        )
+    else:
+        await _fire_snapshot("startup", market_open=False)
+```
+
+Replace the existing block (lines ~1844–1856):
+```python
+_nse_open, _mcx_open = await _probe_nse_mcx(_now_ist)
+if _nse_open or _mcx_open:
+    logger.info(...)
+else:
+    await _fire_snapshot("startup", market_open=False)
+```
+
+With:
+```python
+_today_d = _now_ist.date()
+_nse_open, _mcx_open = await _probe_nse_mcx(_now_ist)
+if _today_d.weekday() >= 5:
+    logger.info(
+        "Background: skipping startup snapshot — weekend "
+        "(existing EOD data serves closed-hours Pulse correctly)"
+    )
+elif _nse_open or _mcx_open:
+    logger.info(
+        f"Background: skipping startup daily snapshot — markets open "
+        f"(NSE={_nse_open}, MCX={_mcx_open}). Settlement passes still fire."
+    )
+else:
+    await _fire_snapshot("startup", market_open=False)
+```
 
 ---
 
 ## Agents
 
-- backend: Fix A — snapshot writer `previous_close` SSOT
-- frontend: Fix B — orphan/paired CSS classes
-- backend-test: Tests for Fix A
+- backend: Fix `_task_daily_snapshot` in `backend/api/background.py` as above
+- frontend: skip
+- broker: skip
 - doc: skip
+- backend-test: Add pytest test — startup snapshot skipped when `today.weekday() >= 5`
 - playwright: skip
-
----
-
-## Detailed changes
-
-### backend — Fix A: Snapshot writer uses prior daily_book.ltp as `previous_close`
-
-In `snapshot_daily_book()` (daily_snapshot.py), before calling `_holdings_rows()` and
-`_positions_rows()`, add a batch query to fetch the most recent prior-day LTP from
-daily_book per (account, symbol, kind):
-
-```python
-prev_ltp_result = await session.execute(text("""
-    SELECT DISTINCT ON (account, symbol, kind)
-        account, symbol, kind, ltp
-    FROM daily_book
-    WHERE date < :today
-      AND ltp IS NOT NULL AND ltp > 0
-    ORDER BY account, symbol, kind, date DESC
-"""), {"today": target_date})
-prev_ltp_map: dict[tuple[str, str, str], float] = {
-    (r.account, r.symbol, r.kind): float(r.ltp)
-    for r in prev_ltp_result
-}
-```
-
-Pass `prev_ltp_map` to `_holdings_rows()` and `_positions_rows()`.
-
-In the row dict for both (lines 472 and 595), replace:
-```python
-"previous_close": float(r["close_price"]) if r.get("close_price") else None,
-```
-With:
-```python
-"previous_close": (
-    prev_ltp_map.get((account, symbol, "holdings"))  # or "positions"
-    or (float(r["close_price"]) if r.get("close_price") else None)
-),
-```
-
-`prev_ltp_map` lookup (prior session's socket LTP from daily_book) takes priority.
-`r["close_price"]` fallback applies only for new positions/holdings with no prior daily_book
-row (first day) — in that case broker's close_price is the only reference available.
-
-**Also update `_snap_compute_day_pnl` call** for positions: pass `prev_ltp_map_val` as
-`close_price` when available, so the `day_pnl` STORED in daily_book is also correct
-(not just the reader's recompute):
-```python
-close_ref = prev_ltp_map.get((account, symbol, "positions")) or r.get("close_price")
-day_pnl = _snap_compute_day_pnl(r, ltp_val, close_ref, qty, multiplier)
-```
-
-This covers: MCX mid-session (15:30–23:30), weekends, holidays, cold restarts —
-all scenarios where broker's `close_price` is stale or zero.
-
-### frontend — Fix B: Orphan/paired color-coding
-
-**MarketPulse.svelte `_sourceRowClasses()`** — inside the `if (s.p)` branch, after
-existing `pos-long` / `pos-short` push:
-
-```javascript
-if (r.is_orphan) {
-    out.push('row-pos-orphan');
-} else {
-    out.push('row-pos-paired');
-}
-```
-
-**app.css** — after existing `row-hold-*` block:
-
-```css
-/* Orphan position — no template / GTT / manual pair */
-.ag-theme-algo .ag-row.row-pos-orphan .ag-col-sym {
-  background-color: rgba(251,191,36,0.08) !important;
-}
-.ag-theme-algo .ag-row.row-pos-orphan .ag-col-sym::after {
-  background: rgba(251,191,36,0.80);
-}
-
-/* Paired / managed position — has active AlgoOrder */
-.ag-theme-algo .ag-row.row-pos-paired .ag-col-sym {
-  background-color: rgba(34,211,238,0.07) !important;
-}
-.ag-theme-algo .ag-row.row-pos-paired .ag-col-sym::after {
-  background: rgba(34,211,238,0.75);
-}
-```
 
 ---
 
 ## Tests
 
 - pytest: yes
-- svelte-check: yes
+- svelte-check: no
 - playwright: no
 
-### Backend tests (backend-test agent)
-
-- `snapshot_daily_book` with prior daily_book row present → positions `previous_close` = prior_ltp, NOT broker `close_price`
-- `snapshot_daily_book` with NO prior daily_book row (new position) → falls back to `r.get("close_price")`
-- `_snap_compute_day_pnl` receives corrected `close_ref` (prior daily_book LTP) → `day_pnl = (ltp - prior_ltp) × qty`
-- Monday-after-weekend scenario: prior row is Friday's, `previous_close` = Friday's LTP ✓
-- Regression: UPSERT COALESCE freeze still works (second write of same day keeps first-write value)
+### Required test cases
+- Mock `timestamp_indian()` to return a Saturday → verify `_fire_snapshot` NOT called
+- Mock to return a Sunday → same
+- Mock to return a weekday (non-holiday, market closed) → verify `_fire_snapshot` IS called
+- Mock to return a weekday with market open → verify `_fire_snapshot` NOT called (existing guard)
 
 ---
 
 ## Commit message
-fix(snapshot): previous_close from prior daily_book.ltp (not broker close_price); orphan/paired coloring
+fix(background): skip startup snapshot on weekends to prevent Day P&L = 0 after off-day restart
 
 ## Done when
-- Positions and holdings Day P&L shows `(today_socket_ltp − yesterday_socket_ltp) × qty` from snapshot
-- MCX mid-session window (15:30–23:30): NSE Day P&L correct, not dependent on stale Kite close_price
-- Weekend restart: `previous_close` = Friday's socket LTP; Day P&L = Friday change
-- Broker REST used only for qty, avg_cost, symbol — no day_change_val or close_price dependency
-- Orphan positions: amber left-border; Paired: cyan left-border
-- svelte-check 0 errors, pytest green
+- `_task_daily_snapshot` does NOT create daily_book rows for Saturday or Sunday on service restart
+- Weekday non-holiday off-hours restarts still fire the startup snapshot (unchanged)
+- Existing NSE/MCX settlement passes (16:15, 23:31, 00:15) unaffected
+- pytest green
