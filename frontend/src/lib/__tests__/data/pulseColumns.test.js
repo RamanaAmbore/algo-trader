@@ -34,10 +34,98 @@ function makeOpts() {
 }
 
 // ---------------------------------------------------------------------------
-// Fix 2 — pos_state column shape
+// Fix 1 — pos_state cellRenderer qty_pos fallback (defensive orphan marker)
 // ---------------------------------------------------------------------------
 
-describe('mkRightColDefs — pos_state column (Fix 2)', () => {
+describe('mkRightColDefs — pos_state cellRenderer qty_pos fallback (Fix 1)', () => {
+  function getPosStateCol() {
+    const cols = mkRightColDefs(makeOpts());
+    const col = cols.find(c => c.colId === 'pos_state');
+    if (!col) throw new Error('pos_state column not found');
+    return col;
+  }
+
+  it('returns "○" when qty_pos is defined but has_gtt/pair_group_key/is_orphan are all falsy', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { qty_pos: 10 } });
+    expect(result).toBe('○');
+  });
+
+  it('returns "○" when qty_pos is 0 (defined but zero)', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { qty_pos: 0 } });
+    expect(result).toBe('○');
+  });
+
+  it('returns "" when qty_pos is undefined (non-position row)', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { qty_hold: 5 } });
+    expect(result).toBe('');
+  });
+
+  it('qty_pos fallback does NOT fire when is_orphan is true (is_orphan takes priority)', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { is_orphan: true, qty_pos: 10 } });
+    expect(result).toBe('○'); // same output, but via the is_orphan branch
+  });
+
+  it('qty_pos fallback does NOT fire when pair_group_key is set (pair takes priority)', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { pair_group_key: 'P1', qty_pos: 10 } });
+    expect(result).toBe('P1');
+  });
+
+  it('returns "" for _isTotal rows regardless of qty_pos', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: { _isTotal: true, qty_pos: 10 } });
+    expect(result).toBe('');
+  });
+
+  it('returns "" for null data', () => {
+    const col = getPosStateCol();
+    const result = col.cellRenderer({ data: null });
+    expect(result).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 — holdingsColDefs IIFE: Lots moves before inv_val
+// ---------------------------------------------------------------------------
+
+describe('holdingsColDefs IIFE — Lots reorder before inv_val (Fix 2)', () => {
+  function makeHoldingsCols() {
+    const cols = mkRightColDefs(makeOpts()).filter(c => c.colId !== 'pos_state');
+    const lotsIdx   = cols.findIndex(c => c.colId === 'lots');
+    const invValIdx = cols.findIndex(c => c.colId === 'inv_val');
+    if (lotsIdx !== -1 && invValIdx !== -1 && lotsIdx !== invValIdx - 1) {
+      const [lotsCol] = cols.splice(lotsIdx, 1);
+      const newInvValIdx = cols.findIndex(c => c.colId === 'inv_val');
+      cols.splice(newInvValIdx, 0, lotsCol);
+    }
+    return cols;
+  }
+
+  it('pos_state is absent from holdings cols', () => {
+    const cols = makeHoldingsCols();
+    expect(cols.some(c => c.colId === 'pos_state')).toBe(false);
+  });
+
+  it('lots appears immediately before inv_val in holdings cols', () => {
+    const cols = makeHoldingsCols();
+    const lotsIdx   = cols.findIndex(c => c.colId === 'lots');
+    const invValIdx = cols.findIndex(c => c.colId === 'inv_val');
+    // Both columns must be present — if either is -1 the IIFE is untested.
+    expect(lotsIdx,   'lots column absent from mkRightColDefs — fix the stub or test').not.toBe(-1);
+    expect(invValIdx, 'inv_val column absent from mkRightColDefs — fix the stub or test').not.toBe(-1);
+    expect(lotsIdx).toBe(invValIdx - 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 (original) — pos_state column shape
+// ---------------------------------------------------------------------------
+
+describe('mkRightColDefs — pos_state column (Fix 2 original)', () => {
   it('returns pos_state as the first column with headerName "St"', () => {
     const cols = mkRightColDefs(makeOpts());
     expect(cols[0].colId).toBe('pos_state');

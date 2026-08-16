@@ -182,9 +182,16 @@
          _handleRowActivate();
        }
      }}>
-  <!-- Position state indicator — first column (38px state track).
+  <input type="checkbox"
+         checked={enabled}
+         onclick={(e) => e.stopPropagation()}
+         onchange={(e) => {
+           const checked = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
+           onToggleEnabled(c, checked);
+         }} />
+  <!-- Position state indicator — second column (38px state track).
        Three states: GTT (green) / Paired (cyan) / Orphan (amber).
-       Maps to the new first grid-template-columns track. -->
+       Maps to the second grid-template-columns track. -->
   <span class="cand-state-cell" style:background={
     c.has_gtt ? 'rgba(74,222,128,0.20)' :
     c.pair_group_key ? 'rgba(34,211,238,0.18)' :
@@ -196,13 +203,6 @@
   }>
     {c.has_gtt ? 'GTT' : c.pair_group_key ?? (c.is_orphan ? '○' : '')}
   </span>
-  <input type="checkbox"
-         checked={enabled}
-         onclick={(e) => e.stopPropagation()}
-         onchange={(e) => {
-           const checked = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
-           onToggleEnabled(c, checked);
-         }} />
   <!-- svelte-ignore a11y_interactive_supports_focus -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- Context-menu is a secondary affordance (right-click / long-press).

@@ -1457,16 +1457,27 @@
   const underlyingOptionsForPicker = $derived.by(() => {
     const seen = new Set();
     const out = [];
+    // Build a position-count map for roots so that roots with more legs
+    // surface first within each tier (secondary sort: alphabetical).
+    const _rootPosCount = new Map();
+    const _allow = _accountAllow;
+    for (const p of positions) {
+      if (_allow && !_allow.has(String(p.account || ''))) continue;
+      const r = p.symbol.replace(/\d.*$/, '');
+      if (r) _rootPosCount.set(r, (_rootPosCount.get(r) || 0) + 1);
+    }
     // Tier 1 — Options positions on this root. Cyan-highlighted label
-    // + 'options' hint chip. Sorted alphabetically inside the tier.
-    for (const u of [..._rootsWithOptions].sort()) {
+    // + 'options' hint chip. Sorted by position count desc, then alpha.
+    for (const u of [..._rootsWithOptions].sort((a, b) =>
+      (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) || a.localeCompare(b))) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u, hint: 'options' });
     }
     // Tier 2 — Futures positions on this root (no options). Default
-    // colour, 'futures' hint chip.
-    for (const u of [..._rootsWithFuturesOnly].sort()) {
+    // colour, 'futures' hint chip. Sorted by position count desc, then alpha.
+    for (const u of [..._rootsWithFuturesOnly].sort((a, b) =>
+      (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) || a.localeCompare(b))) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u, hint: 'futures' });
@@ -4445,8 +4456,6 @@
                page). Stops click propagation so the surrounding
                grid-row toggle handlers don't double-fire. -->
           <div class="cand-headrow">
-            <!-- State column header — matches new first grid-template-columns track (38px). -->
-            <span title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)"></span>
             <input type="checkbox"
                    class="cand-check cand-check-master"
                    aria-label="Toggle all positions"
@@ -4456,6 +4465,8 @@
                    checked={allCandidatesOn}
                    bind:this={allCandidatesEl}
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
+            <!-- State column header — matches second grid-template-columns track (38px). -->
+            <span title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)"></span>
             <!-- Symbol header — hyphenated form below carries the
                  expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
                  separate Expiry column would be redundant. -->
@@ -5969,8 +5980,8 @@
        via formatSymbol(). Operator no longer needs a separate column;
        saves ~58 px of horizontal real estate per row. */
     grid-template-columns:
-      38px                                 /* pos state (GTT / paired / orphan) */
       auto                                 /* checkbox */
+      38px                                 /* pos state (GTT / paired / orphan) */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(max-content, max-content)     /* account */
       minmax(48px, max-content)            /* qty */

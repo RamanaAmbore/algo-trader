@@ -3614,7 +3614,17 @@
     // pinnedBottomRowData semantics).
     // Holdings grid omits the pos_state column (pair/orphan/GTT state
     // is a positions-only concept; showing it on holdings rows misleads).
-    const holdingsColDefs = rightColDefs.filter(c => c.colId !== 'pos_state');
+    const holdingsColDefs = (() => {
+      const cols = rightColDefs.filter(c => c.colId !== 'pos_state');
+      const lotsIdx   = cols.findIndex(c => c.colId === 'lots');
+      const invValIdx = cols.findIndex(c => c.colId === 'inv_val');
+      if (lotsIdx !== -1 && invValIdx !== -1 && lotsIdx !== invValIdx - 1) {
+        const [lotsCol] = cols.splice(lotsIdx, 1);
+        const newInvValIdx = cols.findIndex(c => c.colId === 'inv_val');
+        cols.splice(newInvValIdx, 0, lotsCol);
+      }
+      return cols;
+    })();
     if (gridPositionsEl) {
       gridPositions = makeBucketGrid(gridPositionsEl, rightColDefs,
         'No positions in the active book.', [], { postSortRows: _pairGroupPostSort });

@@ -487,6 +487,7 @@ export function mkRightColDefs({
         if (d.has_gtt)        return 'GTT';
         if (d.pair_group_key) return d.pair_group_key;
         if (d.is_orphan)      return '○';
+        if (d.qty_pos !== undefined) return '○';
         return '';
       },
       cellClass: 'ag-cell-pair-state',

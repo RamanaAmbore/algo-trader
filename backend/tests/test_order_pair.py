@@ -432,6 +432,57 @@ def test_annotate_gtt_partial_match():
     assert infy_r.has_gtt is False
 
 
+# ---------------------------------------------------------------------------
+# 15. longs_q waterfall-advance regression
+#     Two longs, two shorts of equal sizes → the first long is *fully* consumed
+#     by the first short (longs_q[0][1] reaches 0 and must be popped from
+#     longs_q, not the read-only longs list).  If the wrong list were popped
+#     the zero-qty entry would remain at the head of longs_q and the while-loop
+#     would spin forever (infinite loop).  This test verifies that the second
+#     long is correctly advanced to and paired with the second short.
+# ---------------------------------------------------------------------------
+
+def test_auto_pair_longs_q_waterfall_advance():
+    """longs_q.pop(0) is called (not longs.pop(0)) so the waterfall advances."""
+    from backend.api.routes.positions import _auto_pair_positions
+
+    # long 1 (2 lots), long 2 (1 lot), short 1 (2 lots), short 2 (1 lot)
+    # After sorting largest-first:
+    #   longs_q:  [(idx0, 2), (idx1, 1)]
+    #   shorts_q: [(idx2, 2), (idx3, 1)]
+    # Iteration 1: match min(2,2)=2 → longs_q[0][1]=0 → pop → longs_q becomes [(idx1,1)]
+    # Iteration 2: match min(1,1)=1 → both pop → loop ends
+    rows = [
+        _make_row("ZG0790", "NIFTY24800CE", "NFO", 2),   # long 2
+        _make_row("ZG0790", "NIFTY24900CE", "NFO", 1),   # long 1
+        _make_row("ZG0790", "NIFTY24AUGFUT", "NFO", -2), # short 2
+        _make_row("ZG0790", "NIFTY24700PE", "NFO", -1),  # short 1
+    ]
+    # This call must terminate (not infinite-loop).
+    result = _auto_pair_positions(rows)
+
+    # Every row should be paired — no orphans.
+    assert all(r.pair_group_key is not None for r in result), (
+        "All rows must be paired when longs and shorts fully balance"
+    )
+    assert all(r.is_orphan is False for r in result)
+    assert all(r.orphan_qty == 0 for r in result)
+
+    # There must be exactly two distinct pair groups.
+    keys = {r.pair_group_key for r in result}
+    assert keys == {"P1", "P2"}, f"Expected P1+P2, got {keys}"
+
+    # Verify paired_qty per group.
+    by_key: dict = {}
+    for r in result:
+        by_key.setdefault(r.pair_group_key, []).append(r)
+
+    p1_qtys = {r.paired_qty for r in by_key["P1"]}
+    p2_qtys = {r.paired_qty for r in by_key["P2"]}
+    assert p1_qtys == {2}, f"P1 paired_qty should be 2, got {p1_qtys}"
+    assert p2_qtys == {1}, f"P2 paired_qty should be 1, got {p2_qtys}"
+
+
 def test_position_row_default_has_gtt():
     """PositionRow default value for has_gtt is False (backward compat)."""
     from backend.api.schemas import PositionRow

@@ -668,7 +668,7 @@
     // Position state column — first pinned column (38px).
     // Three states: GTT (green), Paired (cyan), Orphan (amber).
     { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
-      hide: false,
+      hide: true,
       width: 38, minWidth: 38, maxWidth: 38,
       pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
       headerTooltip: 'Position state: Paired (P1/P2 cyan) · Orphan (○ amber) · GTT (green)',
@@ -686,6 +686,7 @@
         if (d.has_gtt)        return 'GTT';
         if (d.pair_group_key) return d.pair_group_key;
         if (d.is_orphan)      return '○';
+        if (d.qty_pos !== undefined) return '○';
         return '';
       },
       cellClass: 'ag-cell-pair-state',
