@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.7 — 2026-08-14  
+**Version**: 1.8 — 2026-08-16  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -583,17 +583,20 @@ with account-scoped filters and a pinned TOTAL row at bottom.
 - Live: broker + SSE delta during market hours; `daily_book` snapshot when closed
 - Account filter: MultiSelect on `positionsAccounts` (empty = all); persisted to sessionStorage
 - TOTAL row: pinned bottom, shows sum of filtered positions + live F&O-only expiry value
-- Columns: Symbol (right-aligned account tint) · 5d · LTP · Avg · Day % · Close · P&L · P&L % · Day P&L · Qty · Lots · Account
+- Columns: Symbol (right-aligned account tint) · St · 5d · LTP · Avg · Day % · Close · P&L · P&L % · Day P&L · Qty · Lots · Account
 
 **Holdings grid** (`gridHoldings`):
 - Rows: `_majorGroup === 'holdings'` + `_includesHoldAcct(account)` filter
 - Source: broker holdings + daily_book snapshot; LTP never intraday-split
 - Account filter: separate MultiSelect on `holdingsAccounts`; persisted independently
 - TOTAL row: sum of filtered holdings (cost basis + current value)
-- Columns: Symbol (account tint) · 5d · LTP · Avg · Day % · Close · Day P&L · P&L % · P&L · Qty · Lots · Invested · Value · Account
+- Columns: Symbol (account tint) · 5d · LTP · Avg · Day % · Close · Day P&L · P&L % · P&L · Qty · Lots (immediately before Invested) · Invested · Value · Account
+- **Note**: St (pos_state) column is filtered out of holdings grid; only visible in positions grid
 
 **Right-grid column order** (via `mkRightColDefs()`):
 - Symbol (168px, pinned) — account-tinted background (color per lead account)
+- **St** (30px, positions only) — pos_state indicator; displays '○' for open positions with
+  defined qty; fallback rendering for unenriched rows. Not shown in holdings grid.
 - 5d sparkline (44px)
 - LTP (77px) — SSE tick + vs-avg/vs-prev heat; snapshot-frozen when is_animating=false
 - Avg (68px) — weighted average entry (directional tint: long green, short red, flat gray)
@@ -603,7 +606,9 @@ with account-scoped filters and a pinned TOTAL row at bottom.
 - P&L (78px) — lifetime profit/loss; directional + tick-flash
 - P&L % (64px) — P&L as % of cost basis
 - Qty (56px) — net qty; aggregated across accounts; null hidden
-- Lots (52px) — qty in F&O lot units; via `lotsForRow()` helper
+- **Lots** (52px, immediately before Invested in holdings) — qty in F&O lot units; via
+  `lotsForRow()` helper. Positioned immediately before Invested column in holdings grid for
+  better UX flow (contract quantity → invested basis).
 - Invested (78px) — cost basis (avg × held qty) for holdings
 - Value (78px) — current value (LTP × held qty) for holdings
 - Account (86px) — lead account + "+N" for multi-account rows; STALE@HH:MM badge on circuit-breaker rows
@@ -665,6 +670,14 @@ the accessors so cells see current $state values on every redraw (not stale bind
 - Coral "O" badge (class `badge-o`) shown in symbol or status column when `is_orphan=true`
 - Indicates position has no matching open AlgoOrder (status=OPEN) for its (account, tradingsymbol)
 - Visual cue for operators to establish a parent-child relationship via the OrderPairModal if needed
+
+**Position state (St) column renderer** (Aug 2026):
+- Displays `'○'` (hollow circle, UTF-8 U+25CB) for all position rows with `qty_pos !== undefined`
+- Defensive fallback: renders `'○'` even if `is_orphan`, `pair_group_key`, or `has_gtt` fields are
+  missing (handles unenriched/partially-loaded rows gracefully)
+- Column is visible in positions grid only; hidden in holdings grid
+- Used in derivatives Legs grid (CandidateLegRow) with checkbox rendering before St cell for proper
+  accessibility and tab order
 
 **Numeric header style** — `numericHdr` CSS class for right-aligned headers matching data cells
 
@@ -843,6 +856,21 @@ states.
 
 **Use case**: Operators tracking partial-close executions see which legs have open 
 cancel/reduce orders queued, preventing accidental double-reduces.
+
+### 17.2 Candidate Leg Row DOM Order and Derivatives Grid Picker Sort
+
+**Leg row DOM order** (Aug 2026, commit e6656b7e):
+- Checkbox now renders **BEFORE** the pos_state (St) cell in CandidateLegRow
+- St cell position shifts after checkbox (previously St was rendered first)
+- Improves keyboard tab order and accessibility in the derivatives Legs grid
+- CSS grid layout updated: `.cand-grid` now defines `grid-template-columns: auto 38px ...`
+  where `auto` is the checkbox and `38px` is the St cell width
+
+**Underlying options picker sort** (Aug 2026, commit e6656b7e):
+- `underlyingOptionsForPicker` Tier 1 + Tier 2 now sort by **position-count descending**
+  (then alphabetical), instead of purely alphabetical
+- Operators see underlyings with the most active legs first when selecting roots
+- Example: NIFTY with 5 open positions appears before BANKNIFTY with 2 positions
 
 ### 17.4 Expiry-Close Analysis — "Exp close" Badge Counts
 
@@ -1193,3 +1221,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-08-13 | v1.5 Position day P&L store + timer rationalization: §7 updated — MarketPulse reduced from 22 active timers across 7 cadences to 17 timers across 4 cadences (5s book poller, 30s quotes/movers/sparklines, 60s settings audit, tick-driven SSE). §11.1 new subsection documents `positionsDayPnlStore.svelte.js` module-level singleton (SSOT for live day P&L); exports `{ total, byKey }` at 4Hz throttle; consumed by PositionStrip P pill, MarketPulse grid cells, and Dashboard hero. `mergePositionRows` calls `livePositionDayPnl(ctx)` with `marketOpen: true` unconditionally, preferring snap LTP from `symbolStore` over `liveQ` LTP. |
 | 2026-08-14 | v1.7 Order-pair feature + orphan position tracking (commit 6f374a1a): §4.4 PositionRow added `is_orphan: bool` (True when no open AlgoOrder matches position's account/tradingsymbol) and `pair_group_key: str\|None` (shared root AlgoOrder ID for parent-child linked positions). §15 Row Grouping expanded — `postSortRows` callback now keeps paired positions (same `pair_group_key`) adjacent regardless of column sort. §14 Column Definitions added orphan badge documentation (coral "O" badge when `is_orphan=true` shown in symbol column). Frontend MarketPulse position rows show orphan badge; dangling child orders in ChaseCard show "O" chip. New `OrderPairModal.svelte` accessible from Pulse positions/legs headers; fetches recent orders, links parent + unlinked-child pickers, calls `POST /api/orders/pair` endpoint on submit. |
 | 2026-08-14 | v1.6 Snapshot WHERE NULL fix + holdings day P&L store (commit 43771b98): §4.4 Positions & Holdings updated — `_positions_snapshot()` WHERE filter fixed from `AND db.ltp IS NOT NULL AND db.ltp > 0` to `AND (db.ltp IS NULL OR NOT (db.ltp = 0 ...))` to include NULL LTP rows captured during mid-session NSE passes (prevents grid blanks when broker quote fails). `_override_stale_close_from_snapshot` cutoff extended from 00:00 IST to 08:00 IST — MCX post-midnight snapshots (00:00–08:00 IST) now included in stale-close override for continuous Day P&L visibility. Added §11.2 Holdings Day P&L SSOT (`holdingsDayPnlStore.svelte.js`, Aug 2026) documenting module-level singleton exporting `{ total, byKey }` at 5s live / 30min closed cadence; consumed by PositionStrip H pill, MarketPulse grid, and Dashboard. |
+| 2026-08-16 | v1.8 Position state column + derivatives grid improvements (commit e6656b7e): §13 Holdings grid updated — St (pos_state) column filtered out of holdings (visible only in positions grid); Lots column repositioned immediately before Invested. §14 added pos_state cellRenderer fallback documentation — renders '○' for any row with `qty_pos !== undefined` even if enrichment fields missing. §17.2 (renamed from 17.4) new subsection documents Candidate Leg Row DOM order: checkbox now renders BEFORE St cell for better accessibility; `underlyingOptionsForPicker` Tier 1/2 now sort by position-count descending (then alphabetical) instead of purely alphabetical. PerformancePage St column hidden via `hide: true`. |
