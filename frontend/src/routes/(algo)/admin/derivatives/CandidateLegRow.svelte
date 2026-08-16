@@ -195,15 +195,13 @@
   <span class="cand-state-cell" style:background={
     c.has_gtt ? 'rgba(74,222,128,0.20)' :
     c.pair_group_key ? 'rgba(34,211,238,0.18)' :
-    c.is_orphan ? 'rgba(251,191,36,0.15)' :
-    c.quantity !== undefined ? 'rgba(251,191,36,0.15)' : 'transparent'
+    'rgba(251,191,36,0.15)'
   } style:color={
     c.has_gtt ? '#4ade80' :
     c.pair_group_key ? '#67e8f9' :
-    c.is_orphan ? '#fbbf24' :
-    c.quantity !== undefined ? '#fbbf24' : 'transparent'
+    '#fbbf24'
   }>
-    {c.has_gtt ? 'GTT' : c.pair_group_key ?? (c.is_orphan ? '○' : (c.quantity !== undefined ? '○' : ''))}
+    {c.has_gtt ? 'GTT' : c.pair_group_key ?? '○'}
   </span>
   <!-- svelte-ignore a11y_interactive_supports_focus -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->

@@ -4466,7 +4466,7 @@
                    bind:this={allCandidatesEl}
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
             <!-- State column header — matches second grid-template-columns track (38px). -->
-            <span title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)"></span>
+            <span title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)">St</span>
             <!-- Symbol header — hyphenated form below carries the
                  expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
                  separate Expiry column would be redundant. -->

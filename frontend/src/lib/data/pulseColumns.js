@@ -478,18 +478,14 @@ export function mkRightColDefs({
         if (!d || d._isTotal) return {};
         if (d.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
         if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
-        if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
-        if (d.quantity !== undefined) return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
-        return {};
+        return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
       },
       cellRenderer: (p) => {
         const d = p.data;
         if (!d || d._isTotal) return '';
         if (d.has_gtt)        return 'GTT';
         if (d.pair_group_key) return d.pair_group_key;
-        if (d.is_orphan)      return '○';
-        if (d.quantity !== undefined) return '○';
-        return '';
+        return '○';
       },
       cellClass: 'ag-cell-pair-state',
     },

@@ -58,10 +58,10 @@ describe('mkRightColDefs — pos_state cellRenderer quantity fallback (Fix 1)', 
     expect(result).toBe('○');
   });
 
-  it('returns "" when quantity is undefined (non-position row)', () => {
+  it('returns "○" for any non-total, non-GTT, non-paired row (unconditional orphan)', () => {
     const col = getPosStateCol();
     const result = col.cellRenderer({ data: { qty_hold: 5 } });
-    expect(result).toBe('');
+    expect(result).toBe('○');
   });
 
   it('quantity fallback does NOT fire when is_orphan is true (is_orphan takes priority)', () => {
@@ -88,11 +88,11 @@ describe('mkRightColDefs — pos_state cellRenderer quantity fallback (Fix 1)', 
     expect(result).toBe('');
   });
 
-  // qty_pos (old field) must NOT trigger the fallback — backend never sends it
-  it('does NOT return "○" for qty_pos (old field — not in backend response)', () => {
+  // any non-GTT, non-paired row shows ○ regardless of which fields are present
+  it('returns "○" even when only qty_pos field is present (unconditional orphan)', () => {
     const col = getPosStateCol();
     const result = col.cellRenderer({ data: { qty_pos: 10 } });
-    expect(result).toBe('');
+    expect(result).toBe('○');
   });
 
   // cellStyle tests — amber background when quantity is defined
@@ -102,10 +102,10 @@ describe('mkRightColDefs — pos_state cellRenderer quantity fallback (Fix 1)', 
     expect(result).toEqual({ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' });
   });
 
-  it('cellStyle returns {} when quantity is undefined (non-position row)', () => {
+  it('cellStyle returns amber for any non-total, non-GTT, non-paired row', () => {
     const col = getPosStateCol();
     const result = col.cellStyle({ data: { qty_hold: 5 } });
-    expect(result).toEqual({});
+    expect(result).toEqual({ background: 'rgba(251,191,36,0.15)', color: '#fbbf24' });
   });
 
   it('cellStyle amber does NOT fire when is_orphan is true (is_orphan takes priority)', () => {

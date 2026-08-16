@@ -148,22 +148,30 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
     """Restore day_change_val for rows where the broker gate zeroed it.
 
     The polars gate `pl.when(_ltp > 0)` in `_enrich_positions` zeros
-    `day_change_val` whenever Kite ships `last_price = 0`. Two shapes hit
+    `day_change_val` whenever Kite ships `last_price = 0`. Three shapes hit
     this path:
 
       Case 1 — new position (overnight_quantity == 0, ltp == 0 pre-first-tick):
         Kite's `pnl` field carries the correct value (Kite computes on their
         side with their own quote, usually non-zero). Fall back to `pnl`.
 
+      Case 2 — overnight position where the LTP gate zeroed dcv but broker
+        pnl is valid (overnight_quantity > 0, day_change_val == 0, pnl != 0,
+        close_price > 0, average_price > 0). Recovery mirrors the frontend
+        SSOT `baseDayPnlForPosition` formula:
+            day_pnl = pnl − (close − avg) × oq
+        This strips out the overnight carry so only today's session P&L
+        remains.
+
       Case 3 — fully closed intraday (quantity == 0, realised != 0):
         For a flat row `unrealised = 0` and `pnl = realised`. Fall back to
         `pnl` (covers MCX round-trip quirks where `realised = 0` but
         `pnl != 0`).
 
-    Both cases share: `overnight_quantity == 0 AND day_change_val == 0
-    AND pnl != 0`. The rescue mirrors the frontend SSOT
-    `baseDayPnlForPosition` in `frontend/src/lib/data/nav.js` so route,
-    background task, NAV math, snapshot writers, and alerts all agree.
+    Cases 1 and 3 write `pnl` directly; Case 2 writes the decomposed value.
+    The rescue mirrors the frontend SSOT `baseDayPnlForPosition` in
+    `frontend/src/lib/data/nav.js` so route, background task, NAV math,
+    snapshot writers, and alerts all agree.
 
     Returns a copy of `raw` with `day_change_val` restored where the mask
     fires. If `raw` is empty or lacks the required columns, returns it
@@ -185,13 +193,26 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
     _pnl = pd.to_numeric(
         raw.get('pnl', pd.Series(dtype=float)), errors='coerce'
     ).fillna(0)
+    _cls = pd.to_numeric(
+        raw.get('close_price', pd.Series(dtype=float)), errors='coerce'
+    ).fillna(0)
+    _avg = pd.to_numeric(
+        raw.get('average_price', pd.Series(dtype=float)), errors='coerce'
+    ).fillna(0)
 
     # Case 1: new position (oq=0, dcv zeroed by gate, pnl non-zero)
     _case1 = (_oq == 0) & (_dcv == 0) & (_pnl != 0)
+    # Case 2: overnight position, LTP gate zeroed dcv, broker pnl is valid
+    _case2 = (_oq > 0) & (_dcv == 0) & (_pnl != 0) & (_cls > 0) & (_avg > 0)
+    _case2_val = _pnl - (_cls - _avg) * _oq
     # Case 3: fully closed intraday (qty=0, dcv zeroed by gate, pnl non-zero)
     _case3 = (_qty == 0) & (_dcv == 0) & (_pnl != 0)
 
-    _mask = _case1 | _case3
+    _mask_pnl = _case1 | _case3
+    _mask = _mask_pnl | _case2
     if _mask.any() and 'day_change_val' in raw.columns:
-        raw.loc[_mask, 'day_change_val'] = _pnl[_mask]
+        if _mask_pnl.any():
+            raw.loc[_mask_pnl, 'day_change_val'] = _pnl[_mask_pnl]
+        if _case2.any():
+            raw.loc[_case2, 'day_change_val'] = _case2_val[_case2]
     return raw
