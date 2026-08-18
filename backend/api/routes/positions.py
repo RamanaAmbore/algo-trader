@@ -563,9 +563,11 @@ async def _patch_raw_positions(raw: "pd.DataFrame") -> "pd.DataFrame":
     # 2026-06-19 +1.33L phantom gain incident.
     await _override_stale_close_from_snapshot(raw)
 
-    # Unified Case 1 + Case 3 Day P&L backstop — restores day_change_val
-    # for new positions (oq=0, ltp=0 pre-first-tick) and fully-closed
-    # intraday rows (qty=0) where the polars enrichment gate zeroed it.
+    # Case 1 + Case 2 + Case 3 Day P&L backstop — restores day_change_val
+    # for new intraday positions (oq=0, ltp=0 pre-first-tick), overnight
+    # positions where LTP gate zeroed dcv (Case 2), and fully-closed
+    # intraday round-trips (qty=0, oq=0; Case 3 — overnight closures use
+    # Case 2 so only today's session gain is returned, not total-from-entry).
     # SSOT: backend.api.algo.pnl_math.apply_day_change_backstop. The
     # background performance task calls the same helper so NavStrip P
     # "today" slot agrees with the /api/positions route.

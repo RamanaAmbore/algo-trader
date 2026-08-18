@@ -163,10 +163,13 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
         This strips out the overnight carry so only today's session P&L
         remains.
 
-      Case 3 — fully closed intraday (quantity == 0, realised != 0):
-        For a flat row `unrealised = 0` and `pnl = realised`. Fall back to
-        `pnl` (covers MCX round-trip quirks where `realised = 0` but
-        `pnl != 0`).
+      Case 3 — fully closed intraday round-trip (quantity == 0,
+        overnight_quantity == 0, realised != 0):
+        For a flat intraday row `unrealised = 0` and `pnl = realised`.
+        Fall back to `pnl` (covers MCX round-trip quirks). Requires
+        overnight_quantity == 0 — closed overnight positions (qty=0, oq>0)
+        must use Case 2 so only today's component is returned, not the
+        full gain from entry price.
 
     Cases 1 and 3 write `pnl` directly; Case 2 writes the decomposed value.
     The rescue mirrors the frontend SSOT `baseDayPnlForPosition` in
@@ -205,8 +208,12 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
     # Case 2: overnight position, LTP gate zeroed dcv, broker pnl is valid
     _case2 = (_oq > 0) & (_dcv == 0) & (_pnl != 0) & (_cls > 0) & (_avg > 0)
     _case2_val = _pnl - (_cls - _avg) * _oq
-    # Case 3: fully closed intraday (qty=0, dcv zeroed by gate, pnl non-zero)
-    _case3 = (_qty == 0) & (_dcv == 0) & (_pnl != 0)
+    # Case 3: fully closed intraday round-trip (qty=0, oq=0, dcv zeroed, pnl non-zero).
+    # Requires oq=0 — closed OVERNIGHT positions (qty=0, oq>0) must NOT fall through
+    # here, because pnl for those rows = total gain since entry price, not today's
+    # session gain. Case 2 handles the overnight-closed path when close_price is
+    # available; when it isn't (e.g. Dhan adapter), dcv stays 0 (conservative).
+    _case3 = (_qty == 0) & (_oq == 0) & (_dcv == 0) & (_pnl != 0)
 
     _mask_pnl = _case1 | _case3
     _mask = _mask_pnl | _case2

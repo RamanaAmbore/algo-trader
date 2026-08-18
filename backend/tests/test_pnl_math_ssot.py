@@ -457,3 +457,93 @@ class TestApplyDayChangeBackstop:
         assert math.isclose(out.at[1, 'day_change_val'], 0.0, abs_tol=1e-6)
         assert math.isclose(out.at[2, 'day_change_val'], -200.0, abs_tol=1e-6)
         assert math.isclose(out.at[3, 'day_change_val'], 75.0, abs_tol=1e-6)
+
+    # ── Case 3 oq=0 guard (regression for closed overnight positions) ──────
+
+    def test_case3_does_not_fire_for_closed_overnight_no_close(self):
+        """Closed overnight position (qty=0, oq>0) with close_price=0 must NOT
+        get pnl set as day_change_val.
+
+        Before the fix, Case 3 fired unconditionally on qty=0 rows — even closed
+        overnight futures — setting dcv = total_pnl_since_entry instead of the
+        correct session gain. With oq > 0 and close_price = 0, Case 2 cannot
+        fire either; dcv must stay 0 (conservative) rather than show a bogus value.
+        """
+        df = pd.DataFrame([{
+            'quantity': 0,
+            'overnight_quantity': 5,   # closed overnight position
+            'day_change_val': 0.0,
+            'pnl': 12500.0,            # total gain from entry — NOT today's gain
+            'close_price': 0.0,        # Dhan adapter: no close_price available
+            'average_price': 5800.0,
+        }])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], 0.0, abs_tol=1e-6), (
+            "Closed overnight position without close_price must NOT use pnl as dcv "
+            "(pnl is total from entry, not today's session gain)"
+        )
+
+    def test_case2_fires_for_closed_overnight_with_close(self):
+        """Closed overnight position (qty=0, oq>0) with close_price > 0 must
+        get Case 2 value: pnl − (close − avg) × oq = (exit − close) × oq.
+
+        This is the correct day P&L for a closed overnight futures position:
+        only the move since yesterday's close counts, not the full gain from entry.
+        """
+        # Scenario: bought 5 lots at avg=5800, yesterday's close=5900,
+        # exited today at implied exit_price=6000.
+        # Kite pnl = (6000 - 5800) * 5 = 1000 (total from entry)
+        # Case 2 value = 1000 - (5900 - 5800) * 5 = 1000 - 500 = 500
+        # Which equals (exit - close) * oq = (6000 - 5900) * 5 = 500
+        df = pd.DataFrame([{
+            'quantity': 0,
+            'overnight_quantity': 5,
+            'day_change_val': 0.0,
+            'pnl': 1000.0,
+            'close_price': 5900.0,
+            'average_price': 5800.0,
+        }])
+        out = apply_day_change_backstop(df)
+        expected = 1000.0 - (5900.0 - 5800.0) * 5  # = 500
+        assert math.isclose(out.at[0, 'day_change_val'], expected, abs_tol=1e-6), (
+            f"Closed overnight dcv should be {expected}, got {out.at[0, 'day_change_val']}"
+        )
+
+    def test_case3_still_fires_for_pure_intraday_roundtrip(self):
+        """Pure intraday round-trip (qty=0, oq=0) still gets Case 3 rescue.
+
+        The oq=0 guard must not break legitimate intraday round-trips.
+        """
+        df = pd.DataFrame([{
+            'quantity': 0,
+            'overnight_quantity': 0,   # opened and closed intraday
+            'day_change_val': 0.0,
+            'pnl': -350.0,
+            'close_price': 0.0,
+            'average_price': 0.0,
+        }])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], -350.0, abs_tol=1e-6), (
+            "Pure intraday round-trip (oq=0) must still be rescued by Case 3"
+        )
+
+    def test_case3_oq_guard_mixed_closed_rows(self):
+        """When a frame has both a closed overnight and a closed intraday row,
+        only the intraday row is rescued by Case 3."""
+        df = pd.DataFrame([
+            # Row 0: closed overnight (oq>0, close=0) — Case 3 must NOT fire
+            {'quantity': 0, 'overnight_quantity': 3,
+             'day_change_val': 0.0, 'pnl': 9000.0,
+             'close_price': 0.0, 'average_price': 4000.0},
+            # Row 1: pure intraday round-trip (oq=0) — Case 3 must fire
+            {'quantity': 0, 'overnight_quantity': 0,
+             'day_change_val': 0.0, 'pnl': -150.0,
+             'close_price': 0.0, 'average_price': 0.0},
+        ])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], 0.0, abs_tol=1e-6), (
+            "Closed overnight row (oq>0) must stay 0 — pnl is total from entry"
+        )
+        assert math.isclose(out.at[1, 'day_change_val'], -150.0, abs_tol=1e-6), (
+            "Intraday round-trip (oq=0) must be rescued to pnl=-150"
+        )
