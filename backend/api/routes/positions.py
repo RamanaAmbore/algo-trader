@@ -508,17 +508,26 @@ def _build_polars_summary(df: "pl.DataFrame") -> "pl.DataFrame":
 
 
 def _apply_flat_row_hygiene(raw: "pd.DataFrame") -> None:
-    """Zero day_change and day_change_percentage for quantity==0 rows (in-place).
+    """Zero day_change and day_change_percentage for pure intraday round-trips.
 
-    LTP is meaningless for a closed intraday position. The backstop restores
-    the aggregate rupee value; this helper zeroes the per-share delta and the
-    percentage on those same rows so the frontend doesn't show a stale tick.
+    Rows with quantity==0 AND overnight_quantity==0 are pure intraday
+    round-trips where LTP is meaningless and day_change_val should be zero.
+    Closed overnight positions (qty==0, oq>0) must retain their backstop
+    day_change_val set by apply_day_change_backstop — this function must NOT
+    overwrite them.
+
     No-ops when raw is empty or the relevant columns are absent.
     """
     import pandas as _pd
     if raw.empty or 'quantity' not in raw.columns:
         return
-    _flat_mask = _pd.to_numeric(raw['quantity'], errors='coerce').fillna(0) == 0
+    _qty = _pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+    _oq  = _pd.to_numeric(
+        raw['overnight_quantity'] if 'overnight_quantity' in raw.columns
+        else _pd.Series(0.0, index=raw.index),
+        errors='coerce',
+    ).fillna(0)
+    _flat_mask = (_qty == 0) & (_oq == 0)
     if not _flat_mask.any():
         return
     if 'day_change' in raw.columns:
