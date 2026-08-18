@@ -58,6 +58,7 @@
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
   import { baseDayPnlForPosition, FO_EXCHANGES } from '$lib/data/nav';
+  import { applyUnderlyingTickLtp } from '$lib/data/underlyingQuoteUtils.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -145,6 +146,7 @@
   let teardown;
   let wsTeardown;
   let quotesTeardown;
+  let simTeardown;
 
   // Sim status — when true, the candidates panel shows sim positions
   // instead of live. Polled every few seconds.
@@ -1838,7 +1840,10 @@
       // 1. Spot (by-underlying) LTP cell — re-arm if this sym is a tracked underlying.
       if (root in _underlyingQuotes) {
         const snap = getSnapshot(root);
-        if (snap?.ltp != null) flash.update(`${root}:ltp`, Number(snap.ltp));
+        if (snap?.ltp != null) {
+          flash.update(`${root}:ltp`, Number(snap.ltp));
+          _underlyingQuotes = applyUnderlyingTickLtp(_underlyingQuotes, root, snap.ltp);
+        }
       }
 
       // 2. CandidateLegRow LTP cells — re-arm for each leg whose symbol matches.
@@ -3943,11 +3948,10 @@
     // Fix 7: timed positions poll removed — book poller (5 s) keeps
     // positionsStore fresh. Event-driven loadPositions({ fresh: true })
     // calls (fills, order updates, manual refresh) still fire as before.
-    // Fix 8: loadUnderlyingQuotes + loadSimStatus merged into one 30s timer.
-    quotesTeardown = marketAwareInterval(
-      () => Promise.allSettled([loadUnderlyingQuotes(), loadSimStatus()]),
-      30000, 30_000,
-    );
+    // Underlying quotes at 5s — same cadence as loadStrategy — so liveSpot
+    // stays within 5s even when the underlying is not in the SSE ticker.
+    quotesTeardown = marketAwareInterval(loadUnderlyingQuotes, 5000, 10_000);
+    simTeardown    = marketAwareInterval(loadSimStatus, 30000, 30_000);
 
     // Real-time fill notifications — Kite postback fires a
     // `position_filled` ws event the moment an order completes.
@@ -3989,7 +3993,7 @@
     });
   });
   onDestroy(() => {
-    teardown?.(); wsTeardown?.(); quotesTeardown?.();
+    teardown?.(); wsTeardown?.(); quotesTeardown?.(); simTeardown?.();
     flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.(); _unsubBrokerHealth?.();
     if (_orderUpdateTimer) { clearTimeout(_orderUpdateTimer); _orderUpdateTimer = null; }
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
