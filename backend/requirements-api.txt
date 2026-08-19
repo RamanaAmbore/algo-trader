@@ -27,8 +27,8 @@ asyncpg~=0.30
 
 # Security-patched transitive deps — explicitly floored so pip install
 # on a fresh venv lands safe versions.
-aiohttp>=3.14.1        # PYSEC-2026-237, CVE-2026-34993 et al
-cryptography>=49.0.0   # PYSEC-2026-36, GHSA-537c
+aiohttp>=3.14.3        # PYSEC-2026-3545/3546/3547 (heap read, smuggling, RSV1 deflate)
+cryptography>=50.0.0   # PYSEC-2026-3552 (PKCS7 padding oracle)
 idna>=3.18             # PYSEC-2026-215
 lxml>=6.1.1            # PYSEC-2026-87
 python-multipart>=0.0.32  # CVE-2026-53538/53539/53540
@@ -39,7 +39,7 @@ urllib3>=2.7.0         # PYSEC-2026-141/142
 # Only used by backend/mcp/kite_server.py (operator's local venv runs
 # this as a subprocess from Claude Code); the deployed API never imports
 # it. Pinned floor only — the protocol is still evolving.
-mcp>=1.27
+mcp>=1.29,<2          # PYSEC-2026-3481/3482/3483; cap <2 (2.0 drops fastmcp API)
 
 # Monthly investor-portal PDF statements. Pure-Python; no system deps
 # (no libcairo / libpango). Used only by
