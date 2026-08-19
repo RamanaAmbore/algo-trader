@@ -18,6 +18,7 @@ import { untrack } from 'svelte';
 import { symbolTickCount, getSnapshot } from '$lib/data/symbolStore.svelte.js';
 import { positionsStore } from '$lib/data/marketDataStores.svelte.js';
 import { livePositionDayPnl } from '$lib/data/nav.js';
+import { isMarketOpen } from '$lib/marketHours';
 
 // Module-level throttle state — safe because this module is never
 // instantiated more than once (Vite keeps one instance per bundled app).
@@ -66,7 +67,7 @@ const _store = $derived.by(() => {
         dcvRow:  r,
       },
       liveLtp,
-      { marketOpen: true },
+      { marketOpen: isMarketOpen() },
     );
 
     byKey[sym] = (byKey[sym] ?? 0) + val;

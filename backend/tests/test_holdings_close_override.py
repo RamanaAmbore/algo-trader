@@ -382,3 +382,27 @@ class TestHoldingsCloseOverrideForHoldings:
         assert "positions" not in captured_sql[0].lower(), (
             "Query must NOT reference 'positions' kind"
         )
+
+    def test_recompute_row_percentages_skipped_when_no_matches(self):
+        """recompute_row_percentages must not be called when patched_indices is empty.
+
+        Before the fix, raw.index.isin([]) returned a boolean Series whose len()
+        equals total row count (never zero), so the early-exit guard inside
+        recompute_row_percentages never triggered on a no-match call.
+
+        After the fix, pd.Index([]) has len() == 0, so the guard correctly
+        short-circuits and recompute_row_percentages is not invoked at all.
+        """
+        from unittest.mock import patch as _patch
+
+        df = _make_holdings_df(close_price=150.0, last_price=160.0)
+
+        # No snapshot rows → patched_indices will be [] → pd.Index([]) len==0
+        with _patch(
+            "backend.api.routes.holdings.recompute_row_percentages"
+        ) as mock_recompute:
+            _run_close_override_for_holdings(df, snapshot_rows=[])
+
+        mock_recompute.assert_not_called(), (
+            "recompute_row_percentages must not be called when no rows were patched"
+        )

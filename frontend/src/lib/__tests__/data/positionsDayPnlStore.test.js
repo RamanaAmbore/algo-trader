@@ -159,6 +159,10 @@ describe('positionsDayPnlStore — fallback to baseDayPnlForPosition', () => {
   });
 
   it('market closed: ignores live tick, uses dcv fallback', () => {
+    // Fix 3 (audit P3b): positionsDayPnlStore passes { marketOpen: isMarketOpen() }
+    // instead of the hardcoded `true`. This test (marketOpen=false) validates the
+    // gate: post-settlement, stale SSE ticks with ltp_ts > 0 must NOT activate
+    // the live-tick rescue path when the market is closed.
     const positions = [
       makePositionRow({
         overnight_quantity: 10,

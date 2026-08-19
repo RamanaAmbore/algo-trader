@@ -78,12 +78,12 @@
   // poll of the new session lands (_pollCycleStamp > the snapshot).
   let _openTransitionStamp = $state(-1);
 
-  // Data-change detector — incremented only when positions or holdings
-  // data actually changes (ltp / qty fingerprint). Drives the heartbeat
-  // / poll-pulse animation instead of _pollCycleStamp so the strip
-  // animates at most once per real data change, not every 5s book tick
-  // (backend cache TTL is 30s → 5 of 6 book-poller ticks return
-  // identical data from cache, causing phantom pulses).
+  // Data-change detector — drives heartbeat/poll-pulse animation.
+  // Incremented immediately on fill events (bookChanged) for responsive
+  // UX, then again after _load() when the fingerprint differs. On a fill
+  // this causes two pulses; on a cache-hit book-poll it causes zero.
+  // Replaces _pollCycleStamp to avoid phantom pulses every 5s when the
+  // 30s backend cache returns identical data.
   let _dataChangedTick = $state(0);
   let _prevFingerprint = '';
 
@@ -129,7 +129,7 @@
       const fp =
         (positionsStore.value ?? []).map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|')
         + '||'
-        + (holdingsStore.value ?? []).map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|');
+        + (pulseHoldingsStore.value ?? []).map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|');
       if (fp !== _prevFingerprint) {
         _prevFingerprint = fp;
         untrack(() => { _dataChangedTick++; });

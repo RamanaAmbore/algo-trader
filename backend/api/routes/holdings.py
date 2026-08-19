@@ -399,7 +399,7 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
         _cls = pd.to_numeric(raw.loc[patched_indices, 'close_price'], errors='coerce').fillna(0)
         _qty = pd.to_numeric(raw.loc[patched_indices, 'quantity'], errors='coerce').fillna(0)
         raw.loc[patched_indices, 'day_change_val'] = (_ltp - _cls) * _qty
-    recompute_row_percentages(raw, raw.index.isin(patched_indices))
+    recompute_row_percentages(raw, pd.Index(patched_indices))
 
 
 def _hold_tag_open_row(r, _msc) -> object:

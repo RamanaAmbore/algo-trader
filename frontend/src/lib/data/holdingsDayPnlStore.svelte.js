@@ -2,7 +2,8 @@
  * holdingsDayPnlStore — module-level singleton that aggregates live
  * day P&L across all holdings at 4 Hz (250ms throttle).
  *
- * Reads `holdingsStore.value` (kept fresh by the cross-page book poller).
+ * Reads `pulseHoldingsStore.value` — same source as PositionStrip H slot display,
+ * ensuring day P&L total and value/lifetime columns reflect the same fetch.
  * Throttles at 4 Hz via `symbolTickCount.subscribe` + 250ms setTimeout
  * gate — same pattern as positionsDayPnlStore.
  *
@@ -25,7 +26,7 @@
 import { browser } from '$app/environment';
 import { untrack } from 'svelte';
 import { symbolTickCount, getSnapshot } from '$lib/data/symbolStore.svelte.js';
-import { holdingsStore } from '$lib/data/marketDataStores.svelte.js';
+import { pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
 
 // Module-level throttle state — safe: one instance per bundled app.
 let _tick = $state(0);
@@ -49,7 +50,7 @@ const _store = $derived.by(() => {
   // re-runs at most 4 times/sec during SSE burst.
   void _tick;
 
-  const rows = holdingsStore.value ?? [];
+  const rows = pulseHoldingsStore.value ?? [];
   let total = 0;
   /** @type {Record<string, number>} */
   const byKey = {};
