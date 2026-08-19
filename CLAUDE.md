@@ -359,6 +359,17 @@ implemented; holdings showing all-0 day P&L off-market is a symptom of this miss
 | Closed intraday (qty=0, oq=0) | entry_price → realised | Case 3 backstop: dcv = pnl |
 | Holdings | previous_close (frozen COALESCE) | same as open overnight |
 
+**Holdings sold → P&L splits between holdings and positions — DO NOT CHANGE without explicit operator instruction** —
+When a holding is sold (fully or partially), the sold quantity moves to positions as a
+CNC row. P&L and day P&L for the sold qty are accounted in **positions only**. Holdings
+shows only the **remaining quantity** (`quantity`, not `opening_quantity`).
+
+- Holdings day P&L = `(ltp − prev_close) × quantity` (remaining shares only)
+- Holdings `inv_val` = `avg × quantity`, `cur_val` = `ltp × quantity` (remaining only)
+- Sold portion day P&L = `(sell_price − prev_close) × sold_qty` — lives in the CNC positions row (Case 2 backstop)
+- `opening_quantity` is a reference field only — must NOT be used as the basis for any P&L or value computation
+- No sharing or double-counting between holdings and positions surfaces
+
 **Kite close_price stale overnight** — positions.close_price + quote.ohlc.close lag 
 prior-session EOD between MCX close + next open. Use `daily_book.ltp` instead.
 
