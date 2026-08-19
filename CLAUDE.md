@@ -359,6 +359,18 @@ implemented; holdings showing all-0 day P&L off-market is a symptom of this miss
 | Closed intraday (qty=0, oq=0) | entry_price → realised | Case 3 backstop: dcv = pnl |
 | Holdings | previous_close (frozen COALESCE) | same as open overnight |
 
+**Day P&L formulas by position type — DO NOT CHANGE without explicit operator instruction** —
+Three canonical formulas, no exceptions:
+
+| Position type | Day P&L formula | Notes |
+|---|---|---|
+| Overnight open (oq>0, qty>0) | `(ltp − close) × qty` | `close` = prior session settlement LTP |
+| Closed overnight (oq>0, qty=0) | `(exit_price − close) × qty` | Case 2: `pnl − (close − avg) × oq`; requires `close > 0` |
+| New today (oq=0, qty>0) | `(ltp − entry_price) × qty` | Case 1: dcv = broker pnl; no prior session close exists |
+
+`close` is always the **previous session's settlement LTP** (frozen — see invariant above). Never
+today's settlement, never the current LTP, never a mid-session snapshot.
+
 **Holdings sold → P&L splits between holdings and positions — DO NOT CHANGE without explicit operator instruction** —
 When a holding is sold (fully or partially), the sold quantity moves to positions as a
 CNC row. P&L and day P&L for the sold qty are accounted in **positions only**. Holdings
