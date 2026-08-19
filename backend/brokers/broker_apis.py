@@ -1587,6 +1587,66 @@ def _apply_holdings_dcv_fallback(df: pd.DataFrame) -> None:
         df.loc[_mask, "day_change_val"] = (_f_dc * _f_qty)[_mask]
 
 
+def _enrich_holdings_qty_col(cols: set) -> str:
+    """Select the correct qty column: `quantity` (remaining) preferred; fallback opening_quantity."""
+    return "quantity" if "quantity" in cols else "opening_quantity"
+
+
+def _build_holdings_computed_exprs(
+    lf: "pl.DataFrame",
+    has_ltp: bool,
+    has_avg: bool,
+    has_qty: bool,
+    has_close: bool,
+    has_pnl: bool,
+    has_invval: bool,
+    has_dcv: bool,
+    cols: set,
+) -> "list[pl.Expr]":
+    """Build all Polars derived-column expressions for holdings enrichment.
+    Called from _enrich_holdings; extracted to keep parent CC at grade C.
+    """
+    exprs: list[pl.Expr] = []
+
+    if has_ltp and has_avg and has_qty:
+        exprs.append(_build_holdings_pnl_expr(lf, has_pnl))
+        has_pnl = True  # will exist after this pass
+
+    if has_pnl and has_invval:
+        # These depend on pnl, which may have just been (re)written above.
+        # We reference the planned alias directly.
+        exprs.extend(_build_holdings_curval_exprs(lf))
+
+    if has_close and has_avg:
+        exprs.append(
+            (_col_f64(lf, "close_price") - _col_f64(lf, "average_price"))
+            .alias("price_change")
+        )
+
+    if has_ltp and has_close and has_qty:
+        exprs.append(_build_holdings_dcv_expr(lf, has_avg, has_pnl, has_dcv))
+    elif "day_change" in cols:
+        # Last-resort path: broker shipped a scalar day_change but not the
+        # individual price columns needed for the formula. Multiply by
+        # `quantity` (remaining shares) when available; fall back to
+        # `opening_quantity` for adapters that only ship the original lot.
+        _qty_name = "quantity" if has_qty else "opening_quantity"
+        if _qty_name in cols:
+            exprs.append(
+                (_col_f64(lf, "day_change") * _col_f64(lf, _qty_name))
+                .alias("day_change_val")
+            )
+
+    return exprs
+
+
+def _enrich_holdings_writeback(df: pd.DataFrame, lf: "pl.DataFrame") -> None:
+    """Write computed Polars columns back to the pandas DataFrame in-place."""
+    for c in ("pnl", "inv_val", "cur_val", "pnl_percentage", "price_change", "day_change_val"):
+        if c in lf.columns:
+            df[c] = lf[c].to_pandas()
+
+
 def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     """Polars-vectorized computed-column enrichment for holdings DataFrames.
 
@@ -1607,7 +1667,7 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     # ── inv_val = avg × qty (remaining shares, not opening_quantity) ──
     # Use `quantity` (remaining after partial sells) for all value/P&L
     # computations. `opening_quantity` is kept as a display-only field.
-    _qty_col_name = "quantity" if "quantity" in cols else "opening_quantity"
+    _qty_col_name = _enrich_holdings_qty_col(cols)
     if {"average_price", _qty_col_name}.issubset(cols):
         df["inv_val"] = (
             pd.to_numeric(df["average_price"], errors="coerce").fillna(0)
@@ -1621,57 +1681,24 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     # in one go — avoids repeated from_pandas / to_pandas round-trips.
     cols = set(df.columns)  # refresh after inv_val
 
-    has_ltp    = "last_price"    in cols
-    has_avg    = "average_price" in cols
-    has_qty    = "quantity"      in cols  # remaining shares after partial sells
-    has_close  = "close_price"   in cols
-    has_pnl    = "pnl"           in cols
-    has_invval = "inv_val"       in cols
+    has_ltp    = "last_price"     in cols
+    has_avg    = "average_price"  in cols
+    has_qty    = "quantity"       in cols  # remaining shares after partial sells
+    has_close  = "close_price"    in cols
+    has_pnl    = "pnl"            in cols
+    has_invval = "inv_val"        in cols
     has_dcv    = "day_change_val" in cols
 
     lf = pl.from_pandas(df, nan_to_null=True)
-    computed_exprs: list[pl.Expr] = []
-
-    if has_ltp and has_avg and has_qty:
-        computed_exprs.append(_build_holdings_pnl_expr(lf, has_pnl))
-        if not has_pnl:
-            has_pnl = True  # will exist after this pass
-
-    if has_pnl and has_invval:
-        # These depend on pnl, which may have just been (re)written above.
-        # We reference the planned alias directly.
-        computed_exprs.extend(_build_holdings_curval_exprs(lf))
-
-    if has_close and has_avg:
-        computed_exprs.append(
-            (_col_f64(lf, "close_price") - _col_f64(lf, "average_price"))
-            .alias("price_change")
-        )
-
-    if has_ltp and has_close and has_qty:
-        computed_exprs.append(
-            _build_holdings_dcv_expr(lf, has_avg, has_pnl, has_dcv)
-        )
-    elif "day_change" in cols:
-        # Last-resort path: broker shipped a scalar day_change but not the
-        # individual price columns needed for the formula. Multiply by
-        # `quantity` (remaining shares) when available; fall back to
-        # `opening_quantity` for adapters that only ship the original lot.
-        _qty_name = "quantity" if has_qty else "opening_quantity"
-        if _qty_name in cols:
-            computed_exprs.append(
-                (_col_f64(lf, "day_change") * _col_f64(lf, _qty_name))
-                .alias("day_change_val")
-            )
-
-    if computed_exprs:
-        lf = lf.with_columns(computed_exprs)
+    exprs = _build_holdings_computed_exprs(
+        lf, has_ltp, has_avg, has_qty, has_close,
+        has_pnl, has_invval, has_dcv, cols,
+    )
+    if exprs:
+        lf = lf.with_columns(exprs)
         # Write back only the columns that now exist in the polars frame
         # (avoids KeyError if an expression alias didn't fire).
-        for c in ("pnl", "inv_val", "cur_val", "pnl_percentage",
-                  "price_change", "day_change_val"):
-            if c in lf.columns:
-                df[c] = lf[c].to_pandas()
+        _enrich_holdings_writeback(df, lf)
 
     _apply_holdings_dcv_fallback(df)
 

@@ -2131,6 +2131,14 @@ def _chain_quotes_closed_cache_clear() -> None:
     _CHAIN_QUOTES_CLOSED_CACHE.clear()
 
 
+def _chain_quotes_closed_cache_get(key: tuple) -> "Any | None":
+    """Return cached ChainQuotesResponse for key if still within TTL, else None."""
+    entry = _CHAIN_QUOTES_CLOSED_CACHE.get(key)
+    if entry is not None and time.monotonic() - entry[0] < _CHAIN_QUOTES_CLOSED_TTL:
+        return entry[1]
+    return None
+
+
 def _chain_quotes_build_sym_map(
     inst_resp, und: str, exp: str
 ) -> tuple[dict[float, dict[str, dict]], list[str]]:
@@ -2161,6 +2169,53 @@ def _chain_quotes_build_sym_map(
             "PE": {"sym": "", "ls": 1, "e": ""},
         })[inst.t] = {"sym": inst.s, "ls": int(inst.ls or 1), "e": inst.e or ""}
     return sym_by_strike, sorted(expiry_set)
+
+
+async def _chain_quotes_sym_lookup(
+    und: str, exp: str, inst_resp
+) -> tuple[dict, list]:
+    """Return (sym_by_strike, all_expiries) from cache or by computing it.
+    Uses double-checked locking to coalesce concurrent cache misses.
+    """
+    _cache_key = (und, exp)
+    _now = time.monotonic()
+    _entry = _CHAIN_SYM_CACHE.get(_cache_key)
+    if not (_entry and (_now - _entry[0]) < _CHAIN_SYM_TTL):
+        async with _get_chain_sym_cache_lock():
+            _entry = _CHAIN_SYM_CACHE.get(_cache_key)
+            _now = time.monotonic()
+            if not (_entry and (_now - _entry[0]) < _CHAIN_SYM_TTL):
+                sym_by_strike, all_expiries = await asyncio.to_thread(
+                    _chain_quotes_build_sym_map, inst_resp, und, exp
+                )
+                if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
+                    _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
+                _CHAIN_SYM_CACHE[_cache_key] = (
+                    time.monotonic(), (sym_by_strike, all_expiries)
+                )
+            _entry = _CHAIN_SYM_CACHE[_cache_key]
+    return _entry[1]
+
+
+def _chain_quotes_build_rows(book_by_strike: dict) -> list:
+    """Build ChainQuoteRow list from book_by_strike dict."""
+    return [
+        ChainQuoteRow(
+            k=strike,
+            ce_bid=sides["CE"]["bid"],
+            ce_ask=sides["CE"]["ask"],
+            pe_bid=sides["PE"]["bid"],
+            pe_ask=sides["PE"]["ask"],
+            ce_sym=sides["CE"]["sym"] or None,
+            pe_sym=sides["PE"]["sym"] or None,
+            ce_ls=int(sides["CE"]["ls"]) if sides["CE"]["ls"] else None,
+            pe_ls=int(sides["PE"]["ls"]) if sides["PE"]["ls"] else None,
+            exchange=sides["CE"]["e"] or sides["PE"]["e"] or None,
+            ce_depth_available=sides["CE"].get("depth_available", False),
+            pe_depth_available=sides["PE"].get("depth_available", False),
+        )
+        for strike, sides in sorted(book_by_strike.items())
+    ]
 
 
 async def _chain_quotes_batch_quote(
@@ -2581,33 +2636,13 @@ class OptionsController(Controller):
             logger.warning(f"chain-quotes instruments fetch failed: {e}")
             return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
 
-        # Cache + thread the 156K instrument scan.
-        # Double-checked locking coalesces concurrent cache misses so only
-        # one coroutine runs the expensive scan; LRU cap prevents unbounded
-        # growth on expiry day when many (underlying, expiry) keys are queried.
-        _cache_key = (und, exp)
-        _now = time.monotonic()
-        _entry = _CHAIN_SYM_CACHE.get(_cache_key)
-        if not (_entry and (_now - _entry[0]) < _CHAIN_SYM_TTL):
-            async with _get_chain_sym_cache_lock():
-                _entry = _CHAIN_SYM_CACHE.get(_cache_key)
-                _now = time.monotonic()
-                if not (_entry and (_now - _entry[0]) < _CHAIN_SYM_TTL):
-                    sym_by_strike, all_expiries = await asyncio.to_thread(
-                        _chain_quotes_build_sym_map, inst_resp, und, exp
-                    )
-                    if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
-                        _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
-                    _CHAIN_SYM_CACHE[_cache_key] = (time.monotonic(), (sym_by_strike, all_expiries))
-                _entry = _CHAIN_SYM_CACHE[_cache_key]
-        sym_by_strike, all_expiries = _entry[1]
+        sym_by_strike, all_expiries = await _chain_quotes_sym_lookup(und, exp, inst_resp)
 
         # Expiry-only mode: return just the expiries list, no broker call.
         if not exp:
             return ChainQuotesResponse(
                 underlying=und, expiry="", expiries=all_expiries, rows=[]
             )
-
         if not sym_by_strike:
             return ChainQuotesResponse(
                 underlying=und, expiry=exp, expiries=all_expiries, rows=[]
@@ -2619,37 +2654,17 @@ class OptionsController(Controller):
         # broker every 5 s. `_any_segment_open` covers all configured
         # segments (NSE + MCX) so this fires only when both are closed.
         _closed_cache_key = (und, exp)
-        _mkt_open: bool = await asyncio.to_thread(_any_segment_open)
-        if not _mkt_open:
-            _closed_entry = _CHAIN_QUOTES_CLOSED_CACHE.get(_closed_cache_key)
-            if _closed_entry is not None:
-                _cached_ts, _cached_resp = _closed_entry
-                if time.monotonic() - _cached_ts < _CHAIN_QUOTES_CLOSED_TTL:
-                    return _cached_resp
+        if not await asyncio.to_thread(_any_segment_open):
+            _cached = _chain_quotes_closed_cache_get(_closed_cache_key)
+            if _cached is not None:
+                return _cached
 
         # Build quote keys, fire one broker.quote() call.
         quote_resp, key_meta = await _chain_quotes_batch_quote(sym_by_strike, und, exp)
 
         # Populate bid/ask + sym/ls/exchange per strike+side.
         book_by_strike = _chain_quotes_build_book(sym_by_strike, quote_resp, key_meta)
-
-        rows = [
-            ChainQuoteRow(
-                k=strike,
-                ce_bid=sides["CE"]["bid"],
-                ce_ask=sides["CE"]["ask"],
-                pe_bid=sides["PE"]["bid"],
-                pe_ask=sides["PE"]["ask"],
-                ce_sym=sides["CE"]["sym"] or None,
-                pe_sym=sides["PE"]["sym"] or None,
-                ce_ls=int(sides["CE"]["ls"]) if sides["CE"]["ls"] else None,
-                pe_ls=int(sides["PE"]["ls"]) if sides["PE"]["ls"] else None,
-                exchange=sides["CE"]["e"] or sides["PE"]["e"] or None,
-                ce_depth_available=sides["CE"].get("depth_available", False),
-                pe_depth_available=sides["PE"].get("depth_available", False),
-            )
-            for strike, sides in sorted(book_by_strike.items())
-        ]
+        rows = _chain_quotes_build_rows(book_by_strike)
         result = ChainQuotesResponse(
             underlying=und, expiry=exp, expiries=all_expiries, rows=rows
         )

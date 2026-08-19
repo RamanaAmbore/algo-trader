@@ -35,7 +35,10 @@ and data sources. Code, tests, and documentation must stay in sync with this fil
 22. [Persistent Cache Layer](#22-persistent-cache-layer)
 23. [Closed-Hours Snapshot Behavior](#23-closed-hours-snapshot-behavior)
 24. [CardControls Cluster](#24-cardcontrols-cluster)
-25. [Known Defects](#25-known-defects)
+25. [Stale-While-Revalidate Bridge for DataStore Updates](#25-stale-while-revalidate-bridge-for-datastore-updates)
+26. [Column Sort Now Respects User Click (postSortGroups Guard)](#26-column-sort-now-respects-user-click-postsortgroups-guard)
+27. [Public Performance Page CardControls Color Override](#27-public-performance-page-cardcontrols-color-override)
+28. [Known Defects](#28-known-defects)
 
 ---
 
@@ -1206,7 +1209,123 @@ Buttons stack horizontally or wrap on mobile.
 
 ---
 
-## 25. Known Defects
+## 25. Stale-While-Revalidate Bridge for DataStore Updates
+
+MarketPulse applies a stale-while-revalidate pattern to prevent background data refreshes 
+from flashing empty grids. When a data store (positions, holdings, movers, funds) fetches 
+fresh data, the store's `.value` may transiently become `null` during the network round-trip. 
+In Svelte 5, a `$derived` reading `store.value ?? []` snaps to an empty array on that null 
+flicker, triggering ag-Grid's `animateRows: true` which fades in rows — making the background 
+visible as a flash.
+
+### Pattern Implementation
+
+**Store bridge via $effect + $state** — three data stores now use an explicit bridge:
+
+1. **`pulsePositionsStore` / `pulseHoldingsStore`** (lines 195–204):
+   ```javascript
+   let positions = $state(pulsePositionsStore.value ?? []);
+   let holdings  = $state(pulseHoldingsStore.value  ?? []);
+   $effect(() => {
+     const p = pulsePositionsStore.value;
+     const h = pulseHoldingsStore.value;
+     untrack(() => {
+       if (p != null) positions = p;  // ← skip null, keep prior snapshot
+       if (h != null) holdings  = h;
+     });
+   });
+   ```
+
+2. **`moversStore`** (lines 569–573):
+   ```javascript
+   let movers = $state(moversStore.value ?? []);
+   $effect(() => {
+     const v = moversStore.value;
+     untrack(() => { if (v != null) movers = v; });
+   });
+   ```
+
+3. **`fundsStore`** (lines 763–767):
+   ```javascript
+   let funds = $state(fundsStore.value ?? []);
+   $effect(() => {
+     const v = fundsStore.value;
+     untrack(() => { if (v != null) funds = v; });
+   });
+   ```
+
+### Behavior
+
+- **Fetch completes** → store.value becomes non-null → `$effect` mirrors new data into `$state`
+- **Fetch in progress** → store.value goes null → `$effect` skips the assignment; local `$state` 
+  retains the prior snapshot (unchanged)
+- **Grid render** → derives from local `$state` (never empty during fetch)
+- **Result** → background flash eliminated; grids show prior snapshot while fresh data loads 
+  in background
+
+### Related Surfaces
+
+Same bridge applied to **PositionStrip.svelte** and **NavBreakdown.svelte** for their 
+positions/holdings/funds store reads. Any new consumer of these stores that renders a 
+grid or must maintain smooth UX should apply the same pattern.
+
+---
+
+## 26. Column Sort Now Respects User Click (postSortGroups Guard)
+
+The `postSortGroups` function in `pulseGridSetup.js` previously reordered rows to cluster 
+options with their underlying after every ag-Grid sort operation, visually nullifying the 
+operator's sort click. When sorting by Day P&L descending, the underlying-grouping logic 
+would reshuffle rows back into underlying clusters, ignoring the user's intent.
+
+### Fix
+
+Added early-return guard at the top of `postSortGroups`: when ag-Grid detects an active 
+column sort via `api.getColumnState()`, the function returns immediately and lets the 
+user's sort stand. Only when NO sort is active does the underlying-grouping behaviour run 
+as before.
+
+### Behavior
+
+- **User clicks LTP column header** → ag-Grid sets sort state → `postSortGroups` detects 
+  sort state via `getColumnState()` → early return → rows remain sorted by LTP (user's intent)
+- **No sort active (default view)** → `postSortGroups` regroups normally → options cluster 
+  with underlying
+- **Result** → operator-initiated sorts are preserved; auto-grouping only applies when the 
+  operator hasn't actively sorted
+
+### Impact
+
+Eliminates the confusing behavior where clicking a column header visually sorted for ~100ms, 
+then rows shuffled back into their underlying groups. Now sorts are stable until the 
+operator clicks a different column or manually resets grouping.
+
+---
+
+## 27. Public Performance Page CardControls Color Override
+
+The public performance page (`/admin/perf` or similar public-facing snapshot view) displays 
+CardControls icon buttons with a champagne gold color (`#c8a84b`) instead of the default 
+algo-dark cyan. This visual distinction signals to external stakeholders that the view is 
+a read-only performance snapshot, not an operational control surface.
+
+### Implementation
+
+CSS token override in the `.pub-viewport` container:
+- Targets CardControls icons (refresh, search, download, fullscreen buttons)
+- Applies `color: #c8a84b` to the icon elements
+- Cascades to all cards rendered within the public viewport
+
+### Rationale
+
+Public pages (performance dashboards shared externally, performance reports for clients) 
+use a different color palette from operational pages to reinforce read-only status. The 
+champagne gold matches the public report's header branding and signals "data visibility, 
+no editing."
+
+---
+
+## 28. Known Defects
 
 See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1–D4 fixed in `b6e52b2a`).
 
