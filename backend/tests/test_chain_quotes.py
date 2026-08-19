@@ -203,7 +203,7 @@ class TestChainQuotesEndpoint:
         """GET /chain-quotes?underlying=NIFTY (no expiry) returns expiries list, no rows."""
         client = async_client
 
-        with patch("backend.api.cache.get_or_fetch") as mock_cache, \
+        with patch("backend.api.cache.peek") as mock_cache, \
              patch("backend.api.routes.options._chain_quotes_batch_quote") as mock_quote:
 
             mock_cache.return_value = nifty_instruments_fixture
@@ -272,7 +272,7 @@ class TestChainQuotesEndpoint:
                         key_meta[qk] = (strike, side)
             return synthetic_quotes, key_meta
 
-        with patch("backend.api.cache.get_or_fetch") as mock_cache, \
+        with patch("backend.api.cache.peek") as mock_cache, \
              patch("backend.api.routes.options._chain_quotes_batch_quote", side_effect=mock_batch_quote):
 
             mock_cache.return_value = nifty_instruments_fixture
@@ -308,7 +308,7 @@ class TestChainQuotesEndpoint:
         """GET /chain-quotes?underlying=UNKNOWN returns empty expiries and rows."""
         client = async_client
 
-        with patch("backend.api.cache.get_or_fetch") as mock_cache:
+        with patch("backend.api.cache.peek") as mock_cache:
             mock_cache.return_value = nifty_instruments_fixture
 
             response = await client.get(
@@ -345,7 +345,7 @@ class TestChainQuotesEndpoint:
         """Response fields match ChainQuotesResponse spec."""
         client = async_client
 
-        with patch("backend.api.cache.get_or_fetch") as mock_cache:
+        with patch("backend.api.cache.peek") as mock_cache:
             mock_cache.return_value = nifty_instruments_fixture
 
             response = await client.get(
@@ -414,11 +414,11 @@ class TestChainQuotesEdgeCases:
     """Edge case and error handling tests."""
 
     async def test_instruments_fetch_failure(self, async_client):
-        """When instruments fetch fails, return empty response."""
+        """When instruments cache is cold (peek returns None), return empty response."""
         client = async_client
 
-        with patch("backend.api.cache.get_or_fetch") as mock_cache:
-            mock_cache.side_effect = Exception("Network error")
+        with patch("backend.api.cache.peek") as mock_cache:
+            mock_cache.return_value = None  # cold cache — no download triggered
 
             response = await client.get(
                 "/api/options/chain-quotes",
@@ -446,7 +446,7 @@ class TestChainQuotesEdgeCases:
                         key_meta[qk] = (strike, side)
             return {}, key_meta  # Empty quotes
 
-        with patch("backend.api.cache.get_or_fetch") as mock_cache, \
+        with patch("backend.api.cache.peek") as mock_cache, \
              patch("backend.api.routes.options._chain_quotes_batch_quote", side_effect=mock_batch_quote_empty):
 
             mock_cache.return_value = nifty_instruments_fixture
@@ -558,7 +558,7 @@ class TestChainQuotesIntegration:
             cycle_date="2025-08-11", count=len(instruments), items=instruments
         )
 
-        with patch("backend.api.cache.get_or_fetch") as mock_cache:
+        with patch("backend.api.cache.peek") as mock_cache:
             mock_cache.return_value = inst_resp
 
             response = await client.get(
@@ -764,7 +764,7 @@ class TestChainQuotesOffMarketGate:
         )
 
         with (
-            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch("backend.api.cache.peek") as mock_cache,
             patch(
                 "backend.api.routes.options._any_segment_open",
                 return_value=False,  # market is closed
@@ -811,7 +811,7 @@ class TestChainQuotesOffMarketGate:
         )
 
         with (
-            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch("backend.api.cache.peek") as mock_cache,
             patch(
                 "backend.api.routes.options._any_segment_open",
                 return_value=False,  # market is closed
@@ -854,7 +854,7 @@ class TestChainQuotesOffMarketGate:
         )
 
         with (
-            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch("backend.api.cache.peek") as mock_cache,
             patch(
                 "backend.api.routes.options._any_segment_open",
                 return_value=True,  # market is OPEN
@@ -890,7 +890,7 @@ class TestChainQuotesOffMarketGate:
         _chain_quotes_closed_cache_clear()  # ensure empty
 
         with (
-            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch("backend.api.cache.peek") as mock_cache,
             patch(
                 "backend.api.routes.options._any_segment_open",
                 return_value=True,  # market open
@@ -949,7 +949,7 @@ class TestChainQuotesOffMarketGate:
             return {}, {}
 
         with (
-            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch("backend.api.cache.peek") as mock_cache,
             patch(
                 "backend.api.routes.options._any_segment_open",
                 return_value=False,  # closed

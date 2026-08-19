@@ -2627,14 +2627,17 @@ class OptionsController(Controller):
                                 detail="underlying is required")
         # expiry is now optional — omit to get just the expiries list
 
-        from backend.api.cache import get_or_fetch
-        from backend.api.routes.instruments import _fetch_instruments
-        try:
-            inst_resp = await get_or_fetch(
-                "instruments", _fetch_instruments, ttl_seconds=86400)
-        except Exception as e:
-            logger.warning(f"chain-quotes instruments fetch failed: {e}")
-            return ChainQuotesResponse(underlying=und, expiry=exp, rows=[])
+        # Non-blocking instruments lookup — NEVER trigger a download from here.
+        # Triggering get_or_fetch("instruments") concurrently with the startup
+        # sparkline-warm's _qt_broker_token_map causes a double-NFO-peak OOM
+        # (two 300-500 MB instrument dumps in memory simultaneously). The
+        # background _task_instruments warms the cache at T+120s after restart.
+        # Until then, return empty so the 5s frontend poll retries naturally.
+        from backend.api.cache import peek as _cache_peek
+        inst_resp = _cache_peek("instruments")
+        if inst_resp is None:
+            logger.debug("chain-quotes: instruments cache cold — returning empty")
+            return ChainQuotesResponse(underlying=und, expiry=exp, expiries=[], rows=[])
 
         sym_by_strike, all_expiries = await _chain_quotes_sym_lookup(und, exp, inst_resp)
 

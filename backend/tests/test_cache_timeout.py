@@ -110,34 +110,49 @@ def test_task_instruments_has_120s_startup_delay():
     )
 
 
-def test_options_chain_instruments_no_timeout():
-    """Guard: instruments get_or_fetch in options.py and options_helpers.py
-    must not use timeout_seconds.
+def test_options_chain_instruments_uses_peek_not_get_or_fetch():
+    """Guard: chain_quotes in options.py must use cache.peek('instruments'), NOT
+    get_or_fetch('instruments', ...).
 
-    Adding timeout_seconds=N to the instruments fetch causes zombie threads: when the
-    download takes > N seconds, asyncio.wait_for releases the lock but the underlying
-    asyncio.to_thread worker keeps running and holds GB of instrument data.  The next
-    caller acquires the freed lock and starts a second download — concurrent downloads
-    accumulate and OOM the process.  Root cause of the 2026-08-11 prod OOM kill loop.
+    chain_quotes must NEVER trigger an instruments download from inside the route
+    handler.  Triggering get_or_fetch("instruments") concurrently with the startup
+    sparkline-warm's _qt_broker_token_map causes a double-NFO-peak OOM (two 300-500 MB
+    instrument dumps in memory simultaneously — 2026-08-11 prod OOM kill loop).
+
+    The correct pattern: peek() returns None on cold cache → chain_quotes returns empty
+    immediately → 5s frontend poll retries → background _task_instruments warms cache
+    at T+120s → subsequent requests see data.
     """
     import re
 
-    # Check options.py
     src_options = open("backend/api/routes/options.py").read()
-    m_options = re.search(
-        r'get_or_fetch\s*\(\s*["\']instruments["\'].*?\)',
-        src_options, re.DOTALL,
-    )
-    assert m_options is not None, "get_or_fetch('instruments', ...) not found in options.py"
-    call_text_options = m_options.group(0)
-    assert "timeout_seconds" not in call_text_options, (
-        "instruments get_or_fetch in options.py must not have timeout_seconds — "
-        "a timeout releases the lock while the thread keeps downloading, causing zombie "
-        "threads that accumulate GB of instrument data and OOM prod (see 2026-08-11 fix). "
-        "Use coalescing (no timeout) so concurrent callers wait for the same download."
+
+    # Extract chain_quotes function body only (ends at next top-level async def or EOF)
+    m_fn = re.search(r'async def chain_quotes\b.*?(?=\nasync def |\Z)', src_options, re.DOTALL)
+    assert m_fn is not None, "chain_quotes function not found in options.py"
+    chain_quotes_body = m_fn.group(0)
+
+    # chain_quotes must use peek("instruments") — non-blocking
+    assert 'peek("instruments")' in chain_quotes_body or "peek('instruments')" in chain_quotes_body, (
+        "chain_quotes in options.py must use cache.peek('instruments') — a non-blocking "
+        "read that returns None on cold cache. Never use get_or_fetch('instruments') from "
+        "inside a route handler: it triggers a blocking download that races with the "
+        "sparkline-warm token-map download and causes double-NFO-peak OOM."
     )
 
-    # Check options_helpers.py
+    # chain_quotes must NOT use get_or_fetch for instruments (strip comments first)
+    body_no_comments = re.sub(r'#[^\n]*', '', chain_quotes_body)
+    m_blocking = re.search(
+        r'get_or_fetch\s*\(\s*["\']instruments["\'].*?\)',
+        body_no_comments, re.DOTALL,
+    )
+    assert m_blocking is None, (
+        "chain_quotes in options.py must NOT use get_or_fetch('instruments', ...) — "
+        "this triggers a blocking download that races with sparkline-warm and causes OOM. "
+        "Use cache.peek('instruments') instead."
+    )
+
+    # options_helpers.py: if it uses get_or_fetch('instruments'), it must not add timeout
     src_helpers = open("backend/api/routes/options_helpers.py").read()
     m_helpers = re.search(
         r'get_or_fetch\s*\(\s*["\']instruments["\'].*?\)',

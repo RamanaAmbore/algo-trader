@@ -68,6 +68,19 @@ async def get_or_fetch(key: str, fetcher, ttl_seconds: int = 30,
         return value
 
 
+def peek(key: str) -> "Any | None":
+    """Return cached value for key without blocking or fetching.
+
+    Returns None when the key is absent or expired. Use this in route handlers
+    that must NOT trigger a heavy download (e.g. chain_quotes must not start
+    an instruments fetch that could race with the sparkline-warm OOM window).
+    """
+    entry = _store.get(key)
+    if entry and entry[0] > time.monotonic():
+        return entry[1]
+    return None
+
+
 def invalidate(key: str) -> None:
     """Remove a key from the cache (called by ARQ worker after publish)."""
     _store.pop(key, None)
