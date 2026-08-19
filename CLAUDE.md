@@ -329,6 +329,36 @@ before any broker call. Returns `AttachResult.errors` immediately on failure. Si
 of `broker.translate_qty` + adapter ceiling. `plan.parent_lot_size` always resolved (never 0) 
 by `apply_template_to_order` via `await get_lot_size()`.
 
+**close_price / ltp market invariant — DO NOT CHANGE without explicit operator instruction** —
+`close_price` = the **previous trading day's closing/settlement price**. It is frozen and
+must NEVER be modified during the session, at settlement, or during off-market hours.
+`ltp` is the only price that moves: it ticks during the session and is set to the
+settlement price at session close. The lifecycle is:
+
+```
+Market open:   close_price ← previous session's ltp   (ONLY moment close_price changes)
+               ltp = live ticking prices
+Settlement:    ltp ← settlement price                  (close_price unchanged)
+Off-market:    ltp = settlement price (frozen)         (close_price unchanged)
+Next open:     close_price ← previous session's ltp   (ONLY moment close_price changes)
+```
+
+This rule applies identically whether the gap is 1 day, a weekend, or a multi-day holiday.
+Day P&L = `(ltp − close_price) × qty` is always correct under this invariant.
+**Positions**: `_override_stale_close_from_snapshot` in `positions.py` enforces this when
+Kite's API drifts — do NOT remove or weaken it. **Holdings**: equivalent guard not yet
+implemented; holdings showing all-0 day P&L off-market is a symptom of this missing guard.
+
+**Day P&L reference price by row type** (do not deviate):
+
+| Row type | Reference | Code path |
+|---|---|---|
+| New position today (oq=0) | entry_price (average_price) | Case 1 backstop: dcv = pnl |
+| Open overnight position | prev_close | `(ltp − close_price) × oq` |
+| Closed overnight (qty=0, oq>0) | prev_close | Case 2: `pnl − (close − avg) × oq` |
+| Closed intraday (qty=0, oq=0) | entry_price → realised | Case 3 backstop: dcv = pnl |
+| Holdings | previous_close (frozen COALESCE) | same as open overnight |
+
 **Kite close_price stale overnight** — positions.close_price + quote.ohlc.close lag 
 prior-session EOD between MCX close + next open. Use `daily_book.ltp` instead.
 
