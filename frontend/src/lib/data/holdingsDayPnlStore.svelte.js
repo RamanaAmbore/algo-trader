@@ -9,7 +9,7 @@
  * Formula per row (mirrors mergeHoldingRows and _liveHoldingsToday):
  *   liveLtp  = getSnapshot(sym)?.ltp ?? h.last_price
  *   closePx  = Number(h.close_price) || 0
- *   heldQty  = Number(h.opening_quantity) || Number(h.quantity) || 0
+ *   heldQty  = Number(h.quantity) || 0
  *   day_pnl  = (liveLtp > 0 && closePx > 0 && heldQty !== 0 && |liveLtp−closePx| > 0.005)
  *              ? (liveLtp − closePx) × heldQty
  *              : Number(h.day_change_val) || 0
@@ -70,7 +70,7 @@ const _store = $derived.by(() => {
       : Number(h?.last_price ?? 0);
 
     const closePx  = Number(h?.close_price)    || 0;
-    const heldQty  = Number(h?.opening_quantity) || Number(h?.quantity) || 0;
+    const heldQty  = Number(h?.quantity) || 0;
     const dcv      = Number(h?.day_change_val)  || 0;
 
     let val;

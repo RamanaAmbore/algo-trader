@@ -1876,8 +1876,25 @@
   // strategy.spot_anchor_contract (the actual quote symbol — for MCX
   // commodity options the "spot" anchor is the front-month future), fall
   // back to strategy.underlying, fall back to the server value.
+
+  // Post-close liveSpot fallback: _throttledTick freezes when market is
+  // closed, but candidatePositions keeps updating via the book poller
+  // (post-settlement underlying_ltp). Cache the last non-zero
+  // underlying_ltp from positions so liveSpot stays current after close.
+  // Must be reactive (not untrack) so the overlay updates when the book
+  // poller lands a fresh settlement LTP.
+  let _postCloseUndLtp = $state(0);
+  $effect(() => {
+    if (isMarketOpen()) return;
+    for (const p of candidatePositions) {
+      const v = Number(/** @type {any} */ (p).underlying_ltp);
+      if (v > 0) { _postCloseUndLtp = v; return; }
+    }
+  });
+
   const liveSpot = $derived.by(() => {
     void _throttledTick;
+    void _postCloseUndLtp;
     const stratUnd = String(strategy?.underlying || '').toUpperCase();
     const stratMatchesSel = stratUnd && stratUnd === selectedUnderlying;
 
@@ -1892,14 +1909,19 @@
     }
 
     // SSOT — backend-stamped underlying_ltp from positions (Pass 3).
-    // Available immediately on page load; no SSE tick or batchQuote cycle needed.
-    const posUltp = untrack(() => {
-      for (const p of candidatePositions) {
-        const v = Number(/** @type {any} */ (p).underlying_ltp);
-        if (v > 0) return v;
-      }
-      return null;
-    });
+    // Post-close: use reactive _postCloseUndLtp so candidatePositions
+    // updates propagate after market close. Market-open: use untrack so
+    // candidatePositions changes don't bypass the _throttledTick gate
+    // and cause extra SVG re-renders.
+    const posUltp = (!isMarketOpen() && _postCloseUndLtp > 0)
+      ? _postCloseUndLtp
+      : untrack(() => {
+          for (const p of candidatePositions) {
+            const v = Number(/** @type {any} */ (p).underlying_ltp);
+            if (v > 0) return v;
+          }
+          return null;
+        });
     if (posUltp != null) return posUltp;
 
     // Fourth fallback: the Snapshot card's batchQuote result for the

@@ -24,10 +24,13 @@ from backend.api.routes.options import (
     _chain_quotes_build_sym_map,
     _chain_quotes_bid_ask_from_q,
     _chain_sym_cache_clear,
+    _chain_quotes_closed_cache_clear,
     ChainQuoteRow,
     ChainQuotesResponse,
     _CHAIN_SYM_CACHE,
     _CHAIN_SYM_CACHE_MAX_SIZE,
+    _CHAIN_QUOTES_CLOSED_CACHE,
+    _CHAIN_QUOTES_CLOSED_TTL,
 )
 
 
@@ -103,10 +106,12 @@ def nifty_instruments_fixture() -> InstrumentsResponse:
 
 @pytest.fixture(autouse=True)
 def clear_chain_cache():
-    """Clear the chain quote cache before and after each test."""
+    """Clear both chain-quote caches before and after each test."""
     _chain_sym_cache_clear()
+    _chain_quotes_closed_cache_clear()
     yield
     _chain_sym_cache_clear()
+    _chain_quotes_closed_cache_clear()
 
 
 class TestChainQuotesBuildSymMap:
@@ -712,3 +717,257 @@ class TestChainQuotesBidAskDepthAvailable:
         assert bid == 80.0
         assert ask == 80.0
         assert depth_available is False
+
+
+@pytest.mark.asyncio
+class TestChainQuotesOffMarketGate:
+    """Gap 9 fix: chain_quotes must skip broker.quote() when market is closed.
+
+    Verify that:
+    1. When market is closed and a fresh cache entry exists, broker is NOT called.
+    2. When market is closed but cache is stale/empty, broker IS called and result cached.
+    3. When market is open, broker is always called (live data, no gate).
+    4. Closed-market cache TTL is the configured 5-minute value.
+    """
+
+    async def test_closed_market_returns_cached_response_without_broker_call(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """When market is closed and cache hit is within TTL, broker NOT called."""
+        import time
+
+        client = async_client
+
+        async def mock_batch_quote_sentinel(sym_by_strike, und, exp):
+            # If this is called, the test should fail
+            raise AssertionError("broker.quote() must NOT be called on cache hit during closed market")
+
+        # Pre-populate the closed cache with a fresh entry
+        _cached_resp = ChainQuotesResponse(
+            underlying="NIFTY",
+            expiry="2025-08-14",
+            expiries=["2025-08-14"],
+            rows=[
+                ChainQuoteRow(
+                    k=24000.0,
+                    ce_bid=100.0, ce_ask=105.0,
+                    pe_bid=10.0, pe_ask=12.0,
+                    ce_sym="NIFTY24AUG24000CE", pe_sym="NIFTY24AUG24000PE",
+                    ce_ls=25, pe_ls=25,
+                    exchange="NFO",
+                    ce_depth_available=True, pe_depth_available=True,
+                )
+            ],
+        )
+        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2025-08-14")] = (
+            time.monotonic(), _cached_resp
+        )
+
+        with (
+            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch(
+                "backend.api.routes.options._any_segment_open",
+                return_value=False,  # market is closed
+            ),
+            patch(
+                "backend.api.routes.options._chain_quotes_batch_quote",
+                side_effect=mock_batch_quote_sentinel,
+            ),
+        ):
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            # Should return cached response (1 row for NIFTY)
+            assert len(data["rows"]) == 1
+            assert data["rows"][0]["k"] == 24000.0
+            assert data["rows"][0]["ce_bid"] == 100.0
+
+    async def test_closed_market_stale_cache_calls_broker(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """When market is closed but cache entry is expired, broker IS called."""
+        import time
+
+        client = async_client
+        broker_call_count = 0
+
+        async def mock_batch_quote(sym_by_strike, und, exp):
+            nonlocal broker_call_count
+            broker_call_count += 1
+            return {}, {k: (strike, side) for strike, sides in sym_by_strike.items()
+                        for side, meta in sides.items()
+                        if (k := meta.get("sym"))}
+
+        # Pre-populate with a STALE cache entry (older than TTL)
+        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2025-08-14")] = (
+            time.monotonic() - _CHAIN_QUOTES_CLOSED_TTL - 1,  # expired
+            ChainQuotesResponse(underlying="NIFTY", expiry="2025-08-14", rows=[]),
+        )
+
+        with (
+            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch(
+                "backend.api.routes.options._any_segment_open",
+                return_value=False,  # market is closed
+            ),
+            patch(
+                "backend.api.routes.options._chain_quotes_batch_quote",
+                side_effect=mock_batch_quote,
+            ),
+        ):
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+            )
+
+            assert response.status_code == 200
+            assert broker_call_count == 1, (
+                "Broker must be called when closed-market cache is stale"
+            )
+
+    async def test_open_market_always_calls_broker(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """When market is open, broker is always called regardless of closed cache."""
+        import time
+
+        client = async_client
+        broker_call_count = 0
+
+        async def mock_batch_quote(sym_by_strike, und, exp):
+            nonlocal broker_call_count
+            broker_call_count += 1
+            return {}, {}
+
+        # Pre-populate closed cache with a fresh entry (should be ignored when open)
+        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2025-08-14")] = (
+            time.monotonic(),
+            ChainQuotesResponse(underlying="NIFTY", expiry="2025-08-14", rows=[]),
+        )
+
+        with (
+            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch(
+                "backend.api.routes.options._any_segment_open",
+                return_value=True,  # market is OPEN
+            ),
+            patch(
+                "backend.api.routes.options._chain_quotes_batch_quote",
+                side_effect=mock_batch_quote,
+            ),
+        ):
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+            )
+
+            assert response.status_code == 200
+            assert broker_call_count == 1, (
+                "Broker must always be called when market is open (no gate)"
+            )
+
+    async def test_live_response_populates_closed_cache(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """Every live broker response populates the closed-market cache."""
+        import time
+
+        client = async_client
+
+        async def mock_batch_quote(sym_by_strike, und, exp):
+            return {}, {}
+
+        _chain_quotes_closed_cache_clear()  # ensure empty
+
+        with (
+            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch(
+                "backend.api.routes.options._any_segment_open",
+                return_value=True,  # market open
+            ),
+            patch(
+                "backend.api.routes.options._chain_quotes_batch_quote",
+                side_effect=mock_batch_quote,
+            ),
+        ):
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+            )
+
+            assert response.status_code == 200
+
+        # Cache should now hold the response
+        key = ("NIFTY", "2025-08-14")
+        assert key in _CHAIN_QUOTES_CLOSED_CACHE, (
+            "Live response must populate the closed-market cache for off-hours use"
+        )
+        cached_ts, cached_resp = _CHAIN_QUOTES_CLOSED_CACHE[key]
+        assert time.monotonic() - cached_ts < 5.0, "Cache entry must be fresh"
+        assert isinstance(cached_resp, ChainQuotesResponse)
+
+    def test_closed_market_cache_ttl_is_five_minutes(self):
+        """_CHAIN_QUOTES_CLOSED_TTL must be 300 seconds (5 minutes)."""
+        assert _CHAIN_QUOTES_CLOSED_TTL == 300.0, (
+            f"Off-market cache TTL must be 300s (5 min), got {_CHAIN_QUOTES_CLOSED_TTL}"
+        )
+
+    def test_closed_market_cache_clear_helper_empties_cache(self):
+        """_chain_quotes_closed_cache_clear() resets the cache."""
+        import time
+        key = ("TEST", "2025-08-14")
+        _CHAIN_QUOTES_CLOSED_CACHE[key] = (
+            time.monotonic(),
+            ChainQuotesResponse(underlying="TEST", expiry="2025-08-14", rows=[]),
+        )
+        assert len(_CHAIN_QUOTES_CLOSED_CACHE) > 0
+
+        _chain_quotes_closed_cache_clear()
+        assert len(_CHAIN_QUOTES_CLOSED_CACHE) == 0
+
+    async def test_expiry_only_mode_skips_closed_market_gate(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """Expiry-only mode (no expiry param) does not hit the closed-market gate."""
+        broker_call_count = 0
+
+        async def mock_batch_quote(sym_by_strike, und, exp):
+            nonlocal broker_call_count
+            broker_call_count += 1
+            return {}, {}
+
+        with (
+            patch("backend.api.cache.get_or_fetch") as mock_cache,
+            patch(
+                "backend.api.routes.options._any_segment_open",
+                return_value=False,  # closed
+            ),
+            patch(
+                "backend.api.routes.options._chain_quotes_batch_quote",
+                side_effect=mock_batch_quote,
+            ),
+        ):
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await async_client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY"},  # no expiry — expiry-only mode
+            )
+
+            assert response.status_code == 200
+            # Expiry-only mode returns before the gate; broker still not called
+            assert broker_call_count == 0, (
+                "Expiry-only mode must never call the broker (returns early)"
+            )

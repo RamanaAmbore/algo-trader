@@ -1,5 +1,6 @@
 """Holdings endpoint — returns per-account rows and summary."""
 
+import asyncio
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -287,7 +288,9 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
         return
 
     _sel = pd.Index(res.patched_idx)
-    _qty_col = 'opening_quantity' if 'opening_quantity' in raw.columns else 'quantity'
+    # Use `quantity` (remaining shares) for day P&L recompute — partial-sold
+    # holdings must not include the already-sold portion.
+    _qty_col = 'quantity' if 'quantity' in raw.columns else 'opening_quantity'
     _ltp_p = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
     _cls_p = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0) \
              if 'close_price' in raw.columns else pd.Series(0.0, index=_sel)
@@ -310,6 +313,93 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
         f"zero-LTP rows from KiteTicker"
         + (f" ({n_stale} via last-known-good cache)" if n_stale else "")
     )
+
+
+async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
+    """Replace `close_price` with the most-recent daily_book snapshot LTP
+    per (account, tradingsymbol) for holdings rows. Mirrors the equivalent
+    function in positions.py: Kite's reported `close_price` drifts to the
+    settlement price between sessions, making `(ltp − close) × qty = 0`
+    off-market. The daily_book snapshot captured before 08:00 IST holds the
+    prior-session EOD LTP which is the correct reference for day P&L.
+
+    Runs AFTER backfill_market_data and AFTER `_enrich_holdings` (which runs
+    inside `broker_apis.fetch_holdings` per-account). Because `_enrich_holdings`
+    has already computed `day_change_val` against the stale `close_price`, this
+    function must recompute `day_change_val` on patched rows after updating
+    `close_price`.
+
+    Only overrides rows where the snapshot LTP diverges from Kite's
+    close_price by more than epsilon (0.005) — rows where Kite is already
+    current pass through unchanged.
+    """
+    if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
+        return
+
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+    from datetime import timedelta
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    today_ist_midnight = timestamp_indian().replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    # 08:00 IST cutoff — same rationale as positions.py: MCX can land EOD
+    # snapshots at 00:05 IST next calendar day; 08:00 IST is safely before
+    # any mid-session startup snapshot.
+    today_ist_cutoff = today_ist_midnight + timedelta(hours=8)
+
+    snapshot_map: dict[tuple[str, str], float] = {}
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql_text("""
+                SELECT DISTINCT ON (account, symbol) account, symbol, ltp
+                FROM daily_book
+                WHERE kind = 'holdings' AND ltp IS NOT NULL AND ltp > 0
+                  AND captured_at < :eod_cutoff
+                ORDER BY account, symbol, captured_at DESC
+            """), {"eod_cutoff": today_ist_cutoff})
+            for account, symbol, ltp in result.all():
+                snapshot_map[(str(account), str(symbol))] = float(ltp)
+    except Exception as e:
+        logger.warning(f"holdings daily_book close-override query failed: {e}")
+        return
+
+    if not snapshot_map:
+        return
+
+    patched_indices: list = []
+    for idx in raw.index:
+        key = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
+        snap_ltp = snapshot_map.get(key)
+        if snap_ltp is None:
+            continue
+        try:
+            current_close = float(raw.at[idx, 'close_price']) \
+                if pd.notna(raw.at[idx, 'close_price']) else 0.0
+        except (TypeError, ValueError):
+            current_close = 0.0
+        if abs(snap_ltp - current_close) <= 0.005:
+            continue
+        raw.at[idx, 'close_price'] = snap_ltp
+        patched_indices.append(idx)
+
+    if not patched_indices:
+        return
+
+    logger.info(
+        f"holdings: close-override patched {len(patched_indices)}/{len(raw)} rows from daily_book"
+    )
+
+    # _enrich_holdings already ran inside broker_apis.fetch_holdings, so
+    # day_change_val was computed against the stale close_price. Recompute it
+    # now on only the patched rows using the corrected close_price.
+    if 'day_change_val' in raw.columns:
+        _ltp = pd.to_numeric(raw.loc[patched_indices, 'last_price'], errors='coerce').fillna(0)
+        _cls = pd.to_numeric(raw.loc[patched_indices, 'close_price'], errors='coerce').fillna(0)
+        _qty = pd.to_numeric(raw.loc[patched_indices, 'quantity'], errors='coerce').fillna(0)
+        raw.loc[patched_indices, 'day_change_val'] = (_ltp - _cls) * _qty
+    recompute_row_percentages(raw, raw.index.isin(patched_indices))
 
 
 def _hold_tag_open_row(r, _msc) -> object:
@@ -489,8 +579,11 @@ def _build_summary_rows(summary_df) -> list:
     ]
 
 
-def _fetch() -> HoldingsResponse:
-    per_acct = broker_apis.fetch_holdings()
+async def _fetch() -> HoldingsResponse:
+    # Run sync broker SDK calls in a thread pool — avoids blocking the event
+    # loop (100-500ms round-trips). With --workers 1 (Kite constraint) a
+    # blocking call here stalls the entire API.
+    per_acct = await asyncio.to_thread(broker_apis.fetch_holdings)
     # Outage detection: fetch_failed flag set on every frame. Empty per_acct
     # alone is a legitimate "no holdings" state — not an outage.
     if _is_full_outage(per_acct):
@@ -498,9 +591,15 @@ def _fetch() -> HoldingsResponse:
             "Broker returned no holdings data — upstream Bad Gateway / outage"
         )
     stale_since_by_acct = _stale_since_map(per_acct)
-    raw = _prepare_raw_frame(per_acct)
+    raw = await asyncio.to_thread(_prepare_raw_frame, per_acct)
     if raw.empty:
         return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
+
+    # Replace broker's drifted close_price with the prior-session EOD LTP
+    # from daily_book. _enrich_holdings already ran inside fetch_holdings
+    # per-account, so the override also recomputes day_change_val on patched
+    # rows to reflect the corrected close_price.
+    await _override_stale_close_for_holdings(raw)
 
     df = pl.from_pandas(raw)
     row_cols = [c for c in _ROW_COLS if c in df.columns]

@@ -16,6 +16,7 @@
   import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
+  import { bookChanged } from '$lib/data/bookChanged';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
@@ -77,6 +78,15 @@
   // poll of the new session lands (_pollCycleStamp > the snapshot).
   let _openTransitionStamp = $state(-1);
 
+  // Data-change detector — incremented only when positions or holdings
+  // data actually changes (ltp / qty fingerprint). Drives the heartbeat
+  // / poll-pulse animation instead of _pollCycleStamp so the strip
+  // animates at most once per real data change, not every 5s book tick
+  // (backend cache TTL is 30s → 5 of 6 book-poller ticks return
+  // identical data from cache, causing phantom pulses).
+  let _dataChangedTick = $state(0);
+  let _prevFingerprint = '';
+
   // _load — fires the three-tier refresh via marketDataStores. All
   // caching (Tier 1 memory / Tier 2 localStorage / Tier 3 broker fetch)
   // is handled inside each store. Concurrent calls are deduped by the
@@ -113,6 +123,17 @@
       // so the flash animation aligns with the book-poller cadence (5 s)
       // rather than this 30 s interval.
       _loadUnderlyingSpots().catch(() => { /* silent */ });
+      // Fingerprint check — only pulse the strip when data actually changed.
+      // Avoids animation on every 5s book-poller tick when the backend
+      // cache (30s TTL) returns identical data for 5 of 6 polls.
+      const fp =
+        (positionsStore.value ?? []).map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|')
+        + '||'
+        + (holdingsStore.value ?? []).map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|');
+      if (fp !== _prevFingerprint) {
+        _prevFingerprint = fp;
+        untrack(() => { _dataChangedTick++; });
+      }
     } catch (_) { /* silent — strip stays at last-good values */ }
   }
 
@@ -188,6 +209,21 @@
   $effect(() => {
     const unsub = executionMode.subscribe(v => { _execMode = v || 'idle'; });
     return unsub;
+  });
+
+  // bookChanged subscription — reload immediately on order fill instead
+  // of waiting up to 5s for the next book-poller tick. mirrors the
+  // pattern used in derivatives/+page.svelte and PerformancePage.svelte.
+  let _bookChangedSnap = $state(0);
+  const _unsubBookChanged = bookChanged.subscribe(v => { _bookChangedSnap = v; });
+  onDestroy(() => { _unsubBookChanged(); });
+
+  $effect(() => {
+    if (_bookChangedSnap <= 0) return;
+    untrack(() => {
+      _dataChangedTick++; // immediate visual flash on fill
+      _load();
+    });
   });
 
   // 250 ms-throttled tick clock. _liveDeltaByRow + the freeze effect
@@ -440,7 +476,7 @@
       const sym      = String(h?.tradingsymbol || '').toUpperCase();
       const liveHold = getSnapshot(sym)?.ltp;
       const avgCost  = Number(h?.average_price || 0);
-      const qty      = Number(h?.opening_quantity || h?.quantity || 0);
+      const qty      = Number(h?.quantity || 0);
       if (liveHold != null && liveHold > 0 && avgCost > 0 && qty !== 0) {
         s += (liveHold - avgCost) * qty;
       } else {
@@ -456,7 +492,7 @@
     for (const h of holdings) {
       const sym = String(h?.tradingsymbol || '').toUpperCase();
       const ltp = getSnapshot(sym)?.ltp;
-      const qty = Number(h?.opening_quantity || h?.quantity || 0);
+      const qty = Number(h?.quantity || 0);
       if (ltp != null && ltp > 0 && qty !== 0) {
         s += ltp * qty;
       } else {
@@ -823,7 +859,7 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _heartbeatTimer = null;
   $effect(() => {
-    if (_pollCycleStamp === 0) return;  // skip mount paint
+    if (_dataChangedTick === 0) return; // skip mount — no data yet
     if (_mktTick === 0) return;         // both markets closed — slate pulse handles it
     _heartbeatOn = true;
     if (_heartbeatTimer) clearTimeout(_heartbeatTimer);
@@ -838,11 +874,13 @@
   // closed but the background poller still refreshes broker data (positions,
   // holdings, funds, margins, settlement updates). Distinct from the amber
   // heartbeat: slate palette signals "data refreshed, no live ticks."
+  // Driven by _dataChangedTick so it only fires when broker data actually
+  // changed (not on every 5s book-poller tick against a 30s cache).
   let _pollPulseOn = $state(false);
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _pollPulseTimer = null;
   $effect(() => {
-    if (_pollCycleStamp === 0) return;  // skip mount paint
+    if (_dataChangedTick === 0) return; // skip mount — no data yet
     if (_mktTick !== 0) return;         // at least one market open — amber handles it
     _pollPulseOn = true;
     if (_pollPulseTimer) clearTimeout(_pollPulseTimer);

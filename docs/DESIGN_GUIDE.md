@@ -1552,6 +1552,261 @@ Example:
 
 ---
 
+## 4.10 Market data architecture — refresh cadences
+
+The platform drives all live market data through three independent, asynchronous refresh
+cadences that serve different purposes:
+
+### Tier 1: Tick cadence (~1 second, WebSocket)
+
+**What it is:** Real-time LTP updates from KiteTicker WebSocket → `/dev/shm/ramboq_ticks`
+mmap → SSE push to frontend.
+
+**What it updates:**
+- PositionStrip `liveSpot` overlay during market hours
+- MarketPulse per-row LTP sparklines + `_positionsDelta` SSE flash
+- Payoff diagram `liveSpot` during strategy analysis
+
+**Gate:** Freezes when `isMarketOpen() = false` (no ticks after session close).
+
+**Performance:** One broker WebSocket subscription (per primary account), distributed
+mmap-to-RAM bandwidth < 1 MB/min.
+
+**Files:**
+- `backend/brokers/kite_ticker.py` — WebSocket subscribe + write mmap
+- `frontend/src/lib/PositionStrip.svelte` — SSE reader + `_positionsDelta` computed
+
+### Tier 2: Book cadence (5 second frontend / 30 second backend cache)
+
+**What it is:** Polling refresh of positions, holdings, margins, and funds snapshots.
+
+**Frontend:** `marketDataStores.svelte.js` `_tickBookPollers` fires every 5 seconds.
+
+**Backend:** `positions`, `holdings`, `funds` routes maintain `_RAW_CACHE` (30s TTL).
+One broker round-trip per TTL window shared by all routes + background tasks.
+
+**Net effect:**
+- Broker is queried **at most once per 30 seconds**
+- Frontend re-renders **every 5 seconds** with the freshest cached data
+- Order fill → cache invalidate → page re-render **within ~200ms**
+
+**Gate:** No market-hours gate. Polls continuously (off-market shows last snapshot).
+
+**Invalidation:** `book_changed` event from terminal postback fires `book_changed` bus
+and triggers immediate reload on listening pages (Pulse, Dashboard, Derivatives, Orders,
+Performance).
+
+**Performance:** ~1–2 broker RPC calls per 30 seconds per account; frontend renders
+every 5 seconds with no broker touch on cache hits.
+
+**Files:**
+- `frontend/src/lib/data/marketDataStores.svelte.js` — `_tickBookPollers` interval
+- `backend/brokers/broker_apis.py` — `_RAW_CACHE` (30s TTL), `@for_all_accounts`
+- `backend/api/routes/orders.py` — `book_changed` broadcast + cache invalidation
+
+### Tier 3: Performance cadence (5 minute background tasks)
+
+**What it is:** Async background tasks that compute NAV, portfolio Greeks, equity curves,
+and persist to deques + database.
+
+**When it runs:** `_task_performance` background loop (5 min intervals during market hours).
+
+**What it computes:**
+- Firm NAV + per-account NAV breakdown (read from `positionsDayPnlStore`)
+- Agent P&L attribution per strategy
+- Equity curve snapshots → `_intraday_equity` deque
+
+**Note:** Modern UI reads `positionsDayPnlStore.total` (book-cadence store) instead of
+this task's output. The task is maintained for diagnostic/audit purposes; real-time values
+come from Tier 2.
+
+**Files:**
+- `backend/api/background.py::_task_performance` — 5-min loop
+- `frontend/src/lib/data/positionsDayPnlStore.svelte.js` — canonical frontend source
+
+### Coordination: the `book_changed` event
+
+Terminal order postbacks trigger a coordinated refresh across all three tiers:
+
+```python
+# backend/api/routes/orders.py::order_postback
+invalidate("orders")                       # Tier 1 + 2
+if _terminal_status:
+    invalidate("positions")               # Tier 2
+    invalidate("holdings")                # Tier 2
+    broadcast({"event": "book_changed"})  # Tier 3 listener
+```
+
+**Frontend subscription** (every algo page via `(algo)/+layout.svelte::onMount`):
+
+```javascript
+import { bookChanged } from '$lib/data/bookChanged';
+
+let _bookCounter = 0;
+$effect(() => {
+  const n = $bookChanged;
+  if (n <= _bookCounter) return;
+  _bookCounter = n;
+  loadPositions();  // Reload page's primary data
+});
+```
+
+A 200ms debounce coalesces basket-order bursts (4 fills produce one reload, not four).
+
+**Net effect:** Order fill → Kite postback → cache invalidate → book_changed broadcast →
+frontend reloads → all three tiers see consistent data within ~1 second.
+
+---
+
+## 4.11 Market close / off-market behaviour
+
+After NSE settlement (~15:30 IST) or MCX close (~23:30 IST), the platform transitions
+from live streaming to snapshot mode. Every surface must behave consistently:
+
+### The frozen state
+
+| Component | Value | Update rule |
+|---|---|---|
+| **LTP** | Settlement price from broker | Frozen until next session open |
+| **close_price** | Prior session's settlement LTP | Frozen until next session open |
+| **Positions grid** | Last 30-second cached snapshot | No broker calls during closed hours |
+| **Holdings grid** | Last 30-second cached snapshot | No broker calls during closed hours |
+| **Option chain quotes** | Last cached depth (stale) | Broker returns no real data |
+| **Payoff diagram** | Last computed values with settlement spot | No live Greeks re-computation |
+| **Day P&L** | Computed as `(settlement_ltp − prev_close) × qty` | Frozen (no intraday moves) |
+
+### The invariant: close_price
+
+**CRITICAL:** The `close_price` field must **NEVER** be modified after session close.
+
+**Lifecycle:**
+```
+Session 1 open:   close_price = prev_session's settlement LTP (ONLY moment it changes)
+Session 1 running: close_price = constant (never updated)
+Session 1 close:  close_price = constant (never updated)
+Session 2 open:   close_price = session 1's settlement LTP (ONLY moment it changes again)
+```
+
+**Guardian logic:**
+- `backend/api/routes/positions.py::_override_stale_close_from_snapshot()` — replaces
+  any drifted `close_price` from broker with `daily_book.previous_close` (frozen at
+  first intraday snapshot)
+- Equivalent for holdings via `backend/api/routes/holdings_helpers.py::_build_holding_row_from_snapshot()`
+
+**Why it matters:**
+- Day P&L formula `(ltp − close) × qty` is **always correct** under this invariant
+- Off-market, both `ltp` and `close_price` are frozen, so day P&L is stable (correct —
+  no market moved)
+- Works identically across 1-day gaps, weekends, multi-day holidays
+
+### The gate: `closed_hours_or_broker`
+
+Every live-data route uses this canonical gate:
+
+```python
+# backend/api/helpers/snapshot_gate.py
+async def closed_hours_or_broker(
+    exchange: str,
+    snapshot_fn: Callable[[], Awaitable[Response]],
+    broker_fn: Callable[[], Awaitable[Response]],
+) -> tuple[Response, str]:
+    """
+    Return (response, source) where source ∈ {"live", "snapshot", "snapshot-fallback"}
+    broker_fn is NEVER called if any segment is CLOSED
+    """
+    if _any_segment_open(exchange):
+        response = await broker_fn()
+        return response, "live"
+    else:
+        response = await snapshot_fn()
+        return response, "snapshot"
+```
+
+**Invariant:** `broker_fn` NEVER executes when markets are closed. Zero broker load
+after 15:30 IST (NSE) and 23:30 IST (MCX).
+
+**Files:**
+- `backend/api/helpers/snapshot_gate.py` — gate implementation
+- `backend/api/routes/positions.py::get_positions()` — wired
+- `backend/api/routes/holdings.py::get_holdings()` — wired
+- All other data routes follow the same pattern
+
+---
+
+## 4.12 Day P&L computation — four formulas
+
+The platform uses one of four distinct day P&L formulas depending on position type.
+Every value in the NavStrip P pill, Positions grid Day P&L column, and Performance
+page TOTAL row is computed using the SSOT logic below:
+
+### Frontend SSOT: `baseDayPnlForPosition(r)` in `nav.js`
+
+```javascript
+/**
+ * Primary path (preferred when prev_settlement_pnl available):
+ *   day_delta = pnl − prev_settlement_pnl
+ *
+ * Fallback (for positions opened today):
+ *   day_delta = pnl − overnight_qty × (close_price − average_price)
+ *
+ * Stale-snapshot guard:
+ *   if close_price === ltp: return 0 (off-market snapshot, both values frozen)
+ *
+ * Short position fix (oq < 0):
+ *   applied to both paths (not just oq > 0)
+ */
+export function baseDayPnlForPosition(r: PositionRow): number {
+  if (!r) return 0;
+  const oq = r.overnight_quantity ?? 0;
+  
+  // Primary path: use settled P&L delta
+  if (typeof r.prev_settlement_pnl === 'number') {
+    return r.pnl - r.prev_settlement_pnl;
+  }
+  
+  // Stale-snapshot guard
+  if (r.close_price <= 0 || (r.close_price === r.ltp)) {
+    return 0;
+  }
+  
+  // Fallback: compute yesterday's unrealized synthetically
+  const yesterday_unrealised = oq * (r.close_price - r.average_price);
+  return r.pnl - yesterday_unrealised;
+}
+```
+
+### The four formula cases
+
+| Case | Position state | Formula | Example |
+|---|---|---|---|
+| **A: Overnight open** | oq>0, qty>0 | `(ltp − close) × qty` | Hold NIFTY from yesterday, still holding today |
+| **B: Closed overnight** | oq>0, qty=0 | `(exit_price − close) × qty` | Held overnight, exited during this session |
+| **C: New today** | oq=0, qty>0 | `(ltp − entry_price) × qty` | Opened & exited only today |
+| **D: Holdings** | any qty | `(ltp − prev_close) × qty` | Equity holding (qty = remaining, not opening_qty) |
+
+**Key invariant:** `close` always means the **previous session's settlement LTP**,
+frozen at the moment the prior session ended. Never changes during this session.
+
+### Holdings sold: P&L splits
+
+When a holding is partially or fully sold:
+
+1. **Sold quantity** moves to a CNC positions row
+2. **Holdings grid** shows **remaining quantity only** (not opening_quantity)
+3. **Holdings day P&L** = `(ltp − prev_close) × remaining_qty`
+4. **Sold-portion day P&L** lives **exclusively in the CNC positions row** (Case B formula)
+5. **No sharing or double-counting** between holdings and positions surfaces
+
+**Files:**
+- `frontend/src/lib/data/nav.js::baseDayPnlForPosition` — primary SSOT
+- `frontend/src/lib/data/nav.js::livePositionDayPnl` — adds SSE tick delta for live display
+- `backend/api/algo/pnl_math.py::apply_day_change_backstop` — backend fallback for case A only
+- `backend/api/routes/positions.py::_override_stale_close_from_snapshot` — frozen-close guardian
+- All callers: PerformancePage TOTAL row, Derivatives Greeks aggregate, Dashboard hero,
+  MarketPulse position rows, Snapshot grid, Legs grid
+
+---
+
 # Part II — Order lifecycle
 
 ## 5. Order placement — single ticket (Ticket tab)

@@ -46,9 +46,9 @@ function computeHoldingsDayPnl(holdings = [], snapshots = /** @type {Record<stri
       ? Number(snapLtp)
       : Number(h?.last_price ?? 0);
 
-    const closePx = Number(h?.close_price)     || 0;
-    const heldQty = Number(h?.opening_quantity) || Number(h?.quantity) || 0;
-    const dcv     = Number(h?.day_change_val)  || 0;
+    const closePx = Number(h?.close_price)    || 0;
+    const heldQty = Number(h?.quantity)       || 0;
+    const dcv     = Number(h?.day_change_val) || 0;
 
     let val;
     if (liveLtp > 0 && closePx > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
@@ -300,26 +300,28 @@ describe('holdingsDayPnlStore — edge cases', () => {
     expect(result.byKey).toEqual({});
   });
 
-  it('uses opening_quantity over quantity when both present', () => {
+  it('uses quantity (remaining shares), ignoring opening_quantity, for partial sells', () => {
+    // Partial sell: bought 100, sold 50 → quantity=50, opening_quantity=100
+    // heldQty must be 50 (remaining), NOT 100 (original lot)
     const holdings = [makeHoldingRow({
-      opening_quantity: 8,
-      quantity:         10,  // should be ignored
-      close_price:      2500,
-      last_price:       2510,
+      opening_quantity: 100,
+      quantity:         50,   // remaining after partial sell
+      close_price:      150,
+      last_price:       200,
       day_change_val:   0,
     })];
-    const snapshots = { RELIANCE: { ltp: 2510 } };
+    const snapshots = { RELIANCE: { ltp: 200 } };
 
     const result = computeHoldingsDayPnl(holdings, snapshots);
 
-    // heldQty = opening_quantity = 8 → (2510-2500)*8 = 80
-    expect(result.byKey['RELIANCE']).toBeCloseTo(80, 4);
+    // delta = (200 - 150) * 50 = 2500, NOT (200-150)*100 = 5000
+    expect(result.byKey['RELIANCE']).toBeCloseTo(2500, 4);
   });
 
-  it('same symbol in two rows (multi-account): values are summed', () => {
+  it('same symbol in two rows (multi-account): values are summed using quantity', () => {
     const holdings = [
-      makeHoldingRow({ tradingsymbol: 'RELIANCE', opening_quantity: 5, close_price: 2500, day_change_val: 0 }),
-      makeHoldingRow({ tradingsymbol: 'RELIANCE', opening_quantity: 3, close_price: 2500, day_change_val: 0 }),
+      makeHoldingRow({ tradingsymbol: 'RELIANCE', quantity: 5, opening_quantity: 5, close_price: 2500, day_change_val: 0 }),
+      makeHoldingRow({ tradingsymbol: 'RELIANCE', quantity: 3, opening_quantity: 3, close_price: 2500, day_change_val: 0 }),
     ];
     const snapshots = { RELIANCE: { ltp: 2510 } };
 

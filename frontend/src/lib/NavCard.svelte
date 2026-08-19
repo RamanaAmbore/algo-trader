@@ -16,6 +16,8 @@
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { authStore, visibleInterval } from '$lib/stores';
   import { priceFmt, pctFmt } from '$lib/format';
+  import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
+  import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
 
   // Reactive auth state — bridged through $state so reactivity is stable
   // across CSR hydration (avoids the stale-derived $store.x pattern).
@@ -41,7 +43,11 @@
   const shareCumPnl = $derived(nav ? Number(nav.share_cum_pnl ?? 0) : 0);
   const contribution= $derived(nav ? Number(nav.contribution ?? 0) : 0);
   const firmNav     = $derived(nav ? Number(nav.firm_nav ?? 0) : 0);
-  const firmDayPnl  = $derived(nav ? Number(nav.firm_day_pnl ?? 0) : 0);
+  // firm_day_pnl from the 60s nav poll drifts up to 5 min behind the
+  // book poller (which updates at 5s cadence). Override with live store
+  // values so the FIRM NAV sub-line stays in sync with PositionStrip's
+  // P slot at sub-second latency.
+  const firmDayPnl  = $derived(positionsDayPnlStore.total + holdingsDayPnlStore.total);
   const firmCumPnl  = $derived(nav ? Number(nav.firm_cum_pnl ?? 0) : 0);
   const partnerCount= $derived(nav ? (nav.partner_count ?? 0) : 0);
   const asOf        = $derived(nav?.as_of ?? '');

@@ -93,16 +93,16 @@ def recompute_row_percentages(df: pd.DataFrame, sel_mask: "pd.Index") -> None:
 
         pnl_percentage = pnl / |avg × qty| × 100
 
-    qty column: `quantity` for positions, `opening_quantity` for holdings.
-    The function probes `opening_quantity` first and falls back to `quantity`
-    so it works correctly for both route contexts.
+    qty column: always `quantity` (remaining shares); `opening_quantity` only as
+    last-resort fallback. For partial-sell holdings DataFrames `opening_quantity`
+    is the original lot count (pre-sell) which overstates the P&L denominator.
 
     No-op when the required columns are absent (safe to call unconditionally).
     """
     if df is None or df.empty or len(sel_mask) == 0:
         return
 
-    _qty_col = "opening_quantity" if "opening_quantity" in df.columns else "quantity"
+    _qty_col = "quantity" if "quantity" in df.columns else "opening_quantity"
     if _qty_col not in df.columns:
         return
 

@@ -10,6 +10,7 @@
 
   import { onMount, onDestroy, untrack } from 'svelte';
   import { visibleInterval, withGuard } from '$lib/stores';
+  import { isMarketOpen } from '$lib/marketHours';
   import {
     fetchOptionsSpot, fetchChainQuotes, fetchChainExpiries,
     placeTicketOrder,
@@ -462,6 +463,35 @@
     });
   });
   onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } });
+
+  // Periodic ATM spot refresh — re-fetch spot every 30s during market
+  // hours so the ATM row marker tracks NIFTY/CRUDEOIL moves intraday.
+  // Without this, spot is fetched once when underlying/expiry changes
+  // and the ATM row stays pinned even if the underlying moves 200pts.
+  // Race-condition guard (chainSpotKey !== key) still works: we
+  // capture the current key before the async fetch and discard stale
+  // results if underlying/expiry changed mid-flight.
+  async function _refreshChainSpot() {
+    if (!isMarketOpen() || !chainUnderlying || !chainExpiry) return;
+    const key = `${chainUnderlying.toUpperCase()}|${chainExpiry || ''}`;
+    const u = chainUnderlying; const e = chainExpiry || null;
+    try {
+      const r = await fetchOptionsSpot(u, e);
+      if (chainSpotKey !== key) return; // underlying/expiry changed mid-flight
+      chainSpotFetched = r ? { spot: Number(r.spot) || 0, source: String(r.spot_source || '') } : null;
+    } catch { /* silent — ATM stays at last-good value */ }
+  }
+
+  let _chainSpotRefreshPoll = /** @type {any} */ (null);
+  $effect(() => {
+    void chainUnderlying; void chainExpiry;
+    untrack(() => {
+      if (_chainSpotRefreshPoll) { _chainSpotRefreshPoll(); _chainSpotRefreshPoll = null; }
+      if (!chainUnderlying || !chainExpiry) return;
+      _chainSpotRefreshPoll = visibleInterval(_refreshChainSpot, 30_000);
+    });
+  });
+  onDestroy(() => { if (_chainSpotRefreshPoll) { _chainSpotRefreshPoll(); _chainSpotRefreshPoll = null; } });
 
   // Host-triggered refresh — invalidate the spot + quotes cache keys
   // and re-fire the fetchers so a tab activation always lands on fresh

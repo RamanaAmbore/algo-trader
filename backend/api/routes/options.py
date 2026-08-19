@@ -61,6 +61,7 @@ from backend.api.algo.derivatives import (
     underlying_ltp_key,
 )
 from backend.api.auth_guard import admin_guard, auth_or_demo_guard
+from backend.api.helpers.snapshot_gate import _any_segment_open
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -2116,6 +2117,20 @@ def _chain_sym_cache_clear() -> None:
     _CHAIN_SYM_CACHE.clear()
 
 
+# ---------------------------------------------------------------------------
+# Chain-quotes closed-market response cache — during off-market hours prices
+# are frozen, so returning the last known broker response for up to 5 minutes
+# avoids repeated broker.quote() calls that return identical data.
+# ---------------------------------------------------------------------------
+_CHAIN_QUOTES_CLOSED_CACHE: "dict[tuple, tuple[float, Any]]" = {}
+_CHAIN_QUOTES_CLOSED_TTL = 300.0   # 5 minutes during off-market hours
+
+
+def _chain_quotes_closed_cache_clear() -> None:
+    """Test helper — reset the closed-market response cache between test runs."""
+    _CHAIN_QUOTES_CLOSED_CACHE.clear()
+
+
 def _chain_quotes_build_sym_map(
     inst_resp, und: str, exp: str
 ) -> tuple[dict[float, dict[str, dict]], list[str]]:
@@ -2598,6 +2613,20 @@ class OptionsController(Controller):
                 underlying=und, expiry=exp, expiries=all_expiries, rows=[]
             )
 
+        # ── Off-market gate: skip broker.quote() when prices are frozen ──
+        # During off-market hours option prices don't change, so we return
+        # the cached response for up to 5 minutes rather than hammering the
+        # broker every 5 s. `_any_segment_open` covers all configured
+        # segments (NSE + MCX) so this fires only when both are closed.
+        _closed_cache_key = (und, exp)
+        _mkt_open: bool = await asyncio.to_thread(_any_segment_open)
+        if not _mkt_open:
+            _closed_entry = _CHAIN_QUOTES_CLOSED_CACHE.get(_closed_cache_key)
+            if _closed_entry is not None:
+                _cached_ts, _cached_resp = _closed_entry
+                if time.monotonic() - _cached_ts < _CHAIN_QUOTES_CLOSED_TTL:
+                    return _cached_resp
+
         # Build quote keys, fire one broker.quote() call.
         quote_resp, key_meta = await _chain_quotes_batch_quote(sym_by_strike, und, exp)
 
@@ -2621,9 +2650,14 @@ class OptionsController(Controller):
             )
             for strike, sides in sorted(book_by_strike.items())
         ]
-        return ChainQuotesResponse(
+        result = ChainQuotesResponse(
             underlying=und, expiry=exp, expiries=all_expiries, rows=rows
         )
+        # Populate the closed-market cache so subsequent off-market polls
+        # skip the broker call. Written on every live response so the cache
+        # always holds the freshest data from the last market session.
+        _CHAIN_QUOTES_CLOSED_CACHE[_closed_cache_key] = (time.monotonic(), result)
+        return result
 
     @get("/chain-snapshot")
     async def chain_snapshot(

@@ -52,6 +52,28 @@ Backtest against pre-loaded historical candles (past market moves).
 
 ---
 
+## Market open / close — data refresh cadences and frozen state
+
+The platform drives live data through three distinct refresh cadences:
+
+### Tick cadence (~1 second, live-only)
+Live LTP overlay on PositionStrip, MarketPulse, and payoff diagrams updates every
+second via KiteTicker WebSocket. Freezes when `isMarketOpen() = false` (no ticks
+after session close).
+
+### Book cadence (5 second frontend / 30 second backend cache)
+`marketDataStores.svelte.js` polls every 5 seconds. Backend `positions`, `holdings`,
+and `funds` routes maintain a 30-second raw-DataFrame cache (`_RAW_CACHE`). Net effect:
+broker is queried at most once per 30 seconds; the frontend re-renders the latest
+cached data every 5 seconds. Also fires immediately on `bookChanged` events (order
+fill) for sub-second refresh.
+
+### Performance cadence (5 minutes, closed-hours only)
+Older NAV/P&L computations run every 5 minutes as background tasks. Used when `positionsDayPnlStore`
+is unavailable. Modern UI reads from the book-cadence stores directly.
+
+---
+
 ## Closed-hours data — snapshots instead of live feeds
 
 When the market is closed (weeknights, weekends, holidays), every data display
@@ -60,24 +82,99 @@ instead of showing blanks or stale values. The platform automatically captured
 snapshots when NSE / MCX closed, and serves them from the database without calling
 the broker.
 
-**What you'll see**:
-- Positions grid, holdings grid, nav cards — all show the last live market-hours snapshot
-- Charts and sparklines — historical data persists (no live quotes, but the past week is there)
-- P&L breakdown pills (P / M / C / H) — frozen snapshot values. The **P pill** (day P&L)
-  now uses the authoritative daily settlement (`daily_book.total_pnl`) to compute the day's
-  change: `current_pnl − yesterday's_settlement_pnl`. For positions opened today that aren't
-  yet in the daily book, the fallback is `pnl − overnight_qty × (prev_close − avg_price)`.
-  This replaces the unreliable broker `day_change_val` field and correctly handles:
-  - Positions held overnight and fully exited during the session (realized P&L now appears)
-  - New positions opened today (uses fallback math)
-  - Closed positions are naturally excluded from the base
-  
-  The same computation propagates to the per-leg Day P&L column in the derivatives legs
-  grid and the Performance page TOTAL row, so NavStrip P and the Greeks total match during
-  the MCX overnight window.
-- Live price LTP field — empty or last-known price (no updates)
-- Refresh button — clicking it says "Both NSE and MCX are currently closed" + still fetches
-  the snapshot from DB (fast, no broker round-trip)
+**What happens to each surface after market close (~15:30 IST for NSE, ~23:30 IST for MCX)**:
+
+- **LTP (Last-Traded Price)**: Set to the settlement price by the broker at session
+  close. Does not change during off-market hours.
+
+- **close_price (Previous Close)**: Stays frozen at the previous session's settlement LTP.
+  Does NOT change during the session, at settlement, or off-market hours. Only updates
+  at the next market open. This is the canonical invariant — do not refresh this field.
+
+- **Positions / Holdings grids**: Return the last 30-second-cached broker snapshot.
+  The platform automatically replaces any drifted `close_price` from the broker with
+  the authoritative frozen value (`daily_book.previous_close`), captured before 08:00 IST.
+
+- **Option chain quotes**: Off-market, broker returns stale data (no real depth). Frontend
+  shows `(L)` indicator per strike. Backend caches the response to avoid redundant broker
+  calls during closed hours.
+
+- **Payoff overlay & Greeks**: `_throttledTick` freezes when `isMarketOpen() = false`.
+  `liveSpot` falls back to the settlement LTP from the last book poll, so both spot
+  and day P&L reflect the same post-settlement state.
+
+- **PositionStrip**: Continues updating at book cadence (5s) during off-market hours.
+  The underline pulse animation fires only when data actually changes, not on every 5s tick.
+
+**P&L breakdown pills (P / M / C / H)** — frozen snapshot values. The **P pill** (day P&L)
+computes the day's change as:
+- Primary: `current_pnl − yesterday's_settlement_pnl` (from `daily_book`)
+- Fallback (for positions opened today): `pnl − overnight_qty × (prev_close − avg_price)`
+
+This replaces the unreliable broker `day_change_val` field and correctly handles:
+- Positions held overnight and fully exited during the session (realized P&L appears)
+- New positions opened today (uses fallback math)
+- Closed positions are naturally excluded from the base
+
+The same computation propagates to the per-leg Day P&L column in the derivatives legs
+grid and the Performance page TOTAL row, so NavStrip P and the Greeks total match during
+the MCX overnight window.
+
+**Live price LTP field**: Empty or last-known price (no updates).
+
+**Refresh button**: Clicking it during closed hours displays "Both NSE and MCX are
+currently closed" and fetches the snapshot from DB (fast, no broker round-trip).
+
+## Day P&L — the four formulas (reference)
+
+The platform computes intraday profit/loss using one of four formulas based on position
+type. Every number in the P pill, Positions grid, and Performance page TOTAL row
+uses one of these:
+
+| Position type | Formula | When |
+|---|---|---|
+| Overnight open (oq>0, qty>0) | `(ltp − close) × qty` | Position was held at session open, still open now |
+| Closed overnight (oq>0, qty=0) | `(exit_price − close) × qty` | Held overnight, exited during this session |
+| New today (oq=0, qty>0) | `(ltp − entry_price) × qty` | Opened & still open during this session only |
+| Holdings (any qty) | `(ltp − prev_close) × qty` | Equity holdings; `qty` = remaining quantity |
+
+**Key rule:** `close` always means the **previous session's settlement LTP**, frozen at the
+moment the last session ended. It never changes during this session, never changes after
+settlement, and never changes during off-market hours — only at the next market open.
+
+**Holdings sold during the day**: If you sell shares, the sold quantity moves to positions
+as a CNC row. Holdings shows only the remaining `quantity`. Holdings day P&L is computed on
+the remaining shares; the sold portion's day P&L lives in the CNC positions row.
+
+---
+
+## The LTP / close_price invariant (must never break)
+
+This is the foundational rule that keeps day P&L correct across market state changes:
+
+```
+Market open:   close_price ← previous session's ltp   (ONLY moment close_price changes)
+               ltp = live ticking prices
+
+Settlement:    ltp ← settlement price                  (close_price unchanged)
+
+Off-market:    ltp = settlement price (frozen)         (close_price unchanged)
+
+Next open:     close_price ← previous session's ltp   (ONLY moment close_price changes)
+               ltp = live ticking prices
+```
+
+**Why this matters:**
+- Day P&L = `(ltp − close) × qty` works identically across 1-day gaps, weekends, multi-day holidays
+- The formula is **always** correct under this invariant
+- Off-market, both values are frozen, so day P&L stays flat (correct — no market movement to capture)
+- At the next open, the old `ltp` (settlement) becomes the new `close` automatically
+
+The platform enforces this via `_override_stale_close_from_snapshot` in `positions.py` —
+do NOT edit or remove this guard. It replaces any broker-drifted `close_price` with the
+authoritative frozen value from `daily_book.previous_close`.
+
+---
 
 ## NavStrip — reading the four pills
 

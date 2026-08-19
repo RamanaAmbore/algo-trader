@@ -1483,10 +1483,12 @@ def _build_holdings_pnl_expr(
     """Polars expression for the `pnl` column in holdings enrichment.
     Trust broker pnl when not-null; otherwise compute from (ltp-avg)*qty.
     Caller must confirm has_ltp + has_avg + has_qty before calling.
+    Uses `quantity` (remaining shares) not `opening_quantity` (original lot) so
+    partial-sold holdings don't overstate P&L on the already-sold portion.
     """
     _ltp = _col_f64(lf, "last_price")
     _avg = _col_f64(lf, "average_price")
-    _qty = _col_f64(lf, "opening_quantity")
+    _qty = _col_f64(lf, "quantity")
     _pnl_calc = (_ltp - _avg) * _qty
     if has_pnl:
         _broker_pnl = _col_f64_nullable(lf, "pnl")
@@ -1531,10 +1533,12 @@ def _build_holdings_dcv_expr(
     Day P&L = pnl − overnight_pnl (handles still-held / partial-sold /
     full-sold positions). Falls back to (ltp-close)*qty when intraday
     fields or broker pnl are absent.
+    Uses `quantity` (remaining shares) not `opening_quantity` so partial-sold
+    holdings compute day P&L only on the unsold portion.
     """
     _ltp = _col_f64(lf, "last_price")
     _cls = _col_f64(lf, "close_price")
-    _qty = _col_f64(lf, "opening_quantity")
+    _qty = _col_f64(lf, "quantity")
     if has_avg and has_pnl:
         _avg2      = _col_f64(lf, "average_price")
         _pnl2      = _col_f64_nullable(lf, "pnl")
@@ -1565,20 +1569,22 @@ def _build_holdings_dcv_expr(
 
 def _apply_holdings_dcv_fallback(df: pd.DataFrame) -> None:
     """Fallback: when polars pass left day_change_val==0 but the broker supplied
-    a scalar day_change (ltp−close) with a valid close, multiply by opening_quantity.
-    Handles Dhan/Groww rows where backfill symbol resolution failed so the main
-    formula could not fire. Mutates df in place; no-op when required columns absent.
+    a scalar day_change (ltp−close) with a valid close, multiply by quantity
+    (remaining shares, not opening_quantity). Handles Dhan/Groww rows where
+    backfill symbol resolution failed so the main formula could not fire.
+    Mutates df in place; no-op when required columns absent.
     """
-    _cols = ("day_change", "day_change_val", "close_price", "opening_quantity")
+    _qty_col = "quantity" if "quantity" in df.columns else "opening_quantity"
+    _cols = ("day_change", "day_change_val", "close_price", _qty_col)
     if not all(c in df.columns for c in _cols):
         return
-    _f_dcv = pd.to_numeric(df["day_change_val"],   errors="coerce").fillna(0)
-    _f_dc  = pd.to_numeric(df["day_change"],        errors="coerce").fillna(0)
-    _f_cls = pd.to_numeric(df["close_price"],       errors="coerce").fillna(0)
-    _f_oq  = pd.to_numeric(df["opening_quantity"],  errors="coerce").fillna(0)
-    _mask  = (_f_dcv == 0) & (_f_dc != 0) & (_f_cls > 0) & (_f_oq != 0)
+    _f_dcv = pd.to_numeric(df["day_change_val"],  errors="coerce").fillna(0)
+    _f_dc  = pd.to_numeric(df["day_change"],       errors="coerce").fillna(0)
+    _f_cls = pd.to_numeric(df["close_price"],      errors="coerce").fillna(0)
+    _f_qty = pd.to_numeric(df[_qty_col],           errors="coerce").fillna(0)
+    _mask  = (_f_dcv == 0) & (_f_dc != 0) & (_f_cls > 0) & (_f_qty != 0)
     if _mask.any():
-        df.loc[_mask, "day_change_val"] = (_f_dc * _f_oq)[_mask]
+        df.loc[_mask, "day_change_val"] = (_f_dc * _f_qty)[_mask]
 
 
 def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
@@ -1598,11 +1604,14 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     """
     cols = set(df.columns)
 
-    # ── inv_val = avg × opening_qty ──────────────────────────────────
-    if {"average_price", "opening_quantity"}.issubset(cols):
+    # ── inv_val = avg × qty (remaining shares, not opening_quantity) ──
+    # Use `quantity` (remaining after partial sells) for all value/P&L
+    # computations. `opening_quantity` is kept as a display-only field.
+    _qty_col_name = "quantity" if "quantity" in cols else "opening_quantity"
+    if {"average_price", _qty_col_name}.issubset(cols):
         df["inv_val"] = (
             pd.to_numeric(df["average_price"], errors="coerce").fillna(0)
-            * pd.to_numeric(df["opening_quantity"], errors="coerce").fillna(0)
+            * pd.to_numeric(df[_qty_col_name], errors="coerce").fillna(0)
         )
 
     # ── Polars block: pnl, cur_val, pnl_percentage, price_change,
@@ -1612,13 +1621,13 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     # in one go — avoids repeated from_pandas / to_pandas round-trips.
     cols = set(df.columns)  # refresh after inv_val
 
-    has_ltp    = "last_price"       in cols
-    has_avg    = "average_price"    in cols
-    has_qty    = "opening_quantity" in cols
-    has_close  = "close_price"      in cols
-    has_pnl    = "pnl"              in cols
-    has_invval = "inv_val"          in cols
-    has_dcv    = "day_change_val"   in cols
+    has_ltp    = "last_price"    in cols
+    has_avg    = "average_price" in cols
+    has_qty    = "quantity"      in cols  # remaining shares after partial sells
+    has_close  = "close_price"   in cols
+    has_pnl    = "pnl"           in cols
+    has_invval = "inv_val"       in cols
+    has_dcv    = "day_change_val" in cols
 
     lf = pl.from_pandas(df, nan_to_null=True)
     computed_exprs: list[pl.Expr] = []
@@ -1643,11 +1652,17 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
         computed_exprs.append(
             _build_holdings_dcv_expr(lf, has_avg, has_pnl, has_dcv)
         )
-    elif {"day_change", "opening_quantity"}.issubset(cols):
-        computed_exprs.append(
-            (_col_f64(lf, "day_change") * _col_f64(lf, "opening_quantity"))
-            .alias("day_change_val")
-        )
+    elif "day_change" in cols:
+        # Last-resort path: broker shipped a scalar day_change but not the
+        # individual price columns needed for the formula. Multiply by
+        # `quantity` (remaining shares) when available; fall back to
+        # `opening_quantity` for adapters that only ship the original lot.
+        _qty_name = "quantity" if has_qty else "opening_quantity"
+        if _qty_name in cols:
+            computed_exprs.append(
+                (_col_f64(lf, "day_change") * _col_f64(lf, _qty_name))
+                .alias("day_change_val")
+            )
 
     if computed_exprs:
         lf = lf.with_columns(computed_exprs)
@@ -2316,7 +2331,7 @@ def _bmd_recompute_derived(df, patched_indices: set) -> None:
     reported) the consumer treats as authoritative — overwrite it
     now that we have real market data. Also recomputes pnl / cur_val /
     pnl_percentage / day_change / day_change_percentage as available."""
-    _qty_col = 'opening_quantity' if 'opening_quantity' in df.columns else 'quantity'
+    _qty_col = 'quantity' if 'quantity' in df.columns else 'opening_quantity'
     if _qty_col not in df.columns or 'last_price' not in df.columns:
         return
 
