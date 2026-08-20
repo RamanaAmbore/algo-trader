@@ -69,6 +69,12 @@ class HoldingRow(msgspec.Struct):
     # static (no green/red pulse on the frozen close_price). Frontend's
     # tick-flash cellClass reads this to gate the flash primitive.
     is_animating: bool = True
+    # Frozen prior-session settlement price (COALESCE from daily_book —
+    # never overwritten once set). Used by the frontend as the reference
+    # close for holdings day P&L so the formula `(ltp − previous_close) × qty`
+    # stays correct even when Kite's `close_price` has drifted post-settlement.
+    # Zero means "not yet available" (cold boot / first deploy).
+    previous_close: float = 0.0
 
 
 class HoldingsSummaryRow(msgspec.Struct):

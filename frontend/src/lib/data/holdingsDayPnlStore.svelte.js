@@ -70,7 +70,7 @@ const _store = $derived.by(() => {
       ? Number(snapLtp)
       : Number(h?.last_price ?? 0);
 
-    const closePx  = Number(h?.close_price)    || 0;
+    const closePx  = Number(h?.previous_close) || Number(h?.close_price) || 0;
     const heldQty  = Number(h?.quantity) || 0;
     const dcv      = Number(h?.day_change_val)  || 0;
 

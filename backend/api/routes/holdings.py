@@ -15,7 +15,7 @@ from backend.api.auth_guard import is_admin_request
 from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection, normalise_role,
 )
-from backend.api.algo.pnl_math import recompute_row_percentages
+from backend.api.algo.pnl_math import apply_day_change_backstop, recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, holdings_policy
 from backend.api.helpers.price_resolver import resolve_current_price
@@ -260,6 +260,10 @@ _ROW_COLS = [
     # from broker_apis' LKG frame cache because the account's circuit
     # breaker was OPEN. Preserves DH6847 rows across breaker-open cycles.
     'account_stale',
+    # Frozen prior-session settlement price from daily_book COALESCE.
+    # Exposed to frontend so it can compute `(ltp − previous_close) × qty`
+    # independently of whether Kite's `close_price` has drifted.
+    'previous_close',
 ]
 
 _TTL = 30  # seconds — background task invalidates on each refresh
@@ -316,25 +320,37 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
 
 
 async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
-    """Replace `close_price` with the most-recent daily_book snapshot LTP
-    per (account, tradingsymbol) for holdings rows. Mirrors the equivalent
-    function in positions.py: Kite's reported `close_price` drifts to the
-    settlement price between sessions, making `(ltp − close) × qty = 0`
-    off-market. The daily_book snapshot captured before 08:00 IST holds the
-    prior-session EOD LTP which is the correct reference for day P&L.
+    """Replace `close_price` with the frozen prior-session reference price
+    per (account, tradingsymbol) for holdings rows, and write `previous_close`
+    for every row (regardless of whether `close_price` is patched).
+
+    The reference price is `COALESCE(daily_book.previous_close, daily_book.ltp)`
+    from the most-recent pre-08:00 IST snapshot. `previous_close` is the
+    frozen COALESCE field — never overwritten once set, making it more reliable
+    than `ltp` which tracks the session-end mark. Falling back to `ltp` handles
+    cold-boot / first-day rows before COALESCE materialises.
+
+    `previous_close` is written to ALL rows unconditionally (using whatever
+    reference we found, or 0.0 when not found). This ensures the field is
+    always present in the DataFrame so `_ROW_COLS` selection and the
+    `HoldingRow` constructor can populate it even on cold-boot.
+
+    `close_price` is only overridden where the snapshot diverges from Kite's
+    value by more than epsilon (0.005) — rows where Kite is already current
+    pass through unchanged (close_price patching keeps existing behaviour).
 
     Runs AFTER backfill_market_data and AFTER `_enrich_holdings` (which runs
     inside `broker_apis.fetch_holdings` per-account). Because `_enrich_holdings`
     has already computed `day_change_val` against the stale `close_price`, this
-    function must recompute `day_change_val` on patched rows after updating
-    `close_price`.
-
-    Only overrides rows where the snapshot LTP diverges from Kite's
-    close_price by more than epsilon (0.005) — rows where Kite is already
-    current pass through unchanged.
+    function recomputes `day_change_val` on close_price-patched rows after
+    updating `close_price`.
     """
     if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
         return
+
+    # Initialise previous_close for all rows — ensures the column exists even
+    # when no snapshot is found (cold boot / first deploy).
+    raw['previous_close'] = 0.0
 
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
@@ -349,18 +365,26 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     # any mid-session startup snapshot.
     today_ist_cutoff = today_ist_midnight + timedelta(hours=8)
 
+    # ref_close: COALESCE(previous_close, ltp) — frozen field first,
+    # falling back to ltp for rows where previous_close was not set
+    # (e.g. first-ever write before the COALESCE guard ran).
     snapshot_map: dict[tuple[str, str], float] = {}
     try:
         async with async_session() as session:
             result = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol) account, symbol, ltp
+                SELECT DISTINCT ON (account, symbol)
+                       account, symbol,
+                       COALESCE(previous_close, ltp) AS ref_close
                 FROM daily_book
-                WHERE kind = 'holdings' AND ltp IS NOT NULL AND ltp > 0
+                WHERE kind = 'holdings'
+                  AND ltp IS NOT NULL AND ltp > 0
                   AND captured_at < :eod_cutoff
                 ORDER BY account, symbol, captured_at DESC
             """), {"eod_cutoff": today_ist_cutoff})
-            for account, symbol, ltp in result.all():
-                snapshot_map[(str(account), str(symbol))] = float(ltp)
+            for account, symbol, ref_close in result.all():
+                v = float(ref_close) if ref_close is not None else 0.0
+                if v > 0:
+                    snapshot_map[(str(account), str(symbol))] = v
     except Exception as e:
         logger.warning(f"holdings daily_book close-override query failed: {e}")
         return
@@ -368,20 +392,24 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     if not snapshot_map:
         return
 
+    # Write previous_close for ALL rows that have a snapshot entry (not just
+    # rows where close_price gets patched). Rows with no snapshot entry keep 0.0.
     patched_indices: list = []
     for idx in raw.index:
         key = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
-        snap_ltp = snapshot_map.get(key)
-        if snap_ltp is None:
+        ref_close = snapshot_map.get(key)
+        if ref_close is None:
             continue
+        # Always write previous_close regardless of whether close_price needs patching.
+        raw.at[idx, 'previous_close'] = ref_close
         try:
             current_close = float(raw.at[idx, 'close_price']) \
                 if pd.notna(raw.at[idx, 'close_price']) else 0.0
         except (TypeError, ValueError):
             current_close = 0.0
-        if abs(snap_ltp - current_close) <= 0.005:
+        if abs(ref_close - current_close) <= 0.005:
             continue
-        raw.at[idx, 'close_price'] = snap_ltp
+        raw.at[idx, 'close_price'] = ref_close
         patched_indices.append(idx)
 
     if not patched_indices:
@@ -393,7 +421,7 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
 
     # _enrich_holdings already ran inside broker_apis.fetch_holdings, so
     # day_change_val was computed against the stale close_price. Recompute it
-    # now on only the patched rows using the corrected close_price.
+    # now on only the close_price-patched rows using the corrected close_price.
     if 'day_change_val' in raw.columns:
         _ltp = pd.to_numeric(raw.loc[patched_indices, 'last_price'], errors='coerce').fillna(0)
         _cls = pd.to_numeric(raw.loc[patched_indices, 'close_price'], errors='coerce').fillna(0)
@@ -596,10 +624,15 @@ async def _fetch() -> HoldingsResponse:
         return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
 
     # Replace broker's drifted close_price with the prior-session EOD LTP
-    # from daily_book. _enrich_holdings already ran inside fetch_holdings
-    # per-account, so the override also recomputes day_change_val on patched
-    # rows to reflect the corrected close_price.
+    # from daily_book. Also writes previous_close to all rows unconditionally.
+    # _enrich_holdings already ran inside fetch_holdings per-account, so the
+    # override also recomputes day_change_val on close_price-patched rows.
     await _override_stale_close_for_holdings(raw)
+
+    # Recover day_change_val for rows where the broker gate zeroed it
+    # (new holdings, flat round-trips, or overnight positions with stale LTP).
+    # apply_day_change_backstop returns a copy — capture it.
+    raw = apply_day_change_backstop(raw)
 
     df = pl.from_pandas(raw)
     row_cols = [c for c in _ROW_COLS if c in df.columns]

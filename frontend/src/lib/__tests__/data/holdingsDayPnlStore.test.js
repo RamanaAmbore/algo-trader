@@ -46,7 +46,7 @@ function computeHoldingsDayPnl(holdings = [], snapshots = /** @type {Record<stri
       ? Number(snapLtp)
       : Number(h?.last_price ?? 0);
 
-    const closePx = Number(h?.close_price)    || 0;
+    const closePx = Number(h?.previous_close) || Number(h?.close_price) || 0;
     const heldQty = Number(h?.quantity)       || 0;
     const dcv     = Number(h?.day_change_val) || 0;
 
@@ -378,5 +378,93 @@ describe('holdingsDayPnlStore — edge cases', () => {
 
     expect(result.byKey['HDFC']).toBeCloseTo(-150, 4);
     expect(result.total).toBeCloseTo(-150, 4);
+  });
+});
+
+// ── Test 9: previous_close field (frozen prior-session price) ─────────────────
+// Root-cause fix: backend now exposes `previous_close` (frozen from daily_book).
+// When present and non-zero, it must be used instead of `close_price` (Kite's
+// drifting field, reset to settlement price post-session → triggers the
+// |ltp−close| ≤ 0.005 guard and zeroes the H slot).
+
+describe('holdingsDayPnlStore — previous_close field (frozen prior-session price)', () => {
+  it('previous_close present and non-zero: used as closePx instead of close_price', () => {
+    // close_price = 2500 (Kite settlement, equals ltp → would trigger guard)
+    // previous_close = 2490 (frozen prior-session value → |ltp−2490| = 10 > 0.005)
+    // Expected: formula fires with previous_close, not guard→dcv path
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'RELIANCE',
+      previous_close: 2490,
+      close_price:    2500,   // would equal ltp and trigger guard if used
+      last_price:     2500,
+      quantity:       10,
+      opening_quantity: 10,
+      day_change_val: 0,
+    })];
+    const snapshots = { RELIANCE: { ltp: 2500 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // With previous_close=2490: closePx=2490, (2500-2490)*10 = 100
+    // With close_price=2500:    closePx=2500, |2500-2500|=0 ≤ 0.005 → guard → dcv=0
+    expect(result.byKey['RELIANCE']).toBeCloseTo(100, 4);
+  });
+
+  it('previous_close = 0: falls back to close_price', () => {
+    // previous_close is 0 (field present but zero) — close_price is the valid fallback
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'INFY',
+      previous_close: 0,
+      close_price:    1800,
+      last_price:     1810,
+      quantity:       5,
+      opening_quantity: 5,
+      day_change_val: 50,
+    })];
+    const snapshots = { INFY: { ltp: 1810 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // closePx falls back to close_price=1800; (1810-1800)*5 = 50
+    expect(result.byKey['INFY']).toBeCloseTo(50, 4);
+  });
+
+  it('previous_close absent (undefined): falls back to close_price', () => {
+    // Backend not yet updated for this row — previous_close field missing
+    const holdings = [makeHoldingRow({
+      tradingsymbol: 'TCS',
+      close_price:   3400,
+      last_price:    3420,
+      quantity:      3,
+      opening_quantity: 3,
+      day_change_val: 60,
+      // no previous_close key at all
+    })];
+    const snapshots = { TCS: { ltp: 3420 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // closePx falls back to close_price=3400; (3420-3400)*3 = 60
+    expect(result.byKey['TCS']).toBeCloseTo(60, 4);
+  });
+
+  it('post-settlement guard fires correctly when previous_close ≈ ltp', () => {
+    // When previous_close equals ltp (edge case: yesterday close = today close),
+    // the guard must still fire and fall back to day_change_val.
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'WIPRO',
+      previous_close: 500.002,
+      close_price:    400,    // would give a large delta if used — but previous_close wins
+      last_price:     500.002,
+      quantity:       20,
+      opening_quantity: 20,
+      day_change_val: 80,
+    })];
+    const snapshots = { WIPRO: { ltp: 500.002 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // closePx = previous_close = 500.002; |500.002 - 500.002| = 0 ≤ 0.005 → guard → dcv = 80
+    expect(result.byKey['WIPRO']).toBe(80);
   });
 });
