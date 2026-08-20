@@ -711,7 +711,8 @@ async def _task_prewarm_tokens() -> None:
                     account, e,
                 )
 
-        await _asyncio.sleep(3600)  # check hourly
+        await _asyncio.sleep(60)  # 60s — matches background.py _task_token_refresh cadence;
+        # hourly polling statistically misses the 05:45–05:59 Kite token-expiry window
 
 
 async def _init_connections_on_startup(app: Litestar) -> None:

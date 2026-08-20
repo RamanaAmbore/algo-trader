@@ -285,8 +285,14 @@ def _loaded_accounts() -> set[str]:
             if is_cutover_on():
                 from backend.brokers.client.remote_broker import list_remote_accounts
                 in_conn = {r["account"] for r in list_remote_accounts() if r.get("account")}
+                if not in_conn:
+                    logger.warning(
+                        "_loaded_accounts: conn_service returned no accounts "
+                        "— UDS unreachable or conn_service still loading"
+                    )
         return {a for a in in_conn if is_account_healthy(a)}
-    except Exception:
+    except Exception as e:
+        logger.warning("_loaded_accounts: unexpected error: %s", e)
         return set()
 
 
