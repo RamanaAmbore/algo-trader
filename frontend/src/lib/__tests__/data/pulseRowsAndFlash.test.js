@@ -147,6 +147,83 @@ describe('mergeHoldingRows — quote_symbol is populated', () => {
   });
 });
 
+// ── heldQty uses quantity (remaining) not opening_quantity (pre-sell) ─────────
+//
+// Regression guard for the partial-sell bug: when a holding has quantity=50
+// (remaining after selling 50 of 100) and opening_quantity=100 (original),
+// heldQty must be 50 — not 100. Using opening_quantity first would overstate
+// qty_hold, _avg_hold_num, and any P&L computed as (price − ref) × heldQty.
+// Backend invariant: opening_quantity is a reference field only; quantity is
+// the authoritative remaining-shares count for all value/P&L computation.
+
+describe('mergeHoldingRows — heldQty uses quantity not opening_quantity for partial sells', () => {
+  it('qty_hold reflects remaining quantity (50) not original opening_quantity (100)', () => {
+    const byKey = {};
+    // quantity=50 (remaining after selling 50), opening_quantity=100 (pre-sell total)
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({ quantity: 50, opening_quantity: 100, average_price: 200 })],
+      true,
+      {},
+      makeHoldingCtx()
+    );
+    const row = Object.values(byKey)[0];
+    // heldQty must be 50 (quantity), not 100 (opening_quantity)
+    expect(row.qty_hold).toBe(50);
+  });
+
+  it('_avg_hold_num is weighted by remaining quantity (50), not opening_quantity (100)', () => {
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({ quantity: 50, opening_quantity: 100, average_price: 200 })],
+      true,
+      {},
+      makeHoldingCtx()
+    );
+    const row = Object.values(byKey)[0];
+    // _avg_hold_num = avg × heldQty = 200 × 50 = 10000 (not 200 × 100 = 20000)
+    expect(row._avg_hold_num).toBeCloseTo(10000, 1);
+  });
+
+  it('live P&L uses remaining qty when LTP is available (partial sell)', () => {
+    // avg=200, quantity=50 (remaining), opening_quantity=100, ltp=220
+    // Correct: (220 - 200) * 50 = 1000
+    // Wrong (old bug): (220 - 200) * 100 = 2000
+    const snapMap = { RELIANCE: { ltp: 220 } };
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({ quantity: 50, opening_quantity: 100, average_price: 200 })],
+      true,
+      {},
+      makeHoldingCtx(snapMap)
+    );
+    const row = Object.values(byKey)[0];
+    // pnl = (liveHold - holdAvg) * heldQty = (220 - 200) * 50 = 1000
+    expect(row.pnl).toBeCloseTo(1000, 1);
+    // Regression: must NOT be 2000 (which would come from opening_quantity=100)
+    expect(row.pnl).not.toBeCloseTo(2000, 1);
+  });
+
+  it('heldQty priority: quantity=0 falls through to opening_quantity (fully sold, no snap)', () => {
+    // Edge case: if quantity is 0 (fully closed intraday) but opening_quantity > 0,
+    // the || chain picks opening_quantity. This mirrors how Kite reports fully-sold
+    // holdings that momentarily sit in the holdings list with qty=0.
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({ quantity: 0, opening_quantity: 10 })],
+      true,
+      {},
+      makeHoldingCtx()
+    );
+    const row = Object.values(byKey)[0];
+    // quantity=0 is falsy → falls through to opening_quantity=10
+    expect(row.qty_hold).toBe(10);
+  });
+});
+
 // ── Fix 2a: mergeHoldingRows live pnl formula (H-slot sync prerequisite) ─────
 
 describe('mergeHoldingRows — live pnl recompute (Fix 1 prerequisite)', () => {

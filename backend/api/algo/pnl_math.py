@@ -206,7 +206,7 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
     # Case 1: new position (oq=0, dcv zeroed by gate, pnl non-zero)
     _case1 = (_oq == 0) & (_dcv == 0) & (_pnl != 0)
     # Case 2: overnight position, LTP gate zeroed dcv, broker pnl is valid
-    _case2 = (_oq > 0) & (_dcv == 0) & (_pnl != 0) & (_cls > 0) & (_avg > 0)
+    _case2 = (_oq != 0) & (_dcv == 0) & (_pnl != 0) & (_cls > 0) & (_avg > 0)
     _case2_val = _pnl - (_cls - _avg) * _oq
     # Case 3: fully closed intraday round-trip (qty=0, oq=0, dcv zeroed, pnl non-zero).
     # Requires oq=0 — closed OVERNIGHT positions (qty=0, oq>0) must NOT fall through

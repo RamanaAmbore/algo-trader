@@ -742,9 +742,10 @@ def test_holdings_rows_previous_close_map_priority_over_broker_close():
     )
 
 
-def test_holdings_rows_previous_close_both_absent_becomes_none():
+def test_holdings_rows_previous_close_both_absent_falls_back_to_ltp():
     """When both prev_ltp_map and broker close_price are absent,
-    previous_close becomes None."""
+    previous_close falls back to ltp_val (not None) to prevent the
+    post-settlement guard from zeroing day P&L on a cold-boot snapshot."""
     from backend.api.algo.daily_snapshot import _holdings_rows
     from datetime import date, datetime, timezone
 
@@ -768,9 +769,9 @@ def test_holdings_rows_previous_close_both_absent_becomes_none():
     )
 
     assert len(rows) == 1
-    assert rows[0]["previous_close"] is None, (
-        f"previous_close should be None when both map and close_price absent, "
-        f"got {rows[0]['previous_close']}"
+    assert rows[0]["previous_close"] == 1050.0, (
+        f"previous_close must fall back to ltp_val (1050.0) when both "
+        f"prev_ltp_map and close_price are absent — got {rows[0]['previous_close']}"
     )
 
 

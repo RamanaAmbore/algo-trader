@@ -228,8 +228,14 @@ class TestRowBuilders:
         assert rows[0]["previous_close"] == 7350.0, \
             f"expected previous_close=7350.0 but got {rows[0]['previous_close']}"
 
-    def test_holdings_previous_close_none_when_absent(self):
-        """Test that previous_close is None when close_price is absent."""
+    def test_holdings_previous_close_falls_back_to_ltp_when_absent(self):
+        """Fix P1-B: when close_price is absent, previous_close falls back to ltp_val.
+
+        Before Fix P1-B, previous_close was None when close_price was missing.
+        After the fix, ltp_val is the last-resort fallback so that NULL never
+        reaches the DB (which would trigger the |ltp-close|<=0.005 guard in
+        holdings.py and produce stale day_change_val=0).
+        """
         from backend.api.algo.daily_snapshot import _holdings_rows
         holding_no_close = {
             "tradingsymbol": "INFY",
@@ -243,11 +249,15 @@ class TestRowBuilders:
         }
         rows = _holdings_rows("ZG0790", self._D, [holding_no_close], self._NOW_EOD)
         assert len(rows) == 1
-        assert rows[0]["previous_close"] is None, \
-            f"expected previous_close=None when close_price missing, got {rows[0]['previous_close']}"
+        assert rows[0]["previous_close"] is not None, (
+            "previous_close must not be None when close_price missing — ltp_val fallback must apply"
+        )
+        assert rows[0]["previous_close"] == pytest.approx(1560.0), (
+            f"previous_close must equal ltp_val=1560.0 (ltp fallback); got {rows[0]['previous_close']}"
+        )
 
-    def test_holdings_previous_close_none_when_zero(self):
-        """Test that previous_close is None when close_price is zero."""
+    def test_holdings_previous_close_falls_back_to_ltp_when_zero(self):
+        """Fix P1-B: when close_price is zero, previous_close falls back to ltp_val."""
         from backend.api.algo.daily_snapshot import _holdings_rows
         holding_zero_close = {
             "tradingsymbol": "FOO",
@@ -261,11 +271,15 @@ class TestRowBuilders:
         }
         rows = _holdings_rows("ZG0790", self._D, [holding_zero_close], self._NOW_EOD)
         assert len(rows) == 1
-        assert rows[0]["previous_close"] is None, \
-            f"expected previous_close=None when close_price=0, got {rows[0]['previous_close']}"
+        assert rows[0]["previous_close"] is not None, (
+            "previous_close must not be None when close_price=0 — ltp_val fallback must apply"
+        )
+        assert rows[0]["previous_close"] == pytest.approx(1100.0), (
+            f"previous_close must equal ltp_val=1100.0; got {rows[0]['previous_close']}"
+        )
 
-    def test_holdings_previous_close_none_when_none(self):
-        """Test that previous_close is None when close_price is explicitly None."""
+    def test_holdings_previous_close_falls_back_to_ltp_when_none(self):
+        """Fix P1-B: when close_price is explicitly None, previous_close falls back to ltp_val."""
         from backend.api.algo.daily_snapshot import _holdings_rows
         holding_none_close = {
             "tradingsymbol": "BAR",
@@ -279,8 +293,12 @@ class TestRowBuilders:
         }
         rows = _holdings_rows("ZG0790", self._D, [holding_none_close], self._NOW_EOD)
         assert len(rows) == 1
-        assert rows[0]["previous_close"] is None, \
-            f"expected previous_close=None when close_price is None, got {rows[0]['previous_close']}"
+        assert rows[0]["previous_close"] is not None, (
+            "previous_close must not be None when close_price=None — ltp_val fallback must apply"
+        )
+        assert rows[0]["previous_close"] == pytest.approx(2100.0), (
+            f"previous_close must equal ltp_val=2100.0; got {rows[0]['previous_close']}"
+        )
 
     def test_holdings_previous_close_stored_in_payload(self):
         """Test that previous_close is also captured in snapshot_extras for downstream readers."""
@@ -857,3 +875,241 @@ class TestSnapHoldingEodVals:
         _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
         assert day_pnl_v == pytest.approx(56.0), \
             f"expected day_pnl=-28×(-2)=56.0 but got {day_pnl_v}"
+
+
+# ---------------------------------------------------------------------------
+# Fix P1-A — qty field must prefer `quantity` over `opening_quantity`
+# so partially-sold holdings record the remaining (post-sell) qty.
+# ---------------------------------------------------------------------------
+
+class TestHoldingsRowQtyPriority:
+    """Regression tests for Fix P1-A: `_holdings_rows` qty field ordering.
+
+    Before the fix, `opening_quantity` was used first, writing the pre-sell
+    quantity for partially-sold holdings. The fix swaps the priority so
+    `quantity` (remaining shares) is used first and `opening_quantity` is
+    only the fallback for older broker payloads that omit `quantity`.
+    """
+
+    _D = date(2026, 8, 19)
+    _NOW_EOD = datetime(2026, 8, 19, 23, 35)
+
+    def test_partially_sold_holding_uses_quantity_not_opening_quantity(self):
+        """Partially-sold holding (qty=50, oq=100) must write qty=50 into DB.
+
+        Before the fix: qty field used opening_quantity=100 (pre-sell).
+        After the fix:  qty field uses quantity=50 (remaining shares).
+        """
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        holding = {
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "quantity": 50,            # remaining after partial sell
+            "opening_quantity": 100,   # pre-sell qty — must NOT win
+            "average_price": 1500.0,
+            "last_price": 1600.0,
+            "day_change": 100.0,
+            "pnl": 5000.0,
+            "close_price": 1550.0,
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["qty"] == 50, (
+            f"qty must be `quantity`=50 (remaining), not `opening_quantity`=100; "
+            f"got {rows[0]['qty']}"
+        )
+
+    def test_partial_sell_qty_less_than_opening_quantity(self):
+        """Second partial-sell scenario: qty=30, opening_quantity=80.
+
+        Verifies the fix holds for an arbitrary partially-sold quantity
+        (not just 50/100 from the first test).
+        """
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        holding = {
+            "tradingsymbol": "TCS",
+            "exchange": "NSE",
+            "quantity": 30,
+            "opening_quantity": 80,
+            "average_price": 3400.0,
+            "last_price": 3450.0,
+            "day_change": 50.0,
+            "pnl": 5000.0,
+            "close_price": 3420.0,
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["qty"] == 30, (
+            f"qty must be `quantity`=30 (remaining shares); got {rows[0]['qty']}"
+        )
+
+    def test_unsold_holding_quantity_equals_opening_quantity(self):
+        """Unsold holding (qty == oq): either field gives the same result."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        holding = {
+            "tradingsymbol": "RELIANCE",
+            "exchange": "NSE",
+            "quantity": 10,
+            "opening_quantity": 10,
+            "average_price": 2500.0,
+            "last_price": 2600.0,
+            "day_change": 100.0,
+            "pnl": 1000.0,
+            "close_price": 2550.0,
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["qty"] == 10, (
+            f"Unsold holding: qty must be 10; got {rows[0]['qty']}"
+        )
+
+    def test_quantity_field_absent_falls_back_to_opening_quantity(self):
+        """When `quantity` key is missing, fall back to `opening_quantity`."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        holding = {
+            "tradingsymbol": "SBIN",
+            "exchange": "NSE",
+            # `quantity` key intentionally absent (older broker payload)
+            "opening_quantity": 25,
+            "average_price": 800.0,
+            "last_price": 850.0,
+            "day_change": 50.0,
+            "pnl": 1250.0,
+            "close_price": 820.0,
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD)
+        assert len(rows) == 1
+        assert rows[0]["qty"] == 25, (
+            f"Missing `quantity` key: must fall back to opening_quantity=25; got {rows[0]['qty']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fix P1-B — previous_close must fall back to ltp_val when both prev_ltp_map
+# and close_price are unavailable, preventing NULL in DB which causes the
+# |ltp-close|≤0.005 post-settlement guard to route to stale day_change_val=0.
+# ---------------------------------------------------------------------------
+
+class TestHoldingsRowPreviousCloseLtpFallback:
+    """Regression tests for Fix P1-B: previous_close must use ltp_val as
+    last-resort fallback when no prior close exists.
+
+    Affected path: _holdings_rows() previous_close field, line 473-476.
+    When previous_close=None reaches the DB, _build_holding_row_from_snapshot
+    in holdings.py:147 falls back to close_price_f=ltp_f, which then triggers
+    the |ltp-close|<=0.005 post-settlement guard -> routes to day_change_val=0.
+    The ltp_val fallback ensures same-day buys get previous_close=ltp ->
+    day P&L = 0, which is correct.
+    """
+
+    _D = date(2026, 8, 19)
+    _NOW_EOD = datetime(2026, 8, 19, 23, 35)
+
+    def test_previous_close_falls_back_to_ltp_when_no_close_price(self):
+        """When close_price is 0/absent AND prev_ltp_map is empty,
+        previous_close must be ltp_val (not None).
+
+        This is the same-day-buy case: no prior session exists, so
+        previous_close = current ltp -> day P&L = (ltp - ltp) * qty = 0.
+        """
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        holding = {
+            "tradingsymbol": "NEWBUY",
+            "exchange": "NSE",
+            "quantity": 20,
+            "opening_quantity": 0,
+            "average_price": 500.0,
+            "last_price": 510.0,
+            "day_change": 10.0,
+            "pnl": 200.0,
+            "close_price": 0,         # no prior close — same-day buy
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
+                               prev_ltp_map=None)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] is not None, (
+            "previous_close must not be None when close_price=0 and no prev_ltp_map — "
+            "must fall back to ltp_val to prevent NULL triggering 0-P&L guard in holdings.py"
+        )
+        assert rows[0]["previous_close"] == pytest.approx(510.0), (
+            f"previous_close must equal ltp_val=510.0 when no prior close; "
+            f"got {rows[0]['previous_close']}"
+        )
+
+    def test_previous_close_ltp_fallback_produces_zero_day_pnl(self):
+        """When previous_close == ltp (same-day buy fallback), day P&L = 0.
+
+        This is the semantically correct result: bought today, no prior session,
+        so day gain = 0 (entry and close are the same).
+        """
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        holding = {
+            "tradingsymbol": "FRESHBUY",
+            "exchange": "NSE",
+            "quantity": 10,
+            "opening_quantity": 0,
+            "average_price": 1000.0,
+            "last_price": 1000.0,
+            "day_change": 0.0,
+            "pnl": 0.0,
+            "close_price": 0,
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
+                               prev_ltp_map=None)
+        assert len(rows) == 1
+        # previous_close = ltp_val = 1000, so day P&L formula = (1000-1000)*10 = 0
+        assert rows[0]["previous_close"] == pytest.approx(1000.0)
+
+    def test_prev_ltp_map_takes_priority_over_ltp_fallback(self):
+        """prev_ltp_map value wins over the ltp_val fallback."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        holding = {
+            "tradingsymbol": "HDFCBANK",
+            "exchange": "NSE",
+            "quantity": 5,
+            "opening_quantity": 5,
+            "average_price": 1600.0,
+            "last_price": 1650.0,
+            "day_change": 50.0,
+            "pnl": 250.0,
+            "close_price": 0,          # broker close absent
+        }
+        # prev_ltp_map provides the real prior session LTP
+        prev_ltp_map = {("ZG0790", "HDFCBANK", "holdings"): 1620.0}
+        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
+                               prev_ltp_map=prev_ltp_map)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] == pytest.approx(1620.0), (
+            f"prev_ltp_map should win over ltp_val fallback; "
+            f"got {rows[0]['previous_close']}"
+        )
+
+    def test_close_price_takes_priority_over_ltp_fallback(self):
+        """A valid close_price from broker wins over the ltp_val fallback."""
+        from backend.api.algo.daily_snapshot import _holdings_rows
+
+        holding = {
+            "tradingsymbol": "WIPRO",
+            "exchange": "NSE",
+            "quantity": 8,
+            "opening_quantity": 8,
+            "average_price": 400.0,
+            "last_price": 420.0,
+            "day_change": 20.0,
+            "pnl": 160.0,
+            "close_price": 410.0,      # valid broker close
+        }
+        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
+                               prev_ltp_map=None)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] == pytest.approx(410.0), (
+            f"close_price=410 must win over ltp_val fallback; "
+            f"got {rows[0]['previous_close']}"
+        )

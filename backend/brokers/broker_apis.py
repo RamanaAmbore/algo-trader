@@ -1508,8 +1508,10 @@ def _build_holdings_pnl_expr(
 
 def _build_holdings_curval_exprs(lf: "pl.DataFrame") -> list["pl.Expr"]:
     """Polars expressions for cur_val and pnl_percentage.
-    Depends on the `pnl` alias already being planned in the same
-    with_columns() call; caller must include both in the same pass.
+    Requires `pnl` to already exist as a materialised column in `lf`
+    (i.e. from a prior with_columns pass). Do NOT call this in the same
+    with_columns pass that computes `pnl` — sibling aliases are invisible
+    to each other within a single pass.
     """
     _pnl_expr = pl.col("pnl")
     _inv_expr = _col_f64(lf, "inv_val")
@@ -1603,18 +1605,17 @@ def _build_holdings_computed_exprs(
     has_dcv: bool,
     cols: set,
 ) -> "list[pl.Expr]":
-    """Build all Polars derived-column expressions for holdings enrichment.
-    Called from _enrich_holdings; extracted to keep parent CC at grade C.
+    """Build pass-2 Polars derived-column expressions for holdings enrichment.
+    Called from _enrich_holdings after pnl has already been materialised in lf
+    by a separate pass-1 with_columns call. This function must NOT add the pnl
+    expression — that is owned by pass 1 in _enrich_holdings.
+    Extracted to keep parent CC at grade C.
     """
     exprs: list[pl.Expr] = []
 
-    if has_ltp and has_avg and has_qty:
-        exprs.append(_build_holdings_pnl_expr(lf, has_pnl))
-        has_pnl = True  # will exist after this pass
-
     if has_pnl and has_invval:
-        # These depend on pnl, which may have just been (re)written above.
-        # We reference the planned alias directly.
+        # pnl was materialised in pass 1 (_enrich_holdings) before this
+        # function is called; it is a real column in lf, not a sibling alias.
         exprs.extend(_build_holdings_curval_exprs(lf))
 
     if has_close and has_avg:
@@ -1650,12 +1651,15 @@ def _enrich_holdings_writeback(df: pd.DataFrame, lf: "pl.DataFrame") -> None:
 def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     """Polars-vectorized computed-column enrichment for holdings DataFrames.
 
-    Converts the pandas DataFrame to a Polars DataFrame once, applies all
-    derived-column expressions in a single with_columns pass (one compiled
-    expression plan), then converts back to pandas. This replaces ~8 separate
-    pd.to_numeric().fillna() + Series-arithmetic sequences with a single
-    Polars evaluation — ~2-3× faster for typical 20-50 row per-account frames
-    because Polars casts object-dtype columns to Float64 faster than pandas.
+    Converts the pandas DataFrame to a Polars DataFrame once, applies derived
+    columns in two sequential with_columns passes, then converts back to pandas:
+      Pass 1 — pnl (must be materialised before pass 2 because Polars
+                sibling aliases are invisible within a single with_columns call)
+      Pass 2 — cur_val, pnl_percentage, price_change, day_change_val
+
+    This replaces ~8 separate pd.to_numeric().fillna() + Series-arithmetic
+    sequences — ~2-3× faster for typical 20-50 row per-account frames because
+    Polars casts object-dtype columns to Float64 faster than pandas.
 
     All semantics from the original pandas path are preserved exactly — the
     same fallback priority rules, NaN-vs-0 sentinel distinctions, and the
@@ -1674,11 +1678,12 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
             * pd.to_numeric(df[_qty_col_name], errors="coerce").fillna(0)
         )
 
-    # ── Polars block: pnl, cur_val, pnl_percentage, price_change,
-    #    day_change_val ─────────────────────────────────────────────
+    # ── Polars block: pnl (pass 1), then cur_val / pnl_percentage /
+    #    price_change / day_change_val (pass 2) ──────────────────────
     # Build a polars frame from the current pandas df (after inv_val).
-    # All subsequent derived columns are computed here and written back
-    # in one go — avoids repeated from_pandas / to_pandas round-trips.
+    # Two passes are required because Polars sibling aliases are invisible
+    # within a single with_columns call — pnl must be in the frame before
+    # cur_val / pnl_percentage can reference it.
     cols = set(df.columns)  # refresh after inv_val
 
     has_ltp    = "last_price"     in cols
@@ -1690,15 +1695,26 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     has_dcv    = "day_change_val" in cols
 
     lf = pl.from_pandas(df, nan_to_null=True)
-    exprs = _build_holdings_computed_exprs(
+
+    # ── Pass 1: materialise pnl so pass-2 expressions can reference it
+    #    as a real column (sibling aliases are invisible within a single
+    #    with_columns call — the Polars sibling-alias bug).
+    if has_ltp and has_avg and has_qty:
+        lf = lf.with_columns([_build_holdings_pnl_expr(lf, has_pnl)])
+        has_pnl = True  # pnl now exists in the frame
+
+    # ── Pass 2: cur_val, pnl_percentage, price_change, day_change_val
+    #    These may reference the pnl column materialised in pass 1.
+    exprs2 = _build_holdings_computed_exprs(
         lf, has_ltp, has_avg, has_qty, has_close,
         has_pnl, has_invval, has_dcv, cols,
     )
-    if exprs:
-        lf = lf.with_columns(exprs)
-        # Write back only the columns that now exist in the polars frame
-        # (avoids KeyError if an expression alias didn't fire).
-        _enrich_holdings_writeback(df, lf)
+    if exprs2:
+        lf = lf.with_columns(exprs2)
+
+    # Write back only the columns that now exist in the polars frame
+    # (avoids KeyError if an expression alias didn't fire).
+    _enrich_holdings_writeback(df, lf)
 
     _apply_holdings_dcv_fallback(df)
 

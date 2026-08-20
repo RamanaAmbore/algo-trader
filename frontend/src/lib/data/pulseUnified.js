@@ -523,7 +523,7 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     // lookup path (quote_symbol || tradingsymbol) for all row types.
     if (!row.quote_symbol) row.quote_symbol = sym;
     row.src.h = true;
-    const heldQty = Number(r.opening_quantity) || Number(r.quantity) || 0;
+    const heldQty = Number(r.quantity) || Number(r.opening_quantity) || 0;
     row.qty_hold += heldQty;
     row._avg_hold_num += (Number(r.average_price) || 0) * heldQty;
     if (r.account) row.accounts.add(String(r.account));

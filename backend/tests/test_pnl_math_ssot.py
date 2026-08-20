@@ -547,3 +547,75 @@ class TestApplyDayChangeBackstop:
         assert math.isclose(out.at[1, 'day_change_val'], -150.0, abs_tol=1e-6), (
             "Intraday round-trip (oq=0) must be rescued to pnl=-150"
         )
+
+    # ── Fix P2-A: Case 2 must fire for short overnight positions (oq < 0) ──
+
+    def test_case2_fires_for_short_overnight_with_close(self):
+        """Case 2 must fire when oq < 0 (short overnight position).
+
+        Before the fix (_oq > 0 guard), short overnight positions with dcv=0
+        received no rescue even when close_price was available.
+
+        Scenario: shorted 5 lots at avg=6000, yesterday close=5900,
+        exited today at implied exit=5800 (profit on short).
+        Kite pnl = (6000 - 5800) * 5 = 1000 (total gain from entry, negative oq)
+        For a short: pnl = (avg - exit) * |oq| = (6000 - 5800) * 5 = 1000
+        Case 2 formula: pnl - (close - avg) * oq
+          = 1000 - (5900 - 6000) * (-5)
+          = 1000 - (-100) * (-5)
+          = 1000 - 500 = 500
+        Which equals (close - exit) * |oq| = (5900 - 5800) * 5 = 500 — correct day gain.
+        """
+        df = pd.DataFrame([{
+            'quantity': 0,
+            'overnight_quantity': -5,   # short overnight position
+            'day_change_val': 0.0,
+            'pnl': 1000.0,              # Kite: total gain from entry (positive for profitable short)
+            'close_price': 5900.0,      # prior session settlement
+            'average_price': 6000.0,   # entry price
+        }])
+        out = apply_day_change_backstop(df)
+        expected = 1000.0 - (5900.0 - 6000.0) * (-5)  # = 1000 - 500 = 500
+        assert math.isclose(out.at[0, 'day_change_val'], expected, abs_tol=1e-6), (
+            f"Short overnight Case 2: dcv should be {expected}, got {out.at[0, 'day_change_val']}"
+        )
+
+    def test_case2_short_overnight_open_position(self):
+        """Case 2 rescue for short overnight position that is still open (qty < 0).
+
+        Scenario: short 3 lots overnight at avg=5000, close=4900.
+        dcv=0 (LTP gate zeroed it), pnl=-150 (broker computed on ltp=4950).
+        Case 2: pnl - (close - avg) * oq
+          = -150 - (4900 - 5000) * (-3)
+          = -150 - (-100) * (-3)
+          = -150 - 300 = -450
+        Note: negative dcv means the short is losing (ltp moved against the short).
+        """
+        df = pd.DataFrame([{
+            'quantity': -3,
+            'overnight_quantity': -3,   # still open short
+            'day_change_val': 0.0,
+            'pnl': -150.0,
+            'close_price': 4900.0,
+            'average_price': 5000.0,
+        }])
+        out = apply_day_change_backstop(df)
+        expected = -150.0 - (4900.0 - 5000.0) * (-3)  # = -150 - 300 = -450
+        assert math.isclose(out.at[0, 'day_change_val'], expected, abs_tol=1e-6), (
+            f"Short open overnight Case 2: dcv should be {expected}, got {out.at[0, 'day_change_val']}"
+        )
+
+    def test_case2_does_not_fire_when_dcv_nonzero_for_short(self):
+        """Case 2 must NOT overwrite an already-valid dcv on a short overnight row."""
+        df = pd.DataFrame([{
+            'quantity': -5,
+            'overnight_quantity': -5,
+            'day_change_val': -250.0,   # already valid from broker
+            'pnl': -500.0,
+            'close_price': 5900.0,
+            'average_price': 6000.0,
+        }])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], -250.0, abs_tol=1e-6), (
+            "dcv must not be overwritten when already non-zero"
+        )

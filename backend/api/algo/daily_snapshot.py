@@ -465,7 +465,7 @@ def _holdings_rows(
             "kind":         "holdings",
             "symbol":       symbol,
             "exchange":     exchange,
-            "qty":          int(r.get("opening_quantity") or r.get("quantity") or 0),
+            "qty":          int(r.get("quantity") or r.get("opening_quantity") or 0),
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
             "ltp":            ltp_val,
             "day_pnl":        day_pnl_v,
@@ -473,6 +473,7 @@ def _holdings_rows(
             "previous_close": (
                 (prev_ltp_map or {}).get((account, symbol, "holdings"))
                 or (float(r["close_price"]) if r.get("close_price") else None)
+                or ltp_val
             ),
             "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
