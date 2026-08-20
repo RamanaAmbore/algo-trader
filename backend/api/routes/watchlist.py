@@ -326,6 +326,57 @@ async def _load_latest_movers_snapshot() -> Optional[MoversSnapshot]:
         return None
 
 
+async def _nse_snapshot_as_live_dict(ist_today: str) -> dict[str, dict]:
+    """Load today's NSE EOD snapshot from DB and convert to live_snapshot format.
+
+    Used when NSE is closed but MCX is still open (15:30–23:30 IST) so that
+    the movers grid shows NSE equity underlyings alongside live MCX quotes.
+
+    Returns an empty dict when no snapshot exists, the snapshot is from a
+    different date, or deserialisation fails.  MCX live entries take priority
+    over snapshot entries for the same key — callers must merge as
+    ``{**this_result, **live_snapshot}`` so that live wins on collision.
+
+    Keys are ``tradingsymbol`` (bare underlying name, e.g. "NIFTY", "RELIANCE")
+    matching the convention used by ``live_snapshot`` inside
+    ``_movers_build_live_rows``.  Values are shaped as live_snapshot entries
+    (fields: peak_pct, last_pct, last_price, current_price, previous_close,
+    exchange, price_source, is_animating, quote_symbol).
+    """
+    import json as _json
+    from zoneinfo import ZoneInfo
+
+    snap = await _load_latest_movers_snapshot()
+    if not snap:
+        return {}
+
+    # captured_at is timezone-aware (UTC). Convert to IST for date comparison.
+    snap_date = snap.captured_at.astimezone(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d")
+    if snap_date != ist_today:
+        return {}
+
+    try:
+        rows: list[dict] = _json.loads(snap.payload_json)
+    except Exception:
+        return {}
+
+    return {
+        r["tradingsymbol"]: {
+            "peak_pct":       float(r["peak_pct"]),
+            "last_pct":       float(r["change_pct"]),
+            "last_price":     float(r["last_price"]),
+            "current_price":  float(r["last_price"]),
+            "previous_close": float(r["previous_close"]),
+            "exchange":       r["exchange"],
+            "price_source":   "snapshot",
+            "is_animating":   False,
+            "quote_symbol":   r.get("tradingsymbol", ""),
+        }
+        for r in rows
+        if isinstance(r, dict) and r.get("exchange") == "NSE"
+    }
+
+
 def _combine_movers(
     live_snapshot: dict[str, dict],
     session_movers: dict[str, dict],
@@ -1658,9 +1709,14 @@ def _movers_build_live_rows(
     nse_is_open: bool,
     mcx_is_open: bool,
     ist_today: str,
+    nse_snapshot: "dict[str, dict] | None" = None,
 ) -> tuple[list["MoverRow"], dict]:
     """Build the unified live snapshot dict, combine with session_movers,
     assemble sorted MoverRows, and persist NSE rows to the snapshot store.
+
+    ``nse_snapshot``, when provided, is merged into ``live_snapshot`` before
+    ``_combine_movers`` runs.  Live MCX quotes take priority over snapshot
+    entries for the same key (MCX-open / NSE-closed window, 15:30–23:30 IST).
 
     Returns ``(rows, live_snapshot)`` so the caller can log empty-reason
     diagnostics with the live_snapshot size."""
@@ -1675,6 +1731,13 @@ def _movers_build_live_rows(
         if result is not None:
             underlying, live_entry = result
             live_snapshot[underlying] = live_entry
+
+    # MCX-open / NSE-closed window (15:30–23:30 IST): inject today's NSE EOD
+    # snapshot so equities continue to appear in the movers grid alongside live
+    # MCX quotes.  Live entries (MCX) take priority over snapshot entries on
+    # the same key — the merge order guarantees that.
+    if nse_snapshot:
+        live_snapshot = {**nse_snapshot, **live_snapshot}
 
     combined: dict[str, dict] = _combine_movers(
         live_snapshot, _session_movers, MOVER_TOP_N,
@@ -2127,8 +2190,16 @@ class WatchlistController(Controller):
             )
             return await _movers_offhours_response(ist_today)
 
+        # When NSE is closed but MCX is still open (15:30–23:30 IST), load
+        # today's NSE EOD snapshot so equity underlyings stay visible alongside
+        # live MCX quotes.  Pass None otherwise to keep the hot path unchanged.
+        _nse_snap: "dict[str, dict] | None" = None
+        if not nse_is_open and mcx_is_open:
+            _nse_snap = await _nse_snapshot_as_live_dict(ist_today)
+
         rows, live_snapshot = _movers_build_live_rows(
             key_to_meta, quote_data, nse_is_open, mcx_is_open, ist_today,
+            nse_snapshot=_nse_snap,
         )
 
         if not rows:
