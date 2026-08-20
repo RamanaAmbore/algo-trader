@@ -77,7 +77,7 @@ All adapters return **Zerodha Kite-normalised shapes**. Callers never branch per
 | `historical_data(...)` | `list[dict]` with `date`, `open`, `high`, `low`, `close`, `volume` |
 | `holidays(exchange, year)` | `set[str]` ISO date strings |
 
-**Auth invariant**: Adapters handle token refresh transparently. Callers never see `401`. Re-auth failure raises a domain exception caught by the circuit breaker.
+**Auth invariant**: Adapters handle token refresh transparently. Callers never see `401`. When a fetch raises an auth error, `_maybe_renew_on_auth_error()` immediately retries the call after re-login (one attempt). If the retry also fails, a domain exception is raised and caught by the circuit breaker.
 
 ---
 
@@ -1200,7 +1200,7 @@ payoff accuracy during volatile intraday windows.
 
 **File**: `backend/brokers/service/app.py` — `_task_prewarm_tokens()`
 
-Conn-service runs an hourly background task to pre-warm broker tokens before they
+Conn-service runs a 60-second polling background task to pre-warm broker tokens before they
 expire, preventing mid-session auth failures when operators rely on long-lived
 credentials.
 
@@ -1209,8 +1209,12 @@ credentials.
 | Broker | Window | Condition | Logs |
 |---|---|---|---|
 | Kite | 05:45–05:59 IST | Daily before 06:00 expiry | `[PREWARM]` |
-| Dhan | On-demand hourly | `token_age > 22h` (expiry=23h) | `[PREWARM]` |
-| Groww | On-demand hourly | `_is_token_expired()` returns True | `[PREWARM]` |
+| Dhan | On-demand (60s poll) | `token_age > 22h` (expiry=23h) | `[PREWARM]` |
+| Groww | On-demand (60s poll) | `_is_token_expired()` returns True | `[PREWARM]` |
+
+The 14-minute Kite window (05:45–05:59 IST) cannot be reliably covered by hourly
+polling — 60s matches the `background.py:_task_token_refresh` cadence and guarantees
+the window is hit.
 
 **Dhan co-expiry prevention**: Multiple Dhan accounts minted at similar times could
 expire together, causing a cluster of auth failures. The 22-hour threshold ensures
@@ -1220,6 +1224,26 @@ pre-warms fire at different times, spreading the refresh load.
 **Groww proactive refresh**: `GrowwConnection.get_groww_conn()` now calls
 `_is_token_expired()` synchronously on every session request and proactively
 refreshes if True, preventing expired-credential exceptions on the critical path.
+
+### On-demand token renewal on auth failure
+
+**File**: `backend/brokers/broker_apis.py` — `_maybe_renew_on_auth_error(account)`
+
+When any broker fetch (`_fetch_margins_local`, `_fetch_holdings_local`, `_fetch_positions_local`)
+raises an exception and `_is_auth_error_str(str(exc))` is True, the system immediately
+attempts token renewal before recording the failure:
+
+1. `_maybe_renew_on_auth_error(account)` dispatches to the connection's re-auth method:
+   - `KiteConnection` → `get_kite_conn(test_conn=True)`
+   - `DhanConnection` → `get_dhan_conn(test_conn=True)`
+   - `GrowwConnection` → `conn.refresh()`
+2. If renewal succeeds, the fetch is retried once.
+3. If the retry also fails, the normal error path fires (`_record_fetch(ok=False)` → circuit breaker).
+
+Logs `[TOKEN-RENEW] {account}: auth error detected — renewing token` at INFO.
+This is a safety net independent of the proactive prewarm schedule — if a token expires
+between prewarm cycles for any reason, the first failed fetch self-heals without operator
+intervention.
 
 ---
 
