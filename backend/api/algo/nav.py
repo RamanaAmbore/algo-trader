@@ -273,7 +273,39 @@ async def _resolve_conn_keys() -> list[str]:
 
 
 async def _fetch_funds_phase(accounts_in: list[str], errors: list[str]) -> float:
-    """Fetch margin data and return cash_total; mutates accounts_in and errors."""
+    """Fetch margin data and return cash_total; mutates accounts_in and errors.
+
+    Market-hours gate: when both segments are closed and the funds route has a
+    cached FundsResponse, extract cash_total from that without calling the broker.
+    This keeps the NAV cash term consistent with what the funds route itself returns
+    and avoids stale pre-settlement broker responses during the W3/W4/W5 windows.
+    """
+    from backend.api.helpers.snapshot_gate import _any_segment_open
+    from backend.api.cache import peek as _peek
+
+    mkt_open: bool = await asyncio.to_thread(_any_segment_open)
+    if not mkt_open:
+        cached_funds = _peek("funds")
+        if cached_funds is not None:
+            # Extract cash_total from cached FundsResponse (non-TOTAL rows only).
+            # NAV v4 cash term = cash + option_premium (see _funds_from_df).
+            try:
+                total = 0.0
+                accts: list[str] = []
+                for row in (cached_funds.rows or []):
+                    acct = str(getattr(row, "account", "") or "")
+                    if acct == "TOTAL":
+                        continue
+                    cash = float(getattr(row, "cash", 0) or 0)
+                    premium = float(getattr(row, "option_premium", 0) or 0)
+                    total += cash + premium
+                    if acct:
+                        accts.append(acct)
+                _merge_accounts(accounts_in, accts)
+                return total
+            except Exception as e:
+                logger.warning(f"nav: cached funds extraction failed ({e}) — falling through to broker")
+
     from backend.brokers.broker_apis import fetch_margins
     try:
         funds_dfs = await asyncio.to_thread(fetch_margins)

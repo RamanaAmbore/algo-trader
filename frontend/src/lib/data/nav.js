@@ -103,7 +103,7 @@ export function baseDayPnlForPosition(p) {
   // Overnight hold with no prevPnl: use frozen day_change_val directly.
   // Avoids the close_price=0 trap post-MCX session when Kite returns stale zero.
   const dcv   = Number(p?.day_change_val ?? 0);
-  const close = Number(p?.close_price ?? p?.prev_close ?? 0);
+  const close = Number(p?.previous_close) || Number(p?.close_price) || Number(p?.prev_close) || 0;
   const avg   = Number(p?.average_price ?? p?.avg_cost ?? 0);
   if (oq !== 0 && dcv !== 0) return dcv;
   if (oq !== 0 && dcv === 0) {

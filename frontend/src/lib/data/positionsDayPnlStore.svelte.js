@@ -60,7 +60,7 @@ const _store = $derived.by(() => {
 
     const val = livePositionDayPnl(
       {
-        closePx: Number(r.close_price   ?? 0),
+        closePx: Number(r.previous_close) || Number(r.close_price ?? 0),
         pollLtp: Number(r.last_price    ?? 0),
         qty:     Number(r.quantity      ?? 0),
         avg:     Number(r.average_price ?? 0),

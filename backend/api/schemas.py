@@ -211,6 +211,13 @@ class PositionRow(msgspec.Struct):
     # position rows that already have an active GTT attached, so the
     # operator doesn't accidentally create a duplicate.
     has_gtt: bool = False
+    # Frozen prior-session settlement price (COALESCE from daily_book —
+    # never overwritten once set). Mirrors HoldingRow.previous_close.
+    # Used by the frontend as the reference close for positions day P&L
+    # so the formula `(ltp − previous_close) × qty` stays correct even
+    # when Kite's `close_price` has drifted post-settlement (W3 window).
+    # Zero means "not yet available" (cold boot / first deploy).
+    previous_close: float = 0.0
 
 
 class PositionsSummaryRow(msgspec.Struct):

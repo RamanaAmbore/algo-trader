@@ -319,6 +319,9 @@ _ROW_COLS = [
     'account_stale',
     # Yesterday's total_pnl from daily_book — None for positions opened today.
     'prev_settlement_pnl',
+    # Frozen prior-session settlement price — set by _override_stale_close_from_snapshot
+    # for every matched row (independent of the epsilon close_price patch).
+    'previous_close',
 ]
 
 _TTL = 30
@@ -826,6 +829,10 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
         return
 
+    # Initialise previous_close column unconditionally so the column always
+    # exists even when no DB rows match or the query raises.
+    raw['previous_close'] = 0.0
+
     # Pull the latest snapshot per (account, symbol) — DISTINCT ON keeps
     # only the most recent row, regardless of which date label the
     # snapshot daemon used (00:09 IST captures end up labelled with the
@@ -862,15 +869,17 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     try:
         async with async_session() as session:
             result = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol) account, symbol, ltp, total_pnl
+                SELECT DISTINCT ON (account, symbol) account, symbol,
+                       COALESCE(daily_book.previous_close, daily_book.ltp) AS ref_close,
+                       total_pnl
                 FROM daily_book
                 WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
                   AND captured_at < :today_open
                 ORDER BY account, symbol, captured_at DESC
             """), {"today_open": today_ist_cutoff})
-            for account, symbol, ltp, total_pnl in result.all():
+            for account, symbol, ref_close, total_pnl in result.all():
                 key = (str(account), str(symbol))
-                snapshot_map[key] = float(ltp)
+                snapshot_map[key] = float(ref_close)
                 if total_pnl is not None:
                     prev_pnl_map[key] = float(total_pnl)
     except Exception as e:
@@ -889,6 +898,10 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
         snap_ltp = snapshot_map.get(key)
         if snap_ltp is None:
             continue
+        # Set previous_close for ALL matched rows regardless of epsilon check —
+        # this is the frozen prior-session settlement price consumed by the
+        # frontend's (ltp − previous_close) × qty formula.
+        raw.at[idx, 'previous_close'] = snap_ltp
         try:
             current_close = float(raw.at[idx, 'close_price']) if pd.notna(raw.at[idx, 'close_price']) else 0.0
         except (TypeError, ValueError):

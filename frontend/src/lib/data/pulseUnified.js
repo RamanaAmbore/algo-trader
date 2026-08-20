@@ -458,7 +458,7 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     const _snapLtp   = snap?.ltp;
     const posLiveLtp = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
                      : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
-    const posCls     = Number(r.close_price) || 0;
+    const posCls     = Number(r.previous_close) || Number(r.close_price) || 0;
     row.day_pnl = (row.day_pnl ?? 0) + livePositionDayPnl(
       {
         closePx: posCls,
