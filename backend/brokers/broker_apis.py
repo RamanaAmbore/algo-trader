@@ -106,6 +106,71 @@ def _maybe_renew_on_auth_error(account: str) -> bool:
         return False
 
 
+def _rebuild_holdings_after_renewal(broker, kite, account: str) -> "pd.DataFrame | None":
+    """Rebuild holdings DataFrame after token renewal. Returns enriched df or None."""
+    try:
+        raw = broker.holdings() if broker is not None else kite.holdings()
+        df = pd.DataFrame(raw)
+        if not df.empty:
+            df["account"] = account
+            df["type"] = "H"
+        _record_fetch(account, ok=True)
+        df = _enrich_holdings(df)
+        _record_lkg_frame("holdings", account, df)
+        return df
+    except Exception as e:
+        logger.error("[%s] holdings retry after token renewal failed: %s", account, e)
+        return None
+
+
+def _rebuild_positions_after_renewal(broker, kite, account: str) -> "pd.DataFrame | None":
+    """Rebuild positions DataFrame after token renewal. Returns enriched df or None."""
+    try:
+        net_rows = _extract_net_rows(broker, kite)
+        if net_rows is None:
+            raise RuntimeError("broker.positions() returned None on retry")
+        df = pd.DataFrame(net_rows)
+        _maybe_log_kite_mcx_diag(df)
+        _apply_mcx_multiplier(df)
+        if not df.empty:
+            df["account"] = account
+            df["type"] = "P"
+        _record_fetch(account, ok=True)
+        df = _enrich_positions(df)
+        _record_lkg_frame("positions", account, df)
+        return df
+    except Exception as e:
+        logger.error("[%s] positions retry after token renewal failed: %s", account, e)
+        return None
+
+
+def _rebuild_margins_after_renewal(broker, kite, account: str) -> "pd.DataFrame | None":
+    """Rebuild margins DataFrame after token renewal. Returns flattened df or None."""
+    try:
+        if broker is not None:
+            data = broker.margins(segment="equity")
+        elif kite is not None:
+            data = kite.margins(segment="equity")
+        else:
+            return None
+        df = pd.DataFrame([data])
+        if "utilised" in df.columns:
+            u = pd.json_normalize(df["utilised"]).add_prefix("util ")
+            df = pd.concat([df.drop(columns=["utilised"]), u], axis=1)
+        if "available" in df.columns:
+            a = pd.json_normalize(df["available"]).add_prefix("avail ")
+            df = pd.concat([df.drop(columns=["available"]), a], axis=1)
+        if not df.empty:
+            df["account"] = account
+            df["type"] = "C"
+        _record_fetch(account, ok=True)
+        _record_lkg_frame("margins", account, df)
+        return df
+    except Exception as e:
+        logger.error("[%s] margins retry after token renewal failed: %s", account, e)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Last-known-good LTP cache
 # ---------------------------------------------------------------------------
@@ -1493,20 +1558,9 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
         _record_fetch(account, ok=True)
     except Exception as e:
         if _is_auth_error_str(str(e)) and account and _maybe_renew_on_auth_error(account):
-            try:
-                raw_holdings = broker.holdings() if broker is not None else kite.holdings()
-                df_holdings = pd.DataFrame(raw_holdings)
-                if not df_holdings.empty:
-                    df_holdings["account"] = account
-                    df_holdings["type"] = "H"
-                _record_fetch(account, ok=True)
-                df_holdings = _enrich_holdings(df_holdings)
-                if account:
-                    _record_lkg_frame("holdings", account, df_holdings)
-                return df_holdings
-            except Exception as e2:
-                logger.error("[%s] holdings retry after token renewal failed: %s", account, e2)
-                e = e2
+            _r = _rebuild_holdings_after_renewal(broker, kite, account)
+            if _r is not None:
+                return _r
         logger.error(f"[{account}] Failed to fetch holdings: {e}")
         df_holdings.attrs['fetch_failed'] = True
         _record_fetch(account, ok=False, error=str(e))
@@ -1977,24 +2031,9 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
             df_positions["type"] = "P"
     except Exception as e:
         if _is_auth_error_str(str(e)) and account and _maybe_renew_on_auth_error(account):
-            try:
-                net_rows = _extract_net_rows(broker, kite)
-                if net_rows is None:
-                    raise RuntimeError("broker.positions() returned None on retry")
-                df_positions = pd.DataFrame(net_rows)
-                _maybe_log_kite_mcx_diag(df_positions)
-                _apply_mcx_multiplier(df_positions)
-                if not df_positions.empty:
-                    df_positions["account"] = account
-                    df_positions["type"] = "P"
-                _record_fetch(account, ok=True)
-                df_positions = _enrich_positions(df_positions)
-                if account:
-                    _record_lkg_frame("positions", account, df_positions)
-                return df_positions
-            except Exception as e2:
-                logger.error("[%s] positions retry after token renewal failed: %s", account, e2)
-                e = e2
+            _r = _rebuild_positions_after_renewal(broker, kite, account)
+            if _r is not None:
+                return _r
         logger.error(f"[{account}] Failed to fetch positions: {e}")
         df_positions.attrs['fetch_failed'] = True
         _record_fetch(account, ok=False, error=str(e))
@@ -2588,32 +2627,9 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
         _record_fetch(account, ok=True)
     except Exception as e:
         if _is_auth_error_str(str(e)) and account and _maybe_renew_on_auth_error(account):
-            try:
-                if broker is not None:
-                    margins_data = broker.margins(segment="equity")
-                elif kite is not None:
-                    margins_data = kite.margins(segment="equity")
-                else:
-                    raise RuntimeError("no broker handle for retry")
-                df_margins = pd.DataFrame([margins_data])
-                if "utilised" in df_margins.columns:
-                    utilised_df = pd.json_normalize(df_margins["utilised"])
-                    utilised_df = utilised_df.add_prefix("util ")
-                    df_margins = pd.concat([df_margins.drop(columns=["utilised"]), utilised_df], axis=1)
-                if "available" in df_margins.columns:
-                    available_df = pd.json_normalize(df_margins["available"])
-                    available_df = available_df.add_prefix("avail ")
-                    df_margins = pd.concat([df_margins.drop(columns=["available"]), available_df], axis=1)
-                if not df_margins.empty:
-                    df_margins["account"] = account
-                    df_margins["type"] = "C"
-                _record_fetch(account, ok=True)
-                if account:
-                    _record_lkg_frame("margins", account, df_margins)
-                return df_margins
-            except Exception as e2:
-                logger.error("[%s] margins retry after token renewal failed: %s", account, e2)
-                e = e2
+            _r = _rebuild_margins_after_renewal(broker, kite, account)
+            if _r is not None:
+                return _r
         logger.error(f"[{account}] Failed to fetch margins: {e}")
         _record_fetch(account, ok=False, error=str(e))
         df_margins.attrs['fetch_failed'] = True
