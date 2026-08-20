@@ -88,7 +88,7 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
  * function (or a wrapper that calls it) instead of reading `p.day_change_val`
  * directly.
  *
- * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null, tradingsymbol?: string|null, symbol?: string|null }} p
+ * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, previous_close?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null, tradingsymbol?: string|null, symbol?: string|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
