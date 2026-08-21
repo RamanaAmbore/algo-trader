@@ -2920,6 +2920,24 @@
     }
   });
 
+  // Pulse is the authoritative source for positions day P&L — it uses live cq
+  // quotes. Write the computed aggregate to positionsDayPnlStore so NavStrip P
+  // reads the same value without recomputing.
+  $effect(() => {
+    const posRows = unifiedRows.filter(r => r._majorGroup === 'positions');
+    /** @type {Record<string, number>} */
+    const pulseByKey = {};
+    let pulseTotal = 0;
+    for (const r of posRows) {
+      const sym = String(r?.tradingsymbol || r?.symbol || '').toUpperCase();
+      if (!sym) continue;
+      const v = r.day_pnl ?? 0;
+      pulseByKey[sym] = (pulseByKey[sym] ?? 0) + v;
+      pulseTotal += v;
+    }
+    positionsDayPnlStore.setFromPulse(pulseByKey, pulseTotal);
+  });
+
   // parseSymbol / parseSymbolFallback have moved to pulseUnified.js.
   // No direct callers remain in this file.
   // MAJOR_ORDER is baked into makeRowFactory in pulseUnified.js.
@@ -2946,14 +2964,6 @@
 
     mergeWatchlistRows(byKey, actLists, wlCtx);
     mergePositionRows(byKey, pos, includePos, cq, posCtx);
-    // SSOT override: positionsDayPnlStore wins for day_pnl on every position
-    // row. positionsDayPnlStore.byKey is keyed "EXCHANGE:SYMBOL"; pulseUnified
-    // byKey is keyed "SYMBOL__pos" — strip the exchange prefix before lookup.
-    for (const [exSym, val] of Object.entries(positionsDayPnlStore.byKey)) {
-      const sym = exSym.split(':').pop();
-      const row = byKey[`${sym}__pos`];
-      if (row) row.day_pnl = val;
-    }
     mergeHoldingRows(byKey, hold, includeHold, cq, holdCtx);
     // SSOT override: holdingsDayPnlStore wins for day_pnl on every holding
     // row. holdingsDayPnlStore.byKey is keyed by plain uppercase tradingsymbol;

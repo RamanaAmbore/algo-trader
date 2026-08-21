@@ -16,13 +16,9 @@
 import { browser } from '$app/environment';
 import { untrack } from 'svelte';
 import { symbolTickCount, getSnapshot } from '$lib/data/symbolStore.svelte.js';
-import { positionsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
+import { positionsStore } from '$lib/data/marketDataStores.svelte.js';
 import { livePositionDayPnl } from '$lib/data/nav.js';
 import { isMarketOpen } from '$lib/marketHours';
-import { mergePositionStores } from '$lib/data/mergePositionStores.js';
-
-// Re-export so callers that already import from this module continue to work.
-export { mergePositionStores };
 
 // Module-level throttle state — safe because this module is never
 // instantiated more than once (Vite keeps one instance per bundled app).
@@ -43,12 +39,18 @@ if (browser) {
   });
 }
 
+// Pulse-authoritative override — written by MarketPulse after each buildUnified.
+// Takes priority over the SSE-only _store computation so NavStrip P reads the
+// same cq-accurate value that Pulse displays per row.
+let _pulseTotal = $state(/** @type {number|null} */ (null));
+let _pulseByKey = $state(/** @type {Record<string,number>|null} */ (null));
+
 const _store = $derived.by(() => {
   // Register reactive dependency on the throttled tick so this block
   // re-runs at most 4 times/sec during SSE burst.
   void _tick;
 
-  const rows = mergePositionStores(positionsStore.value ?? [], pulsePositionsStore.value ?? []);
+  const rows = positionsStore.value ?? [];
   let total = 0;
   /** @type {Record<string, number>} */
   const byKey = {};
@@ -84,9 +86,22 @@ const _store = $derived.by(() => {
 /**
  * Singleton store for positions day P&L.
  *
- * @type {{ readonly total: number, readonly byKey: Record<string, number> }}
+ * `total` and `byKey` are sourced from Pulse (_pulseTotal / _pulseByKey) when
+ * available — Pulse computes these using live cq quotes and is more accurate
+ * than the SSE-throttled _store derivation. Falls back to _store when Pulse
+ * has not yet written (e.g. on pages that don't mount MarketPulse).
  */
 export const positionsDayPnlStore = {
-  get total() { return _store.total; },
-  get byKey()  { return _store.byKey;  },
+  get total() { return _pulseTotal ?? _store.total; },
+  get byKey()  { return _pulseByKey ?? _store.byKey;  },
+  /**
+   * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
+   * and aggregate values. Takes priority over the SSE-only _store computation.
+   * @param {Record<string,number>} byKey
+   * @param {number} total
+   */
+  setFromPulse(byKey, total) {
+    _pulseByKey = byKey;
+    _pulseTotal = total;
+  },
 };

@@ -1,76 +1,122 @@
-# Plan: Fix broker modal nav block + P-slot/Pulse day P&L sync
+# Plan: Fix P-slot/Pulse day P&L sync regression — invert SSOT direction
 
 ## Task
-Two production bugs:
+The previous fix (dual-store merge in positionsDayPnlStore) introduced a regression:
 
-1. **Nav clicks blocked when broker-health modal open** — `.bh-overlay` in
-   `BrokerHealthBadge.svelte` has `z-index: 9990` (nav is `--z-nav: 50`) and no
-   `pointer-events: none`. Full-viewport overlay eats all nav clicks. Fix: add
-   `pointer-events: none` to `.bh-overlay` CSS rule. ESC key and X button already provide
-   dismiss — backdrop-click dismiss is sacrificed and removed.
+**Root cause of regression**: `positionsDayPnlStore` now merges both `positionsStore`
+(may have stale localStorage cache from a previous session, e.g. dcv=+7k) and
+`pulsePositionsStore` (fresh). The merge iteration order `[...p1, ...p2]` (positionsStore
+first) means the stale +7k wins. The SSOT override in `buildUnified` then fires for ALL
+position symbols (byKey is now populated), replacing Pulse's accurate cq-computed -6k
+with the stale +7k. BHEL shows 0 because positionsDayPnlStore now has a 0 entry for it
+(NSE equity, no SSE tick → falls to stale broker dcv=0), and the override fires with 0,
+replacing the cq-computed correct value.
 
-2. **NavStrip P slot shows 0 while Pulse positions shows −6k** — `positionsDayPnlStore` reads
-   only `positionsStore.value` (cross-page poller). Pulse uses isolated `pulsePositionsStore`
-   (different dedup key). On first mount, Pulse loads via `loadPulse()` →
-   `pulsePositionsStore` has rows; `positionsStore` may still be empty.
-   `positionsDayPnlStore.byKey` has no entries → `buildUnified`'s SSOT override loop skips
-   those symbols → Pulse shows `mergePositionRows` cq-computed value (−6k) while NavStrip
-   reads `positionsDayPnlStore.total` = 0. Fix: merge both stores in
-   `positionsDayPnlStore`, preferring rows with non-zero `day_change_val`.
+**Correct architectural fix**: Invert the SSOT direction.
+- BEFORE (broken): positionsDayPnlStore computes from broker dcv → overrides Pulse per-row
+- AFTER (correct): Pulse computes from cq (live quotes) → writes result to positionsDayPnlStore → NavStrip reads from store
+
+This means Pulse rows are always cq-accurate, and NavStrip total mirrors Pulse because
+Pulse writes its computed total/byKey to the store after each buildUnified.
 
 ## Agents
 - backend: skip
-- frontend: Two independent fixes in one agent:
+- frontend: Undo the merge regression and invert the SSOT direction.
 
-  **Fix A — BrokerHealthBadge.svelte** (`frontend/src/lib/BrokerHealthBadge.svelte`):
-  Read the file first. Find the `.bh-overlay` CSS rule (around line 144). Add:
-  ```css
-  pointer-events: none;
+  **Step 1 — Revert positionsDayPnlStore.svelte.js**:
+  Read the current file first. Remove the `pulsePositionsStore` import and the
+  `mergePositionStores` import and call. Restore `const rows = positionsStore.value ?? [];`
+  (back to positionsStore only). Restore the original import line to only import
+  `positionsStore`.
+
+  **Step 2 — Add setFromPulse to positionsDayPnlStore**:
+  Add two module-level `$state` variables:
+  ```js
+  let _pulseTotal = $state(/** @type {number|null} */ (null));
+  let _pulseByKey = $state(/** @type {Record<string,number>|null} */ (null));
   ```
-  This makes the overlay click-transparent — nav links become clickable again.
-  Also remove the `onclick` from the overlay `<div>` since it won't receive clicks with
-  `pointer-events: none`. Change:
-    `<div class="bh-overlay" role="presentation" onclick={() => open = false}>`
-  to:
-    `<div class="bh-overlay" role="presentation">`
+  Update the exported object to:
+  ```js
+  export const positionsDayPnlStore = {
+    get total() { return _pulseTotal ?? _store.total; },
+    get byKey()  { return _pulseByKey ?? _store.byKey;  },
+    /**
+     * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
+     * and aggregate values. Takes priority over the SSE-only _store computation.
+     * @param {Record<string,number>} byKey
+     * @param {number} total
+     */
+    setFromPulse(byKey, total) {
+      _pulseByKey = byKey;
+      _pulseTotal = total;
+    },
+  };
+  ```
 
-  **Fix B — positionsDayPnlStore.svelte.js**
-  (`frontend/src/lib/data/positionsDayPnlStore.svelte.js`):
-  1. Replace the existing `positionsStore`-only import with:
-     ```js
-     import { positionsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
-     ```
-  2. In `_store`'s `$derived.by`, replace `const rows = positionsStore.value ?? [];` with:
-     ```js
-     const p1 = positionsStore.value ?? [];
-     const p2 = pulsePositionsStore.value ?? [];
-     // Merge both stores; prefer row with non-zero day_change_val over stale zero.
-     // positionsStore drives the cross-page poller; pulsePositionsStore drives Pulse's
-     // loadPulse() — isolated dedup keys mean one may populate before the other.
-     const _bySymAcct = new Map();
-     for (const r of [...p1, ...p2]) {
-       const k = `${(r.tradingsymbol || r.symbol || '')}:${r.account || ''}`;
-       const existing = _bySymAcct.get(k);
-       if (!existing) { _bySymAcct.set(k, r); }
-       else if (Number(r.day_change_val) !== 0 && Number(existing.day_change_val) === 0) {
-         _bySymAcct.set(k, r);
-       }
-     }
-     const rows = [..._bySymAcct.values()];
-     ```
+  **Step 3 — Remove the SSOT position override from MarketPulse.svelte**:
+  Read `frontend/src/lib/MarketPulse.svelte` around lines 2949-2956. Find and remove the
+  positions SSOT override block:
+  ```js
+  // SSOT override: positionsDayPnlStore wins for day_pnl on every position row.
+  for (const [exSym, val] of Object.entries(positionsDayPnlStore.byKey)) {
+    const sym = exSym.split(':').pop();
+    const row = byKey[`${sym}__pos`];
+    if (row) row.day_pnl = val;
+  }
+  ```
+  This block must be deleted entirely. Pulse will now use the cq-computed day_pnl from
+  mergePositionRows directly (which is the accurate value using live quote LTP).
 
-  For every file you change or create, you MUST write or update at least one test:
-  - Fix A: add a Playwright spec (or update an existing broker-health spec if one exists)
-    verifying that when the broker chip modal is open, a nav link remains clickable.
-  - Fix B: add a Vitest test in `frontend/src/lib/__tests__/data/` covering:
-    (a) `positionsStore` empty + `pulsePositionsStore` has rows → total = sum of pulse rows
-    (b) same symbol in both stores with dcv=0 in one and dcv=-6000 in the other →
-        merged row uses dcv=-6000
+  **Step 4 — Add Pulse → store write in MarketPulse.svelte**:
+  After removing the SSOT override, add a `$effect` in MarketPulse that writes the
+  positions day_pnl aggregate to positionsDayPnlStore after each unifiedRows update.
+  Place it near the other `$effect` blocks (e.g., near the prefetch effect at line ~2914):
+  ```js
+  // Pulse is the authoritative source for positions day P&L — it uses live cq
+  // quotes. Write the computed aggregate to positionsDayPnlStore so NavStrip P
+  // reads the same value without recomputing.
+  $effect(() => {
+    const posRows = unifiedRows.filter(r => r._majorGroup === 'positions');
+    /** @type {Record<string, number>} */
+    const pulseByKey = {};
+    let pulseTotal = 0;
+    for (const r of posRows) {
+      const sym = String(r?.tradingsymbol || r?.symbol || '').toUpperCase();
+      if (!sym) continue;
+      const v = r.day_pnl ?? 0;
+      pulseByKey[sym] = (pulseByKey[sym] ?? 0) + v;
+      pulseTotal += v;
+    }
+    positionsDayPnlStore.setFromPulse(pulseByKey, pulseTotal);
+  });
+  ```
+  Make sure `positionsDayPnlStore` is imported in MarketPulse.svelte (it likely already is
+  for the SSOT override block).
+
+  **Step 5 — Delete mergePositionStores.js**:
+  Delete `frontend/src/lib/data/mergePositionStores.js` — no longer used.
+
+  **Step 6 — Update/replace the Vitest test file**:
+  File: `frontend/src/lib/__tests__/data/positionsDayPnlDualStore.test.js`
+  The existing tests import from `mergePositionStores.js` (now deleted). Replace them with
+  tests for the `setFromPulse` mechanism. Since positionsDayPnlStore is a module-level
+  singleton (hard to unit-test directly), test the observable behavior:
+  - Import positionsDayPnlStore
+  - Call `positionsDayPnlStore.setFromPulse({NIFTY25AUGFUT: -6000}, -6000)`
+  - Assert `positionsDayPnlStore.total === -6000`
+  - Assert `positionsDayPnlStore.byKey['NIFTY25AUGFUT'] === -6000`
+  - Call `positionsDayPnlStore.setFromPulse({}, 0)`; assert total falls back to _store (which is 0 in test env)
+
+  For every file you change or create, you MUST write or update at least one test that covers
+  the changed behaviour. This is mandatory.
+
+  Run `cd frontend && npx svelte-check --output machine 2>&1 | tail -5` and
+  `cd frontend && npx vitest run 2>&1 | tail -8` to verify before reporting done.
 
 - broker: skip
 - doc: skip
 - backend-test: skip
-- playwright: skip (frontend agent handles Playwright)
+- playwright: skip
 
 ## Tests
 - pytest: no
@@ -78,9 +124,12 @@ Two production bugs:
 - playwright: no
 
 ## Commit message
-fix(nav,pnl): broker modal pointer-events + positionsDayPnlStore dual-store merge for P-slot sync
+fix(pnl): invert P-slot SSOT direction — Pulse writes cq-accurate day P&L to positionsDayPnlStore instead of store overriding Pulse rows
 
 ## Done when
-- Clicking nav links while broker health modal is open navigates correctly
-- NavStrip P slot and Pulse positions day P&L agree from first page mount
-- svelte-check clean + Vitest passes
+- Pulse positions day P&L shows cq-accurate values (no SSOT override degrading them)
+- NavStrip P slot reads the same total that Pulse computed (via setFromPulse)
+- BHEL and NSE equity positions show correct non-zero day P&L in Pulse (cq-computed)
+- F&O option rows show correct day P&L in Pulse (same regression root cause)
+- mergePositionStores.js deleted
+- svelte-check 0 errors, vitest passes
