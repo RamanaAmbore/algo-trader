@@ -46,12 +46,16 @@ function computeHoldingsDayPnl(holdings = [], snapshots = /** @type {Record<stri
       ? Number(snapLtp)
       : Number(h?.last_price ?? 0);
 
-    const closePx = Number(h?.previous_close) || Number(h?.close_price) || 0;
+    const closePx = Number(h?.previous_close) || Number(h?.close_price) || Number(h?.ohlc?.close) || 0;
+    const avgCost = Number(h?.average_price) || 0;
     const heldQty = Number(h?.quantity)       || 0;
     const dcv     = Number(h?.day_change_val) || 0;
 
     let val;
-    if (liveLtp > 0 && closePx > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
+    // Guard: closePx missing or equals avgCost → data-source issue, use dcv.
+    if (closePx === 0 || closePx === avgCost) {
+      val = dcv;
+    } else if (liveLtp > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
       val = (liveLtp - closePx) * heldQty;
     } else {
       val = dcv;
@@ -466,5 +470,139 @@ describe('holdingsDayPnlStore — previous_close field (frozen prior-session pri
 
     // closePx = previous_close = 500.002; |500.002 - 500.002| = 0 ≤ 0.005 → guard → dcv = 80
     expect(result.byKey['WIPRO']).toBe(80);
+  });
+});
+
+// ── Test 10: ohlc.close tertiary fallback ────────────────────────────────────
+
+describe('holdingsDayPnlStore — ohlc.close tertiary fallback', () => {
+  it('uses ohlc.close when previous_close and close_price are both 0', () => {
+    // Kite sometimes puts prev close only in ohlc.close for holdings
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'AXISBANK',
+      previous_close: 0,
+      close_price:    0,
+      ohlc:           { close: 1100 },
+      last_price:     1115,
+      quantity:       8,
+      opening_quantity: 8,
+      day_change_val: 120,
+    })];
+    const snapshots = { AXISBANK: { ltp: 1115 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // closePx = ohlc.close = 1100; (1115-1100)*8 = 120
+    expect(result.byKey['AXISBANK']).toBeCloseTo(120, 4);
+  });
+
+  it('ohlc.close = 0: closes fallback chain, uses day_change_val', () => {
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'BANDHANBNK',
+      previous_close: 0,
+      close_price:    0,
+      ohlc:           { close: 0 },
+      last_price:     200,
+      quantity:       10,
+      opening_quantity: 10,
+      day_change_val: 50,
+    })];
+    const snapshots = { BANDHANBNK: { ltp: 205 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // all close sources = 0 → closePx = 0 → guard fires → dcv = 50
+    expect(result.byKey['BANDHANBNK']).toBe(50);
+  });
+
+  it('previous_close wins over ohlc.close when both present and non-zero', () => {
+    // Priority: previous_close > close_price > ohlc.close
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'ICICIBANK',
+      previous_close: 1050,
+      close_price:    1060,
+      ohlc:           { close: 1070 },
+      last_price:     1080,
+      quantity:       5,
+      opening_quantity: 5,
+      day_change_val: 0,
+      average_price:  900,
+    })];
+    const snapshots = { ICICIBANK: { ltp: 1080 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // closePx = previous_close = 1050 (highest priority); (1080-1050)*5 = 150
+    expect(result.byKey['ICICIBANK']).toBeCloseTo(150, 4);
+  });
+});
+
+// ── Test 11: closePx === avgCost guard ───────────────────────────────────────
+
+describe('holdingsDayPnlStore — closePx === avgCost guard', () => {
+  it('when closePx equals avgCost (data-source mixup): falls back to day_change_val', () => {
+    // Bug scenario: backend sends average_price in the close field, so
+    // day P&L formula gives lifetime P&L instead of day P&L.
+    // Guard: closePx === avgCost → use dcv instead.
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'SBIN',
+      previous_close: 750,    // this is what close_price will equal if mixed up
+      close_price:    750,
+      average_price:  750,    // same value → closePx === avgCost → guard fires
+      last_price:     760,
+      quantity:       20,
+      opening_quantity: 20,
+      day_change_val: 200,
+    })];
+    const snapshots = { SBIN: { ltp: 760 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // Without guard: (760-750)*20 = 200, same as dcv — but guard fires so dcv used.
+    // The guard is designed to protect the case where they differ materially.
+    // Here dcv=200 = formula=200, so total is the same; guard still fires.
+    expect(result.byKey['SBIN']).toBe(200);
+  });
+
+  it('closePx !== avgCost: formula fires normally (no false guard)', () => {
+    // avgCost = 700 (cost basis), closePx = 750 (prior session close)
+    // These differ → guard must NOT fire → live formula used.
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'BHARTIARTL',
+      previous_close: 750,
+      close_price:    750,
+      average_price:  700,    // different from close → no guard
+      last_price:     760,
+      quantity:       15,
+      opening_quantity: 15,
+      day_change_val: 150,
+    })];
+    const snapshots = { BHARTIARTL: { ltp: 760 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // closePx = 750, avgCost = 700 → guard does not fire → (760-750)*15 = 150
+    expect(result.byKey['BHARTIARTL']).toBeCloseTo(150, 4);
+  });
+
+  it('closePx === avgCost but avgCost === 0: falls back to dcv (zero-avgCost edge)', () => {
+    // avgCost = 0 means average_price not set; closePx will also be 0 via guard.
+    // The closePx===0 branch fires before the avgCost===closePx branch.
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'DUMMY',
+      previous_close: 0,
+      close_price:    0,
+      average_price:  0,
+      last_price:     100,
+      quantity:       5,
+      opening_quantity: 5,
+      day_change_val: 30,
+    })];
+    const snapshots = { DUMMY: { ltp: 100 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // closePx=0 → guard (closePx===0 branch) fires → dcv=30
+    expect(result.byKey['DUMMY']).toBe(30);
   });
 });

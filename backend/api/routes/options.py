@@ -2238,7 +2238,15 @@ async def _chain_quotes_batch_quote(
     quote_resp: dict = {}
     if keys:
         try:
-            quote_resp = await asyncio.to_thread(get_market_data_broker().quote, keys) or {}
+            quote_resp = await asyncio.wait_for(
+                asyncio.to_thread(get_market_data_broker().quote, keys),
+                timeout=10.0,
+            ) or {}
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[chain-quotes] broker.quote timed out after 10s for %d keys", len(keys)
+            )
+            quote_resp = {}
         except Exception as e:
             logger.warning(f"chain-quotes quote() failed for {und}/{exp}: {e}")
     return quote_resp, key_meta
@@ -2633,8 +2641,10 @@ class OptionsController(Controller):
         # (two 300-500 MB instrument dumps in memory simultaneously). The
         # background _task_instruments warms the cache at T+120s after restart.
         # Until then, return empty so the 5s frontend poll retries naturally.
+        # Prefer instruments_chain (NFO+MCX only, ~35K rows) when available
+        # to avoid scanning 156K rows on every chain-quotes call.
         from backend.api.cache import peek as _cache_peek
-        inst_resp = _cache_peek("instruments")
+        inst_resp = _cache_peek("instruments_chain") or _cache_peek("instruments")
         if inst_resp is None:
             logger.debug("chain-quotes: instruments cache cold — returning empty")
             return ChainQuotesResponse(underlying=und, expiry=exp, expiries=[], rows=[])
@@ -2661,6 +2671,14 @@ class OptionsController(Controller):
             _cached = _chain_quotes_closed_cache_get(_closed_cache_key)
             if _cached is not None:
                 return _cached
+            # Off-market guard: cache miss and market closed — return empty rows
+            # rather than calling broker.quote() which would hang or return stale data.
+            return ChainQuotesResponse(
+                underlying=und,
+                expiry=exp,
+                expiries=all_expiries,
+                rows=[],
+            )
 
         # Build quote keys, fire one broker.quote() call.
         quote_resp, key_meta = await _chain_quotes_batch_quote(sym_by_strike, und, exp)

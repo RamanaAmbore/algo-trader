@@ -220,6 +220,45 @@ def _fetch_instruments() -> InstrumentsResponse:
     )
 
 
+def _fetch_chain_instruments() -> "InstrumentsResponse | None":
+    """Fetch NFO + MCX instruments only — subset used by chain-quotes.
+
+    Returns ~35K rows vs 156K for the full dump, dramatically reducing
+    both the payload size and the scan cost of chain-quotes lookups.
+    Returns None (not an empty response) when no Kite account is loaded,
+    so the background task can distinguish 'no data' from 'empty exchange'.
+
+    Must use a Kite broker — same constraint as _fetch_instruments.
+    NEVER falls over to Dhan/Groww (schema incompatibility).
+    """
+    from backend.brokers.registry import _loaded_accounts, _broker_id_for
+    accts = _loaded_accounts()
+    kite_accts = [a for a in accts if _broker_id_for(a) in {"zerodha_kite", "kite"}]
+    if not kite_accts:
+        logger.warning("Chain-instruments: no Kite account loaded — skipping")
+        return None
+
+    _chain_exchanges = ("NFO", "MCX")
+    items: list[Instrument] = []
+    for exch in _chain_exchanges:
+        raw = _fetch_exchange_raw(exch, kite_accts)
+        if raw is None:
+            continue
+        _mcx_diag_logged: set[str] = set()
+        for inst in raw:
+            items.append(_build_instrument_row(inst, exch, _mcx_diag_logged))
+
+    logger.info(
+        f"Chain-instruments: loaded {len(items)} rows "
+        f"across {len(_chain_exchanges)} exchanges (NFO+MCX)"
+    )
+    return InstrumentsResponse(
+        cycle_date=date.today().isoformat(),
+        count=len(items),
+        items=items,
+    )
+
+
 class InstrumentsController(Controller):
     path = "/api/instruments"
     guards = [auth_or_demo_guard]

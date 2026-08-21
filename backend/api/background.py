@@ -1949,6 +1949,50 @@ async def _task_instruments() -> None:
         await _warm()
 
 
+async def _task_chain_instruments() -> None:
+    """Warm NFO+MCX instruments cache at T+30s, then refresh daily at 08:02 IST.
+
+    Loads only NFO + MCX instruments (~35K rows) instead of the full 156K
+    row dump, keeping memory pressure low and chain-quotes scans fast.
+    Intentionally starts 30s after startup (well before _task_instruments at
+    T+120s) so chain-quotes becomes responsive quickly after a restart.
+
+    No timeout_seconds — OOM invariant from 2026-07-25 bans timeouts on
+    instrument downloads. The while True loop is mandatory — supervised
+    tasks must park, not return (returning triggers _supervised tight loop).
+    """
+    import time as _time
+    from backend.api.cache import _store
+    from backend.api.routes.instruments import _fetch_chain_instruments
+
+    async def _warm():
+        try:
+            result = await _run(_fetch_chain_instruments)
+            if result is not None:
+                _store["instruments_chain"] = (_time.monotonic() + 86400, result)
+                logger.info(
+                    f"[bg-chain-instruments] cached {result.count} NFO+MCX instruments"
+                )
+        except Exception as exc:
+            logger.warning(f"[bg-chain-instruments] fetch failed: {exc}")
+
+    await asyncio.sleep(30)
+    await _warm()
+
+    while True:
+        now = timestamp_indian()
+        # Refresh at 08:02 IST daily (2 minutes after Kite master at 08:00)
+        next_run = now.replace(hour=8, minute=2, second=0, microsecond=0)
+        if next_run <= now:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(
+            f"[bg-chain-instruments] sleeping {sleep_s/3600:.1f}h until next warm"
+        )
+        await asyncio.sleep(sleep_s)
+        await _warm()
+
+
 async def _task_sim_cleanup() -> None:
     """
     Prune sim_iterations + their related sim_mode agent_events and
@@ -5667,6 +5711,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(lambda: _task_performance(state),      name="bg-performance"),     name="bg-performance"),
         asyncio.create_task(_supervised(_task_expiry_check,                    name="bg-expiry"),          name="bg-expiry"),
         asyncio.create_task(_supervised(_task_instruments,                     name="bg-instruments"),     name="bg-instruments"),
+        asyncio.create_task(_supervised(_task_chain_instruments,               name="bg-chain-instruments"), name="bg-chain-instruments"),
         asyncio.create_task(_supervised(_task_daily_snapshot,                  name="bg-daily-snapshot"),  name="bg-daily-snapshot"),
         asyncio.create_task(_supervised(_task_sim_cleanup,                     name="bg-sim-cleanup"),     name="bg-sim-cleanup"),
         asyncio.create_task(_supervised(_task_mcp_audit_cleanup,               name="bg-mcp-audit-cleanup"), name="bg-mcp-audit-cleanup"),

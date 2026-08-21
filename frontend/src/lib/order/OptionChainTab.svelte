@@ -257,14 +257,41 @@
   let _chainExpiriesLoading = $state(false);
   $effect(() => {
     const u = chainUnderlying;
-    if (!u) { chainExpiries = []; return; }
-    _chainExpiriesLoading = true;
-    fetchChainExpiries(u)
-      .then(/** @param {any} d */ (d) => {
-        chainExpiries = Array.isArray(d?.expiries) ? d.expiries : [];
-        _chainExpiriesLoading = false;
-      })
-      .catch(() => { chainExpiries = []; _chainExpiriesLoading = false; });
+    let retryCount = 0;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    let retryTimer = null;
+
+    function cancel() {
+      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    }
+
+    function attempt() {
+      if (!u) { chainExpiries = []; return; }
+      _chainExpiriesLoading = true;
+      fetchChainExpiries(u)
+        .then(/** @param {any} d */ (d) => {
+          const expiries = Array.isArray(d?.expiries) ? d.expiries : [];
+          if (expiries.length > 0 || retryCount >= 12) {
+            chainExpiries = expiries;
+            _chainExpiriesLoading = false;
+          } else {
+            retryCount++;
+            retryTimer = setTimeout(attempt, 5000);
+          }
+        })
+        .catch(() => {
+          if (retryCount < 12) {
+            retryCount++;
+            retryTimer = setTimeout(attempt, 5000);
+          } else {
+            chainExpiries = [];
+            _chainExpiriesLoading = false;
+          }
+        });
+    }
+
+    attempt();
+    return cancel;
   });
   // Human-readable expiry label for the picker. Input is YYYY-MM-DD;
   // output is e.g. "26 Jun 2026" / "26 Jun 2026 (Thu)" so the
@@ -452,6 +479,11 @@
     }
   }
   $effect(() => {
+    if (!chainExpiry) {
+      chainQuotesPoll?.();
+      chainQuotesPoll = null;
+      return;
+    }
     void chainUnderlying; void chainExpiry;
     untrack(() => {
       if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; }

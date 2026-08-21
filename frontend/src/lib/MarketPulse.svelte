@@ -2868,6 +2868,11 @@
   // After 125+ symbols the old `_prefetchTimers.length * 80` delay would
   // exceed 10s; this counter resets toward zero as each request completes.
   let _prefetchPending = $state(0);
+  // Paisa-level change gate for positionsDayPnlStore.setFromPulse — prevents
+  // no-op $state writes (and consequent NavStrip/NavCard re-renders) at full
+  // SSE rate (~10 Hz). Only fires when the total changed by at least 1 paisa.
+  /** @type {number | null} */
+  let _lastPulseTotal = null;
   function _stagedPrefetch(sym, exch) {
     if (!sym || _prefetchedChartSyms.has(sym)) return;
     _prefetchedChartSyms.add(sym);
@@ -2935,7 +2940,10 @@
       pulseByKey[sym] = (pulseByKey[sym] ?? 0) + v;
       pulseTotal += v;
     }
-    positionsDayPnlStore.setFromPulse(pulseByKey, pulseTotal);
+    if (Math.round(pulseTotal * 100) !== Math.round((_lastPulseTotal ?? NaN) * 100)) {
+      _lastPulseTotal = pulseTotal;
+      positionsDayPnlStore.setFromPulse(pulseByKey, pulseTotal);
+    }
   });
 
   // parseSymbol / parseSymbolFallback have moved to pulseUnified.js.

@@ -9,9 +9,11 @@
  *
  * Formula per row (mirrors mergeHoldingRows and _liveHoldingsToday):
  *   liveLtp  = getSnapshot(sym)?.ltp ?? h.last_price
- *   closePx  = Number(h.close_price) || 0
+ *   closePx  = h.previous_close || h.close_price || h.ohlc?.close || 0
+ *   avgCost  = Number(h.average_price) || 0
  *   heldQty  = Number(h.quantity) || 0
- *   day_pnl  = (liveLtp > 0 && closePx > 0 && heldQty !== 0 && |liveLtp−closePx| > 0.005)
+ *   Guard: if closePx===0 or closePx===avgCost → fall back to day_change_val
+ *   day_pnl  = (liveLtp > 0 && heldQty !== 0 && |liveLtp−closePx| > 0.005)
  *              ? (liveLtp − closePx) × heldQty
  *              : Number(h.day_change_val) || 0
  *
@@ -70,12 +72,21 @@ const _store = $derived.by(() => {
       ? Number(snapLtp)
       : Number(h?.last_price ?? 0);
 
-    const closePx  = Number(h?.previous_close) || Number(h?.close_price) || 0;
+    const closePx  = Number(h?.previous_close) || Number(h?.close_price) || Number(h?.ohlc?.close) || 0;
+    const avgCost  = Number(h?.average_price) || 0;
     const heldQty  = Number(h?.quantity) || 0;
     const dcv      = Number(h?.day_change_val)  || 0;
 
     let val;
-    if (liveLtp > 0 && closePx > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
+    // Guard: if closePx is 0 or equals avgCost, the close field is absent or
+    // mixed with average_price (a data-source bug). Fall back to dcv to
+    // avoid computing a wrong value (lifetime P&L instead of day P&L).
+    if (closePx === 0 || closePx === avgCost) {
+      if (import.meta.env.DEV && closePx === avgCost && avgCost > 0) {
+        console.warn('[holdingsDayPnlStore] closePx === avgCost for', sym, '— falling back to day_change_val');
+      }
+      val = dcv;
+    } else if (liveLtp > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
       // Live formula — mirrors _liveHoldingsToday and mergeHoldingRows.
       // Post-settlement guard: skip when ltp ≈ close (Kite resets
       // last_price = close_price = settlement_price → delta ≈ 0).
