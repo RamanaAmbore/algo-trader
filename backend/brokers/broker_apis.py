@@ -2114,6 +2114,26 @@ def _bmd_build_key_index(df):
                     if 'last_price' in df.columns
                     else pd.Series(False, index=df.index))
     _missing = _cls_missing | _ltp_missing
+
+    # Stale fingerprint: overnight F&O position where Kite REST LTP = close_price
+    # (WS tick not yet received; day_change_val collapses to 0 when ltp = cls).
+    # Extend the backfill batch so PriceBroker.quote() delivers a fresh LTP and
+    # _bmd_recompute_derived can fix day_change_val = (fresh_ltp - cls) × qty.
+    _FO_EXCH = {'NFO', 'MCX', 'CDS', 'BFO'}
+    if ('overnight_quantity' in df.columns and 'exchange' in df.columns
+            and 'last_price' in df.columns and 'close_price' in df.columns):
+        _oq_s   = pd.to_numeric(df['overnight_quantity'], errors='coerce').fillna(0)
+        _exch_s = df['exchange'].fillna('').astype(str).str.upper()
+        _ltp_s  = pd.to_numeric(df['last_price'],  errors='coerce').fillna(0)
+        _cls_s  = pd.to_numeric(df['close_price'], errors='coerce').fillna(0)
+        _stale_fp = (
+            (_oq_s != 0) &
+            (_exch_s.isin(_FO_EXCH)) &
+            (_ltp_s > 0) & (_cls_s > 0) &
+            ((_ltp_s - _cls_s).abs() <= 0.005)
+        )
+        _missing = _missing | _stale_fp
+
     if not _missing.any():
         return None, [], []
 

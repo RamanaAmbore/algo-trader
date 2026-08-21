@@ -153,8 +153,15 @@ export function aggregateDayPnlForPositions(rows) {
  *   realisedToday = brokerDcv − (pollLtp − closePx) × qty
  *   result        = realisedToday + (liveLtp − closePx) × qty
  *
- * Fallback: contracts opened today (closePx = 0, avg > 0):
+ * Fallback: contracts opened TODAY (closePx = 0, avg > 0, oq === 0):
  *   result = (liveLtp − avg) × qty
+ *
+ *   Guard: `oq === 0` (overnight_quantity) ensures this path fires only for
+ *   intraday-new positions where avg is the actual entry cost. Overnight
+ *   positions with closePx = 0 (stale/missing close from broker) must NOT use
+ *   avg as the reference — doing so would show lifetime P&L instead of day P&L.
+ *   Those fall through to `baseDayPnlForPosition(dcvRow)` which returns 0 via
+ *   Case 4 (honest "unknown" when no prior close is available).
  *
  * Otherwise: `baseDayPnlForPosition(dcvRow)`.
  *
@@ -177,6 +184,7 @@ export function aggregateDayPnlForPositions(rows) {
 export function livePositionDayPnl({ closePx, pollLtp, qty, avg, dcvRow }, liveLtp, { marketOpen }) {
   const brokerDcv = baseDayPnlForPosition(dcvRow);
   const live = (marketOpen && Number(liveLtp) > 0) ? Number(liveLtp) : null;
+  const oq = Number(dcvRow?.overnight_quantity ?? 0);
   if (live != null && closePx > 0 && qty !== 0) {
     // Realised-today component: broker's dcv minus the overnight mark-to-close
     // residual, so adding the live residual gives the full intraday P&L.
@@ -185,8 +193,10 @@ export function livePositionDayPnl({ closePx, pollLtp, qty, avg, dcvRow }, liveL
       : brokerDcv;
     return realisedToday + (live - closePx) * qty;
   }
-  if (marketOpen && live != null && closePx === 0 && avg > 0 && qty !== 0) {
-    // Position opened today — no prior close, track from avg_cost.
+  if (marketOpen && live != null && closePx === 0 && avg > 0 && qty !== 0 && oq === 0) {
+    // Position opened TODAY — no prior close, track from avg_cost.
+    // Guard: oq === 0 ensures this only fires for intraday positions (overnight
+    // positions with closePx=0 should return 0, not lifetime P&L from avg).
     return (live - avg) * qty;
   }
   return brokerDcv;

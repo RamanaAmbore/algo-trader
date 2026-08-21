@@ -645,3 +645,88 @@ class TestDhanIntervalSkipLkgFallback:
             "only the breaker path should carry this attr"
         )
         assert result.attrs.get("interval_skipped") is True
+
+
+# ---------------------------------------------------------------------------
+# 5. _bmd_build_key_index — stale-fingerprint extension (Aug 2026)
+# ---------------------------------------------------------------------------
+
+class TestBmdStaleFingerprint:
+    """_bmd_build_key_index must include overnight F&O rows where Kite REST
+    returns last_price == close_price (stale fingerprint: WS tick not yet
+    received). Without this, day_change_val stays 0 for all surfaces
+    (derivatives, MarketPulse, NavStrip) until the first WS tick arrives.
+
+    Quality dimensions:
+      * SSOT — single mask extension inside _bmd_build_key_index; no changes
+        needed in _bmd_patch_rows or _bmd_recompute_derived.
+      * Perf — one vectorised comparison added; no per-row Python loop.
+      * Stale-code grep — tolerance is 0.005 (matches the existing stale-close
+        guard used elsewhere in the codebase).
+      * Reuse — re-uses the same _FO_EXCH set pattern as other F&O guards.
+      * UX — day_change_val is recovered as (fresh_ltp - cls) × qty once
+        PriceBroker.quote() delivers a live LTP.
+    """
+
+    def test_bmd_stale_fingerprint_nfo_overnight(self):
+        """Overnight NFO row with ltp == close_price is included in mask."""
+        import pandas as pd
+        from backend.brokers.broker_apis import _bmd_build_key_index
+
+        df = pd.DataFrame([{
+            'overnight_quantity': 5, 'exchange': 'NFO',
+            'last_price': 150.0, 'close_price': 150.0,
+            'tradingsymbol': 'INFY25AUG25C100CE',
+        }])
+        mask, _, _ = _bmd_build_key_index(df)
+        assert mask is not None and bool(mask.iloc[0]), (
+            "Stale NFO overnight row must be in backfill mask"
+        )
+
+    def test_bmd_stale_fingerprint_not_for_intraday(self):
+        """New position today (overnight_quantity=0) with ltp==close is NOT included."""
+        import pandas as pd
+        from backend.brokers.broker_apis import _bmd_build_key_index
+
+        df = pd.DataFrame([{
+            'overnight_quantity': 0, 'exchange': 'NFO',
+            'last_price': 150.0, 'close_price': 150.0,
+            'tradingsymbol': 'INFY25AUG25C100CE',
+        }])
+        mask, _, _ = _bmd_build_key_index(df)
+        # mask may be None (all False) or have False for this row
+        if mask is not None:
+            assert not bool(mask.iloc[0]), (
+                "Intraday (oq=0) stale row must NOT be in backfill mask"
+            )
+
+    def test_bmd_stale_fingerprint_not_for_equity(self):
+        """NSE equity row with ltp==close is NOT included (equity lacks this pattern)."""
+        import pandas as pd
+        from backend.brokers.broker_apis import _bmd_build_key_index
+
+        df = pd.DataFrame([{
+            'overnight_quantity': 5, 'exchange': 'NSE',
+            'last_price': 150.0, 'close_price': 150.0,
+            'tradingsymbol': 'INFY',
+        }])
+        mask, _, _ = _bmd_build_key_index(df)
+        if mask is not None:
+            assert not bool(mask.iloc[0]), (
+                "NSE equity row must NOT be in backfill mask"
+            )
+
+    def test_bmd_stale_fingerprint_mcx_overnight(self):
+        """MCX overnight short position (oq=-1) with ltp==close IS included."""
+        import pandas as pd
+        from backend.brokers.broker_apis import _bmd_build_key_index
+
+        df = pd.DataFrame([{
+            'overnight_quantity': -1, 'exchange': 'MCX',
+            'last_price': 5000.0, 'close_price': 5000.0,
+            'tradingsymbol': 'CRUDEOIL25AUGFUT',
+        }])
+        mask, _, _ = _bmd_build_key_index(df)
+        assert mask is not None and bool(mask.iloc[0]), (
+            "Stale MCX overnight row must be in backfill mask"
+        )

@@ -199,6 +199,49 @@ describe('livePositionDayPnl', () => {
     const result = livePositionDayPnl(fields, 97, { marketOpen: true });
     expect(result).toBe(15);
   });
+
+  it('overnight position with closePx=0 and live tick returns 0 (not lifetime P&L)', () => {
+    // Bug: before the oq === 0 guard, this fired (live - avg) * qty = (310 - 250) * 5 = 300
+    // which is lifetime P&L masquerading as day P&L.
+    // After fix: oq > 0 fails the guard → falls through to baseDayPnlForPosition
+    // which returns 0 via Case 4 (close_price <= 0).
+    const dcvRow = {
+      overnight_quantity: 5,
+      quantity: 5,
+      pnl: 1500,          // (300 - avg) × 5 = lifetime pnl
+      day_change_val: 0,
+      close_price: 0,
+      previous_close: 0,
+      average_price: 250,  // entry cost from prior sessions
+    };
+    const result = livePositionDayPnl(
+      { closePx: 0, pollLtp: 0, qty: 5, avg: 250, dcvRow },
+      310,  // live SSE tick well above avg
+      { marketOpen: true }
+    );
+    // Before fix: (310 - 250) × 5 = 300 (lifetime P&L masquerade)
+    // After fix: 0 (honest "unknown" — no prior close available)
+    expect(result).toBe(0);
+  });
+
+  it('intraday position with closePx=0 and live tick returns (live - avg) * qty', () => {
+    // oq === 0 → new position today; avg is the actual entry cost so the formula is correct.
+    const dcvRow = {
+      overnight_quantity: 0,
+      quantity: 5,
+      pnl: 300,           // (310 - 250) × 5
+      day_change_val: 0,
+      close_price: 0,
+      previous_close: 0,
+      average_price: 250,
+    };
+    const result = livePositionDayPnl(
+      { closePx: 0, pollLtp: 0, qty: 5, avg: 250, dcvRow },
+      310,
+      { marketOpen: true }
+    );
+    expect(result).toBe((310 - 250) * 5);  // 300 — correct for intraday
+  });
 });
 
 // ── navTotalRow ──────────────────────────────────────────────────────────────
