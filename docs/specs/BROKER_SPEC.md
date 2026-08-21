@@ -77,7 +77,7 @@ All adapters return **Zerodha Kite-normalised shapes**. Callers never branch per
 | `historical_data(...)` | `list[dict]` with `date`, `open`, `high`, `low`, `close`, `volume` |
 | `holidays(exchange, year)` | `set[str]` ISO date strings |
 
-**Auth invariant**: Adapters handle token refresh transparently. Callers never see `401`. When a fetch raises an auth error, `_maybe_renew_on_auth_error()` immediately retries the call after re-login (one attempt). If the retry also fails, a domain exception is raised and caught by the circuit breaker.
+**Auth invariant**: Adapters handle token refresh transparently. Callers never see `401`. When a fetch raises an auth error, the `@for_all_accounts` decorator's `_per_account` handler (in `backend/shared/helpers/decorators.py`) detects the error via `is_auth_error_str()`, calls `_try_renew(account, connections)` to refresh the token, and retries the function once with fresh handles. If the retry also fails, the exception is re-raised and caught by the circuit breaker.
 
 ---
 
@@ -209,6 +209,16 @@ prefix.
 600s; the old 300s window caused perpetual amber on cold-priority accounts even when
 healthy. New 660s window (1.1×) allows one full cold poll cycle to complete without
 the account flipping amber mid-cycle.
+
+**Account loading cache with UDS fallback** (Aug 2026): `_loaded_accounts()` in
+`backend/api/routes/brokers.py` now maintains a module-level `_last_known_remote_accounts`
+cache (set[str]). When listing accounts for the navbar chip (e.g., "3/5 accounts healthy"),
+the function calls `list_remote_accounts()` to fetch the current list from the conn_service.
+If conn_service returns empty (brief UDS unavailability at 06:00 IST token-expiry restarts),
+the cache serves the last successful list instead. This prevents the navbar from flipping
+0/5 → 5/5 during transient 5-second conn_service restart windows. Operator sees stable
+chip ("3/5") even when UDS briefly blinks. Cache persists across requests but clears on
+process restart.
 
 Health surface: `GET /api/admin/broker-health`
 
@@ -1227,20 +1237,26 @@ refreshes if True, preventing expired-credential exceptions on the critical path
 
 ### On-demand token renewal on auth failure
 
-**File**: `backend/brokers/broker_apis.py` — `_maybe_renew_on_auth_error(account)`
+**File**: `backend/shared/helpers/decorators.py` — `@for_all_accounts._per_account._try_renew`
 
-When any broker fetch (`_fetch_margins_local`, `_fetch_holdings_local`, `_fetch_positions_local`)
-raises an exception and `_is_auth_error_str(str(exc))` is True, the system immediately
-attempts token renewal before recording the failure:
+**Auth error signal detection**: `backend/shared/helpers/auth_error.py` — `is_auth_error_str(err)`
 
-1. `_maybe_renew_on_auth_error(account)` dispatches to the connection's re-auth method:
+Zero-dependency helper module that detects 401/403/token-expiry signals in error strings
+without importing the broker layer. Used by both the decorator and broker_apis layer.
+
+When any broker fetch raises an exception, `_per_account` (inside `@for_all_accounts`) checks
+if the error string matches auth-failure signals via `is_auth_error_str()`. If True:
+
+1. `_try_renew(account, connections)` dispatches to the connection's re-auth method (duck-typed):
    - `KiteConnection` → `get_kite_conn(test_conn=True)`
-   - `DhanConnection` → `get_dhan_conn(test_conn=True)`
-   - `GrowwConnection` → `conn.refresh()`
-2. If renewal succeeds, the fetch is retried once.
-3. If the retry also fails, the normal error path fires (`_record_fetch(ok=False)` → circuit breaker).
+   - `DhanConnection` → `get_dhan_conn(test_conn=True)` (then rebuild broker via `get_broker`)
+   - `GrowwConnection` → `conn.refresh()` (then rebuild broker via `get_broker`)
+2. If renewal succeeds, the original function is retried once with fresh handles
+3. If the retry also fails, the exception is re-raised and propagates to the caller
 
-Logs `[TOKEN-RENEW] {account}: auth error detected — renewing token` at INFO.
+Logs `[TOKEN-RENEW] {account}: auth error — renewing token` at INFO (per-broker branch).
+Renewal failures log warnings but do not block the original exception from propagating.
+
 This is a safety net independent of the proactive prewarm schedule — if a token expires
 between prewarm cycles for any reason, the first failed fetch self-heals without operator
 intervention.
@@ -1647,3 +1663,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-14 | v1.17 Order-pair feature (commit 6f374a1a): Added §8.6 Order Pairing — Parent-Child Relationship Linking documenting `POST /api/orders/pair` endpoint (validation: parent + child must exist and be distinct, child cannot have existing parent); updates `AlgoOrder.parent_order_id` on child row. PositionRow schema additions: `is_orphan: bool` (True when no open AlgoOrder matches position's account/tradingsymbol), `pair_group_key: str\|None` (shared root AlgoOrder ID for linked positions). Frontend: `OrderPairModal.svelte` for establishing pairs; MarketPulse shows coral "O" badge on orphan positions; `postSortRows` keeps paired positions adjacent in grid; ChaseCard shows "O" chip for dangling children. |
 | 2026-08-15 | v1.18 Admin snapshot trigger + Dhan EOD fallback + weekend guard (commit TBD): Added §7.3.2 Admin Snapshot Trigger documenting `POST /api/admin/pnl/snapshot` endpoint with `market_open` override. Changed holiday-aware detection from time-only `_is_exchange_open_at()` to full `is_any_segment_open()` (checks both hours + holiday calendar). Added §7.3.3 Dhan `last_price=0` Fallback in EOD Snapshots documenting `_snap_holding_eod_vals()` fallback chain: `close_price` → `previous_close` → `last_price=0` when mid_session=False. Ensures Dhan holdings appear in Pulse on non-trading days. Added §7.3.4 Weekend Guard for Filtered Holdings & Positions documenting per-category upsert skip: holdings filtered → skip holdings only, positions filtered → skip positions only (prior: filtered either → skip both). Fixes weekend Dhan holdings disappearing when open positions flatten. Renumbered subsequent sections (7.3.5 Firm NAV). |
 | 2026-08-16 | v1.19 Day P&L backstop Case 2 + Holdings Dhan/Groww fallback (commit 7b8d432c): Updated `backend/api/algo/pnl_math.py:apply_day_change_backstop()` to handle Case 2: overnight positions where LTP gate zeroed `day_change_val` but broker `pnl` is valid (`oq>0, dcv==0, pnl≠0, close>0, avg>0`). Recovery formula mirrors frontend SSOT: `pnl − (close − avg) × oq`. Added `_apply_holdings_dcv_fallback()` post-processing in `broker_apis.py:_enrich_holdings()` for Dhan/Groww holdings where backfill symbol resolution fails, leaving `day_change_val==0`. Fallback: when `day_change` (scalar ltp−close) is present and `close_price > 0`, sets `day_change_val = day_change × opening_quantity`. Ensures holdings Day P&L displays correctly on cold-cache loads instead of showing 0 for symbols outside symbol-resolver cache. |
+| 2026-08-20 | v1.20 Auth-error retry refactor + account loading cache (commit cecc9842): Moved auth-error detection and token renewal from scattered inline blocks in `broker_apis.py` into unified `@for_all_accounts._per_account._try_renew` handler in `backend/shared/helpers/decorators.py`. New zero-dependency `backend/shared/helpers/auth_error.py` module exports `is_auth_error_str(err)` to detect 401/403/token-expiry signals without importing broker layer. Updated §2 Broker Base Contract auth invariant and §9.2 On-demand token renewal subsection. Removed `_maybe_renew_on_auth_error`, `_rebuild_holdings_after_renewal`, `_rebuild_positions_after_renewal`, `_rebuild_margins_after_renewal` from `broker_apis.py` — logic now centralized in decorator `_try_renew`. Added module-level `_last_known_remote_accounts` cache in `backend/api/routes/brokers.py:_loaded_accounts()` to serve fallback account list when conn-service briefly unavailable (06:00 IST token-expiry restart window). Prevents navbar chip from flipping 0/5 → 5/5 during transient UDS blips. Added subsection in §6 Circuit Breaker & Health documenting account loading cache. |
