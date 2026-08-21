@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.9 — 2026-08-16  
+**Version**: 1.10 — 2026-08-20  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -520,21 +520,26 @@ canonical source of truth for live position day P&L across all Pulse surfaces. I
 - `total` — sum of all position day P&L (₹ value, real-time)
 - `byKey` — symbol-to-day_pnl map, keyed by plain uppercase tradingsymbol (no exchange prefix)
 
-**Update schedule**:
-- Polled at 4Hz throttle (250ms debounce per tick count change)
-- Calls `livePositionDayPnl(ctx)` from `nav.js` for each position row
-- Context always passes `marketOpen: true` (live LTP branch unconditional; snap LTP from 
-  `symbolStore` preferred over `liveQ` LTP)
+**Update direction — Pulse is the authoritative writer**:
+- During market-open hours, `buildUnified()` writes accurate position day P&L values via 
+  `mergePositionRows()` (cq-computed, not broker-cached). These values flow directly into 
+  `unifiedRows` grid.
+- MarketPulse component aggregates position rows' `day_pnl` from `unifiedRows` (filtered by 
+  `r._majorGroup === 'positions'`) in a `$effect` that runs after each `unifiedRows` update.
+- Aggregation calls `positionsDayPnlStore.setFromPulse(pulseByKey, pulseTotal)` to write the 
+  canonical totals back to the store.
+- This **inverts the data flow**: Pulse computes → store captures, not store overrides → Pulse 
+  displays.
 
 **Consumers**:
 - **PositionStrip P pill** (nav): reads `store.total` for hero nav badge
-- **MarketPulse per-row day P&L** (gridPositions): reads `store.byKey[symbol]` to override 
-  grid-computed value with live-calculated day P&L
 - **Dashboard hero** (if applicable): reads `store.total` for quick-scan P&L
 
-**Rationale**: Decoupling day P&L calculation from grid renders prevents stale re-renders 
-and ensures all surfaces (nav, grid cells, dashboard) stay synchronized on the same 
-calculation logic without re-running the formula on every tick.
+**Rationale**: Pulse's `mergePositionRows` produces accurate cq-computed day P&L values 
+during market-open hours. Writing these back to the store ensures all surfaces (nav, 
+dashboard) read the same authoritative calculation. Decoupling from grid renders prevents 
+stale re-renders and eliminates the regression where stale broker-cached data would override 
+Pulse's accurate in-memory values.
 
 ---
 
