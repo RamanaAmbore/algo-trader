@@ -486,6 +486,14 @@ This fallback handles new intraday positions by subtracting the opening-session 
 P&L from the current total, leaving only today's delta. When `overnight_quantity = 0`, 
 this reduces to `pnl` itself (the full intraday gain/loss for a new position).
 
+**New-position today escape hatch** — When market is open AND live LTP is available AND 
+`close_price = 0` (missing prior session close) AND average_price > 0 AND quantity ≠ 0 AND 
+`overnight_quantity = 0` (intraday new position), the formula returns `(live − average_price) 
+× quantity` — computing day P&L from entry price. **Guard condition `oq === 0`** ensures 
+this only fires for intraday positions opened today. Overnight positions with `close_price = 0` 
+(incomplete snapshot or connection gap) fall through and return 0 — honest unknown, not 
+lifetime P&L. Prevents confusion between intraday entry cost and absent prior session close.
+
 **Case 4 (stale close guard)** — When `close_price <= 0` (broker returned zero or missing
 prev_close), `baseDayPnlForPosition` returns 0. When `close > 0` and `dcv === 0`, returns
 `pnl − oq×(close−avg)` regardless of whether `close === ltp`. The earlier `close === ltp`
@@ -532,7 +540,7 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 - **Stale indicator**: CSS class `ps-stale` appears after 2 broker errors; disappears on recovery
 - **Color consistency**: Positive/negative values use correct palette across all slots
 - **Heartbeat and tick-border**: Animations fire correctly on poll cycles and SSE ticks
-- **New-position day P&L**: New intraday position (oq=0) shows correct P:1 value via fallback formula
+- **New-position day P&L**: New intraday position (oq=0) with missing close_price shows correct P:1 value via `(live − avg) × qty` escape hatch; overnight positions (oq≠0) with missing close_price return 0
 - **Closed-leg EXP**: Fully exited F&O leg (qty=0) contributes `p.pnl` to EXP; not skipped
 - **Partial-close EXP**: Partially exited F&O leg (qty≠0) adds realised + intrinsic to EXP
 - **Panel popups (Round 6)**: Click P/M/C/H label → panel opens with accent-colored title, left-border stripe, and gradient background; accent color matches pill identity
