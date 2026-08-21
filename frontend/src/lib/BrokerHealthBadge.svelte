@@ -63,7 +63,7 @@
 
 {#if open}
   <!-- Modal overlay -->
-  <div class="bh-overlay" role="presentation" onclick={() => open = false}></div>
+  <div class="bh-overlay" role="presentation"></div>
   <div class="bh-modal algo-modal" role="dialog" aria-label="Broker auth health">
     <div class="bh-modal-header canonical-modal-header">
       <span class="bh-modal-title">Broker Auth Health</span>
@@ -146,6 +146,7 @@
     inset: 0;
     z-index: 9990;
     background: transparent;
+    pointer-events: none;
   }
   .bh-modal {
     /* Composes .algo-modal chrome (gradient + amber halo + shadow +

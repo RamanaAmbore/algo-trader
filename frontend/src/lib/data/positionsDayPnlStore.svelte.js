@@ -16,9 +16,13 @@
 import { browser } from '$app/environment';
 import { untrack } from 'svelte';
 import { symbolTickCount, getSnapshot } from '$lib/data/symbolStore.svelte.js';
-import { positionsStore } from '$lib/data/marketDataStores.svelte.js';
+import { positionsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
 import { livePositionDayPnl } from '$lib/data/nav.js';
 import { isMarketOpen } from '$lib/marketHours';
+import { mergePositionStores } from '$lib/data/mergePositionStores.js';
+
+// Re-export so callers that already import from this module continue to work.
+export { mergePositionStores };
 
 // Module-level throttle state — safe because this module is never
 // instantiated more than once (Vite keeps one instance per bundled app).
@@ -44,7 +48,7 @@ const _store = $derived.by(() => {
   // re-runs at most 4 times/sec during SSE burst.
   void _tick;
 
-  const rows = positionsStore.value ?? [];
+  const rows = mergePositionStores(positionsStore.value ?? [], pulsePositionsStore.value ?? []);
   let total = 0;
   /** @type {Record<string, number>} */
   const byKey = {};
