@@ -3317,6 +3317,8 @@ gantt
 - `_task_closed_hours_refresh` (30min, post-market-close) — persists fresh broker data 
   to `daily_book` after settlement window; invalidates live-data caches so closed-hours 
   routes serve updated snapshots (positions, holdings, funds, trades)
+- `_task_chain_instruments` (T+30s, daily 08:02 IST) — fetches NFO/MCX contracts only; 
+  populates `instruments_chain` cache for option-chain tab quote endpoint
 
 **Token lifecycle tasks:**
 - `_task_token_refresh` (05:45 IST daily, parked under `conn_service` guard) — fires before 

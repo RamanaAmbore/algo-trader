@@ -263,6 +263,13 @@ column for optimal scanning.
 **Rationale**: Operators scanning the chain quickly locate buy/sell actions in the same 
 visual line as the strike price, eliminating eye travel to distant button zones.
 
+**Quote fetch timeout** (`OptionChainTab.svelte`):
+- `chain_quotes` API calls wrapped in `asyncio.wait_for(timeout=10.0)` to prevent hangs
+- Off-market gate: when markets closed, returns empty `rows: []` with populated `expiries`
+- No broker quote call made during closed hours
+- Expiry fetch includes retry logic (5s × 12 attempts) if initial fetch fails
+- `if (!chainExpiry) return;` guard prevents quote effect from firing when expiry unset
+
 ---
 
 ## 5. Data Source Ladder — DB-First Policy

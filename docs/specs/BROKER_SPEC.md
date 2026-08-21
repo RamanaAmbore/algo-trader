@@ -318,6 +318,24 @@ via `_qt_broker_token_map()`. Without the delay, `_task_instruments` starts its 
 300K+ rows → ~400-500MB per parse). The 120s stagger ensures the sparkline warm finishes 
 before instruments begins its cycle.
 
+### Chain Instruments Background Task — NFO/MCX Dedicated Fetch
+
+**File**: `backend/api/background.py` — `_task_chain_instruments` and `backend/api/routes/instruments.py` — `_fetch_chain_instruments()`
+
+A dedicated background task (`bg-chain-instruments`) fetches NFO and MCX contract data exclusively for the option-chain tab. 
+
+**Schedule**: T+30s (first run 30s after startup) → then daily at 08:02 IST
+
+**Scope**: NFO (NSE derivatives) and MCX (commodity futures/options) only; excludes NSE/BSE/CDS to avoid peak memory usage
+
+**Cache key**: `instruments_chain` (separate from the primary `instruments` cache for quota isolation)
+
+**Data source**: `_fetch_chain_instruments()` calls broker.instruments for NFO and MCX exchanges only, storing results in the `instruments_chain` cache
+
+**Use by chain_quotes**: The `chain_quotes` endpoint prefers the `instruments_chain` cache when available, reducing contention with Kite's concurrent NFO lookups that spike during option expiry when 300K+ contract records are parsed simultaneously
+
+**Rationale**: Option chains are expensive to hydrate (large NFO/MCX payloads); dedicated background population ensures the Ticket tab's expiry dropdown and strike picker have pre-warmed data without blocking other routes' instruments lookups
+
 ### Removed Function: `_trigger_instruments_store_populate`
 
 **File**: `backend/api/routes/quote.py` (deleted 2026-07-25)

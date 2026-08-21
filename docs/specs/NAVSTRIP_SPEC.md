@@ -176,6 +176,17 @@ Updated on 5s book-poll cadence (live) or 30min closed-hours interval. Per-row g
 reads from `store.byKey[symbol]` instead of computing independently, ensuring all surfaces show 
 identical values.
 
+**Holdings day P&L closePx fallback chain** (Aug 2026): `previous_close` (from 
+`daily_book`, frozen settlement) → `close_price` (from broker, may be stale overnight) 
+→ `ohlc.close` (from broker quote). When `closePx === 0 OR closePx === avgCost`, 
+fallback to broker snapshot `day_change_val` (no formula applied). Ensures day P&L 
+remains stable during closed hours when broker prices lag.
+
+**setFromPulse paisa-level gate** (Aug 2026): MarketPulse notifies holdings store 
+only when the aggregated day P&L total changes by ₹1 or more (paisa-level precision 
+gate via `_lastPulseTotal`). Prevents jitter from rounding when store refreshes per-row 
+values in rapid succession.
+
 ---
 
 ## 2. Data Sources and SSOT
