@@ -1,105 +1,88 @@
-# Plan: On-demand token renewal on auth failure (all brokers)
+# Plan: Auth retry in @for_all_accounts decorator + 0/5 chip false-zero fix
 
 ## Task
+Three related fixes:
 
-Two complementary fixes to ensure broker tokens are always valid:
+1. **Decorator-level auth retry** — move token renewal out of the three `_fetch_*_local`
+   exception handlers into `@for_all_accounts._per_account`. One Kite/Dhan/Groww account
+   failing auth triggers renewal + one retry for ONLY that account. Other accounts are
+   unaffected (ThreadPoolExecutor isolation).
 
-**Fix 1 — On-demand renewal**: When any broker fetch call (`_fetch_margins_local`,
-`_fetch_holdings_local`, `_fetch_positions_local`) catches an exception and
-`_is_auth_error_str(str(exc))` is True, immediately call the connection's re-auth
-method and retry the call once. Applies to all accounts: Kite, Dhan, Groww.
+2. **0/5 chip false-zero** — with 2 Kite + 3 Dhan/Groww accounts, chip shows 0/5 (not 2/5)
+   at 06:00 IST token expiry because `list_remote_accounts()` returns `[]` when UDS to
+   conn_service is briefly unavailable (Kite renewal load spikes). `_loaded_accounts()`
+   falls back to `set()` → all accounts show `loaded=False`. Fix: cache the last known
+   account list in a module-level variable; serve from cache when `list_remote_accounts()`
+   returns empty, so Dhan/Groww continue showing healthy.
 
-Add `_maybe_renew_on_auth_error(account)` in `broker_apis.py`:
-- Gets `conn = Connections().conn.get(account)`
-- If `KiteConnection`: calls `conn.get_kite_conn(test_conn=True)` 
-- If `DhanConnection`: calls `conn.get_dhan_conn(test_conn=True)`
-- If `GrowwConnection`: calls `conn.refresh()` (existing method)
-- Logs `[TOKEN-RENEW]` at INFO on attempt
-- Returns True if renewal was attempted, False otherwise
+3. **Empty-frame false-fail (existing rebuild helpers)** — `_rebuild_positions_after_renewal`
+   / `_rebuild_holdings_after_renewal` call `_enrich_*` on empty DataFrames when there are
+   no open positions/holdings → throws → returns None → `_record_fetch(ok=False)` falsely.
+   Removed when decorator takes over; guarded in the interim.
 
-The three `_fetch_*_local()` functions each wrap their main broker call in a
-try/except that already exists (line ~2515 in broker_apis.py). Add renewal + single
-retry in each:
-```python
-except Exception as e:
-    if _is_auth_error_str(str(e)) and _maybe_renew_on_auth_error(account):
-        try:                        # one retry after renewal
-            df_margins = pd.DataFrame([broker.margins(segment="equity")])
-            ...  # same flatten + account assignment as happy path
-            _record_fetch(account, ok=True)
-            return df_margins
-        except Exception as e2:
-            logger.error(f"[{account}] margins retry after renewal also failed: {e2}")
-    logger.error(...)
-    _record_fetch(account, ok=False, ...)
-```
-
-**Fix 2 — Proactive pre-warm polling cadence**: `service/app.py:_task_prewarm_tokens`
-sleeps 3600s between checks. The Kite window is 05:45–05:59 IST (14 min). An hourly
-cycle statistically misses this window. Change sleep to 60s — matching
-`background.py:_task_token_refresh` — so the window is reliably hit.
-
-**Fix 3 — Connection badge diagnostic logging**: `_loaded_accounts()` in
-`backend/api/routes/brokers.py` swallows all exceptions with bare
-`except Exception: return set()`. Add `logger.warning` so UDS failures leave a trace.
+4. **Position P&L correctness through retry path** — the current `_rebuild_positions_after_renewal`
+   helper manually re-calls enrichment steps and can miss or mis-sequence them (e.g. calling
+   `_enrich_positions` without `apply_day_change_backstop`). The decorator retry calls the
+   FULL `_fetch_positions_local` function end-to-end (including all enrichment + backstop),
+   guaranteeing P&L fields (`unrealised`, `day_change_val`, `pnl`) are always computed
+   via the canonical path. Broker agent must ensure the retry in `_per_account` passes
+   fresh `kite` + `broker` kwargs to the retried call (not the stale handles from the
+   failed attempt). Test: after decorator retry, returned DataFrame contains correct
+   non-null `unrealised` and `day_change_val` fields.
 
 ## Agents
-
-- broker: Three changes in `backend/brokers/broker_apis.py` and
-  `backend/brokers/service/app.py` and `backend/api/routes/brokers.py`:
-
-  **broker_apis.py**:
-  - Add `_maybe_renew_on_auth_error(account: str) -> bool` function after
-    `_is_auth_error_str()` (~line 68). Uses `Connections().conn.get(account)` and
-    dispatches to `get_kite_conn(test_conn=True)` / `get_dhan_conn(test_conn=True)` /
-    `conn.refresh()` based on connection type. Logs `[TOKEN-RENEW] {account}: renewal
-    attempted` at INFO. Catches and logs exceptions from the renewal itself.
-  - In `_fetch_margins_local()` exception handler (~line 2515): if auth error detected,
-    call `_maybe_renew_on_auth_error(account)` and retry the full broker call + flatten
-    once before falling through to the error path.
-  - Same pattern in `_fetch_holdings_local()` and `_fetch_positions_local()`.
-
-  **service/app.py** line 714: change `await _asyncio.sleep(3600)` to
-  `await _asyncio.sleep(60)`. Add comment: "# 60s — matches background.py
-  _task_token_refresh cadence; hourly polling statistically misses the 05:45–05:59
-  Kite window".
-
-  **backend/api/routes/brokers.py** `_loaded_accounts()` (lines 277–290):
-  - Replace `except Exception: return set()` with:
-    `except Exception as e: logger.warning("_loaded_accounts failed: %s", e); return set()`
-  - After `list_remote_accounts()` returns empty: log
-    `logger.warning("_loaded_accounts: conn_service returned no accounts")`.
-
-- frontend: skip
-- backend: skip
+- broker: (1) Create `backend/shared/helpers/auth_error.py` — extract `_is_auth_error_str`
+  patterns into `is_auth_error_str(err: str) -> bool` with no broker imports.
+  (2) Update `backend/shared/helpers/decorators.py` `for_all_accounts._per_account`:
+  on auth error call `_try_renew(acc, connections)` (duck-typed: get_kite_conn /
+  get_dhan_conn / refresh) then retry the function call once with fresh kite+broker
+  handles. Raise on second failure so the per-function except block still handles it.
+  (3) In `backend/brokers/broker_apis.py`: remove `_maybe_renew_on_auth_error` +
+  `_rebuild_holdings_after_renewal` + `_rebuild_positions_after_renewal` +
+  `_rebuild_margins_after_renewal`; remove the auth-retry blocks from the three
+  `_fetch_*_local` exception handlers (three one-liners each become just
+  `logger.error / _record_fetch(ok=False) / return df`). Import `is_auth_error_str`
+  from the new shared module (still used by `_record_fetch` event-type logic).
+  (4) In `backend/api/routes/brokers.py` `_loaded_accounts()`: add a module-level
+  `_last_known_accounts: set[str] = set()` cache; after a successful `list_remote_accounts()`
+  call update the cache; when `list_remote_accounts()` returns `[]`, serve from cache
+  instead of returning `set()`.
+- backend-test: Update `backend/tests/broker/test_token_renewal.py` — repoint tests
+  at the decorator-level retry (mock `@for_all_accounts._per_account` raising an auth
+  exception → verify `get_kite_conn(test_conn=True)` / `get_dhan_conn(test_conn=True)` /
+  `.refresh()` is called and the function is retried). Remove tests for the removed
+  per-function helpers. Add test: empty positions/holdings after renewal → no
+  `_record_fetch(ok=False)` (verifies the old empty-frame bug is gone).
+  Add test: `list_remote_accounts()` returns `[]` → `_loaded_accounts()` returns cached
+  set, not empty set.
+  Add test: decorator retry on auth error returns DataFrame with correct `unrealised` +
+  `day_change_val` fields (not None, not empty) — verifies P&L enrichment runs on retry.
 - doc: skip
-- backend-test: New file `backend/tests/broker/test_token_renewal.py`:
-  - Test 1: `_maybe_renew_on_auth_error` calls `get_kite_conn(test_conn=True)` on
-    KiteConnection when called (mock Connections().conn, assert call made)
-  - Test 2: same for DhanConnection → `get_dhan_conn(test_conn=True)`
-  - Test 3: same for GrowwConnection → `conn.refresh()`
-  - Test 4: `_fetch_margins_local` retries after auth error and returns data on
-    second attempt (first call raises 401-string exception, second succeeds)
-  - Test 5: `_task_prewarm_tokens` sleep is 60s — grep `service/app.py` body for
-    `sleep(3600)` inside the function, assert NOT found; assert `sleep(60)` IS found
-  - Test 6: `_loaded_accounts()` emits WARNING log when `list_remote_accounts()`
-    raises
+- frontend: skip
 - playwright: skip
 
 ## Tests
-
 - pytest: yes
 - svelte-check: no
 - playwright: no
 
 ## Commit message
+refactor(brokers): move auth-error retry into @for_all_accounts decorator
 
-fix(brokers): on-demand token renewal on auth failure for all brokers + prewarm 60s cadence
+Extract is_auth_error_str to shared module; add _try_renew + one-shot
+retry to for_all_accounts._per_account so token renewal covers every
+broker fetch without per-function boilerplate. Removes _maybe_renew_on_auth_error
+and three _rebuild_*_after_renewal helpers from broker_apis.py.
+Fixes 0/5 chip false-zero: cache last known account list in _loaded_accounts()
+so Dhan/Groww show healthy when UDS is briefly unavailable.
+Fixes empty-frame false-fail: positions/holdings with 0 rows after
+renewal no longer trigger _record_fetch(ok=False).
 
 ## Done when
-
-- Auth failure on any broker call (Kite/Dhan/Groww) triggers immediate re-auth + one
-  retry before marking the account failed
-- `_task_prewarm_tokens` uses 60s sleep (reliable 05:45 window coverage)
-- `_loaded_accounts()` logs warnings on conn_service failures (0/5 diagnosable)
-- All 6 new tests pass; existing broker tests unaffected
+- `venv/bin/python -m radon cc backend/ -s -n D` → no output (no D/E/F grades)
+- pytest passes (broker coverage ≥ 80%)
+- `_maybe_renew_on_auth_error` and `_rebuild_*_after_renewal` no longer exist in broker_apis.py
+- `is_auth_error_str` exists in `backend/shared/helpers/auth_error.py`
+- `@for_all_accounts` retries on auth error for Kite, Dhan, and Groww
+- `_loaded_accounts()` serves from cache when `list_remote_accounts()` returns `[]`
+- decorator retry produces DataFrame with non-null `unrealised` + `day_change_val` (P&L enrichment verified by test)

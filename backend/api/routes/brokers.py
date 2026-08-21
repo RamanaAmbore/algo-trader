@@ -169,6 +169,13 @@ def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
 
 _VALID_POLL_PRIORITIES: frozenset[str] = frozenset({"hot", "warm", "cold"})
 
+# Last-known account list from list_remote_accounts() — serves as a fallback
+# when the UDS conn-service is briefly unavailable (e.g. 06:00 IST token expiry
+# restart window).  Populated on the first successful call; cleared only on
+# process restart.  Thread-safe: the variable is only ever replaced atomically
+# (single assignment).
+_last_known_remote_accounts: set[str] = set()
+
 
 def _apply_nonsecret_fields(row: BrokerAccount, data: "BrokerAccountUpdate") -> None:
     """Patch plain (non-encrypted) fields onto *row* in-place.
@@ -273,7 +280,16 @@ def _loaded_accounts() -> set[str]:
     Per-account fetch results are now tracked in
     broker_apis._FETCH_HEALTH and an account is only loaded when its
     latest attempt succeeded — failing accounts drop out of the
-    navbar count, surfacing the outage at a glance."""
+    navbar count, surfacing the outage at a glance.
+
+    Fallback: when the UDS conn-service is briefly unavailable (e.g.
+    06:00 IST token-expiry restart window) list_remote_accounts()
+    returns []. Without a fallback, _loaded_accounts() returns set()
+    and the navbar chip shows 0/5 even though Dhan/Groww accounts are
+    healthy. The module-level _last_known_remote_accounts cache serves
+    the last successful list so the chip stays stable during the UDS
+    blip (typically <5 s)."""
+    global _last_known_remote_accounts
     try:
         from backend.brokers.connections import Connections
         from backend.brokers.broker_apis import is_account_healthy
@@ -284,8 +300,19 @@ def _loaded_accounts() -> set[str]:
             from backend.brokers.client import is_cutover_on
             if is_cutover_on():
                 from backend.brokers.client.remote_broker import list_remote_accounts
-                in_conn = {r["account"] for r in list_remote_accounts() if r.get("account")}
-                if not in_conn:
+                remote_accs = {r["account"] for r in list_remote_accounts() if r.get("account")}
+                if remote_accs:
+                    _last_known_remote_accounts = remote_accs
+                    in_conn = remote_accs
+                elif _last_known_remote_accounts:
+                    logger.warning(
+                        "_loaded_accounts: list_remote_accounts() returned [] "
+                        "— UDS briefly unavailable; serving cached account list "
+                        "(%d accounts)",
+                        len(_last_known_remote_accounts),
+                    )
+                    in_conn = _last_known_remote_accounts
+                else:
                     logger.warning(
                         "_loaded_accounts: conn_service returned no accounts "
                         "— UDS unreachable or conn_service still loading"

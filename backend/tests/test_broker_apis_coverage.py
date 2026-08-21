@@ -187,36 +187,43 @@ class TestLastGoodQuoteCache:
 
 
 class TestAuthErrorDetection:
-    """Test _is_auth_error_str function."""
+    """Test is_auth_error_str function (now in shared helper)."""
 
     def test_auth_error_401(self):
         """401 error detected as auth failure."""
-        assert broker_apis._is_auth_error_str("401 Unauthorized") is True
+        from backend.shared.helpers.auth_error import is_auth_error_str
+        assert is_auth_error_str("401 Unauthorized") is True
 
     def test_auth_error_403(self):
         """403 error detected as auth failure."""
-        assert broker_apis._is_auth_error_str("403 Forbidden") is True
+        from backend.shared.helpers.auth_error import is_auth_error_str
+        assert is_auth_error_str("403 Forbidden") is True
 
     def test_auth_error_token_expired(self):
         """'token expired' detected as auth failure."""
-        assert broker_apis._is_auth_error_str("Token expired") is True
+        from backend.shared.helpers.auth_error import is_auth_error_str
+        assert is_auth_error_str("Token expired") is True
 
     def test_auth_error_invalid_token(self):
         """'invalid token' detected as auth failure."""
-        assert broker_apis._is_auth_error_str("invalid token") is True
+        from backend.shared.helpers.auth_error import is_auth_error_str
+        assert is_auth_error_str("invalid token") is True
 
     def test_auth_error_dh_906(self):
         """Dhan DH-906 detected as auth failure."""
-        assert broker_apis._is_auth_error_str("DH-906: Invalid Token") is True
+        from backend.shared.helpers.auth_error import is_auth_error_str
+        assert is_auth_error_str("DH-906: Invalid Token") is True
 
     def test_auth_error_dh_901(self):
         """Dhan DH-901 detected as auth failure."""
-        assert broker_apis._is_auth_error_str("DH-901 error") is True
+        from backend.shared.helpers.auth_error import is_auth_error_str
+        assert is_auth_error_str("DH-901 error") is True
 
     def test_non_auth_error(self):
         """Non-auth error not detected."""
-        assert broker_apis._is_auth_error_str("Connection timeout") is False
-        assert broker_apis._is_auth_error_str("Network error") is False
+        from backend.shared.helpers.auth_error import is_auth_error_str
+        assert is_auth_error_str("Connection timeout") is False
+        assert is_auth_error_str("Network error") is False
 
 
 class TestCircuitBreakerStateMachine:

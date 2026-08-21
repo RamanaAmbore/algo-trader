@@ -6,6 +6,7 @@ import time
 from functools import wraps
 from inspect import iscoroutinefunction
 
+from backend.shared.helpers.auth_error import is_auth_error_str
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -232,13 +233,70 @@ def for_all_accounts(func):
                 results.append(func(*args, **new_kwargs))
             return results
 
+        def _try_renew(acc: str, connections) -> dict:
+            """Attempt to refresh the broker token for `acc` and return fresh
+            handle kwargs.  Uses lazy imports inside each branch to avoid the
+            connections ↔ decorators circular-import (connections.py already
+            imports from decorators.py via retry_kite_conn).
+
+            Returns a dict with the refreshed handle key(s) that should be
+            merged into the call kwargs before the retry.  An empty dict means
+            renewal was either not possible or failed — caller should re-raise.
+            """
+            conn_obj = connections.conn.get(acc)
+            if conn_obj is None:
+                return {}
+            try:
+                from backend.brokers.connections import KiteConnection
+                if isinstance(conn_obj, KiteConnection):
+                    logger.info("[TOKEN-RENEW] %s (kite): auth error — renewing token", acc)
+                    new_kite = conn_obj.get_kite_conn(test_conn=True)
+                    if new_kite is not None:
+                        return {"kite": new_kite}
+                    return {}
+            except Exception as _ke:
+                logger.warning("[TOKEN-RENEW] %s (kite): renewal failed: %s", acc, _ke)
+            try:
+                from backend.brokers.connections import DhanConnection
+                if isinstance(conn_obj, DhanConnection):
+                    logger.info("[TOKEN-RENEW] %s (dhan): auth error — renewing token", acc)
+                    conn_obj.get_dhan_conn(test_conn=True)
+                    # Dhan's broker handle is obtained via get_broker — rebuilding
+                    # the broker object after the token refresh picks up the new
+                    # _dhan client that was populated inside get_dhan_conn.
+                    new_broker = get_broker(acc)
+                    if new_broker is not None:
+                        return {"broker": new_broker}
+                    return {}
+            except Exception as _de:
+                logger.warning("[TOKEN-RENEW] %s (dhan): renewal failed: %s", acc, _de)
+            try:
+                from backend.brokers.connections import GrowwConnection
+                if isinstance(conn_obj, GrowwConnection):
+                    logger.info("[TOKEN-RENEW] %s (groww): auth error — renewing token", acc)
+                    conn_obj.refresh()
+                    new_broker = get_broker(acc)
+                    if new_broker is not None:
+                        return {"broker": new_broker}
+            except Exception as _ge:
+                logger.warning("[TOKEN-RENEW] %s (groww): renewal failed: %s", acc, _ge)
+            return {}
+
         def _per_account(acc):
             new_kwargs = kwargs.copy()
             new_kwargs["account"] = acc
             new_kwargs["kite"] = _kite_or_none(acc)
             if accepts_broker:
                 new_kwargs["broker"] = get_broker(acc)
-            return func(*args, **new_kwargs)
+            try:
+                return func(*args, **new_kwargs)
+            except Exception as exc:
+                if is_auth_error_str(str(exc)):
+                    fresh = _try_renew(acc, connections)
+                    if fresh:
+                        retry_kwargs = {**new_kwargs, **fresh}
+                        return func(*args, **retry_kwargs)  # raises on 2nd failure → propagates
+                raise
 
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=max(len(accs), 2)) as pool:

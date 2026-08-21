@@ -8,6 +8,7 @@ import time as _time
 
 from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
 from backend.brokers.connections import Connections
+from backend.shared.helpers.auth_error import is_auth_error_str
 from backend.shared.helpers.decorators import for_all_accounts
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.ssot_fetch import ssot_fetch
@@ -41,134 +42,8 @@ def _broker_id_safe(account: str) -> str:
         return "unknown"
 
 
-# Auth-error signal strings shared across Kite + Dhan error messages.
-# Kept here (not imported from dhan.py) to avoid a cross-adapter import.
-_AUTH_ERROR_HINTS_LOWER: tuple[str, ...] = (
-    "invalid access token",
-    "invalid token",
-    "token expired",
-    "unauthorized",
-    "unauthorised",
-    "auth failed",
-    "invalid api key",
-    "403",
-    "401",
-    "dh-901",
-    "dh-906",
-)
 
 
-def _is_auth_error_str(error: str) -> bool:
-    """Return True when the stringified error message looks like an auth / token
-    failure (401 / 403 class). Used to select event_type="auth_fail" vs
-    "fetch_fail" in _record_fetch without requiring the original exception object.
-    """
-    low = error.lower()
-    return any(hint in low for hint in _AUTH_ERROR_HINTS_LOWER)
-
-
-def _maybe_renew_on_auth_error(account: str) -> bool:
-    """Attempt to renew the broker token for `account` when an auth error is detected.
-
-    Called from _fetch_*_local() exception handlers when _is_auth_error_str() is True.
-    Dispatches to the appropriate connection type's re-auth method:
-      KiteConnection  → get_kite_conn(test_conn=True)
-      DhanConnection  → get_dhan_conn(test_conn=True)
-      GrowwConnection → conn.refresh()
-
-    Returns True if renewal was attempted (not necessarily successful).
-    Returns False if the account has no connection object or unknown type.
-    Exceptions from the renewal are caught and logged — callers should always
-    proceed to the normal error path regardless of the return value.
-    """
-    try:
-        from backend.brokers.connections import (
-            Connections, KiteConnection, DhanConnection, GrowwConnection,
-        )
-        conn = Connections().conn.get(account)
-        if conn is None:
-            return False
-        if isinstance(conn, KiteConnection):
-            logger.info("[TOKEN-RENEW] %s (kite): auth error detected — renewing token", account)
-            conn.get_kite_conn(test_conn=True)
-            return True
-        if isinstance(conn, DhanConnection):
-            logger.info("[TOKEN-RENEW] %s (dhan): auth error detected — renewing token", account)
-            conn.get_dhan_conn(test_conn=True)
-            return True
-        if isinstance(conn, GrowwConnection):
-            logger.info("[TOKEN-RENEW] %s (groww): auth error detected — renewing token", account)
-            conn.refresh()
-            return True
-        return False
-    except Exception as e:
-        logger.warning("[TOKEN-RENEW] %s: renewal attempt failed: %s", account, e)
-        return False
-
-
-def _rebuild_holdings_after_renewal(broker, kite, account: str) -> "pd.DataFrame | None":
-    """Rebuild holdings DataFrame after token renewal. Returns enriched df or None."""
-    try:
-        raw = broker.holdings() if broker is not None else kite.holdings()
-        df = pd.DataFrame(raw)
-        if not df.empty:
-            df["account"] = account
-            df["type"] = "H"
-        _record_fetch(account, ok=True)
-        df = _enrich_holdings(df)
-        _record_lkg_frame("holdings", account, df)
-        return df
-    except Exception as e:
-        logger.error("[%s] holdings retry after token renewal failed: %s", account, e)
-        return None
-
-
-def _rebuild_positions_after_renewal(broker, kite, account: str) -> "pd.DataFrame | None":
-    """Rebuild positions DataFrame after token renewal. Returns enriched df or None."""
-    try:
-        net_rows = _extract_net_rows(broker, kite)
-        if net_rows is None:
-            raise RuntimeError("broker.positions() returned None on retry")
-        df = pd.DataFrame(net_rows)
-        _maybe_log_kite_mcx_diag(df)
-        _apply_mcx_multiplier(df)
-        if not df.empty:
-            df["account"] = account
-            df["type"] = "P"
-        _record_fetch(account, ok=True)
-        df = _enrich_positions(df)
-        _record_lkg_frame("positions", account, df)
-        return df
-    except Exception as e:
-        logger.error("[%s] positions retry after token renewal failed: %s", account, e)
-        return None
-
-
-def _rebuild_margins_after_renewal(broker, kite, account: str) -> "pd.DataFrame | None":
-    """Rebuild margins DataFrame after token renewal. Returns flattened df or None."""
-    try:
-        if broker is not None:
-            data = broker.margins(segment="equity")
-        elif kite is not None:
-            data = kite.margins(segment="equity")
-        else:
-            return None
-        df = pd.DataFrame([data])
-        if "utilised" in df.columns:
-            u = pd.json_normalize(df["utilised"]).add_prefix("util ")
-            df = pd.concat([df.drop(columns=["utilised"]), u], axis=1)
-        if "available" in df.columns:
-            a = pd.json_normalize(df["available"]).add_prefix("avail ")
-            df = pd.concat([df.drop(columns=["available"]), a], axis=1)
-        if not df.empty:
-            df["account"] = account
-            df["type"] = "C"
-        _record_fetch(account, ok=True)
-        _record_lkg_frame("margins", account, df)
-        return df
-    except Exception as e:
-        logger.error("[%s] margins retry after token renewal failed: %s", account, e)
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1197,7 +1072,7 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
         else:
             e["last_fail_at"] = now
             e["last_fail_msg"] = str(error)[:200]
-            _etype = "auth_fail" if _is_auth_error_str(str(error)) else "fetch_fail"
+            _etype = "auth_fail" if is_auth_error_str(str(error)) else "fetch_fail"
             _emit_conn_event(
                 account, _broker_id_safe(account), _etype,
                 {"error": str(error)[:200]},
@@ -1219,7 +1094,7 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
         if _was_halfopen:
             _emit_conn_event(account, _bid, "circuit_close")
     else:
-        _etype = "auth_fail" if _is_auth_error_str(str(error)) else "fetch_fail"
+        _etype = "auth_fail" if is_auth_error_str(str(error)) else "fetch_fail"
         _emit_conn_event(account, _bid, _etype, {"error": str(error)[:200]})
 
     # Auto-downgrade hook — called OUTSIDE the lock to avoid deadlock
@@ -1557,10 +1432,6 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
             df_holdings["type"] = "H"
         _record_fetch(account, ok=True)
     except Exception as e:
-        if _is_auth_error_str(str(e)) and account and _maybe_renew_on_auth_error(account):
-            _r = _rebuild_holdings_after_renewal(broker, kite, account)
-            if _r is not None:
-                return _r
         logger.error(f"[{account}] Failed to fetch holdings: {e}")
         df_holdings.attrs['fetch_failed'] = True
         _record_fetch(account, ok=False, error=str(e))
@@ -2030,10 +1901,6 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
             df_positions["account"] = account
             df_positions["type"] = "P"
     except Exception as e:
-        if _is_auth_error_str(str(e)) and account and _maybe_renew_on_auth_error(account):
-            _r = _rebuild_positions_after_renewal(broker, kite, account)
-            if _r is not None:
-                return _r
         logger.error(f"[{account}] Failed to fetch positions: {e}")
         df_positions.attrs['fetch_failed'] = True
         _record_fetch(account, ok=False, error=str(e))
@@ -2626,10 +2493,6 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
             df_margins["type"] = "C"
         _record_fetch(account, ok=True)
     except Exception as e:
-        if _is_auth_error_str(str(e)) and account and _maybe_renew_on_auth_error(account):
-            _r = _rebuild_margins_after_renewal(broker, kite, account)
-            if _r is not None:
-                return _r
         logger.error(f"[{account}] Failed to fetch margins: {e}")
         _record_fetch(account, ok=False, error=str(e))
         df_margins.attrs['fetch_failed'] = True
