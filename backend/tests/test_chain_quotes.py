@@ -274,7 +274,8 @@ class TestChainQuotesEndpoint:
             return synthetic_quotes, key_meta
 
         with patch("backend.api.cache.peek") as mock_cache, \
-             patch("backend.api.routes.options._chain_quotes_batch_quote", side_effect=mock_batch_quote):
+             patch("backend.api.routes.options._chain_quotes_batch_quote", side_effect=mock_batch_quote), \
+             patch("backend.api.routes.options._any_segment_open", return_value=True):
 
             mock_cache.return_value = nifty_instruments_fixture
 
@@ -448,7 +449,8 @@ class TestChainQuotesEdgeCases:
             return {}, key_meta  # Empty quotes
 
         with patch("backend.api.cache.peek") as mock_cache, \
-             patch("backend.api.routes.options._chain_quotes_batch_quote", side_effect=mock_batch_quote_empty):
+             patch("backend.api.routes.options._chain_quotes_batch_quote", side_effect=mock_batch_quote_empty), \
+             patch("backend.api.routes.options._any_segment_open", return_value=True):
 
             mock_cache.return_value = nifty_instruments_fixture
 

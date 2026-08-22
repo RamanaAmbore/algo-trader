@@ -661,9 +661,46 @@ def _hold_mask_account_in_resp(resp: "HoldingsResponse", _msc) -> "HoldingsRespo
     )
 
 
+def _filter_holdings_by_account(
+    resp: "HoldingsResponse",
+    account: Optional[str],
+    _msc,
+) -> "HoldingsResponse":
+    """Narrow *resp* to rows belonging to *account* (raw code, pre-mask).
+
+    - If *account* is None or empty: return *resp* unchanged.
+    - Otherwise: keep only rows where ``row.account`` matches *account*
+      (case-insensitive) and rebuild the summary so it contains the
+      matching account's summary row plus a recalculated TOTAL row whose
+      values equal that account's totals (single-account TOTAL = account).
+    """
+    if not account:
+        return resp
+
+    acct_upper = account.strip().upper()
+    filtered_rows = [
+        r for r in resp.rows
+        if str(getattr(r, "account", "")).upper() == acct_upper
+    ]
+    # Find the matching summary row (non-TOTAL).
+    acct_summary = [
+        s for s in resp.summary
+        if str(getattr(s, "account", "")).upper() == acct_upper
+    ]
+    if acct_summary:
+        src = acct_summary[0]
+        total_row = _msc.structs.replace(src, account="TOTAL")
+        new_summary = acct_summary + [total_row]
+    else:
+        new_summary = []
+
+    return _msc.structs.replace(resp, rows=filtered_rows, summary=new_summary)
+
+
 async def _scope_and_mask_holdings(
     resp: "HoldingsResponse",
     request: "Request",
+    account: Optional[str] = None,
 ) -> "HoldingsResponse":
     """Apply trader horizontal scoping then account-ID masking.
 
@@ -674,6 +711,10 @@ async def _scope_and_mask_holdings(
 
     The two transforms are always applied in order (scope first, then mask)
     so a trader who is also non-admin gets both filters.
+
+    *account*: optional raw account code from the ``?account=`` query param.
+    Applied after trader-scope scoping but before masking so comparisons
+    use raw codes (the same values in ``row.account`` at that point).
     """
     import msgspec as _msc
 
@@ -689,6 +730,9 @@ async def _scope_and_mask_holdings(
                      if str(getattr(s, "account", "")).upper() in allowed_set
                      or str(getattr(s, "account", "")).upper() == "TOTAL"],
         )
+    # Account filter runs after trader-scope (uses raw codes, pre-mask).
+    if account:
+        resp = _filter_holdings_by_account(resp, account, _msc)
     if not is_admin_request(request):
         resp = _hold_mask_account_in_resp(resp, _msc)
     return resp
@@ -699,7 +743,11 @@ class HoldingsController(Controller):
 
     @get("/")
     async def get_holdings(
-        self, request: Request, fresh: bool = False, skip_ltp: bool = False,
+        self,
+        request: Request,
+        fresh: bool = False,
+        skip_ltp: bool = False,
+        account: Optional[str] = None,
     ) -> HoldingsResponse:
         try:
             # ── Inner helpers ───────────────────────────────────────────────
@@ -768,7 +816,7 @@ class HoldingsController(Controller):
                     logger.debug(
                         f"holdings: market closed ({source}) — serving daily_book snapshot"
                     )
-                    return await _scope_and_mask_holdings(resp, request)
+                    return await _scope_and_mask_holdings(resp, request, account=account)
                 # Market is open (or stale-live), or no snapshot exists yet —
                 # continue to live path.
                 if source not in ("live", "stale-live"):
@@ -777,7 +825,7 @@ class HoldingsController(Controller):
                 resp = await _broker_fn()
 
             # Live path: scope + mask before returning.
-            return await _scope_and_mask_holdings(resp, request)
+            return await _scope_and_mask_holdings(resp, request, account=account)
 
         except Exception as e:
             logger.error(f"Holdings API error: {e}")
