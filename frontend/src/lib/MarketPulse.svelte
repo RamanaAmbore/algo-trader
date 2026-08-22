@@ -2380,7 +2380,7 @@
       })
       .map(r => ({
         account: r.account,
-        day_pnl: Number(r.day_change_val) || 0,
+        day_pnl: holdingsDayPnlStore.byAccount[r.account] ?? (Number(r.day_change_val) || 0),
         pnl:     Number(r.pnl)            || 0,
         cur_val: Number(r.cur_val)        || 0,
         inv_val: Number(r.inv_val)        || 0,
@@ -2873,6 +2873,8 @@
   // SSE rate (~10 Hz). Only fires when the total changed by at least 1 paisa.
   /** @type {number | null} */
   let _lastPulseTotal = null;
+  /** @type {number | null} */
+  let _lastHoldTotal = null;
   function _stagedPrefetch(sym, exch) {
     if (!sym || _prefetchedChartSyms.has(sym)) return;
     _prefetchedChartSyms.add(sym);
@@ -2946,6 +2948,27 @@
     }
   });
 
+  // Holdings day P&L — mirror positions pattern. Pulse is authoritative;
+  // setFromPulse writes to holdingsDayPnlStore so NavStrip H reads the
+  // same value as the main grid displays, and is filter-aware like NavStrip P.
+  $effect(() => {
+    const holdRows = unifiedRows.filter(r => r._majorGroup === 'holdings');
+    /** @type {Record<string, number>} */
+    const holdByKey = {};
+    let holdTotal = 0;
+    for (const r of holdRows) {
+      const sym = String(r?.tradingsymbol || r?.symbol || '').toUpperCase();
+      if (!sym) continue;
+      const v = Number(r.day_pnl) || 0;
+      holdByKey[sym] = (holdByKey[sym] ?? 0) + v;
+      holdTotal += v;
+    }
+    if (Math.round(holdTotal * 100) !== Math.round((_lastHoldTotal ?? NaN) * 100)) {
+      _lastHoldTotal = holdTotal;
+      holdingsDayPnlStore.setFromPulse(holdByKey, holdTotal);
+    }
+  });
+
   // parseSymbol / parseSymbolFallback have moved to pulseUnified.js.
   // No direct callers remain in this file.
   // MAJOR_ORDER is baked into makeRowFactory in pulseUnified.js.
@@ -2973,13 +2996,6 @@
     mergeWatchlistRows(byKey, actLists, wlCtx);
     mergePositionRows(byKey, pos, includePos, cq, posCtx);
     mergeHoldingRows(byKey, hold, includeHold, cq, holdCtx);
-    // SSOT override: holdingsDayPnlStore wins for day_pnl on every holding
-    // row. holdingsDayPnlStore.byKey is keyed by plain uppercase tradingsymbol;
-    // pulseUnified byKey is keyed "SYMBOL__hold" — append the suffix directly.
-    for (const [sym, val] of Object.entries(holdingsDayPnlStore.byKey)) {
-      const row = byKey[`${sym}__hold`];
-      if (row) row.day_pnl = val;
-    }
     mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, includeHold, anchCtx);
     mergeMoverRows(byKey, moverRows, includeMovers, includePos, includeHold, includeWatch, movCtx);
     tagWatchedIndices(byKey);

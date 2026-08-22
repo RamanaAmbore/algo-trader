@@ -206,10 +206,10 @@ describe('mergeHoldingRows — heldQty uses quantity not opening_quantity for pa
     expect(row.pnl).not.toBeCloseTo(2000, 1);
   });
 
-  it('heldQty priority: quantity=0 falls through to opening_quantity (fully sold, no snap)', () => {
-    // Edge case: if quantity is 0 (fully closed intraday) but opening_quantity > 0,
-    // the || chain picks opening_quantity. This mirrors how Kite reports fully-sold
-    // holdings that momentarily sit in the holdings list with qty=0.
+  it('fully sold row has qty_hold=0 (opening_quantity not used)', () => {
+    // CLAUDE.md: opening_quantity is a reference field and must NOT be used
+    // in P&L or quantity calculations. A fully-sold holding (quantity=0) must
+    // report qty_hold=0, not fall back to opening_quantity.
     const byKey = {};
     mergeHoldingRows(
       byKey,
@@ -219,8 +219,8 @@ describe('mergeHoldingRows — heldQty uses quantity not opening_quantity for pa
       makeHoldingCtx()
     );
     const row = Object.values(byKey)[0];
-    // quantity=0 is falsy → falls through to opening_quantity=10
-    expect(row.qty_hold).toBe(10);
+    // quantity=0 → qty_hold must be 0 (opening_quantity ignored)
+    expect(row.qty_hold).toBe(0);
   });
 });
 

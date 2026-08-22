@@ -29,10 +29,11 @@ import { describe, it, expect } from 'vitest';
 /**
  * @param {any[]} holdings
  * @param {Record<string, { ltp?: number | null | undefined }>} [snapshots]
- * @returns {{ total: number, byKey: Record<string, number> }}
+ * @returns {{ total: number, byKey: Record<string, number>, byAccount: Record<string, number> }}
  */
 function computeHoldingsDayPnl(holdings = [], snapshots = /** @type {Record<string, { ltp?: number | null | undefined }>} */ ({})) {
   const byKey = /** @type {Record<string, number>} */ ({});
+  const byAccount = /** @type {Record<string, number>} */ ({});
   let total = 0;
 
   for (const h of holdings) {
@@ -63,9 +64,31 @@ function computeHoldingsDayPnl(holdings = [], snapshots = /** @type {Record<stri
 
     byKey[sym] = (byKey[sym] ?? 0) + val;
     total += val;
+
+    const acc = String(h?.account || '').toUpperCase();
+    if (acc) byAccount[acc] = (byAccount[acc] ?? 0) + val;
   }
 
-  return { total, byKey };
+  byAccount['TOTAL'] = total;
+
+  return { total, byKey, byAccount };
+}
+
+/**
+ * Simulate the setFromPulse override pattern without importing the live store.
+ * Mirrors holdingsDayPnlStore's internal logic: pulse overrides total/byKey
+ * but byAccount always comes from _store (not overridden).
+ *
+ * @param {{ total: number, byKey: Record<string,number>, byAccount: Record<string,number> }} storeState
+ * @param {{ byKey: Record<string,number>, total: number } | null} pulse
+ * @returns {{ total: number, byKey: Record<string,number>, byAccount: Record<string,number> }}
+ */
+function applyPulseOverride(storeState, pulse) {
+  return {
+    total:     pulse != null ? pulse.total     : storeState.total,
+    byKey:     pulse != null ? pulse.byKey     : storeState.byKey,
+    byAccount: storeState.byAccount, // always from store, never overridden
+  };
 }
 
 function makeHoldingRow(overrides = {}) {
@@ -604,5 +627,128 @@ describe('holdingsDayPnlStore — closePx === avgCost guard', () => {
 
     // closePx=0 → guard (closePx===0 branch) fires → dcv=30
     expect(result.byKey['DUMMY']).toBe(30);
+  });
+});
+
+// ── Test 12: byAccount accumulation (multi-account, same symbol) ─────────────
+
+describe('holdingsDayPnlStore — byAccount accumulation', () => {
+  it('two accounts for the same symbol: byAccount keys are separate, byKey is combined', () => {
+    // Scenario: ZG0790 holds 100 SILVERBEES @ close=80, ltp=85 → day_pnl = 500
+    //           DH3747 holds 50  SILVERBEES @ close=80, ltp=85 → day_pnl = 250
+    const holdings = [
+      { tradingsymbol: 'SILVERBEES', account: 'ZG0790', quantity: 100, average_price: 70, close_price: 80, last_price: 85, day_change_val: 500 },
+      { tradingsymbol: 'SILVERBEES', account: 'DH3747', quantity: 50,  average_price: 70, close_price: 80, last_price: 85, day_change_val: 250 },
+    ];
+    const snapshots = { SILVERBEES: { ltp: 85 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // ZG0790: (85-80)*100 = 500
+    expect(result.byAccount['ZG0790']).toBeCloseTo(500, 2);
+    // DH3747: (85-80)*50 = 250
+    expect(result.byAccount['DH3747']).toBeCloseTo(250, 2);
+    // TOTAL = 750
+    expect(result.byAccount['TOTAL']).toBeCloseTo(750, 2);
+    // byKey[SILVERBEES] = combined 750
+    expect(result.byKey['SILVERBEES']).toBeCloseTo(750, 2);
+    // total == TOTAL
+    expect(result.total).toBeCloseTo(result.byAccount['TOTAL'], 2);
+  });
+
+  it('two symbols, two accounts: each account key accumulates across symbols', () => {
+    const holdings = [
+      { tradingsymbol: 'RELIANCE', account: 'ZG0790', quantity: 10, close_price: 2500, last_price: 2510, day_change_val: 100 },
+      { tradingsymbol: 'INFY',     account: 'ZG0790', quantity: 5,  close_price: 1800, last_price: 1810, day_change_val: 50  },
+      { tradingsymbol: 'RELIANCE', account: 'DH3747', quantity: 3,  close_price: 2500, last_price: 2510, day_change_val: 30  },
+    ];
+    const snapshots = {
+      RELIANCE: { ltp: 2510 },
+      INFY:     { ltp: 1810 },
+    };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // ZG0790: (2510-2500)*10 + (1810-1800)*5 = 100 + 50 = 150
+    expect(result.byAccount['ZG0790']).toBeCloseTo(150, 2);
+    // DH3747: (2510-2500)*3 = 30
+    expect(result.byAccount['DH3747']).toBeCloseTo(30, 2);
+    expect(result.byAccount['TOTAL']).toBeCloseTo(180, 2);
+  });
+
+  it('row with empty account string: not counted in byAccount but counted in total', () => {
+    const holdings = [
+      { tradingsymbol: 'HDFC', account: '', quantity: 10, close_price: 3000, last_price: 3010, day_change_val: 100 },
+    ];
+    const snapshots = { HDFC: { ltp: 3010 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // No account key for empty string
+    expect(Object.keys(result.byAccount).filter(k => k !== 'TOTAL')).toEqual([]);
+    // TOTAL still set
+    expect(result.byAccount['TOTAL']).toBeCloseTo(100, 2);
+    expect(result.total).toBeCloseTo(100, 2);
+  });
+});
+
+// ── Test 13: setFromPulse overrides total and byKey but not byAccount ─────────
+
+describe('holdingsDayPnlStore — setFromPulse override contract', () => {
+  it('pulse overrides total and byKey; byAccount remains from _store', () => {
+    // _store state: ZG0790 has SILVERBEES=218000, DH3747 has SILVERBEES=172000
+    const storeState = computeHoldingsDayPnl(
+      [
+        { tradingsymbol: 'SILVERBEES', account: 'ZG0790', quantity: 100, close_price: 80, last_price: 82.18, day_change_val: 21800 },
+        { tradingsymbol: 'SILVERBEES', account: 'ZJ6294', quantity: 80,  close_price: 80, last_price: 82.15, day_change_val: 17200 },
+      ],
+      { SILVERBEES: { ltp: 82 } } // live ltp differs from last_price to force formula path
+    );
+
+    // Pulse says: after account filter, only SILVERBEES=100 matters, total=100
+    const pulse = { byKey: { SILVERBEES: 100 }, total: 100 };
+    const result = applyPulseOverride(storeState, pulse);
+
+    // Pulse overrides:
+    expect(result.total).toBe(100);
+    expect(result.byKey['SILVERBEES']).toBe(100);
+
+    // byAccount is NOT overridden — still reflects all-accounts _store values
+    // ZG0790: (82-80)*100 = 200
+    expect(result.byAccount['ZG0790']).toBeCloseTo(200, 2);
+    // ZJ6294: (82-80)*80 = 160
+    expect(result.byAccount['ZJ6294']).toBeCloseTo(160, 2);
+    // TOTAL in byAccount = 360 (all-accounts), not 100 (pulse single-account)
+    expect(result.byAccount['TOTAL']).toBeCloseTo(360, 2);
+  });
+
+  it('no pulse (null): store values are returned unchanged', () => {
+    const storeState = computeHoldingsDayPnl(
+      [{ tradingsymbol: 'RELIANCE', account: 'ZG0790', quantity: 10, close_price: 2500, last_price: 2510, day_change_val: 100 }],
+      { RELIANCE: { ltp: 2510 } }
+    );
+
+    const result = applyPulseOverride(storeState, null);
+
+    expect(result.total).toBeCloseTo(100, 2);
+    expect(result.byKey['RELIANCE']).toBeCloseTo(100, 2);
+    expect(result.byAccount['ZG0790']).toBeCloseTo(100, 2);
+    expect(result.byAccount['TOTAL']).toBeCloseTo(100, 2);
+  });
+
+  it('pulse total 0 (no holdings in filter): overrides store total to 0', () => {
+    const storeState = computeHoldingsDayPnl(
+      [{ tradingsymbol: 'WIPRO', account: 'ZG0790', quantity: 10, close_price: 500, last_price: 503, day_change_val: 30 }],
+      { WIPRO: { ltp: 503 } }
+    );
+
+    // Pulse with an empty filter result
+    const pulse = { byKey: {}, total: 0 };
+    const result = applyPulseOverride(storeState, pulse);
+
+    expect(result.total).toBe(0);
+    expect(Object.keys(result.byKey)).toHaveLength(0);
+    // byAccount still shows full store values
+    expect(result.byAccount['ZG0790']).toBeCloseTo(30, 2);
   });
 });

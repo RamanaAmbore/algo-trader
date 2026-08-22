@@ -18,11 +18,14 @@
  *              : Number(h.day_change_val) || 0
  *
  * Exports:
- *   { total: number, byKey: { [tradingsymbol: string]: number } }
+ *   { total: number, byKey: { [tradingsymbol: string]: number }, byAccount: { [account: string]: number } }
  *
- * `byKey` keys are plain uppercase tradingsymbols (no exchange prefix) so
- * MarketPulse can look them up via `byKey[sym]` and override row.day_pnl
- * for `${sym}__hold` rows.
+ * `byKey` keys are plain uppercase tradingsymbols (no exchange prefix).
+ * `byAccount` is keyed by uppercase account ID; 'TOTAL' key holds the grand total.
+ *
+ * Pulse override: MarketPulse calls setFromPulse() after each buildUnified pass
+ * so that total/byKey reflect the cq-accurate per-symbol values from the grid.
+ * byAccount is always from _store (all-accounts, not overridden by pulse).
  */
 
 import { browser } from '$app/environment';
@@ -34,6 +37,12 @@ import { pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
 let _tick = $state(0);
 /** @type {ReturnType<typeof setTimeout> | null} */
 let _tickTimer = null;
+
+// Pulse override state — set by MarketPulse.setFromPulse() after each
+// buildUnified pass. Mirrors positionsDayPnlStore's _pulseTotal/_pulseByKey.
+// null means no pulse override yet; store falls back to _store values.
+let _pulseTotal = $state(/** @type {number|null} */ (null));
+let _pulseByKey = $state(/** @type {Record<string,number>|null} */ (null));
 
 // Throttle at 4 Hz (250 ms) — mirrors positionsDayPnlStore pattern.
 // Wrapped in browser guard: SSR has no setTimeout and no symbolTickCount stream.
@@ -56,6 +65,8 @@ const _store = $derived.by(() => {
   let total = 0;
   /** @type {Record<string, number>} */
   const byKey = {};
+  /** @type {Record<string, number>} */
+  const byAccount = {};
 
   for (const h of rows) {
     const sym = String(h?.tradingsymbol || h?.symbol || '').toUpperCase();
@@ -99,17 +110,38 @@ const _store = $derived.by(() => {
 
     byKey[sym] = (byKey[sym] ?? 0) + val;
     total += val;
+
+    // Accumulate per-account totals for holdingsSummaryData filter path.
+    const acc = String(h?.account || '').toUpperCase();
+    if (acc) byAccount[acc] = (byAccount[acc] ?? 0) + val;
   }
 
-  return { total, byKey };
+  byAccount['TOTAL'] = total;
+
+  return { total, byKey, byAccount };
 });
 
 /**
  * Singleton store for holdings day P&L.
  *
- * @type {{ readonly total: number, readonly byKey: Record<string, number> }}
+ * - total / byKey: pulse-overridable (MarketPulse calls setFromPulse after
+ *   each buildUnified so NavStrip H reads the same value the grid displays,
+ *   and is filter-aware like NavStrip P).
+ * - byAccount: always from _store (all-accounts; never overridden by pulse).
  */
 export const holdingsDayPnlStore = {
-  get total() { return _store.total; },
-  get byKey()  { return _store.byKey;  },
+  get total()     { return _pulseTotal ?? _store.total; },
+  get byKey()     { return _pulseByKey ?? _store.byKey; },
+  /** Always all-accounts; not overridden by setFromPulse. */
+  get byAccount() { return _store.byAccount; },
+  /**
+   * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
+   * and aggregate values. Mirrors positionsDayPnlStore.setFromPulse.
+   * @param {Record<string,number>} byKey
+   * @param {number} total
+   */
+  setFromPulse(byKey, total) {
+    _pulseByKey  = byKey;
+    _pulseTotal  = total;
+  },
 };
