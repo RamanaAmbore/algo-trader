@@ -74,59 +74,48 @@ def _dev_reachable() -> bool:
 
 # ── cross-check logic ───────────────────────────────────────────────────────
 
+def _check_symbol(h: dict) -> dict:
+    """Extract per-symbol cross-check data from one holding row."""
+    sym     = str(h.get("tradingsymbol") or h.get("symbol") or "?")
+    qty     = float(h.get("quantity") or 0)
+    close   = float(h.get("previous_close") or h.get("close_price") or 0)
+    ltp     = float(h.get("last_price") or 0)
+    api_dcv = float(h.get("day_change_val") or 0)
+    formula = (ltp - close) * qty if close > 0 else api_dcv
+    return dict(sym=sym, qty=qty, close=close, ltp=ltp,
+                api_dcv=api_dcv, formula=formula, diff=formula - api_dcv)
+
+
+def _pct_diff(api_total: float, formula_total: float) -> float:
+    if abs(api_total) > 1.0:
+        return abs(formula_total - api_total) / abs(api_total) * 100
+    return 0.0 if abs(formula_total - api_total) < 1.0 else 100.0
+
+
 def _run_crosscheck_for_account(account: str, all_rows: list[dict]) -> dict:
     """
     Run cross-check for a single account.
 
-    Fetches holdings for account, then compares:
-      Path A — day_change_val from the API (output of _enrich_holdings)
-      Path B — (last_price − previous_close) × quantity   (independent formula)
-
-    Returns a result dict with keys:
-      account, api_total, formula_total, pct_diff, passed, mismatches, rows, n_held, n_sold
+    Path A — day_change_val from the API (= Kite's raw broker value when provided)
+    Path B — (last_price − previous_close) × quantity (independent formula)
     """
-    # Filter to the requested account only (case-insensitive).
-    account_rows = [r for r in all_rows if str(r.get("account") or "").upper() == account.upper()]
-
-    # Rows with quantity > 0 are held — formula applies.
-    # Rows with quantity == 0 are fully-sold holdings — day_change_val reflects realised P&L.
+    account_rows = [r for r in all_rows
+                    if str(r.get("account") or "").upper() == account.upper()]
     held = [r for r in account_rows if float(r.get("quantity") or 0) > 0]
     sold = [r for r in account_rows if float(r.get("quantity") or 0) == 0]
 
-    api_total = formula_total = 0.0
-    detail = []
-    mismatches = []
-
-    for h in held:
-        sym = str(h.get("tradingsymbol") or h.get("symbol") or "?")
-        qty = float(h.get("quantity") or 0)
-        close = float(h.get("previous_close") or h.get("close_price") or 0)
-        ltp = float(h.get("last_price") or 0)
-        api_dcv = float(h.get("day_change_val") or 0)
-
-        # Independent formula — same as what Kite computes on their side
-        formula = (ltp - close) * qty if close > 0 else api_dcv
-
-        diff = formula - api_dcv
-        api_total += api_dcv
-        formula_total += formula
-        detail.append(dict(sym=sym, qty=qty, close=close, ltp=ltp,
-                           api_dcv=api_dcv, formula=formula, diff=diff))
-        if abs(diff) > PER_SYMBOL_TOLERANCE_RUPEES:
-            mismatches.append(dict(sym=sym, api_dcv=api_dcv,
-                                   formula=formula, diff=diff))
-
-    if abs(api_total) > 1.0:
-        pct_diff = abs(formula_total - api_total) / abs(api_total) * 100
-    else:
-        pct_diff = 0.0 if abs(formula_total - api_total) < 1.0 else 100.0
+    detail     = [_check_symbol(h) for h in held]
+    mismatches = [d for d in detail if abs(d["diff"]) > PER_SYMBOL_TOLERANCE_RUPEES]
+    api_total      = sum(d["api_dcv"]  for d in detail)
+    formula_total  = sum(d["formula"]  for d in detail)
+    pct            = _pct_diff(api_total, formula_total)
 
     return dict(
         account=account,
         api_total=api_total,
         formula_total=formula_total,
-        pct_diff=pct_diff,
-        passed=pct_diff <= TOLERANCE_PCT and not mismatches,
+        pct_diff=pct,
+        passed=pct <= TOLERANCE_PCT and not mismatches,
         mismatches=mismatches,
         rows=detail,
         n_held=len(held),
