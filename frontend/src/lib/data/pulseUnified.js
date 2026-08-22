@@ -554,11 +554,19 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
                    : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
     const holdClose = Number(r.previous_close) || Number(r.close_price) || 0;
     const holdAvg   = Number(r.average_price) || 0;
-    if (liveHold != null && holdClose > 0 && heldQty !== 0) {
+    const holdDcv = Number(r.day_change_val) || 0;
+    // Guard 1: holdClose===0 → (ltp-0)*qty = current value, not day P&L.
+    // Guard 2: holdClose===holdAvg → computes lifetime P&L instead of day P&L.
+    // Guard 3: |liveHold-holdClose|≤0.005 → post-settlement, ltp≈close → use dcv.
+    // Mirrors holdingsDayPnlStore._store formula exactly.
+    if (holdClose === 0 || holdClose === holdAvg) {
+      row.day_pnl = (row.day_pnl ?? 0) + holdDcv;
+    } else if (liveHold != null && holdClose > 0 && heldQty !== 0
+               && Math.abs(liveHold - holdClose) > 0.005) {
       row.day_pnl = (row.day_pnl ?? 0) + (liveHold - holdClose) * heldQty;
     } else {
       // Holdings: day_change_val is correct (no new-position overnight_qty=0 edge case — holdings don't have intraday P&L splits)
-      row.day_pnl = (row.day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+      row.day_pnl = (row.day_pnl ?? 0) + holdDcv;
     }
     if (liveHold != null && holdAvg > 0 && heldQty !== 0) {
       row.pnl = (row.pnl ?? 0) + (liveHold - holdAvg) * heldQty;

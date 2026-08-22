@@ -1076,7 +1076,9 @@ class TestFundsClosedHoursGate:
     Mandatory behaviours:
       1. When market is closed and cache is warm → broker NOT called
       2. When market is open → broker IS called normally
-      3. Cache cold (first run) + market closed → falls through to broker
+      3. Cache cold + market closed → returns empty FundsResponse (broker NOT called;
+         calling broker during clearing windows returns 0 margins which is worse than empty)
+      4. ?fresh=1 → bypasses gate, broker IS called regardless of market state
     """
 
     @pytest.mark.asyncio
@@ -1099,8 +1101,10 @@ class TestFundsClosedHoursGate:
         mock_broker.side_effect = RuntimeError("broker must not be called during closed hours")
 
         with (
+            # After refactor, funds.py no longer imports _any_segment_open directly;
+            # the gate goes through closed_hours_or_broker in snapshot_gate.py.
             patch(
-                "backend.api.routes.funds._any_segment_open",
+                "backend.api.helpers.snapshot_gate._any_segment_open",
                 return_value=False,
             ),
             patch(
@@ -1147,8 +1151,9 @@ class TestFundsClosedHoursGate:
             return live_resp
 
         with (
+            # After refactor, funds.py routes through snapshot_gate.closed_hours_or_broker.
             patch(
-                "backend.api.routes.funds._any_segment_open",
+                "backend.api.helpers.snapshot_gate._any_segment_open",
                 return_value=True,  # market is OPEN
             ),
             patch(
@@ -1171,27 +1176,36 @@ class TestFundsClosedHoursGate:
 
     @pytest.mark.asyncio
     async def test_funds_closed_cache_cold_falls_through_to_broker(self):
-        """When market is closed but cache is cold (peek returns None), fall through to broker."""
-        from backend.api.schemas import FundsResponse, FundsRow
+        """When market is closed and cache is cold, return empty rows — NOT broker data.
 
-        live_resp = FundsResponse(
-            rows=[
-                FundsRow(account="KITE01", cash=90000.0,
-                         avail_margin=70000.0, used_margin=20000.0, collateral=0.0),
-            ],
-            refreshed_at="2026-08-20 06:00:00 IST",
-        )
+        NOTE: This test documents the CORRECTED behaviour after the snapshot gate fix.
+        The old behaviour was: cache cold + market closed → fall through to broker.
+        That was a bug: during post-settlement clearing the broker returns 0 margins
+        which are then displayed to the operator.
+
+        New behaviour: cache cold + market closed → empty FundsResponse, 0 broker calls.
+        The UI can show a 'no data' state which is better than displaying 0s.
+        The broker is NEVER called during closed hours (closed_hours_or_broker invariant).
+        """
+        from backend.api.schemas import FundsResponse, FundsRow
 
         broker_call_count = 0
 
         async def _mock_get_or_fetch(key, fetcher, ttl_seconds=30):
             nonlocal broker_call_count
             broker_call_count += 1
-            return live_resp
+            return FundsResponse(
+                rows=[
+                    FundsRow(account="KITE01", cash=90000.0,
+                             avail_margin=70000.0, used_margin=20000.0, collateral=0.0),
+                ],
+                refreshed_at="2026-08-20 06:00:00 IST",
+            )
 
         with (
+            # After refactor, funds.py routes through snapshot_gate.closed_hours_or_broker.
             patch(
-                "backend.api.routes.funds._any_segment_open",
+                "backend.api.helpers.snapshot_gate._any_segment_open",
                 return_value=False,  # market CLOSED
             ),
             patch(
@@ -1211,9 +1225,16 @@ class TestFundsClosedHoursGate:
             request = MagicMock()
             resp = await handler(None, request, fresh=False)
 
-        assert broker_call_count == 1, (
-            f"get_or_fetch must be called once when cache is cold, even during closed hours. "
-            f"Called {broker_call_count} times"
+        # Market closed + cache cold → broker must NOT be called (snapshot gate invariant)
+        assert broker_call_count == 0, (
+            f"get_or_fetch was called {broker_call_count} times — "
+            "broker must NOT be called when market is closed (even cache cold). "
+            "Calling broker off-market can return 0 margins which corrupt the display."
+        )
+        # Result should be an empty FundsResponse (not broker zeros)
+        assert isinstance(resp, FundsResponse)
+        assert resp.rows == [], (
+            "cache cold + market closed must return empty rows, not broker zeros"
         )
 
     @pytest.mark.asyncio
@@ -1237,8 +1258,12 @@ class TestFundsClosedHoursGate:
             return live_resp
 
         with (
+            # After refactor, funds.py routes through snapshot_gate.closed_hours_or_broker.
+            # _any_segment_open is no longer imported into funds.py directly.
+            # ?fresh=1 bypass runs BEFORE the gate so this patch is not needed
+            # for the fresh path — but we leave it for clarity.
             patch(
-                "backend.api.routes.funds._any_segment_open",
+                "backend.api.helpers.snapshot_gate._any_segment_open",
                 return_value=False,  # market CLOSED
             ),
             patch(

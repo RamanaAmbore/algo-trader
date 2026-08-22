@@ -481,6 +481,84 @@ describe('_liveHoldingsValue formula invariant', () => {
   });
 });
 
+// ── mergeHoldingRows — day_pnl guards (post-settlement + zero close) ─────────
+//
+// Three new guards added to match holdingsDayPnlStore._store formula:
+//   Guard 1: holdClose===0 → fall back to day_change_val (avoids (ltp-0)*qty = cur value)
+//   Guard 2: holdClose===holdAvg → fall back to day_change_val (avoids lifetime P&L)
+//   Guard 3: |liveHold-holdClose|<=0.005 → post-settlement guard, fall back to dcv
+
+describe('mergeHoldingRows — day_pnl guards matching holdingsDayPnlStore', () => {
+  it('holdClose===0: falls back to day_change_val (not (ltp-0)*qty)', () => {
+    // Without guard: (2900 - 0) * 10 = 29000 — wrong (current value, not day P&L)
+    // With guard: holdClose===0 → uses day_change_val=500
+    const snapMap = { RELIANCE: { ltp: 2900 } };
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({ previous_close: 0, close_price: 0, day_change_val: 500 })],
+      true,
+      {},
+      makeHoldingCtx(snapMap)
+    );
+    const row = Object.values(byKey)[0];
+    expect(row.day_pnl).toBeCloseTo(500, 1);
+    expect(row.day_pnl).not.toBeCloseTo(29000, 1);
+  });
+
+  it('holdClose===holdAvg: falls back to day_change_val (not lifetime P&L)', () => {
+    // Without guard: (2900 - 2800) * 10 = 1000 — wrong (lifetime, not day P&L when close=avg)
+    // With guard: holdClose===holdAvg → uses day_change_val=500
+    const snapMap = { RELIANCE: { ltp: 2900 } };
+    const byKey = {};
+    // average_price = previous_close = 2800 → holdClose===holdAvg triggers fallback
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({ average_price: 2800, previous_close: 2800, day_change_val: 500 })],
+      true,
+      {},
+      makeHoldingCtx(snapMap)
+    );
+    const row = Object.values(byKey)[0];
+    expect(row.day_pnl).toBeCloseTo(500, 1);
+    expect(row.day_pnl).not.toBeCloseTo(1000, 1);
+  });
+
+  it('post-settlement: |liveHold-holdClose|<=0.005 → uses day_change_val not formula', () => {
+    // At NSE settlement ltp≈close (within 0.005) — formula gives ~0 instead of real dcv.
+    // liveHold=2850.001, holdClose=2850 → diff=0.001 ≤ 0.005 → use day_change_val=350
+    const snapMap = { RELIANCE: { ltp: 2850.001 } };
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({ previous_close: 2850, average_price: 2800, day_change_val: 350 })],
+      true,
+      {},
+      makeHoldingCtx(snapMap)
+    );
+    const row = Object.values(byKey)[0];
+    // formula: (2850.001 - 2850) * 10 = 0.01 — wrong; dcv=350 is correct
+    expect(row.day_pnl).toBeCloseTo(350, 1);
+    expect(row.day_pnl).not.toBeCloseTo(0.01, 1);
+  });
+
+  it('normal case: |liveHold-holdClose|>0.005 → uses formula (not dcv)', () => {
+    // liveHold=2900, holdClose=2850, qty=10 → (2900-2850)*10=500; dcv=350 (differs to discriminate)
+    const snapMap = { RELIANCE: { ltp: 2900 } };
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({ previous_close: 2850, average_price: 2800, day_change_val: 350 })],
+      true,
+      {},
+      makeHoldingCtx(snapMap)
+    );
+    const row = Object.values(byKey)[0];
+    expect(row.day_pnl).toBeCloseTo(500, 1);
+    expect(row.day_pnl).not.toBeCloseTo(350, 1);
+  });
+});
+
 // ── mergePositionRows — day_pnl mixed overnight + intraday ───────────────────
 
 describe('mergePositionRows — day_pnl with mixed overnight + intraday sell adds', () => {

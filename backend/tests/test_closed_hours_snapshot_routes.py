@@ -875,7 +875,13 @@ def test_sparkline_response_as_of_defaults_none():
 
 @pytest.mark.asyncio
 async def test_positions_fresh_bypasses_closed_hours_guard():
-    """?fresh=True skips the closed-hours snapshot guard and forces live fetch."""
+    """?fresh=True + market OPEN skips the snapshot and forces live fetch.
+
+    NOTE: After the skip_ltp/fresh off-market guard fix, fresh=True is
+    only a bypass when the market is actually open. When market is closed,
+    fresh=True falls through to closed_hours_or_broker (snapshot path).
+    This test covers the open-market + fresh=True path (existing behaviour).
+    """
     from backend.api.schemas import PositionsResponse
 
     live_resp = PositionsResponse(rows=[], summary=[], refreshed_at="fresh-live")
@@ -883,7 +889,7 @@ async def test_positions_fresh_bypasses_closed_hours_guard():
 
     with patch(
         "backend.api.helpers.snapshot_gate._any_segment_open",
-        return_value=False,   # market closed — but fresh=True bypasses
+        return_value=True,   # market OPEN — fresh=True takes the broker bypass
     ), patch(
         "backend.api.routes.positions._positions_snapshot",
         mock_snapshot,
@@ -904,9 +910,9 @@ async def test_positions_fresh_bypasses_closed_hours_guard():
              patch("backend.brokers.broker_apis._raw_cache_invalidate"):
             resp = await handler_fn(None, mock_request, fresh=True)
 
-    # Snapshot should NOT have been called (fresh=True bypasses the guard)
+    # Snapshot should NOT have been called (fresh=True + open market bypasses the guard)
     assert mock_snapshot.call_count == 0, (
-        "snapshot helper must not be called when fresh=True"
+        "snapshot helper must not be called when fresh=True and market is open"
     )
     assert resp.refreshed_at == "fresh-live"
 

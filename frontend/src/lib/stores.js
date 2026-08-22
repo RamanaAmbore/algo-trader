@@ -1354,19 +1354,19 @@ function stopMarketStatusPoller() {
  * @returns {'green'|'amber'|'red'}
  */
 function _brokerHealthWorstState(accounts) {
-  if (!accounts || !accounts.length) return 'amber';
+  if (!accounts || !accounts.length) return 'green';
   const active = accounts.filter(a => a.state !== 'inactive');
   const base = active.length ? active : accounts;
   if (base.some(a => a.state === 'red'))   return 'red';
   if (base.some(a => a.state === 'amber')) return 'amber';
-  if (base.every(a => a.state === 'green')) return 'green';
+  if (base.every(a => a.state === 'green' || a.state === 'inactive')) return 'green';
   // all inactive
-  return 'amber';
+  return 'green';
 }
 
 export const brokerHealthStore = writable(/** @type {{ accounts: BrokerAccountHealth[], worstState: 'green'|'amber'|'red' }} */ ({
   accounts: [],
-  worstState: 'amber',
+  worstState: 'green',
 }));
 
 let _bhPollerStarted = false;

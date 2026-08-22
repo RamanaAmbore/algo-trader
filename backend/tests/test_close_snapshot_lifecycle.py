@@ -322,3 +322,188 @@ async def test_latest_snapshot_ltp_map_returns_empty_for_unknown_kind():
     assert out == {}
     out = await latest_snapshot_ltp_map("")
     assert out == {}
+
+
+# ===========================================================================
+# Change 1 — positions.py: skip_ltp gated on market-open
+# ===========================================================================
+
+def test_positions_skip_ltp_gate_imported_correctly():
+    """positions.py imports _any_segment_open for the skip_ltp gate."""
+    src = _src(_POS)
+    assert "_any_segment_open" in src, (
+        "positions.py must import _any_segment_open to gate skip_ltp bypass"
+    )
+    assert "await _asyncio.to_thread(_any_segment_open)" in src, (
+        "positions.py must call _any_segment_open via asyncio.to_thread"
+    )
+
+
+def test_positions_skip_ltp_guards_on_market_open():
+    """positions.py gates skip_ltp bypass on market_open check.
+
+    The guard prevents off-market skip_ltp=True from bypassing the snapshot
+    gate and calling the broker directly (which might return empty positions
+    and blank the grid).
+    """
+    src = _src(_POS)
+    # Must have: mkt_open = await ..._any_segment_open
+    assert "mkt_open = await _asyncio.to_thread(_any_segment_open)" in src, (
+        "positions.py must capture market-open state before skip_ltp check"
+    )
+    # Must have skip_ltp gated on mkt_open.
+    # Two equivalent forms are accepted:
+    #   (a) if (skip_ltp or fresh) and mkt_open:  — combined condition
+    #   (b) if skip_ltp and mkt_open:              — split form (fresh has own early return)
+    assert (
+        "if (skip_ltp or fresh) and mkt_open:" in src
+        or "if skip_ltp and mkt_open:" in src
+    ), (
+        "positions.py must gate skip_ltp bypass on mkt_open "
+        "(either combined or split form with a separate fresh early-return)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resolve_positions_source_skip_ltp_respects_market_open():
+    """When market is closed and skip_ltp=True, _resolve_positions_source
+    falls through to closed_hours_or_broker (snapshot path), not broker path.
+    """
+    from backend.api.routes.positions import _resolve_positions_source
+    from litestar import Request
+    from unittest.mock import AsyncMock, patch
+
+    # Create a minimal Request mock
+    request = AsyncMock(spec=Request)
+
+    # Scenario: market closed, skip_ltp=True
+    # Expected: snapshot path taken, not broker path
+    with patch(
+        "backend.api.routes.positions._any_segment_open",
+        return_value=False,  # market closed
+    ), patch(
+        "backend.api.routes.positions.closed_hours_or_broker",
+        new_callable=AsyncMock,
+        return_value=(AsyncMock(), "snapshot"),
+    ) as mock_gate:
+        # This is tricky because _resolve_positions_source awaits to_thread
+        # and calls _broker_fn directly when skip_ltp=True + mkt_open.
+        # When market is closed, the gate is called instead.
+        try:
+            await _resolve_positions_source(request, fresh=False, skip_ltp=True)
+        except Exception:
+            # May fail due to snapshot returning None, but we're checking
+            # that the gate was called, not the broker.
+            pass
+
+        # Verify closed_hours_or_broker was called (snapshot path)
+        assert (
+            mock_gate.called
+        ), "When market is closed, closed_hours_or_broker must be called"
+
+
+@pytest.mark.asyncio
+async def test_resolve_positions_source_skip_ltp_bypasses_when_market_open():
+    """When market is open and skip_ltp=True, _resolve_positions_source
+    bypasses the snapshot gate and calls the broker directly (for metadata refresh).
+    """
+    from backend.api.routes.positions import _resolve_positions_source
+    from litestar import Request
+    from unittest.mock import AsyncMock, patch
+
+    request = AsyncMock(spec=Request)
+
+    # Scenario: market open, skip_ltp=True
+    # Expected: broker path taken directly (bypass gate)
+    with patch(
+        "backend.api.routes.positions._any_segment_open",
+        return_value=True,  # market open
+    ), patch(
+        "backend.api.routes.positions.get_or_fetch",
+        new_callable=AsyncMock,
+        return_value=AsyncMock(),
+    ) as mock_fetch, patch(
+        "backend.api.routes.positions.closed_hours_or_broker",
+        new_callable=AsyncMock,
+    ) as mock_gate:
+        try:
+            await _resolve_positions_source(request, fresh=False, skip_ltp=True)
+        except Exception:
+            pass
+
+        # When market is open, skip_ltp should bypass the gate
+        # and call the broker path directly (get_or_fetch)
+        assert (
+            mock_fetch.called
+        ), "When market is open + skip_ltp=True, broker_fn must be called"
+
+
+# ===========================================================================
+# Change 2 — funds.py: closed_hours_or_broker + snapshot fallback
+# ===========================================================================
+
+def test_funds_uses_closed_hours_or_broker_gate():
+    """funds.py uses the canonical closed_hours_or_broker gate when not fresh."""
+    src = _src(_FUN)
+    assert "closed_hours_or_broker" in src, (
+        "funds.py must use closed_hours_or_broker gate"
+    )
+
+
+def test_funds_gate_has_snapshot_fallback_enabled():
+    """funds.py calls closed_hours_or_broker with fallback_to_snapshot_on_broker_error=True.
+
+    This prevents zero-margins being shown post-settlement when the broker
+    returns empty during clearing; the last known cache value is served instead.
+    """
+    src = _src(_FUN)
+    assert "fallback_to_snapshot_on_broker_error=True" in src, (
+        "funds.py must enable snapshot fallback in closed_hours_or_broker call"
+    )
+
+
+def test_funds_fresh_bypass_before_gate():
+    """funds.py has a ?fresh=1 bypass BEFORE the closed_hours_or_broker gate.
+
+    When fresh=True, it invalidates the cache and calls get_or_fetch directly,
+    bypassing all market-hour gates to force a live refresh.
+    """
+    src = _src(_FUN)
+    # Look for the if fresh block that precedes closed_hours_or_broker
+    lines = src.split("\n")
+    fresh_idx = None
+    gate_idx = None
+    for i, line in enumerate(lines):
+        if "if fresh:" in line:
+            fresh_idx = i
+        if "closed_hours_or_broker" in line:
+            gate_idx = i
+    assert (
+        fresh_idx is not None and gate_idx is not None and fresh_idx < gate_idx
+    ), (
+        "funds.py must have if fresh: block before closed_hours_or_broker call"
+    )
+
+
+def test_funds_accept_skip_ltp_param():
+    """funds.py accepts ?skip_ltp param (as a no-op)."""
+    src = _src(_FUN)
+    assert "skip_ltp: bool = False" in src, (
+        "funds.py route must accept skip_ltp param for RefreshButton uniformity"
+    )
+    # Should be documented as a no-op
+    assert "skip_ltp" in src and ("no-op" in src or "ignored" in src), (
+        "funds.py should document skip_ltp as a no-op (funds have no LTP concept)"
+    )
+
+
+def test_funds_snapshot_fn_uses_cache_peek():
+    """funds.py _funds_snapshot_fn uses peek() to return last known TTL cache."""
+    src = _src(_FUN)
+    assert "peek(" in src, (
+        "funds.py snapshot function must use peek() from the TTL cache"
+    )
+    # Should be checking the cache before returning empty
+    assert 'peek("funds")' in src, (
+        "funds.py snapshot must peek the 'funds' cache entry"
+    )

@@ -17,7 +17,8 @@ from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
 from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
-    closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
+    _any_segment_open, closed_hours_or_broker, is_exchange_closed_now,
+    latest_snapshot_ltp_map,
 )
 from backend.api.routes.positions_helpers import (
     _is_broker_outage,
@@ -1147,7 +1148,17 @@ async def _resolve_positions_source(
     # intraday split) refreshes; the row-level overlay tags every
     # closed-exchange row as price_source='snapshot_*' and freezes
     # its last_price to the daily_book close_settled value.
-    if skip_ltp or fresh:
+    #
+    # Guard: skip_ltp only bypasses the snapshot gate when the market
+    # is actually open. Off-market, the broker may return an empty
+    # positions frame (post-settlement clearing) which would blank
+    # pulsePositionsStore. ?fresh=1 always bypasses (operator-explicit
+    # refresh); ?skip_ltp=1 requires market to be open.
+    if fresh:
+        return await _broker_fn()
+    import asyncio as _asyncio
+    mkt_open = await _asyncio.to_thread(_any_segment_open)
+    if skip_ltp and mkt_open:
         return await _broker_fn()
 
     resp, source = await closed_hours_or_broker(

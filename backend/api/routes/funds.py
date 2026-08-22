@@ -1,6 +1,5 @@
 """Funds endpoint — returns margins / cash / available margin per account."""
 
-import asyncio
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -14,7 +13,7 @@ from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection, normalise_role,
 )
 from backend.api.cache import get_or_fetch, invalidate, peek
-from backend.api.helpers.snapshot_gate import _any_segment_open
+from backend.api.helpers.snapshot_gate import closed_hours_or_broker
 from backend.api.routes.positions_helpers import _is_broker_outage
 from backend.api.schemas import FundsResponse, FundsRow
 from backend.brokers import broker_apis
@@ -157,43 +156,65 @@ class FundsController(Controller):
         # the API surface stays uniform. See RefreshButton.svelte.
         _ = skip_ltp  # accepted, ignored — funds already broker-authoritative
         try:
-            # Market-hours gate: when both segments are closed and a cached
-            # value exists, return it directly without calling the broker.
-            # This prevents stale pre-settlement broker responses during the
-            # NSE settlement window (15:30–16:15) and both-closed windows.
-            # ?fresh=1 bypasses this gate intentionally (operator-requested refresh).
-            mkt_open: bool = await asyncio.to_thread(_any_segment_open)
-            if not fresh and not mkt_open:
-                cached = peek("funds")
-                if cached is not None:
-                    # Serve the cached value; fall through to scope/mask below.
-                    resp = cached
-                else:
-                    # Cache cold (first run after restart) — fall through to broker.
-                    resp = await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
-            else:
-                if fresh:
-                    invalidate("funds")
-                    # Also drop the raw-DataFrame cache so the refetch below
-                    # sees fresh broker state (matches positions / holdings).
-                    try:
-                        from backend.brokers.broker_apis import (
-                            _raw_cache_invalidate, dhan_next_poll_clear,
-                            _use_conn_service,
-                        )
-                        _raw_cache_invalidate("margins")
-                        # Reset the Dhan interval gate so ?fresh=1 bypasses
-                        # cold/warm cadence and always hits the broker.
-                        # Under conn-service the _dhan_next_poll dict lives in
-                        # conn_service's process — proxy the reset over UDS.
-                        if _use_conn_service():
-                            from backend.brokers.client.api import dhan_poll_reset_remote
-                            await dhan_poll_reset_remote()
-                        else:
-                            dhan_next_poll_clear()
-                    except Exception:
-                        pass
+            # ?fresh=1 — operator-requested refresh bypasses all gates and
+            # forces a live broker call regardless of market hours.
+            if fresh:
+                invalidate("funds")
+                # Also drop the raw-DataFrame cache so the refetch below
+                # sees fresh broker state (matches positions / holdings).
+                try:
+                    from backend.brokers.broker_apis import (
+                        _raw_cache_invalidate, dhan_next_poll_clear,
+                        _use_conn_service,
+                    )
+                    _raw_cache_invalidate("margins")
+                    # Reset the Dhan interval gate so ?fresh=1 bypasses
+                    # cold/warm cadence and always hits the broker.
+                    # Under conn-service the _dhan_next_poll dict lives in
+                    # conn_service's process — proxy the reset over UDS.
+                    if _use_conn_service():
+                        from backend.brokers.client.api import dhan_poll_reset_remote
+                        await dhan_poll_reset_remote()
+                    else:
+                        dhan_next_poll_clear()
+                except Exception:
+                    pass
                 resp = await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
+            else:
+                # Canonical snapshot gate. When market is closed, snapshot_fn
+                # is called instead of broker_fn. snapshot_fn uses peek() —
+                # the in-process TTL cache — because daily_book stores funds in
+                # a nested Kite-shape payload (segment → available/utilised
+                # sub-dicts) that requires re-running the full rename/aggregate
+                # pipeline to reconstruct FundsResponse. Using the hot TTL
+                # cache as the snapshot avoids re-implementing that pipeline
+                # and is equivalent for the closed-hours use case.
+                # fallback_to_snapshot_on_broker_error=True: if the broker
+                # returns zero/empty margins off-market (post-settlement
+                # clearing), the last known cache value is served instead.
+                async def _funds_snapshot_fn() -> FundsResponse:
+                    cached = peek("funds")
+                    if cached is not None:
+                        return cached
+                    # Cache cold after restart + market closed — no snapshot to
+                    # serve; return empty rows. The caller's exception handler
+                    # catches and surfaces this gracefully.
+                    return FundsResponse(
+                        rows=[],
+                        refreshed_at=timestamp_display(),
+                        stale_accounts=[],
+                    )
+
+                async def _funds_broker_fn() -> FundsResponse:
+                    return await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
+
+                resp, _source = await closed_hours_or_broker(
+                    exchange="NSE",
+                    snapshot_fn=_funds_snapshot_fn,
+                    broker_fn=_funds_broker_fn,
+                    fallback_to_snapshot_on_broker_error=True,
+                    route_key="funds",
+                )
             # Horizontal scoping (slice 5) — trader sees only their
             # assigned_accounts. Firm-wide roles untouched. TOTAL row
             # is always preserved so the page-level rollup remains
