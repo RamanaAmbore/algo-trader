@@ -551,7 +551,8 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     if (liveQ?.oi     != null) row.oi     = liveQ.oi;
     // Day P&L and total P&L — use snapshot LTP regardless of market-open state.
     const liveHold = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
-                   : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
+                   : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp)
+                   : (Number(r.last_price) > 0 ? Number(r.last_price) : null));
     const holdClose = Number(r.previous_close) || Number(r.close_price) || 0;
     const holdAvg   = Number(r.average_price) || 0;
     const holdDcv = Number(r.day_change_val) || 0;

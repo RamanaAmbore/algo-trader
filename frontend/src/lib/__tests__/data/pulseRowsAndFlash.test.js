@@ -607,3 +607,111 @@ describe('mergePositionRows — day_pnl with mixed overnight + intraday sell add
     expect(merged.day_pnl).toBeCloseTo(-25, 1);
   });
 });
+
+// ── mergeHoldingRows — H:1 day_pnl cross-check vs broker day_change_val ──────
+//
+// Critical design: day_change_val is intentionally set to 99999 (wrong sentinel)
+// in tests 1-3. If the code falls through to dcv instead of using the formula,
+// the assertion will fail with 99999 ≠ 5000. This proves the formula path is
+// actually taken, not the dcv fallback.
+//
+// Test 4 is the only case where dcv IS the correct fallback (all LTP sources null).
+
+describe('mergeHoldingRows — H:1 day_pnl cross-check vs broker day_change_val', () => {
+  // Common row shape: previous_close=2800, qty=100, avg=2500.
+  // Formula path: (ltp - 2800) * 100 = 5000 when ltp=2850.
+
+  it('Test 1 — snap LTP wins (market open, subscribed symbol)', () => {
+    // snap.ltp=2850 → liveHold=2850; formula: (2850-2800)*100 = 5000
+    // day_change_val=99999 is a wrong sentinel — if dcv path fires, test fails.
+    const snapMap = { RELIANCE: { ltp: 2850 } };
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({
+        quantity: 100,
+        average_price: 2500,
+        previous_close: 2800,
+        close_price: 2800,
+        day_change_val: 99999,
+      })],
+      true,
+      {},
+      makeHoldingCtx(snapMap)
+    );
+    const row = Object.values(byKey)[0];
+    // Formula must fire, not dcv.
+    expect(row.day_pnl).toBeCloseTo(5000, 1);
+    expect(row.day_pnl).not.toBeCloseTo(99999, 1);
+  });
+
+  it('Test 2 — liveQ wins (no snap, quote bag has LTP)', () => {
+    // snap absent, cq bag provides ltp=2850 → liveHold=2850; formula: (2850-2800)*100=5000
+    // day_change_val=99999 wrong sentinel.
+    const cq = { 'NSE:RELIANCE': { ltp: 2850 } };
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({
+        quantity: 100,
+        average_price: 2500,
+        previous_close: 2800,
+        close_price: 2800,
+        day_change_val: 99999,
+      })],
+      true,
+      cq,
+      makeHoldingCtx()  // no snap
+    );
+    const row = Object.values(byKey)[0];
+    expect(row.day_pnl).toBeCloseTo(5000, 1);
+    expect(row.day_pnl).not.toBeCloseTo(99999, 1);
+  });
+
+  it('Test 3 — last_price wins (no snap, no liveQ) — THE BUG PATH', () => {
+    // Before fix: liveHold was null → fell to dcv=99999 → WRONG.
+    // After fix: r.last_price=2850 is the third fallback → liveHold=2850 → formula fires.
+    // day_change_val=99999 wrong sentinel.
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({
+        quantity: 100,
+        average_price: 2500,
+        previous_close: 2800,
+        close_price: 2800,
+        last_price: 2850,
+        day_change_val: 99999,
+      })],
+      true,
+      {},         // no cq
+      makeHoldingCtx()  // no snap
+    );
+    const row = Object.values(byKey)[0];
+    // Formula must fire, not dcv. Pre-fix this would be 99999.
+    expect(row.day_pnl).toBeCloseTo(5000, 1);
+    expect(row.day_pnl).not.toBeCloseTo(99999, 1);
+  });
+
+  it('Test 4 — all LTP sources null → dcv is the only correct fallback', () => {
+    // snap=null, liveQ=absent, last_price=null → liveHold=null → dcv=5000 is correct.
+    const byKey = {};
+    mergeHoldingRows(
+      byKey,
+      [makeHoldingRow({
+        quantity: 100,
+        average_price: 2500,
+        previous_close: 2800,
+        close_price: 2800,
+        last_price: null,
+        day_change_val: 5000,
+      })],
+      true,
+      {},
+      makeHoldingCtx()
+    );
+    const row = Object.values(byKey)[0];
+    // No LTP anywhere → dcv is the only correct fallback.
+    expect(row.day_pnl).toBeCloseTo(5000, 1);
+  });
+});

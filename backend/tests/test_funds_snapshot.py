@@ -16,7 +16,7 @@ Five quality dimensions:
   2. Perf    — zero broker calls when market is closed + cache warm.
   3. Stale   — manual asyncio.to_thread(_any_segment_open) gate removed.
   4. Reuse   — canonical closed_hours_or_broker used (same as positions/holdings).
-  5. UX      — closed + cache cold → empty FundsResponse (not 0s from broker).
+  5. UX      — closed + cache cold → broker called directly (funds has no DB snapshot source).
 """
 
 from __future__ import annotations
@@ -143,27 +143,29 @@ async def test_funds_closed_cache_warm_no_broker_call():
 
 
 @pytest.mark.asyncio
-async def test_funds_closed_cache_cold_returns_empty_not_zeros():
-    """Market CLOSED + cache cold → snapshot_fn returns empty FundsResponse.
+async def test_funds_closed_cache_cold_calls_broker():
+    """Market CLOSED + cache cold → _funds_snapshot_fn calls broker directly.
 
-    This is the key regression: previously cache-cold off-market would call
-    the broker (which may return 0 margins) and display zeros. Now snapshot_fn
-    returns empty rows (no broker call at all) so the UI can show a 'no data'
-    state rather than 0s.
+    Regression fix: the old code returned empty FundsResponse(rows=[]) when
+    peek("funds") was None (cold cache after restart). This caused the UI to
+    show zeros for margins and cash when the market was closed. The fix calls
+    get_or_fetch("funds", _fetch, ...) in the cold-cache branch so the broker
+    is consulted and real data is returned.
     """
     from backend.api.helpers.snapshot_gate import closed_hours_or_broker
     from backend.api.schemas import FundsResponse
 
+    broker_resp = _make_funds_response(rows=[])
     broker_call_count = 0
 
     async def snapshot_fn() -> FundsResponse:
-        # Simulates _funds_snapshot_fn when cache is cold (peek returns None)
-        from backend.shared.helpers.date_time_utils import timestamp_display
-        return FundsResponse(rows=[], refreshed_at=timestamp_display(), stale_accounts=[])
-
-    async def broker_fn() -> FundsResponse:
+        # Simulates _funds_snapshot_fn when cache is cold: peek returns None
+        # so it falls through to get_or_fetch which hits broker_fn.
         nonlocal broker_call_count
         broker_call_count += 1
+        return broker_resp
+
+    async def broker_fn() -> FundsResponse:
         return _make_funds_response()
 
     with patch(
@@ -180,13 +182,11 @@ async def test_funds_closed_cache_cold_returns_empty_not_zeros():
 
     assert isinstance(result, FundsResponse)
     assert source == "snapshot", f"expected 'snapshot', got {source!r}"
-    assert broker_call_count == 0, (
-        f"broker was called {broker_call_count} times off-market (cache cold) — must be 0"
+    assert broker_call_count >= 1, (
+        f"broker (via snapshot_fn) must be called when cache is cold; "
+        f"got broker_call_count={broker_call_count}"
     )
-    # Cache cold + market closed → empty rows (not broker's potentially-zero rows)
-    assert result.rows == [], (
-        "cache cold + market closed must return empty rows, not broker zeros"
-    )
+    assert result is broker_resp
 
 
 @pytest.mark.asyncio
@@ -288,18 +288,19 @@ async def test_funds_snapshot_fn_peek_warm():
 
 
 @pytest.mark.asyncio
-async def test_funds_snapshot_fn_peek_cold_returns_empty():
-    """When peek returns None, snapshot_fn must return empty FundsResponse."""
-    from backend.api.schemas import FundsResponse
-    from backend.shared.helpers.date_time_utils import timestamp_display
+async def test_funds_snapshot_fn_peek_cold_falls_through_to_broker():
+    """When peek returns None, _funds_snapshot_fn must NOT return empty rows.
 
-    with patch("backend.api.routes.funds.peek", return_value=None):
-        import backend.api.routes.funds as _funds_mod
-        result = _funds_mod.peek("funds")
-
-    assert result is None
-    # The actual _funds_snapshot_fn in get_funds handles this by returning
-    # FundsResponse(rows=[], ...) — verified by test_funds_has_snapshot_fn
-    # source check and test_funds_closed_cache_cold_returns_empty_not_zeros.
-    fallback = FundsResponse(rows=[], refreshed_at=timestamp_display(), stale_accounts=[])
-    assert fallback.rows == []
+    Regression guard: the old code returned FundsResponse(rows=[], ...) when
+    peek was None. The fix routes through get_or_fetch so broker data is served.
+    This test verifies the source code no longer contains the empty-rows fallback.
+    """
+    src = _src()
+    # The old empty-rows fallback must be gone
+    assert "FundsResponse(\n                        rows=[]" not in src, (
+        "_funds_snapshot_fn still contains the empty-rows cold-cache fallback — "
+        "must call get_or_fetch instead"
+    )
+    assert "get_or_fetch(\"funds\", _fetch, ttl_seconds=_TTL)" in src, (
+        "_funds_snapshot_fn cold-cache branch must call get_or_fetch"
+    )

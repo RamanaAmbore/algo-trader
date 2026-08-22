@@ -1176,16 +1176,12 @@ class TestFundsClosedHoursGate:
 
     @pytest.mark.asyncio
     async def test_funds_closed_cache_cold_falls_through_to_broker(self):
-        """When market is closed and cache is cold, return empty rows — NOT broker data.
+        """When market is closed and cache is cold, broker IS called — funds has no DB snapshot.
 
-        NOTE: This test documents the CORRECTED behaviour after the snapshot gate fix.
-        The old behaviour was: cache cold + market closed → fall through to broker.
-        That was a bug: during post-settlement clearing the broker returns 0 margins
-        which are then displayed to the operator.
-
-        New behaviour: cache cold + market closed → empty FundsResponse, 0 broker calls.
-        The UI can show a 'no data' state which is better than displaying 0s.
-        The broker is NEVER called during closed hours (closed_hours_or_broker invariant).
+        Unlike positions/holdings, funds has no daily_book snapshot source. When the
+        in-process TTL cache is cold (after restart or invalidate), the snapshot_fn
+        falls through to broker as the only available data source — even when closed.
+        This restores the pre-refactor behavior and avoids showing zeros.
         """
         from backend.api.schemas import FundsResponse, FundsRow
 
@@ -1225,16 +1221,15 @@ class TestFundsClosedHoursGate:
             request = MagicMock()
             resp = await handler(None, request, fresh=False)
 
-        # Market closed + cache cold → broker must NOT be called (snapshot gate invariant)
-        assert broker_call_count == 0, (
+        # Market closed + cache cold → broker MUST be called (funds has no DB snapshot)
+        assert broker_call_count >= 1, (
             f"get_or_fetch was called {broker_call_count} times — "
-            "broker must NOT be called when market is closed (even cache cold). "
-            "Calling broker off-market can return 0 margins which corrupt the display."
+            "broker must be called when cache is cold (funds has no DB snapshot source)."
         )
-        # Result should be an empty FundsResponse (not broker zeros)
+        # Result should be the broker's FundsResponse (not empty zeros)
         assert isinstance(resp, FundsResponse)
-        assert resp.rows == [], (
-            "cache cold + market closed must return empty rows, not broker zeros"
+        assert len(resp.rows) >= 1, (
+            "cache cold + market closed must return broker data, not empty rows"
         )
 
     @pytest.mark.asyncio

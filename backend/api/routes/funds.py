@@ -196,14 +196,9 @@ class FundsController(Controller):
                     cached = peek("funds")
                     if cached is not None:
                         return cached
-                    # Cache cold after restart + market closed — no snapshot to
-                    # serve; return empty rows. The caller's exception handler
-                    # catches and surfaces this gracefully.
-                    return FundsResponse(
-                        rows=[],
-                        refreshed_at=timestamp_display(),
-                        stale_accounts=[],
-                    )
+                    # Cache cold — funds has no DB snapshot source (unlike positions/holdings).
+                    # Call broker directly: it's the only data source available.
+                    return await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
 
                 async def _funds_broker_fn() -> FundsResponse:
                     return await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
