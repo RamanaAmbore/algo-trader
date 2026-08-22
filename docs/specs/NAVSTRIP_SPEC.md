@@ -150,6 +150,12 @@ else:
 **Primary price reference** (`close`): `previous_close` from `daily_book` (frozen prior-session 
 settlement UPSERT). Frozen on first intraday snapshot and never overwritten.
 
+**Post-settlement guard** (Aug 2026): After NSE settlement (16:15 IST), Kite resets 
+`previous_close ≈ ltp`. The delta threshold `|ltp − close| > 0.005` (> 0.5 paise) prevents 
+computing spurious day P&L when prices converge at settlement. When the condition is false 
+(including the settlement case where delta ≤ 0.005 paise), fallback to broker snapshot 
+`day_change_val` — avoiding zero-values that result from `(settlement_price − settlement_price) × qty`.
+
 **LTP sources** (in priority order):
 1. Live SSE tick from `symbolStore.getSnapshot(sym).ltp` (for subscribed equities in the ticker)
 2. Fallback to `h.last_price` from holdings snapshot (for equity holdings not on watchlist)
@@ -582,3 +588,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-08-13 | H:1 day P&L formula: frontend `_liveHoldingsToday` now uses SSE-tick LTP via `symbolStore` OR fallback to `h.last_price` (for unwatched equities); post-settlement guard (`|ltp − close| ≤ 0.005`) skips formula and uses snapshot `day_change_val`; backend `_build_holding_row_from_snapshot` mirrors formula using `previous_close` as primary reference; ensures closed-hours snapshot path parity |
 | 2026-08-14 | v1.2 Holdings day P&L SSOT + realisedToday fix (commit 43771b98): §1 EXP Slot updated — closed-leg formula now uses `leg.realised \|\| leg.pnl` to capture Kite settlement behavior. §2 Data Sources SSOT table refactored — P:1 now references `positionsDayPnlStore` canonical source; H:1 now references `holdingsDayPnlStore` (Aug 2026 new) exporting `{ total, byKey }` at 5s/30min cadence. §3 Live-Tick Delta Correction unchanged. §4 Snapshot Freeze updated. Updated H:1 Holdings Today MTM detailed subsection — realisedToday fallback changed from hardcoded `0` to `brokerDcv` (Aug 2026 fix) ensuring closed-hours grids show correct snapshot day P&L; SSOT section notes `holdingsDayPnlStore` canonical source for nav + grid + dashboard consumption. |
 | 2026-08-20 | P:1 SSOT architecture update: `positionsDayPnlStore` now exposes `setFromPulse(byKey, total)` method. MarketPulse computes accurate per-row day P&L using live cq REST poll and writes to store. Getters prefer Pulse-written values when available; fall back to SSE-based computation (4Hz throttle) when Pulse is closed. Eliminates dual-store merge pattern; single-source consumer API unchanged (`total` + `byKey`). |
+| 2026-08-21 | H:1 post-settlement guard updated: When `|ltp − close| ≤ 0.005` paise (settlement convergence detected), fallback to broker snapshot `day_change_val` instead of computing `(ltp − close) × qty`. Prevents H slot from showing 0 immediately after NSE/MCX settlement when prices converge and formula would yield spurious result. Guards applied in `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` and `pulseUnified.js:mergeHoldingRows`. Also note: `_brokerHealthWorstState` in `frontend/src/lib/stores.js` now returns 'green' when all accounts are `inactive` (expected post-market state, no quote calls) instead of 'amber', seeding `worstState: 'green'` before first health poll. |
