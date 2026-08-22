@@ -54,13 +54,20 @@ def _login() -> str:
 
 
 def _fetch_holdings(token: str, account: str) -> list[dict]:
-    """Fetch holdings rows for account from dev.ramboq.com."""
+    """Fetch holdings rows for account from dev.ramboq.com.
+
+    The /api/holdings route has no server-side account filter — it returns all
+    accounts. We filter client-side by the `account` field on each row so the
+    cross-check is scoped to the requested account only.
+    """
     req = urllib.request.Request(
-        f"{DEV_BASE}/api/holdings?account={account}",
+        f"{DEV_BASE}/api/holdings",
         headers={"Authorization": f"Bearer {token}", "User-Agent": "Mozilla/5.0"},
     )
     with urllib.request.urlopen(req, timeout=25) as r:
-        return json.loads(r.read()).get("rows", [])
+        all_rows = json.loads(r.read()).get("rows", [])
+    # Filter to the requested account only (case-insensitive).
+    return [r for r in all_rows if str(r.get("account") or "").upper() == account.upper()]
 
 
 def _dev_reachable() -> bool:
