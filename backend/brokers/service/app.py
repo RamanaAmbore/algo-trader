@@ -349,7 +349,7 @@ def _attempt_failover_swap(ticker, log, cooldown_s: float, slowed_s: float) -> b
     unavailable_mode=True).
 
     Side-effects: calls ticker.restart_with_account, writes audit row.
-    Does NOT call sys.exit — reactor-dead exit remains in the loop body.
+    Does NOT trigger process exit — reactor-dead exit remains in the loop body.
     """
     # Ping-pong prevention: enforce a minimum window between consecutive swaps.
     if ticker.swaps_since(cooldown_s) > 0:
@@ -376,13 +376,14 @@ def _attempt_failover_swap(ticker, log, cooldown_s: float, slowed_s: float) -> b
         # (e.g. a stop() inside restart_with_account). Exit immediately
         # rather than looping _try_start_ticker() forever.
         if ticker.is_reactor_dead():
-            import sys
+            import os, signal
             log.critical(
                 "ticker_watchdog: Twisted reactor is dead and all Kite "
-                "accounts are unavailable — exiting for systemd restart "
+                "accounts are unavailable — sending SIGTERM for systemd restart "
                 "(Restart=always, RestartSec=5s)"
             )
-            sys.exit(1)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return False  # watchdog exits cleanly; SIGTERM triggers uvicorn graceful shutdown
         return False  # all accounts exhausted
 
     api_key, access_token = _resolve_kite_creds(next_account)
@@ -480,12 +481,13 @@ async def _ticker_watchdog() -> None:
             # callbacks ever fire. The only recovery is a fresh process.
             # systemd (Restart=always, RestartSec=5) handles the restart.
             if ticker.is_reactor_dead():
-                import sys
+                import os, signal
                 log.critical(
                     "ticker_watchdog: Twisted reactor dead (ReactorNotRunning) — "
-                    "exiting so systemd spawns a fresh process (Restart=always)"
+                    "sending SIGTERM for systemd restart (Restart=always)"
                 )
-                sys.exit(1)
+                os.kill(os.getpid(), signal.SIGTERM)
+                return  # exit watchdog task; SIGTERM triggers uvicorn graceful shutdown
 
             # ── Phase 1: nothing running yet ────────────────────────────
             if not ticker.status().get("started"):

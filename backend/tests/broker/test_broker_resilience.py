@@ -1647,3 +1647,77 @@ class TestBrokerHealthFreshWindowConstant:
             f"Account at 700s must be amber (beyond 660s threshold), "
             f"got {state!r}: {reason}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Ticker-watchdog exit mechanism — sys.exit(1) → os.kill(SIGTERM) fix
+# ---------------------------------------------------------------------------
+
+class TestTickerWatchdogExitMechanism:
+    """Verify the watchdog uses SIGTERM (os.kill) not sys.exit(1).
+
+    sys.exit(1) from inside an asyncio task raises SystemExit, which
+    uvicorn catches at the ASGI middleware level. This partially shuts
+    down the asyncio default executor (loop.shutdown_default_executor()
+    is triggered by the asyncio Runner cleanup path) without killing the
+    process — leaving a zombie: the process responds to HTTP but all
+    asyncio.to_thread() calls raise RuntimeError: Executor shutdown.
+
+    os.kill(os.getpid(), signal.SIGTERM) sends the signal at the OS level,
+    which uvicorn handles via its signal handler (graceful shutdown) →
+    the process terminates cleanly → systemd Restart=always respawns it.
+
+    Dimensions:
+      Correctness — neither watchdog exit path calls sys.exit()
+      SSOT        — single exit mechanism across both watchdog callsites
+      Reuse       — both callsites (loop body + _attempt_failover_swap) fixed
+      Stale       — no sys.exit import remains in either exit branch
+      UX          — zombie state (executor alive check) cannot survive fix
+    """
+
+    _APP_SRC = Path(__file__).parent.parent.parent / "brokers" / "service" / "app.py"
+
+    def _src(self) -> str:
+        return self._APP_SRC.read_text(encoding="utf-8")
+
+    def test_watchdog_loop_uses_sigterm_not_sys_exit(self):
+        """The reactor-dead exit in _ticker_watchdog loop must use os.kill(SIGTERM)."""
+        src = self._src()
+        # The old code: sys.exit(1) in the loop body
+        assert "sys.exit(1)" not in src, (
+            "app.py still contains sys.exit(1) — replace with "
+            "os.kill(os.getpid(), signal.SIGTERM) to avoid zombie executor"
+        )
+
+    def test_watchdog_uses_os_kill_sigterm(self):
+        """Both exit paths must use os.kill(os.getpid(), signal.SIGTERM)."""
+        src = self._src()
+        assert "os.kill(os.getpid(), signal.SIGTERM)" in src, (
+            "app.py must use os.kill(os.getpid(), signal.SIGTERM) for clean process exit"
+        )
+
+    def test_watchdog_task_returns_after_sigterm(self):
+        """After os.kill(), the watchdog task must return (not continue looping)."""
+        src = self._src()
+        # Both exit sites must have a return statement after the os.kill call
+        # to ensure the asyncio task exits cleanly.
+        sigterm_blocks = src.split("os.kill(os.getpid(), signal.SIGTERM)")
+        # After each os.kill call, the next non-blank line should be return
+        for i, block in enumerate(sigterm_blocks[1:], 1):
+            next_lines = [l.strip() for l in block.split("\n") if l.strip()]
+            has_return = any(
+                l.startswith("return") for l in next_lines[:3]
+            )
+            assert has_return, (
+                f"os.kill() call #{i} in app.py must be followed by a return "
+                f"statement so the asyncio task exits cleanly. "
+                f"Next lines: {next_lines[:3]}"
+            )
+
+    def test_no_sys_exit_import_in_exit_branches(self):
+        """The exit branches should not import sys for sys.exit."""
+        src = self._src()
+        # sys.exit should not appear anywhere in the file
+        assert "sys.exit" not in src, (
+            "sys.exit still present in app.py — must be replaced with os.kill(SIGTERM)"
+        )

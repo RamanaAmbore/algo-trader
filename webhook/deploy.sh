@@ -314,6 +314,33 @@ PYEOF
           echo "[$TS] Preserving ramboq_conn.service — broker sessions stay warm"
       fi
 
+      # D12 — Conn-service broker health probe. Verifies that the running
+      # conn service can actually execute broker calls (asyncio.to_thread works,
+      # executor is alive). A zombie process (executor shut down by sys.exit(1)
+      # caught mid-flight) looks "active" to systemd but returns empty accounts.
+      # Probe: GET /internal/margins via UDS → expect non-empty "accounts" list.
+      # Warning only (non-blocking) — main API health check is the hard gate.
+      if [ -S /tmp/ramboq_conn.sock ]; then
+          CONN_PROBE_OK=false
+          for i in 1 2 3 4 5; do
+              MARGINS=$(curl -fsS --max-time 10 --unix-socket /tmp/ramboq_conn.sock \
+                        http://conn/internal/margins 2>/dev/null || true)
+              if echo "$MARGINS" | python3 -c \
+                  "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('accounts') else 1)" \
+                  2>/dev/null; then
+                  echo "[$TS] Conn-service broker probe OK (attempt $i)"
+                  CONN_PROBE_OK=true
+                  break
+              fi
+              sleep 3
+          done
+          if [ "$CONN_PROBE_OK" = "false" ]; then
+              echo "[$TS] WARN: conn-service broker probe failed — executor may be zombie. Restarting ramboq_conn..."
+              sudo systemctl restart ramboq_conn.service 2>&1 || true
+              sleep 5
+          fi
+      fi
+
       echo "[$TS] Restarting $API_SERVICE..."
       sudo systemctl restart "$API_SERVICE" || echo "[$TS] ERROR: failed to restart $API_SERVICE"
 
