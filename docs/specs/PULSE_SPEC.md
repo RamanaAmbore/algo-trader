@@ -3,9 +3,9 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.10 — 2026-08-20  
+**Version**: 1.11 — 2026-08-23  
 **Owner**: Platform  
-**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
+**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
 ---
 
@@ -547,6 +547,52 @@ during market-open hours. Writing these back to the store ensures all surfaces (
 dashboard) read the same authoritative calculation. Decoupling from grid renders prevents 
 stale re-renders and eliminates the regression where stale broker-cached data would override 
 Pulse's accurate in-memory values.
+
+### 11.2 Holdings Day P&L SSOT (`holdingsDayPnlStore`)
+
+Module-level singleton in `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` (Aug 2026) 
+is the canonical source of truth for live holdings day P&L across all Pulse surfaces and 
+dashboard. It exports `{ total, byKey, byAccount }` where:
+- `total` — sum of all holdings day P&L (₹ value, real-time)
+- `byKey` — symbol-to-day_pnl map, keyed by plain uppercase tradingsymbol
+- `byAccount` — per-account holdings day P&L breakdown + `'TOTAL'` for pulse-scope aggregate
+
+**Update direction — background perf task + Pulse coordinate**:
+- Background `_perf_fetch_all_broker_data()` task in `backend/api/background.py` now 
+  calls `_override_stale_close_for_holdings` and `_override_stale_close_from_snapshot` 
+  after threadpool fetch returns, then rebuilds summaries via `_rebuild_holdings_summary`. 
+  This ensures NavStrip H and Pulse day P&L values use frozen `previous_close` 
+  (not stale `day_pnl` from broker), achieving parity with HTTP route values.
+- `holdingsDayPnlStore.byAccount['TOTAL']` now returns `_pulseTotal` when pulse is active 
+  (from `mergeHoldingRows` aggregation), ensuring NavStrip H:1 and Pulse H-grid 
+  TOTAL row show identical values.
+- Dashboard `_holdingsSummary`, `_todayPnl`, `_holdingsFor` all now use 
+  `(ltp - previous_close) × qty` formula (guarded: `previous_close > 0`) instead of 
+  raw `day_change_val` from broker.
+
+**Data flow**:
+1. Background task fetches raw broker holdings via `@for_all_accounts` fan-out
+2. `_rebuild_holdings_summary()` calls `_override_stale_close_for_holdings()` to patch 
+   `day_change_val` with formula `(ltp - previous_close) × qty`
+3. Rebuilt DataFrame written to store + used for NavStrip + Dashboard hero rendering
+4. Pulse `mergeHoldingRows()` independently computes per-row day P&L using `previous_close` 
+   (from merged broker + DB sources)
+5. MarketPulse aggregates holdings rows in a `$effect` and calls 
+   `holdingsDayPnlStore.setFromPulse(pulseByKey, byAccount, pulseTotal)` to write 
+   canonical totals back to store
+6. Result: NavStrip, Dashboard, and Pulse all read the same authoritative day P&L values
+
+**Consumers**:
+- **PositionStrip H pill** (nav): reads `store.byAccount['TOTAL']` for hero nav badge
+- **Dashboard hero** (if applicable): reads `store.total` + `store.byAccount` for summary cards
+- **Pulse Holdings grid TOTAL row**: derived from `mergeHoldingRows` aggregation, 
+  written back to `store.byAccount['TOTAL']` for consistency
+
+**Rationale**: Holdings day P&L was previously stale when broker's `day_pnl` reset to 0 at 
+NSE settlement (16:15 IST) or MCX settlement (23:30 IST). By freezing `previous_close` at 
+write-time (via `COALESCE(daily_book.previous_close, daily_book.ltp)`) and computing 
+day P&L as `(ltp - previous_close) × qty`, all surfaces (NavStrip, Dashboard, Pulse, 
+background task) now show consistent values throughout closed-hours window.
 
 ---
 
@@ -1382,3 +1428,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-08-20 | v1.6 Holdings live-path previous_close fix (commit 75a335f7): §4.4 Holdings updated — `_override_stale_close_for_holdings` now queries `COALESCE(daily_book.previous_close, daily_book.ltp)` as the reference close price and writes `previous_close` to ALL holding rows in raw DataFrame; `HoldingRow` schema now includes `previous_close: float`. Frontend `holdingsDayPnlStore.svelte.js` and `pulseUnified.js` now prefer `h.previous_close` (frozen COALESCE from daily_book) over `h.close_price` (Kite's mutable field). Backend `apply_day_change_backstop()` now called for holdings (same as positions) to handle NSE settlement case where `close_price == ltp` and `day_change_val` stales to 0. Fixes H slot showing 0 after NSE settlement when guardian formula falls back to stale `day_change_val`. |
 | 2026-08-20 | v1.7 Positions previous_close fix + funds closed-hours gate (commits 2fb8ca14, 17da604a): §4.4 Positions updated — `_override_stale_close_from_snapshot()` in positions.py now queries `COALESCE(daily_book.previous_close, daily_book.ltp)` as the reference close price and writes `previous_close` to ALL matched rows; `PositionRow` schema now includes `previous_close: float` (mirrors holdings). Frontend `positionsDayPnlStore.svelte.js`, `pulseUnified.js`, and `nav.js` now prefer `p.previous_close` (frozen COALESCE from daily_book) over `p.close_price` (Kite's mutable field), eliminating positions day P&L zeroing at NSE settlement (matches holdings fix 75a335f7). §2 / §9 Funds route: `/api/funds` and `_fetch_funds_phase()` in nav.py now gate with `closed_hours_or_broker()` pattern — when both market segments closed and cache warm, returns cached value without calling broker, eliminating stale pre-settlement margin/cash data during W3 (NSE-closed + MCX-open) and W4 (both closed) windows. Adds 5-window edge-case test coverage (W1–W5) for positions, holdings, cash, margin completeness. |
 | 2026-08-21 | v1.8 Snapshot gate + funds fallback + holdings day P&L guards (commit d86099fe): §4.4 Positions updated — `skip_ltp` flag now only bypasses gate when market is open (`_any_segment_open()=True`); off-market routes always respect snapshot fallback via `closed_hours_or_broker()`, preventing live-broker calls that return stale 0s at post-settlement. `fresh=True` continues to bypass all gates (operator-explicit). §4.4 Funds off-market behavior updated — `/api/funds` and background `_fetch_funds_phase()` now use `closed_hours_or_broker(fallback_to_snapshot_on_broker_error=True)` to serve cached value when broker returns zeros off-market instead of refreshing from stale broker state. §11.2 Holdings day P&L guards documented in `mergeHoldingRows` — three guards added: `holdClose === 0` (prevents value-formula when close missing), `holdClose === holdAvg` (prevents lifetime-P&L confusion), post-settlement guard `|ltp − close| > 0.005` (at settlement convergence, fallback to day_change_val instead of computing zero). Fixes holdings H slot showing 0 post-settlement and ensures day P&L snapshot path parity across all surfaces (Pulse, NavStrip, Dashboard). |
+| 2026-08-23 | v1.9 Background perf task close-override + holdings store consistency (TBD): §11.2 Holdings Day P&L SSOT documented — `_perf_fetch_all_broker_data()` background task now calls `_override_stale_close_for_holdings()` and `_override_stale_close_from_snapshot()` after threadpool fetch, then rebuilds summaries via `_rebuild_holdings_summary()` / `_rebuild_positions_summary()`. NavStrip P/H values now consistent with HTTP route values (both use frozen `previous_close`-based formula). `holdingsDayPnlStore.byAccount['TOTAL']` now returns `_pulseTotal` when pulse is active, eliminating headline mismatch. Dashboard `_holdingsSummary`, `_todayPnl`, `_holdingsFor` now uniformly use `(ltp - previous_close) × qty` formula (guarded by `previous_close > 0`). Pulse `mergeHoldingRows()` and background task both compute day P&L using frozen reference price, achieving parity across all surfaces. |
