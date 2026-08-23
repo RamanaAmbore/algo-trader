@@ -260,7 +260,7 @@ _ROW_COLS = [
     # from broker_apis' LKG frame cache because the account's circuit
     # breaker was OPEN. Preserves DH6847 rows across breaker-open cycles.
     'account_stale',
-    # Frozen prior-session settlement price from daily_book COALESCE.
+    # Prior-session settlement LTP from daily_book (direct, not COALESCE).
     # Exposed to frontend so it can compute `(ltp − previous_close) × qty`
     # independently of whether Kite's `close_price` has drifted.
     'previous_close',
@@ -324,11 +324,15 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     per (account, tradingsymbol) for holdings rows, and write `previous_close`
     for every row (regardless of whether `close_price` is patched).
 
-    The reference price is `COALESCE(daily_book.previous_close, daily_book.ltp)`
-    from the most-recent pre-08:00 IST snapshot. `previous_close` is the
-    frozen COALESCE field — never overwritten once set, making it more reliable
-    than `ltp` which tracks the session-end mark. Falling back to `ltp` handles
-    cold-boot / first-day rows before COALESCE materialises.
+    The reference price is `daily_book.ltp` from the most-recent pre-08:00 IST
+    snapshot. `daily_book.ltp` is the actual settlement LTP captured at session
+    end and is the canonical prior-session reference price.
+
+    `previous_close` (Kite's BHAV-copy field) is deliberately NOT used here.
+    Kite populates `previous_close` from the BHAV-copy API which lags until
+    ~08:00 IST the next trading day. Using it via COALESCE caused the epsilon
+    check to always pass (stale value equals stale close_price), so `close_price`
+    was never patched. Using `daily_book.ltp` directly fixes this.
 
     `previous_close` is written to ALL rows unconditionally (using whatever
     reference we found, or 0.0 when not found). This ensures the field is
@@ -365,16 +369,16 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     # any mid-session startup snapshot.
     today_ist_cutoff = today_ist_midnight + timedelta(hours=8)
 
-    # ref_close: COALESCE(previous_close, ltp) — frozen field first,
-    # falling back to ltp for rows where previous_close was not set
-    # (e.g. first-ever write before the COALESCE guard ran).
+    # ref_close: ltp directly — canonical prior-session settlement LTP.
+    # previous_close (Kite BHAV-copy) is stale during the overnight window
+    # and must not be used here (see docstring).
     snapshot_map: dict[tuple[str, str], float] = {}
     try:
         async with async_session() as session:
             result = await session.execute(_sql_text("""
                 SELECT DISTINCT ON (account, symbol)
                        account, symbol,
-                       COALESCE(previous_close, ltp) AS ref_close
+                       ltp AS ref_close
                 FROM daily_book
                 WHERE kind = 'holdings'
                   AND ltp IS NOT NULL AND ltp > 0

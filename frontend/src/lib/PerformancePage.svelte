@@ -12,7 +12,7 @@
   import { fetchHoldings, fetchPositions, fetchFunds } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
-  import { authStore } from '$lib/stores';
+  import { authStore, ltpFlashPct } from '$lib/stores';
   import {
     positionsStore, holdingsStore, fundsStore,
     publishPositionsRows, publishHoldingsRows,
@@ -333,6 +333,7 @@
   // prevents false flashes when the same value arrives twice. Alpha 0.13 via
   // global .tf-up/.tf-down in app.css — lower than LTP flash (0.35).
   const _perfFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
+  const _unsubPerfFlashPct = ltpFlashPct.subscribe(v => _perfFlash.setPctThreshold(v));
 
   // Tick-bus directional flash sets — real-time LTP direction (up/down)
   // from SSE ticks, bypassing the 30 s poll-diff lag. Fed by tickBus.subscribe
@@ -1318,6 +1319,7 @@
     _perfLtpTimers.clear();
     if (_fillToastTimer) { clearTimeout(_fillToastTimer); _fillToastTimer = null; }
     _perfFlash.dispose();
+    _unsubPerfFlashPct();
     [fundsGrid, navGrid, holdingsSummaryGrid, holdingsAllGrid,
      positionsSummaryGrid, positionsAllGrid]
       .forEach(g => g?.destroy());

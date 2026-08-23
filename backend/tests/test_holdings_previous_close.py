@@ -277,8 +277,13 @@ class TestPreviousCloseWrittenForAllRows:
         # close_price also patched (130 → 143, diff > epsilon)
         assert abs(df.iloc[0]["close_price"] - coalesced) < 0.001
 
-    def test_sql_uses_coalesce_previous_close(self):
-        """DB query must contain COALESCE and reference previous_close."""
+    def test_sql_uses_ltp_not_coalesce(self):
+        """DB query must use daily_book.ltp directly — NOT COALESCE(previous_close, ltp).
+
+        The COALESCE was the bug: previous_close is populated from Kite's stale BHAV-copy API
+        so COALESCE(previous_close, ltp) returns the stale value → epsilon check passes →
+        no patching → wrong day P&L. Fix: daily_book.ltp as ref_close directly.
+        """
         from backend.api.routes.holdings import _override_stale_close_for_holdings
 
         captured_sql: list[str] = []
@@ -310,12 +315,10 @@ class TestPreviousCloseWrittenForAllRows:
 
         assert len(captured_sql) == 1
         sql_lower = captured_sql[0].lower()
-        assert "previous_close" in sql_lower, (
-            "SQL must reference previous_close in the COALESCE expression"
+        assert "coalesce" not in sql_lower, (
+            "SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
         )
-        assert "coalesce" in sql_lower, (
-            "SQL must use COALESCE(previous_close, ltp), not raw ltp alone"
-        )
+        assert "ltp" in sql_lower, "SQL must reference daily_book.ltp as ref_close"
         assert "holdings" in sql_lower, "SQL must filter on kind='holdings'"
 
     def test_previous_close_per_account_symbol(self):

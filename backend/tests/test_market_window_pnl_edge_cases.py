@@ -505,20 +505,33 @@ class TestSourceIntegrity:
         )
         assert row.previous_close == 0.0, "Default must be 0.0"
 
-    def test_positions_route_uses_coalesce_previous_close(self):
-        """_override_stale_close_from_snapshot in positions.py uses
-        COALESCE(daily_book.previous_close, daily_book.ltp)."""
+    def test_positions_route_uses_ltp_not_coalesce(self):
+        """_override_stale_close_from_snapshot in positions.py must use daily_book.ltp directly.
+
+        The COALESCE(daily_book.previous_close, ltp) was the bug — previous_close is
+        populated from Kite's stale BHAV-copy API. Fix: daily_book.ltp as ref_close.
+        """
+        import re
         from pathlib import Path
 
         pos_src = Path(__file__).parent.parent / "api" / "routes" / "positions.py"
         src_text = pos_src.read_text(encoding="utf-8")
 
-        assert "COALESCE" in src_text, (
-            "positions.py must use COALESCE in the daily_book query"
+        # Find the SQL block inside _override_stale_close_from_snapshot
+        fn_match = re.search(
+            r'async def _override_stale_close_from_snapshot(.*?)(?=\nasync def |\ndef |\Z)',
+            src_text, re.DOTALL
         )
-        assert "previous_close" in src_text, (
-            "positions.py must reference previous_close in the query"
+        assert fn_match, "Function _override_stale_close_from_snapshot not found in positions.py"
+        fn_text = fn_match.group(1)
+
+        # SQL uses triple-quoted string inside _sql_text("""...""")
+        sql_match = re.search(r'_sql_text\("""(.*?)"""', fn_text, re.DOTALL)
+        sql_literal = sql_match.group(1) if sql_match else fn_text
+        assert "COALESCE" not in sql_literal.upper(), (
+            "SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
         )
+        assert "daily_book.ltp" in sql_literal.lower(), "SQL must reference daily_book.ltp as ref_close"
 
     def test_holdings_schema_has_previous_close(self):
         """HoldingRow schema in schemas.py includes previous_close: float = 0.0"""
@@ -541,18 +554,33 @@ class TestSourceIntegrity:
         )
         assert row.previous_close == 0.0, "Default must be 0.0"
 
-    def test_holdings_route_uses_coalesce_previous_close(self):
-        """_override_stale_close_for_holdings uses COALESCE(previous_close, ltp)."""
+    def test_holdings_route_uses_ltp_not_coalesce(self):
+        """_override_stale_close_for_holdings must use daily_book.ltp directly.
+
+        The COALESCE(daily_book.previous_close, ltp) was the bug — previous_close is
+        populated from Kite's stale BHAV-copy API. Fix: daily_book.ltp as ref_close.
+        """
+        import re
         from pathlib import Path
 
         hol_src = Path(__file__).parent.parent / "api" / "routes" / "holdings.py"
         src_text = hol_src.read_text(encoding="utf-8")
 
-        assert "COALESCE" in src_text, (
-            "holdings.py must use COALESCE in the daily_book query"
+        fn_match = re.search(
+            r'async def _override_stale_close_for_holdings(.*?)(?=\nasync def |\ndef |\Z)',
+            src_text, re.DOTALL
         )
-        assert "previous_close" in src_text, (
-            "holdings.py must reference previous_close in the query"
+        assert fn_match, "Function _override_stale_close_for_holdings not found in holdings.py"
+        fn_text = fn_match.group(1)
+
+        # SQL uses triple-quoted string inside _sql_text("""...""")
+        sql_match = re.search(r'_sql_text\("""(.*?)"""', fn_text, re.DOTALL)
+        sql_literal = sql_match.group(1) if sql_match else fn_text
+        assert "COALESCE" not in sql_literal.upper(), (
+            "SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
+        )
+        assert "ltp" in sql_literal.lower() and "ref_close" in sql_literal.lower(), (
+            "SQL must reference ltp AS ref_close (not COALESCE)"
         )
 
 
@@ -999,9 +1027,13 @@ class TestPositionsPreviousCloseOverride:
         )
         assert df.iloc[0]["previous_close"] == 0.0
 
-    def test_sql_uses_coalesce_previous_close_in_positions(self):
-        """DB query in _override_stale_close_from_snapshot must use COALESCE and
-        reference daily_book.previous_close."""
+    def test_sql_uses_ltp_not_coalesce_in_positions(self):
+        """DB query in _override_stale_close_from_snapshot must use daily_book.ltp directly.
+
+        The COALESCE(daily_book.previous_close, ltp) was the bug: previous_close is populated
+        from Kite's stale BHAV-copy API, so COALESCE returns the stale value → epsilon check
+        passes → no patching → wrong day P&L. Fix: use daily_book.ltp as ref_close directly.
+        """
         from backend.api.routes.positions import _override_stale_close_from_snapshot
 
         captured_sql: list[str] = []
@@ -1033,12 +1065,10 @@ class TestPositionsPreviousCloseOverride:
 
         assert len(captured_sql) == 1
         sql_lower = captured_sql[0].lower()
-        assert "previous_close" in sql_lower, (
-            "SQL must reference previous_close in the COALESCE expression"
+        assert "coalesce" not in sql_lower, (
+            "SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
         )
-        assert "coalesce" in sql_lower, (
-            "SQL must use COALESCE(previous_close, ltp), not raw ltp alone"
-        )
+        assert "ltp" in sql_lower, "SQL must reference daily_book.ltp as ref_close"
         assert "positions" in sql_lower, "SQL must filter on kind='positions'"
 
     def test_previous_close_per_account_symbol(self):

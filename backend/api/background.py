@@ -5,13 +5,12 @@ Runs entirely inside the Litestar event loop — no ARQ, no Redis required.
 Blocking broker API calls are offloaded to a ThreadPoolExecutor so they
 never stall the async event loop.
 
-Three tasks are started on Litestar startup:
+Two tasks are started on Litestar startup:
   1. _task_performance — refresh holdings/positions/funds every N minutes during market hours,
-                         send open/close summaries, fire loss alerts.
+                         send open/close summaries (via _perf_run_close_check), fire loss alerts.
   2. _task_market      — warm market cache at startup; re-warm daily at 08:30 IST.
-  3. _task_close       — check for segment close summaries (same cadence as performance).
 
-All three tasks are cancelled cleanly on Litestar shutdown.
+All tasks are cancelled cleanly on Litestar shutdown.
 """
 
 import asyncio
@@ -924,6 +923,70 @@ async def _preload_db_lkg_cache() -> None:
     )
 
 
+async def _perf_run_close_check(
+    df_h: "pd.DataFrame",
+    sum_h: "pd.DataFrame",
+    df_p: "pd.DataFrame",
+    sum_p: "pd.DataFrame",
+    df_m: "pd.DataFrame",
+    now: "datetime",
+    today: "date",
+    seg_state: dict,
+    close_offset: int,
+) -> None:
+    """Check whether any market segment has crossed its close trigger and, if
+    so, send a closing summary via Telegram.
+
+    Called from _task_performance BEFORE the ``if not open_segments: continue``
+    guard so it fires even when all segments are already closed (the most
+    common post-close scenario).  The caller is responsible for providing
+    already-fetched broker data (df_h, sum_h, df_p, sum_p, df_m) so this
+    helper does NOT make any additional broker API calls.
+
+    Segment close trigger: ``hours_end + close_offset minutes``.
+    Fires on weekdays (weekday() < 5) only — weekends are always skipped.
+    Once per day per segment: ``seg_state[seg_name]['last_close'] == today``
+    guards against duplicate sends.
+    """
+    from backend.shared.helpers.alert_utils import send_summary
+    from backend.shared.helpers.summarise import (
+        summarise_holdings as _summarise_holdings,
+        summarise_positions as _summarise_positions,
+    )
+
+    segments = _build_segments()
+    for seg in segments:
+        ss = seg_state[seg['name']]
+        if ss['last_close'] == today:
+            continue
+
+        close_trigger = now.replace(
+            hour=seg['hours_end'].hour,
+            minute=seg['hours_end'].minute,
+            second=0, microsecond=0,
+        ) + timedelta(minutes=close_offset)
+
+        # Operator note: holiday gate deliberately omitted (see _task_close
+        # comment). Weekday gate is sufficient — partial-session days where
+        # one exchange is on holiday but another is open must not be silenced.
+        if now.weekday() < 5 and now >= close_trigger:
+            try:
+                ist_display = timestamp_display()
+                _sh = _summarise_holdings(df_h, sum_h, None)
+                _sp = _summarise_positions(df_p)
+                _label = seg['name'].capitalize()
+                await _run(lambda: send_summary(
+                    _sh, _sp, ist_display, 'close',
+                    label=_label,
+                    df_margins=df_m,
+                    df_positions=df_p,
+                ))
+                ss['last_close'] = today
+                logger.info(f"Background: close summary sent for {seg['name']}")
+            except Exception as e:
+                logger.error(f"Background: close summary failed for {seg['name']}: {e}")
+
+
 async def _task_performance(state: dict) -> None:
     """Refresh performance data every N minutes during market hours."""
     from backend.brokers.broker_apis import fetch_holidays
@@ -945,9 +1008,13 @@ async def _task_performance(state: dict) -> None:
     def _open_offset():
         return get_int("performance.open_summary_offset_min",
                        config.get("open_summary_offset_minutes", 15))
+    def _close_offset():
+        return get_int("performance.close_summary_offset_min",
+                       config.get("close_summary_offset_minutes", 15))
 
-    seg_state   = _default_seg_state()
-    alert_state = {}
+    seg_state       = _default_seg_state()
+    close_seg_state = _default_seg_state()
+    alert_state     = {}
     holiday_cache: dict = {}
 
     # Preload the DB-backed LKG cache from daily_book so Dhan/Groww accounts
@@ -964,8 +1031,9 @@ async def _task_performance(state: dict) -> None:
     while True:
         # Re-read each iteration so a /admin/settings tweak lands on the
         # next cycle instead of after a service restart.
-        interval    = _interval()
-        open_offset = _open_offset()
+        interval     = _interval()
+        open_offset  = _open_offset()
+        close_offset = _close_offset()
         # asyncio.wait_for instead of plain sleep so the sim driver can
         # signal an immediate kick via kick_performance() when it
         # auto-stops. Without this, an auto-stopped sim left up to 5 min
@@ -1011,7 +1079,38 @@ async def _task_performance(state: dict) -> None:
         # loop stalls for ~100-200ms (longer on a Kite outage).
         open_segments = await _perf_probe_open_segments(segments, holiday_cache, now)
 
+        # Close-summary check — runs BEFORE the open-segments gate because
+        # the close trigger fires precisely when open_segments is empty (all
+        # markets just closed).  Fetch broker data independently with its own
+        # timeout so a broker outage at close time doesn't suppress the summary.
         if not open_segments:
+            # Check whether any segment needs a close summary.
+            _needs_close = any(
+                close_seg_state[seg['name']]['last_close'] != today
+                and now.weekday() < 5
+                and now >= (
+                    now.replace(
+                        hour=seg['hours_end'].hour,
+                        minute=seg['hours_end'].minute,
+                        second=0, microsecond=0,
+                    ) + timedelta(minutes=close_offset)
+                )
+                for seg in segments
+            )
+            if _needs_close:
+                try:
+                    try:
+                        (df_h_c, sum_h_c, df_p_c, sum_p_c,
+                         df_m_c) = await _perf_fetch_all_broker_data()
+                    except Exception as _fe:
+                        logger.warning(f"[CLOSE-SUMMARY] broker fetch failed: {_fe}")
+                        df_h_c = sum_h_c = df_p_c = sum_p_c = df_m_c = pd.DataFrame()
+                    await _perf_run_close_check(
+                        df_h_c, sum_h_c, df_p_c, sum_p_c, df_m_c,
+                        now, today, close_seg_state, close_offset,
+                    )
+                except Exception as _ce:
+                    logger.error(f"Background: close-summary dispatch failed: {_ce}")
             continue
 
         sim_active = _bg_is_sim_active()
@@ -1086,98 +1185,6 @@ async def _task_performance(state: dict) -> None:
 
         except Exception as e:
             logger.error(f"Background: performance refresh failed: {e}")
-
-
-async def _task_close(state: dict) -> None:
-    """Send close summary for each segment after its close time + offset."""
-    from backend.brokers.broker_apis import fetch_holidays
-    from backend.shared.helpers.alert_utils import send_summary
-    from backend.shared.helpers.summarise import summarise_holdings as _summarise_holdings, summarise_positions as _summarise_positions
-
-    from backend.shared.helpers.settings import get_int
-    def _interval_close():
-        return get_int("performance.refresh_interval",
-                       config.get("performance_refresh_interval", 5))
-    def _close_offset():
-        return get_int("performance.close_summary_offset_min",
-                       config.get("close_summary_offset_minutes", 15))
-
-    seg_state     = state.setdefault('close_seg_state', _default_seg_state())
-
-    while True:
-        # Dev-idle gate (see _task_performance comment) — also skip the
-        # close-summary task on dev when no operator activity.
-        from backend.shared.helpers.utils import is_engine_idle
-        if is_engine_idle():
-            await asyncio.sleep(60)
-            continue
-        interval     = _interval_close()
-        close_offset = _close_offset()
-        await asyncio.sleep(interval * 60)
-
-        now   = timestamp_indian()
-        today = now.date()
-        segments = _build_segments()
-
-        for seg in segments:
-            ss = seg_state[seg['name']]
-            if ss['last_close'] == today:
-                continue
-
-            close_trigger = now.replace(
-                hour=seg['hours_end'].hour,
-                minute=seg['hours_end'].minute,
-                second=0, microsecond=0
-            ) + timedelta(minutes=close_offset)
-
-            # Operator: "I don't see closing summary in telegram after
-            # MCX closure" — observed on a partial-session day where
-            # NSE was a holiday but MCX evening was open. Kite's MCX
-            # holiday list flags today as closed (since one of the two
-            # sessions skipped), so the previous `today not in h_set`
-            # gate silently swallowed the summary. The close trigger
-            # at 23:45 IST is outside the live-quote probe window so
-            # `is_trading_day(..., now=...)` returns False too.
-            #
-            # Fix: drop the holiday gate from this path. The summary
-            # is informational — firing on a true holiday at most
-            # produces a one-line "no activity" Telegram, which is
-            # cheap and clearly diagnostic. The `weekday() < 5` gate
-            # still prevents weekend noise (markets are weekend-closed
-            # globally; no broker activity to summarise).
-            if now.weekday() < 5 and now >= close_trigger:
-                try:
-                    try:
-                        (df_h, sum_h), (df_p, sum_p) = await asyncio.wait_for(
-                            _run(lambda: (_fetch_holdings_direct(), _fetch_positions_direct())),
-                            timeout=45,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning("[BROKER-TIMEOUT] account=all op=holdings+positions timeout=45s")
-                        df_h, sum_h, df_p, sum_p = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-                    try:
-                        df_margins = await asyncio.wait_for(
-                            _run(_fetch_margins_direct), timeout=45
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning("[BROKER-TIMEOUT] account=all op=margins timeout=45s")
-                        df_margins = pd.DataFrame()
-
-                    ist_display = timestamp_display()
-
-                    _sh = _summarise_holdings(df_h, sum_h, None)
-                    _sp = _summarise_positions(df_p)
-                    _label = seg['name'].capitalize()
-                    _dm = df_margins
-                    _dp = df_p
-                    await _run(lambda: send_summary(_sh, _sp, ist_display, 'close',
-                                                    label=_label,
-                                                    df_margins=_dm, df_positions=_dp))
-                    ss['last_close'] = today
-                    logger.info(f"Background: close summary sent for {seg['name']}")
-                except Exception as e:
-                    logger.error(f"Background: close summary failed for {seg['name']}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1870,6 +1877,10 @@ async def _task_daily_snapshot() -> None:
     _nse_settlement_done: Optional[date] = None
     _mcx_settlement_done: Optional[date] = None
     _mcx_close_done:      Optional[date] = None
+    # Ticker lifecycle dedup — same pattern as settlement passes.
+    _unsub_nonmcx_done:   Optional[date] = None  # 16:15 NSE-close unsub
+    _ticker_stop_done:    Optional[date] = None  # 00:30 full ticker stop
+    _ticker_restart_done: Optional[date] = None  # 08:00 post-token-refresh restart
 
     _NSE_SETTLEMENT_H, _NSE_SETTLEMENT_M = 16, 15
     _MCX_SETTLEMENT_H, _MCX_SETTLEMENT_M =  0, 15
@@ -1913,6 +1924,90 @@ async def _task_daily_snapshot() -> None:
                 )
                 await _fire_snapshot("mcx-settlement")
                 _mcx_settlement_done = _mcx_trade_date
+
+        # ---- Ticker: drop non-MCX subscriptions at 16:15 IST ----------
+        # NSE/BSE close at 15:30; OFS/special sessions end by ~16:15.
+        # Non-MCX tokens are unsubscribed so the WebSocket payload drops to
+        # MCX-only volume for the evening session.  Guarded [16:15, 17:00)
+        # to avoid double-firing on service restart within that window.
+        if dtime(16, 15) <= now.time() < dtime(17, 0):
+            if _unsub_nonmcx_done != today:
+                logger.info("Background: 16:15 IST — unsubscribing non-MCX tokens")
+                try:
+                    from backend.brokers.kite_ticker import get_ticker
+                    _ticker_obj = get_ticker()
+                    if hasattr(_ticker_obj, "unsubscribe_non_mcx"):
+                        await _ticker_obj.unsubscribe_non_mcx()
+                    else:
+                        logger.debug(
+                            "Background: unsubscribe_non_mcx — ticker has no such method "
+                            "(conn-service mode); skipping"
+                        )
+                except Exception as _unsub_exc:
+                    logger.warning(f"Background: unsubscribe_non_mcx failed: {_unsub_exc}")
+                _unsub_nonmcx_done = today
+
+        # ---- Ticker: full stop at 00:30 IST ----------------------------
+        # MCX settles at 00:15; connection is idle after that.  Stopping
+        # here frees the Twisted reactor + socket ahead of the 08:00
+        # restart with a fresh daily access_token.  Guarded [00:30, 02:00)
+        # to avoid spurious stop on a daytime restart.
+        if dtime(0, 30) <= now.time() < dtime(2, 0):
+            _stop_date = today - timedelta(days=1)  # trade-date reference
+            if _ticker_stop_done != _stop_date:
+                logger.info("Background: 00:30 IST — stopping KiteTicker (post-MCX-settlement)")
+                try:
+                    from backend.brokers.kite_ticker import get_ticker
+                    _ticker_obj = get_ticker()
+                    if hasattr(_ticker_obj, "stop"):
+                        _ticker_obj.stop()
+                    else:
+                        logger.debug(
+                            "Background: ticker stop — no stop() method "
+                            "(conn-service mode); skipping"
+                        )
+                except Exception as _stop_exc:
+                    logger.warning(f"Background: ticker stop failed: {_stop_exc}")
+                _ticker_stop_done = _stop_date
+
+        # ---- Ticker: restart at 08:00 IST with fresh daily token -------
+        # Daily access_token is refreshed by _task_token_refresh at 05:45.
+        # The ticker is restarted here (well after token refresh) so it
+        # connects with the new token.  Guarded [08:00, 09:00) so a service
+        # restart during market hours doesn't loop through this block.
+        # hasattr guard: under RAMBOQ_USE_CONN_SERVICE=1, get_ticker()
+        # returns MmapTickReader which has no restart() — skip silently.
+        if dtime(8, 0) <= now.time() < dtime(9, 0):
+            if _ticker_restart_done != today:
+                logger.info("Background: 08:00 IST — restarting KiteTicker with fresh token")
+                try:
+                    from backend.brokers.kite_ticker import get_ticker
+                    _ticker_obj = get_ticker()
+                    if hasattr(_ticker_obj, "restart"):
+                        from backend.brokers.connections import Connections
+                        _conn_map = Connections().conn
+                        _api_key = _access_token = _restart_account = ""
+                        for _acct, _conn in _conn_map.items():
+                            if hasattr(_conn, "kite") and getattr(_conn.kite, "access_token", None):
+                                _api_key      = _conn.kite.api_key
+                                _access_token = _conn.kite.access_token
+                                _restart_account = _acct
+                                break
+                        if _api_key and _access_token:
+                            _ticker_obj.restart(_api_key, _access_token, _restart_account)
+                        else:
+                            logger.warning(
+                                "Background: 08:00 restart — no live Kite credentials found; "
+                                "ticker restart skipped"
+                            )
+                    else:
+                        logger.debug(
+                            "Background: ticker restart — no restart() method "
+                            "(conn-service mode or MmapTickReader); skipping"
+                        )
+                except Exception as _restart_exc:
+                    logger.warning(f"Background: ticker restart failed: {_restart_exc}")
+                _ticker_restart_done = today
 
 
 async def _task_instruments() -> None:

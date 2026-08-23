@@ -824,6 +824,13 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     day_change_val so the row reflects the actual move since the prior
     session's authoritative close.
 
+    Uses `daily_book.ltp` directly (not COALESCE with `previous_close`).
+    `previous_close` is populated from Kite's stale BHAV-copy API and is
+    unreliable during the overnight window — it always passes the epsilon
+    check, meaning `close_price` would never be patched. `daily_book.ltp`
+    is the actual settlement LTP captured at session end and is the
+    canonical prior-session reference price.
+
     Only triggers when the snapshot LTP differs from Kite's reported
     close_price by more than a tiny epsilon — rows where Kite is already
     current pass through unchanged."""
@@ -871,7 +878,7 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
         async with async_session() as session:
             result = await session.execute(_sql_text("""
                 SELECT DISTINCT ON (account, symbol) account, symbol,
-                       COALESCE(daily_book.previous_close, daily_book.ltp) AS ref_close,
+                       daily_book.ltp AS ref_close,
                        total_pnl
                 FROM daily_book
                 WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0

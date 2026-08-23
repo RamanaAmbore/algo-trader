@@ -287,7 +287,6 @@ def _patch_all_bg_tasks():
         "_task_market",
         "_task_token_refresh",
         "_task_performance",
-        "_task_close",
         "_task_expiry_check",
         "_task_instruments",
         "_task_daily_snapshot",

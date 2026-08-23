@@ -24,6 +24,10 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
   const timers = {};
   /** @type {Record<string, 'up'|'down'|''>} */
   let classes = $state({});
+  // Reactive threshold — updated at runtime via setPctThreshold() so that
+  // operator-configurable `ui.ltp_flash_pct` changes propagate without
+  // recreating the flash instance (which would reset all prev baselines).
+  let _pctThreshold = $state(pctThreshold ?? 0);
 
   /** @param {string} key @param {number|null|undefined} value */
   function update(key, value) {
@@ -36,9 +40,9 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
     // mount would flash every cell from null → value.
     if (last == null) return;
     if (Math.abs(v - last) < threshold) return;
-    if (pctThreshold > 0 && last > 0) {
+    if (_pctThreshold > 0 && last > 0) {
       const changePct = Math.abs((v - last) / last * 100);
-      if (changePct < pctThreshold) return;
+      if (changePct < _pctThreshold) return;
     }
     // Tab-hidden guard: state (prev[key]) is always updated above so we
     // track the latest value even when hidden. But we skip the CSS class
@@ -72,11 +76,22 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
     for (const t of Object.values(timers)) clearTimeout(t);
   }
 
+  /**
+   * Update the percentage-change threshold at runtime. Allows the
+   * operator-configurable `ltpFlashPct` store to propagate to all
+   * flash instances without recreating them (which would lose prev baselines).
+   * @param {number} v
+   */
+  function setPctThreshold(v) {
+    _pctThreshold = v;
+  }
+
   return {
     get classes() { return classes; },
     update,
     classOf,
     dispose,
+    setPctThreshold,
   };
 }
 

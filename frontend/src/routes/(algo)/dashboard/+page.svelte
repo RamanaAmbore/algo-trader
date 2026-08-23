@@ -72,14 +72,18 @@
   // card's Day P&L and P&L cells. Keyed as `account:field`. TOTAL rows
   // (account === 'TOTAL') excluded. Alpha 0.13 via global .tf-up/.tf-down.
   const _dashFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
+  // Wire operator-configurable pct threshold to _dashFlash so in-session
+  // changes to ui.ltp_flash_pct propagate without recreating the instance.
+  const _unsubDashFlashPct = ltpFlashPct.subscribe(v => _dashFlash.setPctThreshold(v));
 
-  // Separate flash instance for W/L grid LTP cells — initialized in onMount
-  // after subscribing to ltpFlashPct. Using a separate instance lets the P&L
-  // flash (_dashFlash) keep its fixed absolute threshold while the LTP flash
-  // applies the operator-configured pct gate.
-  let _wlLtpFlash = $state(/** @type {ReturnType<typeof createTickFlash>|null} */ (null));
-  /** @type {(() => void) | null} */
-  let _wlFlashUnsub = null;
+  // Separate flash instance for W/L grid LTP cells. Created once so prev
+  // baselines are preserved across ltpFlashPct changes; threshold updated
+  // reactively via setPctThreshold when the operator changes the setting.
+  const _wlLtpFlash = createTickFlash({ pctThreshold: 0, durationMs: 300 });
+  // Subscribe at script scope so the threshold is live from the first tick.
+  // The immediate callback seeds the initial value (default 0.1); subsequent
+  // calls update _wlLtpFlash without disposing/recreating it.
+  const _wlFlashUnsub = ltpFlashPct.subscribe(v => _wlLtpFlash.setPctThreshold(v));
 
   // Flash-augmented cellClass for the equity summary grids.
   // `field` is the column field name used as part of the per-cell key.
@@ -1306,17 +1310,9 @@
     // Removing the dashboard poll stops the 60s batchQuote round-trip
     // that was driving the now-deleted cards.
 
-    // W/L LTP flash — subscribe to ltpFlashPct so _wlLtpFlash tracks any
-    // in-session changes. loadLtpFlashPct is called asynchronously; the
-    // subscription fires immediately with the default value so the flash
-    // instance is always non-null before the first tick arrives.
-    // Unsub handle is stored at module level so onDestroy can clean it up.
-    _wlFlashUnsub = ltpFlashPct.subscribe(pct => {
-      _wlLtpFlash?.dispose();
-      _wlLtpFlash = createTickFlash({ pctThreshold: pct, durationMs: 300 });
-    });
-    // Fire-and-forget: load the admin setting; the subscribe above will
-    // receive the updated value and recreate _wlLtpFlash automatically.
+    // Fire-and-forget: load the admin setting from the server; the
+    // script-scope _wlFlashUnsub subscribe will receive the updated
+    // value and call _wlLtpFlash.setPctThreshold() automatically.
     loadLtpFlashPct();
   });
 
@@ -1734,8 +1730,9 @@
   onDestroy(() => {
     _heroTeardown?.();
     _dashFlash.dispose();
-    _wlFlashUnsub?.();
-    _wlLtpFlash?.dispose();
+    _unsubDashFlashPct();
+    _wlFlashUnsub();
+    _wlLtpFlash.dispose();
     _fundsGrid?.destroy();  _marginGrid?.destroy();
     _eqPosGrid?.destroy();  _eqHoldGrid?.destroy();
     _winGrid?.destroy();    _losGrid?.destroy();

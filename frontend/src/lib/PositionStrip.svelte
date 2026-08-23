@@ -6,7 +6,7 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval, executionMode } from '$lib/stores';
+  import { visibleInterval, executionMode, ltpFlashPct } from '$lib/stores';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
@@ -257,6 +257,7 @@
   // fires; the first-sample-no-flash gate in the helper prevents
   // a mount paint from flashing every cell.
   const flash = createTickFlash({ threshold: 0, durationMs: 300 });
+  const _unsubFlashPct = ltpFlashPct.subscribe(v => flash.setPctThreshold(v));
 
   onMount(() => {
     // Instruments cache feeds both the long-options premium derivation
@@ -299,6 +300,7 @@
   });
   onDestroy(() => {
     flash.dispose();
+    _unsubFlashPct();
     _mktTimer?.();   // visibleInterval teardown
     if (_tickThrottleTimer) { clearTimeout(_tickThrottleTimer); _tickThrottleTimer = null; }
     _tickThrottleUnsub?.();

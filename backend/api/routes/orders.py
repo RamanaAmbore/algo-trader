@@ -1701,6 +1701,27 @@ class OrdersController(Controller):
             exchange=kite_exchange,
             status_message=status_msg,
         )
+
+        # On a completed Dhan fill: wake performance task + subscribe instrument.
+        try:
+            from backend.api.routes.orders_postback import _broker_is_fill_status  # noqa: PLC0415
+            if _broker_is_fill_status("dhan", str(body.get("orderStatus") or "")):
+                from backend.api.background import kick_performance
+                kick_performance()
+                if kite_symbol and kite_exchange:
+                    from backend.api.persistence.instruments_store import get_or_fetch_instruments
+                    from backend.brokers.kite_ticker import get_ticker
+                    tok_map = await get_or_fetch_instruments(kite_exchange)
+                    tok = tok_map.get((kite_symbol.upper(), kite_exchange.upper()))
+                    if tok:
+                        get_ticker().subscribe([tok])
+                        logger.info(
+                            f"dhan postback: subscribed token {tok} for"
+                            f" {kite_symbol} after fill"
+                        )
+        except Exception as _sub_exc:
+            logger.warning(f"dhan postback: post-fill subscribe failed: {_sub_exc}")
+
         return {"status": "ok"}
 
     @post("/groww_postback", guards=[])
@@ -1747,6 +1768,36 @@ class OrdersController(Controller):
             exchange=str(body.get("exchange") or body.get("segment") or ""),
             status_message=str(body.get("status_message") or ""),
         )
+
+        # On a completed Groww fill: wake performance task + subscribe instrument.
+        # Groww exchange strings may not match Kite canonical names; normalize best-effort.
+        _GROWW_EXCHANGE_TO_KITE: dict[str, str] = {
+            "NSE": "NSE", "BSE": "BSE", "NFO": "NFO", "BFO": "BFO",
+            "MCX": "MCX", "CDS": "CDS",
+            "NSE_EQ": "NSE", "BSE_EQ": "BSE",
+            "NSE_FNO": "NFO", "BSE_FNO": "BFO", "MCX_COMM": "MCX",
+        }
+        if kite_status == "COMPLETE":
+            try:
+                from backend.api.background import kick_performance
+                kick_performance()
+                raw_exchange   = str(body.get("exchange") or body.get("segment") or "").upper()
+                kite_exchange  = _GROWW_EXCHANGE_TO_KITE.get(raw_exchange, raw_exchange)
+                groww_symbol   = str(symbol).upper()
+                if groww_symbol and kite_exchange:
+                    from backend.api.persistence.instruments_store import get_or_fetch_instruments
+                    from backend.brokers.kite_ticker import get_ticker
+                    tok_map = await get_or_fetch_instruments(kite_exchange)
+                    tok = tok_map.get((groww_symbol, kite_exchange))
+                    if tok:
+                        get_ticker().subscribe([tok])
+                        logger.info(
+                            f"groww postback: subscribed token {tok} for"
+                            f" {groww_symbol}/{kite_exchange} after COMPLETE fill"
+                        )
+            except Exception as _sub_exc:
+                logger.warning(f"groww postback: post-fill subscribe failed: {_sub_exc}")
+
         return {"status": "ok"}
 
     @post("/basket/margin")

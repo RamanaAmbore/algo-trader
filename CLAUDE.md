@@ -259,6 +259,12 @@ Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` /
 via `visibleInterval`). State: green (last_good < 5min), amber (stale), red (last_fail > last_ok). 
 Worst state drives color. Click opens per-account modal.
 
+**Market daily window** — 08:00–00:30 IST. KiteConnect starts + prev_close set at 08:00 from `daily_book.ltp` (prior settlement). Non-MCX symbols unsubscribed at 16:15. MCX settlement at 00:15 IST; disconnect at 00:30. Book polling: 15–30 min (qty/composition); prices from WebSocket only. Full schedule: memory `project_market_daily_window`.
+
+**WebSocket subscription** — `MODE_LTP`, event-driven push. All brokers (Kite, Dhan, Groww) use the **same KiteTicker WebSocket** — there is no Dhan or Groww WebSocket. LTP for Dhan/Groww positions is delivered via KiteTicker after the instrument token is resolved from (tradingsymbol, exchange). New instrument from order fill: Kite postback extracts `instrument_token` directly from payload, calls `get_ticker().subscribe([token])` on `COMPLETE`. Dhan/Groww postbacks resolve the token from (tradingsymbol, exchange) via instruments lookup, then subscribe. `subscribe()` is idempotent. Full design: memory `project_websocket_design`.
+
+**Dhan/Groww order detection** — Fill detection relies on broker webhooks + periodic book poll. Kite webhooks are reliable. Dhan webhook (`/dhan_postback`) must be manually configured in the Dhan partner dashboard — if not configured, fills are detected only at the next 5-min `_task_performance` poll. Groww webhook support is uncertain (Groww may not send postbacks). Verify Dhan webhook URL is set to `https://ramboq.com/api/orders/dhan_postback` in Dhan's partner portal before relying on immediate fill detection. The 5-min book poll is the guaranteed backstop for all brokers.
+
 
 ---
 
@@ -329,25 +335,12 @@ before any broker call. Returns `AttachResult.errors` immediately on failure. Si
 of `broker.translate_qty` + adapter ceiling. `plan.parent_lot_size` always resolved (never 0) 
 by `apply_template_to_order` via `await get_lot_size()`.
 
-**close_price / ltp market invariant — DO NOT CHANGE without explicit operator instruction** —
-`close_price` = the **previous trading day's closing/settlement price**. It is frozen and
-must NEVER be modified during the session, at settlement, or during off-market hours.
-`ltp` is the only price that moves: it ticks during the session and is set to the
-settlement price at session close. The lifecycle is:
+**close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
+`prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
 
-```
-Market open:   close_price ← previous session's ltp   (ONLY moment close_price changes)
-               ltp = live ticking prices
-Settlement:    ltp ← settlement price                  (close_price unchanged)
-Off-market:    ltp = settlement price (frozen)         (close_price unchanged)
-Next open:     close_price ← previous session's ltp   (ONLY moment close_price changes)
-```
+**Canonical source**: `daily_book.ltp` from the most recent settlement snapshot (`captured_at < 08:00 IST`, DESC per account+symbol). **NOT** Kite's `positions.close_price` (BHAV copy, lags ~8AM next day). **NOT** `COALESCE(daily_book.previous_close, ltp)` — `previous_close` is populated from the same stale Kite API.
 
-This rule applies identically whether the gap is 1 day, a weekend, or a multi-day holiday.
-Day P&L = `(ltp − close_price) × qty` is always correct under this invariant.
-**Positions**: `_override_stale_close_from_snapshot` in `positions.py` enforces this when
-Kite's API drifts — do NOT remove or weaken it. **Holdings**: equivalent guard not yet
-implemented; holdings showing all-0 day P&L off-market is a symptom of this missing guard.
+Code paths: `_override_stale_close_from_snapshot` (positions.py) and `_override_stale_close_for_holdings` (holdings.py) — both must query `daily_book.ltp` directly. COALESCE→ltp fix is pending (see active plan). Do NOT revert to COALESCE. Full rationale: memory `project_prev_close_architecture`.
 
 **Day P&L reference price by row type** (do not deviate):
 
@@ -357,7 +350,7 @@ implemented; holdings showing all-0 day P&L off-market is a symptom of this miss
 | Open overnight position | prev_close | `(ltp − close_price) × oq` |
 | Closed overnight (qty=0, oq>0) | prev_close | Case 2: `pnl − (close − avg) × oq` |
 | Closed intraday (qty=0, oq=0) | entry_price → realised | Case 3 backstop: dcv = pnl |
-| Holdings | previous_close (frozen COALESCE) | same as open overnight |
+| Holdings | daily_book.ltp (prior settlement, NOT COALESCE) | same as open overnight |
 
 **Day P&L formulas by position type — DO NOT CHANGE without explicit operator instruction** —
 Three canonical formulas, no exceptions:
@@ -382,8 +375,7 @@ shows only the **remaining quantity** (`quantity`, not `opening_quantity`).
 - `opening_quantity` is a reference field only — must NOT be used as the basis for any P&L or value computation
 - No sharing or double-counting between holdings and positions surfaces
 
-**Kite close_price stale overnight** — positions.close_price + quote.ohlc.close lag 
-prior-session EOD between MCX close + next open. Use `daily_book.ltp` instead.
+**Kite close_price stale overnight** — Zerodha updates `close_price` from BHAV copy at ~08:00 IST next trading day; weekends lag until Monday 08:00. Never use `positions.close_price`, `quote.ohlc.close`, or `daily_book.previous_close` as day P&L reference. Use `daily_book.ltp` (settlement snapshot, `captured_at < 08:00 IST`). See memory `project_prev_close_architecture`.
 
 **Day P&L formula + backstop** — Decomposed intraday (not naive `(LTP−close)×qty`). 
 Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: 
@@ -408,11 +400,7 @@ formula `pnl − oq×(close−avg)` is correct even when close equals ltp.
 so short overnight positions (oq < 0) receive the `day_change_val` fast-path and Case 4 
 stale-close guard. See `frontend/src/lib/data/nav.js:108`.
 
-**Holdings Day P&L fix** — `_build_holding_row_from_snapshot` in `holdings.py` now 
-prioritizes `previous_close` (frozen COALESCE) over `prev_ltp` (intraday, near-zero 
-post-settlement). Frontend `_liveHoldingsToday` falls back to `h.last_price` for 
-unwatched symbols. Post-settlement guard `|ltp − close| ≤ 0.005` routes to 
-`day_change_val` instead of formula to prevent 0 H slot values after NSE settlement.
+**Holdings day P&L — COALESCE bug (pending fix)** — `_override_stale_close_for_holdings` in `holdings.py` queries `COALESCE(daily_book.previous_close, ltp)` as ref_close. Since `previous_close` is populated from Kite's stale BHAV-copy API, the epsilon check (`|ref_close − close_price| ≤ 0.005`) always passes → no patching → wrong day P&L. Fix: change query to `daily_book.ltp` directly (same pattern as positions fix). Pending implementation in active plan.
 
 ---
 
@@ -441,6 +429,9 @@ unwatched symbols. Post-settlement guard `|ltp − close| ≤ 0.005` routes to
 | Update macro data | `backend/config/backend_config.yaml` |
 | Day P&L formula | `backend/api/algo/pnl_math.py` + `frontend/src/lib/data/nav.js` |
 | Day P&L store (positions) | `frontend/src/lib/data/positionsDayPnlStore.svelte.js` |
+| prev_close fix (holdings/positions) | `backend/api/routes/holdings.py:_override_stale_close_for_holdings` + `backend/api/routes/positions.py:_override_stale_close_from_snapshot` — change COALESCE→ltp |
+| Market daily window / WebSocket lifecycle | `backend/api/background.py` + `backend/brokers/kite_ticker.py` |
+| Postback subscribe new instrument | Kite: `orders_postback.py` — extract `instrument_token` + subscribe on COMPLETE. Dhan/Groww: `orders.py:order_postback_dhan/groww` — resolve token from (tradingsymbol, exchange) + subscribe + kick_performance() on fill |
 | F&O order qty convention | `backend/api/routes/orders_place.py:_ticket_validate_input` + `frontend/src/lib/order/orderTicketSubmit.js` |
 | NAV breakdown | `frontend/src/lib/data/nav.js` + `backend/api/algo/nav.py:compute_firm_nav` |
 | LTP-override scaffold | `backend/api/helpers/ltp_patch.py` |

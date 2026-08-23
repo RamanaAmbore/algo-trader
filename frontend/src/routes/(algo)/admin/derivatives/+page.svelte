@@ -1049,6 +1049,9 @@
   // store is primed for the next mount; get() reads the current value
   // which is either the default (0.1) or a previously-loaded value.
   const flash = createTickFlash({ threshold: 0, pctThreshold: get(ltpFlashPct), durationMs: 300 });
+  // Keep pctThreshold live — operator may change ui.ltp_flash_pct in-session.
+  // get() seeds the initial value; subscribe() ensures subsequent updates land.
+  const _unsubFlashPct = ltpFlashPct.subscribe(v => flash.setPctThreshold(v));
 
   // Drive the flash off the polled data. Two effects — one for the
   // F&O rollup (Day / P&L / Day Net / P&L Net) and one for the live
@@ -4023,7 +4026,7 @@
   });
   onDestroy(() => {
     teardown?.(); wsTeardown?.(); quotesTeardown?.(); simTeardown?.();
-    flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.(); _unsubBrokerHealth?.();
+    flash.dispose(); _unsubFlashPct(); _unsubBook?.(); _unsubDerivsOrder?.(); _unsubBrokerHealth?.();
     if (_orderUpdateTimer) { clearTimeout(_orderUpdateTimer); _orderUpdateTimer = null; }
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
   });

@@ -797,17 +797,18 @@ async def kite_postback_handler(request) -> dict:
 
     try:
         body = await request.json()
-        order_id        = body.get("order_id", "")
-        order_timestamp = body.get("order_timestamp", "")
-        checksum        = body.get("checksum", "")
-        account         = body.get("user_id", "")
-        status          = body.get("status", "")
-        tradingsymbol   = body.get("tradingsymbol", "")
-        txn             = body.get("transaction_type", "")
-        qty             = body.get("quantity", 0)
-        price           = body.get("average_price") or body.get("price", 0)
-        status_msg      = body.get("status_message") or ""
-        masked          = mask_account(account)
+        order_id         = body.get("order_id", "")
+        order_timestamp  = body.get("order_timestamp", "")
+        checksum         = body.get("checksum", "")
+        account          = body.get("user_id", "")
+        status           = body.get("status", "")
+        tradingsymbol    = body.get("tradingsymbol", "")
+        txn              = body.get("transaction_type", "")
+        qty              = body.get("quantity", 0)
+        price            = body.get("average_price") or body.get("price", 0)
+        status_msg       = body.get("status_message") or ""
+        instrument_token = body.get("instrument_token")
+        masked           = mask_account(account)
 
         sig_valid = await _pb_verify_signature(order_id, order_timestamp, checksum, account)
         if not sig_valid:
@@ -824,6 +825,17 @@ async def kite_postback_handler(request) -> dict:
                     f"{tradingsymbol} price={price} msg={status_msg}")
 
         _pb_write_audit(status, txn, qty, tradingsymbol, price, order_id, masked, status_msg)
+
+        # Kick the performance refresh cycle immediately on fill so the
+        # positions grid reflects the new trade within one broker round-trip
+        # instead of waiting up to 5 minutes for the next scheduled tick.
+        # Lazy import breaks the background↔postback circular dependency.
+        if status == "COMPLETE":
+            try:
+                from backend.api.background import kick_performance  # noqa: PLC0415
+                kick_performance()
+            except Exception:
+                pass
 
         try:
             asyncio.create_task(_pb_event_kite(
@@ -847,6 +859,19 @@ async def kite_postback_handler(request) -> dict:
             exchange=body.get("exchange", ""),
             status_message=status_msg,
         )
+
+        # On a completed fill, subscribe the instrument to the ticker so live
+        # ticks arrive immediately — independent of the next book-poll cycle.
+        if status == "COMPLETE" and instrument_token:
+            try:
+                from backend.brokers.kite_ticker import get_ticker
+                get_ticker().subscribe([int(instrument_token)])
+                logger.info(
+                    f"Postback: subscribed token {instrument_token} for"
+                    f" {tradingsymbol} after COMPLETE fill"
+                )
+            except Exception as _sub_exc:
+                logger.warning(f"Postback: ticker subscribe failed: {_sub_exc}")
 
         return {"status": "ok"}
     except HTTPException:

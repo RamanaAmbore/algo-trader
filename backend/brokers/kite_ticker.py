@@ -628,6 +628,80 @@ class TickerManager:
         self._kws       = None
         logger.info("KiteTicker: stopped (clean)")
 
+    def restart(self, api_key: str, access_token: str, account: str = "") -> None:
+        """Tear down the current ticker and start fresh with new credentials.
+
+        Called at 08:00 IST after the daily token refresh to bind the ticker
+        to the freshly-minted access_token.  Unlike ``ensure_started()`` this
+        always rebuilds the connection regardless of the current ``_started``
+        state.
+
+        Sequence:
+          1. stop() — clean WebSocket disconnect + reactor halt attempt.
+          2. Reset ``_started``, ``_subscribed``, ``_pending``, ``_connected``
+             so ``start()`` won't short-circuit on the idempotency guard.
+          3. start() — opens a new Twisted WebSocket with the new token.
+
+        Note: if ``_reactor_dead`` is True after step 1, ``start()`` will log
+        a critical warning and return without connecting.  systemd
+        (Restart=always on the conn-service unit) will spawn a fresh process.
+        """
+        prev_subs = set(self._subscribed) | set(self._pending)
+        logger.info(
+            "KiteTicker: restart() — stopping current connection before"
+            f" re-start on account {account!r}"
+        )
+        self.stop()
+        # Reset idempotency guard and subscription state so start() runs fully.
+        self._started    = False
+        self._subscribed = set()
+        # Carry forward previous subscriptions so on_connect re-subscribes them.
+        self._pending    = set(prev_subs)
+        self._connected  = False
+        if self._reactor_dead:
+            logger.critical(
+                "KiteTicker: restart() — reactor is dead; cannot restart in-process. "
+                "systemd must respawn the conn-service."
+            )
+            return
+        self.start(api_key, access_token, account=account)
+        logger.info(
+            f"KiteTicker: restart() complete — started={self._started},"
+            f" pending={len(self._pending)} token(s)"
+        )
+
+    async def unsubscribe_non_mcx(self) -> None:
+        """Drop all non-MCX tokens from the live subscription.
+
+        Called at 16:15 IST when NSE/BSE close.  MCX tokens continue
+        streaming until the 00:30 IST full stop.
+
+        Strategy:
+          - Fetch the MCX instrument map from the instruments store (cached,
+            no outbound HTTP unless TTL has lapsed).
+          - Compute the set of currently-subscribed tokens that are NOT in the
+            MCX token set.
+          - Call ``unsubscribe()`` on that drop set.
+        """
+        from backend.api.persistence.instruments_store import get_or_fetch_instruments
+        try:
+            mcx_map = await get_or_fetch_instruments("MCX")
+        except Exception as exc:
+            logger.warning(f"KiteTicker: unsubscribe_non_mcx() — failed to fetch MCX instruments: {exc}")
+            return
+        mcx_tokens = set(mcx_map.values())
+        with self._lock:
+            current = set(self._subscribed)
+        drop = current - mcx_tokens
+        if not drop:
+            logger.info("KiteTicker: unsubscribe_non_mcx() — no non-MCX tokens to drop")
+            return
+        logger.info(
+            f"KiteTicker: unsubscribe_non_mcx() — dropping {len(drop)} non-MCX token(s),"
+            f" {len(current) - len(drop)} MCX token(s) remain"
+        )
+        self.unsubscribe(list(drop))
+
     def ensure_started(self, api_key: str, access_token: str, account: str = "") -> bool:
         """Idempotent re-attempt of start() — safe to call from later
         startup phases (e.g. the sparkline-warm task) when the

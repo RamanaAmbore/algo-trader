@@ -14,7 +14,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { fetchMyNav, fetchFirmNavPublic } from '$lib/api';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
-  import { authStore, visibleInterval } from '$lib/stores';
+  import { authStore, visibleInterval, ltpFlashPct } from '$lib/stores';
   import { priceFmt, pctFmt } from '$lib/format';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
@@ -103,6 +103,7 @@
   // muscle memory for "this just refreshed" works everywhere. First
   // sample establishes baseline (no flash on mount).
   const flash = createTickFlash({ threshold: 0, durationMs: 300 });
+  const _unsubFlashPct = ltpFlashPct.subscribe(v => flash.setPctThreshold(v));
   $effect(() => {
     const sn  = shareNav;
     const sdp = shareDayPnl;
@@ -124,6 +125,7 @@
   onDestroy(() => {
     stopInterval();
     flash.dispose();
+    _unsubFlashPct();
   });
 
   // Re-fetch when auth state changes (e.g. user logs in mid-session).
