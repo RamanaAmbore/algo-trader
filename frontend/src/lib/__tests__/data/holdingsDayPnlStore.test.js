@@ -76,18 +76,28 @@ function computeHoldingsDayPnl(holdings = [], snapshots = /** @type {Record<stri
 
 /**
  * Simulate the setFromPulse override pattern without importing the live store.
- * Mirrors holdingsDayPnlStore's internal logic: pulse overrides total/byKey
- * but byAccount always comes from _store (not overridden).
+ * Mirrors holdingsDayPnlStore's internal logic:
+ *   - pulse overrides total and byKey
+ *   - byAccount per-account keys always come from _store (never overridden)
+ *   - byAccount['TOTAL'] follows the pulse total when pulse is active
  *
  * @param {{ total: number, byKey: Record<string,number>, byAccount: Record<string,number> }} storeState
  * @param {{ byKey: Record<string,number>, total: number } | null} pulse
  * @returns {{ total: number, byKey: Record<string,number>, byAccount: Record<string,number> }}
  */
 function applyPulseOverride(storeState, pulse) {
+  if (pulse === null) {
+    return {
+      total:     storeState.total,
+      byKey:     storeState.byKey,
+      byAccount: storeState.byAccount,
+    };
+  }
   return {
-    total:     pulse != null ? pulse.total     : storeState.total,
-    byKey:     pulse != null ? pulse.byKey     : storeState.byKey,
-    byAccount: storeState.byAccount, // always from store, never overridden
+    total: pulse.total,
+    byKey: pulse.byKey,
+    // Per-account keys from _store; TOTAL overridden by pulse total.
+    byAccount: { ...storeState.byAccount, TOTAL: pulse.total },
   };
 }
 
@@ -713,13 +723,14 @@ describe('holdingsDayPnlStore — setFromPulse override contract', () => {
     expect(result.total).toBe(100);
     expect(result.byKey['SILVERBEES']).toBe(100);
 
-    // byAccount is NOT overridden — still reflects all-accounts _store values
+    // Per-account keys are NOT overridden — still reflect all-accounts _store values.
     // ZG0790: (82-80)*100 = 200
     expect(result.byAccount['ZG0790']).toBeCloseTo(200, 2);
     // ZJ6294: (82-80)*80 = 160
     expect(result.byAccount['ZJ6294']).toBeCloseTo(160, 2);
-    // TOTAL in byAccount = 360 (all-accounts), not 100 (pulse single-account)
-    expect(result.byAccount['TOTAL']).toBeCloseTo(360, 2);
+    // TOTAL in byAccount is now pulse-aware: matches pulse.total (not all-accounts sum).
+    // This aligns byAccount['TOTAL'] with holdingsDayPnlStore.total (also pulse.total).
+    expect(result.byAccount['TOTAL']).toBeCloseTo(100, 2);
   });
 
   it('no pulse (null): store values are returned unchanged', () => {
@@ -748,7 +759,52 @@ describe('holdingsDayPnlStore — setFromPulse override contract', () => {
 
     expect(result.total).toBe(0);
     expect(Object.keys(result.byKey)).toHaveLength(0);
-    // byAccount still shows full store values
+    // byAccount['TOTAL'] is now pulse-aware: reflects pulse total (0), not store total.
+    expect(result.byAccount['TOTAL']).toBe(0);
+    // Per-account keys still show full store values.
     expect(result.byAccount['ZG0790']).toBeCloseTo(30, 2);
+  });
+});
+
+// ── Test 14: byAccount['TOTAL'] is pulse-aware (Fix 1 contract) ──────────────
+// Before Fix 1: byAccount getter returned _store.byAccount verbatim, so
+// byAccount['TOTAL'] always equalled _store.total even after setFromPulse
+// pushed a different value. The total getter correctly returned _pulseTotal,
+// creating the inconsistency: total=-8000 but byAccount['TOTAL']=0.
+// After Fix 1: byAccount getter merges TOTAL from _pulseTotal when active.
+
+describe('holdingsDayPnlStore — byAccount[TOTAL] is pulse-aware (Fix 1)', () => {
+  it('pulseTotal=-8000, store.total=0 → byAccount[TOTAL]=-8000 (matches total getter)', () => {
+    // _store has no holdings → total = 0, byAccount = { TOTAL: 0 }
+    const storeState = computeHoldingsDayPnl([], {});
+    expect(storeState.total).toBe(0);
+    expect(storeState.byAccount['TOTAL']).toBe(0);
+
+    // MarketPulse calls setFromPulse(-8000 total); simulate the override.
+    const pulse = { byKey: { RELIANCE: -8000 }, total: -8000 };
+    const result = applyPulseOverride(storeState, pulse);
+
+    // total getter returns pulse total
+    expect(result.total).toBe(-8000);
+    // byAccount['TOTAL'] must now equal the pulse total — not _store.total
+    expect(result.byAccount['TOTAL']).toBe(-8000);
+  });
+
+  it('pulseTotal=null → byAccount[TOTAL] equals store total (no active pulse)', () => {
+    // _store has one holding: RELIANCE, (2510-2500)*10 = 100
+    const storeState = computeHoldingsDayPnl(
+      [makeHoldingRow({ tradingsymbol: 'RELIANCE', close_price: 2500, last_price: 2510, quantity: 10 })],
+      { RELIANCE: { ltp: 2510 } }
+    );
+    expect(storeState.total).toBeCloseTo(100, 2);
+
+    // No pulse active (null) — both getters should return _store values
+    const result = applyPulseOverride(storeState, null);
+
+    expect(result.total).toBeCloseTo(100, 2);
+    // byAccount['TOTAL'] must equal _store.total when pulse is null
+    expect(result.byAccount['TOTAL']).toBeCloseTo(100, 2);
+    // Consistency: total getter == byAccount['TOTAL']
+    expect(result.byAccount['TOTAL']).toBeCloseTo(result.total, 2);
   });
 });

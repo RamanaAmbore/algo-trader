@@ -25,7 +25,7 @@
  *
  * Pulse override: MarketPulse calls setFromPulse() after each buildUnified pass
  * so that total/byKey reflect the cq-accurate per-symbol values from the grid.
- * byAccount is always from _store (all-accounts, not overridden by pulse).
+ * byAccount TOTAL key is pulse-aware (matches total getter); per-account values are from _store.
  */
 
 import { browser } from '$app/environment';
@@ -127,13 +127,15 @@ const _store = $derived.by(() => {
  * - total / byKey: pulse-overridable (MarketPulse calls setFromPulse after
  *   each buildUnified so NavStrip H reads the same value the grid displays,
  *   and is filter-aware like NavStrip P).
- * - byAccount: always from _store (all-accounts; never overridden by pulse).
+ * - byAccount: TOTAL key is pulse-aware (matches total getter); per-account values are from _store.
  */
 export const holdingsDayPnlStore = {
   get total()     { return _pulseTotal ?? _store.total; },
   get byKey()     { return _pulseByKey ?? _store.byKey; },
-  /** Always all-accounts; not overridden by setFromPulse. */
-  get byAccount() { return _store.byAccount; },
+  get byAccount() {
+    if (_pulseTotal === null) return _store.byAccount;
+    return { ..._store.byAccount, TOTAL: _pulseTotal };
+  },
   /**
    * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
    * and aggregate values. Mirrors positionsDayPnlStore.setFromPulse.

@@ -1,82 +1,23 @@
-# Plan: fix holdings pulse day P&L (last_price fallback) + funds cold-cache zeros
+# Plan: Day P&L zero for positions / wrong value for holdings
 
 ## Task
-Two regressions from commit d86099fe:
 
-**1. Holdings day P&L in Pulse shows wrong value (e.g. 2.33L)**
-`mergeHoldingRows` in `pulseUnified.js` computes `liveHold` without `r.last_price` fallback:
-```js
-const liveHold = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
-               : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);  // ← null when no snap/liveQ
-```
-But `holdingsDayPnlStore._store` always has `h.last_price` as final fallback:
-```js
-const liveLtp = (snapLtp != null && snapLtp > 0) ? Number(snapLtp) : Number(h?.last_price ?? 0);
-```
-When snap and liveQ are absent, `liveHold = null` → falls to `holdDcv` (broker's `day_change_val`)
-instead of formula. `holdingsDayPnlStore` uses `last_price` → formula → different result.
-`setFromPulse()` then overwrites the store with the wrong Pulse dcv value.
+Three structural bugs cause wrong day P&L on positions and holdings. All have the same root cause: `_perf_fetch_all_broker_data` (the async function calling the sync threadpool workers) never applies the async close-price override, so the background task feeds NavStrip and MarketPulse with stale broker `day_change_val`. After BHAV copy (~18:00 IST), broker `close_price` = today's settlement, so `day_change_val = (settlement − settlement) × qty = 0` or wrong value (dev shows 18k, prod shows -8k, both wrong). HTTP routes apply the override correctly — only the background path is broken.
 
-**2. Funds/margins showing zero after cold cache**
-`_funds_snapshot_fn` returns empty `FundsResponse` (no rows) when `peek("funds")` is None.
-When market is closed + cache cold (after restart / invalidate), `closed_hours_or_broker`
-calls `snapshot_fn()` → empty rows → zeros displayed. Old code called broker when cold.
+Bug 1: `_perf_fetch_all_broker_data` never calls `_override_stale_close_for_holdings` or `_override_stale_close_from_snapshot` after threadpool returns. Fix: call them in the async context of `_perf_fetch_all_broker_data`, then rebuild summaries.
 
-## Files to change
-- `frontend/src/lib/data/pulseUnified.js` line 553-554: add `r.last_price` to liveHold chain
-- `backend/api/routes/funds.py` lines 195-206: call broker when peek returns None
+Bug 2: `holdingsDayPnlStore.byAccount['TOTAL']` is hardcoded to `_store.total` (not pulse-aware). When MarketPulse pushes -8k via `setFromPulse`, `total = -8000` but `byAccount['TOTAL'] = 0` — headline ≠ breakdown.
+
+Bug 3: Dashboard `_holdingsSummary` line 481 reads `Number(r.day_change_val) || 0` directly from broker rows, bypassing `previous_close`-based formula. Per-account breakdown = 0 while NavStrip H shows the pulse value.
 
 ## Agents
-- frontend: In `frontend/src/lib/data/pulseUnified.js` at line 553-554, change:
-  ```js
-  const liveHold = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
-                 : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
-  ```
-  To:
-  ```js
-  const liveHold = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
-                 : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp)
-                 : (Number(r.last_price) > 0 ? Number(r.last_price) : null));
-  ```
-  This matches `holdingsDayPnlStore._store` line 82-84's `h.last_price` fallback exactly.
 
-  Add 4 cross-check Vitest tests in `frontend/src/lib/__tests__/data/pulseRowsAndFlash.test.js`
-  under a describe block `"mergeHoldingRows — H:1 day_pnl cross-check vs broker day_change_val"`.
-  Rule: each test sets `day_change_val` to an intentionally WRONG value (e.g. 99999) so that
-  if the code falls through to dcv instead of using the formula, the test fails immediately.
-
-  Test 1 — snap LTP wins:
-    snap.ltp=2850, previous_close=2800, quantity=100, day_change_val=99999
-    assert day_pnl ≈ 5000 (formula: (2850-2800)*100)
-
-  Test 2 — liveQ wins (no snap):
-    snap=null, liveQ.ltp=2850, previous_close=2800, quantity=100, day_change_val=99999
-    assert day_pnl ≈ 5000
-
-  Test 3 — last_price wins (no snap, no liveQ) — THIS IS THE BUG PATH:
-    snap=null, liveQ=null, r.last_price=2850, previous_close=2800, quantity=100, day_change_val=99999
-    assert day_pnl ≈ 5000
-    (with the bug, day_pnl = 99999 because liveHold was null → dcv used)
-
-  Test 4 — all null → dcv is correct fallback:
-    snap=null, liveQ=null, r.last_price=null, previous_close=2800, quantity=100, day_change_val=5000
-    assert day_pnl = 5000 (no LTP available anywhere → dcv is correct)
-
-- backend: In `backend/api/routes/funds.py` lines 195-206, change `_funds_snapshot_fn` from returning empty FundsResponse when cold to calling broker:
-  ```python
-  async def _funds_snapshot_fn() -> FundsResponse:
-      cached = peek("funds")
-      if cached is not None:
-          return cached
-      # Cache cold — no DB snapshot for funds; call broker (only data source)
-      return await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
-  ```
-  Update `backend/tests/test_funds_snapshot.py` `test_funds_closed_cache_cold_*` test to assert cold cache + market closed → broker IS called once (not zero times).
-
+- backend: In `backend/api/background.py`, add two helper functions after `_fetch_holdings_direct` (~line 158): `def _rebuild_holdings_summary(raw: pd.DataFrame) -> pd.DataFrame` (groupby account, sum ['inv_val','cur_val','pnl','day_change_val'], call `_bg_holdings_add_pct`, append TOTAL row) and `def _rebuild_positions_summary(raw: pd.DataFrame) -> pd.DataFrame` (groupby account, sum ['pnl','day_change_val'], append TOTAL row). Then in `_perf_fetch_all_broker_data` (lines 477-501), after the holdings `wait_for` block, add: `try: from backend.api.routes.holdings import _override_stale_close_for_holdings; await _override_stale_close_for_holdings(df_holdings); sum_holdings = _rebuild_holdings_summary(df_holdings); except Exception as _oe: logger.warning(f"[PERF] holdings close-override failed: {_oe}")`. Same pattern for positions: import `_override_stale_close_from_snapshot` from `backend.api.routes.positions`, await it on `df_positions`, rebuild `sum_positions`. Remove the "accepted limitation" comment at lines 175-180. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
+- frontend: (a) In `frontend/src/lib/data/holdingsDayPnlStore.svelte.js`, fix the `byAccount` getter (line 136): change `return _store.byAccount` to `if (_pulseTotal === null) return _store.byAccount; return { ..._store.byAccount, TOTAL: _pulseTotal };`. Remove JSDoc that says "not overridden by setFromPulse". (b) In `frontend/src/routes/(algo)/dashboard/+page.svelte` line 481, replace `byAcct[a].day_pnl += Number(r.day_change_val) || 0` with: `const _hClose = Number(r.previous_close) || Number(r.close_price) || 0; const _hLtp = Number(r.last_price ?? 0); const _hQty = Number(r.quantity ?? 0); const _hDcv = Number(r.day_change_val) || 0; byAcct[a].day_pnl += (_hClose > 0 && Math.abs(_hLtp - _hClose) > 0.005) ? (_hLtp - _hClose) * _hQty : _hDcv;`. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
 - broker: skip
 - doc: skip
+- backend-test: Write pytest tests for the backend changes: (a) `_rebuild_holdings_summary` with multi-account patched df → verify TOTAL row matches sum of per-account rows and day_change_val comes from patched data. (b) `_rebuild_positions_summary` same pattern. (c) Mock `_override_stale_close_for_holdings` to mutate df in-place; verify `_perf_fetch_all_broker_data` calls it and returns rebuilt sum with patched day_change_val (not the original stale value). (d) Same for positions: mock `_override_stale_close_from_snapshot`, verify rebuilt summary. Place tests in `backend/tests/test_background_pnl_override.py`. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
 - playwright: skip
-- backend-test: skip (backend agent handles test update)
 
 ## Tests
 - pytest: yes
@@ -84,9 +25,10 @@ calls `snapshot_fn()` → empty rows → zeros displayed. Old code called broker
 - playwright: no
 
 ## Commit message
-fix(holdings,funds): liveHold last_price fallback in mergeHoldingRows + funds cold-cache calls broker
+fix(pnl): apply async close override in _perf_fetch_all_broker_data, fix holdingsDayPnlStore TOTAL pulse mismatch, use previous_close formula in dashboard holdings summary
 
 ## Done when
-- Holdings day P&L in Pulse uses last_price fallback when no snap/liveQ → matches holdingsDayPnlStore formula
-- Funds/margins show real broker values (not zero) when cache is cold after restart
-- pytest green, svelte-check 0 errors, vitest 0 failures
+- `_perf_fetch_all_broker_data` calls `_override_stale_close_for_holdings` and `_override_stale_close_from_snapshot` on raw DataFrames after threadpool fetch; rebuilt summaries flow to NavStrip with correct day P&L (not 0 or raw broker value)
+- `holdingsDayPnlStore.byAccount['TOTAL']` equals `holdingsDayPnlStore.total` under all pulse states (pulse-active and null)
+- Dashboard `_holdingsSummary.day_pnl` uses `(last_price - previous_close) * qty` when `previous_close > 0`; falls back to `day_change_val` otherwise
+- All pytest tests pass; svelte-check 0 errors

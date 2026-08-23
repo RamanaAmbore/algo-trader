@@ -158,6 +158,37 @@ def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     return raw, summary
 
 
+def _rebuild_holdings_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
+    """Recompute the per-account + TOTAL summary from a (possibly mutated)
+    holdings row DataFrame.  Used by _perf_fetch_all_broker_data after the
+    async stale-close override patches close_price and day_change_val in-place."""
+    if raw.empty or 'account' not in raw.columns:
+        return pd.DataFrame(columns=['account', 'inv_val', 'cur_val', 'pnl', 'day_change_val',
+                                     'pnl_percentage', 'day_change_percentage'])
+    sum_cols = [c for c in ['inv_val', 'cur_val', 'pnl', 'day_change_val'] if c in raw.columns]
+    grouped = raw.groupby('account')[sum_cols].sum().reset_index()
+    _bg_holdings_add_pct(grouped)
+    totals = grouped[sum_cols].sum().to_frame().T
+    totals['account'] = 'TOTAL'
+    _bg_holdings_add_pct(totals)
+    return pd.concat([grouped, totals], ignore_index=True).fillna(0)
+
+
+def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
+    """Recompute the per-account + TOTAL summary from a (possibly mutated)
+    positions row DataFrame.  Used by _perf_fetch_all_broker_data after the
+    async stale-close override patches close_price and day_change_val in-place."""
+    if raw.empty or 'account' not in raw.columns:
+        return pd.DataFrame(columns=['account', 'pnl', 'day_change_val'])
+    sum_cols = [c for c in ('pnl', 'day_change_val') if c in raw.columns]
+    grouped = raw.groupby('account')[sum_cols].sum().reset_index() if sum_cols \
+        else pd.DataFrame(columns=['account'] + list(sum_cols))
+    total_row: dict = {'account': 'TOTAL'}
+    for _c in sum_cols:
+        total_row[_c] = float(grouped[_c].sum()) if _c in grouped.columns else 0.0
+    return pd.concat([grouped, pd.DataFrame([total_row])], ignore_index=True)
+
+
 def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.brokers import broker_apis
     from backend.api.algo.pnl_math import apply_day_change_backstop
@@ -172,12 +203,8 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     #      (Sync function — safe to call from a ThreadPoolExecutor worker.)
     #   2. apply_day_change_backstop — rescue Case 1 + Case 3 where Kite
     #      omits day_change_val for new / fully-closed positions.
-    # NOTE: _override_stale_close_from_snapshot is async (opens async_session)
-    # and cannot be called from this sync thread-pool worker.  The background
-    # task's NavStrip P value does NOT get the stale-close override; that
-    # override only applies to the /api/positions route which runs in the
-    # async event loop.  This is an accepted limitation — the fix would
-    # require refactoring _fetch_positions_direct to be async.
+    # NOTE: _override_stale_close_from_snapshot is async; it is called by
+    # _perf_fetch_all_broker_data after this sync worker returns.
     _override_stale_ltp_from_ticker(raw)
     # Apply the shared Case 1 + Case 3 Day P&L backstop so this task's
     # summary agrees with the /api/positions route (both go through
@@ -478,6 +505,12 @@ async def _perf_fetch_all_broker_data() -> tuple:
         (df_holdings, sum_holdings) = await asyncio.wait_for(
             _run(_fetch_holdings_direct), timeout=45
         )
+        try:
+            from backend.api.routes.holdings import _override_stale_close_for_holdings
+            await _override_stale_close_for_holdings(df_holdings)
+            sum_holdings = _rebuild_holdings_summary(df_holdings)
+        except Exception as _oe:
+            logger.warning(f"[PERF] holdings close-override failed (summary unchanged): {_oe}")
     except asyncio.TimeoutError:
         logger.warning("[BROKER-TIMEOUT] account=all op=holdings timeout=45s")
         df_holdings, sum_holdings = pd.DataFrame(), pd.DataFrame()
@@ -486,6 +519,12 @@ async def _perf_fetch_all_broker_data() -> tuple:
         (df_positions, sum_positions) = await asyncio.wait_for(
             _run(_fetch_positions_direct), timeout=45
         )
+        try:
+            from backend.api.routes.positions import _override_stale_close_from_snapshot
+            await _override_stale_close_from_snapshot(df_positions)
+            sum_positions = _rebuild_positions_summary(df_positions)
+        except Exception as _oe:
+            logger.warning(f"[PERF] positions close-override failed (summary unchanged): {_oe}")
     except asyncio.TimeoutError:
         logger.warning("[BROKER-TIMEOUT] account=all op=positions timeout=45s")
         df_positions, sum_positions = pd.DataFrame(), pd.DataFrame()
