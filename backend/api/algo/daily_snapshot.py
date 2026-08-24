@@ -559,6 +559,44 @@ def _snap_position_eod_vals(
     return ltp_val, day_pnl, total_pnl_v, skip
 
 
+def _closed_position_exit_ltp(
+    r: dict, ltp_val: Optional[float], oq_raw: float, multiplier: int
+) -> Optional[float]:
+    """Return exit-price ltp for a closed position (qty=0).
+
+    Derives VWAP from today's day trade data: sell side for longs/flat,
+    buy side for shorts. Falls back to ltp_val when trade data is absent.
+    """
+    if ltp_val is None:
+        return ltp_val
+    if oq_raw >= 0:
+        sell_qty = float(r.get("day_sell_quantity") or 0)
+        sell_val = float(r.get("day_sell_value")    or 0)
+        if sell_qty > 0 and sell_val > 0:
+            return sell_val / (sell_qty * max(multiplier, 1))
+    else:
+        buy_qty = float(r.get("day_buy_quantity") or 0)
+        buy_val = float(r.get("day_buy_value")    or 0)
+        if buy_qty > 0 and buy_val > 0:
+            return buy_val / (buy_qty * max(multiplier, 1))
+    return ltp_val
+
+
+def _position_previous_close(
+    oq_raw: float, avg_px: float, qty_contracts: int,
+    pos_close_ref: Optional[float], r: dict,
+) -> Optional[float]:
+    """Return previous_close for one position row.
+
+    New position (oq=0, qty>0): no prior settlement — use avg_cost so
+    day P&L = (ltp - entry_price) × qty from day 1.
+    Overnight / closed: daily_book.ltp SSOT or broker close_price fallback.
+    """
+    if oq_raw == 0 and avg_px > 0 and qty_contracts != 0:
+        return avg_px
+    return pos_close_ref or (float(r["close_price"]) if r.get("close_price") else None)
+
+
 def _positions_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
     *, settled: bool = False, market_open: bool = True,
@@ -634,32 +672,12 @@ def _positions_rows(
         oq_raw = float(r.get("overnight_quantity") or 0)
         avg_px = float(r.get("average_price") or 0)
 
-        # Closed position (qty=0): anchor ltp to actual exit price so subsequent
-        # intraday rescans don't overwrite it with a live market price.
-        # Exit price = day trade VWAP (long: sell side; short: buy side).
-        # Falls back to ltp_val (last_price) when trade data is unavailable.
-        if qty_contracts == 0 and ltp_val is not None:
-            if oq_raw >= 0:
-                sell_qty = float(r.get("day_sell_quantity") or 0)
-                sell_val = float(r.get("day_sell_value")    or 0)
-                if sell_qty > 0 and sell_val > 0:
-                    ltp_val = sell_val / (sell_qty * max(multiplier, 1))
-            else:
-                buy_qty = float(r.get("day_buy_quantity") or 0)
-                buy_val = float(r.get("day_buy_value")    or 0)
-                if buy_qty > 0 and buy_val > 0:
-                    ltp_val = buy_val / (buy_qty * max(multiplier, 1))
+        if qty_contracts == 0:
+            ltp_val = _closed_position_exit_ltp(r, ltp_val, oq_raw, multiplier)
 
-        # New position (oq=0, qty>0): no prior settlement exists; use entry
-        # price as previous_close so day P&L = (ltp - avg_cost) × qty.
-        # Overnight and closed positions use daily_book.ltp SSOT or broker close_price.
-        if oq_raw == 0 and avg_px > 0 and qty_contracts != 0:
-            previous_close_val = avg_px
-        else:
-            previous_close_val = (
-                pos_close_ref
-                or (float(r["close_price"]) if r.get("close_price") else None)
-            )
+        previous_close_val = _position_previous_close(
+            oq_raw, avg_px, qty_contracts, pos_close_ref, r
+        )
 
         rows.append({
             "date":           target_date,
