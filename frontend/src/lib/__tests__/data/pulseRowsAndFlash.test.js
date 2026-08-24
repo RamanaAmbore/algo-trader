@@ -257,6 +257,61 @@ describe('mergeHoldingRows — live pnl recompute (Fix 1 prerequisite)', () => {
   });
 });
 
+// ── pnl_per_share computation in mergeHoldingRows ────────────────────────────
+//
+// liveHold resolution order: snap.ltp > liveQ.ltp > r.last_price.
+// pnl_per_share = (liveHold - avg) when liveHold != null && heldQty !== 0.
+// Fallback to r.pnl_per_share only when liveHold is null (all three sources
+// absent/zero) or heldQty === 0.
+
+describe('mergeHoldingRows — pnl_per_share', () => {
+  it('computes pnl_per_share as (snap_ltp - avg) when snap LTP is available', () => {
+    // snap.ltp=2950 takes precedence, avg=2800 → pnl_per_share = 150
+    const snapMap = { RELIANCE: { ltp: 2950 } };
+    const byKey = {};
+    mergeHoldingRows(byKey, [makeHoldingRow()], true, {}, makeHoldingCtx(snapMap));
+    const row = Object.values(byKey)[0];
+    expect(row.pnl_per_share).toBeCloseTo(150, 4);
+  });
+
+  it('uses r.last_price when no snap and no liveQ — last_price is the third liveHold source', () => {
+    // makeHoldingRow: last_price=2900, average_price=2800 → pnl_per_share = 100
+    // liveHold resolves to r.last_price=2900 (not null) even without a snap.
+    const byKey = {};
+    mergeHoldingRows(byKey, [makeHoldingRow()], true, {}, makeHoldingCtx({}));
+    const row = Object.values(byKey)[0];
+    expect(row.pnl_per_share).toBeCloseTo(100, 4);
+  });
+
+  it('falls back to r.pnl_per_share when all liveHold sources are absent/zero', () => {
+    // Strip last_price so liveHold resolves to null → fallback fires.
+    const byKey = {};
+    const hold = [makeHoldingRow({ last_price: 0, pnl_per_share: 75 })];
+    mergeHoldingRows(byKey, hold, true, {}, makeHoldingCtx({}));
+    const row = Object.values(byKey)[0];
+    expect(row.pnl_per_share).toBeCloseTo(75, 4);
+  });
+
+  it('falls back to r.pnl_per_share when snap.ltp is 0 and last_price is also 0', () => {
+    // Both snap.ltp=0 and last_price=0 fail the > 0 guards → liveHold is null.
+    const snapMap = { RELIANCE: { ltp: 0 } };
+    const byKey = {};
+    const hold = [makeHoldingRow({ last_price: 0, pnl_per_share: 42 })];
+    mergeHoldingRows(byKey, hold, true, {}, makeHoldingCtx(snapMap));
+    const row = Object.values(byKey)[0];
+    expect(row.pnl_per_share).toBeCloseTo(42, 4);
+  });
+
+  it('returns 0 when all liveHold sources are absent and r.pnl_per_share is absent', () => {
+    const byKey = {};
+    const hold = [makeHoldingRow({ last_price: 0 })];
+    mergeHoldingRows(byKey, hold, true, {}, makeHoldingCtx({}));
+    const row = Object.values(byKey)[0];
+    // liveHold=null, r.pnl_per_share=undefined → Number(undefined) || 0 = 0
+    expect(row.pnl_per_share).toBe(0);
+  });
+});
+
 // ── Fix 2b: _ltpCellClass flash lookup prefers quote_symbol ──────────────────
 //
 // _ltpCellClass is not exported; we exercise the flash path indirectly through

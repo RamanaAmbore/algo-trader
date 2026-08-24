@@ -266,6 +266,47 @@ describe('holdingsColDefs filter — pos_state exclusion (Fix 1)', () => {
 // dirCls pure-function smoke tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// pnl_per_share column — presence and ordering
+// ---------------------------------------------------------------------------
+
+describe('mkRightColDefs — pnl_per_share column', () => {
+  it('includes pnl_per_share column in the output', () => {
+    const cols = mkRightColDefs(makeOpts());
+    const col = cols.find(c => c.colId === 'pnl_per_share');
+    expect(col).toBeDefined();
+    expect(col.field).toBe('pnl_per_share');
+    expect(col.headerName).toBe('P&L/sh');
+  });
+
+  it('pnl_per_share appears immediately after pnl_pct', () => {
+    const cols = mkRightColDefs(makeOpts());
+    const pnlPctIdx      = cols.findIndex(c => c.colId === 'pnl_pct');
+    const pnlPerShareIdx = cols.findIndex(c => c.colId === 'pnl_per_share');
+    expect(pnlPctIdx,      'pnl_pct column not found').not.toBe(-1);
+    expect(pnlPerShareIdx, 'pnl_per_share column not found').not.toBe(-1);
+    expect(pnlPerShareIdx).toBe(pnlPctIdx + 1);
+  });
+
+  it('pnl_per_share uses aggFmtGrid as valueFormatter', () => {
+    const opts = makeOpts();
+    const cols = mkRightColDefs(opts);
+    const col = cols.find(c => c.colId === 'pnl_per_share');
+    // Invoke the valueFormatter — it must be the aggFmtGrid stub.
+    col.valueFormatter({ value: 99 });
+    expect(opts.aggFmtGrid).toHaveBeenCalledWith({ value: 99 });
+  });
+
+  it('pnl_per_share cellClass delegates to pnlCellClass with field name', () => {
+    const opts = makeOpts();
+    const cols = mkRightColDefs(opts);
+    const col = cols.find(c => c.colId === 'pnl_per_share');
+    const fakeP = { data: { pnl_per_share: 50 } };
+    col.cellClass(fakeP);
+    expect(opts.pnlCellClass).toHaveBeenCalledWith(fakeP, 'pnl_per_share');
+  });
+});
+
 describe('dirCls helper', () => {
   it('returns cell-pos for positive values', () => {
     expect(dirCls(1)).toBe('cell-pos');

@@ -574,6 +574,9 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     } else {
       row.pnl = (row.pnl ?? 0) + (Number(r.pnl) || 0);
     }
+    row.pnl_per_share = (liveHold != null && heldQty !== 0)
+      ? (liveHold - holdAvg)
+      : (Number(r.pnl_per_share) || 0);
     row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
     row._broker_day_pnl = (row._broker_day_pnl ?? 0) + (Number(r.day_change_val) || 0);
     _propagateStaleAndSource(row, r);

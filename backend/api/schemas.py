@@ -75,6 +75,10 @@ class HoldingRow(msgspec.Struct):
     # stays correct even when Kite's `close_price` has drifted post-settlement.
     # Zero means "not yet available" (cold boot / first deploy).
     previous_close: float = 0.0
+    # P&L per share = total pnl / quantity. Useful for per-unit return
+    # display without exposing quantity. Zero when quantity is 0 (e.g.
+    # fully-sold holdings still in the snapshot).
+    pnl_per_share: float = 0.0
 
 
 class HoldingsSummaryRow(msgspec.Struct):

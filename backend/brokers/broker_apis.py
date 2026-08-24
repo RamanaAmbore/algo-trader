@@ -1648,12 +1648,20 @@ def _build_holdings_computed_exprs(
                 .alias("day_change_val")
             )
 
+    if has_pnl and has_qty:
+        exprs.append(
+            pl.when(pl.col("quantity").cast(pl.Float64) != 0.0)
+            .then(pl.col("pnl").cast(pl.Float64) / pl.col("quantity").cast(pl.Float64))
+            .otherwise(pl.lit(0.0))
+            .alias("pnl_per_share")
+        )
+
     return exprs
 
 
 def _enrich_holdings_writeback(df: pd.DataFrame, lf: "pl.DataFrame") -> None:
     """Write computed Polars columns back to the pandas DataFrame in-place."""
-    for c in ("pnl", "inv_val", "cur_val", "pnl_percentage", "price_change", "day_change_val"):
+    for c in ("pnl", "inv_val", "cur_val", "pnl_percentage", "price_change", "day_change_val", "pnl_per_share"):
         if c in lf.columns:
             df[c] = lf[c].to_pandas()
 

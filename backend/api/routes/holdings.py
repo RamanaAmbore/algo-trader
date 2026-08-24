@@ -164,6 +164,8 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
         price_source="snapshot_settled",
         current_price=ltp_f,
         is_animating=False,
+        previous_close=previous_close_f,
+        pnl_per_share=total_pnl_f / qty_i if qty_i != 0 else 0.0,
     )
     return row, inv_val, cur_val, total_pnl_f, day_change_val
 
@@ -264,6 +266,8 @@ _ROW_COLS = [
     # Exposed to frontend so it can compute `(ltp − previous_close) × qty`
     # independently of whether Kite's `close_price` has drifted.
     'previous_close',
+    # P&L per share = total pnl / quantity. Zero when quantity is 0.
+    'pnl_per_share',
 ]
 
 _TTL = 30  # seconds — background task invalidates on each refresh
