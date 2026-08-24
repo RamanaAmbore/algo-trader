@@ -15,5 +15,6 @@ export function applyUnderlyingTickLtp(quotes, root, ltp) {
   if (!(root in quotes)) return quotes;
   const v = Number(ltp);
   if (!Number.isFinite(v) || v <= 0) return quotes;
+  if (quotes[root].ltp === v) return quotes;  // same LTP — no $state write needed
   return { ...quotes, [root]: { ...quotes[root], ltp: v } };
 }

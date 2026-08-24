@@ -11,6 +11,8 @@ from actions.py at call time.
 actions_preflight.py at module top (no cycle).
 """
 
+import asyncio
+
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.api.algo.actions_preflight import run_preflight, diagnose_live_failure
 
@@ -115,7 +117,8 @@ async def _place_order_preflight_block(
         pass
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
-        send_order_failure_alert(
+        await asyncio.to_thread(
+            send_order_failure_alert,
             account=account, symbol=symbol, exchange=exchange,
             side=side, qty=qty, mode="live",
             source=f"agent:{context.get('agent_slug', 'place_order')}",
@@ -176,7 +179,8 @@ async def _place_order_on_failure(
                  f"{side} {qty}: {e} | diag: {diag}")
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
-        send_order_failure_alert(
+        await asyncio.to_thread(
+            send_order_failure_alert,
             account=account, symbol=symbol, exchange=exchange,
             side=side, qty=qty, mode="live",
             source=f"agent:{context.get('agent_slug', 'place_order')}",
@@ -288,7 +292,8 @@ async def _close_position_preflight_block(
     )
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
-        send_order_failure_alert(
+        await asyncio.to_thread(
+            send_order_failure_alert,
             account=account, symbol=symbol, exchange=exchange,
             side=side, qty=qty, mode="live",
             source=f"agent:{getattr(agent, 'slug', 'close_position')}",
@@ -320,7 +325,8 @@ async def _close_position_on_failure(
                  f"{side} {qty}: {e} | diag: {diag}")
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
-        send_order_failure_alert(
+        await asyncio.to_thread(
+            send_order_failure_alert,
             account=account, symbol=symbol, exchange=exchange,
             side=side, qty=qty, mode="live",
             source=f"agent:{getattr(agent, 'slug', 'close_position')}",
@@ -694,7 +700,8 @@ async def _al_chase_handle_blocked(
     )
     try:
         from backend.shared.helpers.alert_utils import send_order_failure_alert
-        send_order_failure_alert(
+        await asyncio.to_thread(
+            send_order_failure_alert,
             account=acct, symbol=symbol, exchange=exchange,
             side=side, qty=qty, mode="live",
             source=f"agent:{getattr(agent, 'slug', 'chase_close_positions')}",
@@ -824,7 +831,8 @@ async def _chase_handle_results(
                      f"{res} | diag: {diag}")
         try:
             from backend.shared.helpers.alert_utils import send_order_failure_alert
-            send_order_failure_alert(
+            await asyncio.to_thread(
+                send_order_failure_alert,
                 account=acct, symbol=symbol, exchange=exchange,
                 side=side, qty=qty, mode="live",
                 source=f"agent:{getattr(agent, 'slug', 'chase_close_positions')}",

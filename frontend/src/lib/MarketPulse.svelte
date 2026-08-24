@@ -1561,25 +1561,10 @@
         _ltpFlashDown = new Set([..._ltpFlashDown, sym]);
         _ltpFlashUp = new Set([..._ltpFlashUp].filter(s => s !== sym));
       }
-      // Immediate refreshCells so the LTP/cascade columns repaint with
-      // flash classes before the 300ms clearance timer fires. The
-      // _liveLtpSnap $effect path (250ms throttle + requestIdleCallback
-      // up to 500ms) is too slow — flash clears at 300ms, so the cell
-      // never shows the colour. Pinned/watch grids are refreshed inside
-      // their own $effect; positions/holdings/win/lose need this call.
-      const _flashCols = ['ltp', 'sparkline', 'day_pnl', 'pnl'];
-      if (gridPositionsReady && gridPositions && showPositions) {
-        try { gridPositions.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
-      }
-      if (gridHoldingsReady && gridHoldings && showHoldings) {
-        try { gridHoldings.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
-      }
-      if (gridWinReady && gridWin && showWinners) {
-        try { gridWin.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
-      }
-      if (gridLoseReady && gridLose && showLosers) {
-        try { gridLose.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
-      }
+      // Schedule a debounced refreshCells so the LTP/cascade columns repaint
+      // with flash classes. Coalesces bursts at 8-12 Hz into at most 20
+      // redraws/sec instead of firing once per tick per grid instance.
+      _scheduleFlashRefresh();
       // Clear existing timer for this sym (re-arm on each tick).
       const existing = _ltpFlashTimers.get(sym);
       if (existing) clearTimeout(existing);
@@ -1589,18 +1574,7 @@
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
         // Repaint once more after clearing flash so cells revert to
         // their non-flash colour without waiting for the next tick.
-        if (gridPositionsReady && gridPositions && showPositions) {
-          try { gridPositions.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
-        }
-        if (gridHoldingsReady && gridHoldings && showHoldings) {
-          try { gridHoldings.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
-        }
-        if (gridWinReady && gridWin && showWinners) {
-          try { gridWin.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
-        }
-        if (gridLoseReady && gridLose && showLosers) {
-          try { gridLose.refreshCells({ columns: _flashCols, force: true }); } catch (_) {}
-        }
+        _scheduleFlashRefresh();
       }, 300));
     });
   });
@@ -2222,6 +2196,7 @@
   // whole set when one symbol clears — prevents flicker when multiple
   // symbols have staggered 300ms windows).
   const _ltpFlashTimers = /** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map());
+  let _flashRefreshTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
   /** @type {(() => void) | null} */
   let _tickBusUnsub = null;
   /** @type {(() => void) | null} */
@@ -2239,6 +2214,25 @@
       setTimeout(cb, 1);
     }
   };
+
+  // Coalesces all tick-driven refreshCells calls into a single 50ms window.
+  // At 8-12 Hz with 20-50 symbols, firing refreshCells immediately per tick
+  // saturates the JS main thread. The debounce ensures at most 20 redraws/sec.
+  function _scheduleFlashRefresh() {
+    if (_flashRefreshTimer) return;
+    _flashRefreshTimer = setTimeout(() => {
+      _flashRefreshTimer = null;
+      const cols = ['ltp', 'sparkline', 'day_pnl', 'pnl'];
+      if (gridPositionsReady && gridPositions && showPositions)
+        try { gridPositions.refreshCells({ columns: cols, force: true }); } catch (_) {}
+      if (gridHoldingsReady && gridHoldings && showHoldings)
+        try { gridHoldings.refreshCells({ columns: cols, force: true }); } catch (_) {}
+      if (gridWinReady && gridWin && showWinners)
+        try { gridWin.refreshCells({ columns: cols, force: true }); } catch (_) {}
+      if (gridLoseReady && gridLose && showLosers)
+        try { gridLose.refreshCells({ columns: cols, force: true }); } catch (_) {}
+    }, 50);
+  }
 
   $effect(() => {
     const snap = _liveLtpSnap; // reactive subscribe — re-runs on every update
@@ -2528,6 +2522,7 @@
     if (_ltpPaintTimer) { clearTimeout(_ltpPaintTimer); _ltpPaintTimer = null; }
     _tickBusUnsub?.();
     _pctUnsub?.();
+    if (_flashRefreshTimer) { clearTimeout(_flashRefreshTimer); _flashRefreshTimer = null; }
     for (const t of _ltpFlashTimers.values()) clearTimeout(t);
     _ltpFlashTimers.clear();
     _mpFlash.dispose();

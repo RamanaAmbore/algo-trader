@@ -1,87 +1,263 @@
-# Plan: qty/lots/lot_size normalization + UPSERT stale fix + DB query tool
+# Plan: Fix frontend hang + event loop blocking + Dhan holdings zeros
+
+## Context
+
+Three audits completed. Root causes confirmed with file:line evidence.
+
+**Hang (Pulse/Derivatives page):** `MarketPulse.svelte` `tickBus.subscribe` callback fires
+`refreshCells({ force: true })` on up to 4 ag-Grid instances immediately per tick, PLUS a
+second round via each symbol's 300ms clearance timer. At 8-12 Hz with 20-50 subscribed
+symbols, this means 32-48 forced ag-Grid redraws/sec + O(N) Set spreads for `_ltpFlashUp`/
+`_ltpFlashDown` per tick. JS main thread saturated → browser hang.
+
+**Backend blocking (P1 — order hot path):** `actions_live.py:118,178,291` calls
+`send_order_failure_alert(...)` bare inside three `async def` functions. Call chain resolves
+to `_alert_route → _send_telegram → requests.post(timeout=10)`. 10-second blocking HTTPS
+call on the event loop, on every failed order placement.
+
+**Backend blocking (P2 — watchdog/pollers):** `background.py:3854` calls
+`_fetch_special_sessions_safe` inside `_watchdog_check_market_open` (runs every 30s). On
+daily cache miss, `fetch_special_sessions → fut.result(timeout=5)` blocks event loop for
+up to 5s. Lines 4578 and 4628 call `is_any_segment_open(now_ist)` bare in two background
+pollers; on daily cache miss → blocking DB query (Tier 3) or NSE HTTP call (Tier 4).
+
+**Backend blocking (P3 — health endpoint):** `health.py:354-355` calls `_git_hash()` and
+`_git_subject()` (each `subprocess.run(["git", ...], timeout=5)`) directly in
+`async def get_health()`. Up to 10s block per call.
+
+**Chain tab "Fetching expiries…" hang:** `OptionChainTab.svelte` retries `fetchChainExpiries`
+up to 12 times × 5s = 60s when the backend returns `expiries=[]`. The backend returns empty
+when `cache.peek("instruments_chain")` is None (instruments cold). But when the event loop is
+blocked by `send_order_failure_alert` (up to 10s per call, 3 call sites in `actions_live.py`),
+the HTTP response for `/api/options/chain-quotes` is delayed. The 5s retry fires while the event
+loop is still blocked → response delayed again → appears to hang indefinitely. Fix: the
+`actions_live.py` `asyncio.to_thread` wraps (in the backend agent below) clear this. No
+separate chain-tab code change needed.
+
+**Dhan holdings zeros (root cause 1 — LKG pre-backfill):** `_record_lkg_frame("holdings",
+account, df_holdings)` is called inside `_fetch_holdings_local` (broker_apis.py:1455) AFTER
+`_enrich_holdings` but BEFORE `_apply_backfill_to_list`. When Dhan returns `lastTradedPrice=0`
+off-market, the LKG records zero-LTP rows. On subsequent calls that hit the stale-substitute
+path (breaker open or interval gate), zeros are served.
+
+**Dhan holdings zeros (root cause 2 — ssot_fetch caches zeros):** `_apply_backfill_to_list`
+catches exceptions and returns raw zero-price frames (`return frames`). ssot_fetch caches any
+non-None result (ssot_fetch.py:143-145). On PriceBroker rate-limit at first post-restart poll,
+zeros are cached and served to all callers for the full cache window (30+s).
 
 ## Task
 
-Four related fixes to position data consistency across the daily_book, broker layer, and frontend:
-
-1. **qty uniform in CONTRACTS + add lots/lot_size fields** — `qty` in `daily_book` must be CONTRACTS (lots * lot_size) uniformly. Currently MCX stores LOTS (e.g., qty=1 for 1 GOLDM lot); NFO stores CONTRACTS (e.g., qty=75 for 1 NIFTY lot). Fix: MCX rows multiply quantity by multiplier to get contracts. Two new columns added: `lots` (integer — number of lots) and `lot_size` (integer — contracts per lot). Invariant after fix: `qty = lots x lot_size` for all rows. P&L math already uses contracts; the fix makes MCX match. Frontend displays lots with lot_size annotation; P&L math uses qty (contracts).
-
-2. **DB query tool** — `scripts/dbq.sh dev|prod "SQL"` SSHes to server and runs psql. Credentials read from server's `secrets.yaml` at runtime — never stored locally.
-
-3. **UPSERT day_pnl zero-guard stale bug** — `COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)` keeps stale 780 when formula legitimately returns 0 (e.g., ltp=prev_close on flat weekend). Fix: when EXCLUDED.ltp IS NOT NULL (valid settlement captured), always use EXCLUDED.day_pnl even if 0.
-
-4. **prev_close timing** — prev_close for a symbol should come from the last session where that segment was actually open. For MCX (which trades Saturdays), Saturday is a valid session. For NSE (closed Saturdays), no Saturday snapshot exists. The real symptom is issue 3. Document as-is; no code change needed here beyond the UPSERT fix.
+Fix all five root causes in order of severity.
 
 ## Agents
 
-- backend: In `backend/brokers/broker_apis.py`, rename `_apply_mcx_multiplier` to `_annotate_lot_size(df)`. New logic: (a) MCX/NCO rows: set `lots = quantity` (already in lots from Kite), `lot_size = multiplier`, then overwrite `quantity = quantity * multiplier` (convert to contracts); scale `overnight_quantity`, `day_buy_quantity`, `day_sell_quantity` by multiplier too. (b) NFO/CDS/BFO rows: read `lot_size` from `_LOT_INDEX` (sync dict in `backend/brokers/adapters/kite.py`, import directly; fall back to 1 if cold), set `lots = quantity // lot_size` (already in contracts), `lot_size = lot_size_from_LOT_INDEX`, `quantity` unchanged (already contracts). (c) Equity: `lots = quantity`, `lot_size = 1`, `quantity` unchanged. Update call site in `_fetch_positions_local` to call `_annotate_lot_size`. The API response for positions now always includes `lots` and `lot_size` fields; `quantity` is always in contracts. In `backend/api/algo/daily_snapshot.py`, update `_positions_rows`: MCX rows -- `qty = int(r['quantity'] * r['multiplier'])` (contracts), `lots = int(r['quantity'])`, `lot_size = int(r['multiplier'])`; NFO rows -- `qty = int(r['quantity'])` (contracts, unchanged), `lots = qty // lot_size_from_LOT_INDEX`, `lot_size = lot_size_from_LOT_INDEX` (import `_LOT_INDEX` directly; fall back to 1). Fix two lines in `_UPSERT_SQL` (around line 706): (1) day_pnl guard: change `day_pnl = COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)` to `day_pnl = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END`; (2) previous_close freeze gate: change `previous_close = COALESCE(daily_book.previous_close, EXCLUDED.previous_close)` to `previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp) THEN daily_book.ltp ELSE daily_book.previous_close END` -- this advances previous_close only when ltp actually changes (new session settlement), preserving it during frozen weekend snapshots. Also add `lots` and `lot_size` to the INSERT column list and UPDATE clause of `_UPSERT_SQL`. In `backend/api/models.py`, add to `DailyBook`: `lots: Mapped[int] = mapped_column(Integer, nullable=False, default=1)` and `lot_size: Mapped[int] = mapped_column(Integer, nullable=False, default=1)`. Create `backend/migrations/add_daily_book_lots_lot_size.sql`: `ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS lots INTEGER NOT NULL DEFAULT 1; ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS lot_size INTEGER NOT NULL DEFAULT 1;`. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory -- not optional.
-- frontend: In every component that renders position `quantity` (search for `quantity` in `frontend/src/routes/(algo)/` and `frontend/src/lib/`): display as lots using the new `lots` field from the API, with lot_size shown alongside (e.g. "2 lots x10"). For P&L value computations (inv_val, cur_val, day P&L), use `quantity` (contracts) x price -- same formula as today since qty is now uniformly in contracts. No formula change needed for NFO (already contracts); MCX formula is now correct since qty is contracts. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory -- not optional.
-- broker: skip
-- doc: skip
-- backend-test: Write pytest tests in `backend/tests/test_lot_size_normalization.py`: (a) `_annotate_lot_size` MCX row -- qty=1 lot, multiplier=10 -> output quantity=10 (contracts), lots=1, lot_size=10; (b) `_annotate_lot_size` NFO row -- quantity=75 (contracts), lot_size=75 from _LOT_INDEX -> output quantity=75, lots=1, lot_size=75; (c) `_annotate_lot_size` equity row -- quantity=100, lot_size=1, lots=100; (d) `_positions_rows` MCX entry in daily_book -> qty=contracts, lots=original, lot_size=multiplier; (e) UPSERT zero-guard: second snapshot with day_pnl=0 and non-null ltp DOES overwrite prior non-zero value; (f) UPSERT mid-session guard: snapshot with ltp=NULL preserves prior day_pnl. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory -- not optional.
-- playwright: skip
+- frontend: Two fixes across Pulse and Chain pages.
 
-## DB tool
-- Create `scripts/dbq.sh` -- executable shell script. Usage: `./scripts/dbq.sh <dev|prod> "SQL"`. SSHes to ramboq server, reads DB credentials from `/opt/ramboq/backend/config/secrets.yaml` on the server (never stored locally), runs psql with `-h 127.0.0.1`. Dev: database `ramboq_dev`; prod: database `ramboq`. Also run the migration `add_daily_book_lots_lot_size.sql` on both dev and prod via this script as part of deployment.
+  **Fix A — MarketPulse.svelte (Pulse page):** Debounce `refreshCells` calls in tickBus subscriber.
+  File: `frontend/src/lib/MarketPulse.svelte`.
+
+  Around line 2224 (near the other flash timer declarations), add:
+  `let _flashRefreshTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);`
+
+  Extract a helper `_scheduleFlashRefresh()` that coalesces calls into a 50ms debounce:
+  ```js
+  function _scheduleFlashRefresh() {
+    if (_flashRefreshTimer) return;
+    _flashRefreshTimer = setTimeout(() => {
+      _flashRefreshTimer = null;
+      const cols = ['ltp', 'sparkline', 'day_pnl', 'pnl'];
+      if (gridPositionsReady && gridPositions && showPositions)
+        try { gridPositions.refreshCells({ columns: cols, force: true }); } catch (_) {}
+      if (gridHoldingsReady && gridHoldings && showHoldings)
+        try { gridHoldings.refreshCells({ columns: cols, force: true }); } catch (_) {}
+      if (gridWinReady && gridWin && showWinners)
+        try { gridWin.refreshCells({ columns: cols, force: true }); } catch (_) {}
+      if (gridLoseReady && gridLose && showLosers)
+        try { gridLose.refreshCells({ columns: cols, force: true }); } catch (_) {}
+    }, 50);
+  }
+  ```
+
+  In the `tickBus.subscribe` callback (around line 1553-1605):
+  - Keep the `$state` writes for `_ltpFlashUp`/`_ltpFlashDown` immediate (needed for CSS classes)
+  - Keep the per-sym clearance `setTimeout` (unchanged — needed for 300ms flash duration)
+  - Replace the immediate `refreshCells` block (lines 1571-1582) with `_scheduleFlashRefresh()`
+  - Replace the clearance timer's `refreshCells` block (lines 1592-1603) with `_scheduleFlashRefresh()`
+
+  Add cleanup in `onDestroy` (near line 2531):
+  `if (_flashRefreshTimer) { clearTimeout(_flashRefreshTimer); _flashRefreshTimer = null; }`
+
+  **Fix B — Chain/Derivatives page:** Guard `_underlyingQuotes` `$state` write against no-op ticks.
+  Files: `frontend/src/lib/data/underlyingQuoteUtils.js` and
+  `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`.
+
+  Problem: `_underlyingQuotes = applyUnderlyingTickLtp(...)` fires on every SSE tick (8-12Hz).
+  Even when LTP hasn't changed between ticks, a new object is created and assigned, which triggers
+  the `$effect` at line 1082 (flash.update loop) AND the template re-render at line 4798
+  (`{@const _q = _underlyingQuotes[g.underlying]}`). This re-renders the entire underlying-totals
+  section on every tick.
+
+  1. In `underlyingQuoteUtils.js`, add no-op guard:
+     ```js
+     export function applyUnderlyingTickLtp(quotes, root, ltp) {
+       if (!(root in quotes)) return quotes;
+       const v = Number(ltp);
+       if (!Number.isFinite(v) || v <= 0) return quotes;
+       if (quotes[root].ltp === v) return quotes;  // same LTP — no $state write needed
+       return { ...quotes, [root]: { ...quotes[root], ltp: v } };
+     }
+     ```
+  2. In `derivatives/+page.svelte` line 1848, guard the assignment:
+     ```js
+     const _next = applyUnderlyingTickLtp(_underlyingQuotes, root, snap.ltp);
+     if (_next !== _underlyingQuotes) _underlyingQuotes = _next;
+     ```
+     This prevents Svelte 5 reactivity from firing when the reference is unchanged.
+
+  For every file you change or create, you MUST write or update at least one test that covers
+  the changed behaviour. This is mandatory — not optional.
+  - Write/update a Vitest test in `frontend/src/lib/__tests__/data/underlyingQuoteUtils.test.js`
+    that asserts `applyUnderlyingTickLtp` returns the SAME object reference when LTP is unchanged.
+  - Write a Vitest test for MarketPulse behavior: mock `tickBus`, fire 20 rapid ticks,
+    assert `refreshCells` is called ≤ once per 50ms window.
+
+- backend: Fix three categories of event loop blocking.
+
+  1. `backend/api/algo/actions_live.py` lines ~118, ~178, ~291: wrap `send_order_failure_alert`
+     in `asyncio.to_thread`. These are inside `async def` functions (`_place_order_preflight_block`,
+     `_place_order_on_failure`, `_close_position_preflight_block`). Change:
+     ```python
+     send_order_failure_alert(account=..., ...)
+     ```
+     to:
+     ```python
+     await asyncio.to_thread(send_order_failure_alert, account=..., ...)
+     ```
+     for all three call sites. The `send_order_failure_alert` import line stays inside the
+     try block (it's a lazy import); just add `await asyncio.to_thread(...)` around the call.
+
+  2. `backend/api/background.py` line 3854 — `_fetch_special_sessions_safe` inside
+     `_watchdog_check_market_open` generator: pre-fetch special sessions for each segment
+     exchange using `asyncio.to_thread` before the `any(is_market_open(...))` call. Change
+     the function body to:
+     ```python
+     # pre-fetch special sessions (sync DB call — must not run on event loop)
+     special_sessions: dict[str, list] = {}
+     for seg in segments:
+         exch = seg['holiday_exchange']
+         if exch not in special_sessions:
+             special_sessions[exch] = await asyncio.to_thread(
+                 _fetch_special_sessions_safe, exch
+             )
+     return any(
+         is_market_open(
+             now,
+             holiday_cache.get(seg['holiday_exchange'], set()),
+             seg['hours_start'],
+             seg['hours_end'],
+             special_sessions=special_sessions.get(seg['holiday_exchange'], []),
+         )
+         for seg in segments
+     )
+     ```
+
+  3. `backend/api/background.py` lines 4578 and 4628 — bare `is_any_segment_open(now_ist)`
+     calls in `_task_funds_offhours` and `_task_closed_hours_refresh`: wrap with
+     `await asyncio.to_thread(is_any_segment_open, now_ist)`.
+
+  4. `backend/api/routes/health.py` lines 354-355 — `_git_hash()` and `_git_subject()`:
+     wrap with `await asyncio.to_thread(_git_hash)` and `await asyncio.to_thread(_git_subject)`.
+
+  For every file you change or create, you MUST write or update at least one test that covers
+  the changed behaviour. This is mandatory — not optional.
+  Add a pytest test in `backend/tests/` that verifies `send_order_failure_alert` is NOT
+  called directly in the async functions (patch the function and assert it was called via
+  `asyncio.to_thread` by checking the call pattern in `_place_order_preflight_block`).
+
+- broker: Fix two Dhan holdings zero root causes in `backend/brokers/broker_apis.py`.
+
+  1. Post-backfill LKG recording in `_fetch_holdings_cached` (line ~1319):
+     ```python
+     @ssot_fetch(mode="coalesce", key="holdings")
+     def _fetch_holdings_cached() -> list[pd.DataFrame]:
+         if _use_conn_service():
+             from backend.brokers.client import sync as conn_sync
+             result = conn_sync.fetch_holdings()
+         else:
+             result = _fetch_holdings_local()
+         backfilled = _apply_backfill_to_list(result)
+         # Upgrade LKG to post-backfill prices so stale-substitute never serves zeros.
+         if backfilled and len(backfilled) > 0:
+             combined = backfilled[0]
+             if not combined.empty and 'account' in combined.columns:
+                 for acct, df_acct in combined.groupby('account', sort=False):
+                     _record_lkg_frame("holdings", str(acct), df_acct.copy())
+         return backfilled
+     ```
+     Do the same for `_fetch_positions_cached` (line ~1330).
+
+  2. `_apply_backfill_to_list` exception handler (line ~1737): change `return frames` to
+     `raise` so ssot_fetch does NOT cache the zero-price result on backfill failure.
+     Change the `except` block to:
+     ```python
+     except Exception as _e:
+         logger.warning(f"_apply_backfill_to_list: backfill failed: {_e}")
+         raise  # do not cache zero-price frames via ssot_fetch
+     ```
+
+  For every file you change or create, you MUST write or update at least one test that covers
+  the changed behaviour. This is mandatory — not optional.
+  - Test that `_fetch_holdings_cached` upgrades LKG after backfill: mock `_fetch_holdings_local`
+    returning zero-LTP frames, mock `backfill_market_data` to patch them to non-zero,
+    call `_fetch_holdings_cached`, then verify `_get_lkg_frame("holdings", acct)` returns
+    the patched (non-zero) frame.
+  - Test that `_apply_backfill_to_list` propagates exception: mock `backfill_market_data`
+    to raise `RuntimeError`, call `_apply_backfill_to_list([some_df])`, assert it raises.
+
+- doc: skip
+- backend-test: skip (tests included in agent briefs above)
+- playwright: skip
 
 ## Tests
 - pytest: yes
 - svelte-check: yes
-- playwright: no
+- playwright: yes
+
+## Dev verification (required before dprod)
+Every change must be verified on dev.ramboq.com before promoting to prod. The playwright agent
+must run targeted specs against dev.ramboq.com that confirm:
+
+1. **Pulse page hang fix** — Open Pulse page, let SSE ticks run for 30s, assert no browser
+   tab freeze (use `page.waitForTimeout` + `page.evaluate(() => document.title)` still returns
+   within 500ms as a liveness check). Verify LTP cells flash correctly.
+
+2. **Chain tab expiry hang fix** — Open order ticket → Chain tab, assert expiries load within
+   10s (not 60s). Verify tab is interactive (can pick expiry, strikes render).
+
+3. **Derivatives page hang fix** — Open derivatives page with an underlying, let SSE ticks run
+   for 20s, assert Spot LTP cell updates and tab remains responsive.
+
+4. **Dhan holdings zeros fix** — After market close, open holdings page for Dhan account,
+   assert `cur_val > 0` for all rows (no zeros). Check that reloading holdings does not blank
+   the prices.
+
+5. **Backend blocking fix (smoke)** — Verify `/api/health` responds in < 2s. Verify positions
+   and holdings routes respond in < 3s during off-hours.
+
+The playwright agent targets `https://dev.ramboq.com` only. All specs must pass before the
+doc agent runs and before `git merge dev→main`.
 
 ## Commit message
-fix(positions): normalize MCX/NFO qty to contracts + add lots/lot_size fields, fix UPSERT day_pnl zero-guard stale preservation, add scripts/dbq.sh DB query tool
+fix(perf): debounce Pulse refreshCells + asyncio.to_thread blocking + Dhan LKG post-backfill
 
 ## Done when
-- `quantity` in positions API response and daily_book is always CONTRACTS (lots x lot_size) for MCX and NFO
-- `lots` and `lot_size` fields present on every position row in the API response and in daily_book
-- MCX: `quantity = lots x lot_size` (e.g., GOLDM 1 lot -> qty=10, lots=1, lot_size=10)
-- NFO: `quantity = lots x lot_size` (e.g., NIFTY 1 lot -> qty=75, lots=1, lot_size=75)
-- Equity: `lot_size=1`, `lots=quantity`
-- `daily_book.lots` and `daily_book.lot_size` columns exist (migration applied on dev and prod)
-- UPSERT no longer preserves stale day_pnl when a subsequent snapshot computes 0 with valid non-null ltp
-- UPSERT no longer advances previous_close from a frozen weekend snapshot (ltp unchanged)
-- Frontend displays qty as lots with lot_size annotation; P&L math uses contracts
-- `scripts/dbq.sh dev "SELECT 1"` works from local machine
-- All pytest tests pass; svelte-check 0 errors
-
-## Context
-
-**qty inconsistency root cause:**
-- MCX: Kite ships `quantity` in LOTS, `multiplier` = lot_size (e.g., GOLDM: qty=1 lot, multiplier=10)
-- NFO/CDS/BFO: Kite ships `quantity` in CONTRACTS (lot_size already applied: e.g., NIFTY 1 lot -> qty=75)
-- `_apply_mcx_multiplier` converts MCX lots->contracts at runtime; snapshot path skips it -> daily_book has LOTS for MCX, CONTRACTS for NFO -- inconsistent
-- Fix: `_annotate_lot_size` converts MCX to contracts + populates `lots` and `lot_size` for all segments
-- P&L math (`decomposed_intraday_pnl` in `backend/api/algo/pnl_math.py`) already multiplies by `lot_mult`; after fix, qty is contracts for MCX too so the existing multiplier in that function now double-counts -- review and fix the call site in `_enrich_positions` so lot_mult=1 is passed for MCX (since quantity is already contracts)
-
-**NFO lot_size sync lookup:**
-- `_LOT_INDEX` in `backend/brokers/adapters/kite.py` is a plain dict (sync-readable), keyed by (exchange, tradingsymbol) -> lot_size
-- Import directly -- no await needed
-- Falls back to `lot_size=1` if cache cold (instruments load in ~30s on startup)
-
-**UPSERT stale day_pnl:**
-- Current: `COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)` -- "if new value is 0, keep old"
-- Bug: when ltp=prev_close (flat weekend settlement), day_pnl formula correctly returns 0 but stale 780 preserved
-- Fix: `CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END`
-- Evidence: Aug 24 (Sunday) day_pnl=780 preserved; should be 0 because ltp=836=prev_close
-
-**prev_close timing (requires snapshot gate):**
-- MCX metals/energy (GOLDM, CRUDEOIL, SILVER, etc.) do NOT trade on Saturdays. Only MCX agri commodities have Saturday morning sessions.
-- The Saturday snapshot for GOLDM captures frozen ltp=836 (Kite returns Friday's EOD settlement since contract hasn't ticked).
-- This Saturday snapshot wrongly becomes the "previous record" in prev_ltp_map for Sunday. Value is the same (836=Friday settlement), so prev_close is numerically correct, but conceptually wrong: we're using a non-trading-day record as the settlement reference.
-- Fix: in `snapshot_daily_book` in `backend/api/algo/daily_snapshot.py`, gate snapshot execution with `is_market_open()` (or equivalent). If NO segment is currently open (pure weekend for that exchange group), skip capturing snapshots for that segment. NSE positions already don't snapshot on weekends (market closed). MCX metals similarly should be gated.
-- Implementation: before calling `snapshot_daily_book` in the background task (`_task_daily_snapshot`), check `is_market_open()`. If market is closed, skip. This is already partially handled by the task schedule but needs an explicit guard so off-hours restarts don't capture stale weekend snapshots.
-- Alternate simpler approach: in `_UPSERT_SQL`, gate `previous_close` update so it only updates when the incoming record's ltp differs meaningfully from the prior ltp (i.e., the market actually moved). `previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND EXCLUDED.ltp != daily_book.ltp THEN daily_book.ltp ELSE daily_book.previous_close END` -- this advances previous_close only when ltp changes (new session settlement), not on frozen weekend snapshots.
-- **Chosen fix**: use the simpler alternate approach for previous_close update gate (no need to restructure the task schedule). The UPSERT fix (issue 3) remains required and separate.
-
-**DDL + one-time data strategy:**
-- Migration adds two columns with DEFAULT 1 -- no complex backfill
-- Historical rows: lot_size=1, lots=qty (MCX rows will show wrong lots for history, but history is not displayed as lots in UI)
-- Going forward: next snapshot after deploy populates lots and lot_size correctly for all open positions
-- Existing P&L values in daily_book remain valid (computed with lot_mult already applied correctly)
-- NOTE: after deploy, first snapshot will also correct the qty field for MCX rows (multiply by lot_size). This means historical MCX qty rows in daily_book will still show LOTS for dates before deploy; this is acceptable.
-
-**DB tool:**
-- `scripts/dbq.sh` reads DB credentials from server's secrets.yaml via SSH at runtime (never stored locally)
-- Supports `dev` (ramboq_dev) and `prod` (ramboq) targets
-- SSH host alias `ramboq` (or `dev.ramboq.com`) assumed to be configured in user's ~/.ssh/config
+- MarketPulse.svelte tickBus subscriber fires `refreshCells` at most once per 50ms (not per tick)
+- Chain page `_underlyingQuotes` `$state` write is no-op when LTP unchanged between ticks
+- `send_order_failure_alert` dispatched via `asyncio.to_thread` in actions_live.py (3 sites)
+- `_fetch_special_sessions_safe` and bare `is_any_segment_open` wrapped in background.py
+- `_git_hash`/`_git_subject` wrapped in health.py
+- `_fetch_holdings_cached` and `_fetch_positions_cached` record LKG after backfill
+- `_apply_backfill_to_list` re-raises on exception (ssot_fetch never caches zeros)
+- All new tests green; svelte-check 0 errors; no CC regressions
+- Playwright specs pass on dev.ramboq.com for all 5 verification points above
+- Only after dev verification: merge to main and push prod

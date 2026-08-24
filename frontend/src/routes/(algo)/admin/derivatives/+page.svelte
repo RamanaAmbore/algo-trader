@@ -1845,7 +1845,8 @@
         const snap = getSnapshot(root);
         if (snap?.ltp != null) {
           flash.update(`${root}:ltp`, Number(snap.ltp));
-          _underlyingQuotes = applyUnderlyingTickLtp(_underlyingQuotes, root, snap.ltp);
+          const _next = applyUnderlyingTickLtp(_underlyingQuotes, root, snap.ltp);
+          if (_next !== _underlyingQuotes) _underlyingQuotes = _next;
         }
       }
 

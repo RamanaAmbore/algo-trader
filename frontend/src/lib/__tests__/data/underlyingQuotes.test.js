@@ -63,4 +63,20 @@ describe('applyUnderlyingTickLtp', () => {
     const result = applyUnderlyingTickLtp(BASE_QUOTES, 'NIFTY', undefined);
     expect(result).toBe(BASE_QUOTES);
   });
+
+  // Fix B: same-value guard — must return SAME reference (toBe, not toEqual)
+  // so that Fix C's `if (_next !== _underlyingQuotes)` assignment guard works.
+  it('returns the SAME object reference when ltp is identical to current value', () => {
+    const quotes = { NIFTY: { ltp: 24000, day_pct: 0.5, prev_close: 23880 } };
+    const result = applyUnderlyingTickLtp(quotes, 'NIFTY', 24000);
+    expect(result).toBe(quotes);          // reference equality — no new allocation
+    expect(result.NIFTY).toBe(quotes.NIFTY); // nested object also same reference
+  });
+
+  it('returns a NEW object reference when ltp differs by even 0.05', () => {
+    const quotes = { NIFTY: { ltp: 24000, day_pct: 0.5, prev_close: 23880 } };
+    const result = applyUnderlyingTickLtp(quotes, 'NIFTY', 24000.05);
+    expect(result).not.toBe(quotes);
+    expect(result.NIFTY.ltp).toBe(24000.05);
+  });
 });

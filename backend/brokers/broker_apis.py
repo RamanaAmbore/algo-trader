@@ -1316,7 +1316,17 @@ def _fetch_holdings_cached() -> list[pd.DataFrame]:
         result = conn_sync.fetch_holdings()
     else:
         result = _fetch_holdings_local()
-    return _apply_backfill_to_list(result)
+    backfilled = _apply_backfill_to_list(result)
+    # Upgrade LKG to post-backfill prices so the stale-substitute path
+    # never serves zero-LTP rows that Dhan returns off-market hours.
+    # _fetch_holdings_local records LKG per-account BEFORE backfill; this
+    # second pass overwrites those entries with the patched prices.
+    if backfilled:
+        combined = backfilled[0]
+        if not combined.empty and "account" in combined.columns:
+            for acct, df_acct in combined.groupby("account", sort=False):
+                _record_lkg_frame("holdings", str(acct), df_acct.copy())
+    return backfilled
 
 
 @ssot_fetch(mode="coalesce", key="positions")
@@ -1327,7 +1337,14 @@ def _fetch_positions_cached() -> list[pd.DataFrame]:
         result = conn_sync.fetch_positions()
     else:
         result = _fetch_positions_local()
-    return _apply_backfill_to_list(result)
+    backfilled = _apply_backfill_to_list(result)
+    # Upgrade LKG to post-backfill prices — same rationale as holdings above.
+    if backfilled:
+        combined = backfilled[0]
+        if not combined.empty and "account" in combined.columns:
+            for acct, df_acct in combined.groupby("account", sort=False):
+                _record_lkg_frame("positions", str(acct), df_acct.copy())
+    return backfilled
 
 
 @ssot_fetch(mode="coalesce", key="margins")
@@ -1722,7 +1739,9 @@ def _apply_backfill_to_list(
 
     Returns the original list unchanged when:
       • the list is empty or all frames are empty (no-op for outage states)
-      • backfill raises unexpectedly (safety net — caller gets raw frames)
+
+    Raises when backfill raises — the exception propagates so ssot_fetch
+    does not cache a zero-price frame for the full TTL window.
 
     The single-element list shape preserves the existing iteration
     contract (`for df in result: ...`) so callers need no migration.
@@ -1737,8 +1756,8 @@ def _apply_backfill_to_list(
         backfill_market_data(combined)
         return [combined]
     except Exception as _e:
-        logger.warning(f"_apply_backfill_to_list: backfill failed, returning raw frames: {_e}")
-        return frames
+        logger.warning(f"_apply_backfill_to_list: backfill failed: {_e}")
+        raise  # do not cache zero-price frames via ssot_fetch
 
 
 def fetch_positions(*args, force_refresh: bool = False, **kwargs):

@@ -3845,13 +3845,24 @@ async def _watchdog_check_market_open(
                 holiday_cache[exch] = await asyncio.to_thread(fetch_holidays, exch)  # type: ignore[operator]
             except Exception:
                 holiday_cache[exch] = set()
+    # Pre-fetch special sessions off the event loop before the generator runs.
+    special_sessions: dict[str, list] = {}
+    for seg in segments:
+        exch = seg['holiday_exchange']
+        if exch not in special_sessions:
+            try:
+                special_sessions[exch] = await asyncio.to_thread(
+                    _fetch_special_sessions_safe, exch
+                )
+            except Exception:
+                special_sessions[exch] = []
     return any(
         is_market_open(
             now,
             holiday_cache.get(seg['holiday_exchange'], set()),
             seg['hours_start'],
             seg['hours_end'],
-            special_sessions=_fetch_special_sessions_safe(seg['holiday_exchange']),
+            special_sessions=special_sessions.get(seg['holiday_exchange'], []),
         )
         for seg in segments
     )
@@ -4575,7 +4586,7 @@ async def _task_funds_offhours() -> None:
     while True:
         try:
             now_ist = timestamp_indian()
-            if not is_any_segment_open(now_ist):
+            if not await asyncio.to_thread(is_any_segment_open, now_ist):
                 # Off-hours fetch — refresh funds only (cheapest broker
                 # call) so cash/balance moves are reflected for
                 # NAV + /performance. Positions + holdings need no
@@ -4625,7 +4636,7 @@ async def _task_closed_hours_refresh() -> None:
     while True:
         try:
             now_ist = timestamp_indian()
-            if not is_any_segment_open(now_ist):
+            if not await asyncio.to_thread(is_any_segment_open, now_ist):
                 # Bust the 30s broker raw cache and API-side TTL cache so
                 # routes serve fresh data on the next inbound request.
                 # snapshot_daily_book() is intentionally NOT called here —
@@ -4802,7 +4813,7 @@ async def _backfill_run_intraday(symbols: list[tuple[str, str]]) -> None:
     from backend.shared.helpers.date_time_utils import is_any_segment_open
     try:
         now_ist = timestamp_indian()
-        if is_any_segment_open(now_ist):
+        if await asyncio.to_thread(is_any_segment_open, now_ist):
             result2 = await backfill_intraday_today(symbols, interval="30minute", max_concurrent=3)
             logger.info(
                 f"backfill warm: intraday_today done — "

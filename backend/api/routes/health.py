@@ -8,6 +8,7 @@ GET /api/admin/health — single round-trip snapshot of the platform state:
 Admin-only. No demo access.
 """
 
+import asyncio
 import subprocess
 import time as _time
 from datetime import datetime, timedelta, timezone
@@ -351,8 +352,8 @@ class HealthController(Controller):
             paper = _paper_status()
             sparkline_warm = _sparkline_warm_status()
             ticker = _ticker_status()
-            git_hash = _git_hash()
-            git_subject = _git_subject()
+            git_hash = await asyncio.to_thread(_git_hash)
+            git_subject = await asyncio.to_thread(_git_subject)
             branch = str(config.get("deploy_branch") or "?")
 
             from backend.api.persistence import write_queue
