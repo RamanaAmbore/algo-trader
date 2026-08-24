@@ -626,6 +626,38 @@ async def _migrate_daily_book_previous_close(conn) -> None:
     ))
 
 
+async def _migrate_daily_book_backfill_previous_close(conn) -> None:
+    """Backfill previous_close for historical daily_book rows that have NULL.
+
+    Rows written before the previous_close column was added (May–Aug 2026)
+    have previous_close = NULL. For each such row, use the most recent prior
+    trading day's ltp from the same (account, symbol, kind) as the reference.
+
+    The UPDATE is idempotent: WHERE previous_close IS NULL means already-filled
+    rows are never touched. Rows with no prior ltp data remain NULL (first-ever
+    snapshot for that symbol — acceptable).
+    """
+    from sqlalchemy import text
+    await conn.execute(text("""
+        UPDATE daily_book t
+        SET    previous_close = p.ltp
+        FROM   daily_book p
+        WHERE  t.previous_close IS NULL
+          AND  p.ltp IS NOT NULL
+          AND  p.account = t.account
+          AND  p.symbol  = t.symbol
+          AND  p.kind    = t.kind
+          AND  p.date    = (
+               SELECT MAX(h.date) FROM daily_book h
+               WHERE  h.account = t.account
+                 AND  h.symbol  = t.symbol
+                 AND  h.kind    = t.kind
+                 AND  h.date    < t.date
+                 AND  h.ltp IS NOT NULL
+          )
+    """))
+
+
 async def _migrate_algo_orders_chase_timing(conn) -> None:
     """Add chase timing + interval columns to algo_orders (idempotent).
 
@@ -728,6 +760,7 @@ async def init_db() -> None:
         await _migrate_audit_stability_indexes(conn)
         await _migrate_code_metrics_perf_snapshots(conn)
         await _migrate_daily_book_previous_close(conn)
+        await _migrate_daily_book_backfill_previous_close(conn)
         await _migrate_algo_orders_chase_timing(conn)
         await _migrate_algo_orders_intent(conn)
         await _migrate_app_messages_table(conn)

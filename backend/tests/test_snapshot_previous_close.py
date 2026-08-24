@@ -62,6 +62,107 @@ def test_migration_ddl_present_in_database_py():
     )
 
 
+def test_backfill_migration_present_and_wired():
+    """_migrate_daily_book_backfill_previous_close exists, SQL is correct,
+    and is called from init_db immediately after _migrate_daily_book_previous_close.
+
+    Quality dimensions:
+    1. SSOT  — function exists in database.py with correct signature
+    2. Perf  — UPDATE uses WHERE previous_close IS NULL (idempotent, no full-table writes)
+    3. Stale — correlated sub-SELECT picks MAX(h.date) < t.date ensuring prior-day only
+    4. Reuse — called in init_db in the correct position (after schema migration)
+    5. UX    — idempotency guard: rows already populated are never touched
+    """
+    import inspect
+    import backend.api.database as _db
+
+    src = inspect.getsource(_db)
+
+    # 1. SSOT — function declared with correct async signature
+    assert "async def _migrate_daily_book_backfill_previous_close(conn)" in src, (
+        "database.py must declare async def _migrate_daily_book_backfill_previous_close(conn)"
+    )
+
+    # 2. Perf — idempotency guard via WHERE previous_close IS NULL
+    assert "t.previous_close IS NULL" in src, (
+        "Backfill UPDATE must filter WHERE t.previous_close IS NULL so already-filled "
+        "rows are never touched (idempotent)"
+    )
+
+    # 3. Stale — correlated sub-SELECT on h.date < t.date to get the prior day
+    assert "h.date    < t.date" in src or "h.date < t.date" in src, (
+        "Backfill sub-SELECT must restrict h.date < t.date to pick the most recent "
+        "prior trading day's ltp"
+    )
+
+    # 4. Reuse — wired into init_db
+    assert "await _migrate_daily_book_backfill_previous_close(conn)" in src, (
+        "_migrate_daily_book_backfill_previous_close must be awaited inside init_db()"
+    )
+
+    # 4b. Order — must appear after _migrate_daily_book_previous_close in init_db
+    schema_call = "await _migrate_daily_book_previous_close(conn)"
+    backfill_call = "await _migrate_daily_book_backfill_previous_close(conn)"
+    pos_schema = src.find(schema_call)
+    pos_backfill = src.find(backfill_call)
+    assert pos_schema != -1 and pos_backfill != -1, (
+        "Both migration calls must be present in database.py"
+    )
+    assert pos_backfill > pos_schema, (
+        "_migrate_daily_book_backfill_previous_close must be called AFTER "
+        "_migrate_daily_book_previous_close in init_db (column must exist first)"
+    )
+
+    # 5. UX — SET previous_close = p.ltp reads from prior-day row alias p
+    assert "SET    previous_close = p.ltp" in src or "SET previous_close = p.ltp" in src, (
+        "Backfill UPDATE must SET previous_close = p.ltp "
+        "(prior-day row's ltp, not a constant)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_backfill_migration_idempotency_logic():
+    """Unit-test the UPDATE SQL logic using an in-memory mock connection.
+
+    Verifies that:
+    - execute() is called exactly once with a text() argument
+    - the SQL text contains the WHERE previous_close IS NULL guard
+    - the SQL text contains a correlated sub-SELECT for MAX prior date
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch, call
+    import backend.api.database as _db
+
+    mock_conn = AsyncMock()
+
+    captured_sql: list[str] = []
+
+    async def _capture_execute(stmt, *args, **kwargs):
+        captured_sql.append(stmt.text if hasattr(stmt, "text") else str(stmt))
+
+    mock_conn.execute = _capture_execute
+
+    await _db._migrate_daily_book_backfill_previous_close(mock_conn)
+
+    assert len(captured_sql) == 1, (
+        "_migrate_daily_book_backfill_previous_close must issue exactly one SQL statement"
+    )
+    sql = captured_sql[0].lower()
+
+    assert "update daily_book" in sql, "SQL must UPDATE daily_book"
+    assert "previous_close is null" in sql, (
+        "SQL must filter WHERE previous_close IS NULL for idempotency"
+    )
+    assert "select max(" in sql, (
+        "SQL must contain a correlated MAX sub-SELECT to find the most recent prior date"
+    )
+    assert "h.date" in sql and "t.date" in sql, (
+        "SQL must compare h.date < t.date to restrict to prior trading days"
+    )
+    assert "p.ltp is not null" in sql, (
+        "SQL must guard against NULL ltp in the source row (p.ltp IS NOT NULL)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. Perf — UPSERT SQL uses COALESCE freeze (no extra query)
 # ---------------------------------------------------------------------------
