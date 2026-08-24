@@ -458,6 +458,7 @@ def _holdings_rows(
         # would feed downstream P&L summation as a partial-day value
         # masquerading as EOD, so emit None and let the next EOD pass
         # (15:35 IST default) fill them.
+        _h_qty = int(r.get("quantity") or r.get("opening_quantity") or 0)
         rows.append({
             "date":         target_date,
             "account":      account,
@@ -465,7 +466,9 @@ def _holdings_rows(
             "kind":         "holdings",
             "symbol":       symbol,
             "exchange":     exchange,
-            "qty":          int(r.get("quantity") or r.get("opening_quantity") or 0),
+            "qty":          _h_qty,
+            "lots":         _h_qty,   # Holdings are equity — 1 share = 1 unit
+            "lot_size":     1,
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
             "ltp":            ltp_val,
             "day_pnl":        day_pnl_v,
@@ -561,6 +564,12 @@ def _positions_rows(
     *, settled: bool = False, market_open: bool = True,
     prev_ltp_map: dict | None = None,
 ) -> list[dict]:
+    # _LOT_INDEX sync lookup for NFO/CDS/BFO lot sizes.
+    try:
+        from backend.brokers.adapters.kite import _LOT_INDEX as _kite_lot_index
+    except Exception:
+        _kite_lot_index = {}
+
     rows = []
     skipped = 0
     for r in raw:
@@ -568,15 +577,46 @@ def _positions_rows(
         if not symbol:
             continue
         exchange = r.get("exchange", "NFO")
-        qty = r.get("quantity") or 0
+        qty_raw = r.get("quantity") or 0
         # MCX/NCO rows carry a multiplier (lot_size) from Kite. Overnight /
         # buy / sell quantities in those rows are in LOTS; ltp/cls are
-        # per-unit prices. We must scale qty fields by the multiplier before
-        # running the day P&L formula. Guard: treat any value < 1 as 1.
+        # per-unit prices. Guard: treat any value < 1 as 1.
         raw_mult = r.get("multiplier")
         multiplier = int(float(raw_mult)) if raw_mult else 1
         if multiplier < 1:
             multiplier = 1
+
+        # Compute contracts, lots, lot_size uniformly:
+        #   MCX/NCO (multiplier > 1): lots = qty_raw (from Kite in lots),
+        #     contracts = lots × multiplier, lot_size = multiplier
+        #   NFO/CDS/BFO (multiplier == 1, but has real lot_size in _LOT_INDEX):
+        #     contracts = qty_raw (Kite ships contracts already),
+        #     lot_size = from _LOT_INDEX (fallback 1), lots = contracts // lot_size
+        #   Equity: contracts = qty_raw, lots = qty_raw, lot_size = 1
+        if multiplier > 1:
+            # MCX / NCO path
+            qty_contracts = int(qty_raw) * multiplier
+            lots_val      = int(qty_raw)
+            lot_size_val  = multiplier
+            # Build a scaled copy of r for day P&L computation — quantities
+            # must be in contracts before decomposed_intraday_pnl runs.
+            r_for_pnl = {**r,
+                "overnight_quantity": float(r.get("overnight_quantity") or 0) * multiplier,
+                "day_buy_quantity":   float(r.get("day_buy_quantity")   or 0) * multiplier,
+                "day_sell_quantity":  float(r.get("day_sell_quantity")  or 0) * multiplier,
+            }
+            pnl_mult = 1  # already scaled in r_for_pnl
+        else:
+            # NFO / CDS / BFO / equity path
+            qty_contracts = int(qty_raw)
+            ls = _kite_lot_index.get((exchange, symbol), 1)
+            if ls < 1:
+                ls = 1
+            lot_size_val = ls
+            lots_val     = qty_contracts // ls
+            r_for_pnl    = r
+            pnl_mult     = 1
+
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
         mid_session = False if not market_open else _is_exchange_open_at(exchange, now_ist)
         # Prior-session daily_book.ltp is the SSOT for close reference.
@@ -585,7 +625,7 @@ def _positions_rows(
         # Captured AT EOD (after the exchange closes) this is the correct
         # day_pnl. Captured MID-SESSION it's a partial-day value — skip.
         ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
-            r, mid_session, qty, multiplier, close_ref=pos_close_ref,
+            r_for_pnl, mid_session, qty_contracts, pnl_mult, close_ref=pos_close_ref,
         )
         if skip:
             skipped += 1
@@ -597,14 +637,16 @@ def _positions_rows(
             "kind":           "positions",
             "symbol":         symbol,
             "exchange":       exchange,
-            "qty":            int(qty),
+            "qty":            qty_contracts,
+            "lots":           lots_val,
+            "lot_size":       lot_size_val,
             "avg_cost":       float(r["average_price"]) if r.get("average_price") is not None else None,
             "ltp":            ltp_val,
             "day_pnl":        day_pnl,
             "total_pnl":      float(r["pnl"]) if r.get("pnl") is not None else None,
             # Prior daily_book.ltp (socket-derived) is the SSOT for previous_close.
             # Falls back to broker close_price for first-day rows (no prior daily_book row).
-            # COALESCE freeze in the UPSERT ensures only the first write lands.
+            # CASE guard in the UPSERT only advances when ltp actually changes.
             "previous_close": (
                 pos_close_ref
                 or (float(r["close_price"]) if r.get("close_price") else None)
@@ -626,6 +668,7 @@ def _trades_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]
         if not symbol:
             continue
         exchange = r.get("exchange", "NSE")
+        _t_qty = int(r.get("filled_quantity") or r.get("quantity") or 0)
         rows.append({
             "date":         target_date,
             "account":      account,
@@ -633,7 +676,9 @@ def _trades_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]
             "kind":         "trades",
             "symbol":       symbol,
             "exchange":     exchange,
-            "qty":          int(r.get("filled_quantity") or r.get("quantity") or 0),
+            "qty":          _t_qty,
+            "lots":         _t_qty,   # Trades: qty in contracts; lot annotation not critical
+            "lot_size":     1,
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
             "ltp":            None,
             "day_pnl":        None,
@@ -662,6 +707,7 @@ def _funds_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
         seg_label = (r.get("segment_label") or "equity").lower()
         avail = r.get("available") or {}
         util  = r.get("utilised")  or {}
+        _f_qty = int(float(util.get("debits") or 0))
         rows.append({
             "date":         target_date,
             "account":      account,
@@ -669,7 +715,9 @@ def _funds_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
             "kind":         "funds",
             "symbol":       "__seg__",
             "exchange":     seg_label.upper(),
-            "qty":          int(float(util.get("debits") or 0)),
+            "qty":          _f_qty,
+            "lots":         _f_qty,   # Funds row: no lot concept; sentinel value
+            "lot_size":     1,
             "avg_cost":     (float(avail.get("cash"))
                              if avail.get("cash") is not None else None),
             "ltp":          (float(avail.get("opening_balance"))
@@ -691,21 +739,23 @@ def _funds_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
 _UPSERT_SQL = text("""
     INSERT INTO daily_book
         (date, account, segment, kind, symbol, exchange,
-         qty, avg_cost, ltp, day_pnl, total_pnl, previous_close,
+         qty, lots, lot_size, avg_cost, ltp, day_pnl, total_pnl, previous_close,
          payload_json, captured_at)
     VALUES
         (:date, :account, :segment, :kind, :symbol, :exchange,
-         :qty, :avg_cost, :ltp, :day_pnl, :total_pnl, :previous_close,
+         :qty, :lots, :lot_size, :avg_cost, :ltp, :day_pnl, :total_pnl, :previous_close,
          :payload_json, :captured_at)
     ON CONFLICT (date, account, kind, symbol) DO UPDATE SET
         segment        = EXCLUDED.segment,
         exchange       = EXCLUDED.exchange,
         qty            = EXCLUDED.qty,
+        lots           = EXCLUDED.lots,
+        lot_size       = EXCLUDED.lot_size,
         avg_cost       = EXCLUDED.avg_cost,
         ltp            = COALESCE(EXCLUDED.ltp, daily_book.ltp),
-        day_pnl        = COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl),
+        day_pnl        = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END,
         total_pnl      = EXCLUDED.total_pnl,
-        previous_close = COALESCE(daily_book.previous_close, EXCLUDED.previous_close),
+        previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp) THEN daily_book.ltp ELSE daily_book.previous_close END,
         payload_json   = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json ELSE daily_book.payload_json END,
         captured_at    = EXCLUDED.captured_at
 """)

@@ -67,14 +67,20 @@ def test_migration_ddl_present_in_database_py():
 # ---------------------------------------------------------------------------
 
 def test_upsert_sql_coalesce_freeze():
-    """_UPSERT_SQL must use COALESCE to freeze the first-write previous_close."""
+    """_UPSERT_SQL must handle previous_close correctly.
+
+    Updated (2026-08-23): the old always-frozen COALESCE pattern was replaced with
+    a CASE guard that only advances previous_close when ltp actually changes
+    (new trading-session settlement). Frozen weekends no longer lock in stale values.
+    """
     from backend.api.algo.daily_snapshot import _UPSERT_SQL
 
     sql = _UPSERT_SQL.text.lower()
     assert "previous_close" in sql, "_UPSERT_SQL must include previous_close column"
-    assert "coalesce(daily_book.previous_close, excluded.previous_close)" in sql, (
-        "UPSERT must use COALESCE(daily_book.previous_close, EXCLUDED.previous_close) "
-        "to freeze the first-write value and never overwrite a non-NULL entry"
+    # New pattern: CASE WHEN EXCLUDED.ltp IS NOT NULL AND (...) THEN ... ELSE daily_book.previous_close END
+    # Previous old pattern (COALESCE freeze) has been intentionally removed.
+    assert "daily_book.previous_close" in sql, (
+        "UPSERT must reference daily_book.previous_close for conditional update"
     )
 
 
@@ -502,45 +508,42 @@ def test_build_row_from_snapshot_raw_fallback_to_prev_ltp_when_no_previous_close
 # ---------------------------------------------------------------------------
 
 def test_upsert_sql_day_pnl_coalesce_nullif_guard():
-    """_UPSERT_SQL must use COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)
-    to preserve a real non-zero day_pnl when a subsequent NULL or zero write arrives.
+    """_UPSERT_SQL must gate day_pnl updates on EXCLUDED.ltp IS NOT NULL.
 
-    Root cause: the 16:15 NSE settlement snapshot writes day_pnl=NULL for MCX
-    positions (mid_session=True at 16:15).  Without this guard, the NULL/0
-    overwrites the last valid EOD value, causing positions ΔP to show 0 from
-    23:30 until the 00:15 MCX settlement pass.
-
-    This SQL-text assertion is the authoritative SSOT check — the actual
-    runtime guard is in the PostgreSQL ON CONFLICT clause.
+    Updated (2026-08-23): the old COALESCE(NULLIF(EXCLUDED.day_pnl, 0), ...) pattern
+    was replaced with a CASE WHEN EXCLUDED.ltp IS NOT NULL guard. This allows a
+    genuinely-zero day_pnl (e.g. flat weekend: ltp=prev_close → profit=0) to
+    overwrite a stale non-zero value, while still preserving a good EOD value
+    when a mid-session NULL write arrives.
     """
     from backend.api.algo.daily_snapshot import _UPSERT_SQL
 
     sql = _UPSERT_SQL.text.lower()
-    assert "coalesce(nullif(excluded.day_pnl, 0), daily_book.day_pnl)" in sql, (
-        "_UPSERT_SQL must use COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl) "
-        "to preserve the last non-zero day_pnl when a NULL or 0 upsert arrives "
-        "(e.g. mid-session NSE settlement snapshot writing NULL for open MCX positions)"
+    # New pattern: CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, ...) ELSE ...
+    assert "case when excluded.ltp is not null then coalesce(excluded.day_pnl" in sql, (
+        "_UPSERT_SQL must gate day_pnl on EXCLUDED.ltp IS NOT NULL "
+        "(old NULLIF pattern was removed — it prevented zero from overwriting stale values)"
+    )
+    # Must NOT use NULLIF(EXCLUDED.day_pnl, 0) which would block zero from overwriting stale
+    assert "nullif(excluded.day_pnl, 0)" not in sql, (
+        "_UPSERT_SQL must not use NULLIF(EXCLUDED.day_pnl, 0) — that freezes stale values"
     )
 
 
 def test_upsert_sql_day_pnl_guard_preserves_existing_on_null():
-    """Verify the SQL expression text structure: NULLIF turns 0 into NULL so
-    COALESCE can fall back to the existing daily_book.day_pnl value.
+    """When EXCLUDED.ltp is NULL, the existing daily_book.day_pnl must be preserved.
 
-    This test checks the correct operand order — EXCLUDED first (new value),
-    daily_book second (existing value) — matching the 'prefer new, keep old'
-    semantics when new is NULL/0.
+    Updated (2026-08-23): the guard is now CASE WHEN EXCLUDED.ltp IS NOT NULL
+    THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END.
     """
     from backend.api.algo.daily_snapshot import _UPSERT_SQL
 
     sql = _UPSERT_SQL.text
 
-    # Verify the column assignment line contains the full guard expression
-    # (case-insensitive, same as DB would parse it)
-    assert "COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)" in sql, (
-        "day_pnl assignment must read: "
-        "COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl) "
-        "— EXCLUDED first so a real new value wins; daily_book second as fallback"
+    # New pattern must exist: CASE guard for day_pnl
+    assert "CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl" in sql, (
+        "day_pnl assignment must use CASE WHEN EXCLUDED.ltp IS NOT NULL guard "
+        "so mid-session NULL writes don't overwrite a good EOD day_pnl"
     )
 
 

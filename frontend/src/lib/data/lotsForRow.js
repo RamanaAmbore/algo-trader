@@ -41,16 +41,28 @@ function _normalizeQtys(row, itype) {
 
 /**
  * Compute the raw (un-rounded) lot total for the given instrument.
+ *
+ * Derivative path: prefer `row.lots` (new backend field, integer lot count)
+ * to avoid a division by lot_size that would be wrong when the instruments
+ * cache is cold (inst?.ls === undefined → lot = 0 → returns 0).
+ * Fallback: `qPos / lot` is correct when `lots` is absent and the cache is
+ * warm — the backend now returns `quantity` as contracts uniformly, so
+ * contracts / lot_size = lot count.
+ *
  * @param {string} sym
  * @param {string|undefined|null} itype
  * @param {number} qPos
  * @param {number} qHold
  * @param {any} inst
+ * @param {any} row  - the original row (for the `lots` shortcut)
  * @returns {number}
  */
-function _computeLots(sym, itype, qPos, qHold, inst) {
+function _computeLots(sym, itype, qPos, qHold, inst, row) {
   const isDerivative = itype === 'CE' || itype === 'PE' || itype === 'FUT';
   if (isDerivative) {
+    // Fast path: backend-supplied lot count (available when API returns
+    // the new `lots` field — avoids division and instruments-cache miss).
+    if (row?.lots != null) return Math.abs(Number(row.lots) || 0);
     const lot = Number(inst?.ls) || 0;
     return (lot > 0 && qPos > 0) ? qPos / lot : 0;
   }
@@ -78,7 +90,7 @@ export function lotsForRow(row) {
   const inst  = getInstrument(sym);
   const itype = inst?.t;
   const { qPos, qHold } = _normalizeQtys(row, itype);
-  const total = _computeLots(sym, itype, qPos, qHold, inst);
+  const total = _computeLots(sym, itype, qPos, qHold, inst, row);
   return Math.round(total * 10) / 10;
 }
 

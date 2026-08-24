@@ -1547,6 +1547,8 @@ class DailyBook(Base):
     symbol: Mapped[str]        = mapped_column(String(64), nullable=False)
     exchange: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     qty: Mapped[int]           = mapped_column(Integer, nullable=False, default=0)
+    lots: Mapped[int]          = mapped_column(Integer, nullable=False, default=1)
+    lot_size: Mapped[int]      = mapped_column(Integer, nullable=False, default=1)
     avg_cost: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
     ltp: Mapped[Optional[float]]      = mapped_column(Numeric, nullable=True)
     day_pnl: Mapped[Optional[float]]  = mapped_column(Numeric, nullable=True)

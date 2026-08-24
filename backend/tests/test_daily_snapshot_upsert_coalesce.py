@@ -47,6 +47,8 @@ async def db_session():
         Column("symbol", String(64), nullable=False),
         Column("exchange", String(8), nullable=True),
         Column("qty", Integer, nullable=False, default=0),
+        Column("lots", Integer, nullable=False, default=1),
+        Column("lot_size", Integer, nullable=False, default=1),
         Column("avg_cost", Numeric, nullable=True),
         Column("ltp", Numeric, nullable=True),
         Column("day_pnl", Numeric, nullable=True),
@@ -94,7 +96,9 @@ def _base_row(**overrides) -> dict:
         "kind": "positions",
         "symbol": "CRUDEOIL26AUGFUT",
         "exchange": "MCX",
-        "qty": 1,
+        "qty": 100,       # contracts (1 lot × 100)
+        "lots": 1,
+        "lot_size": 100,
         "avg_cost": 6500.0,
         "ltp": 100.0,
         "day_pnl": 0.0,
@@ -156,8 +160,9 @@ async def test_upsert_with_valid_ltp_replaces_both(db_session):
 
 @pytest.mark.asyncio
 async def test_upsert_coalesce_sql_strings_present():
-    """_UPSERT_SQL must contain the COALESCE guard for ltp and the CASE expression
-    for payload_json — source-of-truth assertion that the SQL was patched."""
+    """_UPSERT_SQL must contain the COALESCE guard for ltp, the CASE expression
+    for payload_json, the ltp-gated day_pnl, and the ltp-change previous_close
+    guard — source-of-truth assertions that the SQL was patched correctly."""
     from backend.api.algo.daily_snapshot import _UPSERT_SQL
     sql_text = str(_UPSERT_SQL)
     assert "COALESCE(EXCLUDED.ltp, daily_book.ltp)" in sql_text, (
@@ -166,3 +171,14 @@ async def test_upsert_coalesce_sql_strings_present():
     assert "CASE WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json" in sql_text, (
         "_UPSERT_SQL must use CASE WHEN guard for payload_json column"
     )
+    # day_pnl must NOT use NULLIF(EXCLUDED.day_pnl, 0) — that freezes stale non-zero values
+    assert "NULLIF(EXCLUDED.day_pnl, 0)" not in sql_text, (
+        "_UPSERT_SQL must not use NULLIF(day_pnl, 0) which freezes stale values"
+    )
+    # day_pnl and previous_close must be gated on ltp IS NOT NULL
+    assert "CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl" in sql_text, (
+        "_UPSERT_SQL must gate day_pnl update on EXCLUDED.ltp IS NOT NULL"
+    )
+    # lots and lot_size must be in the UPSERT
+    assert "lots" in sql_text, "_UPSERT_SQL must include lots column"
+    assert "lot_size" in sql_text, "_UPSERT_SQL must include lot_size column"

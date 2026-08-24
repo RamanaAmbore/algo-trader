@@ -48,6 +48,8 @@ async def db_session():
         Column("symbol", String(64), nullable=False),
         Column("exchange", String(8), nullable=True),
         Column("qty", Integer, nullable=False, default=0),
+        Column("lots", Integer, nullable=False, default=1),
+        Column("lot_size", Integer, nullable=False, default=1),
         Column("avg_cost", Numeric, nullable=True),
         Column("ltp", Numeric, nullable=True),
         Column("day_pnl", Numeric, nullable=True),

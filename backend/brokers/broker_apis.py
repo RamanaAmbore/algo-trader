@@ -1828,25 +1828,95 @@ def _maybe_log_kite_mcx_diag(df: "pd.DataFrame") -> None:
     _KITE_VALUE_UNIT_LOGGED = True
 
 
-def _apply_mcx_multiplier(df: "pd.DataFrame") -> None:
-    """Multiply quantity-field columns by `multiplier` (lot_size) in-place.
+def _annotate_lot_size(df: "pd.DataFrame") -> None:
+    """Normalise quantity columns in-place and add `lots` / `lot_size` columns.
 
-    MCX commodities: Kite ships `quantity` in LOTS but `last_price` /
-    `close_price` are per CONTRACT so we convert to contract units so
-    downstream `qty × price = ₹` works uniformly.
+    After this function every row carries:
+      - `quantity`  — always in CONTRACTS (unit consistent with price)
+      - `lots`      — integer lot count (original Kite value for MCX; derived for others)
+      - `lot_size`  — contracts per lot
 
-    REVERTED Jun 26 2026 (commit 5b995ccb): day_buy_value / day_sell_value
-    are NOT scaled — Kite ships them as ABSOLUTE ₹ already.  Only the qty
-    columns (quantity, overnight_quantity, day_buy/sell_quantity) are
-    multiplied.
+    Three exchange classes:
+
+    MCX / NCO (multiplier > 1 from Kite):
+      Kite ships `quantity` in LOTS; prices are per CONTRACT.
+      We multiply `quantity` and the overnight/buy/sell qty fields by the
+      Kite `multiplier` to convert to contracts.  day_buy_value /
+      day_sell_value are absolute ₹ already (commit 5b995ccb) — NOT scaled.
+
+    NFO / CDS / BFO (multiplier == 1 from Kite, but real lot_size in _LOT_INDEX):
+      Kite ships `quantity` in CONTRACTS already.  Lot count derived from
+      `_LOT_INDEX` (O(1) sync lookup, warm after instruments cache).  Falls
+      back to `lot_size=1` when cache is cold — safe for NFO because the
+      qty is already correct; only `lots` is inaccurate until warm.
+
+    Equity / everything else (multiplier == 1, not in _LOT_INDEX):
+      `lots = quantity`, `lot_size = 1`, no quantity change.
     """
     if df.empty or 'multiplier' not in df.columns:
         return
-    _mult = df['multiplier']
-    df['quantity'] = df['quantity'] * _mult
-    for _c in ('overnight_quantity', 'day_buy_quantity', 'day_sell_quantity'):
-        if _c in df.columns:
-            df[_c] = df[_c] * _mult
+
+    # Lazy import avoids circular dependency at module load time.
+    # _LOT_INDEX is a plain module-level dict — no await needed.
+    from backend.brokers.adapters.kite import _LOT_INDEX as _kite_lot_index
+
+    # Merge kite's dict into the module-level _LOT_INDEX in-place so that
+    # any entries already injected by tests (patch.dict) are preserved and
+    # take priority, while production data from kite fills in the rest.
+    # Using .update() (not reassignment) keeps the object identity intact so
+    # patch.dict('backend.brokers.broker_apis._LOT_INDEX', ...) works.
+    _LOT_INDEX.update(_kite_lot_index)
+
+    lots_list: list[int] = []
+    lot_size_list: list[int] = []
+
+    for i, row in df.iterrows():
+        mult = int(row.get('multiplier') or 1)
+        exch = str(row.get('exchange') or '')
+        sym  = str(row.get('tradingsymbol') or '')
+        qty  = row.get('quantity') or 0
+
+        if mult > 1:
+            # MCX / NCO: Kite qty is in LOTS
+            lots_list.append(int(qty))
+            lot_size_list.append(mult)
+        else:
+            # NFO / CDS / BFO / equity: Kite qty is already contracts.
+            # Read _LOT_INDEX (module-level) so patch.dict in tests takes effect.
+            ls = _LOT_INDEX.get((exch, sym), 1)
+            if ls < 1:
+                ls = 1
+            lots_list.append(int(qty) // ls)
+            lot_size_list.append(ls)
+
+    df['lots']     = lots_list
+    df['lot_size'] = lot_size_list
+
+    # Scale MCX/NCO quantity columns to contracts (multiplier > 1 rows).
+    _mult_series = df['multiplier']
+    _mcx_mask = _mult_series > 1
+    if _mcx_mask.any():
+        df.loc[_mcx_mask, 'quantity'] = (
+            df.loc[_mcx_mask, 'quantity'] * _mult_series[_mcx_mask]
+        )
+        for _c in ('overnight_quantity', 'day_buy_quantity', 'day_sell_quantity'):
+            if _c in df.columns:
+                df.loc[_mcx_mask, _c] = (
+                    df.loc[_mcx_mask, _c] * _mult_series[_mcx_mask]
+                )
+
+
+# _LOT_INDEX module-level reference — populated lazily by _annotate_lot_size
+# on first call.  Tests may patch this name directly.
+_LOT_INDEX: "dict[tuple[str, str], int]" = {}
+
+
+# Backward-compatible alias — kept so existing callers and tests that
+# reference `_apply_mcx_multiplier` by name continue to work.  New code
+# should call `_annotate_lot_size` directly.
+def _apply_mcx_multiplier(df: "pd.DataFrame") -> None:
+    """Legacy alias for `_annotate_lot_size`.  Kept for backward compatibility."""
+    _annotate_lot_size(df)
 
 
 @for_all_accounts
@@ -1896,7 +1966,7 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
         # lot-units (lots × price) vs absolute ₹. Fires once per
         # process restart for the first MCX-multiplier row encountered.
         _maybe_log_kite_mcx_diag(df_positions)
-        _apply_mcx_multiplier(df_positions)
+        _annotate_lot_size(df_positions)
         if not df_positions.empty:
             df_positions["account"] = account
             df_positions["type"] = "P"

@@ -64,6 +64,11 @@ export function buildPositionRowFromBroker(p, source) {
     symbol:   sym,
     account:  String(p?.account || ''),
     qty:      Number(p?.quantity || 0),
+    // lots / lot_size — new backend fields (quantity is now always contracts).
+    // lots = integer lot count for display; lot_size = contracts per lot.
+    // Preserved as-is (null when absent) so lotsForRow can use the fast path.
+    lots:     p?.lots     != null ? Number(p.lots)     : null,
+    lot_size: p?.lot_size != null ? Number(p.lot_size) : null,
     source,
     avg_cost: p?.average_price != null ? Number(p.average_price) : null,
     ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
@@ -367,6 +372,8 @@ export function buildCandidatePositions({
         symbol:    sym,
         account:   String(entry.account || ''),
         qty:       Number(entry.quantity || 0),
+        lots:      entry.lots     != null ? Number(entry.lots)     : null,
+        lot_size:  entry.lot_size != null ? Number(entry.lot_size) : null,
         avg_cost:  entry.average_price != null ? Number(entry.average_price) : null,
         ltp:       entry.last_price    != null ? Number(entry.last_price)    : null,
         prev_close: 0,
@@ -394,6 +401,8 @@ export function buildCandidatePositions({
         symbol:    sym,
         account:   String(entry.account || ''),
         qty:       Number(entry.quantity || 0),
+        lots:      entry.lots     != null ? Number(entry.lots)     : null,
+        lot_size:  entry.lot_size != null ? Number(entry.lot_size) : null,
         avg_cost:  entry.average_price != null ? Number(entry.average_price) : null,
         ltp:       entry.last_price    != null ? Number(entry.last_price)    : null,
         prev_close: 0,

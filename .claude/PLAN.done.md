@@ -1,23 +1,28 @@
-# Plan: Day P&L zero for positions / wrong value for holdings
+# Plan: qty/lots/lot_size normalization + UPSERT stale fix + DB query tool
 
 ## Task
 
-Three structural bugs cause wrong day P&L on positions and holdings. All have the same root cause: `_perf_fetch_all_broker_data` (the async function calling the sync threadpool workers) never applies the async close-price override, so the background task feeds NavStrip and MarketPulse with stale broker `day_change_val`. After BHAV copy (~18:00 IST), broker `close_price` = today's settlement, so `day_change_val = (settlement − settlement) × qty = 0` or wrong value (dev shows 18k, prod shows -8k, both wrong). HTTP routes apply the override correctly — only the background path is broken.
+Four related fixes to position data consistency across the daily_book, broker layer, and frontend:
 
-Bug 1: `_perf_fetch_all_broker_data` never calls `_override_stale_close_for_holdings` or `_override_stale_close_from_snapshot` after threadpool returns. Fix: call them in the async context of `_perf_fetch_all_broker_data`, then rebuild summaries.
+1. **qty uniform in CONTRACTS + add lots/lot_size fields** — `qty` in `daily_book` must be CONTRACTS (lots * lot_size) uniformly. Currently MCX stores LOTS (e.g., qty=1 for 1 GOLDM lot); NFO stores CONTRACTS (e.g., qty=75 for 1 NIFTY lot). Fix: MCX rows multiply quantity by multiplier to get contracts. Two new columns added: `lots` (integer — number of lots) and `lot_size` (integer — contracts per lot). Invariant after fix: `qty = lots x lot_size` for all rows. P&L math already uses contracts; the fix makes MCX match. Frontend displays lots with lot_size annotation; P&L math uses qty (contracts).
 
-Bug 2: `holdingsDayPnlStore.byAccount['TOTAL']` is hardcoded to `_store.total` (not pulse-aware). When MarketPulse pushes -8k via `setFromPulse`, `total = -8000` but `byAccount['TOTAL'] = 0` — headline ≠ breakdown.
+2. **DB query tool** — `scripts/dbq.sh dev|prod "SQL"` SSHes to server and runs psql. Credentials read from server's `secrets.yaml` at runtime — never stored locally.
 
-Bug 3: Dashboard `_holdingsSummary` line 481 reads `Number(r.day_change_val) || 0` directly from broker rows, bypassing `previous_close`-based formula. Per-account breakdown = 0 while NavStrip H shows the pulse value.
+3. **UPSERT day_pnl zero-guard stale bug** — `COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)` keeps stale 780 when formula legitimately returns 0 (e.g., ltp=prev_close on flat weekend). Fix: when EXCLUDED.ltp IS NOT NULL (valid settlement captured), always use EXCLUDED.day_pnl even if 0.
+
+4. **prev_close timing** — prev_close for a symbol should come from the last session where that segment was actually open. For MCX (which trades Saturdays), Saturday is a valid session. For NSE (closed Saturdays), no Saturday snapshot exists. The real symptom is issue 3. Document as-is; no code change needed here beyond the UPSERT fix.
 
 ## Agents
 
-- backend: In `backend/api/background.py`, add two helper functions after `_fetch_holdings_direct` (~line 158): `def _rebuild_holdings_summary(raw: pd.DataFrame) -> pd.DataFrame` (groupby account, sum ['inv_val','cur_val','pnl','day_change_val'], call `_bg_holdings_add_pct`, append TOTAL row) and `def _rebuild_positions_summary(raw: pd.DataFrame) -> pd.DataFrame` (groupby account, sum ['pnl','day_change_val'], append TOTAL row). Then in `_perf_fetch_all_broker_data` (lines 477-501), after the holdings `wait_for` block, add: `try: from backend.api.routes.holdings import _override_stale_close_for_holdings; await _override_stale_close_for_holdings(df_holdings); sum_holdings = _rebuild_holdings_summary(df_holdings); except Exception as _oe: logger.warning(f"[PERF] holdings close-override failed: {_oe}")`. Same pattern for positions: import `_override_stale_close_from_snapshot` from `backend.api.routes.positions`, await it on `df_positions`, rebuild `sum_positions`. Remove the "accepted limitation" comment at lines 175-180. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
-- frontend: (a) In `frontend/src/lib/data/holdingsDayPnlStore.svelte.js`, fix the `byAccount` getter (line 136): change `return _store.byAccount` to `if (_pulseTotal === null) return _store.byAccount; return { ..._store.byAccount, TOTAL: _pulseTotal };`. Remove JSDoc that says "not overridden by setFromPulse". (b) In `frontend/src/routes/(algo)/dashboard/+page.svelte` line 481, replace `byAcct[a].day_pnl += Number(r.day_change_val) || 0` with: `const _hClose = Number(r.previous_close) || Number(r.close_price) || 0; const _hLtp = Number(r.last_price ?? 0); const _hQty = Number(r.quantity ?? 0); const _hDcv = Number(r.day_change_val) || 0; byAcct[a].day_pnl += (_hClose > 0 && Math.abs(_hLtp - _hClose) > 0.005) ? (_hLtp - _hClose) * _hQty : _hDcv;`. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
+- backend: In `backend/brokers/broker_apis.py`, rename `_apply_mcx_multiplier` to `_annotate_lot_size(df)`. New logic: (a) MCX/NCO rows: set `lots = quantity` (already in lots from Kite), `lot_size = multiplier`, then overwrite `quantity = quantity * multiplier` (convert to contracts); scale `overnight_quantity`, `day_buy_quantity`, `day_sell_quantity` by multiplier too. (b) NFO/CDS/BFO rows: read `lot_size` from `_LOT_INDEX` (sync dict in `backend/brokers/adapters/kite.py`, import directly; fall back to 1 if cold), set `lots = quantity // lot_size` (already in contracts), `lot_size = lot_size_from_LOT_INDEX`, `quantity` unchanged (already contracts). (c) Equity: `lots = quantity`, `lot_size = 1`, `quantity` unchanged. Update call site in `_fetch_positions_local` to call `_annotate_lot_size`. The API response for positions now always includes `lots` and `lot_size` fields; `quantity` is always in contracts. In `backend/api/algo/daily_snapshot.py`, update `_positions_rows`: MCX rows -- `qty = int(r['quantity'] * r['multiplier'])` (contracts), `lots = int(r['quantity'])`, `lot_size = int(r['multiplier'])`; NFO rows -- `qty = int(r['quantity'])` (contracts, unchanged), `lots = qty // lot_size_from_LOT_INDEX`, `lot_size = lot_size_from_LOT_INDEX` (import `_LOT_INDEX` directly; fall back to 1). Fix two lines in `_UPSERT_SQL` (around line 706): (1) day_pnl guard: change `day_pnl = COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)` to `day_pnl = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END`; (2) previous_close freeze gate: change `previous_close = COALESCE(daily_book.previous_close, EXCLUDED.previous_close)` to `previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp) THEN daily_book.ltp ELSE daily_book.previous_close END` -- this advances previous_close only when ltp actually changes (new session settlement), preserving it during frozen weekend snapshots. Also add `lots` and `lot_size` to the INSERT column list and UPDATE clause of `_UPSERT_SQL`. In `backend/api/models.py`, add to `DailyBook`: `lots: Mapped[int] = mapped_column(Integer, nullable=False, default=1)` and `lot_size: Mapped[int] = mapped_column(Integer, nullable=False, default=1)`. Create `backend/migrations/add_daily_book_lots_lot_size.sql`: `ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS lots INTEGER NOT NULL DEFAULT 1; ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS lot_size INTEGER NOT NULL DEFAULT 1;`. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory -- not optional.
+- frontend: In every component that renders position `quantity` (search for `quantity` in `frontend/src/routes/(algo)/` and `frontend/src/lib/`): display as lots using the new `lots` field from the API, with lot_size shown alongside (e.g. "2 lots x10"). For P&L value computations (inv_val, cur_val, day P&L), use `quantity` (contracts) x price -- same formula as today since qty is now uniformly in contracts. No formula change needed for NFO (already contracts); MCX formula is now correct since qty is contracts. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory -- not optional.
 - broker: skip
 - doc: skip
-- backend-test: Write pytest tests for the backend changes: (a) `_rebuild_holdings_summary` with multi-account patched df → verify TOTAL row matches sum of per-account rows and day_change_val comes from patched data. (b) `_rebuild_positions_summary` same pattern. (c) Mock `_override_stale_close_for_holdings` to mutate df in-place; verify `_perf_fetch_all_broker_data` calls it and returns rebuilt sum with patched day_change_val (not the original stale value). (d) Same for positions: mock `_override_stale_close_from_snapshot`, verify rebuilt summary. Place tests in `backend/tests/test_background_pnl_override.py`. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
+- backend-test: Write pytest tests in `backend/tests/test_lot_size_normalization.py`: (a) `_annotate_lot_size` MCX row -- qty=1 lot, multiplier=10 -> output quantity=10 (contracts), lots=1, lot_size=10; (b) `_annotate_lot_size` NFO row -- quantity=75 (contracts), lot_size=75 from _LOT_INDEX -> output quantity=75, lots=1, lot_size=75; (c) `_annotate_lot_size` equity row -- quantity=100, lot_size=1, lots=100; (d) `_positions_rows` MCX entry in daily_book -> qty=contracts, lots=original, lot_size=multiplier; (e) UPSERT zero-guard: second snapshot with day_pnl=0 and non-null ltp DOES overwrite prior non-zero value; (f) UPSERT mid-session guard: snapshot with ltp=NULL preserves prior day_pnl. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory -- not optional.
 - playwright: skip
+
+## DB tool
+- Create `scripts/dbq.sh` -- executable shell script. Usage: `./scripts/dbq.sh <dev|prod> "SQL"`. SSHes to ramboq server, reads DB credentials from `/opt/ramboq/backend/config/secrets.yaml` on the server (never stored locally), runs psql with `-h 127.0.0.1`. Dev: database `ramboq_dev`; prod: database `ramboq`. Also run the migration `add_daily_book_lots_lot_size.sql` on both dev and prod via this script as part of deployment.
 
 ## Tests
 - pytest: yes
@@ -25,10 +30,58 @@ Bug 3: Dashboard `_holdingsSummary` line 481 reads `Number(r.day_change_val) || 
 - playwright: no
 
 ## Commit message
-fix(pnl): apply async close override in _perf_fetch_all_broker_data, fix holdingsDayPnlStore TOTAL pulse mismatch, use previous_close formula in dashboard holdings summary
+fix(positions): normalize MCX/NFO qty to contracts + add lots/lot_size fields, fix UPSERT day_pnl zero-guard stale preservation, add scripts/dbq.sh DB query tool
 
 ## Done when
-- `_perf_fetch_all_broker_data` calls `_override_stale_close_for_holdings` and `_override_stale_close_from_snapshot` on raw DataFrames after threadpool fetch; rebuilt summaries flow to NavStrip with correct day P&L (not 0 or raw broker value)
-- `holdingsDayPnlStore.byAccount['TOTAL']` equals `holdingsDayPnlStore.total` under all pulse states (pulse-active and null)
-- Dashboard `_holdingsSummary.day_pnl` uses `(last_price - previous_close) * qty` when `previous_close > 0`; falls back to `day_change_val` otherwise
+- `quantity` in positions API response and daily_book is always CONTRACTS (lots x lot_size) for MCX and NFO
+- `lots` and `lot_size` fields present on every position row in the API response and in daily_book
+- MCX: `quantity = lots x lot_size` (e.g., GOLDM 1 lot -> qty=10, lots=1, lot_size=10)
+- NFO: `quantity = lots x lot_size` (e.g., NIFTY 1 lot -> qty=75, lots=1, lot_size=75)
+- Equity: `lot_size=1`, `lots=quantity`
+- `daily_book.lots` and `daily_book.lot_size` columns exist (migration applied on dev and prod)
+- UPSERT no longer preserves stale day_pnl when a subsequent snapshot computes 0 with valid non-null ltp
+- UPSERT no longer advances previous_close from a frozen weekend snapshot (ltp unchanged)
+- Frontend displays qty as lots with lot_size annotation; P&L math uses contracts
+- `scripts/dbq.sh dev "SELECT 1"` works from local machine
 - All pytest tests pass; svelte-check 0 errors
+
+## Context
+
+**qty inconsistency root cause:**
+- MCX: Kite ships `quantity` in LOTS, `multiplier` = lot_size (e.g., GOLDM: qty=1 lot, multiplier=10)
+- NFO/CDS/BFO: Kite ships `quantity` in CONTRACTS (lot_size already applied: e.g., NIFTY 1 lot -> qty=75)
+- `_apply_mcx_multiplier` converts MCX lots->contracts at runtime; snapshot path skips it -> daily_book has LOTS for MCX, CONTRACTS for NFO -- inconsistent
+- Fix: `_annotate_lot_size` converts MCX to contracts + populates `lots` and `lot_size` for all segments
+- P&L math (`decomposed_intraday_pnl` in `backend/api/algo/pnl_math.py`) already multiplies by `lot_mult`; after fix, qty is contracts for MCX too so the existing multiplier in that function now double-counts -- review and fix the call site in `_enrich_positions` so lot_mult=1 is passed for MCX (since quantity is already contracts)
+
+**NFO lot_size sync lookup:**
+- `_LOT_INDEX` in `backend/brokers/adapters/kite.py` is a plain dict (sync-readable), keyed by (exchange, tradingsymbol) -> lot_size
+- Import directly -- no await needed
+- Falls back to `lot_size=1` if cache cold (instruments load in ~30s on startup)
+
+**UPSERT stale day_pnl:**
+- Current: `COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)` -- "if new value is 0, keep old"
+- Bug: when ltp=prev_close (flat weekend settlement), day_pnl formula correctly returns 0 but stale 780 preserved
+- Fix: `CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END`
+- Evidence: Aug 24 (Sunday) day_pnl=780 preserved; should be 0 because ltp=836=prev_close
+
+**prev_close timing (requires snapshot gate):**
+- MCX metals/energy (GOLDM, CRUDEOIL, SILVER, etc.) do NOT trade on Saturdays. Only MCX agri commodities have Saturday morning sessions.
+- The Saturday snapshot for GOLDM captures frozen ltp=836 (Kite returns Friday's EOD settlement since contract hasn't ticked).
+- This Saturday snapshot wrongly becomes the "previous record" in prev_ltp_map for Sunday. Value is the same (836=Friday settlement), so prev_close is numerically correct, but conceptually wrong: we're using a non-trading-day record as the settlement reference.
+- Fix: in `snapshot_daily_book` in `backend/api/algo/daily_snapshot.py`, gate snapshot execution with `is_market_open()` (or equivalent). If NO segment is currently open (pure weekend for that exchange group), skip capturing snapshots for that segment. NSE positions already don't snapshot on weekends (market closed). MCX metals similarly should be gated.
+- Implementation: before calling `snapshot_daily_book` in the background task (`_task_daily_snapshot`), check `is_market_open()`. If market is closed, skip. This is already partially handled by the task schedule but needs an explicit guard so off-hours restarts don't capture stale weekend snapshots.
+- Alternate simpler approach: in `_UPSERT_SQL`, gate `previous_close` update so it only updates when the incoming record's ltp differs meaningfully from the prior ltp (i.e., the market actually moved). `previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND EXCLUDED.ltp != daily_book.ltp THEN daily_book.ltp ELSE daily_book.previous_close END` -- this advances previous_close only when ltp changes (new session settlement), not on frozen weekend snapshots.
+- **Chosen fix**: use the simpler alternate approach for previous_close update gate (no need to restructure the task schedule). The UPSERT fix (issue 3) remains required and separate.
+
+**DDL + one-time data strategy:**
+- Migration adds two columns with DEFAULT 1 -- no complex backfill
+- Historical rows: lot_size=1, lots=qty (MCX rows will show wrong lots for history, but history is not displayed as lots in UI)
+- Going forward: next snapshot after deploy populates lots and lot_size correctly for all open positions
+- Existing P&L values in daily_book remain valid (computed with lot_mult already applied correctly)
+- NOTE: after deploy, first snapshot will also correct the qty field for MCX rows (multiply by lot_size). This means historical MCX qty rows in daily_book will still show LOTS for dates before deploy; this is acceptable.
+
+**DB tool:**
+- `scripts/dbq.sh` reads DB credentials from server's secrets.yaml via SSH at runtime (never stored locally)
+- Supports `dev` (ramboq_dev) and `prod` (ramboq) targets
+- SSH host alias `ramboq` (or `dev.ramboq.com`) assumed to be configured in user's ~/.ssh/config

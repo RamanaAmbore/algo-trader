@@ -52,6 +52,8 @@ async def db_session():
         Column("symbol", String(64), nullable=False),
         Column("exchange", String(8), nullable=True),
         Column("qty", Integer, nullable=False, default=0),
+        Column("lots", Integer, nullable=False, default=1),
+        Column("lot_size", Integer, nullable=False, default=1),
         Column("avg_cost", Numeric, nullable=True),
         Column("ltp", Numeric, nullable=True),
         Column("day_pnl", Numeric, nullable=True),
@@ -123,14 +125,18 @@ async def _fetch_row(session: AsyncSession, d: date, account: str, kind: str, sy
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_upsert_zero_day_pnl_preserves_existing_nonzero(db_session: AsyncSession):
+async def test_upsert_zero_day_pnl_overwrites_with_ltp_present(db_session: AsyncSession):
     """
-    Insert row with day_pnl=500. Upsert same key with day_pnl=0 (e.g., post-MCX-settlement).
-    Assert day_pnl remains 500 (COALESCE-NULLIF guard preserved the original).
+    Insert row with day_pnl=500 and ltp=7480. Upsert same key with day_pnl=0
+    and ltp=7480 (same ltp).
 
-    This is the core MCX guard: post-settlement writes send day_pnl=0; the COALESCE-NULLIF
-    pattern (day_pnl = COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)) ensures
-    we keep the intra-session value.
+    Updated (2026-08-23): the old COALESCE-NULLIF guard is replaced by
+    CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, ...).
+    When EXCLUDED.ltp IS NOT NULL and EXCLUDED.day_pnl=0 (not NULL), the
+    COALESCE resolves to 0, allowing a genuinely flat day (ltp=prev_close)
+    to show day_pnl=0 instead of preserving a stale non-zero value.
+
+    day_pnl=None (not 0) is the correct signal for "don't update" (mid-session).
     """
     test_date = date(2099, 1, 1)
     test_account = "ZG9999_ZERO_PRESERVE"
@@ -145,6 +151,8 @@ async def test_upsert_zero_day_pnl_preserves_existing_nonzero(db_session: AsyncS
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": -20,
+        "lots": -20,
+        "lot_size": 1,
         "avg_cost": 7500.0,
         "ltp": 7480.0,
         "day_pnl": 500.0,  # intra-session P&L
@@ -159,7 +167,8 @@ async def test_upsert_zero_day_pnl_preserves_existing_nonzero(db_session: AsyncS
     assert row is not None, "initial insert failed"
     assert float(row["day_pnl"]) == 500.0, f"expected day_pnl=500.0, got {row['day_pnl']}"
 
-    # Second write (e.g., post-MCX-settlement 23:35 IST): day_pnl=0 (broker reset)
+    # Second write (post-MCX-settlement 23:35 IST): day_pnl=0, ltp present.
+    # New behavior: zero is a valid day_pnl (flat day) and overwrites.
     update_row = {
         "date": test_date,
         "account": test_account,
@@ -168,21 +177,23 @@ async def test_upsert_zero_day_pnl_preserves_existing_nonzero(db_session: AsyncS
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": -20,
+        "lots": -20,
+        "lot_size": 1,
         "avg_cost": 7500.0,
         "ltp": 7480.0,
-        "day_pnl": 0.0,  # post-settlement reset — should NOT overwrite
+        "day_pnl": 0.0,  # flat day (ltp=prev_close → P&L=0)
         "total_pnl": 1500.0,
         "previous_close": None,
         "payload_json": json.dumps({"exchange": "MCX", "settled": True}),
     }
     await _upsert_rows(db_session, [update_row])
 
-    # Verify that day_pnl is still 500.0, not 0.0
+    # New behavior: 0.0 (valid flat-day result) overwrites the stale 500.0
     row = await _fetch_row(db_session, test_date, test_account, "positions", test_symbol)
     assert row is not None, "row vanished after update"
-    assert float(row["day_pnl"]) == 500.0, (
-        f"expected day_pnl=500.0 (preserved from initial), got {row['day_pnl']}. "
-        "COALESCE-NULLIF guard failed — zero overwrote the original value."
+    assert float(row["day_pnl"]) == 0.0, (
+        f"expected day_pnl=0.0 (valid flat-day zero), got {row['day_pnl']}. "
+        "New CASE guard allows zero to overwrite stale non-zero (use None for mid-session skip)."
     )
 
 
@@ -212,6 +223,8 @@ async def test_upsert_null_day_pnl_preserves_existing_nonzero(db_session: AsyncS
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": 10,
+        "lots": 10,
+        "lot_size": 1,
         "avg_cost": 6500.0,
         "ltp": 6550.0,
         "day_pnl": 500.0,
@@ -224,7 +237,8 @@ async def test_upsert_null_day_pnl_preserves_existing_nonzero(db_session: AsyncS
     row = await _fetch_row(db_session, test_date, test_account, "positions", test_symbol)
     assert float(row["day_pnl"]) == 500.0, "initial insert failed"
 
-    # Second write (11:00 IST, mid-session): day_pnl=None
+    # Second write (11:00 IST, mid-session): day_pnl=None, ltp present (different).
+    # day_pnl=None + EXCLUDED.ltp IS NOT NULL → COALESCE(None, 500.0) = 500.0 preserved.
     update_row = {
         "date": test_date,
         "account": test_account,
@@ -233,6 +247,8 @@ async def test_upsert_null_day_pnl_preserves_existing_nonzero(db_session: AsyncS
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": 10,
+        "lots": 10,
+        "lot_size": 1,
         "avg_cost": 6500.0,
         "ltp": 6560.0,
         "day_pnl": None,  # mid-session write carries None to preserve existing
@@ -276,6 +292,8 @@ async def test_upsert_nonzero_day_pnl_updates(db_session: AsyncSession):
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": 5,
+        "lots": 5,
+        "lot_size": 1,
         "avg_cost": 8000.0,
         "ltp": 8100.0,
         "day_pnl": 500.0,
@@ -288,7 +306,7 @@ async def test_upsert_nonzero_day_pnl_updates(db_session: AsyncSession):
     row = await _fetch_row(db_session, test_date, test_account, "positions", test_symbol)
     assert float(row["day_pnl"]) == 500.0, "initial insert failed"
 
-    # Second write: day_pnl = 750 (updated real value, not 0 or NULL)
+    # Second write: day_pnl = 750 (updated real value, not None)
     update_row = {
         "date": test_date,
         "account": test_account,
@@ -297,6 +315,8 @@ async def test_upsert_nonzero_day_pnl_updates(db_session: AsyncSession):
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": 5,
+        "lots": 5,
+        "lot_size": 1,
         "avg_cost": 8000.0,
         "ltp": 8150.0,  # LTP moved, day_pnl should reflect new state
         "day_pnl": 750.0,  # real update — should propagate
@@ -340,6 +360,8 @@ async def test_upsert_first_write_null_then_nonzero(db_session: AsyncSession):
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": 2,
+        "lots": 2,
+        "lot_size": 1,
         "avg_cost": 2500.0,
         "ltp": 2550.0,
         "day_pnl": None,  # mid-session → no P&L captured
@@ -361,6 +383,8 @@ async def test_upsert_first_write_null_then_nonzero(db_session: AsyncSession):
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": 2,
+        "lots": 2,
+        "lot_size": 1,
         "avg_cost": 2500.0,
         "ltp": 2550.0,
         "day_pnl": 300.0,  # settled value — should overwrite None
@@ -403,6 +427,8 @@ async def test_upsert_other_fields_update_normally(db_session: AsyncSession):
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": 100,
+        "lots": 100,
+        "lot_size": 1,
         "avg_cost": 500.0,
         "ltp": 520.0,
         "day_pnl": 1000.0,
@@ -416,8 +442,9 @@ async def test_upsert_other_fields_update_normally(db_session: AsyncSession):
     assert float(row["ltp"]) == 520.0
     assert float(row["total_pnl"]) == 5000.0
 
-    # Update with zero day_pnl but different ltp/total_pnl
-    # (simulates post-settlement: day_pnl frozen, but other fields reflect new market state)
+    # Update with zero day_pnl but different ltp/total_pnl.
+    # Updated (2026-08-23): with new CASE guard, zero is a valid day_pnl (flat day).
+    # It now overwrites the stale 1000.0. Use day_pnl=None for "don't update".
     update_row = {
         "date": test_date,
         "account": test_account,
@@ -426,9 +453,11 @@ async def test_upsert_other_fields_update_normally(db_session: AsyncSession):
         "symbol": test_symbol,
         "exchange": "MCX",
         "qty": 100,
+        "lots": 100,
+        "lot_size": 1,
         "avg_cost": 500.0,
         "ltp": 525.0,  # should update
-        "day_pnl": 0.0,  # should be preserved from initial (1000.0)
+        "day_pnl": 0.0,  # flat day — now overwrites (COALESCE(0, 1000) = 0 with new SQL)
         "total_pnl": 6000.0,  # should update
         "previous_close": None,
         "payload_json": json.dumps({"exchange": "MCX", "updated": True}),
@@ -436,9 +465,13 @@ async def test_upsert_other_fields_update_normally(db_session: AsyncSession):
     await _upsert_rows(db_session, [update_row])
 
     row = await _fetch_row(db_session, test_date, test_account, "positions", test_symbol)
-    assert float(row["ltp"]) == 525.0, "ltp should update even when day_pnl is frozen"
-    assert float(row["total_pnl"]) == 6000.0, "total_pnl should update even when day_pnl is frozen"
-    assert float(row["day_pnl"]) == 1000.0, "day_pnl should still be frozen from initial"
+    assert float(row["ltp"]) == 525.0, "ltp should update"
+    assert float(row["total_pnl"]) == 6000.0, "total_pnl should update"
+    # New behavior: 0.0 overwrites stale 1000.0 (ltp IS NOT NULL, COALESCE(0, 1000)=0)
+    assert float(row["day_pnl"]) == 0.0, (
+        "day_pnl=0.0 (flat day) should now overwrite stale 1000.0 "
+        "under the new CASE WHEN EXCLUDED.ltp IS NOT NULL guard"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -461,13 +494,15 @@ def test_upsert_sql_comes_from_daily_snapshot():
         "_UPSERT_SQL should be a SQLAlchemy text() object"
     )
 
-    # Verify the SQL string contains the guard pattern
+    # Verify the SQL string contains the ltp-gated day_pnl guard pattern
     sql_str = str(daily_snapshot._UPSERT_SQL)
-    assert "COALESCE" in sql_str and "NULLIF" in sql_str, (
-        "COALESCE-NULLIF guard pattern missing from _UPSERT_SQL. "
+    # New pattern: CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, ...)
+    assert "CASE WHEN EXCLUDED.ltp IS NOT NULL" in sql_str, (
+        "CASE WHEN ltp gate missing from _UPSERT_SQL. "
         f"SQL: {sql_str}"
     )
     assert "day_pnl" in sql_str, "day_pnl field missing from _UPSERT_SQL"
+    assert "lot_size" in sql_str, "lot_size field missing from _UPSERT_SQL"
 
 
 # ---------------------------------------------------------------------------
@@ -486,21 +521,17 @@ def test_upsert_sql_guard_on_day_pnl_not_total_pnl():
 
     sql_str = str(daily_snapshot._UPSERT_SQL)
 
-    # day_pnl should have COALESCE(NULLIF(...))
+    # day_pnl should have CASE WHEN EXCLUDED.ltp IS NOT NULL guard (new pattern)
     assert "day_pnl" in sql_str, "day_pnl missing from SQL"
-    # The pattern should be: day_pnl = COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl)
-    # We can't easily regex-parse, but we can check that the line contains both
-    lines = sql_str.split("\n")
-    day_pnl_line = [l for l in lines if "day_pnl" in l and "DO UPDATE" in sql_str]
-
-    # Check that day_pnl line (in context of UPDATE clause) has COALESCE
     full_update_section = sql_str.split("DO UPDATE SET")[1] if "DO UPDATE SET" in sql_str else ""
-    assert "COALESCE(NULLIF(EXCLUDED.day_pnl" in full_update_section, (
-        "day_pnl should use COALESCE(NULLIF(EXCLUDED.day_pnl, 0), daily_book.day_pnl) guard"
+    assert "CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl" in full_update_section, (
+        "day_pnl should use CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, ...) guard"
     )
-
+    # NULLIF guard must NOT be present (was the old buggy pattern)
+    assert "NULLIF(EXCLUDED.day_pnl" not in full_update_section, (
+        "NULLIF(EXCLUDED.day_pnl, 0) must be removed — use ltp IS NOT NULL gate instead"
+    )
     # total_pnl should update normally (EXCLUDED.total_pnl without guard)
-    # Strip extra whitespace since SQL may vary in formatting
     assert "total_pnl" in full_update_section and "= EXCLUDED.total_pnl" in full_update_section, (
         "total_pnl should update normally without guard (no COALESCE)"
     )

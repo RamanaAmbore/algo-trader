@@ -157,7 +157,9 @@ class TestPositionsRowsMultiplierPassed:
         assert r["day_pnl"] == pytest.approx(2000.0, rel=1e-5), (
             f"day_pnl={r['day_pnl']} must be 2000 for MCX CRUDEOIL (1 lot with multiplier=100)"
         )
-        assert r["qty"] == 1, "Quantity should be stored as-is from broker (1 lot)"
+        assert r["qty"] == 100, "Quantity should be stored as contracts (1 lot × 100)"
+        assert r["lots"] == 1, "lots must be original lot count from Kite"
+        assert r["lot_size"] == 100, "lot_size must be the Kite multiplier"
 
     def test_positions_rows_equity_no_multiplier_applied(self):
         """_positions_rows for equity works with default multiplier=1."""

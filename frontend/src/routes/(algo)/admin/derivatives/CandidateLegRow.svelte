@@ -326,7 +326,7 @@
       {_lotsTargetLots > 0 ? fmtLots(_lotsTargetLots) : '—'}
     </span>
   {:else}
-    <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty }))}</span>
+    <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty, lots: c.lots ?? null }))}</span>
   {/if}
   <span class="num tf-cell leg-ltp
     {typeof ltp === 'number' && typeof cost === 'number' && cost > 0
