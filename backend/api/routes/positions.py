@@ -855,22 +855,27 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     if not pairs:
         return
 
-    # Filter to snapshots captured BEFORE 08:00 IST today. The cutoff is
-    # 08:00 IST (not midnight) for two reasons:
-    #   1. MCX closes at 23:30 IST; the snapshot daemon can land the row
-    #      at 00:05 IST the next calendar day. A midnight cutoff would
-    #      exclude that valid EOD snapshot.
-    #   2. 08:00 IST is still safely before any mid-session deploy snapshot
-    #      (market opens at 09:00-09:15 IST). Without this upper bound a
-    #      mid-session startup snapshot would land as "most recent" and
-    #      patch close_price to today's mid-session LTP — collapsing
-    #      day_change_val to zero. Observed 2026-06-22 ~09:38 IST.
+    # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).
+    # MCX settles at 23:30–00:15 IST (next calendar day); its daily_book snapshot
+    # lands AFTER yesterday's 08:00 IST. Using 08:00 IST today as cutoff would
+    # include tonight's MCX snapshot, making snap_ltp == last_price == settlement
+    # → day_change_val = 0 for all MCX instruments (observed after 00:15 IST).
+    # Shifting to yesterday's 08:00 IST when now < 08:00 IST excludes it.
+    # After 08:00 IST the regular boundary applies and tonight's MCX snapshot
+    # correctly becomes prev_close for the new MCX session.
     from datetime import timedelta
     from backend.shared.helpers.date_time_utils import timestamp_indian
-    today_ist_midnight = timestamp_indian().replace(
-        hour=0, minute=0, second=0, microsecond=0,
-    )
-    today_ist_cutoff = today_ist_midnight + timedelta(hours=8)
+    now_ist = timestamp_indian()
+    today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Invariant: prev_close is frozen until the next session opens at 08:00 IST.
+    # Cutoff = the last 08:00 IST boundary that has passed.
+    # Before 08:00 IST today: use yesterday's 08:00 IST → excludes tonight's MCX
+    #   settlement snapshot (captured ≈ 00:15 IST today), which would otherwise make
+    #   snap_ltp == last_price == MCX settlement → day_change_val = 0.
+    # At/after 08:00 IST today: use today's 08:00 IST → new session started,
+    #   tonight's MCX snapshot is now the correct prev_close for today's MCX session.
+    today_ist_8am = today_ist_midnight + timedelta(hours=8)
+    today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight
 
     snapshot_map: dict[tuple[str, str], float] = {}
     prev_pnl_map: dict[tuple[str, str], float] = {}

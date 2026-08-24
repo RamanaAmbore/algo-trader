@@ -252,12 +252,14 @@ def positions_policy(current: float, tick_ltp: Optional[float]) -> Decision:
 
 
 def holdings_policy(current: float, tick_ltp: Optional[float]) -> Decision:
-    """holdings.py policy — only patch when the broker LTP is zero
-    or missing. Never overwrites a valid non-zero broker value. Tries
-    LKG cache when the ticker also has nothing.
+    """holdings.py policy — prefer the KiteTicker LTP when it differs
+    from the broker REST value by more than epsilon. Tries LKG cache
+    when the ticker has nothing and broker value is also zero/missing.
     """
-    if current > 0:
-        return Decision()  # broker value is valid, leave it
     if tick_ltp is not None and tick_ltp > 0:
+        if abs(tick_ltp - current) <= 0.005:
+            return Decision()
         return Decision(new_ltp=float(tick_ltp))
-    return Decision(consider_cache=True)
+    if current <= 0:
+        return Decision(consider_cache=True)
+    return Decision()

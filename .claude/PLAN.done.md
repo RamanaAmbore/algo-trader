@@ -1,59 +1,198 @@
-# Plan: pnl_per_share + snapshot path previous_close fix + positions P&L verdict
+# Plan: fix day P&L zero — holdings_policy + MCX overnight query cutoff
 
 ## Context
 
-Three follow-on items from the holdings day P&L fix (commit 39c21cca):
+Two separate bugs both collapse day P&L to zero.
 
-1. **Snapshot path missing `previous_close`** — `_build_holding_row_from_snapshot` computes `previous_close_f` from daily_book but never passes it to the `HoldingRow` constructor. After market close the API returns `previous_close=0.0` for all rows; the frontend falls back to `close_price` (which happens to equal `previous_close_f` in the snapshot path, so values are still correct), but the field should be populated consistently so the frontend's priority chain (`previous_close || close_price`) is unambiguous.
+**Bug 1 — NSE holdings always zero (since commit 1a287553 removed backstop Fix 3)**
 
-2. **pnl_per_share** — new computed field: lifetime P&L per held share (`pnl / quantity`). No DB migration needed; derived on the fly. Expose from the API and add a column to every surface where holdings rows are displayed (Pulse holdings grid; PerformancePage holdings grid if applicable).
+`holdings_policy` in `ltp_patch.py` has `if current > 0: return Decision()` — it never
+patches `last_price` from KiteTicker when Kite REST returns a non-zero stale settlement.
+`_override_stale_close_for_holdings` then computes `day_change_val = (stale_REST - daily_book.ltp) × qty`.
+Since both the stale REST value and `daily_book.ltp` are yesterday's settlement, result is 0.
+`positions_policy` uses an epsilon-aware comparison; `holdings_policy` must do the same.
 
-3. **Positions P&L bug verdict** — `_override_stale_close_from_snapshot` in `positions.py` uses "patched_idx only" recompute (unlike the widened holdings fix). This is intentional and correct for positions:
-   - If epsilon passes (close_price ≈ daily_book.ltp), the broker's decomposed `day_change_val` is already approximately correct — no recompute needed.
-   - If epsilon fails, close_price is patched and dcv is recomputed via `_compute_day_change_val`.
-   - Backstop Case 2 (`oq≠0, dcv=0, pnl≠0, close>0, avg>0`) handles the remaining edge cases correctly and is valid for positions (unlike holdings which had no `overnight_quantity`).
-   - **Conclusion: no equivalent bug in positions.** The backstop IS appropriate for positions.
+**Bug 2 — Both positions AND holdings zero after MCX close (00:15–08:00 IST)**
+
+`_override_stale_close_from_snapshot` (positions.py:873) and `_override_stale_close_for_holdings`
+(holdings.py:374) both compute the daily_book query cutoff as:
+```python
+today_ist_cutoff = today_ist_midnight + timedelta(hours=8)  # 08:00 IST today
+```
+
+After MCX settles at 00:15 IST, `_snap_holding_eod_vals` writes a new `daily_book` entry with
+`ltp = MCX settlement tonight`, `captured_at ≈ 00:15–00:30 IST`. This is BEFORE 08:00 IST, so the
+`DISTINCT ON (account, symbol) … ORDER BY captured_at DESC` query picks it as the most-recent snapshot.
+
+Consequence for **positions**: `snap_ltp = MCX_settlement_tonight`. Kite REST `close_price` =
+`MCX_settlement_yesterday` (correct). `|snap_ltp − close_price| > 0.005` → close_price overwritten
+with tonight's settlement. Now `last_price = close_price = MCX_settlement_tonight` → `day_change_val = 0`.
+
+Consequence for **holdings**: `previous_close = MCX_settlement_tonight`. `last_price` from
+Kite REST = same settlement. `day_change_val = (settlement − settlement) × qty = 0`.
+
+**Fix for Bug 2**: when current IST hour < 8 (overnight window), use `16:00 IST yesterday` as cutoff
+instead of `08:00 IST today`. MCX settlements always land between 23:30–00:30 IST (AFTER 16:00 IST
+yesterday), so they are excluded. NSE settlements always land at ≈15:30 IST (BEFORE 16:00 IST), so
+they are preserved. After 08:00 IST the regular cutoff applies and the MCX tonight snapshot is
+correctly included as prev_close for the day's MCX session.
 
 ## Task
 
-Three changes:
-
-**A. Fix snapshot path**: Add `previous_close=previous_close_f` to the `HoldingRow` constructor in `_build_holding_row_from_snapshot`. One line.
-
-**B. pnl_per_share**: Compute and expose in both the live path and snapshot path. Add to schema, `_ROW_COLS`, and frontend grid column defs.
-
-**C. No positions code change needed** (verdict only). Add a test asserting the positions backstop correctly fires Case 2 and does NOT corrupt day P&L for flat stocks.
+1. Fix `holdings_policy` in `ltp_patch.py` — prefer KiteTicker over stale REST (Bug 1).
+2. Change daily_book query cutoff in `positions.py:_override_stale_close_from_snapshot` and
+   `holdings.py:_override_stale_close_for_holdings` — use 16:00 IST yesterday during midnight-to-08:00
+   IST window (Bug 2).
+3. Add tests covering both fixes.
 
 ## Agents
 
 - backend: skip
-- frontend: Add `pnl_per_share` column to Pulse holdings grid (`pulseColumns.js` `mkRightColDefs` + `rightColDefs` for holdings). Field name: `pnl_per_share`. Header: "P&L/sh". Formatter: `aggFmtGrid()` (same as `pnl`). Place after `pnl_pct` column. Also add to `mergeHoldingRows` in `pulseUnified.js`: `row.pnl_per_share = (liveHold != null && heldQty !== 0) ? (liveHold - holdAvg) : (Number(r.pnl_per_share) || 0)`. Note: frontend must receive `pnl_per_share` from the API response (backend change is in broker agent).
-- broker: Three changes in `backend/brokers/broker_apis.py` and `backend/api/routes/holdings.py` and `backend/api/schemas.py`:
-  1. `_enrich_holdings` in `broker_apis.py` (~line 1718-1730): After computing `pnl` in Pass 1, add `pnl_per_share = pnl / quantity` (guard: quantity ≠ 0). Polars expression: `(pl.col('pnl') / pl.col('quantity').replace(0, None)).fill_null(0.0).alias('pnl_per_share')`.
-  2. `_build_holding_row_from_snapshot` in `holdings.py` (line 148-167): Add `previous_close=previous_close_f` to HoldingRow constructor. Also add `pnl_per_share=total_pnl_f / qty_i if qty_i != 0 else 0.0`.
-  3. `HoldingRow` in `schemas.py` (after `pnl_percentage`): Add `pnl_per_share: float = 0.0`.
-  4. `_ROW_COLS` in `holdings.py` (line 252-267): Add `'pnl_per_share'` to the list.
-  5. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional. `backend/brokers/` change → add/update a pytest test in `backend/tests/broker/` covering the changed lines. No change ships without a corresponding test update.
+- frontend: skip
+- broker: Make ALL of the following changes. No other changes.
+
+  ---
+
+  ### Fix 1 — `backend/api/helpers/ltp_patch.py` (lines 254–263)
+
+  Replace `holdings_policy`:
+
+  OLD:
+  ```python
+  def holdings_policy(current: float, tick_ltp: Optional[float]) -> Decision:
+      if current > 0:
+          return Decision()  # broker value is valid, leave it
+      if tick_ltp is not None and tick_ltp > 0:
+          return Decision(new_ltp=float(tick_ltp))
+      return Decision(consider_cache=True)
+  ```
+
+  NEW (matches positions_policy epsilon pattern):
+  ```python
+  def holdings_policy(current: float, tick_ltp: Optional[float]) -> Decision:
+      if tick_ltp is not None and tick_ltp > 0:
+          if abs(tick_ltp - current) <= 0.005:
+              return Decision()
+          return Decision(new_ltp=float(tick_ltp))
+      if current <= 0:
+          return Decision(consider_cache=True)
+      return Decision()
+  ```
+
+  ---
+
+  ### Fix 2a — `backend/api/routes/positions.py` (around line 870–874)
+
+  Replace the cutoff computation in `_override_stale_close_from_snapshot`:
+
+  OLD:
+  ```python
+  today_ist_midnight = timestamp_indian().replace(
+      hour=0, minute=0, second=0, microsecond=0,
+  )
+  today_ist_cutoff = today_ist_midnight + timedelta(hours=8)
+  ```
+
+  NEW:
+  ```python
+  now_ist = timestamp_indian()
+  today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+  # Invariant: prev_close is frozen until the next session opens at 08:00 IST.
+  # Cutoff = the last 08:00 IST boundary that has passed.
+  # Before 08:00 IST today: use yesterday's 08:00 IST → excludes tonight's MCX
+  #   settlement snapshot (captured ≈ 00:15 IST today), which would otherwise make
+  #   snap_ltp == last_price == MCX settlement → day_change_val = 0.
+  # At/after 08:00 IST today: use today's 08:00 IST → new session started,
+  #   tonight's MCX snapshot is now the correct prev_close for today's MCX session.
+  today_ist_8am = today_ist_midnight + timedelta(hours=8)
+  today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
+  ```
+
+  Also replace the comment block just above (lines 858–867) explaining the cutoff rationale.
+
+  ---
+
+  ### Fix 2b — `backend/api/routes/holdings.py` (around lines 368–374)
+
+  Replace the cutoff computation in `_override_stale_close_for_holdings`:
+
+  OLD:
+  ```python
+  today_ist_midnight = timestamp_indian().replace(
+      hour=0, minute=0, second=0, microsecond=0,
+  )
+  # 08:00 IST cutoff — same rationale as positions.py: MCX can land EOD
+  # snapshots at 00:05 IST next calendar day; 08:00 IST is safely before
+  # any mid-session startup snapshot.
+  today_ist_cutoff = today_ist_midnight + timedelta(hours=8)
+  ```
+
+  NEW:
+  ```python
+  now_ist = timestamp_indian()
+  today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+  # Invariant: prev_close is frozen until the next session opens at 08:00 IST.
+  # Cutoff = the last 08:00 IST boundary that has passed.
+  # Before 08:00 IST: use yesterday's 08:00 IST so tonight's MCX settlement
+  #   snapshot (captured ≈ 00:15 IST today) is excluded. NSE closes at ≈15:30 IST
+  #   (before any 08:00 IST boundary) and is always included correctly.
+  today_ist_8am = today_ist_midnight + timedelta(hours=8)
+  today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
+  ```
+
+  Also update the existing comment block nearby to reflect the updated invariant.
+
+  ---
+
+  ### Tests
+
+  Add or extend `backend/tests/broker/test_ltp_oscillation_fixes.py` (or create
+  `backend/tests/broker/test_holdings_day_pnl.py`):
+
+  **For Fix 1 (holdings_policy):**
+  - `test_holdings_policy_prefers_ticker_over_stale_rest`: `holdings_policy(100.0, 102.5)` →
+    `Decision(new_ltp=102.5)` (diff 2.5 > 0.005 → ticker wins)
+  - `test_holdings_policy_noop_within_epsilon`: `holdings_policy(100.0, 100.002)` →
+    `Decision()` (within epsilon → no-op)
+  - `test_holdings_policy_cache_when_no_tick_zero`: `holdings_policy(0.0, None)` →
+    `Decision(consider_cache=True)`
+  - `test_holdings_policy_passthrough_when_no_tick_nonzero`: `holdings_policy(100.0, None)` →
+    `Decision()`
+
+  **For Fix 2 (prev_close only updates at 08:00 IST — last-boundary cutoff):**
+  - `test_cutoff_before_8am_uses_yesterday_8am`: Mock `timestamp_indian()` to return 01:30 IST Aug 25.
+    Verify cutoff = 08:00 IST Aug 24 (yesterday's 08:00 IST boundary). MCX tonight snapshot
+    (captured 00:15 IST Aug 25 > 08:00 IST Aug 24) would be excluded; previous MCX settlement
+    (00:15 IST Aug 24 < 08:00 IST Aug 24) included.
+  - `test_cutoff_after_8am_uses_today_8am`: Mock `timestamp_indian()` to return 10:00 IST Aug 25.
+    Verify cutoff = 08:00 IST Aug 25 (today's 08:00 IST boundary). Tonight's MCX snapshot
+    (00:15 IST Aug 25 < 08:00 IST Aug 25) is included correctly as prev_close for today's MCX session.
+
+  After edits run:
+  ```bash
+  cd /Users/ramanambore/projects/ramboq && venv/bin/pytest backend/tests/ -q --tb=short -k "ltp or holdings_day or mcx_overnight"
+  ```
+
 - doc: skip
-- backend-test: Add a test in `backend/tests/broker/` covering: (a) `pnl_per_share = pnl / quantity` in `_enrich_holdings` for a basic holding; (b) `_build_holding_row_from_snapshot` includes `previous_close` non-zero; (c) positions backstop Case 2 fires correctly for overnight position with stale close and does NOT corrupt dcv for a flat stock.
+- backend-test: skip
+- playwright: no
 
 ## Tests
 - pytest: yes
-- svelte-check: yes
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(holdings): snapshot previous_close + pnl_per_share field + positions backstop verdict
+fix(positions,holdings): MCX overnight snapshot excluded from prev_close query; holdings_policy prefers ticker
 
 ## Done when
-- `HoldingRow` has `pnl_per_share` and `previous_close` populated in both live and snapshot paths
-- Pulse holdings grid shows a P&L/sh column
-- `_build_holding_row_from_snapshot` passes `previous_close=previous_close_f` to HoldingRow
-- Tests green; svelte-check 0 errors
+- `holdings_policy` returns `Decision(new_ltp=tick)` when tick differs from stale REST by > 0.005
+- Between 00:15–07:59 IST: daily_book cutoff = 16:00 IST yesterday (MCX tonight snapshot excluded)
+- Positions and holdings day P&L non-zero after MCX close (when price moved during session)
+- pytest green
 
 ## Critical files
-- `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot` (line 148-167), `_ROW_COLS` (line 252-267)
-- `backend/api/schemas.py` — `HoldingRow` struct (line 15-77)
-- `backend/brokers/broker_apis.py` — `_enrich_holdings` (line ~1661-1738)
-- `frontend/src/lib/data/pulseColumns.js` — `mkRightColDefs` / holdings colDefs (line ~464-557)
-- `frontend/src/lib/data/pulseUnified.js` — `mergeHoldingRows` (line 509-582)
+- `backend/api/helpers/ltp_patch.py` lines 254–263 (`holdings_policy`)
+- `backend/api/routes/positions.py` lines 868–874 (`_override_stale_close_from_snapshot` cutoff)
+- `backend/api/routes/holdings.py` lines 368–374 (`_override_stale_close_for_holdings` cutoff)
+- `backend/tests/broker/test_ltp_oscillation_fixes.py` (or new test file)

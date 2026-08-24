@@ -365,13 +365,15 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     from datetime import timedelta
     from backend.shared.helpers.date_time_utils import timestamp_indian
 
-    today_ist_midnight = timestamp_indian().replace(
-        hour=0, minute=0, second=0, microsecond=0,
-    )
-    # 08:00 IST cutoff — same rationale as positions.py: MCX can land EOD
-    # snapshots at 00:05 IST next calendar day; 08:00 IST is safely before
-    # any mid-session startup snapshot.
-    today_ist_cutoff = today_ist_midnight + timedelta(hours=8)
+    now_ist = timestamp_indian()
+    today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Invariant: prev_close is frozen until the next session opens at 08:00 IST.
+    # Cutoff = the last 08:00 IST boundary that has passed.
+    # Before 08:00 IST: use yesterday's 08:00 IST so tonight's MCX settlement
+    #   snapshot (captured ≈ 00:15 IST today) is excluded. NSE closes at ≈15:30 IST
+    #   (before any 08:00 IST boundary) and is always included correctly.
+    today_ist_8am = today_ist_midnight + timedelta(hours=8)
+    today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight
 
     # ref_close: ltp directly — canonical prior-session settlement LTP.
     # previous_close (Kite BHAV-copy) is stale during the overnight window

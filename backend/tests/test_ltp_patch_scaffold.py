@@ -57,11 +57,11 @@ class TestPositionsPolicy:
 
 
 class TestHoldingsPolicy:
-    def test_nonzero_broker_never_overwritten(self):
-        # Holdings policy never touches a positive broker value even
-        # if the ticker has a value.
+    def test_nonzero_broker_overwritten_by_ticker_when_delta_large(self):
+        # Fix 1 (Aug 2026): holdings_policy now prefers KiteTicker LTP when
+        # it differs from the broker REST value by more than epsilon (0.005).
         d = holdings_policy(current=100.0, tick_ltp=999.0)
-        assert d.new_ltp is None
+        assert d.new_ltp == 999.0
         assert d.consider_cache is False
 
     def test_zero_broker_uses_fresh_tick(self):
@@ -114,12 +114,28 @@ class TestApplyLtpPatch:
         assert res.stale_idx == []
         assert res.patched_old_ltp[0] == 100.0
 
-    def test_holdings_policy_skips_valid_broker(self):
+    def test_holdings_policy_patches_when_ticker_differs(self):
+        # Fix 1 (Aug 2026): holdings_policy now overwrites broker REST with
+        # ticker when delta > epsilon — covers stale-REST / slow-BHAV-update window.
         df = pd.DataFrame([{
             'tradingsymbol': 'TCS',
             'last_price': 3500.0,
         }])
-        ticker = _fake_ticker({'TCS': 9999.0})  # ticker has wildly different
+        ticker = _fake_ticker({'TCS': 9999.0})  # ticker has wildly different value
+        with patch("backend.api.helpers.ltp_patch.record_good_ltp"), \
+             patch("backend.brokers.kite_ticker.get_ticker", return_value=ticker):
+            res = apply_ltp_patch(df, holdings_policy)
+        assert res is not None
+        assert res.any_patched
+        assert df.at[0, 'last_price'] == 9999.0  # ticker wins
+
+    def test_holdings_policy_noop_within_epsilon(self):
+        # When ticker agrees with broker REST within epsilon, no patch occurs.
+        df = pd.DataFrame([{
+            'tradingsymbol': 'TCS',
+            'last_price': 3500.0,
+        }])
+        ticker = _fake_ticker({'TCS': 3500.002})  # within epsilon
         with patch("backend.api.helpers.ltp_patch.record_good_ltp"), \
              patch("backend.brokers.kite_ticker.get_ticker", return_value=ticker):
             res = apply_ltp_patch(df, holdings_policy)

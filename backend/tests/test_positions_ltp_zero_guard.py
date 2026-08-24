@@ -199,20 +199,22 @@ class TestHoldingsTickerOverride:
         expected_dcv = (1870.0 - 1800.0) * 10
         assert float(df.at[0, 'day_change_val']) == pytest.approx(expected_dcv, abs=0.01)
 
-    def test_nonzero_ltp_not_overwritten(self):
-        """If holdings already has a valid LTP, the ticker override
-        must not touch it."""
+    def test_nonzero_ltp_not_overwritten_within_epsilon(self):
+        """Fix 1 (Aug 2026): holdings_policy now prefers ticker when delta > epsilon.
+        This test verifies the no-patch path: ticker agrees with broker within epsilon
+        (0.005), so last_price is left unchanged."""
         from backend.api.routes.holdings import _override_stale_ltp_from_ticker
 
         df = _hold_df(last_price=1850.0, close_price=1800.0)
-        mock_ticker = _mock_ticker(9999.0)
+        # ticker within epsilon — must NOT patch
+        mock_ticker = _mock_ticker(1850.002)
 
         with patch('backend.brokers.kite_ticker.get_ticker',
                    return_value=mock_ticker):
             _override_stale_ltp_from_ticker(df)
 
         assert float(df.at[0, 'last_price']) == pytest.approx(1850.0), \
-            "Valid holdings LTP must not be overwritten"
+            "Holdings LTP must not be overwritten when ticker is within epsilon"
 
     def test_ticker_unavailable_no_crash(self):
         """If get_ticker() raises, the function exits gracefully."""

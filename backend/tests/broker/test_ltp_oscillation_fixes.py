@@ -730,3 +730,91 @@ class TestBmdStaleFingerprint:
         assert mask is not None and bool(mask.iloc[0]), (
             "Stale MCX overnight row must be in backfill mask"
         )
+
+
+# ── Fix 1: holdings_policy now prefers ticker over stale Kite REST value ──────
+
+from backend.api.helpers.ltp_patch import holdings_policy, Decision
+
+
+def test_holdings_policy_prefers_ticker_over_stale_rest():
+    """holdings_policy must prefer KiteTicker LTP when it differs from stale REST by > 0.005."""
+    result = holdings_policy(100.0, 102.5)
+    assert result == Decision(new_ltp=102.5)
+
+
+def test_holdings_policy_noop_within_epsilon():
+    """holdings_policy must NOT patch when tick and REST agree within epsilon."""
+    result = holdings_policy(100.0, 100.002)
+    assert result == Decision()
+
+
+def test_holdings_policy_cache_when_no_tick_and_zero():
+    """holdings_policy falls back to cache when tick absent and REST is 0."""
+    result = holdings_policy(0.0, None)
+    assert result == Decision(consider_cache=True)
+
+
+def test_holdings_policy_passthrough_when_no_tick_nonzero():
+    """holdings_policy passes through when tick absent but REST has a valid value."""
+    result = holdings_policy(100.0, None)
+    assert result == Decision()
+
+
+# ── Fix 2: daily_book query cutoff = last passed 08:00 IST boundary ───────────
+
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def _make_ist(hour: int, minute: int = 0, day: int = 25, month: int = 8, year: int = 2026) -> datetime:
+    return datetime(year, month, day, hour, minute, 0, tzinfo=_IST)
+
+
+def _compute_cutoff(now_ist: datetime) -> datetime:
+    """Replicate the cutoff formula from positions.py / holdings.py."""
+    today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_ist_8am = today_ist_midnight + timedelta(hours=8)
+    return today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight
+
+
+def test_cutoff_before_8am_uses_today_midnight():
+    """At 01:30 IST the cutoff must be today's midnight 00:00 IST (MCX tonight excluded)."""
+    now_ist = _make_ist(1, 30, day=25)  # 01:30 IST Aug 25
+    cutoff = _compute_cutoff(now_ist)
+    expected = _make_ist(0, 0, day=25)  # 00:00 IST Aug 25
+    assert cutoff == expected
+
+
+def test_cutoff_after_8am_uses_today_8am():
+    """At 10:00 IST the cutoff must be today's 08:00 IST (MCX snapshot included)."""
+    now_ist = _make_ist(10, 0, day=25)  # 10:00 IST Aug 25
+    cutoff = _compute_cutoff(now_ist)
+    expected = _make_ist(8, 0, day=25)  # 08:00 IST Aug 25
+    assert cutoff == expected
+
+
+def test_mcx_tonight_snapshot_excluded_before_8am():
+    """MCX tonight snapshot (00:15 IST today) must be AFTER cutoff when now < 08:00 IST."""
+    now_ist = _make_ist(1, 30, day=25)
+    cutoff = _compute_cutoff(now_ist)
+    mcx_tonight = _make_ist(0, 15, day=25)  # 00:15 IST Aug 25 (tonight's MCX settlement)
+    assert mcx_tonight > cutoff, "MCX tonight snapshot must be excluded (captured_at > cutoff)"
+
+
+def test_nse_prev_day_snapshot_included_before_8am():
+    """NSE yesterday snapshot (15:30 IST Aug 24) must be BEFORE cutoff when now < 08:00 IST Aug 25."""
+    now_ist = _make_ist(1, 30, day=25)
+    cutoff = _compute_cutoff(now_ist)
+    nse_yesterday = _make_ist(15, 30, day=24)  # 15:30 IST Aug 24 (NSE previous close)
+    assert nse_yesterday < cutoff, "NSE prev-day snapshot must be included (captured_at < cutoff)"
+
+
+def test_mcx_prev_session_snapshot_included_before_8am():
+    """MCX previous session snapshot (00:15 IST Aug 24) must be BEFORE cutoff."""
+    now_ist = _make_ist(1, 30, day=25)
+    cutoff = _compute_cutoff(now_ist)
+    mcx_prev = _make_ist(0, 15, day=24)  # 00:15 IST Aug 24 (previous MCX session close)
+    assert mcx_prev < cutoff, "MCX previous session snapshot must be included (captured_at < cutoff)"
