@@ -51,9 +51,9 @@ class User(Base):
     pincode: Mapped[Optional[str]]       = mapped_column(String(10), nullable=True)
 
     # ── Investment / partnership ───────────────────────────────────────────────
-    contribution: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    contribution: Mapped[float] = mapped_column(Numeric(16, 4), nullable=False, default=0.0)
     contribution_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
-    share_pct: Mapped[float]    = mapped_column(Float, nullable=False, default=0.0)
+    share_pct: Mapped[float]    = mapped_column(Numeric(8, 4), nullable=False, default=0.0)
 
     # ── Bank details (for payouts) ────────────────────────────────────────────
     bank_name: Mapped[Optional[str]]     = mapped_column(String(128), nullable=True)
@@ -288,16 +288,16 @@ class InvestorEvent(Base):
     # Cash amount in ₹. Always stored as a positive number; the sign
     # of units_delta encodes direction (subscription positive,
     # redemption negative).
-    amount:           Mapped[float] = mapped_column(Float, nullable=False)
+    amount:           Mapped[float] = mapped_column(Numeric(16, 4), nullable=False)
     # NAV per unit at the time of the event. Operator-supplied at
     # the event date so historical events can be backdated with the
     # correct per-unit value (read from the NavDaily curve on the
     # event date).
-    nav_per_unit:     Mapped[float] = mapped_column(Float, nullable=False)
+    nav_per_unit:     Mapped[float] = mapped_column(Numeric(16, 4), nullable=False)
     # Signed units delta — positive for subscription, negative for
     # redemption. Computed at insert time as ±amount/nav_per_unit;
     # stored explicitly so reads don't re-derive on every call.
-    units_delta:      Mapped[float] = mapped_column(Float, nullable=False)
+    units_delta:      Mapped[float] = mapped_column(Numeric(12, 4), nullable=False)
     note:             Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by:       Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("users.id", ondelete="SET NULL"),
@@ -686,7 +686,7 @@ class Strategy(Base):
     # Target volatility (annualised, decimal fraction — 0.15 = 15%).
     # Informational for the per-strategy NAV view; used in slice 7's
     # vol-targeting sizing helper. NULL = no target.
-    target_volatility: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    target_volatility: Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
     is_active: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
@@ -722,7 +722,7 @@ class AlgoOrder(Base):
     filled_quantity: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0",
     )
-    initial_price: Mapped[float] = mapped_column(Float, nullable=True)
+    initial_price: Mapped[float] = mapped_column(Numeric(16, 4), nullable=True)
     # Audit fix (M-6) — the chase loop's cancel-and-replace updates
     # the broker's limit price every iteration, but pre-fix the only
     # record was the `detail` text ("chase #2 limit=₹181"). The
@@ -731,10 +731,10 @@ class AlgoOrder(Base):
     # chase loop writes `current_limit` on every `_sync_algo_order_id`
     # so the UI can show the live re-quoted price. NULL when the
     # chase has never re-quoted (still at initial_price).
-    current_limit: Mapped[float] = mapped_column(Float, nullable=True)
-    fill_price: Mapped[float]    = mapped_column(Float, nullable=True)
+    current_limit: Mapped[float] = mapped_column(Numeric(16, 4), nullable=True)
+    fill_price: Mapped[float]    = mapped_column(Numeric(16, 4), nullable=True)
     attempts: Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
-    slippage: Mapped[float]      = mapped_column(Float, nullable=True)
+    slippage: Mapped[float]      = mapped_column(Numeric(16, 4), nullable=True)
     status: Mapped[str]          = mapped_column(String(16), nullable=False, default="OPEN", index=True)
     engine: Mapped[str]          = mapped_column(
         String(16), nullable=False, default="manual", server_default="manual",
@@ -768,8 +768,8 @@ class AlgoOrder(Base):
     # Auto profit-target — set once at order creation; engine arms a child
     # TP order on fill.  Exactly one of target_pct / target_abs is set
     # (or both may be None to opt out of the TP feature).
-    target_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    target_abs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    target_pct: Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
+    target_abs: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
     # parent_order_id links a take-profit child row back to the originating
     # parent AlgoOrder.  NULL on parent rows; set on every TP child so
     # idempotency checks can skip duplicate TP creation.
@@ -1171,7 +1171,7 @@ class SimRecording(Base):
     ended_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
-    duration_sec: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    duration_sec: Mapped[float] = mapped_column(Numeric(12, 4), nullable=False, default=0.0)
     tick_count: Mapped[int]    = mapped_column(Integer, nullable=False, default=0)
     event_count: Mapped[int]   = mapped_column(Integer, nullable=False, default=0)
     # Event log — list of {t, kind, payload} dicts. Compact at ~150 KB
@@ -1549,17 +1549,17 @@ class DailyBook(Base):
     qty: Mapped[int]           = mapped_column(Integer, nullable=False, default=0)
     lots: Mapped[int]          = mapped_column(Integer, nullable=False, default=1)
     lot_size: Mapped[int]      = mapped_column(Integer, nullable=False, default=1)
-    avg_cost: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
-    ltp: Mapped[Optional[float]]      = mapped_column(Numeric, nullable=True)
-    day_pnl: Mapped[Optional[float]]  = mapped_column(Numeric, nullable=True)
-    total_pnl: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
+    avg_cost: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
+    ltp: Mapped[Optional[float]]      = mapped_column(Numeric(16, 4), nullable=True)
+    day_pnl: Mapped[Optional[float]]  = mapped_column(Numeric(16, 4), nullable=True)
+    total_pnl: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
     # Frozen first-write per (date, account, kind, symbol). Captures
     # Kite's close_price at the first snapshot of each trading day —
     # which equals yesterday's official settlement before Kite overwrites
     # it at EOD. COALESCE in the UPSERT ensures subsequent writes never
     # overwrite a non-NULL value. Used by _positions_snapshot() to supply
     # a correct close_price during closed-hours reads instead of LTP.
-    previous_close: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    previous_close: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
     payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # raw row for forensics
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1951,14 +1951,14 @@ class HedgeProxy(Base):
     # the value WOULD be auto-generated from a rolling regression of
     # daily returns (R² between proxy and target). Column exists so
     # the schema doesn't need a migration when Stage 3 lands.
-    correlation: Mapped[float]   = mapped_column(Float, nullable=False, default=1.0,
+    correlation: Mapped[float]   = mapped_column(Numeric(6, 4), nullable=False, default=1.0,
                                                   server_default="1.0")
     # Stage 3 — regression slope from a rolling regression of proxy
     # daily returns vs target daily returns (`proxy_return = α + β ×
     # target_return + ε`). NULL → Stage 2 ETF case where β=1.0 by
     # construction. Populated by POST /api/admin/hedge-proxies/{id}/compute
     # on demand (Stage 3) and by a periodic background task (Stage 4).
-    beta: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    beta: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
     regression_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
@@ -1979,8 +1979,8 @@ class HedgeProxy(Base):
     # them how volatile the hedged underlying is); `proxy_sigma` is the
     # ETF / stock proxy's own vol, useful for sanity-checking
     # leveraged-ETF cases where β should be ~2-3 × the target's vol.
-    target_sigma: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    proxy_sigma:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    target_sigma: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
+    proxy_sigma:  Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
@@ -2035,19 +2035,19 @@ class CodeMetricsSnapshot(Base):
 
     # ── Backend metrics (Python — radon + vulture + pytest-cov) ────
     backend_loc:               Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
-    backend_complexity_avg:    Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    backend_complexity_avg:    Mapped[Optional[float]] = mapped_column(Numeric(8, 4),  nullable=True)
     backend_complexity_max:    Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
     backend_duplicated_lines:  Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
     backend_stale_count:       Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
-    backend_coverage_pct:      Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    backend_coverage_pct:      Mapped[Optional[float]] = mapped_column(Numeric(6, 4),  nullable=True)
 
     # ── Frontend metrics (JS/Svelte — jscpd + ESLint + wc) ─────────
     frontend_loc:              Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
-    frontend_complexity_avg:   Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    frontend_complexity_avg:   Mapped[Optional[float]] = mapped_column(Numeric(8, 4),  nullable=True)
     frontend_complexity_max:   Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
     frontend_duplicated_lines: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
     frontend_stale_count:      Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
-    frontend_coverage_pct:     Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    frontend_coverage_pct:     Mapped[Optional[float]] = mapped_column(Numeric(6, 4),  nullable=True)
 
     # ── Cross-cutting ───────────────────────────────────────────────
     # Count of commits matching the bug-fix heuristic between the
@@ -2127,18 +2127,18 @@ class PerfSnapshot(Base):
     state_count: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
     derived_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     cc_max: Mapped[Optional[int]]       = mapped_column(Integer, nullable=True)
-    cc_avg: Mapped[Optional[float]]     = mapped_column(Float,   nullable=True)
+    cc_avg: Mapped[Optional[float]]     = mapped_column(Numeric(8, 4),  nullable=True)
     hotspots_json: Mapped[Optional[dict]] = mapped_column(JSONB,  nullable=True)
 
     # ── Frontend runtime (Playwright — only when --with-runtime ran) ─
     lcp_ms: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
     tbt_ms: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
-    heap_mb: Mapped[Optional[float]] = mapped_column(Float,  nullable=True)
+    heap_mb: Mapped[Optional[float]] = mapped_column(Numeric(10, 4), nullable=True)
 
     # ── Backend runtime (load-test integration — future) ────────────
     route_p50_ms: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
     route_p95_ms: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
-    route_qps: Mapped[Optional[float]]   = mapped_column(Float,   nullable=True)
+    route_qps: Mapped[Optional[float]]   = mapped_column(Numeric(10, 4), nullable=True)
 
 
 class MoversSnapshot(Base):
