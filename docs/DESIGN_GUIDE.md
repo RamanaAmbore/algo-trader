@@ -2550,6 +2550,49 @@ sequenceDiagram
 - `backend/api/app.py` — `before_request` hook wiring
 - Wired callsites (15 files): `quote.py`, `watchlist.py`, `options.py`, `strategies.py`, `positions.py`, `orders_place.py`, `hedge_proxies.py`, `admin.py`, `instruments.py`, `background.py`, `lot_ledger.py`, `paper.py`, `template_attach.py`, `replay/driver.py`, `ohlcv_store.py`, `broker_apis.py`
 
+### 14.2 Data normalization — quantity/lots/lot_size
+
+**File**: `backend/brokers/broker_apis.py::_annotate_lot_size()`
+
+After every broker fetch, `_annotate_lot_size()` normalizes all positions to a uniform
+quantity unit: **CONTRACTS**.
+
+**Why**: Kite ships MCX positions in LOTS (e.g., lot_size=100, Kite qty=5 → 500 contracts). 
+NFO ships in CONTRACTS. Equity as-is. Without normalization, P&L math and order-entry 
+validation branches inconsistently.
+
+**Implementation**:
+
+1. Look up the instrument's `lot_size` from the broker's `_LOT_INDEX` (pre-loaded at startup).
+2. **For MCX/NCO rows** — multiply `quantity`, `overnight_quantity`, `day_buy_quantity`, 
+   `day_sell_quantity` by `lot_size` (convert Kite lots → contracts).
+3. **For NFO/CDS/BFO rows** — already in contracts; derive `lots = quantity / lot_size`.
+4. **For equity** — no-op; `lots = quantity`, `lot_size = 1`.
+5. Add informational fields `lots: int` and `lot_size: int` to every row (audit + UI).
+
+**Persistent in daily_book**: Both `lots` and `lot_size` columns are written to the 
+`daily_book` table (via SQL migration). They are informational; all P&L and day P&L 
+formulas operate on `quantity` (contracts).
+
+**Key invariant**: After `_annotate_lot_size()` returns, **`daily_book.quantity` is 
+ALWAYS in CONTRACTS**, regardless of exchange or lot structure.
+
+**Bug fixes bundled (Aug 2026)**:
+
+1. **Day P&L stale-preservation guard** — `day_pnl = CASE WHEN EXCLUDED.ltp IS NOT NULL 
+   THEN ...formula... END` ensures that mid-session passes with NULL LTP don't 
+   incorrectly preserve a prior session's day_pnl when the formula returns 0 (flat close).
+
+2. **Previous-close advancement gate** — `previous_close` only advances when `ltp` 
+   actually changes (not on frozen weekend snapshots). Prevents the next session's 
+   day P&L formula `(ltp - previous_close)` from computing wrong values.
+
+**Files**:
+- `backend/brokers/broker_apis.py::_annotate_lot_size` — normalization SSOT
+- `backend/api/algo/daily_snapshot.py::snapshot_daily_book` — UPSERT logic with guards
+- `backend/api/models.py::DailyBook` — `lots` and `lot_size` model fields
+- `backend/brokers/adapters/kite.py::_LOT_INDEX` — lot-size lookup table
+
 ---
 
 ## 14.5. Broker abstraction — implementation detail

@@ -486,6 +486,72 @@ their prior-session state, providing an accurate real-time view without stale en
 
 ---
 
+## 7.3.0 Quantity/Lots/Lot-Size Normalization
+
+**File**: `backend/brokers/broker_apis.py` — `_annotate_lot_size()`
+
+All broker responses normalize to a **uniform quantity unit: CONTRACTS**.
+
+### Why
+
+MCX positions ship from Kite as LOTS (e.g., lot_size=100, Kite sends qty=5 meaning 500 contracts). 
+NFO positions ship as CONTRACTS. Equity as-is. Without normalization, code multiplies by 
+`lot_size` inconsistently → wrong P&L, wrong order qty ceilings.
+
+### Solution: `_annotate_lot_size()` SSOT
+
+After every broker fetch (holdings, positions), `_annotate_lot_size(df, broker_id, exchange)` 
+applies one rule uniformly:
+
+1. **Lookup** instrument's `lot_size` from adapter's `_LOT_INDEX` (pre-loaded at startup)
+2. **For MCX/NCO rows** — multiply `quantity`, `overnight_quantity`, `day_buy_quantity`, 
+   `day_sell_quantity` by `lot_size` (convert lots → contracts)
+3. **For NFO/CDS/BFO rows** — already in contracts; derive `lots = quantity / lot_size`
+4. **For equity** — no-op; `lots = quantity`, `lot_size = 1`
+5. **Add informational fields** — `lots: int` and `lot_size: int` to every row
+
+**Invariant after return**: `daily_book.quantity` is ALWAYS in CONTRACTS, regardless of 
+exchange or lot structure.
+
+### Daily snapshot persistence
+
+`daily_snapshot.py::snapshot_daily_book()` UPSERT now includes `lots` and `lot_size` columns 
+in the `daily_book` table (schema via SQL migration). Both are informational (stored for audit + 
+UI display); all P&L and day P&L math operates on `quantity` (contracts).
+
+### New UPSERT guards (Aug 2026)
+
+**Guard 1: `day_pnl` stale-preservation fix**
+
+```sql
+ON CONFLICT (...) DO UPDATE SET
+  day_pnl = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN ...formula... END
+```
+
+**Problem**: Mid-session passes with NULL LTP would preserve a prior session's `day_pnl` even 
+when the formula correctly returned 0 (flat close). 
+
+**Fix**: Only write `day_pnl` when EXCLUDED.ltp is NOT NULL. If NULL, the column is unchanged 
+(and on next pass when LTP arrives, the formula re-computes).
+
+**Guard 2: `previous_close` advancement gate**
+
+```sql
+previous_close = CASE 
+  WHEN EXCLUDED.ltp IS NOT NULL AND EXCLUDED.ltp != daily_book.ltp 
+  THEN EXCLUDED.ltp 
+  ELSE daily_book.previous_close 
+END
+```
+
+**Problem**: Weekend snapshots with frozen LTPs would advance `previous_close` on every poll, 
+even though the price hadn't changed. The next session's formula `(ltp - previous_close)` 
+would compute wrong day P&L.
+
+**Fix**: Only advance `previous_close` when ltp actually changes (not on frozen weekend snapshots).
+
+---
+
 ## 7.3.1 Daily Snapshot UPSERT Idempotency & LTP Coalesce Fix (Aug 2026)
 
 **File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` UPSERT
