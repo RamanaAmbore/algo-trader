@@ -15,7 +15,7 @@ from backend.api.auth_guard import is_admin_request
 from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection, normalise_role,
 )
-from backend.api.algo.pnl_math import apply_day_change_backstop, recompute_row_percentages
+from backend.api.algo.pnl_math import recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, holdings_policy
 from backend.api.helpers.price_resolver import resolve_current_price
@@ -416,22 +416,38 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
         raw.at[idx, 'close_price'] = ref_close
         patched_indices.append(idx)
 
-    if not patched_indices:
-        return
+    if patched_indices:
+        logger.info(
+            f"holdings: close-override patched {len(patched_indices)}/{len(raw)} rows from daily_book"
+        )
 
-    logger.info(
-        f"holdings: close-override patched {len(patched_indices)}/{len(raw)} rows from daily_book"
-    )
-
-    # _enrich_holdings already ran inside broker_apis.fetch_holdings, so
-    # day_change_val was computed against the stale close_price. Recompute it
-    # now on only the close_price-patched rows using the corrected close_price.
-    if 'day_change_val' in raw.columns:
-        _ltp = pd.to_numeric(raw.loc[patched_indices, 'last_price'], errors='coerce').fillna(0)
-        _cls = pd.to_numeric(raw.loc[patched_indices, 'close_price'], errors='coerce').fillna(0)
-        _qty = pd.to_numeric(raw.loc[patched_indices, 'quantity'], errors='coerce').fillna(0)
-        raw.loc[patched_indices, 'day_change_val'] = (_ltp - _cls) * _qty
-    recompute_row_percentages(raw, pd.Index(patched_indices))
+    # Recompute day_change_val for ALL rows where previous_close > 0 — not
+    # just the close_price-patched rows.  Rows where close_price already
+    # matched the snapshot (epsilon ≤ 0.005) still need a fresh
+    # (ltp − previous_close) × qty because _enrich_holdings ran against the
+    # stale Kite close_price before this function was called.
+    #
+    # For Dhan/Groww rows: backfill_market_data sets close_price ≈ ohlc.close
+    # (today's settlement ≈ ltp), so (ltp - close_price) × qty ≈ 0 and the
+    # row falls through the epsilon guard unchanged. Recomputing against
+    # previous_close gives the correct (ltp - prev_close) × qty value.
+    #
+    # close_price patch log is kept separate (above) — it tracks the number of
+    # rows where the broker value diverged, which is the metric that matters for
+    # the Kite BHAV-copy lag diagnostic.
+    pc_series = pd.to_numeric(raw['previous_close'], errors='coerce').fillna(0)
+    all_pc_indices = raw.index[pc_series > 0].tolist()
+    if all_pc_indices and 'day_change_val' in raw.columns:
+        _ltp = pd.to_numeric(raw.loc[all_pc_indices, 'last_price'], errors='coerce').fillna(0)
+        _cls = pc_series.loc[all_pc_indices]
+        _qty = pd.to_numeric(raw.loc[all_pc_indices, 'quantity'], errors='coerce').fillna(0)
+        raw.loc[all_pc_indices, 'day_change_val'] = (_ltp - _cls) * _qty
+        # Also update per-share day_change so percentage columns are consistent.
+        _nonzero_qty = _qty.replace(0, float('nan'))
+        raw.loc[all_pc_indices, 'day_change'] = (
+            raw.loc[all_pc_indices, 'day_change_val'] / _nonzero_qty
+        ).fillna(0)
+    recompute_row_percentages(raw, pd.Index(all_pc_indices))
 
 
 def _hold_tag_open_row(r, _msc) -> object:
@@ -628,15 +644,10 @@ async def _fetch() -> HoldingsResponse:
         return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
 
     # Replace broker's drifted close_price with the prior-session EOD LTP
-    # from daily_book. Also writes previous_close to all rows unconditionally.
-    # _enrich_holdings already ran inside fetch_holdings per-account, so the
-    # override also recomputes day_change_val on close_price-patched rows.
+    # from daily_book. Also writes previous_close to all rows and recomputes
+    # day_change_val for ALL rows with previous_close > 0 using
+    # (ltp - previous_close) × qty — the canonical holdings day P&L formula.
     await _override_stale_close_for_holdings(raw)
-
-    # Recover day_change_val for rows where the broker gate zeroed it
-    # (new holdings, flat round-trips, or overnight positions with stale LTP).
-    # apply_day_change_backstop returns a copy — capture it.
-    raw = apply_day_change_backstop(raw)
 
     df = pl.from_pandas(raw)
     row_cols = [c for c in _ROW_COLS if c in df.columns]

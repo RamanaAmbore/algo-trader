@@ -1292,6 +1292,13 @@ def sort_accounts(accounts: list[str]) -> list[str]:
 _POSITIONS_SSOT_TTL: float = 30.0          # seconds; matches API-route cache TTL
 _positions_ssot_refresh_at: float = 0.0    # monotonic timestamp; 0 = never fetched
 
+# Holdings have the same stale-cache problem as positions: ssot_fetch caches
+# indefinitely until force_refresh or _raw_cache_invalidate. External fills /
+# rate-limit gaps can leave stale (or empty) Dhan rows in cache across MCX
+# evening when _task_closed_hours_refresh never fires (any_segment_open=True).
+_HOLDINGS_SSOT_TTL: float = 30.0
+_holdings_ssot_refresh_at: float = 0.0
+
 
 def _raw_cache_invalidate(key: str | None = None) -> None:
     """Drop a key (or all keys when key=None). Used by tests + on postback
@@ -1381,7 +1388,13 @@ def fetch_holdings(*args, **kwargs):
     patched cur_val so NavCard and /performance agree.
     """
     if not args and not kwargs:
-        return _fetch_holdings_cached()
+        global _holdings_ssot_refresh_at
+        now = _time.monotonic()
+        force_refresh = (now - _holdings_ssot_refresh_at) > _HOLDINGS_SSOT_TTL
+        result = _fetch_holdings_cached(force_refresh=force_refresh)
+        if result is not None:
+            _holdings_ssot_refresh_at = _time.monotonic()
+        return result
     return _fetch_holdings_local(*args, **kwargs)
 
 
