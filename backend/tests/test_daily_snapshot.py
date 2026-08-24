@@ -337,12 +337,13 @@ class TestRowBuilders:
         assert r["qty"] == -50
 
     def test_positions_previous_close_populated(self):
-        """Test that positions previous_close is populated from close_price when present."""
+        """Overnight position: previous_close comes from close_price (broker SSOT)."""
         from backend.api.algo.daily_snapshot import _positions_rows
         pos_with_close = {
             "traditionsymbol": "NIFTY25APRFUT",
             "exchange": "NFO",
             "quantity": -50,
+            "overnight_quantity": -50,  # held overnight → uses close_price not avg_cost
             "average_price": 22500.0,
             "last_price": 22400.0,
             "pnl": 5000.0,
@@ -355,12 +356,13 @@ class TestRowBuilders:
             f"expected previous_close=22450.0 but got {rows[0]['previous_close']}"
 
     def test_positions_previous_close_none_when_absent(self):
-        """Test that positions previous_close is None when close_price is absent."""
+        """Overnight position: previous_close is None when close_price is absent."""
         from backend.api.algo.daily_snapshot import _positions_rows
         pos_no_close = {
             "tradingsymbol": "BANKNIFTY25APRFUT",
             "exchange": "NFO",
             "quantity": 10,
+            "overnight_quantity": 10,  # held overnight
             "average_price": 52000.0,
             "last_price": 52100.0,
             "pnl": 1000.0,
@@ -372,12 +374,13 @@ class TestRowBuilders:
             f"expected previous_close=None when close_price missing, got {rows[0]['previous_close']}"
 
     def test_positions_previous_close_none_when_zero(self):
-        """Test that positions previous_close is None when close_price is zero."""
+        """Overnight position: previous_close is None when close_price is zero."""
         from backend.api.algo.daily_snapshot import _positions_rows
         pos_zero_close = {
             "tradingsymbol": "CRUDEOIL26JULFUT",
             "exchange": "MCX",
             "quantity": 1,
+            "overnight_quantity": 1,  # held overnight
             "average_price": 245.0,
             "last_price": 264.5,
             "pnl": 19.5,

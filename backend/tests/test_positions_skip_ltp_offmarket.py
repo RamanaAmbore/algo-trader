@@ -147,7 +147,11 @@ async def test_skip_ltp_market_closed_uses_snapshot():
     with (
         patch(
             "backend.api.helpers.snapshot_gate._any_segment_open",
-            return_value=False,  # MARKET CLOSED
+            return_value=False,  # MARKET CLOSED — affects closed_hours_or_broker
+        ),
+        patch(
+            "backend.api.routes.positions._any_segment_open",
+            return_value=False,  # MARKET CLOSED — affects the mkt_open check in _resolve_positions_source
         ),
         patch(
             "backend.api.routes.positions.get_or_fetch",
