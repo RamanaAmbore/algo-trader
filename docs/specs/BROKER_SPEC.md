@@ -684,7 +684,30 @@ The guard fires per-category:
 
 ---
 
-## 7.3.5 Firm NAV Computation & Closed-Exchange LTP Overlay
+## 7.3.5 Holdings Data Freshness & SSOT Fetch TTL (Aug 2026)
+
+**File**: `backend/brokers/broker_apis.py` — `fetch_holdings()` + `_HOLDINGS_SSOT_TTL`
+
+`fetch_holdings()` now enforces a **30-second TTL** on broker responses, mirroring 
+`fetch_positions()` (commit 39c21cca). Added module-level:
+
+```python
+_HOLDINGS_SSOT_TTL = 30.0  # seconds
+_holdings_ssot_refresh_at: dict[str, float] = {}
+```
+
+Logic: `fetch_holdings()` checks elapsed time since last successful fetch for each 
+account. If `now() < _holdings_ssot_refresh_at[account]`, the broker call is bypassed 
+and the cached holdings DataFrame is returned. On stale (TTL expired), `fetch_holdings()` 
+calls `_fetch_holdings_cached(force_refresh=True)`, guaranteeing fresh data within 30s.
+
+**Impact**: Holdings grid no longer shows stale positions within a 30s window after 
+rapid account switches or when polling overlaps with position changes. Aligns holdings 
+cache freshness with the stricter positions cache.
+
+---
+
+## 7.3.6 Firm NAV Computation & Closed-Exchange LTP Overlay
 
 **File**: `backend/api/algo/nav.py` — `compute_firm_nav()` + `_fetch_holdings_phase()`
 
@@ -726,7 +749,42 @@ used frozen DB snapshots.
 
 ---
 
-## 7.3.6 Holdings Snapshot Day Change Percentage Formula
+## 7.3.7 Holdings Day P&L Recompute & Backstop Exclusion (Aug 2026)
+
+**File**: `backend/api/routes/holdings.py` — `_override_stale_close_for_holdings()`
+
+Holdings day P&L now recomputes for **ALL rows where a daily_book snapshot with 
+`previous_close > 0` exists** (commit 39c21cca), not just rows where `close_price` 
+was patched from zero. Formula applied universally:
+
+```python
+day_pnl = (ltp - previous_close) * qty
+```
+
+Prior behaviour: Only rows where Dhan's `close_price=0` was patched from Kite quote 
+received day P&L recompute. Holdings with pre-existing stale `close_price` values 
+retained their (incorrect) cached day P&L.
+
+**New behaviour**: When `_override_stale_close_for_holdings()` runs during daily book 
+snapshot retrieval, it recomputes day P&L for **all** holdings rows where the previous 
+session's `daily_book` row exists and contains a valid `previous_close`. This ensures 
+holdings day P&L is never stale due to broker cache delays.
+
+### Exclusion: `apply_day_change_backstop` NOT applied to holdings (Aug 2026)
+
+`apply_day_change_backstop()` is called in positions flow but **explicitly removed** 
+from holdings (commit 39c21cca). Reason: backstop depends on `overnight_quantity` 
+column (Case 1: `oq=0`; Case 2: `oq>0, dcv==0`; Case 3: `oq=0` intraday). Holdings 
+rows have no `overnight_quantity` field (equity holdings do not have intraday decomposition). 
+Applying backstop to holdings with missing `overnight_quantity` would fire Case 1 
+incorrectly (missing field → 0 → matched condition → recompute on every fetch).
+
+**Scope**: Backstop reserved for positions P&L only. Holdings use direct 
+`(ltp - previous_close) * qty` formula without edge-case recovery.
+
+---
+
+## 7.3.8 Holdings Snapshot Day Change Percentage Formula
 
 **File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`
 
