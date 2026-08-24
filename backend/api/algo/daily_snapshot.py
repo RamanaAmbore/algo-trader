@@ -630,6 +630,37 @@ def _positions_rows(
         if skip:
             skipped += 1
             continue
+
+        oq_raw = float(r.get("overnight_quantity") or 0)
+        avg_px = float(r.get("average_price") or 0)
+
+        # Closed position (qty=0): anchor ltp to actual exit price so subsequent
+        # intraday rescans don't overwrite it with a live market price.
+        # Exit price = day trade VWAP (long: sell side; short: buy side).
+        # Falls back to ltp_val (last_price) when trade data is unavailable.
+        if qty_contracts == 0 and ltp_val is not None:
+            if oq_raw >= 0:
+                sell_qty = float(r.get("day_sell_quantity") or 0)
+                sell_val = float(r.get("day_sell_value")    or 0)
+                if sell_qty > 0 and sell_val > 0:
+                    ltp_val = sell_val / (sell_qty * max(multiplier, 1))
+            else:
+                buy_qty = float(r.get("day_buy_quantity") or 0)
+                buy_val = float(r.get("day_buy_value")    or 0)
+                if buy_qty > 0 and buy_val > 0:
+                    ltp_val = buy_val / (buy_qty * max(multiplier, 1))
+
+        # New position (oq=0, qty>0): no prior settlement exists; use entry
+        # price as previous_close so day P&L = (ltp - avg_cost) × qty.
+        # Overnight and closed positions use daily_book.ltp SSOT or broker close_price.
+        if oq_raw == 0 and avg_px > 0 and qty_contracts != 0:
+            previous_close_val = avg_px
+        else:
+            previous_close_val = (
+                pos_close_ref
+                or (float(r["close_price"]) if r.get("close_price") else None)
+            )
+
         rows.append({
             "date":           target_date,
             "account":        account,
@@ -644,13 +675,7 @@ def _positions_rows(
             "ltp":            ltp_val,
             "day_pnl":        day_pnl,
             "total_pnl":      float(r["pnl"]) if r.get("pnl") is not None else None,
-            # Prior daily_book.ltp (socket-derived) is the SSOT for previous_close.
-            # Falls back to broker close_price for first-day rows (no prior daily_book row).
-            # CASE guard in the UPSERT only advances when ltp actually changes.
-            "previous_close": (
-                pos_close_ref
-                or (float(r["close_price"]) if r.get("close_price") else None)
-            ),
+            "previous_close": previous_close_val,
             "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:
@@ -752,7 +777,11 @@ _UPSERT_SQL = text("""
         lots           = EXCLUDED.lots,
         lot_size       = EXCLUDED.lot_size,
         avg_cost       = EXCLUDED.avg_cost,
-        ltp            = COALESCE(EXCLUDED.ltp, daily_book.ltp),
+        ltp            = CASE
+                           WHEN daily_book.qty = 0 AND daily_book.ltp IS NOT NULL
+                               THEN daily_book.ltp
+                           ELSE COALESCE(EXCLUDED.ltp, daily_book.ltp)
+                         END,
         day_pnl        = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END,
         total_pnl      = EXCLUDED.total_pnl,
         previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp) THEN daily_book.ltp ELSE daily_book.previous_close END,
