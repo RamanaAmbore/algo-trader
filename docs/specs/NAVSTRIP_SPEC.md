@@ -37,6 +37,12 @@ in width. Content scrolls vertically if needed. Dismiss via Escape key or clicki
 the panel. The panel coexists independently with any modal on the pill's **value slot**
 (e.g., the DayPnlBreakup modal on P:1 value).
 
+**NavBreakdown P:1 TOTAL row SSOT** (Aug 2026, commit b33d056b): The TOTAL row in the 
+P-pill breakdown reads `positionsDayPnlStore.total` directly (the canonical live day P&L 
+aggregate), ensuring the TOTAL always matches the P:1 pill value in the NavStrip exactly. 
+This remains consistent even when MarketPulse pulse-override is active via `setFromPulse`, 
+eliminating any divergence between the breakdown TOTAL and the NavStrip header value.
+
 ### P pill: Positions P&L
 
 Formula: three slots displaying position profit from three perspectives.
@@ -326,11 +332,13 @@ On every successful poll (independent of whether values moved):
 
 ### Tick-border shimmer
 
-On real SSE tick arrivals (independent of polls):
+On real SSE tick arrivals (independent of polls), the strip's border element receives a 
+`cell-freshness-pulse` class when an LTP tick exceeds the 0.1% threshold:
 
-- Sky-blue border flash (300ms decay)
+- 1px gradient underline sweep animation (sky-300 → indigo-400, left-to-right)
+- 0.6s duration via CSS keyframe `freshness-sweep` in `app.css`
 - Throttled to 1 Hz (leading-edge) so a 20-symbol tick burst pulses once, not 20 times
-- Signals liveness during tick-burst windows
+- Signals liveness during tick-burst windows via `createFreshnessShimmer` wired to tickBus SSE ticks
 
 ---
 
@@ -589,3 +597,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-08-14 | v1.2 Holdings day P&L SSOT + realisedToday fix (commit 43771b98): §1 EXP Slot updated — closed-leg formula now uses `leg.realised \|\| leg.pnl` to capture Kite settlement behavior. §2 Data Sources SSOT table refactored — P:1 now references `positionsDayPnlStore` canonical source; H:1 now references `holdingsDayPnlStore` (Aug 2026 new) exporting `{ total, byKey }` at 5s/30min cadence. §3 Live-Tick Delta Correction unchanged. §4 Snapshot Freeze updated. Updated H:1 Holdings Today MTM detailed subsection — realisedToday fallback changed from hardcoded `0` to `brokerDcv` (Aug 2026 fix) ensuring closed-hours grids show correct snapshot day P&L; SSOT section notes `holdingsDayPnlStore` canonical source for nav + grid + dashboard consumption. |
 | 2026-08-20 | P:1 SSOT architecture update: `positionsDayPnlStore` now exposes `setFromPulse(byKey, total)` method. MarketPulse computes accurate per-row day P&L using live cq REST poll and writes to store. Getters prefer Pulse-written values when available; fall back to SSE-based computation (4Hz throttle) when Pulse is closed. Eliminates dual-store merge pattern; single-source consumer API unchanged (`total` + `byKey`). |
 | 2026-08-21 | H:1 post-settlement guard updated: When `|ltp − close| ≤ 0.005` paise (settlement convergence detected), fallback to broker snapshot `day_change_val` instead of computing `(ltp − close) × qty`. Prevents H slot from showing 0 immediately after NSE/MCX settlement when prices converge and formula would yield spurious result. Guards applied in `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` and `pulseUnified.js:mergeHoldingRows`. Also note: `_brokerHealthWorstState` in `frontend/src/lib/stores.js` now returns 'green' when all accounts are `inactive` (expected post-market state, no quote calls) instead of 'amber', seeding `worstState: 'green'` before first health poll. |
+| 2026-08-25 | v1.3 NavBreakdown TOTAL row SSOT + tick-border underline animation (commit b33d056b): (1) NavBreakdown P-pill breakdown TOTAL row now reads `positionsDayPnlStore.total` directly, ensuring it always matches the P:1 pill value exactly, even when MarketPulse pulse-override is active via `setFromPulse`. Added explicit note in §1 Pill label click-to-breakdown. (2) Tick-border shimmer updated: PositionStrip's border element now receives `cell-freshness-pulse` class on each LTP tick exceeding 0.1% threshold; applies CSS keyframe `freshness-sweep` (sky-300 → indigo-400 gradient, left-to-right, 0.6s) via `createFreshnessShimmer` wired to tickBus SSE ticks. §5 Data Freshness and Staleness updated. |

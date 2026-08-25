@@ -264,7 +264,9 @@ column for optimal scanning.
 visual line as the strike price, eliminating eye travel to distant button zones.
 
 **Quote fetch timeout** (`OptionChainTab.svelte`):
-- `chain_quotes` API calls wrapped in `asyncio.wait_for(timeout=10.0)` to prevent hangs
+- `chain_quotes` API calls wrapped in `asyncio.wait_for(timeout=10.0)` to prevent hangs 
+  (commit b33d056b). A broker stall no longer hangs the chain response indefinitely; 
+  times out after 10s with a warning log and returns an empty quote map.
 - Off-market gate: when markets closed, returns empty `rows: []` with populated `expiries`
 - No broker quote call made during closed hours
 - Expiry fetch includes retry logic (5s × 12 attempts) if initial fetch fails
@@ -817,6 +819,11 @@ base classes (RA + dirCls + mp-pnl-cell)
   + poll-diff flash class (tf-up / tf-down) otherwise
 ```
 
+**TOTAL row animation** (commit b33d056b):
+- MarketPulse TOTAL row cells now receive `tf-up`/`tf-down` animation classes on ≥0.1% 
+  value change. Previously the `_isTotal` guard in `pulseColumns.js` excluded the TOTAL row 
+  from all animation. Also updated in `dashboard/+page.svelte` positions grid.
+
 **Visual effect** — app.css defines:
 - `.ltp-flash-up` — green directional pulse (150ms ramp)
 - `.ltp-flash-down` — red directional pulse
@@ -1182,10 +1189,12 @@ from the last market session. The `closed_hours_or_broker()` gate centralizes th
   open positions visible, matching broker book state at next gate open
 
 **Day P&L recomputation in snapshot mode**:
-- `_positions_snapshot()` CTE `prev_batch` filters within a 7-day lookback window
-  (`db.captured_at >= lb.max_at - INTERVAL '7 days'`) to handle holiday gaps, then resolves
-  yesterday's EOD LTP via `AND db.ltp IS NOT NULL AND db.ltp > 0 AND db.captured_at < :today_ist_midnight`
-  (ensures snapshot uses prior-session closed price, not today's intraday rows)
+- `_positions_snapshot()` CTE `prev_batch` now uses **08:00 IST boundary cutoff** 
+  (`db.captured_at >= :_prev_batch_cutoff`, where `_prev_batch_cutoff = today_ist_date - 1 day at 08:00`) 
+  to match the live-path cutoff (commit b33d056b). Previously used `today_ist_midnight` (00:00 IST), 
+  which after MCX settlement at 00:15 IST would incorrectly find the same-trading-day MCX close 
+  snapshot as "previous" → day P&L delta ≈ 0. Now correctly excludes MCX snapshots before 08:00 IST, 
+  returning yesterday's EOD total_pnl as the baseline.
 - Row mapping loop recomputes `day_change_val = (ltp − prev_ltp) × qty` from the frozen
   prior-session LTP for all rows, not relying on Kite's mutable `day_pnl` field which gets
   reset to 0 at settlement
