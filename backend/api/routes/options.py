@@ -1347,7 +1347,13 @@ async def _ltp_broker_quote(symbol: str) -> Optional[tuple[float, str]]:
     from backend.brokers.registry import get_market_data_broker
     key = option_quote_key(symbol)
     try:
-        resp = await asyncio.to_thread(get_market_data_broker().quote, [key]) or {}
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(get_market_data_broker().quote, [key]),
+            timeout=5.0,
+        ) or {}
+    except asyncio.TimeoutError:
+        logger.warning(f"options LTP quote() timed out (5s) for {symbol}")
+        resp = {}
     except Exception as e:
         logger.warning(f"options LTP quote() failed for {symbol}: {e}")
         resp = {}
@@ -1621,7 +1627,15 @@ async def _mcx_batch_quote_futures(
     _fut_quote_resp: dict = {}
     if _fut_quote_keys:
         try:
-            _fut_quote_resp = await asyncio.to_thread(price_broker.quote, _fut_quote_keys) or {}
+            _fut_quote_resp = await asyncio.wait_for(
+                asyncio.to_thread(price_broker.quote, _fut_quote_keys),
+                timeout=10.0,
+            ) or {}
+        except asyncio.TimeoutError:
+            logger.warning(
+                "MCX per-leg futures batch quote timed out (10s); "
+                "falling back to scale_ratio=1 for all legs"
+            )
         except Exception as _e:
             logger.warning(
                 f"MCX per-leg futures batch quote failed: {_e}; "
@@ -2307,9 +2321,12 @@ async def _strategy_fetch_bulk_quote(
     quote_resp: dict = {}
     if need_quote:
         try:
-            quote_resp = await asyncio.to_thread(
-                _price_broker.quote, list(need_quote.keys()),
+            quote_resp = await asyncio.wait_for(
+                asyncio.to_thread(_price_broker.quote, list(need_quote.keys())),
+                timeout=10.0,
             ) or {}
+        except asyncio.TimeoutError:
+            logger.warning("Strategy quote() timed out (10s)")
         except Exception as e:
             logger.warning(f"Strategy quote() failed: {e}")
     return quote_resp

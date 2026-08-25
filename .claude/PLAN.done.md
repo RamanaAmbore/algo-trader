@@ -1,54 +1,86 @@
-# Plan: Reduce CC of three D-grade hotspots to unblock prod merge
+# Plan: Fix all chain hang vectors — add timeouts to 8 untimed broker calls
 
 ## Context
 
-dprod CC gate blocked prod merge because three functions remain D-grade (CC ≥ 16).
-The previous commit (b33d056b) is on dev and ready to merge; only the CC block prevents it.
-Goal: extract helpers to bring each below D (CC ≤ 15) — no behaviour change, tests unchanged.
+The previous chain snapshot timeout fix (`asyncio.wait_for` at `options_helpers.py:780`)
+only covered 1 of 9 blocking `asyncio.to_thread(broker.quote/instruments, ...)` calls in the
+chain request path. The chain still hangs because:
 
-Pre-existing hotspots (not introduced by b33d056b):
-- `backend/api/background.py:1817  _task_daily_snapshot`  D (30) — improved from E(33) last session
-- `backend/api/algo/daily_snapshot.py:600  _positions_rows`  D (22)
-- `backend/api/routes/orders.py:1728  OrdersController.order_postback_groww`  D (24)
+1. **`_chain_snapshot_instruments` (options_helpers.py:724)** — calls `get_or_fetch("instruments",
+   _fetch_instruments, ttl_seconds=86400)` with no `timeout_seconds`. On cold cache (every
+   restart/deploy), fetches 156K rows from Kite — 30–60s hang. `get_or_fetch` only wraps in
+   `asyncio.wait_for` when `timeout_seconds` is passed (cache.py:62).
+   Fix: use `peek("instruments")` → return HTTP 503 if cold. Background pre-warm populates it.
 
-Pattern: same as commit 28156f2a ("refactor(cc): extract helpers from _enrich_holdings + chain_quotes").
+2. **options_helpers.py:102, 125, 154** — spot-price quote calls (`_nse_spot_4`,
+   `_commodity_spot_4a`, `_commodity_spot_4b`) with no `wait_for`. Each can block indefinitely.
+   Fix: `asyncio.wait_for(..., timeout=5.0)` on each.
+
+3. **options_helpers.py:480** — `asyncio.to_thread(broker.instruments, ex)` in instruments
+   per-exchange fetch — no timeout.
+   Fix: `asyncio.wait_for(..., timeout=30.0)`.
+
+4. **options.py:1350** — `_ltp_broker_quote` — no timeout.
+   Fix: `asyncio.wait_for(..., timeout=5.0)`.
+
+5. **options.py:1624** — `_mcx_populate_phase3` — MCX futures batch quote — no timeout.
+   Fix: `asyncio.wait_for(..., timeout=10.0)`.
+
+6. **options.py:2310** — `_strategy_fetch_bulk_quote` — no timeout.
+   Fix: `asyncio.wait_for(..., timeout=10.0)`.
 
 ## Task
 
-Extract private helper functions from each of the three D-grade functions to lower CC below 16.
-No logic changes. Keep all existing tests green.
+Add `asyncio.wait_for` timeouts to all 8 remaining unguarded broker calls in the chain path.
+The instruments cold-cache path must use `peek()` + 503 instead of blocking on `get_or_fetch`.
 
 ## Agents
 
-- backend: Refactor three functions to lower CC. For each, extract cohesive sub-blocks into
-  private helpers until `radon cc -s -n D` no longer lists the parent function.
+- backend: Fix all 8 remaining hang vectors across two files.
 
-  **`backend/api/background.py` — `_task_daily_snapshot` (CC=30)**
-  Read the function. Extract logical sub-phases (e.g., pre-market checks, snapshot trigger
-  branches, each broker-type path) into private `_snapshot_*` helpers in the same file.
-  Target: parent CC ≤ 15.
+  **`backend/api/routes/options_helpers.py`:**
 
-  **`backend/api/algo/daily_snapshot.py` — `_positions_rows` (CC=22)**
-  Read the function. Extract filtering/transformation branches into private helpers.
-  Target: parent CC ≤ 15.
+  1. **Line ~724 `_chain_snapshot_instruments`** — replace `get_or_fetch("instruments", ...)` with:
+     ```python
+     from backend.api.cache import peek
+     inst_resp = peek("instruments")
+     if inst_resp is None:
+         logger.warning("chain-snapshot: instruments cache cold — returning 503")
+         raise HTTPException(status_code=503, detail="instruments cache warming — retry in a few seconds")
+     ```
+     This is safe: background pre-warm at 08:00 IST and on startup populates the cache before
+     the chain tab is normally used. Cold == just restarted → tell user to retry.
 
-  **`backend/api/routes/orders.py` — `OrdersController.order_postback_groww` (CC=24)**
-  Read the function. Extract fill-detection logic and per-state processing into private
-  `_groww_*` helpers or a module-level helper function.
-  Target: parent CC ≤ 15.
+  2. **Line ~102 `_nse_spot_4`** — wrap with `asyncio.wait_for(..., timeout=5.0)`; catch
+     `asyncio.TimeoutError` → log warning, return None (same as Exception path).
 
-  After each extraction, verify with:
-  `venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null`
-  Must produce no output (zero D/E/F functions).
+  3. **Line ~125 `_commodity_spot_4a`** — same: `wait_for(..., timeout=5.0)`.
 
-  For every file you change, confirm existing tests still cover the extracted logic
-  (no new tests needed if helpers are pure extractions — but if the extaction moves a
-  branch that was previously tested indirectly, add a targeted test).
+  4. **Line ~154 `_commodity_spot_4b`** (inside the for-loop) — same: `wait_for(..., timeout=5.0)`
+     per iteration.
+
+  5. **Line ~480** — instruments per-exchange fetch: `asyncio.wait_for(asyncio.to_thread(broker.instruments, ex), timeout=30.0)`.
+
+  **`backend/api/routes/options.py`:**
+
+  6. **Line ~1350 `_ltp_broker_quote`** — wrap `asyncio.to_thread(get_market_data_broker().quote, [key])`
+     with `asyncio.wait_for(..., timeout=5.0)`; catch TimeoutError → log, return None.
+
+  7. **Line ~1624 `_mcx_populate_phase3`** — wrap `asyncio.to_thread(price_broker.quote, _fut_quote_keys)`
+     with `asyncio.wait_for(..., timeout=10.0)`; catch TimeoutError → log, `_fut_quote_resp = {}`.
+
+  8. **Line ~2310 `_strategy_fetch_bulk_quote`** — wrap `asyncio.to_thread(_price_broker.quote, ...)`
+     with `asyncio.wait_for(..., timeout=10.0)`; catch TimeoutError → log, return `{}`.
+
+  For every file you change, you MUST write or update at least one test that covers the changed
+  behaviour. This is mandatory — not optional.
+  - `backend/api/` change → add/update a pytest test in `backend/tests/` covering the changed lines
+  No change ships without a corresponding test update.
 
 - frontend: skip
 - broker: skip
 - doc: skip
-- backend-test: skip
+- backend-test: skip (backend agent owns its tests)
 - playwright: skip
 
 ## Tests
@@ -57,9 +89,9 @@ No logic changes. Keep all existing tests green.
 - playwright: no
 
 ## Commit message
-refactor(cc): extract helpers from _task_daily_snapshot, _positions_rows, order_postback_groww to restore grade C
+fix(chain): add wait_for timeouts to all 8 remaining unguarded broker calls + peek() for cold instruments
 
 ## Done when
-- `venv/bin/python -m radon cc backend/ -s -n D 2>/dev/null` produces no output
-- All pytest tests still green
-- dprod can proceed: CC gate unblocked → merge dev→main
+- Chain tab does not hang on cold cache (returns 503 immediately instead of 60s block)
+- All spot/quote calls return within 5–10s on broker stall instead of blocking indefinitely
+- All pytest tests green

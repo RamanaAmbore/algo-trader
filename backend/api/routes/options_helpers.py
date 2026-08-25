@@ -99,13 +99,18 @@ async def _resolve_spot_ticker(
     """
     key = underlying_ltp_key(underlying)
     try:
-        resp = await asyncio.to_thread(broker.quote, [key]) or {}  # type: ignore[attr-defined]
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(broker.quote, [key]),  # type: ignore[attr-defined]
+            timeout=5.0,
+        ) or {}
         quote_dict = resp.get(key) or {}
         px, src = ltp_from_quote(quote_dict)  # type: ignore[operator]
         if px is not None:
             prev = prev_close_from_quote(quote_dict)  # type: ignore[operator]
             spot_cache_put(underlying, px, src, prev, None)  # type: ignore[operator]
             return (px, src, prev, None)
+    except asyncio.TimeoutError:
+        logger.warning("options spot quote for %s timed out (5s)", underlying)
     except Exception as exc:
         logger.warning("options spot quote for %s failed: %s", underlying, exc)
     return None
@@ -122,13 +127,18 @@ async def _commodity_spot_4a(
     """Step 4a: quote MCX:{resolved_sym}; return result tuple on success or None."""
     full_key = f"MCX:{resolved_sym}"
     try:
-        resp = await asyncio.to_thread(broker.quote, [full_key]) or {}  # type: ignore[attr-defined]
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(broker.quote, [full_key]),  # type: ignore[attr-defined]
+            timeout=5.0,
+        ) or {}
         quote_dict = resp.get(full_key) or {}
         px, _src = ltp_from_quote(quote_dict)  # type: ignore[operator]
         if px is not None:
             prev = prev_close_from_quote(quote_dict)  # type: ignore[operator]
             spot_cache_put(underlying, px, "futures", prev, resolved_sym)  # type: ignore[operator]
             return (px, "futures", prev, resolved_sym, resolved_sym)
+    except asyncio.TimeoutError:
+        logger.warning("options MCX spot for %s (%s) timed out (5s)", underlying, full_key)
     except Exception as exc:
         logger.warning("options MCX spot for %s (%s) failed: %s", underlying, full_key, exc)
     return None
@@ -151,7 +161,10 @@ async def _commodity_spot_4b(
         for ex in exchanges:
             full_key = f"{ex}:{fut_sym}"
             try:
-                resp = await asyncio.to_thread(broker.quote, [full_key]) or {}  # type: ignore[attr-defined]
+                resp = await asyncio.wait_for(
+                    asyncio.to_thread(broker.quote, [full_key]),  # type: ignore[attr-defined]
+                    timeout=5.0,
+                ) or {}
                 quote_dict = resp.get(full_key) or {}
                 px, _src = ltp_from_quote(quote_dict)  # type: ignore[operator]
                 if px is not None:
@@ -159,6 +172,11 @@ async def _commodity_spot_4b(
                     anchor = fut_sym if is_mcx_underlying(underlying) else None
                     spot_cache_put(underlying, px, "futures", prev, anchor)  # type: ignore[operator]
                     return (px, "futures", prev, resolved_sym, anchor)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "options futures-spot quote for %s (%s) timed out (5s)",
+                    underlying, full_key,
+                )
             except Exception as exc:
                 logger.warning(
                     "options futures-spot quote for %s (%s) failed: %s",
@@ -477,7 +495,23 @@ async def _resolve_token_for_broker(
     for ex in exchange_arms:
         token_map = instruments_cache_get(broker.account, ex)  # type: ignore[operator]
         if token_map is None:
-            insts = await asyncio.to_thread(broker.instruments, ex) or []
+            try:
+                insts = await asyncio.wait_for(
+                    asyncio.to_thread(broker.instruments, ex),
+                    timeout=30.0,
+                ) or []
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "instruments fetch for %s/%s timed out (30s) — skipping exchange",
+                    broker.account, ex,
+                )
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "instruments fetch for %s/%s failed: %s — skipping exchange",
+                    broker.account, ex, exc,
+                )
+                continue
             token_map = {}
             for inst in insts:
                 ts = str(inst.get("tradingsymbol") or "").upper()
@@ -716,17 +750,19 @@ async def _chain_snapshot_instruments(
     compute the ATM window, and return ``(sym_by_strike, atm_strike, window_strikes)``.
 
     Returns an empty dict for ``sym_by_strike`` when no contracts are found.
-    Raises ``HTTPException(502)`` on instruments-cache failure.
+    Raises ``HTTPException(503)`` when the instruments cache is cold (not yet
+    warmed by the background pre-warm at 08:00 IST or startup).  The caller
+    should retry in a few seconds rather than triggering a 30–60s blocking
+    download on the hot path.
     """
-    from backend.api.cache import get_or_fetch
-    from backend.api.routes.instruments import _fetch_instruments
-    try:
-        inst_resp = await get_or_fetch(
-            "instruments", _fetch_instruments, ttl_seconds=86400,
+    from backend.api.cache import peek
+    inst_resp = peek("instruments")
+    if inst_resp is None:
+        logger.warning("chain-snapshot: instruments cache cold — returning 503")
+        raise HTTPException(
+            status_code=503,
+            detail="instruments cache warming — retry in a few seconds",
         )
-    except Exception as exc:
-        logger.warning("chain-snapshot instruments fetch failed: %s", exc)
-        raise HTTPException(status_code=502, detail="instruments cache unavailable")
 
     sym_by_strike: dict[float, dict[str, str]] = {}
     for inst in inst_resp.items:
