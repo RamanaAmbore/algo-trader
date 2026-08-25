@@ -897,6 +897,74 @@ async def _delete_prior_orphan_positions(account: str, current_symbols: set) -> 
         return result.rowcount
 
 
+async def fix_daily_book_prev_close(now_ist=None) -> int:
+    """Repair daily_book.previous_close for today's rows.
+
+    Overnight mode (now_ist < today's 08:00 IST):
+      Reads yesterday's daily_book.previous_close (= prior-prior-session settlement,
+      correctly stored by the UPSERT rolling-shift). Updates only rows where
+      previous_close ≈ ltp (wrong data created by buggy prev_ltp_map that was
+      reading ltp instead of previous_close from yesterday's rows).
+      After fix: day_change = (today's settlement - prior-prior-session) × qty,
+      showing yesterday's session performance during the closed-hours window.
+
+    New-session mode (now_ist >= today's 08:00 IST):
+      Reads yesterday's daily_book.ltp (= prior-session settlement = yesterday's close).
+      Updates today's rows unconditionally — transitions the baseline from the
+      overnight display to the new session. ltp == prev_close is valid here
+      (session opened, no intraday movement yet).
+    """
+    if now_ist is None:
+        now_ist = timestamp_indian()
+    midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_8am = midnight + timedelta(hours=8)
+    today = now_ist.date()
+
+    if now_ist < today_8am:
+        ref_col = "previous_close"
+        ref_cond = "previous_close IS NOT NULL AND previous_close > 0"
+        epsilon = 0.005   # only fix rows where previous_close ≈ ltp (wrong)
+        mode = "overnight"
+    else:
+        ref_col = "ltp"
+        ref_cond = "ltp IS NOT NULL AND ltp > 0"
+        epsilon = 999999.0  # unconditional — transition all today's rows
+        mode = "new-session"
+
+    try:
+        async with async_session() as session:
+            result = await session.execute(text(f"""
+                WITH prev_ref AS (
+                    SELECT DISTINCT ON (kind, account, symbol)
+                           kind, account, symbol, {ref_col} AS ref_close
+                    FROM daily_book
+                    WHERE date < :today
+                      AND {ref_cond}
+                      AND kind IN ('holdings', 'positions')
+                    ORDER BY kind, account, symbol, date DESC
+                )
+                UPDATE daily_book d
+                SET previous_close = r.ref_close
+                FROM prev_ref r
+                WHERE d.kind = r.kind
+                  AND d.account = r.account
+                  AND d.symbol = r.symbol
+                  AND d.date = :today
+                  AND d.ltp IS NOT NULL AND d.ltp > 0
+                  AND ABS(COALESCE(d.previous_close, 0) - d.ltp) < :epsilon
+            """), {"today": today, "epsilon": epsilon})
+            await session.commit()
+            updated = result.rowcount
+        logger.info(
+            "[PREV-CLOSE-FIX] mode=%s updated=%d rows (today=%s)",
+            mode, updated, today,
+        )
+        return updated
+    except Exception as e:
+        logger.warning("[PREV-CLOSE-FIX] failed: %s", e)
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -989,20 +1057,45 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
     errors: list[str] = []
     processed: list[str] = []
 
-    # Pre-fetch prior-session daily_book.ltp for every (account, symbol, kind)
-    # so we can use socket-derived LTP as previous_close instead of broker's
-    # volatile close_price REST field.
+    # Pre-fetch prior-session close for every (account, symbol, kind) to use as
+    # previous_close in today's INSERT rows instead of broker's stale close_price.
+    #
+    # Two modes based on session boundary (08:00 IST):
+    #   Before 08:00 IST (overnight): read daily_book.previous_close from yesterday's rows.
+    #     The UPSERT rolling-shift already stores the prior-prior-session settlement there
+    #     (e.g., Aug 23 settlement = 97.50 in the Aug 24 row's previous_close column) when
+    #     NSE settlement fires and ltp shifts. Using this value as today's INSERT previous_close
+    #     gives the correct overnight display: day_change = (today's settlement - prior-prior-session).
+    #   At/after 08:00 IST (new session): read daily_book.ltp from yesterday's rows.
+    #     ltp = prior-session settlement (e.g., Aug 24 settlement = 98.00) — the correct
+    #     new-session baseline. ltp == prev_close at session open is intentionally valid.
+    _snap_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    _snap_8am = _snap_midnight + timedelta(hours=8)
+    _before_session_open = now_ist < _snap_8am
+    if _before_session_open:
+        _prev_sql = """
+            SELECT DISTINCT ON (account, symbol, kind)
+                   account, symbol, kind, previous_close AS ltp
+            FROM daily_book
+            WHERE date < :today
+              AND previous_close IS NOT NULL AND previous_close > 0
+              AND kind IN ('holdings', 'positions')
+            ORDER BY account, symbol, kind, date DESC
+        """
+    else:
+        _prev_sql = """
+            SELECT DISTINCT ON (account, symbol, kind)
+                   account, symbol, kind, ltp
+            FROM daily_book
+            WHERE date < :today
+              AND ltp IS NOT NULL AND ltp > 0
+              AND kind IN ('holdings', 'positions')
+            ORDER BY account, symbol, kind, date DESC
+        """
     prev_ltp_map: dict[tuple[str, str, str], float] = {}
     try:
         async with async_session() as _sess:
-            _prev_result = await _sess.execute(text("""
-                SELECT DISTINCT ON (account, symbol, kind)
-                    account, symbol, kind, ltp
-                FROM daily_book
-                WHERE date < :today
-                  AND ltp IS NOT NULL AND ltp > 0
-                ORDER BY account, symbol, kind, date DESC
-            """), {"today": target_date})
+            _prev_result = await _sess.execute(text(_prev_sql), {"today": target_date})
             prev_ltp_map = {
                 (row.account, row.symbol, row.kind): float(row.ltp)
                 for row in _prev_result

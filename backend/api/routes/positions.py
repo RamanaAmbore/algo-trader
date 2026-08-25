@@ -869,13 +869,14 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     # Invariant: prev_close is frozen until the next session opens at 08:00 IST.
     # Cutoff = the last 08:00 IST boundary that has passed.
-    # Before 08:00 IST today: use yesterday's 08:00 IST → excludes tonight's MCX
-    #   settlement snapshot (captured ≈ 00:15 IST today), which would otherwise make
-    #   snap_ltp == last_price == MCX settlement → day_change_val = 0.
+    # Before 08:00 IST today: cutoff = yesterday's 08:00 IST — excludes today's EOD
+    #   snapshots (NSE at 15:35 IST, MCX close at 23:31 IST, MCX settlement at 00:15
+    #   IST), returning the prior-prior-session ltp as prev_close so day_change reflects
+    #   yesterday's session performance.
     # At/after 08:00 IST today: use today's 08:00 IST → new session started,
     #   tonight's MCX snapshot is now the correct prev_close for today's MCX session.
     today_ist_8am = today_ist_midnight + timedelta(hours=8)
-    today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight
+    today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
 
     snapshot_map: dict[tuple[str, str], float] = {}
     prev_pnl_map: dict[tuple[str, str], float] = {}

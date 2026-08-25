@@ -1832,7 +1832,7 @@ async def _task_daily_snapshot() -> None:
     market hours to avoid polluting daily_book with mid-session LTPs
     (observed incident 2026-06-22).
     """
-    from backend.api.algo.daily_snapshot import snapshot_daily_book
+    from backend.api.algo.daily_snapshot import snapshot_daily_book, fix_daily_book_prev_close
     from backend.shared.helpers.date_time_utils import (
         timestamp_indian, is_market_open,
     )
@@ -1912,6 +1912,14 @@ async def _task_daily_snapshot() -> None:
         # awareness) cannot suppress ltp capture for Dhan accounts.
         await _fire_snapshot("startup", market_open=False)
 
+    # One-time data repair on startup: fix today's rows where previous_close = ltp (wrong).
+    # Uses yesterday's daily_book.previous_close (correctly stored by UPSERT rolling-shift)
+    # so overnight display shows yesterday's session performance instead of zero.
+    try:
+        await fix_daily_book_prev_close(_now_ist)
+    except Exception as _e:
+        logger.warning("Background: prev_close startup fix failed: %s", _e)
+
     # ── settlement pass deduplication (date | None) ────────────────────
     _nse_settlement_done: Optional[date] = None
     _mcx_settlement_done: Optional[date] = None
@@ -1920,6 +1928,7 @@ async def _task_daily_snapshot() -> None:
     _unsub_nonmcx_done:   Optional[date] = None  # 16:15 NSE-close unsub
     _ticker_stop_done:    Optional[date] = None  # 00:30 full ticker stop
     _ticker_restart_done: Optional[date] = None  # 08:00 post-token-refresh restart
+    _prev_close_fix_done: Optional[date] = None  # 08:00 prev_close new-session transition
 
     _NSE_SETTLEMENT_H, _NSE_SETTLEMENT_M = 16, 15
     _MCX_SETTLEMENT_H, _MCX_SETTLEMENT_M =  0, 15
@@ -1938,6 +1947,18 @@ async def _task_daily_snapshot() -> None:
             logger.info("Background: 16:15 IST — firing NSE settlement snapshot")
             await _fire_snapshot("nse-settlement")
             _nse_settlement_done = today
+
+        # ---- 08:00 IST: transition previous_close to new-session baseline ----------
+        # Sets previous_close for today's daily_book rows to yesterday's settlement ltp.
+        # After this, ltp == prev_close at session open is valid (no intraday movement yet).
+        if (now.time() >= dtime(8, 0) and now.time() < dtime(8, 30)
+                and _prev_close_fix_done != today):
+            logger.info("Background: 08:00 IST — daily prev_close new-session transition")
+            try:
+                await fix_daily_book_prev_close(now)
+            except Exception as _e:
+                logger.warning("Background: 08:00 IST prev_close fix failed: %s", _e)
+            _prev_close_fix_done = today
 
         # ---- MCX close: 23:31 IST (same calendar/trade-date) -----------
         # Fires just after MCX closes so MCX positions get their EOD
