@@ -3728,30 +3728,60 @@ day_delta = pnl − overnight_quantity × (close_price − average_price)
 
 Kite overwrites `positions.close_price` to today's settlement price after market close,
 breaking the day P&L fallback formula during closed-hours snapshot reads. The `daily_book`
-table includes a `previous_close` column that freezes yesterday's official settlement
-price at the first intraday snapshot of each trading day, providing a stable reference.
+table includes a `previous_close` column that freezes the correct reference price based
+on the session boundary, providing a stable overnight baseline.
 
 **Problem it solves:**
-- Between MCX close (23:30 IST) and next market open (09:00 IST), Kite's `positions.close_price`
+- Between MCX close (23:30 IST) and next market open (08:00 IST), Kite's `positions.close_price`
   has already been overwritten to today's settlement (known at 00:00 IST approx).
 - The closed-hours snapshot reader calls `baseDayPnlForPosition` fallback: `pnl − overnight_qty × (close_price − avg_price)`
 - Using today's settlement price here → fallback computes wrong, collapses to 0 for overnight positions
 - Result: NavStrip P pill + Dashboard + Performance page show zero day P&L during overnight window
 
+**Three-layer fix (commit 0da8055c):**
+
+**Layer 1 — Live-path cutoff** (`positions.py:_override_stale_close_from_snapshot`,
+`holdings.py:_override_stale_close_for_holdings`):
+- Before fix: cutoff `today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight`
+  would exclude overnight snapshots when looking for yesterday's settlement LTP
+- After fix: cutoff is `today_ist_8am if now_ist >= today_ist_8am else (today_ist_8am − 1 day)`
+- Before 08:00 IST, the query now looks back to yesterday's 08:00 IST, excluding today's
+  EOD snapshots and properly capturing prior-session settlement
+
+**Layer 2 — Snapshot-path session-boundary branch** (`daily_snapshot.py:snapshot_daily_book`):
+- **Before 08:00 IST** (overnight): reads `daily_book.previous_close` from yesterday's rows
+  (= prior-prior-session settlement, correctly stored by UPSERT rolling-shift). Day P&L
+  shows: `(today's settlement − prior-prior-session settlement) × qty` (yesterday's performance)
+- **At/after 08:00 IST** (new session): reads `daily_book.ltp` from yesterday's rows
+  (= prior-session settlement = yesterday's close = new baseline). Day P&L now resets as
+  new session opens (ltp == prev_close is intentionally valid at session open)
+- Query branches at runtime based on `now_ist < today_8am` vs `>=`
+
+**Layer 3 — Data repair function** (`daily_snapshot.py:fix_daily_book_prev_close`):
+- Called at startup (one-time repair) and daily at 08:00 IST (new-session transition)
+- **Overnight mode**: repairs rows where `|previous_close − ltp| < 0.005` (wrong data),
+  setting `previous_close` from yesterday's `daily_book.previous_close`
+- **New-session mode**: unconditionally updates today's rows to yesterday's `daily_book.ltp`
+- Ensures data consistency regardless of how queries executed during the transition window
+
 **Solution:**
 - `DailyBook.previous_close: Optional[float]` column (DOUBLE PRECISION)
-- **Source**: prior-day `daily_book.ltp` (socket-derived, via `prev_ltp_map` batch query in
-  `snapshot_daily_book`), with broker REST `close_price` as fallback for first-day rows
-  (no prior daily_book entry)
+- **Source**: dual logic per session boundary:
+  - **Before 08:00 IST**: prior-day `daily_book.previous_close` (prior-prior-session settlement)
+  - **At/after 08:00 IST**: prior-day `daily_book.ltp` (prior-session settlement)
+  - Both read via `prev_ltp_map` batch query in `snapshot_daily_book`; broker REST `close_price`
+    as fallback for first-day rows
 - Written once per (date, account, kind, symbol) at first snapshot via COALESCE UPSERT
 - COALESCE ensures subsequent snapshots don't overwrite the frozen value
 - `_positions_snapshot` reads and passes this to `build_snapshot_position_row`, which uses it
   as PositionRow `close_price` when available (> 0)
 
 **Implementation details:**
-- **Capture point:** `backend/api/algo/daily_snapshot.py::_positions_rows()` populates
-  `previous_close` from `prev_ltp_map[(account, symbol, "positions")]` (prior-day socket LTP)
-  or falls back to broker `close_price` for first-day rows
+- **Capture point:** `backend/api/algo/daily_snapshot.py::_positions_rows()`, `_holdings_rows()`
+  populate `previous_close` from `prev_ltp_map[(account, symbol, kind)]` which reads either
+  `previous_close` (before 08:00) or `ltp` (at/after 08:00) based on session boundary
+- **Data repair:** `backend/api/algo/daily_snapshot.py::fix_daily_book_prev_close()` repairs
+  overnight stale data and transitions to new-session baseline at 08:00 IST
 - **Persistence:** `backend/api/database.py::init_db()` creates column via idempotent
   `ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS previous_close DOUBLE PRECISION`
 - **Read point:** `backend/api/routes/positions.py::_positions_snapshot()` queries prior-day
@@ -3760,15 +3790,20 @@ price at the first intraday snapshot of each trading day, providing a stable ref
   `previous_close` as `close_price` in the PositionRow response when `previous_close > 0`
 
 **Frontend visibility:**
-- Closed-hours positions now show the stable overnight `close_price`
-- `baseDayPnlForPosition` fallback uses the correct price, preserving overnight P&L during MCX window
-- NavStrip P pill, Dashboard hero, Performance TOTAL all stay in sync during overnight hours
+- Overnight window (MCX 00:15–08:00 IST): positions show day P&L from previous session
+  (not today's settlement, not zero flash)
+- At 08:00 IST: baseline resets to today's opening snapshot; day P&L correctly shows zero
+  until intraday movement begins
+- NavStrip P pill, Dashboard hero, Performance TOTAL all stay in sync across market boundaries
 
 **Files:**
 - `backend/api/models.py::DailyBook` — column definition
 - `backend/api/database.py::init_db` — migration via ALTER TABLE
-- `backend/api/algo/daily_snapshot.py::_positions_rows`, `_holdings_rows` — populate from prev_ltp_map
-- `backend/api/routes/positions.py::_positions_snapshot`, `_backfill_prev_settlement_pnl` — build prev_ltp_map
+- `backend/api/algo/daily_snapshot.py::snapshot_daily_book`, `fix_daily_book_prev_close` —
+  session-boundary branch + data repair
+- `backend/api/routes/positions.py::_positions_snapshot`, `_override_stale_close_from_snapshot`,
+  `_backfill_prev_settlement_pnl` — live + snapshot builders
+- `backend/api/routes/holdings.py::_override_stale_close_for_holdings` — holdings live path
 - `backend/api/routes/positions_helpers.py::build_snapshot_position_row` — use as close_price
 - Frontend: no changes (uses existing PositionRow.close_price)
 
