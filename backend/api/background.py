@@ -1915,10 +1915,8 @@ async def _task_daily_snapshot() -> None:
     # One-time data repair on startup: fix today's rows where previous_close = ltp (wrong).
     # Uses yesterday's daily_book.previous_close (correctly stored by UPSERT rolling-shift)
     # so overnight display shows yesterday's session performance instead of zero.
-    try:
-        await fix_daily_book_prev_close(_now_ist)
-    except Exception as _e:
-        logger.warning("Background: prev_close startup fix failed: %s", _e)
+    # fix_daily_book_prev_close guards its own exceptions and returns 0 on failure.
+    await fix_daily_book_prev_close(_now_ist)
 
     # ── settlement pass deduplication (date | None) ────────────────────
     _nse_settlement_done: Optional[date] = None
@@ -1951,13 +1949,9 @@ async def _task_daily_snapshot() -> None:
         # ---- 08:00 IST: transition previous_close to new-session baseline ----------
         # Sets previous_close for today's daily_book rows to yesterday's settlement ltp.
         # After this, ltp == prev_close at session open is valid (no intraday movement yet).
-        if (now.time() >= dtime(8, 0) and now.time() < dtime(8, 30)
-                and _prev_close_fix_done != today):
+        if dtime(8, 0) <= now.time() < dtime(8, 30) and _prev_close_fix_done != today:
             logger.info("Background: 08:00 IST — daily prev_close new-session transition")
-            try:
-                await fix_daily_book_prev_close(now)
-            except Exception as _e:
-                logger.warning("Background: 08:00 IST prev_close fix failed: %s", _e)
+            await fix_daily_book_prev_close(now)  # guards its own exceptions
             _prev_close_fix_done = today
 
         # ---- MCX close: 23:31 IST (same calendar/trade-date) -----------

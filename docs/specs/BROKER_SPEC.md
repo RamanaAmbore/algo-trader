@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.18 — 2026-08-15  
+**Version**: 1.19 — 2026-08-24  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -926,6 +926,132 @@ day_change_percentage = (daily_book.day_pnl / (previous_close * qty)) * 100
 
 This convention ensures the stored value is directly interpretable as the P&L you 
 would realize if you squared off the position at LTP on that session.
+
+### Three-Layer prev_close Defect Fix (Aug 2026 — commit f1ecf3c8)
+
+**Files**: 
+- `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()`, `fix_daily_book_prev_close()`
+- `backend/api/routes/positions.py` — `_override_stale_close_from_snapshot()`
+- `backend/api/routes/holdings.py` — `_override_stale_close_for_holdings()`
+- `backend/api/background.py` — `_task_daily_snapshot()`
+
+**Defect**: When both NSE and MCX close between 15:35 IST (NSE settlement) and 08:00 
+IST next morning (session open), the `daily_book.previous_close` column was set to 
+`daily_book.ltp` from that settlement (wrong). At session open, `ltp == previous_close` 
+→ `day_change = (ltp - prev_close) × qty = 0` for all symbols, hiding the overnight 
+move since the prior-prior session. Frontend displayed zero day P&L for all holdings 
+during the closed-hours window.
+
+**Root cause**: Two issues stacked:
+
+1. **prev_ltp_map query branch (overnight hours)**: Before 08:00 IST, `snapshot_daily_book()` 
+   queried `daily_book.ltp` directly when building the `prev_ltp_map`. NSE settlement 
+   (~15:35 IST) and MCX settlement (~00:15 IST) both capture `ltp` and write it to 
+   `daily_book` on today's date. Using that LTP as `previous_close` created the 
+   wrong-on-first-insert tuple.
+
+2. **UPSERT rolling-shift bug**: The UPSERT `ON CONFLICT ... DO UPDATE` clause 
+   attempted to advance `previous_close` only when LTP changed. But the query used 
+   `COALESCE(EXCLUDED.ltp, daily_book.ltp)` to guard against NULL overwrites during 
+   mid-session passes. This meant the first-insert of a settlement snapshot set 
+   `previous_close = NULL`, then the UPSERT guard preserved it unchanged on 
+   subsequent mid-session passes → stuck at NULL until the next date rolled over.
+
+**Fix (Layer 1 — query logic in snapshot_daily_book)**:
+
+Before 08:00 IST (overnight mode): Query `daily_book.previous_close` from rows with 
+`date < today` instead of `ltp`. The UPSERT rolling-shift already stores the 
+prior-prior-session settlement in the `previous_close` column (e.g., Aug 23 settlement 
+lives in Aug 24's `previous_close` after NSE settlement fires and shifts the date). 
+Using yesterday's `previous_close` gives the correct overnight display.
+
+At/after 08:00 IST (new-session mode): Query `daily_book.ltp` from rows with 
+`date < today`. This is the prior-session settlement (= correct new-session baseline). 
+At this point, `ltp == prev_close` is valid (no intraday movement yet).
+
+```python
+# Before 08:00 IST: read prior-prior-session settlement
+if now_ist < today_8am:
+    _prev_sql = """
+        SELECT DISTINCT ON (account, symbol, kind)
+               account, symbol, kind, previous_close AS ltp
+        FROM daily_book
+        WHERE date < :today
+          AND previous_close IS NOT NULL AND previous_close > 0
+          AND kind IN ('holdings', 'positions')
+        ORDER BY account, symbol, kind, date DESC
+    """
+# At/after 08:00 IST: read prior-session settlement
+else:
+    _prev_sql = """
+        SELECT DISTINCT ON (account, symbol, kind)
+               account, symbol, kind, ltp
+        FROM daily_book
+        WHERE date < :today
+          AND ltp IS NOT NULL AND ltp > 0
+          AND kind IN ('holdings', 'positions')
+        ORDER BY account, symbol, kind, date DESC
+    """
+```
+
+**Fix (Layer 2 — close-override paths in positions + holdings routes)**:
+
+Changed the `today_ist_cutoff` formula used by `_override_stale_close_from_snapshot()` 
+(positions) and `_override_stale_close_for_holdings()` (holdings) from 
+`today_ist_midnight` to a session-boundary-aware cutoff:
+
+```python
+# Before 08:00 IST: cutoff = yesterday's 08:00 IST
+# (excludes today's EOD snapshots from the close-override query)
+# At/after 08:00 IST: cutoff = today's 08:00 IST
+today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
+```
+
+This ensures that before 08:00 IST, the close-override query reads from yesterday's 
+08:00 cutoff backward, excluding tonight's MCX settlement snapshot from being used as 
+the day's reference price.
+
+**Fix (Layer 3 — data repair on startup and 08:00 IST transition)**:
+
+New function `fix_daily_book_prev_close(now_ist)` repairs today's `daily_book` rows:
+
+- **Overnight mode (before 08:00 IST)**: Identifies rows where 
+  `|previous_close - ltp| < 0.005` (= the buggy first-insert state). Updates 
+  `previous_close` from yesterday's `daily_book.previous_close` (the correct 
+  prior-prior-session value).
+
+- **New-session mode (at/after 08:00 IST)**: Unconditionally updates today's rows to 
+  yesterday's `daily_book.ltp` (the prior-session settlement = new-session baseline).
+
+Called twice:
+1. **Startup**: `_task_daily_snapshot()` fires this once on boot to repair any 
+   overnight-mode dirty data left from the previous session.
+2. **Daily 08:00 IST transition**: Called again in `_task_daily_snapshot()` at 08:00 
+   IST to transition the baseline for that day's new session.
+
+```python
+async def fix_daily_book_prev_close(now_ist=None) -> int:
+    if now_ist < today_8am:
+        ref_col = "previous_close"  # read prior-prior-session
+        mode = "overnight"
+    else:
+        ref_col = "ltp"              # read prior-session
+        mode = "new-session"
+    # UPDATE daily_book SET previous_close = ref_col
+    # WHERE date = :today AND |previous_close - ltp| < 0.005 (overnight)
+    #    OR date = :today (new-session, unconditional)
+```
+
+**Correct behavior after fix**:
+
+- **Overnight window** (MCX settlement 00:15 → 08:00 IST next day): 
+  `prev_close = prior-prior-session settlement ≠ ltp` 
+  → `day_change = (settlement - prior-prior) × qty` 
+  → frontend shows yesterday's session performance
+
+- **After 08:00 IST** (new session open): 
+  `prev_close = prior-session settlement == ltp` (no intraday movement yet) 
+  → valid state; live LTP ticks above/below this baseline throughout the day
 
 ---
 
