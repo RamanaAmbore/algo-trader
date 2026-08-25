@@ -597,63 +597,126 @@ def _position_previous_close(
     return pos_close_ref or (float(r["close_price"]) if r.get("close_price") else None)
 
 
+def _positions_load_lot_index() -> dict:
+    """Return the kite _LOT_INDEX mapping or an empty dict on import failure."""
+    try:
+        from backend.brokers.adapters.kite import _LOT_INDEX as _kite_lot_index
+        return _kite_lot_index
+    except Exception:
+        return {}
+
+
+def _positions_qty_fields(
+    r: dict, exchange: str, symbol: str, _kite_lot_index: dict,
+) -> tuple[int, int, int, dict, int]:
+    """Compute (qty_contracts, lots_val, lot_size_val, r_for_pnl, pnl_mult).
+
+    MCX/NCO rows: Kite supplies qty in LOTS plus a multiplier field.
+    NFO/CDS/BFO: Kite ships contracts; lot_size comes from _LOT_INDEX.
+    Equity: qty_contracts == lots_val == qty_raw; lot_size = 1.
+
+    Compute contracts, lots, lot_size uniformly:
+      MCX/NCO (multiplier > 1): lots = qty_raw (from Kite in lots),
+        contracts = lots × multiplier, lot_size = multiplier
+      NFO/CDS/BFO (multiplier == 1, but has real lot_size in _LOT_INDEX):
+        contracts = qty_raw (Kite ships contracts already),
+        lot_size = from _LOT_INDEX (fallback 1), lots = contracts // lot_size
+      Equity: contracts = qty_raw, lots = qty_raw, lot_size = 1
+    """
+    qty_raw  = r.get("quantity") or 0
+    raw_mult = r.get("multiplier")
+    multiplier = int(float(raw_mult)) if raw_mult else 1
+    if multiplier < 1:
+        multiplier = 1
+
+    if multiplier > 1:
+        # MCX / NCO path — quantities from Kite are in lots; scale to contracts.
+        qty_contracts = int(qty_raw) * multiplier
+        lots_val      = int(qty_raw)
+        lot_size_val  = multiplier
+        # Build a scaled copy of r for day P&L computation — quantities
+        # must be in contracts before decomposed_intraday_pnl runs.
+        r_for_pnl = {**r,
+            "overnight_quantity": float(r.get("overnight_quantity") or 0) * multiplier,
+            "day_buy_quantity":   float(r.get("day_buy_quantity")   or 0) * multiplier,
+            "day_sell_quantity":  float(r.get("day_sell_quantity")  or 0) * multiplier,
+        }
+        pnl_mult = 1  # already scaled in r_for_pnl
+    else:
+        # NFO / CDS / BFO / equity path
+        qty_contracts = int(qty_raw)
+        ls = _kite_lot_index.get((exchange, symbol), 1)
+        if ls < 1:
+            ls = 1
+        lot_size_val = ls
+        lots_val     = qty_contracts // ls
+        r_for_pnl    = r
+        pnl_mult     = 1
+
+    return qty_contracts, lots_val, lot_size_val, r_for_pnl, pnl_mult
+
+
+def _positions_build_row(
+    r: dict, account: str, target_date: date, exchange: str, symbol: str,
+    qty_contracts: int, lots_val: int, lot_size_val: int,
+    ltp_val: Optional[float], day_pnl: Optional[float],
+    oq_raw: float, avg_px: float, pos_close_ref: Optional[float],
+    settled: bool, multiplier: int,
+) -> dict:
+    """Assemble the final daily_book row dict for one position.
+
+    Closed positions (qty_contracts == 0) receive a VWAP-derived ltp from
+    _closed_position_exit_ltp so the snapshot records the actual exit price.
+    """
+    if qty_contracts == 0:
+        ltp_val = _closed_position_exit_ltp(r, ltp_val, oq_raw, multiplier)
+
+    previous_close_val = _position_previous_close(
+        oq_raw, avg_px, qty_contracts, pos_close_ref, r
+    )
+
+    return {
+        "date":           target_date,
+        "account":        account,
+        "segment":        kite_seg_from_exchange(exchange),
+        "kind":           "positions",
+        "symbol":         symbol,
+        "exchange":       exchange,
+        "qty":            qty_contracts,
+        "lots":           lots_val,
+        "lot_size":       lot_size_val,
+        "avg_cost":       float(r["average_price"]) if r.get("average_price") is not None else None,
+        "ltp":            ltp_val,
+        "day_pnl":        day_pnl,
+        "total_pnl":      float(r["pnl"]) if r.get("pnl") is not None else None,
+        "previous_close": previous_close_val,
+        "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
+    }
+
+
 def _positions_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
     *, settled: bool = False, market_open: bool = True,
     prev_ltp_map: dict | None = None,
 ) -> list[dict]:
-    # _LOT_INDEX sync lookup for NFO/CDS/BFO lot sizes.
-    try:
-        from backend.brokers.adapters.kite import _LOT_INDEX as _kite_lot_index
-    except Exception:
-        _kite_lot_index = {}
+    _kite_lot_index = _positions_load_lot_index()
 
-    rows = []
+    rows: list[dict] = []
     skipped = 0
     for r in raw:
         symbol = r.get("tradingsymbol", "")
         if not symbol:
             continue
         exchange = r.get("exchange", "NFO")
-        qty_raw = r.get("quantity") or 0
-        # MCX/NCO rows carry a multiplier (lot_size) from Kite. Overnight /
-        # buy / sell quantities in those rows are in LOTS; ltp/cls are
-        # per-unit prices. Guard: treat any value < 1 as 1.
-        raw_mult = r.get("multiplier")
+
+        qty_contracts, lots_val, lot_size_val, r_for_pnl, pnl_mult = (
+            _positions_qty_fields(r, exchange, symbol, _kite_lot_index)
+        )
+        # Need the raw multiplier for _closed_position_exit_ltp; re-derive cheaply.
+        raw_mult   = r.get("multiplier")
         multiplier = int(float(raw_mult)) if raw_mult else 1
         if multiplier < 1:
             multiplier = 1
-
-        # Compute contracts, lots, lot_size uniformly:
-        #   MCX/NCO (multiplier > 1): lots = qty_raw (from Kite in lots),
-        #     contracts = lots × multiplier, lot_size = multiplier
-        #   NFO/CDS/BFO (multiplier == 1, but has real lot_size in _LOT_INDEX):
-        #     contracts = qty_raw (Kite ships contracts already),
-        #     lot_size = from _LOT_INDEX (fallback 1), lots = contracts // lot_size
-        #   Equity: contracts = qty_raw, lots = qty_raw, lot_size = 1
-        if multiplier > 1:
-            # MCX / NCO path
-            qty_contracts = int(qty_raw) * multiplier
-            lots_val      = int(qty_raw)
-            lot_size_val  = multiplier
-            # Build a scaled copy of r for day P&L computation — quantities
-            # must be in contracts before decomposed_intraday_pnl runs.
-            r_for_pnl = {**r,
-                "overnight_quantity": float(r.get("overnight_quantity") or 0) * multiplier,
-                "day_buy_quantity":   float(r.get("day_buy_quantity")   or 0) * multiplier,
-                "day_sell_quantity":  float(r.get("day_sell_quantity")  or 0) * multiplier,
-            }
-            pnl_mult = 1  # already scaled in r_for_pnl
-        else:
-            # NFO / CDS / BFO / equity path
-            qty_contracts = int(qty_raw)
-            ls = _kite_lot_index.get((exchange, symbol), 1)
-            if ls < 1:
-                ls = 1
-            lot_size_val = ls
-            lots_val     = qty_contracts // ls
-            r_for_pnl    = r
-            pnl_mult     = 1
 
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
         mid_session = False if not market_open else _is_exchange_open_at(exchange, now_ist)
@@ -672,30 +735,13 @@ def _positions_rows(
         oq_raw = float(r.get("overnight_quantity") or 0)
         avg_px = float(r.get("average_price") or 0)
 
-        if qty_contracts == 0:
-            ltp_val = _closed_position_exit_ltp(r, ltp_val, oq_raw, multiplier)
-
-        previous_close_val = _position_previous_close(
-            oq_raw, avg_px, qty_contracts, pos_close_ref, r
-        )
-
-        rows.append({
-            "date":           target_date,
-            "account":        account,
-            "segment":        kite_seg_from_exchange(exchange),
-            "kind":           "positions",
-            "symbol":         symbol,
-            "exchange":       exchange,
-            "qty":            qty_contracts,
-            "lots":           lots_val,
-            "lot_size":       lot_size_val,
-            "avg_cost":       float(r["average_price"]) if r.get("average_price") is not None else None,
-            "ltp":            ltp_val,
-            "day_pnl":        day_pnl,
-            "total_pnl":      float(r["pnl"]) if r.get("pnl") is not None else None,
-            "previous_close": previous_close_val,
-            "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
-        })
+        rows.append(_positions_build_row(
+            r, account, target_date, exchange, symbol,
+            qty_contracts, lots_val, lot_size_val,
+            ltp_val, day_pnl,
+            oq_raw, avg_px, pos_close_ref,
+            settled, multiplier,
+        ))
     if skipped:
         logger.warning(
             f"Snapshot [{account}] positions: skipped {skipped}/{skipped + len(rows)} rows "

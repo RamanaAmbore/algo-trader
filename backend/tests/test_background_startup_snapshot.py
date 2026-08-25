@@ -260,8 +260,8 @@ def test_startup_decision_matches_background_py_guard_sequence():
     assert "elif _nse_open or _mcx_open:" in startup_block, (
         "startup block must check nse_open or mcx_open second"
     )
-    assert "await _fire_snapshot(" in startup_block, (
-        "startup block must have else case with _fire_snapshot"
+    assert "await _snapshot_fire(" in startup_block, (
+        "startup block must have else case with _snapshot_fire"
     )
 
     # Verify no other guard branches
@@ -282,8 +282,8 @@ def test_startup_block_fires_with_market_open_false():
     startup_block = src[startup_start:startup_end]
 
     # Verify the fire call includes market_open=False
-    assert 'await _fire_snapshot("startup", market_open=False)' in startup_block, (
-        "startup block else clause must call _fire_snapshot with market_open=False"
+    assert 'await _snapshot_fire("startup", market_open=False)' in startup_block, (
+        "startup block else clause must call _snapshot_fire with market_open=False"
     )
 
 

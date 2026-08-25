@@ -1087,6 +1087,56 @@ def _rco_apply_reconcile_status(
     return False, f"broker status={kite_status} (no algo mapping)", False
 
 
+_GROWW_EXCHANGE_TO_KITE: dict[str, str] = {
+    "NSE": "NSE", "BSE": "BSE", "NFO": "NFO", "BFO": "BFO",
+    "MCX": "MCX", "CDS": "CDS",
+    "NSE_EQ": "NSE", "BSE_EQ": "BSE",
+    "NSE_FNO": "NFO", "BSE_FNO": "BFO", "MCX_COMM": "MCX",
+}
+
+
+def _groww_parse_payload(body: dict) -> tuple[str, str, str, str, object, object]:
+    """Extract and normalise core fields from a Groww postback payload.
+
+    Returns (order_id, status, symbol, txn, qty, price).
+    All ``or`` chains are concentrated here so the parent method stays
+    free of boolean-expression CC inflation.
+    """
+    order_id = str(body.get("groww_order_id") or body.get("order_id") or "")
+    status   = str(body.get("order_status")   or body.get("status")   or "").upper()
+    symbol   = body.get("trading_symbol")      or body.get("symbol")   or ""
+    txn      = body.get("transaction_type")    or ""
+    qty      = body.get("filled_quantity")     or body.get("quantity") or 0
+    price    = body.get("average_price")       or body.get("price")    or 0
+    return order_id, status, symbol, txn, qty, price
+
+
+async def _groww_handle_complete_fill(body: dict, symbol: str) -> None:
+    """Wake the performance task and subscribe the filled instrument's ticker token.
+
+    Called only when the mapped kite_status is ``COMPLETE``.
+    Groww exchange strings are normalised to Kite canonical names via
+    ``_GROWW_EXCHANGE_TO_KITE`` before the instrument lookup.
+    """
+    from backend.api.background import kick_performance
+    from backend.api.persistence.instruments_store import get_or_fetch_instruments
+    from backend.brokers.kite_ticker import get_ticker
+
+    kick_performance()
+    raw_exchange  = str(body.get("exchange") or body.get("segment") or "").upper()
+    kite_exchange = _GROWW_EXCHANGE_TO_KITE.get(raw_exchange, raw_exchange)
+    groww_symbol  = str(symbol).upper()
+    if groww_symbol and kite_exchange:
+        tok_map = await get_or_fetch_instruments(kite_exchange)
+        tok = tok_map.get((groww_symbol, kite_exchange))
+        if tok:
+            get_ticker().subscribe([tok])
+            logger.info(
+                f"groww postback: subscribed token {tok} for"
+                f" {groww_symbol}/{kite_exchange} after COMPLETE fill"
+            )
+
+
 class OrdersController(Controller):
     path = "/api/orders"
     guards = [auth_or_demo_guard]
@@ -1743,12 +1793,7 @@ class OrdersController(Controller):
             return {"status": "ok"}
         logger.info(f"groww postback raw payload: {body!r}")
 
-        order_id = str(body.get("groww_order_id") or body.get("order_id") or "")
-        status   = str(body.get("order_status") or body.get("status") or "").upper()
-        symbol   = body.get("trading_symbol") or body.get("symbol") or ""
-        txn      = body.get("transaction_type") or ""
-        qty      = body.get("filled_quantity") or body.get("quantity") or 0
-        price    = body.get("average_price") or body.get("price") or 0
+        order_id, status, symbol, txn, qty, price = _groww_parse_payload(body)
 
         try:
             from backend.brokers.adapters.groww import _GROWW_STATUS_TO_KITE
@@ -1770,31 +1815,9 @@ class OrdersController(Controller):
         )
 
         # On a completed Groww fill: wake performance task + subscribe instrument.
-        # Groww exchange strings may not match Kite canonical names; normalize best-effort.
-        _GROWW_EXCHANGE_TO_KITE: dict[str, str] = {
-            "NSE": "NSE", "BSE": "BSE", "NFO": "NFO", "BFO": "BFO",
-            "MCX": "MCX", "CDS": "CDS",
-            "NSE_EQ": "NSE", "BSE_EQ": "BSE",
-            "NSE_FNO": "NFO", "BSE_FNO": "BFO", "MCX_COMM": "MCX",
-        }
         if kite_status == "COMPLETE":
             try:
-                from backend.api.background import kick_performance
-                kick_performance()
-                raw_exchange   = str(body.get("exchange") or body.get("segment") or "").upper()
-                kite_exchange  = _GROWW_EXCHANGE_TO_KITE.get(raw_exchange, raw_exchange)
-                groww_symbol   = str(symbol).upper()
-                if groww_symbol and kite_exchange:
-                    from backend.api.persistence.instruments_store import get_or_fetch_instruments
-                    from backend.brokers.kite_ticker import get_ticker
-                    tok_map = await get_or_fetch_instruments(kite_exchange)
-                    tok = tok_map.get((groww_symbol, kite_exchange))
-                    if tok:
-                        get_ticker().subscribe([tok])
-                        logger.info(
-                            f"groww postback: subscribed token {tok} for"
-                            f" {groww_symbol}/{kite_exchange} after COMPLETE fill"
-                        )
+                await _groww_handle_complete_fill(body, str(symbol))
             except Exception as _sub_exc:
                 logger.warning(f"groww postback: post-fill subscribe failed: {_sub_exc}")
 

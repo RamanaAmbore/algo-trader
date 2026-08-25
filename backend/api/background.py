@@ -1814,6 +1814,152 @@ async def _task_strategy_snapshot() -> None:
             logger.warning(f"_task_strategy_snapshot: cycle failed: {exc}")
 
 
+async def _snapshot_probe_nse_mcx(now: object) -> tuple[bool, bool]:
+    """Return (nse_open, mcx_open) using the full holiday pipeline.
+
+    Queries all configured segments, deduplicates holiday fetches per
+    exchange, and runs the ``is_market_open`` check in a thread pool so
+    the event loop is never blocked.
+    """
+    from backend.shared.helpers.date_time_utils import is_market_open
+    from backend.brokers.broker_apis import fetch_holidays
+
+    segs = _build_segments()
+    holiday_cache: dict[str, set] = {}
+    for seg in segs:
+        exch = seg['holiday_exchange']
+        if exch not in holiday_cache:
+            try:
+                holiday_cache[exch] = await _run(fetch_holidays, exch)
+            except Exception:
+                holiday_cache[exch] = set()
+
+    def _is_open(seg) -> bool:
+        return is_market_open(
+            now,
+            holiday_cache.get(seg['holiday_exchange'], set()),
+            seg['hours_start'],
+            seg['hours_end'],
+            exchange=seg['holiday_exchange'],
+        )
+
+    nse_segs = [s for s in segs if s['holiday_exchange'] == 'NSE']
+    mcx_segs = [s for s in segs if s['holiday_exchange'] == 'MCX']
+    nse_open = any(
+        ok for ok in await asyncio.gather(
+            *(asyncio.to_thread(_is_open, s) for s in nse_segs)
+        )
+    ) if nse_segs else False
+    mcx_open = any(
+        ok for ok in await asyncio.gather(
+            *(asyncio.to_thread(_is_open, s) for s in mcx_segs)
+        )
+    ) if mcx_segs else False
+    return nse_open, mcx_open
+
+
+async def _snapshot_fire(label: str, *, market_open: bool = True) -> None:
+    """Invoke ``snapshot_daily_book`` and log the result summary.
+
+    Catches and logs all exceptions so the caller's dedup sentinel can
+    still be updated — a transient failure should not trigger a retry
+    storm on the next 30s poll.
+    """
+    from backend.api.algo.daily_snapshot import snapshot_daily_book
+
+    try:
+        result = await snapshot_daily_book(market_open=market_open)
+        logger.info(
+            f"Background: daily snapshot [{label}] — "
+            f"accounts={result['accounts']} "
+            f"h={result['holdings_rows']} p={result['positions_rows']} "
+            f"t={result['trades_rows']} errors={result['errors']}"
+        )
+    except Exception as e:
+        logger.error(f"Background: daily snapshot [{label}] failed: {e}")
+
+
+async def _snapshot_unsub_nonmcx() -> None:
+    """Unsubscribe all non-MCX ticker tokens (called at 16:15 IST).
+
+    NSE/BSE close at 15:30; OFS/special sessions end by ~16:15.  Dropping
+    the non-MCX subscriptions reduces WebSocket payload volume for the
+    evening MCX session.  Under ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker
+    object has no ``unsubscribe_non_mcx`` method — skip silently.
+    """
+    try:
+        from backend.brokers.kite_ticker import get_ticker
+        _ticker_obj = get_ticker()
+        if hasattr(_ticker_obj, "unsubscribe_non_mcx"):
+            await _ticker_obj.unsubscribe_non_mcx()
+        else:
+            logger.debug(
+                "Background: unsubscribe_non_mcx — ticker has no such method "
+                "(conn-service mode); skipping"
+            )
+    except Exception as _unsub_exc:
+        logger.warning(f"Background: unsubscribe_non_mcx failed: {_unsub_exc}")
+
+
+def _snapshot_stop_ticker() -> None:
+    """Stop the KiteTicker after MCX settlement (called at 00:30 IST).
+
+    Frees the Twisted reactor and socket so the 08:00 restart begins from
+    a clean state.  Under ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker object
+    has no ``stop`` method — skip silently.
+    """
+    try:
+        from backend.brokers.kite_ticker import get_ticker
+        _ticker_obj = get_ticker()
+        if hasattr(_ticker_obj, "stop"):
+            _ticker_obj.stop()
+        else:
+            logger.debug(
+                "Background: ticker stop — no stop() method "
+                "(conn-service mode); skipping"
+            )
+    except Exception as _stop_exc:
+        logger.warning(f"Background: ticker stop failed: {_stop_exc}")
+
+
+def _snapshot_restart_ticker() -> None:
+    """Restart the KiteTicker at 08:00 IST with the freshly-rotated daily token.
+
+    ``_task_token_refresh`` runs at 05:45; this restart fires well after that
+    so the new ``access_token`` is already in place.  Under
+    ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker returns a ``MmapTickReader``
+    which has no ``restart`` method — skip silently.
+    """
+    try:
+        from backend.brokers.kite_ticker import get_ticker
+        from backend.brokers.connections import Connections
+
+        _ticker_obj = get_ticker()
+        if hasattr(_ticker_obj, "restart"):
+            _conn_map = Connections().conn
+            _api_key = _access_token = _restart_account = ""
+            for _acct, _conn in _conn_map.items():
+                if hasattr(_conn, "kite") and getattr(_conn.kite, "access_token", None):
+                    _api_key         = _conn.kite.api_key
+                    _access_token    = _conn.kite.access_token
+                    _restart_account = _acct
+                    break
+            if _api_key and _access_token:
+                _ticker_obj.restart(_api_key, _access_token, _restart_account)
+            else:
+                logger.warning(
+                    "Background: 08:00 restart — no live Kite credentials found; "
+                    "ticker restart skipped"
+                )
+        else:
+            logger.debug(
+                "Background: ticker restart — no restart() method "
+                "(conn-service mode or MmapTickReader); skipping"
+            )
+    except Exception as _restart_exc:
+        logger.warning(f"Background: ticker restart failed: {_restart_exc}")
+
+
 async def _task_daily_snapshot() -> None:
     """
     Two-pass settlement snapshot.
@@ -1832,65 +1978,13 @@ async def _task_daily_snapshot() -> None:
     market hours to avoid polluting daily_book with mid-session LTPs
     (observed incident 2026-06-22).
     """
-    from backend.api.algo.daily_snapshot import snapshot_daily_book, fix_daily_book_prev_close
-    from backend.shared.helpers.date_time_utils import (
-        timestamp_indian, is_market_open,
-    )
-    from backend.brokers.broker_apis import fetch_holidays
-
-    # ── helpers ────────────────────────────────────────────────────────
-
-    async def _probe_nse_mcx(now) -> tuple[bool, bool]:
-        """Return (nse_open, mcx_open) using the full holiday pipeline."""
-        segs = _build_segments()
-        holiday_cache: dict[str, set] = {}
-        for seg in segs:
-            exch = seg['holiday_exchange']
-            if exch not in holiday_cache:
-                try:
-                    holiday_cache[exch] = await _run(fetch_holidays, exch)
-                except Exception:
-                    holiday_cache[exch] = set()
-
-        def _is_open(seg) -> bool:
-            return is_market_open(
-                now,
-                holiday_cache.get(seg['holiday_exchange'], set()),
-                seg['hours_start'],
-                seg['hours_end'],
-                exchange=seg['holiday_exchange'],
-            )
-
-        nse_segs = [s for s in segs if s['holiday_exchange'] == 'NSE']
-        mcx_segs = [s for s in segs if s['holiday_exchange'] == 'MCX']
-        nse_open = any(
-            ok for ok in await asyncio.gather(
-                *(asyncio.to_thread(_is_open, s) for s in nse_segs)
-            )
-        ) if nse_segs else False
-        mcx_open = any(
-            ok for ok in await asyncio.gather(
-                *(asyncio.to_thread(_is_open, s) for s in mcx_segs)
-            )
-        ) if mcx_segs else False
-        return nse_open, mcx_open
-
-    async def _fire_snapshot(label: str, *, market_open: bool = True) -> None:
-        try:
-            result = await snapshot_daily_book(market_open=market_open)
-            logger.info(
-                f"Background: daily snapshot [{label}] — "
-                f"accounts={result['accounts']} "
-                f"h={result['holdings_rows']} p={result['positions_rows']} "
-                f"t={result['trades_rows']} errors={result['errors']}"
-            )
-        except Exception as e:
-            logger.error(f"Background: daily snapshot [{label}] failed: {e}")
+    from backend.api.algo.daily_snapshot import fix_daily_book_prev_close
+    from backend.shared.helpers.date_time_utils import timestamp_indian
 
     # ── startup snapshot (closed hours only) ───────────────────────────
     _now_ist = timestamp_indian()
     _today_d = _now_ist.date()
-    _nse_open, _mcx_open = await _probe_nse_mcx(_now_ist)
+    _nse_open, _mcx_open = await _snapshot_probe_nse_mcx(_now_ist)
     if _today_d.weekday() >= 5:
         # Weekend (Saturday=5, Sunday=6): the previous trading day's EOD snapshot
         # already lives in daily_book. Creating today's date rows with stale prices
@@ -1910,7 +2004,7 @@ async def _task_daily_snapshot() -> None:
         # market_open=False: holiday or off-hours restart — force EOD mode so
         # _is_exchange_open_at's time-of-day check (which has no holiday
         # awareness) cannot suppress ltp capture for Dhan accounts.
-        await _fire_snapshot("startup", market_open=False)
+        await _snapshot_fire("startup", market_open=False)
 
     # One-time data repair on startup: fix today's rows where previous_close = ltp (wrong).
     # Uses yesterday's daily_book.previous_close (correctly stored by UPSERT rolling-shift)
@@ -1943,7 +2037,7 @@ async def _task_daily_snapshot() -> None:
         if (now.time() >= dtime(_NSE_SETTLEMENT_H, _NSE_SETTLEMENT_M)
                 and _nse_settlement_done != today):
             logger.info("Background: 16:15 IST — firing NSE settlement snapshot")
-            await _fire_snapshot("nse-settlement")
+            await _snapshot_fire("nse-settlement")
             _nse_settlement_done = today
 
         # ---- 08:00 IST: transition previous_close to new-session baseline ----------
@@ -1960,11 +2054,11 @@ async def _task_daily_snapshot() -> None:
         # Without this, the 16:15 NSE settlement snapshot writes
         # ltp=NULL/day_pnl=NULL for MCX (still mid-session at 16:15),
         # leaving positions ΔP=0 until the 00:15 MCX settlement pass.
-        if dtime(_MCX_CLOSE_H, _MCX_CLOSE_M) <= now.time() < dtime(23, 40):
-            if _mcx_close_done != today:
-                logger.info("Background: 23:31 IST — firing MCX close snapshot")
-                await _fire_snapshot("mcx-close")
-                _mcx_close_done = today
+        if (dtime(_MCX_CLOSE_H, _MCX_CLOSE_M) <= now.time() < dtime(23, 40)
+                and _mcx_close_done != today):
+            logger.info("Background: 23:31 IST — firing MCX close snapshot")
+            await _snapshot_fire("mcx-close")
+            _mcx_close_done = today
 
         # ---- MCX settlement: 00:15 IST (calendar D+1, trade-date D) ---
         # Guard to [00:15, 02:00) IST prevents a daytime restart from
@@ -1976,7 +2070,7 @@ async def _task_daily_snapshot() -> None:
                     f"Background: 00:15 IST — firing MCX settlement snapshot "
                     f"(trade-date {_mcx_trade_date})"
                 )
-                await _fire_snapshot("mcx-settlement")
+                await _snapshot_fire("mcx-settlement")
                 _mcx_settlement_done = _mcx_trade_date
 
         # ---- Ticker: drop non-MCX subscriptions at 16:15 IST ----------
@@ -1984,22 +2078,11 @@ async def _task_daily_snapshot() -> None:
         # Non-MCX tokens are unsubscribed so the WebSocket payload drops to
         # MCX-only volume for the evening session.  Guarded [16:15, 17:00)
         # to avoid double-firing on service restart within that window.
-        if dtime(16, 15) <= now.time() < dtime(17, 0):
-            if _unsub_nonmcx_done != today:
-                logger.info("Background: 16:15 IST — unsubscribing non-MCX tokens")
-                try:
-                    from backend.brokers.kite_ticker import get_ticker
-                    _ticker_obj = get_ticker()
-                    if hasattr(_ticker_obj, "unsubscribe_non_mcx"):
-                        await _ticker_obj.unsubscribe_non_mcx()
-                    else:
-                        logger.debug(
-                            "Background: unsubscribe_non_mcx — ticker has no such method "
-                            "(conn-service mode); skipping"
-                        )
-                except Exception as _unsub_exc:
-                    logger.warning(f"Background: unsubscribe_non_mcx failed: {_unsub_exc}")
-                _unsub_nonmcx_done = today
+        if (dtime(16, 15) <= now.time() < dtime(17, 0)
+                and _unsub_nonmcx_done != today):
+            logger.info("Background: 16:15 IST — unsubscribing non-MCX tokens")
+            await _snapshot_unsub_nonmcx()
+            _unsub_nonmcx_done = today
 
         # ---- Ticker: full stop at 00:30 IST ----------------------------
         # MCX settles at 00:15; connection is idle after that.  Stopping
@@ -2010,18 +2093,7 @@ async def _task_daily_snapshot() -> None:
             _stop_date = today - timedelta(days=1)  # trade-date reference
             if _ticker_stop_done != _stop_date:
                 logger.info("Background: 00:30 IST — stopping KiteTicker (post-MCX-settlement)")
-                try:
-                    from backend.brokers.kite_ticker import get_ticker
-                    _ticker_obj = get_ticker()
-                    if hasattr(_ticker_obj, "stop"):
-                        _ticker_obj.stop()
-                    else:
-                        logger.debug(
-                            "Background: ticker stop — no stop() method "
-                            "(conn-service mode); skipping"
-                        )
-                except Exception as _stop_exc:
-                    logger.warning(f"Background: ticker stop failed: {_stop_exc}")
+                _snapshot_stop_ticker()
                 _ticker_stop_done = _stop_date
 
         # ---- Ticker: restart at 08:00 IST with fresh daily token -------
@@ -2031,37 +2103,11 @@ async def _task_daily_snapshot() -> None:
         # restart during market hours doesn't loop through this block.
         # hasattr guard: under RAMBOQ_USE_CONN_SERVICE=1, get_ticker()
         # returns MmapTickReader which has no restart() — skip silently.
-        if dtime(8, 0) <= now.time() < dtime(9, 0):
-            if _ticker_restart_done != today:
-                logger.info("Background: 08:00 IST — restarting KiteTicker with fresh token")
-                try:
-                    from backend.brokers.kite_ticker import get_ticker
-                    _ticker_obj = get_ticker()
-                    if hasattr(_ticker_obj, "restart"):
-                        from backend.brokers.connections import Connections
-                        _conn_map = Connections().conn
-                        _api_key = _access_token = _restart_account = ""
-                        for _acct, _conn in _conn_map.items():
-                            if hasattr(_conn, "kite") and getattr(_conn.kite, "access_token", None):
-                                _api_key      = _conn.kite.api_key
-                                _access_token = _conn.kite.access_token
-                                _restart_account = _acct
-                                break
-                        if _api_key and _access_token:
-                            _ticker_obj.restart(_api_key, _access_token, _restart_account)
-                        else:
-                            logger.warning(
-                                "Background: 08:00 restart — no live Kite credentials found; "
-                                "ticker restart skipped"
-                            )
-                    else:
-                        logger.debug(
-                            "Background: ticker restart — no restart() method "
-                            "(conn-service mode or MmapTickReader); skipping"
-                        )
-                except Exception as _restart_exc:
-                    logger.warning(f"Background: ticker restart failed: {_restart_exc}")
-                _ticker_restart_done = today
+        if (dtime(8, 0) <= now.time() < dtime(9, 0)
+                and _ticker_restart_done != today):
+            logger.info("Background: 08:00 IST — restarting KiteTicker with fresh token")
+            _snapshot_restart_ticker()
+            _ticker_restart_done = today
 
 
 async def _task_instruments() -> None:
