@@ -2171,7 +2171,7 @@ async def _task_chain_instruments() -> None:
         except Exception as exc:
             logger.warning(f"[bg-chain-instruments] fetch failed: {exc}")
 
-    await asyncio.sleep(30)
+    await asyncio.sleep(10)
     await _warm()
 
     while True:

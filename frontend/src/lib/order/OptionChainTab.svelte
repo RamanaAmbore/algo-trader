@@ -271,7 +271,7 @@
       fetchChainExpiries(u)
         .then(/** @param {any} d */ (d) => {
           const expiries = Array.isArray(d?.expiries) ? d.expiries : [];
-          if (expiries.length > 0 || retryCount >= 12) {
+          if (expiries.length > 0 || retryCount >= 40) {
             chainExpiries = expiries;
             _chainExpiriesLoading = false;
           } else {
@@ -280,7 +280,7 @@
           }
         })
         .catch(() => {
-          if (retryCount < 12) {
+          if (retryCount < 40) {
             retryCount++;
             retryTimer = setTimeout(attempt, 5000);
           } else {
