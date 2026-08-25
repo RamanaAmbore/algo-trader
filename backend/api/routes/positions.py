@@ -211,8 +211,12 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     from sqlalchemy import text as _sql_text
     from backend.shared.helpers.date_time_utils import timestamp_indian as _ts_indian
 
-    _today_ist = _ts_indian().date()
-    _today_ist_midnight = _ts_indian().replace(hour=0, minute=0, second=0, microsecond=0)
+    _now_ist = _ts_indian()
+    _today_ist = _now_ist.date()
+    _today_ist_midnight = _now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    from datetime import timedelta
+    _today_ist_8am = _today_ist_midnight + timedelta(hours=8)
+    _prev_batch_cutoff = _today_ist_8am if _now_ist >= _today_ist_8am else _today_ist_8am - timedelta(days=1)
 
     try:
         async with async_session() as session:
@@ -247,7 +251,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                       AND db.captured_at < lb.max_at
                       AND db.captured_at >= lb.max_at - INTERVAL '7 days'
                       AND db.ltp IS NOT NULL AND db.ltp > 0
-                      AND db.captured_at < :today_ist_midnight
+                      AND db.captured_at < :prev_batch_cutoff
                     ORDER BY db.account, db.symbol, db.captured_at DESC
                 )
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
@@ -264,7 +268,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                   AND (db.ltp IS NULL OR NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
                            AND db.avg_cost IS NOT NULL AND db.avg_cost > 0))
                 ORDER BY db.account, db.symbol
-            """).bindparams(today_ist=_today_ist, today_ist_midnight=_today_ist_midnight))
+            """).bindparams(today_ist=_today_ist, prev_batch_cutoff=_prev_batch_cutoff))
             raw_rows = result.all()
     except Exception as exc:
         logger.warning(f"positions snapshot query failed: {exc}")

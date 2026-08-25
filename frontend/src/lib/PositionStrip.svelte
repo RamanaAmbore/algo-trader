@@ -9,9 +9,9 @@
   import { visibleInterval, executionMode, ltpFlashPct } from '$lib/stores';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
-  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
+  import { createTickFlash, createFreshnessShimmer } from '$lib/data/tickFlash.svelte.js';
   import { cachedDelete } from '$lib/data/persistentCache';
-  import { getSnapshot, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
@@ -247,6 +247,13 @@
         _tickThrottleTimer = null;
       }, 250);
     });
+    // Tick-bus freshness-shimmer subscription — fire the underline sweep
+    // on every real SSE LTP tick. 'strip' is the single tracking key for
+    // the whole strip surface (no per-symbol routing needed here — any tick
+    // landing on any tracked symbol signals liveness to the operator).
+    _tickBusUnsub = tickBus.subscribe(() => {
+      _shimmer.notify('strip');
+    });
   });
 
   // Tick-flash — directional pulse when any of the strip's nine
@@ -258,6 +265,15 @@
   // a mount paint from flashing every cell.
   const flash = createTickFlash({ threshold: 0, durationMs: 300 });
   const _unsubFlashPct = ltpFlashPct.subscribe(v => flash.setPctThreshold(v));
+
+  // Freshness-shimmer — 1px gradient underline sweep on the strip bottom edge
+  // each time a real SSE tick arrives for any tracked symbol. Distinct from the
+  // amber heartbeat (poll-based) and the per-cell directional flash. Sky/indigo
+  // palette matches .cell-freshness-pulse::after in app.css. Uses a single
+  // 'strip' key so any tick fires the same animation regardless of symbol.
+  const _shimmer = createFreshnessShimmer({ durationMs: 700 });
+  /** @type {(() => void) | null} */
+  let _tickBusUnsub = null;
 
   onMount(() => {
     // Instruments cache feeds both the long-options premium derivation
@@ -300,10 +316,12 @@
   });
   onDestroy(() => {
     flash.dispose();
+    _shimmer.dispose();
     _unsubFlashPct();
     _mktTimer?.();   // visibleInterval teardown
     if (_tickThrottleTimer) { clearTimeout(_tickThrottleTimer); _tickThrottleTimer = null; }
     _tickThrottleUnsub?.();
+    _tickBusUnsub?.();
     // _heartbeatTimer is the 300ms pulse decay timer scheduled inside
     // the heartbeat $effect. Latent leak today (strip is layout-
     // persistent so it never unmounts) but the timer would fire into
@@ -892,15 +910,15 @@
     }, 300);
   });
 
-  // Tick-bus border shimmer — per-tick sky-300 border flash driven by
-  // real SSE ticks (separate from the poll-based amber heartbeat).
-  // Direction not applicable on this surface; sky (neutral) palette per
-  // the unified spec. 300ms + cubic-bezier(0.4,0,0.2,1) — same as all
-  // other flash surfaces.
-  // Uses the same a/b class-toggle pattern as RefreshButton: each emit
+  // Tick-bus border shimmer — per-tick sky/indigo gradient underline driven
+  // by real SSE ticks via tickBus (separate from the poll-based amber
+  // heartbeat and the closed-hours slate poll-pulse). _shimmer.notify('strip')
+  // is called in the tickBus subscription (onMount above); the reactive
+  // classOf read below applies 'cell-freshness-pulse' for 700 ms, which
+  // triggers the freshness-sweep keyframe defined in app.css.
 </script>
 
-<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
+<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_staleFailCount >= 2 ? ' ps-stale' : '') + ' ' + _shimmer.classOf('strip')}>
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-p" role="button" tabindex="0"
       onclick={(e) => _openBreakdown(e, 'P')}

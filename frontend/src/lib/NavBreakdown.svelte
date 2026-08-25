@@ -5,7 +5,7 @@
   immediately shows the data that matches the NavStrip pill value the
   operator just clicked:
 
-    P — Day P&L (baseDayPnlForPosition) + Lifetime P&L (Σ pnl) + Expiry P&L (lognormal projection)
+    P — Day P&L (positionsDayPnlStore.total — matches NavStrip P:1) + Lifetime P&L (Σ pnl) + Expiry P&L (lognormal projection)
     M — Available Margin + Total Margin (used + avail)
     C — Live Cash (live_cash ?? cash) + Total Cash (+ long-option premium)
     H — Today MTM (Σ day_change_val) + Value (Σ cur_val) + Lifetime (Σ pnl)
@@ -25,6 +25,7 @@
   import { aggCompact } from '$lib/format';
   import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { connStatus } from '$lib/stores';
@@ -212,7 +213,16 @@
   });
 
   const _pTotal = $derived.by(() => ({
-    dayPnl:      _pByAcct.reduce((s, r) => s + r.dayPnl, 0),
+    // positionsDayPnlStore.total is the SSOT for NavStrip P:1 day P&L (pulse-authoritative
+    // when MarketPulse is mounted, SSE-throttled otherwise). Reading it here keeps
+    // the TOTAL row in sync with NavStrip P:1 regardless of which path wrote it.
+    // NOTE: positionsDayPnlStore.total is a global total — it does NOT scope to
+    // accountFilter. If this component is ever rendered with a non-empty accountFilter,
+    // the TOTAL dayPnl will reflect all accounts, not just the filtered subset.
+    // Per-account rows still use baseDayPnlForPosition (accountFilter-aware). This
+    // is acceptable for the current NavStrip use-case (no filter) but would need a
+    // filtered variant if a filtered NavBreakdown needs strict TOTAL consistency.
+    dayPnl:      positionsDayPnlStore.total,
     lifetimePnl: _pByAcct.reduce((s, r) => s + r.lifetimePnl, 0),
     expiryPnl:   _pByAcct.reduce((s, r) => s + (r.expiryPnl ?? 0), 0),
   }));

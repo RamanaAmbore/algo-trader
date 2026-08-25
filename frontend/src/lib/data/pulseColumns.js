@@ -47,7 +47,15 @@ export function dirCls(v) {
 export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown }) {
   return (p, field) => {
     const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
-    if (p.data?._isTotal) return base;
+    // TOTAL row — use a dedicated flash key ('TOTAL:<field>') so the aggregate
+    // row animates when the total changes, rather than silently skipping animation.
+    // The caller (MarketPulse) must call _mpFlash.update('TOTAL:<field>', value)
+    // whenever the pinned total row value changes.
+    if (p.data?._isTotal) {
+      if (!field) return base;
+      const fc = getMpFlash().classOf(`TOTAL:${field}`);
+      return fc ? `${base} ${fc}` : base;
+    }
     const sym = p.data?.tradingsymbol;
     if (!sym || !field) return base;
     const symUpper = String(sym).toUpperCase();

@@ -90,9 +90,14 @@
   function _dashDirCell(field) {
     return (p) => {
       const base = `ag-right-aligned-cell ${p.value > 0 ? 'pnl-gain' : p.value < 0 ? 'pnl-loss' : 'pnl-zero'}`;
-      if (!p.data || p.data.account === 'TOTAL') return base;
-      // Pinned rows also excluded.
-      if (p.node?.rowPinned === 'bottom') return base;
+      if (!p.data) return base;
+      // TOTAL row — use dedicated 'TOTAL:<field>' key so the aggregate pinned-bottom
+      // row animates when the total P&L changes. _dashFlash.update('TOTAL:...')
+      // is called in the data-refresh effects below (after the per-account loop).
+      if (p.data.account === 'TOTAL' || p.node?.rowPinned === 'bottom') {
+        const fc = _dashFlash.classOf(`TOTAL:${field}`);
+        return fc ? `${base} ${fc}` : base;
+      }
       const fc = _dashFlash.classOf(`${p.data.account}:${field}`);
       return fc ? `${base} ${fc}` : base;
     };
@@ -1690,14 +1695,19 @@
     const total = _positionsTotal;
     untrack(() => {
       // Tick-flash: seed flash.update() for each per-account row before
-      // pushing rowData. TOTAL rows excluded. Threshold 0.001 prevents
-      // false flashes on identical values. Wrapped in untrack() so the
-      // $state write inside flash.update() does NOT register as a dep
-      // and cannot cause an infinite reactive loop.
+      // pushing rowData. Threshold 0.001 prevents false flashes on identical
+      // values. Wrapped in untrack() so the $state write inside flash.update()
+      // does NOT register as a dep and cannot cause an infinite reactive loop.
       for (const r of rows) {
         if (r.account === 'TOTAL') continue;
         _dashFlash.update(`${r.account}:day_pnl`, Number(r.day_pnl));
         _dashFlash.update(`${r.account}:pnl`,     Number(r.pnl));
+      }
+      // TOTAL row — use dedicated keys so _dashDirCell can animate the
+      // pinned-bottom aggregate row when the total P&L changes.
+      if (total) {
+        _dashFlash.update('TOTAL:day_pnl', Number(total.day_pnl));
+        _dashFlash.update('TOTAL:pnl',     Number(total.pnl));
       }
       _eqPosGrid.setGridOption('rowData', rows);
       _eqPosGrid.setGridOption('pinnedBottomRowData', [total]);
@@ -1720,6 +1730,11 @@
         if (r.account === 'TOTAL') continue;
         _dashFlash.update(`${r.account}:day_pnl`, Number(r.day_pnl));
         _dashFlash.update(`${r.account}:pnl`,     Number(r.pnl));
+      }
+      // TOTAL row — same pattern as positions above.
+      if (total) {
+        _dashFlash.update('TOTAL:day_pnl', Number(total.day_pnl));
+        _dashFlash.update('TOTAL:pnl',     Number(total.pnl));
       }
       _eqHoldGrid.setGridOption('rowData', rows);
       _eqHoldGrid.setGridOption('pinnedBottomRowData', [total]);

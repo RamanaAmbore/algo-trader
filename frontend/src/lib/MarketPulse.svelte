@@ -2115,6 +2115,13 @@
         if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
         if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
       }
+      // TOTAL row — update with dedicated keys so mkPnlCellClass can animate
+      // the pinned-bottom aggregate row when the total P&L changes.
+      const pTotal = pTotalRows[0];
+      if (pTotal) {
+        if (pTotal.day_pnl != null) _mpFlash.update('TOTAL:day_pnl', Number(pTotal.day_pnl));
+        if (pTotal.pnl     != null) _mpFlash.update('TOTAL:pnl',     Number(pTotal.pnl));
+      }
       gridPositions.setGridOption('rowData', pRows);
       gridPositions.setGridOption('pinnedBottomRowData', pTotalRows);
       // Force a refreshCells pass so cellClass callbacks re-evaluate the
@@ -2137,6 +2144,13 @@
         if (!sym) continue;
         if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
         if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
+      }
+      // TOTAL row — update with dedicated keys so mkPnlCellClass can animate
+      // the pinned-bottom aggregate row when the total P&L changes.
+      const hTotal = hTotalRows[0];
+      if (hTotal) {
+        if (hTotal.day_pnl != null) _mpFlash.update('TOTAL:day_pnl', Number(hTotal.day_pnl));
+        if (hTotal.pnl     != null) _mpFlash.update('TOTAL:pnl',     Number(hTotal.pnl));
       }
       gridHoldings.setGridOption('rowData', hRows);
       gridHoldings.setGridOption('pinnedBottomRowData', hTotalRows);

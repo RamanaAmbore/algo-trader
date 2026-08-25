@@ -1,266 +1,131 @@
-# Plan: Fix daily_book prev_close — three-layer defect
+# Plan: Fix MCX day P&L, NavBreakdown SSOT, chain timeout + animation audit fixes
 
 ## Context
-`ltp == prev_close → day_change = 0` persists in both live and snapshot paths after both
-markets close. Acceptable `ltp == prev_close` occurs ONLY after 08:00 IST on the next
-market open day (new session started, no trades yet). Three bugs cause it.
 
-**daily_book column semantics (key invariant):**
-`daily_book.ltp` for date=Aug 24 = Aug 24 settlement = 98.00 (today's close).
-`daily_book.previous_close` for date=Aug 24 = Aug 23 settlement = 97.50 (set by the
-UPSERT rolling-shift at line 805 when NSE settlement fires and ltp changes 97.50→98.00).
-The rolling-shift already stores the correct overnight baseline in `previous_close`. We just
-weren't reading it.
+**Group 1 — MCX settlement bugs (from prev session)**
+1. Position day P&L = 0 after MCX close — `_positions_snapshot_mode` uses `today_ist_midnight`
+   in `prev_batch` CTE. After midnight rolls, it selects the MCX settlement snapshot as the
+   "previous" reference → delta ≈ 0. Fix: use 08:00 IST boundary cutoff (same as live path).
+2. NavBreakdown TOTAL row mismatch — computes `Σ baseDayPnlForPosition` but NavStrip reads
+   `positionsDayPnlStore.total` (`_pulseTotal ?? _store.total`). Fix: use store directly.
+3. Chain snapshot hangs — `_chain_snapshot_batch_quote` calls `broker.quote(keys)` with no timeout.
+   Fix: `asyncio.wait_for(..., timeout=10.0)`.
 
----
-
-**Bug 1 — live path cutoff (positions.py:878, holdings.py:376)**
-`today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight`
-At 01:00 IST Aug 25: `today_ist_midnight = 00:00 IST Aug 25`. NSE EOD (15:35 IST Aug 24)
-satisfies `captured_at < 00:00 IST Aug 25` → included → `prev_close = 98.00 = last_price → 0`.
-Fix: `today_ist_midnight` → `today_ist_8am - timedelta(days=1)` in the else branch.
-
-**Bug 2 — prev_ltp_map reads ltp instead of previous_close (daily_snapshot.py:1000–1008)**
-`prev_ltp_map` query: `SELECT ... ltp FROM daily_book WHERE date < :today`.
-At 00:15 IST Aug 25 (MCX settlement INSERT for date=Aug 25): this picks Aug 24 rows whose
-`ltp = 98.00` (today's settlement). `previous_close = 98.00` stored in INSERT. `ltp = 98.00`.
-Snapshot path: `previous_close = ltp → day_change = 0`.
-
-Fix (no timestamp math needed — the rolling-shift already stores the right value):
-- Before 08:00 IST: read `daily_book.previous_close` from `date < today` rows → 97.50 ✓
-- At/after 08:00 IST: read `daily_book.ltp` from `date < today` rows → 98.00 ✓ (new session)
-
-**Bug 3 — existing dirty data**
-Today's rows (date=Aug 25) already have wrong `previous_close = ltp = 98.00`.
-UPSERT rolling-shift cannot fix them (fires only when ltp changes, ltp is unchanged).
-The correct values are already in yesterday's `daily_book.previous_close` (97.50) and `ltp` (98.00).
-Need: one-time overnight fix (97.50) + 08:00 IST new-session fix (98.00).
-
----
+**Group 2 — Animation audit findings**
+- Derivatives day% column animates incorrectly (threshold applied to relative change of a
+  percent value, not the actual price move). Spot LTP should animate on >0.1% LTP change.
+- day% is never updated from tickBus → day% flash only fires on 30s poll, not real-time ticks.
+- NavStrip underline (cell-freshness-pulse::after) is missing: CSS keyframe absent from app.css,
+  `createFreshnessShimmer` never instantiated, tick-bus shimmer in PositionStrip.svelte cut off.
+- TOTAL rows in MarketPulse ag-Grid and Dashboard positions grid excluded from all animation
+  via `_isTotal` / `account === 'TOTAL'` guards. User wants 0.1% threshold flash on TOTAL row numbers.
 
 ## Task
-Fix all three bugs across four files. No new data structures needed — use the values
-already stored in `daily_book.previous_close` and `daily_book.ltp` from yesterday's rows.
+
+Six targeted fixes across backend + frontend. No refactoring beyond the minimum.
 
 ## Agents
-- backend: Implement all fixes.
 
-  **Fix 1 — positions.py:878 and holdings.py:376 (one line each)**
-  Change:
-  ```python
-  today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight
-  ```
-  to:
-  ```python
-  today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
-  ```
-  Update the comment block in both files:
-  "Before 08:00 IST: cutoff = yesterday's 08:00 IST — excludes today's settlements so the
-  query returns the prior-prior-session ltp (Aug 23 settlement), not today's (Aug 24 settlement)."
+### backend
+Files: `backend/api/routes/positions.py`, `backend/api/routes/options_helpers.py`
 
-  **Fix 2 — daily_snapshot.py `prev_ltp_map` (lines 996–1009)**
-  In `snapshot_daily_book`, add 08:00 IST check before the query (reuse `now_ist` from line 968):
-  ```python
-  _snap_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-  _snap_8am = _snap_midnight + timedelta(hours=8)
-  _before_session_open = now_ist < _snap_8am
-  ```
-  Then split the query into two cases:
-  ```python
-  if _before_session_open:
-      # Overnight: read daily_book.previous_close from yesterday's rows.
-      # The UPSERT rolling-shift already stored Aug 23 settlement (97.50) there
-      # when NSE settlement fired and ltp shifted 97.50→98.00. Using it as
-      # previous_close for today's INSERT gives the correct overnight baseline.
-      _prev_sql = """
-          SELECT DISTINCT ON (account, symbol, kind)
-                 account, symbol, kind, previous_close AS ltp
-          FROM daily_book
-          WHERE date < :today
-            AND previous_close IS NOT NULL AND previous_close > 0
-            AND kind IN ('holdings', 'positions')
-          ORDER BY account, symbol, kind, date DESC
-      """
-  else:
-      # New session (>=08:00 IST): read daily_book.ltp from yesterday's rows.
-      # ltp = prior-session settlement (Aug 24 settlement = 98.00) — correct
-      # new-session baseline. ltp==prev_close at session open is valid.
-      _prev_sql = """
-          SELECT DISTINCT ON (account, symbol, kind)
-                 account, symbol, kind, ltp
-          FROM daily_book
-          WHERE date < :today
-            AND ltp IS NOT NULL AND ltp > 0
-            AND kind IN ('holdings', 'positions')
-          ORDER BY account, symbol, kind, date DESC
-      """
-  prev_ltp_map: dict[tuple[str, str, str], float] = {}
-  try:
-      async with async_session() as _sess:
-          _prev_result = await _sess.execute(text(_prev_sql), {"today": target_date})
-          prev_ltp_map = {
-              (row.account, row.symbol, row.kind): float(row.ltp)
-              for row in _prev_result
-          }
-  except Exception as _e:
-      logger.warning("Snapshot: prev_ltp_map query failed (%s) — falling back to broker close_price", _e)
-  ```
-  Note: `timedelta` is already imported at the top of daily_snapshot.py.
+**positions.py — `_positions_snapshot_mode` (line ~210):**
+1. Replace the two separate `_ts_indian()` calls with one: `_now_ist = _ts_indian()`, then
+   `_today_ist = _now_ist.date()`, `_today_ist_midnight = _now_ist.replace(hour=0,minute=0,second=0,microsecond=0)`.
+2. Add local `from datetime import timedelta` import (same pattern as `_override_stale_close_from_snapshot` line 866).
+3. Compute `_today_ist_8am = _today_ist_midnight + timedelta(hours=8)` and
+   `_prev_batch_cutoff = _today_ist_8am if _now_ist >= _today_ist_8am else _today_ist_8am - timedelta(days=1)`.
+4. In `prev_batch` CTE SQL (line ~250): `:today_ist_midnight` → `:prev_batch_cutoff`.
+5. In `.bindparams(...)` (line ~267): replace `today_ist_midnight=_today_ist_midnight` with
+   `prev_batch_cutoff=_prev_batch_cutoff`; keep `today_ist=_today_ist` unchanged.
 
-  **Fix 3 — `fix_daily_book_prev_close` helper in daily_snapshot.py**
-  Add after the `_upsert_rows` block, before the sparkline section:
-  ```python
-  async def fix_daily_book_prev_close(now_ist=None) -> int:
-      """Repair daily_book.previous_close for today's rows.
+**options_helpers.py — `_chain_snapshot_batch_quote` (line ~780):**
+Wrap `asyncio.to_thread(get_market_data_broker().quote, keys)` with
+`asyncio.wait_for(..., timeout=10.0)`; catch `asyncio.TimeoutError` → log warning, return `{}, key_meta`.
+Same pattern as `chain-quotes` in `options.py:2241`.
 
-      Overnight mode (now_ist < today's 08:00 IST):
-        Reads yesterday's daily_book.previous_close (= prior-prior-session settlement,
-        already correctly stored by the UPSERT rolling-shift mechanism).
-        Updates only rows where previous_close ≈ ltp (wrong data).
-        After fix: day_change = (today's settlement - prior-prior-session) × qty — shows
-        yesterday's session performance during the closed-hours window.
+Tests required: add/update pytest in `backend/tests/` for both changed behaviours.
 
-      New-session mode (now_ist >= today's 08:00 IST, fires at 08:00 IST daily):
-        Reads yesterday's daily_book.ltp (= prior-session settlement = yesterday's close).
-        Updates today's rows unconditionally.
-        After fix: previous_close = yesterday's settlement. ltp == prev_close is valid
-        (no intraday movement yet). day_change = 0 correctly.
-      """
-      if now_ist is None:
-          now_ist = timestamp_indian()
-      midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-      today_8am = midnight + timedelta(hours=8)
-      today = now_ist.date()
+### frontend (NavBreakdown + TOTAL-row SSOT)
+File: `frontend/src/lib/NavBreakdown.svelte`
 
-      if now_ist < today_8am:
-          # Overnight: source = yesterday's previous_close; target = wrong rows only
-          ref_col = "previous_close"
-          ref_cond = "previous_close IS NOT NULL AND previous_close > 0"
-          epsilon = 0.005   # only fix rows where previous_close ≈ ltp
-          mode = "overnight"
-      else:
-          # New session: source = yesterday's ltp; target = all today rows
-          ref_col = "ltp"
-          ref_cond = "ltp IS NOT NULL AND ltp > 0"
-          epsilon = 999999.0  # unconditional
-          mode = "new-session"
+1. Add import: `import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';`
+2. Change `_pTotal` (line ~214): set `dayPnl: positionsDayPnlStore.total` (remove the
+   `_pByAcct.reduce(...)` expression for dayPnl — keep lifetimePnl and expiryPnl reduces unchanged).
+3. Update component comment line 8: `Day P&L (positionsDayPnlStore.total — matches NavStrip P:1)`.
 
-      try:
-          async with async_session() as session:
-              result = await session.execute(text(f"""
-                  WITH prev_ref AS (
-                      SELECT DISTINCT ON (kind, account, symbol)
-                             kind, account, symbol, {ref_col} AS ref_close
-                      FROM daily_book
-                      WHERE date < :today
-                        AND {ref_cond}
-                        AND kind IN ('holdings', 'positions')
-                      ORDER BY kind, account, symbol, date DESC
-                  )
-                  UPDATE daily_book d
-                  SET previous_close = r.ref_close
-                  FROM prev_ref r
-                  WHERE d.kind = r.kind
-                    AND d.account = r.account
-                    AND d.symbol = r.symbol
-                    AND d.date = :today
-                    AND d.ltp IS NOT NULL AND d.ltp > 0
-                    AND ABS(COALESCE(d.previous_close, 0) - d.ltp) < :epsilon
-              """), {"today": today, "epsilon": epsilon})
-              await session.commit()
-              updated = result.rowcount
-          logger.info(
-              "[PREV-CLOSE-FIX] mode=%s updated=%d rows (today=%s)",
-              mode, updated, today,
-          )
-          return updated
-      except Exception as e:
-          logger.warning("[PREV-CLOSE-FIX] failed: %s", e)
-          return 0
-  ```
-  Note: `timestamp_indian` and `timedelta` are already imported in this file.
-  Note: using f-string is safe here — `ref_col` and `ref_cond` are hardcoded strings
-  set within the function, never derived from external input.
+Tests required: Playwright spec covering that NavBreakdown TOTAL day P&L matches NavStrip P:1 value.
 
-  **Fix 4 — background.py `_task_daily_snapshot`**
-  At the top of `_task_daily_snapshot`, add import alongside existing imports:
-  ```python
-  from backend.api.algo.daily_snapshot import snapshot_daily_book, fix_daily_book_prev_close
-  ```
-  (already imports `snapshot_daily_book` — add `fix_daily_book_prev_close` to same line)
+### frontend-animations
+Files:
+- `frontend/src/app.css`
+- `frontend/src/lib/data/tickFlash.svelte.js`
+- `frontend/src/lib/PositionStrip.svelte`
+- `frontend/src/lib/data/pulseColumns.js`
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- `frontend/src/routes/(algo)/dashboard/+page.svelte`
 
-  In the startup section (after the weekend/market-open checks, before `while True:`):
-  ```python
-  # One-time data repair: fix today's rows where previous_close = ltp (wrong).
-  # Uses yesterday's daily_book.previous_close (correctly stored by rolling-shift)
-  # so overnight display shows yesterday's session performance, not zero.
-  try:
-      await fix_daily_book_prev_close(_now_ist)
-  except Exception as _e:
-      logger.warning("Background: prev_close startup fix failed: %s", _e)
-  ```
+**Fix A1+A2 — Derivatives spot LTP animation (not day%):**
+In `derivatives/+page.svelte` tickBus handler (line ~1840–1858):
+- Remove or stop updating `flash.update(':pct', ...)` from the tickBus path — day% is a derived
+  metric and should not drive its own flash independent of price.
+- The `:ltp` update already fires `tf-up/tf-down` on spot price column. Ensure the `flash.update(':ltp', ltp)`
+  threshold check is against the absolute LTP value with `pctThreshold=0.001` (0.1%). Spot LTP
+  column class should use `flash.classOf(':ltp')` — verify it already does and confirm no guard removes it.
+- For the 30s poll path: update `:pct` with the current `day_pct` value ONLY from the poll diff
+  (not tickBus), keeping day% flash tied to actual meaningful poll-period changes.
 
-  Declare dedup var with the others (~line 1909):
-  ```python
-  _prev_close_fix_done: Optional[date] = None
-  ```
+**Fix A3+A4 — NavStrip underline animation:**
+In `app.css`: add the `cell-freshness-pulse::after` keyframe — a 1px gradient underline sweep
+(left→right, sky-300/indigo-400 gradient, 0.6s ease, fires once). Example:
+```css
+@keyframes freshness-sweep {
+  from { transform: scaleX(0); transform-origin: left; }
+  to   { transform: scaleX(1); transform-origin: left; }
+}
+.cell-freshness-pulse::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, theme('colors.sky.300'), theme('colors.indigo.400'));
+  animation: freshness-sweep 0.6s ease forwards;
+}
+```
+In `PositionStrip.svelte`: instantiate `createFreshnessShimmer` (imported from tickFlash.svelte.js)
+and wire it to the tickBus event (fire shimmer on each SSE LTP tick that passes 0.1% threshold
+for any slot's underlying symbol). Apply `cell-freshness-pulse` class to the strip's border element
+(the element that currently uses `ps-heartbeat`/`ps-poll-pulse`). The class should be added
+transiently (remove after animation ends via `animationend` event or a short timeout).
 
-  In the `while True:` loop, after the NSE settlement block, add:
-  ```python
-  # ---- 08:00 IST: transition previous_close to new-session baseline ----------
-  # previous_close is set to yesterday's ltp (prior-session settlement).
-  # ltp == prev_close at session open is valid — no intraday movement yet.
-  if (now.time() >= dtime(8, 0) and now.time() < dtime(8, 30)
-          and _prev_close_fix_done != today):
-      logger.info("Background: 08:00 IST — daily prev_close new-session transition")
-      try:
-          await fix_daily_book_prev_close(now)
-      except Exception as _e:
-          logger.warning("Background: 08:00 IST prev_close fix failed: %s", _e)
-      _prev_close_fix_done = today
-  ```
+**Fix A5+A6 — TOTAL row animation in ag-Grid surfaces:**
+In `pulseColumns.js` (line ~50): remove the `_isTotal` guard that returns the base class. Allow
+`tf-up/tf-down` classes to be applied to TOTAL row cells too. Add a `pctThreshold: 0.001` (0.1%)
+gate so only changes ≥ 0.1% trigger animation (same threshold as non-total rows).
+In `dashboard/+page.svelte` (line ~93): remove `account === 'TOTAL'` guard in the cellClass
+function; allow the `_dashFlash` instance to track and flash TOTAL row values.
 
-  **Tests (mandatory — every changed file must have a test)**
-  Write `backend/tests/test_daily_book_prev_close.py`:
-  1. Cutoff formula (parametrized): time < 08:00 IST → `today_8am - 1day`; time >= 08:00 IST → `today_8am`.
-  2. `fix_daily_book_prev_close` overnight mode: seed daily_book with
-     date=yesterday rows (ltp=98, previous_close=97.5) and date=today rows
-     (ltp=98, previous_close=98). Call with `now_ist` before 08:00.
-     Assert today's rows get `previous_close = 97.5` (from yesterday's previous_close).
-  3. `fix_daily_book_prev_close` new-session mode: same seed data, call with
-     `now_ist` after 08:00. Assert today's rows get `previous_close = 98`
-     (from yesterday's ltp). Today's rows had previous_close=97.5 from overnight fix;
-     confirm they're overwritten unconditionally.
-  4. `prev_ltp_map` overnight: mock daily_book with Aug 23 row (ltp=97.5, previous_close=97.0)
-     and Aug 24 row (ltp=98, previous_close=97.5). Call `snapshot_daily_book` at 01:00 IST Aug 25.
-     Assert prev_ltp_map returns 97.5 (Aug 24's previous_close), not 98 (Aug 24's ltp).
-  5. `prev_ltp_map` new-session: same data, call at 09:00 IST.
-     Assert prev_ltp_map returns 98 (Aug 24's ltp).
+Tests required: at minimum one Playwright spec asserting animation class appears on TOTAL row
+when a value changes, and one asserting NavStrip underline class fires on tick.
 
-  For every file you change, you MUST write or update at least one test covering the
-  changed behaviour. This is mandatory — not optional.
-
-- frontend: skip
 - broker: skip
 - doc: skip
-- backend-test: skip (backend agent covers tests)
-- playwright: skip
+- backend-test: skip (backend agent writes its own tests)
+- playwright: skip (animation agents write their own Playwright specs)
 
 ## Tests
 - pytest: yes
-- svelte-check: no
+- svelte-check: yes
 - playwright: no
 
 ## Commit message
-fix(daily_book): three-layer prev_close defect — cutoff, prev_ltp_map column, 08:00 session repair
+fix(positions,chain,animations): MCX prev_batch cutoff + chain timeout + NavBreakdown SSOT + LTP/TOTAL/NavStrip animations
 
 ## Done when
-1. `positions.py:878` and `holdings.py:376` use `today_ist_8am - timedelta(days=1)` before 08:00 IST.
-2. `prev_ltp_map` in `snapshot_daily_book` reads `daily_book.previous_close` before 08:00 IST
-   and `daily_book.ltp` at/after 08:00 IST (both from `date < today` rows).
-3. `fix_daily_book_prev_close()` in `daily_snapshot.py` exists with overnight + new-session modes.
-4. `background.py` calls it on startup (one-time fix) and at 08:00 IST daily.
-5. Pytest passes including new parametrized tests.
-6. After MCX settlement (00:15 IST), today's daily_book rows have `previous_close = 97.5 ≠ ltp = 98`.
-7. After 08:00 IST next trading day, same rows have `previous_close = 98 = ltp` → valid
-   (new session, no trades yet). Day_change becomes non-zero once trading starts.
+- After MCX settlement (>00:15 IST), position day P&L shows correct non-zero values
+- NavBreakdown TOTAL day P&L matches NavStrip P:1 exactly
+- Chain snapshot returns within 10s on broker stall
+- Derivatives spot LTP flashes tf-up/tf-down on >0.1% LTP tick; day% no longer fires independently
+- NavStrip shows gradient underline sweep on SSE LTP ticks
+- MarketPulse and Dashboard TOTAL rows flash tf-up/tf-down on ≥0.1% value change
+- All pytest green, svelte-check 0 errors

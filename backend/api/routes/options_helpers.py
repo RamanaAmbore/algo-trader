@@ -777,9 +777,14 @@ async def _chain_snapshot_batch_quote(
     quote_resp: dict = {}
     if keys:
         try:
-            quote_resp = await asyncio.to_thread(
-                get_market_data_broker().quote, keys,
+            quote_resp = await asyncio.wait_for(
+                asyncio.to_thread(get_market_data_broker().quote, keys),
+                timeout=10.0,
             ) or {}
+        except asyncio.TimeoutError:
+            logger.warning(
+                "chain-snapshot quote() timed out for %s/%s", und, exp,
+            )
         except Exception as exc:
             logger.warning(
                 "chain-snapshot quote() failed for %s/%s: %s", und, exp, exc,

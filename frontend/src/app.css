@@ -2620,6 +2620,37 @@ button:not(:disabled):active,
   .tf-up, .tf-down { animation: none; }
 }
 
+/* ── NavStrip freshness-sweep — 1 px gradient underline on new SSE tick ──────
+   Emitted by PositionStrip.svelte via createFreshnessShimmer when a real-time
+   LTP tick arrives. Neutral sky/indigo palette — directional is handled by
+   tf-up/tf-down above; this is a "data just landed" liveness signal.
+   700 ms matches the createFreshnessShimmer default durationMs.
+   prefers-reduced-motion: sweep disabled; no layout shift either way.
+   Lives in global scope so the class applied to the ps-strip div is reachable
+   without any :global() wrapper. */
+@keyframes freshness-sweep {
+  from { transform: scaleX(0); transform-origin: left; }
+  to   { transform: scaleX(1); transform-origin: left; }
+}
+.cell-freshness-pulse {
+  position: relative;
+  overflow: visible;
+}
+.cell-freshness-pulse::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, rgb(56 189 248), rgb(129 140 248));
+  animation: freshness-sweep 0.6s ease forwards;
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cell-freshness-pulse::after { animation: none; }
+}
+
 /* ── Chart-refresh pulse ─────────────────────────────────────────────────────
    Background-color keyframe on the chart wrapper div when it receives new data.
    Alpha 0.10 — more subtle than cell tick-flash (0.13) because charts occupy
