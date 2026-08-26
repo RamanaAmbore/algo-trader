@@ -122,23 +122,37 @@ After implementing any bug fix:
 
 ## Default Workflow
 
-Three-step pipeline for any non-trivial change:
+Four-step pipeline for any non-trivial change:
 
 ```
-plan mode  →  /impl  →  /ddev  →  /dprod (on request)
-(agree)       (build)    (gate)    (ship)
+plan mode  →  /impl        →  /ddev              →  /dprod (on request)
+(agree)       (build on       (sync + merge          (merge dev→main,
+               workshop)       workshop→dev,           push prod)
+                               test, push dev)
 ```
 Or use **`/depl`** to run all three phases in one command.
+
+**Branch strategy** (as of 2026-08-26):
+
+| Branch | Purpose | Deploy target |
+|---|---|---|
+| `workshop` | All active implementation work — commits land here first | none (local only) |
+| `dev` | Testing / staging — workshop merges here after passing tests | dev.ramboq.com |
+| `main` | Production — only merges from dev on explicit operator request | ramboq.com |
+
+**Never commit directly to `dev` or `main`.** All implementation commits go to `workshop` first.
 
 **Plan before implement** — always enter plan mode for non-trivial tasks. During plan mode, write `.claude/PLAN.md` using the format below, then call ExitPlanMode for operator approval. After ExitPlanMode, output exactly: *"Plan ready — run `/impl` to build only, or `/depl` to build + deploy to prod."* Then **STOP**. Do not start implementing. Do not ask for permissions. Do not take any further action. Wait silently for the operator to run `/impl`, `/ddev`, `/dprod`, or `/depl`.
 
 **Operator's role**: requirements, design, defect identification — plan mode only.  
 **Claude's role**: research, implementation, test loops, doc updates, deployment — background.
 
-**Implement** (`/impl`): reads `.claude/PLAN.md` → dispatches agents → loops tests to green → commits. Never pushes.  
-**Dev deploy** (`/ddev`): pytest + svelte-check green → push dev. Never push dev with failing tests.  
+**Implement** (`/impl`): reads `.claude/PLAN.md` → dispatches agents → loops tests to green → commits to `workshop`. Never pushes.  
+**Dev deploy** (`/ddev`): sync remote+local dev first (`git fetch origin && git checkout dev && git pull origin dev`), then merge workshop→dev, run pytest + svelte-check, push dev only if all pass.  
 **Prod deploy** (`/dprod`): operator explicitly requests → docs/spec/DESIGN_GUIDE/PDF/CC updated → merge dev→main → push. Never push to prod without explicit request.  
 **Full pipeline** (`/depl`): impl → ddev → dprod in one command, bypass-permissions throughout.
+
+**Sync rule before every workshop→dev merge**: always pull `origin/dev` into local `dev` before merging workshop, to avoid divergence conflicts.
 
 ### Plan file format (`.claude/PLAN.md`)
 
