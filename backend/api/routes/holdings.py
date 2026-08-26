@@ -309,6 +309,17 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
                                                       raw.loc[_sel, 'day_change_val'])
     if 'day_change' in raw.columns:
         raw.loc[_sel, 'day_change'] = _ltp_p - _cls_p
+    # Recompute pnl + cur_val on patched rows so the API response is internally
+    # consistent: last_price, pnl, and cur_val all reflect the same LTP.
+    if 'average_price' in raw.columns and 'pnl' in raw.columns:
+        _avg_p = pd.to_numeric(raw.loc[_sel, 'average_price'], errors='coerce').fillna(0)
+        _pnl_p = (_ltp_p - _avg_p) * _qty_p
+        raw.loc[_sel, 'pnl'] = _pnl_p.where(_ltp_p > 0, raw.loc[_sel, 'pnl'])
+        if 'inv_val' in raw.columns and 'cur_val' in raw.columns:
+            _inv_p2 = pd.to_numeric(raw.loc[_sel, 'inv_val'], errors='coerce').fillna(0)
+            raw.loc[_sel, 'cur_val'] = (_inv_p2 + raw.loc[_sel, 'pnl']).where(
+                _ltp_p > 0, raw.loc[_sel, 'cur_val']
+            )
     # Recompute day_change_percentage + pnl_percentage on patched rows.
     # day_change_val and pnl were updated by backfill_market_data for
     # holdings rows that had last_price patched — but pnl and cur_val

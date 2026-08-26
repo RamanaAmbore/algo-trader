@@ -1,97 +1,148 @@
-# Plan: Fix all chain hang vectors — add timeouts to 8 untimed broker calls
+# Plan: Fix H slot 2 — holdings cur_val shows inv_val instead of ltp × qty
 
-## Context
+## Context — exact root cause
 
-The previous chain snapshot timeout fix (`asyncio.wait_for` at `options_helpers.py:780`)
-only covered 1 of 9 blocking `asyncio.to_thread(broker.quote/instruments, ...)` calls in the
-chain request path. The chain still hangs because:
+**Symptom**: NavStrip H pill slot 2 (current holding value) switches between showing `inv_val` (invested
+amount = avg × qty) and `inv_val + P&L` (current market value = ltp × qty). Present state shows the
+correct value; the wrong state appears on page load, refresh, or whenever live SSE ticks are absent
+(pre-open, Dhan/Groww cold LTP, KiteTicker recycle).
 
-1. **`_chain_snapshot_instruments` (options_helpers.py:724)** — calls `get_or_fetch("instruments",
-   _fetch_instruments, ttl_seconds=86400)` with no `timeout_seconds`. On cold cache (every
-   restart/deploy), fetches 156K rows from Kite — 30–60s hang. `get_or_fetch` only wraps in
-   `asyncio.wait_for` when `timeout_seconds` is passed (cache.py:62).
-   Fix: use `peek("instruments")` → return HTTP 503 if cold. Background pre-warm populates it.
+**Slot 2 computation** (`PositionStrip.svelte:510–523`):
+```javascript
+const _liveHoldingsValue = $derived.by(() => {
+  for (const h of holdings) {
+    const ltp = getSnapshot(sym)?.ltp;        // SSE or published poll LTP
+    if (ltp != null && ltp > 0) s += ltp * qty;  // ← live path (correct)
+    else                         s += h?.cur_val; // ← fallback (can be wrong)
+  }
+});
+```
 
-2. **options_helpers.py:102, 125, 154** — spot-price quote calls (`_nse_spot_4`,
-   `_commodity_spot_4a`, `_commodity_spot_4b`) with no `wait_for`. Each can block indefinitely.
-   Fix: `asyncio.wait_for(..., timeout=5.0)` on each.
+**Why `getSnapshot(sym)?.ltp` is null**: `symbolStore.svelte.js:263` silently drops any write
+where `ltp ≤ 0`. When broker returns `last_price = 0`, `_publishHoldingsRows` tries to write
+`ltp = 0` → dropped → snapshot is null → fallback fires.
 
-3. **options_helpers.py:480** — `asyncio.to_thread(broker.instruments, ex)` in instruments
-   per-exchange fetch — no timeout.
-   Fix: `asyncio.wait_for(..., timeout=30.0)`.
+**Why `h.cur_val` equals `inv_val`** (the bug):
 
-4. **options.py:1350** — `_ltp_broker_quote` — no timeout.
-   Fix: `asyncio.wait_for(..., timeout=5.0)`.
+`_override_stale_ltp_from_ticker` in `holdings.py:294–323` runs after `_enrich_holdings`.
+It patches `last_price` via `apply_ltp_patch` (KiteTicker + LKG cache) for rows that had
+`last_price = 0`. It recomputes `day_change_val`, `day_change`, and percentages on patched
+rows — **but does NOT recompute `pnl` or `cur_val`**.
 
-5. **options.py:1624** — `_mcx_populate_phase3` — MCX futures batch quote — no timeout.
-   Fix: `asyncio.wait_for(..., timeout=10.0)`.
+So after the function runs:
+- `last_price` = patched (correct)
+- `day_change_val` = recomputed (correct)
+- `pnl` = stale from broker (wrong — was computed against old `last_price = 0`)
+- `cur_val` = `inv_val + stale_pnl` (wrong — still reflects old prices)
 
-6. **options.py:2310** — `_strategy_fetch_bulk_quote` — no timeout.
-   Fix: `asyncio.wait_for(..., timeout=10.0)`.
+For Dhan/Groww rows that had `last_price = 0`:
+- Dhan adapter computes `pnl = (0 − avg) × qty` = large negative → `cur_val ≈ 0`
+- Groww adapter: similar
 
-## Task
+For Kite rows with broker `pnl = 0` (pre-market window where Kite sends `pnl = 0` explicitly):
+- `_build_holdings_pnl_expr` trusts broker pnl when `is_not_null()` = True
+- `pnl = 0` → `cur_val = inv_val + 0 = inv_val` ← the "shows invested value" case
 
-Add `asyncio.wait_for` timeouts to all 8 remaining unguarded broker calls in the chain path.
-The instruments cold-cache path must use `peek()` + 503 instead of blocking on `get_or_fetch`.
+**When the fallback is reached**:
+When `_override_stale_ltp_from_ticker` FAILS to find an LTP (KiteTicker has no tick for that
+symbol AND LKG cache is empty), `last_price` stays 0 → `_publishHoldingsRows` publishes ltp=0
+→ symbolStore drops it → `getSnapshot(sym)?.ltp = null` → fallback to `h.cur_val`. At that
+point `h.cur_val` is wrong (see above).
+
+## Fix: 2 changes
+
+### Change 1 — `_override_stale_ltp_from_ticker` in `backend/api/routes/holdings.py`
+
+After the existing `day_change_val` + `day_change` recomputation block (after line 311), add
+recomputation of `pnl` and `cur_val` on the same patched rows:
+
+```python
+# Recompute pnl + cur_val on patched rows so the API response is internally
+# consistent: last_price, pnl, and cur_val all reflect the same LTP.
+if 'average_price' in raw.columns and 'pnl' in raw.columns:
+    _avg_p = pd.to_numeric(raw.loc[_sel, 'average_price'], errors='coerce').fillna(0)
+    _pnl_p = (_ltp_p - _avg_p) * _qty_p
+    # Only overwrite when the patched LTP is positive (guard same as day_change_val).
+    raw.loc[_sel, 'pnl'] = _pnl_p.where(_ltp_p > 0, raw.loc[_sel, 'pnl'])
+    if 'inv_val' in raw.columns and 'cur_val' in raw.columns:
+        _inv_p2 = pd.to_numeric(raw.loc[_sel, 'inv_val'], errors='coerce').fillna(0)
+        raw.loc[_sel, 'cur_val'] = (_inv_p2 + raw.loc[_sel, 'pnl']).where(
+            _ltp_p > 0, raw.loc[_sel, 'cur_val']
+        )
+```
+
+Place this immediately after line 311 (`raw.loc[_sel, 'day_change'] = _ltp_p - _cls_p`) and
+before `recompute_row_percentages(raw, _sel)`.
+
+### Change 2 — `_build_holdings_pnl_expr` in `backend/brokers/broker_apis.py`
+
+Tighten the broker-pnl trust policy: treat broker `pnl = 0.0` the same as null when valid
+prices exist to compute it. This closes the Kite pre-market window where `pnl = 0` is sent
+explicitly and blindly trusted.
+
+Current (line 1503–1510):
+```python
+if has_pnl:
+    _broker_pnl = _col_f64_nullable(lf, "pnl")
+    return (
+        pl.when(_broker_pnl.is_not_null())
+        .then(_broker_pnl)
+        .otherwise(_pnl_calc)
+        .alias("pnl")
+    )
+```
+
+Change to:
+```python
+if has_pnl:
+    _broker_pnl = _col_f64_nullable(lf, "pnl")
+    # Trust broker pnl only when non-null AND non-zero. A zero from the broker
+    # is indistinguishable from "no data" (e.g. Kite pre-market window sends
+    # pnl=0 when last_price=0). When broker pnl=0 but valid prices exist,
+    # use the computed formula. At true breakeven (ltp==avg) both give 0 anyway.
+    _valid_prices = (_ltp > 0) & (_avg > 0)
+    return (
+        pl.when(_broker_pnl.is_not_null() & (_broker_pnl != 0.0))
+        .then(_broker_pnl)
+        .when(_valid_prices)
+        .then(_pnl_calc)
+        .otherwise(pl.lit(0.0))
+        .alias("pnl")
+    )
+```
+
+Note: `_ltp`, `_avg` are already defined earlier in the function as `_col_f64(lf, "last_price")`
+and `_col_f64(lf, "average_price")`.
 
 ## Agents
 
-- backend: Fix all 8 remaining hang vectors across two files.
-
-  **`backend/api/routes/options_helpers.py`:**
-
-  1. **Line ~724 `_chain_snapshot_instruments`** — replace `get_or_fetch("instruments", ...)` with:
-     ```python
-     from backend.api.cache import peek
-     inst_resp = peek("instruments")
-     if inst_resp is None:
-         logger.warning("chain-snapshot: instruments cache cold — returning 503")
-         raise HTTPException(status_code=503, detail="instruments cache warming — retry in a few seconds")
-     ```
-     This is safe: background pre-warm at 08:00 IST and on startup populates the cache before
-     the chain tab is normally used. Cold == just restarted → tell user to retry.
-
-  2. **Line ~102 `_nse_spot_4`** — wrap with `asyncio.wait_for(..., timeout=5.0)`; catch
-     `asyncio.TimeoutError` → log warning, return None (same as Exception path).
-
-  3. **Line ~125 `_commodity_spot_4a`** — same: `wait_for(..., timeout=5.0)`.
-
-  4. **Line ~154 `_commodity_spot_4b`** (inside the for-loop) — same: `wait_for(..., timeout=5.0)`
-     per iteration.
-
-  5. **Line ~480** — instruments per-exchange fetch: `asyncio.wait_for(asyncio.to_thread(broker.instruments, ex), timeout=30.0)`.
-
-  **`backend/api/routes/options.py`:**
-
-  6. **Line ~1350 `_ltp_broker_quote`** — wrap `asyncio.to_thread(get_market_data_broker().quote, [key])`
-     with `asyncio.wait_for(..., timeout=5.0)`; catch TimeoutError → log, return None.
-
-  7. **Line ~1624 `_mcx_populate_phase3`** — wrap `asyncio.to_thread(price_broker.quote, _fut_quote_keys)`
-     with `asyncio.wait_for(..., timeout=10.0)`; catch TimeoutError → log, `_fut_quote_resp = {}`.
-
-  8. **Line ~2310 `_strategy_fetch_bulk_quote`** — wrap `asyncio.to_thread(_price_broker.quote, ...)`
-     with `asyncio.wait_for(..., timeout=10.0)`; catch TimeoutError → log, return `{}`.
-
-  For every file you change, you MUST write or update at least one test that covers the changed
-  behaviour. This is mandatory — not optional.
-  - `backend/api/` change → add/update a pytest test in `backend/tests/` covering the changed lines
-  No change ships without a corresponding test update.
-
+- backend: Fix `backend/api/routes/holdings.py` — Change 1. Read `_override_stale_ltp_from_ticker` (lines 276–323) in full before editing. Add the pnl + cur_val recompute block after line 311 (after `raw.loc[_sel, 'day_change'] = _ltp_p - _cls_p`) and before `recompute_row_percentages`. Use `_ltp_p`, `_qty_p` already computed above. For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
+- broker: Fix `backend/brokers/broker_apis.py` — Change 2. Read `_build_holdings_pnl_expr` (lines 1489–1516) in full before editing. Change `pl.when(_broker_pnl.is_not_null())` condition to also require `_broker_pnl != 0.0`. Add `_valid_prices = (_ltp > 0) & (_avg > 0)` expression (same pattern as `_pnl_calc` already uses). For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
 - frontend: skip
-- broker: skip
 - doc: skip
-- backend-test: skip (backend agent owns its tests)
+- backend-test: Write `backend/tests/broker/test_holdings_curval_fix.py`. Three test cases:
+  (a) `_override_stale_ltp_from_ticker` — row with `last_price=0`, `pnl=-20000`, `cur_val=0` gets patched to `last_price=150`, verify after patch: `pnl = (150-100)×100 = 5000`, `cur_val = inv_val + 5000 = 15000`. Use a minimal DataFrame with columns matching the production path. Patch via monkeypatching `apply_ltp_patch` to return a dummy result that marks the row as patched.
+  (b) `_build_holdings_pnl_expr` via `_enrich_holdings` — row with broker `pnl=0` but `last_price=150`, `average_price=100`, `quantity=100`: after enrichment, `pnl = 5000` (not 0), `cur_val = 15000` (not `inv_val=10000`).
+  (c) `_build_holdings_pnl_expr` — breakeven row: broker `pnl=0`, `last_price=100`, `average_price=100`, `quantity=100`: after enrichment, `pnl = 0` (computed formula also gives 0), `cur_val = 10000 = inv_val`. Ensures the fix doesn't regress breakeven positions.
+  For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
 - playwright: skip
 
 ## Tests
+
 - pytest: yes
 - svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(chain): add wait_for timeouts to all 8 remaining unguarded broker calls + peek() for cold instruments
+
+fix(holdings): recompute pnl+cur_val after ltp-override patch; tighten broker pnl=0 trust policy
 
 ## Done when
-- Chain tab does not hang on cold cache (returns 503 immediately instead of 60s block)
-- All spot/quote calls return within 5–10s on broker stall instead of blocking indefinitely
-- All pytest tests green
+
+- `_override_stale_ltp_from_ticker` recomputes `pnl` and `cur_val` on all LTP-patched rows
+- `_build_holdings_pnl_expr` falls through to computed formula when broker sends `pnl = 0`
+- Breakeven positions (ltp == avg) unaffected (both formulas give 0 → no regression)
+- H slot 2 fallback (`h.cur_val`) always equals `ltp × qty` for holdings with valid LTP
+- All three test cases in `test_holdings_curval_fix.py` pass
+- Existing holdings enrichment tests still pass
+- pytest green, 0 failures

@@ -499,3 +499,76 @@ class TestCase2BackstopFiresForShortOvernightPositions:
         assert result.loc[0, "day_change_val"] == pytest.approx(
             expected_dcv
         ), f"Expected {expected_dcv} but got {result.loc[0, 'day_change_val']}"
+
+
+class TestBrokerPnlZeroPreMarket:
+    """Pre-market pnl=0.0 guard in _build_holdings_pnl_expr.
+
+    Kite sends pnl=0.0 explicitly (not null) during the pre-market window
+    when last_price=0. Trusting that zero would set cur_val = inv_val + 0 =
+    inv_val, making the NavStrip H slot show invested amount instead of the
+    correct current market value. The fix: treat pnl=0.0 from the broker as
+    untrustworthy and fall back to the computed formula when prices are valid.
+    """
+
+    def test_broker_pnl_zero_with_valid_prices_uses_computed_pnl(self):
+        """broker pnl=0.0 (not null), last_price=150, avg=100, qty=100 → pnl=5000, cur_val=15000.
+
+        The broker sends pnl=0.0 explicitly during pre-market. The fix must
+        ignore that zero and use the formula (ltp - avg) * qty = 5000 instead,
+        so cur_val = inv_val + 5000 = 10000 + 5000 = 15000 (not 10000).
+        """
+        df = pd.DataFrame(
+            [
+                {
+                    "last_price": 150.0,
+                    "average_price": 100.0,
+                    "quantity": 100,
+                    "opening_quantity": 100,
+                    "close_price": 120.0,
+                    "pnl": 0.0,  # broker sends explicit zero — pre-market window
+                }
+            ]
+        )
+
+        result = _enrich_holdings(df)
+
+        # pnl must be computed from formula, not trusted from broker zero
+        assert result["pnl"].iloc[0] == pytest.approx(5000.0), (
+            f"Expected pnl=5000 (formula), got {result['pnl'].iloc[0]}"
+        )
+        # cur_val = inv_val + pnl = 10000 + 5000 = 15000 (not 10000 = inv_val)
+        assert result["cur_val"].iloc[0] == pytest.approx(15000.0), (
+            f"Expected cur_val=15000, got {result['cur_val'].iloc[0]}"
+        )
+
+    def test_broker_pnl_zero_breakeven_no_regression(self):
+        """Genuine breakeven: broker pnl=0, last_price==avg → pnl=0, cur_val=inv_val.
+
+        At true breakeven (ltp == avg), the formula (ltp - avg) * qty = 0.
+        The fix must not regress this — cur_val should still equal inv_val
+        because the position is genuinely flat.
+        """
+        df = pd.DataFrame(
+            [
+                {
+                    "last_price": 100.0,
+                    "average_price": 100.0,
+                    "quantity": 100,
+                    "opening_quantity": 100,
+                    "close_price": 100.0,
+                    "pnl": 0.0,  # broker zero AND formula zero — genuinely flat
+                }
+            ]
+        )
+
+        result = _enrich_holdings(df)
+
+        # pnl = (100 - 100) * 100 = 0 — formula agrees with broker
+        assert result["pnl"].iloc[0] == pytest.approx(0.0), (
+            f"Expected pnl=0 at breakeven, got {result['pnl'].iloc[0]}"
+        )
+        # cur_val = inv_val + 0 = 10000 (correct — no distortion)
+        assert result["cur_val"].iloc[0] == pytest.approx(10000.0), (
+            f"Expected cur_val=10000 at breakeven, got {result['cur_val'].iloc[0]}"
+        )

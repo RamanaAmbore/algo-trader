@@ -14,6 +14,8 @@ Example: opened 100 shares, sold 50 → holdings should show:
 The sold 50 shares appear as a separate CNC positions row with their own P&L.
 """
 
+from unittest.mock import patch, MagicMock
+
 import pandas as pd
 import polars as pl
 import pytest
@@ -304,3 +306,146 @@ class TestHoldingsQuantityVsOpeningQuantity:
         assert abs(tcs_dcv - (3700.0 - 3500.0) * 20) < 0.1, (
             "TCS day_change_val wrong"
         )
+
+
+class TestOverrideStaleItpFromTicker:
+    """Tests for _override_stale_ltp_from_ticker — pnl + cur_val recompute.
+
+    Invariant: after ltp-patch fires, pnl and cur_val must reflect the new LTP
+    so that the API response is internally consistent (last_price, pnl, cur_val
+    all use the same price).
+
+    Regression: before this fix pnl stayed at the stale (ltp=0) value and
+    cur_val = inv_val + stale_pnl, causing NavStrip H slot 2 to show inv_val
+    instead of ltp × qty on the SSE fallback path.
+    """
+
+    def _make_patch_result(self, patched_idx: list) -> MagicMock:
+        """Build a PatchResult-compatible mock."""
+        result = MagicMock()
+        result.any_patched = True
+        result.patched_idx = patched_idx
+        result.stale_idx = []
+        return result
+
+    def test_pnl_and_cur_val_recomputed_after_ltp_patch(self):
+        """Core regression: zero-LTP row patched to 150 → pnl=5000, cur_val=15000.
+
+        Setup:
+          last_price=0 (broker zero), average_price=100, quantity=100
+          inv_val=10000 (avg × qty), pnl=-10000 (stale, computed against 0 LTP)
+          cur_val=0 (inv_val + stale_pnl = 0)
+          close_price=98, day_change_val=0, day_change=0
+
+        apply_ltp_patch sets last_price=150 in the DataFrame and returns
+        any_patched=True, patched_idx=[0].
+
+        After _override_stale_ltp_from_ticker:
+          pnl   = (150 - 100) × 100 = 5000
+          cur_val = inv_val + pnl   = 10000 + 5000 = 15000
+        """
+        from backend.api.routes.holdings import _override_stale_ltp_from_ticker
+
+        raw = pd.DataFrame([{
+            'last_price': 0.0,
+            'average_price': 100.0,
+            'quantity': 100,
+            'opening_quantity': 100,
+            'inv_val': 10000.0,
+            'pnl': -10000.0,
+            'cur_val': 0.0,
+            'close_price': 98.0,
+            'day_change_val': 0.0,
+            'day_change': 0.0,
+        }])
+
+        def fake_apply_ltp_patch(df: pd.DataFrame, policy):
+            # Simulate what apply_ltp_patch does: write the new LTP into the df
+            df.loc[0, 'last_price'] = 150.0
+            return self._make_patch_result(patched_idx=[0])
+
+        with patch(
+            'backend.api.routes.holdings.apply_ltp_patch',
+            side_effect=fake_apply_ltp_patch,
+        ):
+            _override_stale_ltp_from_ticker(raw)
+
+        assert raw.iloc[0]['pnl'] == pytest.approx(5000.0), (
+            f"pnl should be (150-100)×100=5000 after LTP patch, "
+            f"got {raw.iloc[0]['pnl']}"
+        )
+        assert raw.iloc[0]['cur_val'] == pytest.approx(15000.0), (
+            f"cur_val should be inv_val+pnl=10000+5000=15000 after LTP patch, "
+            f"got {raw.iloc[0]['cur_val']}"
+        )
+
+    def test_pnl_not_recomputed_when_ltp_zero(self):
+        """Guard: if patched LTP is still 0 (edge case), pnl is not overwritten.
+
+        The `.where(_ltp_p > 0, ...)` guard must preserve the original pnl when
+        the new LTP is zero (should not happen in practice but must be safe).
+        """
+        from backend.api.routes.holdings import _override_stale_ltp_from_ticker
+
+        raw = pd.DataFrame([{
+            'last_price': 0.0,
+            'average_price': 100.0,
+            'quantity': 100,
+            'opening_quantity': 100,
+            'inv_val': 10000.0,
+            'pnl': -10000.0,
+            'cur_val': 0.0,
+            'close_price': 98.0,
+            'day_change_val': 0.0,
+            'day_change': 0.0,
+        }])
+
+        original_pnl = float(raw.iloc[0]['pnl'])
+        original_cur_val = float(raw.iloc[0]['cur_val'])
+
+        def fake_apply_ltp_patch_zero(df: pd.DataFrame, policy):
+            # last_price stays 0 — the guard must not overwrite pnl
+            return self._make_patch_result(patched_idx=[0])
+
+        with patch(
+            'backend.api.routes.holdings.apply_ltp_patch',
+            side_effect=fake_apply_ltp_patch_zero,
+        ):
+            _override_stale_ltp_from_ticker(raw)
+
+        assert raw.iloc[0]['pnl'] == pytest.approx(original_pnl), (
+            "pnl must not be overwritten when patched LTP is still 0"
+        )
+        assert raw.iloc[0]['cur_val'] == pytest.approx(original_cur_val), (
+            "cur_val must not be overwritten when patched LTP is still 0"
+        )
+
+    def test_no_patch_when_no_rows_patched(self):
+        """When apply_ltp_patch returns any_patched=False, nothing changes."""
+        from backend.api.routes.holdings import _override_stale_ltp_from_ticker
+
+        raw = pd.DataFrame([{
+            'last_price': 0.0,
+            'average_price': 100.0,
+            'quantity': 100,
+            'opening_quantity': 100,
+            'inv_val': 10000.0,
+            'pnl': -10000.0,
+            'cur_val': 0.0,
+            'close_price': 98.0,
+            'day_change_val': 0.0,
+            'day_change': 0.0,
+        }])
+
+        no_patch_result = MagicMock()
+        no_patch_result.any_patched = False
+
+        with patch(
+            'backend.api.routes.holdings.apply_ltp_patch',
+            return_value=no_patch_result,
+        ):
+            _override_stale_ltp_from_ticker(raw)
+
+        # Nothing should have changed
+        assert raw.iloc[0]['pnl'] == pytest.approx(-10000.0)
+        assert raw.iloc[0]['cur_val'] == pytest.approx(0.0)

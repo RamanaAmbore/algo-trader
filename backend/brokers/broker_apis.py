@@ -1491,10 +1491,18 @@ def _build_holdings_pnl_expr(
     has_pnl: bool,
 ) -> "pl.Expr":
     """Polars expression for the `pnl` column in holdings enrichment.
-    Trust broker pnl when not-null; otherwise compute from (ltp-avg)*qty.
+    Trust broker pnl when not-null AND non-zero; otherwise compute from
+    (ltp-avg)*qty.
     Caller must confirm has_ltp + has_avg + has_qty before calling.
     Uses `quantity` (remaining shares) not `opening_quantity` (original lot) so
     partial-sold holdings don't overstate P&L on the already-sold portion.
+
+    The non-zero guard is required because Kite sends pnl=0.0 explicitly
+    (not null) during the pre-market window when last_price=0. Trusting that
+    zero would set cur_val = inv_val + 0 = inv_val, making the NavStrip H slot
+    show invested amount instead of current market value.
+    At true breakeven (ltp==avg) the formula also gives 0, so there is no
+    regression for genuinely flat positions.
     """
     _ltp = _col_f64(lf, "last_price")
     _avg = _col_f64(lf, "average_price")
@@ -1502,10 +1510,17 @@ def _build_holdings_pnl_expr(
     _pnl_calc = (_ltp - _avg) * _qty
     if has_pnl:
         _broker_pnl = _col_f64_nullable(lf, "pnl")
+        # Trust broker pnl only when non-null AND non-zero. A zero from the
+        # broker is indistinguishable from "no data" (e.g. Kite pre-market
+        # window sends pnl=0 when last_price=0). At true breakeven (ltp==avg)
+        # the computed formula also gives 0, so there is no regression.
+        _valid_prices = (_ltp > 0) & (_avg > 0)
         return (
-            pl.when(_broker_pnl.is_not_null())
+            pl.when(_broker_pnl.is_not_null() & (_broker_pnl != 0.0))
             .then(_broker_pnl)
-            .otherwise(_pnl_calc)
+            .when(_valid_prices)
+            .then(_pnl_calc)
+            .otherwise(pl.lit(0.0))
             .alias("pnl")
         )
     return (
