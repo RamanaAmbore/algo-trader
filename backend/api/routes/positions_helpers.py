@@ -105,32 +105,15 @@ def extract_snapshot_extras(payload_json: object) -> dict:
 
 
 def extract_snapshot_multiplier(payload_json: object) -> int:
-    """Return the Kite ``multiplier`` (lot_size) embedded in daily_book payload_json.
+    """DEPRECATED — always returns 1. Kept for import compatibility.
 
-    Kite ships ``multiplier`` on every positions row (1 for equity/NFO, actual
-    lot_size for MCX/NCO — e.g. 100 for CRUDEOIL).  daily_snapshot stores the
-    full raw broker dict as payload_json, so the field is always present for rows
-    captured from Kite.
-
-    The snapshot write-path (daily_snapshot._positions_rows) stores ``qty`` in
-    LOTS for MCX rows (from raw broker.positions()) while the live path
-    (broker_apis.fetch_positions) multiplies quantity by multiplier before
-    returning to route handlers.  Applying the same multiplier at the snapshot
-    read-seam makes the two paths consistent.
-
-    Returns 1 (no-op) on any parse failure or when the field is absent.
+    ``daily_book.qty`` is written as CONTRACTS by ``_positions_qty_fields``
+    (lots × multiplier) so the read-seam must NOT multiply again.
+    Applying the Kite multiplier a second time caused MCX qty to be
+    lots × lot_size² (e.g. 3 lots CRUDEOIL → 300 contracts stored →
+    30,000 returned) and corrupted NavStrip slots 1 and 3 when market
+    was closed (snapshot path).
     """
-    if not payload_json:
-        return 1
-    try:
-        pj = payload_json if isinstance(payload_json, dict) else _json.loads(payload_json)
-        if isinstance(pj, dict):
-            raw = pj.get("multiplier")
-            if raw is not None:
-                v = int(float(raw))
-                return v if v > 1 else 1
-    except Exception:
-        pass
     return 1
 
 
@@ -308,8 +291,9 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
      prev_ltp, prev_settlement_pnl) = raw_row
 
     extras = extract_snapshot_extras(payload_json)
-    multiplier = extract_snapshot_multiplier(payload_json)
-    effective_qty = (qty or 0) * multiplier
+    # daily_book.qty is already in CONTRACTS — _positions_qty_fields converted
+    # lots × lot_size before the row was written.  No multiplier needed here.
+    effective_qty = qty or 0
 
     # `previous_close` is frozen by COALESCE on the first daily UPSERT and
     # never overwritten — it is the official prior-session settlement price.

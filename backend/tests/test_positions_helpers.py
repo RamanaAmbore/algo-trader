@@ -224,48 +224,39 @@ def test_build_snapshot_position_row_fields():
 
 
 # ---------------------------------------------------------------------------
-# 6. MCX snapshot multiplier — extract_snapshot_multiplier reads the Kite
-#    multiplier field so the snapshot path returns contracts (not lots)
+# 6. extract_snapshot_multiplier — deprecated, always returns 1.
+#    daily_book.qty stores CONTRACTS (write-seam converts lots→contracts),
+#    so applying the Kite multiplier at read time caused double-multiply.
 # ---------------------------------------------------------------------------
 
-def test_extract_snapshot_multiplier_mcx():
-    """MCX CRUDEOIL: multiplier=100 → returns 100."""
+def test_extract_snapshot_multiplier_always_returns_1():
+    """extract_snapshot_multiplier is deprecated — always returns 1 regardless of payload."""
     import json
     from backend.api.routes.positions_helpers import extract_snapshot_multiplier
 
-    pj = json.dumps({"multiplier": 100, "tradingsymbol": "CRUDEOIL26JUL7500CE"})
-    assert extract_snapshot_multiplier(pj) == 100
+    # MCX with multiplier=100 must now return 1 (no-op) to prevent double-multiply
+    pj_mcx = json.dumps({"multiplier": 100, "tradingsymbol": "CRUDEOIL26JUL7500CE"})
+    assert extract_snapshot_multiplier(pj_mcx) == 1
 
+    # NFO — already 1
+    pj_nfo = json.dumps({"multiplier": 1, "tradingsymbol": "NIFTY26JULFUT"})
+    assert extract_snapshot_multiplier(pj_nfo) == 1
 
-def test_extract_snapshot_multiplier_nfo():
-    """NFO NIFTY: multiplier=1 → returns 1 (no-op for contracts)."""
-    import json
-    from backend.api.routes.positions_helpers import extract_snapshot_multiplier
+    # Missing multiplier — 1
+    pj_missing = json.dumps({"tradingsymbol": "SOMESTOCK"})
+    assert extract_snapshot_multiplier(pj_missing) == 1
 
-    pj = json.dumps({"multiplier": 1, "tradingsymbol": "NIFTY26JULFUT"})
-    assert extract_snapshot_multiplier(pj) == 1
-
-
-def test_extract_snapshot_multiplier_missing():
-    """Missing multiplier field → returns 1 (safe no-op)."""
-    import json
-    from backend.api.routes.positions_helpers import extract_snapshot_multiplier
-
-    pj = json.dumps({"tradingsymbol": "SOMESTOCK"})
-    assert extract_snapshot_multiplier(pj) == 1
-
-
-def test_extract_snapshot_multiplier_none_payload():
-    """None payload → returns 1 (safe no-op)."""
-    from backend.api.routes.positions_helpers import extract_snapshot_multiplier
-
+    # None payload — 1
     assert extract_snapshot_multiplier(None) == 1
 
 
-def test_snapshot_mcx_qty_contracts_after_multiplier():
-    """Snapshot path: 1-lot CRUDEOIL (daily_book.qty=1, multiplier=100)
-    must produce quantity=100 contracts — the same value the live path
-    (broker_apis.fetch_positions) returns after applying multiplier.
+def test_snapshot_mcx_qty_contracts_no_double_multiply():
+    """Snapshot path: 1-lot CRUDEOIL is stored as 100 contracts in daily_book.qty.
+    build_row_from_snapshot_raw must NOT apply multiplier again — doing so caused
+    MCX qty to be contracts × lot_size (e.g. 100 × 100 = 10,000) instead of 100.
+
+    The write-seam (_positions_qty_fields) already converts lots → contracts.
+    extract_snapshot_multiplier is deprecated (always returns 1).
     """
     import json
     from decimal import Decimal
@@ -274,30 +265,31 @@ def test_snapshot_mcx_qty_contracts_after_multiplier():
         extract_snapshot_multiplier,
     )
 
-    # Simulates the _positions_snapshot loop for one MCX option row.
+    # daily_book.qty stores CONTRACTS after _positions_qty_fields:
+    # 1 lot CRUDEOIL (lot_size=100) → qty_contracts = 1 × 100 = 100
+    qty_from_db = 100         # daily_book.qty is in contracts, NOT lots
     payload_json = json.dumps({
         "tradingsymbol": "CRUDEOIL26JUL7500CE",
         "exchange": "MCX",
-        "multiplier": 100,
+        "multiplier": 100,    # present in payload but must NOT be applied again
     })
-    qty_from_db = 1          # daily_book.qty is in lots for MCX
-    multiplier  = extract_snapshot_multiplier(payload_json)
-    effective_qty = qty_from_db * multiplier  # → 100 contracts
+    # extract_snapshot_multiplier is deprecated — always returns 1
+    assert extract_snapshot_multiplier(payload_json) == 1
 
     row = build_snapshot_position_row(
         account="ZG0790",
         symbol="CRUDEOIL26JUL7500CE",
         exchange="MCX",
-        qty=effective_qty,
+        qty=qty_from_db,
         avg_cost=Decimal("426.30"),
         ltp=Decimal("180.00"),
         day_pnl=Decimal("-24630.00"),
         total_pnl=Decimal("-24630.00"),
         extras={},
     )
-    # After multiplier: 100 contracts, not 1 lot
+    # Must pass through as-is — no double multiplication
     assert row.quantity == 100, (
-        f"Expected 100 contracts (1 lot × 100), got {row.quantity}"
+        f"Expected 100 contracts (already converted by write-seam), got {row.quantity}"
     )
     assert row.overnight_quantity == 100
     # pnl and day_change_val are from DB (absolute ₹) — not scaled by qty
