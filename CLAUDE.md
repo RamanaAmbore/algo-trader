@@ -140,7 +140,10 @@ Or use **`/depl`** to run all three phases in one command.
 | `dev` | Testing / staging — workshop merges here after passing tests | dev.ramboq.com |
 | `main` | Production — only merges from dev on explicit operator request | ramboq.com |
 
-**Never commit directly to `dev` or `main`.** All implementation commits go to `workshop` first.
+**Never commit directly to `dev` or `main`.** ALL commits — implementation and docs — go to `workshop` first.
+
+**Branch sync invariant**: when any phase completes, all three branches must be at the same commit.  
+After `/dprod` finishes: `git checkout workshop && git merge main --ff-only && git push origin workshop` — always.
 
 **Plan before implement** — always enter plan mode for non-trivial tasks. During plan mode, write `.claude/PLAN.md` using the format below, then call ExitPlanMode for operator approval. After ExitPlanMode, output exactly: *"Plan ready — run `/impl` to build only, or `/depl` to build + deploy to prod."* Then **STOP**. Do not start implementing. Do not ask for permissions. Do not take any further action. Wait silently for the operator to run `/impl`, `/ddev`, `/dprod`, or `/depl`.
 
@@ -149,10 +152,12 @@ Or use **`/depl`** to run all three phases in one command.
 
 **Implement** (`/impl`): reads `.claude/PLAN.md` → dispatches agents → loops tests to green → commits to `workshop`. Never pushes.  
 **Dev deploy** (`/ddev`): sync remote+local dev first (`git fetch origin && git checkout dev && git pull origin dev`), then merge workshop→dev, run pytest + svelte-check, push dev only if all pass.  
-**Prod deploy** (`/dprod`): operator explicitly requests → docs/spec/DESIGN_GUIDE/PDF/CC updated → merge dev→main → push. Never push to prod without explicit request.  
+**Prod deploy** (`/dprod`): operator explicitly requests → all doc/spec commits go to `workshop` first → merge workshop→dev → merge dev→main → push all three. Final step: `git checkout workshop && git merge main --ff-only && git push origin workshop` so all branches are in sync.  
 **Full pipeline** (`/depl`): impl → ddev → dprod in one command, bypass-permissions throughout.
 
 **Sync rule before every workshop→dev merge**: always pull `origin/dev` into local `dev` before merging workshop, to avoid divergence conflicts.
+
+**Sync rule after every dprod**: fast-forward workshop to main (`git checkout workshop && git merge main --ff-only && git push origin workshop`) so all three branches end at the same commit.
 
 ### Plan file format (`.claude/PLAN.md`)
 
