@@ -28,7 +28,8 @@ Code, tests, and documentation must stay in sync with this file.
 7.3.5 [Holdings Data Freshness & SSOT Fetch TTL](#735-holdings-data-freshness--ssot-fetch-ttl-aug-2026)
 7.3.6 [Firm NAV Computation & Closed-Exchange LTP Overlay](#736-firm-nav-computation--closed-exchange-ltp-overlay)
 7.3.7 [Holdings Day P&L Recompute & Backstop Exclusion](#737-holdings-day-pnl-recompute--backstop-exclusion-aug-2026)
-7.3.8 [Holdings Snapshot Day Change Percentage Formula](#738-holdings-snapshot-day-change-percentage-formula)
+7.3.8 [Holdings LTP Override & pnl+cur_val Consistency](#738-holdings-ltp-override--pnlcur_val-consistency-aug-2026)
+7.3.9 [Holdings Snapshot Day Change Percentage Formula](#739-holdings-snapshot-day-change-percentage-formula)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
@@ -786,7 +787,68 @@ incorrectly (missing field → 0 → matched condition → recompute on every fe
 
 ---
 
-## 7.3.8 Holdings Snapshot Day Change Percentage Formula
+## 7.3.8 Holdings LTP Override & pnl+cur_val Consistency (Aug 2026)
+
+**File**: `backend/api/routes/holdings.py` — `_override_stale_ltp_from_ticker()`
+**File**: `backend/brokers/broker_apis.py` — `_build_holdings_pnl_expr()`
+
+### LTP patch consistency recompute
+
+`_override_stale_ltp_from_ticker()` patches `last_price` from the KiteTicker for any
+holdings row with a stale/zero LTP after backfill. Previously, after patching `last_price`,
+the function updated `day_change_val` and `day_change` but left `pnl` and `cur_val` stale
+(computed against the old zero `last_price`). This caused the NavStrip H slot 2 to display
+the invested amount (`inv_val`) instead of current market value when LTP was first patched.
+
+**Fix (Aug 2026, commit bad82021)**: After patching `last_price`, the function now also
+recomputes `pnl` and `cur_val` on the same rows:
+
+```python
+if 'average_price' in raw.columns and 'pnl' in raw.columns:
+    _avg_p = pd.to_numeric(raw.loc[_sel, 'average_price'], errors='coerce').fillna(0)
+    _pnl_p = (_ltp_p - _avg_p) * _qty_p
+    raw.loc[_sel, 'pnl'] = _pnl_p.where(_ltp_p > 0, raw.loc[_sel, 'pnl'])
+    if 'inv_val' in raw.columns and 'cur_val' in raw.columns:
+        _inv_p2 = pd.to_numeric(raw.loc[_sel, 'inv_val'], errors='coerce').fillna(0)
+        raw.loc[_sel, 'cur_val'] = (_inv_p2 + raw.loc[_sel, 'pnl']).where(
+            _ltp_p > 0, raw.loc[_sel, 'cur_val']
+        )
+```
+
+This ensures the API response is internally consistent: `last_price`, `pnl`, and `cur_val`
+all reflect the same fresh LTP immediately after the patch.
+
+### Broker pnl zero-trust policy
+
+`_build_holdings_pnl_expr()` in `broker_apis.py` now requires broker `pnl` to be both
+non-null AND non-zero before trusting it:
+
+```python
+# Before:
+pl.when(_broker_pnl.is_not_null())
+
+# After:
+pl.when(_broker_pnl.is_not_null() & (_broker_pnl != 0.0))
+.then(_broker_pnl)
+.when((_ltp > 0) & (_avg > 0))
+.then(_pnl_calc)
+.otherwise(pl.lit(0.0))
+```
+
+**Rationale**: Kite sends `pnl=0.0` (not null) during the pre-market window when
+`last_price=0`. The old code trusted that zero, setting `cur_val = inv_val`, making the
+holdings card display invested amount instead of current value. The new code treats
+`pnl=0.0` as "no data" and falls back to the computed formula `(ltp - avg) × qty`. At
+true breakeven (`ltp == avg`) both formulas give 0, so there is no regression for
+genuinely flat positions.
+
+**Impact**: Holdings P&L and `cur_val` now remain consistent with the live LTP throughout
+the pre-market and post-settlement windows, eliminating the 30-second gap where the
+NavStrip H slot would show stale values until the next refresh.
+
+---
+
+## 7.3.9 Holdings Snapshot Day Change Percentage Formula
 
 **File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`
 
@@ -1935,3 +1997,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-16 | v1.19 Day P&L backstop Case 2 + Holdings Dhan/Groww fallback (commit 7b8d432c): Updated `backend/api/algo/pnl_math.py:apply_day_change_backstop()` to handle Case 2: overnight positions where LTP gate zeroed `day_change_val` but broker `pnl` is valid (`oq>0, dcv==0, pnl≠0, close>0, avg>0`). Recovery formula mirrors frontend SSOT: `pnl − (close − avg) × oq`. Added `_apply_holdings_dcv_fallback()` post-processing in `broker_apis.py:_enrich_holdings()` for Dhan/Groww holdings where backfill symbol resolution fails, leaving `day_change_val==0`. Fallback: when `day_change` (scalar ltp−close) is present and `close_price > 0`, sets `day_change_val = day_change × opening_quantity`. Ensures holdings Day P&L displays correctly on cold-cache loads instead of showing 0 for symbols outside symbol-resolver cache. |
 | 2026-08-20 | v1.20 Auth-error retry refactor + account loading cache (commit cecc9842): Moved auth-error detection and token renewal from scattered inline blocks in `broker_apis.py` into unified `@for_all_accounts._per_account._try_renew` handler in `backend/shared/helpers/decorators.py`. New zero-dependency `backend/shared/helpers/auth_error.py` module exports `is_auth_error_str(err)` to detect 401/403/token-expiry signals without importing broker layer. Updated §2 Broker Base Contract auth invariant and §9.2 On-demand token renewal subsection. Removed `_maybe_renew_on_auth_error`, `_rebuild_holdings_after_renewal`, `_rebuild_positions_after_renewal`, `_rebuild_margins_after_renewal` from `broker_apis.py` — logic now centralized in decorator `_try_renew`. Added module-level `_last_known_remote_accounts` cache in `backend/api/routes/brokers.py:_loaded_accounts()` to serve fallback account list when conn-service briefly unavailable (06:00 IST token-expiry restart window). Prevents navbar chip from flipping 0/5 → 5/5 during transient UDS blips. Added subsection in §6 Circuit Breaker & Health documenting account loading cache. |
 | 2026-08-24 | v1.21 Holdings data freshness and day P&L fixes (commit 39c21cca): Added §7.3.5 Holdings Data Freshness & SSOT Fetch TTL documenting 30-second TTL on `fetch_holdings()` mirroring `fetch_positions()` pattern. Added `_HOLDINGS_SSOT_TTL = 30.0` and `_holdings_ssot_refresh_at` dict tracking last fetch per account; cache bypass on TTL miss forces fresh broker call. Added §7.3.7 Holdings Day P&L Recompute & Backstop Exclusion documenting two fixes: (1) `_override_stale_close_for_holdings()` now recomputes day P&L for ALL holdings rows where `previous_close > 0` exists (not just Dhan patched rows), formula `(ltp - previous_close) × qty` applied universally, (2) `apply_day_change_backstop()` explicitly removed from holdings flow (retained for positions only) since holdings lack `overnight_quantity` field required for backstop Case 1/2/3 edge cases. Prevents spurious backstop matches on missing field when overnight_qty defaults to 0. Renumbered subsequent sections (7.3.6→7.3.8). |
+| 2026-08-26 | v1.22 Holdings H slot consistency fix (commit bad82021): Added §7.3.8 Holdings LTP Override & pnl+cur_val Consistency documenting two fixes: (1) `_override_stale_ltp_from_ticker()` now recomputes `pnl` and `cur_val` on patched rows after LTP patch (was leaving them stale, causing NavStrip H slot 2 to show `inv_val` instead of `ltp × qty`); (2) `_build_holdings_pnl_expr()` changes broker pnl trust policy from trusting non-null to trusting non-null AND non-zero (Kite sends `pnl=0.0` pre-market when `last_price=0`, old code trusted that zero → `cur_val = inv_val`, now falls back to computed formula `(ltp-avg)×qty`). At breakeven (`ltp==avg`) both formulas give 0, so no regression. Renumbered subsequent section (7.3.8→7.3.9). |
