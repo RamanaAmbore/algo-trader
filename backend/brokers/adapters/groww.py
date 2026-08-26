@@ -1354,14 +1354,36 @@ class GrowwBroker(Broker):
     # ── Qty translation ───────────────────────────────────────────────
 
     def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
-        """Groww accepts quantity in contracts across all segments
-        (including MCX). No lot-to-contract translation needed.
+        """Convert canonical-contract qty to Groww's wire format.
 
-        ASSUMPTION: verified against Groww Trade API docs at
-        https://groww.in/trade-api/docs — Groww's `quantity` field is
-        in contracts across CASH, FNO, and COMMODITY segments. If a
-        Groww account rejects an MCX order with a lot-size error, add
-        MCX-specific `// lot_size` logic here matching Kite's path."""
+        Groww SDK v1.5.0 (Dec 2025) added MCX commodity trading. Like
+        Kite and Dhan, Groww's COMMODITY segment expects quantity IN LOTS
+        for MCX/NCO. NSE/BSE/FNO remain in contracts (no change needed).
+
+        Mirrors kite.py::to_kite_qty — same safety guard: lot_size <= 1
+        on MCX is always a cache miss (no real MCX contract has lot_size
+        <= 1) so we raise ValueError rather than sending raw contracts as
+        lots (100× oversize incident class)."""
+        if exchange in ("MCX", "NCO"):
+            if lot_size <= 1:
+                raise ValueError(
+                    f"[GROWW-QTY-GUARD] {exchange} lot_size={lot_size} for "
+                    f"qty={raw_qty} — instruments cache miss (no real MCX "
+                    f"contract has lot_size<=1). Refusing order to prevent "
+                    f"catastrophic oversize. Retry after cache warms."
+                )
+            if raw_qty >= lot_size:
+                translated = max(1, raw_qty // lot_size)
+                if translated != raw_qty:
+                    logger.info(
+                        f"[GROWW-QTY] {exchange}: contracts={raw_qty} → lots={translated} "
+                        f"(lot_size={lot_size})"
+                    )
+                return translated
+            logger.warning(
+                "[GROWW-QTY-GUARD] sub-lot qty=%d < lot_size=%d for %s — Groww will likely reject",
+                raw_qty, lot_size, exchange,
+            )
         return raw_qty
 
     def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:

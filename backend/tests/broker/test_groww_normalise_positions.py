@@ -220,3 +220,64 @@ def test_day_change_val_present_in_output_dict():
     assert row["close_price"] == pytest.approx(10400.0)
     # (10500 - 10400) * 2 = 200.0
     assert row["day_change_val"] == pytest.approx(200.0)
+
+
+# ---------------------------------------------------------------------------
+# translate_qty — MCX lot conversion (matches Kite convention)
+# ---------------------------------------------------------------------------
+
+class TestGrowwTranslateQtyMCX:
+    def _broker(self):
+        from unittest.mock import MagicMock
+        from backend.brokers.adapters.groww import GrowwBroker
+        conn = MagicMock()
+        conn.account = "test"
+        conn._source_ip = None
+        b = GrowwBroker.__new__(GrowwBroker)
+        b._conn = conn
+        return b
+
+    def test_mcx_contracts_to_lots(self):
+        b = self._broker()
+        # 1 lot CRUDEOIL = 100 contracts; outbound Groww order must send 1
+        assert b.translate_qty("MCX", 100, 100) == 1
+
+    def test_mcx_2_lots(self):
+        b = self._broker()
+        assert b.translate_qty("MCX", 200, 100) == 2
+
+    def test_mcx_naturalgas(self):
+        b = self._broker()
+        # 1 lot NATURALGAS = 1250 contracts
+        assert b.translate_qty("MCX", 1250, 1250) == 1
+
+    def test_nco_contracts_to_lots(self):
+        b = self._broker()
+        assert b.translate_qty("NCO", 100, 100) == 1
+
+    def test_nfo_no_translation(self):
+        b = self._broker()
+        # NFO stays in contracts — no change
+        assert b.translate_qty("NFO", 250, 250) == 250
+
+    def test_nse_equity_no_translation(self):
+        b = self._broker()
+        assert b.translate_qty("NSE", 10, 1) == 10
+
+    def test_mcx_cache_miss_raises(self):
+        b = self._broker()
+        # lot_size <= 1 on MCX = cache miss; must raise, not send 100x oversize
+        import pytest
+        with pytest.raises(ValueError, match="GROWW-QTY-GUARD"):
+            b.translate_qty("MCX", 100, 1)
+
+    def test_mcx_lot_size_zero_raises(self):
+        b = self._broker()
+        import pytest
+        with pytest.raises(ValueError, match="GROWW-QTY-GUARD"):
+            b.translate_qty("MCX", 100, 0)
+
+    def test_mcx_sub_lot_passes_through(self):
+        b = self._broker()
+        # raw_qty < lot_size: sub-lot, pass through unchanged (Groww will reject)
+        assert b.translate_qty("MCX", 10, 100) == 10
