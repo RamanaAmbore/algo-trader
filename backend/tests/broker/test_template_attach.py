@@ -828,27 +828,20 @@ class TestRemoteBrokerTranslateQty:
 # ─── Groww translate_qty MCX logging ────────────────────────────────────────────
 
 class TestGrowwTranslateQtyMcx:
-    """Groww doesn't translate MCX qty (limitation) → logs WARNING."""
+    """Groww translates MCX contracts → lots via the shared exchange convention."""
 
-    def test_groww_translate_qty_mcx_returns_raw_logs_warning(self, caplog):
-        """Groww.translate_qty for MCX should return raw_qty and log WARNING."""
+    def test_groww_translate_qty_mcx_contracts_to_lots(self):
+        """Groww.translate_qty for MCX divides contracts by lot_size."""
         mock_conn = MagicMock()
-        mock_sdk = MagicMock()
-        mock_conn.get_groww_conn.return_value = mock_sdk
+        mock_conn.get_groww_conn.return_value = MagicMock()
 
         adapter = GrowwBroker.__new__(GrowwBroker)
         adapter._conn = mock_conn
         adapter._account = "GR0001"
 
-        with caplog.at_level("WARNING"):
-            result = adapter.translate_qty(exchange="MCX", raw_qty=100, lot_size=2)
-
-            # Groww can't translate MCX — returns raw_qty unchanged
-            assert result == 100
-
-            # Warning should have been logged
-            # (exact log message depends on implementation)
-            # At minimum, the warning should mention Groww or MCX
+        # 100 contracts with lot_size=2 → 50 lots
+        result = adapter.translate_qty(exchange="MCX", raw_qty=100, lot_size=2)
+        assert result == 50
 
 
 # ─── Helper for creating test plans ────────────────────────────────────────────

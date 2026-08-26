@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.brokers.base import Broker
+from backend.brokers.base import Broker, _exchange_contracts_to_wire
 from backend.brokers.connections import KiteConnection
 from backend.brokers.errors import (
     BrokerAuthError, BrokerNetworkError, BrokerOrderError,
@@ -55,56 +55,14 @@ def _kite_exc(e: Exception) -> BrokerError:
 def to_kite_qty(exchange: str, raw_qty: int, lot_size: int) -> int:
     """Translate raw contract qty to Kite's quantity convention.
 
-    NSE/BSE/NFO/BFO/CDS/BCD: quantity = contracts. NSE F&O places
-    qty=50 to trade 1 NIFTY lot (lot_size=50). MCX/NCO: quantity =
-    LOTS. MCX CRUDEOIL with lot_size=100 wants qty=1 to trade 1 lot.
-    Without this translation, a 1-lot MCX order ends up as 100 lots
-    on Kite.
+    NSE/BSE/NFO/BFO/CDS/BCD: quantity = contracts (no-op).
+    MCX/NCO: quantity = LOTS — delegates to the shared exchange rule in
+    _exchange_contracts_to_wire so the conversion logic lives in one place.
 
-    SAFETY for MCX/NCO:
-      - lot_size <= 1 (0 or 1) is ALWAYS a cache miss for any real MCX
-        contract (smallest real lot_size is GOLDPETAL at 10g; every
-        liquid MCX contract has lot_size >> 1). Dividing raw_qty by 1
-        (or passing through on 0) sends raw_qty unchanged as LOTS —
-        100× oversize for a 1-lot CRUDEOIL (lot_size=100) order.
-        Raises ValueError so callers surface a safe 503/422 instead of
-        silently sending a catastrophic position to the exchange.
-      - lot_size > 1: translate contracts → lots normally.
-
-    For non-MCX exchanges the function is always a no-op (Kite wants
-    contracts everywhere else, which is what callers already hold).
-
-    Only translates when raw_qty >= lot_size (operator typed contracts).
-    Sub-lot-size values pass through as-is — better to let Kite reject
-    an odd qty than silently divide and send a nonsensical number.
+    Kept as a module-level function (not an instance method) because
+    actions_preflight.py imports it directly.
     """
-    if exchange in ("MCX", "NCO"):
-        if lot_size <= 1:
-            # lot_size == 0 or 1 on MCX means instruments cache missed.
-            # No real MCX contract has lot_size ≤ 1. Refuse rather than
-            # sending raw_qty as lots (100× oversize incident on CRUDEOIL).
-            raise ValueError(
-                f"[KITE-QTY-GUARD] {exchange} lot_size={lot_size} for "
-                f"qty={raw_qty} — instruments cache miss (no real MCX "
-                f"contract has lot_size≤1). Refusing order to prevent "
-                f"catastrophic oversize. Retry after cache warms."
-            )
-        if raw_qty >= lot_size:
-            translated = max(1, raw_qty // lot_size)
-            if translated != raw_qty:
-                logger.info(
-                    f"[KITE-QTY] {exchange}: contracts={raw_qty} → lots={translated} "
-                    f"(lot_size={lot_size})"
-                )
-            return translated
-        # raw_qty < lot_size — sub-lot: Kite will likely reject the order.
-        # Log a warning so there is a clear audit trail before the SDK call.
-        logger.warning(
-            "[QTY-GUARD] sub-lot qty=%d < lot_size=%d for sym=%s — Kite will likely reject",
-            raw_qty, lot_size, exchange,
-        )
-        return raw_qty
-    return raw_qty
+    return _exchange_contracts_to_wire(exchange, raw_qty, lot_size, label="KITE")
 
 
 def from_kite_qty(exchange: str, kite_qty: int, lot_size: int) -> int:
@@ -568,16 +526,5 @@ class KiteBroker(Broker):
     def get_gtts(self) -> list[dict]:
         return self.kite.get_gtts()
 
-    # ── Qty translation ───────────────────────────────────────────────
-
-    def translate_qty(self, exchange: str, raw_qty: int,
-                      lot_size: int) -> int:
-        """MCX/NCO want qty=lots; every other Kite exchange wants
-        qty=contracts. Delegates to the module-level `to_kite_qty`
-        helper which encodes Kite's lot-vs-contract convention."""
-        return to_kite_qty(exchange, raw_qty, lot_size)
-
-    def normalise_qty(self, exchange: str, raw_qty: int,
-                      lot_size: int) -> int:
-        """Back-compat alias — prefer translate_qty in new code."""
-        return self.translate_qty(exchange, raw_qty, lot_size)
+    # translate_qty and normalise_qty are inherited from Broker base —
+    # @exchange_qty_convention in the base handles MCX/NCO lots conversion.

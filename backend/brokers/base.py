@@ -9,6 +9,8 @@ handle.
 
 from __future__ import annotations
 
+import functools
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -16,6 +18,67 @@ from backend.brokers.capabilities import (
     BrokerCapabilities,
     capabilities_for_broker_id,
 )
+
+_logger = logging.getLogger(__name__)
+
+# MCX and NCO exchanges require quantity in LOTS on every broker that follows
+# the exchange convention. This is an exchange rule, not a broker rule.
+_MCX_EXCHANGES = frozenset({"MCX", "NCO"})
+
+
+def _exchange_contracts_to_wire(
+    exchange: str, contracts: int, lot_size: int, *, label: str = "broker"
+) -> int:
+    """Convert internal contract qty to the wire format required by the exchange.
+
+    MCX/NCO: quantity must be in LOTS. All other exchanges are a no-op.
+
+    Safety guard: lot_size ≤ 1 on MCX is always an instruments-cache miss —
+    no real MCX contract has lot_size ≤ 1. Raises ValueError rather than
+    silently sending contracts as lots (100× oversize for CRUDEOIL).
+    Sub-lot qty (contracts < lot_size) passes through with a warning.
+    """
+    if exchange in _MCX_EXCHANGES:
+        if lot_size <= 1:
+            raise ValueError(
+                f"[QTY-GUARD] {exchange} lot_size={lot_size} for "
+                f"qty={contracts} — instruments cache miss (no real MCX "
+                f"contract has lot_size≤1). Refusing order to prevent "
+                f"catastrophic oversize. Retry after cache warms."
+            )
+        if contracts >= lot_size:
+            wire = max(1, contracts // lot_size)
+            if wire != contracts:
+                _logger.info(
+                    "[%s-QTY] %s: contracts=%d → lots=%d (lot_size=%d)",
+                    label.upper(), exchange, contracts, wire, lot_size,
+                )
+            return wire
+        _logger.warning(
+            "[QTY-GUARD] sub-lot qty=%d < lot_size=%d for %s (%s) — broker will likely reject",
+            contracts, lot_size, exchange, label,
+        )
+    return contracts
+
+
+def exchange_qty_convention(method):
+    """Decorator for translate_qty that applies the exchange-level MCX/NCO
+    lots conversion before delegating to the adapter body.
+
+    The decorated method receives wire_qty (already lot-converted for MCX/NCO)
+    as its raw_qty argument and may apply additional broker-specific adjustments.
+    Adapters that need no extra logic simply return raw_qty.
+
+    RemoteBroker.translate_qty must NOT use this decorator — it forwards to
+    the conn-service which runs its own translation.
+    """
+    @functools.wraps(method)
+    def wrapper(self, exchange: str, raw_qty: int, lot_size: int) -> int:
+        wire_qty = _exchange_contracts_to_wire(
+            exchange, raw_qty, lot_size, label=self.broker_id
+        )
+        return method(self, exchange, wire_qty, lot_size)
+    return wrapper
 
 
 class Broker(ABC):
@@ -286,25 +349,18 @@ class Broker(ABC):
 
     # ── Per-broker qty translation ────────────────────────────────────
 
+    @exchange_qty_convention
     def translate_qty(self, exchange: str, raw_qty: int,
                       lot_size: int) -> int:
-        """Translate operator-supplied qty to the unit the broker's
-        place_order API expects.
+        """Translate operator-supplied qty to the wire format the broker expects.
 
-        Semantics: `raw_qty` is in operator-friendly units — contracts
-        for NSE/BSE/NFO/BFO (e.g. 50 = 1 NIFTY lot), or lots for MCX
-        on Kite (e.g. 1 = 1 lot of CRUDEOIL). The return value is the
-        exact integer to pass to the broker's place_order `quantity`
-        field. Each adapter overrides this to match its own convention.
+        The @exchange_qty_convention decorator applies the MCX/NCO lots rule
+        before this body runs — raw_qty here is already lot-converted for
+        commodity exchanges. Adapters that need no further adjustment inherit
+        this base implementation.
 
-        Default is a no-op (returns `raw_qty` unchanged) — correct for
-        Dhan and Groww which always want qty in contracts. Kite overrides
-        for MCX/NCO where qty=lots is required.
-
-        Only called when `lot_size > 0` and the caller knows the
-        symbol's lot_size (best-effort via the instruments cache). When
-        the lookup fails, `raw_qty` is passed through unchanged and the
-        broker provides an explicit rejection if the qty is wrong."""
+        RemoteBroker overrides without the decorator to forward to the
+        conn-service, which runs its own translation."""
         return raw_qty
 
     def normalise_qty(self, exchange: str, raw_qty: int,

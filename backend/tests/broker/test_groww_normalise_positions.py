@@ -268,13 +268,13 @@ class TestGrowwTranslateQtyMCX:
         b = self._broker()
         # lot_size <= 1 on MCX = cache miss; must raise, not send 100x oversize
         import pytest
-        with pytest.raises(ValueError, match="GROWW-QTY-GUARD"):
+        with pytest.raises(ValueError, match="QTY-GUARD"):
             b.translate_qty("MCX", 100, 1)
 
     def test_mcx_lot_size_zero_raises(self):
         b = self._broker()
         import pytest
-        with pytest.raises(ValueError, match="GROWW-QTY-GUARD"):
+        with pytest.raises(ValueError, match="QTY-GUARD"):
             b.translate_qty("MCX", 100, 0)
 
     def test_mcx_sub_lot_passes_through(self):

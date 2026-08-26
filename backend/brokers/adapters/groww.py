@@ -1351,44 +1351,8 @@ class GrowwBroker(Broker):
             page += 1
         return out
 
-    # ── Qty translation ───────────────────────────────────────────────
-
-    def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
-        """Convert canonical-contract qty to Groww's wire format.
-
-        Groww SDK v1.5.0 (Dec 2025) added MCX commodity trading. Like
-        Kite and Dhan, Groww's COMMODITY segment expects quantity IN LOTS
-        for MCX/NCO. NSE/BSE/FNO remain in contracts (no change needed).
-
-        Mirrors kite.py::to_kite_qty — same safety guard: lot_size <= 1
-        on MCX is always a cache miss (no real MCX contract has lot_size
-        <= 1) so we raise ValueError rather than sending raw contracts as
-        lots (100× oversize incident class)."""
-        if exchange in ("MCX", "NCO"):
-            if lot_size <= 1:
-                raise ValueError(
-                    f"[GROWW-QTY-GUARD] {exchange} lot_size={lot_size} for "
-                    f"qty={raw_qty} — instruments cache miss (no real MCX "
-                    f"contract has lot_size<=1). Refusing order to prevent "
-                    f"catastrophic oversize. Retry after cache warms."
-                )
-            if raw_qty >= lot_size:
-                translated = max(1, raw_qty // lot_size)
-                if translated != raw_qty:
-                    logger.info(
-                        f"[GROWW-QTY] {exchange}: contracts={raw_qty} → lots={translated} "
-                        f"(lot_size={lot_size})"
-                    )
-                return translated
-            logger.warning(
-                "[GROWW-QTY-GUARD] sub-lot qty=%d < lot_size=%d for %s — Groww will likely reject",
-                raw_qty, lot_size, exchange,
-            )
-        return raw_qty
-
-    def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
-        """Back-compat alias — prefer translate_qty in new code."""
-        return self.translate_qty(exchange, raw_qty, lot_size)
+    # translate_qty and normalise_qty are inherited from Broker base —
+    # @exchange_qty_convention in the base handles MCX/NCO lots conversion.
 
 
 # ── Response normalisers ──────────────────────────────────────────────

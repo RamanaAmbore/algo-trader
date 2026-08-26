@@ -1496,38 +1496,8 @@ class DhanBroker(Broker):
             rows = []
         return [_normalise_dhan_gtt_row(r) for r in rows]
 
-    # ── Qty translation ───────────────────────────────────────────────
-
-    def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
-        """Convert canonical-contract qty (the unit our routes + position
-        normalisers use internally) to Dhan's wire format.
-
-        Dhan's API takes quantity IN LOTS for MCX/NCO and IN CONTRACTS
-        for NSE/BSE F&O — same convention Kite uses. The position-data
-        normaliser (`_normalise_positions`) multiplies netQty × multiplier
-        to convert Dhan's lot-based read response back to contracts so
-        every downstream surface (Legs grid, day_change_val formula,
-        analytics, paper engine) treats Dhan + Kite rows uniformly. This
-        method undoes that for the OUTBOUND order: contract qty → lots
-        on MCX/NCO, identity on NSE/BSE F&O.
-
-        operator on /admin/derivatives: Dhan CRUDEOIL position was
-        showing qty=1 while Kite showed qty=300 for the same 3 lots —
-        because the read path stayed in lots while Kite read in contracts.
-        The fix normalises BOTH read + write to contracts internally."""
-        if exchange in ("MCX", "NCO") and lot_size > 0 and raw_qty >= lot_size:
-            translated = max(1, raw_qty // lot_size)
-            if translated != raw_qty:
-                logger.info(
-                    f"[DHAN-QTY] {exchange}: contracts={raw_qty} → lots={translated} "
-                    f"(lot_size={lot_size})"
-                )
-            return translated
-        return raw_qty
-
-    def normalise_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
-        """Back-compat alias — prefer translate_qty in new code."""
-        return self.translate_qty(exchange, raw_qty, lot_size)
+    # translate_qty and normalise_qty are inherited from Broker base —
+    # @exchange_qty_convention in the base handles MCX/NCO lots conversion.
 
 
 # ── Response normalisers ──────────────────────────────────────────────
