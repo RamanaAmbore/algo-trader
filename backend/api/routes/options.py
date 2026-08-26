@@ -2189,26 +2189,37 @@ async def _chain_quotes_sym_lookup(
     und: str, exp: str, inst_resp
 ) -> tuple[dict, list]:
     """Return (sym_by_strike, all_expiries) from cache or by computing it.
-    Uses double-checked locking to coalesce concurrent cache misses.
+
+    Compute-outside-lock pattern: asyncio.to_thread runs WITHOUT holding
+    _CHAIN_SYM_CACHE_LOCK so a saturated thread pool (periodic broker polls)
+    never blocks unrelated chain_quotes requests. Two concurrent misses for the
+    same key both compute; the second write is a harmless overwrite (deterministic
+    result). The lock guards only the short dict-write critical section.
     """
     _cache_key = (und, exp)
-    _now = time.monotonic()
     _entry = _CHAIN_SYM_CACHE.get(_cache_key)
-    if not (_entry and (_now - _entry[0]) < _CHAIN_SYM_TTL):
-        async with _get_chain_sym_cache_lock():
-            _entry = _CHAIN_SYM_CACHE.get(_cache_key)
-            _now = time.monotonic()
-            if not (_entry and (_now - _entry[0]) < _CHAIN_SYM_TTL):
-                sym_by_strike, all_expiries = await asyncio.to_thread(
-                    _chain_quotes_build_sym_map, inst_resp, und, exp
-                )
-                if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
-                    _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
-                _CHAIN_SYM_CACHE[_cache_key] = (
-                    time.monotonic(), (sym_by_strike, all_expiries)
-                )
-            _entry = _CHAIN_SYM_CACHE[_cache_key]
-    return _entry[1]
+    if _entry and (time.monotonic() - _entry[0]) < _CHAIN_SYM_TTL:
+        return _entry[1]
+
+    # Compute outside the lock — may run concurrently for the same key on
+    # cache miss, but results are identical so the last write wins safely.
+    sym_by_strike, all_expiries = await asyncio.to_thread(
+        _chain_quotes_build_sym_map, inst_resp, und, exp
+    )
+
+    async with _get_chain_sym_cache_lock():
+        # Re-check: another coroutine may have written while we were in thread.
+        _entry = _CHAIN_SYM_CACHE.get(_cache_key)
+        if not (_entry and (time.monotonic() - _entry[0]) < _CHAIN_SYM_TTL):
+            if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
+                _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
+            _CHAIN_SYM_CACHE[_cache_key] = (
+                time.monotonic(), (sym_by_strike, all_expiries)
+            )
+        else:
+            sym_by_strike, all_expiries = _entry[1]
+
+    return sym_by_strike, all_expiries
 
 
 def _chain_quotes_build_rows(book_by_strike: dict) -> list:
