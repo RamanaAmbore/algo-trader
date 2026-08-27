@@ -197,8 +197,8 @@ alert_routing:
   oco_double_fire:      { telegram: ops,   ntfy: urgent,  email: false }
   template_guard:       { telegram: ops,   ntfy: high,    email: false }
   template_attach_fail: { telegram: ops,   ntfy: urgent,  email: false }
-  market_open:          { telegram: info,  ntfy: false,   email: true  }
-  market_close:         { telegram: info,  ntfy: false,   email: true  }
+  market_open:          { telegram: false, ntfy: false,   email: true  }
+  market_close:         { telegram: false, ntfy: false,   email: true  }
   visitor_report:       { telegram: info,  ntfy: false,   email: false }
   agent_alert:          { telegram: ops,   ntfy: false,   email: true  }
   deploy:               { telegram: info,  ntfy: default, email: false }
