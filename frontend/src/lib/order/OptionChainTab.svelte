@@ -327,6 +327,7 @@
   let chainQuotesMap = $state(null);
   let _chainQuotesLoading = $state(false);
   let _chainQuotesError = $state('');
+  let _pricesFetching = $state(false);
   const chainStrikes = $derived(
     Object.keys(chainQuotesMap ?? {}).map(Number).filter(Boolean).sort((a, b) => a - b)
   );
@@ -463,7 +464,7 @@
   //   via a surgical per-strike merge (never nulls the map).
   //   If it fails or is aborted (new expiry selected), grid stays visible
   //   with '—' placeholders — no retry loop.
-  // Subsequent 5 s poll ticks hit prices-only; skeleton never re-fetches
+  // Subsequent 30 s poll ticks hit prices-only; skeleton never re-fetches
   //   (strike list doesn't change mid-session for a fixed expiry).
 
   let chainQuotesKey = '';
@@ -541,27 +542,33 @@
    */
   async function _loadPrices(u = '', e = '') {
     if (!u || !e) return;
-    // Cancel any prior in-flight prices fetch.
-    _pricesAbort?.abort();
-    const ac = new AbortController();
-    _pricesAbort = ac;
-    const key = `${u}|${e}`;
+    if (_pricesFetching) return;
+    _pricesFetching = true;
     try {
-      const r = await fetchChainQuotesPrices(u, e, { signal: ac.signal });
-      _overlayPrices(r, key);
-    } catch (err) {
-      // AbortError = intentional cancel (expiry change). Ignore.
-      // Network errors: grid stays with skeleton '—' values. No retry.
-      if (/** @type {any} */ (err)?.name !== 'AbortError' && chainQuotesKey === key) {
-        // Prices failed — skeleton stays visible; no error banner
-        // (skeleton is already showing — operator can see strikes).
+      // Cancel any prior in-flight prices fetch.
+      _pricesAbort?.abort();
+      const ac = new AbortController();
+      _pricesAbort = ac;
+      const key = `${u}|${e}`;
+      try {
+        const r = await fetchChainQuotesPrices(u, e, { signal: ac.signal });
+        _overlayPrices(r, key);
+      } catch (err) {
+        // AbortError = intentional cancel (expiry change). Ignore.
+        // Network errors: grid stays with skeleton '—' values. No retry.
+        if (/** @type {any} */ (err)?.name !== 'AbortError' && chainQuotesKey === key) {
+          // Prices failed — skeleton stays visible; no error banner
+          // (skeleton is already showing — operator can see strikes).
+        }
       }
+    } finally {
+      _pricesFetching = false;
     }
   }
 
   /**
    * Full refresh: skeleton immediately, prices in parallel.
-   * Called on initial expiry load and by the 5 s poll (which skips
+   * Called on initial expiry load and by the 30 s poll (which skips
    * the skeleton phase after first load).
    * @param {boolean} [skeletonOnly=false] - if true, skip the prices call
    */
@@ -577,7 +584,7 @@
   }
 
   /**
-   * Prices-only refresh — called by the 5 s poll after initial load.
+   * Prices-only refresh — called by the 30 s poll after initial load.
    * The strike list is stable for a fixed expiry; only bid/ask change.
    */
   async function _refreshChainPrices() {
@@ -603,8 +610,8 @@
       if (key !== chainQuotesKey) { chainQuotesMap = null; chainQuotesKey = key; }
       // Initial two-phase load (skeleton + prices in parallel).
       _refreshChainQuotes();
-      // Subsequent 5 s poll ticks hit prices only — skeleton stable.
-      chainQuotesPoll = visibleInterval(withGuard(_refreshChainPrices), 5000);
+      // Subsequent 30 s poll ticks hit prices only — skeleton stable.
+      chainQuotesPoll = visibleInterval(withGuard(_refreshChainPrices), 30000);
     });
   });
   onDestroy(() => {

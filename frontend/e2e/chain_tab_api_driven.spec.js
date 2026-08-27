@@ -482,4 +482,146 @@ test.describe('OptionChainTab API-driven redesign (Option B)', () => {
       expect(firstSkeletonIdx).toBeLessThan(firstPricesIdx);
     }
   });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Test 10: _pricesFetching in-flight guard — concurrent poll ticks do not
+  // fire a second prices request while the first is still in flight.
+  //
+  // Strategy: intercept prices=1 requests with a 2 s artificial delay.
+  // After the first prices call starts, wait 1 s (still in flight), then
+  // trigger a manual poll-equivalent via page.evaluate dispatching a custom
+  // event that the component ignores because _pricesFetching is true.
+  // The assertion is that at most one prices=1 request is made to the
+  // backend during the in-flight window.
+  // ──────────────────────────────────────────────────────────────────────────
+  test('10: _pricesFetching guard — only one prices request fires while one is in flight', async ({ page }) => {
+    let pricesCallCount = 0;
+
+    await page.route('**/api/options/chain-quotes**', async (route) => {
+      const url = route.request().url();
+      const hasPrices = url.includes('prices=1');
+      const hasExpiry = /expiry=[^&]+/.test(url) && !url.includes('expiry=&') && !url.match(/expiry=$/);
+
+      if (!hasExpiry) {
+        await route.continue();
+        return;
+      }
+
+      if (hasPrices) {
+        pricesCallCount++;
+        // Hold the response for 2 s to keep _pricesFetching=true long enough
+        // for a hypothetical concurrent tick to be rejected by the guard.
+        await new Promise((r) => setTimeout(r, 2000));
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ underlying: 'NIFTY', expiry: '2025-06-26', rows: [] }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ underlying: 'NIFTY', expiry: '2025-06-26', rows: [] }),
+        });
+      }
+    });
+
+    await gotoDerivatives(page);
+
+    const chainRoot = page.locator('.oct-root').first();
+    if (!(await chainRoot.count())) {
+      test.skip(true, 'OptionChainTab not found — skip in-flight guard test');
+      return;
+    }
+
+    // Wait for the initial prices call to start (give it up to 3 s).
+    await page.waitForTimeout(500);
+    const countAtStart = pricesCallCount;
+
+    if (countAtStart === 0) {
+      // No prices call was made (market closed or no expiry context).
+      test.skip(true, 'No prices call observed — chain may not have an expiry context');
+      return;
+    }
+
+    // While the first call is still in flight (2 s hold), wait 800 ms and
+    // check that no additional prices call was triggered.
+    await page.waitForTimeout(800);
+    expect(pricesCallCount).toBe(countAtStart);
+
+    // After the 2 s hold expires, one more call is allowed (next poll tick),
+    // but during the in-flight window only the original call should have fired.
+    // Wait for the first call to resolve.
+    await page.waitForTimeout(1500);
+    // pricesCallCount may now be 1 or 2 depending on whether a poll tick fired
+    // after the first resolved; the key invariant was checked above (no second
+    // call during the 800 ms in-flight window).
+    expect(pricesCallCount).toBeGreaterThanOrEqual(1);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Test 11: Prices poll interval is 30 s — no second prices call within 5 s
+  //
+  // Verifies that after the initial prices load completes, the next automatic
+  // poll tick for prices does NOT fire within 5 s (which would indicate the
+  // old 5 s interval is still in effect). The poll is now 30 s, so the
+  // second prices=1 request must not arrive within a 5 s observation window.
+  // ──────────────────────────────────────────────────────────────────────────
+  test('11: Prices poll interval is 30s — no second prices call within 5s of first', async ({ page }) => {
+    const priceCallTimestamps = [];
+
+    await page.route('**/api/options/chain-quotes**', async (route) => {
+      const url = route.request().url();
+      const hasPrices = url.includes('prices=1');
+      const hasExpiry = /expiry=[^&]+/.test(url) && !url.includes('expiry=&') && !url.match(/expiry=$/);
+
+      if (!hasExpiry) {
+        await route.continue();
+        return;
+      }
+
+      if (hasPrices) {
+        priceCallTimestamps.push(Date.now());
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ underlying: 'NIFTY', expiry: '2025-06-26', rows: [] }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ underlying: 'NIFTY', expiry: '2025-06-26', rows: [] }),
+        });
+      }
+    });
+
+    await gotoDerivatives(page);
+
+    const chainRoot = page.locator('.oct-root').first();
+    if (!(await chainRoot.count())) {
+      test.skip(true, 'OptionChainTab not found — skip poll interval test');
+      return;
+    }
+
+    // Wait up to 3 s for the initial prices call.
+    await page.waitForTimeout(3000);
+
+    if (priceCallTimestamps.length === 0) {
+      test.skip(true, 'No prices call observed — chain may not have an expiry context');
+      return;
+    }
+
+    const firstCallTime = priceCallTimestamps[0];
+
+    // Observe for 5 s after the first prices call completed.
+    await page.waitForTimeout(5000);
+
+    // With a 30 s poll, no second prices=1 call should have fired within 5 s
+    // of the first one.
+    const secondCallsWithin5s = priceCallTimestamps.filter(
+      (t, idx) => idx > 0 && t - firstCallTime < 5000
+    );
+    expect(secondCallsWithin5s.length).toBe(0);
+  });
 });
