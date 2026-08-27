@@ -281,7 +281,7 @@ class TestChainQuotesEndpoint:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"}
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"}
             )
 
             assert response.status_code == 200, f"Got {response.status_code}: {response.text}"
@@ -781,7 +781,7 @@ class TestChainQuotesOffMarketGate:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -828,7 +828,7 @@ class TestChainQuotesOffMarketGate:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -875,7 +875,7 @@ class TestChainQuotesOffMarketGate:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -911,7 +911,7 @@ class TestChainQuotesOffMarketGate:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -1121,7 +1121,7 @@ class TestChainQuotesOffMarketGateEnhanced:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -1168,7 +1168,7 @@ class TestChainQuotesOffMarketGateEnhanced:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -1560,3 +1560,236 @@ class TestFetchChainInstruments:
         assert result.cycle_date == date.today().isoformat()
         exchanges_in_result = {inst.e for inst in result.items}
         assert exchanges_in_result == {"NFO", "MCX"}
+
+
+# ---------------------------------------------------------------------------
+# Fix A1 tests — prices query param + None-key guard + 30s timeout
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+class TestChainQuotesPricesParam:
+    """Fix A1 tests: prices=False fast path + None-key guard + 30s timeout."""
+
+    async def test_chain_quotes_skeleton_no_broker_call(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """prices=False (default) must NOT call _chain_quotes_batch_quote.
+        Rows are returned with bid=None, ask=None."""
+        client = async_client
+
+        with patch("backend.api.cache.peek") as mock_cache, \
+             patch("backend.api.routes.options._chain_quotes_batch_quote") as mock_batch:
+
+            mock_cache.return_value = nifty_instruments_fixture
+
+            # prices=False is the default — omitting the param must trigger the fast path
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+            )
+
+            assert response.status_code == 200, response.text
+            data = response.json()
+
+            # broker must NOT have been called
+            mock_batch.assert_not_called()
+
+            # rows must be populated (from sym_map, not from broker)
+            assert len(data["rows"]) == 2, f"Expected 2 strike rows, got {len(data['rows'])}"
+
+            # every row must have None bid/ask
+            for row in data["rows"]:
+                assert row["ce_bid"] is None, f"ce_bid must be None on fast path, got {row['ce_bid']}"
+                assert row["ce_ask"] is None, f"ce_ask must be None on fast path, got {row['ce_ask']}"
+                assert row["pe_bid"] is None, f"pe_bid must be None on fast path, got {row['pe_bid']}"
+                assert row["pe_ask"] is None, f"pe_ask must be None on fast path, got {row['pe_ask']}"
+
+            # sym/ls/exchange must still be populated
+            row_24k = next((r for r in data["rows"] if r["k"] == 24000.0), None)
+            assert row_24k is not None
+            assert row_24k["ce_sym"] == "NIFTY24AUG24000CE"
+            assert row_24k["pe_sym"] == "NIFTY24AUG24000PE"
+            assert row_24k["ce_ls"] == 25
+            assert row_24k["exchange"] == "NFO"
+
+    async def test_chain_quotes_prices_false_explicit_no_broker_call(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """prices=False passed explicitly also skips broker call."""
+        client = async_client
+
+        with patch("backend.api.cache.peek") as mock_cache, \
+             patch("backend.api.routes.options._chain_quotes_batch_quote") as mock_batch:
+
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "false"},
+            )
+
+            assert response.status_code == 200
+            mock_batch.assert_not_called()
+            data = response.json()
+            assert len(data["rows"]) == 2
+
+    async def test_chain_quotes_prices_true_calls_broker(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """prices=True must call _chain_quotes_batch_quote and populate bid/ask."""
+        client = async_client
+
+        synthetic_quotes = {
+            "NFO:NIFTY24AUG24000CE": {
+                "depth": {
+                    "buy": [{"price": 200.0, "quantity": 50}],
+                    "sell": [{"price": 205.0, "quantity": 50}],
+                }
+            },
+            "NFO:NIFTY24AUG24000PE": {
+                "depth": {
+                    "buy": [{"price": 15.0, "quantity": 50}],
+                    "sell": [{"price": 17.0, "quantity": 50}],
+                }
+            },
+            "NFO:NIFTY24AUG24500CE": {
+                "depth": {
+                    "buy": [{"price": 75.0, "quantity": 50}],
+                    "sell": [{"price": 78.0, "quantity": 50}],
+                }
+            },
+            "NFO:NIFTY24AUG24500PE": {
+                "depth": {
+                    "buy": [{"price": 30.0, "quantity": 50}],
+                    "sell": [{"price": 32.0, "quantity": 50}],
+                }
+            },
+        }
+
+        async def _fake_batch_quote(sym_by_strike, und, exp):
+            key_meta: dict = {}
+            for strike, sides in sym_by_strike.items():
+                for side, meta in sides.items():
+                    if meta.get("sym"):
+                        # Use the real option_quote_key format
+                        qk = f"NFO:{meta['sym']}"
+                        key_meta[qk] = (strike, side)
+            return synthetic_quotes, key_meta
+
+        with patch("backend.api.cache.peek") as mock_cache, \
+             patch("backend.api.routes.options._chain_quotes_batch_quote",
+                   side_effect=_fake_batch_quote) as mock_batch, \
+             patch("backend.api.routes.options._any_segment_open", return_value=True):
+
+            mock_cache.return_value = nifty_instruments_fixture
+
+            response = await client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
+            )
+
+            assert response.status_code == 200, response.text
+            # broker MUST have been called
+            mock_batch.assert_called_once()
+
+            data = response.json()
+            assert len(data["rows"]) == 2
+
+            row_24k = next((r for r in data["rows"] if r["k"] == 24000.0), None)
+            assert row_24k is not None
+            assert row_24k["ce_bid"] == 200.0
+            assert row_24k["ce_ask"] == 205.0
+            assert row_24k["pe_bid"] == 15.0
+            assert row_24k["pe_ask"] == 17.0
+
+
+@pytest.mark.asyncio
+class TestChainQuotesNoneKeyGuard:
+    """Fix A1: None key from option_quote_key must be excluded, no exception."""
+
+    async def test_none_key_excluded_from_batch(self):
+        """When option_quote_key returns None for a symbol, that symbol is
+        excluded from keys/key_meta — no KeyError or TypeError propagates."""
+        from backend.api.routes.options import _chain_quotes_batch_quote
+        from backend.api.algo.derivatives import option_quote_key as real_oqk
+
+        # Build a sym_by_strike where one sym will produce None from option_quote_key.
+        # We simulate this by patching option_quote_key to return None for the CE.
+        sym_by_strike: dict = {
+            24000.0: {
+                "CE": {"sym": "MALFORMED_SYM", "ls": 25, "e": "NFO"},
+                "PE": {"sym": "NIFTY24AUG24000PE", "ls": 25, "e": "NFO"},
+            }
+        }
+
+        def _mock_oqk(sym: str) -> str | None:
+            if sym == "MALFORMED_SYM":
+                return None  # simulate bad symbol
+            return real_oqk(sym)
+
+        with patch("backend.api.routes.options.option_quote_key", side_effect=_mock_oqk), \
+             patch("backend.api.routes.options.asyncio.wait_for",
+                   side_effect=asyncio.TimeoutError()):
+            # Must not raise even though one key was None
+            quote_resp, key_meta = await _chain_quotes_batch_quote(
+                sym_by_strike, "NIFTY", "2025-08-14"
+            )
+
+        # MALFORMED_SYM must NOT be in key_meta
+        assert None not in key_meta, "None must never be a key in key_meta"
+        assert "MALFORMED_SYM" not in str(key_meta), \
+            "Malformed sym must be excluded from key_meta"
+
+        # The valid PE symbol should produce a key (even if we timed out)
+        # key_meta uses the oqk return value, so check no None key was added
+        for k in key_meta:
+            assert k is not None, f"Found None key in key_meta: {key_meta}"
+
+    async def test_none_key_does_not_raise_typeerror(self):
+        """Before the fix, appending None to keys then using it as dict key would
+        succeed silently but cause KeyError in _chain_quotes_build_book. Verify
+        no exception propagates when option_quote_key returns None."""
+        from backend.api.routes.options import _chain_quotes_batch_quote
+
+        sym_by_strike: dict = {
+            24000.0: {
+                "CE": {"sym": "BAD_SYMBOL_XYZ", "ls": 25, "e": "NFO"},
+                "PE": {"sym": "BAD_SYMBOL_PE", "ls": 25, "e": "NFO"},
+            }
+        }
+
+        # Both syms return None — all keys excluded → broker not called
+        with patch("backend.api.routes.options.option_quote_key", return_value=None):
+            quote_resp, key_meta = await _chain_quotes_batch_quote(
+                sym_by_strike, "NIFTY", "2025-08-14"
+            )
+
+        assert quote_resp == {}, "Empty quote_resp when all keys are None"
+        assert key_meta == {}, "Empty key_meta when all keys are None"
+
+
+class TestChainQuotesTimeout30s:
+    """Fix A1: broker.quote timeout raised from 10s to 30s."""
+
+    def test_timeout_value_is_30s(self):
+        """The timeout constant in _chain_quotes_batch_quote must be 30.0 seconds.
+        Read the source and check the literal value."""
+        import inspect
+        from backend.api.routes.options import _chain_quotes_batch_quote
+
+        src = inspect.getsource(_chain_quotes_batch_quote)
+        assert "timeout=30.0" in src, (
+            "broker.quote timeout must be 30.0s in _chain_quotes_batch_quote"
+        )
+        assert "timeout=10.0" not in src, (
+            "Old 10s timeout must be removed from _chain_quotes_batch_quote"
+        )
+
+    def test_timeout_warning_message_says_30s(self):
+        """Warning log message must say '30s' not '10s'."""
+        import inspect
+        from backend.api.routes.options import _chain_quotes_batch_quote
+
+        src = inspect.getsource(_chain_quotes_batch_quote)
+        assert "30s" in src, "Warning message must reference '30s'"
+        assert "10s" not in src, "Old '10s' reference must be removed from warning"

@@ -915,7 +915,7 @@
   // heartbeat and the closed-hours slate poll-pulse). _shimmer.notify('strip')
   // is called in the tickBus subscription (onMount above); the reactive
   // classOf read below applies 'cell-freshness-pulse' for 700 ms, which
-  // triggers the freshness-sweep keyframe defined in app.css.
+  // triggers the rainbow-fade keyframe defined in app.css.
 </script>
 
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_staleFailCount >= 2 ? ' ps-stale' : '') + ' ' + _shimmer.classOf('strip')}>
@@ -1084,7 +1084,7 @@
      competing with the per-cell directional flash. Operator: "I don't
      see any animation refreshing nav strip". */
   .ps-strip.ps-heartbeat {
-    border-bottom-color: rgba(251, 191, 36, 0.40);
+    border-bottom-color: rgba(251, 191, 36, 0.32);
   }
   /* Stale-data indicator — amber tint when positions or holdings have
      returned 2+ consecutive errors. Color-codes the strip without an

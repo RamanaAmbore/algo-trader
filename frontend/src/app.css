@@ -2620,17 +2620,17 @@ button:not(:disabled):active,
   .tf-up, .tf-down { animation: none; }
 }
 
-/* ── NavStrip freshness-sweep — 1 px gradient underline on new SSE tick ──────
+/* ── NavStrip rainbow-fade — 1 px gradient underline on new SSE tick ──────
    Emitted by PositionStrip.svelte via createFreshnessShimmer when a real-time
-   LTP tick arrives. Neutral sky/indigo palette — directional is handled by
-   tf-up/tf-down above; this is a "data just landed" liveness signal.
-   700 ms matches the createFreshnessShimmer default durationMs.
-   prefers-reduced-motion: sweep disabled; no layout shift either way.
+   LTP tick arrives. Rainbow gradient at ≤20% opacity — barely perceptible
+   "data just landed" liveness signal. Directional is handled by tf-up/tf-down
+   above. prefers-reduced-motion: fade disabled; no layout shift either way.
    Lives in global scope so the class applied to the ps-strip div is reachable
    without any :global() wrapper. */
-@keyframes freshness-sweep {
-  from { transform: scaleX(0); transform-origin: left; }
-  to   { transform: scaleX(1); transform-origin: left; }
+@keyframes rainbow-fade {
+  0%   { opacity: 0; }
+  25%  { opacity: 0.5; }
+  100% { opacity: 0; }
 }
 .cell-freshness-pulse {
   position: relative;
@@ -2643,8 +2643,13 @@ button:not(:disabled):active,
   left: 0;
   right: 0;
   height: 1px;
-  background: linear-gradient(90deg, rgb(56 189 248), rgb(129 140 248));
-  animation: freshness-sweep 0.6s ease forwards;
+  background: linear-gradient(90deg,
+    rgba(251, 191, 36, 0.20),
+    rgba(34, 197, 94,  0.20),
+    rgba(34, 211, 238, 0.20),
+    rgba(129, 140, 248, 0.20)
+  );
+  animation: rainbow-fade 1.0s ease-out forwards;
   pointer-events: none;
 }
 @media (prefers-reduced-motion: reduce) {

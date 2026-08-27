@@ -984,6 +984,22 @@ export async function fetchChainQuotes(underlying, expiry) {
               { auth: true });
 }
 
+/** GET /api/options/chain-quotes?prices=1 — same as fetchChainQuotes but
+ *  includes the broker quote call (bid/ask populated). Used for the second
+ *  phase of the two-phase chain load: instruments arrive first (fast), then
+ *  prices overlay once the broker call returns (10–30 s).
+ *  Pass an AbortSignal via `signal` to cancel when the expiry changes.
+ *  @param {string} underlying
+ *  @param {string} expiry
+ *  @param {{ signal?: AbortSignal }} [opts]
+ */
+export async function fetchChainQuotesPrices(underlying, expiry, opts = {}) {
+  const u = encodeURIComponent(String(underlying || '').toUpperCase());
+  const e = encodeURIComponent(String(expiry || ''));
+  return _get(`/options/chain-quotes?underlying=${u}&expiry=${e}&prices=1`,
+              { auth: true, signal: opts.signal });
+}
+
 /** GET /api/options/chain-quotes (no expiry) — returns the list of
  *  available expiries for the given underlying without any strike rows.
  *  Used by OptionChainTab to populate the expiry dropdown without

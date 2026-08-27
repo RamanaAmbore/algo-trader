@@ -12,7 +12,7 @@
   import { visibleInterval, withGuard } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
-    fetchOptionsSpot, fetchChainQuotes, fetchChainExpiries,
+    fetchOptionsSpot, fetchChainQuotes, fetchChainQuotesPrices, fetchChainExpiries,
     placeTicketOrder,
     fetchAccounts,
   } from '$lib/api';
@@ -453,31 +453,139 @@
     }
   });
 
-  // ── Chain quotes polling ───────────────────────────────────────────
+  // ── Chain quotes polling — two-phase load ─────────────────────────
+  // Phase 1 (skeleton): fetch without prices=1 — returns instrument rows
+  //   (sym, ls, exchange) with bid=null/ask=null. Fast — no broker call.
+  //   Renders the strike grid immediately so the operator sees the shape
+  //   of the chain while prices are still loading.
+  // Phase 2 (prices): fetch with prices=1 — broker call (10–30 s).
+  //   When it returns, overlays bid/ask onto the already-rendered grid
+  //   via a surgical per-strike merge (never nulls the map).
+  //   If it fails or is aborted (new expiry selected), grid stays visible
+  //   with '—' placeholders — no retry loop.
+  // Subsequent 5 s poll ticks hit prices-only; skeleton never re-fetches
+  //   (strike list doesn't change mid-session for a fixed expiry).
+
   let chainQuotesKey = '';
   let chainQuotesPoll = /** @type {any} */ (null);
-  async function _refreshChainQuotes() {
-    if (!chainUnderlying || !chainExpiry) return;
-    const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
+  // AbortController for any in-flight prices fetch.
+  // Cancelled when underlying/expiry changes so stale broker responses
+  // can't overlay the wrong grid.
+  let _pricesAbort = /** @type {AbortController|null} */ (null);
+
+  /** Build a chainQuotesMap from API rows (bid/ask may be null). */
+  function _rowsToMap(/** @type {any[]} */ rows) {
+    /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean}}>} */
+    const map = {};
+    for (const row of rows) {
+      const [k, q] = parseChainQuoteRow(row);
+      map[k] = q;
+    }
+    return map;
+  }
+
+  /**
+   * Overlay prices (bid/ask) from a prices-response onto the current map.
+   * Surgical merge — never resets the map to null, so the grid stays mounted.
+   * Only updates strikes that exist in both old map and new response.
+   * @param {any} r  - response from fetchChainQuotesPrices
+   * @param {string} key - the chainQuotesKey at fetch-start (stale guard)
+   */
+  function _overlayPrices(r, key) {
+    if (chainQuotesKey !== key) return; // underlying/expiry changed mid-flight
+    const rows = r?.rows || [];
+    if (!rows.length) return;
+    // Build a new map: merge prices into current state.
+    // Start from the existing map (preserves sym/ls/exchange for strikes
+    // the backend omits from the prices response) then overlay bid/ask.
+    const current = chainQuotesMap ?? {};
+    /** @type {typeof current} */
+    const next = {};
+    // Seed from prices response first (freshest data).
+    for (const row of rows) {
+      const [k, q] = parseChainQuoteRow(row);
+      next[k] = q;
+    }
+    // For strikes in current but not in prices response, preserve metadata.
+    for (const k of Object.keys(current)) {
+      if (!(k in next)) next[k] = current[k];
+    }
+    chainQuotesMap = next;
+  }
+
+  /**
+   * Phase 1: load skeleton (instruments, no broker quote).
+   * Sets chainQuotesMap so the grid renders with '—' bid/ask.
+   */
+  async function _loadSkeleton(u = '', e = '') {
+    if (!u || !e) return;
     _chainQuotesLoading = true;
     _chainQuotesError = '';
     try {
       const r = await fetchChainQuotes(u, e);
-      // Discard if the underlying/expiry changed while the fetch was in-flight.
-      if (chainQuotesKey !== `${u}|${e}`) return;
-      /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean}}>} */
-      const map = {};
-      for (const row of (r?.rows || [])) {
-        const [k, q] = parseChainQuoteRow(row);
-        map[k] = q;
-      }
-      chainQuotesMap = map;
+      if (chainQuotesKey !== `${u}|${e}`) return; // stale
+      chainQuotesMap = _rowsToMap(r?.rows || []);
     } catch {
-      _chainQuotesError = 'Failed to load quotes — retrying…';
+      if (chainQuotesKey === `${u}|${e}`) {
+        _chainQuotesError = 'Failed to load quotes — retrying…';
+      }
     } finally {
-      _chainQuotesLoading = false;
+      if (chainQuotesKey === `${u}|${e}`) _chainQuotesLoading = false;
     }
   }
+
+  /**
+   * Phase 2: overlay bid/ask from broker (slow, cancellable).
+   * Fires in parallel with phase 1; resolves whenever the broker responds.
+   * Aborts silently on expiry change.
+   */
+  async function _loadPrices(u = '', e = '') {
+    if (!u || !e) return;
+    // Cancel any prior in-flight prices fetch.
+    _pricesAbort?.abort();
+    const ac = new AbortController();
+    _pricesAbort = ac;
+    const key = `${u}|${e}`;
+    try {
+      const r = await fetchChainQuotesPrices(u, e, { signal: ac.signal });
+      _overlayPrices(r, key);
+    } catch (err) {
+      // AbortError = intentional cancel (expiry change). Ignore.
+      // Network errors: grid stays with skeleton '—' values. No retry.
+      if (/** @type {any} */ (err)?.name !== 'AbortError' && chainQuotesKey === key) {
+        // Prices failed — skeleton stays visible; no error banner
+        // (skeleton is already showing — operator can see strikes).
+      }
+    }
+  }
+
+  /**
+   * Full refresh: skeleton immediately, prices in parallel.
+   * Called on initial expiry load and by the 5 s poll (which skips
+   * the skeleton phase after first load).
+   * @param {boolean} [skeletonOnly=false] - if true, skip the prices call
+   */
+  async function _refreshChainQuotes(skeletonOnly = false) {
+    if (!chainUnderlying || !chainExpiry) return;
+    const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
+    // Phase 1 — skeleton (fast, sets grid shape).
+    await _loadSkeleton(u, e);
+    // Phase 2 — prices (slow, overlays bid/ask). Fire in parallel; don't await.
+    if (!skeletonOnly) {
+      _loadPrices(u, e);
+    }
+  }
+
+  /**
+   * Prices-only refresh — called by the 5 s poll after initial load.
+   * The strike list is stable for a fixed expiry; only bid/ask change.
+   */
+  async function _refreshChainPrices() {
+    if (!chainUnderlying || !chainExpiry) return;
+    const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
+    _loadPrices(u, e);
+  }
+
   $effect(() => {
     if (!chainExpiry) {
       chainQuotesPoll?.();
@@ -487,14 +595,23 @@
     void chainUnderlying; void chainExpiry;
     untrack(() => {
       if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; }
+      // Cancel any in-flight prices fetch for the old expiry.
+      _pricesAbort?.abort();
+      _pricesAbort = null;
       if (!chainUnderlying || !chainExpiry) { chainQuotesMap = null; chainQuotesKey = ''; return; }
       const key = `${chainUnderlying.toUpperCase()}|${chainExpiry}`;
       if (key !== chainQuotesKey) { chainQuotesMap = null; chainQuotesKey = key; }
+      // Initial two-phase load (skeleton + prices in parallel).
       _refreshChainQuotes();
-      chainQuotesPoll = visibleInterval(withGuard(_refreshChainQuotes), 5000);
+      // Subsequent 5 s poll ticks hit prices only — skeleton stable.
+      chainQuotesPoll = visibleInterval(withGuard(_refreshChainPrices), 5000);
     });
   });
-  onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } });
+  onDestroy(() => {
+    if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; }
+    _pricesAbort?.abort();
+    _pricesAbort = null;
+  });
 
   // Periodic ATM spot refresh — re-fetch spot every 30s during market
   // hours so the ATM row marker tracks NIFTY/CRUDEOIL moves intraday.

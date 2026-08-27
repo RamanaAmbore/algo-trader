@@ -2256,6 +2256,8 @@ async def _chain_quotes_batch_quote(
             if not meta.get("sym"):
                 continue
             qk = option_quote_key(meta["sym"])
+            if qk is None:
+                continue
             keys.append(qk)
             key_meta[qk] = (strike, side)
 
@@ -2265,11 +2267,11 @@ async def _chain_quotes_batch_quote(
         try:
             quote_resp = await asyncio.wait_for(
                 asyncio.to_thread(get_market_data_broker().quote, keys),
-                timeout=10.0,
+                timeout=30.0,
             ) or {}
         except asyncio.TimeoutError:
             logger.warning(
-                "[chain-quotes] broker.quote timed out after 10s for %d keys", len(keys)
+                "[chain-quotes] broker.quote timed out after 30s for %d keys", len(keys)
             )
             quote_resp = {}
         except Exception as e:
@@ -2644,7 +2646,8 @@ class OptionsController(Controller):
 
     @get("/chain-quotes")
     async def chain_quotes(self, underlying: str = "",
-                           expiry: str = "") -> ChainQuotesResponse:
+                           expiry: str = "",
+                           prices: bool = False) -> ChainQuotesResponse:
         """Per-strike CE + PE LTP for a given (underlying, expiry).
         Resolves all CE/PE contracts via the cached instruments dump
         (already warmed by the daily refresh task), then makes ONE
@@ -2655,7 +2658,11 @@ class OptionsController(Controller):
 
         When expiry is omitted the response contains only `expiries`
         (the available expiry dates for the underlying) with an empty
-        `rows` list — no broker quote call is made."""
+        `rows` list — no broker quote call is made.
+
+        When prices=False (default) the strike grid is returned
+        immediately with bid=None / ask=None for every row — no broker
+        call is made.  Use prices=True to fetch live bid/ask depth."""
         und = (underlying or "").upper().strip()
         exp = (expiry or "").strip()
         if not und:
@@ -2687,6 +2694,16 @@ class OptionsController(Controller):
         if not sym_by_strike:
             return ChainQuotesResponse(
                 underlying=und, expiry=exp, expiries=all_expiries, rows=[]
+            )
+
+        # ── Fast path: prices=False skips broker call entirely ──
+        # Returns the strike skeleton (sym/ls/exchange populated, bid/ask=None)
+        # in sub-100ms. No off-market gate needed — there is no broker call.
+        if not prices:
+            book_by_strike = _chain_quotes_build_book(sym_by_strike, {}, {})
+            rows = _chain_quotes_build_rows(book_by_strike)
+            return ChainQuotesResponse(
+                underlying=und, expiry=exp, expiries=all_expiries, rows=rows
             )
 
         # ── Off-market gate: skip broker.quote() when prices are frozen ──
