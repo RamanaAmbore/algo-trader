@@ -267,14 +267,58 @@ class TestNavCurValSSoT:
     """SSOT: verify that _holdings_from_df's cur_val path
     and the route's summation path read the same column."""
 
-    def test_holdings_from_df_prefers_cur_val_over_qty_ltp(self):
-        """When cur_val is populated, _holdings_from_df sums it directly.
-        This is the fast path used for Kite + backfill-patched Dhan rows."""
+    def test_holdings_from_df_stale_ltp_zero_ticker_contributes_zero(self):
+        """Post-Fix A: rows with last_price=0 AND ticker returning nothing
+        contribute 0, NOT their cost-basis cur_val.
+
+        Pre-fix these rows were summed via cv_sum (cost basis masquerading as
+        market value). Post-fix they go to _ltp_fallback_sum which returns 0
+        when the ticker has no LTP — under-estimate is safer than wrong value.
+        """
         df = pd.DataFrame([
             {"tradingsymbol": "A", "account": "ZG0790",
              "opening_quantity": 10.0, "cur_val": 1500.0, "last_price": 0.0},
             {"tradingsymbol": "B", "account": "ZG0790",
              "opening_quantity": 5.0,  "cur_val": 2000.0, "last_price": 0.0},
+        ])
+
+        class _StubTickerNoLtp:
+            def get_ltp_by_sym(self, sym):
+                return None  # no ticker LTP either
+
+        mtm, _ = _holdings_from_df(df, _StubTickerNoLtp())
+        # Both rows have stale LTP (last_price=0) and ticker returns nothing.
+        # They go to _ltp_fallback_sum → 0, NOT to cv_sum (which would give 3500).
+        assert math.isclose(mtm, 0.0, abs_tol=0.01), (
+            f"Expected 0.0 (stale-LTP rescue returned nothing), got {mtm}"
+        )
+
+    def test_holdings_from_df_stale_ltp_ticker_rescue_uses_market_value(self):
+        """Post-Fix A: rows with last_price=0 but ticker returning a valid LTP
+        use qty × ticker_ltp (market value), not cur_val (cost basis).
+        """
+        df = pd.DataFrame([
+            {"tradingsymbol": "A", "account": "ZG0790",
+             "opening_quantity": 10.0, "cur_val": 1500.0, "last_price": 0.0},
+        ])
+
+        class _StubTickerWithLtp:
+            def get_ltp_by_sym(self, sym):
+                return 175.0 if sym == "A" else None
+
+        mtm, _ = _holdings_from_df(df, _StubTickerWithLtp())
+        # Expected: qty=10 × ticker_ltp=175 = 1750, NOT cur_val=1500 (cost basis)
+        assert math.isclose(mtm, 1750.0, abs_tol=0.01), (
+            f"Expected 1750.0 (qty×ticker_ltp), got {mtm}"
+        )
+
+    def test_holdings_from_df_valid_ltp_uses_cur_val_directly(self):
+        """Rows with last_price > 0 still use cur_val directly (fast path unchanged)."""
+        df = pd.DataFrame([
+            {"tradingsymbol": "A", "account": "ZG0790",
+             "opening_quantity": 10.0, "cur_val": 1500.0, "last_price": 150.0},
+            {"tradingsymbol": "B", "account": "ZG0790",
+             "opening_quantity": 5.0,  "cur_val": 2000.0, "last_price": 400.0},
         ])
 
         class _StubTicker:

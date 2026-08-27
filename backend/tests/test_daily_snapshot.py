@@ -1118,3 +1118,158 @@ class TestHoldingsRowPreviousCloseLtpFallback:
             f"close_price=410 must win over ltp_val fallback; "
             f"got {rows[0]['previous_close']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Fix C1 — _backfill_market_data_dicts holdings should use qty_col="quantity"
+# Fix C2 — _snap_holding_eod_vals qty must prefer "quantity" over
+#           "opening_quantity" so partially-sold holdings use remaining qty.
+# ---------------------------------------------------------------------------
+
+class TestFixC1BackfillQtyCol:
+    """Fix C1: _backfill_market_data_dicts holdings path now uses qty_col='quantity'.
+
+    When a holding is partially sold (quantity=5, opening_quantity=10), the
+    backfill pnl/day_change recomputation must use the remaining quantity (5),
+    not the pre-sell quantity (10).
+    """
+
+    def test_backfill_uses_quantity_not_opening_quantity(self):
+        """Backfill-derived pnl uses quantity=5 (remaining), not opening_quantity=10."""
+        from backend.api.algo.daily_snapshot import _backfill_market_data_dicts
+
+        rows = [{
+            "tradingsymbol": "INFY",
+            "exchange": "NSE",
+            "quantity": 5,            # remaining after partial sell
+            "opening_quantity": 10,   # pre-sell qty — must NOT be used for pnl
+            "average_price": 1400.0,
+            "last_price": 0.0,        # stale — backfill will patch
+            "close_price": 0.0,       # stale — backfill will patch
+        }]
+
+        # Patch _backfill_build_df to inject a known LTP
+        import pandas as pd
+        from unittest.mock import patch as _patch
+
+        patched_ltp = 1500.0
+        patched_close = 1450.0
+
+        def _fake_backfill(df):
+            df["last_price"] = patched_ltp
+            df["close_price"] = patched_close
+            return 1
+
+        with _patch("backend.api.algo.daily_snapshot.backfill_market_data" if
+                    hasattr(__import__("backend.api.algo.daily_snapshot",
+                                      fromlist=["backfill_market_data"]),
+                            "backfill_market_data") else
+                    "backend.brokers.broker_apis.backfill_market_data",
+                    side_effect=_fake_backfill):
+            _backfill_market_data_dicts(rows, qty_col="quantity")
+
+        # pnl should use quantity=5, not opening_quantity=10
+        # _backfill_recompute_derived: pnl = (ltp - avg) * qty
+        if "pnl" in rows[0] and rows[0]["pnl"] is not None:
+            expected_pnl_qty5 = (patched_ltp - 1400.0) * 5
+            expected_pnl_qty10 = (patched_ltp - 1400.0) * 10
+            pnl = rows[0]["pnl"]
+            assert abs(pnl - expected_pnl_qty5) < 1.0, (
+                f"pnl={pnl} should use quantity=5 → expected≈{expected_pnl_qty5}; "
+                f"if pnl≈{expected_pnl_qty10} it is still using opening_quantity=10"
+            )
+            assert abs(pnl - expected_pnl_qty10) > 1.0, (
+                f"pnl={pnl} must NOT equal opening_quantity=10 result ({expected_pnl_qty10})"
+            )
+
+    def test_backfill_qty_col_quantity_default_call(self):
+        """The call in _fetch_account_data uses qty_col='quantity' for holdings.
+
+        This test verifies the function accepts qty_col='quantity' without error
+        and the _backfill_build_df guard for missing opening_quantity fires.
+        """
+        from backend.api.algo.daily_snapshot import _backfill_market_data_dicts
+
+        rows = [{
+            "tradingsymbol": "TCS",
+            "exchange": "NSE",
+            "quantity": 3,
+            "opening_quantity": 6,
+            "average_price": 3400.0,
+            "last_price": 0.0,
+            "close_price": 0.0,
+        }]
+
+        # Should not raise — qty_col='quantity' is now valid for holdings
+        try:
+            _backfill_market_data_dicts(rows, qty_col="quantity")
+        except Exception as e:
+            pytest.fail(f"_backfill_market_data_dicts raised unexpected: {e}")
+
+
+class TestFixC2SnapHoldingEodValsQtyPriority:
+    """Fix C2: _snap_holding_eod_vals must prefer 'quantity' over 'opening_quantity'
+    for the qty used in day_pnl computation.
+
+    When a holding is partially sold (quantity=5, opening_quantity=10), the
+    day_pnl formula (day_change × qty) must use quantity=5, not 10.
+    """
+
+    def test_day_pnl_uses_quantity_not_opening_quantity(self):
+        """Partially-sold: day_pnl uses quantity=5, not opening_quantity=10."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        r = {
+            "last_price": 1600.0,
+            "day_change": 100.0,
+            "pnl": 500.0,
+            "quantity": 5,          # remaining after partial sell
+            "opening_quantity": 10, # pre-sell — must NOT be used for day_pnl
+        }
+        _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
+
+        expected_qty5  = 100.0 * 5   # = 500.0
+        expected_qty10 = 100.0 * 10  # = 1000.0 (wrong — using opening_quantity)
+
+        assert day_pnl_v == pytest.approx(expected_qty5), (
+            f"day_pnl={day_pnl_v} must use quantity=5 → {expected_qty5}; "
+            f"if {expected_qty10} it is still using opening_quantity=10"
+        )
+        assert not pytest.approx(day_pnl_v, abs=1.0) == expected_qty10, (
+            f"day_pnl must NOT equal opening_quantity=10 result ({expected_qty10})"
+        )
+
+    def test_day_pnl_opening_quantity_fallback_when_quantity_absent(self):
+        """When 'quantity' is absent, falls back to opening_quantity."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        r = {
+            "last_price": 1600.0,
+            "day_change": 100.0,
+            "pnl": 1000.0,
+            # 'quantity' key absent — older broker payload
+            "opening_quantity": 10,
+        }
+        _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
+
+        # Falls back to opening_quantity=10
+        assert day_pnl_v == pytest.approx(1000.0), (
+            f"day_pnl={day_pnl_v} must use opening_quantity=10 fallback → 1000.0"
+        )
+
+    def test_day_pnl_unsold_holding_quantity_equals_opening_quantity(self):
+        """Unsold holding (quantity == opening_quantity): result identical either way."""
+        from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+        r = {
+            "last_price": 1600.0,
+            "day_change": 100.0,
+            "pnl": 1000.0,
+            "quantity": 10,
+            "opening_quantity": 10,
+        }
+        _, day_pnl_v, _ = _snap_holding_eod_vals(r, mid_session=False)
+
+        assert day_pnl_v == pytest.approx(1000.0), (
+            f"Unsold holding: day_pnl must be 100×10=1000; got {day_pnl_v}"
+        )

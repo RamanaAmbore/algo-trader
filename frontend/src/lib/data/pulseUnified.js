@@ -415,6 +415,7 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
  * @param {{
  *   snapOf: (sym: string) => any,
  *   getInst: ((s: string) => any) | null,
+ *   isMarketOpen: () => boolean,
  *   baseDayPnlForPosition: (r: any) => number,
  *   livePositionDayPnl: (fields: any, liveLtp: number|null, opts: {marketOpen: boolean}) => number,
  * }} ctx
@@ -422,7 +423,7 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
 export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
   if (includePos === false) return;
   const get = makeRowFactory(byKey);
-  const { snapOf, getInst, baseDayPnlForPosition, livePositionDayPnl } = ctx;
+  const { snapOf, getInst, isMarketOpen, baseDayPnlForPosition, livePositionDayPnl } = ctx;
   for (const r of pos) {
     const exch = r.exchange || 'NFO';
     const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
@@ -468,7 +469,7 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
         dcvRow:  r,
       },
       posLiveLtp,
-      { marketOpen: true },
+      { marketOpen: isMarketOpen() },
     );
     // Total P&L live recompute.
     if (posLiveLtp != null && avg > 0 && q !== 0) {

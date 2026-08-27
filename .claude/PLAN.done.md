@@ -1,87 +1,91 @@
-# Plan: Remove Day %/P&L % background tint + remove TOTAL row flash everywhere
+# Plan: Fix holdings NAV undercount (71.10L→1.80C) + snapshot Day% animation + snapshot qty bug
 
 ## Context
 
-Two related flash/animation issues in MarketPulse grids:
+Three bugs found via audit:
 
-**Issue 1 — Percentage columns incorrectly flash:**
-`day_pnl_pct` ("Day %") and `pnl_pct` ("P&L %") have `mp-pnl-cell` in their `cellClass`,
-giving them a persistent green/red background tint. When poll data arrives and ag-Grid
-re-evaluates cellClass, the colour change looks like a flash. Percentage columns should show
-directional text colour only — no background, no flash.
+**Bug A (P1) — Holdings NAV undercount in NavStrip:**
+`compute_firm_nav` → `_holdings_from_df` sums `cur_val` for ALL rows where `cur_val != 0`.
+For Dhan/Groww rows where `backfill_market_data` couldn't get a quote,
+`cur_val = avg × qty` (cost basis, not market value) — but it's > 0, so it passes the
+filter and goes into `cv_sum` instead of `_ltp_fallback_sum`. The route rescues this
+via `_override_stale_ltp_from_ticker` in `holdings.py:276`, but `compute_firm_nav`
+never calls that step. Fix: in `_holdings_from_df`, detect rows with `last_price <= 0`
+AND `cur_val > 0` — those are cost-basis rows masquerading as market values — and route
+them through `_ltp_fallback_sum` (ticker rescue) instead of `cv_sum`.
 
-**Issue 2 — TOTAL pinned-bottom row flashes (should not):**
-The main positions/holdings grids in MarketPulse call `_mpFlash.update('TOTAL:day_pnl', ...)`
-and `_mpFlash.update('TOTAL:pnl', ...)` on every poll, causing the TOTAL row to animate with
-`tf-up/tf-down`. Operator wants TOTAL rows to NOT flash on any grid.
-PerformancePage already excludes TOTAL rows from flash by design (line 363: explicit guard).
-MarketPulse summary grids never had TOTAL flash — only the two main grids need cleanup.
+**Bug B (P1) — Snapshot Day% shows refresh animation in closed hours:**
+`pulseUnified.js:471` calls `livePositionDayPnl` with `marketOpen: true` hardcoded.
+In closed hours, SSE ticks still arrive (MCX) and shift `row.day_pnl` on each
+`buildUnified` call → `setGridOption('rowData', pRows)` fires → ag-Grid re-renders
+Day% cells → visible flash. Fix: pass actual `isMarketOpen()` value.
 
-**LTP column:** flash on ≥0.1% tick change via `ltp-flash-up/down` — correct, no change.
+**Bug C (P2) — Snapshot writer uses opening_quantity instead of quantity:**
+`daily_snapshot.py:357` — `_backfill_market_data_dicts` uses `qty_col="opening_quantity"`
+(should be `"quantity"` to match live path). For partially-sold holdings this inflates
+snapshot pnl/cur_val.
+`daily_snapshot.py:415` — `_snap_holding_eod_vals` tries `opening_quantity` first
+(should prefer `quantity`, same as `_holdings_rows` at line 461).
 
 ## Task
 
-### Fix 1 & 2 — Remove `mp-pnl-cell` from percentage columns in right grid (`pulseColumns.js`)
+### Fix A — nav.py `_holdings_from_df`
 
-`pulseColumns.js:530` — `day_pnl_pct`:
-```js
-// BEFORE: cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
-// AFTER:  cellClass: (p) => `${RA} ${dirCls(p.value)}`,
-```
-`pulseColumns.js:541` — `pnl_pct`:
-```js
-// BEFORE: cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
-// AFTER:  cellClass: (p) => `${RA} ${dirCls(p.value)}`,
-```
+File: `backend/api/algo/nav.py`
 
-### Fix 3–5 — Summary grids: use `dirCellClass` for percentage columns
-
-`mkPosSummaryCols` (line 589): add `dirCellClass` to options; use it for `day_change_percentage` (line 596).
-`mkHoldSummaryCols` (line 617): add `dirCellClass` to options; use it for `day_change_percentage` (line 624) and `pnl_percentage` (line 630).
-`MarketPulse.svelte` lines 3685 + 3701: pass `dirCellClass` to both factory calls.
-`dirCellClass` is already at `MarketPulse.svelte:3521`: `const dirCellClass = (p) => \`${RA} ${dirCls(p.value)}\``
-
-**PerformancePage.svelte** — clean already (`pnlCls` uses `pnl-loss`/`pnl-gain`/`pnl-zero`). No change.
-
-### Fix 6 — Remove TOTAL row flash updates from MarketPulse main grids
-
-`MarketPulse.svelte` — delete the four TOTAL flash update lines:
-```js
-// DELETE these four lines (two in positions block ~2122-2123, two in holdings block ~2152-2153):
-if (pTotal.day_pnl != null) _mpFlash.update('TOTAL:day_pnl', Number(pTotal.day_pnl));
-if (pTotal.pnl     != null) _mpFlash.update('TOTAL:pnl',     Number(pTotal.pnl));
-// ... and the matching hTotal lines
+Current code (lines 235-238):
+```python
+cv_sum = float(
+    lf.filter(pl.col("_cv") != 0.0).select(pl.col("_cv").sum()).to_series()[0] or 0.0
+)
+ltp_sum = _ltp_fallback_sum(lf.filter(pl.col("_cv") == 0.0), ticker)
 ```
 
-### Fix 7 — Remove dead `_isTotal` flash branch from `mkPnlCellClass` (`pulseColumns.js`)
+Problem: Dhan/Groww rows with stale LTP have `cur_val = avg×qty > 0` (cost basis),
+so they land in `cv_sum` with wrong values. Ticker fallback only fires for `_cv == 0`.
 
-With no `TOTAL:*` keys ever set in `_mpFlash`, the `_isTotal` branch in `mkPnlCellClass`
-(lines 54-58) is dead code. Simplify:
-```js
-// DELETE the _isTotal branch:
-if (p.data?._isTotal) {
-  if (!field) return base;
-  const fc = getMpFlash().classOf(`TOTAL:${field}`);
-  return fc ? `${base} ${fc}` : base;
-}
-```
-After deletion, TOTAL rows fall through to the normal `base` path — no flash, correct directional tint only.
+Fix: Split `cv_sum` into two groups:
+- Rows with valid LTP (`last_price > 0`) AND `cur_val > 0` → trust `cur_val` (already correct)
+- Rows with stale/zero LTP (`last_price <= 0`) AND `cur_val > 0` → route to `_ltp_fallback_sum`
+  (these are cost-basis rows masquerading as market values; ticker can rescue them)
+- Rows with `cur_val == 0` → existing `_ltp_fallback_sum` path (unchanged)
+
+Only apply `last_price` split when the column exists in the frame (guard with `if "last_price" in lf.columns`).
+
+### Fix B — pulseUnified.js `marketOpen`
+
+File: `frontend/src/lib/data/pulseUnified.js`
+
+Around line 471, find the call to `livePositionDayPnl` that passes `marketOpen: true`.
+Change to pass the actual market state. `isMarketOpen()` or equivalent is available
+in the module — check what function/import is used elsewhere in the file for market state.
+If not imported, import it from `$lib/data/marketState.js` or wherever it lives in the
+codebase (search for `isMarketOpen` usage in other files in `frontend/src/lib/data/`).
+
+### Fix C — daily_snapshot.py qty column
+
+File: `backend/api/algo/daily_snapshot.py`
+
+Line 357: Change `qty_col="opening_quantity"` → `qty_col="quantity"` in the
+`_backfill_market_data_dicts` call.
+
+Line 415: In `_snap_holding_eod_vals`, change qty resolution from:
+`int(r.get("opening_quantity") or r.get("quantity") or 1)`
+to:
+`int(r.get("quantity") or r.get("opening_quantity") or 1)`
 
 ## Agents
 
-- backend: skip
-- frontend: Apply all 7 fixes in `frontend/src/lib/data/pulseColumns.js` and
-  `frontend/src/lib/MarketPulse.svelte`:
-  1. Lines 530, 541 in pulseColumns.js — remove `mp-pnl-cell` from day_pnl_pct + pnl_pct.
-  2. mkPosSummaryCols + mkHoldSummaryCols — add dirCellClass param, use for Day %/P&L %.
-  3. MarketPulse.svelte lines 3685, 3701 — pass dirCellClass to both factory calls.
-  4. MarketPulse.svelte ~2122-2123 + ~2152-2153 — delete TOTAL _mpFlash.update calls.
-  5. pulseColumns.js lines 54-58 — delete the _isTotal branch from mkPnlCellClass.
-  Write Vitest tests in `frontend/src/lib/__tests__/` covering:
-  - `day_pnl_pct` and `pnl_pct` cellClass with positive value → no `mp-pnl-cell`, has `cell-pos`
-  - `mkPosSummaryCols`/`mkHoldSummaryCols` Day % column uses dirCellClass (no `mp-pnl-cell`)
-  - `mkPnlCellClass` with `_isTotal=true` row returns only `base` (no `TOTAL:*` flash class)
-  For every file you change, write or update at least one test.
+- backend: Apply Fix A (nav.py `_holdings_from_df` stale-LTP split) and Fix C
+  (daily_snapshot.py two lines: qty_col + eod_vals qty order).
+  For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
+  - `backend/api/algo/nav.py` change → add/update a pytest test in `backend/tests/` covering the changed lines
+  - `backend/api/algo/daily_snapshot.py` change → add/update a pytest test in `backend/tests/` covering the changed lines
+- frontend: Apply Fix B (pulseUnified.js `marketOpen: true` → actual market state).
+  Find where `isMarketOpen` (or equivalent closed-hours check) is imported/used elsewhere
+  in `frontend/src/lib/data/` and use the same pattern. Write a Vitest test in
+  `frontend/src/lib/__tests__/` covering the changed logic.
+  For every file you change or create, you MUST write or update at least one test. This is mandatory.
 - broker: skip
 - doc: skip
 - backend-test: skip
@@ -89,19 +93,18 @@ After deletion, TOTAL rows fall through to the normal `base` path — no flash, 
 
 ## Tests
 
-- pytest: no
+- pytest: yes
 - svelte-check: yes
 - playwright: no
 
 ## Commit message
 
-fix(ui): remove mp-pnl-cell tint from Day%/P&L% columns + remove TOTAL row flash from all grids
+fix(nav): stale-LTP holdings use ticker rescue in NAV + snapshot Day% marketOpen fix + snapshot qty col
 
 ## Done when
 
-- `day_pnl_pct` and `pnl_pct` cellClass contain no `mp-pnl-cell`
-- Summary grid Day % and P&L % columns use `dirCellClass` (no background tint)
-- No `_mpFlash.update('TOTAL:...')` calls remain in MarketPulse.svelte
-- `mkPnlCellClass` has no `_isTotal` branch
-- Vitest tests pass covering all three assertions above
-- svelte-check 0 errors
+- `_holdings_from_df` routes rows with `last_price <= 0` AND `cur_val > 0` through
+  `_ltp_fallback_sum` instead of `cv_sum`
+- `pulseUnified.js` passes actual market state (not hardcoded `true`) to `livePositionDayPnl`
+- `daily_snapshot.py` uses `quantity` (not `opening_quantity`) in both patched places
+- pytest green, svelte-check 0 errors, vitest green

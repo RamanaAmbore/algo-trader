@@ -354,7 +354,7 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
     # (`/api/holdings`, `/api/positions`) which run the same backfill
     # right after `pd.concat`.
     try:
-        n_h = _backfill_market_data_dicts(out["holdings"], qty_col="opening_quantity")
+        n_h = _backfill_market_data_dicts(out["holdings"], qty_col="quantity")
         n_p = _backfill_market_data_dicts(out["positions"] or [], qty_col="quantity")
         if n_h or n_p:
             logger.info(
@@ -412,7 +412,7 @@ def _snap_holding_eod_vals(
     last_price = r.get("last_price")
     day_change = r.get("day_change")
     total_pnl_raw = r.get("pnl")
-    qty = int(r.get("opening_quantity") or r.get("quantity") or 1)
+    qty = int(r.get("quantity") or r.get("opening_quantity") or 1)
     ltp_val   = None if mid_session else (float(last_price) if last_price is not None else None)
     # Dhan and some brokers return last_price=0 on non-trading days (weekends,
     # holidays). Fall back to close_price / previous_close so the row survives

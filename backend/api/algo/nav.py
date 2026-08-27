@@ -222,20 +222,47 @@ def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
         else pl.lit(0.0)
     )
 
+    # Build _ltp column: 0.0 when last_price absent (e.g. Dhan/Groww frames
+    # that omit the field) or when last_price is explicitly zero (stale LTP).
+    ltp_col = (
+        pl.col("last_price").cast(pl.Float64, strict=False).fill_null(0.0)
+        if "last_price" in lf.columns
+        else pl.lit(0.0)
+    )
+
     # Rows where both qty and cur_val are zero — skip (same as original).
     # For rows with cv == 0 but qty != 0 we fall back to LTP below.
     lf = lf.with_columns(
         qty_col.alias("_qty"),
         cv_col.alias("_cv"),
+        ltp_col.alias("_ltp"),
     ).filter(~((pl.col("_qty") == 0.0) & (pl.col("_cv") == 0.0)))
 
     if lf.is_empty():
         return 0.0, []
 
+    # Three-way split:
+    #   lf_good_cv  — cv != 0 AND ltp > 0  → cur_val is a real market value; trust it
+    #   lf_stale_ltp — cv != 0 AND ltp <= 0 → cur_val is cost basis (Dhan/Groww cold cache);
+    #                                          route via ticker rescue so NAV uses market value
+    #   lf_zero_cv  — cv == 0              → existing ticker fallback path (unchanged)
+    lf_good_cv   = lf.filter((pl.col("_cv") != 0.0) & (pl.col("_ltp") > 0.0))
+    lf_stale_ltp = lf.filter((pl.col("_cv") != 0.0) & (pl.col("_ltp") <= 0.0))
+    lf_zero_cv   = lf.filter(pl.col("_cv") == 0.0)
+
     cv_sum = float(
-        lf.filter(pl.col("_cv") != 0.0).select(pl.col("_cv").sum()).to_series()[0] or 0.0
+        lf_good_cv.select(pl.col("_cv").sum()).to_series()[0] or 0.0
+        if not lf_good_cv.is_empty() else 0.0
     )
-    ltp_sum = _ltp_fallback_sum(lf.filter(pl.col("_cv") == 0.0), ticker)
+    # Both stale-LTP and zero-cv groups need ticker rescue; concat is safe because
+    # both frames derive from `lf` so their schemas are identical.
+    lf_need_rescue = (
+        pl.concat([lf_stale_ltp, lf_zero_cv])
+        if not lf_stale_ltp.is_empty() and not lf_zero_cv.is_empty()
+        else lf_stale_ltp if not lf_stale_ltp.is_empty()
+        else lf_zero_cv
+    )
+    ltp_sum = _ltp_fallback_sum(lf_need_rescue, ticker)
     mtm = cv_sum + ltp_sum
 
     accounts: list[str] = []
