@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.21 — 2026-08-26  
+**Version**: 1.22 — 2026-08-27  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -338,6 +338,29 @@ A dedicated background task (`bg-chain-instruments`) fetches NFO and MCX contrac
 **Use by chain_quotes**: The `chain_quotes` endpoint prefers the `instruments_chain` cache when available, reducing contention with Kite's concurrent NFO lookups that spike during option expiry when 300K+ contract records are parsed simultaneously
 
 **Rationale**: Option chains are expensive to hydrate (large NFO/MCX payloads); dedicated background population ensures the Ticket tab's expiry dropdown and strike picker have pre-warmed data without blocking other routes' instruments lookups
+
+### Options Chain Polling & Timeouts (Aug 2026)
+
+**File**: `backend/api/routes/quote.py` — `_chain_quotes_batch_quote()` and frontend
+`ChainCard.svelte`
+
+**Backend timeout reduction** (30s → 12s): `asyncio.wait_for` timeout in 
+`_chain_quotes_batch_quote()` reduced from 30 seconds to 12 seconds to reduce thread pool 
+hold time during high-volume option expiry days when NFO chain has 300K+ contracts being 
+quoted simultaneously.
+
+**Frontend poll interval increase** (5s → 30s): `visibleInterval` for prices polling in 
+ChainCard changed from 5 seconds to 30 seconds (default). Reduces API pressure during 
+peak expiry windows.
+
+**In-flight guard added**: New `_pricesFetching` guard in `_loadPrices()` prevents 
+concurrent broker.quote() calls. When a prices fetch is in-flight, subsequent poll ticks 
+are silently dropped until the fetch completes. This prevents request starvation when 
+browser polls faster than broker responses can complete.
+
+**Impact**: Options chain tab remains responsive on expiry days (300K+ NFO contracts) 
+without blocking other routes; excessive backend load from 5-second polls eliminated; 
+simultaneous quote requests prevented by frontend guard.
 
 ### Removed Function: `_trigger_instruments_store_populate`
 
@@ -687,7 +710,35 @@ The guard fires per-category:
 
 ---
 
-## 7.3.5 Holdings Data Freshness & SSOT Fetch TTL (Aug 2026)
+## 7.3.5 Holdings Gate Now NSE-Specific (Aug 2026)
+
+**File**: `backend/api/helpers/snapshot_gate.py` — `closed_hours_or_broker()`
+
+Holdings routes now use NSE-only closed-hours gate instead of waiting for all
+market segments to close:
+
+```python
+data, source = await closed_hours_or_broker(
+    exchange='NSE',
+    snapshot_fn=_holdings_snapshot,
+    broker_fn=_fetch_holdings_live,
+    segment_exchanges=["NSE"],  # NEW: restrict to NSE only
+    route_key='holdings',
+)
+```
+
+**Impact**: Holdings enter snapshot mode at NSE close (~15:35 IST) instead of
+at MCX close (~23:30 IST). The gate now uses `segment_exchanges=["NSE"]`
+parameter to restrict market-open check to NSE segments only. This means:
+
+- Holdings show frozen prices once NSE settles
+- MCX-only positions (if any) still receive live broker fetch
+- Pre-market and post-MCX-settlement holdings display correct day P&L from
+  prior-session snapshot without waiting 8 hours for MCX to close
+
+---
+
+## 7.3.6 Holdings Data Freshness & SSOT Fetch TTL (Aug 2026)
 
 **File**: `backend/brokers/broker_apis.py` — `fetch_holdings()` + `_HOLDINGS_SSOT_TTL`
 
@@ -710,7 +761,35 @@ cache freshness with the stricter positions cache.
 
 ---
 
-## 7.3.6 Firm NAV Computation & Closed-Exchange LTP Overlay
+## 7.3.7 Snapshot Path Now Calls `_override_stale_close_for_holdings` (Aug 2026)
+
+**File**: `backend/api/routes/holdings.py` — `_holdings_snapshot()` + 
+`_build_holding_row_from_snapshot()`
+
+Both the **broker path** (live fetch) AND the **snapshot path** (closed-hours
+read) now apply `_override_stale_close_for_holdings()` to patch stale or missing
+`close_price` values with the correct prior-session settlement LTP from
+`daily_book.ltp` (captured at settlement, `captured_at < today_08:00 IST`).
+
+**Broker path flow**:
+1. `_fetch_holdings_live()` calls `fetch_holdings()`
+2. `_override_stale_close_for_holdings()` patches `close_price` from DB snapshot
+3. Day P&L recomputed using patched `close_price`
+
+**Snapshot path flow** (during closed hours or on broker failure):
+1. `_holdings_snapshot()` queries `daily_book` for latest batch per account
+2. `_build_holding_row_from_snapshot()` reconstructs row from snapshot columns
+3. `_override_stale_close_for_holdings()` patches `close_price` from prior-session DB row
+4. Day P&L recomputed using patched `close_price`
+
+**Impact**: Both paths now use the same prior-session settlement LTP as the
+day P&L reference price, eliminating divergence between live and snapshot
+displays. Previously the snapshot path used the drifted `db.previous_close`
+from the rolling-shift UPSERT, which could drift overnight.
+
+---
+
+## 7.3.8 Firm NAV Computation & Closed-Exchange LTP Overlay
 
 **File**: `backend/api/algo/nav.py` — `compute_firm_nav()` + `_fetch_holdings_phase()`
 
@@ -752,7 +831,29 @@ used frozen DB snapshots.
 
 ---
 
-## 7.3.7 Holdings Day P&L Recompute & Backstop Exclusion (Aug 2026)
+## 7.3.9 `close_price` Always Synced to `ref_close` (Aug 2026)
+
+**File**: `backend/api/routes/holdings.py` — `_override_stale_close_for_holdings()`
+
+The epsilon guard (`abs(ref_close - current_close) > 0.005`) that gated whether
+`close_price` gets synced has been **removed**. `close_price` is now **always** set
+to `ref_close` (the prior-session settlement LTP from daily_book).
+
+**Prior behaviour**: Epsilon guard prevented sync when prices were already "close
+enough", saving DB writes but leaving `close_price` stale.
+
+**New behaviour**: `close_price` is unconditionally synced to `ref_close` to keep
+`_recompute_day_change_pct`'s denominator consistent with `day_change_val`. Both
+metrics now derive from the same prior-session price source.
+
+**Impact**: Holdings day P&L percentage metric `day_change_percentage = day_pnl /
+(close_price × qty) × 100` and the numerator `day_pnl = (ltp - close_price) × qty`
+now use identical denominators, preventing floating-point divergence that could
+cause NavStrip to show inconsistent day P&L vs. percentage figures.
+
+---
+
+## 7.3.10 Holdings Day P&L Recompute & Backstop Exclusion (Aug 2026)
 
 **File**: `backend/api/routes/holdings.py` — `_override_stale_close_for_holdings()`
 
@@ -787,7 +888,7 @@ incorrectly (missing field → 0 → matched condition → recompute on every fe
 
 ---
 
-## 7.3.8 Holdings LTP Override & pnl+cur_val Consistency (Aug 2026)
+## 7.3.11 Holdings LTP Override & pnl+cur_val Consistency (Aug 2026)
 
 **File**: `backend/api/routes/holdings.py` — `_override_stale_ltp_from_ticker()`
 **File**: `backend/brokers/broker_apis.py` — `_build_holdings_pnl_expr()`
@@ -852,7 +953,7 @@ NavStrip H slot would show stale values until the next refresh.
 
 ---
 
-## 7.3.9 Holdings Snapshot Day Change Percentage Formula
+## 7.3.12 Holdings Snapshot Day Change Percentage Formula
 
 **File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`
 
@@ -1118,6 +1219,36 @@ async def fix_daily_book_prev_close(now_ist=None) -> int:
 - **After 08:00 IST** (new session open): 
   `prev_close = prior-session settlement == ltp` (no intraday movement yet) 
   → valid state; live LTP ticks above/below this baseline throughout the day
+
+---
+
+## 7.3.13 Positions Per-Exchange Day P&L Overlay (Aug 2026)
+
+**File**: `backend/api/routes/positions.py` — `_overlay_snapshot_for_closed_exchanges()`
+
+Positions now patch `day_change_val`, `day_change_percentage`, and `close_price`
+for closed-exchange rows immediately upon their exchange closure, without waiting
+for all markets to close.
+
+**Mechanism**: After fetching live positions (via broker), `_overlay_snapshot_for_closed_exchanges()`
+queries `_fetch_ref_close_map()` to fetch prior-session close prices from daily_book
+(cutoff: `captured_at < today_08:00 IST`). For each row:
+
+- **If exchange is open now**: Use broker values as-is (live LTP, live day P&L)
+- **If exchange is closed now** (e.g., NFO closed at 15:30): Recalculate
+  `day_change_val = (broker_ltp - ref_close) × qty`
+  `day_change_percentage = (day_change_val / (ref_close × qty)) × 100`
+  `close_price = ref_close`
+
+**Impact**: NFO/BSE positions show correct day P&L immediately after their close
+(~15:30 IST for equity derivatives), without waiting for MCX to close at 23:30 IST.
+MCX rows remain unaffected and continue receiving live broker calculations until
+MCX session closes.
+
+**Example (Aug 2026)**: At 15:35 IST (2 minutes after NSE/NFO close):
+- Live positions fetch shows NFO rows with stale day P&L (broker hasn't updated settlement prices)
+- Overlay patches those rows from prior-session daily_book snapshot
+- NavStrip displays correct overnight move immediately, not 8 hours later
 
 ---
 
@@ -2050,3 +2181,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-20 | v1.20 Auth-error retry refactor + account loading cache (commit cecc9842): Moved auth-error detection and token renewal from scattered inline blocks in `broker_apis.py` into unified `@for_all_accounts._per_account._try_renew` handler in `backend/shared/helpers/decorators.py`. New zero-dependency `backend/shared/helpers/auth_error.py` module exports `is_auth_error_str(err)` to detect 401/403/token-expiry signals without importing broker layer. Updated §2 Broker Base Contract auth invariant and §9.2 On-demand token renewal subsection. Removed `_maybe_renew_on_auth_error`, `_rebuild_holdings_after_renewal`, `_rebuild_positions_after_renewal`, `_rebuild_margins_after_renewal` from `broker_apis.py` — logic now centralized in decorator `_try_renew`. Added module-level `_last_known_remote_accounts` cache in `backend/api/routes/brokers.py:_loaded_accounts()` to serve fallback account list when conn-service briefly unavailable (06:00 IST token-expiry restart window). Prevents navbar chip from flipping 0/5 → 5/5 during transient UDS blips. Added subsection in §6 Circuit Breaker & Health documenting account loading cache. |
 | 2026-08-24 | v1.21 Holdings data freshness and day P&L fixes (commit 39c21cca): Added §7.3.5 Holdings Data Freshness & SSOT Fetch TTL documenting 30-second TTL on `fetch_holdings()` mirroring `fetch_positions()` pattern. Added `_HOLDINGS_SSOT_TTL = 30.0` and `_holdings_ssot_refresh_at` dict tracking last fetch per account; cache bypass on TTL miss forces fresh broker call. Added §7.3.7 Holdings Day P&L Recompute & Backstop Exclusion documenting two fixes: (1) `_override_stale_close_for_holdings()` now recomputes day P&L for ALL holdings rows where `previous_close > 0` exists (not just Dhan patched rows), formula `(ltp - previous_close) × qty` applied universally, (2) `apply_day_change_backstop()` explicitly removed from holdings flow (retained for positions only) since holdings lack `overnight_quantity` field required for backstop Case 1/2/3 edge cases. Prevents spurious backstop matches on missing field when overnight_qty defaults to 0. Renumbered subsequent sections (7.3.6→7.3.8). |
 | 2026-08-26 | v1.22 Holdings H slot consistency fix (commit bad82021): Added §7.3.8 Holdings LTP Override & pnl+cur_val Consistency documenting two fixes: (1) `_override_stale_ltp_from_ticker()` now recomputes `pnl` and `cur_val` on patched rows after LTP patch (was leaving them stale, causing NavStrip H slot 2 to show `inv_val` instead of `ltp × qty`); (2) `_build_holdings_pnl_expr()` changes broker pnl trust policy from trusting non-null to trusting non-null AND non-zero (Kite sends `pnl=0.0` pre-market when `last_price=0`, old code trusted that zero → `cur_val = inv_val`, now falls back to computed formula `(ltp-avg)×qty`). At breakeven (`ltp==avg`) both formulas give 0, so no regression. Renumbered subsequent section (7.3.8→7.3.9). |
+| 2026-08-27 | v1.23 Holdings gate NSE-specific + per-exchange P&L overlay + chain polling tuning (commits bb778062, 13f59ac0, d4e75014): Added §7.3.5 Holdings Gate Now NSE-Specific documenting `closed_hours_or_broker(segment_exchanges=["NSE"])` parameter; holdings now enter snapshot mode at NSE close (15:35 IST) instead of MCX close (23:30 IST). Added §7.3.7 Snapshot Path Now Calls `_override_stale_close_for_holdings` documenting both broker AND snapshot paths now call `_override_stale_close_for_holdings()` to patch from prior-session daily_book.ltp (cutoff: `captured_at < today_08:00 IST`), eliminating divergence between live/snapshot displays. Added §7.3.9 `close_price` Always Synced to `ref_close` documenting removal of epsilon guard; `close_price` now unconditionally synced to keep denominator consistent with `day_change_val` numerator. Added §7.3.13 Positions Per-Exchange Day P&L Overlay documenting `_overlay_snapshot_for_closed_exchanges()` now patches day P&L for closed-exchange rows (NFO/BSE) immediately after their close (~15:30 IST) using prior-session daily_book snapshot, without waiting for MCX to close. Added Options Chain Polling & Timeouts subsection documenting backend timeout reduction (30s→12s) in `_chain_quotes_batch_quote()` and frontend interval increase (5s→30s) in ChainCard.svelte; added `_pricesFetching` in-flight guard to prevent concurrent quote() calls. Renumbered §7.3.6+ holdings sections (6→6, 7→7, 8→8, etc.). |
