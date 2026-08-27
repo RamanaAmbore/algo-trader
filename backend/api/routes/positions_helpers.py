@@ -104,18 +104,6 @@ def extract_snapshot_extras(payload_json: object) -> dict:
     return {}
 
 
-def extract_snapshot_multiplier(payload_json: object) -> int:
-    """DEPRECATED — always returns 1. Kept for import compatibility.
-
-    ``daily_book.qty`` is written as CONTRACTS by ``_positions_qty_fields``
-    (lots × multiplier) so the read-seam must NOT multiply again.
-    Applying the Kite multiplier a second time caused MCX qty to be
-    lots × lot_size² (e.g. 3 lots CRUDEOIL → 300 contracts stored →
-    30,000 returned) and corrupted NavStrip slots 1 and 3 when market
-    was closed (snapshot path).
-    """
-    return 1
-
 
 def resolve_snapshot_day_pnl(
     day_pnl_col: object,

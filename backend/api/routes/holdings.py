@@ -315,6 +315,10 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
         _avg_p = pd.to_numeric(raw.loc[_sel, 'average_price'], errors='coerce').fillna(0)
         _pnl_p = (_ltp_p - _avg_p) * _qty_p
         raw.loc[_sel, 'pnl'] = _pnl_p.where(_ltp_p > 0, raw.loc[_sel, 'pnl'])
+        if 'pnl_per_share' in raw.columns:
+            raw.loc[_sel, 'pnl_per_share'] = (
+                _pnl_p / _qty_p.replace(0, float('nan'))
+            ).fillna(0).where(_ltp_p > 0, raw.loc[_sel, 'pnl_per_share'])
         if 'inv_val' in raw.columns and 'cur_val' in raw.columns:
             _inv_p2 = pd.to_numeric(raw.loc[_sel, 'inv_val'], errors='coerce').fillna(0)
             raw.loc[_sel, 'cur_val'] = (_inv_p2 + raw.loc[_sel, 'pnl']).where(

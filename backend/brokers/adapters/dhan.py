@@ -83,22 +83,11 @@ _DHAN_RATE_LIMITER = TokenBucketLimiter({
     "auth":    (1, 300.0),  # 1 call per 5 min for token generation (Dhan v2 published)
 })
 
+# Absurd-qty ceiling for NFO/BFO GTT legs — protects against untranslated
+# lots vs contracts bugs reaching the Dhan Forever Order API.
+_DHAN_GTT_MAX_QTY = 50_000  # contracts
 
-def _emit_conn_event(
-    account: str,
-    broker_id: str,
-    event_type: str,
-    detail: dict | None = None,
-) -> None:
-    """Lazy-import shim so dhan.py can emit connection events without
-    a hard dependency on conn_events (which owns the DB session factory
-    and must only be imported inside the conn_service process)."""
-    try:
-        # lazy import to avoid circular dependency — conn_events → event_queue → database
-        from backend.brokers.service.conn_events import _emit_conn_event as _fire
-        _fire(account, broker_id, event_type, detail)
-    except Exception:
-        pass
+from backend.brokers.conn_event_shim import _emit_conn_event
 
 
 # ── Instruments cache ──────────────────────────────────────────────────
@@ -1415,6 +1404,18 @@ class DhanBroker(Broker):
                 f"should attach the template via the Kite-mirrored "
                 f"account (got exchange={exchange!r}, symbol={tradingsymbol!r})"
             )
+        # Absurd-qty ceiling for NFO/BFO legs — catches untranslated
+        # lots vs contracts bugs before they reach the Dhan API.
+        _exch_upper = exchange.upper()
+        if _exch_upper in ("NFO", "BFO"):
+            for _leg in orders:
+                _qty = int(_leg.get("quantity") or 0)
+                if _qty > _DHAN_GTT_MAX_QTY:
+                    raise ValueError(
+                        f"Dhan GTT qty {_qty} exceeds ceiling {_DHAN_GTT_MAX_QTY} "
+                        f"for {_exch_upper} — check lots vs contracts "
+                        f"(symbol={tradingsymbol!r})"
+                    )
         security_id = _resolve_security_id(tradingsymbol, exchange)
         if not security_id:
             raise RuntimeError(

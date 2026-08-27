@@ -16,21 +16,7 @@ from backend.shared.helpers.ssot_fetch import ssot_fetch
 logger = get_logger(__name__)
 
 
-def _emit_conn_event(
-    account: str,
-    broker_id: str,
-    event_type: str,
-    detail: dict | None = None,
-) -> None:
-    """Lazy-import shim so broker_apis can emit connection events without
-    a hard import on conn_events (which owns the DB session factory and
-    must only be imported inside the conn_service process)."""
-    try:
-        # lazy import to avoid circular dependency — conn_events → event_queue → database
-        from backend.brokers.service.conn_events import _emit_conn_event as _fire
-        _fire(account, broker_id, event_type, detail)
-    except Exception:
-        pass
+from backend.brokers.conn_event_shim import _emit_conn_event
 
 
 def _broker_id_safe(account: str) -> str:

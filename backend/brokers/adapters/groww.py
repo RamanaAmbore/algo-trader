@@ -245,6 +245,7 @@ _EXCHANGE_TO_GROWW: dict[str, str] = {
     "NFO": "NSE",  # Groww uses segment to distinguish F&O — exchange stays NSE
     "BFO": "BSE",
     "MCX": "MCX",
+    "NCO": "MCX",  # National Commodity Options — same exchange tier as MCX
     "CDS": "NSE",
     "BCD": "BSE",
 }
@@ -257,6 +258,7 @@ _SEGMENT_TO_GROWW: dict[str, str] = {
     "NFO": "FNO",
     "BFO": "FNO",
     "MCX": "COMMODITY",
+    "NCO": "COMMODITY",  # National Commodity Options — same segment as MCX
     "CDS": "CURRENCY",
     "BCD": "CURRENCY",
 }
@@ -285,6 +287,11 @@ _XCHG_TO_GROWW_MARKET_STATUS: dict[str, tuple[str, ...]] = {
 }
 
 _GROWW_OPEN_STATUS_STRINGS = frozenset({"OPEN", "TRADING", "ACTIVE", "Y", "YES", "TRUE"})
+
+# Set of Groww accounts whose raw margin response keys have been logged.
+# Paired with the one-time INFO log in margins() to confirm field names
+# against Groww's incomplete SDK documentation. Resets on process restart.
+_GROWW_MARGINS_LOGGED: set[str] = set()
 
 
 def _first(d: dict, *keys: str, default: Any = "") -> Any:
@@ -1567,11 +1574,6 @@ def _normalise_positions(resp: Any) -> dict:
         net.append(row)
     return {"net": net, "day": day}
 
-
-# Set of Groww accounts whose raw margin response keys have been logged.
-# Paired with the one-time INFO log in margins() to confirm field names
-# against Groww's incomplete SDK documentation. Resets on process restart.
-_GROWW_MARGINS_LOGGED: set[str] = set()
 
 
 def _normalise_margins(resp: Any, segment: str | None) -> dict:

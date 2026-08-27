@@ -224,31 +224,10 @@ def test_build_snapshot_position_row_fields():
 
 
 # ---------------------------------------------------------------------------
-# 6. extract_snapshot_multiplier — deprecated, always returns 1.
-#    daily_book.qty stores CONTRACTS (write-seam converts lots→contracts),
-#    so applying the Kite multiplier at read time caused double-multiply.
+# 6. extract_snapshot_multiplier removed — daily_book.qty stores CONTRACTS
+#    (write-seam converts lots→contracts) so read-seam must NOT multiply again.
+#    The function has been deleted from positions_helpers.py.
 # ---------------------------------------------------------------------------
-
-def test_extract_snapshot_multiplier_always_returns_1():
-    """extract_snapshot_multiplier is deprecated — always returns 1 regardless of payload."""
-    import json
-    from backend.api.routes.positions_helpers import extract_snapshot_multiplier
-
-    # MCX with multiplier=100 must now return 1 (no-op) to prevent double-multiply
-    pj_mcx = json.dumps({"multiplier": 100, "tradingsymbol": "CRUDEOIL26JUL7500CE"})
-    assert extract_snapshot_multiplier(pj_mcx) == 1
-
-    # NFO — already 1
-    pj_nfo = json.dumps({"multiplier": 1, "tradingsymbol": "NIFTY26JULFUT"})
-    assert extract_snapshot_multiplier(pj_nfo) == 1
-
-    # Missing multiplier — 1
-    pj_missing = json.dumps({"tradingsymbol": "SOMESTOCK"})
-    assert extract_snapshot_multiplier(pj_missing) == 1
-
-    # None payload — 1
-    assert extract_snapshot_multiplier(None) == 1
-
 
 def test_snapshot_mcx_qty_contracts_no_double_multiply():
     """Snapshot path: 1-lot CRUDEOIL is stored as 100 contracts in daily_book.qty.
@@ -256,13 +235,12 @@ def test_snapshot_mcx_qty_contracts_no_double_multiply():
     MCX qty to be contracts × lot_size (e.g. 100 × 100 = 10,000) instead of 100.
 
     The write-seam (_positions_qty_fields) already converts lots → contracts.
-    extract_snapshot_multiplier is deprecated (always returns 1).
+    extract_snapshot_multiplier was deprecated and has been removed.
     """
     import json
     from decimal import Decimal
     from backend.api.routes.positions_helpers import (
         build_snapshot_position_row,
-        extract_snapshot_multiplier,
     )
 
     # daily_book.qty stores CONTRACTS after _positions_qty_fields:
@@ -273,8 +251,6 @@ def test_snapshot_mcx_qty_contracts_no_double_multiply():
         "exchange": "MCX",
         "multiplier": 100,    # present in payload but must NOT be applied again
     })
-    # extract_snapshot_multiplier is deprecated — always returns 1
-    assert extract_snapshot_multiplier(payload_json) == 1
 
     row = build_snapshot_position_row(
         account="ZG0790",

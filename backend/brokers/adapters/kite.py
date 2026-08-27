@@ -242,10 +242,10 @@ def _check_kite_gtt_qty_ceiling(
     """Apply absurd-qty ceiling to each GTT leg. GTT has no close-intent
     so the ceiling is always enforced (no bypass)."""
     _exch = exchange.upper()
+    from backend.shared.helpers.settings import get_int
+    _mcx_gtt_ceiling = get_int("orders.mcx_gtt_lot_ceiling", 200)
     for _leg in orders:
         _kqty = int(_leg.get("quantity") or 0)
-        from backend.shared.helpers.settings import get_int
-        _mcx_gtt_ceiling = get_int("orders.mcx_gtt_lot_ceiling", 200)
         if _exch in ("MCX", "NCO") and _kqty > _mcx_gtt_ceiling:
             logger.error(
                 "[ADAPTER-GTT-QTY-CEILING] REFUSING GTT %s %s: leg qty=%s "

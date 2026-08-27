@@ -289,6 +289,8 @@ class Broker(ABC):
         Called at the top of apply_plan_live — before lot-size resolution,
         plan resolution, and any broker call — so the operator sees a
         clear error without paying for any upstream work."""
+        # Subclasses raise ValueError for unsupported exchanges; default = all allowed.
+        pass
 
     def place_gtt(
         self,
