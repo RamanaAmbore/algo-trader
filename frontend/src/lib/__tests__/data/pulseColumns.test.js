@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkRightColDefs, dirCls } from '../../data/pulseColumns.js';
+import { mkRightColDefs, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols } from '../../data/pulseColumns.js';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs — mkRightColDefs requires many column objects and formatters
@@ -319,5 +319,235 @@ describe('dirCls helper', () => {
   });
   it('returns cell-flat for null', () => {
     expect(dirCls(null)).toBe('cell-flat');
+  });
+});
+
+// ===========================================================================
+// Flash / animation fixes — 7-fix set (Fixes 1–4 + Fix 7)
+// ===========================================================================
+
+// Shared helpers for flash-fix tests
+const _RA = 'ag-right-aligned-cell';
+/** @type {() => any} */
+const _noFlash = () => ({ classOf: () => null });
+
+function _makePnlCellClass() {
+  return mkPnlCellClass({
+    RA:              _RA,
+    getMpFlash:      _noFlash,
+    getLtpFlashUp:   () => new Set(),
+    getLtpFlashDown: () => new Set(),
+  });
+}
+
+function _makeP(value, data = {}) {
+  return { value, data };
+}
+
+// ---------------------------------------------------------------------------
+// Fix 1 — day_pnl_pct cellClass: no mp-pnl-cell, directional text only
+// ---------------------------------------------------------------------------
+
+describe('Fix 1 — day_pnl_pct column cellClass (no mp-pnl-cell)', () => {
+  // The column uses inline lambda: (p) => `${RA} ${dirCls(p.value)}`
+  const dayPnlPctCellClass = (p) => `${_RA} ${dirCls(p.value)}`;
+
+  it('positive value: contains cell-pos, does NOT contain mp-pnl-cell', () => {
+    const result = dayPnlPctCellClass(_makeP(1.5));
+    expect(result).toContain('cell-pos');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('negative value: contains cell-neg, does NOT contain mp-pnl-cell', () => {
+    const result = dayPnlPctCellClass(_makeP(-0.5));
+    expect(result).toContain('cell-neg');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('zero value: contains cell-flat, does NOT contain mp-pnl-cell', () => {
+    const result = dayPnlPctCellClass(_makeP(0));
+    expect(result).toContain('cell-flat');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('null value: contains cell-flat, does NOT contain mp-pnl-cell', () => {
+    const result = dayPnlPctCellClass(_makeP(null));
+    expect(result).toContain('cell-flat');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2 — pnl_pct cellClass: no mp-pnl-cell, directional text only
+// ---------------------------------------------------------------------------
+
+describe('Fix 2 — pnl_pct column cellClass (no mp-pnl-cell)', () => {
+  const pnlPctCellClass = (p) => `${_RA} ${dirCls(p.value)}`;
+
+  it('positive value: contains cell-pos, does NOT contain mp-pnl-cell', () => {
+    const result = pnlPctCellClass(_makeP(3.2));
+    expect(result).toContain('cell-pos');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('negative value: contains cell-neg, does NOT contain mp-pnl-cell', () => {
+    const result = pnlPctCellClass(_makeP(-2.1));
+    expect(result).toContain('cell-neg');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 3 — mkPosSummaryCols: day_change_percentage uses dirCellClass
+// ---------------------------------------------------------------------------
+
+describe('Fix 3 — mkPosSummaryCols day_change_percentage (no mp-pnl-cell)', () => {
+  const dirCellClass = (p) => `${_RA} ${dirCls(p.value)}`;
+  const pnlCellClass = _makePnlCellClass();
+  const cols = mkPosSummaryCols({
+    numericHdr: 'ag-right-aligned-header',
+    pnlCellClass,
+    dirCellClass,
+    aggFmtGrid: () => '',
+    pctFmtGrid: () => '',
+  });
+
+  const dayChangePctCol = cols.find(c => c.field === 'day_change_percentage');
+
+  it('day_change_percentage column exists', () => {
+    expect(dayChangePctCol).toBeDefined();
+  });
+
+  it('positive value: contains cell-pos, does NOT contain mp-pnl-cell', () => {
+    const result = dayChangePctCol.cellClass(_makeP(2.5));
+    expect(result).toContain('cell-pos');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('negative value: contains cell-neg, does NOT contain mp-pnl-cell', () => {
+    const result = dayChangePctCol.cellClass(_makeP(-1.1));
+    expect(result).toContain('cell-neg');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('day_pnl column still uses pnlCellClass (has mp-pnl-cell)', () => {
+    const dayPnlCol = cols.find(c => c.field === 'day_pnl');
+    // pnlCellClass with no field → early return of base which contains mp-pnl-cell
+    const result = dayPnlCol.cellClass(_makeP(100));
+    expect(result).toContain('mp-pnl-cell');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 4 — mkHoldSummaryCols: day_change_percentage and pnl_percentage no mp-pnl-cell
+// ---------------------------------------------------------------------------
+
+describe('Fix 4 — mkHoldSummaryCols pct columns (no mp-pnl-cell)', () => {
+  const dirCellClass = (p) => `${_RA} ${dirCls(p.value)}`;
+  const pnlCellClass = _makePnlCellClass();
+  const cols = mkHoldSummaryCols({
+    RA: _RA,
+    numericHdr: 'ag-right-aligned-header',
+    pnlCellClass,
+    dirCellClass,
+    aggFmtGrid: () => '',
+    pctFmtGrid: () => '',
+  });
+
+  const dayChangePctCol = cols.find(c => c.field === 'day_change_percentage');
+  const pnlPctCol       = cols.find(c => c.field === 'pnl_percentage');
+
+  it('day_change_percentage column exists', () => {
+    expect(dayChangePctCol).toBeDefined();
+  });
+
+  it('pnl_percentage column exists', () => {
+    expect(pnlPctCol).toBeDefined();
+  });
+
+  it('day_change_percentage positive: cell-pos, no mp-pnl-cell', () => {
+    const result = dayChangePctCol.cellClass(_makeP(1.8));
+    expect(result).toContain('cell-pos');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('day_change_percentage negative: cell-neg, no mp-pnl-cell', () => {
+    const result = dayChangePctCol.cellClass(_makeP(-0.7));
+    expect(result).toContain('cell-neg');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('pnl_percentage positive: cell-pos, no mp-pnl-cell', () => {
+    const result = pnlPctCol.cellClass(_makeP(5.0));
+    expect(result).toContain('cell-pos');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('pnl_percentage negative: cell-neg, no mp-pnl-cell', () => {
+    const result = pnlPctCol.cellClass(_makeP(-3.3));
+    expect(result).toContain('cell-neg');
+    expect(result).not.toContain('mp-pnl-cell');
+  });
+
+  it('day_pnl column still uses pnlCellClass (has mp-pnl-cell)', () => {
+    const dayPnlCol = cols.find(c => c.field === 'day_pnl');
+    const result = dayPnlCol.cellClass(_makeP(500));
+    expect(result).toContain('mp-pnl-cell');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 7 — mkPnlCellClass: _isTotal rows produce no TOTAL:* flash class
+// ---------------------------------------------------------------------------
+
+describe('Fix 7 — mkPnlCellClass: _isTotal rows produce no flash class', () => {
+  const pnlCellClass = _makePnlCellClass();
+
+  it('TOTAL row with no tradingsymbol returns base class only (no flash suffix)', () => {
+    // sym is falsy → early return at `!sym` guard → returns base
+    const p = _makeP(12345, { _isTotal: true });
+    const result = pnlCellClass(p, 'day_pnl');
+    // base = `${RA} ${dirCls(p.value)} mp-pnl-cell`
+    expect(result).toBe(`${_RA} cell-pos mp-pnl-cell`);
+    expect(result).not.toMatch(/tf-up|tf-down|ltp-flash/);
+  });
+
+  it('TOTAL row negative value returns base class only', () => {
+    const p = _makeP(-5000, { _isTotal: true });
+    const result = pnlCellClass(p, 'pnl');
+    expect(result).toBe(`${_RA} cell-neg mp-pnl-cell`);
+    expect(result).not.toMatch(/tf-up|tf-down|ltp-flash/);
+  });
+
+  it('TOTAL row: getMpFlash.classOf is NOT called for TOTAL:* keys', () => {
+    /** @type {import('vitest').Mock<() => '' | 'tf-up' | 'tf-down'>} */
+    const classOf = vi.fn(() => /** @type {'tf-up'} */ ('tf-up'));
+    /** @type {() => any} */
+    const getMpFlash = () => ({ classOf });
+    const pcc = mkPnlCellClass({
+      RA: _RA,
+      getMpFlash,
+      getLtpFlashUp:   () => new Set(),
+      getLtpFlashDown: () => new Set(),
+    });
+    // _isTotal=true, no tradingsymbol → sym falsy → early return before classOf
+    pcc(_makeP(100, { _isTotal: true }), 'day_pnl');
+    expect(classOf).not.toHaveBeenCalledWith('TOTAL:day_pnl');
+  });
+
+  it('regular row WITH tradingsymbol still gets flash class from getMpFlash', () => {
+    /** @type {import('vitest').Mock<() => '' | 'tf-up' | 'tf-down'>} */
+    const classOf = vi.fn(() => /** @type {'tf-up'} */ ('tf-up'));
+    /** @type {() => any} */
+    const getMpFlash = () => ({ classOf });
+    const pcc = mkPnlCellClass({
+      RA: _RA,
+      getMpFlash,
+      getLtpFlashUp:   () => new Set(),
+      getLtpFlashDown: () => new Set(),
+    });
+    const result = pcc(_makeP(200, { tradingsymbol: 'RELIANCE' }), 'day_pnl');
+    expect(result).toContain('tf-up');
+    expect(classOf).toHaveBeenCalledWith('RELIANCE:day_pnl');
   });
 });

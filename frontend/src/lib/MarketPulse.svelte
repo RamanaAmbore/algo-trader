@@ -2115,13 +2115,6 @@
         if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
         if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
       }
-      // TOTAL row — update with dedicated keys so mkPnlCellClass can animate
-      // the pinned-bottom aggregate row when the total P&L changes.
-      const pTotal = pTotalRows[0];
-      if (pTotal) {
-        if (pTotal.day_pnl != null) _mpFlash.update('TOTAL:day_pnl', Number(pTotal.day_pnl));
-        if (pTotal.pnl     != null) _mpFlash.update('TOTAL:pnl',     Number(pTotal.pnl));
-      }
       gridPositions.setGridOption('rowData', pRows);
       gridPositions.setGridOption('pinnedBottomRowData', pTotalRows);
       // Force a refreshCells pass so cellClass callbacks re-evaluate the
@@ -2144,13 +2137,6 @@
         if (!sym) continue;
         if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
         if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
-      }
-      // TOTAL row — update with dedicated keys so mkPnlCellClass can animate
-      // the pinned-bottom aggregate row when the total P&L changes.
-      const hTotal = hTotalRows[0];
-      if (hTotal) {
-        if (hTotal.day_pnl != null) _mpFlash.update('TOTAL:day_pnl', Number(hTotal.day_pnl));
-        if (hTotal.pnl     != null) _mpFlash.update('TOTAL:pnl',     Number(hTotal.pnl));
       }
       gridHoldings.setGridOption('rowData', hRows);
       gridHoldings.setGridOption('pinnedBottomRowData', hTotalRows);
@@ -3682,7 +3668,7 @@
 
     // Positions Summary grid — Account | Day P&L | Day % | P&L
     if (showSummary && positionsSummaryEl) {
-      const posSummaryCols = mkPosSummaryCols({ numericHdr, pnlCellClass, aggFmtGrid, pctFmtGrid });
+      const posSummaryCols = mkPosSummaryCols({ numericHdr, pnlCellClass, dirCellClass, aggFmtGrid, pctFmtGrid });
       positionsSummaryGrid = createGrid(positionsSummaryEl, {
         theme: 'legacy',
         columnDefs: posSummaryCols,
@@ -3698,7 +3684,7 @@
 
     // Holdings Summary grid — Account | Day P&L | Day % | P&L | P&L % | Cur Val | Inv Val
     if (showSummary && holdingsSummaryEl) {
-      const holdSummaryCols = mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, aggFmtGrid, pctFmtGrid });
+      const holdSummaryCols = mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, dirCellClass, aggFmtGrid, pctFmtGrid });
       holdingsSummaryGrid = createGrid(holdingsSummaryEl, {
         theme: 'legacy',
         columnDefs: holdSummaryCols,

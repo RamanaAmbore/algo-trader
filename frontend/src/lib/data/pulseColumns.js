@@ -47,15 +47,6 @@ export function dirCls(v) {
 export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown }) {
   return (p, field) => {
     const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
-    // TOTAL row — use a dedicated flash key ('TOTAL:<field>') so the aggregate
-    // row animates when the total changes, rather than silently skipping animation.
-    // The caller (MarketPulse) must call _mpFlash.update('TOTAL:<field>', value)
-    // whenever the pinned total row value changes.
-    if (p.data?._isTotal) {
-      if (!field) return base;
-      const fc = getMpFlash().classOf(`TOTAL:${field}`);
-      return fc ? `${base} ${fc}` : base;
-    }
     const sym = p.data?.tradingsymbol;
     if (!sym || !field) return base;
     const symUpper = String(sym).toUpperCase();
@@ -527,7 +518,7 @@ export function mkRightColDefs({
       valueFormatter: aggFmtGrid },
     { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
+      cellClass: (p) => `${RA} ${dirCls(p.value)}`,
       valueGetter: _dayPnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
@@ -538,7 +529,7 @@ export function mkRightColDefs({
       valueFormatter: aggFmtGrid },
     { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
+      cellClass: (p) => `${RA} ${dirCls(p.value)}`,
       valueGetter: _pnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: 'P&L as % of cost basis.' },
@@ -581,12 +572,13 @@ export function mkRightColDefs({
  * @param {{
  *   numericHdr: string,
  *   pnlCellClass: (p: any, field?: string) => string,
+ *   dirCellClass: (p: any) => string,
  *   aggFmtGrid: (p: { value: any }) => string,
  *   pctFmtGrid: (p: { value: any }) => string,
  * }} opts
  * @returns {any[]}
  */
-export function mkPosSummaryCols({ numericHdr, pnlCellClass, aggFmtGrid, pctFmtGrid }) {
+export function mkPosSummaryCols({ numericHdr, pnlCellClass, dirCellClass, aggFmtGrid, pctFmtGrid }) {
   return [
     { field: 'account',               headerName: 'Account', width: 76,
       cellClass: 'ag-col-fill' },
@@ -595,7 +587,7 @@ export function mkPosSummaryCols({ numericHdr, pnlCellClass, aggFmtGrid, pctFmtG
       cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
     { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
+      cellClass: dirCellClass, valueFormatter: pctFmtGrid },
     { field: 'pnl',                   headerName: 'P&L',     width: 78,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
@@ -609,12 +601,13 @@ export function mkPosSummaryCols({ numericHdr, pnlCellClass, aggFmtGrid, pctFmtG
  *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  *   pnlCellClass: (p: any, field?: string) => string,
+ *   dirCellClass: (p: any) => string,
  *   aggFmtGrid: (p: { value: any }) => string,
  *   pctFmtGrid: (p: { value: any }) => string,
  * }} opts
  * @returns {any[]}
  */
-export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, aggFmtGrid, pctFmtGrid }) {
+export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, dirCellClass, aggFmtGrid, pctFmtGrid }) {
   return [
     { field: 'account',               headerName: 'Account', width: 76,
       cellClass: 'ag-col-fill' },
@@ -623,13 +616,13 @@ export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, aggFmtGrid, pc
       cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
     { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
+      cellClass: dirCellClass, valueFormatter: pctFmtGrid },
     { field: 'pnl',                   headerName: 'P&L',     width: 78,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
     { field: 'pnl_percentage',        headerName: 'P&L %',   width: 60,
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
+      cellClass: dirCellClass, valueFormatter: pctFmtGrid },
     { field: 'cur_val',               headerName: 'Value', width: 78,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: RA, valueFormatter: aggFmtGrid },
