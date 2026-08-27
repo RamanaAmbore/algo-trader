@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.19 — 2026-08-24  
+**Version**: 1.20 — 2026-08-26  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -1117,15 +1117,50 @@ async def fix_daily_book_prev_close(now_ist=None) -> int:
 
 ---
 
+## 7.4 Snapshot Quantity Read Path — No Multiplier (Aug 2026)
+
+**File**: `backend/api/routes/positions_helpers.py` — `build_row_from_snapshot_raw()`
+
+When reading a position from a `daily_book` snapshot (closed-hours read path), 
+`daily_book.qty` contains CONTRACTS (not lots), written by `_positions_qty_fields` at 
+snapshot time. The read seam must NOT apply any multiplier.
+
+**Prior bug**: MCX positions read from closed-hours snapshots incorrectly applied the 
+lot_size multiplier a second time, resulting in `qty = contracts × lot_size²`. Example: 
+3 lots CRUDEOIL stored as 300 contracts → read as 300 × 100 = 30,000. This corrupted 
+NavStrip slots 1 and 3 during closed hours (when the snapshot path is used instead of 
+live broker fetch).
+
+**Fix (Aug 2026, commit cef00739)**: `build_row_from_snapshot_raw()` now applies 
+no multiplier and uses the qty directly: `effective_qty = qty or 0`. The quantity is 
+already in contracts; no further scaling is needed.
+
+**Related guard**: `extract_snapshot_multiplier()` is now deprecated and always returns 1 
+(kept for import compatibility). This documents the invariant and prevents accidental 
+re-introduction of the multiplier.
+
+---
+
 ## 8. Adapter Implementations
 
+### Base Broker
+- **`translate_qty(exchange, raw_qty, lot_size)` SSOT** (Aug 2026): Canonical qty conversion
+  moved to `backend/brokers/base.py`. Decorated with `@exchange_qty_convention`, which applies
+  MCX/NCO contracts→lots rule before adapter body runs. All adapters (Kite, Dhan, Groww)
+  inherit this rule; no duplication. Guard: raises `ValueError` on `lot_size≤1` (instruments
+  cache miss). Adapters may override for broker-specific adjustments, but the MCX rule is
+  unified at base layer. Base implementation (no-op after decorator) suitable for any broker
+  that needs no further adjustment.
+
 ### KiteBroker
-- `translate_qty(exchange, raw_qty, lot_size)` — MCX: `contracts = lots × lot_size`; raises `ValueError` on `lot_size≤1` (cache miss guard)
+- `translate_qty` inherited from base; no adapter-specific overrides
 - Every GTT leg AND wing MUST call `translate_qty` before `place_gtt()` — `place_gtt` does NOT auto-translate (incident 2026-07-02)
 - `place_order(qty, ...)` has a 50-lot adapter ceiling; bypassed for `intent="close"`
 - `_truncate_tag(kwargs)` — defensive 20-char tag truncation before every `place_order`
 
 ### DhanBroker
+- `translate_qty` inherited from base; MCX/NCO contracts→lots conversion now unified (Aug 2026),
+  previously individual adapter implementations. Groww also participates.
 - Instruments CSV from `images.dhan.co` once per IST day; F&O symbol: Dhan format → Kite format
 - **429 → BrokerRateLimitError** (Jul 2026): `_DhanSDKProxy` checks `resp.get("code") == "DH-904"`
   and raises `BrokerRateLimitError` instead of returning the dict as-is. Allows PriceBroker
@@ -1146,6 +1181,8 @@ async def fix_daily_book_prev_close(now_ist=None) -> int:
 - `place_gtt()` raises `NotImplementedError` for MCX/NCO
 
 ### GrowwBroker
+- `translate_qty` inherited from base; MCX/NCO contracts→lots conversion now applied (Aug 2026).
+  Previously Groww was a noop for MCX, sending raw contract qty and causing potential oversize orders.
 - `_retry_groww_auth` wraps every SDK call: `401/403` → re-mint + retry once; `429` → exponential backoff (1→2→4→8s, cap 30s, 3 retries); `504` → refresh session + retry; `400/404` → re-raise immediately
 - `instruments()` uses per-account `@ssot_fetch` key (`groww_instruments_{account}`) to prevent cache collision when multiple Groww accounts are active simultaneously
 - Entitlement counter in `GET /api/admin/broker-health extra` field
@@ -1634,7 +1671,7 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I1 — Kite-only for historical data**: `ohlcv_store._broker_fetch_sync` and `intraday_store._broker_fetch_sync` MUST use `get_historical_brokers()[0]`. Violation: silent empty bars (incident 2026-07-11).
 
-**I2 — `translate_qty` before every GTT leg**: `apply_plan_live` MUST call `broker.translate_qty(exchange, raw_qty, lot_size)` for every GTT leg AND wing before `broker.place_gtt()`. Incident: 2026-07-02, 1-lot MCX = 100 lots sent.
+**I2 — `translate_qty` before every GTT leg (unified base class)**: `apply_plan_live` MUST call `broker.translate_qty(exchange, raw_qty, lot_size)` for every GTT leg AND wing before `broker.place_gtt()` (incident 2026-07-02: 1-lot MCX = 100 lots sent). As of Aug 2026, `translate_qty` is implemented in the base class with `@exchange_qty_convention` decorator handling MCX/NCO contracts→lots conversion; all adapters (Kite, Dhan, Groww) inherit this unified rule instead of duplicating it. RemoteBroker must still override to delegate via `_call()` to the conn-service.
 
 **I3 — Token cache atomicity**: `tempfile + os.replace()` under `fcntl.flock(LOCK_EX)`. No direct JSON writes.
 
@@ -1689,6 +1726,8 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 **I28 — Chase active 10-second snapshot timeout**: `_chase_snapshot_broker_status_by_id()` wraps the orders cache fetch in `asyncio.wait_for(timeout=10.0)`. On timeout, returns empty dict `{}`; chase reconcile treats missing order IDs as "keep OPEN". Prevents `/chases/active` panel from lock-starving when broker fetch hangs. Next poll (3s default) attempts fresh snapshot.
 
 **I29 — Frontend chase polling guard**: `ChaseCard.svelte` includes in-flight `_fetching` flag. `visibleInterval` callback calls `_poll()` which silently drops concurrent polls while one is in-flight. Prevents request starvation when browser polls faster than API responds (e.g., when fetch timeout > polling interval).
+
+**I30 — Snapshot quantity read path does not apply multiplier** (Aug 2026): `daily_book.qty` is written in CONTRACTS by the snapshot write path (`_positions_qty_fields`); the read seam (`build_row_from_snapshot_raw()`) must NOT apply any multiplier. Prior bug: MCX read applied lot_size multiplier twice, resulting in `qty = contracts × lot_size²` (e.g. 300 contracts × 100 = 30,000). Fix: `effective_qty = qty or 0` (no scaling). This affects closed-hours position grids, NavStrip P slot 1 (quantity), and NavStrip P slot 3 (NAV).
 
 ---
 
