@@ -1769,27 +1769,28 @@ class TestChainQuotesNoneKeyGuard:
 
 
 class TestChainQuotesTimeout30s:
-    """Fix A1: broker.quote timeout raised from 10s to 30s."""
+    """Fix 3: broker.quote timeout reduced from 30s to 12s."""
 
-    def test_timeout_value_is_30s(self):
-        """The timeout constant in _chain_quotes_batch_quote must be 30.0 seconds.
-        Read the source and check the literal value."""
+    def test_timeout_value_is_12s(self):
+        """The timeout constant in _chain_quotes_batch_quote must be 12.0 seconds
+        (reduced from 30.0 per Fix 3)."""
         import inspect
         from backend.api.routes.options import _chain_quotes_batch_quote
 
         src = inspect.getsource(_chain_quotes_batch_quote)
-        assert "timeout=30.0" in src, (
-            "broker.quote timeout must be 30.0s in _chain_quotes_batch_quote"
+        assert "timeout=12.0" in src, (
+            "broker.quote timeout must be 12.0s in _chain_quotes_batch_quote "
+            "(reduced from 30.0 per Fix 3)"
         )
-        assert "timeout=10.0" not in src, (
-            "Old 10s timeout must be removed from _chain_quotes_batch_quote"
+        assert "timeout=30.0" not in src, (
+            "Old 30s timeout must be removed from _chain_quotes_batch_quote"
         )
 
-    def test_timeout_warning_message_says_30s(self):
-        """Warning log message must say '30s' not '10s'."""
+    def test_timeout_warning_message_says_12s(self):
+        """Warning log message must say '12s' not '30s'."""
         import inspect
         from backend.api.routes.options import _chain_quotes_batch_quote
 
         src = inspect.getsource(_chain_quotes_batch_quote)
-        assert "30s" in src, "Warning message must reference '30s'"
-        assert "10s" not in src, "Old '10s' reference must be removed from warning"
+        assert "12s" in src, "Warning message must reference '12s'"
+        assert "30s" not in src, "Old '30s' reference must be removed from warning"

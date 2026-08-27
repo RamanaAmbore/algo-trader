@@ -210,13 +210,14 @@ class TestPreviousCloseWrittenForAllRows:
     """
 
     def test_previous_close_set_on_row_within_epsilon(self):
-        """Row whose close_price is within epsilon of snapshot gets previous_close
-        set even though close_price is not patched.
+        """Row whose close_price is within the old epsilon of ref_close now also
+        gets close_price patched (Fix 6 removed the epsilon guard).
 
-        Row A: close_price=145.0, ref_close=145.003 → within epsilon (0.005),
-               close_price unchanged BUT previous_close must be 145.003.
-        Row B: close_price=1500.0, ref_close=1480.0 → > epsilon,
-               both close_price and previous_close patched to 1480.0.
+        Row A: close_price=145.0, ref_close=145.003 → previously within epsilon
+               and skipped; NOW close_price must be patched to 145.003, and
+               previous_close must be 145.003.
+        Row B: close_price=1500.0, ref_close=1480.0 → always patched.
+               Both close_price and previous_close set to 1480.0.
         """
         df = pd.concat([
             _make_raw_df(account="T1", symbol="REL",
@@ -226,24 +227,23 @@ class TestPreviousCloseWrittenForAllRows:
         ], ignore_index=True)
 
         df = _run_override(df, [
-            ("T1", "REL", 145.003),   # within epsilon — no close_price patch
-            ("T1", "INFY", 1480.0),   # > epsilon — close_price patched
+            ("T1", "REL", 145.003),   # was within epsilon; Fix 6: now always patched
+            ("T1", "INFY", 1480.0),   # always patched
         ])
 
         row_rel = df[df["tradingsymbol"] == "REL"].iloc[0]
         row_infy = df[df["tradingsymbol"] == "INFY"].iloc[0]
 
-        # REL: close_price must NOT be patched (within epsilon)
-        assert abs(row_rel["close_price"] - 145.0) < 0.001, (
-            "close_price must not change when within epsilon"
+        # REL: Fix 6 — close_price MUST now be patched to ref_close (no epsilon guard).
+        assert abs(row_rel["close_price"] - 145.003) < 0.001, (
+            "close_price must be set to ref_close even when diff < 0.005 (Fix 6 removed epsilon guard)"
         )
-        # REL: but previous_close MUST be set (independent write)
+        # REL: previous_close must also be set.
         assert abs(row_rel["previous_close"] - 145.003) < 0.001, (
-            f"previous_close must be written even when close_price is NOT patched, "
-            f"got {row_rel['previous_close']}"
+            f"previous_close must be written for row REL, got {row_rel['previous_close']}"
         )
 
-        # INFY: both patched
+        # INFY: both patched.
         assert abs(row_infy["close_price"] - 1480.0) < 0.001
         assert abs(row_infy["previous_close"] - 1480.0) < 0.001
 

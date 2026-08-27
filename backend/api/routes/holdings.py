@@ -214,6 +214,13 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
     and reconstruct a HoldingsResponse from it.
 
     Returns None when no snapshot exists or the DB query fails.
+
+    After building the initial HoldingRow list, `_override_stale_close_for_holdings`
+    is applied via a minimal DataFrame so that `previous_close` (and `close_price`)
+    reflect the actual settlement LTP from daily_book rather than the potentially
+    stale value stored in the snapshot row's `previous_close` column.  This ensures
+    the snapshot path and the broker path use the same canonical prior-session
+    reference price.
     """
     raw_rows = await _query_holdings_snapshot_rows()
     if not raw_rows:
@@ -221,23 +228,60 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
 
     snap_captured_at: str = raw_rows[0][9].isoformat() if raw_rows[0][9] else ""
 
+    rows: list[HoldingRow] = []
+    for raw_row in raw_rows:
+        row, _, _, _, _ = _build_holding_row_from_snapshot(raw_row)
+        rows.append(row)
+
+    # Apply the same close-price override that runs on the broker path so
+    # previous_close and day_change_val in the snapshot path reflect the
+    # real prior-session settlement LTP, not the potentially drifted value
+    # stored in daily_book.previous_close (Kite BHAV-copy).
+    raw_df = pd.DataFrame([
+        {
+            "account":        r.account,
+            "tradingsymbol":  r.tradingsymbol,
+            "close_price":    r.close_price,
+            "last_price":     r.last_price,
+            "quantity":       r.quantity,
+            "day_change_val": r.day_change_val,
+            "day_change":     r.day_change_val / r.quantity if r.quantity else 0.0,
+            "previous_close": r.previous_close,
+        }
+        for r in rows
+    ])
+    if not raw_df.empty:
+        await _override_stale_close_for_holdings(raw_df)
+        # Rebuild rows with the patched previous_close + day_change_val values.
+        import msgspec as _msc
+        patched_rows: list[HoldingRow] = []
+        for idx, row in enumerate(rows):
+            new_prev_close = float(raw_df.at[idx, "previous_close"])
+            new_dcv        = float(raw_df.at[idx, "day_change_val"])
+            new_close      = float(raw_df.at[idx, "close_price"])
+            # Recompute day_change_percentage from the patched values.
+            qty = row.quantity
+            prev_val = abs(new_prev_close * qty) if new_prev_close > 0 and qty else 0.0
+            new_dcp = (new_dcv / prev_val * 100.0) if prev_val else row.day_change_percentage
+            patched_rows.append(_msc.structs.replace(
+                row,
+                previous_close=new_prev_close,
+                close_price=new_close,
+                day_change_val=new_dcv,
+                day_change_percentage=new_dcp,
+            ))
+        rows = patched_rows
+
     inv_by_account: dict[str, float] = {}
     cur_by_account: dict[str, float] = {}
     pnl_by_account: dict[str, float] = {}
     dcv_by_account: dict[str, float] = {}
-
-    rows: list[HoldingRow] = []
-    for raw_row in raw_rows:
-        row, inv_val, cur_val, total_pnl_f, day_pnl_f = (
-            _build_holding_row_from_snapshot(raw_row)
-        )
-        rows.append(row)
-
+    for row in rows:
         acct = row.account
-        inv_by_account[acct] = inv_by_account.get(acct, 0.0) + inv_val
-        cur_by_account[acct] = cur_by_account.get(acct, 0.0) + cur_val
-        pnl_by_account[acct] = pnl_by_account.get(acct, 0.0) + total_pnl_f
-        dcv_by_account[acct] = dcv_by_account.get(acct, 0.0) + day_pnl_f
+        inv_by_account[acct] = inv_by_account.get(acct, 0.0) + row.inv_val
+        cur_by_account[acct] = cur_by_account.get(acct, 0.0) + row.cur_val
+        pnl_by_account[acct] = pnl_by_account.get(acct, 0.0) + row.pnl
+        dcv_by_account[acct] = dcv_by_account.get(acct, 0.0) + row.day_change_val
 
     summary = _build_holdings_summary(
         inv_by_account, cur_by_account, pnl_by_account, dcv_by_account
@@ -426,15 +470,15 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
         ref_close = snapshot_map.get(key)
         if ref_close is None:
             continue
-        # Always write previous_close regardless of whether close_price needs patching.
+        # Always write previous_close unconditionally.
         raw.at[idx, 'previous_close'] = ref_close
-        try:
-            current_close = float(raw.at[idx, 'close_price']) \
-                if pd.notna(raw.at[idx, 'close_price']) else 0.0
-        except (TypeError, ValueError):
-            current_close = 0.0
-        if abs(ref_close - current_close) <= 0.005:
-            continue
+        # Always sync close_price to ref_close — unconditional, no epsilon guard.
+        # This ensures _recompute_day_change_pct (which uses close_price as the
+        # percentage denominator) is always consistent with day_change_val
+        # (which uses previous_close = ref_close).  The old epsilon guard
+        # (abs(ref_close - current_close) <= 0.005) silently skipped rows where
+        # Kite's BHAV-copy value was close to the snapshot — causing the
+        # denominator and numerator to reference different prices.
         raw.at[idx, 'close_price'] = ref_close
         patched_indices.append(idx)
 
@@ -847,6 +891,7 @@ class HoldingsController(Controller):
                     broker_fn=_broker_fn,
                     fallback_to_snapshot_on_broker_error=True,
                     route_key="holdings",
+                    segment_exchanges=["NSE"],
                 )
                 if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
                     # Market closed — snapshot path: scope + mask then return.

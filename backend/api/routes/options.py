@@ -2267,11 +2267,11 @@ async def _chain_quotes_batch_quote(
         try:
             quote_resp = await asyncio.wait_for(
                 asyncio.to_thread(get_market_data_broker().quote, keys),
-                timeout=30.0,
+                timeout=12.0,
             ) or {}
         except asyncio.TimeoutError:
             logger.warning(
-                "[chain-quotes] broker.quote timed out after 30s for %d keys", len(keys)
+                "[chain-quotes] broker.quote timed out after 12s for %d keys", len(keys)
             )
             quote_resp = {}
         except Exception as e:

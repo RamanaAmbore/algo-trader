@@ -507,3 +507,152 @@ def test_holdings_passes_route_key():
         "holdings.py must pass route_key='holdings' to closed_hours_or_broker "
         "for the anti-flicker stale-live cache to work"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 — _any_segment_open exchanges filter
+# ---------------------------------------------------------------------------
+
+def _make_seg_cfg(holiday_exchange: str, hours_start: str = "09:15",
+                  hours_end: str = "15:30") -> dict:
+    return {
+        "holiday_exchange": holiday_exchange,
+        "hours_start": hours_start,
+        "hours_end": hours_end,
+    }
+
+
+def _fake_config_get(fake_segments: dict):
+    """Return a side_effect fn that acts like config.get(key, default)."""
+    def _get(key, default=None):
+        if key == "market_segments":
+            return fake_segments
+        return default
+    return _get
+
+
+@pytest.mark.asyncio
+async def test_any_segment_open_no_filter_returns_true_when_mcx_open():
+    """_any_segment_open(exchanges=None) returns True when MCX is open even if NSE closed."""
+    from backend.api.helpers.snapshot_gate import _any_segment_open
+    from unittest.mock import MagicMock
+
+    nse_cfg = _make_seg_cfg("NSE", "09:15", "15:30")
+    mcx_cfg = _make_seg_cfg("MCX", "09:00", "23:30")
+    fake_segments = {"equity": nse_cfg, "commodity": mcx_cfg}
+
+    def _mock_segment_is_open(seg_cfg, now):
+        exch = seg_cfg.get("holiday_exchange", "NSE").upper()
+        # Simulate NSE closed, MCX open.
+        return exch == "MCX"
+
+    mock_cfg = MagicMock()
+    mock_cfg.get.side_effect = _fake_config_get(fake_segments)
+
+    with patch("backend.shared.helpers.utils.config", mock_cfg), \
+         patch("backend.shared.helpers.date_time_utils._segment_is_open",
+               side_effect=_mock_segment_is_open):
+        result = await asyncio.to_thread(_any_segment_open, None)
+
+    assert result is True, (
+        "_any_segment_open(None) must return True when at least one segment (MCX) is open"
+    )
+
+
+@pytest.mark.asyncio
+async def test_any_segment_open_nse_filter_returns_false_when_nse_closed():
+    """_any_segment_open(exchanges=['NSE']) returns False when NSE is closed."""
+    from backend.api.helpers.snapshot_gate import _any_segment_open
+    from unittest.mock import MagicMock
+
+    nse_cfg = _make_seg_cfg("NSE", "09:15", "15:30")
+    mcx_cfg = _make_seg_cfg("MCX", "09:00", "23:30")
+    fake_segments = {"equity": nse_cfg, "commodity": mcx_cfg}
+
+    def _mock_segment_is_open(seg_cfg, now):
+        exch = seg_cfg.get("holiday_exchange", "NSE").upper()
+        return exch == "MCX"  # NSE closed, MCX open
+
+    mock_cfg = MagicMock()
+    mock_cfg.get.side_effect = _fake_config_get(fake_segments)
+
+    with patch("backend.shared.helpers.utils.config", mock_cfg), \
+         patch("backend.shared.helpers.date_time_utils._segment_is_open",
+               side_effect=_mock_segment_is_open):
+        result = await asyncio.to_thread(_any_segment_open, ["NSE"])
+
+    assert result is False, (
+        "_any_segment_open(['NSE']) must return False when NSE is closed "
+        "even if MCX is open"
+    )
+
+
+@pytest.mark.asyncio
+async def test_any_segment_open_nse_filter_returns_true_when_nse_open():
+    """_any_segment_open(exchanges=['NSE']) returns True when NSE is open."""
+    from backend.api.helpers.snapshot_gate import _any_segment_open
+    from unittest.mock import MagicMock
+
+    nse_cfg = _make_seg_cfg("NSE", "09:15", "15:30")
+    mcx_cfg = _make_seg_cfg("MCX", "09:00", "23:30")
+    fake_segments = {"equity": nse_cfg, "commodity": mcx_cfg}
+
+    def _mock_segment_is_open(seg_cfg, now):
+        return True  # Both open
+
+    mock_cfg = MagicMock()
+    mock_cfg.get.side_effect = _fake_config_get(fake_segments)
+
+    with patch("backend.shared.helpers.utils.config", mock_cfg), \
+         patch("backend.shared.helpers.date_time_utils._segment_is_open",
+               side_effect=_mock_segment_is_open):
+        result = await asyncio.to_thread(_any_segment_open, ["NSE"])
+
+    assert result is True, (
+        "_any_segment_open(['NSE']) must return True when NSE is open"
+    )
+
+
+@pytest.mark.asyncio
+async def test_closed_hours_or_broker_nse_filter_fires_at_nse_close():
+    """closed_hours_or_broker with segment_exchanges=['NSE'] must use the
+    NSE-only open check — when NSE is closed it must return snapshot even
+    if MCX would be open under the unfiltered check."""
+    from backend.api.helpers.snapshot_gate import closed_hours_or_broker
+
+    snapshot_sentinel = object()
+    broker_called = False
+
+    async def _snap():
+        return snapshot_sentinel
+
+    async def _live():
+        nonlocal broker_called
+        broker_called = True
+        return object()
+
+    # NSE closed → _any_segment_open(["NSE"]) returns False → snapshot path.
+    with patch(
+        "backend.api.helpers.snapshot_gate._any_segment_open",
+        return_value=False,
+    ):
+        data, source = await closed_hours_or_broker(
+            "NSE", _snap, _live,
+            segment_exchanges=["NSE"],
+        )
+
+    assert source == "snapshot"
+    assert data is snapshot_sentinel
+    assert not broker_called, "broker_fn must not be called when NSE is closed"
+
+
+def test_holdings_passes_segment_exchanges_nse():
+    """holdings.py must pass segment_exchanges=['NSE'] to closed_hours_or_broker."""
+    src = _src(_HOL_SRC)
+    assert "segment_exchanges" in src, (
+        "holdings.py must pass segment_exchanges kwarg to closed_hours_or_broker "
+        "so the gate fires at NSE close instead of MCX close"
+    )
+    assert "NSE" in src, (
+        "holdings.py must restrict to NSE segments for the closed_hours gate"
+    )

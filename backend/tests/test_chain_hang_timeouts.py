@@ -291,3 +291,83 @@ async def test_resolve_token_for_broker_returns_none_when_all_exchanges_timeout(
 
     assert token is None
     instruments_cache_put.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — _chain_quotes_batch_quote timeout 30s → 12s
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_chain_quotes_batch_quote_timeout_is_12s():
+    """_chain_quotes_batch_quote must use timeout=12.0 (reduced from 30.0)."""
+    from backend.api.routes.options import _chain_quotes_batch_quote
+
+    captured_timeout: list[float] = []
+
+    async def _recording_wait_for(coro, timeout=None, **kw):
+        captured_timeout.append(timeout)
+        raise asyncio.TimeoutError()
+
+    sym_by_strike = {
+        24000.0: {
+            "CE": {"sym": "NIFTY26AUG24000CE", "ls": 50, "e": "NFO"},
+            "PE": {"sym": "NIFTY26AUG24000PE", "ls": 50, "e": "NFO"},
+        }
+    }
+    window_strikes = [24000.0]
+
+    mock_broker = MagicMock()
+    with patch("backend.brokers.registry.get_market_data_broker", return_value=mock_broker), \
+         patch("backend.api.routes.options.asyncio.wait_for",
+               side_effect=_recording_wait_for):
+        quote_resp, key_meta = await _chain_quotes_batch_quote(
+            sym_by_strike, "NIFTY", "2026-08-28"
+        )
+
+    assert quote_resp == {}, "timeout must yield empty quote_resp"
+    assert len(captured_timeout) == 1, "asyncio.wait_for should have been called once"
+    assert captured_timeout[0] == 12.0, (
+        f"Expected timeout=12.0 but got {captured_timeout[0]!r} — "
+        "fix 3 reduced the chain-quotes timeout from 30s to 12s"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chain_quotes_batch_quote_timeout_warning_says_12s():
+    """Warning log for _chain_quotes_batch_quote timeout must say '12s', not '30s'."""
+    import logging
+    from backend.api.routes import options as _options_mod
+
+    sym_by_strike = {
+        24000.0: {
+            "CE": {"sym": "NIFTY26AUG24000CE", "ls": 50, "e": "NFO"},
+            "PE": {"sym": "NIFTY26AUG24000PE", "ls": 50, "e": "NFO"},
+        }
+    }
+    mock_broker = MagicMock()
+
+    log_records: list[str] = []
+
+    class _CapHandler(logging.Handler):
+        def emit(self, record):
+            log_records.append(record.getMessage())
+
+    handler = _CapHandler()
+    _logger = logging.getLogger(_options_mod.__name__)
+    _logger.addHandler(handler)
+    _logger.setLevel(logging.WARNING)
+    try:
+        with patch("backend.brokers.registry.get_market_data_broker", return_value=mock_broker), \
+             patch("backend.api.routes.options.asyncio.wait_for",
+                   side_effect=asyncio.TimeoutError()):
+            await _options_mod._chain_quotes_batch_quote(
+                sym_by_strike, "NIFTY", "2026-08-28"
+            )
+    finally:
+        _logger.removeHandler(handler)
+
+    timeout_msgs = [m for m in log_records if "timed out" in m.lower()]
+    assert timeout_msgs, "Expected a timeout warning message to be logged"
+    assert any("12s" in m for m in timeout_msgs), (
+        f"Timeout warning must say '12s', got: {timeout_msgs}"
+    )

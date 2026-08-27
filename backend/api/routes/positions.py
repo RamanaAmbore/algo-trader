@@ -366,6 +366,54 @@ def _replace_row_price(r, live_ltp: float, exchange_open: bool, snap_ltp: "float
     return _msc.structs.replace(r, **replace_kwargs)
 
 
+async def _fetch_ref_close_map(
+    closed_pairs: list[tuple[str, str]],
+    kind: str,
+) -> dict[tuple[str, str], float]:
+    """Query daily_book for the prior-session settlement LTP for the given
+    (account, symbol) pairs.  Only called for rows whose exchange is
+    currently closed, to avoid DB hits for live MCX rows.
+
+    Uses the same cutoff logic as `_override_stale_close_from_snapshot`
+    (captured_at < today_08:00 IST) so the reference price is the true
+    prior-session settlement LTP, not any mid-session or same-session value.
+
+    Returns {} on error so callers fall through to the existing broker value.
+    """
+    if not closed_pairs:
+        return {}
+
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+    from datetime import timedelta
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    now_ist = timestamp_indian()
+    today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_ist_8am = today_ist_midnight + timedelta(hours=8)
+    cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
+
+    out: dict[tuple[str, str], float] = {}
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql_text("""
+                SELECT DISTINCT ON (account, symbol)
+                       account, symbol, ltp AS ref_close
+                FROM daily_book
+                WHERE kind = :kind
+                  AND ltp IS NOT NULL AND ltp > 0
+                  AND captured_at < :cutoff
+                ORDER BY account, symbol, captured_at DESC
+            """), {"kind": kind, "cutoff": cutoff})
+            for account, symbol, ref_close in result.all():
+                v = float(ref_close) if ref_close is not None else 0.0
+                if v > 0:
+                    out[(str(account), str(symbol))] = v
+    except Exception as exc:
+        logger.warning(f"_fetch_ref_close_map({kind}) failed: {exc}")
+    return out
+
+
 async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> list:
     """Per-exchange close-snapshot overlay under the unified animation model
     (Jul 2026 refactor).
@@ -379,6 +427,9 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
       3. mapping resolver outputs back into the msgspec Struct row
       4. holdings-only recompute of cur_val when the snapshot LTP wins
          (positions' pnl is broker-owned and stays as-is)
+      5. (positions only) day_change_val / day_change_percentage / close_price
+         overlay for closed-exchange rows using the prior-session settlement
+         LTP from daily_book so the values are consistent with the snapshot path
 
     The `settled` flag we pass to the resolver is a presence heuristic:
     when the snapshot map has an LTP for this key we treat it as settled
@@ -437,6 +488,20 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
     # Some rows are on closed exchanges — pull the snapshot map ONCE and
     # let the resolver decide per-row.
     snap_map = await latest_snapshot_ltp_map(kind)
+
+    # For positions, also fetch the prior-session settlement LTP (ref_close)
+    # for closed-exchange rows so day_change_val / day_change_pct / close_price
+    # can be overlaid consistently with the snapshot path.  Open-exchange
+    # rows (e.g. MCX when NSE is closed) are NOT included in this query.
+    closed_pairs: list[tuple[str, str]] = [
+        (str(getattr(r, "account", "")), str(getattr(r, "tradingsymbol", "")))
+        for r in rows
+        if _closed(getattr(r, "exchange", "")) and not _is_settled_flat(r)
+    ]
+    ref_close_map: dict[tuple[str, str], float] = {}
+    if kind == "positions" and closed_pairs:
+        ref_close_map = await _fetch_ref_close_map(closed_pairs, kind)
+
     out = []
     for r in rows:
         exch = getattr(r, "exchange", "")
@@ -455,7 +520,30 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
 
         key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
         snap_ltp = snap_map.get(key)
-        out.append(_replace_row_price(r, broker_ltp, exchange_open=False, snap_ltp=snap_ltp))
+        replaced = _replace_row_price(r, broker_ltp, exchange_open=False, snap_ltp=snap_ltp)
+
+        # Overlay day_change_val, day_change_percentage, and close_price for
+        # positions rows whose exchange is closed.  Uses the prior-session
+        # settlement LTP from daily_book so these fields agree with the
+        # snapshot path — without this, NSE-closed rows keep the broker's
+        # stale day_change values which were computed against Kite's drifted
+        # close_price.
+        if kind == "positions":
+            ref_close = ref_close_map.get(key, 0.0)
+            if ref_close > 0:
+                snap_ltp_f = float(snap_ltp) if snap_ltp is not None else broker_ltp
+                qty = int(getattr(r, "quantity", 0) or 0)
+                dcv = (snap_ltp_f - ref_close) * qty
+                prev_val = abs(ref_close * qty) if qty else 0.0
+                dcp = (dcv / prev_val * 100.0) if prev_val else 0.0
+                replaced = _msc.structs.replace(
+                    replaced,
+                    day_change_val=dcv,
+                    day_change_percentage=dcp,
+                    close_price=ref_close,
+                )
+
+        out.append(replaced)
     return out
 
 

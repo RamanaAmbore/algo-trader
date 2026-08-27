@@ -203,14 +203,43 @@ async def latest_snapshot_ltp_map(kind: str) -> dict[tuple[str, str], float]:
     return out
 
 
-def _any_segment_open() -> bool:
-    """Sync wrapper used by asyncio.to_thread."""
+def _any_segment_open(exchanges: "list[str] | None" = None) -> bool:
+    """Sync wrapper used by asyncio.to_thread.
+
+    Parameters
+    ----------
+    exchanges:
+        Optional list of exchange names (e.g. ``["NSE"]``).  When provided,
+        only segments whose ``holiday_exchange`` attribute matches one of the
+        names in the list are consulted.  ``None`` (default) checks ALL
+        configured segments (original behaviour).
+    """
     try:
         from backend.shared.helpers.date_time_utils import (
-            is_any_segment_open,
             timestamp_indian,
         )
-        return is_any_segment_open(timestamp_indian())
+        from backend.shared.helpers.utils import config as _cfg
+
+        now_ist = timestamp_indian()
+
+        if exchanges is None:
+            from backend.shared.helpers.date_time_utils import is_any_segment_open
+            return is_any_segment_open(now_ist)
+
+        # Filter to segments whose holiday_exchange is in the provided list.
+        upper_set = {e.upper() for e in exchanges}
+        from backend.shared.helpers.date_time_utils import _segment_is_open
+        segments = _cfg.get("market_segments", {}) or {}
+        for seg_cfg in segments.values():
+            exch = str((seg_cfg or {}).get("holiday_exchange", "NSE")).upper()
+            if exch not in upper_set:
+                continue
+            try:
+                if _segment_is_open(seg_cfg or {}, now_ist):
+                    return True
+            except Exception:
+                continue
+        return False
     except Exception:
         # fail-open: if we cannot determine market state, assume open so
         # the live broker path runs and the operator sees fresh data.
@@ -224,6 +253,7 @@ async def closed_hours_or_broker(
     *,
     fallback_to_snapshot_on_broker_error: bool = True,
     route_key: str = "",
+    segment_exchanges: "list[str] | None" = None,
 ) -> tuple[T, str]:
     """Return ``(data, source)`` for a data route.
 
@@ -253,6 +283,13 @@ async def closed_hours_or_broker(
         'holdings').  Enables the anti-flicker stale-live cache.  When
         empty (default) the cache is bypassed and the original
         snapshot-fallback behaviour applies.
+    segment_exchanges:
+        Optional list of exchange names to restrict the market-open check
+        (e.g. ``["NSE"]``).  When provided, only segments whose
+        ``holiday_exchange`` matches are consulted, so NSE-specific routes
+        fire their snapshot at NSE close (15:30 IST) instead of waiting
+        for MCX to close (23:30 IST).  ``None`` (default) uses all
+        segments — the original behaviour.
 
     Returns
     -------
@@ -271,7 +308,7 @@ async def closed_hours_or_broker(
     * If snapshot_fn raises during market-closed hours, the exception
       propagates (no silent swallow of DB errors).
     """
-    market_open: bool = await asyncio.to_thread(_any_segment_open)
+    market_open: bool = await asyncio.to_thread(_any_segment_open, segment_exchanges)
 
     if not market_open:
         # Market is closed — NEVER call broker; return snapshot directly.
