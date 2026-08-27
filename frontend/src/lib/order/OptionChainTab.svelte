@@ -605,6 +605,7 @@
       // Cancel any in-flight prices fetch for the old expiry.
       _pricesAbort?.abort();
       _pricesAbort = null;
+      _pricesFetching = false;  // clear guard so new-expiry load isn't blocked
       if (!chainUnderlying || !chainExpiry) { chainQuotesMap = null; chainQuotesKey = ''; return; }
       const key = `${chainUnderlying.toUpperCase()}|${chainExpiry}`;
       if (key !== chainQuotesKey) { chainQuotesMap = null; chainQuotesKey = key; }

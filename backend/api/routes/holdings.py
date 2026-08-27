@@ -118,8 +118,8 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     # pnl_percentage: pnl / |avg × qty| × 100
     # (inv_val = avg_cost_f × qty_i, so use that directly)
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-    # `previous_close` is frozen by COALESCE on the first daily UPSERT and
-    # never overwritten — it is the official prior-session settlement price.
+    # `previous_close` is the rolling-shift of the prior daily_book.ltp set at
+    # each UPSERT — it holds the prior-session settlement price (pre-08:00).
     # `prev_ltp` is the most-recent batch LTP and converges toward the current
     # LTP during a session, which would make day_change ≈ 0. Use
     # `previous_close` as the primary reference and fall back to `prev_ltp`
@@ -543,11 +543,18 @@ def _hold_tag_closed_row(r, snap_ltp, _msc) -> object:
         "current_price": price if price is not None else broker_ltp,
         "is_animating": animating,
     }
-    # On settled path — overlay last_price + recompute cur_val.
+    # On settled path — overlay last_price + recompute cur_val + day_change_val.
     if has_snapshot and price is not None:
         qty = int(getattr(r, "quantity", 0) or getattr(r, "opening_quantity", 0))
-        replace_kwargs["last_price"] = float(price)
-        replace_kwargs["cur_val"] = float(price) * qty
+        snap_price = float(price)
+        close_px = float(getattr(r, "close_price", 0.0) or 0.0)
+        replace_kwargs["last_price"] = snap_price
+        replace_kwargs["cur_val"] = snap_price * qty
+        if close_px > 0 and qty != 0:
+            dcv = (snap_price - close_px) * qty
+            replace_kwargs["day_change_val"] = dcv
+            replace_kwargs["day_change"] = dcv / qty
+            replace_kwargs["day_change_percentage"] = dcv / abs(close_px * qty) * 100
     return _msc.structs.replace(r, **replace_kwargs)
 
 

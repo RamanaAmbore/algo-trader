@@ -394,17 +394,23 @@ async def _fetch_ref_close_map(
     cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
 
     out: dict[tuple[str, str], float] = {}
+    # Build IN-list filter to avoid scanning all positions rows.
+    pair_filter = " AND (account, symbol) IN :pairs" if closed_pairs else ""
+    params: dict = {"kind": kind, "cutoff": cutoff}
+    if closed_pairs:
+        params["pairs"] = tuple(closed_pairs)
     try:
         async with async_session() as session:
-            result = await session.execute(_sql_text("""
+            result = await session.execute(_sql_text(f"""
                 SELECT DISTINCT ON (account, symbol)
                        account, symbol, ltp AS ref_close
                 FROM daily_book
                 WHERE kind = :kind
                   AND ltp IS NOT NULL AND ltp > 0
                   AND captured_at < :cutoff
+                  {pair_filter}
                 ORDER BY account, symbol, captured_at DESC
-            """), {"kind": kind, "cutoff": cutoff})
+            """), params)
             for account, symbol, ref_close in result.all():
                 v = float(ref_close) if ref_close is not None else 0.0
                 if v > 0:
