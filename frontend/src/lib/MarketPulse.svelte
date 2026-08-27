@@ -714,7 +714,7 @@
     const n = _bookChangedVal;
     if (n <= _pulseBookCounter) return;
     _pulseBookCounter = n;
-    loadPulse();
+    loadPulse({ force: true });
   });
   const _knownBrokerAccounts = $derived(_connStatusSnap.accounts ?? []);
   // Latches when the Account seed has firmed up after the broker
