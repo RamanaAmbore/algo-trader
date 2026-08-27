@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.20 — 2026-08-26  
+**Version**: 1.21 — 2026-08-26  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -801,13 +801,17 @@ the function updated `day_change_val` and `day_change` but left `pnl` and `cur_v
 the invested amount (`inv_val`) instead of current market value when LTP was first patched.
 
 **Fix (Aug 2026, commit bad82021)**: After patching `last_price`, the function now also
-recomputes `pnl` and `cur_val` on the same rows:
+recomputes `pnl`, `pnl_per_share`, and `cur_val` on the same rows:
 
 ```python
 if 'average_price' in raw.columns and 'pnl' in raw.columns:
     _avg_p = pd.to_numeric(raw.loc[_sel, 'average_price'], errors='coerce').fillna(0)
     _pnl_p = (_ltp_p - _avg_p) * _qty_p
     raw.loc[_sel, 'pnl'] = _pnl_p.where(_ltp_p > 0, raw.loc[_sel, 'pnl'])
+    if 'pnl_per_share' in raw.columns:
+        raw.loc[_sel, 'pnl_per_share'] = (
+            _pnl_p / _qty_p.replace(0, float('nan'))
+        ).fillna(0).where(_ltp_p > 0, raw.loc[_sel, 'pnl_per_share'])
     if 'inv_val' in raw.columns and 'cur_val' in raw.columns:
         _inv_p2 = pd.to_numeric(raw.loc[_sel, 'inv_val'], errors='coerce').fillna(0)
         raw.loc[_sel, 'cur_val'] = (_inv_p2 + raw.loc[_sel, 'pnl']).where(
@@ -815,8 +819,8 @@ if 'average_price' in raw.columns and 'pnl' in raw.columns:
         )
 ```
 
-This ensures the API response is internally consistent: `last_price`, `pnl`, and `cur_val`
-all reflect the same fresh LTP immediately after the patch.
+This ensures the API response is internally consistent: `last_price`, `pnl`, `pnl_per_share`, 
+and `cur_val` all reflect the same fresh LTP immediately after the patch.
 
 ### Broker pnl zero-trust policy
 
@@ -1291,7 +1295,16 @@ check stops obviously broken plans early with a diagnostic message.
 |---|---|---|---|
 | Kite | All | — | No (no-op default) |
 | Dhan | NSE, BSE, NFO, BFO, CDS | MCX, NCO | `ValueError` |
-| Groww | NSE, BSE, NFO, BFO, CDS | MCX, NCO | `ValueError` |
+| Groww | NSE, BSE, NFO, BFO, CDS, NCO | MCX | `ValueError` |
+
+**Groww NCO support** (Aug 2026): Groww adapter maps `"NCO"` (National Commodity Options) in 
+`_EXCHANGE_TO_GROWW` → `"MCX"` and `_SEGMENT_TO_GROWW` → `"COMMODITY"`, placing it in the 
+same tier as MCX. However, Groww GTT does not support NCO — `_GROWW_GTT_UNSUPPORTED` includes 
+both MCX and NCO.
+
+**Dhan GTT NFO/BFO qty ceiling** (Aug 2026): `dhan.py:place_gtt` enforces a 50,000-contract 
+qty ceiling for NFO and BFO legs (constant `_DHAN_GTT_MAX_QTY = 50_000`). Raises `ValueError` 
+on breach to catch untranslated lots-vs-contracts bugs before they reach the Dhan API.
 
 **MCX/Dhan fail-fast in `apply_template_to_order`** (commit b8b1214c): After resolving `caps = capabilities_for(account)`, if `caps.gtt_supports_mcx=False` and `parent_exchange` is MCX or NCO, the function returns an `AttachResult` with errors immediately — before lot-size resolution, plan resolution, or any broker call. Fires `_fire_attach_fail_alert`. `guard_alert_fired=True` suppresses the duplicate alert at the bottom of the function.
 
