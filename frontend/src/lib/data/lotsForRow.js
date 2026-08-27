@@ -34,7 +34,7 @@ function _normalizeQtys(row, itype) {
   const qPosRaw  = row.qty_pos != null  ? row.qty_pos  : (isDerivative ? row.quantity : 0);
   const qHoldRaw = row.qty_hold != null ? row.qty_hold : (isEquityLike  ? row.quantity : 0);
   return {
-    qPos:  Math.abs(Number(qPosRaw)  || 0),
+    qPos:  Number(qPosRaw)  || 0,
     qHold: Math.abs(Number(qHoldRaw) || 0),
   };
 }
@@ -62,9 +62,9 @@ function _computeLots(sym, itype, qPos, qHold, inst, row) {
   if (isDerivative) {
     // Fast path: backend-supplied lot count (available when API returns
     // the new `lots` field — avoids division and instruments-cache miss).
-    if (row?.lots != null) return Math.abs(Number(row.lots) || 0);
+    if (row?.lots != null) return Number(row.lots) || 0;
     const lot = Number(inst?.ls) || 0;
-    return (lot > 0 && qPos > 0) ? qPos / lot : 0;
+    return (lot > 0 && qPos !== 0) ? qPos / lot : 0;
   }
   const lot = getOptionUnderlyingLot(sym);
   return (lot > 0 && qHold > 0) ? qHold / lot : 0;

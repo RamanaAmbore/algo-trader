@@ -97,11 +97,10 @@ describe('lotsForRow — derivative row, `lots` field present (fast path)', () =
     expect(lotsForRow(row)).toBe(5);
   });
 
-  it('uses Math.abs so negative lots (short positions) are non-negative display', () => {
+  it('preserves sign for short positions — negative lots stays negative', () => {
     _getInstrument.mockReturnValue({ t: 'CE', ls: 50 });
-    // qty_pos path uses Math.abs; `lots` fast path also applies Math.abs
     const row = { tradingsymbol: 'NIFTY24JAN22000CE', quantity: -100, lots: -2 };
-    expect(lotsForRow(row)).toBe(2);
+    expect(lotsForRow(row)).toBe(-2);
   });
 });
 
@@ -134,6 +133,21 @@ describe('lotsForRow — derivative row, `lots` absent (fallback: quantity / lot
     const row = { tradingsymbol: 'BANKNIFTY24JAN46000PE', qty_pos: 150, qty_hold: 0 };
     // 150 / 75 = 2 lots
     expect(lotsForRow(row)).toBe(2);
+  });
+});
+
+describe('lotsForRow — short positions (negative qty)', () => {
+  it('returns negative lots via fallback path when qty_pos is negative and lots absent', () => {
+    _getInstrument.mockReturnValue({ t: 'PE', ls: 50 });
+    const row = { tradingsymbol: 'NIFTY24JAN21000PE', qty_pos: -100 };
+    // -100 / 50 = -2 lots
+    expect(lotsForRow(row)).toBe(-2);
+  });
+
+  it('returns negative lots via fast path when lots field is negative', () => {
+    _getInstrument.mockReturnValue({ t: 'FUT', ls: 250 });
+    const row = { tradingsymbol: 'NIFTY24JANFUT', quantity: -250, lots: -1 };
+    expect(lotsForRow(row)).toBe(-1);
   });
 });
 
@@ -172,4 +186,6 @@ describe('fmtLots', () => {
   it('returns "2" for integer 2', () => { expect(fmtLots(2)).toBe('2'); });
   it('returns "1.5" for 1.5', () => { expect(fmtLots(1.5)).toBe('1.5'); });
   it('returns "10" for integer 10', () => { expect(fmtLots(10)).toBe('10'); });
+  it('returns "-2" for -2 (negative integer)', () => { expect(fmtLots(-2)).toBe('-2'); });
+  it('returns "-1.5" for -1.5 (negative fraction)', () => { expect(fmtLots(-1.5)).toBe('-1.5'); });
 });

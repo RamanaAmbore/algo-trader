@@ -3234,7 +3234,7 @@
     if (row.src?.p) {
       const q = Number(row.qty_pos) || 0;
       const _pLots = lotsForRow(row);
-      const _pLabel = (_pLots != null && _pLots > 0) ? `${fmtLots(_pLots)}L` : qtyFmt(q);
+      const _pLabel = (_pLots != null && _pLots !== 0) ? `${fmtLots(_pLots)}L` : qtyFmt(q);
       badges.push(`<span class="sym-badge badge-p" title="Position (${qtyFmt(q)} contracts)">P ${_pLabel}</span>`);
     }
     if (row.src?.h) {
