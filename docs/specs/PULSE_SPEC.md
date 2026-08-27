@@ -263,13 +263,18 @@ column for optimal scanning.
 **Rationale**: Operators scanning the chain quickly locate buy/sell actions in the same 
 visual line as the strike price, eliminating eye travel to distant button zones.
 
-**Quote fetch timeout** (`OptionChainTab.svelte`):
-- `chain_quotes` API calls wrapped in `asyncio.wait_for(timeout=10.0)` to prevent hangs 
-  (commit b33d056b). A broker stall no longer hangs the chain response indefinitely; 
-  times out after 10s with a warning log and returns an empty quote map.
+**Two-phase chain grid load** (`OptionChainTab.svelte` + `chain_quotes` endpoint):
+- Phase 1 (skeleton): `chain-quotes?und=X&expiry=Y` (no `prices` param) returns strike rows
+  immediately from the instruments cache — `bid=null, ask=null`. No broker call. Sub-100ms.
+  Grid renders at once; bid/ask columns show `—` placeholder.
+- Phase 2 (prices): `chain-quotes?und=X&expiry=Y&prices=1` calls `broker.quote()` and
+  overlays live bid/ask/LTP on the already-visible grid when ready (1–30s depending on
+  broker load). Uses `AbortController` — cancelled on expiry change to prevent stale overlay.
+- `asyncio.wait_for(timeout=30.0)` guards the broker quote call (increased from 10s to
+  accommodate UDS + shared rate-limiter + Kite HTTP latency under load).
+- `option_quote_key()` returning `None` for unparseable symbols is now guarded; those
+  symbols are skipped before the keys list is built.
 - Off-market gate: when markets closed, returns empty `rows: []` with populated `expiries`
-- No broker quote call made during closed hours
-- Expiry fetch includes retry logic (5s × 12 attempts) if initial fetch fails
 - `if (!chainExpiry) return;` guard prevents quote effect from firing when expiry unset
 
 ---
