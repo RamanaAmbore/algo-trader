@@ -246,17 +246,21 @@ class TestNavHoldingsConsistency:
         # All empty → non_empty is [] → returns original list
         assert all(df.empty for df in result)
 
-    def test_apply_backfill_to_list_exception_safety(self):
-        """A backfill exception returns the original frames (safety net)."""
+    def test_apply_backfill_to_list_exception_propagates(self):
+        """A backfill exception propagates — prevents caching a zero-price frame.
+
+        The old behaviour (catch + return original) has been removed.
+        _apply_backfill_to_list now re-raises so ssot_fetch does not cache
+        a corrupt/zero-price frame for the full 30s TTL window.
+        """
+        import pytest
         df = pd.DataFrame([{"a": 1}])
         with patch(
             "backend.brokers.broker_apis.backfill_market_data",
             side_effect=RuntimeError("test error"),
         ):
-            result = _apply_backfill_to_list([df])
-        # Should return the raw list, not raise
-        assert len(result) == 1
-        assert result[0] is df
+            with pytest.raises(RuntimeError, match="test error"):
+                _apply_backfill_to_list([df])
 
 
 class TestNavCurValSSoT:

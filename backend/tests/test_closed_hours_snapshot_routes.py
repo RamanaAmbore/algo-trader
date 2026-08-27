@@ -1329,12 +1329,9 @@ async def test_positions_snapshot_recomputes_day_pnl_from_prev_ltp():
 
     with (
         patch("backend.api.database.async_session", return_value=mock_session),
-        patch("backend.shared.helpers.date_time_utils.timestamp_indian") as mock_ts,
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+              return_value=datetime(2026, 8, 8, 16, 15, 0, tzinfo=timezone.utc)),
     ):
-        mock_ts_obj = MagicMock()
-        mock_ts_obj.date.return_value = today_ist
-        mock_ts_obj.replace.return_value = datetime(2026, 8, 8, 0, 0, 0, tzinfo=timezone.utc)
-        mock_ts.return_value = mock_ts_obj
         from backend.api.routes.positions import _positions_snapshot
         result = await _positions_snapshot()
 

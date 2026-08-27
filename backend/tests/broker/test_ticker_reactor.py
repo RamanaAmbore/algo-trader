@@ -6,7 +6,7 @@ Covers five quality dimensions:
   Correctness — ReactorNotRunning detection, _reactor_dead flag, start() bailout, watchdog exit
   Performance — no blocking I/O on reactor-dead code paths
   Reuse       — reactor_dead state surfaces via is_reactor_dead() + watchdog logic
-  UX          — operator sees correct log messages + system exit on watchdog
+  UX          — operator sees correct log messages + SIGTERM on watchdog (systemd restarts)
 
 Test catalogue:
 
@@ -23,10 +23,10 @@ TestStartBailsWhenReactorDead (3 tests):
   8. start() idempotent check (_started=True) still works when reactor not dead
 
 TestReactorDeadWatchdogExit (4 tests):
-  9. watchdog calls sys.exit(1) when ticker.is_reactor_dead() returns True
-  10. watchdog does NOT exit when is_reactor_dead() returns False (healthy case)
+  9. watchdog sends SIGTERM via os.kill when ticker.is_reactor_dead() returns True
+  10. watchdog does NOT send SIGTERM when is_reactor_dead() returns False (healthy case)
   11. watchdog exits before any other phase logic (reactor_dead checked first)
-  12. watchdog exits on EVERY iteration where reactor is dead, not just first
+  12. watchdog sends SIGTERM on every iteration where reactor is dead, not just first
 """
 
 from __future__ import annotations
@@ -252,15 +252,21 @@ class TestStartBailsWhenReactorDead:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestReactorDeadWatchdogExit:
-    """Verify _ticker_watchdog detects reactor-dead and exits the process."""
+    """Verify _ticker_watchdog detects reactor-dead and sends SIGTERM for systemd restart."""
 
     @pytest.mark.asyncio
     async def test_watchdog_exits_when_reactor_dead(self):
-        """watchdog should call sys.exit(1) when ticker.is_reactor_dead() returns True."""
+        """watchdog should send SIGTERM via os.kill when ticker.is_reactor_dead() returns True.
+
+        Production code calls os.kill(os.getpid(), signal.SIGTERM) so systemd
+        (Restart=always) restarts the process — NOT sys.exit().  Patching os.kill
+        prevents the live signal from killing the test process.
+        """
+        import os as _os
+        import signal as _signal
         ticker = TickerManager()
         ticker._reactor_dead = True
 
-        # Import the watchdog after setting up mocks
         from backend.brokers.service.app import _ticker_watchdog
 
         async def sleep_noop(*args, **kwargs):
@@ -269,21 +275,16 @@ class TestReactorDeadWatchdogExit:
         with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
              patch('asyncio.sleep', side_effect=sleep_noop), \
              patch('backend.brokers.service.app.logger'), \
-             patch('sys.exit', side_effect=SystemExit(1)) as mock_exit:
+             patch('os.kill') as mock_kill:
 
-            # Run watchdog — should exit on first iteration
-            try:
-                await asyncio.wait_for(_ticker_watchdog(), timeout=2.0)
-            except (SystemExit, asyncio.TimeoutError):
-                pass
+            # Watchdog returns normally after os.kill (code does `return` after the call)
+            await asyncio.wait_for(_ticker_watchdog(), timeout=2.0)
 
-            # Verify sys.exit(1) was called
-            mock_exit.assert_called_once_with(1), \
-                "watchdog should call sys.exit(1) when reactor is dead"
+            mock_kill.assert_called_once_with(_os.getpid(), _signal.SIGTERM)
 
     @pytest.mark.asyncio
     async def test_watchdog_does_not_exit_when_reactor_healthy(self):
-        """watchdog should NOT exit when is_reactor_dead() returns False (healthy case)."""
+        """watchdog should NOT send SIGTERM when is_reactor_dead() returns False."""
         ticker = TickerManager()
         ticker._reactor_dead = False
         ticker._started = True
@@ -292,39 +293,33 @@ class TestReactorDeadWatchdogExit:
         from backend.brokers.service.app import _ticker_watchdog
 
         async def mock_sleep_with_cancel(*args, **kwargs):
-            # Cancel after first sleep so we can check state without infinite loop
             raise asyncio.CancelledError()
 
         with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
              patch('asyncio.sleep', side_effect=mock_sleep_with_cancel), \
              patch('backend.brokers.service.app.logger'), \
-             patch('sys.exit', side_effect=lambda *args: None) as mock_exit:
+             patch('os.kill') as mock_kill:
 
-            # Run watchdog — should NOT exit
             try:
                 await _ticker_watchdog()
             except asyncio.CancelledError:
                 pass
 
-        # Verify sys.exit was NOT called (watchdog would have exited if reactor was dead)
-        mock_exit.assert_not_called(), \
-            "watchdog should NOT exit when reactor_dead is False"
+        mock_kill.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_watchdog_checks_reactor_dead_first(self):
         """watchdog should check reactor_dead BEFORE other phase logic.
 
-        The key invariant is that when reactor is dead, the watchdog exits
-        immediately (before trying other phases like "start ticker"). This
-        test verifies the watchdog doesn't waste time on other phases when
-        it already knows the reactor is dead.
+        When reactor is dead the watchdog must exit immediately — before calling
+        status() or any other phase-logic method — so we don't waste time on
+        phases that can never succeed.
         """
         ticker = TickerManager()
         ticker._reactor_dead = True
 
         from backend.brokers.service.app import _ticker_watchdog
 
-        # Track if any other methods are called (they shouldn't be)
         ticker_methods_called = []
 
         original_status = ticker.status
@@ -334,60 +329,44 @@ class TestReactorDeadWatchdogExit:
 
         ticker.status = track_status
 
-        async def mock_sleep_with_exit(*args, **kwargs):
-            raise SystemExit(1)
+        async def mock_sleep_noop(*args, **kwargs):
+            pass
 
         with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
-             patch('asyncio.sleep', side_effect=mock_sleep_with_exit), \
+             patch('asyncio.sleep', side_effect=mock_sleep_noop), \
              patch('backend.brokers.service.app.logger'), \
-             patch('sys.exit', side_effect=SystemExit(1)):
+             patch('os.kill'):
 
-            try:
-                await _ticker_watchdog()
-            except SystemExit:
-                pass
+            await asyncio.wait_for(_ticker_watchdog(), timeout=2.0)
 
-        # When reactor is dead, watchdog exits immediately without calling status()
-        # (phase 1 checking) — this proves is_reactor_dead() check comes first
+        # When reactor is dead, watchdog exits without calling status()
         assert "status" not in ticker_methods_called, \
             "watchdog should exit without calling status() when reactor dead"
 
     @pytest.mark.asyncio
     async def test_watchdog_exits_on_every_reactor_dead_iteration(self):
-        """watchdog should exit on EVERY iteration where reactor is dead, not just first."""
+        """watchdog sends SIGTERM on the first reactor-dead iteration and then returns."""
+        import os as _os
+        import signal as _signal
         from backend.brokers.service.app import _ticker_watchdog
 
         ticker = TickerManager()
         ticker._reactor_dead = True
 
-        exit_count = 0
-        sleep_count = 0
-
-        def track_exit(code):
-            nonlocal exit_count
-            exit_count += 1
-            raise SystemExit(code)
-
-        async def mock_sleep_counting(*args, **kwargs):
-            nonlocal sleep_count
-            sleep_count += 1
-            # Allow 2 iterations to verify exit fires every time
-            if sleep_count > 1:
-                raise asyncio.CancelledError()
+        async def sleep_noop(*args, **kwargs):
+            pass
 
         with patch('backend.brokers.kite_ticker.get_ticker', return_value=ticker), \
-             patch('asyncio.sleep', side_effect=mock_sleep_counting), \
+             patch('asyncio.sleep', side_effect=sleep_noop), \
              patch('backend.brokers.service.app.logger'), \
-             patch('sys.exit', side_effect=track_exit):
+             patch('os.kill') as mock_kill:
 
-            try:
-                await _ticker_watchdog()
-            except (SystemExit, asyncio.CancelledError):
-                pass
+            await asyncio.wait_for(_ticker_watchdog(), timeout=2.0)
 
-        # sys.exit should have been called (at least once, potentially multiple times)
-        assert exit_count > 0, \
-            "watchdog should exit when reactor is dead"
+        # os.kill(pid, SIGTERM) must be called at least once
+        assert mock_kill.call_count > 0, \
+            "watchdog should send SIGTERM when reactor is dead"
+        mock_kill.assert_called_with(_os.getpid(), _signal.SIGTERM)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

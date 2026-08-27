@@ -613,50 +613,46 @@ def test_positions_snapshot_prev_batch_sql_has_ltp_not_null_guard():
     )
 
 
-def test_positions_snapshot_prev_batch_sql_has_today_ist_midnight_boundary():
-    """prev_batch CTE must include `captured_at < :today_ist_midnight` to
-    exclude any same-day rows from prev_batch — they must never serve as
-    yesterday's EOD baseline.
+def test_positions_snapshot_prev_batch_sql_has_prev_batch_cutoff_boundary():
+    """prev_batch CTE must use :prev_batch_cutoff to exclude same-session rows.
+
+    The boundary is either today 08:00 IST (normal trading day) or yesterday 08:00 IST
+    (pre-market window), chosen dynamically so prev_batch always pulls from the
+    prior session's data regardless of when the snapshot is read.
     """
     import inspect
     from backend.api.routes import positions as _pos_module
 
     src = inspect.getsource(_pos_module._positions_snapshot)
-    assert "captured_at < :today_ist_midnight" in src, (
-        "prev_batch CTE must exclude same-day rows with "
-        "`AND db.captured_at < :today_ist_midnight` boundary"
+    assert "captured_at < :prev_batch_cutoff" in src, (
+        "prev_batch CTE must exclude same-session rows with "
+        "`AND db.captured_at < :prev_batch_cutoff` boundary"
     )
 
 
-def test_positions_snapshot_bindparams_includes_today_ist_midnight():
-    """The bindparams call must pass today_ist_midnight as a named parameter."""
+def test_positions_snapshot_bindparams_includes_prev_batch_cutoff():
+    """The bindparams call must pass prev_batch_cutoff as a named parameter."""
     import inspect
     from backend.api.routes import positions as _pos_module
 
     src = inspect.getsource(_pos_module._positions_snapshot)
-    # Accept either variable name form: today_ist_midnight= or _today_ist_midnight=
-    has_param = (
-        "today_ist_midnight=today_ist_midnight" in src
-        or "today_ist_midnight=_today_ist_midnight" in src
-    )
-    assert has_param, (
-        "bindparams must include today_ist_midnight= (bound to the computed "
-        "midnight datetime) to enforce the date-boundary parameter in SQL"
+    assert "prev_batch_cutoff=_prev_batch_cutoff" in src, (
+        "bindparams must include prev_batch_cutoff= (bound to the computed "
+        "8am IST cutoff) to enforce the session-boundary parameter in SQL"
     )
 
 
 def test_positions_snapshot_today_ist_midnight_computed_from_ts_indian():
-    """The midnight boundary is derived from _ts_indian().replace(hour=0, ...).
-    Verify the pattern is present (uses the aliased import already in scope,
-    not a new unaliased import that would NameError).
+    """The 8am cutoff is derived from _now_ist.replace(hour=0, ...) + timedelta(hours=8).
+    Verify the midnight pattern is present — it's the base for the 8am cutoff.
     """
     import inspect
     from backend.api.routes import positions as _pos_module
 
     src = inspect.getsource(_pos_module._positions_snapshot)
-    assert "_ts_indian().replace(hour=0, minute=0, second=0, microsecond=0)" in src, (
-        "The midnight boundary must use _ts_indian() (the aliased import) "
-        "not timestamp_indian() which is not in scope inside _positions_snapshot"
+    assert "_now_ist.replace(hour=0, minute=0, second=0, microsecond=0)" in src, (
+        "The 8am cutoff must be derived from _now_ist.replace(hour=0, ...) "
+        "(midnight base) not from _ts_indian() called again separately"
     )
 
 

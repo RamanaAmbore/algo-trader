@@ -524,6 +524,7 @@ class TestFetchOrderingAndCoexistence:
 
 def _make_snapshot_session(rows, today_ist_date):
     """Return (mock_session, mock_ts_indian) pair for _positions_snapshot tests."""
+    from datetime import datetime, timezone
     from unittest.mock import AsyncMock, MagicMock
     mock_result = MagicMock()
     mock_result.all.return_value = rows
@@ -531,8 +532,12 @@ def _make_snapshot_session(rows, today_ist_date):
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
-    mock_ts = MagicMock()
-    mock_ts.return_value.date.return_value = today_ist_date
+    # Return a real datetime so >= comparisons and .replace() work correctly.
+    # The new _positions_snapshot code does `_now_ist >= _today_ist_8am` which
+    # fails when _now_ist is a MagicMock. Use 10:00 IST — clearly post-8am cutoff.
+    now_ist = datetime(today_ist_date.year, today_ist_date.month, today_ist_date.day,
+                       10, 0, 0, tzinfo=timezone.utc)
+    mock_ts = MagicMock(return_value=now_ist)
     return mock_session, mock_ts
 
 
@@ -660,12 +665,9 @@ async def test_prev_batch_excludes_todays_snapshots_uses_yesterday_ltp():
 
     with (
         patch("backend.api.database.async_session", return_value=mock_session),
-        patch("backend.shared.helpers.date_time_utils.timestamp_indian") as mock_ts,
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+              return_value=datetime(2026, 8, 8, 16, 15, 0, tzinfo=timezone.utc)),
     ):
-        mock_ts_obj = MagicMock()
-        mock_ts_obj.date.return_value = today
-        mock_ts_obj.replace.return_value = datetime(2026, 8, 8, 0, 0, 0, tzinfo=timezone.utc)
-        mock_ts.return_value = mock_ts_obj
         from backend.api.routes.positions import _positions_snapshot
         result = await _positions_snapshot()
 
@@ -713,12 +715,9 @@ async def test_prev_batch_null_ltp_rows_excluded():
 
     with (
         patch("backend.api.database.async_session", return_value=mock_session),
-        patch("backend.shared.helpers.date_time_utils.timestamp_indian") as mock_ts,
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+              return_value=datetime(2026, 8, 8, 16, 15, 0, tzinfo=timezone.utc)),
     ):
-        mock_ts_obj = MagicMock()
-        mock_ts_obj.date.return_value = today
-        mock_ts_obj.replace.return_value = datetime(2026, 8, 8, 0, 0, 0, tzinfo=timezone.utc)
-        mock_ts.return_value = mock_ts_obj
         from backend.api.routes.positions import _positions_snapshot
         result = await _positions_snapshot()
 

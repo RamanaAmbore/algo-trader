@@ -548,18 +548,20 @@ class TestApplyDayChangeBackstopHoldings:
             "No recovery when pnl=0 — no real session gain/loss to restore"
         )
 
-    def test_fetch_calls_backstop_and_captures_return_value(self):
-        """_fetch() must assign the return value of apply_day_change_backstop.
+    def test_fetch_calls_override_stale_close_for_holdings(self):
+        """_fetch() must call _override_stale_close_for_holdings(raw) to patch
+        stale close_price values with the prior-session EOD LTP from daily_book.
 
-        Reads the source of _fetch() to confirm `raw = apply_day_change_backstop(raw)`
-        (not the silent bug `apply_day_change_backstop(raw)` without capture).
+        The old apply_day_change_backstop inline call was replaced by
+        _override_stale_close_for_holdings which combines close_price patching
+        and day_change_val recomputation in a single async pass.
         """
         import inspect
         from backend.api.routes.holdings import _fetch
 
         source = inspect.getsource(_fetch)
-        # Grep for assignment: raw = apply_day_change_backstop
-        assert "raw = apply_day_change_backstop(raw)" in source, (
-            "_fetch() must capture the return value of apply_day_change_backstop: "
-            "raw = apply_day_change_backstop(raw). Found source does not contain this."
+        assert "_override_stale_close_for_holdings(raw)" in source, (
+            "_fetch() must call _override_stale_close_for_holdings(raw) to patch "
+            "stale close_price and recompute day_change_val against the canonical "
+            "prior-session EOD LTP."
         )

@@ -812,15 +812,16 @@ class TestComponentReuse:
             "positions.py must call apply_day_change_backstop"
         )
 
-    def test_backstop_called_from_holdings_route(self):
-        """Holdings route calls apply_day_change_backstop on raw DataFrame."""
+    def test_override_stale_close_called_from_holdings_route(self):
+        """Holdings route calls _override_stale_close_for_holdings to patch stale prices."""
         from pathlib import Path
 
         hol_src = Path(__file__).parent.parent / "api" / "routes" / "holdings.py"
         src_text = hol_src.read_text(encoding="utf-8")
 
-        assert "apply_day_change_backstop" in src_text, (
-            "holdings.py must call apply_day_change_backstop"
+        assert "_override_stale_close_for_holdings" in src_text, (
+            "holdings.py must call _override_stale_close_for_holdings "
+            "(replaced apply_day_change_backstop inline call)"
         )
 
     def test_backstop_returns_copy_not_inplace(self):

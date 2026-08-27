@@ -210,10 +210,11 @@ class TestBrokerBase:
         assert result == {"order_id": 123, "status": "COMPLETE"}
 
     def test_translate_qty_default_noop(self):
-        """translate_qty default returns raw_qty unchanged."""
+        """translate_qty base: non-MCX exchanges pass through; MCX converts contracts→lots."""
         broker = _TestBroker()
         assert broker.translate_qty("NSE", 50, 1) == 50
-        assert broker.translate_qty("MCX", 100, 100) == 100
+        # MCX: base class converts contracts→lots (100 contracts / lot_size=100 = 1 lot)
+        assert broker.translate_qty("MCX", 100, 100) == 1
         assert broker.translate_qty("NFO", 1000, 50) == 1000
 
     def test_normalise_qty_alias(self):

@@ -1144,10 +1144,10 @@ class TestGrowwBrokerTranslateQty:
         result = broker.translate_qty("NSE", 100, 1)
         assert result == 100
 
-    def test_translate_qty_mcx_noop(self, broker):
-        # Groww accepts contracts, not lots
+    def test_translate_qty_mcx_converts_contracts_to_lots(self, broker):
+        # Groww MCX: contracts→lots like Kite/Dhan (100 contracts / lot_size=100 = 1 lot)
         result = broker.translate_qty("MCX", 100, 100)
-        assert result == 100
+        assert result == 1
 
     def test_translate_qty_all_segments_noop(self, broker):
         # Groww same behavior for all segments
