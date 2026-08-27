@@ -1,62 +1,39 @@
-# Plan: Fix 6d-audit findings — P1 pnl_per_share stale + P2 dedup/hoist/ceiling + P3 cleanup
+# Plan: Fix market summary Telegram alerts routing to wrong group
 
 ## Task
 
-Fix all findings from the 6d-audit in priority order:
+Market summary alerts (`market_open`, `market_close`, `visitor_report`) are landing in the
+deploy alerts Telegram group instead of the RamboQuant alerts group.
 
-**P1** — `holdings.py`: `_override_stale_ltp_from_ticker` updates `pnl` after LTP override but never
-updates `pnl_per_share`. The derived column stays stale (shows old per-share figure) whenever
-PriceBroker patches a zero-LTP Dhan/Groww row.
+**Root cause**: `_send_telegram_info()` in `alert_utils.py:274-275` looks for
+`telegram_chat_id_deploy` as primary key, then falls back to `telegram_chat_id`.
+The server's `telegram_chat_id` points to the deploy group (set up first).
+Market summaries fall through to that same key → wrong group.
 
-**P2a** — `_emit_conn_event` shim is copy-pasted verbatim into both `dhan.py` (lines 87–101) and
-`broker_apis.py` (lines 19–33). Extract to `backend/brokers/conn_event_shim.py`; import from there.
-
-**P2b** — `kite.py:place_gtt` loop (lines ~245–248): `from backend.shared.helpers.settings import get_int`
-and `_mcx_gtt_ceiling = get_int(...)` are inside the `for _leg in orders:` loop — redundant per iteration.
-Hoist both above the loop.
-
-**P2c** — `groww.py`: `_GROWW_MARGINS_LOGGED: set[str] = set()` declared at line ~1574 (near EOF)
-but referenced at line ~576. Move to top of file with other module-level state.
-
-**P2d** — `dhan.py:place_gtt`: has no absurd-qty ceiling for NFO/BFO legs (Kite has a 50k-contract
-ceiling). Add a parallel check before calling the Dhan API.
-
-**P3a** — `positions_helpers.py`: `extract_snapshot_multiplier()` is deprecated (always returns 1,
-no prod callers). Remove the function and flip the import test in `test_positions_imports.py`.
-
-**P3b** — `base.py:validate_gtt_exchange`: empty method body silently no-ops if an adapter forgets
-to override. Add `pass` + a comment explaining the "all exchanges allowed" default intent.
-
-**P3c** — `groww.py`: NCO exchange missing from `_EXCHANGE_TO_GROWW` and `_SEGMENT_TO_GROWW`.
-Add it (NCO = National Commodity Options, same tier as MCX).
+**Fix**: Change `_send_telegram_info()` to look for `telegram_chat_id_ramboquant`
+(primary) + `telegram_bot_token_ramboquant` (primary token), with the existing
+`telegram_chat_id` / `telegram_bot_token` as fallback. The server then needs
+`telegram_chat_id_ramboquant` added to secrets.yaml with the RamboQuant group's chat_id.
 
 ## Agents
 
 - backend: skip
 - frontend: skip
-- broker: Fix all eight findings:
-  1. `backend/api/routes/holdings.py` (~line 312–328): after `raw.loc[_sel, 'pnl'] = _pnl_p`,
-     add `raw.loc[_sel, 'pnl_per_share'] = (_pnl_p / _qty_p.replace(0, float('nan'))).fillna(0)`
-     inside the same `if _ltp_p > 0:` block.
-  2. Create `backend/brokers/conn_event_shim.py` with the single shared `_emit_conn_event` shim;
-     replace both copies in `dhan.py` and `broker_apis.py` with `from backend.brokers.conn_event_shim import _emit_conn_event`.
-  3. `backend/brokers/adapters/kite.py`: hoist `get_int` import and `_mcx_gtt_ceiling` above the
-     `for _leg in orders:` loop in `place_gtt`.
-  4. `backend/brokers/adapters/groww.py`: move `_GROWW_MARGINS_LOGGED: set[str] = set()` from
-     ~line 1574 to the top of the file, grouped with other module-level set/dict state.
-  5. `backend/brokers/adapters/dhan.py`: in `place_gtt`, add a ceiling check for NFO/BFO legs
-     (≤ 50,000 contracts) mirroring `_check_kite_gtt_qty_ceiling` pattern; raise `ValueError` on breach.
-  6. `backend/api/routes/positions_helpers.py`: delete `extract_snapshot_multiplier()` function.
-  7. `backend/brokers/base.py`: add explicit `pass` to `validate_gtt_exchange` body and a one-line
-     comment: `# Subclasses raise ValueError for unsupported exchanges; default = all allowed.`
-  8. `backend/brokers/adapters/groww.py`: add `"NCO"` to `_EXCHANGE_TO_GROWW` and `_SEGMENT_TO_GROWW`.
-  For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
-  - `backend/brokers/` change → add/update a pytest test in `backend/tests/broker/` covering the changed lines
-  - `backend/api/` change → add/update a pytest test in `backend/tests/` covering the changed lines
-  No change ships without a corresponding test update.
+- broker: skip
 - doc: skip
 - backend-test: skip
 - playwright: skip
+
+**Implementation** (broker agent handles this — it owns alert_utils.py via shared helpers):
+- backend: In `backend/shared/helpers/alert_utils.py` lines 257–291:
+  1. Change line 274: `telegram_bot_token_deploy` → `telegram_bot_token_ramboquant`
+  2. Change line 275: `telegram_chat_id_deploy` → `telegram_chat_id_ramboquant`
+  3. Update docstring on `_send_telegram_info()` to say "RamboQuant alerts group"
+     instead of "info/deploy channel"
+  4. Write a unit test in `backend/tests/` that patches `secrets` dict with
+     `telegram_chat_id_ramboquant` and confirms `_send_telegram_info()` uses that key
+     (not `_deploy`); also test fallback to `telegram_chat_id` when `_ramboquant` absent.
+  For every file you change or create, you MUST write or update at least one test.
 
 ## Tests
 
@@ -66,16 +43,15 @@ Add it (NCO = National Commodity Options, same tier as MCX).
 
 ## Commit message
 
-fix(audit): P1 pnl_per_share stale after LTP override; P2 dedup _emit_conn_event + hoist get_int + Dhan GTT ceiling + Groww margins set; P3 drop extract_snapshot_multiplier + base.py comment + NCO exchange
+fix(alerts): market summary Telegram → telegram_chat_id_ramboquant (was _deploy)
 
 ## Done when
 
-- `holdings.py`: `pnl_per_share` is updated whenever `pnl` is rewritten by `_override_stale_ltp_from_ticker`
-- `conn_event_shim.py` exists; neither `dhan.py` nor `broker_apis.py` contains a local copy of the shim
-- `kite.py place_gtt`: `get_int` import and `_mcx_gtt_ceiling` assignment are above the `for _leg` loop
-- `groww.py`: `_GROWW_MARGINS_LOGGED` is declared at the top of the file
-- `dhan.py place_gtt`: NFO/BFO qty ceiling check exists and raises on breach
-- `positions_helpers.py`: `extract_snapshot_multiplier` is gone
-- `base.py validate_gtt_exchange`: has explicit `pass` + comment
-- `groww.py`: `NCO` is in both mapping dicts
-- All pytest tests pass (broker ≥ 80%, API ≥ 45%)
+- `_send_telegram_info()` reads `telegram_chat_id_ramboquant` first, falls back to `telegram_chat_id`
+- Unit tests confirm the key lookup order
+- pytest green (broker ≥ 80%, API ≥ 45%)
+- **Server step (manual — operator)**: SSH to prod server and add
+  `telegram_chat_id_ramboquant: <ramboquant group chat_id>` to
+  `/opt/ramboq/backend/config/secrets.yaml`. If a separate bot token is used for that group,
+  also add `telegram_bot_token_ramboquant: <token>` (otherwise the same bot works fine
+  since fallback uses `telegram_bot_token`). Restart `ramboq_api` after editing.

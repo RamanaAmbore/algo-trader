@@ -255,8 +255,8 @@ def _send_telegram(message: str):
 
 
 def _send_telegram_info(message: str):
-    """Send to the info/deploy Telegram channel (telegram_chat_id_deploy).
-    Falls back to the ops channel keys if the dedicated deploy keys are absent.
+    """Send to the RamboQuant alerts Telegram channel (telegram_chat_id_ramboquant).
+    Falls back to the ops channel keys if the dedicated ramboquant keys are absent.
     Shares the same engine-idle suppression and is_enabled gate as _send_telegram.
     """
     import logging
@@ -271,8 +271,8 @@ def _send_telegram_info(message: str):
     if not is_enabled('telegram'):
         _log.info("Telegram info skipped — disabled for this environment")
         return
-    token   = secrets.get('telegram_bot_token_deploy') or secrets.get('telegram_bot_token', '')
-    chat_id = secrets.get('telegram_chat_id_deploy')   or secrets.get('telegram_chat_id', '')
+    token   = secrets.get('telegram_bot_token_ramboquant') or secrets.get('telegram_bot_token', '')
+    chat_id = secrets.get('telegram_chat_id_ramboquant')   or secrets.get('telegram_chat_id', '')
     if not token or not chat_id:
         logger.warning("Telegram info channel not configured — skipping")
         return
