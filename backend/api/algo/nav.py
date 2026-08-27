@@ -183,6 +183,30 @@ def _row_ltp(sym: str, lf, ticker) -> float:
     return lp
 
 
+def _ltp_or_cv_fallback_sum(lf_no_ltp, ticker) -> float:
+    """Sum qty × ticker_ltp when available, else sum cur_val.
+
+    Used for holdings rows where last_price column is absent entirely.
+    Ticker is tried first (market value); cur_val is the fallback when ticker
+    has no entry (safer than returning 0 for genuine data we trust).
+    """
+    if lf_no_ltp.is_empty() or "tradingsymbol" not in lf_no_ltp.columns:
+        return 0.0
+    total = 0.0
+    has_cv = "_cv" in lf_no_ltp.columns
+    for row in lf_no_ltp.select(
+        [c for c in ["tradingsymbol", "_qty", "_cv"] if c in lf_no_ltp.columns]
+    ).to_dicts():
+        sym = str(row.get("tradingsymbol") or "")
+        qty = float(row.get("_qty") or 0.0)
+        cv  = float(row.get("_cv") or 0.0) if has_cv else 0.0
+        if not sym:
+            continue
+        lp = ticker.get_ltp_by_sym(sym) or 0.0
+        total += (qty * lp) if lp > 0 else cv
+    return total
+
+
 def _ltp_fallback_sum(lf_need_ltp, ticker) -> float:
     """Sum qty × LTP for holdings rows that lack cur_val.
 
@@ -222,13 +246,17 @@ def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
         else pl.lit(0.0)
     )
 
-    # Build _ltp column: 0.0 when last_price absent (e.g. Dhan/Groww frames
-    # that omit the field) or when last_price is explicitly zero (stale LTP).
-    ltp_col = (
-        pl.col("last_price").cast(pl.Float64, strict=False).fill_null(0.0)
-        if "last_price" in lf.columns
-        else pl.lit(0.0)
-    )
+    # Build _ltp and _has_ltp columns.
+    # _has_ltp=False when the column is entirely absent (e.g. synthetic test frames,
+    # holdings summaries) — in that case cur_val is trusted directly.
+    # _has_ltp=True + _ltp<=0 means broker delivered an explicit zero/null LTP
+    # (Dhan/Groww cold-cache), so cur_val is cost basis and needs ticker rescue.
+    if "last_price" in lf.columns:
+        ltp_col     = pl.col("last_price").cast(pl.Float64, strict=False).fill_null(0.0)
+        has_ltp_col = pl.lit(True)
+    else:
+        ltp_col     = pl.lit(0.0)
+        has_ltp_col = pl.lit(False)
 
     # Rows where both qty and cur_val are zero — skip (same as original).
     # For rows with cv == 0 but qty != 0 we fall back to LTP below.
@@ -236,26 +264,37 @@ def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
         qty_col.alias("_qty"),
         cv_col.alias("_cv"),
         ltp_col.alias("_ltp"),
+        has_ltp_col.alias("_has_ltp"),
     ).filter(~((pl.col("_qty") == 0.0) & (pl.col("_cv") == 0.0)))
 
     if lf.is_empty():
         return 0.0, []
 
-    # Three-way split:
-    #   lf_good_cv  — cv != 0 AND ltp > 0  → cur_val is a real market value; trust it
-    #   lf_stale_ltp — cv != 0 AND ltp <= 0 → cur_val is cost basis (Dhan/Groww cold cache);
-    #                                          route via ticker rescue so NAV uses market value
-    #   lf_zero_cv  — cv == 0              → existing ticker fallback path (unchanged)
-    lf_good_cv   = lf.filter((pl.col("_cv") != 0.0) & (pl.col("_ltp") > 0.0))
-    lf_stale_ltp = lf.filter((pl.col("_cv") != 0.0) & (pl.col("_ltp") <= 0.0))
-    lf_zero_cv   = lf.filter(pl.col("_cv") == 0.0)
+    # Four-way split:
+    #   lf_good_cv   — cv != 0 AND last_price column present AND ltp > 0
+    #                  → cur_val is a real market value; trust it
+    #   lf_stale_ltp — cv != 0 AND last_price column present AND ltp <= 0
+    #                  → cur_val is cost basis (Dhan/Groww cold cache);
+    #                    route via ticker rescue; contribute 0 if no ticker
+    #   lf_no_ltp_col — cv != 0 AND last_price column absent
+    #                  → try ticker first (market value), else fall back to cv
+    #   lf_zero_cv   — cv == 0 → existing ticker fallback path (unchanged)
+    lf_good_cv = lf.filter(
+        (pl.col("_cv") != 0.0) & pl.col("_has_ltp") & (pl.col("_ltp") > 0.0)
+    )
+    lf_stale_ltp = lf.filter(
+        (pl.col("_cv") != 0.0) & pl.col("_has_ltp") & (pl.col("_ltp") <= 0.0)
+    )
+    lf_no_ltp_col = lf.filter(
+        (pl.col("_cv") != 0.0) & ~pl.col("_has_ltp")
+    )
+    lf_zero_cv = lf.filter(pl.col("_cv") == 0.0)
 
     cv_sum = float(
         lf_good_cv.select(pl.col("_cv").sum()).to_series()[0] or 0.0
         if not lf_good_cv.is_empty() else 0.0
     )
-    # Both stale-LTP and zero-cv groups need ticker rescue; concat is safe because
-    # both frames derive from `lf` so their schemas are identical.
+    # stale-LTP and zero-cv need ticker rescue (contribute 0 if no ticker).
     lf_need_rescue = (
         pl.concat([lf_stale_ltp, lf_zero_cv])
         if not lf_stale_ltp.is_empty() and not lf_zero_cv.is_empty()
@@ -263,7 +302,11 @@ def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
         else lf_zero_cv
     )
     ltp_sum = _ltp_fallback_sum(lf_need_rescue, ticker)
-    mtm = cv_sum + ltp_sum
+
+    # No-ltp-col rows: ticker-first, then cv as fallback (not 0).
+    no_ltp_col_sum = _ltp_or_cv_fallback_sum(lf_no_ltp_col, ticker)
+
+    mtm = cv_sum + ltp_sum + no_ltp_col_sum
 
     accounts: list[str] = []
     if "account" in lf.columns:
