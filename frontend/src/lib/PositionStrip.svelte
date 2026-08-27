@@ -1084,8 +1084,7 @@
      competing with the per-cell directional flash. Operator: "I don't
      see any animation refreshing nav strip". */
   .ps-strip.ps-heartbeat {
-    border-bottom-color: rgba(251, 191, 36, 0.85);
-    background: linear-gradient(180deg, #0a1020 0%, #1a2640 100%);
+    border-bottom-color: rgba(251, 191, 36, 0.40);
   }
   /* Stale-data indicator — amber tint when positions or holdings have
      returned 2+ consecutive errors. Color-codes the strip without an
