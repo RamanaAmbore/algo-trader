@@ -2030,8 +2030,8 @@ async def _task_daily_snapshot() -> None:
     # ── startup snapshot (closed hours only) ───────────────────────────
     _now_ist = timestamp_indian()
     _today_d = _now_ist.date()
-    _nse_open = exchange_clock.is_exchange_open("NSE", at=_now_ist)
-    _mcx_open = exchange_clock.is_exchange_open("MCX", at=_now_ist)
+    _nse_open = exchange_clock.is_exchange_open("NSE")
+    _mcx_open = exchange_clock.is_exchange_open("MCX")
     if _today_d.weekday() >= 5:
         # Weekend (Saturday=5, Sunday=6): the previous trading day's EOD snapshot
         # already lives in daily_book. Creating today's date rows with stale prices
