@@ -280,8 +280,8 @@ class TestTriggerHelpers:
 class TestGetSegmentsFallback:
     """_get_segments returns hardcoded defaults when exchange_clock cache is not warm."""
 
-    def test_fallback_returns_nse_and_mcx_segments(self):
-        """When cache is not warm, _get_segments returns both NSE and MCX segments."""
+    def test_fallback_returns_non_mcx_and_mcx_segments(self):
+        """When cache is not warm, _get_segments returns NON-MCX and MCX segments."""
         with patch("backend.api.background.exchange_clock") as mock_ec:
             mock_ec._cache_loaded = False
 
@@ -289,11 +289,11 @@ class TestGetSegmentsFallback:
             segs = _get_segments()
 
         gates = {s['name'] for s in segs}
-        assert 'NSE' in gates, "NSE segment must be in fallback"
+        assert 'NON-MCX' in gates, "NON-MCX segment must be in fallback"
         assert 'MCX' in gates, "MCX segment must be in fallback"
 
-    def test_fallback_nse_segment_hours(self):
-        """Fallback NSE segment: hours_start=09:15, hours_end=15:30."""
+    def test_fallback_non_mcx_segment_hours(self):
+        """Fallback NON-MCX segment: hours_start=08:00, hours_end=16:00."""
         from datetime import time
 
         with patch("backend.api.background.exchange_clock") as mock_ec:
@@ -302,12 +302,12 @@ class TestGetSegmentsFallback:
             from backend.api.background import _get_segments
             segs = _get_segments()
 
-        nse = next(s for s in segs if s['name'] == 'NSE')
-        assert nse['hours_start'] == time(9, 15)
-        assert nse['hours_end'] == time(15, 30)
+        non_mcx = next(s for s in segs if s['name'] == 'NON-MCX')
+        assert non_mcx['hours_start'] == time(8, 0)
+        assert non_mcx['hours_end'] == time(16, 0)
 
     def test_fallback_mcx_segment_hours(self):
-        """Fallback MCX segment: hours_start=09:00, hours_end=23:30."""
+        """Fallback MCX segment: hours_start=08:00, hours_end=23:30."""
         from datetime import time
 
         with patch("backend.api.background.exchange_clock") as mock_ec:
@@ -317,7 +317,7 @@ class TestGetSegmentsFallback:
             segs = _get_segments()
 
         mcx = next(s for s in segs if s['name'] == 'MCX')
-        assert mcx['hours_start'] == time(9, 0)
+        assert mcx['hours_start'] == time(8, 0)
         assert mcx['hours_end'] == time(23, 30)
 
     def test_fallback_has_holiday_exchange_key(self):
@@ -339,24 +339,24 @@ class TestGetSegmentsFallback:
         from types import SimpleNamespace
 
         mock_session = SimpleNamespace(
-            gate="NSE",
+            gate="NON-MCX",
             session_name="regular",
             is_open=True,
-            open_time=dtime(9, 15),
-            close_time=dtime(15, 30),
-            exchanges=["NSE", "BSE", "NFO"],
+            open_time=dtime(8, 0),
+            close_time=dtime(16, 0),
+            exchanges=["NSE", "BSE", "NFO", "BFO", "CDS"],
         )
 
         with patch("backend.api.background.exchange_clock") as mock_ec:
             mock_ec._cache_loaded = True
             mock_ec._resolve_for_gate.side_effect = lambda gate, today: (
-                [mock_session] if gate == "NSE" else []
+                [mock_session] if gate == "NON-MCX" else []
             )
 
             from backend.api.background import _get_segments
             segs = _get_segments()
 
-        assert any(s['name'] == 'NSE' for s in segs)
+        assert any(s['name'] == 'NON-MCX' for s in segs)
         # Falls back to hardcoded MCX since mock returns [] for MCX gate
         # (or MCX is absent — either is acceptable)
 
@@ -366,12 +366,12 @@ class TestGetSegmentsFallback:
 # ---------------------------------------------------------------------------
 
 class TestDefaultSegState:
-    """_default_seg_state is hardcoded to NSE and MCX gate keys."""
+    """_default_seg_state is hardcoded to NON-MCX and MCX gate keys."""
 
-    def test_has_nse_key(self):
+    def test_has_non_mcx_key(self):
         from backend.api.background import _default_seg_state
         state = _default_seg_state()
-        assert 'NSE' in state, "_default_seg_state must have NSE key"
+        assert 'NON-MCX' in state, "_default_seg_state must have NON-MCX key"
 
     def test_has_mcx_key(self):
         from backend.api.background import _default_seg_state
@@ -381,7 +381,7 @@ class TestDefaultSegState:
     def test_values_have_last_open_and_last_close(self):
         from backend.api.background import _default_seg_state
         state = _default_seg_state()
-        for gate in ('NSE', 'MCX'):
+        for gate in ('NON-MCX', 'MCX'):
             assert 'last_open' in state[gate]
             assert 'last_close' in state[gate]
             assert state[gate]['last_open'] is None

@@ -260,7 +260,7 @@ class TestSettlementCutoffFor:
     def _set_cache_with_reset(self, reset_time: time):
         import backend.api.helpers.exchange_clock as ec
         row = _make_schedule_row(
-            "NSE", ["NSE"],
+            "NON-MCX", ["NSE", "BSE", "NFO", "BFO", "CDS"],
             snapshot_reset_time=reset_time,
             date_val=None,
         )
@@ -274,7 +274,7 @@ class TestSettlementCutoffFor:
         import backend.api.helpers.exchange_clock as ec
         self._set_cache_with_reset(time(8, 0))
         with self._patch_now(10, 30):
-            cutoff = await ec.settlement_cutoff_for("NSE")
+            cutoff = await ec.settlement_cutoff_for("NON-MCX")
         # Now is 10:30 IST → after 08:00 → cutoff = today's 08:00 IST
         assert cutoff.hour == 8
         assert cutoff.minute == 0
@@ -285,7 +285,7 @@ class TestSettlementCutoffFor:
         import backend.api.helpers.exchange_clock as ec
         self._set_cache_with_reset(time(8, 0))
         with self._patch_now(6, 0):
-            cutoff = await ec.settlement_cutoff_for("NSE")
+            cutoff = await ec.settlement_cutoff_for("NON-MCX")
         # Now is 06:00 IST → before 08:00 → cutoff = yesterday's 08:00 IST
         assert cutoff.hour == 8
         assert cutoff.minute == 0
@@ -301,7 +301,7 @@ class TestSettlementCutoffFor:
         import time as _time
         ec._cache_loaded_at = _time.monotonic()  # fresh but empty
         with self._patch_now(10, 0):
-            cutoff = await ec.settlement_cutoff_for("NSE")
+            cutoff = await ec.settlement_cutoff_for("NON-MCX")
         # Falls back to 08:00 default
         assert cutoff.hour == 8
 
@@ -549,29 +549,44 @@ class TestExchangeScheduleModel:
 # ---------------------------------------------------------------------------
 
 class TestSeedRows:
-    def test_seed_contains_five_rows(self):
+    def test_seed_contains_two_rows(self):
         from backend.api.helpers.exchange_clock import _SEED_ROWS
-        assert len(_SEED_ROWS) == 5
+        assert len(_SEED_ROWS) == 2
 
     def test_seed_gates(self):
         from backend.api.helpers.exchange_clock import _SEED_ROWS
         gates = {r["gate"] for r in _SEED_ROWS}
-        assert gates == {"NSE", "MCX", "PRE", "POST", "NIGHT"}
+        assert gates == {"NON-MCX", "MCX"}
 
-    def test_nse_exchanges(self):
+    def test_non_mcx_exchanges(self):
         from backend.api.helpers.exchange_clock import _SEED_ROWS
-        nse = next(r for r in _SEED_ROWS if r["gate"] == "NSE")
-        assert set(nse["exchanges"]) == {"NSE", "BSE", "NFO", "BFO", "CDS"}
+        non_mcx = next(r for r in _SEED_ROWS if r["gate"] == "NON-MCX")
+        assert set(non_mcx["exchanges"]) == {"NSE", "BSE", "NFO", "BFO", "CDS"}
 
     def test_mcx_snapshot_reset_is_0800(self):
         from backend.api.helpers.exchange_clock import _SEED_ROWS
         mcx = next(r for r in _SEED_ROWS if r["gate"] == "MCX")
         assert mcx["snapshot_reset_time"] == time(8, 0)
 
-    def test_nse_snapshot_reset_is_0800(self):
+    def test_non_mcx_snapshot_reset_is_0800(self):
         from backend.api.helpers.exchange_clock import _SEED_ROWS
-        nse = next(r for r in _SEED_ROWS if r["gate"] == "NSE")
-        assert nse["snapshot_reset_time"] == time(8, 0)
+        non_mcx = next(r for r in _SEED_ROWS if r["gate"] == "NON-MCX")
+        assert non_mcx["snapshot_reset_time"] == time(8, 0)
+
+    def test_mcx_snapshot_time_is_0015(self):
+        from backend.api.helpers.exchange_clock import _SEED_ROWS
+        mcx = next(r for r in _SEED_ROWS if r["gate"] == "MCX")
+        assert mcx["snapshot_time"] == time(0, 15)
+
+    def test_non_mcx_opens_at_0800(self):
+        from backend.api.helpers.exchange_clock import _SEED_ROWS
+        non_mcx = next(r for r in _SEED_ROWS if r["gate"] == "NON-MCX")
+        assert non_mcx["open_time"] == time(8, 0)
+
+    def test_mcx_opens_at_0800(self):
+        from backend.api.helpers.exchange_clock import _SEED_ROWS
+        mcx = next(r for r in _SEED_ROWS if r["gate"] == "MCX")
+        assert mcx["open_time"] == time(8, 0)
 
 
 # ---------------------------------------------------------------------------

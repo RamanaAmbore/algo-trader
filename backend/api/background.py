@@ -68,18 +68,17 @@ def _get_segments() -> list[dict]:
 
     When the exchange_clock cache is warm, returns open sessions sourced from the
     DB-backed exchange_schedule table (one dict per gate session with is_open=True).
-    Falls back to a hardcoded two-gate default (NSE 09:15-15:30, MCX 09:00-23:30)
+    Falls back to a hardcoded two-gate default (NON-MCX 08:00-16:00, MCX 08:00-23:30)
     if the cache has not been populated yet or the import fails.  The fallback
-    matches the legacy ``market_segments`` YAML defaults that were previously read
-    by ``_get_segments()`` so behaviour is unchanged during cold-start or tests
-    that do not warm the exchange_clock cache.
+    matches the exchange_schedule seed rows so behaviour is unchanged during
+    cold-start or tests that do not warm the exchange_clock cache.
     """
     try:
         if exchange_clock._cache_loaded:
             from datetime import date as _date
             today = _date.today()
             sessions = []
-            for gate in ("NSE", "MCX"):
+            for gate in ("NON-MCX", "MCX"):
                 for sess in exchange_clock._resolve_for_gate(gate, today):
                     if (sess.is_open
                             and sess.open_time is not None
@@ -95,18 +94,18 @@ def _get_segments() -> list[dict]:
                 return sessions
     except Exception:
         pass
-    # Hardcoded fallback — same values as the removed market_segments YAML block.
+    # Hardcoded fallback — mirrors the exchange_schedule seed rows.
     return [
         {
-            'name':             'NSE',
-            'hours_start':      dtime(9, 15),
-            'hours_end':        dtime(15, 30),
+            'name':             'NON-MCX',
+            'hours_start':      dtime(8, 0),
+            'hours_end':        dtime(16, 0),
             'holiday_exchange': 'NSE',
             'exchanges':        {'NSE', 'BSE', 'NFO', 'BFO', 'CDS'},
         },
         {
             'name':             'MCX',
-            'hours_start':      dtime(9, 0),
+            'hours_start':      dtime(8, 0),
             'hours_end':        dtime(23, 30),
             'holiday_exchange': 'MCX',
             'exchanges':        {'MCX'},
@@ -115,15 +114,9 @@ def _get_segments() -> list[dict]:
 
 
 def _default_seg_state() -> dict:
-    """Return a per-gate state dict with NSE and MCX gate keys.
-
-    Hardcoded to the two known gates so the dict is always well-formed,
-    regardless of whether the exchange_clock cache has been loaded.  The
-    exchange_clock EXCHANGE_TO_GATE map also only defines these two gates,
-    so hardcoding here is correct.
-    """
+    """Return a per-gate state dict with NON-MCX and MCX gate keys."""
     return {
-        'NSE': {'last_open': None, 'last_close': None},
+        'NON-MCX': {'last_open': None, 'last_close': None},
         'MCX': {'last_open': None, 'last_close': None},
     }
 
@@ -1857,7 +1850,7 @@ async def _task_strategy_snapshot() -> None:
 
 
 async def trigger_close_snapshot(gate: str) -> None:
-    """Fire the daily_book LTP close snapshot for *gate* (e.g. "NSE" or "MCX").
+    """Fire the daily_book LTP close snapshot for *gate* (e.g. "NON-MCX" or "MCX").
 
     Called by ``_snapshot_probe_nse_mcx`` when a session's ``snapshot_time``
     matches the current IST minute and the session is a regular trading window

@@ -387,7 +387,7 @@ async def _fetch_ref_close_map(
     from sqlalchemy import text as _sql_text
     from backend.api.helpers.exchange_clock import settlement_cutoff_for
 
-    cutoff = await settlement_cutoff_for("NSE")
+    cutoff = await settlement_cutoff_for("NON-MCX")
 
     out: dict[tuple[str, str], float] = {}
     # Build IN-list filter to avoid scanning all positions rows.
@@ -923,10 +923,11 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
         return
 
     # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).
-    # Delegated to exchange_clock.settlement_cutoff_for("NSE") which reads the
-    # snapshot_reset_time from the DB-backed exchange_schedule cache.
+    # Use NON-MCX gate; MCX gate has the same reset time (08:00 IST) so one
+    # cutoff covers all exchanges.  Both daily_book snapshots (NSE ~15:45 and
+    # MCX ~00:15) fall before the 08:00 boundary and are included by this query.
     from backend.api.helpers.exchange_clock import settlement_cutoff_for
-    today_ist_cutoff = await settlement_cutoff_for("NSE")
+    today_ist_cutoff = await settlement_cutoff_for("NON-MCX")
 
     snapshot_map: dict[tuple[str, str], float] = {}
     prev_pnl_map: dict[tuple[str, str], float] = {}

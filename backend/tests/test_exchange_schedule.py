@@ -308,24 +308,24 @@ def test_sessions_snapshot_now_no_match():
 @pytest.mark.asyncio
 async def test_settlement_cutoff_for_before_reset():
     """Before 08:00 IST, cutoff is yesterday 08:00 IST."""
-    cache = [_row(gate="NSE", date=None, snapshot_reset_time=time(8, 0))]
+    cache = [_row(gate="NON-MCX", date=None, snapshot_reset_time=time(8, 0))]
     now = datetime(2026, 8, 25, 7, 0, tzinfo=IST)
     expected = datetime(2026, 8, 24, 8, 0, tzinfo=IST)
     with patch.object(exchange_clock, "_CACHE", cache), _patch_now(now):
         with patch.object(exchange_clock, "refresh", new=AsyncMock()):
-            cutoff = await exchange_clock.settlement_cutoff_for("NSE")
+            cutoff = await exchange_clock.settlement_cutoff_for("NON-MCX")
     assert cutoff == expected
 
 
 @pytest.mark.asyncio
 async def test_settlement_cutoff_for_after_reset():
     """After 08:00 IST, cutoff is today 08:00 IST."""
-    cache = [_row(gate="NSE", date=None, snapshot_reset_time=time(8, 0))]
+    cache = [_row(gate="NON-MCX", date=None, snapshot_reset_time=time(8, 0))]
     now = datetime(2026, 8, 25, 9, 15, tzinfo=IST)
     expected = datetime(2026, 8, 25, 8, 0, tzinfo=IST)
     with patch.object(exchange_clock, "_CACHE", cache), _patch_now(now):
         with patch.object(exchange_clock, "refresh", new=AsyncMock()):
-            cutoff = await exchange_clock.settlement_cutoff_for("NSE")
+            cutoff = await exchange_clock.settlement_cutoff_for("NON-MCX")
     assert cutoff == expected
 
 

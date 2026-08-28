@@ -424,9 +424,10 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     from backend.api.helpers.exchange_clock import settlement_cutoff_for
 
     # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).
-    # Delegated to exchange_clock.settlement_cutoff_for("NSE") which reads the
-    # snapshot_reset_time from the DB-backed exchange_schedule cache.
-    today_ist_cutoff = await settlement_cutoff_for("NSE")
+    # Use NON-MCX gate; MCX gate has the same reset time (08:00 IST) so one
+    # cutoff covers all exchanges.  Both daily_book snapshots (NSE ~15:45 and
+    # MCX ~00:15) fall before the 08:00 boundary and are included by this query.
+    today_ist_cutoff = await settlement_cutoff_for("NON-MCX")
 
     # ref_close: ltp directly — canonical prior-session settlement LTP.
     # previous_close (Kite BHAV-copy) is stale during the overnight window

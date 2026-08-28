@@ -248,7 +248,7 @@ class TestPerfRunCloseCheck:
         assert now.weekday() == 4, f"2026-08-21 should be Friday, got {now.weekday()}"
 
         df_empty = pd.DataFrame()
-        seg = self._make_segment('NSE', 15, 30)
+        seg = self._make_segment('NON-MCX', 15, 30)
 
         # _run must be an async wrapper that calls the lambda immediately
         async def _mock_run(fn):
@@ -270,8 +270,8 @@ class TestPerfRunCloseCheck:
             ))
 
         # last_close must be updated for the segment
-        assert seg_state['NSE']['last_close'] == today, (
-            "seg_state['NSE']['last_close'] must be set to today after summary fires"
+        assert seg_state['NON-MCX']['last_close'] == today, (
+            "seg_state['NON-MCX']['last_close'] must be set to today after summary fires"
         )
 
     def test_skips_when_before_trigger(self):
@@ -283,7 +283,7 @@ class TestPerfRunCloseCheck:
         # Trigger would be 15:45; now=15:30 → before trigger
         now = datetime(2026, 8, 22, 15, 30, 0, tzinfo=IST)
 
-        seg = self._make_segment('NSE', 15, 30)
+        seg = self._make_segment('NON-MCX', 15, 30)
 
         mock_send = MagicMock()
         with (
@@ -296,7 +296,7 @@ class TestPerfRunCloseCheck:
             ))
 
         # last_close must NOT be set
-        assert seg_state['NSE']['last_close'] != today, (
+        assert seg_state['NON-MCX']['last_close'] != today, (
             "seg_state must not be updated before the close trigger"
         )
 
@@ -310,7 +310,7 @@ class TestPerfRunCloseCheck:
         now = datetime(2026, 8, 23, 16, 0, 0, tzinfo=IST)
         assert now.weekday() == 6, f"2026-08-23 should be Sunday, got {now.weekday()}"
 
-        seg = self._make_segment('NSE', 15, 30)
+        seg = self._make_segment('NON-MCX', 15, 30)
         mock_send = MagicMock()
 
         with (
@@ -322,7 +322,7 @@ class TestPerfRunCloseCheck:
                 now, today, seg_state, close_offset=15,
             ))
 
-        assert seg_state['NSE']['last_close'] != today, (
+        assert seg_state['NON-MCX']['last_close'] != today, (
             "Close summary must not fire on weekends (weekday >= 5)"
         )
 
@@ -332,10 +332,10 @@ class TestPerfRunCloseCheck:
 
         seg_state = self._make_seg_state()
         today = date(2026, 8, 22)  # Friday
-        seg_state['NSE']['last_close'] = today  # already sent
+        seg_state['NON-MCX']['last_close'] = today  # already sent
         now = datetime(2026, 8, 22, 16, 30, 0, tzinfo=IST)
 
-        seg = self._make_segment('NSE', 15, 30)
+        seg = self._make_segment('NON-MCX', 15, 30)
         mock_send = MagicMock()
 
         with (

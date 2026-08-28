@@ -14,7 +14,7 @@ while keeping timing changes effective within one refresh cycle (default 60 s).
     sessions_with_snapshot_time_now()        — sync; list of rows whose
                                                snapshot_time matches now ± 1 min
     await seed_and_warm()                    — on_startup callable: idempotent seed
-                                               of 5 default rows, then warm cache
+                                               of 2 default rows, then warm cache
 
 Design
 ------
@@ -30,28 +30,30 @@ dependency-injection session is not available at startup.
 Gate → exchange mapping
 -----------------------
 Each row carries ``exchanges: list[str]`` — the Kite exchange codes that belong
-to that gate (e.g. NSE gate → ["NSE", "BSE", "NFO", "BFO", "CDS"]).
-``is_exchange_open`` resolves the exchange to a gate by iterating rows and
-checking membership in ``row.exchanges``.
+to that gate.  ``is_exchange_open`` resolves the exchange to a gate by iterating
+rows and checking membership in ``row.exchanges``.
 
-Seed rows (5 defaults, date IS NULL)
+Seed rows (2 defaults, date IS NULL)
 -------------------------------------
-+-------+----------------------------------+---------+-----------+----------+----------+
-| gate  | exchanges                        | open    | close     | snapshot | reset    |
-+-------+----------------------------------+---------+-----------+----------+----------+
-| NSE   | NSE, BSE, NFO, BFO, CDS         | 09:15   | 15:30     | 15:45    | 08:00    |
-| MCX   | MCX                              | 09:00   | 23:30     | 23:45    | 08:00    |
-| PRE   | NSE                              | 09:00   | 09:08     | –        | –        |
-| POST  | NSE, BSE                         | 15:40   | 16:00     | –        | –        |
-| NIGHT | MCX                              | 00:00   | 01:00     | 00:15    | –        |
-+-------+----------------------------------+---------+-----------+----------+----------+
++---------+----------------------------------+---------+-----------+----------+----------+
+| gate    | exchanges                        | open    | close     | snapshot | reset    |
++---------+----------------------------------+---------+-----------+----------+----------+
+| NON-MCX | NSE, BSE, NFO, BFO, CDS         | 08:00   | 16:00     | 15:45    | 08:00    |
+| MCX     | MCX                              | 08:00   | 23:30     | 00:15*   | 08:00    |
++---------+----------------------------------+---------+-----------+----------+----------+
+* 00:15 IST (next calendar day) — after MCX settlement; snapshot_time wraps midnight.
+
+Pre-open, post-close, and night-settlement sessions are absorbed into the two
+main gate rows.  PRE/POST/NIGHT rows from older schema versions are removed by
+the migration step in seed_and_warm().
 
 settlement_cutoff_for
 ---------------------
 Returns the last 08:00 IST boundary that has passed for the given gate.
 This is the canonical cutoff used when querying ``daily_book.ltp`` for
-the prior-session settlement price. Both NSE and MCX use 08:00 IST as
-``snapshot_reset_time``, so a single gate lookup suffices for callers.
+the prior-session settlement price. Both NON-MCX and MCX use 08:00 IST as
+``snapshot_reset_time``; callers should pass the gate derived from the
+position/holding's exchange field via EXCHANGE_TO_GATE.
 """
 
 from __future__ import annotations
@@ -294,12 +296,12 @@ async def settlement_cutoff_for(gate: str) -> datetime:
 
 _SEED_ROWS: list[dict] = [
     {
-        "gate": "NSE",
+        "gate": "NON-MCX",
         "exchanges": ["NSE", "BSE", "NFO", "BFO", "CDS"],
         "session_name": "regular",
         "is_open": True,
-        "open_time": time(9, 15),
-        "close_time": time(15, 30),
+        "open_time": time(8, 0),
+        "close_time": time(16, 0),
         "snapshot_time": time(15, 45),
         "snapshot_reset_time": time(8, 0),
         "source": "system",
@@ -309,43 +311,10 @@ _SEED_ROWS: list[dict] = [
         "exchanges": ["MCX"],
         "session_name": "regular",
         "is_open": True,
-        "open_time": time(9, 0),
+        "open_time": time(8, 0),
         "close_time": time(23, 30),
-        "snapshot_time": time(23, 45),
-        "snapshot_reset_time": time(8, 0),
-        "source": "system",
-    },
-    {
-        "gate": "PRE",
-        "exchanges": ["NSE"],
-        "session_name": "pre_open",
-        "is_open": True,
-        "open_time": time(9, 0),
-        "close_time": time(9, 8),
-        "snapshot_time": None,
-        "snapshot_reset_time": None,
-        "source": "system",
-    },
-    {
-        "gate": "POST",
-        "exchanges": ["NSE", "BSE"],
-        "session_name": "post_close",
-        "is_open": True,
-        "open_time": time(15, 40),
-        "close_time": time(16, 0),
-        "snapshot_time": None,
-        "snapshot_reset_time": None,
-        "source": "system",
-    },
-    {
-        "gate": "NIGHT",
-        "exchanges": ["MCX"],
-        "session_name": "night_settlement",
-        "is_open": True,
-        "open_time": time(0, 0),
-        "close_time": time(1, 0),
         "snapshot_time": time(0, 15),
-        "snapshot_reset_time": None,
+        "snapshot_reset_time": time(8, 0),
         "source": "system",
     },
 ]
@@ -358,8 +327,13 @@ async def seed_and_warm() -> None:
     Uses the app engine directly (``AsyncSession(engine)``) since the
     DI session is not available at startup.
 
-    Each seed row is inserted with ``ON CONFLICT DO NOTHING`` so repeated
-    restarts do not alter operator-modified rows.
+    Migration steps run first (idempotent):
+      1. Delete legacy PRE / POST / NIGHT rows (no-op if already absent).
+      2. Rename the old NSE gate row to NON-MCX and update its open/close times.
+      3. Update MCX snapshot time from 23:45 to 00:15 and open from 09:00 to 08:00.
+
+    Seed inserts follow with ``ON CONFLICT DO NOTHING`` so repeated restarts
+    do not clobber operator-modified rows.
     """
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy import text as _text
@@ -368,6 +342,34 @@ async def seed_and_warm() -> None:
     try:
         async with AsyncSession(engine) as session:
             async with session.begin():
+                # --- migration: remove old session rows -------------------------
+                await session.execute(_text(
+                    "DELETE FROM exchange_schedule WHERE gate IN ('PRE', 'POST', 'NIGHT')"
+                ))
+                # --- migration: rename NSE → NON-MCX, update times -------------
+                await session.execute(_text("""
+                    UPDATE exchange_schedule
+                    SET gate = 'NON-MCX',
+                        open_time = '08:00',
+                        close_time = '16:00',
+                        snapshot_time = '15:45',
+                        snapshot_reset_time = '08:00'
+                    WHERE gate = 'NSE'
+                      AND date IS NULL
+                      AND session_name = 'regular'
+                      AND source = 'system'
+                """))
+                # --- migration: fix MCX open + snapshot time -------------------
+                await session.execute(_text("""
+                    UPDATE exchange_schedule
+                    SET open_time = '08:00',
+                        snapshot_time = '00:15'
+                    WHERE gate = 'MCX'
+                      AND date IS NULL
+                      AND session_name = 'regular'
+                      AND source = 'system'
+                """))
+                # --- seed missing rows (NON-MCX / MCX if not yet present) ------
                 for row in _SEED_ROWS:
                     await session.execute(_text("""
                         INSERT INTO exchange_schedule
@@ -391,7 +393,7 @@ async def seed_and_warm() -> None:
                         "snapshot_reset_time": row.get("snapshot_reset_time"),
                         "source": row["source"],
                     })
-        logger.info("exchange_clock: seed rows inserted (idempotent)")
+        logger.info("exchange_clock: migration + seed complete")
     except Exception as exc:
         logger.warning("exchange_clock: seed failed — %s", exc)
 
