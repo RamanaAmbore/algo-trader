@@ -332,6 +332,7 @@
   const _canView = $derived(hasCap('manage_settings', _caps, _role));
   const _canViewSchedule = $derived(hasCap('view_exchange_schedule', _caps, _role));
   let _loadedOnce = false;
+  let _scheduleLoadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {
       _loadedOnce = true;
@@ -342,8 +343,14 @@
       // Defer one event-loop tick so the settings cards paint first;
       // the dropdown swaps from free-text → Select once symbols land.
       setTimeout(() => { _loadPinnedSymbols(); }, 0);
-      // TERTIARY — exchange schedule. Loaded with admin cap guard.
-      if (hasCap('view_exchange_schedule', _caps, _role)) setTimeout(() => { loadSchedule(); }, 0);
+    }
+  });
+  // Separate effect so admin/risk/trader (view_exchange_schedule but not
+  // manage_settings) still load the schedule table on first mount.
+  $effect(() => {
+    if (_canViewSchedule && !_scheduleLoadedOnce) {
+      _scheduleLoadedOnce = true;
+      setTimeout(() => { loadSchedule(); }, 0);
     }
   });
 </script>
