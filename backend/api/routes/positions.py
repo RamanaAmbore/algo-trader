@@ -416,6 +416,57 @@ async def _fetch_ref_close_map(
     return out
 
 
+def _row_is_settled_flat(row) -> bool:
+    """Case 3: flat intraday row (qty==0) — settled regardless of exchange state."""
+    try:
+        return int(getattr(row, "quantity", 0) or 0) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _exchange_closed_cached(exchange: str, cache: dict[str, bool]) -> bool:
+    """Per-call exchange-closed probe with memoisation to avoid N×holiday lookups."""
+    e = (exchange or "").upper()
+    if e not in cache:
+        cache[e] = is_exchange_closed_now(e)
+    return cache[e]
+
+
+async def _process_overlay_row(r, kind: str, snap_map: dict, ref_close_map: dict,
+                               exchange_closed: dict) -> object:
+    """Resolve price/source/animation for one row under the closed-exchange overlay.
+
+    Handles the three cases: flat (settled), open exchange (live), closed exchange
+    (snapshot path + optional day-change overlay for positions).
+    """
+    import msgspec as _msc
+    broker_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+    if _row_is_settled_flat(r):
+        return _msc.structs.replace(
+            r, price_source="snapshot_settled",
+            current_price=broker_ltp, is_animating=False,
+        )
+    if not _exchange_closed_cached(getattr(r, "exchange", ""), exchange_closed):
+        return _replace_row_price(r, broker_ltp, exchange_open=True, snap_ltp=None)
+
+    key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
+    snap_ltp = snap_map.get(key)
+    replaced = _replace_row_price(r, broker_ltp, exchange_open=False, snap_ltp=snap_ltp)
+    if kind == "positions":
+        ref_close = ref_close_map.get(key, 0.0)
+        if ref_close > 0 and snap_ltp is not None:
+            snap_ltp_f = float(snap_ltp)
+            qty = int(getattr(r, "quantity", 0) or 0)
+            dcv = (snap_ltp_f - ref_close) * qty
+            prev_val = abs(ref_close * qty) if qty else 0.0
+            dcp = (dcv / prev_val * 100.0) if prev_val else 0.0
+            replaced = _msc.structs.replace(
+                replaced, day_change_val=dcv, day_change_percentage=dcp,
+                close_price=ref_close,
+            )
+    return replaced
+
+
 async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> list:
     """Per-exchange close-snapshot overlay under the unified animation model
     (Jul 2026 refactor).
@@ -447,58 +498,17 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
     """
     if not rows:
         return rows
-    # Which exchanges are currently closed? Cache per call so we don't
-    # probe holidays N × per-row times.
-    exchange_closed: dict[str, bool] = {}
-    def _closed(exch: str) -> bool:
-        e = (exch or "").upper()
-        if e not in exchange_closed:
-            exchange_closed[e] = is_exchange_closed_now(e)
-        return exchange_closed[e]
 
     import msgspec as _msc
 
-    # Case 3 helper — a fully-closed intraday row (quantity == 0 with a
-    # non-zero realised P&L) is settled by definition: no live LTP can
-    # move its P&L. Route these rows straight to snapshot_settled +
-    # is_animating=False regardless of exchange-open state so the
-    # frontend's tick-flash cellClass skips them.
-    def _is_settled_flat(row) -> bool:
-        try:
-            _qty = int(getattr(row, "quantity", 0) or 0)
-        except (TypeError, ValueError):
-            _qty = 0
-        return _qty == 0
-
-    # Fast path — every row's exchange is currently open. Route through
-    # the resolver for uniform tagging (single decision point).
-    if not any(_closed(getattr(r, "exchange", "")) for r in rows):
-        out: list = []
-        for r in rows:
-            live_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
-            if _is_settled_flat(r):
-                # Flat row — freeze it, no animation, tag settled.
-                out.append(_msc.structs.replace(
-                    r, price_source="snapshot_settled",
-                    current_price=live_ltp,
-                    is_animating=False,
-                ))
-                continue
-            out.append(_replace_row_price(r, live_ltp, exchange_open=True, snap_ltp=None))
-        return out
-
-    # Some rows are on closed exchanges — pull the snapshot map ONCE and
-    # let the resolver decide per-row.
+    exchange_closed: dict[str, bool] = {}
     snap_map = await latest_snapshot_ltp_map(kind)
 
-    # For positions, also fetch the prior-session settlement LTP (ref_close)
-    # for closed-exchange rows so day_change_val / day_change_pct / close_price
-    # can be overlaid consistently with the snapshot path.  Open-exchange
-    # rows (e.g. MCX when NSE is closed) are NOT included in this query.
     closed_pairs: list[tuple[str, str]] = [
         (str(getattr(r, "account", "")), str(getattr(r, "tradingsymbol", "")))
         for r in rows
-        if _closed(getattr(r, "exchange", "")) and not _is_settled_flat(r)
+        if _exchange_closed_cached(getattr(r, "exchange", ""), exchange_closed)
+        and not _row_is_settled_flat(r)
     ]
     ref_close_map: dict[tuple[str, str], float] = {}
     if kind == "positions" and closed_pairs:
@@ -506,46 +516,9 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
 
     out = []
     for r in rows:
-        exch = getattr(r, "exchange", "")
-        broker_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
-        # Case 3 — settled flat row wins regardless of exchange state.
-        if _is_settled_flat(r):
-            out.append(_msc.structs.replace(
-                r, price_source="snapshot_settled",
-                current_price=broker_ltp,
-                is_animating=False,
-            ))
-            continue
-        if not _closed(exch):
-            out.append(_replace_row_price(r, broker_ltp, exchange_open=True, snap_ltp=None))
-            continue
-
-        key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
-        snap_ltp = snap_map.get(key)
-        replaced = _replace_row_price(r, broker_ltp, exchange_open=False, snap_ltp=snap_ltp)
-
-        # Overlay day_change_val, day_change_percentage, and close_price for
-        # positions rows whose exchange is closed.  Uses the prior-session
-        # settlement LTP from daily_book so these fields agree with the
-        # snapshot path — without this, NSE-closed rows keep the broker's
-        # stale day_change values which were computed against Kite's drifted
-        # close_price.
-        if kind == "positions":
-            ref_close = ref_close_map.get(key, 0.0)
-            if ref_close > 0 and snap_ltp is not None:
-                snap_ltp_f = float(snap_ltp)
-                qty = int(getattr(r, "quantity", 0) or 0)
-                dcv = (snap_ltp_f - ref_close) * qty
-                prev_val = abs(ref_close * qty) if qty else 0.0
-                dcp = (dcv / prev_val * 100.0) if prev_val else 0.0
-                replaced = _msc.structs.replace(
-                    replaced,
-                    day_change_val=dcv,
-                    day_change_percentage=dcp,
-                    close_price=ref_close,
-                )
-
-        out.append(replaced)
+        out.append(await _process_overlay_row(
+            r, kind, snap_map, ref_close_map, exchange_closed,
+        ))
     return out
 
 

@@ -860,6 +860,7 @@ All tables live in the branch-local DB except `broker_accounts`, which is shared
 | `broker_connection_events` | Shared table — audit log of connection lifecycle (auth_fail, fetch_fail, token_ok, circuit_open/close, ticker_error, etc.). Enables operator forensics on credential/network issues. | id (PK), account, event_type (VARCHAR 32), event_ts (TIMESTAMP TZ, indexed), detail (JSONB) |
 | `market_holidays` | Exchange holiday calendar (NSE/MCX/CDS). Seeded from broker API, cached. | id (PK), exchange, holiday_date (unique per exchange) |
 | `market_special_sessions` | Special trading sessions (e.g. Muhurat trading). Operator-editable overrides. | id (PK), exchange, date, start_time, end_time, reason |
+| `exchange_schedule` | Configurable segment opening hours and snapshot timing (NSE, MCX, pre/post market). DB-backed single source of truth for `closed_hours_or_broker` gate logic. Default rows seeded at startup; operator can override via `/api/admin/exchange-schedule`. | id (PK), gate (NSE\|MCX\|PRE\|POST\|NIGHT), date (NULL=default, non-NULL=override), session_name, is_open (boolean), exchanges (TEXT[] array), open_time, close_time, snapshot_time, reset_time, weekdays (int[] for Mon=0…Sun=6), reason, updated_at; UNIQUE (gate, date, session_name) |
 
 **Watchlists** — User-defined symbol groups:
 
@@ -1725,8 +1726,14 @@ async def closed_hours_or_broker(
 **Invariant:** `broker_fn` NEVER executes when markets are closed. Zero broker load
 after 15:30 IST (NSE) and 23:30 IST (MCX).
 
+**Delegation to exchange_clock** — `_any_segment_open()` and `is_exchange_closed_now()` 
+now delegate to `backend/api/helpers/exchange_clock` instead of reading hardcoded time 
+constants. The exchange schedule is DB-backed and configurable via the 
+`ExchangeSchedule` table (§4.6). See §4.13 for the exchange_clock architecture.
+
 **Files:**
 - `backend/api/helpers/snapshot_gate.py` — gate implementation
+- `backend/api/helpers/exchange_clock.py` — DB-backed schedule cache (§4.13)
 - `backend/api/routes/positions.py::get_positions()` — wired
 - `backend/api/routes/holdings.py::get_holdings()` — wired
 - All other data routes follow the same pattern
@@ -1804,6 +1811,126 @@ When a holding is partially or fully sold:
 - `backend/api/routes/positions.py::_override_stale_close_from_snapshot` — frozen-close guardian
 - All callers: PerformancePage TOTAL row, Derivatives Greeks aggregate, Dashboard hero,
   MarketPulse position rows, Snapshot grid, Legs grid
+
+---
+
+## 4.13 Exchange schedule — DB-backed market timing configuration
+
+**Problem it solves:** Hardcoded opening hours (`_NSE_OPEN_H`, `_MCX_CLOSE_M`, etc.) scattered 
+across `background.py` made market-schedule changes (holidays, special sessions, new gates) 
+require code edits + deployments. After Oct 2024 timezone drift fixes, all timing became 
+configurable via the `ExchangeSchedule` table, eliminating hardcoded constants.
+
+**Design:** Exchange schedule is a **configurable ORM model** with DB-backed in-process cache 
+(60s TTL). Five default rows are seeded at startup (date=NULL, non-NULL weekday filters for 
+regular schedules). Operator can create date-specific overrides for holidays + special sessions 
+via the admin controller (`/api/admin/exchange-schedule`). The cache is refreshed on every 
+mutation and consulted by `snapshot_gate.py` + background tasks.
+
+### API: exchange_clock module
+
+**File:** `backend/api/helpers/exchange_clock.py`
+
+**Public API:**
+
+| Function | Signature | Purpose |
+|---|---|---|
+| `is_exchange_open(exchange)` | `str → bool` (sync) | Check if a given exchange (e.g. "NSE") has any open segment now |
+| `is_exchange_closed(exchange)` | `str → bool` (sync) | Inverse of `is_exchange_open` |
+| `is_any_segment_open(exchanges)` | `List[str] \| None → bool` (sync) | Check if ANY segment is open; None checks all |
+| `sessions_with_snapshot_time_now()` | `() → List[ExchangeSchedule]` (sync) | Return rows whose `snapshot_time` matches within ±1 min |
+| `settlement_cutoff_for(gate)` | `str → datetime` (async) | Last 08:00 IST boundary passed for a gate (used in positions/holdings close-price queries) |
+| `refresh()` | `() → None` (async) | Reload cache from DB (skips if cache is fresh < 60s) |
+| `seed_and_warm()` | `() → None` (async) | On_startup callable; seeds 5 defaults, loads cache |
+
+**Cache behavior:**
+
+- **Module-level:** `_CACHE: List[ExchangeSchedule]` (in-process, not shared across processes)
+- **TTL:** 60 seconds; skip DB call if cache is fresh
+- **Thread-safe:** `asyncio.Lock` around refresh so concurrent calls share one DB fetch
+- **Fail-open:** If cache is empty or an exchange is unknown, assume market is open (returns 
+  True) so the live broker path keeps the data fresh
+
+### Default seed rows
+
+Five rows are created on every startup (idempotent — duplicate key skips):
+
+| gate | exchanges | open | close | snapshot | reset | weekdays | date |
+|---|---|---|---|---|---|---|---|
+| NSE | NSE, BSE, NFO, BFO, CDS | 09:15 | 15:30 | 15:45 | 08:00 | Weekdays only | NULL (default) |
+| MCX | MCX | 09:00 | 23:30 | 23:45 | 08:00 | Weekdays only | NULL (default) |
+| PRE | NSE | 09:00 | 09:08 | — | — | Weekdays only | NULL (default) |
+| POST | NSE, BSE | 15:40 | 16:00 | — | — | Weekdays only | NULL (default) |
+| NIGHT | MCX | 00:00 | 01:00 | 00:15 | — | Weekdays only | NULL (default) |
+
+**Weekdays filter:** Array of 0–6 (Mon=0 … Sun=6). Empty array or NULL means applies every day.
+
+### Consumer integration
+
+**snapshot_gate.py delegation:**
+
+```python
+def _any_segment_open(exchanges: list[str] | None = None) -> bool:
+    try:
+        from backend.api.helpers import exchange_clock
+        return exchange_clock.is_any_segment_open(exchanges)
+    except Exception:
+        return True  # fail-open
+```
+
+**background.py snapshot dispatch:**
+
+The old `_snapshot_probe_nse_mcx()` task was replaced. Now:
+
+```python
+async def _snapshot_probe_nse_mcx():
+    sessions = exchange_clock.sessions_with_snapshot_time_now()
+    for session in sessions:
+        if session.gate == "NSE":
+            await trigger_close_snapshot("NSE")
+        elif session.gate == "MCX":
+            await trigger_settlement_capture("MCX")
+        # ... per-gate dispatch
+```
+
+**Positions/holdings cutoff:**
+
+```python
+# OLD (hardcoded): today_ist_8am = ...
+# NEW (dynamic):
+cutoff = await exchange_clock.settlement_cutoff_for("NSE")
+rows = await session.execute(
+    select(DailyBook).where(
+        DailyBook.captured_at < cutoff
+    )
+)
+```
+
+### Admin route: ExchangeScheduleController
+
+**Path:** `GET|PUT|DELETE /api/admin/exchange-schedule`
+
+- **GET** — list all rows (default + overrides)
+- **PUT** — upsert a row (date=specific date creates an override; date=NULL updates a default)
+- **DELETE** — remove a row by id
+
+**On mutation:** Cache is invalidated + refreshed, so the next `closed_hours_or_broker` call 
+picks up the change within 1 request latency.
+
+**Operator workflow:** To close markets for a holiday:
+1. `/admin/exchange-schedule` → `PUT` row with `date=holiday_date, is_open=false` for all gates
+2. Immediate effect: next refresh-rate call sees markets closed; background tasks skip market-hours gates
+
+### Files
+
+- `backend/api/helpers/exchange_clock.py` — SSOT cache + public API
+- `backend/api/routes/exchange_schedule.py` — admin CRUD controller
+- `backend/api/models.py::ExchangeSchedule` — ORM model
+- `backend/api/background.py` — updated `_snapshot_probe_nse_mcx()` (deprecated; 
+  integrated into on_startup + segment-specific background tasks)
+- `backend/api/app.py::on_startup` — calls `exchange_clock.seed_and_warm` after `init_db`
+- `backend/api/helpers/snapshot_gate.py` — delegates to `exchange_clock.is_exchange_closed`, 
+  `is_any_segment_open`
 
 ---
 
@@ -3347,7 +3474,7 @@ gantt
 
 **Key files:**
 - `backend/api/background.py` — all task definitions
-- `backend/api/app.py::on_startup` — spawn list
+- `backend/api/app.py::on_startup` — spawn list + initialization sequence (see §4.13 `seed_and_warm`)
 
 **Tasks that touch operator orders:**
 - `_task_performance` (5min) — fetches positions/holdings/funds; runs `agent_engine.run_cycle`
@@ -3360,6 +3487,10 @@ gantt
 - `_task_closed_hours_refresh` (30min, post-market-close) — persists fresh broker data 
   to `daily_book` after settlement window; invalidates live-data caches so closed-hours 
   routes serve updated snapshots (positions, holdings, funds, trades)
+- `_snapshot_probe_nse_mcx` (polling, triggered at snapshot times) — replaces hardcoded time checks. 
+  Calls `exchange_clock.sessions_with_snapshot_time_now()` to find which gates have 
+  snapshot_time in the next minute, then dispatches `trigger_close_snapshot(gate)` or 
+  `trigger_settlement_capture(gate)` accordingly (see §4.13)
 - `_task_chain_instruments` (T+30s, daily 08:02 IST) — fetches NFO/MCX contracts only; 
   populates `instruments_chain` cache for option-chain tab quote endpoint
 
@@ -3742,11 +3873,11 @@ on the session boundary, providing a stable overnight baseline.
 
 **Layer 1 — Live-path cutoff** (`positions.py:_override_stale_close_from_snapshot`,
 `holdings.py:_override_stale_close_for_holdings`):
-- Before fix: cutoff `today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight`
-  would exclude overnight snapshots when looking for yesterday's settlement LTP
-- After fix: cutoff is `today_ist_8am if now_ist >= today_ist_8am else (today_ist_8am − 1 day)`
-- Before 08:00 IST, the query now looks back to yesterday's 08:00 IST, excluding today's
-  EOD snapshots and properly capturing prior-session settlement
+- Old hardcoded cutoff: `today_ist_8am if now_ist >= today_ist_8am else today_ist_midnight`
+- Current: calls `await exchange_clock.settlement_cutoff_for("NSE")` which returns the 
+  last 08:00 IST boundary that has passed. Before 08:00 IST, returns yesterday's 08:00; 
+  at/after 08:00 IST returns today's 08:00. Query uses this cutoff to exclude today's
+  EOD snapshots and properly capture prior-session settlement LTP
 
 **Layer 2 — Snapshot-path session-boundary branch** (`daily_snapshot.py:snapshot_daily_book`):
 - **Before 08:00 IST** (overnight): reads `daily_book.previous_close` from yesterday's rows
