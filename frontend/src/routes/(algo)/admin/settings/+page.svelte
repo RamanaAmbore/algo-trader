@@ -602,7 +602,7 @@
 {/snippet}
 {/if}
 
-{#if hasCap('manage_settings', _caps, _role)}
+{#if hasCap('view_exchange_schedule', _caps, _role)}
   <!-- Exchange Schedule — operator-editable DB-backed timing table.
        Default rows (date=null) define recurring Mon–Fri schedules per
        gate. Date-override rows cover holidays and special sessions like
@@ -620,8 +620,10 @@
     <!-- Defaults table -->
     <div class="flex items-center gap-2 mb-1 mt-2">
       <span class="text-[0.6rem] font-bold opacity-80 uppercase tracking-widest">Default Schedules</span>
-      <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
-              onclick={() => openScheduleForm(null)}>+ Add Session</button>
+      {#if hasCap('manage_exchange_schedule', _caps, _role)}
+        <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
+                onclick={() => openScheduleForm(null)}>+ Add Session</button>
+      {/if}
     </div>
     {#if scheduleDefaults.length}
       <div class="overflow-x-auto mb-3">
@@ -651,10 +653,12 @@
                 <td class="p-1 text-right font-mono text-[0.65rem]">{row.close_time || '—'}</td>
                 <td class="p-1 text-right font-mono text-[0.65rem]">{row.snapshot_time       || '—'}</td>
                 <td class="p-1 text-right font-mono text-[0.65rem]">{row.snapshot_reset_time || '—'}</td>
-                <td class="p-1">
-                  <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
-                          onclick={() => openScheduleForm(row)}>✏</button>
-                </td>
+                {#if hasCap('manage_exchange_schedule', _caps, _role)}
+                  <td class="p-1">
+                    <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                            onclick={() => openScheduleForm(row)}>✏</button>
+                  </td>
+                {/if}
               </tr>
             {/each}
           </tbody>
@@ -667,8 +671,10 @@
     <!-- Overrides table -->
     <div class="flex items-center gap-2 mb-1">
       <span class="text-[0.6rem] font-bold opacity-80 uppercase tracking-widest">Date Overrides</span>
-      <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
-              onclick={() => { const f = { gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']], date: '', session_name: 'closed', is_open: false, open_time: null, close_time: null, snapshot_time: null, snapshot_reset_time: null, reason: null }; scheduleForm = f; }}>+ Add Override</button>
+      {#if hasCap('manage_exchange_schedule', _caps, _role)}
+        <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
+                onclick={() => { const f = { gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']], date: '', session_name: 'closed', is_open: false, open_time: null, close_time: null, snapshot_time: null, snapshot_reset_time: null, reason: null }; scheduleForm = f; }}>+ Add Override</button>
+      {/if}
     </div>
     {#if scheduleOverrides.length}
       <div class="overflow-x-auto mb-2">
@@ -701,12 +707,14 @@
                 <td class="p-1 text-right font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
                 <td class="p-1 text-right font-mono text-[0.65rem]">{row.close_time || '—'}</td>
                 <td class="p-1 text-[0.65rem] opacity-80">{row.reason || '—'}</td>
-                <td class="p-1 flex gap-1">
-                  <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
-                          onclick={() => openScheduleForm(row)}>✏</button>
-                  <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5 text-red-400"
-                          onclick={() => row.id != null && removeSchedule(row.id)}>×</button>
-                </td>
+                {#if hasCap('manage_exchange_schedule', _caps, _role)}
+                  <td class="p-1 flex gap-1">
+                    <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                            onclick={() => openScheduleForm(row)}>✏</button>
+                    <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5 text-red-400"
+                            onclick={() => row.id != null && removeSchedule(row.id)}>×</button>
+                  </td>
+                {/if}
               </tr>
             {/each}
           </tbody>
@@ -716,8 +724,8 @@
       <div class="text-[0.6rem] opacity-60">No date overrides — all exchanges follow default schedules.</div>
     {/if}
 
-    <!-- Unified add/edit panel -->
-    {#if scheduleForm}
+    <!-- Unified add/edit panel — manage_exchange_schedule only -->
+    {#if scheduleForm && hasCap('manage_exchange_schedule', _caps, _role)}
       <div class="mt-3 pt-3 border-t" style="border-top-color: rgba(126,151,184,0.15)">
         <h4 class="text-[0.6rem] font-bold uppercase tracking-widest opacity-80 mb-2">
           {scheduleForm.id != null ? 'Edit Session' : 'New Session'}
