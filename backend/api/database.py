@@ -723,16 +723,21 @@ async def _migrate_exchange_schedule_table(conn) -> None:
             source              VARCHAR(16) NOT NULL DEFAULT 'operator'
         )
     """))
-    # NULLS NOT DISTINCT requires PG15+; wrapped so older CI instances degrade
-    # gracefully (they simply miss the NULL dedup, which is non-critical in dev).
-    try:
-        await conn.execute(_text("""
-            ALTER TABLE exchange_schedule
-            ADD CONSTRAINT uq_exchange_schedule_gate_date_session
-            UNIQUE NULLS NOT DISTINCT (gate, date, session_name)
-        """))
-    except Exception:
-        pass  # Constraint already exists — idempotent
+    # Idempotent constraint add: DO $$ block avoids aborting the transaction
+    # if the constraint already exists (UNIQUE NULLS NOT DISTINCT requires PG15+).
+    await conn.execute(_text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'uq_exchange_schedule_gate_date_session'
+            ) THEN
+                ALTER TABLE exchange_schedule
+                ADD CONSTRAINT uq_exchange_schedule_gate_date_session
+                UNIQUE NULLS NOT DISTINCT (gate, date, session_name);
+            END IF;
+        END $$
+    """))
     await conn.execute(_text("""
         CREATE INDEX IF NOT EXISTS ix_exchange_schedule_gate_date
         ON exchange_schedule (gate, date)
