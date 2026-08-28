@@ -100,67 +100,29 @@ def _get_stale_live(route_key: str) -> Any | None:
 # daily_book snapshot while MCX rows stay live.  These helpers give routes a
 # single sync predicate they can consult per-row after fetching the raw
 # broker frame.
-
-# Kite exchange → lifecycle gate label. NFO/BFO derivatives track the NSE
-# equity session (same 09:15-15:30 IST window); MCX tracks its own longer
-# window; CDS (currency derivatives) also inherits equity hours. Rows on
-# unknown exchanges fall through to NSE (safest default — most equity-like).
-_EXCHANGE_TO_GATE: dict[str, str] = {
-    "NSE":  "NSE",
-    "BSE":  "NSE",
-    "NFO":  "NSE",
-    "BFO":  "NSE",
-    "CDS":  "NSE",   # 09:15-15:30 IST
-    "MCX":  "MCX",
-}
+#
+# Timing is now delegated to exchange_clock which reads from the DB-backed
+# exchange_schedule table.  The old hardcoded _EXCHANGE_TO_GATE dict and
+# YAML-segment reader have been removed; exchange_clock.is_exchange_closed()
+# resolves each exchange to its gate via the ``exchanges`` column in the DB.
 
 
 def is_exchange_closed_now(exchange: str) -> bool:
     """Return True when `exchange` is currently closed (row-level gate).
 
-    Consults `is_market_open()` with the per-segment hours + holiday
-    calendar. Used by positions.py / holdings.py to decide whether an
-    individual row's LTP should be served from the DB snapshot or from
-    the live broker fetch.
+    Delegates to exchange_clock which resolves timing from the DB-backed
+    exchange_schedule table.  Used by positions.py / holdings.py to decide
+    whether an individual row's LTP should be served from the DB snapshot
+    or from the live broker fetch.
 
-    Fail-open: if the check raises (config missing, holiday API down),
-    return False so the caller keeps the broker value.
+    Fail-open: returns False (treat as open) when exchange_clock cache is
+    empty or the exchange is unknown, so the caller keeps the broker value.
     """
-    gate = _EXCHANGE_TO_GATE.get((exchange or "").upper(), "NSE")
     try:
-        from backend.shared.helpers.date_time_utils import (
-            is_market_open, timestamp_indian,
-        )
-        from backend.shared.helpers.utils import config as _cfg
-        from backend.brokers.broker_apis import fetch_holidays, fetch_special_sessions
-        from datetime import time as _dt_time
-
-        segments = _cfg.get("market_segments", {}) or {}
-        for seg_cfg in segments.values():
-            exch = str(seg_cfg.get("holiday_exchange", "NSE")).upper()
-            if exch != gate:
-                continue
-            h_s, m_s = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
-            h_e, m_e = map(int, seg_cfg.get("hours_end",   "15:30").split(":"))
-            seg_start = _dt_time(h_s, m_s)
-            seg_end   = _dt_time(h_e, m_e)
-            try:
-                holidays = fetch_holidays(exch)
-            except Exception:
-                holidays = set()
-            try:
-                special = fetch_special_sessions(exch)
-            except Exception:
-                special = []
-            now_ist = timestamp_indian()
-            return not is_market_open(
-                now_ist, holidays, seg_start, seg_end, exchange=exch,
-                special_sessions=special,
-            )
+        from backend.api.helpers import exchange_clock
+        return exchange_clock.is_exchange_closed(exchange)
     except Exception:
         return False
-    # No matching segment configured — treat as closed (conservative).
-    return True
 
 
 async def latest_snapshot_ltp_map(kind: str) -> dict[tuple[str, str], float]:
@@ -206,40 +168,19 @@ async def latest_snapshot_ltp_map(kind: str) -> dict[tuple[str, str], float]:
 def _any_segment_open(exchanges: "list[str] | None" = None) -> bool:
     """Sync wrapper used by asyncio.to_thread.
 
+    Delegates to exchange_clock.is_any_segment_open() which reads from the
+    DB-backed exchange_schedule cache.
+
     Parameters
     ----------
     exchanges:
         Optional list of exchange names (e.g. ``["NSE"]``).  When provided,
-        only segments whose ``holiday_exchange`` attribute matches one of the
-        names in the list are consulted.  ``None`` (default) checks ALL
-        configured segments (original behaviour).
+        only segments whose ``exchanges`` column contains one of the names
+        are consulted.  ``None`` (default) checks ALL configured segments.
     """
     try:
-        from backend.shared.helpers.date_time_utils import (
-            timestamp_indian,
-        )
-        from backend.shared.helpers.utils import config as _cfg
-
-        now_ist = timestamp_indian()
-
-        if exchanges is None:
-            from backend.shared.helpers.date_time_utils import is_any_segment_open
-            return is_any_segment_open(now_ist)
-
-        # Filter to segments whose holiday_exchange is in the provided list.
-        upper_set = {e.upper() for e in exchanges}
-        from backend.shared.helpers.date_time_utils import _segment_is_open
-        segments = _cfg.get("market_segments", {}) or {}
-        for seg_cfg in segments.values():
-            exch = str((seg_cfg or {}).get("holiday_exchange", "NSE")).upper()
-            if exch not in upper_set:
-                continue
-            try:
-                if _segment_is_open(seg_cfg or {}, now_ist):
-                    return True
-            except Exception:
-                continue
-        return False
+        from backend.api.helpers import exchange_clock
+        return exchange_clock.is_any_segment_open(exchanges)
     except Exception:
         # fail-open: if we cannot determine market state, assume open so
         # the live broker path runs and the operator sees fresh data.

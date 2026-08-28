@@ -248,14 +248,14 @@ class TestPerfRunCloseCheck:
         assert now.weekday() == 4, f"2026-08-21 should be Friday, got {now.weekday()}"
 
         df_empty = pd.DataFrame()
-        seg = self._make_segment('equity', 15, 30)
+        seg = self._make_segment('NSE', 15, 30)
 
         # _run must be an async wrapper that calls the lambda immediately
         async def _mock_run(fn):
             return fn()
 
         with (
-            patch("backend.api.background._build_segments", return_value=[seg]),
+            patch("backend.api.background._get_segments", return_value=[seg]),
             patch("backend.api.background._run", side_effect=_mock_run),
             patch("backend.api.background.timestamp_display", return_value="16:00 IST"),
             patch("backend.shared.helpers.summarise.summarise_holdings",
@@ -270,8 +270,8 @@ class TestPerfRunCloseCheck:
             ))
 
         # last_close must be updated for the segment
-        assert seg_state['equity']['last_close'] == today, (
-            "seg_state['equity']['last_close'] must be set to today after summary fires"
+        assert seg_state['NSE']['last_close'] == today, (
+            "seg_state['NSE']['last_close'] must be set to today after summary fires"
         )
 
     def test_skips_when_before_trigger(self):
@@ -283,11 +283,11 @@ class TestPerfRunCloseCheck:
         # Trigger would be 15:45; now=15:30 → before trigger
         now = datetime(2026, 8, 22, 15, 30, 0, tzinfo=IST)
 
-        seg = self._make_segment('equity', 15, 30)
+        seg = self._make_segment('NSE', 15, 30)
 
         mock_send = MagicMock()
         with (
-            patch("backend.api.background._build_segments", return_value=[seg]),
+            patch("backend.api.background._get_segments", return_value=[seg]),
             patch("backend.shared.helpers.alert_utils.send_summary", mock_send),
         ):
             asyncio.run(_perf_run_close_check(
@@ -296,7 +296,7 @@ class TestPerfRunCloseCheck:
             ))
 
         # last_close must NOT be set
-        assert seg_state['equity']['last_close'] != today, (
+        assert seg_state['NSE']['last_close'] != today, (
             "seg_state must not be updated before the close trigger"
         )
 
@@ -310,11 +310,11 @@ class TestPerfRunCloseCheck:
         now = datetime(2026, 8, 23, 16, 0, 0, tzinfo=IST)
         assert now.weekday() == 6, f"2026-08-23 should be Sunday, got {now.weekday()}"
 
-        seg = self._make_segment('equity', 15, 30)
+        seg = self._make_segment('NSE', 15, 30)
         mock_send = MagicMock()
 
         with (
-            patch("backend.api.background._build_segments", return_value=[seg]),
+            patch("backend.api.background._get_segments", return_value=[seg]),
             patch("backend.shared.helpers.alert_utils.send_summary", mock_send),
         ):
             asyncio.run(_perf_run_close_check(
@@ -322,7 +322,7 @@ class TestPerfRunCloseCheck:
                 now, today, seg_state, close_offset=15,
             ))
 
-        assert seg_state['equity']['last_close'] != today, (
+        assert seg_state['NSE']['last_close'] != today, (
             "Close summary must not fire on weekends (weekday >= 5)"
         )
 
@@ -332,14 +332,14 @@ class TestPerfRunCloseCheck:
 
         seg_state = self._make_seg_state()
         today = date(2026, 8, 22)  # Friday
-        seg_state['equity']['last_close'] = today  # already sent
+        seg_state['NSE']['last_close'] = today  # already sent
         now = datetime(2026, 8, 22, 16, 30, 0, tzinfo=IST)
 
-        seg = self._make_segment('equity', 15, 30)
+        seg = self._make_segment('NSE', 15, 30)
         mock_send = MagicMock()
 
         with (
-            patch("backend.api.background._build_segments", return_value=[seg]),
+            patch("backend.api.background._get_segments", return_value=[seg]),
             patch("backend.shared.helpers.alert_utils.send_summary", mock_send),
         ):
             asyncio.run(_perf_run_close_check(

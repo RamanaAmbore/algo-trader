@@ -56,6 +56,8 @@ from backend.api.routes.positions import PositionsController
 from backend.api.routes.settings import SettingsController
 from backend.api.routes.brokers import BrokersController
 from backend.api.routes.hedge_proxies import HedgeProxiesController, seed_hedge_proxies
+from backend.api.routes.exchange_schedule import ExchangeScheduleController
+from backend.api.helpers.exchange_clock import seed_and_warm as exchange_clock_seed_and_warm
 from backend.api.routes.research import ResearchController
 from backend.api.routes.economic import EconomicController
 from backend.api.routes.charts import ChartsController
@@ -227,6 +229,7 @@ _route_handlers = [
     OptionsController,
     BrokersController,
     HedgeProxiesController,
+    ExchangeScheduleController,
     ResearchController,
     EconomicController,
     WatchlistController,
@@ -719,7 +722,7 @@ app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
     openapi_config=openapi_config,
-    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup, _start_write_queue, _start_event_queues, *_perf_on_startup],
+    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, exchange_clock_seed_and_warm, _start_kite_ticker, bg_startup, _start_write_queue, _start_event_queues, *_perf_on_startup],
     on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue, _stop_event_queues, *_perf_on_shutdown],
     before_request=_log_visitor,
     # Audit middleware — writes one audit_log row per mutating

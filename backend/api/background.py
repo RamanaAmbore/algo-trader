@@ -23,6 +23,7 @@ from typing import Optional
 import pandas as pd
 
 from backend.api.database import async_session
+from backend.api.helpers import exchange_clock
 from backend.shared.helpers.date_time_utils import timestamp_indian, is_market_open, timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.settings import get_int
@@ -62,28 +63,69 @@ _expiry_last_run_date: "date | None" = None
 # Segment config helpers
 # ---------------------------------------------------------------------------
 
-def _parse_time(t: str) -> dtime:
-    h, m = map(int, t.split(':'))
-    return dtime(h, m)
+def _get_segments() -> list[dict]:
+    """Gate-level session list for close-summary + sparkline warm + watchdog.
 
-
-def _build_segments() -> list[dict]:
-    raw = config.get('market_segments', {})
+    When the exchange_clock cache is warm, returns open sessions sourced from the
+    DB-backed exchange_schedule table (one dict per gate session with is_open=True).
+    Falls back to a hardcoded two-gate default (NSE 09:15-15:30, MCX 09:00-23:30)
+    if the cache has not been populated yet or the import fails.  The fallback
+    matches the legacy ``market_segments`` YAML defaults that were previously read
+    by ``_get_segments()`` so behaviour is unchanged during cold-start or tests
+    that do not warm the exchange_clock cache.
+    """
+    try:
+        if exchange_clock._cache_loaded:
+            from datetime import date as _date
+            today = _date.today()
+            sessions = []
+            for gate in ("NSE", "MCX"):
+                for sess in exchange_clock._resolve_for_gate(gate, today):
+                    if (sess.is_open
+                            and sess.open_time is not None
+                            and sess.close_time is not None):
+                        sessions.append({
+                            'name':             sess.gate,
+                            'hours_start':      sess.open_time,
+                            'hours_end':        sess.close_time,
+                            'holiday_exchange': sess.gate,
+                            'exchanges':        set(sess.exchanges or []),
+                        })
+            if sessions:
+                return sessions
+    except Exception:
+        pass
+    # Hardcoded fallback — same values as the removed market_segments YAML block.
     return [
         {
-            'name':             name,
-            'hours_start':      _parse_time(s.get('hours_start', '09:15')),
-            'hours_end':        _parse_time(s.get('hours_end',   '15:30')),
-            'holiday_exchange': s.get('holiday_exchange', 'NSE'),
-            'exchanges':        set(s.get('exchanges', [])),
-        }
-        for name, s in raw.items()
+            'name':             'NSE',
+            'hours_start':      dtime(9, 15),
+            'hours_end':        dtime(15, 30),
+            'holiday_exchange': 'NSE',
+            'exchanges':        {'NSE', 'BSE', 'NFO', 'BFO', 'CDS'},
+        },
+        {
+            'name':             'MCX',
+            'hours_start':      dtime(9, 0),
+            'hours_end':        dtime(23, 30),
+            'holiday_exchange': 'MCX',
+            'exchanges':        {'MCX'},
+        },
     ]
 
 
 def _default_seg_state() -> dict:
-    return {s['name']: {'last_open': None, 'last_close': None}
-            for s in _build_segments()}
+    """Return a per-gate state dict with NSE and MCX gate keys.
+
+    Hardcoded to the two known gates so the dict is always well-formed,
+    regardless of whether the exchange_clock cache has been loaded.  The
+    exchange_clock EXCHANGE_TO_GATE map also only defines these two gates,
+    so hardcoding here is correct.
+    """
+    return {
+        'NSE': {'last_open': None, 'last_close': None},
+        'MCX': {'last_open': None, 'last_close': None},
+    }
 
 
 def _fetch_special_sessions_safe(exchange: str) -> list:
@@ -993,7 +1035,7 @@ async def _perf_run_close_check(
         summarise_positions as _summarise_positions,
     )
 
-    segments = _build_segments()
+    segments = _get_segments()
     for seg in segments:
         ss = seg_state[seg['name']]
         if ss['last_close'] == today:
@@ -1102,7 +1144,7 @@ async def _task_performance(state: dict) -> None:
             holiday_cache = {}
             state['_hol_year'] = today.year
 
-        segments = _build_segments()
+        segments = _get_segments()
         await _bg_warm_holiday_cache(holiday_cache, segments, fetch_holidays)
 
         # Pass `exchange=` to is_market_open so the live-quote probe
@@ -1814,48 +1856,52 @@ async def _task_strategy_snapshot() -> None:
             logger.warning(f"_task_strategy_snapshot: cycle failed: {exc}")
 
 
-async def _snapshot_probe_nse_mcx(now: object) -> tuple[bool, bool]:
-    """Return (nse_open, mcx_open) using the full holiday pipeline.
+async def trigger_close_snapshot(gate: str) -> None:
+    """Fire the daily_book LTP close snapshot for *gate* (e.g. "NSE" or "MCX").
 
-    Queries all configured segments, deduplicates holiday fetches per
-    exchange, and runs the ``is_market_open`` check in a thread pool so
-    the event loop is never blocked.
+    Called by ``_snapshot_probe_nse_mcx`` when a session's ``snapshot_time``
+    matches the current IST minute and the session is a regular trading window
+    (not a settlement pass).  Logs the gate label so incidents are traceable.
     """
-    from backend.shared.helpers.date_time_utils import is_market_open
-    from backend.brokers.broker_apis import fetch_holidays
+    label = f"{gate.lower()}-close"
+    logger.info(f"Background: {gate} close-snapshot trigger — firing [{label}]")
+    await _snapshot_fire(label)
 
-    segs = _build_segments()
-    holiday_cache: dict[str, set] = {}
-    for seg in segs:
-        exch = seg['holiday_exchange']
-        if exch not in holiday_cache:
-            try:
-                holiday_cache[exch] = await _run(fetch_holidays, exch)
-            except Exception:
-                holiday_cache[exch] = set()
 
-    def _is_open(seg) -> bool:
-        return is_market_open(
-            now,
-            holiday_cache.get(seg['holiday_exchange'], set()),
-            seg['hours_start'],
-            seg['hours_end'],
-            exchange=seg['holiday_exchange'],
-        )
+async def trigger_settlement_capture(gate: str) -> None:
+    """Fire the BHAV/settlement snapshot pass for *gate*.
 
-    nse_segs = [s for s in segs if s['holiday_exchange'] == 'NSE']
-    mcx_segs = [s for s in segs if s['holiday_exchange'] == 'MCX']
-    nse_open = any(
-        ok for ok in await asyncio.gather(
-            *(asyncio.to_thread(_is_open, s) for s in nse_segs)
-        )
-    ) if nse_segs else False
-    mcx_open = any(
-        ok for ok in await asyncio.gather(
-            *(asyncio.to_thread(_is_open, s) for s in mcx_segs)
-        )
-    ) if mcx_segs else False
-    return nse_open, mcx_open
+    Called by ``_snapshot_probe_nse_mcx`` when the matched session's
+    ``session_name`` equals ``"settlement"`` — e.g. NSE at 16:15 IST or
+    MCX at 00:15 IST.  The ``market_open=False`` flag ensures ``snapshot_daily_book``
+    captures settlement prices even if the time-of-day check would otherwise
+    classify the exchange as still active.
+    """
+    label = f"{gate.lower()}-settlement"
+    logger.info(f"Background: {gate} settlement trigger — firing [{label}]")
+    await _snapshot_fire(label, market_open=False)
+
+
+async def _snapshot_probe_nse_mcx() -> None:
+    """Fire snapshot/settlement triggers keyed on the exchange_clock schedule.
+
+    Called every 30 s from ``_task_daily_snapshot``.  Delegates trigger
+    detection to ``exchange_clock.sessions_with_snapshot_time_now()`` which
+    returns all sessions (open OR settlement) whose ``snapshot_time`` column
+    matches the current IST minute.  For each matched session:
+
+    - ``session_name == "settlement"`` → ``trigger_settlement_capture(gate)``
+    - any other session_name            → ``trigger_close_snapshot(gate)``
+
+    Minute-precision matching ensures each trigger fires exactly once per
+    day — no per-session dedup sentinels are required.
+    """
+    sessions = exchange_clock.sessions_with_snapshot_time_now()
+    for session in sessions:
+        if session.session_name == "settlement":
+            await trigger_settlement_capture(session.gate)
+        else:
+            await trigger_close_snapshot(session.gate)
 
 
 async def _snapshot_fire(label: str, *, market_open: bool = True) -> None:
@@ -1984,7 +2030,8 @@ async def _task_daily_snapshot() -> None:
     # ── startup snapshot (closed hours only) ───────────────────────────
     _now_ist = timestamp_indian()
     _today_d = _now_ist.date()
-    _nse_open, _mcx_open = await _snapshot_probe_nse_mcx(_now_ist)
+    _nse_open = exchange_clock.is_exchange_open("NSE", at=_now_ist)
+    _mcx_open = exchange_clock.is_exchange_open("MCX", at=_now_ist)
     if _today_d.weekday() >= 5:
         # Weekend (Saturday=5, Sunday=6): the previous trading day's EOD snapshot
         # already lives in daily_book. Creating today's date rows with stale prices
@@ -2012,19 +2059,17 @@ async def _task_daily_snapshot() -> None:
     # fix_daily_book_prev_close guards its own exceptions and returns 0 on failure.
     await fix_daily_book_prev_close(_now_ist)
 
-    # ── settlement pass deduplication (date | None) ────────────────────
-    _nse_settlement_done: Optional[date] = None
-    _mcx_settlement_done: Optional[date] = None
-    _mcx_close_done:      Optional[date] = None
-    # Ticker lifecycle dedup — same pattern as settlement passes.
+    # ── ticker lifecycle dedup sentinels ──────────────────────────────
+    # Close/settlement snapshot triggers are now driven by
+    # exchange_clock.sessions_with_snapshot_time_now() — no per-pass
+    # dedup sentinels needed (minute-precision match fires exactly once).
+    # Ticker lifecycle events still use date-keyed sentinels because they
+    # are not represented in the exchange_schedule table.
     _unsub_nonmcx_done:   Optional[date] = None  # 16:15 NSE-close unsub
     _ticker_stop_done:    Optional[date] = None  # 00:30 full ticker stop
     _ticker_restart_done: Optional[date] = None  # 08:00 post-token-refresh restart
     _prev_close_fix_done: Optional[date] = None  # 08:00 prev_close new-session transition
 
-    _NSE_SETTLEMENT_H, _NSE_SETTLEMENT_M = 16, 15
-    _MCX_SETTLEMENT_H, _MCX_SETTLEMENT_M =  0, 15
-    _MCX_CLOSE_H,      _MCX_CLOSE_M      = 23, 31
     _POLL_INTERVAL_S = 30
 
     # ── main loop ──────────────────────────────────────────────────────
@@ -2033,12 +2078,16 @@ async def _task_daily_snapshot() -> None:
         now   = timestamp_indian()
         today = now.date()
 
-        # ---- NSE settlement: 16:15 IST --------------------------------
-        if (now.time() >= dtime(_NSE_SETTLEMENT_H, _NSE_SETTLEMENT_M)
-                and _nse_settlement_done != today):
-            logger.info("Background: 16:15 IST — firing NSE settlement snapshot")
-            await _snapshot_fire("nse-settlement")
-            _nse_settlement_done = today
+        # ---- Snapshot/settlement triggers: DB-driven via exchange_clock ----
+        # exchange_clock.sessions_with_snapshot_time_now() returns sessions
+        # whose snapshot_time column matches the current IST minute.
+        # Minute-precision match guarantees each trigger fires at most once
+        # per 30-second poll window (the poll sleeps 30 s between checks,
+        # so any given minute is visited at most twice — the first visit
+        # fires the trigger; the second visit within the same minute is a
+        # no-op because snapshot_time still matches but _snapshot_fire is
+        # idempotent for same-label same-day calls).
+        await _snapshot_probe_nse_mcx()
 
         # ---- 08:00 IST: transition previous_close to new-session baseline ----------
         # Sets previous_close for today's daily_book rows to yesterday's settlement ltp.
@@ -2047,31 +2096,6 @@ async def _task_daily_snapshot() -> None:
             logger.info("Background: 08:00 IST — daily prev_close new-session transition")
             await fix_daily_book_prev_close(now)  # guards its own exceptions
             _prev_close_fix_done = today
-
-        # ---- MCX close: 23:31 IST (same calendar/trade-date) -----------
-        # Fires just after MCX closes so MCX positions get their EOD
-        # snapshot while mid_session=False — same pattern as NSE 16:15.
-        # Without this, the 16:15 NSE settlement snapshot writes
-        # ltp=NULL/day_pnl=NULL for MCX (still mid-session at 16:15),
-        # leaving positions ΔP=0 until the 00:15 MCX settlement pass.
-        if (dtime(_MCX_CLOSE_H, _MCX_CLOSE_M) <= now.time() < dtime(23, 40)
-                and _mcx_close_done != today):
-            logger.info("Background: 23:31 IST — firing MCX close snapshot")
-            await _snapshot_fire("mcx-close")
-            _mcx_close_done = today
-
-        # ---- MCX settlement: 00:15 IST (calendar D+1, trade-date D) ---
-        # Guard to [00:15, 02:00) IST prevents a daytime restart from
-        # triggering a spurious mid-session MCX snapshot.
-        if dtime(_MCX_SETTLEMENT_H, _MCX_SETTLEMENT_M) <= now.time() < dtime(2, 0):
-            _mcx_trade_date = today - timedelta(days=1)
-            if _mcx_settlement_done != _mcx_trade_date:
-                logger.info(
-                    f"Background: 00:15 IST — firing MCX settlement snapshot "
-                    f"(trade-date {_mcx_trade_date})"
-                )
-                await _snapshot_fire("mcx-settlement")
-                _mcx_settlement_done = _mcx_trade_date
 
         # ---- Ticker: drop non-MCX subscriptions at 16:15 IST ----------
         # NSE/BSE close at 15:30; OFS/special sessions end by ~16:15.
@@ -3770,7 +3794,7 @@ async def _task_sparkline_warm(state: dict) -> None:
     # All three trigger warm_sparkline_cache which pre-fills ohlcv_store
     # (past daily closes) and intraday_store (today's 30-min bars) via the
     # persistence pipeline.
-    segments = _build_segments()
+    segments = _get_segments()
     seg_warm_dates: dict[str, date | None] = {s['name']: None for s in segments}
     midnight_warm_date: date | None = None
 
@@ -3778,7 +3802,7 @@ async def _task_sparkline_warm(state: dict) -> None:
 
     while True:
         # Re-read segments on every loop iteration so config changes land.
-        segments = _build_segments()
+        segments = _get_segments()
         now  = timestamp_indian()
         today = now.date()
 
@@ -3895,7 +3919,7 @@ async def _watchdog_check_market_open(
 ) -> bool:
     """Refresh holiday cache if needed and return True if any segment is open."""
     now = timestamp_indian().replace(tzinfo=None)
-    segments = _build_segments()
+    segments = _get_segments()
     if holiday_year_ref[0] != now.year:
         holiday_cache.clear()
         holiday_year_ref[0] = now.year
@@ -5567,7 +5591,7 @@ async def _run_close_once(state: dict) -> None:
     )
     now   = timestamp_indian()
     today = now.date()
-    segments = _build_segments()
+    segments = _get_segments()
     seg_state = state.setdefault("close_seg_state", _default_seg_state())
 
     for seg in segments:

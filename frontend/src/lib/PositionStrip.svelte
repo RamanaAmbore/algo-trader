@@ -1080,11 +1080,19 @@
   .ps-strip::-webkit-scrollbar { display: none; }
   /* Heartbeat — fires on every successful 30s poll completion via a
      class toggle that resolves after 300ms (unified tick-bus duration).
-     Subtle amber-bordered glow that reads as "data refreshed" without
-     competing with the per-cell directional flash. Operator: "I don't
-     see any animation refreshing nav strip". */
+     Amber glow pulse that reads as "data refreshed" without competing
+     with the per-cell directional flash. Operator: "I don't see any
+     animation refreshing nav strip". */
+  @keyframes ps-heartbeat-pulse {
+    0%   { border-bottom-color: rgba(251, 191, 36, 0.30);
+           box-shadow: 0 1px 0 0 rgba(251, 191, 36, 0.0); }
+    30%  { border-bottom-color: rgba(251, 191, 36, 1.00);
+           box-shadow: 0 2px 10px 0 rgba(251, 191, 36, 0.55); }
+    100% { border-bottom-color: rgba(251, 191, 36, 0.30);
+           box-shadow: 0 1px 0 0 rgba(251, 191, 36, 0.0); }
+  }
   .ps-strip.ps-heartbeat {
-    border-bottom-color: rgba(251, 191, 36, 0.75);
+    animation: ps-heartbeat-pulse 300ms ease-out forwards;
   }
   /* Stale-data indicator — amber tint when positions or holdings have
      returned 2+ consecutive errors. Color-codes the strip without an
@@ -1103,7 +1111,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .ps-strip.ps-heartbeat { transition: none; }
+    .ps-strip.ps-heartbeat { animation: none; transition: none; }
     .ps-strip.ps-poll-pulse { transition: none; }
   }
   .ps-strip:hover {

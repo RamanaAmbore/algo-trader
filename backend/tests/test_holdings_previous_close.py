@@ -303,12 +303,17 @@ class TestPreviousCloseWrittenForAllRows:
 
         df = _make_raw_df()
         mock_time = datetime(2026, 8, 20, 9, 0, 0, tzinfo=_IST)
+        fixed_cutoff = datetime(2026, 8, 20, 8, 0, 0, tzinfo=_IST)
 
         with (
             patch("backend.api.database.async_session", return_value=mock_session),
             patch(
                 "backend.shared.helpers.date_time_utils.timestamp_indian",
                 return_value=mock_time,
+            ),
+            patch(
+                "backend.api.helpers.exchange_clock.settlement_cutoff_for",
+                new=AsyncMock(return_value=fixed_cutoff),
             ),
         ):
             asyncio.run(_override_stale_close_for_holdings(df))

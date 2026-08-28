@@ -153,14 +153,40 @@ def test_routes_accept_skip_ltp_param():
 
 @pytest.mark.asyncio
 async def test_exchange_to_gate_map_covers_common_exchanges():
-    """NSE/BSE/NFO/BFO/CDS gate to NSE hours; MCX gates to MCX hours."""
-    from backend.api.helpers.snapshot_gate import _EXCHANGE_TO_GATE
-    assert _EXCHANGE_TO_GATE["NSE"] == "NSE"
-    assert _EXCHANGE_TO_GATE["BSE"] == "NSE"
-    assert _EXCHANGE_TO_GATE["NFO"] == "NSE"
-    assert _EXCHANGE_TO_GATE["BFO"] == "NSE"
-    assert _EXCHANGE_TO_GATE["CDS"] == "NSE"
-    assert _EXCHANGE_TO_GATE["MCX"] == "MCX"
+    """NSE/BSE/NFO/BFO/CDS resolve to NSE gate; MCX resolves to MCX gate.
+
+    Exchange→gate mapping is now in exchange_clock (seed rows in exchanges column).
+    snapshot_gate no longer exports _EXCHANGE_TO_GATE — verify via exchange_clock.
+    """
+    from backend.api.helpers import exchange_clock as ec
+    from unittest.mock import MagicMock
+
+    def _row(gate, exchanges):
+        r = MagicMock()
+        r.gate = gate
+        r.exchanges = exchanges
+        r.date = None
+        r.weekdays = None
+        r.is_open = True
+        r.open_time = None
+        r.close_time = None
+        return r
+
+    ec._CACHE = [
+        _row("NSE", ["NSE", "BSE", "NFO", "BFO", "CDS"]),
+        _row("MCX", ["MCX"]),
+    ]
+    # Verify each exchange resolves to the expected gate via is_exchange_closed.
+    # Both rows have is_open=True but no session window (open/close_time=None),
+    # so is_exchange_open returns False for all → is_exchange_closed returns True.
+    # What we care about is that the exchange is FOUND in the right gate's list.
+    # Check via _exchange_to_gate helper (internal function).
+    assert ec._exchange_to_gate("NSE") == "NSE"
+    assert ec._exchange_to_gate("BSE") == "NSE"
+    assert ec._exchange_to_gate("NFO") == "NSE"
+    assert ec._exchange_to_gate("BFO") == "NSE"
+    assert ec._exchange_to_gate("CDS") == "NSE"
+    assert ec._exchange_to_gate("MCX") == "MCX"
 
 
 @pytest.mark.asyncio

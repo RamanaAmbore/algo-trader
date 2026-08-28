@@ -107,6 +107,7 @@ async def _migrate_create_tables(conn) -> None:
         GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog,
         CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday,
         MarketSpecialSession, BrokerAccount, PerfSnapshot, AppMessage,
+        ExchangeSchedule,
     )
     from sqlalchemy import text
     _branch_local_tables = [
@@ -696,6 +697,48 @@ async def _migrate_algo_orders_intent(conn) -> None:
     ))
 
 
+async def _migrate_exchange_schedule_table(conn) -> None:
+    """Create the exchange_schedule table and its indexes (idempotent).
+
+    Uses raw DDL so both the unique constraint with NULLS NOT DISTINCT and
+    the composite index are created correctly on existing deployments (where
+    metadata.create_all would skip already-existing tables). The constraint
+    requires PostgreSQL 15+ which is satisfied by our PG17 deployment.
+    """
+    from sqlalchemy import text as _text
+    await conn.execute(_text("""
+        CREATE TABLE IF NOT EXISTS exchange_schedule (
+            id                  SERIAL PRIMARY KEY,
+            gate                VARCHAR(16) NOT NULL,
+            exchanges           TEXT[]      NOT NULL,
+            date                DATE,
+            weekdays            INTEGER[],
+            session_name        VARCHAR(32) NOT NULL DEFAULT 'regular',
+            is_open             BOOLEAN     NOT NULL DEFAULT TRUE,
+            open_time           TIME,
+            close_time          TIME,
+            snapshot_time       TIME,
+            snapshot_reset_time TIME,
+            reason              VARCHAR(200),
+            source              VARCHAR(16) NOT NULL DEFAULT 'operator'
+        )
+    """))
+    # NULLS NOT DISTINCT requires PG15+; wrapped so older CI instances degrade
+    # gracefully (they simply miss the NULL dedup, which is non-critical in dev).
+    try:
+        await conn.execute(_text("""
+            ALTER TABLE exchange_schedule
+            ADD CONSTRAINT uq_exchange_schedule_gate_date_session
+            UNIQUE NULLS NOT DISTINCT (gate, date, session_name)
+        """))
+    except Exception:
+        pass  # Constraint already exists — idempotent
+    await conn.execute(_text("""
+        CREATE INDEX IF NOT EXISTS ix_exchange_schedule_gate_date
+        ON exchange_schedule (gate, date)
+    """))
+
+
 async def _migrate_app_messages_table(conn) -> None:
     """Idempotent — create app_messages table + indexes.
 
@@ -763,6 +806,7 @@ async def init_db() -> None:
         await _migrate_daily_book_backfill_previous_close(conn)
         await _migrate_algo_orders_chase_timing(conn)
         await _migrate_algo_orders_intent(conn)
+        await _migrate_exchange_schedule_table(conn)
         await _migrate_app_messages_table(conn)
     logger.info("Database: tables verified")
 

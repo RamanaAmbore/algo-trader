@@ -533,25 +533,15 @@ def _fake_config_get(fake_segments: dict):
 
 @pytest.mark.asyncio
 async def test_any_segment_open_no_filter_returns_true_when_mcx_open():
-    """_any_segment_open(exchanges=None) returns True when MCX is open even if NSE closed."""
+    """_any_segment_open(exchanges=None) returns True when MCX is open even if NSE closed.
+
+    Now delegates to exchange_clock.is_any_segment_open — patch that instead of
+    the old YAML _segment_is_open path.
+    """
     from backend.api.helpers.snapshot_gate import _any_segment_open
-    from unittest.mock import MagicMock
 
-    nse_cfg = _make_seg_cfg("NSE", "09:15", "15:30")
-    mcx_cfg = _make_seg_cfg("MCX", "09:00", "23:30")
-    fake_segments = {"equity": nse_cfg, "commodity": mcx_cfg}
-
-    def _mock_segment_is_open(seg_cfg, now):
-        exch = seg_cfg.get("holiday_exchange", "NSE").upper()
-        # Simulate NSE closed, MCX open.
-        return exch == "MCX"
-
-    mock_cfg = MagicMock()
-    mock_cfg.get.side_effect = _fake_config_get(fake_segments)
-
-    with patch("backend.shared.helpers.utils.config", mock_cfg), \
-         patch("backend.shared.helpers.date_time_utils._segment_is_open",
-               side_effect=_mock_segment_is_open):
+    # Simulate: MCX open, NSE closed — is_any_segment_open(None) returns True.
+    with patch("backend.api.helpers.exchange_clock.is_any_segment_open", return_value=True):
         result = await asyncio.to_thread(_any_segment_open, None)
 
     assert result is True, (
@@ -561,24 +551,15 @@ async def test_any_segment_open_no_filter_returns_true_when_mcx_open():
 
 @pytest.mark.asyncio
 async def test_any_segment_open_nse_filter_returns_false_when_nse_closed():
-    """_any_segment_open(exchanges=['NSE']) returns False when NSE is closed."""
+    """_any_segment_open(exchanges=['NSE']) returns False when NSE is closed.
+
+    Now delegates to exchange_clock.is_any_segment_open — patch that instead of
+    the old YAML _segment_is_open path.
+    """
     from backend.api.helpers.snapshot_gate import _any_segment_open
-    from unittest.mock import MagicMock
 
-    nse_cfg = _make_seg_cfg("NSE", "09:15", "15:30")
-    mcx_cfg = _make_seg_cfg("MCX", "09:00", "23:30")
-    fake_segments = {"equity": nse_cfg, "commodity": mcx_cfg}
-
-    def _mock_segment_is_open(seg_cfg, now):
-        exch = seg_cfg.get("holiday_exchange", "NSE").upper()
-        return exch == "MCX"  # NSE closed, MCX open
-
-    mock_cfg = MagicMock()
-    mock_cfg.get.side_effect = _fake_config_get(fake_segments)
-
-    with patch("backend.shared.helpers.utils.config", mock_cfg), \
-         patch("backend.shared.helpers.date_time_utils._segment_is_open",
-               side_effect=_mock_segment_is_open):
+    # Simulate: NSE closed, MCX open — is_any_segment_open(['NSE']) returns False.
+    with patch("backend.api.helpers.exchange_clock.is_any_segment_open", return_value=False):
         result = await asyncio.to_thread(_any_segment_open, ["NSE"])
 
     assert result is False, (
@@ -589,23 +570,14 @@ async def test_any_segment_open_nse_filter_returns_false_when_nse_closed():
 
 @pytest.mark.asyncio
 async def test_any_segment_open_nse_filter_returns_true_when_nse_open():
-    """_any_segment_open(exchanges=['NSE']) returns True when NSE is open."""
+    """_any_segment_open(exchanges=['NSE']) returns True when NSE is open.
+
+    Now delegates to exchange_clock.is_any_segment_open — patch that instead of
+    the old YAML _segment_is_open path.
+    """
     from backend.api.helpers.snapshot_gate import _any_segment_open
-    from unittest.mock import MagicMock
 
-    nse_cfg = _make_seg_cfg("NSE", "09:15", "15:30")
-    mcx_cfg = _make_seg_cfg("MCX", "09:00", "23:30")
-    fake_segments = {"equity": nse_cfg, "commodity": mcx_cfg}
-
-    def _mock_segment_is_open(seg_cfg, now):
-        return True  # Both open
-
-    mock_cfg = MagicMock()
-    mock_cfg.get.side_effect = _fake_config_get(fake_segments)
-
-    with patch("backend.shared.helpers.utils.config", mock_cfg), \
-         patch("backend.shared.helpers.date_time_utils._segment_is_open",
-               side_effect=_mock_segment_is_open):
+    with patch("backend.api.helpers.exchange_clock.is_any_segment_open", return_value=True):
         result = await asyncio.to_thread(_any_segment_open, ["NSE"])
 
     assert result is True, (

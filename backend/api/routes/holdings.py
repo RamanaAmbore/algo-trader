@@ -421,19 +421,12 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
 
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
-    from datetime import timedelta
-    from backend.shared.helpers.date_time_utils import timestamp_indian
+    from backend.api.helpers.exchange_clock import settlement_cutoff_for
 
-    now_ist = timestamp_indian()
-    today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    # Invariant: prev_close is frozen until the next session opens at 08:00 IST.
-    # Cutoff = the last 08:00 IST boundary that has passed.
-    # Before 08:00 IST: cutoff = yesterday's 08:00 IST — excludes today's EOD snapshots
-    #   (NSE at 15:35 IST, MCX close at 23:31 IST, MCX settlement at 00:15 IST),
-    #   returning the prior-prior-session ltp as prev_close so day_change reflects
-    #   yesterday's session performance.
-    today_ist_8am = today_ist_midnight + timedelta(hours=8)
-    today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
+    # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).
+    # Delegated to exchange_clock.settlement_cutoff_for("NSE") which reads the
+    # snapshot_reset_time from the DB-backed exchange_schedule cache.
+    today_ist_cutoff = await settlement_cutoff_for("NSE")
 
     # ref_close: ltp directly — canonical prior-session settlement LTP.
     # previous_close (Kite BHAV-copy) is stale during the overnight window

@@ -12,7 +12,8 @@
   import EmptyState from '$lib/EmptyState.svelte';
   import { fetchSettings, updateSetting, resetSetting, fetchWatchlists,
            fetchHedgeProxies, createHedgeProxy, updateHedgeProxy, deleteHedgeProxy,
-           computeHedgeProxy } from '$lib/api';
+           computeHedgeProxy,
+           fetchExchangeSchedule, upsertExchangeSchedule, deleteExchangeSchedule } from '$lib/api';
   import { loadHedgeProxies as _invalidateHedgeProxyCache } from '$lib/data/hedgeProxies';
   import Select   from '$lib/Select.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
@@ -177,7 +178,106 @@
     } catch (e) { error = 'Reset failed.'; toast.error('Reset failed'); }
   }
 
-  // Execution-mode summary used by the top banner: how many of the
+  // ── Exchange schedule CRUD ─────────────────────────────────────────────
+  /** @typedef {{
+   *   id?: number,
+   *   gate: string, exchanges: string[], date: string|null,
+   *   session_name: string, is_open: boolean,
+   *   open_time: string|null, close_time: string|null,
+   *   snapshot_time: string|null, snapshot_reset_time: string|null,
+   *   reason: string|null, source?: string
+   * }} ScheduleRow */
+
+  const GATE_EXCHANGES = /** @type {Record<string,string[]>} */ ({
+    NSE: ['NSE', 'BSE', 'NFO', 'BFO', 'CDS'],
+    MCX: ['MCX'],
+  });
+
+  /** @type {ScheduleRow[]} */
+  let scheduleRows   = $state([]);
+  let scheduleErr    = $state('');
+  let scheduleLoading = $state(false);
+  /** @type {ScheduleRow | null} */
+  let scheduleForm   = $state(null);   // null = panel closed
+
+  async function loadSchedule() {
+    scheduleErr = ''; scheduleLoading = true;
+    try { scheduleRows = await fetchExchangeSchedule(); }
+    catch (e) { scheduleErr = e?.message || 'fetch failed'; }
+    finally { scheduleLoading = false; }
+  }
+
+  /** @param {ScheduleRow | null} row */
+  function openScheduleForm(row) {
+    if (row) {
+      // Edit existing — clone to avoid mutating the list
+      scheduleForm = { ...row, exchanges: [...(row.exchanges || [])] };
+    } else {
+      // Add new — blank default
+      scheduleForm = {
+        gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']],
+        date: null, session_name: '',
+        is_open: true, open_time: null, close_time: null,
+        snapshot_time: null, snapshot_reset_time: null, reason: null,
+      };
+    }
+  }
+
+  function closeScheduleForm() { scheduleForm = null; }
+
+  function onScheduleGateChange(/** @type {string} */ gate) {
+    if (!scheduleForm) return;
+    scheduleForm = {
+      ...scheduleForm,
+      gate,
+      exchanges: [...(GATE_EXCHANGES[gate] || [])],
+    };
+  }
+
+  function toggleScheduleExchange(/** @type {string} */ ex) {
+    if (!scheduleForm) return;
+    const exs = scheduleForm.exchanges;
+    scheduleForm = {
+      ...scheduleForm,
+      exchanges: exs.includes(ex) ? exs.filter(e => e !== ex) : [...exs, ex],
+    };
+  }
+
+  async function saveSchedule() {
+    if (!scheduleForm) return;
+    scheduleErr = '';
+    const dto = {
+      gate:                scheduleForm.gate,
+      exchanges:           scheduleForm.exchanges,
+      date:                scheduleForm.date || null,
+      session_name:        scheduleForm.session_name,
+      is_open:             scheduleForm.is_open,
+      open_time:           scheduleForm.is_open ? (scheduleForm.open_time || null) : null,
+      close_time:          scheduleForm.is_open ? (scheduleForm.close_time || null) : null,
+      snapshot_time:       scheduleForm.snapshot_time || null,
+      snapshot_reset_time: scheduleForm.snapshot_reset_time || null,
+      reason:              scheduleForm.reason || null,
+    };
+    try {
+      await upsertExchangeSchedule(dto);
+      closeScheduleForm();
+      await loadSchedule();
+      toast.success('Schedule saved');
+    } catch (e) { scheduleErr = e?.message || 'save failed'; toast.error('Save failed'); }
+  }
+
+  async function removeSchedule(/** @type {number} */ id) {
+    scheduleErr = '';
+    try { await deleteExchangeSchedule(id); await loadSchedule(); toast.success('Override deleted'); }
+    catch (e) { scheduleErr = e?.message || 'delete failed'; toast.error('Delete failed'); }
+  }
+
+  const scheduleDefaults  = $derived(scheduleRows.filter(r => r.date == null));
+  const scheduleOverrides = $derived(
+    scheduleRows.filter(r => r.date != null).sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+  );
+
+  // ── Execution-mode summary used by the top banner: how many of the
   // execution.live.* flags are currently set to True.
   const execRows = $derived(settings.filter(s => s.key.startsWith('execution.live.')));
   const liveCount = $derived(execRows.filter(s => String(currentValue(s)).toLowerCase() === 'true').length);
@@ -241,6 +341,8 @@
       // Defer one event-loop tick so the settings cards paint first;
       // the dropdown swaps from free-text → Select once symbols land.
       setTimeout(() => { _loadPinnedSymbols(); }, 0);
+      // TERTIARY — exchange schedule. Loaded with admin cap guard.
+      if (hasCap('manage_settings', _caps, _role)) setTimeout(() => { loadSchedule(); }, 0);
     }
   });
 </script>
@@ -498,6 +600,232 @@
     </div>
   </div>
 {/snippet}
+{/if}
+
+{#if hasCap('manage_settings', _caps, _role)}
+  <!-- Exchange Schedule — operator-editable DB-backed timing table.
+       Default rows (date=null) define recurring Mon–Fri schedules per
+       gate. Date-override rows cover holidays and special sessions like
+       Diwali Muhurat. Backed by exchange_clock.py which caches and
+       exposes DB values to background.py, positions.py, holdings.py. -->
+  <section class="algo-card mb-2 content-fade-in" data-status="inactive">
+    <div class="flex items-center gap-2 mb-2">
+      <h3 class="section-heading flex-1 mb-0 pb-0 border-0">Exchange Schedule</h3>
+      {#if scheduleLoading}<span class="text-[0.55rem] opacity-60 ml-1">loading…</span>{/if}
+    </div>
+    {#if scheduleErr}
+      <div class="mb-2 text-[0.65rem] text-red-300">{scheduleErr}</div>
+    {/if}
+
+    <!-- Defaults table -->
+    <div class="flex items-center gap-2 mb-1 mt-2">
+      <span class="text-[0.6rem] font-bold opacity-80 uppercase tracking-widest">Default Schedules</span>
+      <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
+              onclick={() => openScheduleForm(null)}>+ Add Session</button>
+    </div>
+    {#if scheduleDefaults.length}
+      <div class="overflow-x-auto mb-3">
+        <table class="algo-table">
+          <thead class="opacity-70">
+            <tr>
+              <th class="text-left p-1">Gate</th>
+              <th class="text-left p-1">Session</th>
+              <th class="text-left p-1">Exchanges</th>
+              <th class="text-right p-1">Open</th>
+              <th class="text-right p-1">Close</th>
+              <th class="text-right p-1">Snapshot</th>
+              <th class="text-right p-1">Reset</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each scheduleDefaults as row (row.id)}
+              <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
+                <td class="p-1 font-mono text-[0.65rem]">{row.gate}</td>
+                <td class="p-1 text-[0.65rem]">
+                  {row.session_name}
+                  {#if !row.is_open}<span class="ml-1 text-[0.55rem] opacity-60">(closed)</span>{/if}
+                </td>
+                <td class="p-1 text-[0.55rem] opacity-70">{(row.exchanges || []).join(', ')}</td>
+                <td class="p-1 text-right font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
+                <td class="p-1 text-right font-mono text-[0.65rem]">{row.close_time || '—'}</td>
+                <td class="p-1 text-right font-mono text-[0.65rem]">{row.snapshot_time       || '—'}</td>
+                <td class="p-1 text-right font-mono text-[0.65rem]">{row.snapshot_reset_time || '—'}</td>
+                <td class="p-1">
+                  <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                          onclick={() => openScheduleForm(row)}>✏</button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {:else if !scheduleLoading}
+      <div class="text-[0.6rem] opacity-60 mb-3">No default schedules seeded yet.</div>
+    {/if}
+
+    <!-- Overrides table -->
+    <div class="flex items-center gap-2 mb-1">
+      <span class="text-[0.6rem] font-bold opacity-80 uppercase tracking-widest">Date Overrides</span>
+      <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
+              onclick={() => { const f = { gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']], date: '', session_name: 'closed', is_open: false, open_time: null, close_time: null, snapshot_time: null, snapshot_reset_time: null, reason: null }; scheduleForm = f; }}>+ Add Override</button>
+    </div>
+    {#if scheduleOverrides.length}
+      <div class="overflow-x-auto mb-2">
+        <table class="algo-table">
+          <thead class="opacity-70">
+            <tr>
+              <th class="text-left p-1">Gate</th>
+              <th class="text-left p-1">Date</th>
+              <th class="text-left p-1">Session</th>
+              <th class="text-left p-1">Exchanges</th>
+              <th class="text-left p-1">Open?</th>
+              <th class="text-right p-1">Open</th>
+              <th class="text-right p-1">Close</th>
+              <th class="text-left p-1">Reason</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each scheduleOverrides as row (row.id)}
+              <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
+                <td class="p-1 font-mono text-[0.65rem]">{row.gate}</td>
+                <td class="p-1 font-mono text-[0.65rem]">{row.date}</td>
+                <td class="p-1 text-[0.65rem]">{row.session_name}</td>
+                <td class="p-1 text-[0.55rem] opacity-70">{(row.exchanges || []).join(', ')}</td>
+                <td class="p-1 text-[0.65rem]"
+                    class:text-green-400={row.is_open}
+                    class:text-red-400={!row.is_open}>
+                  {row.is_open ? 'Open' : 'Closed'}
+                </td>
+                <td class="p-1 text-right font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
+                <td class="p-1 text-right font-mono text-[0.65rem]">{row.close_time || '—'}</td>
+                <td class="p-1 text-[0.65rem] opacity-80">{row.reason || '—'}</td>
+                <td class="p-1 flex gap-1">
+                  <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                          onclick={() => openScheduleForm(row)}>✏</button>
+                  <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5 text-red-400"
+                          onclick={() => row.id != null && removeSchedule(row.id)}>×</button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {:else if !scheduleLoading}
+      <div class="text-[0.6rem] opacity-60">No date overrides — all exchanges follow default schedules.</div>
+    {/if}
+
+    <!-- Unified add/edit panel -->
+    {#if scheduleForm}
+      <div class="mt-3 pt-3 border-t" style="border-top-color: rgba(126,151,184,0.15)">
+        <h4 class="text-[0.6rem] font-bold uppercase tracking-widest opacity-80 mb-2">
+          {scheduleForm.id != null ? 'Edit Session' : 'New Session'}
+        </h4>
+        <div class="grid gap-2 text-[0.65rem]" style="grid-template-columns: 140px 1fr">
+
+          <label for="sched-gate" class="opacity-70 self-center">Gate</label>
+          <div>
+            <select id="sched-gate" class="field-input"
+                    value={scheduleForm.gate}
+                    onchange={(e) => onScheduleGateChange(e.currentTarget.value)}>
+              {#each Object.keys(GATE_EXCHANGES) as g}
+                <option value={g}>{g}</option>
+              {/each}
+            </select>
+          </div>
+
+          <label for="sched-date" class="opacity-70 self-center">Date
+            <span class="block text-[0.5rem] opacity-60 font-normal">blank = default</span>
+          </label>
+          <div>
+            <input id="sched-date" type="date"
+                   class="field-input"
+                   value={scheduleForm.date || ''}
+                   oninput={(e) => scheduleForm = { ...scheduleForm, date: e.currentTarget.value || null }} />
+            <p class="text-[0.5rem] opacity-50 mt-0.5">Leave blank to edit the recurring default schedule</p>
+          </div>
+
+          <label for="sched-session" class="opacity-70 self-center">Session name</label>
+          <div>
+            <input id="sched-session" type="text"
+                   class="field-input"
+                   placeholder="regular / evening / closed / muhurat"
+                   value={scheduleForm.session_name}
+                   oninput={(e) => scheduleForm = { ...scheduleForm, session_name: e.currentTarget.value }} />
+            <p class="text-[0.5rem] opacity-50 mt-0.5">Use "closed" with Is open=No to mark a holiday</p>
+          </div>
+
+          <span class="opacity-70 self-start pt-0.5">Exchanges</span>
+          <div class="flex flex-wrap gap-2">
+            {#each (GATE_EXCHANGES[scheduleForm.gate] || []) as ex}
+              <label class="flex items-center gap-1 cursor-pointer">
+                <input type="checkbox"
+                       checked={scheduleForm.exchanges.includes(ex)}
+                       onchange={() => toggleScheduleExchange(ex)} />
+                <span class="font-mono">{ex}</span>
+              </label>
+            {/each}
+            <p class="w-full text-[0.5rem] opacity-50 mt-0.5">Uncheck F&amp;O exchanges for Muhurat trading overrides</p>
+          </div>
+
+          <span class="opacity-70 self-center">Is open</span>
+          <div class="flex gap-4">
+            <label class="flex items-center gap-1 cursor-pointer">
+              <input type="radio" name="sched-is-open" value="yes"
+                     checked={scheduleForm.is_open}
+                     onchange={() => scheduleForm = { ...scheduleForm, is_open: true }} />
+              Yes
+            </label>
+            <label class="flex items-center gap-1 cursor-pointer">
+              <input type="radio" name="sched-is-open" value="no"
+                     checked={!scheduleForm.is_open}
+                     onchange={() => scheduleForm = { ...scheduleForm, is_open: false }} />
+              No
+            </label>
+          </div>
+
+          {#if scheduleForm.is_open}
+            <label for="sched-open-time" class="opacity-70 self-center">Open time</label>
+            <input id="sched-open-time" type="time" class="field-input"
+                   value={scheduleForm.open_time || ''}
+                   oninput={(e) => scheduleForm = { ...scheduleForm, open_time: e.currentTarget.value || null }} />
+
+            <label for="sched-close-time" class="opacity-70 self-center">Close time</label>
+            <input id="sched-close-time" type="time" class="field-input"
+                   value={scheduleForm.close_time || ''}
+                   oninput={(e) => scheduleForm = { ...scheduleForm, close_time: e.currentTarget.value || null }} />
+          {/if}
+
+          <label for="sched-snapshot" class="opacity-70 self-center">Snapshot time
+            <span class="block text-[0.5rem] opacity-60 font-normal">blank = none</span>
+          </label>
+          <input id="sched-snapshot" type="time" class="field-input"
+                 value={scheduleForm.snapshot_time || ''}
+                 oninput={(e) => scheduleForm = { ...scheduleForm, snapshot_time: e.currentTarget.value || null }} />
+
+          <label for="sched-reset" class="opacity-70 self-center">Reset time
+            <span class="block text-[0.5rem] opacity-60 font-normal">blank = none</span>
+          </label>
+          <input id="sched-reset" type="time" class="field-input"
+                 value={scheduleForm.snapshot_reset_time || ''}
+                 oninput={(e) => scheduleForm = { ...scheduleForm, snapshot_reset_time: e.currentTarget.value || null }} />
+
+          <label for="sched-reason" class="opacity-70 self-center">Reason</label>
+          <input id="sched-reason" type="text" class="field-input"
+                 placeholder="Independence Day, Diwali Muhurat 2026…"
+                 value={scheduleForm.reason || ''}
+                 oninput={(e) => scheduleForm = { ...scheduleForm, reason: e.currentTarget.value || null }} />
+
+        </div>
+
+        <div class="flex gap-2 mt-3">
+          <button class="btn-primary text-[0.65rem] py-1 px-3" onclick={saveSchedule}>Save</button>
+          <button class="btn-secondary text-[0.65rem] py-1 px-3" onclick={closeScheduleForm}>Cancel</button>
+        </div>
+      </div>
+    {/if}
+  </section>
 {/if}
 
 {/if}

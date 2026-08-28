@@ -233,64 +233,64 @@ def test_closed_hours_refresh_does_not_import_snapshot_daily_book():
 
 
 # ---------------------------------------------------------------------------
-# MCX post-close snapshot trigger (23:31 IST)
+# MCX post-close snapshot trigger (23:31 IST) — now DB-driven
 # ---------------------------------------------------------------------------
 
-def test_mcx_close_snapshot_trigger_exists():
-    """background.py must contain the 23:31 IST MCX-close snapshot trigger.
+def test_mcx_close_snapshot_trigger_db_driven():
+    """background.py must use exchange_clock for the 23:31 MCX-close trigger.
 
-    Without it, the 16:15 NSE settlement snapshot writes ltp=NULL/day_pnl=NULL
-    for MCX positions (mid_session=True at 16:15).  No snapshot fires again
-    until 00:15, so the positions route serves NULL->0 for the entire
-    23:30–00:15 window.  The 23:31 trigger closes that gap.
+    The old hardcoded _MCX_CLOSE_H/_MCX_CLOSE_M constants have been removed.
+    The trigger is now fired by _snapshot_probe_nse_mcx() which delegates to
+    exchange_clock.sessions_with_snapshot_time_now() — the MCX/evening session
+    row in exchange_schedule carries snapshot_time=23:31 so the trigger fires
+    at the right time without hardcoded constants.
     """
-    assert "_MCX_CLOSE_H" in _SRC and "_mcx_close_done" in _SRC, (
-        "MCX post-close snapshot trigger missing — positions day_pnl will be NULL "
-        "from 23:30 until 00:15 MCX settlement.  Add _MCX_CLOSE_H/_MCX_CLOSE_M "
-        "constants + _mcx_close_done deduplication sentinel to _task_daily_snapshot."
+    # The old sentinels and constants must be gone
+    assert "_MCX_CLOSE_H" not in _SRC, (
+        "_MCX_CLOSE_H constant must be removed — MCX close trigger is now "
+        "DB-driven via exchange_clock.sessions_with_snapshot_time_now()"
+    )
+    assert "_mcx_close_done" not in _SRC, (
+        "_mcx_close_done sentinel must be removed — minute-precision match "
+        "in exchange_clock ensures each trigger fires exactly once per day"
+    )
+    # The new dispatch path must be present
+    assert "trigger_close_snapshot" in _SRC, (
+        "trigger_close_snapshot helper must exist in background.py — "
+        "called by _snapshot_probe_nse_mcx when session_name != 'settlement'"
+    )
+    assert "sessions_with_snapshot_time_now" in _SRC, (
+        "_snapshot_probe_nse_mcx must call exchange_clock.sessions_with_snapshot_time_now() "
+        "to determine which snapshot triggers to fire each minute"
     )
 
 
-def test_mcx_close_snapshot_fires_at_2331_not_later():
-    """The MCX-close window must start at exactly 23:31 IST and end before 23:40.
+def test_mcx_close_snapshot_timing_in_exchange_schedule():
+    """MCX/evening snapshot_time is stored in exchange_schedule (23:31 IST).
 
-    The window must be narrow ([23:31, 23:40)) to avoid overlapping with the
-    overnight polling period.  A start time later than 23:35 would leave a gap
-    during which the 30s poll might not fire before 00:00.
+    This test verifies the architectural invariant: the timing is no longer
+    in background.py source code — it lives in the DB-backed exchange_clock
+    cache.  The background.py source must NOT contain the literal '23, 31'
+    as a hardcoded time constant for MCX close.
     """
-    assert "_MCX_CLOSE_H,      _MCX_CLOSE_M      = 23, 31" in _SRC or (
-        "_MCX_CLOSE_H" in _SRC and "23, 31" in _SRC
-    ), (
-        "_MCX_CLOSE_H/_MCX_CLOSE_M must be set to (23, 31) — "
-        "start any later and a 30s poll boundary may miss the window before midnight"
-    )
-    assert "dtime(_MCX_CLOSE_H, _MCX_CLOSE_M) <= now.time() < dtime(23, 40)" in _SRC, (
-        "MCX-close guard must be [23:31, 23:40) — upper bound keeps the window "
-        "narrow and prevents overlap with the overnight polling period"
-    )
-
-
-def test_mcx_close_dedup_uses_today_not_adjusted():
-    """MCX close deduplication uses `today` (same calendar date as MCX close),
-    NOT `today - timedelta(days=1)` — that adjustment belongs only to the
-    00:15 MCX *settlement* block which fires on D+1.
-    """
-    # The mcx-close block fires at 23:31 on the same calendar day as the
-    # trade-date.  The settlement block fires at 00:15 D+1 and adjusts.
-    # Verify the close block does NOT contain the timedelta adjustment.
     import re
+    # Must NOT contain a hardcoded MCX close time assignment
+    assert not re.search(r"_MCX_CLOSE_[HM]\s*=\s*\d+", _SRC), (
+        "MCX close time must not be hardcoded in background.py; "
+        "store it in exchange_schedule.snapshot_time for MCX/evening session"
+    )
 
-    # Extract just the mcx-close block from the source
-    close_block_match = re.search(
-        r"MCX close: 23:31.*?_mcx_close_done = today",
-        _SRC,
-        re.DOTALL,
+
+def test_trigger_helpers_are_public():
+    """trigger_close_snapshot and trigger_settlement_capture must be public functions.
+
+    Making them public allows them to be unit-tested independently of the
+    _task_daily_snapshot loop.  Private helpers (starting with _) cannot be
+    reliably imported and asserted against in tests.
+    """
+    assert "async def trigger_close_snapshot" in _SRC, (
+        "trigger_close_snapshot must be a public async function"
     )
-    assert close_block_match is not None, (
-        "Could not find MCX-close block ending with '_mcx_close_done = today'"
-    )
-    block_text = close_block_match.group(0)
-    assert "timedelta(days=1)" not in block_text, (
-        "MCX-close block must NOT use timedelta(days=1) adjustment — "
-        "that adjustment is only for the 00:15 settlement block (D+1 calendar)"
+    assert "async def trigger_settlement_capture" in _SRC, (
+        "trigger_settlement_capture must be a public async function"
     )

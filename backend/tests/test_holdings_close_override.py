@@ -345,8 +345,13 @@ class TestHoldingsCloseOverrideForHoldings:
         mock_session.__aenter__.assert_not_called()
 
     def test_uses_holdings_kind_not_positions(self):
-        """DB query must use kind='holdings', not kind='positions'."""
+        """DB query must use kind='holdings', not kind='positions'.
+
+        settlement_cutoff_for is also patched to bypass the exchange_clock DB
+        refresh so captured_sql contains only the holdings daily_book query.
+        """
         from backend.api.routes.holdings import _override_stale_close_for_holdings
+        from datetime import timezone
 
         IST = ZoneInfo("Asia/Kolkata")
         df = _make_holdings_df(close_price=150.0)
@@ -365,12 +370,17 @@ class TestHoldingsCloseOverrideForHoldings:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         mock_time = datetime(2026, 7, 8, 8, 30, 0, tzinfo=IST)
+        fixed_cutoff = datetime(2026, 7, 8, 8, 0, 0, tzinfo=IST)
 
         with (
             patch("backend.api.database.async_session", return_value=mock_session),
             patch(
                 "backend.shared.helpers.date_time_utils.timestamp_indian",
                 return_value=mock_time,
+            ),
+            patch(
+                "backend.api.helpers.exchange_clock.settlement_cutoff_for",
+                new=AsyncMock(return_value=fixed_cutoff),
             ),
         ):
             asyncio.run(_override_stale_close_for_holdings(df))

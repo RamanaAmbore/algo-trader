@@ -507,6 +507,19 @@ export const fetchPerfLatest = () =>
 export const fetchPerfRegressions = (days = 7, threshold_pct = 10) =>
   _get(`/admin/perf/regressions?days=${days}&threshold_pct=${threshold_pct}`, { auth: true });
 
+// ── Exchange schedule (admin) ────────────────────────────────────────────
+/** GET /api/admin/exchange-schedule — list all rows (defaults first, then by date). */
+export const fetchExchangeSchedule   = () =>
+  _get('/admin/exchange-schedule', { auth: true });
+/** PUT /api/admin/exchange-schedule — upsert a schedule row.
+ *  @param {object} dto - schedule fields (gate, exchanges, date, session_name, …) */
+export const upsertExchangeSchedule  = (dto) =>
+  _put('/admin/exchange-schedule', dto, { auth: true });
+/** DELETE /api/admin/exchange-schedule/{id} — remove a date-override row.
+ *  Default rows (date=null) are protected server-side and return 400. */
+export const deleteExchangeSchedule  = (/** @type {number} */ id) =>
+  _del(`/admin/exchange-schedule/${id}`, { auth: true });
+
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });
 export const fetchSetting      = (key) => _get(`/admin/settings/${encodeURIComponent(key)}`, { auth: true });

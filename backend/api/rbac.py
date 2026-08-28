@@ -121,6 +121,8 @@ CAPS: dict[str, frozenset[str]] = {
     "manage_settings":          frozenset({"designated"}),
     "view_hedge_proxies":       frozenset({"designated", "trader", "risk", "demo"}),
     "manage_hedge_proxies":     frozenset({"designated", "trader"}),
+    "view_exchange_schedule":   frozenset({"designated", "trader", "risk", "admin", "demo"}),
+    "manage_exchange_schedule": frozenset({"designated"}),
 
     # ── Brokers ───────────────────────────────────────────────────────
     "manage_brokers":           frozenset({"designated", "admin"}),

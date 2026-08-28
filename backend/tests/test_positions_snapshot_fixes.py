@@ -76,19 +76,29 @@ def test_positions_snapshot_where_structure_combined():
 # ---------------------------------------------------------------------------
 
 def test_override_stale_close_uses_timedelta_hours_8():
-    """_override_stale_close_from_snapshot must compute an 08:00 IST cutoff
-    via timedelta(hours=8), not the raw midnight timestamp."""
+    """_override_stale_close_from_snapshot must produce an 08:00 IST cutoff.
+
+    The cutoff is now delegated to exchange_clock.settlement_cutoff_for("NSE")
+    which reads snapshot_reset_time from the DB-backed exchange_schedule table
+    (seeded as 08:00 IST). The test verifies the delegation is present and that
+    the old hardcoded timedelta(hours=8) arithmetic has been replaced.
+    """
     from backend.api.routes import positions as _pos_module
 
     src = inspect.getsource(_pos_module._override_stale_close_from_snapshot)
-    assert "timedelta(hours=8)" in src, (
-        "_override_stale_close_from_snapshot must add timedelta(hours=8) to "
-        "today's IST midnight to produce the 08:00 IST cutoff. "
-        "Old code used midnight (00:00) which excluded MCX 23:30 snapshots "
-        "captured at 00:05 IST the following calendar day."
+    # The delegation call must be present (replaces old timedelta arithmetic).
+    assert "settlement_cutoff_for" in src, (
+        "_override_stale_close_from_snapshot must delegate to "
+        "exchange_clock.settlement_cutoff_for('NSE') for the 08:00 IST cutoff."
     )
     assert "today_ist_cutoff" in src, (
         "Variable today_ist_cutoff must be present as the cutoff passed to the query."
+    )
+    # The old hardcoded arithmetic must be gone (now lives in exchange_clock).
+    assert "timedelta(hours=8)" not in src, (
+        "_override_stale_close_from_snapshot still contains hardcoded "
+        "timedelta(hours=8) — cutoff computation must be delegated to "
+        "exchange_clock.settlement_cutoff_for('NSE')."
     )
 
 

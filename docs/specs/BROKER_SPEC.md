@@ -43,6 +43,13 @@ Code, tests, and documentation must stay in sync with this file.
 11. [Key Invariants](#11-key-invariants)
 12. [Test Coverage Map](#12-test-coverage-map)
 13. [Known Defects & Risks](#13-known-defects--risks)
+14. [Exchange Schedule Table & Clock Module](#14-exchange-schedule-table--clock-module)
+15. [Broker Connection Events Audit Log](#15-broker-connection-events-audit-log)
+16. [Daily Broker Issue Aggregation & Monitoring](#16-daily-broker-issue-aggregation--monitoring)
+16.1 [CONNCHECK TLM Tool](#161-conncheck-tlm-tool)
+16.2 [Deploy Notification Receipt Tracking](#162-deploy-notification-receipt-tracking)
+16.3 [Alert Routing Restoration](#163-alert-routing-restoration)
+17. [Closed-Hours Cache Refresh Pattern](#17-closed-hours-cache-refresh-pattern)
 
 ---
 
@@ -1940,7 +1947,7 @@ connection dropouts in the logs. Circuit breaker should open/close more predicta
 
 ---
 
-## 14. Broker Connection Events Audit Log
+## 15. Broker Connection Events Audit Log
 
 **Table**: `broker_connection_events` (shared ramboq DB)
 
@@ -2008,7 +2015,249 @@ for debugging recurring 2FA timeouts or credential rotation issues.
 
 ---
 
-## 15. Daily Broker Issue Aggregation & Monitoring
+## 14. Exchange Schedule Table & Clock Module
+
+**Files**: `backend/api/models.py` · `backend/api/helpers/exchange_clock.py` ·
+`backend/api/routes/exchange_schedule.py` · `backend/config/backend_config.yaml`
+
+Single source of truth for market segment timing (open/close windows, snapshot
+triggers, settlement cutoffs). Replaces three scattered definitions:
+`_EXCHANGE_TO_GATE` dict, `market_segments` YAML, and hardcoded times in
+`background.py`. Fully editable from `/admin/settings` UI.
+
+### Table: `exchange_schedule`
+
+Persistent configuration rows, one row per (gate, date, session) combination.
+Operator-editable defaults (date=NULL) and date-specific overrides (holidays,
+special sessions).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | SERIAL PK | |
+| `gate` | VARCHAR(32) NOT NULL | Grouping label: "NSE", "MCX" |
+| `exchanges` | TEXT[] NOT NULL | Exchanges in this gate: {"NSE","BSE","NFO","BFO","CDS"} or {"MCX"}. Used for matching; a Muhurat row with exchanges=["NSE","BSE"] closes NFO/BFO |
+| `date` | DATE NULL | NULL = recurring default; specific date = override |
+| `weekdays` | INT[] NULL | ISO weekdays [1..7]; 1=Mon, 7=Sun; NULL on date-override rows |
+| `session_name` | VARCHAR(32) NOT NULL | "regular", "morning", "evening", "muhurat", "settlement", "closed" |
+| `is_open` | BOOLEAN NOT NULL | FALSE = market closed for this gate/date/session |
+| `open_time` | TIME NULL | IST open time (NULL when is_open=FALSE) |
+| `close_time` | TIME NULL | IST close time (NULL when is_open=FALSE) |
+| `snapshot_time` | TIME NULL | IST: when daily_book LTP snapshot is captured (set only on LAST session of day) |
+| `snapshot_reset_time` | TIME NULL | IST: when prev_close rolls over (cutoff for settlement queries; usually 08:00; NULL on settlement rows) |
+| `reason` | VARCHAR(256) NULL | "Independence Day", "Diwali Muhurat 2026" (operator-entered) |
+| `source` | VARCHAR(32) NOT NULL DEFAULT 'operator' | "legacy_seed" or "operator" (audit trail) |
+
+Unique constraint: `(gate, date, session_name)`  
+Index: `(gate, date)` for fast date-override lookups
+
+### Default seed records (date=NULL, inserted at startup)
+
+| Gate | Exchanges | Weekdays | Session | Is Open | Open | Close | Snapshot | Reset |
+|---|---|---|---|---|---|---|---|---|
+| NSE | {NSE,BSE,NFO,BFO,CDS} | {1,2,3,4,5} | regular | true | 09:15 | 15:30 | 15:31 | 08:00 |
+| NSE | {NSE,BSE,NFO,BFO,CDS} | {1,2,3,4,5} | settlement | false | — | — | 16:15 | — |
+| MCX | {MCX} | {1,2,3,4,5} | morning | true | 09:00 | 17:00 | — | — |
+| MCX | {MCX} | {1,2,3,4,5} | evening | true | 17:00 | 23:30 | 23:31 | 08:00 |
+| MCX | {MCX} | {1,2,3,4,5} | settlement | false | — | — | 00:15 | — |
+
+**Settlement row semantics**: `is_open=false` means trading is closed. These rows
+exist solely to carry `snapshot_time` so `background.py` knows when to fire the
+final settlement capture (NSE BHAV at 16:15; MCX final at 00:15).
+`background.py` distinguishes close-snapshot vs settlement-capture by checking
+`session_name == "settlement"`.
+
+### Date-override examples
+
+**Holiday close (one row suppresses ALL sessions for that gate):**
+
+| Gate | Date | Session | Is Open | Reason |
+|---|---|---|---|---|
+| NSE | 2026-08-15 | closed | false | Independence Day |
+| MCX | 2026-08-15 | closed | false | Independence Day |
+
+**Diwali Muhurat (equity open, F&O closed):**
+
+| Gate | Exchanges | Date | Session | Is Open | Open | Close | Snapshot | Reset | Reason |
+|---|---|---|---|---|---|---|---|---|---|
+| NSE | {NSE,BSE} | 2026-11-01 | muhurat | true | 17:45 | 18:45 | 18:46 | 08:00 | Diwali Muhurat |
+
+Only NSE and BSE are in the `exchanges` array, so NFO/BFO/CDS do not match this
+row → `resolve_sessions_for("NFO", 2026-11-01)` returns [] → NFO is correctly
+closed for the day without needing separate closed-override rows.
+
+### Runtime lookup algorithm
+
+**Per-exchange session resolution** (`resolve_sessions_for(exchange, on_date)`):
+1. Look for date-specific rows where `exchange = ANY(row.exchanges)` and
+   `row.date = on_date`
+2. If any row has `is_open=false`, return [] (closed)
+3. Otherwise return matched rows (open sessions for this exchange on this date)
+4. If no date rows, fall back to defaults where `exchange = ANY(row.exchanges)`,
+   `row.date IS NULL`, and `on_date.isoweekday() IN row.weekdays`
+5. If no defaults or weekday not in list, return [] (closed)
+
+**Gate-level session resolution** (`resolve_sessions_for_gate(gate, on_date)`):
+1. Look for date-specific rows where `row.gate = gate` and `row.date = on_date`
+2. If found, return all (open AND settlement rows)
+3. Otherwise, fall back to defaults where `row.gate = gate`, `row.date IS NULL`,
+   and weekday check
+4. Used by `background.py` only (snapshot/settlement triggers fire per gate)
+
+**Exchange-to-gate mapping** (internal constant):
+```
+NSE, BSE, NFO, BFO, CDS  →  "NSE"
+MCX                       →  "MCX"
+```
+
+### Public API: `backend/api/helpers/exchange_clock.py`
+
+Module-level async-loaded cache (1-hour TTL). Sync methods safe after warm.
+
+| Function | Returns | Purpose |
+|---|---|---|
+| `is_exchange_open(exchange, *, at=None)` | bool | True if `exchange` is inside an active session at `at` (default: now IST). Uses per-exchange lookup. |
+| `is_exchange_closed(exchange, *, at=None)` | bool | `not is_exchange_open(...)` |
+| `snapshot_time_for(exchange, *, on=None)` | time\|None | IST close-snapshot time for exchange on date (open sessions only) |
+| `snapshot_reset_time_for(exchange, *, on=None)` | time | IST prev_close reset time; defaults to 08:00 if NULL in DB |
+| `sessions_with_snapshot_time_now(*, at=None)` | list[ExchangeSchedule] | All sessions (open OR settlement, any gate) whose snapshot_time matches current IST minute (minute-precision). Used by `background.py` triggers. |
+| `async settlement_cutoff_for(exchange)` | datetime | Prior-session settlement boundary. Formula: `today_ist + reset_time` if `now_ist >= reset_time`, else `yesterday_ist + reset_time`. |
+| `async settlement_ref_close_map(exchange, kind, pairs)` | dict[(account,symbol), float] | `daily_book.ltp` WHERE `captured_at < settlement_cutoff_for(exchange)` for given (account, symbol) pairs. |
+| `async refresh_cache()` | None | Reload `exchange_schedule` from DB (called hourly + on any admin write) |
+| `async seed_and_warm(session)` | None | Insert 5 default rows + market_holidays + market_special_sessions; call `refresh_cache()` |
+
+### Background integration
+
+`_snapshot_probe_nse_mcx()` in `background.py` replaces hardcoded trigger times:
+
+```python
+# Every minute:
+sessions_now = exchange_clock.sessions_with_snapshot_time_now()
+for session in sessions_now:
+    if session.session_name == "settlement":
+        await trigger_settlement_capture(session.gate)  # final BHAV/settlement
+    else:
+        await trigger_close_snapshot(session.gate)      # daily_book.ltp capture
+```
+
+Triggers (5 per trading day Mon–Fri):
+- **NSE 15:31** — close snapshot (regular session)
+- **NSE 16:15** — settlement capture (settlement session, is_open=false)
+- **MCX 23:31** — close snapshot (evening session)
+- **MCX 00:15** — settlement capture (settlement session, is_open=false)
+
+### Admin API: `backend/api/routes/exchange_schedule.py`
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/admin/exchange-schedule` | List all rows (defaults first, then by date ascending) |
+| PUT | `/api/admin/exchange-schedule` | Upsert row: ON CONFLICT (gate, date, session_name) DO UPDATE |
+| DELETE | `/api/admin/exchange-schedule/{id}` | Delete date-override row (default rows protected; 400 if date IS NULL) |
+
+**PUT payload** (all fields optional except `gate` + `session_name`):
+
+```json
+{
+  "gate": "NSE",
+  "exchanges": ["NSE", "BSE"],
+  "date": "2026-11-01",
+  "session_name": "muhurat",
+  "is_open": true,
+  "open_time": "17:45",
+  "close_time": "18:45",
+  "snapshot_time": "18:46",
+  "snapshot_reset_time": null,
+  "reason": "Diwali Muhurat 2026"
+}
+```
+
+When `exchanges` is null/omitted, server fills it from the default row for that
+gate. After any write, `exchange_clock.refresh_cache()` is called
+server-side.
+
+### Frontend settings: Exchange Schedule section
+
+**File**: `frontend/src/routes/(algo)/admin/settings/+page.svelte`
+
+Two tables: defaults (date=NULL) and overrides (date-specific)
+
+**Defaults table**:
+- Columns: Gate | Session | Open | Close | Snapshot | Reset | Actions
+- Per-gate rows (NSE/regular + NSE/settlement + MCX/morning + MCX/evening +
+  MCX/settlement)
+- Edit button (✏); delete blocked (400 response)
+- Shows "—" for open/close when is_open=false
+
+**Overrides table**:
+- Columns: Gate | Date | Session | Open? | Open | Close | Reason | Actions
+- Sorted by date ascending
+- Edit (✏) and delete (🗑) buttons
+- [+ Add Override] button
+
+**Unified add/edit form**:
+- Gate dropdown (NSE | MCX)
+- Date input (blank = edit default; filled = new override)
+- Session name text input ("regular", "morning", "closed", "muhurat", etc.)
+- Exchanges multi-select (checkboxes; defaults to all in gate; operator
+  deselects to exclude F&O for Muhurat)
+- Is open toggle (Yes | No)
+- Conditional fields (shown only when Is open=Yes):
+  - Open time
+  - Close time
+  - Snapshot time (blank = no snapshot)
+  - Reset time (blank = no reset)
+- Reason text input (optional)
+- Save | Cancel buttons
+
+Behaviour:
+- Date blank + existing session name → upserts default record
+- Date filled → upserts date-override
+- UNIQUE (gate, date, session_name) ensures safe re-edit
+- After save, cache refreshes immediately on server
+
+### Adding a new exchange
+
+**Option A**: Edit existing gate's `exchanges` array from UI
+```
+Default row: gate="NSE", exchanges=["NSE", "BSE", "NFO", "BFO", "CDS"]
+→ Add "GIFT": exchanges=["NSE", "BSE", "NFO", "BFO", "CDS", "GIFT"]
+→ Save
+→ GIFT now inherits NSE schedule (09:15–15:30, settlement 16:15)
+```
+
+**Option B**: Create new default row with own gate
+```
+[+ Add Session] → Gate="GIFT", Session="regular", Exchanges=["GIFT"],
+Open=09:15, Close=15:30, Snapshot=15:31, Reset=08:00
+→ Save
+→ GIFT has its own independent schedule
+```
+
+### Decorator: `@apply_settlement_overlay(kind)`
+
+Applied to async route handlers returning `list[Row]` (positions, holdings).
+Patches day P&L and close_price for closed-exchange rows after market close:
+
+```python
+for row in rows:
+    if is_exchange_closed(row.exchange):
+        # Fetch prior-session settlement snapshot
+        ref_close = await exchange_clock.settlement_ref_close_map(
+            row.exchange, kind, [(row.account, row.symbol)]
+        )[(row.account, row.symbol)]
+        
+        if snap_ltp is not None and ref_close > 0:
+            # Patch using prior-session LTP
+            row.day_change_val = (snap_ltp - ref_close) * row.qty
+            row.day_change_percentage = (row.day_change_val / (ref_close * row.qty)) * 100
+            row.close_price = ref_close
+```
+
+Ensures frozen snapshot P&L is consistent with broker settlement settlement
+prices even after both NSE and MCX have closed.
+
+---
+
+## 16. Daily Broker Issue Aggregation & Monitoring
 
 **File**: `backend/api/models.py` · `backend/api/background.py` · `backend/brokers/service/routes.py`
 
@@ -2044,7 +2293,7 @@ replaces when a re-run happens or the date rolls.
 
 ---
 
-## 15.1 CONNCHECK TLM Tool
+## 16.1 CONNCHECK TLM Tool
 
 **File**: `tools/tlm/conncheck.py` → delegates to `scripts/check_broker_conn_issues.py`
 
@@ -2076,7 +2325,7 @@ Operator can tune these via `/admin/settings` (or backend_config.yaml).
 
 ---
 
-## 15.2 Deploy Notification Receipt Tracking
+## 16.2 Deploy Notification Receipt Tracking
 
 **File**: `scripts/monitor_ntfy_deploy.py`
 
@@ -2096,7 +2345,7 @@ whether the deployment alert actually reached the team's devices.
 
 ---
 
-## 15.3 Alert Routing Restoration
+## 16.3 Alert Routing Restoration
 
 **File**: `backend/config/backend_config.yaml`
 
@@ -2115,7 +2364,7 @@ designed.
 
 ---
 
-## 16. Closed-Hours Cache Refresh Pattern
+## 17. Closed-Hours Cache Refresh Pattern
 
 **File**: `backend/api/background.py` — `_task_closed_hours_refresh()` (deprecated pattern)
 
@@ -2182,3 +2431,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-24 | v1.21 Holdings data freshness and day P&L fixes (commit 39c21cca): Added §7.3.5 Holdings Data Freshness & SSOT Fetch TTL documenting 30-second TTL on `fetch_holdings()` mirroring `fetch_positions()` pattern. Added `_HOLDINGS_SSOT_TTL = 30.0` and `_holdings_ssot_refresh_at` dict tracking last fetch per account; cache bypass on TTL miss forces fresh broker call. Added §7.3.7 Holdings Day P&L Recompute & Backstop Exclusion documenting two fixes: (1) `_override_stale_close_for_holdings()` now recomputes day P&L for ALL holdings rows where `previous_close > 0` exists (not just Dhan patched rows), formula `(ltp - previous_close) × qty` applied universally, (2) `apply_day_change_backstop()` explicitly removed from holdings flow (retained for positions only) since holdings lack `overnight_quantity` field required for backstop Case 1/2/3 edge cases. Prevents spurious backstop matches on missing field when overnight_qty defaults to 0. Renumbered subsequent sections (7.3.6→7.3.8). |
 | 2026-08-26 | v1.22 Holdings H slot consistency fix (commit bad82021): Added §7.3.8 Holdings LTP Override & pnl+cur_val Consistency documenting two fixes: (1) `_override_stale_ltp_from_ticker()` now recomputes `pnl` and `cur_val` on patched rows after LTP patch (was leaving them stale, causing NavStrip H slot 2 to show `inv_val` instead of `ltp × qty`); (2) `_build_holdings_pnl_expr()` changes broker pnl trust policy from trusting non-null to trusting non-null AND non-zero (Kite sends `pnl=0.0` pre-market when `last_price=0`, old code trusted that zero → `cur_val = inv_val`, now falls back to computed formula `(ltp-avg)×qty`). At breakeven (`ltp==avg`) both formulas give 0, so no regression. Renumbered subsequent section (7.3.8→7.3.9). |
 | 2026-08-27 | v1.23 Holdings gate NSE-specific + per-exchange P&L overlay + chain polling tuning (commits bb778062, 13f59ac0, d4e75014): Added §7.3.5 Holdings Gate Now NSE-Specific documenting `closed_hours_or_broker(segment_exchanges=["NSE"])` parameter; holdings now enter snapshot mode at NSE close (15:35 IST) instead of MCX close (23:30 IST). Added §7.3.7 Snapshot Path Now Calls `_override_stale_close_for_holdings` documenting both broker AND snapshot paths now call `_override_stale_close_for_holdings()` to patch from prior-session daily_book.ltp (cutoff: `captured_at < today_08:00 IST`), eliminating divergence between live/snapshot displays. Added §7.3.9 `close_price` Always Synced to `ref_close` documenting removal of epsilon guard; `close_price` now unconditionally synced to keep denominator consistent with `day_change_val` numerator. Added §7.3.13 Positions Per-Exchange Day P&L Overlay documenting `_overlay_snapshot_for_closed_exchanges()` now patches day P&L for closed-exchange rows (NFO/BSE) immediately after their close (~15:30 IST) using prior-session daily_book snapshot, without waiting for MCX to close. Added Options Chain Polling & Timeouts subsection documenting backend timeout reduction (30s→12s) in `_chain_quotes_batch_quote()` and frontend interval increase (5s→30s) in ChainCard.svelte; added `_pricesFetching` in-flight guard to prevent concurrent quote() calls. Renumbered §7.3.6+ holdings sections (6→6, 7→7, 8→8, etc.). |
+| 2026-08-28 | v1.24 Exchange schedule table & clock module (from PLAN): Added §14 Exchange Schedule Table & Clock Module documenting new `exchange_schedule` DB table (date-aware, operator-editable defaults + overrides via `/admin/settings`), module-level cache, public API (`is_exchange_open`, `snapshot_time_for`, `snapshot_reset_time_for`, `sessions_with_snapshot_time_now`, `settlement_cutoff_for`, `settlement_ref_close_map`, `refresh_cache`, `seed_and_warm`), admin routes (GET/PUT/DELETE `/api/admin/exchange-schedule`), and `@apply_settlement_overlay(kind)` decorator for patch-on-close P&L + close_price. Replaces hardcoded `_EXCHANGE_TO_GATE` dict in snapshot_gate.py, `market_segments` YAML block, and 6 hardcoded trigger times in background.py. Single gate/exchanges distinction: a Muhurat row with exchanges=[NSE,BSE] correctly closes NFO/BFO/CDS via per-exchange `_resolve_for_exchange()` lookup. Backend snapshot triggers fully DB-driven: 5 per-day (NSE 15:31 + 16:15, MCX 23:31 + 00:15, MCX morning no-snapshot). Renumbered §15+ sections (14→15, 15→16, 16→17). |

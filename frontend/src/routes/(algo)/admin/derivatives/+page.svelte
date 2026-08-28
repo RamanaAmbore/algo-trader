@@ -1912,6 +1912,17 @@
       if (Number.isFinite(v) && v > 0) return v;
     }
 
+    // Try SSE tick via the resolved contract key — for MCX virtual roots
+    // (e.g. "CRUDEOIL") the ticker publishes under the actual front-month
+    // future tradingsymbol (e.g. "CRUDEOIL26JUNFUT"). Without this lookup
+    // the key mismatch caused fallthrough to the positions-API
+    // underlying_ltp, which can lag by up to 5 s.
+    const _resolvedTs = resolveUnderlying(selectedUnderlying, findNearestFuture)?.tradingsymbol;
+    if (_resolvedTs) {
+      const v = Number(untrack(() => getSnapshot(_resolvedTs)?.ltp));
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+
     // SSOT — backend-stamped underlying_ltp from positions (Pass 3).
     // Post-close: use reactive _postCloseUndLtp so candidatePositions
     // updates propagate after market close. Market-open: use untrack so

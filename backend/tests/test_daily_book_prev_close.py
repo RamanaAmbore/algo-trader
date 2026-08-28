@@ -194,20 +194,27 @@ def test_prev_ltp_map_new_session_sql_uses_ltp():
 # ---------------------------------------------------------------------------
 
 def test_positions_py_cutoff_uses_8am_minus_1_day():
-    """_override_stale_close_from_snapshot in positions.py must use
-    today_ist_8am - timedelta(days=1) as the before-08:00 cutoff, NOT midnight.
+    """_override_stale_close_from_snapshot in positions.py must produce an 08:00 IST cutoff.
+
+    The cutoff logic has been delegated to exchange_clock.settlement_cutoff_for("NSE")
+    which implements the before/after 08:00 branch in one canonical place. Verify the
+    delegation is present and that the old hardcoded arithmetic is gone from positions.py.
     """
     from backend.api.routes import positions as _pos_module
 
     src = inspect.getsource(_pos_module._override_stale_close_from_snapshot)
 
-    assert "today_ist_8am - timedelta(days=1)" in src, (
-        "positions.py cutoff before 08:00 IST must be 'today_ist_8am - timedelta(days=1)' "
-        "— not today_ist_midnight"
+    assert "settlement_cutoff_for" in src, (
+        "positions.py must delegate cutoff to exchange_clock.settlement_cutoff_for('NSE') "
+        "— the 08:00 IST / 08:00 IST-1day logic lives in exchange_clock now"
     )
-    # Ensure the old midnight-based form is gone
-    assert "today_ist_midnight" not in src or "today_ist_8am - timedelta" in src, (
-        "today_ist_midnight must not be used as the else-branch cutoff in positions.py"
+    # Ensure the old hardcoded forms are gone (now live in exchange_clock).
+    assert "today_ist_8am - timedelta(days=1)" not in src, (
+        "positions.py still contains hardcoded today_ist_8am - timedelta(days=1) — "
+        "cutoff must be delegated to exchange_clock.settlement_cutoff_for('NSE')"
+    )
+    assert "today_ist_midnight" not in src, (
+        "positions.py still references today_ist_midnight — cutoff is now in exchange_clock"
     )
 
 
@@ -216,19 +223,26 @@ def test_positions_py_cutoff_uses_8am_minus_1_day():
 # ---------------------------------------------------------------------------
 
 def test_holdings_py_cutoff_uses_8am_minus_1_day():
-    """_override_stale_close_for_holdings in holdings.py must use
-    today_ist_8am - timedelta(days=1) as the before-08:00 cutoff, NOT midnight.
+    """_override_stale_close_for_holdings in holdings.py must produce an 08:00 IST cutoff.
+
+    The cutoff logic has been delegated to exchange_clock.settlement_cutoff_for("NSE").
+    Verify the delegation is present and the old hardcoded arithmetic is gone.
     """
     from backend.api.routes import holdings as _hold_module
 
     src = inspect.getsource(_hold_module._override_stale_close_for_holdings)
 
-    assert "today_ist_8am - timedelta(days=1)" in src, (
-        "holdings.py cutoff before 08:00 IST must be 'today_ist_8am - timedelta(days=1)' "
-        "— not today_ist_midnight"
+    assert "settlement_cutoff_for" in src, (
+        "holdings.py must delegate cutoff to exchange_clock.settlement_cutoff_for('NSE') "
+        "— the 08:00 IST / 08:00 IST-1day logic lives in exchange_clock now"
     )
-    assert "today_ist_midnight" not in src or "today_ist_8am - timedelta" in src, (
-        "today_ist_midnight must not be used as the else-branch cutoff in holdings.py"
+    # Ensure the old hardcoded forms are gone.
+    assert "today_ist_8am - timedelta(days=1)" not in src, (
+        "holdings.py still contains hardcoded today_ist_8am - timedelta(days=1) — "
+        "cutoff must be delegated to exchange_clock.settlement_cutoff_for('NSE')"
+    )
+    assert "today_ist_midnight" not in src, (
+        "holdings.py still references today_ist_midnight — cutoff is now in exchange_clock"
     )
 
 

@@ -3,7 +3,7 @@ SQLAlchemy ORM models — user and partner management.
 """
 
 import secrets as _secrets
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Optional
 
 from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, Time, UniqueConstraint, text
@@ -2323,4 +2323,47 @@ class AppMessage(Base):
               postgresql_where=text("retain_until IS NOT NULL")),
         Index("ix_app_messages_account", "account",
               postgresql_where=text("account IS NOT NULL")),
+    )
+
+
+class ExchangeSchedule(Base):
+    """DB-backed exchange schedule — single source of truth for all segment timing.
+
+    Each row represents one named session (or special day override) for a
+    named gate (e.g. "NSE", "MCX").  The ``gate`` maps to a set of Kite
+    exchange codes via the ``exchanges`` TEXT[] column.
+
+    Default rows (date IS NULL) are the permanent weekday schedule — they
+    apply whenever no date-specific row exists for that gate+session_name.
+    Date-specific rows override the default for that particular calendar day
+    (e.g. special sessions, early-close days).
+
+    The ``NULLS NOT DISTINCT`` option on the unique constraint is required
+    on PostgreSQL 15+ so that rows with date=NULL can be deduplicated on
+    (gate, NULL, session_name) — without it every INSERT for default rows
+    would succeed even when duplicates exist.
+    """
+    __tablename__ = "exchange_schedule"
+
+    id:                   Mapped[int]             = mapped_column(primary_key=True, autoincrement=True)
+    gate:                 Mapped[str]             = mapped_column(String(16), nullable=False)
+    exchanges:            Mapped[list[str]]       = mapped_column(PG_ARRAY(String), nullable=False)
+    date:                 Mapped[Optional[date]]  = mapped_column(Date, nullable=True)
+    weekdays:             Mapped[Optional[list[int]]] = mapped_column(PG_ARRAY(Integer), nullable=True)
+    session_name:         Mapped[str]             = mapped_column(String(32), nullable=False, server_default="regular")
+    is_open:              Mapped[bool]            = mapped_column(Boolean, nullable=False, default=True)
+    open_time:            Mapped[Optional[time]]  = mapped_column(Time, nullable=True)
+    close_time:           Mapped[Optional[time]]  = mapped_column(Time, nullable=True)
+    snapshot_time:        Mapped[Optional[time]]  = mapped_column(Time, nullable=True)
+    snapshot_reset_time:  Mapped[Optional[time]]  = mapped_column(Time, nullable=True)
+    reason:               Mapped[Optional[str]]   = mapped_column(String(200), nullable=True)
+    source:               Mapped[str]             = mapped_column(String(16), nullable=False, server_default="operator")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "gate", "date", "session_name",
+            name="uq_exchange_schedule_gate_date_session",
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_exchange_schedule_gate_date", "gate", "date"),
     )

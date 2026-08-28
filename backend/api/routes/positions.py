@@ -385,13 +385,9 @@ async def _fetch_ref_close_map(
 
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
-    from datetime import timedelta
-    from backend.shared.helpers.date_time_utils import timestamp_indian
+    from backend.api.helpers.exchange_clock import settlement_cutoff_for
 
-    now_ist = timestamp_indian()
-    today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_ist_8am = today_ist_midnight + timedelta(hours=8)
-    cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
+    cutoff = await settlement_cutoff_for("NSE")
 
     out: dict[tuple[str, str], float] = {}
     # Build IN-list filter to avoid scanning all positions rows.
@@ -536,8 +532,8 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
         # close_price.
         if kind == "positions":
             ref_close = ref_close_map.get(key, 0.0)
-            if ref_close > 0:
-                snap_ltp_f = float(snap_ltp) if snap_ltp is not None else broker_ltp
+            if ref_close > 0 and snap_ltp is not None:
+                snap_ltp_f = float(snap_ltp)
                 qty = int(getattr(r, "quantity", 0) or 0)
                 dcv = (snap_ltp_f - ref_close) * qty
                 prev_val = abs(ref_close * qty) if qty else 0.0
@@ -954,27 +950,10 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
         return
 
     # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).
-    # MCX settles at 23:30–00:15 IST (next calendar day); its daily_book snapshot
-    # lands AFTER yesterday's 08:00 IST. Using 08:00 IST today as cutoff would
-    # include tonight's MCX snapshot, making snap_ltp == last_price == settlement
-    # → day_change_val = 0 for all MCX instruments (observed after 00:15 IST).
-    # Shifting to yesterday's 08:00 IST when now < 08:00 IST excludes it.
-    # After 08:00 IST the regular boundary applies and tonight's MCX snapshot
-    # correctly becomes prev_close for the new MCX session.
-    from datetime import timedelta
-    from backend.shared.helpers.date_time_utils import timestamp_indian
-    now_ist = timestamp_indian()
-    today_ist_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    # Invariant: prev_close is frozen until the next session opens at 08:00 IST.
-    # Cutoff = the last 08:00 IST boundary that has passed.
-    # Before 08:00 IST today: cutoff = yesterday's 08:00 IST — excludes today's EOD
-    #   snapshots (NSE at 15:35 IST, MCX close at 23:31 IST, MCX settlement at 00:15
-    #   IST), returning the prior-prior-session ltp as prev_close so day_change reflects
-    #   yesterday's session performance.
-    # At/after 08:00 IST today: use today's 08:00 IST → new session started,
-    #   tonight's MCX snapshot is now the correct prev_close for today's MCX session.
-    today_ist_8am = today_ist_midnight + timedelta(hours=8)
-    today_ist_cutoff = today_ist_8am if now_ist >= today_ist_8am else today_ist_8am - timedelta(days=1)
+    # Delegated to exchange_clock.settlement_cutoff_for("NSE") which reads the
+    # snapshot_reset_time from the DB-backed exchange_schedule cache.
+    from backend.api.helpers.exchange_clock import settlement_cutoff_for
+    today_ist_cutoff = await settlement_cutoff_for("NSE")
 
     snapshot_map: dict[tuple[str, str], float] = {}
     prev_pnl_map: dict[tuple[str, str], float] = {}
