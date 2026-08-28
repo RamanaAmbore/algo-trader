@@ -330,6 +330,7 @@
   $effect(() => { _caps = $userCaps; });
   $effect(() => { _role = $userRole; });
   const _canView = $derived(hasCap('manage_settings', _caps, _role));
+  const _canViewSchedule = $derived(hasCap('view_exchange_schedule', _caps, _role));
   let _loadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {
@@ -342,7 +343,7 @@
       // the dropdown swaps from free-text → Select once symbols land.
       setTimeout(() => { _loadPinnedSymbols(); }, 0);
       // TERTIARY — exchange schedule. Loaded with admin cap guard.
-      if (hasCap('manage_settings', _caps, _role)) setTimeout(() => { loadSchedule(); }, 0);
+      if (hasCap('view_exchange_schedule', _caps, _role)) setTimeout(() => { loadSchedule(); }, 0);
     }
   });
 </script>
@@ -365,7 +366,7 @@
   <!-- RBAC bootstrap still in-flight — show a skeleton so a legitimate
        operator never sees the access-denied panel as a false-positive. -->
   <LoadingSkeleton variant="card" rows={3} />
-{:else if !_canView}
+{:else if !_canView && !_canViewSchedule}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
       Editing settings requires the <code>manage_settings</code> capability
@@ -375,6 +376,7 @@
   </EmptyState>
 {:else}
 
+{#if _canView}
 {#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}
 
 {#if execRows.length}
@@ -600,6 +602,7 @@
     </div>
   </div>
 {/snippet}
+{/if}
 {/if}
 
 {#if hasCap('view_exchange_schedule', _caps, _role)}
