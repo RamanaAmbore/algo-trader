@@ -654,10 +654,10 @@
               <th class="text-left p-1">Days</th>
               <th class="text-left p-1">Session</th>
               <th class="text-left p-1">Exchanges</th>
-              <th class="text-right p-1">Open</th>
-              <th class="text-right p-1">Close</th>
-              <th class="text-right p-1">Snapshot</th>
-              <th class="text-right p-1">Reset</th>
+              <th class="text-center p-1">Open</th>
+              <th class="text-center p-1">Close</th>
+              <th class="text-center p-1">Snapshot</th>
+              <th class="text-center p-1">Reset</th>
               {#if hasCap('manage_exchange_schedule', _caps, _role)}<th></th>{/if}
             </tr>
           </thead>
@@ -671,10 +671,10 @@
                   {#if !row.is_open}<span class="ml-1 text-[0.55rem] opacity-60">(closed)</span>{/if}
                 </td>
                 <td class="p-1 text-[0.55rem] opacity-70">{(row.exchanges || []).join(', ')}</td>
-                <td class="p-1 text-right font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
-                <td class="p-1 text-right font-mono text-[0.65rem]">{row.close_time || '—'}</td>
-                <td class="p-1 text-right font-mono text-[0.65rem]">{row.snapshot_time       || '—'}</td>
-                <td class="p-1 text-right font-mono text-[0.65rem]">{row.snapshot_reset_time || '—'}</td>
+                <td class="p-1 text-center font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
+                <td class="p-1 text-center font-mono text-[0.65rem]">{row.close_time || '—'}</td>
+                <td class="p-1 text-center font-mono text-[0.65rem]">{row.snapshot_time       || '—'}</td>
+                <td class="p-1 text-center font-mono text-[0.65rem]">{row.snapshot_reset_time || '—'}</td>
                 {#if hasCap('manage_exchange_schedule', _caps, _role)}
                   <td class="p-1">
                     <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
@@ -711,8 +711,8 @@
               <th class="text-left p-1">Session</th>
               <th class="text-left p-1">Exchanges</th>
               <th class="text-left p-1">Open?</th>
-              <th class="text-right p-1">Open</th>
-              <th class="text-right p-1">Close</th>
+              <th class="text-center p-1">Open</th>
+              <th class="text-center p-1">Close</th>
               <th class="text-left p-1">Reason</th>
               {#if hasCap('manage_exchange_schedule', _caps, _role)}<th></th>{/if}
             </tr>
@@ -729,8 +729,8 @@
                     class:text-red-400={!row.is_open}>
                   {row.is_open ? 'Open' : 'Closed'}
                 </td>
-                <td class="p-1 text-right font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
-                <td class="p-1 text-right font-mono text-[0.65rem]">{row.close_time || '—'}</td>
+                <td class="p-1 text-center font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
+                <td class="p-1 text-center font-mono text-[0.65rem]">{row.close_time || '—'}</td>
                 <td class="p-1 text-[0.65rem] opacity-80">{row.reason || '—'}</td>
                 {#if hasCap('manage_exchange_schedule', _caps, _role)}
                   <td class="p-1">
