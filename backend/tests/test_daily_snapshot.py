@@ -201,16 +201,20 @@ class TestRowBuilders:
         assert len(rows) == 2
 
     def test_holdings_row_shape(self):
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
-        rows = _holdings_rows("ZG0790", self._D, _HOLDINGS, self._NOW_EOD)
-        r = rows[0]
-        assert r["kind"] == "holdings"
-        assert r["segment"] == "equity"
-        assert r["qty"] == 10
-        assert r["avg_cost"] == 1500.0
-        assert r["ltp"] == 1560.0
-        assert r["total_pnl"] == 600.0
-        assert json.loads(r["payload_json"])["tradingsymbol"] == "INFY"
+        # EOD snapshot — market closed, ltp captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, _HOLDINGS, self._NOW_EOD)
+            r = rows[0]
+            assert r["kind"] == "holdings"
+            assert r["segment"] == "equity"
+            assert r["qty"] == 10
+            assert r["avg_cost"] == 1500.0
+            assert r["ltp"] == 1560.0
+            assert r["total_pnl"] == 600.0
+            assert json.loads(r["payload_json"])["tradingsymbol"] == "INFY"
 
     def test_holdings_previous_close_populated(self):
         """Test that previous_close is populated from close_price when present."""
@@ -238,6 +242,8 @@ class TestRowBuilders:
         reaches the DB (which would trigger the |ltp-close|<=0.005 guard in
         holdings.py and produce stale day_change_val=0).
         """
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
         holding_no_close = {
             "tradingsymbol": "INFY",
@@ -249,17 +255,21 @@ class TestRowBuilders:
             "pnl": 600.0,
             # close_price intentionally missing
         }
-        rows = _holdings_rows("ZG0790", self._D, [holding_no_close], self._NOW_EOD)
-        assert len(rows) == 1
-        assert rows[0]["previous_close"] is not None, (
-            "previous_close must not be None when close_price missing — ltp_val fallback must apply"
-        )
-        assert rows[0]["previous_close"] == pytest.approx(1560.0), (
-            f"previous_close must equal ltp_val=1560.0 (ltp fallback); got {rows[0]['previous_close']}"
-        )
+        # EOD snapshot — market closed, ltp captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, [holding_no_close], self._NOW_EOD)
+            assert len(rows) == 1
+            assert rows[0]["previous_close"] is not None, (
+                "previous_close must not be None when close_price missing — ltp_val fallback must apply"
+            )
+            assert rows[0]["previous_close"] == pytest.approx(1560.0), (
+                f"previous_close must equal ltp_val=1560.0 (ltp fallback); got {rows[0]['previous_close']}"
+            )
 
     def test_holdings_previous_close_falls_back_to_ltp_when_zero(self):
         """Fix P1-B: when close_price is zero, previous_close falls back to ltp_val."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
         holding_zero_close = {
             "tradingsymbol": "FOO",
@@ -271,17 +281,21 @@ class TestRowBuilders:
             "pnl": 500.0,
             "close_price": 0,  # Zero close price
         }
-        rows = _holdings_rows("ZG0790", self._D, [holding_zero_close], self._NOW_EOD)
-        assert len(rows) == 1
-        assert rows[0]["previous_close"] is not None, (
-            "previous_close must not be None when close_price=0 — ltp_val fallback must apply"
-        )
-        assert rows[0]["previous_close"] == pytest.approx(1100.0), (
-            f"previous_close must equal ltp_val=1100.0; got {rows[0]['previous_close']}"
-        )
+        # EOD snapshot — market closed, ltp captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, [holding_zero_close], self._NOW_EOD)
+            assert len(rows) == 1
+            assert rows[0]["previous_close"] is not None, (
+                "previous_close must not be None when close_price=0 — ltp_val fallback must apply"
+            )
+            assert rows[0]["previous_close"] == pytest.approx(1100.0), (
+                f"previous_close must equal ltp_val=1100.0; got {rows[0]['previous_close']}"
+            )
 
     def test_holdings_previous_close_falls_back_to_ltp_when_none(self):
         """Fix P1-B: when close_price is explicitly None, previous_close falls back to ltp_val."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
         holding_none_close = {
             "tradingsymbol": "BAR",
@@ -293,14 +307,16 @@ class TestRowBuilders:
             "pnl": 200.0,
             "close_price": None,  # Explicitly None
         }
-        rows = _holdings_rows("ZG0790", self._D, [holding_none_close], self._NOW_EOD)
-        assert len(rows) == 1
-        assert rows[0]["previous_close"] is not None, (
-            "previous_close must not be None when close_price=None — ltp_val fallback must apply"
-        )
-        assert rows[0]["previous_close"] == pytest.approx(2100.0), (
-            f"previous_close must equal ltp_val=2100.0; got {rows[0]['previous_close']}"
-        )
+        # EOD snapshot — market closed, ltp captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, [holding_none_close], self._NOW_EOD)
+            assert len(rows) == 1
+            assert rows[0]["previous_close"] is not None, (
+                "previous_close must not be None when close_price=None — ltp_val fallback must apply"
+            )
+            assert rows[0]["previous_close"] == pytest.approx(2100.0), (
+                f"previous_close must equal ltp_val=2100.0; got {rows[0]['previous_close']}"
+            )
 
     def test_holdings_previous_close_stored_in_payload(self):
         """Test that previous_close is also captured in snapshot_extras for downstream readers."""
@@ -396,6 +412,8 @@ class TestRowBuilders:
         emit ltp=None + day_pnl=None so the close-override path in
         positions.py doesn't consume a mid-session value as yesterday's
         EOD. The 23:35 IST follow-up pass captures the real EOD."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
         mcx_pos = [{
             "tradingsymbol": "CRUDEOIL26JUL6900PE", "exchange": "MCX",
@@ -403,18 +421,22 @@ class TestRowBuilders:
             "average_price": 245.0, "pnl": 19.5,
         }]
         now_1535 = datetime(2026, 5, 8, 15, 35)
-        rows = _positions_rows("ZG0790", self._D, mcx_pos, now_1535)
-        assert rows[0]["ltp"] is None
-        assert rows[0]["day_pnl"] is None
+        # First call: mid-session (MCX open at 15:35)
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _positions_rows("ZG0790", self._D, mcx_pos, now_1535)
+            assert rows[0]["ltp"] is None
+            assert rows[0]["day_pnl"] is None
         # qty + avg_cost + total_pnl still captured — they're not session-sensitive
         assert rows[0]["qty"] == 1
         assert rows[0]["avg_cost"] == 245.0
         assert rows[0]["total_pnl"] == 19.5
         # Same row at 23:35 (after MCX close) gets full EOD values
         now_2335 = datetime(2026, 5, 8, 23, 35)
-        rows = _positions_rows("ZG0790", self._D, mcx_pos, now_2335)
-        assert rows[0]["ltp"] == 264.5
-        assert rows[0]["day_pnl"] == 44.5  # (264.5 - 220.0) × 1
+        # Second call: post-session (MCX closed at 23:35)
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _positions_rows("ZG0790", self._D, mcx_pos, now_2335)
+            assert rows[0]["ltp"] == 264.5
+            assert rows[0]["day_pnl"] == 44.5  # (264.5 - 220.0) × 1
 
     def test_trades_row_shape(self):
         from backend.api.algo.daily_snapshot import _trades_rows
@@ -487,6 +509,8 @@ class TestRowBuilders:
         CRUDEOIL overnight position: multiplier=100, oq=1 lot.
         Expected day_pnl = (ltp - cls) × oq × 100 = (6900 - 6800) × 100 = 10000.
         """
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
         mcx_pos = [{
             "tradingsymbol": "CRUDEOIL26AUGFUT",
@@ -504,13 +528,17 @@ class TestRowBuilders:
             "day_sell_value":      0.0,
         }]
         # Use EOD time (after MCX close) so the snapshot captures day_pnl
-        rows = _positions_rows("ZG0790", self._D, mcx_pos, self._NOW_EOD)
-        assert len(rows) == 1, "expected one row"
-        assert rows[0]["day_pnl"] == pytest.approx(10_000.0), \
-            f"MCX day_pnl via _positions_rows: expected 10000, got {rows[0]['day_pnl']}"
+        # Market closed at EOD, ltp captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _positions_rows("ZG0790", self._D, mcx_pos, self._NOW_EOD)
+            assert len(rows) == 1, "expected one row"
+            assert rows[0]["day_pnl"] == pytest.approx(10_000.0), \
+                f"MCX day_pnl via _positions_rows: expected 10000, got {rows[0]['day_pnl']}"
 
     def test_positions_rows_mcx_multiplier_guard_lt1(self):
         """multiplier < 1 must be clamped to 1 (bad broker data guard)."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
         pos = [{
             "tradingsymbol": "CRUDEOIL26AUGFUT",
@@ -527,11 +555,14 @@ class TestRowBuilders:
             "day_buy_value":       0.0,
             "day_sell_value":      0.0,
         }]
-        rows = _positions_rows("ZG0790", self._D, pos, self._NOW_EOD)
-        assert len(rows) == 1
-        # With multiplier clamped to 1: (6900-6800)×1 = 100
-        assert rows[0]["day_pnl"] == pytest.approx(100.0), \
-            f"multiplier=0 should clamp to 1; expected day_pnl=100, got {rows[0]['day_pnl']}"
+        # Market closed at EOD, ltp captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _positions_rows("ZG0790", self._D, pos, self._NOW_EOD)
+            assert len(rows) == 1
+            # With multiplier clamped to 1: (6900-6800)×1 = 100
+            assert rows[0]["day_pnl"] == pytest.approx(100.0), (
+                f"multiplier=0 should clamp to 1; expected day_pnl=100, got {rows[0]['day_pnl']}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1021,6 +1052,8 @@ class TestHoldingsRowPreviousCloseLtpFallback:
         This is the same-day-buy case: no prior session exists, so
         previous_close = current ltp -> day P&L = (ltp - ltp) * qty = 0.
         """
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
         holding = {
@@ -1034,17 +1067,19 @@ class TestHoldingsRowPreviousCloseLtpFallback:
             "pnl": 200.0,
             "close_price": 0,         # no prior close — same-day buy
         }
-        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
-                               prev_ltp_map=None)
-        assert len(rows) == 1
-        assert rows[0]["previous_close"] is not None, (
-            "previous_close must not be None when close_price=0 and no prev_ltp_map — "
-            "must fall back to ltp_val to prevent NULL triggering 0-P&L guard in holdings.py"
-        )
-        assert rows[0]["previous_close"] == pytest.approx(510.0), (
-            f"previous_close must equal ltp_val=510.0 when no prior close; "
-            f"got {rows[0]['previous_close']}"
-        )
+        # EOD snapshot — market closed, ltp captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
+                                   prev_ltp_map=None)
+            assert len(rows) == 1
+            assert rows[0]["previous_close"] is not None, (
+                "previous_close must not be None when close_price=0 and no prev_ltp_map — "
+                "must fall back to ltp_val to prevent NULL triggering 0-P&L guard in holdings.py"
+            )
+            assert rows[0]["previous_close"] == pytest.approx(510.0), (
+                f"previous_close must equal ltp_val=510.0 when no prior close; "
+                f"got {rows[0]['previous_close']}"
+            )
 
     def test_previous_close_ltp_fallback_produces_zero_day_pnl(self):
         """When previous_close == ltp (same-day buy fallback), day P&L = 0.
@@ -1052,6 +1087,8 @@ class TestHoldingsRowPreviousCloseLtpFallback:
         This is the semantically correct result: bought today, no prior session,
         so day gain = 0 (entry and close are the same).
         """
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
         holding = {
@@ -1065,11 +1102,13 @@ class TestHoldingsRowPreviousCloseLtpFallback:
             "pnl": 0.0,
             "close_price": 0,
         }
-        rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
-                               prev_ltp_map=None)
-        assert len(rows) == 1
-        # previous_close = ltp_val = 1000, so day P&L formula = (1000-1000)*10 = 0
-        assert rows[0]["previous_close"] == pytest.approx(1000.0)
+        # EOD snapshot — market closed, ltp captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
+                                   prev_ltp_map=None)
+            assert len(rows) == 1
+            # previous_close = ltp_val = 1000, so day P&L formula = (1000-1000)*10 = 0
+            assert rows[0]["previous_close"] == pytest.approx(1000.0)
 
     def test_prev_ltp_map_takes_priority_over_ltp_fallback(self):
         """prev_ltp_map value wins over the ltp_val fallback."""

@@ -153,10 +153,14 @@ class TestHoldingsRowsBadPayloadGuard:
 
     def test_all_zero_rows_are_skipped(self):
         """All-zero holdings rows (bad token) produce no output rows."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
         bad = self._build_zero_holdings(3)
-        rows = _holdings_rows("ZG0790", self._D, bad, self._NOW_EOD)
-        assert rows == [], f"Expected 0 rows, got {len(rows)}"
+        # EOD time: market closed, ltp would be captured if not for zero-payload guard
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, bad, self._NOW_EOD)
+            assert rows == [], f"Expected 0 rows, got {len(rows)}"
 
     def test_warning_logged_when_rows_skipped(self):
         """A WARNING is emitted when holdings rows are skipped.
@@ -166,31 +170,41 @@ class TestHoldingsRowsBadPayloadGuard:
         """
         from backend.api.algo import daily_snapshot as ds
         bad = self._build_zero_holdings(2)
-        with patch.object(ds.logger, "warning") as mock_warn:
-            ds._holdings_rows("ZG0790", self._D, bad, self._NOW_EOD)
-        assert mock_warn.called, "logger.warning must be called when holdings rows are skipped"
-        all_messages = " ".join(str(c) for c in mock_warn.call_args_list)
-        assert "skipped" in all_messages and "holdings" in all_messages, (
-            f"WARNING must mention 'skipped' and 'holdings'; got: {all_messages}"
-        )
+        # EOD time: market closed, ltp would be captured if not for zero-payload guard
+        with patch.object(ds._exchange_clock, "is_exchange_open", return_value=False):
+            with patch.object(ds.logger, "warning") as mock_warn:
+                ds._holdings_rows("ZG0790", self._D, bad, self._NOW_EOD)
+            assert mock_warn.called, "logger.warning must be called when holdings rows are skipped"
+            all_messages = " ".join(str(c) for c in mock_warn.call_args_list)
+            assert "skipped" in all_messages and "holdings" in all_messages, (
+                f"WARNING must mention 'skipped' and 'holdings'; got: {all_messages}"
+            )
 
     def test_good_rows_pass_through(self):
         """Valid non-zero holdings rows are written normally."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
         good = self._build_good_holdings()
-        rows = _holdings_rows("ZG0790", self._D, good, self._NOW_EOD)
-        assert len(rows) == 1
-        assert rows[0]["symbol"] == "INFY"
-        assert rows[0]["ltp"] == 1560.0
+        # EOD time: market closed, ltp should be captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, good, self._NOW_EOD)
+            assert len(rows) == 1
+            assert rows[0]["symbol"] == "INFY"
+            assert rows[0]["ltp"] == 1560.0
 
     def test_mixed_rows_preserves_good_skips_bad(self):
         """Mixed good + bad holdings: good rows written, bad rows skipped."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
         bad = self._build_zero_holdings(2)
         good = self._build_good_holdings()
-        rows = _holdings_rows("ZG0790", self._D, bad + good, self._NOW_EOD)
-        assert len(rows) == 1
-        assert rows[0]["symbol"] == "INFY"
+        # EOD time: market closed, ltp should be captured for good rows
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("ZG0790", self._D, bad + good, self._NOW_EOD)
+            assert len(rows) == 1
+            assert rows[0]["symbol"] == "INFY"
 
     def test_zero_rows_during_mid_session_not_filtered(self):
         """Mid-session rows (ltp=None by design) are NOT filtered by bad-payload guard."""
@@ -239,25 +253,33 @@ class TestPositionsRowsBadPayloadGuard:
 
     def test_all_zero_positions_skipped(self):
         """All-zero position rows are skipped (bad token)."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
         bad = self._build_zero_positions(2)
-        rows = _positions_rows("ZG0790", self._D, bad, self._NOW_EOD)
-        assert rows == [], f"Expected 0 rows, got {len(rows)}"
+        # EOD time: market closed, ltp would be captured if not for zero-payload guard
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _positions_rows("ZG0790", self._D, bad, self._NOW_EOD)
+            assert rows == [], f"Expected 0 rows, got {len(rows)}"
 
     def test_warning_logged_for_skipped_positions(self):
         """WARNING is emitted when positions rows are skipped."""
         from backend.api.algo import daily_snapshot as ds
         bad = self._build_zero_positions(1)
-        with patch.object(ds.logger, "warning") as mock_warn:
-            ds._positions_rows("ZG0790", self._D, bad, self._NOW_EOD)
-        assert mock_warn.called, "logger.warning must be called when positions rows are skipped"
-        all_messages = " ".join(str(c) for c in mock_warn.call_args_list)
-        assert "skipped" in all_messages and "positions" in all_messages, (
-            f"WARNING must mention 'skipped' and 'positions'; got: {all_messages}"
-        )
+        # EOD time: market closed, ltp would be captured if not for zero-payload guard
+        with patch.object(ds._exchange_clock, "is_exchange_open", return_value=False):
+            with patch.object(ds.logger, "warning") as mock_warn:
+                ds._positions_rows("ZG0790", self._D, bad, self._NOW_EOD)
+            assert mock_warn.called, "logger.warning must be called when positions rows are skipped"
+            all_messages = " ".join(str(c) for c in mock_warn.call_args_list)
+            assert "skipped" in all_messages and "positions" in all_messages, (
+                f"WARNING must mention 'skipped' and 'positions'; got: {all_messages}"
+            )
 
     def test_good_positions_pass_through(self):
         """Position with real LTP passes through the guard."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
         good = [
             {
@@ -270,10 +292,12 @@ class TestPositionsRowsBadPayloadGuard:
                 "pnl": 10000.0,
             }
         ]
-        rows = _positions_rows("ZG0790", self._D, good, self._NOW_EOD)
-        assert len(rows) == 1
-        assert rows[0]["symbol"] == "NIFTY25JUNFUT"
-        assert rows[0]["ltp"] == 23200.0
+        # EOD time: market closed, ltp should be captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _positions_rows("ZG0790", self._D, good, self._NOW_EOD)
+            assert len(rows) == 1
+            assert rows[0]["symbol"] == "NIFTY25JUNFUT"
+            assert rows[0]["ltp"] == 23200.0
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +351,7 @@ async def test_snapshot_all_filtered_no_upsert_emits_warning(caplog):
          patch.object(ds, "_get_connections", return_value=MagicMock(conn={"ZG0790": None})), \
          patch("backend.brokers.registry.all_brokers", return_value=[mock_broker]), \
          patch.object(ds, "timestamp_indian", return_value=fixed_ist), \
+         patch.object(ds._exchange_clock, "is_exchange_open", return_value=False), \
          patch.object(ds.logger, "warning") as mock_warn:
 
         result = await ds.snapshot_daily_book(target_date=date(2026, 6, 30))
@@ -399,7 +424,8 @@ async def test_snapshot_prior_snapshot_untouched_on_bad_payload():
     with patch.object(ds, "_upsert_rows", side_effect=_spy_upsert), \
          patch.object(ds, "_get_connections", return_value=MagicMock(conn={"ZJ6294": None})), \
          patch("backend.brokers.registry.all_brokers", return_value=[mock_broker]), \
-         patch.object(ds, "timestamp_indian", return_value=fixed_ist):
+         patch.object(ds, "timestamp_indian", return_value=fixed_ist), \
+         patch.object(ds._exchange_clock, "is_exchange_open", return_value=False):
 
         await ds.snapshot_daily_book(target_date=date(2026, 6, 30))
 

@@ -175,6 +175,8 @@ class TestPositionsRowsDayPnl:
 
     def test_decomposed_formula_used_when_intraday_fields_present(self):
         """day_pnl uses decomposed formula when all intraday split fields present."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
         from backend.api.algo.pnl_math import decomposed_intraday_pnl
 
@@ -194,22 +196,26 @@ class TestPositionsRowsDayPnl:
             "day_sell_value":     0.0,
         }
         target_date = date(2026, 6, 27)
-        rows = _positions_rows("ZG0790", target_date, [row], self._now_ist_post_close())
+        # Post-close time: market is closed, ltp should be captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _positions_rows("ZG0790", target_date, [row], self._now_ist_post_close())
 
-        assert len(rows) == 1
-        expected = float(decomposed_intraday_pnl(
-            oq=50.0, ltp=23150.0, cls=23000.0,
-            bq=0.0, bv=0.0, sv=0.0, sq=0.0,
-        ))
-        assert rows[0]["day_pnl"] is not None
-        assert math.isclose(rows[0]["day_pnl"], expected, rel_tol=1e-6), (
-            f"day_pnl={rows[0]['day_pnl']:.2f} expected {expected:.2f}"
-        )
+            assert len(rows) == 1
+            expected = float(decomposed_intraday_pnl(
+                oq=50.0, ltp=23150.0, cls=23000.0,
+                bq=0.0, bv=0.0, sv=0.0, sq=0.0,
+            ))
+            assert rows[0]["day_pnl"] is not None
+            assert math.isclose(rows[0]["day_pnl"], expected, rel_tol=1e-6), (
+                f"day_pnl={rows[0]['day_pnl']:.2f} expected {expected:.2f}"
+            )
 
     def test_decomposed_formula_partially_closed_position(self):
         """Partially-closed position: overnight 10, sold 4 today, net 6.
         Naive formula (LTP-close)*qty=6*150 misses the realised leg.
         Decomposed formula captures both."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
         from backend.api.algo.pnl_math import decomposed_intraday_pnl
 
@@ -229,25 +235,29 @@ class TestPositionsRowsDayPnl:
             "day_sell_value":     92800.0,
         }
         target_date = date(2026, 6, 27)
-        rows = _positions_rows("ZG0790", target_date, [row], self._now_ist_post_close())
+        # Post-close time: market is closed, ltp should be captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _positions_rows("ZG0790", target_date, [row], self._now_ist_post_close())
 
-        expected_decomposed = float(decomposed_intraday_pnl(
-            oq=10.0, ltp=23150.0, cls=23000.0,
-            bq=0.0, bv=0.0, sv=92800.0, sq=4.0,
-        ))
-        naive = (23150.0 - 23000.0) * 6  # 900 — wrong for partially-closed
-        assert rows[0]["day_pnl"] is not None
-        assert math.isclose(rows[0]["day_pnl"], expected_decomposed, rel_tol=1e-6), (
-            f"day_pnl={rows[0]['day_pnl']:.2f} expected {expected_decomposed:.2f}"
-        )
-        # Confirm the decomposed result differs from the naive (this is the bug)
-        assert not math.isclose(rows[0]["day_pnl"], naive, abs_tol=1.0), (
-            f"day_pnl should not equal naive (LTP-close)*qty={naive}; "
-            "that formula misses the realised sell leg"
-        )
+            expected_decomposed = float(decomposed_intraday_pnl(
+                oq=10.0, ltp=23150.0, cls=23000.0,
+                bq=0.0, bv=0.0, sv=92800.0, sq=4.0,
+            ))
+            naive = (23150.0 - 23000.0) * 6  # 900 — wrong for partially-closed
+            assert rows[0]["day_pnl"] is not None
+            assert math.isclose(rows[0]["day_pnl"], expected_decomposed, rel_tol=1e-6), (
+                f"day_pnl={rows[0]['day_pnl']:.2f} expected {expected_decomposed:.2f}"
+            )
+            # Confirm the decomposed result differs from the naive (this is the bug)
+            assert not math.isclose(rows[0]["day_pnl"], naive, abs_tol=1.0), (
+                f"day_pnl should not equal naive (LTP-close)*qty={naive}; "
+                "that formula misses the realised sell leg"
+            )
 
     def test_naive_fallback_when_no_intraday_fields(self):
         """Falls back to naive (LTP-close)×qty when intraday fields are absent."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
 
         row = {
@@ -261,11 +271,13 @@ class TestPositionsRowsDayPnl:
             # No overnight_quantity / day_buy_quantity etc.
         }
         target_date = date(2026, 6, 27)
-        rows = _positions_rows("ZG0790", target_date, [row], self._now_ist_post_close())
+        # Post-close time: market is closed, ltp should be captured
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _positions_rows("ZG0790", target_date, [row], self._now_ist_post_close())
 
-        expected_naive = (2950.0 - 2900.0) * 10  # 500
-        assert rows[0]["day_pnl"] is not None
-        assert math.isclose(rows[0]["day_pnl"], expected_naive, rel_tol=1e-6)
+            expected_naive = (2950.0 - 2900.0) * 10  # 500
+            assert rows[0]["day_pnl"] is not None
+            assert math.isclose(rows[0]["day_pnl"], expected_naive, rel_tol=1e-6)
 
     def test_mid_session_yields_none_pnl(self):
         """Rows captured mid-session produce None day_pnl (not committed to DB)."""

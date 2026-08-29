@@ -576,7 +576,7 @@ class TestSeedRows:
     def test_mcx_snapshot_time_is_0015(self):
         from backend.api.helpers.exchange_clock import _SEED_ROWS
         mcx = next(r for r in _SEED_ROWS if r["gate"] == "MCX")
-        assert mcx["snapshot_time"] == time(0, 15)
+        assert mcx["snapshot_time"] == time(23, 45)
 
     def test_non_mcx_opens_at_0800(self):
         from backend.api.helpers.exchange_clock import _SEED_ROWS

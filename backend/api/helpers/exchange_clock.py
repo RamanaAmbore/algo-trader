@@ -39,9 +39,8 @@ Seed rows (2 defaults, date IS NULL)
 | gate    | exchanges                        | open    | close     | snapshot | reset    |
 +---------+----------------------------------+---------+-----------+----------+----------+
 | NON-MCX | NSE, BSE, NFO, BFO, CDS         | 08:00   | 16:00     | 15:45    | 08:00    |
-| MCX     | MCX                              | 08:00   | 23:30     | 00:15*   | 08:00    |
+| MCX     | MCX                              | 08:00   | 23:30     | 23:45    | 08:00    |
 +---------+----------------------------------+---------+-----------+----------+----------+
-* 00:15 IST (next calendar day) — after MCX settlement; snapshot_time wraps midnight.
 
 Pre-open, post-close, and night-settlement sessions are absorbed into the two
 main gate rows.  PRE/POST/NIGHT rows from older schema versions are removed by
@@ -313,7 +312,7 @@ _SEED_ROWS: list[dict] = [
         "is_open": True,
         "open_time": time(8, 0),
         "close_time": time(23, 30),
-        "snapshot_time": time(0, 15),
+        "snapshot_time": time(23, 45),
         "snapshot_reset_time": time(8, 0),
         "source": "system",
     },
@@ -330,7 +329,7 @@ async def seed_and_warm() -> None:
     Migration steps run first (idempotent):
       1. Delete legacy PRE / POST / NIGHT rows (no-op if already absent).
       2. Rename the old NSE gate row to NON-MCX and update its open/close times.
-      3. Update MCX snapshot time from 23:45 to 00:15 and open from 09:00 to 08:00.
+      3. Update MCX snapshot time to 23:45 and open from 09:00 to 08:00.
 
     Seed inserts follow with ``ON CONFLICT DO NOTHING`` so repeated restarts
     do not clobber operator-modified rows.
@@ -363,7 +362,7 @@ async def seed_and_warm() -> None:
                 await session.execute(_text("""
                     UPDATE exchange_schedule
                     SET open_time = '08:00',
-                        snapshot_time = '00:15'
+                        snapshot_time = '23:45'
                     WHERE gate = 'MCX'
                       AND date IS NULL
                       AND session_name = 'regular'

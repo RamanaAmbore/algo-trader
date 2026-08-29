@@ -95,16 +95,19 @@ class TestHoldingsRowsMarketOpenOverride:
 
     def test_market_open_default_is_true(self):
         """Default market_open=True preserves original behaviour."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
         # 17:00 IST — outside NSE hours; default market_open=True → mid_session=False
         now_ist = datetime(2026, 8, 14, 17, 0, 0, tzinfo=IST)
         raw = [self._make_holding_row()]
 
-        rows = _holdings_rows("KITE_ACC", date(2026, 8, 14), raw, now_ist)
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows("KITE_ACC", date(2026, 8, 14), raw, now_ist)
 
-        assert len(rows) == 1
-        assert rows[0]["ltp"] is not None, "After market close, ltp should be captured"
+            assert len(rows) == 1
+            assert rows[0]["ltp"] is not None, "After market close, ltp should be captured"
 
 
 # ---------------------------------------------------------------------------
@@ -226,27 +229,39 @@ class TestSnapshotDailyBookSignature:
 # ---------------------------------------------------------------------------
 
 class TestIsExchangeOpenAtUnchanged:
-    """_is_exchange_open_at still correctly identifies session windows."""
+    """_is_exchange_open_at delegates to exchange_clock."""
 
     def test_nse_open_at_11am(self):
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _is_exchange_open_at
         t = datetime(2026, 8, 14, 11, 0, tzinfo=IST)
-        assert _is_exchange_open_at("NSE", t) is True
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            assert _is_exchange_open_at("NSE", t) is True
 
     def test_nse_closed_at_16h(self):
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _is_exchange_open_at
         t = datetime(2026, 8, 14, 16, 0, tzinfo=IST)
-        assert _is_exchange_open_at("NSE", t) is False
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            assert _is_exchange_open_at("NSE", t) is False
 
     def test_mcx_open_at_noon(self):
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _is_exchange_open_at
         t = datetime(2026, 8, 14, 12, 0, tzinfo=IST)
-        assert _is_exchange_open_at("MCX", t) is True
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            assert _is_exchange_open_at("MCX", t) is True
 
     def test_mcx_closed_at_00h_05m(self):
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _is_exchange_open_at
         t = datetime(2026, 8, 14, 0, 5, tzinfo=IST)
-        assert _is_exchange_open_at("MCX", t) is False
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            assert _is_exchange_open_at("MCX", t) is False
 
 
 # ---------------------------------------------------------------------------

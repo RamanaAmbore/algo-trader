@@ -54,6 +54,8 @@ class ExchangeScheduleDTO(msgspec.Struct):
     snapshot_reset_time: Optional[time]
     reason: Optional[str]
     source: str
+    deletable: bool  # True only for future-dated overrides (date >= today)
+    editable: bool   # True for default rows and future-dated overrides
 
 
 class ExchangeScheduleWrite(msgspec.Struct):
@@ -77,6 +79,9 @@ class ExchangeScheduleWrite(msgspec.Struct):
 # ---------------------------------------------------------------------------
 
 def _to_dto(row: ExchangeSchedule) -> ExchangeScheduleDTO:
+    today = date.today()
+    deletable = row.date is not None and row.date >= today
+    editable = row.date is None or row.date >= today
     return ExchangeScheduleDTO(
         id=row.id,
         gate=row.gate,
@@ -91,6 +96,8 @@ def _to_dto(row: ExchangeSchedule) -> ExchangeScheduleDTO:
         snapshot_reset_time=row.snapshot_reset_time,
         reason=row.reason,
         source=row.source,
+        deletable=deletable,
+        editable=editable,
     )
 
 
@@ -183,6 +190,11 @@ class ExchangeScheduleController(Controller):
                     status_code=404,
                     detail=f"exchange_schedule id={schedule_id} not found",
                 )
+            if row.date is not None and row.date < date.today():
+                raise HTTPException(
+                    status_code=409,
+                    detail="past-date overrides cannot be updated",
+                )
             row.gate = data.gate.upper()
             row.exchanges = [e.upper() for e in data.exchanges]
             row.date = data.date
@@ -218,6 +230,16 @@ class ExchangeScheduleController(Controller):
                 raise HTTPException(
                     status_code=404,
                     detail=f"exchange_schedule id={schedule_id} not found",
+                )
+            if row.date is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="default gate rows cannot be deleted",
+                )
+            if row.date < date.today():
+                raise HTTPException(
+                    status_code=409,
+                    detail="past-date overrides cannot be deleted",
                 )
             async with session.begin():
                 await session.delete(row)

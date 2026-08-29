@@ -850,6 +850,8 @@ def test_holdings_rows_previous_close_both_absent_falls_back_to_ltp():
     """When both prev_ltp_map and broker close_price are absent,
     previous_close falls back to ltp_val (not None) to prevent the
     post-settlement guard from zeroing day P&L on a cold-boot snapshot."""
+    from unittest.mock import patch
+    import backend.api.algo.daily_snapshot as _ds
     from backend.api.algo.daily_snapshot import _holdings_rows
     from datetime import date, datetime, timezone
 
@@ -867,16 +869,18 @@ def test_holdings_rows_previous_close_both_absent_falls_back_to_ltp():
     prev_ltp_map = {}
 
     now_ist = datetime(2026, 8, 15, 15, 35, 0)
-    rows = _holdings_rows(
-        "ACC1", date(2026, 8, 15), [holding], now_ist,
-        prev_ltp_map=prev_ltp_map
-    )
+    # Market closed (post-session) so ltp is captured and available as fallback
+    with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+        rows = _holdings_rows(
+            "ACC1", date(2026, 8, 15), [holding], now_ist,
+            prev_ltp_map=prev_ltp_map
+        )
 
-    assert len(rows) == 1
-    assert rows[0]["previous_close"] == 1050.0, (
-        f"previous_close must fall back to ltp_val (1050.0) when both "
-        f"prev_ltp_map and close_price are absent — got {rows[0]['previous_close']}"
-    )
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] == 1050.0, (
+            f"previous_close must fall back to ltp_val (1050.0) when both "
+            f"prev_ltp_map and close_price are absent — got {rows[0]['previous_close']}"
+        )
 
 
 def test_positions_rows_previous_close_basic():
@@ -946,6 +950,8 @@ def _make_position_row(symbol="NIFTY26JULFUT", exchange="NFO", qty=50,
 def test_positions_rows_prev_ltp_map_priority_over_close_price():
     """When prev_ltp_map has entry for (account, symbol, 'positions'),
     it wins over broker close_price for both previous_close and day_pnl."""
+    from unittest.mock import patch
+    import backend.api.algo.daily_snapshot as _ds
     from backend.api.algo.daily_snapshot import _positions_rows
     from datetime import date, datetime, timezone
 
@@ -959,20 +965,22 @@ def test_positions_rows_prev_ltp_map_priority_over_close_price():
     now_ist = datetime(2026, 8, 15, 16, 0, 0, tzinfo=timezone.utc)
     prev_ltp_map = {("ZG0790", "NIFTY26JULFUT", "positions"): PRIOR_LTP}
 
-    rows = _positions_rows("ZG0790", date(2026, 8, 15), raw, now_ist,
-                           settled=True, prev_ltp_map=prev_ltp_map)
-    assert len(rows) == 1
-    assert rows[0]["previous_close"] == pytest.approx(PRIOR_LTP), (
-        f"previous_close={rows[0]['previous_close']} must equal prev_ltp_map "
-        f"value ({PRIOR_LTP}), not broker close_price ({BROKER_CLOSE})"
-    )
-    # day_pnl must also use prior_ltp as the close reference
-    expected = (LTP - PRIOR_LTP) * QTY  # 35000
-    wrong = (LTP - BROKER_CLOSE) * QTY   # 20000
-    assert rows[0]["day_pnl"] == pytest.approx(expected, rel=1e-4), (
-        f"day_pnl={rows[0]['day_pnl']} must use prev_ltp ({PRIOR_LTP}), "
-        f"not broker close_price ({BROKER_CLOSE}); expected={expected}, wrong={wrong}"
-    )
+    # Market closed (post-session) so ltp is captured
+    with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+        rows = _positions_rows("ZG0790", date(2026, 8, 15), raw, now_ist,
+                               settled=True, prev_ltp_map=prev_ltp_map)
+        assert len(rows) == 1
+        assert rows[0]["previous_close"] == pytest.approx(PRIOR_LTP), (
+            f"previous_close={rows[0]['previous_close']} must equal prev_ltp_map "
+            f"value ({PRIOR_LTP}), not broker close_price ({BROKER_CLOSE})"
+        )
+        # day_pnl must also use prior_ltp as the close reference
+        expected = (LTP - PRIOR_LTP) * QTY  # 35000
+        wrong = (LTP - BROKER_CLOSE) * QTY   # 20000
+        assert rows[0]["day_pnl"] == pytest.approx(expected, rel=1e-4), (
+            f"day_pnl={rows[0]['day_pnl']} must use prev_ltp ({PRIOR_LTP}), "
+            f"not broker close_price ({BROKER_CLOSE}); expected={expected}, wrong={wrong}"
+        )
 
 
 def test_positions_rows_prev_ltp_map_fallback_to_close_price_for_new_position():

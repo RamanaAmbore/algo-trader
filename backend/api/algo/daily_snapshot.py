@@ -16,43 +16,28 @@ import asyncio
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta, time as _dt_time, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import text
 
 from backend.api.database import async_session
+from backend.api.helpers import exchange_clock as _exchange_clock
 from backend.shared.helpers.date_time_utils import timestamp_indian
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
 
-# Exchange session windows (IST) — used to decide whether a snapshot
-# captures EOD or mid-session data. MCX runs 09:00–23:30; NSE/BSE and
-# derivatives run 09:15–15:30. Weekends and holidays are not checked
-# here — the upstream task gates by `is_market_open` already; this
-# helper only answers "if it were a trading day, is this exchange in
-# session at now_ist?". Used by row builders to skip ltp/day_pnl
-# capture for mid-session rows.
-_NSE_OPEN_T  = _dt_time(9, 15)
-_NSE_CLOSE_T = _dt_time(15, 30)
-_MCX_OPEN_T  = _dt_time(9, 0)
-_MCX_CLOSE_T = _dt_time(23, 30)
-
-
 def _is_exchange_open_at(exchange: str, now_ist: datetime) -> bool:
-    """True when `exchange` is in active session at `now_ist` (time-of-day
-    only). MCX session 09:00–23:30 IST; equity exchanges 09:15–15:30 IST.
-    Mid-session captures pollute the close-override path in positions.py
-    (which treats the most recent pre-today daily_book row as yesterday's
-    EOD) so callers emit `ltp=None`, `day_pnl=None` for in-session rows
-    and rely on the 23:35 IST follow-up snapshot to fill MCX correctly."""
-    exch = (exchange or "").upper()
-    t = now_ist.time()
-    if exch == "MCX":
-        return _MCX_OPEN_T <= t <= _MCX_CLOSE_T
-    return _NSE_OPEN_T <= t <= _NSE_CLOSE_T
+    """Delegate to exchange_clock (reads from DB-backed cache).
+
+    The ``now_ist`` parameter is kept for caller compatibility but is not
+    used — exchange_clock.is_exchange_open() reads the current IST time
+    internally from the DB-backed cache so timing is always consistent
+    with the rest of the system.
+    """
+    return _exchange_clock.is_exchange_open(exchange)
 
 
 def _extract_snapshot_extras(r: dict, ltp_val: float | None,

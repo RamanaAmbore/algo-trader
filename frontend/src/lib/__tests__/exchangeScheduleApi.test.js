@@ -178,3 +178,85 @@ describe('deleteExchangeSchedule', () => {
     expect(init.body).toBeUndefined();
   });
 });
+
+// ── deletable / editable fields data-contract ─────────────────────────────────
+// These tests verify that the API response shape includes the two new boolean
+// fields that the UI now depends on for conditional rendering of the edit
+// (disabled when !editable) and delete (hidden when !deletable) buttons.
+
+describe('fetchExchangeSchedule — deletable/editable contract', () => {
+  it('default row has editable:true and deletable:false', async () => {
+    // Backend: date IS NULL → editable=true, deletable=false
+    const rows = [
+      {
+        id: 1, gate: 'NSE', session_name: 'regular', date: null,
+        exchanges: ['NSE', 'BSE'], is_open: true,
+        open_time: '09:15', close_time: '15:30',
+        snapshot_time: null, snapshot_reset_time: null, reason: null,
+        editable: true, deletable: false,
+      },
+    ];
+    fetchSpy.mockResolvedValue(makeFetchResponse(rows));
+
+    const result = await fetchExchangeSchedule();
+
+    expect(result[0].editable).toBe(true);
+    expect(result[0].deletable).toBe(false);
+  });
+
+  it('past-date override has editable:false and deletable:false', async () => {
+    // Backend: date < today → editable=false, deletable=false
+    const rows = [
+      {
+        id: 2, gate: 'NSE', session_name: 'closed', date: '2026-01-01',
+        exchanges: ['NSE'], is_open: false,
+        open_time: null, close_time: null,
+        snapshot_time: null, snapshot_reset_time: null, reason: 'New Year',
+        editable: false, deletable: false,
+      },
+    ];
+    fetchSpy.mockResolvedValue(makeFetchResponse(rows));
+
+    const result = await fetchExchangeSchedule();
+
+    expect(result[0].editable).toBe(false);
+    expect(result[0].deletable).toBe(false);
+  });
+
+  it('future-date override has editable:true and deletable:true', async () => {
+    // Backend: date >= today → editable=true, deletable=true
+    const rows = [
+      {
+        id: 3, gate: 'NSE', session_name: 'closed', date: '2027-08-15',
+        exchanges: ['NSE', 'BSE'], is_open: false,
+        open_time: null, close_time: null,
+        snapshot_time: null, snapshot_reset_time: null, reason: 'Independence Day',
+        editable: true, deletable: true,
+      },
+    ];
+    fetchSpy.mockResolvedValue(makeFetchResponse(rows));
+
+    const result = await fetchExchangeSchedule();
+
+    expect(result[0].editable).toBe(true);
+    expect(result[0].deletable).toBe(true);
+  });
+
+  it('fields are boolean (not truthy strings or undefined)', async () => {
+    // Guard: UI uses strict boolean checks; string "true" or undefined would break
+    const rows = [
+      { id: 4, gate: 'MCX', session_name: 'evening', date: null,
+        exchanges: ['MCX'], is_open: true, editable: true, deletable: false },
+      { id: 5, gate: 'NSE', session_name: 'closed', date: '2026-07-01',
+        exchanges: ['NSE'], is_open: false, editable: false, deletable: false },
+    ];
+    fetchSpy.mockResolvedValue(makeFetchResponse(rows));
+
+    const result = await fetchExchangeSchedule();
+
+    for (const row of result) {
+      expect(typeof row.editable).toBe('boolean');
+      expect(typeof row.deletable).toBe('boolean');
+    }
+  });
+});

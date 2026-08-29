@@ -185,7 +185,8 @@
    *   session_name: string, is_open: boolean,
    *   open_time: string|null, close_time: string|null,
    *   snapshot_time: string|null, snapshot_reset_time: string|null,
-   *   reason: string|null, source?: string
+   *   reason: string|null, source?: string,
+   *   editable: boolean, deletable: boolean
    * }} ScheduleRow */
 
   const GATE_EXCHANGES = /** @type {Record<string,string[]>} */ ({
@@ -219,6 +220,7 @@
         date: null, session_name: '',
         is_open: true, open_time: null, close_time: null,
         snapshot_time: null, snapshot_reset_time: null, reason: null,
+        editable: true, deletable: true,
       };
     }
   }
@@ -666,6 +668,9 @@
                 {#if hasCap('manage_exchange_schedule', _caps, _role)}
                   <td class="p-1">
                     <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                            class:opacity-40={!row.editable}
+                            class:cursor-not-allowed={!row.editable}
+                            disabled={!row.editable}
                             onclick={() => openScheduleForm(row)}>✏</button>
                   </td>
                 {/if}
@@ -683,7 +688,7 @@
       <span class="text-[0.6rem] font-bold opacity-80 uppercase tracking-widest">Date Overrides</span>
       {#if hasCap('manage_exchange_schedule', _caps, _role)}
         <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
-                onclick={() => { const f = { gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']], date: '', session_name: 'closed', is_open: false, open_time: null, close_time: null, snapshot_time: null, snapshot_reset_time: null, reason: null }; scheduleForm = f; }}>+ Add Override</button>
+                onclick={() => { const f = { gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']], date: '', session_name: 'closed', is_open: false, open_time: null, close_time: null, snapshot_time: null, snapshot_reset_time: null, reason: null, editable: true, deletable: true }; scheduleForm = f; }}>+ Add Override</button>
       {/if}
     </div>
     {#if scheduleOverrides.length}
@@ -720,9 +725,14 @@
                 {#if hasCap('manage_exchange_schedule', _caps, _role)}
                   <td class="p-1 flex gap-1">
                     <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                            class:opacity-40={!row.editable}
+                            class:cursor-not-allowed={!row.editable}
+                            disabled={!row.editable}
                             onclick={() => openScheduleForm(row)}>✏</button>
-                    <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5 text-red-400"
-                            onclick={() => row.id != null && removeSchedule(row.id)}>×</button>
+                    {#if row.deletable}
+                      <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5 text-red-400"
+                              onclick={() => row.id != null && removeSchedule(row.id)}>×</button>
+                    {/if}
                   </td>
                 {/if}
               </tr>

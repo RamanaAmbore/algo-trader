@@ -224,15 +224,18 @@ class TestHoldingsRowsMarketOpen:
 
     def test_holdings_market_open_true_eod_time_captures_ltp(self, now_2335_ist):
         """market_open=True after EOD (23:35) → ltp captured (not mid-session)."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
-        rows = _holdings_rows(
-            "ZG0790", _D, [_HOLDING_INFY], now_2335_ist,
-            market_open=True
-        )
-        assert len(rows) == 1
-        assert rows[0]["ltp"] == 1560.0, \
-            f"Expected ltp=1560.0 at 23:35 (post-close), got {rows[0]['ltp']}"
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
+            rows = _holdings_rows(
+                "ZG0790", _D, [_HOLDING_INFY], now_2335_ist,
+                market_open=True
+            )
+            assert len(rows) == 1
+            assert rows[0]["ltp"] == 1560.0, \
+                f"Expected ltp=1560.0 at 23:35 (post-close), got {rows[0]['ltp']}"
 
     def test_holdings_market_open_default_is_true(self, now_10am_ist):
         """market_open defaults to True → time-of-day check applies."""
