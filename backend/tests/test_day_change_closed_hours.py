@@ -281,7 +281,9 @@ class TestPositionsRowsDayPnl:
 
     def test_mid_session_yields_none_pnl(self):
         """Rows captured mid-session produce None day_pnl (not committed to DB)."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
+        from unittest.mock import patch
         from zoneinfo import ZoneInfo
 
         # NFO is NSE-hours; 11:00 IST = mid-session
@@ -302,7 +304,9 @@ class TestPositionsRowsDayPnl:
             "day_sell_value":     0.0,
         }
         target_date = date(2026, 6, 27)
-        rows = _positions_rows("ZG0790", target_date, [row], mid_session)
+        # Patch exchange_clock to simulate market open (mid-session) regardless of wall clock.
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _positions_rows("ZG0790", target_date, [row], mid_session)
 
         assert rows[0]["day_pnl"] is None, (
             "day_pnl must be None during market hours to prevent mid-session "

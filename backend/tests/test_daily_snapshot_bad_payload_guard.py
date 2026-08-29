@@ -208,7 +208,9 @@ class TestHoldingsRowsBadPayloadGuard:
 
     def test_zero_rows_during_mid_session_not_filtered(self):
         """Mid-session rows (ltp=None by design) are NOT filtered by bad-payload guard."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
+        from unittest.mock import patch
         # NSE mid-session at 12:00 — ltp is set to None by mid-session guard,
         # not by the zero-payload guard. Row should still be emitted.
         now_mid = datetime(2026, 6, 30, 12, 0)
@@ -223,7 +225,9 @@ class TestHoldingsRowsBadPayloadGuard:
                 "pnl": 0.0,
             }
         ]
-        rows = _holdings_rows("ZG0790", self._D, good_mid, now_mid)
+        # Patch exchange_clock to simulate market open (mid-session) regardless of wall clock.
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _holdings_rows("ZG0790", self._D, good_mid, now_mid)
         # Mid-session: ltp emitted as None (not 0.0), so guard doesn't fire
         assert len(rows) == 1, "Mid-session row must not be filtered by bad-payload guard"
         assert rows[0]["ltp"] is None
