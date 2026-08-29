@@ -293,7 +293,7 @@ class TestGetSegmentsFallback:
         assert 'MCX' in gates, "MCX segment must be in fallback"
 
     def test_fallback_non_mcx_segment_hours(self):
-        """Fallback NON-MCX segment: hours_start=08:00, hours_end=16:00."""
+        """Fallback NON-MCX segment: hours_start=08:00, hours_end=15:30."""
         from datetime import time
 
         with patch("backend.api.background.exchange_clock") as mock_ec:
@@ -304,7 +304,7 @@ class TestGetSegmentsFallback:
 
         non_mcx = next(s for s in segs if s['name'] == 'NON-MCX')
         assert non_mcx['hours_start'] == time(8, 0)
-        assert non_mcx['hours_end'] == time(16, 0)
+        assert non_mcx['hours_end'] == time(15, 30)
 
     def test_fallback_mcx_segment_hours(self):
         """Fallback MCX segment: hours_start=08:00, hours_end=23:30."""
@@ -343,7 +343,7 @@ class TestGetSegmentsFallback:
             session_name="regular",
             is_open=True,
             open_time=dtime(8, 0),
-            close_time=dtime(16, 0),
+            close_time=dtime(15, 30),
             exchanges=["NSE", "BSE", "NFO", "BFO", "CDS"],
         )
 

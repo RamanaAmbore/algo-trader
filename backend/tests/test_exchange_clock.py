@@ -104,7 +104,7 @@ class TestIsExchangeOpen:
             open_time=time(9, 15), close_time=time(15, 30),
         )
         self._set_cache([nse_row])
-        with self._patch_now(16, 0):
+        with self._patch_now(15, 45):
             assert ec.is_exchange_open("NSE") is False
 
     def test_nfo_inherits_nse_gate(self):
@@ -130,7 +130,7 @@ class TestIsExchangeOpen:
             open_time=time(9, 0), close_time=time(23, 30),
         )
         self._set_cache([nse_row, mcx_row])
-        with self._patch_now(16, 0):
+        with self._patch_now(15, 45):
             assert ec.is_exchange_open("NSE") is False
             assert ec.is_exchange_open("MCX") is True
 
@@ -172,7 +172,7 @@ class TestIsAnySegmentOpen:
             "MCX", ["MCX"], open_time=time(9, 0), close_time=time(23, 30),
         )
         self._set_cache([nse_row, mcx_row])
-        with self._patch_now(16, 0):
+        with self._patch_now(15, 45):
             # NSE closed, MCX open → True
             assert ec.is_any_segment_open() is True
 
@@ -197,8 +197,8 @@ class TestIsAnySegmentOpen:
             "MCX", ["MCX"], open_time=time(9, 0), close_time=time(23, 30),
         )
         self._set_cache([nse_row, mcx_row])
-        with self._patch_now(16, 0):
-            # MCX is open at 16:00 but we restrict to NSE → False
+        with self._patch_now(15, 45):
+            # MCX is open at 15:45 but we restrict to NSE → False
             assert ec.is_any_segment_open(["NSE"]) is False
 
     def test_fail_open_empty_cache(self):
@@ -367,10 +367,10 @@ class TestSnapshotGateDelegation:
             "NSE", ["NSE", "BSE", "NFO"],
             open_time=time(9, 15), close_time=time(15, 30),
         )]
-        fixed = datetime(2026, 8, 25, 16, 0, 0, tzinfo=_IST)
+        fixed = datetime(2026, 8, 25, 15, 45, 0, tzinfo=_IST)
         with patch.object(ec, "_now_ist", return_value=fixed):
             result = sg.is_exchange_closed_now("NSE")
-        assert result is True  # NSE closed at 16:00
+        assert result is True  # NSE closed at 15:45 (after close_time=15:30)
 
     def test_is_exchange_closed_fail_open_on_exception(self):
         """is_exchange_closed_now returns False (fail-open) when exchange_clock raises."""
@@ -583,10 +583,29 @@ class TestSeedRows:
         non_mcx = next(r for r in _SEED_ROWS if r["gate"] == "NON-MCX")
         assert non_mcx["open_time"] == time(8, 0)
 
+    def test_non_mcx_closes_at_1530(self):
+        from backend.api.helpers.exchange_clock import _SEED_ROWS
+        non_mcx = next(r for r in _SEED_ROWS if r["gate"] == "NON-MCX")
+        assert non_mcx["close_time"] == time(15, 30)
+
     def test_mcx_opens_at_0800(self):
         from backend.api.helpers.exchange_clock import _SEED_ROWS
         mcx = next(r for r in _SEED_ROWS if r["gate"] == "MCX")
         assert mcx["open_time"] == time(8, 0)
+
+    def test_non_mcx_closed_at_1545(self):
+        """NON-MCX is closed at 15:45 IST (after close_time=15:30)."""
+        import backend.api.helpers.exchange_clock as ec
+        nse_row = _make_schedule_row(
+            "NSE", ["NSE", "BSE", "NFO", "BFO", "CDS"],
+            open_time=time(8, 0), close_time=time(15, 30),
+        )
+        ec._CACHE = [nse_row]
+        fixed = datetime(2026, 8, 25, 15, 45, 0, tzinfo=_IST)
+        with patch.object(ec, "_now_ist", return_value=fixed):
+            assert ec.is_exchange_open("NSE") is False, (
+                "NSE must be closed at 15:45 IST (after 15:30 close time)"
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -67,9 +67,9 @@ def test_nse_open_during_regular_session():
 
 
 def test_nse_closed_after_regular_session():
-    """NSE is closed at 16:00 IST (past close_time=15:30)."""
+    """NSE is closed at 15:45 IST (past close_time=15:30)."""
     cache = [_row()]
-    now = datetime(2026, 8, 25, 16, 0, tzinfo=IST)
+    now = datetime(2026, 8, 25, 15, 45, tzinfo=IST)
     with patch.object(exchange_clock, "_CACHE", cache), _patch_now(now):
         assert exchange_clock.is_exchange_open("NSE") is False
 
@@ -95,9 +95,9 @@ def test_nfo_open_during_nse_session():
 
 
 def test_nfo_closed_after_nse_session():
-    """NFO is closed at 16:00 IST."""
+    """NFO is closed at 15:45 IST."""
     cache = [_row(exchanges=["NSE", "BSE", "NFO", "BFO", "CDS"])]
-    now = datetime(2026, 8, 25, 16, 0, tzinfo=IST)
+    now = datetime(2026, 8, 25, 15, 45, tzinfo=IST)
     with patch.object(exchange_clock, "_CACHE", cache), _patch_now(now):
         assert exchange_clock.is_exchange_open("NFO") is False
 

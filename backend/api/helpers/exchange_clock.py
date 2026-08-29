@@ -38,7 +38,7 @@ Seed rows (2 defaults, date IS NULL)
 +---------+----------------------------------+---------+-----------+----------+----------+
 | gate    | exchanges                        | open    | close     | snapshot | reset    |
 +---------+----------------------------------+---------+-----------+----------+----------+
-| NON-MCX | NSE, BSE, NFO, BFO, CDS         | 08:00   | 16:00     | 15:45    | 08:00    |
+| NON-MCX | NSE, BSE, NFO, BFO, CDS         | 08:00   | 15:30     | 15:45    | 08:00    |
 | MCX     | MCX                              | 08:00   | 23:30     | 23:45    | 08:00    |
 +---------+----------------------------------+---------+-----------+----------+----------+
 
@@ -300,7 +300,7 @@ _SEED_ROWS: list[dict] = [
         "session_name": "regular",
         "is_open": True,
         "open_time": time(8, 0),
-        "close_time": time(16, 0),
+        "close_time": time(15, 30),
         "snapshot_time": time(15, 45),
         "snapshot_reset_time": time(8, 0),
         "source": "system",
@@ -350,7 +350,7 @@ async def seed_and_warm() -> None:
                     UPDATE exchange_schedule
                     SET gate = 'NON-MCX',
                         open_time = '08:00',
-                        close_time = '16:00',
+                        close_time = '15:30',
                         snapshot_time = '15:45',
                         snapshot_reset_time = '08:00'
                     WHERE gate = 'NSE'

@@ -68,7 +68,7 @@ def _get_segments() -> list[dict]:
 
     When the exchange_clock cache is warm, returns open sessions sourced from the
     DB-backed exchange_schedule table (one dict per gate session with is_open=True).
-    Falls back to a hardcoded two-gate default (NON-MCX 08:00-16:00, MCX 08:00-23:30)
+    Falls back to a hardcoded two-gate default (NON-MCX 08:00-15:30, MCX 08:00-23:30)
     if the cache has not been populated yet or the import fails.  The fallback
     matches the exchange_schedule seed rows so behaviour is unchanged during
     cold-start or tests that do not warm the exchange_clock cache.
@@ -99,7 +99,7 @@ def _get_segments() -> list[dict]:
         {
             'name':             'NON-MCX',
             'hours_start':      dtime(8, 0),
-            'hours_end':        dtime(16, 0),
+            'hours_end':        dtime(15, 30),
             'holiday_exchange': 'NSE',
             'exchanges':        {'NSE', 'BSE', 'NFO', 'BFO', 'CDS'},
         },
