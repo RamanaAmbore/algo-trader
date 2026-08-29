@@ -123,6 +123,11 @@ def _make_session(gate: str, session_name: str) -> SimpleNamespace:
 class TestSnapshotProbeDispatch:
     """_snapshot_probe_nse_mcx correctly routes to close-snapshot or settlement helpers."""
 
+    def setup_method(self):
+        """Reset the per-gate daily dedup sentinel before each test."""
+        import backend.api.background as bg
+        bg._snapshot_fired_today = {"NON-MCX": None, "MCX": None}
+
     @pytest.mark.asyncio
     async def test_nse_regular_routes_to_close_snapshot(self):
         """NSE/regular session → trigger_close_snapshot("NSE"), not settlement."""
@@ -232,6 +237,55 @@ class TestSnapshotProbeDispatch:
         mock_close.assert_awaited_once_with("NSE")
         mock_settle.assert_awaited_once_with("MCX")
 
+    @pytest.mark.asyncio
+    async def test_dedup_sentinel_fires_gate_only_once_per_day(self):
+        """Second poll for same gate on same day is skipped by _snapshot_fired_today dedup."""
+        sessions = [_make_session("NON-MCX", "regular")]
+
+        import backend.api.background as bg
+        with (
+            patch("backend.api.background.exchange_clock") as mock_ec,
+            patch("backend.api.background.trigger_close_snapshot", new_callable=AsyncMock) as mock_close,
+            patch("backend.api.background.trigger_settlement_capture", new_callable=AsyncMock) as mock_settle,
+        ):
+            mock_ec.sessions_with_snapshot_time_now.return_value = sessions
+
+            from backend.api.background import _snapshot_probe_nse_mcx
+            # First poll — should fire.
+            await _snapshot_probe_nse_mcx()
+            # Second poll — same day, same gate — should be skipped.
+            await _snapshot_probe_nse_mcx()
+
+        # trigger_close_snapshot should have been called exactly once, not twice.
+        assert mock_close.await_count == 1, (
+            "_snapshot_fired_today dedup failed: trigger_close_snapshot called "
+            f"{mock_close.await_count} times; expected 1"
+        )
+        mock_settle.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dedup_sentinel_different_gates_both_fire(self):
+        """Different gates both fire even on same day — dedup is per-gate."""
+        sessions = [
+            _make_session("NON-MCX", "regular"),
+            _make_session("MCX", "regular"),
+        ]
+
+        with (
+            patch("backend.api.background.exchange_clock") as mock_ec,
+            patch("backend.api.background.trigger_close_snapshot", new_callable=AsyncMock) as mock_close,
+            patch("backend.api.background.trigger_settlement_capture", new_callable=AsyncMock) as mock_settle,
+        ):
+            mock_ec.sessions_with_snapshot_time_now.return_value = sessions
+
+            from backend.api.background import _snapshot_probe_nse_mcx
+            await _snapshot_probe_nse_mcx()
+
+        assert mock_close.await_count == 2, (
+            "Both NON-MCX and MCX gates should fire on first poll; "
+            f"got {mock_close.await_count} calls"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test class: trigger_close_snapshot + trigger_settlement_capture helpers
@@ -283,7 +337,7 @@ class TestGetSegmentsFallback:
     def test_fallback_returns_non_mcx_and_mcx_segments(self):
         """When cache is not warm, _get_segments returns NON-MCX and MCX segments."""
         with patch("backend.api.background.exchange_clock") as mock_ec:
-            mock_ec._cache_loaded = False
+            mock_ec._CACHE = []  # empty cache → triggers fallback
 
             from backend.api.background import _get_segments
             segs = _get_segments()
@@ -297,7 +351,7 @@ class TestGetSegmentsFallback:
         from datetime import time
 
         with patch("backend.api.background.exchange_clock") as mock_ec:
-            mock_ec._cache_loaded = False
+            mock_ec._CACHE = []  # empty cache → triggers fallback
 
             from backend.api.background import _get_segments
             segs = _get_segments()
@@ -311,7 +365,7 @@ class TestGetSegmentsFallback:
         from datetime import time
 
         with patch("backend.api.background.exchange_clock") as mock_ec:
-            mock_ec._cache_loaded = False
+            mock_ec._CACHE = []  # empty cache → triggers fallback
 
             from backend.api.background import _get_segments
             segs = _get_segments()
@@ -323,7 +377,7 @@ class TestGetSegmentsFallback:
     def test_fallback_has_holiday_exchange_key(self):
         """Fallback segments must have 'holiday_exchange' key for watchdog compat."""
         with patch("backend.api.background.exchange_clock") as mock_ec:
-            mock_ec._cache_loaded = False
+            mock_ec._CACHE = []  # empty cache → triggers fallback
 
             from backend.api.background import _get_segments
             segs = _get_segments()
@@ -334,7 +388,7 @@ class TestGetSegmentsFallback:
             )
 
     def test_get_segments_uses_exchange_clock_when_cache_warm(self):
-        """When cache is warm, _get_segments delegates to exchange_clock._resolve_for_gate."""
+        """When cache is warm, _get_segments delegates to exchange_clock.get_today_gate_sessions."""
         from datetime import time as dtime
         from types import SimpleNamespace
 
@@ -348,8 +402,8 @@ class TestGetSegmentsFallback:
         )
 
         with patch("backend.api.background.exchange_clock") as mock_ec:
-            mock_ec._cache_loaded = True
-            mock_ec._resolve_for_gate.side_effect = lambda gate, today: (
+            mock_ec._CACHE = [mock_session]  # non-empty → warm path
+            mock_ec.get_today_gate_sessions.side_effect = lambda gate: (
                 [mock_session] if gate == "NON-MCX" else []
             )
 

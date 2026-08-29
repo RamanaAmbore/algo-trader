@@ -58,6 +58,11 @@ _intraday_equity_date: date | None = None
 # that we have not yet run on today's date.
 _expiry_last_run_date: "date | None" = None
 
+# Per-gate daily dedup sentinel for _snapshot_probe_nse_mcx.
+# Ensures each gate fires exactly once per calendar day even if multiple
+# 30-second polls land in the ±1 min snapshot_time window.
+_snapshot_fired_today: dict[str, "date | None"] = {"NON-MCX": None, "MCX": None}
+
 
 # ---------------------------------------------------------------------------
 # Segment config helpers
@@ -74,12 +79,10 @@ def _get_segments() -> list[dict]:
     cold-start or tests that do not warm the exchange_clock cache.
     """
     try:
-        if exchange_clock._cache_loaded:
-            from datetime import date as _date
-            today = _date.today()
+        if exchange_clock._CACHE:
             sessions = []
             for gate in ("NON-MCX", "MCX"):
-                for sess in exchange_clock._resolve_for_gate(gate, today):
+                for sess in exchange_clock.get_today_gate_sessions(gate):
                     if (sess.is_open
                             and sess.open_time is not None
                             and sess.close_time is not None):
@@ -1878,23 +1881,25 @@ async def trigger_settlement_capture(gate: str) -> None:
 async def _snapshot_probe_nse_mcx() -> None:
     """Fire snapshot/settlement triggers keyed on the exchange_clock schedule.
 
-    Called every 30 s from ``_task_daily_snapshot``.  Delegates trigger
-    detection to ``exchange_clock.sessions_with_snapshot_time_now()`` which
-    returns all sessions (open OR settlement) whose ``snapshot_time`` column
-    matches the current IST minute.  For each matched session:
-
-    - ``session_name == "settlement"`` → ``trigger_settlement_capture(gate)``
-    - any other session_name            → ``trigger_close_snapshot(gate)``
-
-    Minute-precision matching ensures each trigger fires exactly once per
-    day — no per-session dedup sentinels are required.
+    Called every 30 s from ``_task_daily_snapshot``. Delegates trigger detection
+    to ``exchange_clock.sessions_with_snapshot_time_now()`` which returns sessions
+    whose ``snapshot_time`` matches the current IST minute (±1 min tolerance).
+    A per-gate daily dedup sentinel (``_snapshot_fired_today``) ensures each gate
+    fires exactly once per calendar day even if multiple 30-second polls land in
+    the ±1 min window.
     """
+    from datetime import date as _date
+    global _snapshot_fired_today
+    today = _date.today()
     sessions = exchange_clock.sessions_with_snapshot_time_now()
     for session in sessions:
+        if _snapshot_fired_today.get(session.gate) == today:
+            continue  # already fired this gate today
         if session.session_name == "settlement":
             await trigger_settlement_capture(session.gate)
         else:
             await trigger_close_snapshot(session.gate)
+        _snapshot_fired_today[session.gate] = today
 
 
 async def _snapshot_fire(label: str, *, market_open: bool = True) -> None:

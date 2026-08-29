@@ -913,6 +913,7 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     # snapshot daemon used (00:09 IST captures end up labelled with the
     # NEXT session's date; 23:52 IST captures end up labelled with the
     # CURRENT session's date — both represent the same prior-session EOD).
+    from datetime import timedelta
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
 
@@ -936,9 +937,13 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
                        total_pnl
                 FROM daily_book
                 WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
+                  AND captured_at >= :lower_cutoff
                   AND captured_at < :today_open
                 ORDER BY account, symbol, captured_at DESC
-            """), {"today_open": today_ist_cutoff})
+            """), {
+                "lower_cutoff": today_ist_cutoff - timedelta(days=7),
+                "today_open": today_ist_cutoff,
+            })
             for account, symbol, ref_close, total_pnl in result.all():
                 key = (str(account), str(symbol))
                 snapshot_map[key] = float(ref_close)

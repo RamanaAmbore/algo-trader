@@ -123,6 +123,12 @@ def _exchange_to_gate(exchange: str) -> str | None:
     return None
 
 
+def get_today_gate_sessions(gate: str) -> list["ExchangeSchedule"]:
+    """Return all _CACHE rows for *gate* that are in effect today."""
+    upper = gate.upper()
+    return [r for r in _CACHE if r.gate.upper() == upper and _row_matches_now(r)]
+
+
 # ---------------------------------------------------------------------------
 # Cache refresh
 # ---------------------------------------------------------------------------
@@ -243,8 +249,10 @@ def sessions_with_snapshot_time_now(tolerance_minutes: int = 1) -> list["Exchang
     """Return rows whose ``snapshot_time`` is within ± *tolerance_minutes* of now.
 
     Used by background.py to fire snapshot tasks at the correct moment
-    without relying on hardcoded trigger times.  Background polls every 30s
-    so a 1-minute window guarantees exactly one hit per snapshot event.
+    without relying on hardcoded trigger times.  Poll cadence is 30 s; with
+    ±1 min tolerance up to 4 consecutive polls may match the same snapshot_time.
+    background.py uses _snapshot_fired_today dedup to ensure a single broker
+    round-trip per gate per day.
     """
     now_t = _now_ist().time().replace(second=0, microsecond=0)
     delta = timedelta(minutes=tolerance_minutes)
@@ -276,11 +284,22 @@ async def settlement_cutoff_for(gate: str) -> datetime:
     await refresh()
 
     reset_time: time = time(8, 0)  # Default: 08:00 IST
+    today = _now_ist().date()
+    # Date-specific override takes priority over the default row.
+    found = False
     for row in _CACHE:
-        if row.gate.upper() == gate.upper() and row.date is None:
-            if row.snapshot_reset_time is not None:
-                reset_time = row.snapshot_reset_time
+        if row.gate.upper() != gate.upper():
+            continue
+        if row.date == today and row.snapshot_reset_time is not None:
+            reset_time = row.snapshot_reset_time
+            found = True
             break
+    if not found:
+        for row in _CACHE:
+            if row.gate.upper() == gate.upper() and row.date is None:
+                if row.snapshot_reset_time is not None:
+                    reset_time = row.snapshot_reset_time
+                break
 
     now_ist = _now_ist()
     today_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -307,6 +326,7 @@ _SEED_ROWS: list[dict] = [
         "close_time": time(15, 30),
         "snapshot_time": time(15, 45),
         "snapshot_reset_time": time(8, 0),
+        "weekdays": [0, 1, 2, 3, 4],
         "source": "system",
     },
     {
@@ -318,6 +338,7 @@ _SEED_ROWS: list[dict] = [
         "close_time": time(23, 30),
         "snapshot_time": time(23, 45),
         "snapshot_reset_time": time(8, 0),
+        "weekdays": [0, 1, 2, 3, 4],
         "source": "system",
     },
 ]
@@ -384,6 +405,16 @@ async def seed_and_warm() -> None:
                       AND source = 'system'
                       AND close_time != '15:30'
                 """))
+                # --- migration: add Mon–Fri weekday restriction to default system rows ------
+                # Servers seeded before this migration have weekdays=NULL which makes
+                # is_exchange_open() return True on Saturday/Sunday between 08:00–15:30 IST.
+                await session.execute(_text("""
+                    UPDATE exchange_schedule
+                    SET weekdays = '[0,1,2,3,4]'
+                    WHERE weekdays IS NULL
+                      AND date IS NULL
+                      AND source = 'system'
+                """))
                 # --- seed missing rows (NON-MCX / MCX if not yet present) ------
                 for row in _SEED_ROWS:
                     await session.execute(_text("""
@@ -392,7 +423,7 @@ async def seed_and_warm() -> None:
                              is_open, open_time, close_time,
                              snapshot_time, snapshot_reset_time, reason, source)
                         VALUES
-                            (:gate, :exchanges, NULL, NULL, :session_name,
+                            (:gate, :exchanges, NULL, :weekdays, :session_name,
                              :is_open, :open_time, :close_time,
                              :snapshot_time, :snapshot_reset_time, NULL, :source)
                         ON CONFLICT ON CONSTRAINT uq_exchange_schedule_gate_date_session
@@ -400,6 +431,7 @@ async def seed_and_warm() -> None:
                     """), {
                         "gate": row["gate"],
                         "exchanges": row["exchanges"],
+                        "weekdays": row.get("weekdays"),
                         "session_name": row["session_name"],
                         "is_open": row["is_open"],
                         "open_time": row.get("open_time"),

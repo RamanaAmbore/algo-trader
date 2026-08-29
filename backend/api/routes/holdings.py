@@ -1,7 +1,7 @@
 """Holdings endpoint — returns per-account rows and summary."""
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -440,9 +440,13 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
                 FROM daily_book
                 WHERE kind = 'holdings'
                   AND ltp IS NOT NULL AND ltp > 0
+                  AND captured_at >= :lower_cutoff
                   AND captured_at < :eod_cutoff
                 ORDER BY account, symbol, captured_at DESC
-            """), {"eod_cutoff": today_ist_cutoff})
+            """), {
+                "lower_cutoff": today_ist_cutoff - timedelta(days=7),
+                "eod_cutoff": today_ist_cutoff,
+            })
             for account, symbol, ref_close in result.all():
                 v = float(ref_close) if ref_close is not None else 0.0
                 if v > 0:

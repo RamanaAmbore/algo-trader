@@ -230,6 +230,13 @@ def build_snapshot_position_row(
         close_price_f=close_price_f,
     )
 
+    # overnight_quantity is set to qty_i (the snapshot qty column) because the
+    # daily_book table does not store opening_quantity separately — only qty is
+    # persisted.  For a partially-closed intraday position the true
+    # opening_quantity would differ from qty; however, closed-hours snapshot rows
+    # represent the last live state persisted at session close, so qty and
+    # opening_quantity are effectively identical at that point.  No correction is
+    # needed for the closed-hours path.
     return PositionRow(
         account=str(account),
         tradingsymbol=str(symbol),
