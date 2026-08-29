@@ -916,10 +916,7 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
 
-    pairs = list({(str(r["account"]), str(r["tradingsymbol"]))
-                  for _, r in raw.iterrows()
-                  if r.get("account") and r.get("tradingsymbol")})
-    if not pairs:
+    if not (raw["account"].notna() & raw["tradingsymbol"].notna()).any():
         return
 
     # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).

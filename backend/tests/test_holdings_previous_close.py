@@ -247,18 +247,23 @@ class TestPreviousCloseWrittenForAllRows:
         assert abs(row_infy["close_price"] - 1480.0) < 0.001
         assert abs(row_infy["previous_close"] - 1480.0) < 0.001
 
-    def test_previous_close_zero_for_rows_with_no_snapshot(self):
-        """Row with no snapshot entry → previous_close initialised to 0.0.
-        The column must exist regardless (initialised unconditionally).
+    def test_previous_close_absent_when_snapshot_map_empty(self):
+        """P2-B fix: empty snapshot_map → early return → previous_close column absent.
+
+        Before the P2-B fix, raw['previous_close'] = 0.0 was set unconditionally
+        before the DB query. After the fix, the init is placed after the query
+        succeeds AND after the snapshot_map is non-empty check. An empty
+        snapshot_map means no DB entry to compare against — the function returns
+        early and the column is never created, so the broker's own value
+        (set by _enrich_holdings) is preserved rather than overwritten with 0.0.
         """
         df = _make_raw_df(last_price=150.0, close_price=148.0)
-        df = _run_override(df, [])  # empty snapshot_map
+        df = _run_override(df, [])  # snapshot_map will be empty → early return
 
-        assert "previous_close" in df.columns, (
-            "previous_close column must be added even when snapshot_map is empty"
-        )
-        assert df.iloc[0]["previous_close"] == 0.0, (
-            "Unmatched row must have previous_close=0.0, not NaN or missing"
+        # After P2-B fix: column absent when no snapshot entries exist.
+        assert "previous_close" not in df.columns, (
+            "P2-B fix: previous_close column must be absent when snapshot_map is "
+            "empty (early return preserves broker's own value instead of 0.0)"
         )
 
     def test_previous_close_uses_coalesce_value(self):
@@ -350,9 +355,14 @@ class TestPreviousCloseWrittenForAllRows:
             f"ACC2 previous_close should be 197.0, got {acc2['previous_close']}"
         )
 
-    def test_previous_close_column_initialised_before_db_call(self):
-        """Column must exist even when the DB query raises an exception
-        (initialised at the top of the function, before the DB call).
+    def test_previous_close_column_absent_on_db_failure(self):
+        """P2-B fix: DB failure → previous_close column must be absent.
+
+        Before the P2-B fix, raw['previous_close'] = 0.0 was set before the
+        DB query. On exception the function returned early with all rows at 0.0,
+        causing Day P&L% = 0 for every holding (zero denominator). After the
+        fix, the init is placed after the query succeeds — a DB failure returns
+        early without touching the column.
         """
         from backend.api.routes.holdings import _override_stale_close_for_holdings
 
@@ -374,12 +384,12 @@ class TestPreviousCloseWrittenForAllRows:
         ):
             asyncio.run(_override_stale_close_for_holdings(df))
 
-        # Column exists even when DB failed — initialised unconditionally
-        assert "previous_close" in df.columns, (
-            "previous_close column must be initialised before DB call so it "
-            "exists even on DB failure"
+        # After P2-B fix: column must be absent on DB failure so broker's
+        # own close_price / previous_close (from _enrich_holdings) is used.
+        assert "previous_close" not in df.columns, (
+            "P2-B fix: previous_close column must be absent when DB query fails "
+            "— initialising to 0.0 before the query causes wrong Day P&L% display"
         )
-        assert df.iloc[0]["previous_close"] == 0.0
 
 
 # ===========================================================================

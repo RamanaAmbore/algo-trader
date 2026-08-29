@@ -184,13 +184,17 @@ def is_exchange_open(exchange: str) -> bool:
         return True  # Fail-open: assume market open if cache not warmed.
 
     upper = exchange.upper()
+    found_in_cache = False
     for row in _CACHE:
         if upper not in [e.upper() for e in (row.exchanges or [])]:
             continue
+        found_in_cache = True
         if not _row_matches_now(row):
             continue
         if _is_within_session(row):
             return True
+    if not found_in_cache:
+        return True  # Fail-open: unknown exchange not in schedule — assume open.
     return False
 
 
@@ -367,6 +371,18 @@ async def seed_and_warm() -> None:
                       AND date IS NULL
                       AND session_name = 'regular'
                       AND source = 'system'
+                """))
+                # --- migration: fix NON-MCX close_time 16:00 → 15:30 ----------
+                # Targets servers that already renamed NSE→NON-MCX via the
+                # fd2164e9 deploy but still carry a stale 16:00 close_time.
+                await session.execute(_text("""
+                    UPDATE exchange_schedule
+                    SET close_time = '15:30'
+                    WHERE gate = 'NON-MCX'
+                      AND date IS NULL
+                      AND session_name = 'regular'
+                      AND source = 'system'
+                      AND close_time != '15:30'
                 """))
                 # --- seed missing rows (NON-MCX / MCX if not yet present) ------
                 for row in _SEED_ROWS:

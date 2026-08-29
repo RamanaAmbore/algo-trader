@@ -141,7 +141,8 @@ class TestIsExchangeOpen:
         assert ec.is_exchange_open("NSE") is True
         assert ec.is_exchange_closed("NSE") is False
 
-    def test_unknown_exchange_returns_false(self):
+    def test_unknown_exchange_fails_open(self):
+        """Fix 4: unknown exchange not in any schedule row → fail-open (True)."""
         import backend.api.helpers.exchange_clock as ec
         nse_row = _make_schedule_row(
             "NSE", ["NSE", "BSE"],
@@ -149,8 +150,8 @@ class TestIsExchangeOpen:
         )
         ec._CACHE = [nse_row]
         with self._patch_now(10, 0):
-            # XBOM not in any exchanges list → returns False (closed)
-            assert ec.is_exchange_open("XBOM") is False
+            # XBOM not in any exchanges list → fail-open (True), not False
+            assert ec.is_exchange_open("XBOM") is True
 
 
 class TestIsAnySegmentOpen:
@@ -250,6 +251,51 @@ class TestSessionsWithSnapshotTimeNow:
             hits = ec.sessions_with_snapshot_time_now(tolerance_minutes=1)
         assert len(hits) == 0
 
+    def test_within_tolerance_59_seconds_before(self):
+        """Test boundary: 59 seconds before snapshot_time is within 1-minute tolerance."""
+        import backend.api.helpers.exchange_clock as ec
+        row = _make_schedule_row("NON-MCX", ["NSE"], snapshot_time=time(15, 45))
+        self._set_cache([row])
+        # now_ist rounds seconds/microseconds to 0, so we patch at 15:44 (60 seconds before 15:45)
+        with self._patch_now(15, 44):
+            hits = ec.sessions_with_snapshot_time_now(tolerance_minutes=1)
+        assert len(hits) == 1, "59 seconds before (via 15:44 rounded) should match with 1-min tolerance"
+
+    def test_outside_tolerance_61_seconds_before(self):
+        """Test boundary: 61 seconds before snapshot_time is outside 1-minute tolerance."""
+        import backend.api.helpers.exchange_clock as ec
+        row = _make_schedule_row("NON-MCX", ["NSE"], snapshot_time=time(15, 45))
+        self._set_cache([row])
+        # now_ist at 15:43 (120 seconds before 15:45) is well outside tolerance
+        with self._patch_now(15, 43):
+            hits = ec.sessions_with_snapshot_time_now(tolerance_minutes=1)
+        assert len(hits) == 0, "61+ seconds before should not match with 1-min tolerance"
+
+    def test_multiple_rows_mixed_match(self):
+        """Test with multiple rows: some match, some don't."""
+        import backend.api.helpers.exchange_clock as ec
+        nse_row = _make_schedule_row("NON-MCX", ["NSE"], snapshot_time=time(15, 45))
+        mcx_row = _make_schedule_row("MCX", ["MCX"], snapshot_time=time(23, 45))
+        self._set_cache([nse_row, mcx_row])
+        with self._patch_now(15, 45):
+            # At 15:45: NON-MCX matches, MCX (23:45) does not
+            hits = ec.sessions_with_snapshot_time_now(tolerance_minutes=1)
+        assert len(hits) == 1, "Only NON-MCX should match at 15:45"
+        assert hits[0].gate == "NON-MCX", "NON-MCX row should be returned"
+
+    def test_multiple_rows_all_match(self):
+        """Test with two rows both within tolerance at current time."""
+        import backend.api.helpers.exchange_clock as ec
+        nse_row = _make_schedule_row("NON-MCX", ["NSE"], snapshot_time=time(15, 45))
+        mcx_row = _make_schedule_row("MCX", ["MCX"], snapshot_time=time(15, 46))
+        self._set_cache([nse_row, mcx_row])
+        with self._patch_now(15, 45):
+            # At 15:45: both rows are within tolerance (NON-MCX exact, MCX 1 min after)
+            hits = ec.sessions_with_snapshot_time_now(tolerance_minutes=1)
+        assert len(hits) == 2, "Both rows should match within 1-minute tolerance"
+        gate_names = {r.gate for r in hits}
+        assert gate_names == {"NON-MCX", "MCX"}, "Both NON-MCX and MCX should be returned"
+
 
 class TestSettlementCutoffFor:
     def _patch_now(self, hour: int, minute: int):
@@ -304,6 +350,66 @@ class TestSettlementCutoffFor:
             cutoff = await ec.settlement_cutoff_for("NON-MCX")
         # Falls back to 08:00 default
         assert cutoff.hour == 8
+
+    @pytest.mark.asyncio
+    async def test_mcx_with_custom_reset_time(self):
+        """MCX gate with custom snapshot_reset_time uses that time, not 08:00 default."""
+        import backend.api.helpers.exchange_clock as ec
+        # MCX with a hypothetical custom reset time of 09:00 IST
+        mcx_row = _make_schedule_row(
+            "MCX", ["MCX"],
+            snapshot_reset_time=time(9, 0),  # custom reset time
+            date_val=None,
+        )
+        ec._CACHE = [mcx_row]
+        import time as _time
+        ec._cache_loaded_at = _time.monotonic()
+
+        with self._patch_now(10, 0):
+            # At 10:00 IST, which is after 09:00 → should return today's 09:00
+            cutoff = await ec.settlement_cutoff_for("MCX")
+        assert cutoff.hour == 9, "MCX cutoff should use custom reset time 09:00"
+        assert cutoff.minute == 0
+
+    @pytest.mark.asyncio
+    async def test_before_custom_reset_time_returns_yesterday(self):
+        """Before custom reset time → returns yesterday's boundary at that time."""
+        import backend.api.helpers.exchange_clock as ec
+        mcx_row = _make_schedule_row(
+            "MCX", ["MCX"],
+            snapshot_reset_time=time(9, 0),
+            date_val=None,
+        )
+        ec._CACHE = [mcx_row]
+        import time as _time
+        ec._cache_loaded_at = _time.monotonic()
+
+        with self._patch_now(8, 0):
+            # At 08:00 IST, which is BEFORE 09:00 → should return yesterday's 09:00
+            cutoff = await ec.settlement_cutoff_for("MCX")
+        assert cutoff.hour == 9
+        # Should be yesterday
+        fixed_today = datetime(2026, 8, 25, 9, 0, tzinfo=_IST)
+        expected = fixed_today - timedelta(days=1)
+        assert cutoff.date() == expected.date(), "Before reset time should return yesterday's boundary"
+
+    @pytest.mark.asyncio
+    async def test_gate_case_insensitive_lookup(self):
+        """Gate name lookup is case-insensitive (upper-case matching)."""
+        import backend.api.helpers.exchange_clock as ec
+        mcx_row = _make_schedule_row(
+            "MCX", ["MCX"],
+            snapshot_reset_time=time(8, 0),
+            date_val=None,
+        )
+        ec._CACHE = [mcx_row]
+        import time as _time
+        ec._cache_loaded_at = _time.monotonic()
+
+        with self._patch_now(10, 0):
+            # Lookup with lowercase "mcx" should find the "MCX" row
+            cutoff = await ec.settlement_cutoff_for("mcx")
+        assert cutoff.hour == 8, "Gate lookup should be case-insensitive"
 
 
 class TestCacheRefreshTTL:
@@ -651,3 +757,117 @@ class TestRBACCapabilities:
         from backend.api.rbac import CAPS
         assert "demo" in CAPS["view_exchange_schedule"]
         assert "demo" not in CAPS["manage_exchange_schedule"]
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: seed_and_warm NON-MCX close_time migration
+# ---------------------------------------------------------------------------
+
+class TestSeedAndWarmNonMcxMigration:
+    """Fix 1: seed_and_warm must UPDATE close_time to '15:30' for NON-MCX rows
+    that still carry a stale '16:00' value (servers already renamed from NSE
+    to NON-MCX via the fd2164e9 deploy but missed the close_time patch)."""
+
+    @pytest.mark.asyncio
+    async def test_seed_and_warm_emits_non_mcx_close_time_migration(self):
+        """The NON-MCX close_time migration SQL must be executed during seed_and_warm."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        import backend.api.helpers.exchange_clock as ec
+
+        executed_sqls: list[str] = []
+
+        mock_begin_ctx = AsyncMock()
+        mock_begin_ctx.__aenter__ = AsyncMock(return_value=mock_begin_ctx)
+        mock_begin_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.begin = MagicMock(return_value=mock_begin_ctx)
+
+        async def _capture_execute(stmt, *args, **kwargs):
+            executed_sqls.append(str(stmt))
+            return MagicMock()
+
+        mock_session.execute = AsyncMock(side_effect=_capture_execute)
+
+        mock_async_session_cls = MagicMock(return_value=mock_session)
+        mock_engine = MagicMock()
+
+        # Patch at the import source locations used inside seed_and_warm().
+        with patch("sqlalchemy.ext.asyncio.AsyncSession", mock_async_session_cls), \
+             patch("backend.api.database.engine", mock_engine), \
+             patch.object(ec, "_force_refresh", new_callable=AsyncMock):
+            await ec.seed_and_warm()
+
+        # At least one executed SQL must target NON-MCX close_time migration.
+        non_mcx_migration_found = any(
+            "NON-MCX" in sql and "close_time" in sql and "15:30" in sql
+            for sql in executed_sqls
+        )
+        assert non_mcx_migration_found, (
+            "seed_and_warm must execute a migration UPDATE that sets "
+            "close_time='15:30' WHERE gate='NON-MCX'. "
+            f"Executed SQLs: {executed_sqls}"
+        )
+
+    def test_non_mcx_close_time_in_seed_rows(self):
+        """_SEED_ROWS NON-MCX row must already have close_time=15:30 (seed fallback)."""
+        from backend.api.helpers.exchange_clock import _SEED_ROWS
+        non_mcx = next(r for r in _SEED_ROWS if r["gate"] == "NON-MCX")
+        assert non_mcx["close_time"] == time(15, 30), (
+            "NON-MCX seed row close_time must be 15:30 — "
+            f"got {non_mcx['close_time']}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fix 4: fail-open for unknown exchange in non-empty cache
+# ---------------------------------------------------------------------------
+
+class TestFailOpenUnknownExchange:
+    """Fix 4: is_exchange_open must return True (fail-open) when the exchange
+    is not found in any row of a non-empty cache."""
+
+    def _set_cache(self, rows):
+        import backend.api.helpers.exchange_clock as ec
+        ec._CACHE = rows
+
+    def _patch_now(self, hour: int, minute: int):
+        import backend.api.helpers.exchange_clock as ec
+        fixed = datetime(2026, 8, 25, hour, minute, 0, tzinfo=_IST)
+        return patch.object(ec, "_now_ist", return_value=fixed)
+
+    def test_unknown_exchange_fails_open_with_populated_cache(self):
+        """A non-empty cache that does not contain the exchange → True (fail-open)."""
+        import backend.api.helpers.exchange_clock as ec
+        nse_row = _make_schedule_row(
+            "NON-MCX", ["NSE", "BSE", "NFO", "BFO", "CDS"],
+            open_time=time(8, 0), close_time=time(15, 30),
+        )
+        mcx_row = _make_schedule_row(
+            "MCX", ["MCX"],
+            open_time=time(8, 0), close_time=time(23, 30),
+        )
+        self._set_cache([nse_row, mcx_row])
+        with self._patch_now(10, 0):
+            result = ec.is_exchange_open("UNKNOWN_EXCH")
+        assert result is True, (
+            "is_exchange_open must fail-open (True) for an exchange not in "
+            "any schedule row, even when cache is non-empty"
+        )
+
+    def test_known_exchange_not_affected_by_failopen(self):
+        """Known exchange that is closed still returns False (not caught by fail-open)."""
+        import backend.api.helpers.exchange_clock as ec
+        nse_row = _make_schedule_row(
+            "NON-MCX", ["NSE", "BSE", "NFO", "BFO", "CDS"],
+            open_time=time(9, 15), close_time=time(15, 30),
+        )
+        self._set_cache([nse_row])
+        with self._patch_now(16, 0):
+            # NSE is in schedule but session is closed at 16:00
+            result = ec.is_exchange_open("NSE")
+        assert result is False, (
+            "Known exchange that is outside session window must still return False"
+        )

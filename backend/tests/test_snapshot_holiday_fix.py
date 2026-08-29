@@ -228,6 +228,34 @@ class TestSnapshotDailyBookSignature:
 # _is_exchange_open_at: existing time-of-day logic unchanged
 # ---------------------------------------------------------------------------
 
+class TestIsExchangeOpenAtSignature:
+    """_is_exchange_open_at takes only exchange — now_ist removed (P2-C fix)."""
+
+    def test_signature_has_no_now_ist_param(self):
+        """After P2-C fix the function accepts only exchange (one positional arg)."""
+        import inspect
+        from backend.api.algo.daily_snapshot import _is_exchange_open_at
+
+        sig = inspect.signature(_is_exchange_open_at)
+        assert "now_ist" not in sig.parameters, (
+            "_is_exchange_open_at must not have a now_ist parameter after P2-C fix"
+        )
+        params = list(sig.parameters)
+        assert params == ["exchange"], (
+            f"Expected only ['exchange'] parameter, got {params}"
+        )
+
+    def test_accepts_single_exchange_arg(self):
+        """Calling _is_exchange_open_at('NSE') (no second arg) must not TypeError."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
+        from backend.api.algo.daily_snapshot import _is_exchange_open_at
+
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            result = _is_exchange_open_at("NSE")
+        assert result is True
+
+
 class TestIsExchangeOpenAtUnchanged:
     """_is_exchange_open_at delegates to exchange_clock."""
 
@@ -235,33 +263,29 @@ class TestIsExchangeOpenAtUnchanged:
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _is_exchange_open_at
-        t = datetime(2026, 8, 14, 11, 0, tzinfo=IST)
         with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
-            assert _is_exchange_open_at("NSE", t) is True
+            assert _is_exchange_open_at("NSE") is True
 
     def test_nse_closed_at_16h(self):
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _is_exchange_open_at
-        t = datetime(2026, 8, 14, 16, 0, tzinfo=IST)
         with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
-            assert _is_exchange_open_at("NSE", t) is False
+            assert _is_exchange_open_at("NSE") is False
 
     def test_mcx_open_at_noon(self):
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _is_exchange_open_at
-        t = datetime(2026, 8, 14, 12, 0, tzinfo=IST)
         with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
-            assert _is_exchange_open_at("MCX", t) is True
+            assert _is_exchange_open_at("MCX") is True
 
     def test_mcx_closed_at_00h_05m(self):
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _is_exchange_open_at
-        t = datetime(2026, 8, 14, 0, 5, tzinfo=IST)
         with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
-            assert _is_exchange_open_at("MCX", t) is False
+            assert _is_exchange_open_at("MCX") is False
 
 
 # ---------------------------------------------------------------------------

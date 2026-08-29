@@ -393,6 +393,52 @@ class TestHoldingsCloseOverrideForHoldings:
             "Query must NOT reference 'positions' kind"
         )
 
+    def test_db_failure_leaves_previous_close_column_absent(self):
+        """P2-B fix: DB exception must NOT create a previous_close=0.0 column.
+
+        Before the fix, raw['previous_close'] = 0.0 was set unconditionally
+        BEFORE the DB try/except. On exception the function returned early,
+        leaving all rows with previous_close=0.0. The frontend then showed
+        Day P&L% = 0 for every holding because the denominator was 0.
+
+        After the fix, the init is placed AFTER the query succeeds. A DB
+        failure returns early without ever touching the column — so the
+        broker's own value (set by _enrich_holdings) is preserved.
+        """
+        from backend.api.routes.holdings import _override_stale_close_for_holdings
+        from zoneinfo import ZoneInfo
+
+        IST = ZoneInfo("Asia/Kolkata")
+        df = _make_holdings_df(close_price=150.0)
+
+        # Verify the helper doesn't inject previous_close upfront
+        assert 'previous_close' not in df.columns, (
+            "Test precondition: _make_holdings_df must not include previous_close"
+        )
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=RuntimeError("DB down"))
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        mock_time = datetime(2026, 7, 8, 8, 30, 0, tzinfo=IST)
+
+        with (
+            patch("backend.api.database.async_session", return_value=mock_session),
+            patch(
+                "backend.shared.helpers.date_time_utils.timestamp_indian",
+                return_value=mock_time,
+            ),
+        ):
+            asyncio.run(_override_stale_close_for_holdings(df))
+
+        # The column must be absent — not set to 0.0 — so broker's value is used.
+        assert 'previous_close' not in df.columns, (
+            "On DB failure, previous_close column must remain absent "
+            "(not initialised to 0.0). Got previous_close="
+            + str(df.get('previous_close', 'ABSENT'))
+        )
+
     def test_recompute_row_percentages_skipped_when_no_matches(self):
         """recompute_row_percentages must not be called when patched_indices is empty.
 

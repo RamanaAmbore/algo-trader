@@ -397,14 +397,16 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     check to always pass (stale value equals stale close_price), so `close_price`
     was never patched. Using `daily_book.ltp` directly fixes this.
 
-    `previous_close` is written to ALL rows unconditionally (using whatever
-    reference we found, or 0.0 when not found). This ensures the field is
-    always present in the DataFrame so `_ROW_COLS` selection and the
-    `HoldingRow` constructor can populate it even on cold-boot.
+    `previous_close` is written to rows that have a matching daily_book
+    snapshot entry.  Rows with no snapshot entry receive 0.0 (initialised
+    after the query succeeds).  On DB failure the column is left absent so
+    the broker's own `close_price` / `previous_close` field (set by
+    `_enrich_holdings`) is used instead of a hard zero.
 
-    `close_price` is only overridden where the snapshot diverges from Kite's
-    value by more than epsilon (0.005) — rows where Kite is already current
-    pass through unchanged (close_price patching keeps existing behaviour).
+    `close_price` is synced to ref_close unconditionally for every row that
+    has a snapshot entry — no epsilon guard (the old epsilon guard caused the
+    denominator and numerator to reference different prices when Kite's
+    BHAV-copy value was close to the snapshot).
 
     Runs AFTER backfill_market_data and AFTER `_enrich_holdings` (which runs
     inside `broker_apis.fetch_holdings` per-account). Because `_enrich_holdings`
@@ -414,10 +416,6 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     """
     if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
         return
-
-    # Initialise previous_close for all rows — ensures the column exists even
-    # when no snapshot is found (cold boot / first deploy).
-    raw['previous_close'] = 0.0
 
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
@@ -455,6 +453,13 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
 
     if not snapshot_map:
         return
+
+    # Ensure previous_close column exists — initialised to 0.0 for rows that
+    # have no matching snapshot entry.  Placed here (after the query succeeds)
+    # so that a DB failure returns early above, leaving the column absent and
+    # letting the broker's own value be used by downstream consumers.
+    if 'previous_close' not in raw.columns:
+        raw['previous_close'] = 0.0
 
     # Write previous_close for ALL rows that have a snapshot entry (not just
     # rows where close_price gets patched). Rows with no snapshot entry keep 0.0.

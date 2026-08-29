@@ -1,48 +1,85 @@
-# Plan: Exchange schedule CRUD guards + MCX snapshot/P&L fixes
-
-## Context
-Two fixes identified during the NON-MCX gate rename investigation:
-
-1. **Exchange schedule CRUD protection**: No guards exist on delete/update for default rows or past-date overrides. Default gate rows (date IS NULL) are the permanent schedule and must not be deletable. Past-date overrides are historical records and must be immutable.
-
-2. **MCX P&L regression**: MCX snapshot_time was changed 23:45→00:15 in the prior commit, creating a 45-minute window (23:30–00:15) where `latest_snapshot_ltp_map` returns yesterday's settlement LTP → day P&L shows 0 for all MCX positions during that window. Also, `daily_snapshot.py::_is_exchange_open_at` uses hardcoded times inconsistent with exchange_schedule after the 08:00 open_time change.
+# Plan: Snapshot/book audit — remaining P2 fixes + coverage uplift
 
 ## Task
-Two related fixes:
 
-**1. Exchange schedule CRUD protection**  
-Default rows (date IS NULL): update allowed, delete blocked (409).  
-Past-date overrides (date < today): update blocked (409), delete blocked (409).  
-Future/today overrides: full CRUD.  
-Add `deletable` and `editable` bool fields to DTO; frontend conditionally renders controls.
+Deploy the 5 P1/P2 backend fixes + exchange-schedule grid alignment already
+completed by agents. Then fix 3 remaining P2 issues and add targeted test
+coverage for the snapshot/book/close-price paths identified by the audit.
 
-**2. MCX snapshot timing + `_is_exchange_open_at` fix**  
-Revert MCX `snapshot_time` from 00:15 → 23:45 (restores 15-minute post-close window).  
-Fix `_is_exchange_open_at` in `daily_snapshot.py` to delegate to `exchange_clock.is_exchange_open(exchange)` instead of hardcoded times.
+### What's already done (uncommitted, staged for commit)
+
+| File | Change |
+|---|---|
+| `exchange_clock.py` | NON-MCX close_time migration (fixes DB no-op) + fail-open for unknown exchange |
+| `daily_snapshot.py` | sparkline row missing `lots`/`lot_size`/`previous_close` keys |
+| `positions_helpers.py` | closed overnight day_pnl = 0 bug |
+| `positions.py` | dead `pairs` set-comprehension removed |
+| `settings/+page.svelte` | weekdays column + phantom th + td flex fix |
+| `test_exchange_clock.py` | new tests for migration + fail-open |
+| `test_sparkline_snapshot.py` | new UPSERT-keys test |
+| `test_positions_helpers.py` | new closed-overnight day_pnl test |
+
+### Remaining P2 issues to fix in this plan
+
+**P2-A — `connections.py:1730` blocking sleep in async startup**
+`import time as _t; _t.sleep(2)` inside `rebuild_from_db` (an async function
+decorated with `@ssot_fetch`) blocks the event loop during Dhan stagger.
+Fix: `await asyncio.sleep(2)`.
+File: `backend/brokers/connections.py:1730`
+
+**P2-B — `_override_stale_close_for_holdings`: 0.0 written before DB query**
+`raw['previous_close'] = 0.0` is set unconditionally (line 420) before the
+try/except. On DB failure the function returns early, leaving `previous_close=0.0`
+for all rows — the broker live path then sends 0.0 to the frontend as the prior
+close, zeroing the Day P&L %.
+Fix: defer the `raw['previous_close'] = 0.0` init to AFTER a successful query
+so on DB failure the column is either absent (broker will leave it) or retains
+the broker-supplied stale BHAV value (better than 0.0).
+Specifically: remove line 420, add `raw['previous_close'] = raw.get('previous_close', 0.0)`
+ONLY within the success path. Rows with no snapshot entry still get 0.0 in
+the loop at line 468.
+File: `backend/api/routes/holdings.py:420`
+
+**P2-C — `_is_exchange_open_at`: vestigial `now_ist` parameter**
+Parameter is accepted but ignored since the exchange_clock delegation refactor.
+Callers that pass `now_ist` for test-time control no longer have that ability —
+they must mock `exchange_clock.is_exchange_open` instead. Remove the parameter
+to make the interface honest and avoid confusion.
+File: `backend/api/algo/daily_snapshot.py` — function `_is_exchange_open_at`
+Also update all internal callers.
+
+### Coverage uplift (broker + backend-test agents)
+
+Four uncovered paths — add pytest tests only (no prod code changes):
+
+| Path | Test location |
+|---|---|
+| `exchange_clock.sessions_with_snapshot_time_now` — time exactly at boundary, time outside window, multiple rows | `backend/tests/test_exchange_clock.py` |
+| `exchange_clock.settlement_cutoff_for` — MCX gate, before reset time (yesterday boundary), after reset time | `backend/tests/test_exchange_clock.py` |
+| `holdings._overlay_snapshot_for_closed_exchanges` — closed exchange gets snapshot price, open exchange gets live price | `backend/tests/test_holdings_overlay.py` (new) |
+| `holdings._override_stale_close_for_holdings` — DB failure path (no crash, previous_close stays absent/0) | `backend/tests/test_holdings_overlay.py` (new) |
 
 ## Agents
-- backend: (1) `backend/api/routes/exchange_schedule.py`: add `deletable: bool` and `editable: bool` to `ExchangeScheduleDTO`; compute in `_to_dto(row)` as: `deletable = row.date is not None and row.date >= date.today()`, `editable = row.date is None or row.date >= date.today()`. In `delete_schedule`: raise HTTPException(409) if `row.date is None` (detail "default gate rows cannot be deleted") or `row.date < date.today()` (detail "past-date overrides cannot be deleted"). In `update_schedule`: raise HTTPException(409) if `row.date is not None and row.date < date.today()` (detail "past-date overrides cannot be updated"). (2) `backend/api/algo/daily_snapshot.py`: remove hardcoded `_NSE_OPEN_T/_NSE_CLOSE_T/_MCX_OPEN_T/_MCX_CLOSE_T` constants; replace `_is_exchange_open_at` body with `return exchange_clock.is_exchange_open(exchange)` (ignore `now_ist` param). Add `from backend.api.helpers import exchange_clock` import. (3) `backend/api/helpers/exchange_clock.py`: revert MCX `snapshot_time` in `_SEED_ROWS` from `time(0, 15)` → `time(23, 45)`. In `seed_and_warm()` MCX migration UPDATE: change `snapshot_time = '00:15'` → `snapshot_time = '23:45'`. Update module docstring MCX snapshot column (00:15* → 23:45).
-- frontend: Find the exchange schedule admin UI component at `frontend/src/routes/(algo)/admin/` or similar. Hide the delete button when `!row.deletable`; disable/grey the edit button (or show lock icon) when `!row.editable`.
-- broker: skip
+
+- backend: fix P2-B (`holdings.py`) and P2-C (`daily_snapshot.py`)
+- broker: fix P2-A (`connections.py`)
+- backend-test: add coverage for `sessions_with_snapshot_time_now`, `settlement_cutoff_for`, `_overlay_snapshot_for_closed_exchanges`, DB-failure path
 - doc: skip
-- backend-test: Add pytest cases in `backend/tests/test_exchange_schedule.py`: (a) DELETE default row → 409; (b) DELETE past-date row → 409; (c) DELETE today/future-date row → 204; (d) UPDATE default row → 200; (e) UPDATE past-date row → 409; (f) UPDATE today/future-date row → 200. Also update `backend/tests/test_exchange_clock.py`: MCX seed snapshot_time assertion → time(23, 45).
-- playwright: skip
 
 ## Tests
+
 - pytest: yes
-- svelte-check: yes
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(exchange-schedule): CRUD guards for default/past rows + revert MCX snapshot to 23:45 + delegate _is_exchange_open_at to exchange_clock
+
+fix(snapshot): remaining P2 — async sleep, holdings 0.0 prev_close on DB fail, vestigial now_ist; coverage uplift for clock/overlay paths
 
 ## Done when
-- DELETE on default gate row → 409
-- DELETE on past-date override → 409
-- UPDATE on past-date override → 409
-- UPDATE on default gate row → 200
-- DTO has `deletable` and `editable` booleans
-- Frontend hides/disables controls accordingly
-- MCX seed snapshot_time = time(23, 45)
-- `_is_exchange_open_at` delegates to `exchange_clock.is_exchange_open`
-- All pytest green, svelte-check 0 errors
+
+- All pytest pass (broker cov ≥ 80%, api cov ≥ 45%)
+- `connections.py` Dhan stagger uses `await asyncio.sleep(2)`
+- `_override_stale_close_for_holdings` no longer writes `previous_close=0.0` before the DB round-trip
+- `_is_exchange_open_at` signature has no `now_ist` parameter
+- `sessions_with_snapshot_time_now`, `settlement_cutoff_for`, overlay, and DB-failure paths have explicit test coverage

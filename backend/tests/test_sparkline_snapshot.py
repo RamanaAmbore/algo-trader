@@ -402,3 +402,37 @@ async def test_settled_kwarg_sequence_close_then_settled():
         f"First call should have settled=False, got {spark_calls[0]}"
     assert spark_calls[1]["settled"] is True, \
         f"Second call should have settled=True, got {spark_calls[1]}"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sparkline_row_contains_upsert_keys():
+    """Fix 2: sparkline rows passed to _upsert_rows must contain `lots`,
+    `lot_size`, and `previous_close` — all three are bound in _UPSERT_SQL
+    and were missing before this fix."""
+    from backend.api.algo import daily_snapshot as ds
+
+    universe = [("RELIANCE", "NSE"), ("CRUDEOIL", "MCX")]
+
+    with patch.object(ds, "_sparkline_universe_symbols",
+                      new=AsyncMock(return_value=universe)), \
+         patch("backend.api.persistence.ohlcv_store.get_or_fetch_daily",
+               new=AsyncMock(return_value=_fake_bars(3))), \
+         patch.object(ds, "_upsert_rows",
+                      new=AsyncMock(return_value=2)) as m_up:
+        await ds.snapshot_sparkline(settled=False)
+
+    rows_batch = m_up.call_args[0][0]
+    assert len(rows_batch) == 2, f"Expected 2 rows, got {len(rows_batch)}"
+    for row in rows_batch:
+        assert "lots" in row, (
+            f"sparkline row missing 'lots' key — _UPSERT_SQL will fail: {list(row.keys())}"
+        )
+        assert "lot_size" in row, (
+            f"sparkline row missing 'lot_size' key — _UPSERT_SQL will fail: {list(row.keys())}"
+        )
+        assert "previous_close" in row, (
+            f"sparkline row missing 'previous_close' key — _UPSERT_SQL will fail: {list(row.keys())}"
+        )
+        assert row["lots"] == 0
+        assert row["lot_size"] == 1
+        assert row["previous_close"] is None

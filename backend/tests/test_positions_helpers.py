@@ -497,3 +497,48 @@ def test_prev_settlement_pnl_coexists_with_close_override():
     day_pnl_branch_a = row.pnl - row.prev_settlement_pnl
     assert math.isclose(day_pnl_branch_a, 545.0, rel_tol=1e-6), \
         f"Expected day_pnl=545.0, got {day_pnl_branch_a}"
+
+
+# ---------------------------------------------------------------------------
+# Fix 3: closed overnight position must preserve stored day_pnl (not 0.0)
+# ---------------------------------------------------------------------------
+
+def test_closed_overnight_position_preserves_day_pnl():
+    """Fix 3: when qty=0 (closed overnight position), build_row_from_snapshot_raw
+    must return the stored day_pnl, NOT (ltp - prev_close) * 0 = 0.0.
+
+    Column order for build_row_from_snapshot_raw:
+    account, symbol, exchange, qty, avg_cost, ltp,
+    day_pnl, total_pnl, payload_json, captured_at, previous_close,
+    prev_ltp, prev_settlement_pnl
+    """
+    import json
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
+
+    # Closed overnight: qty=0 but meaningful day_pnl from prior decomposed calc.
+    # (ltp - prev_close) * qty = (201.5 - 200.0) * 0 = 0.0 — the broken formula.
+    # Fix: the function must return day_change_val = -500.0, not 0.0.
+    raw_row = (
+        "ZG0790",               # account
+        "RELIANCE",             # symbol
+        "NSE",                  # exchange
+        0,                      # qty — closed overnight
+        Decimal("195.00"),      # avg_cost
+        Decimal("201.50"),      # ltp
+        Decimal("-500.00"),     # day_pnl — stored decomposed value
+        Decimal("-300.00"),     # total_pnl
+        json.dumps({}),         # payload_json
+        None,                   # captured_at
+        Decimal("200.00"),      # previous_close
+        Decimal("200.00"),      # prev_ltp
+        None,                   # prev_settlement_pnl
+    )
+
+    row = build_row_from_snapshot_raw(raw_row)
+
+    assert math.isclose(row.day_change_val, -500.0, rel_tol=1e-6), (
+        f"Fix 3: closed overnight position (qty=0) must return stored day_pnl=-500.0, "
+        f"got {row.day_change_val}. "
+        f"The formula (ltp - prev_close) * 0 = 0.0 was incorrectly overwriting the stored value."
+    )

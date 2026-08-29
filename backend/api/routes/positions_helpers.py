@@ -300,10 +300,17 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     # Use actual_previous_close (not prev_close_val) so that a valid prev_ltp
     # fallback doesn't contaminate the day-P&L formula when previous_close IS
     # available but we still want to forward only the authoritative close.
+    # For closed overnight positions (effective_qty == 0), the formula
+    # (ltp - prev_close) * 0 always yields 0.0, which overwrites the stored
+    # decomposed day P&L. Use the stored value directly for closed rows.
     computed_day_pnl: object = (
-        (float(ltp) - actual_previous_close) * effective_qty
-        if actual_previous_close and ltp
-        else day_pnl
+        day_pnl  # closed overnight — qty=0; use stored decomposed day P&L
+        if effective_qty == 0
+        else (
+            (float(ltp) - actual_previous_close) * effective_qty
+            if actual_previous_close and ltp
+            else day_pnl
+        )
     )
 
     return build_snapshot_position_row(

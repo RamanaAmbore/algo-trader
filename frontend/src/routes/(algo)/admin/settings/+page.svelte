@@ -151,6 +151,13 @@
     try { return new Date(s).toISOString().slice(0, 10); } catch { return s.slice(0, 10); }
   }
 
+  const _WD = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+  /** @param {number[]|null|undefined} days */
+  function fmtWeekdays(days) {
+    if (!days?.length) return '—';
+    return days.map(d => _WD[d] ?? String(d)).join(' ');
+  }
+
   function onEdit(/** @type {any} */ s, /** @type {any} */ newVal) {
     dirty[s.key] = String(newVal);
   }
@@ -182,6 +189,7 @@
   /** @typedef {{
    *   id?: number,
    *   gate: string, exchanges: string[], date: string|null,
+   *   weekdays: number[]|null,
    *   session_name: string, is_open: boolean,
    *   open_time: string|null, close_time: string|null,
    *   snapshot_time: string|null, snapshot_reset_time: string|null,
@@ -217,7 +225,7 @@
       // Add new — blank default
       scheduleForm = {
         gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']],
-        date: null, session_name: '',
+        date: null, weekdays: null, session_name: '',
         is_open: true, open_time: null, close_time: null,
         snapshot_time: null, snapshot_reset_time: null, reason: null,
         editable: true, deletable: true,
@@ -643,19 +651,21 @@
           <thead class="opacity-70">
             <tr>
               <th class="text-left p-1">Gate</th>
+              <th class="text-left p-1">Days</th>
               <th class="text-left p-1">Session</th>
               <th class="text-left p-1">Exchanges</th>
               <th class="text-right p-1">Open</th>
               <th class="text-right p-1">Close</th>
               <th class="text-right p-1">Snapshot</th>
               <th class="text-right p-1">Reset</th>
-              <th></th>
+              {#if hasCap('manage_exchange_schedule', _caps, _role)}<th></th>{/if}
             </tr>
           </thead>
           <tbody>
             {#each scheduleDefaults as row (row.id)}
               <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
                 <td class="p-1 font-mono text-[0.65rem]">{row.gate}</td>
+                <td class="p-1 font-mono text-[0.65rem] opacity-70">{fmtWeekdays(row.weekdays)}</td>
                 <td class="p-1 text-[0.65rem]">
                   {row.session_name}
                   {#if !row.is_open}<span class="ml-1 text-[0.55rem] opacity-60">(closed)</span>{/if}
@@ -688,7 +698,7 @@
       <span class="text-[0.6rem] font-bold opacity-80 uppercase tracking-widest">Date Overrides</span>
       {#if hasCap('manage_exchange_schedule', _caps, _role)}
         <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
-                onclick={() => { const f = { gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']], date: '', session_name: 'closed', is_open: false, open_time: null, close_time: null, snapshot_time: null, snapshot_reset_time: null, reason: null, editable: true, deletable: true }; scheduleForm = f; }}>+ Add Override</button>
+                onclick={() => { const f = { gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']], date: '', weekdays: null, session_name: 'closed', is_open: false, open_time: null, close_time: null, snapshot_time: null, snapshot_reset_time: null, reason: null, editable: true, deletable: true }; scheduleForm = f; }}>+ Add Override</button>
       {/if}
     </div>
     {#if scheduleOverrides.length}
@@ -704,7 +714,7 @@
               <th class="text-right p-1">Open</th>
               <th class="text-right p-1">Close</th>
               <th class="text-left p-1">Reason</th>
-              <th></th>
+              {#if hasCap('manage_exchange_schedule', _caps, _role)}<th></th>{/if}
             </tr>
           </thead>
           <tbody>
@@ -723,16 +733,18 @@
                 <td class="p-1 text-right font-mono text-[0.65rem]">{row.close_time || '—'}</td>
                 <td class="p-1 text-[0.65rem] opacity-80">{row.reason || '—'}</td>
                 {#if hasCap('manage_exchange_schedule', _caps, _role)}
-                  <td class="p-1 flex gap-1">
-                    <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
-                            class:opacity-40={!row.editable}
-                            class:cursor-not-allowed={!row.editable}
-                            disabled={!row.editable}
-                            onclick={() => openScheduleForm(row)}>✏</button>
-                    {#if row.deletable}
-                      <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5 text-red-400"
-                              onclick={() => row.id != null && removeSchedule(row.id)}>×</button>
-                    {/if}
+                  <td class="p-1">
+                    <div class="flex gap-1">
+                      <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                              class:opacity-40={!row.editable}
+                              class:cursor-not-allowed={!row.editable}
+                              disabled={!row.editable}
+                              onclick={() => openScheduleForm(row)}>✏</button>
+                      {#if row.deletable}
+                        <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5 text-red-400"
+                                onclick={() => row.id != null && removeSchedule(row.id)}>×</button>
+                      {/if}
+                    </div>
                   </td>
                 {/if}
               </tr>

@@ -29,13 +29,12 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
-def _is_exchange_open_at(exchange: str, now_ist: datetime) -> bool:
+def _is_exchange_open_at(exchange: str) -> bool:
     """Delegate to exchange_clock (reads from DB-backed cache).
 
-    The ``now_ist`` parameter is kept for caller compatibility but is not
-    used — exchange_clock.is_exchange_open() reads the current IST time
-    internally from the DB-backed cache so timing is always consistent
-    with the rest of the system.
+    exchange_clock.is_exchange_open() reads the current IST time internally
+    from the DB-backed cache so timing is always consistent with the rest of
+    the system.
     """
     return _exchange_clock.is_exchange_open(exchange)
 
@@ -426,7 +425,7 @@ def _holdings_rows(
             continue
         exchange = r.get("exchange", "NSE")
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
-        mid_session = False if not market_open else _is_exchange_open_at(exchange, now_ist)
+        mid_session = False if not market_open else _is_exchange_open_at(exchange)
         ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session)
 
         # Bad-payload guard: broker returned all zeros for a real holding.
@@ -704,7 +703,7 @@ def _positions_rows(
             multiplier = 1
 
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
-        mid_session = False if not market_open else _is_exchange_open_at(exchange, now_ist)
+        mid_session = False if not market_open else _is_exchange_open_at(exchange)
         # Prior-session daily_book.ltp is the SSOT for close reference.
         # Falls back to broker close_price for first-day rows (no prior daily_book row).
         pos_close_ref = (prev_ltp_map or {}).get((account, symbol, "positions")) or None
@@ -1307,10 +1306,13 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
             "symbol":       sym,
             "exchange":     exch,
             "qty":          0,
+            "lots":         0,
+            "lot_size":     1,
             "avg_cost":     None,
             "ltp":          points[-1]["ltp"] if points else None,
             "day_pnl":      None,
             "total_pnl":    None,
+            "previous_close": None,
             "payload_json": json.dumps({
                 "points":      points,
                 "settled":     bool(settled),
