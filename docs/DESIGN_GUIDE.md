@@ -860,7 +860,7 @@ All tables live in the branch-local DB except `broker_accounts`, which is shared
 | `broker_connection_events` | Shared table — audit log of connection lifecycle (auth_fail, fetch_fail, token_ok, circuit_open/close, ticker_error, etc.). Enables operator forensics on credential/network issues. | id (PK), account, event_type (VARCHAR 32), event_ts (TIMESTAMP TZ, indexed), detail (JSONB) |
 | `market_holidays` | Exchange holiday calendar (NSE/MCX/CDS). Seeded from broker API, cached. | id (PK), exchange, holiday_date (unique per exchange) |
 | `market_special_sessions` | Special trading sessions (e.g. Muhurat trading). Operator-editable overrides. | id (PK), exchange, date, start_time, end_time, reason |
-| `exchange_schedule` | Configurable segment opening hours and snapshot timing (NSE, MCX, pre/post market). DB-backed single source of truth for `closed_hours_or_broker` gate logic. Default rows seeded at startup; operator can override via `/api/admin/exchange-schedule`. | id (PK), gate (NSE\|MCX\|PRE\|POST\|NIGHT), date (NULL=default, non-NULL=override), session_name, is_open (boolean), exchanges (TEXT[] array), open_time, close_time, snapshot_time, reset_time, weekdays (int[] for Mon=0…Sun=6), reason, updated_at; UNIQUE (gate, date, session_name) |
+| `exchange_schedule` | Configurable segment opening hours and snapshot timing (equity + commodity exchanges). DB-backed single source of truth for `closed_hours_or_broker` gate logic via `exchange_clock.is_exchange_open(exchange)`. Default rows seeded at startup; operator can override via `/api/admin/exchange-schedule`. | id (PK), gate (NON-MCX\|MCX), date (NULL=default, non-NULL=override), session_name, is_open (boolean), exchanges (TEXT[] array), open_time, close_time, snapshot_time, reset_time, weekdays (int[] for Mon=0…Sun=6), reason, updated_at; UNIQUE (gate, date, session_name) |
 
 **Watchlists** — User-defined symbol groups:
 
@@ -3806,6 +3806,34 @@ sequenceDiagram
 - `backend/brokers/broker_apis.py` — `_RAW_CACHE`, `fetch_positions`, `@for_all_accounts`
 - `backend/brokers/client/remote_broker.py` — UDS proxy
 - `backend/brokers/service/app.py` — conn_service Litestar app
+
+### 21.5.1 Exchange schedule — DB-backed market hours configuration
+
+Market open/close times are now sourced from the `exchange_schedule` table rather than
+hardcoded hour checks. `_is_exchange_open_at()` now delegates to
+`exchange_clock.is_exchange_open(exchange)` (implemented in
+`backend/api/helpers/exchange_clock.py`), which queries the DB-backed schedule with
+in-process LRU caching. Changes to `exchange_schedule` propagate immediately to snapshot
+behavior on subsequent requests — no code redeployment required.
+
+**Default seed rows (2 rows):**
+- **NON-MCX**: `exchanges=[NSE,BSE,NFO,BFO,CDS]`, `open=08:00`, `close=16:00`,
+  `snapshot=15:45`, `reset=08:00`
+- **MCX**: `exchanges=[MCX]`, `open=08:00`, `close=23:30`, `snapshot=23:45`, `reset=08:00`
+
+**API CRUD protection rules** — `GET|PUT|DELETE /api/admin/exchange-schedule`:
+- **Default rows** (`date IS NULL`): updates allowed, deletes blocked (409
+  "default gate rows cannot be deleted")
+- **Past-date overrides** (`date < today`): updates blocked, deletes blocked (409)
+- **Future/today overrides**: full CRUD allowed
+- **DTO includes** `deletable: bool` and `editable: bool` fields; frontend uses these
+  to hide/disable controls per row
+
+**Files:**
+- `backend/api/helpers/exchange_clock.py::is_exchange_open` — DB query + cache
+- `backend/api/routes/exchange_schedule.py` — CRUD endpoint + protection rules
+- `backend/api/models.py::ExchangeSchedule` — table definition
+- `backend/api/schemas.py::ExchangeScheduleDto` — response with `deletable`, `editable`
 
 ---
 
