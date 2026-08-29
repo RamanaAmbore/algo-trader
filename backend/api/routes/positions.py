@@ -236,6 +236,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                     SELECT account, MAX(captured_at) AS max_at
                     FROM daily_book
                     WHERE kind = 'positions' AND ltp IS NOT NULL
+                      AND captured_at < :prev_batch_cutoff
                     GROUP BY account
                 ),
                 prev_batch AS (

@@ -43,6 +43,7 @@ _HOLDINGS_SNAPSHOT_SQL = """
         SELECT account, MAX(captured_at) AS max_at
         FROM daily_book
         WHERE kind = 'holdings' AND ltp IS NOT NULL
+          AND captured_at < :snapshot_cutoff
         GROUP BY account
     ),
     prev_batch AS (
@@ -85,13 +86,28 @@ async def _query_holdings_snapshot_rows():
     book, never carry-over from prior sessions. Zero-payload guard
     still applies inside the batch in case the writer slipped one
     through.
+
+    snapshot_cutoff = today 08:00 IST (yesterday 08:00 if before 08:00 today).
+    Bounding latest_batch by this cutoff prevents weekend/holiday snapshots
+    (captured after 08:00 on a non-trading day) from shadowing the last
+    valid EOD snapshot.  Friday's 15:45 snapshot is always < Saturday 08:00,
+    so it persists correctly through the full weekend.
     """
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
+    from backend.shared.helpers.date_time_utils import timestamp_indian as _ts_indian
+
+    _now_ist = _ts_indian()
+    _today_ist_midnight = _now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    _today_ist_8am = _today_ist_midnight + timedelta(hours=8)
+    snapshot_cutoff = _today_ist_8am if _now_ist >= _today_ist_8am else _today_ist_8am - timedelta(days=1)
 
     try:
         async with async_session() as session:
-            result = await session.execute(_sql_text(_HOLDINGS_SNAPSHOT_SQL))
+            result = await session.execute(
+                _sql_text(_HOLDINGS_SNAPSHOT_SQL),
+                {"snapshot_cutoff": snapshot_cutoff},
+            )
             return result.all()
     except Exception as exc:
         logger.warning(f"holdings snapshot query failed: {exc}")
