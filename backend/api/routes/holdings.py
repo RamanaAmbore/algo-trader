@@ -99,8 +99,20 @@ async def _query_holdings_snapshot_rows():
 
     _now_ist = _ts_indian()
     _today_ist_midnight = _now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    _today_ist_8am = _today_ist_midnight + timedelta(hours=8)
-    snapshot_cutoff = _today_ist_8am if _now_ist >= _today_ist_8am else _today_ist_8am - timedelta(days=1)
+    # Weekday-aware snapshot cutoff so Friday's EOD snapshot is not excluded
+    # on weekdays.  The old `today 08:00` cutoff worked on weekends (Fri 15:45
+    # < Sat 08:00) but excluded Friday's snapshot when queried on a Friday
+    # afternoon (Fri 15:45 > Fri 08:00 → would serve Thursday instead).
+    #   Mon–Fri : tomorrow midnight (includes any EOD snapshot written today)
+    #   Saturday: today midnight   (excludes any Sat market-special-session)
+    #   Sunday  : yesterday midnight == Saturday 00:00 (same intent as Sat)
+    _weekday = _now_ist.weekday()  # Mon=0 … Sun=6
+    if _weekday == 5:   # Saturday
+        snapshot_cutoff = _today_ist_midnight
+    elif _weekday == 6:  # Sunday
+        snapshot_cutoff = _today_ist_midnight - timedelta(days=1)  # Saturday 00:00
+    else:               # Mon–Fri
+        snapshot_cutoff = _today_ist_midnight + timedelta(days=1)  # tomorrow midnight
 
     try:
         async with async_session() as session:
@@ -141,12 +153,18 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     # `previous_close` as the primary reference and fall back to `prev_ltp`
     # only when `previous_close` is absent or zero. Mirrors positions_helpers.py.
     prev_ltp_f = float(prev_ltp) if prev_ltp is not None and float(prev_ltp) > 0 else None
-    if previous_close_f > 0:
+    # Priority: stored EOD day_pnl is authoritative when non-zero (it was
+    # computed by the broker at session end, so it already accounts for
+    # intraday buys/sells). Only recompute from prices when day_pnl_f == 0
+    # (null or genuinely zero — e.g. symbol held flat all day).
+    if day_pnl_f != 0.0:
+        day_change_val = day_pnl_f
+    elif previous_close_f > 0:
         day_change_val = (ltp_f - previous_close_f) * qty_i
     elif prev_ltp_f is not None:
         day_change_val = (ltp_f - prev_ltp_f) * qty_i
     else:
-        day_change_val = day_pnl_f
+        day_change_val = 0.0
     # day_change_percentage: day_change_val / |previous_close × qty| × 100
     # Use yesterday's close price as the denominator (NOT LTP, which would
     # understate the move). Fallback to avg_cost when previous_close is
@@ -231,12 +249,13 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
 
     Returns None when no snapshot exists or the DB query fails.
 
-    After building the initial HoldingRow list, `_override_stale_close_for_holdings`
-    is applied via a minimal DataFrame so that `previous_close` (and `close_price`)
-    reflect the actual settlement LTP from daily_book rather than the potentially
-    stale value stored in the snapshot row's `previous_close` column.  This ensures
-    the snapshot path and the broker path use the same canonical prior-session
-    reference price.
+    The snapshot row already carries the correct prior-session settlement LTP
+    in `daily_book.ltp` (written at EOD) and `day_pnl` (broker-computed at that
+    moment). `_build_holding_row_from_snapshot` uses these directly — calling
+    `_override_stale_close_for_holdings` here would re-query the DB for the same
+    data and, worse, produce `(ltp - ltp) × qty = 0` day_change_val because
+    both the snapshot cutoff and the override cutoff resolve to today 08:00.
+    The override is used only on the live broker path (not here).
     """
     raw_rows = await _query_holdings_snapshot_rows()
     if not raw_rows:
@@ -248,45 +267,6 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
     for raw_row in raw_rows:
         row, _, _, _, _ = _build_holding_row_from_snapshot(raw_row)
         rows.append(row)
-
-    # Apply the same close-price override that runs on the broker path so
-    # previous_close and day_change_val in the snapshot path reflect the
-    # real prior-session settlement LTP, not the potentially drifted value
-    # stored in daily_book.previous_close (Kite BHAV-copy).
-    raw_df = pd.DataFrame([
-        {
-            "account":        r.account,
-            "tradingsymbol":  r.tradingsymbol,
-            "close_price":    r.close_price,
-            "last_price":     r.last_price,
-            "quantity":       r.quantity,
-            "day_change_val": r.day_change_val,
-            "day_change":     r.day_change_val / r.quantity if r.quantity else 0.0,
-            "previous_close": r.previous_close,
-        }
-        for r in rows
-    ])
-    if not raw_df.empty:
-        await _override_stale_close_for_holdings(raw_df)
-        # Rebuild rows with the patched previous_close + day_change_val values.
-        import msgspec as _msc
-        patched_rows: list[HoldingRow] = []
-        for idx, row in enumerate(rows):
-            new_prev_close = float(raw_df.at[idx, "previous_close"])
-            new_dcv        = float(raw_df.at[idx, "day_change_val"])
-            new_close      = float(raw_df.at[idx, "close_price"])
-            # Recompute day_change_percentage from the patched values.
-            qty = row.quantity
-            prev_val = abs(new_prev_close * qty) if new_prev_close > 0 and qty else 0.0
-            new_dcp = (new_dcv / prev_val * 100.0) if prev_val else row.day_change_percentage
-            patched_rows.append(_msc.structs.replace(
-                row,
-                previous_close=new_prev_close,
-                close_price=new_close,
-                day_change_val=new_dcv,
-                day_change_percentage=new_dcp,
-            ))
-        rows = patched_rows
 
     inv_by_account: dict[str, float] = {}
     cur_by_account: dict[str, float] = {}
@@ -380,9 +360,14 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
                 _pnl_p / _qty_p.replace(0, float('nan'))
             ).fillna(0).where(_ltp_p > 0, raw.loc[_sel, 'pnl_per_share'])
         if 'inv_val' in raw.columns and 'cur_val' in raw.columns:
-            _inv_p2 = pd.to_numeric(raw.loc[_sel, 'inv_val'], errors='coerce').fillna(0)
-            raw.loc[_sel, 'cur_val'] = (_inv_p2 + raw.loc[_sel, 'pnl']).where(
-                _ltp_p > 0, raw.loc[_sel, 'cur_val']
+            # Use ltp × qty directly — inv_val + pnl is wrong when ltp=0
+            # (Kite sends pnl=0 in that case, so inv_val+0 = inv_val, not cur_val).
+            # Fallback: preserve the original cur_val when ltp=0 (guard against
+            # the edge case where the ltp-patch returned 0, which should not happen
+            # in practice but must not corrupt the stored value).
+            _orig_cur_val = raw.loc[_sel, 'cur_val']
+            raw.loc[_sel, 'cur_val'] = (_ltp_p * _qty_p).where(
+                _ltp_p > 0, _orig_cur_val
             )
     # Recompute day_change_percentage + pnl_percentage on patched rows.
     # day_change_val and pnl were updated by backfill_market_data for

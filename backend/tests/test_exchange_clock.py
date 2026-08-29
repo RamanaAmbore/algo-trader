@@ -577,6 +577,178 @@ class TestHoldingsCutoffDelegation:
             "should no longer need it after exchange_clock delegation"
         )
 
+    def test_override_stale_close_for_holdings_has_lower_cutoff(self):
+        """_override_stale_close_for_holdings must include lower_cutoff in query (7-day bound)."""
+        import inspect
+        import backend.api.routes.holdings as hld
+        src = inspect.getsource(hld._override_stale_close_for_holdings)
+        assert "lower_cutoff" in src, (
+            "_override_stale_close_for_holdings must use lower_cutoff parameter "
+            "to bound query to 7 days"
+        )
+
+
+# ---------------------------------------------------------------------------
+# get_today_gate_sessions tests
+# ---------------------------------------------------------------------------
+
+class TestGetTodayGateSessions:
+    """get_today_gate_sessions filters _CACHE by gate and _row_matches_now."""
+
+    def _patch_now(self, hour: int, minute: int, weekday: int = 0):
+        import backend.api.helpers.exchange_clock as ec
+        fixed = datetime(2026, 8, 24, hour, minute, 0, tzinfo=_IST)  # Monday
+        return patch.object(ec, "_now_ist", return_value=fixed)
+
+    def test_returns_matching_gate_rows(self):
+        """Returns only rows whose gate matches, filtered by _row_matches_now."""
+        import backend.api.helpers.exchange_clock as ec
+        row_non_mcx = _make_schedule_row("NON-MCX", ["NSE"], weekdays=[0, 1, 2, 3, 4])
+        row_mcx = _make_schedule_row("MCX", ["MCX"], weekdays=[0, 1, 2, 3, 4])
+        ec._CACHE = [row_non_mcx, row_mcx]
+
+        with self._patch_now(10, 0, weekday=0):  # Monday
+            result = ec.get_today_gate_sessions("NON-MCX")
+
+        assert row_non_mcx in result
+        assert row_mcx not in result
+
+    def test_returns_empty_for_unknown_gate(self):
+        """Returns empty list when gate is not in cache."""
+        import backend.api.helpers.exchange_clock as ec
+        row = _make_schedule_row("NON-MCX", ["NSE"], weekdays=[0, 1, 2, 3, 4])
+        ec._CACHE = [row]
+
+        with self._patch_now(10, 0):
+            result = ec.get_today_gate_sessions("UNKNOWN")
+
+        assert result == []
+
+    def test_case_insensitive_gate_match(self):
+        """Gate matching is case-insensitive."""
+        import backend.api.helpers.exchange_clock as ec
+        row = _make_schedule_row("NON-MCX", ["NSE"], weekdays=[0, 1, 2, 3, 4])
+        ec._CACHE = [row]
+
+        with self._patch_now(10, 0, weekday=0):
+            result = ec.get_today_gate_sessions("non-mcx")
+
+        assert row in result
+
+    def test_weekend_excluded_when_weekdays_set(self):
+        """Rows with weekdays=[0-4] are excluded on Saturday (weekday=5)."""
+        import backend.api.helpers.exchange_clock as ec
+        row = _make_schedule_row("NON-MCX", ["NSE"], weekdays=[0, 1, 2, 3, 4])
+        ec._CACHE = [row]
+        # Saturday = datetime 2026-08-29 (weekday=5)
+        fixed = datetime(2026, 8, 29, 10, 0, 0, tzinfo=_IST)
+        with patch.object(ec, "_now_ist", return_value=fixed):
+            result = ec.get_today_gate_sessions("NON-MCX")
+
+        assert result == [], "Weekend rows should be excluded when weekdays=[0,1,2,3,4]"
+
+    def test_callable_and_importable(self):
+        """get_today_gate_sessions is importable from exchange_clock."""
+        from backend.api.helpers.exchange_clock import get_today_gate_sessions
+        assert callable(get_today_gate_sessions)
+
+
+# ---------------------------------------------------------------------------
+# settlement_cutoff_for date-specific override tests
+# ---------------------------------------------------------------------------
+
+class TestSettlementCutoffDateOverride:
+    """settlement_cutoff_for prefers date-specific rows over default rows."""
+
+    def _patch_now(self, hour: int, minute: int):
+        import backend.api.helpers.exchange_clock as ec
+        fixed = datetime(2026, 8, 25, hour, minute, 0, tzinfo=_IST)
+        return patch.object(ec, "_now_ist", return_value=fixed)
+
+    @pytest.mark.asyncio
+    async def test_date_specific_override_wins_over_default(self):
+        """A date-specific row for today overrides the default row's reset_time."""
+        import backend.api.helpers.exchange_clock as ec
+        import time as _time
+
+        today_date = date(2026, 8, 25)
+        # Default row: 08:00 reset
+        default_row = _make_schedule_row(
+            "NON-MCX", ["NSE"],
+            snapshot_reset_time=time(8, 0),
+            date_val=None,
+        )
+        # Date-specific override for today: 09:30 reset
+        override_row = _make_schedule_row(
+            "NON-MCX", ["NSE"],
+            snapshot_reset_time=time(9, 30),
+            date_val=today_date,
+        )
+        ec._CACHE = [default_row, override_row]
+        ec._cache_loaded_at = _time.monotonic()
+
+        with self._patch_now(10, 0):  # after both reset times
+            cutoff = await ec.settlement_cutoff_for("NON-MCX")
+
+        # Should use 09:30 from the date-specific override, not 08:00 from default.
+        assert cutoff.hour == 9, "Date-specific override should win (09:30)"
+        assert cutoff.minute == 30
+
+    @pytest.mark.asyncio
+    async def test_different_date_override_falls_back_to_default(self):
+        """A date-specific row for a different date is ignored; default row is used."""
+        import backend.api.helpers.exchange_clock as ec
+        import time as _time
+
+        other_date = date(2026, 8, 24)  # yesterday
+        default_row = _make_schedule_row(
+            "NON-MCX", ["NSE"],
+            snapshot_reset_time=time(8, 0),
+            date_val=None,
+        )
+        other_override = _make_schedule_row(
+            "NON-MCX", ["NSE"],
+            snapshot_reset_time=time(9, 30),
+            date_val=other_date,
+        )
+        ec._CACHE = [default_row, other_override]
+        ec._cache_loaded_at = _time.monotonic()
+
+        with self._patch_now(10, 0):  # today is 2026-08-25
+            cutoff = await ec.settlement_cutoff_for("NON-MCX")
+
+        # Yesterday's override must not apply; default 08:00 is used.
+        assert cutoff.hour == 8, "Non-matching date override should not apply"
+        assert cutoff.minute == 0
+
+
+# ---------------------------------------------------------------------------
+# 7-day lower-bound tests for positions / holdings queries
+# ---------------------------------------------------------------------------
+
+class TestDailyBookLowerBound:
+    """Verify 7-day lower_cutoff is present in daily_book query functions."""
+
+    def test_positions_override_has_lower_cutoff(self):
+        """_override_stale_close_from_snapshot must include lower_cutoff (7-day bound)."""
+        import inspect
+        import backend.api.routes.positions as pos
+        src = inspect.getsource(pos._override_stale_close_from_snapshot)
+        assert "lower_cutoff" in src, (
+            "_override_stale_close_from_snapshot must use lower_cutoff to bound "
+            "daily_book query to 7 days"
+        )
+
+    def test_holdings_override_has_lower_cutoff(self):
+        """_override_stale_close_for_holdings must include lower_cutoff (7-day bound)."""
+        import inspect
+        import backend.api.routes.holdings as hld
+        src = inspect.getsource(hld._override_stale_close_for_holdings)
+        assert "lower_cutoff" in src, (
+            "_override_stale_close_for_holdings must use lower_cutoff to bound "
+            "daily_book query to 7 days"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Bug Fix 3: snap_ltp guard in positions overlay

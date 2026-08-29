@@ -1,15 +1,17 @@
 """
 Test holdings snapshot day_change_val priority in _build_holding_row_from_snapshot.
 
-Priority (fixed 2026-08-13, mirrors positions_helpers.py):
-  1. previous_close (frozen prior-session settlement, write-once COALESCE)
-  2. prev_ltp (most-recent batch LTP — fallback when previous_close absent/zero)
-  3. stored day_pnl (final fallback)
+Priority (updated 2026-08-28, Bug 2A fix):
+  1. stored day_pnl (primary — broker-computed EOD value is authoritative when non-zero)
+  2. (ltp - previous_close) * qty (recompute when day_pnl == 0 and previous_close > 0)
+  3. (ltp - prev_ltp) * qty (fallback when previous_close is also absent/zero)
+  4. 0.0 (all references absent)
 
-Background: prev_ltp converges toward the current LTP during a session, so
-using it as the primary reference makes day_change ≈ 0 the more frequently
-the writer runs.  previous_close is frozen on the first daily UPSERT and never
-overwritten, making it the correct reference price.
+Background: The old priority (previous_close first) was wrong for snapshots because
+`previous_close` in the snapshot row is Kite's BHAV-copy which lags overnight, and the
+`_override_stale_close_for_holdings` DB re-query that fixed it has been removed from the
+snapshot path (Bug 2B). The stored `day_pnl` was computed by the broker at EOD when it
+had live market data — it is more accurate than recomputing from a stale close price.
 
 Column order for 11-element raw_row:
   account, symbol, exchange, qty, avg_cost, ltp, previous_close,
@@ -52,82 +54,93 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
     """Test that _build_holding_row_from_snapshot computes day_change_val correctly."""
 
     # -----------------------------------------------------------------------
-    # Priority 1: previous_close (frozen prior-session settlement)
+    # Priority 1: stored day_pnl (broker EOD, authoritative when non-zero)
     # -----------------------------------------------------------------------
 
-    def test_previous_close_takes_first_priority_over_prev_ltp(self):
-        """(ltp - previous_close) * qty is used when previous_close > 0,
-        even when prev_ltp is also present.
+    def test_stored_day_pnl_takes_first_priority_over_previous_close(self):
+        """Stored day_pnl is used as primary when non-zero, even when previous_close > 0.
 
-        ltp=1650, previous_close=1620, prev_ltp=1648, qty=10
-        -> day_change_val = (1650 - 1620) * 10 = 300  (NOT 1650-1648=20)
+        ltp=1650, previous_close=1620, prev_ltp=1648, qty=10, day_pnl=100
+        -> day_change_val = 100 (stored EOD, NOT (1650-1620)*10 = 300)
         """
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1648, qty=10)
+        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1648, qty=10, day_pnl="100.00")
         row, inv_val, cur_val, total_pnl_f, day_change_f = _build_holding_row_from_snapshot(raw_row)
 
-        assert row.day_change_val == pytest.approx(300.0, rel=1e-5), (
-            f"day_change_val={row.day_change_val} must be (ltp-previous_close)*qty = "
-            f"(1650-1620)*10 = 300.0; prev_ltp must NOT take priority"
+        assert row.day_change_val == pytest.approx(100.0, rel=1e-5), (
+            f"day_change_val={row.day_change_val} must be stored day_pnl=100 "
+            f"(broker EOD value is authoritative when non-zero)"
         )
 
-    def test_previous_close_beats_stored_day_pnl(self):
-        """previous_close computation overrides stale stored day_pnl from DB."""
+    def test_stored_day_pnl_takes_priority_over_recompute(self):
+        """When day_pnl is non-zero, it is used directly — not recomputed."""
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        # Stored day_pnl=999, but correct value = (1650-1620)*10 = 300
+        # Stored day_pnl=999 is authoritative; (ltp-previous_close)*qty = 300 is ignored
         raw_row = _make_row(
             ltp=1650, previous_close=1620, prev_ltp=None, qty=10, day_pnl="999.00"
         )
         row, *_ = _build_holding_row_from_snapshot(raw_row)
 
-        assert row.day_change_val == pytest.approx(300.0, rel=1e-5), (
-            "previous_close path: (1650-1620)*10=300 must override stored day_pnl=999"
+        assert row.day_change_val == pytest.approx(999.0, rel=1e-5), (
+            "Stored day_pnl=999 is the primary value; (1650-1620)*10=300 must be ignored"
         )
 
-    def test_day_change_val_not_near_zero_when_prev_ltp_close_to_ltp(self):
-        """Regression: frequent writer makes prev_ltp ≈ ltp; must use previous_close.
-
-        ltp=1650, prev_ltp=1649.5 (writer ran 5s ago), previous_close=1620, qty=10
-        -> day_change_val must be ~300, NOT ~5 (the prev_ltp-based value).
-        """
+    def test_day_pnl_used_even_when_prev_ltp_close_to_ltp(self):
+        """When day_pnl is non-zero, it is used regardless of prev_ltp proximity to ltp."""
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1649.5, qty=10)
+        # day_pnl=100 is authoritative even though (1650-1620)*10=300 is also computable
+        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1649.5, qty=10, day_pnl="100.00")
         row, *_ = _build_holding_row_from_snapshot(raw_row)
 
-        assert row.day_change_val == pytest.approx(300.0, rel=1e-5), (
-            "When prev_ltp ≈ ltp, using prev_ltp gives near-zero day_change; "
-            "must use previous_close instead"
+        assert row.day_change_val == pytest.approx(100.0, rel=1e-5), (
+            "day_pnl=100 (non-zero) must be used as primary day_change_val"
         )
 
     # -----------------------------------------------------------------------
-    # Priority 2: prev_ltp fallback when previous_close is absent or zero
+    # Priority 2: (ltp - previous_close) * qty when day_pnl == 0
     # -----------------------------------------------------------------------
 
-    def test_prev_ltp_used_when_previous_close_none(self):
-        """When previous_close is None, fall back to (ltp - prev_ltp) * qty."""
+    def test_previous_close_used_when_day_pnl_is_zero(self):
+        """When day_pnl == 0 and previous_close > 0, recompute from prices."""
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        # previous_close=None -> use prev_ltp: (1650-1630)*10 = 200
-        raw_row = _make_row(ltp=1650, previous_close=None, prev_ltp=1630, qty=10, day_pnl="100.00")
+        # day_pnl=0 -> fall back to (ltp-previous_close)*qty = (1650-1620)*10 = 300
+        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1648, qty=10, day_pnl="0.00")
         row, *_ = _build_holding_row_from_snapshot(raw_row)
 
-        assert row.day_change_val == pytest.approx(200.0, rel=1e-5), (
-            "previous_close=None -> fallback to (ltp-prev_ltp)*qty = (1650-1630)*10 = 200"
+        assert row.day_change_val == pytest.approx(300.0, rel=1e-5), (
+            "day_pnl=0 -> fallback to (ltp-previous_close)*qty = (1650-1620)*10 = 300"
         )
 
-    def test_prev_ltp_used_when_previous_close_zero(self):
-        """When previous_close == 0, fall back to (ltp - prev_ltp) * qty."""
+    # -----------------------------------------------------------------------
+    # Priority 3: prev_ltp fallback when day_pnl == 0 and previous_close absent
+    # -----------------------------------------------------------------------
+
+    def test_prev_ltp_used_when_day_pnl_zero_and_previous_close_none(self):
+        """When day_pnl==0 and previous_close is None, fall back to (ltp - prev_ltp) * qty."""
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        # previous_close=0 -> use prev_ltp: (1650-1630)*10 = 200
-        raw_row = _make_row(ltp=1650, previous_close=0, prev_ltp=1630, qty=10, day_pnl="100.00")
+        # day_pnl=0, previous_close=None -> use prev_ltp: (1650-1630)*10 = 200
+        raw_row = _make_row(ltp=1650, previous_close=None, prev_ltp=1630, qty=10, day_pnl="0.00")
         row, *_ = _build_holding_row_from_snapshot(raw_row)
 
         assert row.day_change_val == pytest.approx(200.0, rel=1e-5), (
-            "previous_close=0 treated as absent -> fallback to (ltp-prev_ltp)*qty = 200"
+            "day_pnl=0, previous_close=None -> fallback to (ltp-prev_ltp)*qty = (1650-1630)*10 = 200"
+        )
+
+    def test_prev_ltp_used_when_day_pnl_zero_and_previous_close_zero(self):
+        """When day_pnl==0 and previous_close == 0, fall back to (ltp - prev_ltp) * qty."""
+        from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+        # day_pnl=0, previous_close=0 -> use prev_ltp: (1650-1630)*10 = 200
+        raw_row = _make_row(ltp=1650, previous_close=0, prev_ltp=1630, qty=10, day_pnl="0.00")
+        row, *_ = _build_holding_row_from_snapshot(raw_row)
+
+        assert row.day_change_val == pytest.approx(200.0, rel=1e-5), (
+            "day_pnl=0, previous_close=0 -> fallback to (ltp-prev_ltp)*qty = 200"
         )
 
     # -----------------------------------------------------------------------
@@ -189,24 +202,29 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
         )
 
     def test_multiple_holdings_each_recomputed_independently(self):
-        """Each row is independently recomputed from its own previous_close."""
+        """Each row is independently computed (new priority: stored day_pnl primary).
+
+        When day_pnl == 0 for both rows, each falls back to (ltp - previous_close) * qty
+        computed independently from its own reference prices.
+        """
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
+        # day_pnl=0 forces fallback to (ltp - previous_close) * qty
         row1_raw = _make_row(
             ltp=1650, previous_close=1600, prev_ltp=1649,
-            qty=10, avg_cost="1600.00", symbol="HDFCBANK",
+            qty=10, avg_cost="1600.00", symbol="HDFCBANK", day_pnl="0.00",
         )
         row2_raw = _make_row(
             ltp=2600, previous_close=2550, prev_ltp=2599,
-            qty=5, avg_cost="2500.00", symbol="INFY",
+            qty=5, avg_cost="2500.00", symbol="INFY", day_pnl="0.00",
         )
 
         row1, *_ = _build_holding_row_from_snapshot(row1_raw)
         row2, *_ = _build_holding_row_from_snapshot(row2_raw)
 
-        # HDFCBANK: (1650 - 1600) * 10 = 500
+        # HDFCBANK: day_pnl=0, fallback -> (1650 - 1600) * 10 = 500
         assert row1.day_change_val == pytest.approx(500.0, rel=1e-5)
-        # INFY: (2600 - 2550) * 5 = 250
+        # INFY: day_pnl=0, fallback -> (2600 - 2550) * 5 = 250
         assert row2.day_change_val == pytest.approx(250.0, rel=1e-5)
 
     def test_zero_qty_produces_zero_day_pnl(self):

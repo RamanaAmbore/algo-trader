@@ -2,7 +2,12 @@
 Tests for holdings.py and positions.py snapshot-path fixes.
 
 Covers:
-  Fix 5 — _holdings_snapshot snapshot path calls _override_stale_close_for_holdings
+  Fix 5 (updated 2026-08-28) — _holdings_snapshot must NOT call
+           _override_stale_close_for_holdings. The override was removed from the
+           snapshot path because: (a) the snapshot already has the correct settlement
+           LTP in daily_book.ltp; (b) calling the override would produce
+           (ltp - ltp) × qty = 0 day_change_val since both cutoffs resolve to today
+           08:00. The override remains active only on the live broker path.
   Fix 6 — _override_stale_close_for_holdings always sets close_price=ref_close
            (epsilon guard removed)
   Fix 7 — _overlay_snapshot_for_closed_exchanges patches day_change_val,
@@ -10,10 +15,10 @@ Covers:
 
 Five quality dimensions per fix:
   1. SSOT     — canonical function is called; no inline re-implementation
-  2. Perf     — no redundant DB queries for open-exchange rows
-  3. Stale    — epsilon guard removed (Fix 6); snapshot path patched (Fix 5)
-  4. Reuse    — shared helper called from both broker and snapshot paths
-  5. UX       — patched values are mathematically correct
+  2. Perf     — no redundant DB queries on the snapshot path
+  3. Stale    — epsilon guard removed (Fix 6); snapshot path no longer double-queries
+  4. Reuse    — override helper kept for live broker path; snapshot uses stored values
+  5. UX       — day_change_val on snapshot path uses broker-computed EOD value
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ from datetime import datetime, timezone
 
 
 # ---------------------------------------------------------------------------
-# Fix 5 — snapshot path calls _override_stale_close_for_holdings
+# Fix 5 (updated 2026-08-28) — snapshot path must NOT call override
 # ---------------------------------------------------------------------------
 
 def _make_raw_row(
@@ -48,18 +53,22 @@ def _make_raw_row(
 
 
 @pytest.mark.asyncio
-async def test_holdings_snapshot_calls_override_stale_close():
-    """_holdings_snapshot must call _override_stale_close_for_holdings on the
-    snapshot path so previous_close and close_price reflect the real settlement LTP."""
+async def test_holdings_snapshot_does_not_call_override_stale_close():
+    """_holdings_snapshot must NOT call _override_stale_close_for_holdings.
+
+    The override was removed from the snapshot path (Bug 2B fix). Calling it would
+    produce (ltp - ltp) × qty = 0 day_change_val because both the snapshot cutoff
+    and the override cutoff resolve to today 08:00. The stored day_pnl is the
+    correct EOD value and is used directly via _build_holding_row_from_snapshot.
+    """
     from backend.api.routes import holdings as _hol_mod
 
     raw_rows = [_make_raw_row()]
-
-    override_called_with: list = []
+    override_called = False
 
     async def _fake_override(raw_df: pd.DataFrame) -> None:
-        override_called_with.append(raw_df.copy())
-        # No-op: we just verify it was called with a non-empty DataFrame.
+        nonlocal override_called
+        override_called = True
 
     with patch.object(_hol_mod, "_query_holdings_snapshot_rows",
                       new=AsyncMock(return_value=raw_rows)), \
@@ -68,75 +77,50 @@ async def test_holdings_snapshot_calls_override_stale_close():
         result = await _hol_mod._holdings_snapshot()
 
     assert result is not None, "_holdings_snapshot must return a response when rows exist"
-    assert len(override_called_with) == 1, (
-        "_override_stale_close_for_holdings was not called on the snapshot path"
+    assert not override_called, (
+        "_override_stale_close_for_holdings must NOT be called from the snapshot path "
+        "(Bug 2B fix): the stored day_pnl is authoritative; calling override would zero it out"
     )
-    df = override_called_with[0]
-    assert not df.empty, (
-        "_override_stale_close_for_holdings must receive a non-empty DataFrame"
-    )
-    assert "account" in df.columns
-    assert "tradingsymbol" in df.columns
 
 
 @pytest.mark.asyncio
-async def test_holdings_snapshot_empty_rows_skips_override():
-    """When no rows are returned, _override_stale_close_for_holdings is not called
-    and _holdings_snapshot returns None."""
+async def test_holdings_snapshot_empty_rows_returns_none():
+    """When no rows are returned, _holdings_snapshot returns None."""
     from backend.api.routes import holdings as _hol_mod
 
-    override_called = False
-
-    async def _fake_override(raw_df: pd.DataFrame) -> None:
-        nonlocal override_called
-        override_called = True
-
     with patch.object(_hol_mod, "_query_holdings_snapshot_rows",
-                      new=AsyncMock(return_value=[])), \
-         patch.object(_hol_mod, "_override_stale_close_for_holdings",
-                      new=_fake_override):
+                      new=AsyncMock(return_value=[])):
         result = await _hol_mod._holdings_snapshot()
 
     assert result is None
-    assert not override_called, (
-        "_override_stale_close_for_holdings must not be called when there are no rows"
-    )
 
 
 @pytest.mark.asyncio
-async def test_holdings_snapshot_override_patches_rows():
-    """_holdings_snapshot must propagate the patched previous_close + day_change_val
-    from _override_stale_close_for_holdings into the returned HoldingRow structs."""
+async def test_holdings_snapshot_uses_stored_day_pnl_directly():
+    """_holdings_snapshot must use the stored day_pnl as day_change_val (primary).
+
+    The snapshot row has day_pnl=500 (broker EOD). Under the new priority (Bug 2A),
+    this is used directly as day_change_val without recomputing from prices.
+    """
     from backend.api.routes import holdings as _hol_mod
 
-    raw_rows = [_make_raw_row(ltp=2100.0, previous_close=2050.0)]
-    patched_prev_close = 2040.0  # DB says 2040, not 2050 (BHAV was stale)
-
-    async def _fake_override(raw_df: pd.DataFrame) -> None:
-        # Simulate the override patching previous_close and day_change_val.
-        raw_df['previous_close'] = patched_prev_close
-        # day_change_val = (ltp - prev_close) * qty = (2100 - 2040) * 10 = 600
-        raw_df['day_change_val'] = (raw_df['last_price'] - patched_prev_close) * raw_df['quantity']
-        raw_df['close_price'] = patched_prev_close
+    # day_pnl=500 should be used directly as day_change_val
+    raw_rows = [_make_raw_row(ltp=2100.0, previous_close=2050.0, day_pnl=500.0)]
 
     with patch.object(_hol_mod, "_query_holdings_snapshot_rows",
-                      new=AsyncMock(return_value=raw_rows)), \
-         patch.object(_hol_mod, "_override_stale_close_for_holdings",
-                      new=_fake_override):
+                      new=AsyncMock(return_value=raw_rows)):
         result = await _hol_mod._holdings_snapshot()
 
     assert result is not None
     assert result.rows, "Response must contain at least one row"
     row = result.rows[0]
-    assert row.previous_close == patched_prev_close, (
-        f"previous_close should be {patched_prev_close} after override, got {row.previous_close}"
+    # Stored day_pnl=500 is authoritative; (2100-2050)*10=500 would coincide here
+    assert abs(row.day_change_val - 500.0) < 0.01, (
+        f"day_change_val should be stored day_pnl=500, got {row.day_change_val}"
     )
-    assert row.close_price == patched_prev_close, (
-        f"close_price should be {patched_prev_close} after override, got {row.close_price}"
-    )
-    expected_dcv = (2100.0 - patched_prev_close) * 10  # 600.0
-    assert abs(row.day_change_val - expected_dcv) < 0.01, (
-        f"day_change_val should be {expected_dcv} after override, got {row.day_change_val}"
+    # previous_close from snapshot row is preserved as-is (no DB re-query)
+    assert row.previous_close == 2050.0, (
+        f"previous_close should be the stored value 2050.0, got {row.previous_close}"
     )
 
 

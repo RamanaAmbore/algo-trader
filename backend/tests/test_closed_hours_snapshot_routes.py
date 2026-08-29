@@ -975,15 +975,17 @@ async def test_holdings_snapshot_pnl_percentage_populated():
     assert abs(row.pnl_percentage - (1000.0 / 28000.0 * 100.0)) < 0.01, (
         f"pnl_percentage expected {1000.0/28000.0*100:.4f}, got {row.pnl_percentage}"
     )
-    # day_change_val recomputed from (ltp - previous_close) * qty:
-    # (2900 - 2800) * 10 = 1000 (not stored day_pnl=100 — recomputed from price move)
-    # day_change_percentage = 1000 / (2800 * 10) * 100 ≈ 3.571%
-    expected_dcv = (2900.0 - 2800.0) * 10  # 1000.0
-    expected_pct = expected_dcv / (2800.0 * 10) * 100  # ~3.571%
+    # day_change_val: stored day_pnl=100 is the primary value (Bug 2A fix).
+    # The stored broker-computed EOD day_pnl takes priority over recomputing
+    # from (ltp - previous_close) * qty. Only when day_pnl==0 is the price
+    # formula used as fallback.
+    # day_change_percentage = 100 / (2800 * 10) * 100 ≈ 0.3571%
+    expected_dcv = 100.0   # stored day_pnl (primary per Bug 2A)
+    expected_pct = expected_dcv / (2800.0 * 10) * 100  # ~0.3571%
     assert row.day_change_percentage is not None
     assert abs(row.day_change_percentage - expected_pct) < 0.01, (
         f"day_change_percentage expected {expected_pct:.4f}, got {row.day_change_percentage}. "
-        f"day_change_val recomputed as (ltp-prev_close)*qty={expected_dcv}"
+        f"day_change_val uses stored day_pnl={expected_dcv} (Bug 2A: day_pnl is primary)"
     )
     # last_price_stale must be True for a snapshot (it's not live broker data)
     assert row.last_price_stale is True, "snapshot rows must have last_price_stale=True"

@@ -1517,17 +1517,55 @@ def _build_holdings_pnl_expr(
     )
 
 
-def _build_holdings_curval_exprs(lf: "pl.DataFrame") -> list["pl.Expr"]:
+def _build_holdings_curval_exprs(
+    lf: "pl.DataFrame",
+    has_qty: bool = True,
+    cols: "set | None" = None,
+) -> list["pl.Expr"]:
     """Polars expressions for cur_val and pnl_percentage.
     Requires `pnl` to already exist as a materialised column in `lf`
     (i.e. from a prior with_columns pass). Do NOT call this in the same
     with_columns pass that computes `pnl` — sibling aliases are invisible
     to each other within a single pass.
+
+    cur_val = ltp × qty when ltp > 0, otherwise inv_val (fallback).
+    Using inv_val + pnl was wrong: when Kite sends last_price=0 during
+    the pre-market / rate-limit cooloff window, pnl=0 too, so
+    cur_val = inv_val + 0 = inv_val — showing invested value as current
+    value in the NavStrip H slot.
+
+    When `quantity` is absent but `opening_quantity` is present, use the
+    latter. When neither qty column is available (broker frame has neither),
+    fall back to inv_val + pnl (old formula) to avoid a ColumnNotFoundError.
     """
     _pnl_expr = pl.col("pnl")
     _inv_expr = _col_f64(lf, "inv_val")
+    _ltp_expr = _col_f64(lf, "last_price")
+
+    # Resolve qty column — prefer `quantity` (remaining shares), fall back
+    # to `opening_quantity`, then to None (no qty column present).
+    _all_cols = cols if cols is not None else set(lf.columns)
+    _qty_col = (
+        "quantity"         if has_qty and "quantity"         in _all_cols else
+        "opening_quantity" if "opening_quantity"              in _all_cols else
+        None
+    )
+
+    if _qty_col is not None:
+        _qty_expr = _col_f64(lf, _qty_col)
+        _cur_val_expr = (
+            pl.when(_ltp_expr > 0)
+            .then(_ltp_expr * _qty_expr)
+            .otherwise(_inv_expr)
+            .alias("cur_val")
+        )
+    else:
+        # No qty column available — fall back to inv_val + pnl so the
+        # function does not crash with ColumnNotFoundError.
+        _cur_val_expr = (_inv_expr + _pnl_expr).alias("cur_val")
+
     return [
-        (_inv_expr + _pnl_expr).alias("cur_val"),
+        _cur_val_expr,
         pl.when(_inv_expr != 0.0)
         .then(_pnl_expr / _inv_expr * 100.0)
         .otherwise(pl.lit(0.0))
@@ -1627,7 +1665,7 @@ def _build_holdings_computed_exprs(
     if has_pnl and has_invval:
         # pnl was materialised in pass 1 (_enrich_holdings) before this
         # function is called; it is a real column in lf, not a sibling alias.
-        exprs.extend(_build_holdings_curval_exprs(lf))
+        exprs.extend(_build_holdings_curval_exprs(lf, has_qty=has_qty, cols=cols))
 
     if has_close and has_avg:
         exprs.append(

@@ -216,7 +216,24 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     _today_ist_midnight = _now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     from datetime import timedelta
     _today_ist_8am = _today_ist_midnight + timedelta(hours=8)
+    # prev_batch_cutoff: used by prev_batch CTE to exclude same-session rows.
+    # 08:00 IST boundary is correct here — it prevents today's intraday rows
+    # from appearing in the "prior session" reference batch.
     _prev_batch_cutoff = _today_ist_8am if _now_ist >= _today_ist_8am else _today_ist_8am - timedelta(days=1)
+    # snapshot_cutoff: used by latest_batch CTE to select the most-recent EOD
+    # snapshot.  Weekday-aware so Friday's 15:45 EOD snapshot is included when
+    # the query runs on a Friday afternoon (old today-08:00 cutoff would exclude
+    # it because 15:45 > 08:00, causing Thursday's data to be served instead).
+    #   Mon–Fri : tomorrow midnight — includes any EOD snapshot written today
+    #   Saturday: today midnight   — excludes any Sat market-special-session
+    #   Sunday  : Saturday 00:00   — same intent as Saturday path
+    _weekday = _now_ist.weekday()  # Mon=0 … Sun=6
+    if _weekday == 5:   # Saturday
+        _snapshot_cutoff = _today_ist_midnight
+    elif _weekday == 6:  # Sunday
+        _snapshot_cutoff = _today_ist_midnight - timedelta(days=1)
+    else:               # Mon–Fri
+        _snapshot_cutoff = _today_ist_midnight + timedelta(days=1)
 
     try:
         async with async_session() as session:
@@ -236,7 +253,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                     SELECT account, MAX(captured_at) AS max_at
                     FROM daily_book
                     WHERE kind = 'positions' AND ltp IS NOT NULL
-                      AND captured_at < :prev_batch_cutoff
+                      AND captured_at < :snapshot_cutoff
                     GROUP BY account
                 ),
                 prev_batch AS (
@@ -269,7 +286,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                   AND (db.ltp IS NULL OR NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
                            AND db.avg_cost IS NOT NULL AND db.avg_cost > 0))
                 ORDER BY db.account, db.symbol
-            """).bindparams(today_ist=_today_ist, prev_batch_cutoff=_prev_batch_cutoff))
+            """).bindparams(today_ist=_today_ist, prev_batch_cutoff=_prev_batch_cutoff, snapshot_cutoff=_snapshot_cutoff))
             raw_rows = result.all()
     except Exception as exc:
         logger.warning(f"positions snapshot query failed: {exc}")

@@ -395,3 +395,155 @@ class TestHoldingsOverrideStaleCloseDBFailurePath:
             f"day_change_val should be recomputed to {expected_dcv}, "
             f"got {df.iloc[0]['day_change_val']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# New tests for Bug 1 + Bug 2 + Bug 3 fixes
+# ---------------------------------------------------------------------------
+
+class TestBuildHoldingRowFromSnapshot:
+    """Unit tests for _build_holding_row_from_snapshot priority logic."""
+
+    def _make_raw_row(
+        self,
+        account="ACC1",
+        symbol="RELIANCE",
+        exchange="NSE",
+        qty=100,
+        avg_cost=2000.0,
+        ltp=2100.0,
+        previous_close=2050.0,
+        day_pnl=5000.0,
+        total_pnl=10000.0,
+        captured_at=None,
+        prev_ltp=None,
+    ):
+        from datetime import datetime
+        return (
+            account, symbol, exchange, qty, avg_cost, ltp, previous_close,
+            day_pnl, total_pnl,
+            captured_at or datetime(2026, 8, 22, 15, 45, 0),
+            prev_ltp,
+        )
+
+    def test_stored_day_pnl_used_as_primary_when_nonzero(self):
+        """When day_pnl_f != 0, it is used as day_change_val (not recomputed)."""
+        from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+        raw_row = self._make_raw_row(
+            ltp=2100.0,
+            previous_close=2050.0,
+            day_pnl=9999.0,   # Stored non-zero EOD value
+            qty=100,
+        )
+        row, _, _, _, day_change_val = _build_holding_row_from_snapshot(raw_row)
+        assert day_change_val == 9999.0, (
+            f"Stored day_pnl_f=9999.0 should be used directly; got {day_change_val}"
+        )
+        assert row.day_change_val == 9999.0
+
+    def test_fallback_to_ltp_minus_close_when_day_pnl_zero(self):
+        """When day_pnl_f == 0, recompute from (ltp - previous_close) × qty."""
+        from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+        raw_row = self._make_raw_row(
+            ltp=2100.0,
+            previous_close=2050.0,
+            day_pnl=0.0,   # Zero — must fall back to price formula
+            qty=50,
+        )
+        row, _, _, _, day_change_val = _build_holding_row_from_snapshot(raw_row)
+        expected = (2100.0 - 2050.0) * 50  # = 2500.0
+        assert abs(day_change_val - expected) < 0.01, (
+            f"Expected (ltp-prev_close)*qty = {expected}; got {day_change_val}"
+        )
+
+    def test_fallback_to_prev_ltp_when_no_previous_close(self):
+        """When day_pnl_f == 0 and previous_close == 0, use prev_ltp."""
+        from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+        raw_row = self._make_raw_row(
+            ltp=2100.0,
+            previous_close=0.0,   # Missing
+            day_pnl=0.0,
+            qty=10,
+            prev_ltp=2080.0,
+        )
+        row, _, _, _, day_change_val = _build_holding_row_from_snapshot(raw_row)
+        expected = (2100.0 - 2080.0) * 10  # = 200.0
+        assert abs(day_change_val - expected) < 0.01, (
+            f"Expected (ltp-prev_ltp)*qty = {expected}; got {day_change_val}"
+        )
+
+    def test_zero_when_all_references_missing(self):
+        """When day_pnl_f == 0, previous_close == 0, prev_ltp is None → 0.0."""
+        from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+        raw_row = self._make_raw_row(
+            ltp=2100.0,
+            previous_close=0.0,
+            day_pnl=0.0,
+            qty=10,
+            prev_ltp=None,
+        )
+        _, _, _, _, day_change_val = _build_holding_row_from_snapshot(raw_row)
+        assert day_change_val == 0.0, (
+            f"Expected 0.0 when no references available; got {day_change_val}"
+        )
+
+
+class TestSnapshotCutoffWeekdayFormula:
+    """Unit tests for the weekday-aware snapshot_cutoff formula (Bug 3)."""
+
+    def _compute_cutoff(self, weekday: int, today_midnight):
+        """Replicate the formula from _query_holdings_snapshot_rows."""
+        from datetime import timedelta
+        if weekday == 5:   # Saturday
+            return today_midnight
+        elif weekday == 6:  # Sunday
+            return today_midnight - timedelta(days=1)
+        else:              # Mon–Fri
+            return today_midnight + timedelta(days=1)
+
+    def test_saturday_gives_today_midnight(self):
+        """Saturday: cutoff = today midnight (excludes any Sat snapshot)."""
+        from datetime import datetime
+        today = datetime(2026, 8, 29, 10, 0, 0)  # Saturday
+        midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
+        assert today.weekday() == 5, "Sanity: 2026-08-29 must be Saturday"
+        result = self._compute_cutoff(today.weekday(), midnight)
+        assert result == midnight, f"Saturday cutoff should be today midnight; got {result}"
+
+    def test_sunday_gives_saturday_midnight(self):
+        """Sunday: cutoff = Saturday 00:00 (yesterday midnight)."""
+        from datetime import datetime, timedelta
+        today = datetime(2026, 8, 30, 10, 0, 0)  # Sunday
+        midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
+        assert today.weekday() == 6, "Sanity: 2026-08-30 must be Sunday"
+        result = self._compute_cutoff(today.weekday(), midnight)
+        expected = midnight - timedelta(days=1)  # Saturday 00:00
+        assert result == expected, f"Sunday cutoff should be Saturday midnight; got {result}"
+
+    def test_monday_gives_tomorrow_midnight(self):
+        """Monday: cutoff = Tuesday 00:00 (includes Monday EOD snapshot)."""
+        from datetime import datetime, timedelta
+        today = datetime(2026, 8, 31, 10, 0, 0)  # Monday
+        midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
+        assert today.weekday() == 0, "Sanity: 2026-08-31 must be Monday"
+        result = self._compute_cutoff(today.weekday(), midnight)
+        expected = midnight + timedelta(days=1)  # Tuesday 00:00
+        assert result == expected, f"Monday cutoff should be tomorrow midnight; got {result}"
+
+    def test_friday_gives_tomorrow_midnight(self):
+        """Friday afternoon: cutoff = Saturday 00:00 (includes Friday 15:45 EOD)."""
+        from datetime import datetime, timedelta
+        today = datetime(2026, 8, 28, 16, 0, 0)  # Friday afternoon
+        midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
+        assert today.weekday() == 4, "Sanity: 2026-08-28 must be Friday"
+        result = self._compute_cutoff(today.weekday(), midnight)
+        expected = midnight + timedelta(days=1)  # Saturday 00:00
+        # Friday 15:45 < Saturday 00:00 → EOD snapshot IS included
+        from datetime import datetime as _dt
+        eod_snapshot = _dt(2026, 8, 28, 15, 45, 0)
+        assert eod_snapshot < result, "Friday 15:45 EOD snapshot must be < cutoff"
+        assert result == expected, f"Friday cutoff should be Saturday midnight; got {result}"

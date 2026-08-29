@@ -314,7 +314,10 @@ class TestEnrichHoldingsTwoPassKitePath:
     """P2-B (Kite path): two-pass fix must not break frames that already have a pnl column."""
 
     def test_kite_pnl_column_trusted(self):
-        """Kite ships pnl; broker value must be preferred over formula when not-null."""
+        """Kite ships pnl; broker value must be preferred over formula when not-null.
+        cur_val is computed as ltp × qty (not inv_val + broker_pnl) — using actual
+        market value avoids inflating cur_val when broker pnl includes realised adjustments.
+        """
         broker_pnl = 750.0  # not equal to (210-200)*50 = 500 — proves broker value is used
         df = pd.DataFrame(
             [
@@ -333,10 +336,12 @@ class TestEnrichHoldingsTwoPassKitePath:
         assert result["pnl"].iloc[0] == pytest.approx(broker_pnl), (
             f"Broker pnl should be trusted; expected {broker_pnl}, got {result['pnl'].iloc[0]}"
         )
-        # cur_val = inv_val + pnl; inv_val = avg*qty = 200*50 = 10000
+        # cur_val = ltp × qty = 210 × 50 = 10500 (not inv_val + broker_pnl).
+        # Using ltp × qty avoids inflating cur_val when broker pnl includes
+        # realised gains that exceed the simple (ltp-avg)*qty formula.
         assert "cur_val" in result.columns
-        assert result["cur_val"].iloc[0] == pytest.approx(200.0 * 50 + broker_pnl), (
-            f"cur_val = inv_val + broker_pnl; got {result['cur_val'].iloc[0]}"
+        assert result["cur_val"].iloc[0] == pytest.approx(210.0 * 50), (
+            f"cur_val = ltp × qty = {210.0 * 50}; got {result['cur_val'].iloc[0]}"
         )
 
     def test_dhan_vs_kite_cur_val_both_positive(self):

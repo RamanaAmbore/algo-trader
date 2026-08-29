@@ -82,7 +82,7 @@ class TestLTPOverrideRecomputesPnlAndCurval:
         assert df.iloc[0]["pnl"] == pytest.approx(5000.0), \
             f"expected pnl=5000 but got {df.iloc[0]['pnl']}"
 
-        # Assert: cur_val was recomputed.
+        # Assert: cur_val was recomputed as ltp × qty = 150 × 100 = 15000.
         assert df.iloc[0]["cur_val"] == pytest.approx(15000.0), \
             f"expected cur_val=15000 but got {df.iloc[0]['cur_val']}"
 
@@ -160,10 +160,14 @@ class TestEnrichHoldingsComputedPnlWhenBrokerSendsZero:
             f"expected cur_val=15000 but got {result.iloc[0]['cur_val']}"
 
     def test_enrich_holdings_trusts_broker_pnl_when_nonzero(self):
-        """Regression guard: when broker sends non-zero pnl, use it.
+        """Regression guard: when broker sends non-zero pnl, trust it for pnl.
+        cur_val is computed as ltp × qty (not inv_val + broker_pnl) — the
+        ltp × qty formula avoids inflating cur_val when the broker's pnl includes
+        realised adjustments that exceed the simple (ltp-avg)*qty formula.
 
-        Scenario: broker_pnl = 8000 (trusted). Formula would give 5000,
-        but we use broker's 8000 instead.
+        Scenario: broker_pnl = 8000 (trusted for pnl). ltp=150, qty=100.
+          pnl    = 8000 (broker, trusted)
+          cur_val = ltp × qty = 150 × 100 = 15000  (correct market value)
         """
         df = pd.DataFrame({
             "last_price": [150.0],
@@ -180,9 +184,10 @@ class TestEnrichHoldingsComputedPnlWhenBrokerSendsZero:
         assert result.iloc[0]["pnl"] == pytest.approx(8000.0), \
             f"expected pnl=8000 (broker value) but got {result.iloc[0]['pnl']}"
 
-        # Assert: cur_val = inv_val + broker_pnl = 10000 + 8000 = 18000.
-        assert result.iloc[0]["cur_val"] == pytest.approx(18000.0), \
-            f"expected cur_val=18000 but got {result.iloc[0]['cur_val']}"
+        # Assert: cur_val = ltp × qty = 15000 (not inv_val + broker_pnl which
+        # would give 18000 — that inflates the market value display).
+        assert result.iloc[0]["cur_val"] == pytest.approx(15000.0), \
+            f"expected cur_val=15000 (ltp×qty) but got {result.iloc[0]['cur_val']}"
 
     def test_enrich_holdings_trusts_broker_pnl_when_null(self):
         """Regression guard: when broker sends null pnl, compute from formula.
