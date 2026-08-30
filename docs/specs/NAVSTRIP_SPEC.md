@@ -138,7 +138,7 @@ Formula: three slots displaying holding value and profit from three perspectives
 | Slot | Value | Formula |
 |---|---|---|
 | 1 | Today's MTM move | `Σ holdings.day_change_val + live-tick delta`; recomputed live via `(ltp − close) × qty` when available |
-| 2 | Current value | `Σ (ltp × qty)` from symbolStore, fallback to `holdings.cur_val + live-tick delta` |
+| 2 | Current value | Three-tier fallback (commit adc5e1f0): (1) `symbolStore ltp × qty` (SSE tick, most accurate), (2) `h.last_price × qty` (broker's last seen price, avoids invented value when last_price=0), (3) `h.cur_val` (broker computed value) |
 | 3 | Lifetime P&L | `Σ holdings.pnl + live-tick delta` |
 
 #### H:1 Holdings Today MTM — Live Recomputation
@@ -188,16 +188,41 @@ Updated on 5s book-poll cadence (live) or 30min closed-hours interval. Per-row g
 reads from `store.byKey[symbol]` instead of computing independently, ensuring all surfaces show 
 identical values.
 
-**Holdings day P&L closePx fallback chain** (Aug 2026): `previous_close` (from 
-`daily_book`, frozen settlement) → `close_price` (from broker, may be stale overnight) 
-→ `ohlc.close` (from broker quote). When `closePx === 0 OR closePx === avgCost`, 
-fallback to broker snapshot `day_change_val` (no formula applied). Ensures day P&L 
-remains stable during closed hours when broker prices lag.
+**Holdings day P&L closePx guard** (Aug 2026, commit adc5e1f0): Guard is now 
+`closePx <= 0` only. When `closePx > 0`, the store always computes `(liveLtp − closePx) 
+× heldQty`. The earlier `closePx === avgCost` guard was removed — it incorrectly fell back 
+to broker's `day_change_val` even on valid trading days when market price coincidentally 
+equaled cost basis. Now only missing/zero `closePx` triggers fallback to snapshot 
+`day_change_val`. Fallback chain for `closePx`: `previous_close` (from `daily_book`, 
+frozen settlement) → `close_price` (from broker, may be stale overnight) → `ohlc.close` 
+(from broker quote) → `0` (missing). Ensures day P&L remains stable during closed hours.
 
 **setFromPulse paisa-level gate** (Aug 2026): MarketPulse notifies holdings store 
 only when the aggregated day P&L total changes by ₹1 or more (paisa-level precision 
 gate via `_lastPulseTotal`). Prevents jitter from rounding when store refreshes per-row 
 values in rapid succession.
+
+#### H:2 Holdings Current Value — Three-Tier Fallback
+
+The current holding value (slot 2) uses a three-tier fallback chain to prevent the 
+"invented value" bug where `cur_val = average_price × qty` (investment cost, not market 
+value) appears as current value:
+
+**Tier 1** (primary): `symbolStore.getSnapshot(sym).ltp × qty`  
+Live SSE tick price, most accurate. Used when available.
+
+**Tier 2** (fallback): `h.last_price × qty`  
+Broker's last seen price from the holdings snapshot. Prevents the invented-value trap: 
+when Dhan/Groww send `last_price = 0` (missing), the backend sets `cur_val = inv_val = 
+average_price × qty`. Tier 2 computes `0 × qty = 0` (clearly missing), which is 
+preferable to displaying the invented cost-basis value. Only used when `last_price > 0`.
+
+**Tier 3** (final fallback): `h.cur_val`  
+Broker's computed value from snapshot. Used when both Tier 1 and Tier 2 are unavailable 
+(cold-cache, missing symbol, or zero last_price).
+
+Added in commit adc5e1f0. Code path: `frontend/src/lib/PositionStrip.svelte` 
+`_liveHoldingsValue`.
 
 ---
 
@@ -214,7 +239,7 @@ Every value must match a canonical source to stay in sync with other surfaces.
 | C:1 | Broker's live cash (CA) | `fundsStore.load()` → `funds[].live_cash` |
 | C:2 | Option premium tied up in long positions | Derived from `positions[]` CE/PE rows |
 | H:1 | `holdingsDayPnlStore` (module-level singleton, Aug 2026) | `_liveHoldingsToday` ($derived); recomputed live via `(ltp − previous_close) × qty` when `ltp` from SSE or fallback `h.last_price`; post-settlement guard skips formula when price delta < 0.5 paise; realisedToday fallback uses `brokerDcv` not hardcoded 0; exports `total` + `byKey[symbol]`; 5s live / 30min closed cadence |
-| H:2 | MarketPulse Holdings grid TOTAL row, Value column | `pulseHoldingsStore` (shared with MarketPulse); formula: `ltp × qty` from symbolStore, fallback to `h.cur_val` |
+| H:2 | MarketPulse Holdings grid TOTAL row, Value column | `pulseHoldingsStore` (shared with MarketPulse); three-tier fallback (commit adc5e1f0): (1) `symbolStore ltp × qty` (live SSE tick), (2) `h.last_price × qty` (broker's last seen price, prevents invented value when last_price=0), (3) `h.cur_val` (broker computed value) |
 | H:3 | MarketPulse Holdings grid TOTAL row, P&L column | `_liveHoldingsTotal` ($derived); `(ltp − avg_cost) × qty` from symbolStore, fallback to `h.pnl` |
 
 ---
@@ -598,3 +623,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-08-20 | P:1 SSOT architecture update: `positionsDayPnlStore` now exposes `setFromPulse(byKey, total)` method. MarketPulse computes accurate per-row day P&L using live cq REST poll and writes to store. Getters prefer Pulse-written values when available; fall back to SSE-based computation (4Hz throttle) when Pulse is closed. Eliminates dual-store merge pattern; single-source consumer API unchanged (`total` + `byKey`). |
 | 2026-08-21 | H:1 post-settlement guard updated: When `|ltp − close| ≤ 0.005` paise (settlement convergence detected), fallback to broker snapshot `day_change_val` instead of computing `(ltp − close) × qty`. Prevents H slot from showing 0 immediately after NSE/MCX settlement when prices converge and formula would yield spurious result. Guards applied in `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` and `pulseUnified.js:mergeHoldingRows`. Also note: `_brokerHealthWorstState` in `frontend/src/lib/stores.js` now returns 'green' when all accounts are `inactive` (expected post-market state, no quote calls) instead of 'amber', seeding `worstState: 'green'` before first health poll. |
 | 2026-08-25 | v1.3 NavBreakdown TOTAL row SSOT + tick-border underline animation (commit b33d056b): (1) NavBreakdown P-pill breakdown TOTAL row now reads `positionsDayPnlStore.total` directly, ensuring it always matches the P:1 pill value exactly, even when MarketPulse pulse-override is active via `setFromPulse`. Added explicit note in §1 Pill label click-to-breakdown. (2) Tick-border shimmer updated: PositionStrip's border element now receives `cell-freshness-pulse` class on each LTP tick exceeding 0.1% threshold; applies CSS keyframe `freshness-sweep` (sky-300 → indigo-400 gradient, left-to-right, 0.6s) via `createFreshnessShimmer` wired to tickBus SSE ticks. §5 Data Freshness and Staleness updated. |
+| 2026-08-30 | v1.4 Holdings day P&L guard fix + H:2 three-tier fallback (commit adc5e1f0): (1) H:1 closePx guard updated — removed `closePx === avgCost` condition which incorrectly fell back to broker `day_change_val` on valid trading days when price coincidentally equaled cost basis. New guard: `closePx <= 0` only. When `closePx > 0`, formula always computes `(liveLtp − closePx) × heldQty`. (2) H:2 current value added three-tier fallback in `_liveHoldingsValue`: Tier 1 `symbolStore ltp × qty` (SSE tick), Tier 2 `h.last_price × qty` (prevents invented value when broker sends last_price=0), Tier 3 `h.cur_val` (final fallback). Detailed subsection added in §1. |

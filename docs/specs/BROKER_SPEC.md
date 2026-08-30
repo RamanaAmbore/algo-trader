@@ -811,7 +811,10 @@ from the rolling-shift UPSERT, which could drift overnight.
 
 ## 7.3.8 Firm NAV Computation & Closed-Exchange LTP Overlay
 
-**File**: `backend/api/algo/nav.py` — `compute_firm_nav()` + `_fetch_holdings_phase()`
+**File**: `backend/api/algo/nav.py` — `compute_firm_nav()` + `_fetch_holdings_phase()`  
+**File**: `backend/api/helpers/snapshot_gate.py` — `latest_snapshot_ltp_map()`  
+**File**: `backend/api/routes/positions.py` — `_overlay_snapshot_for_closed_exchanges()` + `_process_overlay_row()`  
+**File**: `backend/api/routes/holdings.py` — `_hold_tag_closed_row()`
 
 Firm NAV calculation (v4 formula: `cash_total + positions_mtm + holdings_mtm`) ensures
 that when an exchange closes, both the `/api/holdings` route and the daily NAV snapshot
@@ -829,25 +832,91 @@ broker response.
 3. **NEW (Aug 2026)**: Applies `_overlay_closed_exchange_ltp(df, snap_map)` to each
    holdings DataFrame before summing `cur_val`
 
-### Overlay logic
+### Overlay logic — `latest_snapshot_ltp_map` return type
 
-`_overlay_closed_exchange_ltp()` iterates each row in the holdings DataFrame:
-- If the exchange is **open now**, use broker `cur_val` (live LTP × qty)
-- If the exchange is **closed now**, look up `(account, symbol)` in the snapshot map
-  - If a snapshot LTP exists and is positive, **recalculate** `cur_val = snapshot_ltp × qty`
-  - Otherwise, fall back to broker `cur_val` (may be stale, but fail-open)
+`latest_snapshot_ltp_map(kind)` (commit adc5e1f0) now returns:
 
-This mirrors the same overlay applied in `_overlay_snapshot_for_closed_exchanges()` in
-`backend/api/routes/holdings.py` (the `/api/holdings` route). Both now use the
-identical snapshot LTP when an exchange is closed.
+```python
+dict[tuple[str, str], tuple[float, float | None]]
+# Key: (account, symbol)
+# Value: (ltp, day_pnl)
+#   - ltp: settlement LTP from daily_book
+#   - day_pnl: broker-computed EOD day P&L (nullable — None or 0 = no data)
+```
 
-### Impact
+The return type changed from `dict[tuple[str, str], float]` (LTP only) to include
+a second tuple element carrying the stored `day_pnl`. This fixes the weekend
+zero-delta bug where both `snap_price` and `close_px` came from the same Friday
+settlement snapshot → `(Fri − Fri) × qty = 0`.
 
-**Pre-session divergence eliminated (Aug 2026)**: Before market open, the firm NAV
-calculation and the holdings grid now show the same values, eliminating the ~6L
-(60-lakh) pre-session NAV divergence that occurred when firm NAV used live broker LTPs
-(which had not yet updated to the new session's opening levels) while the holdings route
-used frozen DB snapshots.
+### Closed-exchange day P&L overlay using stored values
+
+**File**: `backend/api/routes/positions.py` — `_process_overlay_row()`
+
+For positions rows on closed exchanges (lines 474–491):
+
+1. Unpack snapshot tuple: `snap_ltp, snap_day_pnl = snap_map.get(key, (None, None))`
+2. **If `snap_day_pnl` is non-zero** → use it directly as the authoritative `day_change_val`:
+   ```python
+   if snap_day_pnl is not None and snap_day_pnl != 0.0:
+       dcv = snap_day_pnl
+   ```
+3. **Otherwise** → fall back to price-recompute path using prior-session close:
+   ```python
+   elif ref_close > 0:
+       dcv = (snap_ltp - ref_close) × qty
+   ```
+
+**File**: `backend/api/routes/holdings.py` — `_hold_tag_closed_row()`
+
+For holdings rows on closed exchanges, the same logic applies: when
+`snap_day_pnl` is authoritative (non-None and non-zero), it replaces the
+broker-computed value with the stored settlement day P&L.
+
+**Impact**: The weekend zero-delta bug is fixed. When NSE and MCX both settle
+on Friday, the snapshot captures Friday settlement `ltp` and `day_pnl`. On
+Saturday-Sunday when the grid reads that snapshot for closed-exchange rows,
+the overlay uses the stored `day_pnl` directly instead of recomputing
+`(Fri_close − Fri_close) × qty = 0`.
+
+### Pre-session divergence eliminated (Aug 2026)
+
+Before market open, the firm NAV calculation and the holdings grid now show
+the same values, eliminating the ~6L (60-lakh) pre-session NAV divergence that
+occurred when firm NAV used live broker LTPs (which had not yet updated to the
+new session's opening levels) while the holdings route used frozen DB snapshots.
+
+### Function: `latest_snapshot_ltp_map(kind)` (Aug 2026 — commit adc5e1f0)
+
+**File**: `backend/api/helpers/snapshot_gate.py`
+
+```python
+async def latest_snapshot_ltp_map(
+    kind: str  # 'positions' or 'holdings'
+) -> dict[tuple[str, str], tuple[float, float | None]]:
+```
+
+**Purpose**: Returns a unified lookup map of (ltp, day_pnl) tuples keyed by
+(account, symbol) for use in closed-exchange overlay logic across holdings,
+positions, and NAV routes.
+
+**Query strategy**: Queries `daily_book` for the most-recent batch per account
+(using `MAX(captured_at)` within each account group). Returns only rows where
+`ltp IS NOT NULL AND ltp > 0`.
+
+**Return format**:
+- **Key**: `(account: str, symbol: str)`
+- **Value**: `(ltp: float, day_pnl: float | None)`
+  - `ltp` — settlement LTP from the snapshot (always positive when row is present)
+  - `day_pnl` — broker-computed end-of-day P&L, or None if unavailable
+
+**Guarantee**: Uses the **identical `latest_batch` CTE** as the per-route snapshot
+readers (`_positions_snapshot`, `_holdings_snapshot`), ensuring the two paths
+(live broker fetch + closed-exchange overlay, vs. snapshot read path) never
+diverge on which daily_book batch is authoritative.
+
+**Fail-open**: Returns `{}` on any database error; callers gracefully omit the
+snapshot-map lookup and fall through to the price-recompute fallback.
 
 ---
 
@@ -2525,3 +2594,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-26 | v1.22 Holdings H slot consistency fix (commit bad82021): Added §7.3.8 Holdings LTP Override & pnl+cur_val Consistency documenting two fixes: (1) `_override_stale_ltp_from_ticker()` now recomputes `pnl` and `cur_val` on patched rows after LTP patch (was leaving them stale, causing NavStrip H slot 2 to show `inv_val` instead of `ltp × qty`); (2) `_build_holdings_pnl_expr()` changes broker pnl trust policy from trusting non-null to trusting non-null AND non-zero (Kite sends `pnl=0.0` pre-market when `last_price=0`, old code trusted that zero → `cur_val = inv_val`, now falls back to computed formula `(ltp-avg)×qty`). At breakeven (`ltp==avg`) both formulas give 0, so no regression. Renumbered subsequent section (7.3.8→7.3.9). |
 | 2026-08-27 | v1.23 Holdings gate NSE-specific + per-exchange P&L overlay + chain polling tuning (commits bb778062, 13f59ac0, d4e75014): Added §7.3.5 Holdings Gate Now NSE-Specific documenting `closed_hours_or_broker(segment_exchanges=["NSE"])` parameter; holdings now enter snapshot mode at NSE close (15:35 IST) instead of MCX close (23:30 IST). Added §7.3.7 Snapshot Path Now Calls `_override_stale_close_for_holdings` documenting both broker AND snapshot paths now call `_override_stale_close_for_holdings()` to patch from prior-session daily_book.ltp (cutoff: `captured_at < today_08:00 IST`), eliminating divergence between live/snapshot displays. Added §7.3.9 `close_price` Always Synced to `ref_close` documenting removal of epsilon guard; `close_price` now unconditionally synced to keep denominator consistent with `day_change_val` numerator. Added §7.3.13 Positions Per-Exchange Day P&L Overlay documenting `_overlay_snapshot_for_closed_exchanges()` now patches day P&L for closed-exchange rows (NFO/BSE) immediately after their close (~15:30 IST) using prior-session daily_book snapshot, without waiting for MCX to close. Added Options Chain Polling & Timeouts subsection documenting backend timeout reduction (30s→12s) in `_chain_quotes_batch_quote()` and frontend interval increase (5s→30s) in ChainCard.svelte; added `_pricesFetching` in-flight guard to prevent concurrent quote() calls. Renumbered §7.3.6+ holdings sections (6→6, 7→7, 8→8, etc.). |
 | 2026-08-28 | v1.24 Exchange schedule table & clock module (from PLAN): Added §14 Exchange Schedule Table & Clock Module documenting new `exchange_schedule` DB table (date-aware, operator-editable defaults + overrides via `/admin/settings`), module-level cache, public API (`is_exchange_open`, `snapshot_time_for`, `snapshot_reset_time_for`, `sessions_with_snapshot_time_now`, `settlement_cutoff_for`, `settlement_ref_close_map`, `refresh_cache`, `seed_and_warm`), admin routes (GET/PUT/DELETE `/api/admin/exchange-schedule`), and `@apply_settlement_overlay(kind)` decorator for patch-on-close P&L + close_price. Replaces hardcoded `_EXCHANGE_TO_GATE` dict in snapshot_gate.py, `market_segments` YAML block, and 6 hardcoded trigger times in background.py. Single gate/exchanges distinction: a Muhurat row with exchanges=[NSE,BSE] correctly closes NFO/BFO/CDS via per-exchange `_resolve_for_exchange()` lookup. Backend snapshot triggers fully DB-driven: 5 per-day (NSE 15:31 + 16:15, MCX 23:31 + 00:15, MCX morning no-snapshot). Renumbered §15+ sections (14→15, 15→16, 16→17). |
+| 2026-08-30 | v1.25 Closed-exchange overlay stored day P&L fix (commit adc5e1f0): Updated §7.3.8 Firm NAV Computation & Closed-Exchange LTP Overlay documenting `latest_snapshot_ltp_map(kind)` return type change from `dict[tuple[str,str], float]` (LTP only) to `dict[tuple[str,str], tuple[float, float\|None]]` (LTP + day_pnl tuple). Added subsection on Overlay Logic documenting new return format and weekend zero-delta bug fix: when both snap_ltp and snap_close come from same Friday settlement snapshot, old code computed `(Fri−Fri)×qty=0` on weekends; now stores EOD `day_pnl` in tuple and uses it directly when non-zero, falling back to price-recompute only when `day_pnl` is None/zero. Added Function subsection documenting `latest_snapshot_ltp_map(kind)` signature, query strategy (MAX(captured_at) per account), return format, guarantee (identical CTE as route snapshot readers), and fail-open behaviour. Updated `_process_overlay_row()` code path (positions.py lines 474–491) and `_hold_tag_closed_row()` (holdings.py) to unpack tuples and prioritize stored `day_pnl` over recomputed values. Impact: weekend grids now show correct overnight P&L from Friday settlement instead of zero-delta phantom move. |
