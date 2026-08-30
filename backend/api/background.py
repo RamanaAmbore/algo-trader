@@ -2183,7 +2183,21 @@ async def _task_chain_instruments() -> None:
             logger.warning(f"[bg-chain-instruments] fetch failed: {exc}")
 
     await asyncio.sleep(10)
+
+    # Retry with backoff if Kite accounts aren't available yet — conn_service
+    # may take ~90s after a deployment restart to restore tokens. Retries at
+    # T+40s, T+100s, T+220s before giving up and waiting until 08:02 IST.
+    from backend.api.cache import peek as _cache_peek_chain
     await _warm()
+    for _retry_delay in (30, 60, 120):
+        if _cache_peek_chain("instruments_chain") is not None:
+            break
+        logger.info(
+            "[bg-chain-instruments] cache cold after warm, retrying in %ds (conn_service may still be starting)",
+            _retry_delay,
+        )
+        await asyncio.sleep(_retry_delay)
+        await _warm()
 
     while True:
         now = timestamp_indian()

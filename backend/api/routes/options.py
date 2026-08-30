@@ -2166,6 +2166,7 @@ def _chain_quotes_build_sym_map(
     When exp is empty the strike_map is empty (expiry-only mode — caller
     skips the broker quote call entirely).
     """
+    today_iso = date.today().isoformat()
     sym_by_strike: dict[float, dict[str, dict]] = {}
     expiry_set: set[str] = set()
     for inst in inst_resp.items:
@@ -2175,7 +2176,7 @@ def _chain_quotes_build_sym_map(
             continue
         if inst.t not in ("CE", "PE"):
             continue
-        if inst.x:
+        if inst.x and inst.x >= today_iso:
             expiry_set.add(inst.x)
         if not exp or inst.x != exp:
             continue

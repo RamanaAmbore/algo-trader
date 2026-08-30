@@ -39,7 +39,7 @@ from backend.api.routes.options import (
 def nifty_instruments_fixture() -> InstrumentsResponse:
     """Minimal NIFTY instruments fixture with two expiries, four strikes."""
     instruments = [
-        # 2025-08-14 expiry
+        # 2027-08-14 expiry
         Instrument(
             s="NIFTY24AUG24000CE",
             e="NFO",
@@ -47,7 +47,7 @@ def nifty_instruments_fixture() -> InstrumentsResponse:
             ls=25,
             ts=0.05,
             u="NIFTY",
-            x="2025-08-14",
+            x="2027-08-14",
             k=24000.0,
         ),
         Instrument(
@@ -57,7 +57,7 @@ def nifty_instruments_fixture() -> InstrumentsResponse:
             ls=25,
             ts=0.05,
             u="NIFTY",
-            x="2025-08-14",
+            x="2027-08-14",
             k=24000.0,
         ),
         Instrument(
@@ -67,7 +67,7 @@ def nifty_instruments_fixture() -> InstrumentsResponse:
             ls=25,
             ts=0.05,
             u="NIFTY",
-            x="2025-08-14",
+            x="2027-08-14",
             k=24500.0,
         ),
         Instrument(
@@ -77,10 +77,10 @@ def nifty_instruments_fixture() -> InstrumentsResponse:
             ls=25,
             ts=0.05,
             u="NIFTY",
-            x="2025-08-14",
+            x="2027-08-14",
             k=24500.0,
         ),
-        # 2025-08-21 expiry
+        # 2027-08-21 expiry
         Instrument(
             s="NIFTY24AUG24000CE",
             e="NFO",
@@ -88,7 +88,7 @@ def nifty_instruments_fixture() -> InstrumentsResponse:
             ls=25,
             ts=0.05,
             u="NIFTY",
-            x="2025-08-21",
+            x="2027-08-21",
             k=24000.0,
         ),
         Instrument(
@@ -98,11 +98,11 @@ def nifty_instruments_fixture() -> InstrumentsResponse:
             ls=25,
             ts=0.05,
             u="NIFTY",
-            x="2025-08-21",
+            x="2027-08-21",
             k=24000.0,
         ),
     ]
-    return InstrumentsResponse(cycle_date="2025-08-11", count=len(instruments), items=instruments)
+    return InstrumentsResponse(cycle_date="2027-08-11", count=len(instruments), items=instruments)
 
 
 @pytest.fixture(autouse=True)
@@ -124,17 +124,17 @@ class TestChainQuotesBuildSymMap:
             nifty_instruments_fixture, "NIFTY", ""
         )
         assert sym_by_strike == {}, "Strike map should be empty in expiry-only mode"
-        assert all_expiries == ["2025-08-14", "2025-08-21"], f"Expected both expiries, got {all_expiries}"
+        assert all_expiries == ["2027-08-14", "2027-08-21"], f"Expected both expiries, got {all_expiries}"
 
     def test_full_mode_with_expiry(self, nifty_instruments_fixture):
-        """When exp='2025-08-14', strike_map populated with both CE/PE."""
+        """When exp='2027-08-14', strike_map populated with both CE/PE."""
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
-            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+            nifty_instruments_fixture, "NIFTY", "2027-08-14"
         )
         # Should have 2 strikes (24000, 24500)
         assert len(sym_by_strike) == 2, f"Expected 2 strikes, got {len(sym_by_strike)}"
         # Expiries still populated (all expiries for the underlying)
-        assert all_expiries == ["2025-08-14", "2025-08-21"]
+        assert all_expiries == ["2027-08-14", "2027-08-21"]
 
         # Check strike 24000
         assert 24000.0 in sym_by_strike
@@ -154,7 +154,7 @@ class TestChainQuotesBuildSymMap:
         # The function expects und to already be uppercased (route handler does this).
         # Instruments have u="NIFTY", so (inst.u or "").upper() == und should match.
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
-            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+            nifty_instruments_fixture, "NIFTY", "2027-08-14"
         )
         assert len(sym_by_strike) == 2, "Should find NIFTY when passed uppercase"
 
@@ -181,7 +181,7 @@ class TestChainQuotesBuildSymMap:
                 ls=100,
                 ts=1.0,
                 u="CRUDE OIL",  # Kite's actual name field — with space (ignored now)
-                x="2025-09-19",
+                x="2027-09-19",
                 k=7500.0,
             ),
             Instrument(
@@ -191,16 +191,16 @@ class TestChainQuotesBuildSymMap:
                 ls=100,
                 ts=1.0,
                 u="CRUDE OIL",
-                x="2025-09-19",
+                x="2027-09-19",
                 k=7500.0,
             ),
         ]
         inst_resp = InstrumentsResponse(
-            cycle_date="2025-09-01", count=len(instruments), items=instruments
+            cycle_date="2027-09-01", count=len(instruments), items=instruments
         )
         # Frontend sends "CRUDEOIL" which matches tradingsymbol prefix "CRUDEOIL25SEP7500CE" → "CRUDEOIL"
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
-            inst_resp, "CRUDEOIL", "2025-09-19"
+            inst_resp, "CRUDEOIL", "2027-09-19"
         )
         assert len(sym_by_strike) == 1, (
             "CRUDEOIL query must match instruments by tradingsymbol prefix"
@@ -208,7 +208,7 @@ class TestChainQuotesBuildSymMap:
         assert 7500.0 in sym_by_strike
         assert sym_by_strike[7500.0]["CE"]["sym"] == "CRUDEOIL25SEP7500CE"
         assert sym_by_strike[7500.0]["PE"]["sym"] == "CRUDEOIL25SEP7500PE"
-        assert all_expiries == ["2025-09-19"]
+        assert all_expiries == ["2027-09-19"]
 
     def test_non_option_instruments_skipped(self):
         """Equity and futures instruments should be skipped; only CE/PE included."""
@@ -222,14 +222,14 @@ class TestChainQuotesBuildSymMap:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24000.0,
             ),
         ]
-        inst_resp = InstrumentsResponse(cycle_date="2025-08-11", count=len(instruments), items=instruments)
+        inst_resp = InstrumentsResponse(cycle_date="2027-08-11", count=len(instruments), items=instruments)
 
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
-            inst_resp, "NIFTY", "2025-08-14"
+            inst_resp, "NIFTY", "2027-08-14"
         )
         # The strike is added when ANY side (CE or PE) is found.
         # PE is missing but CE exists, so the strike is included (PE dict initialized empty).
@@ -271,7 +271,7 @@ class TestChainQuotesEndpoint:
 
             # Verify expiry-only mode: no rows, expiries populated
             assert data["rows"] == [], f"Expected empty rows, got {data['rows']}"
-            assert set(data["expiries"]) == {"2025-08-14", "2025-08-21"}
+            assert set(data["expiries"]) == {"2027-08-14", "2027-08-21"}
             assert data["underlying"] == "NIFTY"
             assert data["expiry"] == ""
 
@@ -281,7 +281,7 @@ class TestChainQuotesEndpoint:
     async def test_full_quote_mode_with_expiry(
         self, async_client, nifty_instruments_fixture
     ):
-        """GET /chain-quotes?underlying=NIFTY&expiry=2025-08-14 populates rows with bid/ask."""
+        """GET /chain-quotes?underlying=NIFTY&expiry=2027-08-14 populates rows with bid/ask."""
         client = async_client
 
         # Minimal synthetic quote response
@@ -330,7 +330,7 @@ class TestChainQuotesEndpoint:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"}
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "true"}
             )
 
             assert response.status_code == 200, f"Got {response.status_code}: {response.text}"
@@ -339,8 +339,8 @@ class TestChainQuotesEndpoint:
             # Verify rows are populated
             assert len(data["rows"]) == 2, f"Expected 2 strikes, got {len(data['rows'])}"
             assert data["underlying"] == "NIFTY"
-            assert data["expiry"] == "2025-08-14"
-            assert set(data["expiries"]) == {"2025-08-14", "2025-08-21"}
+            assert data["expiry"] == "2027-08-14"
+            assert set(data["expiries"]) == {"2027-08-14", "2027-08-21"}
 
             # Verify first row (strike 24000)
             row_24k = next((r for r in data["rows"] if r["k"] == 24000.0), None)
@@ -440,13 +440,13 @@ class TestChainQuotesCachePerformance:
 
         # Build sym map
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
-            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+            nifty_instruments_fixture, "NIFTY", "2027-08-14"
         )
 
         # Note: cache is populated by the route handler, not by _chain_quotes_build_sym_map itself.
         # The function is just the computation. Let's verify the data structure is correct.
         assert len(sym_by_strike) == 2
-        assert all_expiries == ["2025-08-14", "2025-08-21"]
+        assert all_expiries == ["2027-08-14", "2027-08-21"]
 
     def test_cache_clear_resets_cache(self, nifty_instruments_fixture):
         """_chain_sym_cache_clear() should wipe the cache."""
@@ -454,10 +454,10 @@ class TestChainQuotesCachePerformance:
         import time
 
         # Manually populate cache (simulating route behavior)
-        _cache_key = ("NIFTY", "2025-08-14")
+        _cache_key = ("NIFTY", "2027-08-14")
         _now = time.monotonic()
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
-            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+            nifty_instruments_fixture, "NIFTY", "2027-08-14"
         )
         _CHAIN_SYM_CACHE[_cache_key] = (_now, (sym_by_strike, all_expiries))
 
@@ -513,7 +513,7 @@ class TestChainQuotesEdgeCases:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"}
+                params={"underlying": "NIFTY", "expiry": "2027-08-14"}
             )
 
             assert response.status_code == 200
@@ -541,7 +541,7 @@ class TestChainQuotesEdgeCases:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24000.0,
             ),
             # Note: no PE for 24000 strike
@@ -552,7 +552,7 @@ class TestChainQuotesEdgeCases:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24500.0,
             ),
             Instrument(
@@ -562,14 +562,14 @@ class TestChainQuotesEdgeCases:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24500.0,
             ),
         ]
-        inst_resp = InstrumentsResponse(cycle_date="2025-08-11", count=len(instruments), items=instruments)
+        inst_resp = InstrumentsResponse(cycle_date="2027-08-11", count=len(instruments), items=instruments)
 
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
-            inst_resp, "NIFTY", "2025-08-14"
+            inst_resp, "NIFTY", "2027-08-14"
         )
 
         # 24000 should have only CE (PE will be empty dict initialized)
@@ -600,7 +600,7 @@ class TestChainQuotesIntegration:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-09-04",
+                x="2027-09-04",
                 k=24000.0,
             ),
             Instrument(
@@ -610,12 +610,12 @@ class TestChainQuotesIntegration:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-09-04",
+                x="2027-09-04",
                 k=24000.0,
             ),
         ]
         inst_resp = InstrumentsResponse(
-            cycle_date="2025-08-11", count=len(instruments), items=instruments
+            cycle_date="2027-08-11", count=len(instruments), items=instruments
         )
 
         def _peek_no_expiry_index(key: str):
@@ -634,7 +634,7 @@ class TestChainQuotesIntegration:
             data = response.json()
 
             # Expiries should be sorted
-            expected = ["2025-08-14", "2025-08-21", "2025-09-04"]
+            expected = ["2027-08-14", "2027-08-21", "2027-09-04"]
             assert data["expiries"] == expected, f"Expected {expected}, got {data['expiries']}"
 
 
@@ -655,7 +655,7 @@ class TestChainSymCacheLRUCap:
         # Fill the cache to the cap using the same insertion pattern the route uses.
         first_key = None
         for i in range(_CHAIN_SYM_CACHE_MAX_SIZE):
-            key = (f"UNDER{i}", f"2025-0{(i % 9) + 1}-01")
+            key = (f"UNDER{i}", f"2027-0{(i % 9) + 1}-01")
             if first_key is None:
                 first_key = key
             _CHAIN_SYM_CACHE[key] = (time.monotonic(), ({}, []))
@@ -664,7 +664,7 @@ class TestChainSymCacheLRUCap:
         assert first_key in _CHAIN_SYM_CACHE
 
         # Simulate route eviction: at capacity, pop oldest before inserting new entry.
-        new_key = ("OVERFLOW", "2025-12-31")
+        new_key = ("OVERFLOW", "2027-12-31")
         if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
             _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
         _CHAIN_SYM_CACHE[new_key] = (time.monotonic(), ({}, []))
@@ -686,11 +686,11 @@ class TestChainSymCacheLRUCap:
         _chain_sym_cache_clear()
         n = _CHAIN_SYM_CACHE_MAX_SIZE - 1
         for i in range(n):
-            _CHAIN_SYM_CACHE[(f"X{i}", "2025-08-14")] = (time.monotonic(), ({}, []))
+            _CHAIN_SYM_CACHE[(f"X{i}", "2027-08-14")] = (time.monotonic(), ({}, []))
 
         assert len(_CHAIN_SYM_CACHE) == n
 
-        new_key = ("NEWENTRY", "2025-08-14")
+        new_key = ("NEWENTRY", "2027-08-14")
         if len(_CHAIN_SYM_CACHE) >= _CHAIN_SYM_CACHE_MAX_SIZE:
             _CHAIN_SYM_CACHE.pop(next(iter(_CHAIN_SYM_CACHE)))
         _CHAIN_SYM_CACHE[new_key] = (time.monotonic(), ({}, []))
@@ -809,8 +809,8 @@ class TestChainQuotesOffMarketGate:
         # Pre-populate the closed cache with a fresh entry
         _cached_resp = ChainQuotesResponse(
             underlying="NIFTY",
-            expiry="2025-08-14",
-            expiries=["2025-08-14"],
+            expiry="2027-08-14",
+            expiries=["2027-08-14"],
             rows=[
                 ChainQuoteRow(
                     k=24000.0,
@@ -823,7 +823,7 @@ class TestChainQuotesOffMarketGate:
                 )
             ],
         )
-        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2025-08-14")] = (
+        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2027-08-14")] = (
             time.monotonic(), _cached_resp
         )
 
@@ -842,7 +842,7 @@ class TestChainQuotesOffMarketGate:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -869,9 +869,9 @@ class TestChainQuotesOffMarketGate:
                         if (k := meta.get("sym"))}
 
         # Pre-populate with a STALE cache entry (older than TTL)
-        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2025-08-14")] = (
+        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2027-08-14")] = (
             time.monotonic() - _CHAIN_QUOTES_CLOSED_TTL - 1,  # expired
-            ChainQuotesResponse(underlying="NIFTY", expiry="2025-08-14", rows=[]),
+            ChainQuotesResponse(underlying="NIFTY", expiry="2027-08-14", rows=[]),
         )
 
         with (
@@ -889,7 +889,7 @@ class TestChainQuotesOffMarketGate:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -916,9 +916,9 @@ class TestChainQuotesOffMarketGate:
             return {}, {}
 
         # Pre-populate closed cache with a fresh entry (should be ignored when open)
-        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2025-08-14")] = (
+        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2027-08-14")] = (
             time.monotonic(),
-            ChainQuotesResponse(underlying="NIFTY", expiry="2025-08-14", rows=[]),
+            ChainQuotesResponse(underlying="NIFTY", expiry="2027-08-14", rows=[]),
         )
 
         with (
@@ -936,7 +936,7 @@ class TestChainQuotesOffMarketGate:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -972,13 +972,13 @@ class TestChainQuotesOffMarketGate:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
 
         # Cache should now hold the response
-        key = ("NIFTY", "2025-08-14")
+        key = ("NIFTY", "2027-08-14")
         assert key in _CHAIN_QUOTES_CLOSED_CACHE, (
             "Live response must populate the closed-market cache for off-hours use"
         )
@@ -995,10 +995,10 @@ class TestChainQuotesOffMarketGate:
     def test_closed_market_cache_clear_helper_empties_cache(self):
         """_chain_quotes_closed_cache_clear() resets the cache."""
         import time
-        key = ("TEST", "2025-08-14")
+        key = ("TEST", "2027-08-14")
         _CHAIN_QUOTES_CLOSED_CACHE[key] = (
             time.monotonic(),
-            ChainQuotesResponse(underlying="TEST", expiry="2025-08-14", rows=[]),
+            ChainQuotesResponse(underlying="TEST", expiry="2027-08-14", rows=[]),
         )
         assert len(_CHAIN_QUOTES_CLOSED_CACHE) > 0
 
@@ -1065,7 +1065,7 @@ class TestChainQuotesBrokerTimeout:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24000.0,
             ),
             Instrument(
@@ -1075,16 +1075,16 @@ class TestChainQuotesBrokerTimeout:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24000.0,
             ),
         ]
         inst_resp = InstrumentsResponse(
-            cycle_date="2025-08-11", count=len(nifty_instruments), items=nifty_instruments
+            cycle_date="2027-08-11", count=len(nifty_instruments), items=nifty_instruments
         )
 
         # Build sym_by_strike to pass to _chain_quotes_batch_quote
-        sym_by_strike, _ = _chain_quotes_build_sym_map(inst_resp, "NIFTY", "2025-08-14")
+        sym_by_strike, _ = _chain_quotes_build_sym_map(inst_resp, "NIFTY", "2027-08-14")
 
         # Call _chain_quotes_batch_quote with mocked broker that times out
         # asyncio.to_thread is called from within _chain_quotes_batch_quote,
@@ -1093,7 +1093,7 @@ class TestChainQuotesBrokerTimeout:
             mock_to_thread.side_effect = asyncio.TimeoutError("Quote call timed out")
 
             quote_resp, key_meta = await _chain_quotes_batch_quote(
-                sym_by_strike, "NIFTY", "2025-08-14"
+                sym_by_strike, "NIFTY", "2027-08-14"
             )
 
         # When timeout occurs, quote_resp should be empty dict, not raise
@@ -1111,7 +1111,7 @@ class TestChainQuotesBrokerTimeout:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24000.0,
             ),
             Instrument(
@@ -1121,22 +1121,22 @@ class TestChainQuotesBrokerTimeout:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24000.0,
             ),
         ]
         inst_resp = InstrumentsResponse(
-            cycle_date="2025-08-11", count=len(nifty_instruments), items=nifty_instruments
+            cycle_date="2027-08-11", count=len(nifty_instruments), items=nifty_instruments
         )
 
-        sym_by_strike, _ = _chain_quotes_build_sym_map(inst_resp, "NIFTY", "2025-08-14")
+        sym_by_strike, _ = _chain_quotes_build_sym_map(inst_resp, "NIFTY", "2027-08-14")
 
         # Patch asyncio.to_thread to raise a generic exception (network failure)
         with patch("asyncio.to_thread") as mock_to_thread:
             mock_to_thread.side_effect = RuntimeError("Broker connection lost")
 
             quote_resp, key_meta = await _chain_quotes_batch_quote(
-                sym_by_strike, "NIFTY", "2025-08-14"
+                sym_by_strike, "NIFTY", "2027-08-14"
             )
 
         # On exception, should return empty dict and valid key_meta
@@ -1185,7 +1185,7 @@ class TestChainQuotesOffMarketGateEnhanced:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -1212,9 +1212,9 @@ class TestChainQuotesOffMarketGateEnhanced:
 
         # Pre-populate cache with entry that's just outside the TTL window
         cache_entry_age = _CHAIN_QUOTES_CLOSED_TTL + 0.1  # 0.1s past expiry
-        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2025-08-14")] = (
+        _CHAIN_QUOTES_CLOSED_CACHE[("NIFTY", "2027-08-14")] = (
             time.monotonic() - cache_entry_age,
-            ChainQuotesResponse(underlying="NIFTY", expiry="2025-08-14", rows=[]),
+            ChainQuotesResponse(underlying="NIFTY", expiry="2027-08-14", rows=[]),
         )
 
         with (
@@ -1232,7 +1232,7 @@ class TestChainQuotesOffMarketGateEnhanced:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200
@@ -1276,7 +1276,7 @@ class TestChainInstrumentsNFOMCXOnly:
                 ls=1,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
             ),
             # NFO option (should be included)
             Instrument(
@@ -1286,7 +1286,7 @@ class TestChainInstrumentsNFOMCXOnly:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24000.0,
             ),
             Instrument(
@@ -1296,7 +1296,7 @@ class TestChainInstrumentsNFOMCXOnly:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=24000.0,
             ),
             # MCX commodity option (should be included)
@@ -1307,18 +1307,18 @@ class TestChainInstrumentsNFOMCXOnly:
                 ls=10,
                 ts=0.05,
                 u="GOLDM",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=99000.0,
             ),
             # BSE equity (should be skipped)
             Instrument(s="SENSEX", e="BSE", t="EQ", ls=1, ts=0.05, u="SENSEX"),
         ]
         inst_resp = InstrumentsResponse(
-            cycle_date="2025-08-11", count=len(instruments), items=instruments
+            cycle_date="2027-08-11", count=len(instruments), items=instruments
         )
 
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
-            inst_resp, "NIFTY", "2025-08-14"
+            inst_resp, "NIFTY", "2027-08-14"
         )
 
         # Should have 1 strike (24000) with both CE and PE from NFO
@@ -1351,7 +1351,7 @@ class TestChainInstrumentsNFOMCXOnly:
                 ls=100,
                 ts=1.0,
                 u="CRUDEOIL",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=6500.0,
             ),
             Instrument(
@@ -1361,12 +1361,12 @@ class TestChainInstrumentsNFOMCXOnly:
                 ls=100,
                 ts=1.0,
                 u="CRUDEOIL",
-                x="2025-08-14",
+                x="2027-08-14",
                 k=6500.0,
             ),
         ]
         inst_resp = InstrumentsResponse(
-            cycle_date="2025-08-11", count=len(instruments), items=instruments
+            cycle_date="2027-08-11", count=len(instruments), items=instruments
         )
 
         async def mock_batch_quote(sym_by_strike, und, exp):
@@ -1391,7 +1391,7 @@ class TestChainInstrumentsNFOMCXOnly:
             # Query for CRUDEOIL (MCX commodity)
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "CRUDEOIL", "expiry": "2025-08-14"},
+                params={"underlying": "CRUDEOIL", "expiry": "2027-08-14"},
             )
 
             assert response.status_code == 200
@@ -1415,14 +1415,14 @@ class TestChainQuotesBatchQuoteWaitForTimeout:
     async def test_wait_for_timeout_returns_empty_quote_resp(self, nifty_instruments_fixture):
         """When asyncio.wait_for raises TimeoutError, quote_resp is {} and no exception propagates."""
         sym_by_strike, _ = _chain_quotes_build_sym_map(
-            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+            nifty_instruments_fixture, "NIFTY", "2027-08-14"
         )
 
         # Patch asyncio.wait_for itself to raise TimeoutError, simulating a 10s hang
         with patch("backend.api.routes.options.asyncio.wait_for",
                    side_effect=asyncio.TimeoutError):
             quote_resp, key_meta = await _chain_quotes_batch_quote(
-                sym_by_strike, "NIFTY", "2025-08-14"
+                sym_by_strike, "NIFTY", "2027-08-14"
             )
 
         assert quote_resp == {}, "TimeoutError must produce empty quote_resp"
@@ -1433,14 +1433,14 @@ class TestChainQuotesBatchQuoteWaitForTimeout:
     async def test_wait_for_timeout_does_not_propagate(self, nifty_instruments_fixture):
         """TimeoutError from asyncio.wait_for is caught internally — caller never sees it."""
         sym_by_strike, _ = _chain_quotes_build_sym_map(
-            nifty_instruments_fixture, "NIFTY", "2025-08-14"
+            nifty_instruments_fixture, "NIFTY", "2027-08-14"
         )
 
         raised = False
         try:
             with patch("backend.api.routes.options.asyncio.wait_for",
                        side_effect=asyncio.TimeoutError):
-                await _chain_quotes_batch_quote(sym_by_strike, "NIFTY", "2025-08-14")
+                await _chain_quotes_batch_quote(sym_by_strike, "NIFTY", "2027-08-14")
         except asyncio.TimeoutError:
             raised = True
 
@@ -1465,7 +1465,7 @@ class TestChainQuotesBatchQuoteWaitForTimeout:
 
         with patch("backend.api.routes.options.asyncio.wait_for", side_effect=_counting_wait_for):
             quote_resp, key_meta = await _chain_quotes_batch_quote(
-                empty_sym_by_strike, "NIFTY", "2025-08-14"
+                empty_sym_by_strike, "NIFTY", "2027-08-14"
             )
 
         assert quote_resp == {}, "No keys → empty quote_resp"
@@ -1530,7 +1530,7 @@ class TestChainQuotesInstrumentsChainCacheKey:
         assert response.status_code == 200
         data = response.json()
         # Should still return expiries from the fallback instruments cache
-        assert set(data["expiries"]) == {"2025-08-14", "2025-08-21"}, (
+        assert set(data["expiries"]) == {"2027-08-14", "2027-08-21"}, (
             "Fallback to instruments must still populate expiries correctly"
         )
         assert "instruments" in peek_order, "instruments must be tried as fallback"
@@ -1649,7 +1649,7 @@ class TestChainQuotesPricesParam:
             # prices=False is the default — omitting the param must trigger the fast path
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14"},
             )
 
             assert response.status_code == 200, response.text
@@ -1689,7 +1689,7 @@ class TestChainQuotesPricesParam:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "false"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "false"},
             )
 
             assert response.status_code == 200
@@ -1749,7 +1749,7 @@ class TestChainQuotesPricesParam:
 
             response = await client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14", "prices": "true"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14", "prices": "true"},
             )
 
             assert response.status_code == 200, response.text
@@ -1796,7 +1796,7 @@ class TestChainQuotesNoneKeyGuard:
                    side_effect=asyncio.TimeoutError()):
             # Must not raise even though one key was None
             quote_resp, key_meta = await _chain_quotes_batch_quote(
-                sym_by_strike, "NIFTY", "2025-08-14"
+                sym_by_strike, "NIFTY", "2027-08-14"
             )
 
         # MALFORMED_SYM must NOT be in key_meta
@@ -1825,7 +1825,7 @@ class TestChainQuotesNoneKeyGuard:
         # Both syms return None — all keys excluded → broker not called
         with patch("backend.api.routes.options.option_quote_key", return_value=None):
             quote_resp, key_meta = await _chain_quotes_batch_quote(
-                sym_by_strike, "NIFTY", "2025-08-14"
+                sym_by_strike, "NIFTY", "2027-08-14"
             )
 
         assert quote_resp == {}, "Empty quote_resp when all keys are None"
@@ -1903,21 +1903,21 @@ class TestBuildExpiriesIndex:
         from backend.api.routes.instruments import _build_expiries_index
 
         items = [
-            self._make_instrument("CE", "NIFTY", "2025-08-14"),
-            self._make_instrument("PE", "NIFTY", "2025-08-14"),
+            self._make_instrument("CE", "NIFTY", "2027-08-14"),
+            self._make_instrument("PE", "NIFTY", "2027-08-14"),
         ]
         idx = _build_expiries_index(items)
         assert "NIFTY" in idx
-        assert idx["NIFTY"] == ["2025-08-14"]
+        assert idx["NIFTY"] == ["2027-08-14"]
 
     def test_fut_eq_skipped(self):
         """FUT and EQ instruments must not appear in the index."""
         from backend.api.routes.instruments import _build_expiries_index
 
         items = [
-            self._make_instrument("FUT", "NIFTY", "2025-08-29"),
+            self._make_instrument("FUT", "NIFTY", "2027-08-29"),
             self._make_instrument("EQ", "RELIANCE", None),
-            self._make_instrument("CE", "BANKNIFTY", "2025-08-21"),
+            self._make_instrument("CE", "BANKNIFTY", "2027-08-21"),
         ]
         idx = _build_expiries_index(items)
         assert "NIFTY" not in idx, "FUT must not appear in expiries index"
@@ -1929,8 +1929,8 @@ class TestBuildExpiriesIndex:
         from backend.api.routes.instruments import _build_expiries_index
 
         items = [
-            self._make_instrument("CE", None, "2025-08-14"),
-            self._make_instrument("CE", "NIFTY", "2025-08-21"),
+            self._make_instrument("CE", None, "2027-08-14"),
+            self._make_instrument("CE", "NIFTY", "2027-08-21"),
         ]
         idx = _build_expiries_index(items)
         assert None not in idx
@@ -1943,54 +1943,54 @@ class TestBuildExpiriesIndex:
 
         items = [
             self._make_instrument("CE", "NIFTY", None),
-            self._make_instrument("CE", "NIFTY", "2025-08-14"),
+            self._make_instrument("CE", "NIFTY", "2027-08-14"),
         ]
         idx = _build_expiries_index(items)
         assert "NIFTY" in idx
         assert None not in idx["NIFTY"]
         assert "" not in idx["NIFTY"]
-        assert idx["NIFTY"] == ["2025-08-14"]
+        assert idx["NIFTY"] == ["2027-08-14"]
 
     def test_expiries_sorted(self):
         """Expiries per underlying must be sorted in ascending ISO order."""
         from backend.api.routes.instruments import _build_expiries_index
 
         items = [
-            self._make_instrument("CE", "NIFTY", "2025-09-04"),
-            self._make_instrument("PE", "NIFTY", "2025-08-14"),
-            self._make_instrument("CE", "NIFTY", "2025-08-21"),
+            self._make_instrument("CE", "NIFTY", "2027-09-04"),
+            self._make_instrument("PE", "NIFTY", "2027-08-14"),
+            self._make_instrument("CE", "NIFTY", "2027-08-21"),
         ]
         idx = _build_expiries_index(items)
-        assert idx["NIFTY"] == ["2025-08-14", "2025-08-21", "2025-09-04"]
+        assert idx["NIFTY"] == ["2027-08-14", "2027-08-21", "2027-09-04"]
 
     def test_duplicates_deduplicated(self):
         """Multiple CE+PE on same expiry must produce one entry per expiry, not duplicates."""
         from backend.api.routes.instruments import _build_expiries_index
 
         items = [
-            self._make_instrument("CE", "NIFTY", "2025-08-14"),
-            self._make_instrument("PE", "NIFTY", "2025-08-14"),
-            self._make_instrument("CE", "NIFTY", "2025-08-14"),  # duplicate
+            self._make_instrument("CE", "NIFTY", "2027-08-14"),
+            self._make_instrument("PE", "NIFTY", "2027-08-14"),
+            self._make_instrument("CE", "NIFTY", "2027-08-14"),  # duplicate
         ]
         idx = _build_expiries_index(items)
-        assert idx["NIFTY"].count("2025-08-14") == 1, "Duplicate expiry must be deduplicated"
+        assert idx["NIFTY"].count("2027-08-14") == 1, "Duplicate expiry must be deduplicated"
 
     def test_multiple_underlyings(self):
         """Multiple underlyings each get their own expiry list."""
         from backend.api.routes.instruments import _build_expiries_index
 
         items = [
-            self._make_instrument("CE", "NIFTY", "2025-08-14"),
-            self._make_instrument("CE", "BANKNIFTY", "2025-08-21"),
-            self._make_instrument("CE", "CRUDEOIL", "2025-08-19"),
+            self._make_instrument("CE", "NIFTY", "2027-08-14"),
+            self._make_instrument("CE", "BANKNIFTY", "2027-08-21"),
+            self._make_instrument("CE", "CRUDEOIL", "2027-08-19"),
         ]
         idx = _build_expiries_index(items)
         assert "NIFTY" in idx
         assert "BANKNIFTY" in idx
         assert "CRUDEOIL" in idx
-        assert idx["NIFTY"] == ["2025-08-14"]
-        assert idx["BANKNIFTY"] == ["2025-08-21"]
-        assert idx["CRUDEOIL"] == ["2025-08-19"]
+        assert idx["NIFTY"] == ["2027-08-14"]
+        assert idx["BANKNIFTY"] == ["2027-08-21"]
+        assert idx["CRUDEOIL"] == ["2027-08-19"]
 
     def test_tradingsymbol_prefix_case_preserved(self):
         """Tradingsymbol prefix is used as-is (case preserved, no special handling)."""
@@ -1999,7 +1999,7 @@ class TestBuildExpiriesIndex:
         items = [
             # Tradingsymbol starts with uppercase letters; prefix is "NIFTY"
             Instrument(s="NIFTY24AUG24000CE", e="NFO", t="CE", ls=25, ts=0.05,
-                       u="nifty", x="2025-08-14", k=24000.0),
+                       u="nifty", x="2027-08-14", k=24000.0),
         ]
         idx = _build_expiries_index(items)
         # Key is derived from tradingsymbol prefix "NIFTY24AUG24000CE" → "NIFTY"
@@ -2027,7 +2027,7 @@ class TestBuildExpiriesIndex:
                 ls=100,
                 ts=1.0,
                 u="CRUDE OIL",  # Kite's actual name field — with space (ignored now)
-                x="2025-09-19",
+                x="2027-09-19",
                 k=7500.0,
             ),
             Instrument(
@@ -2037,7 +2037,7 @@ class TestBuildExpiriesIndex:
                 ls=100,
                 ts=1.0,
                 u="CRUDE OIL",
-                x="2025-09-19",
+                x="2027-09-19",
                 k=7500.0,
             ),
         ]
@@ -2046,7 +2046,7 @@ class TestBuildExpiriesIndex:
         assert "CRUDEOIL" in idx, (
             "Index key must be the tradingsymbol prefix (digits stripped)"
         )
-        assert idx["CRUDEOIL"] == ["2025-09-19"]
+        assert idx["CRUDEOIL"] == ["2027-09-19"]
 
     def test_expiry_index_mini_variant(self):
         """Mini variants (e.g., CRUDEOILM) produce different keys than non-mini.
@@ -2064,7 +2064,7 @@ class TestBuildExpiriesIndex:
                 ls=10,
                 ts=1.0,
                 u="CRUDE OIL M",  # Kite variant with space-M (ignored)
-                x="2025-09-25",
+                x="2027-09-25",
                 k=7600.0,
             ),
         ]
@@ -2072,7 +2072,7 @@ class TestBuildExpiriesIndex:
         # CRUDEOILM is separate key from CRUDEOIL
         assert "CRUDEOILM" in idx, "Mini variant must have distinct key"
         assert "CRUDEOIL" not in idx, "Non-mini variant key must not appear"
-        assert idx["CRUDEOILM"] == ["2025-09-25"]
+        assert idx["CRUDEOILM"] == ["2027-09-25"]
 
     def test_expiry_index_naturalgas(self):
         """NATURAL GAS → NATURALGAS via tradingsymbol prefix, not inst.u normalization."""
@@ -2086,13 +2086,13 @@ class TestBuildExpiriesIndex:
                 ls=1250,
                 ts=0.1,
                 u="NATURAL GAS",
-                x="2025-09-25",
+                x="2027-09-25",
                 k=400.0,
             ),
         ]
         idx = _build_expiries_index(items)
         assert "NATURALGAS" in idx, "Key is from tradingsymbol prefix"
-        assert idx["NATURALGAS"] == ["2025-09-25"]
+        assert idx["NATURALGAS"] == ["2027-09-25"]
 
     def test_expiry_index_nifty(self):
         """Index nifty options by their tradingsymbol prefix."""
@@ -2106,13 +2106,13 @@ class TestBuildExpiriesIndex:
                 ls=25,
                 ts=0.05,
                 u="NIFTY",
-                x="2026-03-26",
+                x="2027-03-26",
                 k=22500.0,
             ),
         ]
         idx = _build_expiries_index(items)
         assert "NIFTY" in idx, "NIFTY prefix extracted from tradingsymbol"
-        assert idx["NIFTY"] == ["2026-03-26"]
+        assert idx["NIFTY"] == ["2027-03-26"]
 
     def test_expiry_index_fut_excluded(self):
         """FUT instruments are excluded from the index (only CE/PE included)."""
@@ -2126,7 +2126,7 @@ class TestBuildExpiriesIndex:
                 ls=100,
                 ts=1.0,
                 u="CRUDE OIL",
-                x="2025-09-25",
+                x="2027-09-25",
                 k=None,
             ),
             Instrument(
@@ -2136,14 +2136,14 @@ class TestBuildExpiriesIndex:
                 ls=100,
                 ts=1.0,
                 u="CRUDE OIL",
-                x="2025-09-25",
+                x="2027-09-25",
                 k=7600.0,
             ),
         ]
         idx = _build_expiries_index(items)
         # Only the CE is included
         assert "CRUDEOIL" in idx
-        assert idx["CRUDEOIL"] == ["2025-09-25"]
+        assert idx["CRUDEOIL"] == ["2027-09-25"]
 
     def test_expiry_index_no_expiry_excluded(self):
         """Instruments with x=None are skipped."""
@@ -2164,6 +2164,67 @@ class TestBuildExpiriesIndex:
         idx = _build_expiries_index(items)
         assert len(idx) == 0, "Instruments without expiry must be excluded"
 
+    def test_past_expiries_filtered_out(self):
+        """Instruments with expiry in the past are excluded from the index.
+
+        This prevents stale persisted instrument data (e.g. expired Aug 2025
+        MCX contracts still in instruments_store) from appearing as valid
+        expiries in the chain tab.
+        """
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            Instrument(
+                s="CRUDEOIL25AUG6500CE",
+                e="MCX",
+                t="CE",
+                ls=100,
+                ts=1.0,
+                u="CRUDE OIL",
+                x="2025-08-19",  # expired August 2025
+                k=6500.0,
+            ),
+            Instrument(
+                s="CRUDEOIL27SEP7000CE",
+                e="MCX",
+                t="CE",
+                ls=100,
+                ts=1.0,
+                u="CRUDE OIL",
+                x="2027-09-18",  # future
+                k=7000.0,
+            ),
+        ]
+        idx = _build_expiries_index(items)
+        # Past expiry must be excluded; only the future one appears
+        assert "CRUDEOIL" in idx
+        assert "2025-08-19" not in idx["CRUDEOIL"], "Past expiry must be filtered"
+        assert "2027-09-18" in idx["CRUDEOIL"], "Future expiry must be retained"
+
+    def test_sym_map_past_expiries_excluded_from_all_expiries(self):
+        """_chain_quotes_build_sym_map excludes past expiry dates from all_expiries."""
+        from backend.api.routes.options import _chain_quotes_build_sym_map
+        from backend.api.routes.instruments import Instrument, InstrumentsResponse
+
+        items = [
+            Instrument(
+                s="NIFTY25AUG24000CE", e="NFO", t="CE", ls=25, ts=0.05,
+                u="NIFTY", x="2025-08-14", k=24000.0,  # expired
+            ),
+            Instrument(
+                s="NIFTY25AUG24000PE", e="NFO", t="PE", ls=25, ts=0.05,
+                u="NIFTY", x="2025-08-14", k=24000.0,  # expired
+            ),
+            Instrument(
+                s="NIFTY27AUG24000CE", e="NFO", t="CE", ls=25, ts=0.05,
+                u="NIFTY", x="2027-08-14", k=24000.0,  # future
+            ),
+        ]
+        inst_resp = InstrumentsResponse(cycle_date="2027-08-01", count=3, items=items)
+        _, all_expiries = _chain_quotes_build_sym_map(inst_resp, "NIFTY", "")
+        assert "2025-08-14" not in all_expiries, "Expired expiry must not appear in all_expiries"
+        assert "2027-08-14" in all_expiries, "Future expiry must appear in all_expiries"
+
 
 @pytest.mark.asyncio
 class TestChainQuotesExpiriesIndexFastPath:
@@ -2179,8 +2240,8 @@ class TestChainQuotesExpiriesIndexFastPath:
         """When instruments_chain_expiries is warm, expiry-only request returns
         from the index without calling _chain_quotes_sym_lookup."""
         warm_index = {
-            "NIFTY": ["2025-08-14", "2025-08-21"],
-            "BANKNIFTY": ["2025-08-21"],
+            "NIFTY": ["2027-08-14", "2027-08-21"],
+            "BANKNIFTY": ["2027-08-21"],
         }
 
         def _peek(key: str):
@@ -2198,7 +2259,7 @@ class TestChainQuotesExpiriesIndexFastPath:
 
             assert response.status_code == 200
             data = response.json()
-            assert data["expiries"] == ["2025-08-14", "2025-08-21"]
+            assert data["expiries"] == ["2027-08-14", "2027-08-21"]
             assert data["rows"] == []
             assert data["expiry"] == ""
             assert data["underlying"] == "NIFTY"
@@ -2209,7 +2270,7 @@ class TestChainQuotesExpiriesIndexFastPath:
         self, async_client, nifty_instruments_fixture
     ):
         """Fast path with unknown underlying returns empty expiries (dict .get miss)."""
-        warm_index = {"NIFTY": ["2025-08-14"]}
+        warm_index = {"NIFTY": ["2027-08-14"]}
 
         def _peek(key: str):
             if key == "instruments_chain_expiries":
@@ -2252,13 +2313,13 @@ class TestChainQuotesExpiriesIndexFastPath:
             mock_scan.assert_called_once()
             data = response.json()
             # Scan result from fixture: two expiries
-            assert set(data["expiries"]) == {"2025-08-14", "2025-08-21"}
+            assert set(data["expiries"]) == {"2027-08-14", "2027-08-21"}
 
     async def test_fast_path_only_fires_for_expiry_only_mode(
         self, async_client, nifty_instruments_fixture
     ):
         """When expiry= is provided, the index fast path must NOT fire (full scan runs)."""
-        warm_index = {"NIFTY": ["2025-08-14", "2025-08-21"]}
+        warm_index = {"NIFTY": ["2027-08-14", "2027-08-21"]}
         scan_called = False
 
         def _peek(key: str):
@@ -2280,7 +2341,7 @@ class TestChainQuotesExpiriesIndexFastPath:
                    side_effect=_tracking_lookup):
             response = await async_client.get(
                 "/api/options/chain-quotes",
-                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+                params={"underlying": "NIFTY", "expiry": "2027-08-14"},
             )
 
         assert response.status_code == 200
@@ -2301,7 +2362,7 @@ class TestChainQuotesExpiriesIndexFastPath:
         This test documents the NEW BEHAVIOR: fast-path only short-circuits when
         the underlying IS found in the index. Missing key triggers the fallback scan.
         """
-        warm_index = {"NIFTY": ["2025-08-14", "2025-08-21"]}
+        warm_index = {"NIFTY": ["2027-08-14", "2027-08-21"]}
 
         def _peek(key: str):
             if key == "instruments_chain_expiries":

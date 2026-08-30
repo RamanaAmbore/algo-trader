@@ -186,11 +186,15 @@ def _build_expiries_index(items: list) -> "dict[str, list[str]]":
     """Build tradingsymbol-prefix → sorted ISO expiry list from instruments items.
 
     Keys by stripping digits from tradingsymbol (mirrors frontend virtual root derivation).
-    CE/PE only; instruments with no expiry are skipped.
+    CE/PE only; instruments with no expiry or a past expiry are skipped so that
+    stale persisted instrument data can never return expired contracts to the chain tab.
     """
+    today_iso = date.today().isoformat()
     idx: dict[str, set[str]] = {}
     for inst in items:
         if inst.t not in ("CE", "PE") or not inst.x:
+            continue
+        if inst.x < today_iso:
             continue
         key = _re.sub(r'\d.*', '', inst.s)
         if key:
