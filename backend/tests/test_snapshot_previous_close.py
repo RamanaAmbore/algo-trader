@@ -846,10 +846,11 @@ def test_holdings_rows_previous_close_map_priority_over_broker_close():
     )
 
 
-def test_holdings_rows_previous_close_both_absent_falls_back_to_ltp():
-    """When both prev_ltp_map and broker close_price are absent,
-    previous_close falls back to ltp_val (not None) to prevent the
-    post-settlement guard from zeroing day P&L on a cold-boot snapshot."""
+def test_holdings_rows_previous_close_none_when_both_absent():
+    """When both prev_ltp_map and broker close_price are absent, writer stores
+    previous_close = None.  The reader safety net fills from prev_ltp (DB join)
+    or previous_close_backup at read time — writing ltp_val was removed because
+    it caused previous_close ≈ ltp corruption."""
     from unittest.mock import patch
     import backend.api.algo.daily_snapshot as _ds
     from backend.api.algo.daily_snapshot import _holdings_rows
@@ -869,7 +870,6 @@ def test_holdings_rows_previous_close_both_absent_falls_back_to_ltp():
     prev_ltp_map = {}
 
     now_ist = datetime(2026, 8, 15, 15, 35, 0)
-    # Market closed (post-session) so ltp is captured and available as fallback
     with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
         rows = _holdings_rows(
             "ACC1", date(2026, 8, 15), [holding], now_ist,
@@ -877,9 +877,9 @@ def test_holdings_rows_previous_close_both_absent_falls_back_to_ltp():
         )
 
         assert len(rows) == 1
-        assert rows[0]["previous_close"] == 1050.0, (
-            f"previous_close must fall back to ltp_val (1050.0) when both "
-            f"prev_ltp_map and close_price are absent — got {rows[0]['previous_close']}"
+        assert rows[0]["previous_close"] is None, (
+            f"Writer must store None when both prev_ltp_map and close_price are absent; "
+            f"reader safety net fills at read time — got {rows[0]['previous_close']}"
         )
 
 

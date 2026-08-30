@@ -79,6 +79,10 @@ _CACHE_LOCK = asyncio.Lock()
 _CACHE_TTL_S: float = 60.0
 _cache_loaded_at: float = 0.0  # unix epoch
 
+# Today's NSE session open time — set at startup and refreshed at 04:00 IST.
+# None when today is a holiday (no session open time).
+_TODAY_NSE_OPEN: "time | None" = time(8, 0)
+
 
 def _now_ist() -> datetime:
     return datetime.now(_IST)
@@ -148,6 +152,33 @@ def _effective_gate_rows(gate: str) -> list["ExchangeSchedule"]:
 def get_today_gate_sessions(gate: str) -> list["ExchangeSchedule"]:
     """Return all rows for *gate* that are in effect today and have an open_time."""
     return [r for r in _effective_gate_rows(gate) if r.open_time is not None]
+
+
+def get_nse_open_time() -> "time | None":
+    """Return today's NSE session open time. None = holiday (no transition fires)."""
+    return _TODAY_NSE_OPEN
+
+
+async def load_today_open_time() -> None:
+    """Read today's effective NSE open time from exchange_schedule and cache it.
+
+    Called at startup (from seed_and_warm) and at 04:00 IST daily (piggybacked
+    on _task_holiday_refresh) so _TODAY_NSE_OPEN is always correct for the day.
+    Default = time(8, 0) when cache is empty or no matching row found.
+
+    Uses _effective_gate_rows (not get_today_gate_sessions) so holiday override
+    rows (open_time=None) are detected correctly — get_today_gate_sessions already
+    filters those out and would incorrectly fall back to the default.
+    """
+    global _TODAY_NSE_OPEN
+    await refresh()
+    rows = _effective_gate_rows("NON-MCX")
+    if not rows:
+        _TODAY_NSE_OPEN = time(8, 0)   # no config row → default
+    elif rows[0].open_time is None:
+        _TODAY_NSE_OPEN = None          # holiday override row — no session today
+    else:
+        _TODAY_NSE_OPEN = rows[0].open_time
 
 
 # ---------------------------------------------------------------------------
@@ -458,3 +489,4 @@ async def seed_and_warm() -> None:
     async with _CACHE_LOCK:
         await _force_refresh()
     logger.info("exchange_clock: cache warmed — %d rows", len(_CACHE))
+    await load_today_open_time()

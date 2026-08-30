@@ -318,31 +318,55 @@ class TestBuildHoldingRowFromSnapshot:
         total_pnl=1000.0,
         captured_at=None,
         prev_ltp=1545.0,
+        previous_close_backup=None,
     ):
-        """Build a raw_row namedtuple-compatible tuple matching the SQL query output."""
+        """Build a raw_row namedtuple-compatible tuple matching the SQL query output.
+
+        Now 12 columns: ..., prev_ltp, previous_close_backup.
+        """
         from datetime import datetime
         _cap = captured_at or datetime(2026, 8, 24, 9, 30, 0)
         return (account, symbol, exchange, qty, avg_cost, ltp, previous_close,
-                day_pnl, total_pnl, _cap, prev_ltp)
+                day_pnl, total_pnl, _cap, prev_ltp, previous_close_backup)
 
     def test_previous_close_populated(self):
         """previous_close from daily_book must be forwarded to HoldingRow.previous_close."""
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        raw_row = self._make_raw_row(previous_close=1550.0)
+        raw_row = self._make_raw_row(previous_close=1550.0, ltp=1600.0)
         row, _inv, _cur, _pnl, _dcv = _build_holding_row_from_snapshot(raw_row)
         assert row.previous_close == pytest.approx(1550.0), (
-            "HoldingRow.previous_close must be set from daily_book previous_close"
+            "HoldingRow.previous_close must be set from daily_book previous_close "
+            "(no corruption since |1550 - 1600| = 50 >> 0.01 threshold)"
         )
 
-    def test_previous_close_zero_when_none(self):
-        """When previous_close is None in snapshot, HoldingRow.previous_close must be 0.0."""
+    def test_previous_close_falls_back_to_prev_ltp_when_none(self):
+        """When previous_close is None but prev_ltp is available, fall back to prev_ltp.
+
+        The safety net fills previous_close_f from prev_ltp when previous_close is
+        missing (≤ 0) and no backup exists — avoids a silent 0.0 that would make
+        day P&L = ltp × qty instead of (ltp - prior_close) × qty.
+        """
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        raw_row = self._make_raw_row(previous_close=None)
+        raw_row = self._make_raw_row(previous_close=None, ltp=1600.0, prev_ltp=1545.0,
+                                     previous_close_backup=None)
+        row, _inv, _cur, _pnl, _dcv = _build_holding_row_from_snapshot(raw_row)
+        assert row.previous_close == pytest.approx(1545.0), (
+            "When previous_close is None and prev_ltp is available, "
+            "safety net must fill in prev_ltp (1545.0)"
+        )
+
+    def test_previous_close_zero_when_all_missing(self):
+        """When previous_close, backup, and prev_ltp are all None/zero, previous_close = 0.0."""
+        from backend.api.routes.holdings import _build_holding_row_from_snapshot
+
+        raw_row = self._make_raw_row(previous_close=None, ltp=1600.0, prev_ltp=None,
+                                     previous_close_backup=None)
         row, _inv, _cur, _pnl, _dcv = _build_holding_row_from_snapshot(raw_row)
         assert row.previous_close == pytest.approx(0.0), (
-            "HoldingRow.previous_close must default to 0.0 when snapshot value is None"
+            "When previous_close, backup, and prev_ltp are all missing, "
+            "HoldingRow.previous_close must be 0.0"
         )
 
     def test_pnl_per_share_populated(self):

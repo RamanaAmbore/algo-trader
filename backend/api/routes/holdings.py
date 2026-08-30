@@ -60,7 +60,7 @@ _HOLDINGS_SNAPSHOT_SQL = """
     )
     SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
            db.ltp, db.previous_close, db.day_pnl, db.total_pnl, db.captured_at,
-           pb.prev_ltp
+           pb.prev_ltp, db.previous_close_backup
     FROM daily_book db
     JOIN latest_batch lb
       ON db.account = lb.account AND db.captured_at = lb.max_at
@@ -130,7 +130,8 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     aggregates into HoldingsSummaryRow.
     """
     (account, symbol, exchange, qty, avg_cost, ltp, previous_close,
-     day_pnl, total_pnl, _captured_at, prev_ltp) = raw_row
+     day_pnl, total_pnl, _captured_at, prev_ltp) = raw_row[:11]
+    previous_close_backup = raw_row[11] if len(raw_row) > 11 else None
 
     avg_cost_f       = float(avg_cost)       if avg_cost       is not None else 0.0
     ltp_f            = float(ltp)            if ltp             is not None else 0.0
@@ -151,6 +152,16 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     # `previous_close` as the primary reference and fall back to `prev_ltp`
     # only when `previous_close` is absent or zero. Mirrors positions_helpers.py.
     prev_ltp_f = float(prev_ltp) if prev_ltp is not None and float(prev_ltp) > 0 else None
+    # Safety net: when previous_close was corrupted by the rolling-shift UPSERT
+    # (i.e. previous_close ≈ ltp, meaning no real prior-session data), fall back
+    # to previous_close_backup (saved before the fix_daily_book_prev_close
+    # overwrote previous_close) or to prev_ltp from the prior snapshot batch.
+    backup_f = float(previous_close_backup) if previous_close_backup else 0.0
+    if previous_close_f <= 0 or (ltp_f > 0 and abs(previous_close_f - ltp_f) < 0.01):
+        if backup_f > 0 and abs(backup_f - ltp_f) >= 0.01:
+            previous_close_f = backup_f
+        elif prev_ltp_f is not None and prev_ltp_f > 0:
+            previous_close_f = prev_ltp_f
     # Priority: stored EOD day_pnl is authoritative when non-zero (it was
     # computed by the broker at session end, so it already accounts for
     # intraday buys/sells). Only recompute from prices when day_pnl_f == 0

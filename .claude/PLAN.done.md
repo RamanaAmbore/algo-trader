@@ -1,252 +1,271 @@
-# Plan: Fix NavStrip H slot 1 (day P&L) and H slot 2 (current value)
+# Plan: Fix previous_close corruption — immutable in UPSERT, dynamic open-time trigger
 
-## Context
+## Root cause
+The UPSERT rolling-shift in `_UPSERT_SQL` (`daily_snapshot.py:852-854`) overwrites
+`previous_close` every time `ltp` changes:
+```sql
+previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND EXCLUDED.ltp != 0
+                           AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp)
+                      THEN daily_book.ltp ELSE daily_book.previous_close END,
+```
+Positions get ~15 intraday writes per day. By 15:45 EOD, `previous_close` has been
+rolled through every intraday ltp and ends up at the last intraday price (~407.4) instead
+of Thursday's settlement (374.10).
 
-**Root cause — H:1 (day P&L shows ~₹0 on weekends/after-hours):**
+Additionally, the writer uses `ltp_val` as a last resort for `previous_close` when
+both `prev_ltp_map` and `close_price` are unavailable. This sets `previous_close = ltp`.
 
-On weekends (Saturday/Sunday), both `previous_close` and current `ltp` equal Friday's settlement price:
-- `previous_close` = `daily_book.ltp WHERE captured_at < today_08:00` = Friday 15:45 snapshot LTP
-- `last_price` from broker = also Friday settlement (market closed, no trades)
-- `_hold_tag_closed_row` recomputes `day_change_val = (snap_price - close_px) × qty = (Friday - Friday) × qty = 0`
-- `_override_stale_close_for_holdings` also recomputes `day_change_val = (last_price - previous_close) × qty = 0`
+Three hardcoded `dtime(8, 0)` / `timedelta(hours=8)` references determine when
+`previous_close` transitions to the new session. These must use the actual market open
+time from `exchange_schedule` (default 08:00, overridden per date for special sessions).
 
-The **correct Friday day P&L** (the actual session move from Thursday close to Friday close) is already stored in `daily_book.day_pnl`, captured by the EOD snapshot writer at 15:45 IST. Neither overlay path reads it.
-
-On **Monday 08:00** (market open): the default NON-MCX/MCX calendar triggers the prev_close reset. Holdings live LTP ticks from the ticker, diverging from Friday settlement → `day_change_val = (live_ltp - friday_settlement) × qty = Monday's move` — correct.
-
-**Secondary issue — H:1 frontend guard:**
-`holdingsDayPnlStore.svelte.js` has guard `closePx === avgCost → val = dcv`. With the backend fix, `dcv = daily_book.day_pnl` on weekends and `(live_ltp - prev_close) × qty` on weekdays — both correct. But the guard still incorrectly fires if `previous_close === average_price` (coincidental market condition), using broker dcv instead of live formula. Remove the guard.
-
-**Root cause — H:2 (current value shows "invented value"):**
-`_liveHoldingsValue` in `PositionStrip.svelte` falls back to `h.cur_val`. For holdings where broker returns `last_price = 0` (Dhan/Groww can send zero LTP for some NSE symbols), backend computes `cur_val = inv_val = average_price × qty` (investment cost, not current market value). Fix: prefer `h.last_price × qty` as first fallback — gives 0 (clearly missing) instead of investment cost (wrong but plausible).
+## Correct design (user confirmed)
+- `previous_close` is set ONCE — at the INSERT (via `prev_ltp_map` = yesterday's ltp).
+- ON CONFLICT DO UPDATE must NEVER touch `previous_close`.
+- `ltp` updates freely until settlement (NSE 15:45, MCX 00:15) — unaffected.
+- Today's session open time is read from `exchange_schedule` at **startup** and again
+  at **04:00 IST** (piggybacked on `_task_holiday_refresh`) — stored as module-level
+  variable `_TODAY_NSE_OPEN` in `exchange_clock.py`.
+- `fix_daily_book_prev_close` fires when `now.time() >= _TODAY_NSE_OPEN` (replacing
+  the hardcoded `dtime(8, 0)` guard) and is the ONLY mechanism to update `previous_close`.
+- If today has a holiday override (`open_time=None`), `_TODAY_NSE_OPEN` is `None` →
+  fix does not fire → `previous_close` unchanged → correct for closed days.
 
 ## Agents
 
-- backend: Fix `snapshot_gate.py` and `holdings.py` — extend snap_map to return day_pnl, use it in closed-exchange overlay
-- frontend: Fix `holdingsDayPnlStore.svelte.js` (H:1 guard) and `PositionStrip.svelte` (H:2 fallback)
-- broker: skip
+### broker: Five changes in `backend/api/algo/daily_snapshot.py`
+
+1. **UPSERT SQL (`_UPSERT_SQL` line ~852)** — replace rolling-shift with immutable preserve:
+   ```sql
+   -- REMOVE:
+   previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND EXCLUDED.ltp != 0
+                              AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp)
+                         THEN daily_book.ltp ELSE daily_book.previous_close END,
+   -- REPLACE WITH:
+   previous_close = daily_book.previous_close,
+   ```
+   `ltp` update clause is unchanged — ltp continues to update freely.
+
+2. **`_holdings_rows` writer (line ~470)** — remove `ltp_val` fallback:
+   ```python
+   # REMOVE the trailing `or ltp_val`:
+   "previous_close": (
+       (prev_ltp_map or {}).get((account, symbol, "holdings"))
+       or (float(r["close_price"]) if r.get("close_price") else None)
+       # None when unavailable — reader uses prev_batch ltp as safety net
+   ),
+   ```
+
+3. **`_positions_rows` writer** — same removal if the positions writer also has a
+   `ltp_val` fallback for `previous_close`. Check `_positions_build_row` and
+   `_position_previous_close`: cap `previous_close_val` to `None` instead of `ltp_val`.
+
+4. **`fix_daily_book_prev_close` (line 969)** — backup old value before overwriting + replace hardcoded `timedelta(hours=8)`:
+   ```python
+   # CURRENT:
+   today_8am = midnight + timedelta(hours=8)
+   if now_ist < today_8am:
+   # REPLACE WITH:
+   from backend.api.helpers import exchange_clock as _ec
+   _open = _ec.get_nse_open_time()          # sync — set at startup + 04:00 IST
+   if _open is None:
+       return 0                             # holiday → no transition
+   today_open = midnight.replace(hour=_open.hour, minute=_open.minute, second=0)
+   if now_ist < today_open:
+   ```
+
+5. **`prev_ltp_map` boundary (line 1121-1123)** — replace hardcoded 08:00:
+   ```python
+   # CURRENT:
+   _snap_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+   _snap_8am = _snap_midnight + timedelta(hours=8)
+   _before_session_open = now_ist < _snap_8am
+   # REPLACE WITH:
+   from backend.api.helpers import exchange_clock as _ec
+   _open = _ec.get_nse_open_time()
+   if _open is not None:
+       _snap_open = now_ist.replace(hour=_open.hour, minute=_open.minute, second=0, microsecond=0)
+       _before_session_open = now_ist < _snap_open
+   else:
+       _before_session_open = True          # holiday → behave as before-open
+   ```
+
+### broker (exchange_clock): Two additions in `backend/api/helpers/exchange_clock.py`
+
+Add module-level variable and loader:
+```python
+# Module-level — set at startup and refreshed at 04:00 IST
+_TODAY_NSE_OPEN: time | None = time(8, 0)  # default; None = holiday/closed
+
+def get_nse_open_time() -> time | None:
+    """Return today's NSE session open time. None = holiday (no transition fires)."""
+    return _TODAY_NSE_OPEN
+
+async def load_today_open_time() -> None:
+    """Read today's effective NSE open time from exchange_schedule and cache it.
+
+    Called at startup (from seed_and_warm) and at 04:00 IST daily (piggybacked
+    on _task_holiday_refresh) so _TODAY_NSE_OPEN is always correct for the day.
+    Default = time(8, 0) when cache is empty or no matching row found.
+    """
+    global _TODAY_NSE_OPEN
+    await refresh()                         # ensure cache is warm
+    sessions = get_today_gate_sessions("NON-MCX")
+    if not sessions:
+        _TODAY_NSE_OPEN = time(8, 0)        # no rows → fallback default
+    elif sessions[0].open_time is None:
+        _TODAY_NSE_OPEN = None              # holiday override — closed
+    else:
+        _TODAY_NSE_OPEN = sessions[0].open_time
+```
+
+Also call `await load_today_open_time()` at the end of the existing `seed_and_warm()`.
+
+### backend (migration + model): `previous_close_backup` column on `daily_book`
+
+**A. Alembic migration** — add nullable column (no backfill needed; NULL = "fix not yet run for this row"):
+```sql
+ALTER TABLE daily_book ADD COLUMN IF NOT EXISTS
+    previous_close_backup DOUBLE PRECISION DEFAULT NULL;
+```
+Create as a new Alembic revision in `backend/alembic/versions/`.
+
+**B. SQLAlchemy model** (`backend/api/models.py`, `DailyBook` class) — add:
+```python
+previous_close_backup: Mapped[Optional[float]] = mapped_column(Double, nullable=True)
+```
+
+**C. `fix_daily_book_prev_close` UPDATE** (`daily_snapshot.py` line ~995) — save old
+`previous_close` into backup column before overwriting it:
+```sql
+UPDATE daily_book d
+SET previous_close        = r.ref_close,
+    previous_close_backup = COALESCE(d.previous_close_backup, d.previous_close)
+    -- COALESCE preserves first backup; idempotent on server restart within same day
+FROM prev_ref r
+WHERE ...
+```
+`previous_close_backup` is never touched by `_UPSERT_SQL` — intraday writes leave it
+NULL until the morning fix runs once.
+This UPDATE covers **both** `kind='holdings'` and `kind='positions'` rows (the
+`prev_ref` CTE filters `kind IN ('holdings', 'positions')`) — backup applies to both.
+
+### backend: Three changes
+
+**A. `backend/api/background.py` — piggyback onto `_task_holiday_refresh` (line ~2325)**
+
+At the end of each successful daily holiday refresh, add:
+```python
+await exchange_clock.load_today_open_time()
+logger.info("Background: 04:00 IST — NSE session open time loaded: %s",
+            exchange_clock.get_nse_open_time())
+```
+
+**B. `backend/api/background.py` — dynamic trigger for `fix_daily_book_prev_close` (line 2093)**
+
+Replace hardcoded `dtime(8, 0)` window:
+```python
+# CURRENT:
+if dtime(8, 0) <= now.time() < dtime(8, 30) and _prev_close_fix_done != today:
+
+# REPLACE WITH:
+_nse_open_t = exchange_clock.get_nse_open_time()   # sync — set at startup + 04:00
+_nse_close_t = dtime((_nse_open_t.hour * 60 + _nse_open_t.minute + 30) // 60,
+                     (_nse_open_t.minute + 30) % 60) if _nse_open_t else None
+if (_nse_open_t is not None
+        and _nse_open_t <= now.time() < _nse_close_t
+        and _prev_close_fix_done != today):
+```
+
+**C. `backend/api/routes/holdings.py` — reader safety net in `_build_holding_row_from_snapshot`**
+
+Add `previous_close_backup` to `_HOLDINGS_SNAPSHOT_SQL` SELECT (alongside existing columns).
+
+After computing `previous_close_f` (line ~155), add before `day_change_val` computation:
+```python
+# Safety net for legacy rows where previous_close was stamped = ltp (rolling-shift bug).
+# Priority: previous_close_backup (saved by morning fix) > prev_ltp (prev_batch CTE).
+backup_f = float(row.previous_close_backup) if row.previous_close_backup else 0.0
+if previous_close_f <= 0 or (ltp_f > 0 and abs(previous_close_f - ltp_f) < 0.01):
+    if backup_f > 0 and abs(backup_f - ltp_f) >= 0.01:
+        previous_close_f = backup_f
+    elif prev_ltp_f is not None and prev_ltp_f > 0:
+        previous_close_f = prev_ltp_f
+```
+`prev_ltp_f` comes from the `prev_batch` CTE already in `_HOLDINGS_SNAPSHOT_SQL` (line ~60).
+
+**D. `backend/api/routes/positions_helpers.py` — same safety net in `build_row_from_snapshot_raw`**
+
+Add `previous_close_backup` to the positions snapshot SQL SELECT (whichever query feeds
+`build_row_from_snapshot_raw` — check `_POSITIONS_SNAPSHOT_SQL` or equivalent).
+
+In `build_row_from_snapshot_raw`, after reading `previous_close` from the row, add
+the same safety net as holdings:
+```python
+# Safety net: use previous_close_backup or prior ltp when previous_close ≈ ltp.
+backup_f = float(row.previous_close_backup) if getattr(row, 'previous_close_backup', None) else 0.0
+if previous_close_f <= 0 or (ltp_f > 0 and abs(previous_close_f - ltp_f) < 0.01):
+    if backup_f > 0 and abs(backup_f - ltp_f) >= 0.01:
+        previous_close_f = backup_f
+```
+With the UPSERT fix, new rows will have correct `previous_close` after the morning fix;
+this guard covers legacy corrupted rows already in `daily_book`.
+
+- frontend: skip
 - doc: skip
-- backend-test: Update/add tests for the day_pnl-as-day_change_val path in holdings closed overlay
+
+### backend-test: Add tests in `backend/tests/`
+
+1. **UPSERT immutability**: Insert a row with `previous_close=374.10, ltp=374.10`, then
+   UPSERT again with `ltp=407.50`. Assert `daily_book.previous_close` is still `374.10`.
+
+2. **Writer `None` fallback**: Call holdings writer with `prev_ltp_map={}` and
+   `close_price=0`. Assert stored `previous_close` is `None`, not ltp.
+
+3. **Reader safety net**: Call `_build_holding_row_from_snapshot` with
+   `previous_close=407.50, ltp=407.50, prev_ltp=374.10`. Assert returned
+   `close_price` (= `previous_close_f`) is `374.10`.
+
+4. **Positions formula**: Call `build_row_from_snapshot_raw` with
+   `previous_close=374.10, ltp=407.50, average_price=350.00, opening_quantity=10`.
+   Assert `day_change_val ≈ 334.0`.
+
+5. **`load_today_open_time` — default and holiday**: Patch `exchange_clock._CACHE`
+   with (a) normal NON-MCX row `open_time=time(8,0)`, (b) holiday override
+   `open_time=None`. Assert `get_nse_open_time()` returns correct value in each case.
+
+6. **`fix_daily_book_prev_close` — holiday no-op**: Patch `get_nse_open_time()` to
+   return `None`. Call `fix_daily_book_prev_close(now_ist)`. Assert returns `0`
+   immediately without touching the DB.
+
+7. **`previous_close_backup` saved on fix**: After `fix_daily_book_prev_close` runs,
+   assert `daily_book.previous_close_backup` equals the old `previous_close` value for
+   both `kind='holdings'` and `kind='positions'` rows.
+   Run fix a second time; assert `previous_close_backup` is unchanged (COALESCE guard).
+
+8. **Positions reader safety net**: Call `build_row_from_snapshot_raw` with a row where
+   `previous_close=407.50, ltp=407.50, previous_close_backup=374.10`. Assert
+   `day_change_val` is computed using 374.10 (backup), not 407.50.
+
 - playwright: skip
 
-## Backend agent task
-
-Working directory: `/Users/ramanambore/projects/ramboq`
-
-For every file you change, you MUST write or update at least one test covering the changed behaviour.
-
-### File 1 — `backend/api/helpers/snapshot_gate.py`
-
-**`latest_snapshot_ltp_map(kind)`** → change return type to include `day_pnl`.
-
-Current return: `dict[tuple[str, str], float]` (account, symbol) → ltp
-
-New return: `dict[tuple[str, str], tuple[float, float | None]]` (account, symbol) → (ltp, day_pnl)
-
-Change the SQL to also select `db.day_pnl`:
-```python
-SELECT db.account, db.symbol, db.ltp, db.day_pnl
-FROM daily_book db
-JOIN latest_batch lb
-  ON db.account = lb.account AND db.captured_at = lb.max_at
-WHERE db.kind = :kind
-  AND db.ltp IS NOT NULL AND db.ltp > 0
-```
-
-Change the result parsing:
-```python
-for account, symbol, ltp, day_pnl in result.all():
-    out[(str(account), str(symbol))] = (
-        float(ltp),
-        float(day_pnl) if day_pnl is not None else None
-    )
-```
-
-Update the docstring to reflect new return type.
-
-### File 2 — `backend/api/routes/holdings.py`
-
-**`_hold_tag_closed_row(r, snap_data, _msc)`** → unpack `(snap_ltp, snap_day_pnl)` from the new tuple.
-
-Change signature and unpacking:
-```python
-def _hold_tag_closed_row(r, snap_data, _msc) -> object:
-    # snap_data is now (ltp, day_pnl) tuple from latest_snapshot_ltp_map
-    snap_ltp = snap_data[0] if isinstance(snap_data, tuple) else snap_data
-    snap_day_pnl = snap_data[1] if isinstance(snap_data, tuple) else None
-```
-
-In the settled path (lines ~548-559), replace the `day_change_val` recomputation:
-
-```python
-# BEFORE:
-if close_px > 0 and qty != 0:
-    dcv = (snap_price - close_px) * qty
-    replace_kwargs["day_change_val"] = dcv
-    replace_kwargs["day_change"] = dcv / qty
-    replace_kwargs["day_change_percentage"] = dcv / abs(close_px * qty) * 100
-
-# AFTER:
-if snap_day_pnl is not None and snap_day_pnl != 0.0:
-    # Use the stored EOD day P&L from the snapshot (broker-computed at settlement).
-    # Recomputing (snap_price - close_px) × qty gives 0 on weekends because both
-    # snap_price and close_px reference the same Friday settlement snapshot.
-    replace_kwargs["day_change_val"] = snap_day_pnl
-    replace_kwargs["day_change"] = snap_day_pnl / qty if qty != 0 else 0.0
-    denom = abs(close_px * qty)
-    replace_kwargs["day_change_percentage"] = (snap_day_pnl / denom * 100) if denom else 0.0
-elif close_px > 0 and qty != 0:
-    # Fallback: recompute from prices (used when day_pnl is genuinely 0 —
-    # e.g. stock held flat all day, or no day_pnl in daily_book).
-    dcv = (snap_price - close_px) * qty
-    replace_kwargs["day_change_val"] = dcv
-    replace_kwargs["day_change"] = dcv / qty
-    replace_kwargs["day_change_percentage"] = dcv / abs(close_px * qty) * 100
-```
-
-### File 3 — `backend/api/routes/positions.py`
-
-`_process_overlay_row` also calls `snap_map.get(key)`. Update to unpack the new tuple:
-
-```python
-# BEFORE:
-snap_ltp = snap_map.get(key)
-...
-if kind == "positions":
-    ref_close = ref_close_map.get(key, 0.0)
-    if ref_close > 0 and snap_ltp is not None:
-        snap_ltp_f = float(snap_ltp)
-        qty = int(getattr(r, "quantity", 0) or 0)
-        dcv = (snap_ltp_f - ref_close) * qty
-
-# AFTER:
-snap_val = snap_map.get(key)
-snap_ltp = snap_val[0] if isinstance(snap_val, tuple) else snap_val
-snap_day_pnl = snap_val[1] if isinstance(snap_val, tuple) else None
-...
-if kind == "positions":
-    ref_close = ref_close_map.get(key, 0.0)
-    if snap_ltp is not None:
-        snap_ltp_f = float(snap_ltp)
-        qty = int(getattr(r, "quantity", 0) or 0)
-        if snap_day_pnl is not None and snap_day_pnl != 0.0:
-            dcv = snap_day_pnl
-        elif ref_close > 0:
-            dcv = (snap_ltp_f - ref_close) * qty
-        else:
-            dcv = None
-        if dcv is not None:
-            prev_val = abs(ref_close * qty) if (ref_close > 0 and qty) else 0.0
-            dcp = (dcv / prev_val * 100.0) if prev_val else 0.0
-            replaced = _msc.structs.replace(
-                replaced, day_change_val=dcv, day_change_percentage=dcp,
-                close_price=ref_close,
-            )
-```
-
-## Frontend agent task
-
-Working directory: `/Users/ramanambore/projects/ramboq`
-
-For every file you change, you MUST write or update at least one test covering the changed behaviour.
-
-### File 1 — `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` (H:1 guard fix)
-
-Remove `closePx === avgCost` from the guard condition. New guard: only `closePx <= 0`.
-Remove the unused `const avgCost = ...` line.
-
-```javascript
-// BEFORE:
-if (closePx === 0 || closePx === avgCost) {
-  if (import.meta.env.DEV && closePx === avgCost && avgCost > 0) {
-    console.warn('[holdingsDayPnlStore] closePx === avgCost for', sym, '— falling back to day_change_val');
-  }
-  val = dcv;
-} else if (liveLtp > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
-  val = (liveLtp - closePx) * heldQty;
-} else {
-  val = dcv;
-}
-
-// AFTER:
-if (closePx <= 0) {
-  val = dcv;
-} else if (liveLtp > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
-  val = (liveLtp - closePx) * heldQty;
-} else {
-  // Market closed or price flat (ltp ≈ close): use broker day_change_val.
-  // With the backend fix, day_change_val = daily_book.day_pnl for closed
-  // exchanges — the actual EOD day P&L, not 0.
-  val = dcv;
-}
-```
-
-Also update the JSDoc comment at the top (Guard line): `closePx<=0 (missing/zero) → fall back to day_change_val`.
-
-Remove `const avgCost = Number(h?.average_price) || 0;` since it's no longer used.
-
-### File 2 — `frontend/src/lib/PositionStrip.svelte` (H:2 fallback fix)
-
-In `_liveHoldingsValue`, add `h.last_price × qty` as intermediate fallback before `h.cur_val`:
-
-```javascript
-// AFTER:
-const _liveHoldingsValue = $derived.by(() => {
-  let s = 0;
-  for (const h of holdings) {
-    const sym    = String(h?.tradingsymbol || '').toUpperCase();
-    const ltp    = getSnapshot(sym)?.ltp;
-    const qty    = Number(h?.quantity || 0);
-    const lastPx = Number(h?.last_price || 0);
-    if (ltp != null && ltp > 0 && qty !== 0) {
-      s += ltp * qty;
-    } else if (lastPx > 0 && qty !== 0) {
-      // Use last_price × qty rather than h.cur_val: cur_val may equal
-      // inv_val (avg_price × qty) when backend's last_price was 0.
-      s += lastPx * qty;
-    } else {
-      s += Number(h?.cur_val || 0);
-    }
-  }
-  return s;
-});
-```
-
-## Backend-test agent task
-
-Working directory: `/Users/ramanambore/projects/ramboq`
-
-Add/update tests in `backend/tests/`:
-
-1. **`test_holdings_snapshot_day_pnl.py`** (new file):
-   - Test `latest_snapshot_ltp_map` returns `(ltp, day_pnl)` tuples — mock DB to return a row with `ltp=500, day_pnl=15000`, assert result `[(account, sym)] == (500.0, 15000.0)`
-   - Test `_hold_tag_closed_row` uses `snap_day_pnl` when non-zero (not recomputing from prices):
-     Set `snap_data=(500.0, 15000.0)`, `close_price=490`, `quantity=100`. 
-     Expect `day_change_val=15000` (from day_pnl), NOT `(500-490)*100=1000` (price recompute).
-   - Test `_hold_tag_closed_row` falls back to price recompute when `snap_day_pnl=None`:
-     Set `snap_data=(500.0, None)`, `close_price=490`, `quantity=100`.
-     Expect `day_change_val=(500-490)*100=1000`.
-   - Test `_hold_tag_closed_row` falls back to price recompute when `snap_day_pnl=0.0`:
-     Set `snap_data=(500.0, 0.0)`, `close_price=490`, `quantity=100`.
-     Expect `day_change_val=(500-490)*100=1000` (0.0 means genuinely flat, not missing).
-
-2. Update any existing test that mocks `latest_snapshot_ltp_map` to return `(ltp, day_pnl)` tuples.
-
 ## Tests
-
 - pytest: yes
-- svelte-check: yes
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-
-fix(holdings): use daily_book.day_pnl as day_change_val in closed-exchange overlay; remove avgCost close guard; prefer last_price×qty over cur_val
+fix(snapshot): previous_close immutable in UPSERT; open-time loaded at startup + 04:00 IST
 
 ## Done when
-
-- Weekend: H:1 shows Friday's actual day P&L (from `daily_book.day_pnl`), not 0
-- Market hours: H:1 uses `(liveLtp - previous_close) × qty` via holdingsDayPnlStore formula
-- H:2 uses `last_price × qty` as first fallback over `cur_val` when symbolStore LTP unavailable
-- `holdingsDayPnlStore` tests: `closePx === avgCost` no longer triggers dcv; `closePx <= 0` still does
-- pytest passes (broker ≥80%, api ≥45%)
-- svelte-check 0 errors
+- Multiple intraday writes on same date do NOT change `daily_book.previous_close`
+- Holdings writer stores `None` (not ltp) when prev_ltp_map and close_price unavailable
+- `exchange_clock._TODAY_NSE_OPEN` is populated at startup and refreshed at 04:00 IST
+- `fix_daily_book_prev_close` and `prev_ltp_map` boundary use `get_nse_open_time()`
+- On holiday (`open_time=None`): fix does not fire, prev_ltp_map behaves as before-open
+- `_build_holding_row_from_snapshot` uses `prev_ltp_f` when `previous_close_f ≈ ltp_f`
+- Positions day P&L formula computes correctly with stable `previous_close`
+- `daily_book.previous_close_backup` holds the pre-fix value for both holdings and positions after morning fix runs
+- `previous_close_backup` is NULL before the fix runs and immutable once set (per day)
+- Holdings and positions readers use `previous_close_backup` as primary fallback when `previous_close ≈ ltp`
+- All tests green

@@ -346,15 +346,23 @@ class TestHoldingsWriterNeutralisesZeroLtpNoFallback:
 
 
 class TestUpsertPreviousCloseGuard:
-    """UPSERT SQL must not roll previous_close when ltp=0."""
+    """UPSERT SQL must not roll previous_close — it is now immutable."""
 
-    def test_upsert_sql_previous_close_excludes_zero_ltp(self):
-        """previous_close CASE must have EXCLUDED.ltp != 0 guard."""
+    def test_upsert_sql_previous_close_immutable_on_conflict(self):
+        """previous_close is immutable: set at INSERT only, never updated on conflict.
+        The old rolling-shift CASE (EXCLUDED.ltp != 0 guard) has been removed."""
         from backend.api.algo.daily_snapshot import _UPSERT_SQL
         sql_text = str(_UPSERT_SQL)
-        # The rolling-shift guard: only roll previous_close when ltp != 0
-        assert "EXCLUDED.ltp != 0" in sql_text, (
-            "_UPSERT_SQL previous_close CASE must guard against ltp=0 rolling-shift"
+        # Old rolling-shift guards must be absent
+        assert "EXCLUDED.ltp != 0" not in sql_text, (
+            "Old ltp=0 rolling-shift guard must not be present — previous_close is now immutable"
+        )
+        assert "EXCLUDED.ltp != daily_book.ltp" not in sql_text, (
+            "Old ltp-change gate must not be present — previous_close is now immutable"
+        )
+        # Immutable preserve pattern must be present
+        assert "previous_close = daily_book.previous_close" in sql_text, (
+            "_UPSERT_SQL must preserve previous_close from the existing row (immutable)"
         )
 
 

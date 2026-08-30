@@ -234,13 +234,14 @@ class TestRowBuilders:
         assert rows[0]["previous_close"] == 7350.0, \
             f"expected previous_close=7350.0 but got {rows[0]['previous_close']}"
 
-    def test_holdings_previous_close_falls_back_to_ltp_when_absent(self):
-        """Fix P1-B: when close_price is absent, previous_close falls back to ltp_val.
+    def test_holdings_previous_close_none_when_close_price_absent(self):
+        """When close_price is absent and prev_ltp_map is empty, previous_close is None.
 
-        Before Fix P1-B, previous_close was None when close_price was missing.
-        After the fix, ltp_val is the last-resort fallback so that NULL never
-        reaches the DB (which would trigger the |ltp-close|<=0.005 guard in
-        holdings.py and produce stale day_change_val=0).
+        Design (post-P1-B revision): previous_close = None is intentional when there is
+        no prior session close reference. fix_daily_book_prev_close fills in the correct
+        value from yesterday's daily_book.ltp at 08:00 IST. Using ltp_val as a fallback
+        would set previous_close = ltp, causing day P&L = (ltp - ltp) * qty = 0, which
+        is exactly the corruption bug we are fixing.
         """
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
@@ -259,15 +260,18 @@ class TestRowBuilders:
         with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
             rows = _holdings_rows("ZG0790", self._D, [holding_no_close], self._NOW_EOD)
             assert len(rows) == 1
-            assert rows[0]["previous_close"] is not None, (
-                "previous_close must not be None when close_price missing — ltp_val fallback must apply"
-            )
-            assert rows[0]["previous_close"] == pytest.approx(1560.0), (
-                f"previous_close must equal ltp_val=1560.0 (ltp fallback); got {rows[0]['previous_close']}"
+            assert rows[0]["previous_close"] is None, (
+                "previous_close must be None when close_price missing and no prev_ltp_map — "
+                "fix_daily_book_prev_close fills it in at 08:00 IST the next morning"
             )
 
-    def test_holdings_previous_close_falls_back_to_ltp_when_zero(self):
-        """Fix P1-B: when close_price is zero, previous_close falls back to ltp_val."""
+    def test_holdings_previous_close_none_when_close_price_zero(self):
+        """When close_price is zero and prev_ltp_map is empty, previous_close is None.
+
+        Zero close_price is treated identically to absent: no reliable prior-session
+        reference is available, so previous_close stays None. The morning fix job
+        supplies the correct value from daily_book.ltp.
+        """
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
@@ -279,21 +283,18 @@ class TestRowBuilders:
             "last_price": 1100.0,
             "day_change": 100.0,
             "pnl": 500.0,
-            "close_price": 0,  # Zero close price
+            "close_price": 0,  # Zero close price — not a valid prior-session reference
         }
         # EOD snapshot — market closed, ltp captured
         with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
             rows = _holdings_rows("ZG0790", self._D, [holding_zero_close], self._NOW_EOD)
             assert len(rows) == 1
-            assert rows[0]["previous_close"] is not None, (
-                "previous_close must not be None when close_price=0 — ltp_val fallback must apply"
-            )
-            assert rows[0]["previous_close"] == pytest.approx(1100.0), (
-                f"previous_close must equal ltp_val=1100.0; got {rows[0]['previous_close']}"
+            assert rows[0]["previous_close"] is None, (
+                "previous_close must be None when close_price=0 and prev_ltp_map empty"
             )
 
-    def test_holdings_previous_close_falls_back_to_ltp_when_none(self):
-        """Fix P1-B: when close_price is explicitly None, previous_close falls back to ltp_val."""
+    def test_holdings_previous_close_none_when_close_price_explicitly_none(self):
+        """When close_price is explicitly None, previous_close is None (no ltp fallback)."""
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
@@ -305,17 +306,14 @@ class TestRowBuilders:
             "last_price": 2100.0,
             "day_change": 100.0,
             "pnl": 200.0,
-            "close_price": None,  # Explicitly None
+            "close_price": None,  # Explicitly None — no valid prior-session close
         }
         # EOD snapshot — market closed, ltp captured
         with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
             rows = _holdings_rows("ZG0790", self._D, [holding_none_close], self._NOW_EOD)
             assert len(rows) == 1
-            assert rows[0]["previous_close"] is not None, (
-                "previous_close must not be None when close_price=None — ltp_val fallback must apply"
-            )
-            assert rows[0]["previous_close"] == pytest.approx(2100.0), (
-                f"previous_close must equal ltp_val=2100.0; got {rows[0]['previous_close']}"
+            assert rows[0]["previous_close"] is None, (
+                "previous_close must be None when close_price=None and prev_ltp_map empty"
             )
 
     def test_holdings_previous_close_stored_in_payload(self):
@@ -1031,26 +1029,23 @@ class TestHoldingsRowQtyPriority:
 # ---------------------------------------------------------------------------
 
 class TestHoldingsRowPreviousCloseLtpFallback:
-    """Regression tests for Fix P1-B: previous_close must use ltp_val as
-    last-resort fallback when no prior close exists.
+    """Regression tests for the writer previous_close contract.
 
-    Affected path: _holdings_rows() previous_close field, line 473-476.
-    When previous_close=None reaches the DB, _build_holding_row_from_snapshot
-    in holdings.py:147 falls back to close_price_f=ltp_f, which then triggers
-    the |ltp-close|<=0.005 post-settlement guard -> routes to day_change_val=0.
-    The ltp_val fallback ensures same-day buys get previous_close=ltp ->
-    day P&L = 0, which is correct.
+    Design (current): the writer stores None when no prior-session close
+    reference is available (close_price=0/absent, prev_ltp_map empty).
+    The reader safety net in _build_holding_row_from_snapshot fills the gap
+    from prev_ltp (DB join) or previous_close_backup.  Writing ltp_val as
+    previous_close was removed because it caused previous_close ≈ ltp
+    corruption that fix_daily_book_prev_close was designed to undo.
     """
 
     _D = date(2026, 8, 19)
     _NOW_EOD = datetime(2026, 8, 19, 23, 35)
 
-    def test_previous_close_falls_back_to_ltp_when_no_close_price(self):
-        """When close_price is 0/absent AND prev_ltp_map is empty,
-        previous_close must be ltp_val (not None).
-
-        This is the same-day-buy case: no prior session exists, so
-        previous_close = current ltp -> day P&L = (ltp - ltp) * qty = 0.
+    def test_previous_close_none_when_no_close_price_and_no_prev_ltp(self):
+        """When close_price is 0/absent AND prev_ltp_map is empty, writer
+        stores previous_close = None.  The reader safety net will fill from
+        prev_ltp or previous_close_backup at read time.
         """
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
@@ -1072,20 +1067,14 @@ class TestHoldingsRowPreviousCloseLtpFallback:
             rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
                                    prev_ltp_map=None)
             assert len(rows) == 1
-            assert rows[0]["previous_close"] is not None, (
-                "previous_close must not be None when close_price=0 and no prev_ltp_map — "
-                "must fall back to ltp_val to prevent NULL triggering 0-P&L guard in holdings.py"
-            )
-            assert rows[0]["previous_close"] == pytest.approx(510.0), (
-                f"previous_close must equal ltp_val=510.0 when no prior close; "
-                f"got {rows[0]['previous_close']}"
+            assert rows[0]["previous_close"] is None, (
+                "Writer must store None when no prior-session close is available; "
+                "reader safety net fills from prev_ltp or backup at read time"
             )
 
-    def test_previous_close_ltp_fallback_produces_zero_day_pnl(self):
-        """When previous_close == ltp (same-day buy fallback), day P&L = 0.
-
-        This is the semantically correct result: bought today, no prior session,
-        so day gain = 0 (entry and close are the same).
+    def test_previous_close_none_when_ltp_equals_entry_price(self):
+        """Same-day buy: writer stores None (not ltp_val) to avoid
+        previous_close ≈ ltp corruption that fix_daily_book_prev_close repairs.
         """
         from unittest.mock import patch
         import backend.api.algo.daily_snapshot as _ds
@@ -1107,8 +1096,10 @@ class TestHoldingsRowPreviousCloseLtpFallback:
             rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
                                    prev_ltp_map=None)
             assert len(rows) == 1
-            # previous_close = ltp_val = 1000, so day P&L formula = (1000-1000)*10 = 0
-            assert rows[0]["previous_close"] == pytest.approx(1000.0)
+            assert rows[0]["previous_close"] is None, (
+                "Writer must not set previous_close = ltp_val (causes corruption); "
+                "expected None when no prior close reference"
+            )
 
     def test_prev_ltp_map_takes_priority_over_ltp_fallback(self):
         """prev_ltp_map value wins over the ltp_val fallback."""

@@ -470,7 +470,6 @@ def _holdings_rows(
             "previous_close": (
                 (prev_ltp_map or {}).get((account, symbol, "holdings"))
                 or (float(r["close_price"]) if r.get("close_price") else None)
-                or ltp_val
             ),
             "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
@@ -849,9 +848,7 @@ _UPSERT_SQL = text("""
                          END,
         day_pnl        = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END,
         total_pnl      = EXCLUDED.total_pnl,
-        previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND EXCLUDED.ltp != 0
-                                   AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp)
-                              THEN daily_book.ltp ELSE daily_book.previous_close END,
+        previous_close = daily_book.previous_close,
         payload_json   = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json ELSE daily_book.payload_json END,
         captured_at    = EXCLUDED.captured_at
 """)
@@ -949,11 +946,10 @@ async def _delete_prior_orphan_positions(account: str, current_symbols: set) -> 
 async def fix_daily_book_prev_close(now_ist=None) -> int:
     """Repair daily_book.previous_close for today's rows.
 
-    Overnight mode (now_ist < today's 08:00 IST):
-      Reads yesterday's daily_book.previous_close (= prior-prior-session settlement,
-      correctly stored by the UPSERT rolling-shift). Updates only rows where
-      previous_close ≈ ltp (wrong data created by buggy prev_ltp_map that was
-      reading ltp instead of previous_close from yesterday's rows).
+    Overnight mode (now_ist < today's session open):
+      Reads yesterday's daily_book.previous_close (= prior-prior-session settlement).
+      Updates only rows where previous_close ≈ ltp (stale data from prior bug).
+      Saves old value into previous_close_backup before overwriting.
       After fix: day_change = (today's settlement - prior-prior-session) × qty,
       showing yesterday's session performance during the closed-hours window.
 
@@ -966,10 +962,14 @@ async def fix_daily_book_prev_close(now_ist=None) -> int:
     if now_ist is None:
         now_ist = timestamp_indian()
     midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_8am = midnight + timedelta(hours=8)
     today = now_ist.date()
 
-    if now_ist < today_8am:
+    _open = _exchange_clock.get_nse_open_time()   # sync — set at startup and at 04:00 IST
+    if _open is None:
+        return 0                      # holiday — no transition fires
+    today_open = midnight.replace(hour=_open.hour, minute=_open.minute, second=0, microsecond=0)
+
+    if now_ist < today_open:
         ref_col = "previous_close"
         ref_cond = "previous_close IS NOT NULL AND previous_close > 0"
         epsilon = 0.005   # only fix rows where previous_close ≈ ltp (wrong)
@@ -993,7 +993,8 @@ async def fix_daily_book_prev_close(now_ist=None) -> int:
                     ORDER BY kind, account, symbol, date DESC
                 )
                 UPDATE daily_book d
-                SET previous_close = r.ref_close
+                SET previous_close        = r.ref_close,
+                    previous_close_backup = COALESCE(d.previous_close_backup, d.previous_close)
                 FROM prev_ref r
                 WHERE d.kind = r.kind
                   AND d.account = r.account
@@ -1110,17 +1111,19 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
     # previous_close in today's INSERT rows instead of broker's stale close_price.
     #
     # Two modes based on session boundary (08:00 IST):
-    #   Before 08:00 IST (overnight): read daily_book.previous_close from yesterday's rows.
-    #     The UPSERT rolling-shift already stores the prior-prior-session settlement there
-    #     (e.g., Aug 23 settlement = 97.50 in the Aug 24 row's previous_close column) when
-    #     NSE settlement fires and ltp shifts. Using this value as today's INSERT previous_close
+    #   Before session open (overnight): read daily_book.previous_close from yesterday's rows.
+    #     previous_close = prior-prior-session settlement (immutable after INSERT — UPSERT
+    #     no longer overwrites it). Using this value as today's INSERT previous_close
     #     gives the correct overnight display: day_change = (today's settlement - prior-prior-session).
     #   At/after 08:00 IST (new session): read daily_book.ltp from yesterday's rows.
     #     ltp = prior-session settlement (e.g., Aug 24 settlement = 98.00) — the correct
     #     new-session baseline. ltp == prev_close at session open is intentionally valid.
-    _snap_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    _snap_8am = _snap_midnight + timedelta(hours=8)
-    _before_session_open = now_ist < _snap_8am
+    _open = _exchange_clock.get_nse_open_time()
+    if _open is not None:
+        _snap_open = now_ist.replace(hour=_open.hour, minute=_open.minute, second=0, microsecond=0)
+        _before_session_open = now_ist < _snap_open
+    else:
+        _before_session_open = True   # holiday — treat as before session open
     if _before_session_open:
         _prev_sql = """
             SELECT DISTINCT ON (account, symbol, kind)

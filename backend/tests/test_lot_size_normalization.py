@@ -504,19 +504,22 @@ class TestUpsertSQLFixes:
             "UPSERT must preserve existing ltp when new value is NULL or 0"
         )
 
-    def test_upsert_sql_previous_close_gated_by_ltp_change(self):
-        """FIXED: previous_close now only advances when ltp changes
-        (ltp IS NOT NULL AND ltp != daily_book.ltp)."""
+    def test_upsert_sql_previous_close_immutable(self):
+        """FIXED: previous_close is now immutable — set only at INSERT, never updated
+        on conflict.  The old rolling-shift CASE pattern has been removed."""
         from backend.api.algo.daily_snapshot import _UPSERT_SQL
 
         sql_str = str(_UPSERT_SQL)
-        # Should NOT have the old always-frozen pattern
-        assert 'COALESCE(daily_book.previous_close, EXCLUDED.previous_close)' not in sql_str, (
-            "FIXED: previous_close should not always preserve old value"
+        # Old rolling-shift guard must be gone
+        assert 'EXCLUDED.ltp != daily_book.ltp' not in sql_str, (
+            "Old ltp-change-gated rolling-shift pattern must not be present"
         )
-        # Should have the new ltp change gate
-        assert 'EXCLUDED.ltp != daily_book.ltp' in sql_str, (
-            "previous_close must be gated by ltp change detection"
+        assert 'EXCLUDED.ltp != 0' not in sql_str, (
+            "Old ltp=0 rolling-shift guard must not be present"
+        )
+        # New immutable pattern: preserve the existing DB value on conflict
+        assert 'previous_close = daily_book.previous_close' in sql_str, (
+            "UPSERT must preserve previous_close from the existing row (immutable)"
         )
 
     def test_upsert_sql_adds_lots_and_lot_size_columns(self):

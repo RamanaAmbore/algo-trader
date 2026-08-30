@@ -659,6 +659,21 @@ async def _migrate_daily_book_backfill_previous_close(conn) -> None:
     """))
 
 
+async def _migrate_daily_book_previous_close_backup(conn) -> None:
+    """Add previous_close_backup column to daily_book (idempotent).
+
+    Saved by fix_daily_book_prev_close before it overwrites previous_close
+    with yesterday's ltp. Allows reader safety nets in holdings.py and
+    positions_helpers.py to fall back to the original value when the
+    rolling-shift UPSERT corrupts previous_close (i.e. sets it equal to ltp).
+    """
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE daily_book "
+        "ADD COLUMN IF NOT EXISTS previous_close_backup DOUBLE PRECISION"
+    ))
+
+
 async def _migrate_algo_orders_chase_timing(conn) -> None:
     """Add chase timing + interval columns to algo_orders (idempotent).
 
@@ -809,6 +824,7 @@ async def init_db() -> None:
         await _migrate_code_metrics_perf_snapshots(conn)
         await _migrate_daily_book_previous_close(conn)
         await _migrate_daily_book_backfill_previous_close(conn)
+        await _migrate_daily_book_previous_close_backup(conn)
         await _migrate_algo_orders_chase_timing(conn)
         await _migrate_algo_orders_intent(conn)
         await _migrate_exchange_schedule_table(conn)

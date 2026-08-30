@@ -1560,6 +1560,7 @@ class DailyBook(Base):
     # overwrite a non-NULL value. Used by _positions_snapshot() to supply
     # a correct close_price during closed-hours reads instead of LTP.
     previous_close: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
+    previous_close_backup: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
     payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # raw row for forensics
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

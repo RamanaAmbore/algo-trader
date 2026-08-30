@@ -272,17 +272,18 @@ def extract_snapshot_product(payload_json: object) -> str:
 
 
 def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
-    """Build a PositionRow from a 13-column daily_book raw snapshot tuple.
+    """Build a PositionRow from a 14-column daily_book raw snapshot tuple.
 
     Column order: account, symbol, exchange, qty, avg_cost, ltp,
     day_pnl, total_pnl, payload_json, captured_at, previous_close,
-    prev_ltp, prev_settlement_pnl.
+    prev_ltp, prev_settlement_pnl, previous_close_backup.
 
     Extracted from ``_positions_snapshot`` to reduce that function's CC.
     """
     (account, symbol, exchange, qty, avg_cost, ltp,
      day_pnl, total_pnl, payload_json, _captured_at, previous_close,
-     prev_ltp, prev_settlement_pnl) = raw_row
+     prev_ltp, prev_settlement_pnl) = raw_row[:13]
+    previous_close_backup = raw_row[13] if len(raw_row) > 13 else None
 
     extras = extract_snapshot_extras(payload_json)
     # daily_book.qty is already in CONTRACTS — _positions_qty_fields converted
@@ -295,9 +296,17 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     # LTP during a session, which would make day_change ≈ 0.  Use
     # `actual_previous_close` as the primary reference and fall back to
     # `prev_ltp` only when `previous_close` is absent or zero.
-    actual_previous_close = (
-        float(previous_close) if previous_close and float(previous_close) > 0 else None
-    )
+    # Safety net: when previous_close was corrupted by the rolling-shift UPSERT
+    # (i.e. previous_close == ltp), fall back to previous_close_backup (saved
+    # before fix_daily_book_prev_close overwrote previous_close).
+    _pc_raw = float(previous_close) if previous_close and float(previous_close) > 0 else None
+    _ltp_f  = float(ltp) if ltp else 0.0
+    backup_f = float(previous_close_backup) if previous_close_backup else 0.0
+    if _pc_raw is not None and _ltp_f > 0 and abs(_pc_raw - _ltp_f) < 0.01:
+        # previous_close ≈ ltp: rolling-shift corruption — try backup
+        if backup_f > 0 and abs(backup_f - _ltp_f) >= 0.01:
+            _pc_raw = backup_f
+    actual_previous_close = _pc_raw
     prev_close_val = (
         actual_previous_close
         or (float(prev_ltp) if prev_ltp and float(prev_ltp) > 0 else None)

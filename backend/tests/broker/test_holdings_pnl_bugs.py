@@ -103,15 +103,23 @@ class TestDailySnapshotQtyUsesQuantityNotOpeningQuantity:
 
 
 class TestDailySnapshotPreviousCloseNeverNull:
-    """P1-B: previous_close fallback chain includes ltp_val as last resort."""
+    """P1-B: previous_close fallback chain: prev_ltp_map > close_price > None.
 
-    def test_daily_snapshot_previous_close_never_null(self):
-        """Holding with no prev_ltp_map entry and close_price=0: previous_close must be ltp_val.
+    Updated Aug 2026: the `or ltp_val` last-resort was removed from the writer
+    because it was stamping previous_close = ltp (current price) on cold-boot
+    rows, corrupting the overnight P&L baseline.  The UPSERT now preserves
+    previous_close unchanged on conflict; fix_daily_book_prev_close sets the
+    correct value at session open using yesterday's ltp from daily_book.
+    Correct behavior: None is stored when both prev_ltp_map and close_price
+    are unavailable — the morning fix will supply the correct value.
+    """
 
-        When a holding has close_price=0 (e.g., Dhan cold-boot) and no historical
-        entry in prev_ltp_map, the fallback chain must produce a non-null value
-        using the current LTP as the last resort. This prevents `previous_close IS NULL`
-        rows landing in the daily_book snapshot.
+    def test_daily_snapshot_previous_close_none_when_no_prior_data(self):
+        """Holding with no prev_ltp_map entry and close_price=0: previous_close must be None.
+
+        The old ltp_val fallback was removed — it stamped previous_close = ltp,
+        which corrupted day P&L.  None is the correct value here; the morning
+        fix_daily_book_prev_close will populate it from yesterday's daily_book.ltp.
         """
         from datetime import datetime, date, timezone
         from backend.shared.helpers.date_time_utils import timestamp_indian
@@ -129,7 +137,6 @@ class TestDailySnapshotPreviousCloseNeverNull:
 
         prev_ltp_map = {}  # empty map — no historical prev_close
         now_ist = timestamp_indian()
-        ltp_val = 1520.0
 
         rows = _holdings_rows(
             account="TEST_ACCT",
@@ -143,14 +150,15 @@ class TestDailySnapshotPreviousCloseNeverNull:
 
         assert len(rows) == 1
         row = rows[0]
-        # Regression guard: previous_close must not be None; should fall back to ltp_val
-        assert row["previous_close"] is not None, "previous_close must not be None"
-        assert row["previous_close"] == pytest.approx(
-            ltp_val
-        ), f"Expected previous_close={ltp_val} but got {row['previous_close']}"
+        # Correct behavior: None is stored when both prev_ltp_map and close_price unavailable.
+        # The morning fix_daily_book_prev_close supplies the correct value from daily_book.ltp.
+        assert row["previous_close"] is None, (
+            f"previous_close must be None when prev_ltp_map empty and close_price=0, "
+            f"got {row['previous_close']!r}"
+        )
 
     def test_daily_snapshot_previous_close_fallback_chain(self):
-        """Verify the complete fallback chain: prev_ltp_map > close_price > ltp_val."""
+        """Verify the fallback chain: prev_ltp_map > close_price > None (no ltp fallback)."""
         from backend.shared.helpers.date_time_utils import timestamp_indian
 
         now_ist = timestamp_indian()
@@ -205,7 +213,8 @@ class TestDailySnapshotPreviousCloseNeverNull:
             "close_price should be used when prev_ltp_map is empty"
         )
 
-        # Case 3: no prev_ltp_map, close_price=0 — fall back to ltp_val
+        # Case 3: no prev_ltp_map, close_price=0 — previous_close is None (no ltp fallback).
+        # The morning fix_daily_book_prev_close will populate from yesterday's daily_book.ltp.
         raw_holding3 = {
             "tradingsymbol": "INFY",
             "exchange": "NSE",
@@ -224,8 +233,9 @@ class TestDailySnapshotPreviousCloseNeverNull:
             market_open=False,
             prev_ltp_map={},
         )
-        assert rows3[0]["previous_close"] == pytest.approx(ltp_val), (
-            "ltp_val should be the final fallback when close_price is 0"
+        assert rows3[0]["previous_close"] is None, (
+            f"previous_close should be None when close_price=0 and prev_ltp_map empty; "
+            f"got {rows3[0]['previous_close']!r}"
         )
 
 

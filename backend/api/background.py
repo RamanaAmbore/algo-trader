@@ -2087,11 +2087,22 @@ async def _task_daily_snapshot() -> None:
         # idempotent for same-label same-day calls).
         await _snapshot_probe_nse_mcx()
 
-        # ---- 08:00 IST: transition previous_close to new-session baseline ----------
+        # ---- session-open IST: transition previous_close to new-session baseline ----
         # Sets previous_close for today's daily_book rows to yesterday's settlement ltp.
         # After this, ltp == prev_close at session open is valid (no intraday movement yet).
-        if dtime(8, 0) <= now.time() < dtime(8, 30) and _prev_close_fix_done != today:
-            logger.info("Background: 08:00 IST — daily prev_close new-session transition")
+        # Window is dynamic: [nse_open_time, nse_open_time + 30 min). Falls back to
+        # the hardcoded 08:00–08:30 window when exchange_clock has no open time cached.
+        _nse_open_t = exchange_clock.get_nse_open_time()
+        if _nse_open_t is not None:
+            _nse_open_minutes = _nse_open_t.hour * 60 + _nse_open_t.minute
+            _nse_close_t = dtime((_nse_open_minutes + 30) // 60, (_nse_open_minutes + 30) % 60)
+        else:
+            _nse_close_t = None
+        if (_nse_open_t is not None
+                and _nse_open_t <= now.time() < _nse_close_t
+                and _prev_close_fix_done != today):
+            logger.info("Background: %s IST — daily prev_close new-session transition",
+                        _nse_open_t.strftime("%H:%M"))
             await fix_daily_book_prev_close(now)  # guards its own exceptions
             _prev_close_fix_done = today
 
@@ -2457,6 +2468,9 @@ async def _task_holiday_refresh() -> None:
         except asyncio.CancelledError:
             raise
         try:
+            await exchange_clock.load_today_open_time()
+            logger.info("Background: 04:00 IST — NSE session open time loaded: %s",
+                        exchange_clock.get_nse_open_time())
             outcomes = await _do_all()
             logger.info(f"Background: holiday refresh complete — {outcomes}")
         except Exception as e:

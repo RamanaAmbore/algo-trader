@@ -275,7 +275,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
                        db.ltp, db.day_pnl, db.total_pnl, db.payload_json,
                        db.captured_at, db.previous_close,
-                       pb.prev_ltp, pb.prev_settlement_pnl
+                       pb.prev_ltp, pb.prev_settlement_pnl, db.previous_close_backup
                 FROM daily_book db
                 JOIN latest_batch lb
                   ON db.account = lb.account AND db.captured_at = lb.max_at
