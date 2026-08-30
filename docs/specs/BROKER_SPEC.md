@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.22 — 2026-08-27  
+**Version**: 1.27 — 2026-08-30  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -21,6 +21,7 @@ Code, tests, and documentation must stay in sync with this file.
 7.1 [Market-Data Backfill Pipeline](#71-market-data-backfill-pipeline)
 7.2 [Instruments & Token-Map Cache](#72-instruments--token-map-cache)
 7.3 [Daily Snapshot Orphan Cleanup](#73-daily-snapshot-orphan-cleanup)
+9.3 [Instruments & Options Endpoints — MCX Name Normalization](#93-instruments--options-endpoints--mcx-name-normalization-aug-2026)
 7.3.1 [Daily Snapshot UPSERT Idempotency & LTP Coalesce Fix](#731-daily-snapshot-upsert-idempotency--ltp-coalesce-fix-aug-2026)
 7.3.2 [Admin Snapshot Trigger — Holiday-Aware Market-Open Detection](#732-admin-snapshot-trigger--holiday-aware-market-open-detection-aug-2026)
 7.3.3 [Dhan `last_price=0` Fallback in EOD Snapshots](#733-dhan-last_price0-fallback-in-eod-snapshots-aug-2026)
@@ -2036,6 +2037,55 @@ intervention.
 
 ---
 
+## 9.3 Instruments & Options Endpoints — MCX Name Normalization (Aug 2026)
+
+**Files**: `backend/api/routes/instruments.py` · `backend/api/routes/options.py`
+
+Kite's MCX commodity instruments use spaced names in the `name` field (e.g., "CRUDE OIL", 
+"NATURAL GAS"), while the frontend sends underlying symbols in spaceless form 
+("CRUDEOIL", "NATURALGAS"). Two endpoints now normalize MCX names for consistency:
+
+### Instruments expiry index (`_build_expiries_index`)
+
+**File**: `backend/api/routes/instruments.py` — line 201
+
+When building the expiry index for options chain-quotes lookups, MCX underlying names 
+are normalized by stripping spaces:
+
+```python
+raw_u = inst.u.upper()
+if " " in raw_u:
+    _mcx_names_raw.add(f"{raw_u!r}→'{raw_u.replace(' ', '')}'")
+key = raw_u.replace(" ", "")
+idx.setdefault(key, set()).add(inst.x)
+```
+
+A diagnostic log line `[expiries-index] normalized MCX spaced names: ...` is emitted 
+per instruments reload. This ensures the cache key matches the spaceless form the 
+frontend sends in `GET /api/options/chain-quotes?und=CRUDEOIL&exp=...` requests.
+
+### Chain-quotes symbol map (`_chain_quotes_build_sym_map`)
+
+**File**: `backend/api/routes/options.py` — line 2172
+
+When scanning the instrument response for matching CE/PE contracts, MCX underlyings 
+are normalized before comparison:
+
+```python
+if (inst.u or "").upper().replace(" ", "") != und:
+    continue
+```
+
+This prevents mismatches when Kite returns "CRUDE OIL" but the frontend sends "CRUDEOIL", 
+ensuring the chain-quotes endpoint correctly identifies all matching strikes for MCX 
+commodity options.
+
+**Impact**: Option chain expiry dropdown and strike-by-strike quotes now work 
+correctly for MCX commodities (CRUDEOIL, NATURALGAS, GOLD, SILVER, etc.) without 
+manual workaround.
+
+---
+
 ## 10. Virtual Root Resolution
 
 **File**: `backend/api/algo/symbol_resolver.py`
@@ -2697,3 +2747,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-28 | v1.24 Exchange schedule table & clock module (from PLAN): Added §14 Exchange Schedule Table & Clock Module documenting new `exchange_schedule` DB table (date-aware, operator-editable defaults + overrides via `/admin/settings`), module-level cache, public API (`is_exchange_open`, `snapshot_time_for`, `snapshot_reset_time_for`, `sessions_with_snapshot_time_now`, `settlement_cutoff_for`, `settlement_ref_close_map`, `refresh_cache`, `seed_and_warm`), admin routes (GET/PUT/DELETE `/api/admin/exchange-schedule`), and `@apply_settlement_overlay(kind)` decorator for patch-on-close P&L + close_price. Replaces hardcoded `_EXCHANGE_TO_GATE` dict in snapshot_gate.py, `market_segments` YAML block, and 6 hardcoded trigger times in background.py. Single gate/exchanges distinction: a Muhurat row with exchanges=[NSE,BSE] correctly closes NFO/BFO/CDS via per-exchange `_resolve_for_exchange()` lookup. Backend snapshot triggers fully DB-driven: 5 per-day (NSE 15:31 + 16:15, MCX 23:31 + 00:15, MCX morning no-snapshot). Renumbered §15+ sections (14→15, 15→16, 16→17). |
 | 2026-08-30 | v1.25 Closed-exchange overlay stored day P&L fix (commit adc5e1f0): Updated §7.3.8 Firm NAV Computation & Closed-Exchange LTP Overlay documenting `latest_snapshot_ltp_map(kind)` return type change from `dict[tuple[str,str], float]` (LTP only) to `dict[tuple[str,str], tuple[float, float\|None]]` (LTP + day_pnl tuple). Added subsection on Overlay Logic documenting new return format and weekend zero-delta bug fix: when both snap_ltp and snap_close come from same Friday settlement snapshot, old code computed `(Fri−Fri)×qty=0` on weekends; now stores EOD `day_pnl` in tuple and uses it directly when non-zero, falling back to price-recompute only when `day_pnl` is None/zero. Added Function subsection documenting `latest_snapshot_ltp_map(kind)` signature, query strategy (MAX(captured_at) per account), return format, guarantee (identical CTE as route snapshot readers), and fail-open behaviour. Updated `_process_overlay_row()` code path (positions.py lines 474–491) and `_hold_tag_closed_row()` (holdings.py) to unpack tuples and prioritize stored `day_pnl` over recomputed values. Impact: weekend grids now show correct overnight P&L from Friday settlement instead of zero-delta phantom move. |
 | 2026-08-30 | v1.26 Consolidated morning task schedule (backend implementation): Merged three separate morning events (04:00 holiday refresh, 05:45 Kite token pre-warm, 06:00 hard expiry) into a single 05:30 IST `_task_holiday_refresh()` combined task covering: (1) open-time loading from `exchange_schedule`, (2) NSE API holiday calendar refresh (retries until 08:00 if slow), (3) best-effort proactive token refresh for all brokers (Kite TOTP auto-login, Dhan RenewToken API, Groww session refresh). Token refresh failures logged as warnings only; `@retry_kite_conn` decorator provides automatic recovery on next API call. Skipped under `RAMBOQ_USE_CONN_SERVICE=1`. Updated §7.3.10 Market-open time loading section with new 05:30 lifecycle, updated §9.2 Token Pre-Warm Task title to "Morning Token Refresh — Consolidated 05:30 Task" and restructured content to reflect unified schedule. Updated Token Refresh Delegation to Conn-Service subsection in §9.1 Background Task Supervisor. |
+| 2026-08-30 | v1.27 MCX name normalization in instruments & options endpoints (commit TBD): Added §9.3 Instruments & Options Endpoints — MCX Name Normalization documenting two fixes: (1) `_build_expiries_index()` in instruments.py line 201 normalizes MCX underlying names by stripping spaces (`key = inst.u.upper().replace(" ", "")`) so the expiry cache key matches spaceless form frontend sends (e.g., "CRUDE OIL" → "CRUDEOIL"), (2) `_chain_quotes_build_sym_map()` in options.py line 2172 applies same normalization in comparison (`if (inst.u or "").upper().replace(" ", "") != und`). Diagnostic log `[expiries-index] normalized MCX spaced names: ...` emitted per reload. Impact: option chain expiry dropdown and strike-by-strike quotes now work correctly for MCX commodities (CRUDEOIL, NATURALGAS, GOLD, SILVER, etc.) without manual workaround. |
