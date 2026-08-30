@@ -1348,6 +1348,128 @@ latency by skipping a re-login round-trip when possible.
 
 ---
 
+## Holiday Calendar & Session Management
+
+### View Current Holidays
+
+```
+GET /api/admin/market-holidays?exchange=NSE&year=2026
+GET /api/admin/market-holidays?exchange=MCX&year=2026
+```
+
+Or query the database directly:
+```sql
+SELECT date, reason, source FROM market_holidays
+WHERE exchange = 'NSE' AND EXTRACT(year FROM date) = 2026
+ORDER BY date;
+```
+
+Sources: `nse_auto` (fetched from NSE API at 05:30 daily), `operator`
+(hand-added), `legacy_seed` (boot import).
+
+### Add an Ad-Hoc Holiday
+
+Insert directly into the database with `source='operator'` — operator
+rows are never overwritten by the auto-refresh:
+
+```sql
+INSERT INTO market_holidays (exchange, date, reason, source)
+VALUES ('NSE', '2026-09-05', 'State election', 'operator');
+```
+
+The in-process holiday cache refreshes within 30 minutes (next
+`_task_holiday_refresh` cycle). To apply immediately without waiting,
+restart the API service.
+
+### Force-Close a Specific Date
+
+Use the exchange-schedule override — this takes effect immediately and
+survives restarts:
+
+```
+PUT /admin/exchange-schedule
+{
+  "date": "2026-09-05",
+  "gate": "NON-MCX",
+  "is_open": false,
+  "reason": "State election — NSE closed"
+}
+```
+
+`gate` values: `"NON-MCX"` (NSE/BSE/NFO/CDS), `"MCX"` (commodity segment),
+or `"ALL"`.
+
+Operator source beats `nse_auto` in precedence. Verify with
+`GET /api/market-status` after applying.
+
+### Add a Muhurat / Special Session
+
+Special sessions override holiday closures — use for Diwali Muhurat or
+court-ordered extra sessions:
+
+```sql
+INSERT INTO market_special_sessions (exchange, date, start_time, end_time, reason)
+VALUES ('NSE', '2026-11-01', '18:00', '19:00', 'Diwali Muhurat 2026');
+
+-- Also set the snapshot time so the settlement snapshot captures Muhurat prices:
+UPDATE exchange_schedule
+SET snapshot_time = '19:15', reason = 'Muhurat snapshot'
+WHERE gate = 'NON-MCX' AND date = '2026-11-01';
+```
+
+Verify via `GET /api/market-status` at 18:00 on the date — should return
+`{"is_open": true, "session": "muhurat"}`.
+
+### MCX Evening Session on an NSE Holiday
+
+**No action required.** MCX is configured with `evening_open_on_holidays:
+true` in `backend_config.yaml`. On any NSE-holiday date, MCX
+automatically opens at 09:00 and runs its full session (09:00–23:30).
+
+Verify at 09:00 on the holiday date:
+```
+GET /api/market-status?exchange=MCX
+→ {"is_open": true, "segment": "commodity", "reason": "evening_on_holiday"}
+```
+
+### Token Refresh Troubleshooting
+
+The platform pre-warms all broker tokens at **05:30 IST** daily. If
+this fails, retries fire every 30 minutes until 08:00.
+
+**Check token age:**
+```bash
+cat .log/kite_tokens.json | python3 -c "import json,sys; d=json.load(sys.stdin); [print(k, v['created_at']) for k,v in d.items()]"
+```
+Token created before yesterday 08:00 IST is stale and needs refresh.
+
+**Force manual token refresh:**
+```
+POST /api/admin/broker/reconnect?account=ACCT_ID
+```
+
+**Verify broker health after refresh:**
+```
+GET /api/admin/broker/health
+→ {"ACCT_ID": {"status": "ok", "last_good": "2026-08-30T08:12:00+05:30"}}
+```
+
+**If KiteTicker fails to restart at 08:00:**
+1. Check `.log/kite_tokens.json` — `created_at` should be within the
+   last 23 hours.
+2. Run `POST /api/admin/broker/reconnect?account=ACCT_ID` to force
+   re-login.
+3. Restart the conn service: `sudo systemctl restart ramboq_conn` — this
+   triggers `_snapshot_restart_ticker()` on startup.
+
+**Holiday refresh failures** (05:30 cron could not reach NSE API):
+- Retries automatically every 30 min until 08:00.
+- If all retries fail, the platform falls back to the last PostgreSQL
+  snapshot (Tier 3).
+- Check logs for `[holiday-refresh] FAILED` lines to identify the error.
+
+---
+
 ## Investor portal — mint URL for an LP
 
 LP-facing read-only page at `/investor/<token>` showing the LP's NAV slice + 180-day curve. **Token is the credential** — no LP login, no password. Operator mints + forwards URL through their own channel (WhatsApp / email).

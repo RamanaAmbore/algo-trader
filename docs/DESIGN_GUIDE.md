@@ -3699,6 +3699,116 @@ for each. The function queries broker order book, compares against local state, 
 - `backend/api/routes/orders.py::_rco_reconcile_account` — broker reconcile + DB update
 - `backend/api/routes/orders_place.py::_maybe_fire_template_attach_for_reconcile` — template fire
 
+### 20.6 Market Daily Window
+
+The platform runs a fixed 24-hour market operating cycle. Every event fires exactly once per 
+calendar day via dedup sentinels keyed on trade-date.
+
+#### 24-Hour Event Table
+
+| Time (IST) | Event | Exchange | Function | File:Line |
+|------------|-------|----------|----------|-----------|
+| 00:15 | MCX settlement snapshot (`daily_book`) | MCX | `trigger_settlement_capture("MCX")` → `_snapshot_fire(label="mcx-settlement")` | background.py:1836–1847 |
+| 00:30 | KiteTicker full stop — reactor halt, WebSocket close, subscriptions cleared | ALL | `_snapshot_stop_ticker()` | background.py:1917–1935, 2089–2099 |
+| 05:30 | Holiday calendar refresh + token pre-warm (all brokers) | NSE+MCX | `_task_holiday_refresh()` | background.py:2314–2493 |
+| 08:00 | KiteTicker restart with fresh token; `fix_daily_book_prev_close()` resets prev_close from yesterday's settlement LTP | ALL | `_snapshot_restart_ticker()`, `fix_daily_book_prev_close()` | background.py:2059–2112 |
+| 09:00 | MCX regular session opens | MCX | config | backend_config.yaml |
+| 09:15 | NSE/BSE/NFO/CDS regular session opens | NSE/BSE | config | backend_config.yaml |
+| 15:30 | NSE regular session closes | NSE/BSE | config | backend_config.yaml |
+| 15:45 | NSE close snapshot (`daily_book`) | NSE/BSE | `trigger_close_snapshot("NON-MCX")` → `_snapshot_fire(label="non-mcx-close")` | exchange_clock.py:368, background.py:1824–1833 |
+| 16:15 | NSE settlement snapshot + non-MCX unsubscribe from KiteTicker | NSE/BSE | `trigger_settlement_capture("NON-MCX")`, `_snapshot_unsub_nonmcx()` | background.py:1836–1847, 2078–2087 |
+| 23:30 | MCX regular session closes | MCX | config | backend_config.yaml |
+| 23:45 | MCX close snapshot (`daily_book`) | MCX | `trigger_close_snapshot("MCX")` → `_snapshot_fire(label="mcx-close")` | exchange_clock.py:380, background.py:1824–1833 |
+
+Snapshot times (15:45, 16:15, 23:45, 00:15) are stored in `exchange_schedule.snapshot_time` and 
+are operator-configurable via `/admin/exchange-schedule`.
+
+#### MCX vs Non-MCX Comparison
+
+| Dimension | NSE/BSE/NFO/CDS | MCX |
+|-----------|-----------------|-----|
+| Session hours | 09:15–15:30 | 09:00–23:30 |
+| Holiday calendar | `market_holidays` WHERE `exchange='NSE'` | `market_holidays` WHERE `exchange='MCX'` |
+| Open on NSE holidays? | No | Yes (`evening_open_on_holidays: true`) |
+| KiteTicker subscription | Dropped at 16:15 | Held until 00:30 |
+| Close snapshot | 15:45 IST | 23:45 IST |
+| Settlement snapshot | 16:15 IST | 00:15 IST (next calendar day) |
+
+#### Token Refresh Lifecycle
+
+Kite tokens carry a 23-hour vendor TTL (`conn_reset_hours: 23`, backend_config.yaml:5). The 
+daily cycle ensures a fresh token is always available before market open:
+
+```
+05:30 IST  → _task_holiday_refresh() pre-warms tokens for all loaded accounts
+              • Kite:  get_kite_conn(test_conn=True) — validates via profile() call
+              • Dhan:  get_dhan_conn(test_conn=True)
+              • Groww: get_groww_conn()
+              On failure → retries every 30 min until 08:00 IST
+              Token cache: .log/kite_tokens.json (per-account, advisory flock)
+
+08:00 IST  → _snapshot_restart_ticker() passes freshly validated token to KiteTicker
+              Guarded [08:00, 09:00) — no double-fire on daytime service restart
+
+Per-call    → every get_kite_conn() validates via profile(); clears cache + forces
+              re-auth on 401; @retry_kite_conn handles auto-recovery
+
+Next 05:30 → cycle repeats (23h token issued at 08:00 expires at 07:00+1; pre-warm
+              at 05:30 refreshes it with 90 min headroom before expiry)
+```
+
+#### Holiday Calendar — 4-Tier Read Hierarchy
+
+```
+Request for holiday set (exchange, date)
+    │
+    ├─ Tier 1: in-process LRU cache (_MEM_CACHE)     ← zero I/O, sync dict
+    │          hit: return immediately
+    │
+    ├─ Tier 2: module-level _HOLIDAY_CACHE (daily TTL) ← pre-DB fallback
+    │          hit: return
+    │
+    ├─ Tier 3: PostgreSQL market_holidays table       ← durable source
+    │          sources: nse_auto | operator | legacy_seed
+    │          refreshed daily at 05:30 IST
+    │          retry every 30 min until 08:00 on failure
+    │
+    └─ Tier 4: NSE public API (cold-boot only)        ← 10s timeout
+               fallback when DB is empty at first startup
+```
+
+Special-session override (highest precedence): if a `market_special_sessions` row exists for 
+(exchange, date, start_time), `is_market_open()` returns `True` during that window regardless of 
+holiday status or regular-session config.
+
+Operator override: `PUT /admin/exchange-schedule` with `{date, gate, is_open: false}` 
+force-closes any date. Takes effect immediately; survives restarts.
+
+#### Worked Examples
+
+**Example 1 — NSE Holiday (e.g., Republic Day 2026-01-26)**
+
+- `market_holidays` has a row for `(exchange='NSE', date=2026-01-26)`.
+- No row for `(exchange='MCX', date=2026-01-26)` → MCX calendar is unaffected.
+- At 09:00: `is_market_open()` returns `True` for MCX segment; KiteTicker subscribes MCX tokens.
+- At 09:15: `is_market_open()` returns `False` for equity segment — NSE never opens.
+- Non-MCX instruments are never subscribed to KiteTicker that day.
+- MCX close snapshot fires at 23:45; MCX settlement snapshot fires at 00:15+1.
+- NSE `daily_book` rows carry yesterday's settlement LTP as `ltp` all day (no new snapshot).
+
+**Example 2 — Diwali Muhurat Trading (e.g., 2026-11-01)**
+
+- Both NSE and MCX are in `market_holidays` (full holiday).
+- A `market_special_sessions` row adds `(exchange='NSE', date=2026-11-01, start_time=18:00, end_time=19:00, reason='Muhurat')`.
+- At 18:00: `is_market_open()` returns `True` (special-session override takes precedence); KiteTicker 
+  subscriptions resume.
+- At 19:00: `is_market_open()` returns `False`; displays freeze with `as_of=19:00` stamp.
+- Snapshot fires at the special session's `snapshot_time` (operator-set to 19:15 in 
+  `exchange_schedule`).
+- MCX is also governed by any MCX-specific `market_special_sessions` row; if none, MCX follows 
+  its holiday rule (`evening_open_on_holidays: true` → opens at 17:00 for the evening session as 
+  normal).
+
 ---
 
 ## 21. Data refresh — PositionStrip + Dashboard

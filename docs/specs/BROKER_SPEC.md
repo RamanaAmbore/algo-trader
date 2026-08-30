@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.27 — 2026-08-30  
+**Version**: 1.28 — 2026-08-30  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -16,6 +16,7 @@ Code, tests, and documentation must stay in sync with this file.
 3. [Capabilities Matrix](#3-capabilities-matrix)
 4. [Broker Selection SSOT](#4-broker-selection-ssot)
 5. [Connections Singleton](#5-connections-singleton)
+5.4 [Token Refresh Lifecycle](#54-token-refresh-lifecycle)
 6. [Circuit Breaker & Health](#6-circuit-breaker--health)
 7. [KiteTicker & Mmap Pipeline](#7-kiteticker--mmap-pipeline)
 7.1 [Market-Data Backfill Pipeline](#71-market-data-backfill-pipeline)
@@ -175,6 +176,49 @@ Populated by `rebuild_from_db()` — queries `broker_accounts`, decrypts Fernet 
   - `_check_login_rate_limit()` — 120s cooloff on auth failure (mirrors Dhan)
   - Proactive refresh in `get_groww_conn()` when `_is_token_expired()` returns True
   - Logs with `[GROWW-LOGIN]` prefix on auth failure
+
+### 5.4 Token Refresh Lifecycle
+
+Kite access tokens carry a **23-hour vendor TTL** (`conn_reset_hours: 23` in
+`backend_config.yaml` line 5). This is a Zerodha-imposed constant — not
+operator-tunable. The platform runs a daily pre-warm cycle to ensure a fresh
+token is available before market open.
+
+**Daily cycle:**
+
+| Time (IST) | Action | Code |
+|---|---|---|
+| 05:30 | `_task_holiday_refresh()` pre-warms tokens for ALL loaded accounts | `background.py:2467–2492` |
+| 05:30 + 30 min (retry) | Retry pre-warm if any account failed; repeats until 08:00 | `background.py:2425–2443` |
+| 08:00 | `_snapshot_restart_ticker()` passes validated token to KiteTicker restart | `background.py:2101–2112` |
+
+**Per-broker pre-warm calls (05:30):**
+
+| Broker | Call | Effect |
+|---|---|---|
+| Zerodha Kite | `get_kite_conn(test_conn=True)` | Validates via lightweight `profile()` call; forces re-login if 401 |
+| Dhan | `get_dhan_conn(test_conn=True)` | Validates session; forces re-login on failure |
+| Groww | `get_groww_conn()` | Validates session |
+
+**Token cache:** `.log/kite_tokens.json` (per-account JSON, `{account: {access_token,
+created_at}}`). Cross-process advisory flock (`_cross_process_login_lock`)
+serialises concurrent login attempts across `ramboq_api` and `ramboq_conn`
+processes.
+
+**Per-call validation:** every `get_kite_conn()` call validates the cached token
+via a lightweight `profile()` call before returning the `KiteConnect` object. On
+401: cache entry is cleared and a fresh login is forced. The `@retry_kite_conn`
+decorator handles transient network failures with automatic retry.
+
+**Token validity window example:**
+```
+08:00 IST D+0  → KiteTicker restart issues token  (23h TTL → expires 07:00 D+1)
+05:30 IST D+1  → pre-warm refreshes token         (new 23h TTL → expires 04:30 D+2)
+08:00 IST D+1  → KiteTicker restart uses new token (90 min headroom)
+```
+
+The 05:30 pre-warm runs 90 minutes before the ~07:00 expiry, giving ample time
+for the retry loop (up to 08:00) to succeed on transient login failures.
 
 ---
 
@@ -2748,3 +2792,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-30 | v1.25 Closed-exchange overlay stored day P&L fix (commit adc5e1f0): Updated §7.3.8 Firm NAV Computation & Closed-Exchange LTP Overlay documenting `latest_snapshot_ltp_map(kind)` return type change from `dict[tuple[str,str], float]` (LTP only) to `dict[tuple[str,str], tuple[float, float\|None]]` (LTP + day_pnl tuple). Added subsection on Overlay Logic documenting new return format and weekend zero-delta bug fix: when both snap_ltp and snap_close come from same Friday settlement snapshot, old code computed `(Fri−Fri)×qty=0` on weekends; now stores EOD `day_pnl` in tuple and uses it directly when non-zero, falling back to price-recompute only when `day_pnl` is None/zero. Added Function subsection documenting `latest_snapshot_ltp_map(kind)` signature, query strategy (MAX(captured_at) per account), return format, guarantee (identical CTE as route snapshot readers), and fail-open behaviour. Updated `_process_overlay_row()` code path (positions.py lines 474–491) and `_hold_tag_closed_row()` (holdings.py) to unpack tuples and prioritize stored `day_pnl` over recomputed values. Impact: weekend grids now show correct overnight P&L from Friday settlement instead of zero-delta phantom move. |
 | 2026-08-30 | v1.26 Consolidated morning task schedule (backend implementation): Merged three separate morning events (04:00 holiday refresh, 05:45 Kite token pre-warm, 06:00 hard expiry) into a single 05:30 IST `_task_holiday_refresh()` combined task covering: (1) open-time loading from `exchange_schedule`, (2) NSE API holiday calendar refresh (retries until 08:00 if slow), (3) best-effort proactive token refresh for all brokers (Kite TOTP auto-login, Dhan RenewToken API, Groww session refresh). Token refresh failures logged as warnings only; `@retry_kite_conn` decorator provides automatic recovery on next API call. Skipped under `RAMBOQ_USE_CONN_SERVICE=1`. Updated §7.3.10 Market-open time loading section with new 05:30 lifecycle, updated §9.2 Token Pre-Warm Task title to "Morning Token Refresh — Consolidated 05:30 Task" and restructured content to reflect unified schedule. Updated Token Refresh Delegation to Conn-Service subsection in §9.1 Background Task Supervisor. |
 | 2026-08-30 | v1.27 MCX name normalization in instruments & options endpoints (commit TBD): Added §9.3 Instruments & Options Endpoints — MCX Name Normalization documenting two fixes: (1) `_build_expiries_index()` in instruments.py line 201 normalizes MCX underlying names by stripping spaces (`key = inst.u.upper().replace(" ", "")`) so the expiry cache key matches spaceless form frontend sends (e.g., "CRUDE OIL" → "CRUDEOIL"), (2) `_chain_quotes_build_sym_map()` in options.py line 2172 applies same normalization in comparison (`if (inst.u or "").upper().replace(" ", "") != und`). Diagnostic log `[expiries-index] normalized MCX spaced names: ...` emitted per reload. Impact: option chain expiry dropdown and strike-by-strike quotes now work correctly for MCX commodities (CRUDEOIL, NATURALGAS, GOLD, SILVER, etc.) without manual workaround. |
+| 2026-08-30 | v1.28 Token Refresh Lifecycle (documentation): Added §5.4 Token Refresh Lifecycle documenting Kite 23-hour vendor TTL, daily 05:30 pre-warm cycle via `_task_holiday_refresh()` with 30-minute retry loop (until 08:00), per-broker validation calls (Kite profile(), Dhan session check, Groww session refresh), token cache at `.log/kite_tokens.json`, cross-process login flock serialisation, per-call validation via lightweight profile() call, and example 90-minute headroom window before expiry (07:00 D+1). Clarifies timing invariants and retry semantics for token lifecycle management. |

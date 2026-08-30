@@ -125,6 +125,49 @@ the MCX overnight window.
 **Refresh button**: Clicking it during closed hours displays "Both NSE and MCX are
 currently closed" and fetches the snapshot from DB (fast, no broker round-trip).
 
+### Market Session Lifecycle
+
+The platform follows a fixed daily cycle. What you see at each phase:
+
+| Phase | Time (IST) | What you see |
+|-------|------------|--------------|
+| Off-hours | 00:30 – 08:00 | All P&L and prices frozen at last in-session values. `as_of` timestamp shows when the freeze happened. Refresh button shows "Showing close snapshot — markets reopen at 09:00 IST". No live ticks. |
+| Session start | 08:00 | Previous close resets to yesterday's settlement price (not Kite's stale API value). Live ticks resume when KiteTicker connects. |
+| MCX opens | 09:00 | MCX commodity positions go live. |
+| NSE opens | 09:15 | NSE/BSE equity, F&O, and currency positions go live. |
+| NSE close | 15:30 | NSE/BSE P&L freezes at last tick. MCX continues live. |
+| NSE settlement | 16:15 | Final NSE settlement prices captured; NSE day P&L is now final for the day. |
+| MCX close | 23:30 | MCX P&L freezes at last tick. |
+| MCX settlement | 00:15 | Final MCX settlement prices captured; MCX day P&L is now final. |
+| Full stop | 00:30 | Market data connection closes until 08:00. |
+
+#### Holiday Behaviour
+
+**NSE holiday (e.g., Republic Day):**
+- NSE/BSE/NFO shows yesterday's close prices all day — no live updates.
+- MCX opens at 09:00 as usual — live MCX positions remain active throughout the day.
+- You will see NSE P&L frozen and MCX P&L live in the same portfolio view simultaneously.
+- MCX settlement still fires at 23:45 and 00:15.
+
+**MCX holiday (rare):**
+- MCX shows yesterday's close; NSE trades normally.
+
+**Both exchanges holiday:**
+- Everything frozen until the next trading day.
+
+**Diwali Muhurat (special session):**
+- A 1-hour trading window (typically 18:00–19:00) is configured as a special session.
+- The platform goes live for that window and freezes again at session end.
+- Settlement snapshot captures prices at the Muhurat close.
+
+#### Example: Opening the app at 17:30 on an NSE Holiday
+
+You have NIFTY options and CRUDEOIL futures in your portfolio.
+
+- **NIFTY options panel:** shows yesterday's settlement price with `as_of: 15:45`. No live updates. Day P&L shows 0 (NSE never opened; no intraday movement).
+- **CRUDEOIL futures panel:** shows live MCX tick — CRUDEOIL has been trading since 09:00. Day P&L updates in real time.
+- No "stale data" warning for CRUDEOIL — the platform knows MCX is open on NSE holidays.
+
 ## Day P&L — the four formulas (reference)
 
 The platform computes intraday profit/loss using one of four formulas based on position
