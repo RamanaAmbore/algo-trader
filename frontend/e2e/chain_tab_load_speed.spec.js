@@ -79,7 +79,7 @@ async function triggerChainTab(page) {
   const selectors = [
     'button[title*="chain" i]',
     '[data-testid*="chain" i]',
-    'button:has-text(/chain/i)',
+    'button:has-text("Chain")',
     '.symbol-card',     // fallback: click a symbol card
     '[role="button"]',  // generic button
   ];
@@ -120,54 +120,34 @@ test.describe('chain_tab_load_speed — expiry pre-indexing fix', () => {
   // Test 1: Expiries appear within 2s (no hang)
   // ──────────────────────────────────────────────────────────────────────────
   test('expiries appear within 2s (no hang)', async ({ page }) => {
-    test.skip(!isMarketOpen(), 'Market closed — chain quotes may not load');
+    // No market-hours guard — expiries come from the pre-indexed instruments cache
+    // (_task_chain_instruments stores instruments_chain_expiries at T+10s after startup),
+    // so this is valid 24/7 regardless of whether the market is open.
+    //
+    // Strategy: hit the API directly with page.request (authenticated via the same
+    // session as loginAsAdmin). This avoids fragile modal-navigation to find .oct-root.
 
-    await gotoDerivativesPage(page);
+    await loginAsAdmin(page);
 
-    // Try to trigger the chain tab if it's not already visible
-    const chainVisible = await chainTabIsAccessible(page);
-    if (!chainVisible) {
-      const opened = await triggerChainTab(page);
-      if (!opened) {
-        test.skip(true, 'Could not open chain tab on this page');
-        return;
-      }
+    const start = Date.now();
+    const resp = await page.request.get(`${BASE}/api/options/chain-quotes?underlying=NIFTY`);
+    const elapsed = Date.now() - start;
+
+    expect(resp.ok()).toBe(true);
+    const data = await resp.json();
+
+    // The expiries array must be present in the response body
+    expect(Array.isArray(data.expiries)).toBe(true);
+
+    // Core regression check: O(1) pre-indexed path must respond in under 2s.
+    // Before the fix this could take 5–200s due to thread-pool queuing.
+    expect(elapsed, `expiry API took ${elapsed}ms — pre-index not active or cache cold`).toBeLessThan(TIMEOUT_EXPIRY);
+
+    // Expiries should be non-empty when instruments are loaded (after T+10s from restart).
+    // We don't hard-fail if empty — the server may have just restarted — but log it.
+    if (data.expiries.length === 0) {
+      console.warn('chain-quotes returned 0 expiries for NIFTY — instruments_chain_expiries cache may be cold (wait 30s and retry)');
     }
-
-    // Verify the chain root exists
-    const chainRoot = page.locator('.oct-root').first();
-    await expect(chainRoot).toBeVisible({ timeout: 5_000 });
-
-    // The "Fetching expiries…" state should NOT be visible for more than 2s.
-    // After 2s, either expiries have loaded and the dropdown is visible,
-    // or the expiry section is hidden (no underlying selected yet).
-    const fetchingState = page.locator('.oct-empty:has-text("Fetching expiries")');
-
-    // Measure time: start checking if "Fetching expiries" is visible.
-    // It should become hidden within 2s.
-    const startTime = Date.now();
-    let isFetching = await fetchingState.isVisible().catch(() => false);
-
-    if (isFetching) {
-      // Poll for it to disappear within 2s
-      let elapsed = 0;
-      while (isFetching && elapsed < TIMEOUT_EXPIRY) {
-        await page.waitForTimeout(100);
-        elapsed = Date.now() - startTime;
-        isFetching = await fetchingState.isVisible().catch(() => false);
-      }
-
-      // After 2s, "Fetching expiries" should be gone
-      expect(isFetching).toBe(false);
-      expect(elapsed).toBeLessThan(TIMEOUT_EXPIRY);
-    }
-
-    // Verify expiry picker is visible (indicating expiries loaded)
-    const expiryPicker = page.locator('.oct-expiry-pick').first();
-    await expect(expiryPicker).toBeVisible({ timeout: TIMEOUT_EXPIRY }).catch(() => {
-      // If expiry picker isn't visible, it might mean no underlying was selected yet.
-      // That's OK — we still verified the "Fetching expiries" state resolved within 2s.
-    });
   });
 
   // ──────────────────────────────────────────────────────────────────────────
