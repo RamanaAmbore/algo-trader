@@ -167,9 +167,11 @@ class TestChainQuotesBuildSymMap:
         assert all_expiries == []
 
     def test_mcx_spaced_name_matches_spaceless_underlying(self):
-        """Kite sends MCX name as 'CRUDE OIL' but frontend queries 'CRUDEOIL'.
+        """_chain_quotes_build_sym_map keys by tradingsymbol prefix, not inst.u.
 
-        _chain_quotes_build_sym_map must normalize inst.u to match.
+        Kite sends MCX name as 'CRUDE OIL' but frontend queries 'CRUDEOIL'.
+        The matching now happens via tradingsymbol prefix (strip digits from s),
+        not via inst.u normalization.
         """
         instruments = [
             Instrument(
@@ -178,7 +180,7 @@ class TestChainQuotesBuildSymMap:
                 t="CE",
                 ls=100,
                 ts=1.0,
-                u="CRUDE OIL",  # Kite's actual name field — with space
+                u="CRUDE OIL",  # Kite's actual name field — with space (ignored now)
                 x="2025-09-19",
                 k=7500.0,
             ),
@@ -196,12 +198,12 @@ class TestChainQuotesBuildSymMap:
         inst_resp = InstrumentsResponse(
             cycle_date="2025-09-01", count=len(instruments), items=instruments
         )
-        # Frontend sends "CRUDEOIL" (no space) — must still match instruments with u="CRUDE OIL"
+        # Frontend sends "CRUDEOIL" which matches tradingsymbol prefix "CRUDEOIL25SEP7500CE" → "CRUDEOIL"
         sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
             inst_resp, "CRUDEOIL", "2025-09-19"
         )
         assert len(sym_by_strike) == 1, (
-            "CRUDEOIL query must match instruments with u='CRUDE OIL'"
+            "CRUDEOIL query must match instruments by tradingsymbol prefix"
         )
         assert 7500.0 in sym_by_strike
         assert sym_by_strike[7500.0]["CE"]["sym"] == "CRUDEOIL25SEP7500CE"
@@ -1870,9 +1872,23 @@ class TestBuildExpiriesIndex:
     """
 
     def _make_instrument(self, t: str, u: str | None, x: str | None) -> Instrument:
-        """Helper to build a minimal Instrument for index tests."""
+        """Helper to build a minimal Instrument for index tests.
+
+        Generates realistic tradingsymbols: NIFTY24AUG24000CE, etc.
+        Format: {root}{YYMMDD/YYMM}{strike}{CE|PE|FUT}
+        """
+        if t in ("CE", "PE"):
+            # Example: NIFTY24AUG24000CE
+            s = f"{u or 'X'}24AUG24000{t}"
+        elif t == "FUT":
+            # Example: NIFTY24AUG
+            s = f"{u or 'X'}24AUG"
+        else:
+            # Equity: just the symbol
+            s = f"{u or 'X'}"
+
         return Instrument(
-            s=f"{u or 'X'}{t}",
+            s=s,
             e="NFO",
             t=t,
             ls=25,
@@ -1976,27 +1992,30 @@ class TestBuildExpiriesIndex:
         assert idx["BANKNIFTY"] == ["2025-08-21"]
         assert idx["CRUDEOIL"] == ["2025-08-19"]
 
-    def test_underlying_uppercased(self):
-        """Underlying is stored in uppercase in the index (inst.u.upper())."""
+    def test_tradingsymbol_prefix_case_preserved(self):
+        """Tradingsymbol prefix is used as-is (case preserved, no special handling)."""
         from backend.api.routes.instruments import _build_expiries_index
 
         items = [
-            Instrument(s="X", e="NFO", t="CE", ls=25, ts=0.05,
+            # Tradingsymbol starts with uppercase letters; prefix is "NIFTY"
+            Instrument(s="NIFTY24AUG24000CE", e="NFO", t="CE", ls=25, ts=0.05,
                        u="nifty", x="2025-08-14", k=24000.0),
         ]
         idx = _build_expiries_index(items)
-        assert "NIFTY" in idx
-        assert "nifty" not in idx
+        # Key is derived from tradingsymbol prefix "NIFTY24AUG24000CE" → "NIFTY"
+        assert "NIFTY" in idx, "Tradingsymbol prefix is the key"
+        assert "nifty" not in idx, "Lowercase variant is not used"
 
     def test_empty_input_returns_empty_dict(self):
         """Empty items list returns empty dict."""
         from backend.api.routes.instruments import _build_expiries_index
         assert _build_expiries_index([]) == {}
 
-    def test_mcx_space_in_name_normalized(self):
-        """Kite MCX `name` field uses spaces ('CRUDE OIL') — must be stored as 'CRUDEOIL'.
+    def test_expiry_index_keyed_by_tradingsymbol_prefix(self):
+        """_build_expiries_index keys by tradingsymbol prefix (digits stripped).
 
-        Frontend sends 'CRUDEOIL' (no space) so the index key must match.
+        For s="CRUDEOIL25SEP7500CE", key is "CRUDEOIL" (everything before first digit).
+        This is immune to Kite's MCX name variants ("CRUDE OIL", "CRUDE OIL M", etc).
         """
         from backend.api.routes.instruments import _build_expiries_index
 
@@ -2007,7 +2026,7 @@ class TestBuildExpiriesIndex:
                 t="CE",
                 ls=100,
                 ts=1.0,
-                u="CRUDE OIL",  # Kite's actual name field — with space
+                u="CRUDE OIL",  # Kite's actual name field — with space (ignored now)
                 x="2025-09-19",
                 k=7500.0,
             ),
@@ -2023,34 +2042,127 @@ class TestBuildExpiriesIndex:
             ),
         ]
         idx = _build_expiries_index(items)
-        # Must be stored without space so frontend lookup "CRUDEOIL" hits
+        # Key is derived from tradingsymbol "CRUDEOIL25SEP7500CE" → "CRUDEOIL"
         assert "CRUDEOIL" in idx, (
-            "MCX name 'CRUDE OIL' must be normalized to 'CRUDEOIL' in the index"
-        )
-        assert "CRUDE OIL" not in idx, (
-            "Space-variant key must NOT appear in the index"
+            "Index key must be the tradingsymbol prefix (digits stripped)"
         )
         assert idx["CRUDEOIL"] == ["2025-09-19"]
 
-    def test_mcx_naturalgas_space_normalized(self):
-        """'NATURAL GAS' → 'NATURALGAS' normalization mirrors CRUDEOIL fix."""
+    def test_expiry_index_mini_variant(self):
+        """Mini variants (e.g., CRUDEOILM) produce different keys than non-mini.
+
+        s="CRUDEOILM26SEP7600PE" → key is "CRUDEOILM" (not "CRUDEOIL").
+        Prefix stripping treats the M as part of the root name.
+        """
         from backend.api.routes.instruments import _build_expiries_index
 
         items = [
             Instrument(
-                s="NATURALGAS25SEP200CE",
+                s="CRUDEOILM26SEP7600PE",
+                e="MCX",
+                t="PE",
+                ls=10,
+                ts=1.0,
+                u="CRUDE OIL M",  # Kite variant with space-M (ignored)
+                x="2025-09-25",
+                k=7600.0,
+            ),
+        ]
+        idx = _build_expiries_index(items)
+        # CRUDEOILM is separate key from CRUDEOIL
+        assert "CRUDEOILM" in idx, "Mini variant must have distinct key"
+        assert "CRUDEOIL" not in idx, "Non-mini variant key must not appear"
+        assert idx["CRUDEOILM"] == ["2025-09-25"]
+
+    def test_expiry_index_naturalgas(self):
+        """NATURAL GAS → NATURALGAS via tradingsymbol prefix, not inst.u normalization."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            Instrument(
+                s="NATURALGAS26SEP400CE",
                 e="MCX",
                 t="CE",
                 ls=1250,
                 ts=0.1,
                 u="NATURAL GAS",
                 x="2025-09-25",
-                k=200.0,
+                k=400.0,
             ),
         ]
         idx = _build_expiries_index(items)
-        assert "NATURALGAS" in idx
-        assert "NATURAL GAS" not in idx
+        assert "NATURALGAS" in idx, "Key is from tradingsymbol prefix"
+        assert idx["NATURALGAS"] == ["2025-09-25"]
+
+    def test_expiry_index_nifty(self):
+        """Index nifty options by their tradingsymbol prefix."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            Instrument(
+                s="NIFTY26MAR22500CE",
+                e="NFO",
+                t="CE",
+                ls=25,
+                ts=0.05,
+                u="NIFTY",
+                x="2026-03-26",
+                k=22500.0,
+            ),
+        ]
+        idx = _build_expiries_index(items)
+        assert "NIFTY" in idx, "NIFTY prefix extracted from tradingsymbol"
+        assert idx["NIFTY"] == ["2026-03-26"]
+
+    def test_expiry_index_fut_excluded(self):
+        """FUT instruments are excluded from the index (only CE/PE included)."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            Instrument(
+                s="CRUDEOIL26SEP100FUT",
+                e="MCX",
+                t="FUT",
+                ls=100,
+                ts=1.0,
+                u="CRUDE OIL",
+                x="2025-09-25",
+                k=None,
+            ),
+            Instrument(
+                s="CRUDEOIL26SEP7600CE",
+                e="MCX",
+                t="CE",
+                ls=100,
+                ts=1.0,
+                u="CRUDE OIL",
+                x="2025-09-25",
+                k=7600.0,
+            ),
+        ]
+        idx = _build_expiries_index(items)
+        # Only the CE is included
+        assert "CRUDEOIL" in idx
+        assert idx["CRUDEOIL"] == ["2025-09-25"]
+
+    def test_expiry_index_no_expiry_excluded(self):
+        """Instruments with x=None are skipped."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            Instrument(
+                s="SOME26INVALID",  # Missing expiry
+                e="MCX",
+                t="CE",
+                ls=100,
+                ts=1.0,
+                u="SOME",
+                x=None,  # No expiry
+                k=100.0,
+            ),
+        ]
+        idx = _build_expiries_index(items)
+        assert len(idx) == 0, "Instruments without expiry must be excluded"
 
 
 @pytest.mark.asyncio
@@ -2175,3 +2287,77 @@ class TestChainQuotesExpiriesIndexFastPath:
         assert scan_called, (
             "Scan must run when expiry= is provided — fast path is expiry-only"
         )
+
+    async def test_chain_quotes_fast_path_key_miss_falls_through(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """Fast-path dict.get() miss does NOT return empty — it falls through to the scan.
+
+        When the index is warm but lacks the requested underlying key, the fast-path
+        returns empty (via dict.get miss), and the route continues to the slow-path scan.
+        However, the current implementation short-circuits when `und in _exp_index`,
+        so a key miss causes early return with empty expiries list, skipping the scan.
+
+        This test documents the NEW BEHAVIOR: fast-path only short-circuits when
+        the underlying IS found in the index. Missing key triggers the fallback scan.
+        """
+        warm_index = {"NIFTY": ["2025-08-14", "2025-08-21"]}
+
+        def _peek(key: str):
+            if key == "instruments_chain_expiries":
+                return warm_index
+            return nifty_instruments_fixture
+
+        with patch("backend.api.cache.peek", side_effect=_peek), \
+             patch("backend.api.routes.options._chain_quotes_sym_lookup",
+                   wraps=__import__("backend.api.routes.options",
+                                    fromlist=["_chain_quotes_sym_lookup"])
+                         ._chain_quotes_sym_lookup) as mock_scan:
+
+            response = await async_client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "CRUDEOIL"},  # Not in warm_index
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            # Key miss should trigger the scan to return expiries via the slow path
+            mock_scan.assert_called_once()
+            # Scan result from fixture (it doesn't contain CRUDEOIL, so empty)
+            assert data["expiries"] == [], "CRUDEOIL not in fixture, so empty expiries"
+            assert data["rows"] == []
+
+    async def test_chain_quotes_fast_path_key_hit_returns_immediately(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """Fast-path key hit returns immediately without calling the slow-path scan.
+
+        When the index is warm and the underlying is found, the response is populated
+        from the index in O(1) time. The slow-path scan is NOT called.
+        """
+        warm_index = {"CRUDEOIL": ["2026-09-25", "2026-10-30"]}
+
+        def _peek(key: str):
+            if key == "instruments_chain_expiries":
+                return warm_index
+            return nifty_instruments_fixture
+
+        with patch("backend.api.cache.peek", side_effect=_peek), \
+             patch("backend.api.routes.options._chain_quotes_sym_lookup") as mock_scan:
+
+            response = await async_client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "CRUDEOIL"},
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            # Index hit: expiries populated from the warm index
+            assert data["expiries"] == ["2026-09-25", "2026-10-30"], (
+                "Fast-path should return expiries directly from the warm index"
+            )
+            assert data["rows"] == []
+            assert data["underlying"] == "CRUDEOIL"
+            assert data["expiry"] == ""
+            # Scan must NOT have been called — O(1) path only
+            mock_scan.assert_not_called()

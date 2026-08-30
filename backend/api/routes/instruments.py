@@ -22,6 +22,7 @@ Field abbreviations keep payload small:
   ts = tick_size
 """
 
+import re as _re
 from datetime import date
 from typing import Optional
 
@@ -182,26 +183,18 @@ def _build_instrument_row(inst: dict, exch: str, mcx_diag_logged: set) -> Instru
 
 
 def _build_expiries_index(items: list) -> "dict[str, list[str]]":
-    """Build underlying → sorted ISO expiry list from instruments items.
+    """Build tradingsymbol-prefix → sorted ISO expiry list from instruments items.
 
-    CE/PE only; instruments with no underlying or no expiry are skipped.
-    Used by _task_chain_instruments to warm instruments_chain_expiries cache
-    so chain_quotes expiry-only requests need no asyncio.to_thread scan.
+    Keys by stripping digits from tradingsymbol (mirrors frontend virtual root derivation).
+    CE/PE only; instruments with no expiry are skipped.
     """
     idx: dict[str, set[str]] = {}
-    _mcx_names_raw: set[str] = set()  # raw u values for MCX instruments (diagnostic)
     for inst in items:
-        if inst.t not in ("CE", "PE") or not inst.u or not inst.x:
+        if inst.t not in ("CE", "PE") or not inst.x:
             continue
-        # Kite's MCX `name` field uses spaces ("CRUDE OIL", "NATURAL GAS").
-        # Normalize to match the spaceless form the frontend sends ("CRUDEOIL").
-        raw_u = inst.u.upper()
-        if " " in raw_u:
-            _mcx_names_raw.add(f"{raw_u!r}→'{raw_u.replace(' ', '')}'")
-        key = raw_u.replace(" ", "")
-        idx.setdefault(key, set()).add(inst.x)
-    if _mcx_names_raw:
-        logger.info("[expiries-index] normalized MCX spaced names: %s", sorted(_mcx_names_raw))
+        key = _re.sub(r'\d.*', '', inst.s)
+        if key:
+            idx.setdefault(key, set()).add(inst.x)
     return {u: sorted(xs) for u, xs in idx.items()}
 
 

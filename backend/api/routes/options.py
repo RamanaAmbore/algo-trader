@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re as _re
 import threading as _threading
 import time
 from collections import OrderedDict as _OrderedDict
@@ -2168,8 +2169,9 @@ def _chain_quotes_build_sym_map(
     sym_by_strike: dict[float, dict[str, dict]] = {}
     expiry_set: set[str] = set()
     for inst in inst_resp.items:
-        # Normalize MCX names: Kite sends "CRUDE OIL" but frontend sends "CRUDEOIL".
-        if (inst.u or "").upper().replace(" ", "") != und:
+        # Key by tradingsymbol prefix (strip digits onward) — mirrors frontend rootOf derivation.
+        inst_root = _re.sub(r'\d.*', '', inst.s)
+        if inst_root != und:
             continue
         if inst.t not in ("CE", "PE"):
             continue
@@ -2690,16 +2692,10 @@ class OptionsController(Controller):
         # _task_chain_instruments has finished its first warm.
         if not exp:
             _exp_index = _cache_peek("instruments_chain_expiries")
-            if _exp_index is not None:
-                _expiries = _exp_index.get(und, [])
-                logger.info(
-                    "[chain-expiry-fast-path] und=%r found=%d keys_sample=%s",
-                    und, len(_expiries),
-                    sorted(k for k in _exp_index if "CRUDE" in k or "GOLD" in k or "NIFTY" in k)[:10],
-                )
+            if _exp_index is not None and und in _exp_index:
                 return ChainQuotesResponse(
                     underlying=und, expiry="",
-                    expiries=_expiries,
+                    expiries=_exp_index[und],
                     rows=[],
                 )
 

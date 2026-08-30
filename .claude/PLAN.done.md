@@ -1,58 +1,82 @@
-# Plan: Combine morning tasks into single 05:30 wake-up
+# Plan: Fix chain expiry index — key by tradingsymbol prefix (virtual root)
 
 ## Context
-Currently three separate early-morning scheduled tasks exist:
-- `_task_holiday_refresh` at **04:00 IST** (background.py:2336) — holiday calendar + `load_today_open_time()`
-- `_task_token_refresh` at **05:45 IST** (background.py:468) — Kite-only proactive token pre-warm
-- **06:00 IST** — Kite token hard-expiry (external Kite event, no code)
+The chain tab still hangs because the expiry index is keyed by `inst.u` (Kite's `name` field),
+which may differ from what the frontend sends. The frontend derives the underlying by stripping
+digits from the tradingsymbol: `"CRUDEOILM26SEP7600PE".replace(/\d.*$/, '')` → `"CRUDEOILM"`.
+But Kite's `name` field for CRUDEOILM options is `"CRUDE OIL M"` (spaces, different token).
+Space-normalization ("CRUDE OIL M" → "CRUDEOILM") is fragile — it doesn't handle all variants
+and the fast-path still returns `[]` silently when any key is missing instead of falling back.
 
-Problems:
-1. Three separate wake-ups for logically related morning prep
-2. `_task_token_refresh` only covers Kite — Dhan and Groww tokens not proactively refreshed
-3. Token refresh at 05:45 leaves only 15 min before 06:00 expiry (tight if retry needed)
-4. The `@retry_kite_conn` decorator auto-recovers from token expiry on every API call for ALL
-   brokers — so the scheduled refresh is best-effort optimization, not a correctness requirement
+## Fix — two changes
 
-Design: merge into a single **05:30 IST combined task** with best-effort token refresh for all
-broker types. `_task_token_refresh` is removed. `_task_holiday_refresh` absorbs its work and
-shifts to 05:30. `_task_perf_snapshot` (04:00) is untouched — separate concern.
+### 1. Key expiry index by tradingsymbol prefix everywhere
 
-## Task
-1. Change `_task_holiday_refresh` trigger from 04:00 → 05:30 by updating the
-   `holiday_refresh_time` default in `backend/config/backend_config.yaml` from `"04:00"` to
-   `"05:30"`. The task already reads this config key.
+Replace the `inst.u`-based key with `re.sub(r'\d.*', '', inst.s)` — mirrors the frontend's
+`.replace(/\d.*$/, '')`. Works for all variants automatically:
 
-2. Expand `_task_holiday_refresh` (background.py:2336-2478) to also do proactive token refresh
-   for all broker types after the holiday calendar step:
-   - Under `RAMBOQ_USE_CONN_SERVICE=0` (direct mode): iterate `Connections().conn`, call
-     `get_kite_conn(test_conn=True)` for KiteConnection instances,
-     `get_dhan_conn(test_conn=True)` for DhanConnection instances,
-     `get_groww_conn(test_conn=True)` for GrowwConnection instances (best-effort, log warning
-     on failure, do NOT raise — decorator handles recovery on next API call)
-   - Under `RAMBOQ_USE_CONN_SERVICE=1`: skip token refresh (broker layer owns it, same as
-     existing `_task_token_refresh` no-op logic)
+| Tradingsymbol | Frontend key (strip digits) | Old key (inst.u, broken) |
+|---------------|----------------------------|--------------------------|
+| CRUDEOIL26SEP7600PE | CRUDEOIL | "CRUDE OIL" |
+| CRUDEOILM26SEP7600PE | CRUDEOILM | "CRUDE OIL M" |
+| NATURALGAS26SEP400CE | NATURALGAS | "NATURAL GAS" |
+| GOLD26DEC75000CE | GOLD | "GOLD" |
+| NIFTY26MAR22500CE | NIFTY | "NIFTY" |
+| BANKNIFTY26MAR50000CE | BANKNIFTY | "BANKNIFTY" |
 
-3. Remove `_task_token_refresh` function (background.py:468-497) and its registration at
-   line 5952 (`asyncio.create_task(_supervised(_task_token_refresh, ...))`).
+**`_build_expiries_index`** in `backend/api/routes/instruments.py`:
+```python
+import re as _re
+def _build_expiries_index(items):
+    idx: dict[str, set[str]] = {}
+    for inst in items:
+        if inst.t not in ("CE", "PE") or not inst.x:
+            continue
+        key = _re.sub(r'\d.*', '', inst.s)   # strip digits + suffix, matches frontend
+        if key:
+            idx.setdefault(key, set()).add(inst.x)
+    return {u: sorted(xs) for u, xs in idx.items()}
+```
+Remove the old MCX space-normalization diagnostic log block — no longer needed.
 
-4. Update `BROKER_SPEC.md` to document the combined 05:30 task and removal of the separate
-   05:45 Kite-only refresh.
+**`_chain_quotes_build_sym_map`** in `backend/api/routes/options.py`:
+Same pattern — when building the sym-map, key by `re.sub(r'\d.*', '', inst.s)` for the
+underlying dimension, so it matches the expiry index. The existing `inst.u` filter can be
+dropped entirely for this purpose; CE/PE rows are already filtered by `inst.t`.
+
+### 2. Fast-path guard — fall through when key not in index
+
+```python
+# BEFORE (buggy — returns [] when und not in index)
+if _exp_index is not None:
+    _expiries = _exp_index.get(und, [])
+    return ChainQuotesResponse(expiries=_expiries)   # silent empty, no fallback
+
+# AFTER — only short-circuit when key actually found
+if _exp_index is not None and und in _exp_index:
+    return ChainQuotesResponse(expiries=_exp_index[und])
+# else: fall through to slow-path _chain_quotes_sym_lookup
+```
+
+Also remove the `[chain-expiry-fast-path]` debug `logger.info` added earlier — log noise.
+
+## Files to change
+- `backend/api/routes/instruments.py` — `_build_expiries_index`: key by `re.sub(r'\d.*', '', inst.s)`; remove old MCX space-normalization block and diagnostic log
+- `backend/api/routes/options.py` — `_chain_quotes_build_sym_map`: use same tradingsymbol-prefix key; fast-path guard: `and und in _exp_index`
+- `backend/tests/test_chain_quotes.py` — update existing MCX tests to use tradingsymbol-prefix keying; add test: fast-path key-miss falls through to slow-path
 
 ## Agents
-- backend: (a) In `backend/config/backend_config.yaml`: change `holiday_refresh_time` default
-  from `"04:00"` to `"05:30"`. (b) In `backend/api/background.py`: expand
-  `_task_holiday_refresh` to add best-effort token refresh loop (all broker types) after the
-  NSE API step; guard with `RAMBOQ_USE_CONN_SERVICE` check same pattern as existing
-  `_task_token_refresh`. (c) Remove `_task_token_refresh` function and its `create_task`
-  registration. Keep `_task_perf_snapshot` (04:00) and `_task_purge_perf_snapshots` (04:05)
-  unchanged.
-- backend-test: Update any tests referencing `_task_token_refresh` or the 05:45 trigger time.
-  Add a test that verifies `_task_holiday_refresh` calls token refresh for each broker type
-  when `RAMBOQ_USE_CONN_SERVICE=0`. Existing holiday refresh tests must still pass.
-- doc: Update `docs/specs/BROKER_SPEC.md` — replace the separate 04:00 / 05:45 / 06:00
-  entries with the single 05:30 combined task. Document that token refresh is best-effort
-  (decorator auto-recovers), covers all three brokers, and is a no-op under
-  RAMBOQ_USE_CONN_SERVICE=1.
+- backend: Apply both changes above. In `instruments.py`: replace `_build_expiries_index` body
+  with the `re.sub(r'\d.*', '', inst.s)` approach; remove the old `raw_u`/space-normalization
+  block and the `[expiries-index] normalized MCX spaced names` logger.info. In `options.py`:
+  update `_chain_quotes_build_sym_map` to key by tradingsymbol prefix; change the fast-path
+  guard to `if _exp_index is not None and und in _exp_index:` with direct `_exp_index[und]`;
+  remove the `[chain-expiry-fast-path]` logger.info debug line.
+- backend-test: In `test_chain_quotes.py` update MCX tests that checked for space-normalized
+  keys — they should now check for tradingsymbol-prefix keys (e.g., `"CRUDEOILM"` from
+  `"CRUDEOILM26SEP7600PE"`, not from `inst.u`). Add one test: mock `_cache_peek` to return an
+  index without the requested key → verify slow-path is called. Add one test: index has key →
+  verify fast-path fires and slow-path is NOT called.
 
 ## Tests
 - pytest: yes
@@ -60,10 +84,9 @@ shifts to 05:30. `_task_perf_snapshot` (04:00) is untouched — separate concern
 - playwright: no
 
 ## Commit message
-refactor(background): combine morning tasks into single 05:30 wake-up; add all-broker token refresh
+fix(chain): key expiry index by tradingsymbol prefix (virtual root) — covers all MCX variants + fix fast-path fallback
 
 ## Done when
-- `_task_token_refresh` no longer exists in background.py
-- `_task_holiday_refresh` fires at 05:30 and calls token refresh for Kite, Dhan, Groww
-- `holiday_refresh_time` default is `"05:30"` in backend_config.yaml
-- pytest passes; BROKER_SPEC updated
+- CRUDEOIL, CRUDEOILM, NATURALGAS, GOLD, GOLDM, NIFTY expiry pickers all load within 1s
+- Fast-path key-miss falls through to slow-path (no silent empty response)
+- pytest green
