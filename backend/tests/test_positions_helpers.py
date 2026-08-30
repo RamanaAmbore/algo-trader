@@ -571,3 +571,144 @@ def test_closed_overnight_position_preserves_day_pnl():
         f"With overnight_quantity=100 in payload, day_change_val = 250 - (200-195)*100 = -250, "
         f"got {row_with_oq.day_change_val}."
     )
+
+
+# ---------------------------------------------------------------------------
+# 8. _compute_snapshot_day_pnl — extracted CC-reduction helper
+# ---------------------------------------------------------------------------
+
+class TestComputeSnapshotDayPnl:
+    """Unit tests for _compute_snapshot_day_pnl helper."""
+
+    def test_with_valid_prev_close(self):
+        """When actual_pc > 0, formula = total_pnl - (prev_close - avg) * oq."""
+        from backend.api.routes.positions_helpers import _compute_snapshot_day_pnl
+
+        # Overnight position: total=2500, avg=195, oq=100, prev_close=200
+        # day = 2500 - (200-195)*100 = 2500 - 500 = 2000
+        result = _compute_snapshot_day_pnl(
+            actual_pc=200.0, total_pnl=2500.0, avg=195.0, oq=100.0, day_pnl_raw=9999.0
+        )
+        assert math.isclose(result, 2000.0, rel_tol=1e-6), (
+            f"Expected 2000.0, got {result}"
+        )
+
+    def test_fallback_to_day_pnl_raw_when_no_prev_close(self):
+        """When actual_pc is None, return day_pnl_raw unchanged."""
+        from backend.api.routes.positions_helpers import _compute_snapshot_day_pnl
+
+        result = _compute_snapshot_day_pnl(
+            actual_pc=None, total_pnl=1000.0, avg=100.0, oq=10.0, day_pnl_raw=42.0
+        )
+        assert result == 42.0, f"Expected day_pnl_raw=42.0, got {result}"
+
+    def test_fallback_when_prev_close_zero(self):
+        """When actual_pc=0.0, return day_pnl_raw (zero is falsy guard)."""
+        from backend.api.routes.positions_helpers import _compute_snapshot_day_pnl
+
+        result = _compute_snapshot_day_pnl(
+            actual_pc=0.0, total_pnl=1000.0, avg=100.0, oq=10.0, day_pnl_raw=-55.0
+        )
+        assert result == -55.0, f"Expected day_pnl_raw=-55.0, got {result}"
+
+    def test_new_position_oq_zero(self):
+        """New-position case (oq=0): day = total_pnl - (prev-avg)*0 = total_pnl."""
+        from backend.api.routes.positions_helpers import _compute_snapshot_day_pnl
+
+        result = _compute_snapshot_day_pnl(
+            actual_pc=200.0, total_pnl=500.0, avg=195.0, oq=0.0, day_pnl_raw=0.0
+        )
+        assert math.isclose(result, 500.0, rel_tol=1e-6), (
+            f"New position (oq=0): day should equal total_pnl=500.0, got {result}"
+        )
+
+    def test_closed_overnight_position(self):
+        """Closed overnight (oq>0, qty=0): day = total_pnl - (prev-avg)*oq."""
+        from backend.api.routes.positions_helpers import _compute_snapshot_day_pnl
+
+        # avg=195, oq=100, prev_close=200, total_pnl=250 (exit at 197.5)
+        # day = 250 - (200-195)*100 = 250 - 500 = -250
+        result = _compute_snapshot_day_pnl(
+            actual_pc=200.0, total_pnl=250.0, avg=195.0, oq=100.0, day_pnl_raw=0.0
+        )
+        assert math.isclose(result, -250.0, rel_tol=1e-6), (
+            f"Closed overnight: expected -250.0, got {result}"
+        )
+
+    def test_is_importable_from_positions_helpers(self):
+        """SSOT: helper must be importable from positions_helpers, not inline."""
+        from backend.api.routes.positions_helpers import _compute_snapshot_day_pnl
+        import inspect
+        assert callable(_compute_snapshot_day_pnl)
+        assert not inspect.iscoroutinefunction(_compute_snapshot_day_pnl)
+
+
+# ---------------------------------------------------------------------------
+# 9. _compute_holding_day_change — extracted holdings CC-reduction helper
+# ---------------------------------------------------------------------------
+
+class TestComputeHoldingDayChange:
+    """Unit tests for _compute_holding_day_change helper."""
+
+    def test_day_pnl_nonzero_wins(self):
+        """Stored day_pnl is authoritative when non-zero."""
+        from backend.api.routes.holdings import _compute_holding_day_change
+
+        result = _compute_holding_day_change(
+            day_pnl_f=500.0, ltp_f=2100.0, previous_close_f=2050.0,
+            prev_ltp_f=2040.0, qty_i=10
+        )
+        assert result == 500.0, f"Stored day_pnl=500 should win, got {result}"
+
+    def test_price_recompute_using_previous_close(self):
+        """day_pnl=0, previous_close valid: use (ltp - previous_close) * qty."""
+        from backend.api.routes.holdings import _compute_holding_day_change
+
+        result = _compute_holding_day_change(
+            day_pnl_f=0.0, ltp_f=2100.0, previous_close_f=2050.0,
+            prev_ltp_f=None, qty_i=10
+        )
+        expected = (2100.0 - 2050.0) * 10  # 500.0
+        assert math.isclose(result, expected, rel_tol=1e-6), (
+            f"Expected (ltp-pc)*qty={expected}, got {result}"
+        )
+
+    def test_price_recompute_using_prev_ltp_fallback(self):
+        """day_pnl=0, previous_close=0, prev_ltp set: use (ltp - prev_ltp) * qty."""
+        from backend.api.routes.holdings import _compute_holding_day_change
+
+        result = _compute_holding_day_change(
+            day_pnl_f=0.0, ltp_f=2100.0, previous_close_f=0.0,
+            prev_ltp_f=2040.0, qty_i=10
+        )
+        expected = (2100.0 - 2040.0) * 10  # 600.0
+        assert math.isclose(result, expected, rel_tol=1e-6), (
+            f"Expected (ltp-prev_ltp)*qty={expected}, got {result}"
+        )
+
+    def test_all_zero_returns_zero(self):
+        """No reference available: returns 0.0."""
+        from backend.api.routes.holdings import _compute_holding_day_change
+
+        result = _compute_holding_day_change(
+            day_pnl_f=0.0, ltp_f=2100.0, previous_close_f=0.0,
+            prev_ltp_f=None, qty_i=10
+        )
+        assert result == 0.0, f"Expected 0.0 when no reference available, got {result}"
+
+    def test_negative_day_pnl_returned_directly(self):
+        """Negative stored day_pnl is returned as-is (loss day)."""
+        from backend.api.routes.holdings import _compute_holding_day_change
+
+        result = _compute_holding_day_change(
+            day_pnl_f=-800.0, ltp_f=1900.0, previous_close_f=1980.0,
+            prev_ltp_f=None, qty_i=10
+        )
+        assert result == -800.0, f"Expected -800.0, got {result}"
+
+    def test_is_importable_from_holdings(self):
+        """SSOT: helper must be importable from holdings module."""
+        from backend.api.routes.holdings import _compute_holding_day_change
+        import inspect
+        assert callable(_compute_holding_day_change)
+        assert not inspect.iscoroutinefunction(_compute_holding_day_change)

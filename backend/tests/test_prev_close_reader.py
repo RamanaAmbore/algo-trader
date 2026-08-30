@@ -225,3 +225,92 @@ async def test_fix_daily_book_prev_close_backup_in_executed_sql():
         # Fallback: check source directly (the mock may not capture the f-string expansion)
         "previous_close_backup not found in executed SQL"
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests for _resolve_previous_close helper
+# ---------------------------------------------------------------------------
+
+class TestResolvePreviousClose:
+    """Unit tests for _resolve_previous_close corruption detection helper."""
+
+    def test_clean_path_returns_primary(self):
+        """Clean path: pc_f=374.10, ltp_f=407.50, backup_f=0, prev_ltp_f=None → returns 374.10."""
+        from backend.api.routes.positions_helpers import _resolve_previous_close
+
+        result = _resolve_previous_close(pc_f=374.10, ltp_f=407.50, backup_f=0, prev_ltp_f=None)
+        assert abs(result - 374.10) < 0.01, (
+            f"Expected clean path to return pc_f=374.10, got {result}"
+        )
+
+    def test_pc_zero_backup_valid(self):
+        """pc_f zero, backup valid: pc_f=0, ltp_f=407.50, backup_f=374.10, prev_ltp_f=None → returns 374.10."""
+        from backend.api.routes.positions_helpers import _resolve_previous_close
+
+        result = _resolve_previous_close(pc_f=0, ltp_f=407.50, backup_f=374.10, prev_ltp_f=None)
+        assert abs(result - 374.10) < 0.01, (
+            f"Expected pc_f=0 with valid backup to return backup=374.10, got {result}"
+        )
+
+    def test_pc_corrupted_nearly_equal_ltp_backup_valid(self):
+        """pc ≈ ltp (rolling-shift corruption), backup valid: pc_f=407.49, ltp_f=407.50, backup_f=374.10, prev_ltp_f=None → returns 374.10."""
+        from backend.api.routes.positions_helpers import _resolve_previous_close
+
+        # pc_f is within 0.01 of ltp_f, so corruption is detected
+        result = _resolve_previous_close(pc_f=407.49, ltp_f=407.50, backup_f=374.10, prev_ltp_f=None)
+        assert abs(result - 374.10) < 0.01, (
+            f"Expected corruption detection (pc≈ltp) to use backup=374.10, got {result}"
+        )
+
+    def test_pc_corrupted_backup_also_corrupted_prev_ltp_valid(self):
+        """pc ≈ ltp, backup also ≈ ltp, prev_ltp_f set: pc_f=407.50, ltp_f=407.50, backup_f=407.495, prev_ltp_f=374.10 → returns 374.10."""
+        from backend.api.routes.positions_helpers import _resolve_previous_close
+
+        # pc_f is nearly equal to ltp_f (corruption), backup is also nearly ltp (within 0.01, fails distance check),
+        # so should fall back to prev_ltp_f
+        result = _resolve_previous_close(pc_f=407.50, ltp_f=407.50, backup_f=407.495, prev_ltp_f=374.10)
+        assert abs(result - 374.10) < 0.01, (
+            f"Expected fallback to prev_ltp_f=374.10 when backup fails distance check, got {result}"
+        )
+
+    def test_pc_corrupted_no_backup_no_prev_ltp(self):
+        """pc ≈ ltp, no backup, no prev_ltp: pc_f=407.50, ltp_f=407.50, backup_f=0, prev_ltp_f=None → returns 407.50."""
+        from backend.api.routes.positions_helpers import _resolve_previous_close
+
+        # pc_f is corrupted (≈ ltp_f), no backup, no prev_ltp_f; should return pc_f as-is
+        result = _resolve_previous_close(pc_f=407.50, ltp_f=407.50, backup_f=0, prev_ltp_f=None)
+        assert abs(result - 407.50) < 0.01, (
+            f"Expected fallback to pc_f=407.50 when no valid backup or prev_ltp, got {result}"
+        )
+
+    def test_pc_negative_backup_valid(self):
+        """pc_f negative, backup valid: pc_f=-1.0, ltp_f=407.50, backup_f=374.10, prev_ltp_f=None → returns 374.10."""
+        from backend.api.routes.positions_helpers import _resolve_previous_close
+
+        # Negative pc_f is treated as invalid (pc_f <= 0 check)
+        result = _resolve_previous_close(pc_f=-1.0, ltp_f=407.50, backup_f=374.10, prev_ltp_f=None)
+        assert abs(result - 374.10) < 0.01, (
+            f"Expected negative pc_f to trigger backup, got {result}"
+        )
+
+    def test_ltp_zero_pc_nonzero(self):
+        """ltp_f is zero, pc_f nonzero: pc_f=374.10, ltp_f=0, backup_f=0, prev_ltp_f=None → returns 374.10."""
+        from backend.api.routes.positions_helpers import _resolve_previous_close
+
+        # When ltp_f is 0, the corruption check doesn't apply (ltp_f > 0 is false),
+        # so pc_f is returned as-is
+        result = _resolve_previous_close(pc_f=374.10, ltp_f=0, backup_f=0, prev_ltp_f=None)
+        assert abs(result - 374.10) < 0.01, (
+            f"Expected pc_f to be returned when ltp_f=0 (no corruption check), got {result}"
+        )
+
+    def test_backup_nonzero_but_too_close_to_ltp(self):
+        """Backup exists but is too close to ltp (fails distance check)."""
+        from backend.api.routes.positions_helpers import _resolve_previous_close
+
+        # pc_f is corrupted (≈ ltp_f), but backup is also within 0.01 of ltp_f (fails distance check)
+        # and no prev_ltp_f; should return pc_f as-is (the corrupted value as fallback)
+        result = _resolve_previous_close(pc_f=407.50, ltp_f=407.50, backup_f=407.505, prev_ltp_f=None)
+        assert abs(result - 407.50) < 0.01, (
+            f"Expected corrupted pc_f when backup fails distance check, got {result}"
+        )

@@ -192,31 +192,30 @@ async def test_positions_snapshot_loop_unpacks_prev_ltp_and_prev_settlement_pnl(
 
 @pytest.mark.asyncio
 async def test_positions_snapshot_prev_close_val_prefers_prev_ltp():
-    """The preference logic now uses actual_previous_close (frozen settlement) as the
-    primary reference, with prev_ltp as the fallback when previous_close is absent/zero.
+    """actual_previous_close (frozen settlement) is the primary reference for day P&L.
 
-    After the prev_close_val priority fix (2026-08-11), this logic lives in
-    build_row_from_snapshot_raw (positions_helpers). actual_previous_close is
-    computed first; prev_ltp fills in only when actual_previous_close is None.
+    After the CC-refactor (2026-08-30), the `prev_close_val` dead-variable was removed.
+    The helper `_resolve_previous_close` is now called WITHOUT prev_ltp so that
+    corruption detection (pc ≈ ltp) does not fall through to prev_ltp — positions
+    only uses prev_ltp when previous_close is completely absent/zero.
+    Verify: (a) actual_previous_close is computed, (b) _resolve_previous_close is used.
     """
     import inspect
     from backend.api.routes import positions_helpers as _helpers
 
     src = inspect.getsource(_helpers.build_row_from_snapshot_raw)
-    assert "prev_close_val = (" in src, (
-        "build_row_from_snapshot_raw must compute prev_close_val"
-    )
     assert "actual_previous_close" in src, (
         "build_row_from_snapshot_raw must compute actual_previous_close "
         "(the frozen prior-session settlement) as the primary reference"
     )
-    assert "float(prev_ltp) if prev_ltp and float(prev_ltp) > 0" in src, (
-        "prev_close_val must fall back to prev_ltp when actual_previous_close is None"
+    assert "_resolve_previous_close" in src, (
+        "build_row_from_snapshot_raw must use _resolve_previous_close helper "
+        "for corruption-detection (CC-reduction refactor 2026-08-30)"
     )
-    # Priority: actual_previous_close first, prev_ltp second
-    assert "actual_previous_close\n        or (float(prev_ltp)" in src or \
-           "actual_previous_close or" in src, (
-        "prev_close_val must prefer actual_previous_close over prev_ltp"
+    # prev_ltp must still be unpacked from the tuple (column 11) but is no
+    # longer passed to _resolve_previous_close (positions fallback removed).
+    assert "prev_ltp, prev_settlement_pnl" in src, (
+        "Tuple unpack must still include prev_ltp (column 11)"
     )
 
 

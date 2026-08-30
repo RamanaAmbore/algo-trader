@@ -22,7 +22,7 @@ from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
     closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
 )
-from backend.api.routes.positions_helpers import _is_broker_outage
+from backend.api.routes.positions_helpers import _is_broker_outage, _resolve_previous_close
 from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
@@ -124,6 +124,30 @@ async def _query_holdings_snapshot_rows():
         return None
 
 
+def _compute_holding_day_change(
+    day_pnl_f: float,
+    ltp_f: float,
+    previous_close_f: float,
+    prev_ltp_f: "float | None",
+    qty_i: int,
+) -> float:
+    """Return day_change_val for a holdings snapshot row.
+
+    Priority:
+      1. Stored EOD day_pnl when non-zero — authoritative (broker-computed at session end).
+      2. Price recompute using prior-session close: (ltp - previous_close) * qty.
+      3. Price recompute using prior snapshot batch LTP as fallback.
+      4. Zero when no reference price is available.
+    """
+    if day_pnl_f != 0.0:
+        return day_pnl_f
+    if previous_close_f > 0:
+        return (ltp_f - previous_close_f) * qty_i
+    if prev_ltp_f is not None:
+        return (ltp_f - prev_ltp_f) * qty_i
+    return 0.0
+
+
 def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float, float, float]:
     """Convert one raw snapshot tuple into a HoldingRow + the four
     per-account sums (inv, cur, total_pnl, day_pnl) that the caller
@@ -157,23 +181,12 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     # to previous_close_backup (saved before the fix_daily_book_prev_close
     # overwrote previous_close) or to prev_ltp from the prior snapshot batch.
     backup_f = float(previous_close_backup) if previous_close_backup else 0.0
-    if previous_close_f <= 0 or (ltp_f > 0 and abs(previous_close_f - ltp_f) < 0.01):
-        if backup_f > 0 and abs(backup_f - ltp_f) >= 0.01:
-            previous_close_f = backup_f
-        elif prev_ltp_f is not None and prev_ltp_f > 0:
-            previous_close_f = prev_ltp_f
+    previous_close_f = _resolve_previous_close(previous_close_f, ltp_f, backup_f, prev_ltp_f)
     # Priority: stored EOD day_pnl is authoritative when non-zero (it was
     # computed by the broker at session end, so it already accounts for
     # intraday buys/sells). Only recompute from prices when day_pnl_f == 0
     # (null or genuinely zero — e.g. symbol held flat all day).
-    if day_pnl_f != 0.0:
-        day_change_val = day_pnl_f
-    elif previous_close_f > 0:
-        day_change_val = (ltp_f - previous_close_f) * qty_i
-    elif prev_ltp_f is not None:
-        day_change_val = (ltp_f - prev_ltp_f) * qty_i
-    else:
-        day_change_val = 0.0
+    day_change_val = _compute_holding_day_change(day_pnl_f, ltp_f, previous_close_f, prev_ltp_f, qty_i)
     # day_change_percentage: day_change_val / |previous_close × qty| × 100
     # Use yesterday's close price as the denominator (NOT LTP, which would
     # understate the move). Fallback to avg_cost when previous_close is

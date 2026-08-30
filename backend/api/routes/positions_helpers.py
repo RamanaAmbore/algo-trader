@@ -27,6 +27,63 @@ from backend.shared.helpers.utils import mask_account
 
 
 # ---------------------------------------------------------------------------
+# Shared previous-close resolution helpers (used by both holdings and positions)
+# ---------------------------------------------------------------------------
+
+def _resolve_previous_close(
+    pc_f: float,
+    ltp_f: float,
+    backup_f: float,
+    prev_ltp_f: "float | None" = None,
+) -> float:
+    """Return a corrected previous_close, falling back when NULL or ≈ ltp.
+
+    When `pc_f` is zero/missing or equal to `ltp_f` within 0.01 (rolling-shift
+    corruption where previous_close was overwritten by the current LTP), try
+    `backup_f` first, then `prev_ltp_f` (prior snapshot batch LTP). Returns
+    the original `pc_f` when no correction is needed.
+    """
+    if pc_f <= 0 or (ltp_f > 0 and abs(pc_f - ltp_f) < 0.01):
+        if backup_f > 0 and abs(backup_f - ltp_f) >= 0.01:
+            return backup_f
+        if prev_ltp_f is not None and prev_ltp_f > 0:
+            return prev_ltp_f
+    return pc_f
+
+
+def _parse_overnight_qty(payload_json, fallback_qty: float) -> float:
+    """Return overnight_quantity from payload_json, falling back to fallback_qty."""
+    try:
+        pj = _json.loads(payload_json) if isinstance(payload_json, str) else payload_json
+        pj = pj if isinstance(pj, dict) else {}
+    except (_json.JSONDecodeError, ValueError, TypeError):
+        pj = {}
+    oq_raw = pj.get("overnight_quantity")
+    return float(oq_raw) if oq_raw is not None else float(fallback_qty)
+
+
+def _compute_snapshot_day_pnl(
+    actual_pc: "float | None",
+    total_pnl: float,
+    avg: float,
+    oq: float,
+    day_pnl_raw,
+) -> "float | None":
+    """Compute day_pnl from the universal formula when prev_close is available.
+
+    Formula: day_pnl = total_pnl - (prev_close - avg) * oq
+      Overnight open (oq=qty):  (ltp-avg)*oq - (prev-avg)*oq = (ltp-prev)*oq ✓
+      New today (oq=0):         total_pnl - 0 = realised ✓
+      Closed overnight (oq>0):  realised - (prev-avg)*oq = (exit-prev)*oq ✓
+
+    Falls back to `day_pnl_raw` when prev_close is unavailable.
+    """
+    if actual_pc and actual_pc > 0:
+        return total_pnl - (actual_pc - avg) * oq
+    return day_pnl_raw
+
+
+# ---------------------------------------------------------------------------
 # 1. Summary builder — SSOT (was copied verbatim in _positions_snapshot,
 #    _build_paper_positions_response, and the mode=both merge in get_positions)
 # ---------------------------------------------------------------------------
@@ -299,18 +356,16 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     # Safety net: when previous_close was corrupted by the rolling-shift UPSERT
     # (i.e. previous_close == ltp), fall back to previous_close_backup (saved
     # before fix_daily_book_prev_close overwrote previous_close).
-    _pc_raw = float(previous_close) if previous_close and float(previous_close) > 0 else None
+    _pc_raw = float(previous_close) if previous_close and float(previous_close) > 0 else 0.0
     _ltp_f  = float(ltp) if ltp else 0.0
     backup_f = float(previous_close_backup) if previous_close_backup else 0.0
-    if _pc_raw is not None and _ltp_f > 0 and abs(_pc_raw - _ltp_f) < 0.01:
-        # previous_close ≈ ltp: rolling-shift corruption — try backup
-        if backup_f > 0 and abs(backup_f - _ltp_f) >= 0.01:
-            _pc_raw = backup_f
-    actual_previous_close = _pc_raw
-    prev_close_val = (
-        actual_previous_close
-        or (float(prev_ltp) if prev_ltp and float(prev_ltp) > 0 else None)
-    )
+
+    # Use the corruption-detection helper to resolve the final previous_close value.
+    # prev_ltp is NOT passed here — positions falls back to prev_ltp only when
+    # previous_close is completely absent (None/zero), not as a corruption fallback.
+    # Corruption fallback (pc ≈ ltp) tries backup_f only; if no backup, keeps pc as-is.
+    resolved_pc = _resolve_previous_close(_pc_raw, _ltp_f, backup_f)
+    actual_previous_close = resolved_pc if resolved_pc > 0 else None
     prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
     # Universal day_pnl formula using overnight_quantity from payload_json.
     # Handles all position states (overnight open, new today, partial close,
@@ -321,24 +376,13 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     #   Partial close (oq>qty>0): (ltp-avg)*rem + realised - (prev-avg)*oq ✓
     #   Closed intraday (oq=0):   realised - 0 = realised ✓
     #   Closed overnight (oq>0):  realised - (prev-avg)*oq = (exit-prev)*oq ✓
-    try:
-        _pj_raw = _json.loads(payload_json) if isinstance(payload_json, str) else payload_json
-        _pj = _pj_raw if isinstance(_pj_raw, dict) else {}
-    except (_json.JSONDecodeError, ValueError, TypeError):
-        _pj = {}
     _avg = float(avg_cost) if avg_cost else 0.0
     _total = float(total_pnl) if total_pnl is not None else 0.0
-
-    # Read overnight_quantity from payload_json when present.
     # Snapshots written before this fix have no overnight_quantity field — fall
     # back to effective_qty (the old behavior: all held qty = overnight qty).
-    _oq_raw = _pj.get("overnight_quantity")
-    _oq = float(_oq_raw) if _oq_raw is not None else float(effective_qty)
+    _oq = _parse_overnight_qty(payload_json, effective_qty)
 
-    if actual_previous_close and actual_previous_close > 0:
-        computed_day_pnl = _total - (actual_previous_close - _avg) * _oq
-    else:
-        computed_day_pnl = day_pnl  # fallback when prev_close unavailable
+    computed_day_pnl = _compute_snapshot_day_pnl(actual_previous_close, _total, _avg, _oq, day_pnl)
 
     return build_snapshot_position_row(
         account, symbol, exchange, effective_qty, avg_cost, ltp,

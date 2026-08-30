@@ -899,7 +899,7 @@ All tables live in the branch-local DB except `broker_accounts`, which is shared
 
 | Table | Purpose | Key columns |
 |---|---|---|
-| `daily_book` | Intraday snapshot of positions, holdings, or funds per account per symbol. Captured at market close, useful when markets closed. Schema includes `previous_close` (frozen yesterday's settlement price) to stabilize day P&L math during closed-hours reads. | id (PK), kind (positions\|holdings\|funds), account, symbol, exchange, qty, avg_price, ltp, pnl, pnl_pct, date, captured_at, segment (NSE\|MCX\|...), **previous_close** |
+| `daily_book` | Intraday snapshot of positions, holdings, or funds per account per symbol. Captured at market close, useful when markets closed. Schema includes `previous_close` (frozen yesterday's settlement price) to stabilize day P&L math during closed-hours reads, and `previous_close_backup` (immutable backup of pre-fix value). | id (PK), kind (positions\|holdings\|funds), account, symbol, exchange, qty, avg_price, ltp, pnl, pnl_pct, date, captured_at, segment (NSE\|MCX\|...), **previous_close**, **previous_close_backup** |
 | `ohlcv_daily` | 5-year OHLCV history. Persistence tier 2 fallback for chart data. | symbol, exchange (PK), date (PK), open, high, low, close, volume |
 | `instruments_snapshot` | Per-exchange symbol→token map. Refreshed daily. | id (PK), exchange, date, payload (JSONB full instruments dict), row_count |
 | `holidays_snapshot` | Exchange holiday sets per year. Immutable once year closes. | id (PK), exchange, year, dates_json (JSONB list) |
@@ -1831,6 +1831,11 @@ mutation and consulted by `snapshot_gate.py` + background tasks.
 
 **File:** `backend/api/helpers/exchange_clock.py`
 
+**Module-level state:**
+- `_TODAY_NSE_OPEN: time | None` — cached NSE session open time for today, set at startup and refreshed at 04:00 IST from `exchange_schedule` table
+- `_load_today_open_time()` — async loader; reads effective rows for NON-MCX gate and extracts the open time (may be NULL on holidays)
+- `get_nse_open_time() -> time | None` — sync accessor; returns the cached NSE open time, or None if unknown/holiday
+
 **Public API:**
 
 | Function | Signature | Purpose |
@@ -1842,6 +1847,8 @@ mutation and consulted by `snapshot_gate.py` + background tasks.
 | `settlement_cutoff_for(gate)` | `str → datetime` (async) | Returns `default_row.open_time` (08:00) as the reset boundary for daily snapshots (used in positions/holdings close-price queries) |
 | `refresh()` | `() → None` (async) | Reload cache from DB (skips if cache is fresh < 60s) |
 | `seed_and_warm()` | `() → None` (async) | On_startup callable; seeds defaults, loads cache |
+| `load_today_open_time()` | `() → None` (async) | Async loader for dynamic NSE open time; called at startup (before holiday refresh) and at 04:00 IST daily; sets `_TODAY_NSE_OPEN` from DB schedule |
+| `get_nse_open_time()` | `() → time \| None` (sync) | Returns cached NSE session open time for today, or None if unknown or market closed |
 
 **Cache behavior:**
 
@@ -3522,6 +3529,9 @@ gantt
   errors during market hours. When `RAMBOQ_USE_CONN_SERVICE=1`, the task is not scheduled 
   to avoid tight-loop polling when the conn service is not running; skipped at startup.
 
+**Schedule refresh tasks:**
+- 04:00 IST daily — calls `exchange_clock.load_today_open_time()` (before holiday refresh) to set dynamic NSE open time from `exchange_schedule` table. The fix fires at the actual session open time (which may differ on special sessions) and does not fire on holidays. Then runs `_task_holiday_refresh` to sync the market holidays calendar from NSE API.
+
 ⚙ **TECH — Why poll-based + not event-based** — `WHY` Vendor postbacks are unreliable (Dhan + Groww have no inbound webhook; Kite drops 0.5-2% in our experience). Polling is the conservative floor. `WHAT` Each task runs on its own asyncio cadence; no scheduler library. `HOW` Pick interval based on operator latency tolerance: trail-stop = 30s (slow ratchet OK), OCO watcher = 15s (faster because both legs settling within window means double-fire). `WHERE` `backend/api/background.py`.
 
 ### 20.1 Sparkline refresh pipeline
@@ -4565,6 +4575,35 @@ Shared params: `from_date / to_date / accounts / symbols` (comma-separated lists
 - **Orders**: `counts` field is a SQL-side `GROUP BY status` histogram. UI renders as summary pills without paginating.
 - **Trades**: `summary.total_notional` is `Σ qty × avg_cost` across the FILTERED set, computed via `_func.sum()` so pagination doesn't degrade accuracy.
 - **Funds**: `earliest_date` is `MIN(daily_book.date) WHERE kind='funds'` — the UI's "tracking started X" chip uses it to set expectations while historical backfill catches up.
+
+### DailyBook schema
+
+Core `daily_book` table columns — one row per `(date, account, kind, symbol)`:
+
+| Column | Type | Purpose |
+|---|---|---|
+| `id` | SERIAL PK | Row identifier |
+| `date` | DATE | Snapshot date (IST) |
+| `account` | VARCHAR(32) | Broker account (indexed) |
+| `segment` | VARCHAR(16) | 'equity' \| 'commodity' \| 'currency' \| 'derivatives' |
+| `kind` | VARCHAR(16) | 'holdings' \| 'positions' \| 'trades' \| 'funds' (indexed with account + symbol) |
+| `symbol` | VARCHAR(64) | Trading symbol (indexed with account, kind) |
+| `exchange` | VARCHAR(16) NULLABLE | Exchange code (e.g. 'NSE', 'MCX') |
+| `qty` | INTEGER | Quantity (CONTRACTS, after lot normalization via `_annotate_lot_size`) |
+| `lots` | INTEGER | Lot count (qty / lot_size); informational |
+| `lot_size` | INTEGER | Lot size for this instrument; informational |
+| `avg_cost` | NUMERIC(16,4) NULLABLE | Average fill cost |
+| `ltp` | NUMERIC(16,4) NULLABLE | Last trade price at snapshot time |
+| `day_pnl` | NUMERIC(16,4) NULLABLE | Intraday P&L (frozen at session close) |
+| `total_pnl` | NUMERIC(16,4) NULLABLE | Cumulative P&L since inception |
+| `previous_close` | NUMERIC(16,4) NULLABLE | Prior session settlement LTP (frozen, first-write-wins via COALESCE in UPSERT) |
+| `previous_close_backup` | NUMERIC(16,4) NULLABLE | Copy of previous_close saved before fix_daily_book_prev_close overwrites it; COALESCE guard prevents re-overwrite on restart |
+| `payload_json` | TEXT NULLABLE | Raw broker row for forensics (e.g. full KiteTicker payload) |
+| `captured_at` | TIMESTAMP(TZ) | When the snapshot was taken (UTC) |
+
+**Unique constraint:** `(date, account, kind, symbol)` — allows idempotent re-runs of `_task_daily_snapshot`.
+
+**Key invariant:** `previous_close` is set exactly once per (account, symbol, date) via `COALESCE(..., previous_close)` in the UPSERT. Subsequent passes never overwrite a non-NULL value. This ensures day P&L formulas always reference the same prior-session settlement LTP throughout the trading day.
 
 ### Funds capture (new — Jun 2026)
 

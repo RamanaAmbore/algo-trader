@@ -583,6 +583,14 @@ would compute wrong day P&L.
 
 **Fix**: Only advance `previous_close` when ltp actually changes (not on frozen weekend snapshots).
 
+### `previous_close` immutability (Aug 2026)
+
+`previous_close` is frozen after the first INSERT for each (account, symbol, 
+captured_at date). The UPSERT `ON CONFLICT DO UPDATE` clause deliberately omits 
+`previous_close = EXCLUDED.previous_close` — intraday writes never overwrite it. 
+Only `fix_daily_book_prev_close()` may update `previous_close`, once per session 
+at open (see section 7.3.12).
+
 ---
 
 ## 7.3.1 MCX 23:45 ltp=0 Corruption — Three-Layer Defense (Aug 2026)
@@ -1203,6 +1211,72 @@ or recalculated close price.
 - Ensures Day P&L consistency when exchanges close mid-session (MCX during 
   NSE close, NCDEX holidays, etc.).
 
+### `previous_close_backup` Column (Aug 2026)
+
+**File**: `backend/api/algo/daily_snapshot.py` — `fix_daily_book_prev_close()`
+
+A new `previous_close_backup` column in `daily_book` stores a copy of 
+`previous_close` saved by `fix_daily_book_prev_close()` before it overwrites 
+`previous_close` at market open. This provides a guard against legacy-corrupted 
+rows where `previous_close ≈ ltp` (rolling-shift corruption from overnight hours).
+
+**Schema**:
+
+- **`previous_close_backup`** — `DOUBLE NULLABLE` — copy of `previous_close` 
+  saved by `fix_daily_book_prev_close()` before it overwrites `previous_close`. 
+  COALESCE guard ensures only the first daily backup survives (subsequent updates 
+  within the same day preserve the original value). Never updated by intraday 
+  UPSERT.
+
+**Purpose**: Reader fallback chain in `_resolve_previous_close()` (holdings and 
+positions) checks: (1) if `previous_close ≈ ltp` (corruption), try 
+`previous_close_backup`; (2) if backup also absent/corrupted, fall back to 
+`prev_ltp` from prior snapshot batch. This ensures day P&L uses the correct 
+prior-session price even when legacy data has corrupted `previous_close` values.
+
+### Reader Fallback Chain for `previous_close` (Aug 2026)
+
+**File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`  
+**File**: `backend/api/routes/positions_helpers.py` — `build_row_from_snapshot_raw()`
+
+Both holdings and positions snapshot readers use `_resolve_previous_close(pc_f, 
+ltp_f, backup_f, prev_ltp_f)` to guard against legacy-corrupted rows:
+
+```python
+def _resolve_previous_close(pc_f, ltp_f, backup_f, prev_ltp_f):
+    # pc_f: current previous_close value from row
+    # ltp_f: current ltp value from row
+    # backup_f: previous_close_backup (saved copy, nullable)
+    # prev_ltp_f: ltp from prior snapshot batch (fallback)
+    
+    if pc_f is not None and abs(pc_f - ltp_f) < 0.005:
+        # Rolling-shift corruption: pc ≈ ltp
+        if backup_f is not None and abs(backup_f - ltp_f) >= 0.005:
+            return backup_f  # Layer 1: use backup if uncorrupted
+        elif prev_ltp_f is not None:
+            return prev_ltp_f  # Layer 2: fall back to prior batch LTP
+    
+    return pc_f  # Normal case: use current previous_close
+```
+
+**Three-layer fallback**:
+
+1. **If `previous_close ≈ ltp`** (epsilon < 0.005 = rolling-shift corruption):
+   - Try `previous_close_backup` (saved copy)
+   - If backup is also absent or ≈ ltp: fall back to `prev_ltp` from the prior 
+     snapshot batch
+   - Otherwise return `previous_close` unchanged
+
+2. **Layer 2** (if backup unavailable): Use `prev_ltp` (prior batch's settlement 
+   LTP, queried from 7-day lookback)
+
+3. **Layer 3** (normal case): Return `previous_close` as-is
+
+**Impact**: Day P&L calculations use the correct prior-session close price even 
+when `daily_book` rows contain legacy-corrupted `previous_close` values. Operator 
+sees accurate overnight moves immediately after market open, not just after 
+`fix_daily_book_prev_close()` runs at 08:00 IST.
+
 ### Dhan `close_price=0` handling and backfill recompute (Aug 2026)
 
 **File**: `backend/api/algo/daily_snapshot.py` — `_backfill_recompute_derived()` 
@@ -1367,6 +1441,26 @@ async def fix_daily_book_prev_close(now_ist=None) -> int:
     # WHERE date = :today AND |previous_close - ltp| < 0.005 (overnight)
     #    OR date = :today (new-session, unconditional)
 ```
+
+### Market-open time loading (Aug 2026)
+
+The fix fires at the **NSE session open time**, loaded dynamically from 
+`exchange_schedule` via `exchange_clock.get_nse_open_time()`. On holidays 
+(`open_time = None`), the fix does not fire.
+
+**Lifecycle**:
+
+- **Backend startup** (`seed_and_warm()`): NSE open time loaded from `exchange_schedule` 
+  table and cached in `_nse_open_time_cached` module variable
+- **Daily 04:00 IST** (`_task_holiday_refresh`): Exchange schedule refreshed from 
+  database — before 08:00 market open — ensuring special sessions and custom 
+  schedules are always respected
+- **08:00 IST transition**: `fix_daily_book_prev_close()` fires at the cached NSE 
+  open time; if no row found or schedule not loaded, gracefully skips (fail-open)
+
+**Rationale**: Hardcoding "08:00 IST" would miss special market sessions (e.g., 
+extended hours on festival eves, extended holidays). Loading from the schedule 
+table ensures the fix respects the real market calendar.
 
 **Correct behavior after fix**:
 
