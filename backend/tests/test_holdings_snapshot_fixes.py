@@ -287,7 +287,8 @@ async def test_overlay_snapshot_patches_day_change_for_closed_nfo_row():
         return exch.upper() == "NFO"
 
     # snap_map: NFO row has a snapshot entry, MCX doesn't.
-    snap_map = {("ZG0001", "NIFTY26AUG24500CE"): 150.0}
+    # Values are now (ltp, day_pnl) tuples, not flat floats.
+    snap_map = {("ZG0001", "NIFTY26AUG24500CE"): (150.0, 400.0)}
 
     # ref_close_map returned by _fetch_ref_close_map for closed pairs.
     ref_close_map = {("ZG0001", "NIFTY26AUG24500CE"): ref_close_for_nfo}

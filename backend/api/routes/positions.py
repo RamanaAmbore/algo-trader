@@ -467,20 +467,28 @@ async def _process_overlay_row(r, kind: str, snap_map: dict, ref_close_map: dict
         return _replace_row_price(r, broker_ltp, exchange_open=True, snap_ltp=None)
 
     key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
-    snap_ltp = snap_map.get(key)
+    snap_val     = snap_map.get(key)
+    snap_ltp     = snap_val[0] if isinstance(snap_val, tuple) else snap_val
+    snap_day_pnl = snap_val[1] if isinstance(snap_val, tuple) else None
     replaced = _replace_row_price(r, broker_ltp, exchange_open=False, snap_ltp=snap_ltp)
     if kind == "positions":
         ref_close = ref_close_map.get(key, 0.0)
-        if ref_close > 0 and snap_ltp is not None:
+        if snap_ltp is not None:
             snap_ltp_f = float(snap_ltp)
             qty = int(getattr(r, "quantity", 0) or 0)
-            dcv = (snap_ltp_f - ref_close) * qty
-            prev_val = abs(ref_close * qty) if qty else 0.0
-            dcp = (dcv / prev_val * 100.0) if prev_val else 0.0
-            replaced = _msc.structs.replace(
-                replaced, day_change_val=dcv, day_change_percentage=dcp,
-                close_price=ref_close,
-            )
+            if snap_day_pnl is not None and snap_day_pnl != 0.0:
+                dcv = snap_day_pnl
+            elif ref_close > 0:
+                dcv = (snap_ltp_f - ref_close) * qty
+            else:
+                dcv = None
+            if dcv is not None:
+                prev_val = abs(ref_close * qty) if (ref_close > 0 and qty) else 0.0
+                dcp = (dcv / prev_val * 100.0) if prev_val else 0.0
+                replaced = _msc.structs.replace(
+                    replaced, day_change_val=dcv, day_change_percentage=dcp,
+                    close_price=ref_close,
+                )
     return replaced
 
 

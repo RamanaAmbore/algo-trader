@@ -48,17 +48,16 @@ function computeHoldingsDayPnl(holdings = [], snapshots = /** @type {Record<stri
       : Number(h?.last_price ?? 0);
 
     const closePx = Number(h?.previous_close) || Number(h?.close_price) || Number(h?.ohlc?.close) || 0;
-    const avgCost = Number(h?.average_price) || 0;
     const heldQty = Number(h?.quantity)       || 0;
     const dcv     = Number(h?.day_change_val) || 0;
 
     let val;
-    // Guard: closePx missing or equals avgCost → data-source issue, use dcv.
-    if (closePx === 0 || closePx === avgCost) {
+    if (closePx <= 0) {
       val = dcv;
     } else if (liveLtp > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
       val = (liveLtp - closePx) * heldQty;
     } else {
+      // Market closed or price flat (ltp ≈ close): fall back to broker day_change_val.
       val = dcv;
     }
 
@@ -570,41 +569,63 @@ describe('holdingsDayPnlStore — ohlc.close tertiary fallback', () => {
   });
 });
 
-// ── Test 11: closePx === avgCost guard ───────────────────────────────────────
+// ── Test 11: closePx === avgCost no longer triggers dcv fallback ──────────────
+// The old guard `closePx === avgCost` was removed because the backend now sends
+// `previous_close = daily_book.ltp` (settlement LTP) separately from
+// `average_price`. Buying a stock at exactly the prior settlement price is a
+// legitimate market condition that must NOT fall back to dcv.
 
-describe('holdingsDayPnlStore — closePx === avgCost guard', () => {
-  it('when closePx equals avgCost (data-source mixup): falls back to day_change_val', () => {
-    // Bug scenario: backend sends average_price in the close field, so
-    // day P&L formula gives lifetime P&L instead of day P&L.
-    // Guard: closePx === avgCost → use dcv instead.
+describe('holdingsDayPnlStore — closePx === avgCost no longer triggers fallback', () => {
+  it('spec case: previous_close=avgCost=200, ltp=210, qty=100 → formula fires, total=1000 (not dcv)', () => {
+    // This is the canonical spec scenario: buying at exactly the prior settlement
+    // price. Old guard would have fallen back to dcv; new guard must NOT.
     const holdings = [makeHoldingRow({
       tradingsymbol:  'SBIN',
-      previous_close: 750,    // this is what close_price will equal if mixed up
-      close_price:    750,
-      average_price:  750,    // same value → closePx === avgCost → guard fires
-      last_price:     760,
-      quantity:       20,
-      opening_quantity: 20,
-      day_change_val: 200,
+      previous_close: 200,
+      close_price:    200,
+      average_price:  200,   // equals previous_close — old guard would have fired
+      last_price:     210,
+      quantity:       100,
+      opening_quantity: 100,
+      day_change_val: 50,    // dcv ≠ formula result (50 vs 1000) — proves formula is used
     })];
-    const snapshots = { SBIN: { ltp: 760 } };
+    const snapshots = { SBIN: { ltp: 210 } };
 
     const result = computeHoldingsDayPnl(holdings, snapshots);
 
-    // Without guard: (760-750)*20 = 200, same as dcv — but guard fires so dcv used.
-    // The guard is designed to protect the case where they differ materially.
-    // Here dcv=200 = formula=200, so total is the same; guard still fires.
-    expect(result.byKey['SBIN']).toBe(200);
+    // Formula: (210 - 200) * 100 = 1000  (NOT dcv=50)
+    expect(result.byKey['SBIN']).toBeCloseTo(1000, 4);
+    expect(result.total).toBeCloseTo(1000, 4);
   });
 
-  it('closePx !== avgCost: formula fires normally (no false guard)', () => {
+  it('closePx <= 0 still triggers dcv fallback: previous_close=0, dcv=500 → total=500', () => {
+    const holdings = [makeHoldingRow({
+      tradingsymbol:  'DUMMY',
+      previous_close: 0,
+      close_price:    0,
+      average_price:  0,
+      last_price:     100,
+      quantity:       5,
+      opening_quantity: 5,
+      day_change_val: 500,
+    })];
+    const snapshots = { DUMMY: { ltp: 100 } };
+
+    const result = computeHoldingsDayPnl(holdings, snapshots);
+
+    // closePx=0 → guard (closePx<=0) fires → dcv=500
+    expect(result.byKey['DUMMY']).toBe(500);
+    expect(result.total).toBe(500);
+  });
+
+  it('closePx !== avgCost: formula still fires normally', () => {
     // avgCost = 700 (cost basis), closePx = 750 (prior session close)
-    // These differ → guard must NOT fire → live formula used.
+    // These differ — old guard correctly did not fire; new guard also does not.
     const holdings = [makeHoldingRow({
       tradingsymbol:  'BHARTIARTL',
       previous_close: 750,
       close_price:    750,
-      average_price:  700,    // different from close → no guard
+      average_price:  700,
       last_price:     760,
       quantity:       15,
       opening_quantity: 15,
@@ -614,29 +635,8 @@ describe('holdingsDayPnlStore — closePx === avgCost guard', () => {
 
     const result = computeHoldingsDayPnl(holdings, snapshots);
 
-    // closePx = 750, avgCost = 700 → guard does not fire → (760-750)*15 = 150
+    // (760-750)*15 = 150
     expect(result.byKey['BHARTIARTL']).toBeCloseTo(150, 4);
-  });
-
-  it('closePx === avgCost but avgCost === 0: falls back to dcv (zero-avgCost edge)', () => {
-    // avgCost = 0 means average_price not set; closePx will also be 0 via guard.
-    // The closePx===0 branch fires before the avgCost===closePx branch.
-    const holdings = [makeHoldingRow({
-      tradingsymbol:  'DUMMY',
-      previous_close: 0,
-      close_price:    0,
-      average_price:  0,
-      last_price:     100,
-      quantity:       5,
-      opening_quantity: 5,
-      day_change_val: 30,
-    })];
-    const snapshots = { DUMMY: { ltp: 100 } };
-
-    const result = computeHoldingsDayPnl(holdings, snapshots);
-
-    // closePx=0 → guard (closePx===0 branch) fires → dcv=30
-    expect(result.byKey['DUMMY']).toBe(30);
   });
 });
 

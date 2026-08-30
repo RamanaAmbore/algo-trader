@@ -125,15 +125,21 @@ def is_exchange_closed_now(exchange: str) -> bool:
         return False
 
 
-async def latest_snapshot_ltp_map(kind: str) -> dict[tuple[str, str], float]:
-    """Return a `(account, symbol) → ltp` map from the most-recent daily_book
-    batch per account for the given kind ('positions' | 'holdings').
+async def latest_snapshot_ltp_map(kind: str) -> dict[tuple[str, str], tuple[float, float | None]]:
+    """Return a `(account, symbol) → (ltp, day_pnl)` map from the most-recent
+    daily_book batch per account for the given kind ('positions' | 'holdings').
 
     Uses the same `WITH latest_batch AS (...)` CTE as the per-route snapshot
     readers (positions.py `_positions_snapshot`, holdings.py `_holdings_snapshot`)
     so the two paths cannot drift on which batch is authoritative. This is
     what the per-exchange row overlay reads when a row's exchange has
     just closed and its LTP should be frozen at the close_settled value.
+
+    `day_pnl` — the broker-computed EOD day P&L at settlement, used by
+    closed-exchange overlay to avoid the weekend 0-delta problem (snap_price =
+    close_px = same Friday settlement snapshot → (snap_price - close_px) × qty = 0).
+    When `day_pnl` is non-zero it is authoritative; the price-recompute path
+    is used only as a fallback when `day_pnl` is None or genuinely zero.
     """
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
@@ -141,7 +147,7 @@ async def latest_snapshot_ltp_map(kind: str) -> dict[tuple[str, str], float]:
     kind_lower = str(kind or "").lower()
     if kind_lower not in ("positions", "holdings"):
         return {}
-    out: dict[tuple[str, str], float] = {}
+    out: dict[tuple[str, str], tuple[float, float | None]] = {}
     try:
         async with async_session() as session:
             result = await session.execute(_sql_text("""
@@ -151,15 +157,18 @@ async def latest_snapshot_ltp_map(kind: str) -> dict[tuple[str, str], float]:
                     WHERE kind = :kind AND ltp IS NOT NULL AND ltp > 0
                     GROUP BY account
                 )
-                SELECT db.account, db.symbol, db.ltp
+                SELECT db.account, db.symbol, db.ltp, db.day_pnl
                 FROM daily_book db
                 JOIN latest_batch lb
                   ON db.account = lb.account AND db.captured_at = lb.max_at
                 WHERE db.kind = :kind
                   AND db.ltp IS NOT NULL AND db.ltp > 0
             """), {"kind": kind_lower})
-            for account, symbol, ltp in result.all():
-                out[(str(account), str(symbol))] = float(ltp)
+            for account, symbol, ltp, day_pnl in result.all():
+                out[(str(account), str(symbol))] = (
+                    float(ltp),
+                    float(day_pnl) if day_pnl is not None else None,
+                )
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"latest_snapshot_ltp_map({kind}) failed: {exc}")
     return out

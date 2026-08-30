@@ -100,8 +100,8 @@ class TestHoldingsOverlaySnapshotForClosedExchanges:
         def mock_is_closed(exch):
             return exch.upper() == "NSE"
 
-        # Mock latest_snapshot_ltp_map to return a snapshot entry
-        snapshot_map = {("TEST001", "RELIANCE"): 148.5}
+        # Mock latest_snapshot_ltp_map to return (ltp, day_pnl) tuple
+        snapshot_map = {("TEST001", "RELIANCE"): (148.5, 100.0)}
 
         with (
             patch(

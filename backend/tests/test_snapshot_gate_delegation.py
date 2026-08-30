@@ -163,18 +163,19 @@ async def test_latest_snapshot_ltp_map_for_positions():
     """latest_snapshot_ltp_map returns the most recent daily_book positions snapshot."""
     from backend.api.helpers import snapshot_gate
 
+    # Values are now (ltp, day_pnl) tuples, not flat floats
     mock_ltp_map = {
-        ("ZG0790", "RELIANCE"): 2850.50,
-        ("ZG0790", "TCS"): 4200.00,
+        ("ZG0790", "RELIANCE"): (2850.50, 500.0),
+        ("ZG0790", "TCS"): (4200.00, -200.0),
     }
 
     with patch("backend.api.database.async_session") as mock_session_ctx:
-        # Mock the DB query to return our test data
+        # Mock the DB query to return our test data with ltp and day_pnl columns
         mock_session = AsyncMock()
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            ("ZG0790", "RELIANCE", 2850.50),
-            ("ZG0790", "TCS", 4200.00),
+            ("ZG0790", "RELIANCE", 2850.50, 500.0),
+            ("ZG0790", "TCS", 4200.00, -200.0),
         ]
         mock_session.execute.return_value = mock_result
         mock_session_ctx.return_value.__aenter__.return_value = mock_session
@@ -188,15 +189,16 @@ async def test_latest_snapshot_ltp_map_for_holdings():
     """latest_snapshot_ltp_map works for holdings snapshots too."""
     from backend.api.helpers import snapshot_gate
 
+    # Values are now (ltp, day_pnl) tuples, not flat floats
     mock_ltp_map = {
-        ("ZG0790", "INFY"): 3500.00,
+        ("ZG0790", "INFY"): (3500.00, 300.0),
     }
 
     with patch("backend.api.database.async_session") as mock_session_ctx:
         mock_session = AsyncMock()
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            ("ZG0790", "INFY", 3500.00),
+            ("ZG0790", "INFY", 3500.00, 300.0),
         ]
         mock_session.execute.return_value = mock_result
         mock_session_ctx.return_value.__aenter__.return_value = mock_session
@@ -214,8 +216,9 @@ async def test_latest_snapshot_ltp_map_filters_invalid_prices():
         mock_session = AsyncMock()
         mock_result = MagicMock()
         # DB returns valid rows only (filter applied at SQL level)
+        # Now includes day_pnl column
         mock_result.all.return_value = [
-            ("ZG0790", "RELIANCE", 2850.50),
+            ("ZG0790", "RELIANCE", 2850.50, 500.0),
         ]
         mock_session.execute.return_value = mock_result
         mock_session_ctx.return_value.__aenter__.return_value = mock_session
@@ -223,7 +226,8 @@ async def test_latest_snapshot_ltp_map_filters_invalid_prices():
         result = await snapshot_gate.latest_snapshot_ltp_map("positions")
         # Should only contain the valid row
         assert len(result) == 1
-        assert result[("ZG0790", "RELIANCE")] == 2850.50
+        # Values are now (ltp, day_pnl) tuples
+        assert result[("ZG0790", "RELIANCE")] == (2850.50, 500.0)
 
 
 # ---------------------------------------------------------------------------

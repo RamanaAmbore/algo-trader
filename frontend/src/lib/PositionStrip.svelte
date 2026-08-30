@@ -506,15 +506,26 @@
     return s;
   });
   // Live LTP × qty from symbolStore, matching finalizeRows in pulseUnified.js:697.
-  // Falls back to broker h.cur_val when ltp is unavailable or zero.
+  // Three-tier fallback:
+  //   1. symbolStore ltp × qty  (live tick, most accurate)
+  //   2. h.last_price × qty     (broker's last seen price — avoids cur_val=inv_val trap)
+  //   3. h.cur_val              (broker computed value, may equal inv_val when last_price=0)
+  // Tier 2 exists because when backend's last_price = 0 (Dhan/Groww zero-LTP case),
+  // the backend sets cur_val = inv_val = average_price × qty (investment cost, not market
+  // value). Using last_price × qty gives 0 (clearly missing) rather than an invented value.
   const _liveHoldingsValue = $derived.by(() => {
     let s = 0;
     for (const h of holdings) {
-      const sym = String(h?.tradingsymbol || '').toUpperCase();
-      const ltp = getSnapshot(sym)?.ltp;
-      const qty = Number(h?.quantity || 0);
+      const sym    = String(h?.tradingsymbol || '').toUpperCase();
+      const ltp    = getSnapshot(sym)?.ltp;
+      const qty    = Number(h?.quantity || 0);
+      const lastPx = Number(h?.last_price || 0);
       if (ltp != null && ltp > 0 && qty !== 0) {
         s += ltp * qty;
+      } else if (lastPx > 0 && qty !== 0) {
+        // Prefer last_price × qty over h.cur_val: cur_val may equal inv_val
+        // (avg_price × qty) when backend's last_price was 0 (Dhan/Groww zero LTP).
+        s += lastPx * qty;
       } else {
         s += Number(h?.cur_val || 0);
       }

@@ -529,8 +529,15 @@ def _hold_tag_open_row(r, _msc) -> object:
     )
 
 
-def _hold_tag_closed_row(r, snap_ltp, _msc) -> object:
-    """Tag a single holding row when its exchange is closed."""
+def _hold_tag_closed_row(r, snap_data, _msc) -> object:
+    """Tag a single holding row when its exchange is closed.
+
+    snap_data is either a (ltp, day_pnl) tuple (from latest_snapshot_ltp_map)
+    or None when no snapshot exists for this row.
+    """
+    snap_ltp     = snap_data[0] if isinstance(snap_data, tuple) else snap_data
+    snap_day_pnl = snap_data[1] if isinstance(snap_data, tuple) else None
+
     broker_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
     has_snapshot = snap_ltp is not None and snap_ltp > 0
     price, source, animating = resolve_current_price(
@@ -552,7 +559,16 @@ def _hold_tag_closed_row(r, snap_ltp, _msc) -> object:
         close_px = float(getattr(r, "close_price", 0.0) or 0.0)
         replace_kwargs["last_price"] = snap_price
         replace_kwargs["cur_val"] = snap_price * qty
-        if close_px > 0 and qty != 0:
+        if snap_day_pnl is not None and snap_day_pnl != 0.0:
+            # Stored EOD day P&L is authoritative — avoids the weekend zero-delta
+            # problem where snap_price == close_px (same Friday settlement snapshot).
+            replace_kwargs["day_change_val"] = snap_day_pnl
+            replace_kwargs["day_change"] = snap_day_pnl / qty if qty != 0 else 0.0
+            denom = abs(close_px * qty)
+            replace_kwargs["day_change_percentage"] = (snap_day_pnl / denom * 100) if denom else 0.0
+        elif close_px > 0 and qty != 0:
+            # Fallback: price recompute when day_pnl is genuinely 0 (stock flat all day)
+            # or missing from daily_book.
             dcv = (snap_price - close_px) * qty
             replace_kwargs["day_change_val"] = dcv
             replace_kwargs["day_change"] = dcv / qty
