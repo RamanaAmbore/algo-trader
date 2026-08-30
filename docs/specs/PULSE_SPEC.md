@@ -280,23 +280,35 @@ visual line as the strike price, eliminating eye travel to distant button zones.
 ### 4.7.1 Expiry Fetch Retry Cap and MCX Instrument Normalization
 
 **Expiry fetch retry cap** (commit `f84dcb2b` — broker resilience fixes):
-- `fetchChainExpiries` loop capped at 6 retries × 5s = 30s max hang (reduced from 40 retries 
-  = 200s)
-- Defense-in-depth guard when MCX instruments (e.g., CRUDEOIL) are missing from the 
+- `fetchChainExpiries` loop capped at 6 retries × 5s = 30s max hang (reduced from 40
+  retries = 200s)
+- Defense-in-depth guard when MCX instruments (e.g., CRUDEOIL) are missing from the
   chain expiry index due to name mismatch
 
-**MCX instrument name normalization fix** (backend):
-- Root cause: Kite's master instrument data uses spaced names (e.g., "CRUDE OIL") while 
-  the frontend sends unspaced names (e.g., "CRUDEOIL")
-- Backend now normalizes instrument names by removing whitespace when building the expiry 
-  chain index, ensuring CRUDEOIL and "CRUDE OIL" are matched correctly
-- Result: MCX expiry chains load immediately; frontend retry cap is a safety net only
+**MCX instrument tradingsymbol-prefix normalization fix** (backend):
+- Root cause: Kite's master instrument data uses spaced names in the `name` field
+  (e.g., "CRUDE OIL") while the frontend sends unspaced tradingsymbols (e.g.,
+  "CRUDEOIL")
+- Backend now normalizes MCX underlying keys by **stripping trailing digits and
+  spaces** from tradingsymbol via `re.sub(r'\d.*', '', tradingsymbol)` when
+  building the expiry index (`_build_expiries_index`). This matches the frontend's
+  virtual root derivation (`.replace(/\d.*$/, '')`)
+- Both `_build_expiries_index` (instruments.py) and `_chain_quotes_build_sym_map`
+  (options.py) use the same prefix-derivation logic for consistency
+- Fast-path guard: `chain_quotes` endpoint now validates `und in _exp_index` before
+  short-circuiting; key-miss falls through to slow-path scan instead of returning
+  empty silently
+- Result: MCX expiry chains load immediately for all variants (CRUDEOIL, CRUDEOILM,
+  NATURALGAS, GOLD, GOLDM, etc.) without name-field dependency; frontend retry cap
+  is a safety net only
 
 **`_chainExpiriesLoading` state reset fix**:
-- `_chainExpiriesLoading` flag now correctly resets to `false` when `chainUnderlying` 
+- `_chainExpiriesLoading` flag now correctly resets to `false` when `chainUnderlying`
   becomes empty (previously it could remain `true` indefinitely)
-- Fixes: "Fetching expiries…" placeholder UI clearing only after timeout or manual refresh
-- Implemented as: `$effect` watches `chainUnderlying`; clears loading state on empty underlying
+- Fixes: "Fetching expiries…" placeholder UI clearing only after timeout or manual
+  refresh
+- Implemented as: `$effect` watches `chainUnderlying`; clears loading state on empty
+  underlying
 
 ---
 

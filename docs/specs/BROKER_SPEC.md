@@ -2085,48 +2085,64 @@ intervention.
 
 **Files**: `backend/api/routes/instruments.py` · `backend/api/routes/options.py`
 
-Kite's MCX commodity instruments use spaced names in the `name` field (e.g., "CRUDE OIL", 
-"NATURAL GAS"), while the frontend sends underlying symbols in spaceless form 
-("CRUDEOIL", "NATURALGAS"). Two endpoints now normalize MCX names for consistency:
+Kite's MCX commodity instruments carry tradingsymbols with intraday markers
+(e.g., "CRUDEOIL", "CRUDEOILM", "NATURALGAS") and legacy spaced names in the
+`name` field (e.g., "CRUDE OIL", "CRUDE OIL M"). Two endpoints now normalize
+MCX underlyings by tradingsymbol-prefix extraction, matching the frontend's
+virtual root derivation.
 
 ### Instruments expiry index (`_build_expiries_index`)
 
 **File**: `backend/api/routes/instruments.py` — line 201
 
-When building the expiry index for options chain-quotes lookups, MCX underlying names 
-are normalized by stripping spaces:
+When building the expiry index for options chain-quotes lookups, MCX underlying
+keys are derived by stripping trailing digits from tradingsymbol via:
 
 ```python
-raw_u = inst.u.upper()
-if " " in raw_u:
-    _mcx_names_raw.add(f"{raw_u!r}→'{raw_u.replace(' ', '')}'")
-key = raw_u.replace(" ", "")
-idx.setdefault(key, set()).add(inst.x)
+raw_key = re.sub(r'\d.*', '', inst.s).upper()  # "CRUDEOILM" → "CRUDEOIL"
+_exp_index[raw_key].add(inst.x)
 ```
 
-A diagnostic log line `[expiries-index] normalized MCX spaced names: ...` is emitted 
-per instruments reload. This ensures the cache key matches the spaceless form the 
-frontend sends in `GET /api/options/chain-quotes?und=CRUDEOIL&exp=...` requests.
+A diagnostic log line `[expiries-index] normalized MCX spaced names: ...` is
+emitted per instruments reload. This ensures the cache key matches the
+prefix form the frontend sends in
+`GET /api/options/chain-quotes?und=CRUDEOIL&exp=...` requests.
 
 ### Chain-quotes symbol map (`_chain_quotes_build_sym_map`)
 
 **File**: `backend/api/routes/options.py` — line 2172
 
-When scanning the instrument response for matching CE/PE contracts, MCX underlyings 
-are normalized before comparison:
+When scanning the instrument response for matching CE/PE contracts, MCX
+underlyings use the same prefix-extraction before comparison:
 
 ```python
-if (inst.u or "").upper().replace(" ", "") != und:
+raw_key = re.sub(r'\d.*', '', inst.s).upper()  # "CRUDEOILM" → "CRUDEOIL"
+if raw_key != und:
     continue
 ```
 
-This prevents mismatches when Kite returns "CRUDE OIL" but the frontend sends "CRUDEOIL", 
-ensuring the chain-quotes endpoint correctly identifies all matching strikes for MCX 
-commodity options.
+This ensures consistent key derivation across both index and chain-quotes paths.
 
-**Impact**: Option chain expiry dropdown and strike-by-strike quotes now work 
-correctly for MCX commodities (CRUDEOIL, NATURALGAS, GOLD, SILVER, etc.) without 
-manual workaround.
+### Fast-path guard in `chain_quotes`
+
+**File**: `backend/api/routes/options.py` — `chain_quotes()` route
+
+Before short-circuiting on the fast-path (cached index), the endpoint now
+validates `und in _exp_index`:
+
+```python
+if _exp_index is not None and und in _exp_index:
+    # fast-path: return cached rows
+else:
+    # slow-path: scan instrument response
+```
+
+Key-miss (underlying not found in index) now falls through to slow-path scan
+instead of returning empty silently.
+
+**Impact**: Option chain expiry dropdown and strike-by-strike quotes now work
+correctly for MCX commodities (CRUDEOIL, CRUDEOILM, NATURALGAS, GOLD, GOLDM,
+etc.) — immune to intraday marker variations — without manual workaround.
 
 ---
 
