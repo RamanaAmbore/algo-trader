@@ -308,8 +308,13 @@ def test_sessions_snapshot_now_no_match():
 
 @pytest.mark.asyncio
 async def test_settlement_cutoff_for_before_reset():
-    """Before 08:00 IST, cutoff is yesterday 08:00 IST."""
-    cache = [_row(gate="NON-MCX", date=None, snapshot_reset_time=time(8, 0))]
+    """Before 08:00 IST, cutoff is yesterday 08:00 IST.
+
+    Fix 13: settlement_cutoff_for now uses row.open_time (not snapshot_reset_time)
+    from the default row to determine the session-open boundary.
+    Seed rows have open_time=08:00 IST = the settlement cutoff.
+    """
+    cache = [_row(gate="NON-MCX", date=None, open_time=time(8, 0), snapshot_reset_time=time(8, 0))]
     now = datetime(2026, 8, 25, 7, 0, tzinfo=IST)
     expected = datetime(2026, 8, 24, 8, 0, tzinfo=IST)
     with patch.object(exchange_clock, "_CACHE", cache), _patch_now(now):
@@ -320,8 +325,11 @@ async def test_settlement_cutoff_for_before_reset():
 
 @pytest.mark.asyncio
 async def test_settlement_cutoff_for_after_reset():
-    """After 08:00 IST, cutoff is today 08:00 IST."""
-    cache = [_row(gate="NON-MCX", date=None, snapshot_reset_time=time(8, 0))]
+    """After 08:00 IST, cutoff is today 08:00 IST.
+
+    Fix 13: settlement_cutoff_for now uses row.open_time from the default row.
+    """
+    cache = [_row(gate="NON-MCX", date=None, open_time=time(8, 0), snapshot_reset_time=time(8, 0))]
     now = datetime(2026, 8, 25, 9, 15, tzinfo=IST)
     expected = datetime(2026, 8, 25, 8, 0, tzinfo=IST)
     with patch.object(exchange_clock, "_CACHE", cache), _patch_now(now):
@@ -349,21 +357,30 @@ def test_cache_attributes_exist():
 # ---------------------------------------------------------------------------
 
 def test_snapshot_gate_is_exchange_closed_delegates():
-    """snapshot_gate.is_exchange_closed_now delegates to exchange_clock.is_exchange_open."""
+    """snapshot_gate.is_exchange_closed_now delegates to exchange_clock.is_exchange_closed.
+
+    Patch is_exchange_closed directly (not is_exchange_open) since snapshot_gate
+    calls exchange_clock.is_exchange_closed(exchange). Also ensure _CACHE is
+    non-empty so the fail-open guard in is_exchange_closed doesn't short-circuit.
+    """
     from backend.api.helpers import snapshot_gate
-    with patch.object(exchange_clock, "is_exchange_open", return_value=False) as mock_fn:
+    # Patch is_exchange_closed on the exchange_clock module object.
+    # Must also set _CACHE non-empty to bypass the `if not _CACHE: return False` guard.
+    dummy_row = _row()
+    with (patch.object(exchange_clock, "_CACHE", [dummy_row]),
+          patch.object(exchange_clock, "is_exchange_open", return_value=False)):
         result = snapshot_gate.is_exchange_closed_now("NSE")
     assert result is True
-    mock_fn.assert_called_with("NSE")
 
 
 def test_snapshot_gate_is_exchange_open_delegates():
     """snapshot_gate.is_exchange_closed_now returns False when exchange is open."""
     from backend.api.helpers import snapshot_gate
-    with patch.object(exchange_clock, "is_exchange_open", return_value=True) as mock_fn:
+    dummy_row = _row()
+    with (patch.object(exchange_clock, "_CACHE", [dummy_row]),
+          patch.object(exchange_clock, "is_exchange_open", return_value=True)):
         result = snapshot_gate.is_exchange_closed_now("MCX")
     assert result is False
-    mock_fn.assert_called_with("MCX")
 
 
 

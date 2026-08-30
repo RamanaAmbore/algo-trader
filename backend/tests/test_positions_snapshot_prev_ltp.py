@@ -509,7 +509,11 @@ async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
     captured_ts = datetime(2026, 7, 13, 10, 30, tzinfo=timezone.utc)
 
     YESTERDAY_TOTAL_PNL = 4000.0
-    TODAY_TOTAL_PNL = 4500.0
+    # total_pnl must equal (ltp - avg) * qty for the universal formula to yield
+    # the expected (ltp - prev_close) * qty day_pnl:
+    #   day_pnl = total_pnl - (prev_close - avg) * oq
+    #           = (5500-5000)*10 - (5400-5000)*10 = 5000 - 4000 = 1000 ✓
+    TODAY_TOTAL_PNL = 5000.0  # (5500-5000)*10 = unrealised only, no realised
     QTY = 10
     LTP = 5500.0
     PREVIOUS_CLOSE = 5400.0      # frozen settlement (correct baseline)
@@ -524,8 +528,8 @@ async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
         QTY,
         Decimal("5000.00"),               # avg_cost
         Decimal(str(LTP)),                # ltp
-        Decimal("500.00"),                # day_pnl stored (stale)
-        Decimal(str(TODAY_TOTAL_PNL)),    # total_pnl = 4500
+        Decimal("500.00"),                # day_pnl stored (stale — overridden by formula)
+        Decimal(str(TODAY_TOTAL_PNL)),    # total_pnl = 5000 = (ltp-avg)*qty
         "{}",                             # payload_json
         captured_ts,
         Decimal(str(PREVIOUS_CLOSE)),     # previous_close = frozen settlement (5400)

@@ -2141,9 +2141,13 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
     # ── pnl ──────────────────────────────────────────────────────────
     if 'pnl' in cols:
         _broker_pnl = _col_f64_nullable(lf, 'pnl')
+        _broker_realised = (
+            _col_f64_nullable(lf, 'realised').fill_null(0.0)
+            if 'realised' in cols else pl.lit(0.0)
+        )
         _pnl_expr = (
             pl.when(_broker_pnl.is_not_null())
-            .then(_broker_pnl)
+            .then(_broker_pnl + _broker_realised)
             .otherwise(_pnl_calc)
         )
     else:
@@ -2582,7 +2586,11 @@ def _bmd_recompute_derived(df, patched_indices: set) -> None:
         # consistent when present.
         if 'inv_val' in df.columns and 'cur_val' in df.columns:
             _inv_p = pd.to_numeric(df.loc[_idx_array, 'inv_val'], errors='coerce').fillna(0)
-            df.loc[_idx_array, 'cur_val'] = _inv_p + df.loc[_idx_array, 'pnl']
+            # Use ltp × qty for cur_val (not inv_val + pnl). When last_price was
+            # zero the broker's pnl was also stale (= -cost × qty), so
+            # inv_val + pnl would give ~0. ltp × qty is the authoritative market
+            # value; fall back to inv_val only when the patched ltp is still 0.
+            df.loc[_idx_array, 'cur_val'] = (_ltp_p * _qty_p).where(_ltp_p > 0, _inv_p)
             if 'pnl_percentage' in df.columns:
                 _pp = (df.loc[_idx_array, 'pnl'] / _inv_p.replace(0, pd.NA) * 100).fillna(0)
                 df.loc[_idx_array, 'pnl_percentage'] = _pp

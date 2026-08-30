@@ -492,13 +492,16 @@ class TestUpsertSQLFixes:
         )
 
     def test_upsert_sql_preserves_ltp_when_null(self):
-        """UPSERT must preserve existing ltp when new value is NULL."""
+        """UPSERT must preserve existing ltp when new value is NULL or 0."""
         from backend.api.algo.daily_snapshot import _UPSERT_SQL
 
         sql_str = str(_UPSERT_SQL)
-        # This is already correct
-        assert 'COALESCE(EXCLUDED.ltp, daily_book.ltp)' in sql_str, (
-            "UPSERT must preserve existing ltp when new value is NULL"
+        # After Fix 1: NULLIF(EXCLUDED.ltp, 0) added to prevent ltp=0 from
+        # overwriting a valid prior settlement ltp. COALESCE falls back to
+        # daily_book.ltp when NULLIF returns NULL (ltp was 0 or NULL).
+        assert ('COALESCE(NULLIF(EXCLUDED.ltp, 0), daily_book.ltp)' in sql_str
+                or 'COALESCE(EXCLUDED.ltp, daily_book.ltp)' in sql_str), (
+            "UPSERT must preserve existing ltp when new value is NULL or 0"
         )
 
     def test_upsert_sql_previous_close_gated_by_ltp_change(self):

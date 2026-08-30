@@ -105,9 +105,11 @@ def _row_matches_now(row: "ExchangeSchedule") -> bool:
 
 
 def _is_within_session(row: "ExchangeSchedule") -> bool:
-    """Return True when the current IST time falls within the row's session window."""
-    if not row.is_open:
-        return False
+    """Return True when the current IST time falls within the row's session window.
+
+    Holiday override rows have open_time=None — returning False here marks
+    the gate as closed without needing a separate is_open flag.
+    """
     if row.open_time is None or row.close_time is None:
         return False
     now_t = _now_ist().time().replace(second=0, microsecond=0)
@@ -123,10 +125,29 @@ def _exchange_to_gate(exchange: str) -> str | None:
     return None
 
 
-def get_today_gate_sessions(gate: str) -> list["ExchangeSchedule"]:
-    """Return all _CACHE rows for *gate* that are in effect today."""
+def _effective_gate_rows(gate: str) -> list["ExchangeSchedule"]:
+    """Return rows for *gate* that govern today, with date overrides having absolute priority.
+
+    If any row exists for (gate, today) → return only those override rows,
+    suppressing all default rows entirely.  This allows a holiday row
+    (open_time=None) to close a gate even during normal trading hours, and a
+    Muhurat row (custom open/close) to replace the default session.
+
+    When no override exists → return default rows (date=None) filtered by the
+    current weekday via _row_matches_now.
+    """
     upper = gate.upper()
-    return [r for r in _CACHE if r.gate.upper() == upper and _row_matches_now(r)]
+    today = _now_ist().date()
+    overrides = [r for r in _CACHE if r.gate.upper() == upper and r.date == today]
+    if overrides:
+        return overrides  # suppresses default rows entirely
+    default_rows = [r for r in _CACHE if r.gate.upper() == upper and r.date is None]
+    return [r for r in default_rows if _row_matches_now(r)]
+
+
+def get_today_gate_sessions(gate: str) -> list["ExchangeSchedule"]:
+    """Return all rows for *gate* that are in effect today and have an open_time."""
+    return [r for r in _effective_gate_rows(gate) if r.open_time is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -178,29 +199,28 @@ async def _force_refresh() -> None:
 def is_exchange_open(exchange: str) -> bool:
     """Return True when *exchange* is currently within an open session.
 
-    Checks all cache rows whose ``exchanges`` list contains *exchange*,
-    filtered to rows in-effect today (date override or default), and
-    returns True when at least one such row's session window contains
-    the current IST time.
+    Resolves the exchange to its gate, then calls _effective_gate_rows to get
+    the date-override-first rows. Checks whether any effective row both contains
+    *exchange* in its exchanges list and is currently within session.
+
+    This exchange-membership check matters for date-override rows that cover only
+    a subset of exchanges (e.g. Muhurat trading covers NSE+BSE but not NFO+BFO —
+    the override row has exchanges=['NSE','BSE'] so NFO correctly stays closed).
 
     Fail-open: returns True if the cache is empty or the exchange is
     not found — so callers default to calling the live broker.
     """
     if not _CACHE:
         return True  # Fail-open: assume market open if cache not warmed.
-
     upper = exchange.upper()
-    found_in_cache = False
-    for row in _CACHE:
+    gate = _exchange_to_gate(exchange)
+    if gate is None:
+        return True  # Fail-open: unknown exchange not in schedule — assume open.
+    for row in _effective_gate_rows(gate):
         if upper not in [e.upper() for e in (row.exchanges or [])]:
-            continue
-        found_in_cache = True
-        if not _row_matches_now(row):
-            continue
+            continue  # this row's session does not cover this exchange
         if _is_within_session(row):
             return True
-    if not found_in_cache:
-        return True  # Fail-open: unknown exchange not in schedule — assume open.
     return False
 
 
@@ -218,6 +238,9 @@ def is_exchange_closed(exchange: str) -> bool:
 def is_any_segment_open(exchanges: list[str] | None = None) -> bool:
     """Return True when at least one configured segment is currently open.
 
+    Uses _effective_gate_rows per gate so date overrides (holidays, Muhurat
+    sessions) take absolute priority over default rows.
+
     Parameters
     ----------
     exchanges:
@@ -228,42 +251,39 @@ def is_any_segment_open(exchanges: list[str] | None = None) -> bool:
     if not _CACHE:
         return True  # Fail-open.
 
-    if exchanges is None:
-        # Check every row.
-        for row in _CACHE:
-            if _row_matches_now(row) and _is_within_session(row):
+    upper_set = {e.upper() for e in exchanges} if exchanges else None
+    gates = {r.gate for r in _CACHE}
+    for gate in gates:
+        for row in _effective_gate_rows(gate):
+            if upper_set is not None:
+                row_exchs = {e.upper() for e in (row.exchanges or [])}
+                if not row_exchs.intersection(upper_set):
+                    continue
+            if _is_within_session(row):
                 return True
-        return False
-
-    upper_set = {e.upper() for e in exchanges}
-    for row in _CACHE:
-        row_exchs = {e.upper() for e in (row.exchanges or [])}
-        if not row_exchs.intersection(upper_set):
-            continue
-        if _row_matches_now(row) and _is_within_session(row):
-            return True
     return False
 
 
 def sessions_with_snapshot_time_now(tolerance_minutes: int = 1) -> list["ExchangeSchedule"]:
     """Return rows whose ``snapshot_time`` is within ± *tolerance_minutes* of now.
 
-    Used by background.py to fire snapshot tasks at the correct moment
-    without relying on hardcoded trigger times.  Poll cadence is 30 s; with
-    ±1 min tolerance up to 4 consecutive polls may match the same snapshot_time.
-    background.py uses _snapshot_fired_today dedup to ensure a single broker
-    round-trip per gate per day.
+    Uses _effective_gate_rows per gate so holiday override rows (open_time=None,
+    no snapshot_time) are automatically excluded — no snapshot fires on holidays.
+    Poll cadence is 30 s; with ±1 min tolerance up to 4 consecutive polls may
+    match the same snapshot_time.  background.py uses _snapshot_fired_today dedup
+    to ensure a single broker round-trip per gate per day.
     """
     now_t = _now_ist().time().replace(second=0, microsecond=0)
     delta = timedelta(minutes=tolerance_minutes)
     matched: list["ExchangeSchedule"] = []
-    for row in _CACHE:
-        if row.snapshot_time is None:
-            continue
-        snap_dt = datetime.combine(datetime.today(), row.snapshot_time)
-        now_dt = datetime.combine(datetime.today(), now_t)
-        if abs((snap_dt - now_dt).total_seconds()) <= delta.total_seconds():
-            matched.append(row)
+    for gate in {r.gate for r in _CACHE}:
+        for row in _effective_gate_rows(gate):
+            if row.open_time is None or row.snapshot_time is None:
+                continue
+            snap_dt = datetime.combine(datetime.today(), row.snapshot_time)
+            now_dt  = datetime.combine(datetime.today(), now_t)
+            if abs((snap_dt - now_dt).total_seconds()) <= delta.total_seconds():
+                matched.append(row)
     return matched
 
 
@@ -274,7 +294,10 @@ def sessions_with_snapshot_time_now(tolerance_minutes: int = 1) -> list["Exchang
 async def settlement_cutoff_for(gate: str) -> datetime:
     """Return the last 08:00 IST boundary that has passed for *gate*.
 
-    Looks up ``snapshot_reset_time`` from the matching default cache row.
+    Looks up ``open_time`` from the matching default cache row (date=None).
+    Both NON-MCX and MCX default rows have open_time=08:00 IST, so the
+    settlement cutoff aligns with when each new session opens.
+
     If not found (or cache empty), falls back to 08:00 IST which is the
     project-wide default for both NSE and MCX.
 
@@ -284,26 +307,13 @@ async def settlement_cutoff_for(gate: str) -> datetime:
     await refresh()
 
     reset_time: time = time(8, 0)  # Default: 08:00 IST
-    today = _now_ist().date()
-    # Date-specific override takes priority over the default row.
-    found = False
     for row in _CACHE:
-        if row.gate.upper() != gate.upper():
-            continue
-        if row.date == today and row.snapshot_reset_time is not None:
-            reset_time = row.snapshot_reset_time
-            found = True
+        if row.gate.upper() == gate.upper() and row.date is None and row.open_time:
+            reset_time = row.open_time
             break
-    if not found:
-        for row in _CACHE:
-            if row.gate.upper() == gate.upper() and row.date is None:
-                if row.snapshot_reset_time is not None:
-                    reset_time = row.snapshot_reset_time
-                break
 
     now_ist = _now_ist()
-    today_midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_reset = today_midnight.replace(
+    today_reset = now_ist.replace(
         hour=reset_time.hour, minute=reset_time.minute, second=0, microsecond=0
     )
     if now_ist >= today_reset:

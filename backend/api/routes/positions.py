@@ -252,7 +252,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 WITH latest_batch AS (
                     SELECT account, MAX(captured_at) AS max_at
                     FROM daily_book
-                    WHERE kind = 'positions' AND ltp IS NOT NULL
+                    WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
                       AND captured_at < :snapshot_cutoff
                     GROUP BY account
                 ),
@@ -283,8 +283,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                   ON pb.account = db.account AND pb.symbol = db.symbol
                 WHERE db.kind = 'positions'
                   AND (db.qty != 0 OR db.date = :today_ist)
-                  AND (db.ltp IS NULL OR NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
-                           AND db.avg_cost IS NOT NULL AND db.avg_cost > 0))
+                  AND (db.ltp IS NULL OR db.ltp > 0)
                 ORDER BY db.account, db.symbol
             """).bindparams(today_ist=_today_ist, prev_batch_cutoff=_prev_batch_cutoff, snapshot_cutoff=_snapshot_cutoff))
             raw_rows = result.all()

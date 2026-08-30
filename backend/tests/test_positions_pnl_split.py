@@ -187,7 +187,12 @@ class TestCase3_FullyClosedIntraday:
         assert len(result) == 1
 
     def test_fully_closed_row_realised_preserved(self):
-        """`pnl` = broker `realised` for a flat row (Kite ships pnl directly)."""
+        """`pnl` = unrealised + realised for a flat row.
+
+        For fully closed positions (qty=0), unrealised = 0 and realised = net P&L.
+        The broker adapter sets pnl=unrealised=0 and realised=200 (Kite's realised field).
+        After _enrich_positions: pnl = 0 + 200 = 200.
+        """
         from backend.brokers.broker_apis import _enrich_positions
         df = pd.DataFrame([{
             'tradingsymbol': 'NIFTY26JULFUT',
@@ -202,10 +207,11 @@ class TestCase3_FullyClosedIntraday:
             'last_price': 120.0,
             'close_price': 100.0,
             'average_price': 100.0,
-            'pnl': 200.0,
-            'realised': 200.0,
+            'pnl': 0.0,         # unrealised = 0 for closed position
+            'realised': 200.0,  # realised gain from the day trade
         }])
         result = _enrich_positions(df)
+        # enriched pnl = unrealised(0) + realised(200) = 200
         assert math.isclose(result.iloc[0]['pnl'], 200.0, abs_tol=1e-6)
 
     def test_fully_closed_row_dcv_backstops_pnl_when_ltp_zero(self):

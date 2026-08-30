@@ -820,7 +820,9 @@ class TestIntegrationDayChangeNotCollapsed:
         captured_ts = datetime(2026, 7, 13, 10, 30, tzinfo=timezone.utc)
 
         YESTERDAY_TOTAL_PNL = 4000.0
-        TODAY_TOTAL_PNL = 4500.0
+        # total_pnl = (ltp - avg) * qty = (5500-5000)*10 = 5000 so universal formula gives:
+        #   day_pnl = 5000 - (5400-5000)*10 = 5000 - 4000 = 1000 = (ltp-prev_close)*qty ✓
+        TODAY_TOTAL_PNL = 5000.0
         QTY = 10
         LTP = 5500.0
         PREV_CLOSE = 5400.0  # Official prior-session settlement (frozen by COALESCE)
@@ -835,7 +837,7 @@ class TestIntegrationDayChangeNotCollapsed:
             Decimal("5000.00"),               # avg_cost
             Decimal(str(LTP)),                # ltp (today's LTP)
             Decimal("500.00"),                # day_pnl stored (stale — will be overridden)
-            Decimal(str(TODAY_TOTAL_PNL)),    # total_pnl = 4500
+            Decimal(str(TODAY_TOTAL_PNL)),    # total_pnl = 5000 = (ltp-avg)*qty
             "{}",
             captured_ts,
             Decimal(str(PREV_CLOSE)),         # previous_close = yesterday's settlement (GOOD)

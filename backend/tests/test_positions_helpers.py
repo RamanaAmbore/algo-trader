@@ -504,8 +504,11 @@ def test_prev_settlement_pnl_coexists_with_close_override():
 # ---------------------------------------------------------------------------
 
 def test_closed_overnight_position_preserves_day_pnl():
-    """Fix 3: when qty=0 (closed overnight position), build_row_from_snapshot_raw
-    must return the stored day_pnl, NOT (ltp - prev_close) * 0 = 0.0.
+    """Universal formula: when qty=0 (closed overnight position) and no overnight_quantity
+    in payload, build_row_from_snapshot_raw falls back to oq=0, so day_pnl = total_pnl.
+
+    With overnight_quantity provided in payload, the universal formula gives the
+    correct day_pnl = total_pnl - (prev_close - avg) * oq.
 
     Column order for build_row_from_snapshot_raw:
     account, symbol, exchange, qty, avg_cost, ltp,
@@ -516,29 +519,55 @@ def test_closed_overnight_position_preserves_day_pnl():
     from decimal import Decimal
     from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
 
-    # Closed overnight: qty=0 but meaningful day_pnl from prior decomposed calc.
-    # (ltp - prev_close) * qty = (201.5 - 200.0) * 0 = 0.0 — the broken formula.
-    # Fix: the function must return day_change_val = -500.0, not 0.0.
-    raw_row = (
+    # Case 1: No overnight_quantity in payload → fallback to qty=0 → day_pnl = total_pnl
+    # avg=195, prev_close=200, total_pnl=-300 (realised from closing 100 shares at 197)
+    raw_row_no_oq = (
         "ZG0790",               # account
         "RELIANCE",             # symbol
         "NSE",                  # exchange
         0,                      # qty — closed overnight
         Decimal("195.00"),      # avg_cost
-        Decimal("201.50"),      # ltp
-        Decimal("-500.00"),     # day_pnl — stored decomposed value
-        Decimal("-300.00"),     # total_pnl
-        json.dumps({}),         # payload_json
+        Decimal("201.50"),      # ltp (exit price after close)
+        Decimal("-500.00"),     # day_pnl stored (stale — formula overrides)
+        Decimal("-300.00"),     # total_pnl (realised)
+        json.dumps({}),         # payload_json — no overnight_quantity
         None,                   # captured_at
         Decimal("200.00"),      # previous_close
         Decimal("200.00"),      # prev_ltp
         None,                   # prev_settlement_pnl
     )
+    row_no_oq = build_row_from_snapshot_raw(raw_row_no_oq)
+    # Without overnight_quantity, formula: total_pnl - (prev-avg) * 0 = total_pnl
+    assert math.isclose(row_no_oq.day_change_val, -300.0, rel_tol=1e-6), (
+        f"Without overnight_quantity in payload, day_change_val = total_pnl = -300, "
+        f"got {row_no_oq.day_change_val}."
+    )
 
-    row = build_row_from_snapshot_raw(raw_row)
-
-    assert math.isclose(row.day_change_val, -500.0, rel_tol=1e-6), (
-        f"Fix 3: closed overnight position (qty=0) must return stored day_pnl=-500.0, "
-        f"got {row.day_change_val}. "
-        f"The formula (ltp - prev_close) * 0 = 0.0 was incorrectly overwriting the stored value."
+    # Case 2: With overnight_quantity=100 in payload → universal formula gives correct result
+    # avg=195, oq=100, prev_close=200, total_pnl=-300
+    # day_pnl = -300 - (200-195)*100 = -300 - 500 = -800? No...
+    # Let's use consistent data: exit_price=197.5, oq=100, prev_close=200
+    # total_pnl = (197.5 - 195)*100 = 250 (realised gain)
+    # day_pnl = (exit - prev)*oq = (197.5-200)*100 = -250
+    # formula: 250 - (200-195)*100 = 250 - 500 = -250 ✓
+    raw_row_with_oq = (
+        "ZG0790",               # account
+        "RELIANCE",             # symbol
+        "NSE",                  # exchange
+        0,                      # qty — closed overnight
+        Decimal("195.00"),      # avg_cost
+        Decimal("197.50"),      # ltp (exit price VWAP)
+        Decimal("-250.00"),     # day_pnl stored
+        Decimal("250.00"),      # total_pnl = (197.5-195)*100 = 250
+        json.dumps({"overnight_quantity": 100}),  # payload with overnight_quantity
+        None,                   # captured_at
+        Decimal("200.00"),      # previous_close
+        Decimal("200.00"),      # prev_ltp
+        None,                   # prev_settlement_pnl
+    )
+    row_with_oq = build_row_from_snapshot_raw(raw_row_with_oq)
+    # Formula: 250 - (200-195)*100 = 250 - 500 = -250
+    assert math.isclose(row_with_oq.day_change_val, -250.0, rel_tol=1e-6), (
+        f"With overnight_quantity=100 in payload, day_change_val = 250 - (200-195)*100 = -250, "
+        f"got {row_with_oq.day_change_val}."
     )

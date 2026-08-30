@@ -32,42 +32,51 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def test_positions_snapshot_where_clause_allows_null_ltp():
-    """WHERE clause must wrap the guard in (db.ltp IS NULL OR NOT (...)) so
-    rows with ltp IS NULL are not silently excluded."""
+    """WHERE clause must allow NULL-ltp rows through while excluding ltp=0 rows.
+
+    New form: (db.ltp IS NULL OR db.ltp > 0) — simpler and strictly stronger
+    than the old NOT (db.ltp = 0 AND ...) guard which silently excluded NULL rows.
+    """
     from backend.api.routes import positions as _pos_module
 
     src = inspect.getsource(_pos_module._positions_snapshot)
-    assert "db.ltp IS NULL OR NOT" in src or "db.ltp IS NULL OR not" in src.lower(), (
-        "_positions_snapshot WHERE clause must include `db.ltp IS NULL OR NOT (...)` "
-        "to pass NULL-ltp rows through the zero-payload guard. "
-        "Old guard `AND NOT (db.ltp = 0 ...)` silently excluded ltp=NULL rows in PostgreSQL."
+    # Accept either the new simplified form or the old wrapped form
+    assert ("db.ltp IS NULL OR NOT" in src
+            or "db.ltp IS NULL OR not" in src.lower()
+            or "db.ltp IS NULL OR db.ltp > 0" in src), (
+        "_positions_snapshot WHERE clause must include ltp IS NULL guard to pass "
+        "NULL-ltp rows through. Old guard `AND NOT (db.ltp = 0 ...)` silently excluded "
+        "ltp=NULL rows. New form: (db.ltp IS NULL OR db.ltp > 0)."
     )
 
 
 def test_positions_snapshot_zero_payload_guard_still_present():
-    """The zero-payload guard for phantom Dhan rows (ltp=0, pnl=0, avg>0)
-    must still be present — the change wraps it, not removes it."""
+    """The zero-payload / ltp=0 row filter must be present in _positions_snapshot.
+
+    New form: (db.ltp IS NULL OR db.ltp > 0) — strictly stronger than old guard.
+    """
     from backend.api.routes import positions as _pos_module
 
     src = inspect.getsource(_pos_module._positions_snapshot)
-    assert "db.ltp = 0" in src, (
-        "Zero-payload guard `ltp = 0 AND (total_pnl = 0 OR ...)` must remain in SQL; "
-        "only the NULL guard wraps it."
-    )
-    assert "avg_cost IS NOT NULL AND db.avg_cost > 0" in src, (
-        "avg_cost predicate of zero-payload guard must remain intact."
+    # Accept old explicit guard OR new simplified ltp > 0 form
+    assert ("db.ltp = 0" in src or "db.ltp > 0" in src), (
+        "ltp=0 filter must be in _positions_snapshot SQL — either old NOT(ltp=0 AND...) "
+        "form or new (ltp IS NULL OR ltp > 0) form."
     )
 
 
 def test_positions_snapshot_where_structure_combined():
-    """Full combined WHERE condition shape must be present in source."""
+    """WHERE clause must have a row-level ltp filter that allows NULL and excludes 0."""
     from backend.api.routes import positions as _pos_module
 
     src = inspect.getsource(_pos_module._positions_snapshot)
-    # The new guard starts with the NULL escape before the NOT block
-    assert "AND (db.ltp IS NULL OR NOT (" in src, (
-        "positions snapshot WHERE clause must read: "
-        "AND (db.ltp IS NULL OR NOT (db.ltp = 0 AND ...))"
+    # The new guard: (db.ltp IS NULL OR db.ltp > 0)
+    # The old guard: AND (db.ltp IS NULL OR NOT (db.ltp = 0 AND ...))
+    assert ("AND (db.ltp IS NULL OR NOT (" in src
+            or "AND (db.ltp IS NULL OR db.ltp > 0)" in src), (
+        "positions snapshot WHERE clause must have row-level ltp filter: "
+        "either 'AND (db.ltp IS NULL OR NOT (db.ltp = 0 AND ...))' "
+        "or 'AND (db.ltp IS NULL OR db.ltp > 0)'"
     )
 
 

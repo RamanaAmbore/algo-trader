@@ -1200,9 +1200,13 @@ async def test_holdings_snapshot_sql_excludes_bad_payload_rows():
         "(latest-batch pattern) so closed-out symbols from past months don't "
         "carry stale day_pnl into today's NavStrip"
     )
-    assert "NOT (db.ltp = 0" in src or "NOT (ltp = 0" in src, (
+    # Row-level ltp filter (simplied form: ltp IS NULL OR ltp > 0).
+    # Old form was NOT (ltp = 0 AND ...) — replaced by simpler row-level filter.
+    assert ("NOT (db.ltp = 0" in src or "NOT (ltp = 0" in src
+            or "db.ltp IS NULL OR db.ltp > 0" in src
+            or "ltp IS NULL OR ltp > 0" in src), (
         "_holdings_snapshot SQL must exclude zero-ltp bad-payload rows "
-        "via WHERE NOT (ltp = 0 ...)"
+        "via ltp filter (NOT ltp=0 or ltp IS NULL OR ltp > 0)"
     )
     # Stale grep: the prior DISTINCT ON pattern with `captured_at < today_open`
     # must NOT come back — it was the source of the May-row carry-over bug.
@@ -1221,8 +1225,13 @@ async def test_positions_snapshot_sql_excludes_bad_payload_rows():
     assert "MAX(captured_at)" in src, (
         "_positions_snapshot SQL must anchor on MAX(captured_at) per account"
     )
-    assert "NOT (db.ltp = 0" in src or "NOT (ltp = 0" in src, (
-        "_positions_snapshot SQL must exclude zero-ltp bad-payload rows"
+    # Row-level ltp filter. New form: (db.ltp IS NULL OR db.ltp > 0).
+    # Old form: NOT (db.ltp = 0 AND ...) — replaced by simpler ltp filter.
+    assert ("NOT (db.ltp = 0" in src or "NOT (ltp = 0" in src
+            or "db.ltp IS NULL OR db.ltp > 0" in src
+            or "(db.ltp IS NULL OR db.ltp" in src), (
+        "_positions_snapshot SQL must exclude zero-ltp bad-payload rows "
+        "via ltp filter (NOT ltp=0 or ltp IS NULL OR ltp > 0)"
     )
     # The LTP-close-override path (further down in positions.py) DOES legitimately
     # use `captured_at < :today_open` to pull yesterday's close. So we can't blanket-ban

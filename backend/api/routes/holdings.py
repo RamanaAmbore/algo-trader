@@ -42,7 +42,7 @@ _HOLDINGS_SNAPSHOT_SQL = """
     WITH latest_batch AS (
         SELECT account, MAX(captured_at) AS max_at
         FROM daily_book
-        WHERE kind = 'holdings' AND ltp IS NOT NULL
+        WHERE kind = 'holdings' AND ltp IS NOT NULL AND ltp > 0
           AND captured_at < :snapshot_cutoff
         GROUP BY account
     ),
@@ -67,9 +67,7 @@ _HOLDINGS_SNAPSHOT_SQL = """
     LEFT JOIN prev_batch pb
       ON db.account = pb.account AND db.symbol = pb.symbol
     WHERE db.kind = 'holdings'
-      AND db.ltp IS NOT NULL
-      AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
-               AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
+      AND (db.ltp IS NULL OR db.ltp > 0)
     ORDER BY db.account, db.symbol
 """
 

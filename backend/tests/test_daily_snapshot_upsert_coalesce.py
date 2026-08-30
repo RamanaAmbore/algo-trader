@@ -165,8 +165,11 @@ async def test_upsert_coalesce_sql_strings_present():
     guard — source-of-truth assertions that the SQL was patched correctly."""
     from backend.api.algo.daily_snapshot import _UPSERT_SQL
     sql_text = str(_UPSERT_SQL)
-    assert "COALESCE(EXCLUDED.ltp, daily_book.ltp)" in sql_text, (
-        "_UPSERT_SQL must use COALESCE(EXCLUDED.ltp, daily_book.ltp) for ltp column"
+    # After Fix 1: NULLIF(EXCLUDED.ltp, 0) prevents ltp=0 from overwriting good data.
+    # The COALESCE falls back to existing ltp when NULLIF returns NULL (ltp was 0).
+    assert "COALESCE(NULLIF(EXCLUDED.ltp, 0), daily_book.ltp)" in sql_text, (
+        "_UPSERT_SQL must use COALESCE(NULLIF(EXCLUDED.ltp, 0), daily_book.ltp) for ltp column "
+        "to prevent ltp=0 from overwriting a valid prior settlement ltp"
     )
     assert "CASE WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json" in sql_text, (
         "_UPSERT_SQL must use CASE WHEN guard for payload_json column"

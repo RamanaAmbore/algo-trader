@@ -428,6 +428,16 @@ def _holdings_rows(
         mid_session = False if not market_open else _is_exchange_open_at(exchange)
         ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session)
 
+        # ltp=0 neutralisation (non-mid-session only):
+        # Dhan returns last_price=0 for NSE holdings at MCX settlement time.
+        # Set ltp_val=None so UPSERT NULLIF preserves the existing settlement
+        # ltp from Friday. Do NOT use `continue` — skipping the row would
+        # remove NSE holdings from the 23:45 batch and the reader would miss
+        # them when max_at is driven to 23:45 by MCX rows.
+        if not mid_session and ltp_val is not None and ltp_val == 0.0:
+            ltp_val = None
+            logger.debug(f"holdings: ltp=0 neutralised for {symbol} (non-mid-session)")
+
         # Bad-payload guard: broker returned all zeros for a real holding.
         # This is the fingerprint of an invalid/expired token (e.g. ZG0790
         # auth failure). Skip the row — the existing snapshot (if any) is
@@ -537,8 +547,12 @@ def _snap_position_eod_vals(
     ltp_val = float(ltp_val) if ltp_val is not None else None
     effective_close = close_ref if close_ref is not None else r.get("close_price")
     day_pnl = _snap_compute_day_pnl(r, ltp_val, effective_close, qty, multiplier)
-    total_pnl_raw = r.get("pnl")
-    total_pnl_v   = float(total_pnl_raw) if total_pnl_raw is not None else None
+    _unrealised   = r.get("pnl")
+    _realised     = r.get("realised")
+    if _unrealised is not None or _realised is not None:
+        total_pnl_v = float(_unrealised or 0) + float(_realised or 0)
+    else:
+        total_pnl_v = None
     skip = _is_zero_payload_row(r, ltp_val, day_pnl, total_pnl_v)
     return ltp_val, day_pnl, total_pnl_v, skip
 
@@ -672,7 +686,10 @@ def _positions_build_row(
         "avg_cost":       float(r["average_price"]) if r.get("average_price") is not None else None,
         "ltp":            ltp_val,
         "day_pnl":        day_pnl,
-        "total_pnl":      float(r["pnl"]) if r.get("pnl") is not None else None,
+        "total_pnl":      (
+            (float(r.get("pnl") or 0) + float(r.get("realised") or 0))
+            if (r.get("pnl") is not None or r.get("realised") is not None) else None
+        ),
         "previous_close": previous_close_val,
         "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
     }
@@ -828,11 +845,13 @@ _UPSERT_SQL = text("""
         ltp            = CASE
                            WHEN daily_book.qty = 0 AND daily_book.ltp IS NOT NULL
                                THEN daily_book.ltp
-                           ELSE COALESCE(EXCLUDED.ltp, daily_book.ltp)
+                           ELSE COALESCE(NULLIF(EXCLUDED.ltp, 0), daily_book.ltp)
                          END,
         day_pnl        = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END,
         total_pnl      = EXCLUDED.total_pnl,
-        previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp) THEN daily_book.ltp ELSE daily_book.previous_close END,
+        previous_close = CASE WHEN EXCLUDED.ltp IS NOT NULL AND EXCLUDED.ltp != 0
+                                   AND (daily_book.ltp IS NULL OR EXCLUDED.ltp != daily_book.ltp)
+                              THEN daily_book.ltp ELSE daily_book.previous_close END,
         payload_json   = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json ELSE daily_book.payload_json END,
         captured_at    = EXCLUDED.captured_at
 """)

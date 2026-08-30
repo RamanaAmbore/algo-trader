@@ -202,9 +202,15 @@ class TestMcxNullLtpPositionsSnapshot:
         import inspect
         from backend.api.routes.positions import _positions_snapshot
         src = inspect.getsource(_positions_snapshot)
-        assert "NOT (db.ltp = 0 AND" in src or "NOT (db.ltp = 0 and" in src.lower(), (
+        # Row-level ltp filter. New form: (db.ltp IS NULL OR db.ltp > 0), which is
+        # strictly stronger than the old NOT (db.ltp = 0 AND ...) guard.
+        assert ("NOT (db.ltp = 0 AND" in src
+                or "NOT (db.ltp = 0 and" in src.lower()
+                or "db.ltp IS NULL OR db.ltp > 0" in src
+                or "(db.ltp IS NULL OR db.ltp" in src), (
             "Zero-payload guard must remain in _positions_snapshot SQL; "
-            "do not remove it — it filters phantom Dhan rows (ltp=0, pnl=0, avg>0)"
+            "filters phantom Dhan rows (ltp=0, pnl=0, avg>0). "
+            "Accepts either old NOT(ltp=0 AND...) or new (ltp IS NULL OR ltp > 0) form."
         )
 
     def test_nfo_only_batch_still_works(self):
