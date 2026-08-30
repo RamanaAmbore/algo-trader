@@ -8,7 +8,7 @@
     P — Day P&L (positionsDayPnlStore.total — matches NavStrip P:1) + Lifetime P&L (Σ pnl) + Expiry P&L (lognormal projection)
     M — Available Margin + Total Margin (used + avail)
     C — Live Cash (live_cash ?? cash) + Total Cash (+ long-option premium)
-    H — Today MTM (Σ day_change_val) + Value (Σ cur_val) + Lifetime (Σ pnl)
+    H — Today MTM (holdingsDayPnlStore.byAccount) + Value (live ltp×qty) + Lifetime (Σ pnl)
 
   TOTAL row sums the same scoped accounts and matches the NavStrip pill
   value for that slot.
@@ -23,9 +23,11 @@
 <script>
   import { onDestroy, untrack } from 'svelte';
   import { aggCompact } from '$lib/format';
-  import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { fundsStore, holdingsStore, positionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
+  import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
+  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { connStatus } from '$lib/stores';
@@ -77,6 +79,12 @@
   $effect(() => {
     const v = holdingsStore.value;
     untrack(() => { if (v != null) _holdings = v; });
+  });
+  /** @type {any[]} */
+  let _pulseHoldings = $state(pulseHoldingsStore.value ?? []);
+  $effect(() => {
+    const v = pulseHoldingsStore.value;
+    untrack(() => { if (v != null) _pulseHoldings = v; });
   });
 
   // ── Loading-state machine ────────────────────────────────────────────
@@ -270,18 +278,31 @@
   }));
 
   // ── H slot — per-account Today MTM + Value + Lifetime from holdings ──
+  // todayMtm: holdingsDayPnlStore.byAccount — SSOT matching NavStrip H:1 (pulseHoldingsStore
+  //   rows, live ltp×close formula, pulse-overridable by MarketPulse).
+  // value:    live ltp×qty from symbolStore snapshot (matching PositionStrip _liveHoldingsValue),
+  //   fallback to h.cur_val when ltp unavailable.
+  // lifetimePnl: Σ h.pnl from pulseHoldingsStore rows.
   const _hByAcct = $derived.by(() => {
     return _scopedAccounts.map(acct => {
-      const rows = _holdings.filter(h => String(h.account) === acct);
-      const todayMtm    = rows.reduce((s, h) => s + Number(h.day_change_val ?? 0), 0);
-      const value       = rows.reduce((s, h) => s + Number(h.cur_val        ?? 0), 0);
-      const lifetimePnl = rows.reduce((s, h) => s + Number(h.pnl            ?? 0), 0);
+      const key  = acct.toUpperCase();
+      const rows = _pulseHoldings.filter(h => String(h.account) === acct);
+      const todayMtm = holdingsDayPnlStore.byAccount[key] ?? 0;
+      let value = 0;
+      for (const h of rows) {
+        const sym = String(h?.tradingsymbol || '').toUpperCase();
+        const ltp = getSnapshot(sym)?.ltp;
+        const qty = Number(h?.quantity || 0);
+        value += (ltp != null && ltp > 0 && qty !== 0) ? ltp * qty : Number(h?.cur_val || 0);
+      }
+      const lifetimePnl = rows.reduce((s, h) => s + Number(h.pnl ?? 0), 0);
       return { account: acct, todayMtm, value, lifetimePnl };
     });
   });
 
   const _hTotal = $derived.by(() => ({
-    todayMtm:    _hByAcct.reduce((s, r) => s + r.todayMtm, 0),
+    // TOTAL todayMtm from SSOT — matches NavStrip dispHoldingsToday exactly.
+    todayMtm:    holdingsDayPnlStore.byAccount['TOTAL'] ?? _hByAcct.reduce((s, r) => s + r.todayMtm, 0),
     value:       _hByAcct.reduce((s, r) => s + r.value, 0),
     lifetimePnl: _hByAcct.reduce((s, r) => s + r.lifetimePnl, 0),
   }));
