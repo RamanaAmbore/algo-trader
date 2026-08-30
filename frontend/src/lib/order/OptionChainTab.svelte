@@ -266,12 +266,12 @@
     }
 
     function attempt() {
-      if (!u) { chainExpiries = []; return; }
+      if (!u) { chainExpiries = []; _chainExpiriesLoading = false; return; }
       _chainExpiriesLoading = true;
       fetchChainExpiries(u)
         .then(/** @param {any} d */ (d) => {
           const expiries = Array.isArray(d?.expiries) ? d.expiries : [];
-          if (expiries.length > 0 || retryCount >= 40) {
+          if (expiries.length > 0 || retryCount >= 6) {
             chainExpiries = expiries;
             _chainExpiriesLoading = false;
           } else {
@@ -280,7 +280,7 @@
           }
         })
         .catch(() => {
-          if (retryCount < 40) {
+          if (retryCount < 6) {
             retryCount++;
             retryTimer = setTimeout(attempt, 5000);
           } else {

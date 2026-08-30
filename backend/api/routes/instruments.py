@@ -192,7 +192,10 @@ def _build_expiries_index(items: list) -> "dict[str, list[str]]":
     for inst in items:
         if inst.t not in ("CE", "PE") or not inst.u or not inst.x:
             continue
-        idx.setdefault(inst.u.upper(), set()).add(inst.x)
+        # Kite's MCX `name` field uses spaces ("CRUDE OIL", "NATURAL GAS").
+        # Normalize to match the spaceless form the frontend sends ("CRUDEOIL").
+        key = inst.u.upper().replace(" ", "")
+        idx.setdefault(key, set()).add(inst.x)
     return {u: sorted(xs) for u, xs in idx.items()}
 
 

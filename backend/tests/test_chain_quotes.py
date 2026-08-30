@@ -166,6 +166,48 @@ class TestChainQuotesBuildSymMap:
         assert sym_by_strike == {}
         assert all_expiries == []
 
+    def test_mcx_spaced_name_matches_spaceless_underlying(self):
+        """Kite sends MCX name as 'CRUDE OIL' but frontend queries 'CRUDEOIL'.
+
+        _chain_quotes_build_sym_map must normalize inst.u to match.
+        """
+        instruments = [
+            Instrument(
+                s="CRUDEOIL25SEP7500CE",
+                e="MCX",
+                t="CE",
+                ls=100,
+                ts=1.0,
+                u="CRUDE OIL",  # Kite's actual name field — with space
+                x="2025-09-19",
+                k=7500.0,
+            ),
+            Instrument(
+                s="CRUDEOIL25SEP7500PE",
+                e="MCX",
+                t="PE",
+                ls=100,
+                ts=1.0,
+                u="CRUDE OIL",
+                x="2025-09-19",
+                k=7500.0,
+            ),
+        ]
+        inst_resp = InstrumentsResponse(
+            cycle_date="2025-09-01", count=len(instruments), items=instruments
+        )
+        # Frontend sends "CRUDEOIL" (no space) — must still match instruments with u="CRUDE OIL"
+        sym_by_strike, all_expiries = _chain_quotes_build_sym_map(
+            inst_resp, "CRUDEOIL", "2025-09-19"
+        )
+        assert len(sym_by_strike) == 1, (
+            "CRUDEOIL query must match instruments with u='CRUDE OIL'"
+        )
+        assert 7500.0 in sym_by_strike
+        assert sym_by_strike[7500.0]["CE"]["sym"] == "CRUDEOIL25SEP7500CE"
+        assert sym_by_strike[7500.0]["PE"]["sym"] == "CRUDEOIL25SEP7500PE"
+        assert all_expiries == ["2025-09-19"]
+
     def test_non_option_instruments_skipped(self):
         """Equity and futures instruments should be skipped; only CE/PE included."""
         instruments = [
@@ -1950,6 +1992,65 @@ class TestBuildExpiriesIndex:
         """Empty items list returns empty dict."""
         from backend.api.routes.instruments import _build_expiries_index
         assert _build_expiries_index([]) == {}
+
+    def test_mcx_space_in_name_normalized(self):
+        """Kite MCX `name` field uses spaces ('CRUDE OIL') — must be stored as 'CRUDEOIL'.
+
+        Frontend sends 'CRUDEOIL' (no space) so the index key must match.
+        """
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            Instrument(
+                s="CRUDEOIL25SEP7500CE",
+                e="MCX",
+                t="CE",
+                ls=100,
+                ts=1.0,
+                u="CRUDE OIL",  # Kite's actual name field — with space
+                x="2025-09-19",
+                k=7500.0,
+            ),
+            Instrument(
+                s="CRUDEOIL25SEP7500PE",
+                e="MCX",
+                t="PE",
+                ls=100,
+                ts=1.0,
+                u="CRUDE OIL",
+                x="2025-09-19",
+                k=7500.0,
+            ),
+        ]
+        idx = _build_expiries_index(items)
+        # Must be stored without space so frontend lookup "CRUDEOIL" hits
+        assert "CRUDEOIL" in idx, (
+            "MCX name 'CRUDE OIL' must be normalized to 'CRUDEOIL' in the index"
+        )
+        assert "CRUDE OIL" not in idx, (
+            "Space-variant key must NOT appear in the index"
+        )
+        assert idx["CRUDEOIL"] == ["2025-09-19"]
+
+    def test_mcx_naturalgas_space_normalized(self):
+        """'NATURAL GAS' → 'NATURALGAS' normalization mirrors CRUDEOIL fix."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            Instrument(
+                s="NATURALGAS25SEP200CE",
+                e="MCX",
+                t="CE",
+                ls=1250,
+                ts=0.1,
+                u="NATURAL GAS",
+                x="2025-09-25",
+                k=200.0,
+            ),
+        ]
+        idx = _build_expiries_index(items)
+        assert "NATURALGAS" in idx
+        assert "NATURAL GAS" not in idx
 
 
 @pytest.mark.asyncio

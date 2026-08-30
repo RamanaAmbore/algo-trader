@@ -2168,7 +2168,8 @@ def _chain_quotes_build_sym_map(
     sym_by_strike: dict[float, dict[str, dict]] = {}
     expiry_set: set[str] = set()
     for inst in inst_resp.items:
-        if (inst.u or "").upper() != und:
+        # Normalize MCX names: Kite sends "CRUDE OIL" but frontend sends "CRUDEOIL".
+        if (inst.u or "").upper().replace(" ", "") != und:
             continue
         if inst.t not in ("CE", "PE"):
             continue
@@ -2690,9 +2691,15 @@ class OptionsController(Controller):
         if not exp:
             _exp_index = _cache_peek("instruments_chain_expiries")
             if _exp_index is not None:
+                _expiries = _exp_index.get(und, [])
+                logger.info(
+                    "[chain-expiry-fast-path] und=%r found=%d keys_sample=%s",
+                    und, len(_expiries),
+                    sorted(k for k in _exp_index if "CRUDE" in k or "GOLD" in k or "NIFTY" in k)[:10],
+                )
                 return ChainQuotesResponse(
                     underlying=und, expiry="",
-                    expiries=_exp_index.get(und, []),
+                    expiries=_expiries,
                     rows=[],
                 )
 
