@@ -1822,8 +1822,8 @@ require code edits + deployments. After Oct 2024 timezone drift fixes, all timin
 configurable via the `ExchangeSchedule` table, eliminating hardcoded constants.
 
 **Design:** Exchange schedule is a **configurable ORM model** with DB-backed in-process cache 
-(60s TTL). Five default rows are seeded at startup (date=NULL, non-NULL weekday filters for 
-regular schedules). Operator can create date-specific overrides for holidays + special sessions 
+(60s TTL). Default rows are seeded at startup (date=NULL, filtered by weekday for regular 
+schedules). Operator can create date-specific overrides for holidays + special sessions 
 via the admin controller (`/api/admin/exchange-schedule`). The cache is refreshed on every 
 mutation and consulted by `snapshot_gate.py` + background tasks.
 
@@ -1835,13 +1835,13 @@ mutation and consulted by `snapshot_gate.py` + background tasks.
 
 | Function | Signature | Purpose |
 |---|---|---|
-| `is_exchange_open(exchange)` | `str → bool` (sync) | Check if a given exchange (e.g. "NSE") has any open segment now |
+| `is_exchange_open(exchange)` | `str → bool` (sync) | Check if a given exchange (e.g. "NSE") is open now. Resolves exchange to gate, then checks effective rows; skips rows where exchange not in `row.exchanges`. Returns False only if all effective rows are closed (`open_time IS NULL`). |
 | `is_exchange_closed(exchange)` | `str → bool` (sync) | Inverse of `is_exchange_open` |
 | `is_any_segment_open(exchanges)` | `List[str] \| None → bool` (sync) | Check if ANY segment is open; None checks all |
-| `sessions_with_snapshot_time_now()` | `() → List[ExchangeSchedule]` (sync) | Return rows whose `snapshot_time` matches within ±1 min |
-| `settlement_cutoff_for(gate)` | `str → datetime` (async) | Last 08:00 IST boundary passed for a gate (used in positions/holdings close-price queries) |
+| `sessions_with_snapshot_time_now()` | `() → List[ExchangeSchedule]` (sync) | Return rows whose `snapshot_time` matches within ±1 min (skips holiday rows with open_time=None) |
+| `settlement_cutoff_for(gate)` | `str → datetime` (async) | Returns `default_row.open_time` (08:00) as the reset boundary for daily snapshots (used in positions/holdings close-price queries) |
 | `refresh()` | `() → None` (async) | Reload cache from DB (skips if cache is fresh < 60s) |
-| `seed_and_warm()` | `() → None` (async) | On_startup callable; seeds 5 defaults, loads cache |
+| `seed_and_warm()` | `() → None` (async) | On_startup callable; seeds defaults, loads cache |
 
 **Cache behavior:**
 
@@ -1851,19 +1851,37 @@ mutation and consulted by `snapshot_gate.py` + background tasks.
 - **Fail-open:** If cache is empty or an exchange is unknown, assume market is open (returns 
   True) so the live broker path keeps the data fresh
 
-### Default seed rows
+### Override-first priority rule
 
-Five rows are created on every startup (idempotent — duplicate key skips):
+**Date-override-first rule** — `_effective_gate_rows(gate: str) → list[ExchangeSchedule]` 
+returns rows governing today's gate:
+- If ANY row with `date == today` exists for the gate → absolute precedence; default row 
+  suppressed entirely
+- Otherwise apply default row (date=NULL) with weekday filter
+- Helper ensures only one flow path is active per gate per date
 
-| gate | exchanges | open | close | snapshot | reset | weekdays | date |
-|---|---|---|---|---|---|---|---|
-| NSE | NSE, BSE, NFO, BFO, CDS | 09:15 | 15:30 | 15:45 | 08:00 | Weekdays only | NULL (default) |
-| MCX | MCX | 09:00 | 23:30 | 23:45 | 08:00 | Weekdays only | NULL (default) |
-| PRE | NSE | 09:00 | 09:08 | — | — | Weekdays only | NULL (default) |
-| POST | NSE, BSE | 15:40 | 16:00 | — | — | Weekdays only | NULL (default) |
-| NIGHT | MCX | 00:00 | 01:00 | 00:15 | — | Weekdays only | NULL (default) |
+**Open/closed flag** — `open_time IS NOT NULL` means open; `open_time IS NULL` means closed 
+(holiday). The `is_open` boolean column is no longer used in session logic.
 
-**Weekdays filter:** Array of 0–6 (Mon=0 … Sun=6). Empty array or NULL means applies every day.
+**Exchange-membership per-row** — `is_exchange_open(exchange)` iterates 
+`_effective_gate_rows(gate)` and skips rows where the exchange is NOT in `row.exchanges`:
+- Resolves exchange (e.g., "NFO") to its gate (e.g., "NON-MCX")
+- For each effective row, checks `exchange in row.exchanges` before checking session time
+- Allows override rows covering a subset of exchanges (e.g. Muhurat on NSE+BSE but not NFO)
+- If all applicable rows are skipped (exchange not in any), returns closed (False)
+
+### Default seed rows (simplified)
+
+Two rows are created at startup (idempotent — duplicate key skips):
+
+| gate | exchanges | open_time | close_time | snapshot_time | weekdays | date |
+|---|---|---|---|---|---|---|
+| NON-MCX | NSE, BSE, NFO, BFO, CDS | 08:00 | 15:30 | 15:45 | [0,1,2,3,4] (Mon–Fri) | NULL (default) |
+| MCX | MCX | 08:00 | 23:30 | 23:45 | [0,1,2,3,4] (Mon–Fri) | NULL (default) |
+
+**Weekdays filter:** Array of 0–6 (Mon=0 … Sun=6). Values [0,1,2,3,4] = Mon–Fri only; 
+empty array or NULL means applies every day. Pre-open (PRE) and post-close (POST) 
+sessions are absorbed into the NON-MCX main gate.
 
 ### Consumer integration
 
@@ -1918,8 +1936,11 @@ rows = await session.execute(
 picks up the change within 1 request latency.
 
 **Operator workflow:** To close markets for a holiday:
-1. `/admin/exchange-schedule` → `PUT` row with `date=holiday_date, is_open=false` for all gates
-2. Immediate effect: next refresh-rate call sees markets closed; background tasks skip market-hours gates
+1. `/admin/exchange-schedule` → `PUT` row with `date=holiday_date, open_time=NULL, 
+   close_time=NULL, snapshot_time=NULL` for the desired gates (e.g., "NON-MCX" and/or "MCX")
+2. Immediate effect: next refresh-rate call sees markets closed (`is_exchange_open` returns False); 
+   background tasks skip market-hours gates
+3. To cancel the override, `DELETE` the row or `PUT` with the proper open_time restored
 
 ### Files
 
@@ -4027,6 +4048,40 @@ zeroing when both LTP and close_price hold the same snapshot value.
 - `backend/api/routes/holdings_helpers.py::_build_holding_row_from_snapshot` — COALESCE logic
 - `backend/api/algo/daily_snapshot.py` — writes `previous_close` at first snapshot
 - `backend/api/routes/holdings.py` — caller
+
+### 21.5.8 MCX 23:45 ltp=0 corruption fix — UPSERT NULL handling
+
+**Problem:** MCX midnight settlement snapshot (23:45 IST) was captured with broker `ltp=0` 
+(temporary state during settlement reconciliation), which overwrote valid Friday EOD prices. 
+The UPSERT's plain `COALESCE(EXCLUDED.ltp, daily_book.ltp)` had no guard against zero values.
+
+**Fix — two-layer approach:**
+
+1. **Writer neutralizes zero ltp** — `backend/api/algo/daily_snapshot.py::_positions_rows()` 
+   now sets `ltp_val = None` (not skips the row) when `not mid_session and ltp_val == 0.0`. 
+   The row is still written so the `captured_at` batch join works correctly.
+
+2. **UPSERT uses NULLIF guard** — SQL now reads:
+   ```sql
+   ltp = CASE
+          WHEN daily_book.qty = 0 AND daily_book.ltp IS NOT NULL
+              THEN daily_book.ltp  -- preserve exit price for closed positions
+          ELSE COALESCE(NULLIF(EXCLUDED.ltp, 0), daily_book.ltp)
+        END
+   ```
+   `NULLIF(EXCLUDED.ltp, 0)` converts zero to NULL so the fallback preserves the old value.
+
+3. **Reader filters zero rows** — CTEs in snapshot paths (`latest_batch` in `positions.py` 
+   and holdings routes) now filter `(ltp IS NULL OR ltp > 0)` to exclude zero rows from 
+   delivery to positions and holdings routes.
+
+**Result:** Snapshot grids and P&L remain stable through settlement windows; Friday close 
+prices survive midnight reconciliation until replaced by Monday's 08:00 open snapshot.
+
+**Files:**
+- `backend/api/algo/daily_snapshot.py::_positions_rows`, `_upsert_rows` (UPSERT SQL) 
+- `backend/api/routes/positions.py::_positions_snapshot` (reader filter)
+- `backend/api/routes/holdings.py::get_holdings` (reader filter)
 
 ---
 

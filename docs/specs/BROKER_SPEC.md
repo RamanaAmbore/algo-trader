@@ -585,34 +585,47 @@ would compute wrong day P&L.
 
 ---
 
-## 7.3.1 Daily Snapshot UPSERT Idempotency & LTP Coalesce Fix (Aug 2026)
+## 7.3.1 MCX 23:45 ltp=0 Corruption — Three-Layer Defense (Aug 2026)
 
-**File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` UPSERT
+**File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book()` UPSERT  
+**File**: `backend/api/routes/positions.py` · `backend/api/routes/holdings.py` — CTEs  
+**File**: `backend/brokers/broker_apis.py` — `_enrich_positions()`
 
-The daily_book UPSERT now guards against mid-session NSE passes overwriting MCX 
-settlement LTPs with NULL values:
+MCX occasionally returns `ltp=0` at settlement (~23:45 IST). Without guards, a zero 
+LTP overwrites a valid prior-session settlement price, causing grids to show blank 
+cells and NAV to collapse.
+
+### Layer 1: UPSERT NULLIF coalesce (write-side guard)
 
 ```sql
 ON CONFLICT (date, account, kind, symbol) DO UPDATE SET
-  ltp = COALESCE(EXCLUDED.ltp, daily_book.ltp),
+  ltp = COALESCE(NULLIF(EXCLUDED.ltp, 0), daily_book.ltp),
   payload_json = CASE 
-    WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json 
+    WHEN EXCLUDED.ltp IS NOT NULL AND EXCLUDED.ltp > 0 THEN EXCLUDED.payload_json 
     ELSE daily_book.payload_json 
   END,
   ...
 ```
 
-**Problem addressed**: Mid-session NSE data passes (during MCX close, 00:00–08:00 IST) 
-can capture NULL LTP values when broker quote fails. The UPSERT would overwrite a valid 
-prior-session MCX LTP (from settlement snapshot) with NULL, causing grids to show blank 
-cells and NAV to collapse.
+When `EXCLUDED.ltp = 0`, `NULLIF(0, 0)` returns NULL, so `COALESCE` falls back to 
+`daily_book.ltp` (the existing valid price). Row is UPSERT'd with NULL LTP to preserve 
+join integrity; the existing LTP survives.
 
-**Solution**: `COALESCE(EXCLUDED.ltp, daily_book.ltp)` preserves the existing LTP when 
-the incoming row has NULL. `payload_json` (OHLC data) is similarly preserved when LTP is 
-NULL, maintaining EOD snapshot data integrity across polling cycles.
+### Layer 2: Writer NULL-set on zero-outside-session (mid-write guard)
+
+When `ltp=0` and the timestamp falls **outside** the MCX regular session window 
+(09:00–17:00 IST) or evening session (17:00–23:30 IST), the writer sets `ltp_val = None` 
+(not a skip). Row stays in the batch and is committed; UPSERT NULLIF then preserves 
+the existing good LTP.
+
+### Layer 3: Reader filters zero rows (read-side guard)
+
+Both positions and holdings routes now filter `WHERE ltp IS NOT NULL AND ltp > 0` in 
+their `latest_batch` CTEs. Final WHERE adds `(db.ltp IS NULL OR db.ltp > 0)` to 
+exclude zero rows from snapshot delivery.
 
 **Impact**: Off-hours grids (positions, holdings, sparklines) now display frozen prices 
-correctly throughout closed windows without blank cells from mid-session NULL overwrites.
+correctly throughout closed windows without blank cells from MCX zero-LTP corruption.
 
 ---
 
@@ -957,6 +970,76 @@ genuinely flat positions.
 **Impact**: Holdings P&L and `cur_val` now remain consistent with the live LTP throughout
 the pre-market and post-settlement windows, eliminating the 30-second gap where the
 NavStrip H slot would show stale values until the next refresh.
+
+---
+
+## 7.3.11 Universal Day P&L Formula in Snapshot (Aug 2026)
+
+**File**: `backend/api/routes/positions_helpers.py` — `build_row_from_snapshot_raw()`
+
+When reconstructing a position from a closed-hours snapshot, the day P&L now uses 
+a universal formula that handles all five position states:
+
+```python
+day_pnl = total_pnl - (prev_close - avg) * overnight_quantity
+```
+
+**Five position states covered**:
+
+1. **Overnight open** (`oq > 0, qty > 0`): 
+   `day_pnl = total_pnl - (prev_close - avg) × oq` → zeroes the per-unit cost gap, leaving intraday move
+2. **New today** (`oq = 0, qty > 0`): 
+   `day_pnl = total_pnl` (term is zero; formula degenerates correctly)
+3. **Partial close** (`oq > 0, qty > 0, qty < oq`): 
+   Formula handles mixed legs (open + closed portions)
+4. **Fully closed intraday** (`oq = 0, qty = 0`): 
+   `day_pnl = realised` (total_pnl only contains realised P&L)
+5. **Fully closed overnight** (`oq > 0, qty = 0`): 
+   `day_pnl = total_pnl − (prev_close − avg) × oq` (exit price − close) × qty
+
+**Fallback**: When `prev_close` is unavailable, the formula uses the stored 
+`day_pnl` directly from the `daily_book` row (no re-calculation).
+
+**Impact**: All closed-hours position snapshots now use consistent day P&L 
+regardless of position state, eliminating edge-case gaps between live and snapshot 
+displays.
+
+---
+
+## 7.3.11a Positions P&L Unification — `pnl + realised` (Aug 2026)
+
+**File**: `backend/brokers/broker_apis.py` — `_enrich_positions()`
+
+When computing `pnl` in positions rows, `_enrich_positions()` now unifies realised
+and unrealised P&L by summing them:
+
+```python
+_broker_realised = (
+    _col_f64_nullable(lf, 'realised').fill_null(0.0)
+    if 'realised' in cols else pl.lit(0.0)
+)
+_pnl_expr = (
+    pl.when(_broker_pnl.is_not_null())
+    .then(_broker_pnl + _broker_realised)
+    .otherwise(_pnl_calc)
+)
+```
+
+**Broker-specific handling**:
+
+- **Kite**: Separates `pnl` (unrealised) and `realised` for closed/partially-closed legs
+- **Dhan**: May split P&L across both fields
+- **Groww**: May split P&L across both fields
+- **Other brokers**: `realised = 0` by default
+
+Adding `pnl + realised` ensures the snapshot's `daily_book.total_pnl` captures 
+the full economic P&L (realised gains/losses on closed legs + unrealised MTM on 
+open legs). This total is then used by `build_row_from_snapshot_raw()` during 
+closed-hours position reconstruction via the universal day P&L formula.
+
+**Impact**: The `total_pnl` stored in `daily_book` snapshots now accurately reflects
+the position's total P&L across all brokers, enabling consistent day P&L calculations
+in the snapshot path (section 7.3.11).
 
 ---
 
@@ -2085,23 +2168,33 @@ Only NSE and BSE are in the `exchanges` array, so NFO/BFO/CDS do not match this
 row → `resolve_sessions_for("NFO", 2026-11-01)` returns [] → NFO is correctly
 closed for the day without needing separate closed-override rows.
 
-### Runtime lookup algorithm
+### Runtime lookup algorithm (Aug 2026 — date-override-first)
 
 **Per-exchange session resolution** (`resolve_sessions_for(exchange, on_date)`):
-1. Look for date-specific rows where `exchange = ANY(row.exchanges)` and
-   `row.date = on_date`
-2. If any row has `is_open=false`, return [] (closed)
-3. Otherwise return matched rows (open sessions for this exchange on this date)
-4. If no date rows, fall back to defaults where `exchange = ANY(row.exchanges)`,
+1. Look for date-specific override rows where `exchange = ANY(row.exchanges)` and
+   `row.date = on_date` — **these suppress the default row entirely** if found
+2. If any override row has `is_open=false` (or `open_time=NULL`), return [] (closed)
+3. If any override row has `open_time=HH:MM`, return it (custom session hours)
+4. If no date-override rows, fall back to defaults where `exchange = ANY(row.exchanges)`,
    `row.date IS NULL`, and `on_date.isoweekday() IN row.weekdays`
 5. If no defaults or weekday not in list, return [] (closed)
 
+**Exchange membership per row** — `is_exchange_open(exchange)` now checks 
+per-row `exchanges` list membership. Example: Muhurat override with 
+`exchanges=["NSE","BSE"]` correctly leaves NFO/BFO closed for that day without 
+needing separate closed-override rows.
+
 **Gate-level session resolution** (`resolve_sessions_for_gate(gate, on_date)`):
-1. Look for date-specific rows where `row.gate = gate` and `row.date = on_date`
-2. If found, return all (open AND settlement rows)
+1. Look for date-specific override rows where `row.gate = gate` and `row.date = on_date`
+   — **override rows suppress defaults** if found
+2. If found, return all matching rows (open AND settlement rows)
 3. Otherwise, fall back to defaults where `row.gate = gate`, `row.date IS NULL`,
    and weekday check
 4. Used by `background.py` only (snapshot/settlement triggers fire per gate)
+
+**Settlement cutoff per gate** — `settlement_cutoff_for(gate)` reads the default 
+(non-override) row's `open_time` field (typically 08:00 IST) as the reset boundary 
+for prior-close lookups, instead of the hardcoded `snapshot_reset_time`.
 
 **Exchange-to-gate mapping** (internal constant):
 ```
