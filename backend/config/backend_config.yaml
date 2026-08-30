@@ -107,7 +107,7 @@ market_segments:
 
 # Daily holiday refresh cron (fires `_task_holiday_refresh`). Time in IST,
 # HH:MM. Retries every 30 min until 08:00 IST on any failure.
-holiday_refresh_time: "04:00"
+holiday_refresh_time: "05:30"
 
 # Algo agent (chase + expiry) — every knob moved to DB:
 #   algo.chase_interval_seconds, algo.aggression_step, algo.max_attempts

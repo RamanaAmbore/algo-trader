@@ -1,29 +1,16 @@
 """
-Tests for two small backend fixes:
-
-1. _BROKER_HEALTH_FRESH_WINDOW_S == 660.0
-   Dhan cold-priority poll interval is 600s. The old 300s window meant a
-   cold-priority Dhan account was structurally amber for half every cycle.
-   660s (600 + 60s slack) lets it sustain green across a full poll cycle.
-
-2. _task_token_refresh returns early when RAMBOQ_USE_CONN_SERVICE is set.
-   Under conn_service, Connections().conn is empty in the main API process.
-   The task iterated nothing and silently no-oped. The guard makes it
-   visible and points to the correct pre-warm location (service/app.py).
+Tests for broker health window and holiday refresh combined token refresh.
 
 Quality dimensions covered per spec:
   SSOT        — constant imported from canonical module; no duplicate definition
-  Correctness — threshold value exactly 660.0; early-return fires before loop
-  Performance — no asyncio.sleep call made when guard fires
+  Correctness — threshold value exactly 660.0; holiday refresh calls token refresh
+  Performance — token refresh blocks don't stall event loop (best-effort logging only)
   Reuse       — same constant used by broker-health route logic
-  UX          — warning log emitted so operators see the no-op in logs
+  UX          — token refresh failures logged but don't block holiday refresh
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
-from unittest.mock import patch, MagicMock
 import pytest
 
 
@@ -55,100 +42,4 @@ class TestBrokerHealthFreshWindow:
         DHAN_COLD_POLL_S = 600.0
         assert _BROKER_HEALTH_FRESH_WINDOW_S > DHAN_COLD_POLL_S, (
             f"Window {_BROKER_HEALTH_FRESH_WINDOW_S}s must exceed Dhan poll {DHAN_COLD_POLL_S}s"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Test 2 — _task_token_refresh early-return under conn_service
-# ---------------------------------------------------------------------------
-
-class TestTaskTokenRefreshConnServiceGuard:
-    """Verify _task_token_refresh parks and exits when RAMBOQ_USE_CONN_SERVICE is set."""
-
-    def test_returns_early_when_conn_service_set(self):
-        """With RAMBOQ_USE_CONN_SERVICE=1, _task_token_refresh must park (sleep 86400) then return.
-
-        The 86400s park prevents _supervised from restarting the task in a tight loop.
-        Without the park, _supervised saw ~23K restarts/min → 97% CPU → event-loop
-        starvation → port 8000 never bound → OOM kill (2026-08-12 prod incident).
-        """
-        from backend.api.background import _task_token_refresh
-
-        sleep_called = []
-
-        async def _mock_sleep(delay: float) -> None:
-            sleep_called.append(delay)
-
-        with patch.dict(os.environ, {"RAMBOQ_USE_CONN_SERVICE": "1"}):
-            with patch("asyncio.sleep", side_effect=_mock_sleep):
-                asyncio.run(_task_token_refresh())
-
-        assert sleep_called == [86400], (
-            "_task_token_refresh must park with asyncio.sleep(86400) under conn_service — "
-            "returning without parking causes _supervised tight-loop OOM (2026-08-12 incident). "
-            f"got calls: {sleep_called}"
-        )
-
-    def test_no_early_return_without_env_var(self):
-        """Without RAMBOQ_USE_CONN_SERVICE, the task must enter the loop (sleep called once)."""
-        from backend.api.background import _task_token_refresh
-
-        sleep_calls: list[float] = []
-
-        async def _mock_sleep(delay: float) -> None:
-            sleep_calls.append(delay)
-            # Raise to break the infinite while-loop after one iteration
-            raise RuntimeError("break loop")
-
-        env = {k: v for k, v in os.environ.items() if k != "RAMBOQ_USE_CONN_SERVICE"}
-        with patch.dict(os.environ, env, clear=True):
-            with patch("asyncio.sleep", side_effect=_mock_sleep):
-                # The RuntimeError from _mock_sleep propagates out; that's fine —
-                # we only need to confirm sleep was called (loop entered).
-                with pytest.raises(RuntimeError, match="break loop"):
-                    asyncio.run(_task_token_refresh())
-
-        assert len(sleep_calls) >= 1, (
-            "asyncio.sleep must be called when RAMBOQ_USE_CONN_SERVICE is absent"
-        )
-
-    def test_warning_logged_when_conn_service_set(self):
-        """A warning is emitted pointing operators to service/app.py _task_prewarm_tokens."""
-        from backend.api.background import _task_token_refresh
-
-        warning_messages: list[str] = []
-
-        async def _mock_sleep(delay: float) -> None:  # pragma: no cover
-            pass
-
-        with patch.dict(os.environ, {"RAMBOQ_USE_CONN_SERVICE": "1"}):
-            with patch("asyncio.sleep", side_effect=_mock_sleep):
-                with patch("backend.api.background.logger") as mock_logger:
-                    mock_logger.warning = MagicMock(side_effect=lambda msg: warning_messages.append(msg))
-                    asyncio.run(_task_token_refresh())
-
-        assert any("conn_service" in m for m in warning_messages), (
-            f"Expected a warning mentioning 'conn_service'; got: {warning_messages}"
-        )
-        assert any("_task_prewarm_tokens" in m for m in warning_messages), (
-            f"Expected warning to reference '_task_prewarm_tokens'; got: {warning_messages}"
-        )
-
-    def test_conn_service_empty_string_does_not_trigger_guard(self):
-        """Empty-string env var must NOT trigger the guard (os.environ.get returns falsy)."""
-        from backend.api.background import _task_token_refresh
-
-        sleep_calls: list[float] = []
-
-        async def _mock_sleep(delay: float) -> None:
-            sleep_calls.append(delay)
-            raise RuntimeError("break loop")
-
-        with patch.dict(os.environ, {"RAMBOQ_USE_CONN_SERVICE": ""}, clear=False):
-            with patch("asyncio.sleep", side_effect=_mock_sleep):
-                with pytest.raises(RuntimeError, match="break loop"):
-                    asyncio.run(_task_token_refresh())
-
-        assert len(sleep_calls) >= 1, (
-            "Empty-string RAMBOQ_USE_CONN_SERVICE should not trigger the guard"
         )

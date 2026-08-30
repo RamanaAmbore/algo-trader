@@ -1452,11 +1452,18 @@ The fix fires at the **NSE session open time**, loaded dynamically from
 
 - **Backend startup** (`seed_and_warm()`): NSE open time loaded from `exchange_schedule` 
   table and cached in `_nse_open_time_cached` module variable
-- **Daily 04:00 IST** (`_task_holiday_refresh`): Exchange schedule refreshed from 
-  database — before 08:00 market open — ensuring special sessions and custom 
-  schedules are always respected
+- **Daily 05:30 IST** (`_task_holiday_refresh`): Combined morning task runs once per day:
+  1. `load_today_open_time()` reads NSE open time from `exchange_schedule` table
+  2. Holiday calendar refresh via NSE API (retries until 08:00 IST if NSE API is slow)
+  3. Best-effort proactive token refresh for all broker types (Kite TOTP auto-login, 
+     Dhan RenewToken API, Groww session refresh). Failures logged as warnings only — 
+     `@retry_kite_conn` decorator auto-recovers on next API call.
+  4. Note: token refresh skipped under `RAMBOQ_USE_CONN_SERVICE=1` (broker layer owns it)
 - **08:00 IST transition**: `fix_daily_book_prev_close()` fires at the cached NSE 
   open time; if no row found or schedule not loaded, gracefully skips (fail-open)
+- **06:00 IST — Token hard-expiry** (external Kite/Dhan/Groww server-side event, no code). 
+  First API call after expiry triggers `@retry_kite_conn` decorator → auto re-auth 
+  within 2–30s for all brokers
 
 **Rationale**: Hardcoding "08:00 IST" would miss special market sessions (e.g., 
 extended hours on festival eves, extended holidays). Loading from the schedule 
@@ -1910,23 +1917,22 @@ never binds the port.
 **Rule**: Any `_task_*` function that exits before its main `while True:` loop MUST include an 
 `await asyncio.sleep(N)` before the `return` to yield control and prevent tight looping.
 
-### Token Refresh No-Op Warning
+### Token Refresh Delegation to Conn-Service
 
-**File**: `backend/api/background.py` — `_task_token_refresh()`
+**File**: `backend/api/background.py` — `_task_holiday_refresh()` (morning 05:30 task)
 
-When `RAMBOQ_USE_CONN_SERVICE=1` is set, `_task_token_refresh()` in the main API is a 
-no-op — all token management is delegated to the conn-service. This task now logs a 
-WARNING at startup to make the no-op visible to operators, preventing confusion if they 
-expect this background task to do token work on the main process:
+When `RAMBOQ_USE_CONN_SERVICE=1` is set, the morning `_task_holiday_refresh()` in the main API 
+skips token refresh and logs a WARNING to make the delegation visible to operators:
 
 ```
-WARNING: _task_token_refresh called but RAMBOQ_USE_CONN_SERVICE=1 — skipping (conn-service owns token management)
+WARNING: _task_holiday_refresh token refresh skipped — RAMBOQ_USE_CONN_SERVICE=1 (conn-service owns token management)
 ```
 
-**Rationale**: Token refresh happens in conn-service background tasks (`_task_prewarm_tokens`, 
-`_task_health_heartbeat`, etc.). The main API background task is kept as a guard rail; 
-when active (non-conn-service mode), it refreshes Kite/Dhan/Groww tokens synchronously. 
-With conn-service mode enabled, it correctly exits early with a diagnostic log.
+**Rationale**: In conn-service mode, all broker session management (including proactive token 
+refresh) is owned by the conn-service background tasks. The main API's `_task_holiday_refresh()` 
+still runs to load holiday calendars and open times, but token refresh is delegated. With 
+conn-service disabled, the combined 05:30 task refreshes Kite/Dhan/Groww tokens proactively 
+on the main process.
 
 **Canonical examples in the codebase**:
 - `_task_ticker_watchdog`: cutover mode exit → `while is_cutover_on(): await asyncio.sleep(300); return`
@@ -1972,36 +1978,37 @@ payoff accuracy during volatile intraday windows.
 
 ---
 
-## 9.2 Token Pre-Warm Task & Expiry Prevention
+## 9.2 Morning Token Refresh — Consolidated 05:30 Task
 
-**File**: `backend/brokers/service/app.py` — `_task_prewarm_tokens()`
+**File**: `backend/api/background.py` — `_task_holiday_refresh()`
 
-Conn-service runs a 60-second polling background task to pre-warm broker tokens before they
-expire, preventing mid-session auth failures when operators rely on long-lived
-credentials.
+All morning broker token management is now consolidated into a single 05:30 IST task
+that handles holiday calendar loading, open-time resolution, and best-effort token
+refresh for all brokers in sequence.
 
-### Pre-warm schedule by broker
+### Token refresh during 05:30 task
 
-| Broker | Window | Condition | Logs |
-|---|---|---|---|
-| Kite | 05:45–05:59 IST | Daily before 06:00 expiry | `[PREWARM]` |
-| Dhan | On-demand (60s poll) | `token_age > 22h` (expiry=23h) | `[PREWARM]` |
-| Groww | On-demand (60s poll) | `_is_token_expired()` returns True | `[PREWARM]` |
+| Broker | Refresh Method | Behavior |
+|---|---|---|
+| Kite | TOTP auto-login | `get_kite_conn(test_conn=False)` during 05:30 window before 06:00 hard expiry |
+| Dhan | RenewToken API | Lightweight token renewal attempt; falls back to full TOTP if renewal fails |
+| Groww | Session refresh | Proactive `get_groww_conn()` refresh if `_is_token_expired()` returns True |
 
-The 14-minute Kite window (05:45–05:59 IST) cannot be reliably covered by hourly
-polling — 60s matches the `background.py:_task_token_refresh` cadence and guarantees
-the window is hit.
+All three brokers attempt refresh during the single 05:30 IST combined task. Token refresh
+failures are logged as warnings only — they do NOT block subsequent API calls. The
+`@retry_kite_conn` decorator provides automatic recovery on the first failed fetch after
+token expiry (within 2–30s depending on broker).
 
-**Dhan co-expiry prevention**: Multiple Dhan accounts minted at similar times could
-expire together, causing a cluster of auth failures. The 22-hour threshold ensures
-at least one fresh token is available before expiry; staggered account startups mean
-pre-warms fire at different times, spreading the refresh load.
+**Rationale**: Merging separate 04:00 holiday + 05:45 Kite token tasks into a single
+05:30 call reduces task overhead and ensures both operations complete before the 06:00
+hard expiry and market open. Best-effort design avoids blocking market-open latency
+on failed preemptive refresh.
 
-**Groww proactive refresh**: `GrowwConnection.get_groww_conn()` now calls
-`_is_token_expired()` synchronously on every session request and proactively
-refreshes if True, preventing expired-credential exceptions on the critical path.
+**Skipped under conn-service mode**: When `RAMBOQ_USE_CONN_SERVICE=1`, token management
+is delegated entirely to the conn-service, and the main API task logs a WARNING and exits
+early.
 
-### On-demand token renewal on auth failure
+### On-demand token renewal on auth failure (safety net)
 
 **File**: `backend/shared/helpers/decorators.py` — `@for_all_accounts._per_account._try_renew`
 
@@ -2689,3 +2696,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-27 | v1.23 Holdings gate NSE-specific + per-exchange P&L overlay + chain polling tuning (commits bb778062, 13f59ac0, d4e75014): Added §7.3.5 Holdings Gate Now NSE-Specific documenting `closed_hours_or_broker(segment_exchanges=["NSE"])` parameter; holdings now enter snapshot mode at NSE close (15:35 IST) instead of MCX close (23:30 IST). Added §7.3.7 Snapshot Path Now Calls `_override_stale_close_for_holdings` documenting both broker AND snapshot paths now call `_override_stale_close_for_holdings()` to patch from prior-session daily_book.ltp (cutoff: `captured_at < today_08:00 IST`), eliminating divergence between live/snapshot displays. Added §7.3.9 `close_price` Always Synced to `ref_close` documenting removal of epsilon guard; `close_price` now unconditionally synced to keep denominator consistent with `day_change_val` numerator. Added §7.3.13 Positions Per-Exchange Day P&L Overlay documenting `_overlay_snapshot_for_closed_exchanges()` now patches day P&L for closed-exchange rows (NFO/BSE) immediately after their close (~15:30 IST) using prior-session daily_book snapshot, without waiting for MCX to close. Added Options Chain Polling & Timeouts subsection documenting backend timeout reduction (30s→12s) in `_chain_quotes_batch_quote()` and frontend interval increase (5s→30s) in ChainCard.svelte; added `_pricesFetching` in-flight guard to prevent concurrent quote() calls. Renumbered §7.3.6+ holdings sections (6→6, 7→7, 8→8, etc.). |
 | 2026-08-28 | v1.24 Exchange schedule table & clock module (from PLAN): Added §14 Exchange Schedule Table & Clock Module documenting new `exchange_schedule` DB table (date-aware, operator-editable defaults + overrides via `/admin/settings`), module-level cache, public API (`is_exchange_open`, `snapshot_time_for`, `snapshot_reset_time_for`, `sessions_with_snapshot_time_now`, `settlement_cutoff_for`, `settlement_ref_close_map`, `refresh_cache`, `seed_and_warm`), admin routes (GET/PUT/DELETE `/api/admin/exchange-schedule`), and `@apply_settlement_overlay(kind)` decorator for patch-on-close P&L + close_price. Replaces hardcoded `_EXCHANGE_TO_GATE` dict in snapshot_gate.py, `market_segments` YAML block, and 6 hardcoded trigger times in background.py. Single gate/exchanges distinction: a Muhurat row with exchanges=[NSE,BSE] correctly closes NFO/BFO/CDS via per-exchange `_resolve_for_exchange()` lookup. Backend snapshot triggers fully DB-driven: 5 per-day (NSE 15:31 + 16:15, MCX 23:31 + 00:15, MCX morning no-snapshot). Renumbered §15+ sections (14→15, 15→16, 16→17). |
 | 2026-08-30 | v1.25 Closed-exchange overlay stored day P&L fix (commit adc5e1f0): Updated §7.3.8 Firm NAV Computation & Closed-Exchange LTP Overlay documenting `latest_snapshot_ltp_map(kind)` return type change from `dict[tuple[str,str], float]` (LTP only) to `dict[tuple[str,str], tuple[float, float\|None]]` (LTP + day_pnl tuple). Added subsection on Overlay Logic documenting new return format and weekend zero-delta bug fix: when both snap_ltp and snap_close come from same Friday settlement snapshot, old code computed `(Fri−Fri)×qty=0` on weekends; now stores EOD `day_pnl` in tuple and uses it directly when non-zero, falling back to price-recompute only when `day_pnl` is None/zero. Added Function subsection documenting `latest_snapshot_ltp_map(kind)` signature, query strategy (MAX(captured_at) per account), return format, guarantee (identical CTE as route snapshot readers), and fail-open behaviour. Updated `_process_overlay_row()` code path (positions.py lines 474–491) and `_hold_tag_closed_row()` (holdings.py) to unpack tuples and prioritize stored `day_pnl` over recomputed values. Impact: weekend grids now show correct overnight P&L from Friday settlement instead of zero-delta phantom move. |
+| 2026-08-30 | v1.26 Consolidated morning task schedule (backend implementation): Merged three separate morning events (04:00 holiday refresh, 05:45 Kite token pre-warm, 06:00 hard expiry) into a single 05:30 IST `_task_holiday_refresh()` combined task covering: (1) open-time loading from `exchange_schedule`, (2) NSE API holiday calendar refresh (retries until 08:00 if slow), (3) best-effort proactive token refresh for all brokers (Kite TOTP auto-login, Dhan RenewToken API, Groww session refresh). Token refresh failures logged as warnings only; `@retry_kite_conn` decorator provides automatic recovery on next API call. Skipped under `RAMBOQ_USE_CONN_SERVICE=1`. Updated §7.3.10 Market-open time loading section with new 05:30 lifecycle, updated §9.2 Token Pre-Warm Task title to "Morning Token Refresh — Consolidated 05:30 Task" and restructured content to reflect unified schedule. Updated Token Refresh Delegation to Conn-Service subsection in §9.1 Background Task Supervisor. |

@@ -285,7 +285,6 @@ def _patch_all_bg_tasks():
 
     _TASK_NAMES = [
         "_task_market",
-        "_task_token_refresh",
         "_task_performance",
         "_task_expiry_check",
         "_task_instruments",

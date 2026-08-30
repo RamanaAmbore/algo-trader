@@ -465,37 +465,6 @@ async def _task_market(state: dict) -> None:
             logger.error(f"Background: market warm failed: {e}")
 
 
-async def _task_token_refresh() -> None:
-    """Pre-warm Kite tokens at 05:45 IST before 06:00 AM expiry."""
-    import os as _os
-    if _os.environ.get("RAMBOQ_USE_CONN_SERVICE"):
-        logger.warning(
-            "_task_token_refresh: no-op under conn_service — "
-            "token pre-warm is handled by service/app.py _task_prewarm_tokens"
-        )
-        await asyncio.sleep(86400)  # park — returning immediately causes _supervised tight loop
-        return
-    _TARGET = "05:45"
-    last_fired: str | None = None
-    while True:
-        await asyncio.sleep(60)
-        try:
-            now = timestamp_indian()
-            today = now.strftime("%Y-%m-%d")
-            if now.strftime("%H:%M") == _TARGET and last_fired != today:
-                last_fired = today
-                from backend.brokers.connections import Connections, KiteConnection
-                for account, conn in Connections().conn.items():
-                    if not isinstance(conn, KiteConnection):
-                        continue
-                    try:
-                        conn.get_kite_conn(test_conn=True)
-                        logger.info(f"[TOKEN-PREWARM] {account} refreshed")
-                    except Exception as e:
-                        logger.warning(f"[TOKEN-PREWARM] {account} failed: {e}")
-        except Exception:
-            pass
-
 
 _PERF_KICK_EVENT: asyncio.Event | None = None
 
@@ -1969,8 +1938,8 @@ def _snapshot_stop_ticker() -> None:
 def _snapshot_restart_ticker() -> None:
     """Restart the KiteTicker at 08:00 IST with the freshly-rotated daily token.
 
-    ``_task_token_refresh`` runs at 05:45; this restart fires well after that
-    so the new ``access_token`` is already in place.  Under
+    ``_task_holiday_refresh`` refreshes tokens at 05:30; this restart fires
+    well after that so the new ``access_token`` is already in place.  Under
     ``RAMBOQ_USE_CONN_SERVICE=1`` the ticker returns a ``MmapTickReader``
     which has no ``restart`` method — skip silently.
     """
@@ -2130,10 +2099,10 @@ async def _task_daily_snapshot() -> None:
                 _ticker_stop_done = _stop_date
 
         # ---- Ticker: restart at 08:00 IST with fresh daily token -------
-        # Daily access_token is refreshed by _task_token_refresh at 05:45.
-        # The ticker is restarted here (well after token refresh) so it
-        # connects with the new token.  Guarded [08:00, 09:00) so a service
-        # restart during market hours doesn't loop through this block.
+        # Daily access_token is refreshed by _task_holiday_refresh at 05:30
+        # (merged cron). The ticker is restarted here (well after token
+        # refresh) so it connects with the new token.  Guarded [08:00, 09:00)
+        # so a service restart during market hours doesn't loop through this block.
         # hasattr guard: under RAMBOQ_USE_CONN_SERVICE=1, get_ticker()
         # returns MmapTickReader which has no restart() — skip silently.
         if (dtime(8, 0) <= now.time() < dtime(9, 0)
@@ -2334,14 +2303,24 @@ async def _task_mcp_audit_cleanup() -> None:
 
 
 async def _task_holiday_refresh() -> None:
-    """Daily NSE-holiday refresh cron — 04:00 IST.
+    """Daily early-morning cron — 05:30 IST (configurable via ``holiday_refresh_time``).
 
-    Fetches trading holidays from the NSE public API for every distinct
-    `holiday_exchange` in `market_segments` (NSE + MCX today) and UPSERTs
-    them into the `market_holidays` DB table with `source='nse_auto'`.
+    Two responsibilities in a single wake-up:
 
-    Retry cadence:
-      • First attempt at `holiday_refresh_time` (default 04:00 IST) each day.
+    1. **NSE holiday calendar** — Fetches trading holidays from the NSE public
+       API for every distinct ``holiday_exchange`` in ``market_segments``
+       (NSE + MCX today) and UPSERTs them into the ``market_holidays`` DB
+       table with ``source='nse_auto'``.
+
+    2. **Best-effort token refresh** — Calls the broker connection's login
+       helper for every account so that short-lived access tokens are renewed
+       ahead of the 06:00 AM expiry window. No-op under
+       ``RAMBOQ_USE_CONN_SERVICE=1`` (the conn service owns its own pre-warm).
+       The ``@retry_kite_conn`` decorator auto-recovers on the next API call if
+       this fails, so the block never raises.
+
+    Retry cadence (holiday calendar only):
+      • First attempt at ``holiday_refresh_time`` (default 05:30 IST) each day.
       • On failure (network error / empty response), retry every 30 min
         until 08:00 IST, then give up for the day. The prior day's rows
         remain in the table; `fetch_holidays` Tier 3 still serves them.
@@ -2359,12 +2338,12 @@ async def _task_holiday_refresh() -> None:
     from backend.shared.helpers.utils import config as _cfg
 
     def _next_run_at(now_ist: datetime) -> datetime:
-        """Return the next 04:00 IST slot after `now_ist`."""
-        target_str = str(_cfg.get("holiday_refresh_time", "04:00") or "04:00")
+        """Return the next 05:30 IST slot after `now_ist`."""
+        target_str = str(_cfg.get("holiday_refresh_time", "05:30") or "05:30")
         try:
             hh, mm = (int(x) for x in target_str.split(":", 1))
         except Exception:
-            hh, mm = 4, 0
+            hh, mm = 5, 30
         slot = now_ist.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if slot <= now_ist:
             slot += timedelta(days=1)
@@ -2469,12 +2448,39 @@ async def _task_holiday_refresh() -> None:
             raise
         try:
             await exchange_clock.load_today_open_time()
-            logger.info("Background: 04:00 IST — NSE session open time loaded: %s",
+            logger.info("Background: 05:30 IST — NSE session open time loaded: %s",
                         exchange_clock.get_nse_open_time())
             outcomes = await _do_all()
             logger.info(f"Background: holiday refresh complete — {outcomes}")
         except Exception as e:
             logger.error(f"Background: holiday refresh crashed: {e}")
+
+        # Best-effort proactive token refresh — all broker types.
+        # @retry_kite_conn auto-recovers on every subsequent API call if this
+        # fails; do NOT raise so a login hiccup doesn't abort the loop.
+        import os as _os
+        if not _os.environ.get("RAMBOQ_USE_CONN_SERVICE"):
+            from backend.brokers.connections import (
+                Connections, KiteConnection, DhanConnection, GrowwConnection,
+            )
+            _conns = Connections()
+            for _acct, _conn in (_conns.conn or {}).items():
+                try:
+                    if isinstance(_conn, KiteConnection):
+                        _conn.get_kite_conn(test_conn=True)
+                        logger.info("[TOKEN-REFRESH] Kite %s refreshed at 05:30", _acct)
+                    elif isinstance(_conn, DhanConnection):
+                        _conn.get_dhan_conn(test_conn=True)
+                        logger.info("[TOKEN-REFRESH] Dhan %s refreshed at 05:30", _acct)
+                    elif isinstance(_conn, GrowwConnection):
+                        _conn.get_groww_conn()
+                        logger.info("[TOKEN-REFRESH] Groww %s refreshed at 05:30", _acct)
+                except Exception as _e:
+                    logger.warning(
+                        "[TOKEN-REFRESH] %s %s: best-effort refresh failed — "
+                        "decorator will recover: %s",
+                        type(_conn).__name__, _acct, _e,
+                    )
 
 
 async def _task_hedge_proxy_regression() -> None:
@@ -5949,7 +5955,6 @@ async def on_startup(app) -> None:
     logger.info("Background: start_persist_flush done, creating tasks")
     app.state.bg_tasks = [
         asyncio.create_task(_supervised(lambda: _task_market(state),          name="bg-market"),          name="bg-market"),
-        asyncio.create_task(_supervised(_task_token_refresh,                   name="bg-token-refresh"),   name="bg-token-refresh"),
         asyncio.create_task(_supervised(lambda: _task_performance(state),      name="bg-performance"),     name="bg-performance"),
         asyncio.create_task(_supervised(_task_expiry_check,                    name="bg-expiry"),          name="bg-expiry"),
         asyncio.create_task(_supervised(_task_instruments,                     name="bg-instruments"),     name="bg-instruments"),
