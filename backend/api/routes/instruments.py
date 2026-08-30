@@ -189,13 +189,19 @@ def _build_expiries_index(items: list) -> "dict[str, list[str]]":
     so chain_quotes expiry-only requests need no asyncio.to_thread scan.
     """
     idx: dict[str, set[str]] = {}
+    _mcx_names_raw: set[str] = set()  # raw u values for MCX instruments (diagnostic)
     for inst in items:
         if inst.t not in ("CE", "PE") or not inst.u or not inst.x:
             continue
         # Kite's MCX `name` field uses spaces ("CRUDE OIL", "NATURAL GAS").
         # Normalize to match the spaceless form the frontend sends ("CRUDEOIL").
-        key = inst.u.upper().replace(" ", "")
+        raw_u = inst.u.upper()
+        if " " in raw_u:
+            _mcx_names_raw.add(f"{raw_u!r}→'{raw_u.replace(' ', '')}'")
+        key = raw_u.replace(" ", "")
         idx.setdefault(key, set()).add(inst.x)
+    if _mcx_names_raw:
+        logger.info("[expiries-index] normalized MCX spaced names: %s", sorted(_mcx_names_raw))
     return {u: sorted(xs) for u, xs in idx.items()}
 
 
