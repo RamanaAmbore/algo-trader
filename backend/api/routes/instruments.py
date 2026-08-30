@@ -181,6 +181,21 @@ def _build_instrument_row(inst: dict, exch: str, mcx_diag_logged: set) -> Instru
     )
 
 
+def _build_expiries_index(items: list) -> "dict[str, list[str]]":
+    """Build underlying → sorted ISO expiry list from instruments items.
+
+    CE/PE only; instruments with no underlying or no expiry are skipped.
+    Used by _task_chain_instruments to warm instruments_chain_expiries cache
+    so chain_quotes expiry-only requests need no asyncio.to_thread scan.
+    """
+    idx: dict[str, set[str]] = {}
+    for inst in items:
+        if inst.t not in ("CE", "PE") or not inst.u or not inst.x:
+            continue
+        idx.setdefault(inst.u.upper(), set()).add(inst.x)
+    return {u: sorted(xs) for u, xs in idx.items()}
+
+
 def _fetch_instruments() -> InstrumentsResponse:
     """Fetch full instrument dump from Kite across all relevant exchanges.
 

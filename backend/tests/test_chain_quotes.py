@@ -204,10 +204,15 @@ class TestChainQuotesEndpoint:
         """GET /chain-quotes?underlying=NIFTY (no expiry) returns expiries list, no rows."""
         client = async_client
 
-        with patch("backend.api.cache.peek") as mock_cache, \
-             patch("backend.api.routes.options._chain_quotes_batch_quote") as mock_quote:
+        def _peek_no_expiry_index(key: str):
+            # Return None for the expiries index so the fast path falls through
+            # to the scan, which populates expiries from the instruments fixture.
+            if key == "instruments_chain_expiries":
+                return None
+            return nifty_instruments_fixture
 
-            mock_cache.return_value = nifty_instruments_fixture
+        with patch("backend.api.cache.peek", side_effect=_peek_no_expiry_index), \
+             patch("backend.api.routes.options._chain_quotes_batch_quote") as mock_quote:
 
             response = await client.get("/api/options/chain-quotes", params={"underlying": "NIFTY"})
 
@@ -310,8 +315,12 @@ class TestChainQuotesEndpoint:
         """GET /chain-quotes?underlying=UNKNOWN returns empty expiries and rows."""
         client = async_client
 
-        with patch("backend.api.cache.peek") as mock_cache:
-            mock_cache.return_value = nifty_instruments_fixture
+        def _peek_no_expiry_index(key: str):
+            if key == "instruments_chain_expiries":
+                return None
+            return nifty_instruments_fixture
+
+        with patch("backend.api.cache.peek", side_effect=_peek_no_expiry_index):
 
             response = await client.get(
                 "/api/options/chain-quotes",
@@ -347,8 +356,12 @@ class TestChainQuotesEndpoint:
         """Response fields match ChainQuotesResponse spec."""
         client = async_client
 
-        with patch("backend.api.cache.peek") as mock_cache:
-            mock_cache.return_value = nifty_instruments_fixture
+        def _peek_no_expiry_index(key: str):
+            if key == "instruments_chain_expiries":
+                return None
+            return nifty_instruments_fixture
+
+        with patch("backend.api.cache.peek", side_effect=_peek_no_expiry_index):
 
             response = await client.get(
                 "/api/options/chain-quotes",
@@ -561,8 +574,12 @@ class TestChainQuotesIntegration:
             cycle_date="2025-08-11", count=len(instruments), items=instruments
         )
 
-        with patch("backend.api.cache.peek") as mock_cache:
-            mock_cache.return_value = inst_resp
+        def _peek_no_expiry_index(key: str):
+            if key == "instruments_chain_expiries":
+                return None
+            return inst_resp
+
+        with patch("backend.api.cache.peek", side_effect=_peek_no_expiry_index):
 
             response = await client.get(
                 "/api/options/chain-quotes",
@@ -955,8 +972,13 @@ class TestChainQuotesOffMarketGate:
             broker_call_count += 1
             return {}, {}
 
+        def _peek_no_expiry_index(key: str):
+            if key == "instruments_chain_expiries":
+                return None
+            return nifty_instruments_fixture
+
         with (
-            patch("backend.api.cache.peek") as mock_cache,
+            patch("backend.api.cache.peek", side_effect=_peek_no_expiry_index),
             patch(
                 "backend.api.routes.options._any_segment_open",
                 return_value=False,  # closed
@@ -966,8 +988,6 @@ class TestChainQuotesOffMarketGate:
                 side_effect=mock_batch_quote,
             ),
         ):
-            mock_cache.return_value = nifty_instruments_fixture
-
             response = await async_client.get(
                 "/api/options/chain-quotes",
                 params={"underlying": "NIFTY"},  # no expiry — expiry-only mode
@@ -1794,3 +1814,263 @@ class TestChainQuotesTimeout30s:
         src = inspect.getsource(_chain_quotes_batch_quote)
         assert "12s" in src, "Warning message must reference '12s'"
         assert "30s" not in src, "Old '30s' reference must be removed from warning"
+
+
+# ---------------------------------------------------------------------------
+# Expiries pre-index tests — _build_expiries_index + O(1) fast path
+# ---------------------------------------------------------------------------
+
+class TestBuildExpiriesIndex:
+    """Unit tests for _build_expiries_index helper in instruments.py.
+
+    Pre-computes underlying→sorted-expiry-list at instruments cache load time
+    so chain_quotes expiry-only requests avoid the O(35K) asyncio.to_thread scan.
+    """
+
+    def _make_instrument(self, t: str, u: str | None, x: str | None) -> Instrument:
+        """Helper to build a minimal Instrument for index tests."""
+        return Instrument(
+            s=f"{u or 'X'}{t}",
+            e="NFO",
+            t=t,
+            ls=25,
+            ts=0.05,
+            u=u,
+            x=x,
+            k=24000.0 if t in ("CE", "PE") else None,
+        )
+
+    def test_ce_and_pe_included(self):
+        """CE and PE instruments with valid u+x are included in the index."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            self._make_instrument("CE", "NIFTY", "2025-08-14"),
+            self._make_instrument("PE", "NIFTY", "2025-08-14"),
+        ]
+        idx = _build_expiries_index(items)
+        assert "NIFTY" in idx
+        assert idx["NIFTY"] == ["2025-08-14"]
+
+    def test_fut_eq_skipped(self):
+        """FUT and EQ instruments must not appear in the index."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            self._make_instrument("FUT", "NIFTY", "2025-08-29"),
+            self._make_instrument("EQ", "RELIANCE", None),
+            self._make_instrument("CE", "BANKNIFTY", "2025-08-21"),
+        ]
+        idx = _build_expiries_index(items)
+        assert "NIFTY" not in idx, "FUT must not appear in expiries index"
+        assert "RELIANCE" not in idx, "EQ must not appear in expiries index"
+        assert "BANKNIFTY" in idx
+
+    def test_missing_underlying_skipped(self):
+        """Instruments with u=None or u='' are skipped — no KeyError."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            self._make_instrument("CE", None, "2025-08-14"),
+            self._make_instrument("CE", "NIFTY", "2025-08-21"),
+        ]
+        idx = _build_expiries_index(items)
+        assert None not in idx
+        assert "" not in idx
+        assert "NIFTY" in idx
+
+    def test_missing_expiry_skipped(self):
+        """Instruments with x=None or x='' are skipped."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            self._make_instrument("CE", "NIFTY", None),
+            self._make_instrument("CE", "NIFTY", "2025-08-14"),
+        ]
+        idx = _build_expiries_index(items)
+        assert "NIFTY" in idx
+        assert None not in idx["NIFTY"]
+        assert "" not in idx["NIFTY"]
+        assert idx["NIFTY"] == ["2025-08-14"]
+
+    def test_expiries_sorted(self):
+        """Expiries per underlying must be sorted in ascending ISO order."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            self._make_instrument("CE", "NIFTY", "2025-09-04"),
+            self._make_instrument("PE", "NIFTY", "2025-08-14"),
+            self._make_instrument("CE", "NIFTY", "2025-08-21"),
+        ]
+        idx = _build_expiries_index(items)
+        assert idx["NIFTY"] == ["2025-08-14", "2025-08-21", "2025-09-04"]
+
+    def test_duplicates_deduplicated(self):
+        """Multiple CE+PE on same expiry must produce one entry per expiry, not duplicates."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            self._make_instrument("CE", "NIFTY", "2025-08-14"),
+            self._make_instrument("PE", "NIFTY", "2025-08-14"),
+            self._make_instrument("CE", "NIFTY", "2025-08-14"),  # duplicate
+        ]
+        idx = _build_expiries_index(items)
+        assert idx["NIFTY"].count("2025-08-14") == 1, "Duplicate expiry must be deduplicated"
+
+    def test_multiple_underlyings(self):
+        """Multiple underlyings each get their own expiry list."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            self._make_instrument("CE", "NIFTY", "2025-08-14"),
+            self._make_instrument("CE", "BANKNIFTY", "2025-08-21"),
+            self._make_instrument("CE", "CRUDEOIL", "2025-08-19"),
+        ]
+        idx = _build_expiries_index(items)
+        assert "NIFTY" in idx
+        assert "BANKNIFTY" in idx
+        assert "CRUDEOIL" in idx
+        assert idx["NIFTY"] == ["2025-08-14"]
+        assert idx["BANKNIFTY"] == ["2025-08-21"]
+        assert idx["CRUDEOIL"] == ["2025-08-19"]
+
+    def test_underlying_uppercased(self):
+        """Underlying is stored in uppercase in the index (inst.u.upper())."""
+        from backend.api.routes.instruments import _build_expiries_index
+
+        items = [
+            Instrument(s="X", e="NFO", t="CE", ls=25, ts=0.05,
+                       u="nifty", x="2025-08-14", k=24000.0),
+        ]
+        idx = _build_expiries_index(items)
+        assert "NIFTY" in idx
+        assert "nifty" not in idx
+
+    def test_empty_input_returns_empty_dict(self):
+        """Empty items list returns empty dict."""
+        from backend.api.routes.instruments import _build_expiries_index
+        assert _build_expiries_index([]) == {}
+
+
+@pytest.mark.asyncio
+class TestChainQuotesExpiriesIndexFastPath:
+    """Tests for the O(1) expiries-index fast path in chain_quotes.
+
+    When instruments_chain_expiries is warm, expiry-only requests (no expiry=)
+    skip the O(35K) asyncio.to_thread scan and return immediately.
+    """
+
+    async def test_fast_path_used_when_index_warm(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """When instruments_chain_expiries is warm, expiry-only request returns
+        from the index without calling _chain_quotes_sym_lookup."""
+        warm_index = {
+            "NIFTY": ["2025-08-14", "2025-08-21"],
+            "BANKNIFTY": ["2025-08-21"],
+        }
+
+        def _peek(key: str):
+            if key == "instruments_chain_expiries":
+                return warm_index
+            return nifty_instruments_fixture
+
+        with patch("backend.api.cache.peek", side_effect=_peek), \
+             patch("backend.api.routes.options._chain_quotes_sym_lookup") as mock_scan:
+
+            response = await async_client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY"},
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["expiries"] == ["2025-08-14", "2025-08-21"]
+            assert data["rows"] == []
+            assert data["expiry"] == ""
+            assert data["underlying"] == "NIFTY"
+            # The O(35K) scan must NOT have been called
+            mock_scan.assert_not_called()
+
+    async def test_fast_path_unknown_underlying_returns_empty(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """Fast path with unknown underlying returns empty expiries (dict .get miss)."""
+        warm_index = {"NIFTY": ["2025-08-14"]}
+
+        def _peek(key: str):
+            if key == "instruments_chain_expiries":
+                return warm_index
+            return nifty_instruments_fixture
+
+        with patch("backend.api.cache.peek", side_effect=_peek):
+            response = await async_client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "BANKNIFTY"},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["expiries"] == [], "Unknown underlying must return empty expiries"
+        assert data["rows"] == []
+
+    async def test_fast_path_skipped_when_index_cold(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """When instruments_chain_expiries is cold (None), route falls back to the scan."""
+        def _peek(key: str):
+            if key == "instruments_chain_expiries":
+                return None  # cold — not yet warmed
+            return nifty_instruments_fixture
+
+        with patch("backend.api.cache.peek", side_effect=_peek), \
+             patch("backend.api.routes.options._chain_quotes_sym_lookup",
+                   wraps=__import__("backend.api.routes.options",
+                                    fromlist=["_chain_quotes_sym_lookup"])
+                         ._chain_quotes_sym_lookup) as mock_scan:
+
+            response = await async_client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY"},
+            )
+
+            assert response.status_code == 200
+            # Scan must have been called as the fallback path
+            mock_scan.assert_called_once()
+            data = response.json()
+            # Scan result from fixture: two expiries
+            assert set(data["expiries"]) == {"2025-08-14", "2025-08-21"}
+
+    async def test_fast_path_only_fires_for_expiry_only_mode(
+        self, async_client, nifty_instruments_fixture
+    ):
+        """When expiry= is provided, the index fast path must NOT fire (full scan runs)."""
+        warm_index = {"NIFTY": ["2025-08-14", "2025-08-21"]}
+        scan_called = False
+
+        def _peek(key: str):
+            if key == "instruments_chain_expiries":
+                return warm_index
+            return nifty_instruments_fixture
+
+        original_lookup = __import__(
+            "backend.api.routes.options", fromlist=["_chain_quotes_sym_lookup"]
+        )._chain_quotes_sym_lookup
+
+        async def _tracking_lookup(und, exp, inst_resp):
+            nonlocal scan_called
+            scan_called = True
+            return await original_lookup(und, exp, inst_resp)
+
+        with patch("backend.api.cache.peek", side_effect=_peek), \
+             patch("backend.api.routes.options._chain_quotes_sym_lookup",
+                   side_effect=_tracking_lookup):
+            response = await async_client.get(
+                "/api/options/chain-quotes",
+                params={"underlying": "NIFTY", "expiry": "2025-08-14"},
+            )
+
+        assert response.status_code == 200
+        assert scan_called, (
+            "Scan must run when expiry= is provided — fast path is expiry-only"
+        )

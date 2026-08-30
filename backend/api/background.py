@@ -2167,6 +2167,15 @@ async def _task_chain_instruments() -> None:
             result = await _run(_fetch_chain_instruments)
             if result is not None:
                 _store["instruments_chain"] = (_time.monotonic() + 86400, result)
+                from backend.api.routes.instruments import _build_expiries_index
+                _store["instruments_chain_expiries"] = (
+                    _time.monotonic() + 86400,
+                    _build_expiries_index(result.items),
+                )
+                logger.info(
+                    "[bg-chain-instruments] built expiries index for %d underlyings",
+                    len(_store["instruments_chain_expiries"][1]),
+                )
                 logger.info(
                     f"[bg-chain-instruments] cached {result.count} NFO+MCX instruments"
                 )

@@ -2684,6 +2684,18 @@ class OptionsController(Controller):
             logger.debug("chain-quotes: instruments cache cold — returning empty")
             return ChainQuotesResponse(underlying=und, expiry=exp, expiries=[], rows=[])
 
+        # Expiry-only fast path: O(1) dict lookup from pre-built index — no thread needed.
+        # Falls back to the scan below only during the T+10–30s startup window before
+        # _task_chain_instruments has finished its first warm.
+        if not exp:
+            _exp_index = _cache_peek("instruments_chain_expiries")
+            if _exp_index is not None:
+                return ChainQuotesResponse(
+                    underlying=und, expiry="",
+                    expiries=_exp_index.get(und, []),
+                    rows=[],
+                )
+
         sym_by_strike, all_expiries = await _chain_quotes_sym_lookup(und, exp, inst_resp)
 
         # Expiry-only mode: return just the expiries list, no broker call.
