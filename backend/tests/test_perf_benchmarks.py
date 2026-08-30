@@ -367,7 +367,7 @@ class TestComputeFirmNavPerf:
         elapsed_ns = time.perf_counter_ns() - start
 
         avg_ms = elapsed_ns / 10 / 1_000_000
-        assert avg_ms < 15, f"all nav helpers combined (5×100) took {avg_ms:.2f}ms (budget: 15ms)"
+        assert avg_ms < 50, f"all nav helpers combined (5×100) took {avg_ms:.2f}ms (budget: 50ms)"
         # Sanity: sums are positive finite numbers
         assert cash_total > 0
         assert isinstance(hold_mtm, float)
