@@ -978,9 +978,6 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
         logger.warning(f"daily_book close-override query failed: {e}")
         return
 
-    if not snapshot_map:
-        return
-
     # Apply override row-by-row. Use a small epsilon (0.005) so we only
     # patch when the values meaningfully diverge — protects against
     # rounding noise between Kite's float repr and snapshot storage.
@@ -1003,14 +1000,50 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
         raw.at[idx, 'close_price'] = snap_ltp
         patched_idx.append(idx)
 
+    # Second-pass fallback for rows whose previous_close is still 0 after the
+    # first pass.  MCX option snapshots are captured DURING the MCX evening
+    # session (after 18:30 UTC), which is AFTER the 08:00 IST cutoff used by
+    # the first-pass query, so they never match it.  However, those same
+    # daily_book rows carry a valid `previous_close` column (the prior-session
+    # settlement price written by the broker adapter at snapshot time).  This
+    # second pass fetches that value directly.
+    patched_idx2: list = []
+    zero_mask = raw['previous_close'] == 0.0
+    if zero_mask.any():
+        zero_indices = raw.index[zero_mask].tolist()
+        syms_needing_fallback = list({str(raw.at[i, 'tradingsymbol']) for i in zero_indices})
+        try:
+            async with async_session() as session:
+                result2 = await session.execute(_sql_text("""
+                    SELECT DISTINCT ON (account, symbol) account, symbol, previous_close
+                    FROM daily_book
+                    WHERE kind = 'positions'
+                      AND previous_close IS NOT NULL AND previous_close > 0
+                      AND symbol = ANY(:syms)
+                    ORDER BY account, symbol, captured_at DESC
+                """), {"syms": syms_needing_fallback})
+                fallback_map: dict[tuple[str, str], float] = {
+                    (str(acc), str(sym)): float(pc)
+                    for acc, sym, pc in result2.all()
+                }
+            for idx in zero_indices:
+                key2 = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
+                fallback_close = fallback_map.get(key2)
+                if fallback_close is None:
+                    continue
+                raw.at[idx, 'previous_close'] = fallback_close
+                raw.at[idx, 'close_price'] = fallback_close
+                patched_idx2.append(idx)
+        except Exception as e:
+            logger.warning(f"positions: close-override second-pass query failed: {e}")
+
     # Backfill prev_settlement_pnl — yesterday's total_pnl for each position
     # that exists in the daily_book snapshot.  Rows opened today have no entry
-    # and remain None (the PositionRow default).  Must run before the
-    # `if not patched_idx: return` guard so it fires even on days when Kite's
-    # close_price already matches the snapshot (no close-override needed).
+    # and remain None (the PositionRow default).
     _backfill_prev_settlement_pnl(raw, prev_pnl_map)
 
-    if not patched_idx:
+    all_patched = patched_idx + patched_idx2
+    if not all_patched:
         return
 
     # Recompute day_change_val on patched rows only — same decomposed
@@ -1019,7 +1052,7 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     # backfill computes day_chg = (LTP - close) × qty as a fallback for
     # missing intraday fields) stay correct.
     # (Uses module-level _INTRADAY_FIELDS via _compute_day_change_val.)
-    _sel = pd.Index(patched_idx)
+    _sel = pd.Index(all_patched)
     _ltp = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
     _cls = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0)
     _dcv_calc = _compute_day_change_val(raw, _sel)
@@ -1030,7 +1063,13 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     # without this step the percentage columns lag the absolute columns
     # (same fix applied to _override_stale_ltp_from_ticker above).
     recompute_row_percentages(raw, _sel)
-    logger.info(f"positions: close-override patched {len(patched_idx)}/{len(raw)} rows from daily_book")
+    if patched_idx:
+        logger.info(f"positions: close-override patched {len(patched_idx)}/{len(raw)} rows from daily_book")
+    if patched_idx2:
+        logger.info(
+            f"positions: close-override second-pass (MCX option fallback) patched "
+            f"{len(patched_idx2)}/{len(raw)} rows from daily_book.previous_close"
+        )
 
 
 async def _build_paper_positions_response() -> PositionsResponse:

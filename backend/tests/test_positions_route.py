@@ -222,6 +222,8 @@ def _run_close_override(df: pd.DataFrame, snapshot_rows: list) -> pd.DataFrame:
     return df
 
 
+
+
 class TestOverrideStaleCloseFromSnapshot:
     """Unit tests for _override_stale_close_from_snapshot.
 
@@ -371,6 +373,126 @@ class TestOverrideStaleCloseFromSnapshot:
 
         assert abs(df.at[0, 'close_price'] - original_close) < 0.005, (
             "close_price must be unchanged when DB query fails"
+        )
+
+    def test_mcx_option_second_pass_updates_when_first_finds_nothing(self):
+        """MCX second-pass fallback: first-pass returns nothing; second pass provides
+        daily_book.previous_close=214.6 for CRUDEOIL26SEP7900PE.
+
+        Simulates MCX option snapshots captured AFTER 08:00 IST (after the time-window
+        cutoff), meaning no rows come back from the first-pass query.  The second pass
+        should populate previous_close and close_price from daily_book.previous_close.
+        """
+        from backend.api.routes.positions import _override_stale_close_from_snapshot
+        from zoneinfo import ZoneInfo
+
+        LAST_PRICE = 197.4
+        FALLBACK_PREV_CLOSE = 214.6
+        QTY = 2
+
+        df = _make_mcx_df(
+            last_price=LAST_PRICE,
+            close_price=0.0,
+            quantity=QTY,
+            overnight_quantity=QTY,
+            symbol="CRUDEOIL26SEP7900PE",
+        )
+
+        ist = ZoneInfo("Asia/Kolkata")
+        midnight = datetime(2026, 8, 31, 0, 0, 0, tzinfo=ist)
+
+        # First pass: no within-window snapshots → returns []
+        mock_result1 = MagicMock()
+        mock_result1.all.return_value = []
+        # Second pass: returns daily_book.previous_close for the symbol
+        mock_result2 = MagicMock()
+        mock_result2.all.return_value = [("ZG0790", "CRUDEOIL26SEP7900PE", FALLBACK_PREV_CLOSE)]
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[mock_result1, mock_result2])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        # Patch settlement_cutoff_for to bypass its internal refresh() DB call,
+        # ensuring mock_session.execute side_effect is consumed only by our queries.
+        with (
+            patch(
+                "backend.api.helpers.exchange_clock.settlement_cutoff_for",
+                AsyncMock(return_value=midnight),
+            ),
+            patch("backend.api.database.async_session", return_value=mock_session),
+        ):
+            asyncio.run(_override_stale_close_from_snapshot(df))
+
+        assert df.at[0, 'previous_close'] == FALLBACK_PREV_CLOSE, (
+            f"second-pass fallback must set previous_close={FALLBACK_PREV_CLOSE}, got {df.at[0, 'previous_close']}"
+        )
+        assert df.at[0, 'close_price'] == FALLBACK_PREV_CLOSE, (
+            f"second-pass fallback must patch close_price={FALLBACK_PREV_CLOSE}, got {df.at[0, 'close_price']}"
+        )
+        # execute called twice: first pass + second pass
+        assert mock_session.execute.call_count == 2, (
+            f"expected 2 execute calls (first-pass + second-pass), got {mock_session.execute.call_count}"
+        )
+        # day_change_val recomputed: overnight qty * (ltp - prev_close)
+        expected_dcv = QTY * (LAST_PRICE - FALLBACK_PREV_CLOSE)
+        assert abs(df.at[0, 'day_change_val'] - expected_dcv) < 0.1, (
+            f"day_change_val should be ~{expected_dcv:.1f}, got {df.at[0, 'day_change_val']}"
+        )
+
+    def test_mcx_option_first_pass_wins_no_second_pass_needed(self):
+        """First-pass finds a within-window snapshot; second-pass must not trigger.
+
+        When the first-pass query returns a valid ltp for the (account, symbol) pair,
+        previous_close is populated and zero_mask.any() is False — the second DB query
+        must not execute.
+        """
+        from backend.api.routes.positions import _override_stale_close_from_snapshot
+        from zoneinfo import ZoneInfo
+
+        LAST_PRICE = 197.4
+        FIRST_PASS_LTP = 220.0
+        QTY = 2
+
+        df = _make_mcx_df(
+            last_price=LAST_PRICE,
+            close_price=180.0,
+            quantity=QTY,
+            overnight_quantity=QTY,
+            symbol="CRUDEOIL26SEP7900PE",
+        )
+
+        ist = ZoneInfo("Asia/Kolkata")
+        midnight = datetime(2026, 8, 31, 0, 0, 0, tzinfo=ist)
+
+        # First pass: returns ltp for the symbol → previous_close set to 220.0
+        mock_result1 = MagicMock()
+        mock_result1.all.return_value = [("ZG0790", "CRUDEOIL26SEP7900PE", FIRST_PASS_LTP, None)]
+        # Second pass should NOT be called; stub with sentinel to detect accidental calls
+        mock_result2 = MagicMock()
+        mock_result2.all.return_value = []
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=[mock_result1, mock_result2])
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "backend.api.helpers.exchange_clock.settlement_cutoff_for",
+                AsyncMock(return_value=midnight),
+            ),
+            patch("backend.api.database.async_session", return_value=mock_session),
+        ):
+            asyncio.run(_override_stale_close_from_snapshot(df))
+
+        assert df.at[0, 'previous_close'] == FIRST_PASS_LTP, (
+            f"first-pass ltp must win; expected previous_close={FIRST_PASS_LTP}, got {df.at[0, 'previous_close']}"
+        )
+        # Second pass must not have been triggered (execute called only once)
+        assert mock_session.execute.call_count == 1, (
+            f"second-pass must not fire when first-pass populated previous_close; "
+            f"got {mock_session.execute.call_count} execute calls"
         )
 
 

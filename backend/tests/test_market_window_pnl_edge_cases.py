@@ -1069,13 +1069,24 @@ class TestPositionsPreviousCloseOverride:
         ):
             asyncio.run(_override_stale_close_from_snapshot(df))
 
-        assert len(captured_sql) == 1
+        # First-pass query + optional second-pass fallback: at least 1 query, at most 2.
+        # (Second pass fires when previous_close stays 0 after the first pass.)
+        assert len(captured_sql) >= 1, "at least one SQL query must execute"
         sql_lower = captured_sql[0].lower()
         assert "coalesce" not in sql_lower, (
-            "SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
+            "First-pass SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
         )
-        assert "ltp" in sql_lower, "SQL must reference daily_book.ltp as ref_close"
-        assert "positions" in sql_lower, "SQL must filter on kind='positions'"
+        assert "ltp" in sql_lower, "First-pass SQL must reference daily_book.ltp as ref_close"
+        assert "positions" in sql_lower, "First-pass SQL must filter on kind='positions'"
+        # If a second-pass query ran, it must use previous_close (not ltp) and no COALESCE.
+        if len(captured_sql) >= 2:
+            sql2_lower = captured_sql[1].lower()
+            assert "coalesce" not in sql2_lower, (
+                "Second-pass SQL must NOT use COALESCE"
+            )
+            assert "previous_close" in sql2_lower, (
+                "Second-pass SQL must read daily_book.previous_close for the MCX option fallback"
+            )
 
     def test_previous_close_per_account_symbol(self):
         """Each (account, symbol) combination gets its own previous_close."""
