@@ -260,7 +260,7 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
  */
 export function mkPrevCol({ RA, numericHdr, numFmt }) {
   return {
-    field: 'close', headerName: 'Close', width: 68, minWidth: 68, maxWidth: 84,
+    field: 'close', headerName: 'P.Close', width: 68, minWidth: 68, maxWidth: 84,
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: `${RA} cell-muted`,
     valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
@@ -512,6 +512,7 @@ export function mkRightColDefs({
       },
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
       headerTooltip: 'Weighted average entry across positions + holdings.' },
+    prevCol,
     { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'day_pnl'),
@@ -522,7 +523,6 @@ export function mkRightColDefs({
       valueGetter: _dayPnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
-    prevCol,
     { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'pnl'),

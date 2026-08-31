@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkRightColDefs, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols } from '../../data/pulseColumns.js';
+import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols } from '../../data/pulseColumns.js';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs — mkRightColDefs requires many column objects and formatters
@@ -304,6 +304,70 @@ describe('mkRightColDefs — pnl_per_share column', () => {
     const fakeP = { data: { pnl_per_share: 50 } };
     col.cellClass(fakeP);
     expect(opts.pnlCellClass).toHaveBeenCalledWith(fakeP, 'pnl_per_share');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P.Close rename + reorder — mkPrevCol headerName and prevCol position
+// ---------------------------------------------------------------------------
+
+describe('mkPrevCol — headerName is P.Close', () => {
+  const col = mkPrevCol({
+    RA: 'ra-cls',
+    numericHdr: 'ag-right-aligned-header',
+    numFmt: ({ value }) => String(value),
+  });
+
+  it('headerName is "P.Close"', () => {
+    expect(col.headerName).toBe('P.Close');
+  });
+
+  it('field is "close"', () => {
+    expect(col.field).toBe('close');
+  });
+
+  it('valueFormatter returns empty string for _isTotal rows', () => {
+    expect(col.valueFormatter({ data: { _isTotal: true }, value: 100 })).toBe('');
+  });
+
+  it('valueFormatter calls numFmt for normal rows', () => {
+    const numFmt = vi.fn(({ value }) => `${value}`);
+    const c = mkPrevCol({ RA: 'ra', numericHdr: 'h', numFmt });
+    c.valueFormatter({ data: {}, value: 250 });
+    expect(numFmt).toHaveBeenCalledWith({ value: 250 });
+  });
+});
+
+describe('mkRightColDefs — prevCol (P.Close) immediately after avg_combined', () => {
+  function getOrderedCols() {
+    return mkRightColDefs(makeOpts());
+  }
+
+  it('prevCol (field "prev") appears immediately after avg_combined', () => {
+    const cols = getOrderedCols();
+    const avgIdx  = cols.findIndex(c => c.colId === 'avg_combined' || c.field === 'avg_combined');
+    const prevIdx = cols.findIndex(c => c.colId === 'prev'         || c.field === 'prev');
+    expect(avgIdx,  'avg_combined column not found').not.toBe(-1);
+    expect(prevIdx, 'prev column not found').not.toBe(-1);
+    expect(prevIdx).toBe(avgIdx + 1);
+  });
+
+  it('prevCol appears BEFORE day_pnl', () => {
+    const cols = getOrderedCols();
+    const prevIdx   = cols.findIndex(c => c.field === 'prev');
+    const dayPnlIdx = cols.findIndex(c => c.field === 'day_pnl');
+    expect(prevIdx,   'prev column not found').not.toBe(-1);
+    expect(dayPnlIdx, 'day_pnl column not found').not.toBe(-1);
+    expect(prevIdx).toBeLessThan(dayPnlIdx);
+  });
+
+  it('prevCol appears BEFORE day_pnl_pct', () => {
+    const cols = getOrderedCols();
+    const prevIdx      = cols.findIndex(c => c.field === 'prev');
+    const dayPnlPctIdx = cols.findIndex(c => c.colId === 'day_pnl_pct');
+    expect(prevIdx,      'prev column not found').not.toBe(-1);
+    expect(dayPnlPctIdx, 'day_pnl_pct column not found').not.toBe(-1);
+    expect(prevIdx).toBeLessThan(dayPnlPctIdx);
   });
 });
 

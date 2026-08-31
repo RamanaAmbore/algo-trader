@@ -337,11 +337,11 @@
       : ''}
     {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <span class="num {displayQty > 0 ? 'cell-pos' : displayQty < 0 ? 'cell-neg' : 'cell-flat'}">{cost != null ? priceFmt(cost) : '—'}</span>
+  <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
   <span class="num tf-cell cand-pnl {_dayPnl == null ? 'cell-flat' : _dayPnl > 0 ? 'cell-pos' : _dayPnl < 0 ? 'cell-neg' : 'cell-flat'} {_dayPnl == null ? '' : flash.classOf(`${_legFlashKey}:day`)}"
         title={_legExp ? 'Day P&L promoted to Exp P&L on expiry day — settlement realized today.' : "Day P&L = today's intraday move × qty"}>
     {_dayPnl == null ? '—' : aggCompact(Number(_dayPnl))}
   </span>
-  <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
   <span class="num tf-cell cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'} {pnl == null ? '' : flash.classOf(`${_legFlashKey}:pnl`)}">
     {pnl == null ? '—' : aggCompact(pnl)}
   </span>

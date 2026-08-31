@@ -1,75 +1,86 @@
-# Plan: Fix pledged holdings — collateral_quantity ignored → quantity=0 hides 56 Kite holdings in Pulse/PositionStrip
+# Plan: Group LTP → Avg → P.Close in sequence and rename Close → P.Close across all grids
 
 ## Context
-Kite returns `quantity=0` for pledged shares and puts the actual count in `collateral_quantity`.
-Our `_enrich_holdings` pipeline uses only `quantity`, so pledged holdings contribute 0 to every
-value column. Live Kite API confirms (queried via RemoteBroker today):
-- ZJ6294: 20/30 holdings pledged (quantity=0, collateral_quantity>0, t1_quantity=0)
-- ZG0790: 36/57 holdings pledged (quantity=0, collateral_quantity>0, t1_quantity=0)
-- 56 total Kite holdings are effectively invisible during market hours
+The Close (previous session close) column is out of sequence in every position/holdings grid — it sits after Day P&L / Day % instead of immediately after Avg. Two changes needed: (1) move Close to be immediately after Avg so LTP → Avg → P.Close are grouped, and (2) rename the header from "Close" to "P.Close" everywhere.
 
-Downstream effects:
-- `inv_val = avg_price × 0 = 0` → no invested value shown in Pulse for pledged rows
-- Frontend `pulseUnified.js:mergeHoldingRows` reads `heldQty = Number(r.quantity) = 0`
-  → `denom = 0` → `avg_combined = null` → shows "—" for avg price in Pulse
-- `PositionStrip._liveHoldingsValue` uses `qty = h.quantity = 0` → slot 2 shows ~16.52L
-  instead of ~1.80C (only non-pledged holdings contribute)
+## Affected pages
+- `/pulse` (public) — MarketPulse right grid
+- `/dashboard` (algo) — MarketPulse right grid (same component as Pulse)
+- `/performance` (public) — holdings grid + positions grid
+- `/admin/derivatives` (algo) — Legs/Exp-close grid (header + data rows) + Snapshot card
 
-**Why DB snapshot looks fine**: `daily_snapshot.py` uses
-`qty = r.get("quantity") or r.get("opening_quantity") or 0`. When `quantity=0` (pledged),
-it falls back to `opening_quantity` which mirrors the full pledge count. Snapshot shows
-correct counts; the live path does not.
+## Files to change
 
-**Not a T+1 issue**: `t1_quantity=0` for all 56 affected rows. Pledged shares are owned
-but locked as margin collateral — Kite separates them into `collateral_quantity` and
-sets `quantity=0` for the free-deliverable count.
+### 1. `frontend/src/lib/data/pulseColumns.js`
 
-## Task
-In `backend/brokers/broker_apis.py:_enrich_holdings`, add a pre-computation step that
-merges `collateral_quantity` (and `t1_quantity` as a belt-and-suspenders for future T+1
-edge cases) into `quantity` so the effective owned share count is used for all downstream
-calculations.
+**`mkPrevCol` factory (~line 261–274):**
+Change `headerName: 'Close'` → `headerName: 'P.Close'`.
+This renames Close in both the MarketPulse left grid (movers/watchlist) and wherever prevCol is used in mkRightColDefs.
 
-Insert just before line 1731 (before `_qty_col_name = _enrich_holdings_qty_col(cols)`):
+**`mkRightColDefs` (~line 503–561):**
+Move `prevCol` from its current position after the `day_pnl_pct` block (line 525) to immediately after the `avg_combined` block (line 514).
 
-```python
-# Merge pledged (collateral_quantity) and unsettled (t1_quantity) shares into
-# effective quantity so holdings locked as margin collateral remain visible.
-# Kite returns quantity=0, collateral_quantity=N for pledged holdings —
-# leaving them separate zeros out inv_val/cur_val and hides them in Pulse.
-if "quantity" in cols:
-    _qty = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).astype(int)
-    if "collateral_quantity" in cols:
-        _qty = _qty + pd.to_numeric(df["collateral_quantity"], errors="coerce").fillna(0).astype(int)
-    if "t1_quantity" in cols:
-        _qty = _qty + pd.to_numeric(df["t1_quantity"], errors="coerce").fillna(0).astype(int)
-    df["quantity"] = _qty
-    cols = set(df.columns)  # refresh after mutate
-```
+Current order: `ltpCol | avg_combined | day_pnl | day_pnl_pct | prevCol | pnl | ...`
+Target order:  `ltpCol | avg_combined | prevCol | day_pnl | day_pnl_pct | pnl | ...`
 
-No frontend changes needed — `h.quantity` picks up the corrected value automatically,
-fixing Pulse `avg_combined` and PositionStrip slot 2 for all pledged holdings.
+### 2. `frontend/src/lib/PerformancePage.svelte`
+
+**`holdingsCols` (~line 562–587):**
+- Change `headerName: 'Close'` → `headerName: 'P.Close'` on the `close_price` row (line 569)
+- Move that row to right after `average_price` (line 564)
+
+Current order: `last_price | average_price | day_change_val | day_change_percentage | pnl | pnl_percentage | close_price | ...`
+Target order:  `last_price | average_price | close_price | day_change_val | day_change_percentage | pnl | pnl_percentage | ...`
+
+**`positionsCols` (~line 698–720):**
+- Change `headerName: 'Close'` → `headerName: 'P.Close'` on the `close_price` row (line 704)
+- Move that row to right after `average_price` (line 699)
+
+Same reorder as holdingsCols.
+
+### 3. `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+
+**Legs/Exp-close grid header (~line 4534–4544):**
+- Rename `<span class="num">Close</span>` → `<span class="num">P.Close</span>` (line 4540)
+- Move that `<span>` from after Day P&L (line 4540) to right after the Avg `<span>` (line 4535)
+
+Current header: `... | LTP | Avg | Day P&L | Close | P&L | ...`
+Target header:  `... | LTP | Avg | P.Close | Day P&L | P&L | ...`
+
+**Snapshot card header (~line 4780):**
+- Rename `<span class="num" title="...">Close</span>` → `P.Close` (keep title attribute)
+- No reorder needed (no Avg column in Snapshot)
+
+### 4. `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+
+**Data cells (~line 331–347):**
+Move the prev_close cell (line 344: `{c.prev_close != null ? priceFmt(c.prev_close) : '—'}`)
+from after the Day P&L cell (line 340–343) to right after the Avg/cost cell (line 339).
+
+Current cell order: `LTP (331) | Avg (339) | Day P&L (340–343) | Close (344) | P&L (345) | ...`
+Target cell order:  `LTP (331) | Avg (339) | Close (344) | Day P&L (340–343) | P&L (345) | ...`
 
 ## Agents
 - backend: skip
-- frontend: skip
-- broker: In `backend/brokers/broker_apis.py:_enrich_holdings` (line ~1726), add the
-  collateral+t1 merge block shown in the Task section BEFORE the `_qty_col_name`
-  derivation at line 1731. No other files need changing. For every file you change or
-  create, you MUST write or update at least one test covering the changed behaviour.
+- frontend: Make the column reorder (LTP → Avg → P.Close) and header rename (Close → P.Close) in all four files listed above. Pure ordering + string changes — no logic changes. For every file you change, you MUST write or update at least one Vitest test covering the column order and header name.
+- broker: skip
 - doc: skip
 - backend-test: skip
 - playwright: skip
 
 ## Tests
-- pytest: yes
-- svelte-check: no
+- pytest: no
+- svelte-check: yes
 - playwright: no
 
 ## Commit message
-fix(holdings): merge collateral_quantity into quantity so pledged Kite holdings show inv_val, cur_val, and avg_price in Pulse/PositionStrip
+fix(ui): group LTP → Avg → P.Close in sequence and rename Close to P.Close across all position, holdings, and derivatives grids
 
 ## Done when
-- `backend/brokers/broker_apis.py:_enrich_holdings` merges collateral_quantity (and t1_quantity) into quantity before inv_val/cur_val
-- Test asserts a pledged holding (qty=0, collateral_qty=N, t1_qty=0) produces correct inv_val and non-null effective quantity
-- `venv/bin/pytest backend/tests/ -q` passes
+- `mkPrevCol` in pulseColumns.js has `headerName: 'P.Close'`
+- `mkRightColDefs` has prevCol immediately after avg_combined
+- `PerformancePage` holdingsCols and positionsCols have `headerName: 'P.Close'` and close_price immediately after average_price
+- Derivatives Legs header has `P.Close` immediately after `Avg`
+- `CandidateLegRow` prev_close cell is immediately after the Avg/cost cell
+- Derivatives Snapshot header has `P.Close`
+- `npx svelte-check` passes with 0 errors

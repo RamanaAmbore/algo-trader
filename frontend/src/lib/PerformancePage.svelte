@@ -562,11 +562,11 @@
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 132, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _symWithChartRenderer },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgClsWithDir },
+    { field: 'close_price',           headerName: 'P.Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'close_price',           headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
     // Lots — qty in F&O lot units. Holdings on F&O underlyings use
     // the underlying lot; option / futures positions use the contract
@@ -697,11 +697,11 @@
     positionsSymbolCol,
     { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgClsWithDir },
+    { field: 'close_price',          headerName: 'P.Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'close_price',          headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
     // Lots — option / futures positions use the contract's own lot;
     // cash equity + other non-derivative positions read 0. Shared
