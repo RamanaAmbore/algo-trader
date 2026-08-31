@@ -29,9 +29,13 @@ Code, tests, and documentation must stay in sync with this file.
 7.3.4 [Weekend Guard for Filtered Holdings & Positions](#734-weekend-guard-for-filtered-holdings--positions-aug-2026)
 7.3.5 [Holdings Data Freshness & SSOT Fetch TTL](#735-holdings-data-freshness--ssot-fetch-ttl-aug-2026)
 7.3.6 [Firm NAV Computation & Closed-Exchange LTP Overlay](#736-firm-nav-computation--closed-exchange-ltp-overlay)
-7.3.7 [Holdings Day P&L Recompute & Backstop Exclusion](#737-holdings-day-pnl-recompute--backstop-exclusion-aug-2026)
-7.3.8 [Holdings LTP Override & pnl+cur_val Consistency](#738-holdings-ltp-override--pnlcur_val-consistency-aug-2026)
-7.3.9 [Holdings Snapshot Day Change Percentage Formula](#739-holdings-snapshot-day-change-percentage-formula)
+7.3.9 [`close_price` Always Synced to `ref_close`](#739-close_price-always-synced-to-ref_close-aug-2026)
+7.3.10 [Holdings Day P&L Recompute & Backstop Exclusion](#7310-holdings-day-pnl-recompute--backstop-exclusion-aug-2026)
+7.3.11 [Holdings LTP Override & pnl+cur_val Consistency](#7311-holdings-ltp-override--pnlcur_val-consistency-aug-2026)
+7.3.11a [Holdings Collateral Quantity Merge](#7311a-holdings-collateral-quantity-merge-aug-2026)
+7.3.12 [Universal Day P&L Formula in Snapshot](#7312-universal-day-pnl-formula-in-snapshot-aug-2026)
+7.3.13 [Positions P&L Unification — `pnl + realised`](#7313-positions-pnl-unification--pnl--realised-aug-2026)
+7.3.14 [Holdings Snapshot Day Change Percentage Formula](#7314-holdings-snapshot-day-change-percentage-formula)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
@@ -1095,7 +1099,41 @@ NavStrip H slot would show stale values until the next refresh.
 
 ---
 
-## 7.3.11 Universal Day P&L Formula in Snapshot (Aug 2026)
+## 7.3.11a Holdings Collateral Quantity Merge (Aug 2026)
+
+**File**: `backend/brokers/broker_apis.py` — `_enrich_holdings()`
+
+Kite returns pledged holdings with `quantity=0, collateral_quantity=N` where `N` is
+the count of shares pledged as margin collateral. Without a merge step, these holdings
+were invisible: `quantity=0` caused `inv_val=0`, `cur_val=0`, and `avg_price="—"`.
+This made pledged positions disappear from the Pulse market-data grid and PositionStrip
+holdings card during market hours.
+
+**Fix (Aug 2026)**: `_enrich_holdings()` now merges `collateral_quantity + t1_quantity`
+into `quantity` as a pre-step before computing derived metrics:
+
+```python
+# Before any inv_val / cur_val / avg_combined computation:
+df['quantity'] = df['quantity'] + df.get('collateral_quantity', 0) + df.get('t1_quantity', 0)
+```
+
+This ensures all downstream calculations (cost basis, market value, P&L) see the
+effective owned count (current + pledged + T+1 settlement).
+
+**Broker-specific behavior**:
+
+- **Kite**: Populates `collateral_quantity` for pledged shares; merge is essential
+- **Dhan**: Does not use `collateral_quantity` field; merge is a no-op
+- **Groww**: Does not use `collateral_quantity` field; merge is a no-op
+
+**Impact**: Pledged holdings (56 across two test accounts) now display correctly in
+Pulse and PositionStrip with accurate cost basis (`avg_price`), current market value
+(`cur_val`), and invested value (`inv_val`) during market hours. NavStrip holdings
+totals now include pledged shares in the aggregate position count.
+
+---
+
+## 7.3.12 Universal Day P&L Formula in Snapshot (Aug 2026)
 
 **File**: `backend/api/routes/positions_helpers.py` — `build_row_from_snapshot_raw()`
 
@@ -1128,7 +1166,7 @@ displays.
 
 ---
 
-## 7.3.11a Positions P&L Unification — `pnl + realised` (Aug 2026)
+## 7.3.13 Positions P&L Unification — `pnl + realised` (Aug 2026)
 
 **File**: `backend/brokers/broker_apis.py` — `_enrich_positions()`
 
@@ -1161,11 +1199,11 @@ closed-hours position reconstruction via the universal day P&L formula.
 
 **Impact**: The `total_pnl` stored in `daily_book` snapshots now accurately reflects
 the position's total P&L across all brokers, enabling consistent day P&L calculations
-in the snapshot path (section 7.3.11).
+in the snapshot path (section 7.3.12).
 
 ---
 
-## 7.3.12 Holdings Snapshot Day Change Percentage Formula
+## 7.3.14 Holdings Snapshot Day Change Percentage Formula
 
 **File**: `backend/api/routes/holdings.py` — `_build_holding_row_from_snapshot()`
 
@@ -2809,3 +2847,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-30 | v1.26 Consolidated morning task schedule (backend implementation): Merged three separate morning events (04:00 holiday refresh, 05:45 Kite token pre-warm, 06:00 hard expiry) into a single 05:30 IST `_task_holiday_refresh()` combined task covering: (1) open-time loading from `exchange_schedule`, (2) NSE API holiday calendar refresh (retries until 08:00 if slow), (3) best-effort proactive token refresh for all brokers (Kite TOTP auto-login, Dhan RenewToken API, Groww session refresh). Token refresh failures logged as warnings only; `@retry_kite_conn` decorator provides automatic recovery on next API call. Skipped under `RAMBOQ_USE_CONN_SERVICE=1`. Updated §7.3.10 Market-open time loading section with new 05:30 lifecycle, updated §9.2 Token Pre-Warm Task title to "Morning Token Refresh — Consolidated 05:30 Task" and restructured content to reflect unified schedule. Updated Token Refresh Delegation to Conn-Service subsection in §9.1 Background Task Supervisor. |
 | 2026-08-30 | v1.27 MCX name normalization in instruments & options endpoints (commit TBD): Added §9.3 Instruments & Options Endpoints — MCX Name Normalization documenting two fixes: (1) `_build_expiries_index()` in instruments.py line 201 normalizes MCX underlying names by stripping spaces (`key = inst.u.upper().replace(" ", "")`) so the expiry cache key matches spaceless form frontend sends (e.g., "CRUDE OIL" → "CRUDEOIL"), (2) `_chain_quotes_build_sym_map()` in options.py line 2172 applies same normalization in comparison (`if (inst.u or "").upper().replace(" ", "") != und`). Diagnostic log `[expiries-index] normalized MCX spaced names: ...` emitted per reload. Impact: option chain expiry dropdown and strike-by-strike quotes now work correctly for MCX commodities (CRUDEOIL, NATURALGAS, GOLD, SILVER, etc.) without manual workaround. |
 | 2026-08-30 | v1.28 Token Refresh Lifecycle (documentation): Added §5.4 Token Refresh Lifecycle documenting Kite 23-hour vendor TTL, daily 05:30 pre-warm cycle via `_task_holiday_refresh()` with 30-minute retry loop (until 08:00), per-broker validation calls (Kite profile(), Dhan session check, Groww session refresh), token cache at `.log/kite_tokens.json`, cross-process login flock serialisation, per-call validation via lightweight profile() call, and example 90-minute headroom window before expiry (07:00 D+1). Clarifies timing invariants and retry semantics for token lifecycle management. |
+| 2026-08-31 | v1.29 Holdings collateral_quantity merge fix (commit TBD): Added §7.3.11a Holdings Collateral Quantity Merge documenting `_enrich_holdings()` now merges `collateral_quantity + t1_quantity` into `quantity` as a pre-step before computing `inv_val`, `cur_val`, and `avg_combined`. Kite returns `quantity=0, collateral_quantity=N` for shares pledged as margin collateral; without merge, 56 holdings across two accounts were invisible (quantity=0, inv_val=0, avg_price="—") in Pulse and PositionStrip. Merge is a no-op for Dhan/Groww (those adapters do not populate `collateral_quantity` field). Ensures pledged holdings display correctly during market hours with accurate cost basis and current values. |
