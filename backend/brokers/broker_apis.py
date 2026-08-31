@@ -1725,6 +1725,19 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     """
     cols = set(df.columns)
 
+    # Merge pledged (collateral_quantity) and unsettled (t1_quantity) shares into
+    # effective quantity so holdings locked as margin collateral remain visible.
+    # Kite returns quantity=0, collateral_quantity=N for pledged holdings —
+    # leaving them separate zeros out inv_val/cur_val and hides them in Pulse.
+    if "quantity" in cols:
+        _qty = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).astype(int)
+        if "collateral_quantity" in cols:
+            _qty = _qty + pd.to_numeric(df["collateral_quantity"], errors="coerce").fillna(0).astype(int)
+        if "t1_quantity" in cols:
+            _qty = _qty + pd.to_numeric(df["t1_quantity"], errors="coerce").fillna(0).astype(int)
+        df["quantity"] = _qty
+        cols = set(df.columns)  # refresh after mutate
+
     # ── inv_val = avg × qty (remaining shares, not opening_quantity) ──
     # Use `quantity` (remaining after partial sells) for all value/P&L
     # computations. `opening_quantity` is kept as a display-only field.

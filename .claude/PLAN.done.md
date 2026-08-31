@@ -1,82 +1,65 @@
-# Plan: Fix chain expiry index — key by tradingsymbol prefix (virtual root)
+# Plan: Fix pledged holdings — collateral_quantity ignored → quantity=0 hides 56 Kite holdings in Pulse/PositionStrip
 
 ## Context
-The chain tab still hangs because the expiry index is keyed by `inst.u` (Kite's `name` field),
-which may differ from what the frontend sends. The frontend derives the underlying by stripping
-digits from the tradingsymbol: `"CRUDEOILM26SEP7600PE".replace(/\d.*$/, '')` → `"CRUDEOILM"`.
-But Kite's `name` field for CRUDEOILM options is `"CRUDE OIL M"` (spaces, different token).
-Space-normalization ("CRUDE OIL M" → "CRUDEOILM") is fragile — it doesn't handle all variants
-and the fast-path still returns `[]` silently when any key is missing instead of falling back.
+Kite returns `quantity=0` for pledged shares and puts the actual count in `collateral_quantity`.
+Our `_enrich_holdings` pipeline uses only `quantity`, so pledged holdings contribute 0 to every
+value column. Live Kite API confirms (queried via RemoteBroker today):
+- ZJ6294: 20/30 holdings pledged (quantity=0, collateral_quantity>0, t1_quantity=0)
+- ZG0790: 36/57 holdings pledged (quantity=0, collateral_quantity>0, t1_quantity=0)
+- 56 total Kite holdings are effectively invisible during market hours
 
-## Fix — two changes
+Downstream effects:
+- `inv_val = avg_price × 0 = 0` → no invested value shown in Pulse for pledged rows
+- Frontend `pulseUnified.js:mergeHoldingRows` reads `heldQty = Number(r.quantity) = 0`
+  → `denom = 0` → `avg_combined = null` → shows "—" for avg price in Pulse
+- `PositionStrip._liveHoldingsValue` uses `qty = h.quantity = 0` → slot 2 shows ~16.52L
+  instead of ~1.80C (only non-pledged holdings contribute)
 
-### 1. Key expiry index by tradingsymbol prefix everywhere
+**Why DB snapshot looks fine**: `daily_snapshot.py` uses
+`qty = r.get("quantity") or r.get("opening_quantity") or 0`. When `quantity=0` (pledged),
+it falls back to `opening_quantity` which mirrors the full pledge count. Snapshot shows
+correct counts; the live path does not.
 
-Replace the `inst.u`-based key with `re.sub(r'\d.*', '', inst.s)` — mirrors the frontend's
-`.replace(/\d.*$/, '')`. Works for all variants automatically:
+**Not a T+1 issue**: `t1_quantity=0` for all 56 affected rows. Pledged shares are owned
+but locked as margin collateral — Kite separates them into `collateral_quantity` and
+sets `quantity=0` for the free-deliverable count.
 
-| Tradingsymbol | Frontend key (strip digits) | Old key (inst.u, broken) |
-|---------------|----------------------------|--------------------------|
-| CRUDEOIL26SEP7600PE | CRUDEOIL | "CRUDE OIL" |
-| CRUDEOILM26SEP7600PE | CRUDEOILM | "CRUDE OIL M" |
-| NATURALGAS26SEP400CE | NATURALGAS | "NATURAL GAS" |
-| GOLD26DEC75000CE | GOLD | "GOLD" |
-| NIFTY26MAR22500CE | NIFTY | "NIFTY" |
-| BANKNIFTY26MAR50000CE | BANKNIFTY | "BANKNIFTY" |
+## Task
+In `backend/brokers/broker_apis.py:_enrich_holdings`, add a pre-computation step that
+merges `collateral_quantity` (and `t1_quantity` as a belt-and-suspenders for future T+1
+edge cases) into `quantity` so the effective owned share count is used for all downstream
+calculations.
 
-**`_build_expiries_index`** in `backend/api/routes/instruments.py`:
-```python
-import re as _re
-def _build_expiries_index(items):
-    idx: dict[str, set[str]] = {}
-    for inst in items:
-        if inst.t not in ("CE", "PE") or not inst.x:
-            continue
-        key = _re.sub(r'\d.*', '', inst.s)   # strip digits + suffix, matches frontend
-        if key:
-            idx.setdefault(key, set()).add(inst.x)
-    return {u: sorted(xs) for u, xs in idx.items()}
-```
-Remove the old MCX space-normalization diagnostic log block — no longer needed.
-
-**`_chain_quotes_build_sym_map`** in `backend/api/routes/options.py`:
-Same pattern — when building the sym-map, key by `re.sub(r'\d.*', '', inst.s)` for the
-underlying dimension, so it matches the expiry index. The existing `inst.u` filter can be
-dropped entirely for this purpose; CE/PE rows are already filtered by `inst.t`.
-
-### 2. Fast-path guard — fall through when key not in index
+Insert just before line 1731 (before `_qty_col_name = _enrich_holdings_qty_col(cols)`):
 
 ```python
-# BEFORE (buggy — returns [] when und not in index)
-if _exp_index is not None:
-    _expiries = _exp_index.get(und, [])
-    return ChainQuotesResponse(expiries=_expiries)   # silent empty, no fallback
-
-# AFTER — only short-circuit when key actually found
-if _exp_index is not None and und in _exp_index:
-    return ChainQuotesResponse(expiries=_exp_index[und])
-# else: fall through to slow-path _chain_quotes_sym_lookup
+# Merge pledged (collateral_quantity) and unsettled (t1_quantity) shares into
+# effective quantity so holdings locked as margin collateral remain visible.
+# Kite returns quantity=0, collateral_quantity=N for pledged holdings —
+# leaving them separate zeros out inv_val/cur_val and hides them in Pulse.
+if "quantity" in cols:
+    _qty = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).astype(int)
+    if "collateral_quantity" in cols:
+        _qty = _qty + pd.to_numeric(df["collateral_quantity"], errors="coerce").fillna(0).astype(int)
+    if "t1_quantity" in cols:
+        _qty = _qty + pd.to_numeric(df["t1_quantity"], errors="coerce").fillna(0).astype(int)
+    df["quantity"] = _qty
+    cols = set(df.columns)  # refresh after mutate
 ```
 
-Also remove the `[chain-expiry-fast-path]` debug `logger.info` added earlier — log noise.
-
-## Files to change
-- `backend/api/routes/instruments.py` — `_build_expiries_index`: key by `re.sub(r'\d.*', '', inst.s)`; remove old MCX space-normalization block and diagnostic log
-- `backend/api/routes/options.py` — `_chain_quotes_build_sym_map`: use same tradingsymbol-prefix key; fast-path guard: `and und in _exp_index`
-- `backend/tests/test_chain_quotes.py` — update existing MCX tests to use tradingsymbol-prefix keying; add test: fast-path key-miss falls through to slow-path
+No frontend changes needed — `h.quantity` picks up the corrected value automatically,
+fixing Pulse `avg_combined` and PositionStrip slot 2 for all pledged holdings.
 
 ## Agents
-- backend: Apply both changes above. In `instruments.py`: replace `_build_expiries_index` body
-  with the `re.sub(r'\d.*', '', inst.s)` approach; remove the old `raw_u`/space-normalization
-  block and the `[expiries-index] normalized MCX spaced names` logger.info. In `options.py`:
-  update `_chain_quotes_build_sym_map` to key by tradingsymbol prefix; change the fast-path
-  guard to `if _exp_index is not None and und in _exp_index:` with direct `_exp_index[und]`;
-  remove the `[chain-expiry-fast-path]` logger.info debug line.
-- backend-test: In `test_chain_quotes.py` update MCX tests that checked for space-normalized
-  keys — they should now check for tradingsymbol-prefix keys (e.g., `"CRUDEOILM"` from
-  `"CRUDEOILM26SEP7600PE"`, not from `inst.u`). Add one test: mock `_cache_peek` to return an
-  index without the requested key → verify slow-path is called. Add one test: index has key →
-  verify fast-path fires and slow-path is NOT called.
+- backend: skip
+- frontend: skip
+- broker: In `backend/brokers/broker_apis.py:_enrich_holdings` (line ~1726), add the
+  collateral+t1 merge block shown in the Task section BEFORE the `_qty_col_name`
+  derivation at line 1731. No other files need changing. For every file you change or
+  create, you MUST write or update at least one test covering the changed behaviour.
+- doc: skip
+- backend-test: skip
+- playwright: skip
 
 ## Tests
 - pytest: yes
@@ -84,9 +67,9 @@ Also remove the `[chain-expiry-fast-path]` debug `logger.info` added earlier —
 - playwright: no
 
 ## Commit message
-fix(chain): key expiry index by tradingsymbol prefix (virtual root) — covers all MCX variants + fix fast-path fallback
+fix(holdings): merge collateral_quantity into quantity so pledged Kite holdings show inv_val, cur_val, and avg_price in Pulse/PositionStrip
 
 ## Done when
-- CRUDEOIL, CRUDEOILM, NATURALGAS, GOLD, GOLDM, NIFTY expiry pickers all load within 1s
-- Fast-path key-miss falls through to slow-path (no silent empty response)
-- pytest green
+- `backend/brokers/broker_apis.py:_enrich_holdings` merges collateral_quantity (and t1_quantity) into quantity before inv_val/cur_val
+- Test asserts a pledged holding (qty=0, collateral_qty=N, t1_qty=0) produces correct inv_val and non-null effective quantity
+- `venv/bin/pytest backend/tests/ -q` passes
