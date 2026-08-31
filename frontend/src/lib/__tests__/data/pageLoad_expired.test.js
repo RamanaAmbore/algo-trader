@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { buildCandidatePositions, buildCleanLegs } from '$lib/derivatives/pageLoad.js';
+import { buildCandidatePositions, buildCleanLegs, buildPositionRowFromBroker, buildHoldingRowFromBroker } from '$lib/derivatives/pageLoad.js';
 
 // Pin todayIST to a fixed date so tests are not flaky across calendar days.
 vi.mock('$lib/dateFormat.js', () => ({
@@ -227,5 +227,95 @@ describe('buildCleanLegs — expired-leg safety-net filter', () => {
     const result = buildCleanLegs(legs, getInst);
     expect(result).toHaveLength(1);
     expect(result[0].symbol).toBe('IDFCFIRSTB26AUG500CE');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildPositionRowFromBroker — prev_close field priority
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('buildPositionRowFromBroker — prev_close uses previous_close over close_price', () => {
+  it('uses previous_close when close_price is 0 (stale overnight)', () => {
+    const row = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25SEP24000CE',
+      previous_close: 500,
+      close_price: 0,
+      quantity: 50,
+      account: 'ZG0790',
+    }, 'live');
+    expect(row.prev_close).toBe(500);
+  });
+
+  it('falls back to close_price when previous_close is 0 or absent', () => {
+    const row = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25SEP24000CE',
+      previous_close: 0,
+      close_price: 300,
+      quantity: 50,
+      account: 'ZG0790',
+    }, 'live');
+    expect(row.prev_close).toBe(300);
+  });
+
+  it('previous_close wins when both fields are non-zero', () => {
+    const row = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25SEP24000CE',
+      previous_close: 500,
+      close_price: 300,
+      quantity: 50,
+      account: 'ZG0790',
+    }, 'live');
+    expect(row.prev_close).toBe(500);
+  });
+
+  it('returns null when both previous_close and close_price are absent', () => {
+    const row = buildPositionRowFromBroker({
+      tradingsymbol: 'NIFTY25SEP24000CE',
+      quantity: 50,
+      account: 'ZG0790',
+    }, 'live');
+    expect(row.prev_close).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildHoldingRowFromBroker — prev_close field priority
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('buildHoldingRowFromBroker — prev_close uses previous_close over close_price', () => {
+  it('uses previous_close when close_price is 0 (stale overnight)', () => {
+    const row = buildHoldingRowFromBroker({
+      tradingsymbol: 'RELIANCE',
+      previous_close: 500,
+      close_price: 0,
+      quantity: 10,
+      opening_quantity: 10,
+      account: 'ZG0790',
+    });
+    expect(row.prev_close).toBe(500);
+  });
+
+  it('falls back to close_price when previous_close is 0 or absent', () => {
+    const row = buildHoldingRowFromBroker({
+      tradingsymbol: 'RELIANCE',
+      previous_close: 0,
+      close_price: 300,
+      quantity: 10,
+      opening_quantity: 10,
+      account: 'ZG0790',
+    });
+    expect(row.prev_close).toBe(300);
+  });
+
+  it('previous_close wins when both fields are non-zero', () => {
+    const row = buildHoldingRowFromBroker({
+      tradingsymbol: 'RELIANCE',
+      previous_close: 500,
+      close_price: 300,
+      quantity: 10,
+      opening_quantity: 10,
+      account: 'ZG0790',
+    });
+    expect(row.prev_close).toBe(500);
   });
 });
