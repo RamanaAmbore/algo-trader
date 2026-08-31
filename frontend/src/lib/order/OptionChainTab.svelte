@@ -387,6 +387,7 @@
 
   $effect(() => {
     void chainUnderlying;
+    void chainExpiries; // force tracking — array is assigned async, short-circuit would miss it
     if (chainExpiries.length && !chainExpiries.includes(chainExpiry)) {
       // Prefer the seed contract's own expiry if it's in the list —
       // operator clicked a specific position (e.g. NIFTY26MAY22000CE)
