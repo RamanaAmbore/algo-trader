@@ -506,10 +506,14 @@ class TestSourceIntegrity:
         assert row.previous_close == 0.0, "Default must be 0.0"
 
     def test_positions_route_uses_ltp_not_coalesce(self):
-        """_override_stale_close_from_snapshot in positions.py must use daily_book.ltp directly.
+        """Positions close-override path must use daily_book.ltp directly (not COALESCE).
 
         The COALESCE(daily_book.previous_close, ltp) was the bug — previous_close is
         populated from Kite's stale BHAV-copy API. Fix: daily_book.ltp as ref_close.
+
+        After the CC refactor the SQL lives in _fetch_snapshot_close_map; the test
+        checks that helper for the SQL invariant and confirms the orchestrator
+        _override_stale_close_from_snapshot still exists in the same file.
         """
         import re
         from pathlib import Path
@@ -517,17 +521,25 @@ class TestSourceIntegrity:
         pos_src = Path(__file__).parent.parent / "api" / "routes" / "positions.py"
         src_text = pos_src.read_text(encoding="utf-8")
 
-        # Find the SQL block inside _override_stale_close_from_snapshot
-        fn_match = re.search(
-            r'async def _override_stale_close_from_snapshot(.*?)(?=\nasync def |\ndef |\Z)',
+        # Orchestrator must still exist.
+        assert re.search(
+            r'async def _override_stale_close_from_snapshot',
+            src_text,
+        ), "Function _override_stale_close_from_snapshot not found in positions.py"
+
+        # SQL invariant lives in the extracted helper _fetch_snapshot_close_map.
+        helper_match = re.search(
+            r'async def _fetch_snapshot_close_map(.*?)(?=\nasync def |\ndef |\Z)',
             src_text, re.DOTALL
         )
-        assert fn_match, "Function _override_stale_close_from_snapshot not found in positions.py"
-        fn_text = fn_match.group(1)
+        assert helper_match, "_fetch_snapshot_close_map not found in positions.py"
+        helper_text = helper_match.group(1)
 
-        # SQL uses triple-quoted string inside _sql_text("""...""")
-        sql_match = re.search(r'_sql_text\("""(.*?)"""', fn_text, re.DOTALL)
-        sql_literal = sql_match.group(1) if sql_match else fn_text
+        # Find the SQL literal inside _sql_text("""...""").
+        sql_match = re.search(r'_sql_text\("""(.*?)"""', helper_text, re.DOTALL)
+        assert sql_match, "_fetch_snapshot_close_map must contain a _sql_text(\"\"\"...\"\"\") block"
+        sql_literal = sql_match.group(1)
+
         assert "COALESCE" not in sql_literal.upper(), (
             "SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
         )

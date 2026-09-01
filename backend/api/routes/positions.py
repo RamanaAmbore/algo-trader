@@ -910,47 +910,23 @@ def _dict_to_position_row(r: dict) -> "PositionRow":
     return PositionRow(**{k: (v if v is not None or k in _NULLABLE_COLS else 0) for k, v in r.items()})
 
 
-async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
-    """Replace `close_price` with the most-recent daily_book snapshot LTP
-    per (account, tradingsymbol). When found, recomputes the decomposed
-    day_change_val so the row reflects the actual move since the prior
-    session's authoritative close.
+async def _fetch_snapshot_close_map(
+    raw: pd.DataFrame,
+    cutoff,
+) -> tuple[dict, dict]:
+    """Query daily_book for the most-recent settlement LTP per (account, symbol).
 
-    Uses `daily_book.ltp` directly (not COALESCE with `previous_close`).
-    `previous_close` is populated from Kite's stale BHAV-copy API and is
-    unreliable during the overnight window — it always passes the epsilon
-    check, meaning `close_price` would never be patched. `daily_book.ltp`
-    is the actual settlement LTP captured at session end and is the
-    canonical prior-session reference price.
+    Uses a 7-day lookback window anchored at *cutoff* (the last 08:00 IST
+    boundary).  Both NSE (~15:45) and MCX (~00:15) settlement snapshots fall
+    within this window.
 
-    Only triggers when the snapshot LTP differs from Kite's reported
-    close_price by more than a tiny epsilon — rows where Kite is already
-    current pass through unchanged."""
-    if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
-        return
-
-    # Initialise previous_close column unconditionally so the column always
-    # exists even when no DB rows match or the query raises.
-    raw['previous_close'] = 0.0
-
-    # Pull the latest snapshot per (account, symbol) — DISTINCT ON keeps
-    # only the most recent row, regardless of which date label the
-    # snapshot daemon used (00:09 IST captures end up labelled with the
-    # NEXT session's date; 23:52 IST captures end up labelled with the
-    # CURRENT session's date — both represent the same prior-session EOD).
+    Returns ``(snapshot_map, prev_pnl_map)`` where both are
+    ``dict[tuple[str, str], float]`` keyed by ``(account, tradingsymbol)``.
+    On any DB error logs a warning and returns ``({}, {})``.
+    """
     from datetime import timedelta
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
-
-    if not (raw["account"].notna() & raw["tradingsymbol"].notna()).any():
-        return
-
-    # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).
-    # Use NON-MCX gate; MCX gate has the same reset time (08:00 IST) so one
-    # cutoff covers all exchanges.  Both daily_book snapshots (NSE ~15:45 and
-    # MCX ~00:15) fall before the 08:00 boundary and are included by this query.
-    from backend.api.helpers.exchange_clock import settlement_cutoff_for
-    today_ist_cutoff = await settlement_cutoff_for("NON-MCX")
 
     snapshot_map: dict[tuple[str, str], float] = {}
     prev_pnl_map: dict[tuple[str, str], float] = {}
@@ -966,8 +942,8 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
                   AND captured_at < :today_open
                 ORDER BY account, symbol, captured_at DESC
             """), {
-                "lower_cutoff": today_ist_cutoff - timedelta(days=7),
-                "today_open": today_ist_cutoff,
+                "lower_cutoff": cutoff - timedelta(days=7),
+                "today_open": cutoff,
             })
             for account, symbol, ref_close, total_pnl in result.all():
                 key = (str(account), str(symbol))
@@ -976,11 +952,25 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
                     prev_pnl_map[key] = float(total_pnl)
     except Exception as e:
         logger.warning(f"daily_book close-override query failed: {e}")
-        return
+        return {}, {}
+    return snapshot_map, prev_pnl_map
 
-    # Apply override row-by-row. Use a small epsilon (0.005) so we only
-    # patch when the values meaningfully diverge — protects against
-    # rounding noise between Kite's float repr and snapshot storage.
+
+def _patch_close_from_snapshot_map(
+    raw: pd.DataFrame,
+    snapshot_map: dict,
+) -> list:
+    """Apply snapshot LTP values to ``raw`` row-by-row.
+
+    For every row matched in *snapshot_map*:
+    - Sets ``previous_close`` unconditionally (the frozen prior-session
+      settlement price consumed by the frontend formula).
+    - Replaces ``close_price`` only when the snapshot LTP diverges from
+      Kite's value by more than a tiny epsilon (0.005) — protects against
+      rounding noise.
+
+    Returns the list of indices where ``close_price`` was actually patched.
+    """
     patched_idx: list = []
     for idx in raw.index:
         key = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
@@ -999,43 +989,95 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
             continue
         raw.at[idx, 'close_price'] = snap_ltp
         patched_idx.append(idx)
+    return patched_idx
 
-    # Second-pass fallback for rows whose previous_close is still 0 after the
-    # first pass.  MCX option snapshots are captured DURING the MCX evening
-    # session (after 18:30 UTC), which is AFTER the 08:00 IST cutoff used by
-    # the first-pass query, so they never match it.  However, those same
-    # daily_book rows carry a valid `previous_close` column (the prior-session
-    # settlement price written by the broker adapter at snapshot time).  This
-    # second pass fetches that value directly.
+
+async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
+    """Fallback for rows whose ``previous_close`` is still 0 after the first pass.
+
+    MCX option snapshots are captured DURING the MCX evening session (after
+    18:30 UTC), which is AFTER the 08:00 IST cutoff used by the first-pass
+    query, so they never match it.  Those daily_book rows carry a valid
+    ``previous_close`` column (prior-session settlement price written by the
+    broker adapter at snapshot time).  This pass fetches that value directly.
+
+    Only fires when at least one row still has ``previous_close == 0.0``.
+    Returns the list of indices patched.  On any DB error logs a warning and
+    returns ``[]``.
+    """
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+
     patched_idx2: list = []
     zero_mask = raw['previous_close'] == 0.0
-    if zero_mask.any():
-        zero_indices = raw.index[zero_mask].tolist()
-        syms_needing_fallback = list({str(raw.at[i, 'tradingsymbol']) for i in zero_indices})
-        try:
-            async with async_session() as session:
-                result2 = await session.execute(_sql_text("""
-                    SELECT DISTINCT ON (account, symbol) account, symbol, previous_close
-                    FROM daily_book
-                    WHERE kind = 'positions'
-                      AND previous_close IS NOT NULL AND previous_close > 0
-                      AND symbol = ANY(:syms)
-                    ORDER BY account, symbol, captured_at DESC
-                """), {"syms": syms_needing_fallback})
-                fallback_map: dict[tuple[str, str], float] = {
-                    (str(acc), str(sym)): float(pc)
-                    for acc, sym, pc in result2.all()
-                }
-            for idx in zero_indices:
-                key2 = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
-                fallback_close = fallback_map.get(key2)
-                if fallback_close is None:
-                    continue
-                raw.at[idx, 'previous_close'] = fallback_close
-                raw.at[idx, 'close_price'] = fallback_close
-                patched_idx2.append(idx)
-        except Exception as e:
-            logger.warning(f"positions: close-override second-pass query failed: {e}")
+    if not zero_mask.any():
+        return patched_idx2
+
+    zero_indices = raw.index[zero_mask].tolist()
+    syms_needing_fallback = list({str(raw.at[i, 'tradingsymbol']) for i in zero_indices})
+    try:
+        async with async_session() as session:
+            result2 = await session.execute(_sql_text("""
+                SELECT DISTINCT ON (account, symbol) account, symbol, previous_close
+                FROM daily_book
+                WHERE kind = 'positions'
+                  AND previous_close IS NOT NULL AND previous_close > 0
+                  AND symbol = ANY(:syms)
+                ORDER BY account, symbol, captured_at DESC
+            """), {"syms": syms_needing_fallback})
+            fallback_map: dict[tuple[str, str], float] = {
+                (str(acc), str(sym)): float(pc)
+                for acc, sym, pc in result2.all()
+            }
+        for idx in zero_indices:
+            key2 = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
+            fallback_close = fallback_map.get(key2)
+            if fallback_close is None:
+                continue
+            raw.at[idx, 'previous_close'] = fallback_close
+            raw.at[idx, 'close_price'] = fallback_close
+            patched_idx2.append(idx)
+    except Exception as e:
+        logger.warning(f"positions: close-override second-pass query failed: {e}")
+    return patched_idx2
+
+
+async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
+    """Replace ``close_price`` with the most-recent daily_book snapshot LTP
+    per (account, tradingsymbol). When found, recomputes the decomposed
+    day_change_val so the row reflects the actual move since the prior
+    session's authoritative close.
+
+    Uses ``daily_book.ltp`` directly (not COALESCE with ``previous_close``).
+    ``previous_close`` is populated from Kite's stale BHAV-copy API and is
+    unreliable during the overnight window — it always passes the epsilon
+    check, meaning ``close_price`` would never be patched. ``daily_book.ltp``
+    is the actual settlement LTP captured at session end and is the
+    canonical prior-session reference price.
+
+    Only triggers when the snapshot LTP differs from Kite's reported
+    close_price by more than a tiny epsilon — rows where Kite is already
+    current pass through unchanged."""
+    if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
+        return
+
+    # Initialise previous_close column unconditionally so the column always
+    # exists even when no DB rows match or the query raises.
+    raw['previous_close'] = 0.0
+
+    if not (raw["account"].notna() & raw["tradingsymbol"].notna()).any():
+        return
+
+    # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).
+    # Use NON-MCX gate; MCX gate has the same reset time (08:00 IST) so one
+    # cutoff covers all exchanges.  Both daily_book snapshots (NSE ~15:45 and
+    # MCX ~00:15) fall before the 08:00 boundary and are included by this query.
+    from backend.api.helpers.exchange_clock import settlement_cutoff_for
+    today_ist_cutoff = await settlement_cutoff_for("NON-MCX")
+
+    snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, today_ist_cutoff)
+    patched_idx = _patch_close_from_snapshot_map(raw, snapshot_map)
+    patched_idx2 = await _apply_second_pass_fallback(raw)
 
     # Backfill prev_settlement_pnl — yesterday's total_pnl for each position
     # that exists in the daily_book snapshot.  Rows opened today have no entry
