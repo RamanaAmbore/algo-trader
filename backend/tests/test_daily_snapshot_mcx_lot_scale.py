@@ -148,7 +148,7 @@ class TestPositionsRowsMultiplierPassed:
         ist = ZoneInfo('Asia/Kolkata')
         now_ist = datetime(2026, 8, 9, 23, 35, 0, tzinfo=ist)
 
-        rows = _positions_rows("ZG0790", date(2026, 8, 9), raw, now_ist, settled=True)
+        rows = _positions_rows("ZG0790", date(2026, 8, 9), raw, now_ist, settled=True, market_open=False)
         assert len(rows) == 1
         r = rows[0]
         # day_pnl should use multiplier when computing decomposed formula
@@ -187,7 +187,7 @@ class TestPositionsRowsMultiplierPassed:
         ist = ZoneInfo('Asia/Kolkata')
         now_ist = datetime(2026, 8, 9, 15, 35, 0, tzinfo=ist)
 
-        rows = _positions_rows("ZG0790", date(2026, 8, 9), raw, now_ist, settled=True)
+        rows = _positions_rows("ZG0790", date(2026, 8, 9), raw, now_ist, settled=True, market_open=False)
         assert len(rows) == 1
         r = rows[0]
         # day_pnl = 50 * (23200 - 23000) = 50 * 200 = 10000
