@@ -2205,6 +2205,9 @@ async def _chain_quotes_sym_lookup(
     if _entry and (time.monotonic() - _entry[0]) < _CHAIN_SYM_TTL:
         return _entry[1]
 
+    _t0 = time.monotonic()
+    logger.debug("[chain-quotes] sym_lookup: cache miss for (%s, %s) — starting thread scan", und, exp or "(none)")
+
     # Compute outside the lock — may run concurrently for the same key on
     # cache miss, but results are identical so the last write wins safely.
     sym_by_strike, all_expiries = await asyncio.to_thread(
@@ -2223,6 +2226,10 @@ async def _chain_quotes_sym_lookup(
         else:
             sym_by_strike, all_expiries = _entry[1]
 
+    logger.debug(
+        "[chain-quotes] sym_lookup(%s,%s) took %.3fs → %d strikes, %d expiries",
+        und, exp or "(none)", time.monotonic() - _t0, len(sym_by_strike), len(all_expiries),
+    )
     return sym_by_strike, all_expiries
 
 
@@ -2684,8 +2691,17 @@ class OptionsController(Controller):
         # to avoid scanning 156K rows on every chain-quotes call.
         from backend.api.cache import peek as _cache_peek
         inst_resp = _cache_peek("instruments_chain") or _cache_peek("instruments")
+        _exp_idx_for_log = _cache_peek("instruments_chain_expiries")
+        _exp_idx_is_dict = isinstance(_exp_idx_for_log, dict)
+        logger.debug(
+            "[chain-quotes] und=%s exp=%s inst_chain_warm=%s exp_index_size=%d und_in_index=%s",
+            und, exp or "(none)",
+            _cache_peek("instruments_chain") is not None,
+            len(_exp_idx_for_log) if _exp_idx_is_dict else -1,
+            und in _exp_idx_for_log if _exp_idx_is_dict else "idx_cold",
+        )
         if inst_resp is None:
-            logger.debug("chain-quotes: instruments cache cold — returning empty")
+            logger.warning("[chain-quotes] instruments cache cold — returning empty for und=%s", und)
             return ChainQuotesResponse(underlying=und, expiry=exp, expiries=[], rows=[])
 
         # Expiry-only fast path: O(1) dict lookup from pre-built index — no thread needed.
@@ -2694,11 +2710,16 @@ class OptionsController(Controller):
         if not exp:
             _exp_index = _cache_peek("instruments_chain_expiries")
             if _exp_index is not None and und in _exp_index:
+                logger.debug("[chain-quotes] fast-path: returning %d expiries for %s", len(_exp_index[und]), und)
                 return ChainQuotesResponse(
                     underlying=und, expiry="",
                     expiries=_exp_index[und],
                     rows=[],
                 )
+            if _exp_index is None:
+                logger.debug("[chain-quotes] fast-path miss for %s: exp_index cold", und)
+            else:
+                logger.debug("[chain-quotes] fast-path miss for %s: und not in index (index has %d underlyings)", und, len(_exp_index))
 
         sym_by_strike, all_expiries = await _chain_quotes_sym_lookup(und, exp, inst_resp)
 

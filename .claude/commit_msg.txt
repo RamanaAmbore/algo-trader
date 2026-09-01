@@ -1,0 +1,20 @@
+docs: sync DESIGN_GUIDE for previous_close_backup + exchange_clock dynamic open time
+
+Three targeted additions to DESIGN_GUIDE.md:
+
+1. Add previous_close_backup to daily_book schema
+   - New table documenting all core daily_book columns with types and purposes
+   - Includes previous_close_backup column: backup of previous_close before
+     fix_daily_book_prev_close overwrites it; COALESCE guard prevents re-overwrite on restart
+   - Documents unique constraint and key invariant for previous_close frozen behavior
+
+2. Document exchange_clock dynamic open time
+   - New module-level state: _TODAY_NSE_OPEN cached at startup, refreshed at 04:00 IST
+   - New functions: get_nse_open_time() (sync accessor), load_today_open_time() (async loader)
+   - Loader respects holiday overrides from exchange_schedule table
+
+3. Update background task schedule
+   - 04:00 IST daily entry now documents call to load_today_open_time() before holiday refresh
+   - Fix fires at actual session open time (may differ on special sessions) and not on holidays
+
+No changes to unrelated sections. No diagrams altered.

@@ -1018,10 +1018,13 @@ export async function fetchChainQuotesPrices(underlying, expiry, opts = {}) {
  *  Used by OptionChainTab to populate the expiry dropdown without
  *  blocking on the 156K-row instruments cache.
  *  Returns `{underlying, expiry: "", expiries: string[], rows: []}`. */
-/** @param {string} underlying */
-export async function fetchChainExpiries(underlying) {
+/**
+ * @param {string} underlying
+ * @param {AbortSignal} [signal]
+ */
+export async function fetchChainExpiries(underlying, signal = undefined) {
   const params = new URLSearchParams({ underlying });
-  return _get(`/options/chain-quotes?${params}`, { auth: true });
+  return _get(`/options/chain-quotes?${params}`, { auth: true, signal });
 }
 
 /** GET /api/options/historical — Kite OHLCV candles for any symbol.

@@ -260,17 +260,23 @@
     let retryCount = 0;
     /** @type {ReturnType<typeof setTimeout> | null} */
     let retryTimer = null;
+    const controller = new AbortController();
 
     function cancel() {
+      console.log(`[chain] cancel: underlying=${u} had retryCount=${retryCount}`);
+      controller.abort();
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     }
 
     function attempt() {
       if (!u) { chainExpiries = []; _chainExpiriesLoading = false; return; }
+      console.log(`[chain] attempt #${retryCount} underlying=${u}`);
       _chainExpiriesLoading = true;
-      fetchChainExpiries(u)
+      fetchChainExpiries(u, controller.signal)
         .then(/** @param {any} d */ (d) => {
           const expiries = Array.isArray(d?.expiries) ? d.expiries : [];
+          const retrying = expiries.length === 0 && retryCount < 6;
+          console.log(`[chain] response: expiries=${expiries.length} retrying=${retrying}`);
           if (expiries.length > 0 || retryCount >= 6) {
             chainExpiries = expiries;
             _chainExpiriesLoading = false;
@@ -279,7 +285,10 @@
             retryTimer = setTimeout(attempt, 5000);
           }
         })
-        .catch(() => {
+        .catch((/** @type {any} */ err) => {
+          if (err?.name === 'AbortError') return;
+          const retrying = retryCount < 6;
+          console.log(`[chain] fetch error: name=${err?.name} retrying=${retrying}`);
           if (retryCount < 6) {
             retryCount++;
             retryTimer = setTimeout(attempt, 5000);
