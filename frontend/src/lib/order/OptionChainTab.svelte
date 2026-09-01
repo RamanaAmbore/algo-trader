@@ -355,7 +355,7 @@
 
   $effect(() => {
     void chainUnderlying;
-    if (chainExpiries.length && !chainExpiries.includes(chainExpiry)) {
+    if (chainExpiries.length && !chainExpiries.includes(untrack(() => chainExpiry))) {
       // Prefer the seed contract's own expiry if it's in the list —
       // operator clicked a specific position (e.g. NIFTY26MAY22000CE)
       // and the chain should open on THAT month, not nearest-future.
