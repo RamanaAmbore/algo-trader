@@ -12,7 +12,7 @@
   import { visibleInterval } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
-    fetchOptionsSpot, fetchChainQuotes,
+    fetchOptionsSpot, fetchChainQuotes, fetchChainQuotesPrices,
     placeTicketOrder,
     fetchAccounts,
   } from '$lib/api';
@@ -293,6 +293,8 @@
   //    can reference it before the polling $effect below.
   /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>|null} */
   let chainQuotesMap = $state(null);
+  let _pricesFetching = $state(false);
+  let _pricesAbort = /** @type {AbortController|null} */ (null);
   const chainStrikes = $derived.by(() => {
     if (!instrumentsReady || !chainUnderlying || !chainExpiry) return [];
     return listStrikes(chainUnderlying.toUpperCase(), 'CE', chainExpiry);
@@ -430,9 +432,15 @@
   let chainQuotesPoll = /** @type {any} */ (null);
   function _refreshChainQuotes() {
     if (!chainUnderlying || !chainExpiry || !isMarketOpen()) return;
+    if (_pricesFetching) return;
     const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
-    fetchChainQuotes(u, e).then((r) => {
-      if (chainQuotesKey !== `${u}|${e}`) return;
+    const key = `${u}|${e}`;
+    _pricesAbort?.abort();
+    const ac = new AbortController();
+    _pricesAbort = ac;
+    _pricesFetching = true;
+    fetchChainQuotesPrices(u, e, { signal: ac.signal }).then((r) => {
+      if (chainQuotesKey !== key) return;
       /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>} */
       const map = {};
       for (const row of (r?.rows || [])) {
@@ -442,20 +450,21 @@
         };
       }
       chainQuotesMap = map;
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => { _pricesFetching = false; });
   }
   $effect(() => {
     void chainUnderlying; void chainExpiry;
     untrack(() => {
       if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; }
+      _pricesAbort?.abort(); _pricesAbort = null; _pricesFetching = false;
       if (!chainUnderlying || !chainExpiry) { chainQuotesMap = null; chainQuotesKey = ''; return; }
       const key = `${chainUnderlying.toUpperCase()}|${chainExpiry}`;
       if (key !== chainQuotesKey) { chainQuotesMap = null; chainQuotesKey = key; }
       _refreshChainQuotes();
-      chainQuotesPoll = visibleInterval(_refreshChainQuotes, 5000);
+      chainQuotesPoll = visibleInterval(_refreshChainQuotes, 30000);
     });
   });
-  onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } });
+  onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } _pricesAbort?.abort(); _pricesAbort = null; });
 
   // Periodic ATM spot refresh — re-fetch spot every 30s during market
   // hours so the ATM row marker tracks NIFTY/CRUDEOIL moves intraday.
@@ -877,6 +886,10 @@
         </div>
       {/each}
     </div>
+  {/if}
+
+  {#if _pricesFetching && chainStrikes.length && !chainQuotesMap}
+    <div class="oct-empty">Fetching live prices…</div>
   {/if}
 
   <!-- Strike grid -->
