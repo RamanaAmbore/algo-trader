@@ -109,41 +109,30 @@ function _derivedUnderlying(it) {
   return m ? m[1] : it.s;
 }
 
-// Yield to the browser so a frame can paint between index chunks.
-const _yieldFrame = () => new Promise(r => setTimeout(r, 0));
-
-async function _buildIndexes(items) {
-  // Build indexes in chunks of 5000 so the main thread yields between
-  // batches. Without chunking, 90K rows takes 300–600ms on Safari and
-  // freezes the UI right when the chain grid first appears.
-  const CHUNK = 5000;
+function _buildIndexes(items) {
   const byTradingsymbol  = new Map();
   const exchangesBySymbol = new Map();
   const underlyings      = new Set();
   const byUnderlyingType = new Map();
 
-  for (let i = 0; i < items.length; i += CHUNK) {
-    const end = Math.min(i + CHUNK, items.length);
-    for (let j = i; j < end; j++) {
-      const it = items[j];
-      byTradingsymbol.set(it.s, it);
-      if (it.e) {
-        const list = exchangesBySymbol.get(it.s);
-        if (list) {
-          if (!list.includes(it.e)) list.push(it.e);
-        } else {
-          exchangesBySymbol.set(it.s, [it.e]);
-        }
-      }
-      const underlying = _derivedUnderlying(it);
-      if (underlying) {
-        underlyings.add(underlying);
-        const key = `${underlying}|${it.t}`;
-        if (!byUnderlyingType.has(key)) byUnderlyingType.set(key, []);
-        byUnderlyingType.get(key).push(it);
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    byTradingsymbol.set(it.s, it);
+    if (it.e) {
+      const list = exchangesBySymbol.get(it.s);
+      if (list) {
+        if (!list.includes(it.e)) list.push(it.e);
+      } else {
+        exchangesBySymbol.set(it.s, [it.e]);
       }
     }
-    if (i + CHUNK < items.length) await _yieldFrame();
+    const underlying = _derivedUnderlying(it);
+    if (underlying) {
+      underlyings.add(underlying);
+      const key = `${underlying}|${it.t}`;
+      if (!byUnderlyingType.has(key)) byUnderlyingType.set(key, []);
+      byUnderlyingType.get(key).push(it);
+    }
   }
 
   // Publish atomically — all indexes ready before any consumer sees them.
@@ -200,7 +189,7 @@ export async function loadInstruments({ forceRefresh = false } = {}) {
       } catch (e) { /* ignore — fall through to fetch */ }
     }
     if (!items) items = await _fetchAndCache();
-    await _buildIndexes(items);
+    _buildIndexes(items);
     return items;
   })();
 
