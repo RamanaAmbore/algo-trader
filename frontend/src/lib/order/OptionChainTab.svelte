@@ -179,14 +179,14 @@
   // svelte-ignore state_referenced_locally
   let _account = $state(_isRealAcct(account) ? $state.snapshot(account) : '');
   $effect(() => {
-    if (_account) return;
+    if (untrack(() => _account)) return;
     if (_isRealAcct(account)) { _account = account; return; }
     if (_allAccounts.length === 1) _account = _allAccounts[0];
   });
   // Sync from a shell-pushed prop change (operator switched account
   // in another tab; shell re-renders us with the new value).
   $effect(() => {
-    if (account && _isRealAcct(account) && account !== _account) {
+    if (account && _isRealAcct(account) && account !== untrack(() => _account)) {
       _account = account;
     }
   });
@@ -209,17 +209,20 @@
   $effect(() => {
     const rows = $orderTemplatesStore;
     if (rows && rows.length) {
-      _templates = rows.filter(t => t.is_active);
-      if (templateId === null) {
+      // Store in local var — don't read _templates after writing it or the
+      // new-array-reference from filter() creates an infinite self-loop.
+      const active = rows.filter(t => t.is_active);
+      _templates = active;
+      if (untrack(() => templateId) === null) {
         // Operator: "instead of None, going forward use the default
         // valid template for buy or sell". Standalone OptionChainTab
         // has no _side prop in scope, so we pick the first is_default
         // (any applies_to) — the shell's side-aware effect overrides
         // this whenever it is mounted, so this fallback only matters
         // for the rare standalone mount.
-        const def = _templates.find(t => t.is_default);
+        const def = active.find(t => t.is_default);
         if (def) { templateId = def.id; return; }
-        const none = _templates.find(t => t.slug === 'none');
+        const none = active.find(t => t.slug === 'none');
         if (none) templateId = none.id;
       }
     }
