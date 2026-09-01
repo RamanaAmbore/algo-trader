@@ -15,6 +15,7 @@ All tasks are cancelled cleanly on Litestar shutdown.
 
 import asyncio
 import time as _time
+from backend.api.cache import peek as _cache_peek_chain
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, time as dtime, timezone
@@ -2123,6 +2124,19 @@ async def _task_instruments() -> None:
             result = await _run(_fetch_instruments)
             _store["instruments"] = (_time.monotonic() + 86400, result)
             logger.info(f"Background: instruments cache warmed ({result.count} rows)")
+            # Rebuild chain expiries index from the fresh dump (free filter — no broker call).
+            from backend.api.routes.instruments import _build_expiries_index, InstrumentsResponse as _IR
+            _chain_items = [i for i in result.items if i.e in {"NFO", "MCX"}]
+            if _chain_items:
+                _store["instruments_chain"] = (_time.monotonic() + 86400,
+                    _IR(cycle_date=result.cycle_date, count=len(_chain_items), items=_chain_items))
+                exp_idx = _build_expiries_index(_chain_items)
+                _store["instruments_chain_expiries"] = (_time.monotonic() + 86400, exp_idx)
+                logger.info(
+                    "Background: instruments_chain_expiries rebuilt — %d NFO+MCX rows, %d underlyings — %s",
+                    len(_chain_items), len(exp_idx),
+                    {k: v for k, v in list(exp_idx.items())[:8]},
+                )
         except Exception as e:
             logger.error(f"Background: instruments warm failed: {e}")
 
@@ -2158,26 +2172,40 @@ async def _task_chain_instruments() -> None:
     instrument downloads. The while True loop is mandatory — supervised
     tasks must park, not return (returning triggers _supervised tight loop).
     """
-    import time as _time
     from backend.api.cache import _store
     from backend.api.routes.instruments import _fetch_chain_instruments
 
     async def _warm():
+        from backend.api.routes.instruments import _build_expiries_index, InstrumentsResponse as _IR
+        # Fast path: build from existing full instruments cache — no broker call.
+        _full = _cache_peek_chain("instruments")
+        if _full is not None:
+            _chain_items = [i for i in _full.items if i.e in {"NFO", "MCX"}]
+            logger.info("[bg-chain-instruments] instruments cache has %d total rows, %d NFO+MCX", len(_full.items), len(_chain_items))
+            if _chain_items:
+                _store["instruments_chain"] = (_time.monotonic() + 86400,
+                    _IR(cycle_date=_full.cycle_date, count=len(_chain_items), items=_chain_items))
+                exp_idx = _build_expiries_index(_chain_items)
+                _store["instruments_chain_expiries"] = (_time.monotonic() + 86400, exp_idx)
+                logger.info(
+                    "[bg-chain-instruments] built from instruments cache: %d NFO+MCX, %d underlyings — %s",
+                    len(_chain_items), len(exp_idx),
+                    {k: v for k, v in list(exp_idx.items())[:8]},
+                )
+                return
+            else:
+                logger.warning("[bg-chain-instruments] instruments cache warm but no NFO+MCX rows — falling back to broker")
+        # Fallback: download NFO+MCX from broker (T+10–220s before instruments warms).
         try:
             result = await _run(_fetch_chain_instruments)
             if result is not None:
                 _store["instruments_chain"] = (_time.monotonic() + 86400, result)
-                from backend.api.routes.instruments import _build_expiries_index
-                _store["instruments_chain_expiries"] = (
-                    _time.monotonic() + 86400,
-                    _build_expiries_index(result.items),
-                )
+                exp_idx = _build_expiries_index(result.items)
+                _store["instruments_chain_expiries"] = (_time.monotonic() + 86400, exp_idx)
                 logger.info(
-                    "[bg-chain-instruments] built expiries index for %d underlyings",
-                    len(_store["instruments_chain_expiries"][1]),
-                )
-                logger.info(
-                    f"[bg-chain-instruments] cached {result.count} NFO+MCX instruments"
+                    "[bg-chain-instruments] broker fetch: %d NFO+MCX, %d underlyings — %s",
+                    result.count, len(exp_idx),
+                    {k: v for k, v in list(exp_idx.items())[:8]},
                 )
         except Exception as exc:
             logger.warning(f"[bg-chain-instruments] fetch failed: {exc}")
@@ -2187,7 +2215,6 @@ async def _task_chain_instruments() -> None:
     # Retry with backoff if Kite accounts aren't available yet — conn_service
     # may take ~90s after a deployment restart to restore tokens. Retries at
     # T+40s, T+100s, T+220s before giving up and waiting until 08:02 IST.
-    from backend.api.cache import peek as _cache_peek_chain
     await _warm()
     for _retry_delay in (30, 60, 120):
         if _cache_peek_chain("instruments_chain") is not None:
