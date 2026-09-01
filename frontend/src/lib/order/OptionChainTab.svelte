@@ -270,6 +270,7 @@
 
     function attempt() {
       if (!u) { chainExpiries = []; _chainExpiriesLoading = false; return; }
+      if (controller.signal.aborted) { chainExpiries = []; _chainExpiriesLoading = false; return; }
       console.log(`[chain] attempt #${retryCount} underlying=${u}`);
       // Only show the loading spinner on the very first attempt — subsequent retries
       // are silent so the grid (empty) stays visible rather than hanging the UI.
@@ -292,7 +293,13 @@
           }
         })
         .catch((/** @type {any} */ err) => {
-          if (err?.name === 'AbortError') return;
+          if (err?.name === 'AbortError') {
+            // Effect cleanup aborted this fetch — reset the spinner so the
+            // next effect run (new underlying) doesn't inherit a stuck state.
+            chainExpiries = [];
+            _chainExpiriesLoading = false;
+            return;
+          }
           console.log(`[chain] fetch error: name=${err?.name} retrying=${retryCount < 6}`);
           chainExpiries = [];
           _chainExpiriesLoading = false;
