@@ -431,7 +431,7 @@
   let chainQuotesKey = '';
   let chainQuotesPoll = /** @type {any} */ (null);
   function _refreshChainQuotes() {
-    if (!chainUnderlying || !chainExpiry || !isMarketOpen()) return;
+    if (!chainUnderlying || !chainExpiry) return;
     if (_pricesFetching) return;
     const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
     const key = `${u}|${e}`;
@@ -505,7 +505,8 @@
       // Clear keys so the next spot effect treats the underlying as
       // newly-set and re-fetches.
       chainSpotKey = '';
-      chainQuotesKey = '';
+      // Do NOT reset chainQuotesKey here — that would cause every subsequent
+      // price response to be discarded (the .then() guard checks key equality).
       if (chainUnderlying) {
         // Spot re-fetch — bypass the key-equality short-circuit.
         const u = chainUnderlying; const e = chainExpiry || null;
