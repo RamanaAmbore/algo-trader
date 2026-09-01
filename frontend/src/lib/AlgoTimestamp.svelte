@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { browser } from '$app/environment';
   import { lastRefreshAt, formatDualTz } from '$lib/stores';
@@ -11,7 +12,7 @@
   $effect(() => {
     const lr = $lastRefreshAt;
     _lastRefresh = lr;
-    if (lr > _nowEpoch) _nowEpoch = Date.now();
+    if (lr > untrack(() => _nowEpoch)) _nowEpoch = Date.now();
   });
 
   $effect(() => {

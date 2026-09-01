@@ -458,8 +458,8 @@
   // they're broker balance-sheet fields without a "day" concept.
   let dispPositionsToday = $state(0);
   let dispHoldingsToday  = $state(0);
-  let _prevMktOpen       = $state(false);
-  let _prevExecMode      = $state('idle');
+  let _prevMktOpen       = false;
+  let _prevExecMode      = 'idle';
   // P pill slots 1 + 2: ALL positions (no exchange filter), matching the
   // MarketPulse positions TOTAL row (gold standard SSOT). Includes NSE/BSE
   // equity intraday positions alongside F&O so the P pill stays in sync

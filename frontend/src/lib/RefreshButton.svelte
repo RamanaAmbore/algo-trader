@@ -30,6 +30,7 @@
   twice while the first request was still in flight).
 -->
 <script>
+  import { untrack } from 'svelte';
   import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, visibleInterval, postHibernationRefiring } from '$lib/stores';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
@@ -195,7 +196,7 @@
   let _spinCapExpired = $state(false);
   let _spinCapTimer   = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
   $effect(() => {
-    if ((loading || _refiring) && !_spinCapExpired) {
+    if ((loading || _refiring) && !untrack(() => _spinCapExpired)) {
       if (_spinCapTimer == null) {
         _spinCapTimer = setTimeout(() => { _spinCapExpired = true; }, _MAX_SPIN_MS);
       }

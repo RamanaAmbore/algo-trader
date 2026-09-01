@@ -3,7 +3,7 @@
   // Self-contained: polls /api/simulator/*, renders controls, status,
   // chart grid, and an embedded LogPanel. Accepts no required props.
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { page } from '$app/state';
   import { clientTimestamp, visibleInterval, branchLabel, logTime, dualTsHtml } from '$lib/stores';
   import {
@@ -264,10 +264,14 @@
 
   $effect(() => {
     const groups = positionsByUnderlying;
+    const legKeySnap = untrack(() => _lastLegKey);
+    let nextKey = { ...legKeySnap };
+    let keyChanged = false;
     for (const [u, positions] of Object.entries(groups)) {
       const key = positions.map((p) => `${p.symbol}:${p.quantity}`).sort().join('|');
-      if (_lastLegKey[u] === key) continue;
-      _lastLegKey = { ..._lastLegKey, [u]: key };
+      if (legKeySnap[u] === key) continue;
+      nextKey[u] = key;
+      keyChanged = true;
       const legs = positions.map((p) => ({
         symbol:   p.symbol,
         qty:      Number(p.quantity) || 0,
@@ -276,16 +280,18 @@
       }));
       fetchStrategyAnalytics(legs)
         .then((s) => {
-          payoffByUnderlying = { ...payoffByUnderlying, [u]: { legs: positions, strategy: s } };
+          payoffByUnderlying = { ...untrack(() => payoffByUnderlying), [u]: { legs: positions, strategy: s } };
         })
         .catch((e) => {
           console.warn(`[sim] strategy-analytics for ${u} failed:`, e?.message || e);
         });
     }
+    if (keyChanged) _lastLegKey = nextKey;
     // Drop entries for underlyings no longer in the book.
     const known = new Set(Object.keys(groups));
+    const snap = untrack(() => payoffByUnderlying);
     let changed = false;
-    const next = { ...payoffByUnderlying };
+    const next = { ...snap };
     for (const k of Object.keys(next)) {
       if (!known.has(k)) { delete next[k]; changed = true; }
     }

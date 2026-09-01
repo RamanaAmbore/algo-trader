@@ -534,12 +534,13 @@
   $effect(() => {
     const allowedSrc = _availableSourceValues;
     const allowedWl  = new Set(lists.map(l => `wl:${l.id}`));
-    const filtered = selectedShow.filter(v =>
+    const current = untrack(() => selectedShow);
+    const filtered = current.filter(v =>
       v.startsWith('src:') ? allowedSrc.has(v.slice(4))
       : v.startsWith('wl:') ? allowedWl.has(v)
       : false
     );
-    if (filtered.length !== selectedShow.length) selectedShow = filtered;
+    if (filtered.length !== current.length) selectedShow = filtered;
   });
 
   // Refetch watchlist contents whenever activeIds changes from any
@@ -687,10 +688,12 @@
   $effect(() => {
     if (availableAccounts.length === 0) return;
     const allow = new Set(availableAccounts);
-    const prunedP = positionsAccounts.filter((a) => allow.has(a));
-    if (prunedP.length !== positionsAccounts.length) positionsAccounts = prunedP;
-    const prunedH = holdingsAccounts.filter((a) => allow.has(a));
-    if (prunedH.length !== holdingsAccounts.length) holdingsAccounts = prunedH;
+    const curP = untrack(() => positionsAccounts);
+    const prunedP = curP.filter((a) => allow.has(a));
+    if (prunedP.length !== curP.length) positionsAccounts = prunedP;
+    const curH = untrack(() => holdingsAccounts);
+    const prunedH = curH.filter((a) => allow.has(a));
+    if (prunedH.length !== curH.length) holdingsAccounts = prunedH;
   });
   // Broker-registry-loaded accounts — surfaced via /api/admin/brokers
   // Broker account list sourced from the connStatus store which is
