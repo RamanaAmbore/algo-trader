@@ -9,10 +9,10 @@
   // via placeTicketOrder() without a new backend route.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval, withGuard } from '$lib/stores';
+  import { visibleInterval } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
-    fetchOptionsSpot, fetchChainQuotes, fetchChainQuotesPrices,
+    fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder,
     fetchAccounts,
   } from '$lib/api';
@@ -22,9 +22,9 @@
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listFutures, getInstrument,
+    listStrikes, findOption,
     instrumentsCacheVersion,
   } from '$lib/data/instruments';
-  import { parseChainQuoteRow } from '$lib/data/chainQuotes';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT } from '$lib/data/resolveUnderlying.js';
   import { priceFmt } from '$lib/format';
@@ -291,14 +291,12 @@
   );
   // ── Chain quotes (bid/ask per strike) — declared here so chainStrikes
   //    can reference it before the polling $effect below.
-  /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean}}>|null} */
+  /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>|null} */
   let chainQuotesMap = $state(null);
-  let _chainQuotesLoading = $state(false);
-  let _chainQuotesError = $state('');
-  let _pricesFetching = $state(false);
-  const chainStrikes = $derived(
-    Object.keys(chainQuotesMap ?? {}).map(Number).filter(Boolean).sort((a, b) => a - b)
-  );
+  const chainStrikes = $derived.by(() => {
+    if (!instrumentsReady || !chainUnderlying || !chainExpiry) return [];
+    return listStrikes(chainUnderlying.toUpperCase(), 'CE', chainExpiry);
+  });
   const chainFutures = $derived.by(() => {
     if (!chainUnderlying) return [];
     const all = listFutures(chainUnderlying.toUpperCase()) || [];
@@ -422,172 +420,42 @@
     }
   });
 
-  // ── Chain quotes polling — two-phase load ─────────────────────────
-  // Phase 1 (skeleton): fetch without prices=1 — returns instrument rows
-  //   (sym, ls, exchange) with bid=null/ask=null. Fast — no broker call.
-  //   Renders the strike grid immediately so the operator sees the shape
-  //   of the chain while prices are still loading.
-  // Phase 2 (prices): fetch with prices=1 — broker call (10–30 s).
-  //   When it returns, overlays bid/ask onto the already-rendered grid
-  //   via a surgical per-strike merge (never nulls the map).
-  //   If it fails or is aborted (new expiry selected), grid stays visible
-  //   with '—' placeholders — no retry loop.
-  // Subsequent 30 s poll ticks hit prices-only; skeleton never re-fetches
-  //   (strike list doesn't change mid-session for a fixed expiry).
+  // ── Chain quotes polling — bid/ask overlay ────────────────────────
+  // Strike list comes from the local instruments cache (instant via
+  // listStrikes). This poll fetches bid/ask from the backend every 5 s
+  // and overlays them onto the rendered grid. Grid shows immediately;
+  // bid/ask cells show '—' until the first poll resolves.
 
   let chainQuotesKey = '';
   let chainQuotesPoll = /** @type {any} */ (null);
-  // AbortController for any in-flight prices fetch.
-  // Cancelled when underlying/expiry changes so stale broker responses
-  // can't overlay the wrong grid.
-  let _pricesAbort = /** @type {AbortController|null} */ (null);
-
-  /** Build a chainQuotesMap from API rows (bid/ask may be null). */
-  function _rowsToMap(/** @type {any[]} */ rows) {
-    /** @type {Record<string,{ce:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean},pe:{bid:number|null,ask:number|null,sym:string|null,ls:number|null,exchange:string|null,depthAvail:boolean}}>} */
-    const map = {};
-    for (const row of rows) {
-      const [k, q] = parseChainQuoteRow(row);
-      map[k] = q;
-    }
-    return map;
-  }
-
-  /**
-   * Overlay prices (bid/ask) from a prices-response onto the current map.
-   * Surgical merge — never resets the map to null, so the grid stays mounted.
-   * Only updates strikes that exist in both old map and new response.
-   * @param {any} r  - response from fetchChainQuotesPrices
-   * @param {string} key - the chainQuotesKey at fetch-start (stale guard)
-   */
-  function _overlayPrices(r, key) {
-    if (chainQuotesKey !== key) return; // underlying/expiry changed mid-flight
-    const rows = r?.rows || [];
-    if (!rows.length) return;
-    // Build a new map: merge prices into current state.
-    // Start from the existing map (preserves sym/ls/exchange for strikes
-    // the backend omits from the prices response) then overlay bid/ask.
-    const current = chainQuotesMap ?? {};
-    /** @type {typeof current} */
-    const next = {};
-    // Seed from prices response first (freshest data).
-    for (const row of rows) {
-      const [k, q] = parseChainQuoteRow(row);
-      next[k] = q;
-    }
-    // For strikes in current but not in prices response, preserve metadata.
-    for (const k of Object.keys(current)) {
-      if (!(k in next)) next[k] = current[k];
-    }
-    chainQuotesMap = next;
-  }
-
-  /**
-   * Phase 1: load skeleton (instruments, no broker quote).
-   * Sets chainQuotesMap so the grid renders with '—' bid/ask.
-   */
-  async function _loadSkeleton(u = '', e = '') {
-    if (!u || !e) return;
-    _chainQuotesLoading = true;
-    _chainQuotesError = '';
-    try {
-      const r = await fetchChainQuotes(u, e);
-      if (chainQuotesKey !== `${u}|${e}`) return; // stale
-      chainQuotesMap = _rowsToMap(r?.rows || []);
-    } catch {
-      if (chainQuotesKey === `${u}|${e}`) {
-        _chainQuotesError = 'Failed to load quotes — retrying…';
-      }
-    } finally {
-      if (chainQuotesKey === `${u}|${e}`) _chainQuotesLoading = false;
-    }
-  }
-
-  /**
-   * Phase 2: overlay bid/ask from broker (slow, cancellable).
-   * Fires in parallel with phase 1; resolves whenever the broker responds.
-   * Aborts silently on expiry change.
-   */
-  async function _loadPrices(u = '', e = '') {
-    if (!u || !e) return;
-    if (_pricesFetching) return;
-    _pricesFetching = true;
-    try {
-      // Cancel any prior in-flight prices fetch.
-      _pricesAbort?.abort();
-      const ac = new AbortController();
-      _pricesAbort = ac;
-      const key = `${u}|${e}`;
-      try {
-        const r = await fetchChainQuotesPrices(u, e, { signal: ac.signal });
-        _overlayPrices(r, key);
-      } catch (err) {
-        // AbortError = intentional cancel (expiry change). Ignore.
-        // Network errors: grid stays with skeleton '—' values. No retry.
-        if (/** @type {any} */ (err)?.name !== 'AbortError' && chainQuotesKey === key) {
-          // Prices failed — skeleton stays visible; no error banner
-          // (skeleton is already showing — operator can see strikes).
-        }
-      }
-    } finally {
-      _pricesFetching = false;
-    }
-  }
-
-  /**
-   * Full refresh: skeleton immediately, prices in parallel.
-   * Called on initial expiry load and by the 30 s poll (which skips
-   * the skeleton phase after first load).
-   * @param {boolean} [skeletonOnly=false] - if true, skip the prices call
-   */
-  async function _refreshChainQuotes(skeletonOnly = false) {
-    if (!chainUnderlying || !chainExpiry) return;
+  function _refreshChainQuotes() {
+    if (!chainUnderlying || !chainExpiry || !isMarketOpen()) return;
     const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
-    // Phase 1 — skeleton (fast, sets grid shape).
-    await _loadSkeleton(u, e);
-    // Phase 2 — prices (slow, overlays bid/ask). Fire in parallel; don't await.
-    if (!skeletonOnly) {
-      _loadPrices(u, e);
-    }
+    fetchChainQuotes(u, e).then((r) => {
+      if (chainQuotesKey !== `${u}|${e}`) return;
+      /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>} */
+      const map = {};
+      for (const row of (r?.rows || [])) {
+        map[String(row.k)] = {
+          ce: { bid: row.ce_bid == null ? null : Number(row.ce_bid), ask: row.ce_ask == null ? null : Number(row.ce_ask) },
+          pe: { bid: row.pe_bid == null ? null : Number(row.pe_bid), ask: row.pe_ask == null ? null : Number(row.pe_ask) },
+        };
+      }
+      chainQuotesMap = map;
+    }).catch(() => {});
   }
-
-  /**
-   * Prices-only refresh — called by the 30 s poll after initial load.
-   * The strike list is stable for a fixed expiry; only bid/ask change.
-   */
-  async function _refreshChainPrices() {
-    if (!chainUnderlying || !chainExpiry) return;
-    const u = chainUnderlying.toUpperCase(); const e = chainExpiry;
-    _loadPrices(u, e);
-  }
-
   $effect(() => {
-    if (!chainExpiry) {
-      chainQuotesPoll?.();
-      chainQuotesPoll = null;
-      return;
-    }
     void chainUnderlying; void chainExpiry;
     untrack(() => {
       if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; }
-      // Cancel any in-flight prices fetch for the old expiry.
-      _pricesAbort?.abort();
-      _pricesAbort = null;
-      _pricesFetching = false;  // clear guard so new-expiry load isn't blocked
       if (!chainUnderlying || !chainExpiry) { chainQuotesMap = null; chainQuotesKey = ''; return; }
       const key = `${chainUnderlying.toUpperCase()}|${chainExpiry}`;
       if (key !== chainQuotesKey) { chainQuotesMap = null; chainQuotesKey = key; }
-      // Initial two-phase load (skeleton + prices in parallel).
       _refreshChainQuotes();
-      // Subsequent 30 s poll ticks hit prices only — skeleton stable.
-      chainQuotesPoll = visibleInterval(withGuard(_refreshChainPrices), 30000);
+      chainQuotesPoll = visibleInterval(_refreshChainQuotes, 5000);
     });
   });
-  onDestroy(() => {
-    if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; }
-    _pricesAbort?.abort();
-    _pricesAbort = null;
-  });
+  onDestroy(() => { if (chainQuotesPoll) { chainQuotesPoll(); chainQuotesPoll = null; } });
 
   // Periodic ATM spot refresh — re-fetch spot every 30s during market
   // hours so the ATM row marker tracks NIFTY/CRUDEOIL moves intraday.
@@ -713,30 +581,21 @@
 
   function addOptionToBasket(/** @type {number} */ strike, /** @type {'CE'|'PE'} */ optType, /** @type {'long'|'short'} */ side) {
     if (!chainUnderlying || !chainExpiry) return;
-    const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
-    if (!q?.sym) { basketError = 'Quote not loaded — wait for chain refresh.'; return; }
-    const sym      = q.sym;
-    const exchange = q.exchange || 'NFO';
-    const lotSize  = q.ls || 1;
-    const sideTag  = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
-    // Audit fix — eliminate the _account='' race. The $effect auto-picks
-    // the single account but only after the first paint; a fast click on
-    // +CE in that window used to silently no-op. Re-derive synchronously:
-    // single account → pick it; multiple → ask the operator to choose.
+    const inst = findOption(chainUnderlying.toUpperCase(), optType, strike, chainExpiry);
+    if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
+    const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
     if (!_account) {
       if (_allAccounts.length === 1) { _account = _allAccounts[0]; }
       else if (_allAccounts.length === 0) { basketError = 'No broker accounts loaded — wait or sign in.'; return; }
       else { basketError = 'Pick a routable account before adding legs.'; return; }
     }
-    // Pin the active row visual marker — survives the 900 ms toast.
     _markActive(strike, optType);
-    // Place-mode short-circuit: route directly to the Ticket tab
-    // pre-filled with this leg, bypassing the basket entirely.
     if (_placeMode && onPlaceLeg) {
+      const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
       const limit = sideTag === 'BUY' ? (q?.ask ?? q?.bid ?? 0) : (q?.bid ?? q?.ask ?? 0);
       onPlaceLeg({
-        symbol: sym, exchange, side: sideTag,
-        qty: lotSize, lotSize,
+        symbol: String(inst.s), exchange: inst.e || 'NFO', side: sideTag,
+        qty: Number(inst.ls || 1), lotSize: Number(inst.ls || 1),
         price: Number(limit) || 0,
         orderType: limit > 0 ? 'LIMIT' : 'MARKET',
         product: 'NRML', variety: 'regular', account: _account,
@@ -744,15 +603,16 @@
       _flashToast(_quickKeyOpt(strike, optType), '→ ticket');
       return;
     }
-    if (_mergeIntoBasket({ sym, side: sideTag, lots: 1 })) {
+    if (_mergeIntoBasket({ sym: String(inst.s), side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '+1 lot'); return;
     }
+    const q = chainQuotesMap?.[String(strike)]?.[optType.toLowerCase()];
     const limit = sideTag === 'BUY' ? (q?.ask ?? q?.bid ?? 0) : (q?.bid ?? q?.ask ?? 0);
     _pushToBasket({
       key:      `${sideTag}|${_quickKeyOpt(strike, optType)}|${Date.now()}`,
-      side:     sideTag, sym, exchange,
+      side:     sideTag, sym: String(inst.s), exchange: inst.e || 'NFO',
       account:  _account,
-      lots: 1, lotSize, product: 'NRML',
+      lots: 1, lotSize: Number(inst.ls || 1), product: 'NRML',
       limit: Number(limit) || 0, chaseAgg: 'low',
     });
     basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '✓ added');
@@ -1019,13 +879,6 @@
     </div>
   {/if}
 
-  {#if _chainQuotesError}
-    <div class="oct-empty" style="color:var(--c-short)">{_chainQuotesError}</div>
-  {/if}
-  {#if _chainQuotesLoading && chainKinds.includes('opt') && !chainStrikes.length}
-    <div class="oct-empty">Fetching quotes…</div>
-  {/if}
-
   <!-- Strike grid -->
   {#if chainKinds.includes('opt') && chainStrikes.length}
     <div class="chain-grid-wrap">
@@ -1060,8 +913,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span
-                            class="chain-cell-no-depth" title="No depth available — using last traded price">(L)</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1097,8 +949,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span
-                            class="chain-cell-no-depth" title="No depth available — using last traded price">(L)</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>
                     </span>
                   </span>
                 </td>
@@ -1110,8 +961,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span
-                            class="chain-cell-no-depth" title="No depth available — using last traded price">(L)</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1147,8 +997,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span
-                            class="chain-cell-no-depth" title="No depth available — using last traded price">(L)</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>
                     </span>
                   </span>
                 </td>

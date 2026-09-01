@@ -1,112 +1,51 @@
-# Plan: Revert chain expiry loading to local instruments cache
+# Plan: Fix chain tab — restore July 2026 instruments-cache approach
 
 ## Context
+The chain tab broke across three compounding regressions:
 
-`fetchChainExpiries` (introduced in Aug-11 commit `0e15bff2`) replaces what was a
-synchronous `$derived.by(() => listExpiries(...))` with an async `$effect` that
-calls the backend API. The API approach has never worked on Safari: nginx confirms
-**zero** `/api/options/chain-quotes` calls when the chain tab opens, even after the
-AbortError fix (`9bcf9904`) is deployed.
+1. **IDB hang** — `_openDB()` had no `req.onblocked` handler. Safari fires `blocked` when another
+   tab holds the connection; without a handler the Promise hangs forever — try/catch can't rescue it.
 
-Root cause: the async `$effect` captures `chainUnderlying` as a reactive dependency.
-Effect A (`seedUnderlying → chainUnderlying`) fires in the same reactive batch as the
-fetch effect, causing the fetch effect to cleanup-abort before `fetch()` even reaches
-the network layer. The AbortError microtask and the next effect run's
-`_chainExpiriesLoading = true` race — producing a permanently stuck spinner.
+2. **Spinner never cleared** — `onMount` was `async` and awaited `loadInstruments()`. If IDB hung,
+   `instrumentsReady` was never set.
 
-The July-27 working approach used `listExpiries()` synchronously from the local
-instruments cache (already loaded globally). `instruments.js` still exports both
-`loadInstruments` and `listExpiries`. Reverting to that approach eliminates all
-AbortController complexity.
+3. **Grid never rendered** — `chainStrikes` was changed to derive from `Object.keys(chainQuotesMap)`
+   (API response keys) instead of `listStrikes()` (local instruments cache). Grid only appeared after
+   the slow broker API responded — or never, if `isMarketOpen()` was false.
+
+All three are fixed. Fixes 1+2 already committed (`ad7f4ee7`). Fix 3 is the remaining uncommitted
+change in the working tree (implemented and svelte-check verified by the implementation agent).
+
+## Task
+Commit the already-implemented fix 3 to workshop and deploy:
+
+- `chainStrikes` → `listStrikes(underlying, 'CE', expiry)` from local instruments cache — grid
+  renders immediately when instruments are ready, no API wait
+- `addOptionToBasket` → uses `findOption()` for sym/ls/exchange; `chainQuotesMap` for bid/ask only
+- Quotes loading → single-phase `fetchChainQuotes` polled every 5 s; bid/ask overlaid on arrival;
+  grid shows `—` until first poll resolves
+- Removed: two-phase skeleton/prices loader, `_chainQuotesLoading`, `_chainQuotesError`,
+  `_pricesFetching`, `parseChainQuoteRow` import, `fetchChainQuotesPrices` import, `depthAvail`
+  template guards, `withGuard` import (was only used for chain quotes poll)
 
 ## Agents
-- frontend: revert expiry loading in `frontend/src/lib/order/OptionChainTab.svelte` —
-  see Task section below
+- frontend: skip (changes already implemented and svelte-check verified — 0 errors)
 - backend: skip
 - broker: skip
 - doc: skip
 - backend-test: skip
 - playwright: skip
 
-## Task (frontend agent)
-
-File: `frontend/src/lib/order/OptionChainTab.svelte`
-
-**Imports (line ~22-25):** add `loadInstruments` and `listExpiries`:
-```js
-import {
-    loadInstruments, suggestUnderlyings,
-    listExpiries, listFutures, getInstrument,
-} from '$lib/data/instruments';
-```
-
-**State (~line 256):** Remove these two lines:
-```js
-let chainExpiries = $state(/** @type {string[]} */ ([]));
-let _chainExpiriesLoading = $state(false);
-```
-Replace with:
-```js
-let instrumentsReady = $state(false);
-const chainExpiries = $derived.by(() => {
-    if (!instrumentsReady || !chainUnderlying) return [];
-    return listExpiries(chainUnderlying.toUpperCase(), 'CE');
-});
-```
-
-**Remove the entire fetch `$effect` (~lines 257-315)** — the block that creates
-`AbortController`, defines `cancel()` / `attempt()`, and calls `fetchChainExpiries`.
-
-**seedExpiry (~line 128):** guard on `instrumentsReady` (like July version):
-```js
-const seedExpiry = $derived.by(() => {
-    if (!instrumentsReady || !symbol) return null;
-    const inst = getInstrument(String(symbol).toUpperCase());
-    return inst?.x || null;
-});
-```
-
-**onMount (~line 980):** add instruments load at the TOP of the existing onMount:
-```js
-onMount(async () => {
-    await loadInstruments();
-    instrumentsReady = true;
-    // … rest of existing onMount body unchanged …
-});
-```
-
-**Template (~line 998):** replace:
-```svelte
-{#if _chainExpiriesLoading && !chainExpiries.length}
-    <div class="oct-empty">Fetching expiries…</div>
-{/if}
-```
-with:
-```svelte
-{#if !instrumentsReady && chainUnderlying}
-    <div class="oct-empty">Loading instruments…</div>
-{/if}
-```
-
-**Cleanup:** Remove `fetchChainExpiries` from the import at line 15 (keep
-`fetchOptionsSpot`, `fetchChainQuotes`, `fetchChainQuotesPrices`).
-
-**Write a Vitest test** in `frontend/src/lib/__tests__/data/chainExpiries.test.js`
-(or add to existing chain test file if one exists):
-- Mock `instruments.js` to return a known set of expiries for 'NIFTY'
-- Confirm `listExpiries('NIFTY', 'CE')` returns expected array before/after ready
-
 ## Tests
 - pytest: no
-- svelte-check: yes
+- svelte-check: yes (already green — verify before commit)
 - playwright: no
 
 ## Commit message
-fix(chain): revert expiry loading to local instruments cache — eliminates AbortController race that hung spinner on Safari
+fix(chain): revert chainStrikes to listStrikes() — grid from instruments cache, bid/ask overlaid from API
 
 ## Done when
-- No `_chainExpiriesLoading` state in OptionChainTab.svelte
-- `chainExpiries` is a `$derived.by` using `listExpiries`
-- `instrumentsReady` gating is back, set in `onMount` after `loadInstruments()`
-- `fetchChainExpiries` no longer imported in OptionChainTab.svelte
-- svelte-check passes with 0 errors
+- Strike grid appears immediately after expiry is picked (no API wait)
+- Bid/ask cells show `—` until `fetchChainQuotes` poll resolves (every 5 s when market is open)
+- svelte-check 0 errors, vitest passes
+- Committed to workshop → merged to dev → deployed to prod
