@@ -22,6 +22,7 @@
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listFutures, getInstrument,
+    instrumentsCacheVersion,
   } from '$lib/data/instruments';
   import { parseChainQuoteRow } from '$lib/data/chainQuotes';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
@@ -125,7 +126,8 @@
   // default-pick effect below prefers this expiry over chainExpiries[0]
   // (the near-month default) — operator clicking "close this position"
   // lands on the position's own contract month, not nearest-future.
-  let instrumentsReady = $state(false);
+  let _instrumentsTimedOut = $state(false);
+  const instrumentsReady = $derived($instrumentsCacheVersion > 0 || _instrumentsTimedOut);
 
   const seedExpiry = $derived.by(() => {
     if (!instrumentsReady || !symbol) return null;
@@ -922,9 +924,12 @@
     _finalizeBasket(failures, total);
   }
 
-  onMount(async () => {
-    try { await loadInstruments(); } catch { /* IDB/network failure — proceed with empty cache */ }
-    instrumentsReady = true;
+  onMount(() => {
+    // Fire-and-forget: IDB may block (other tab holds connection); don't await.
+    // instrumentsReady derives from instrumentsCacheVersion (bumped on load)
+    // or _instrumentsTimedOut (8s fallback so spinner never freezes).
+    loadInstruments().catch(() => {});
+    const _readyTimer = setTimeout(() => { _instrumentsTimedOut = true; }, 8000);
     // Self-fetch accounts when the prop didn't supply any.
     if (!accounts.length && !_isRealAcct(account)) {
       fetchAccounts()
@@ -938,6 +943,7 @@
     // wouldn't have triggered it yet. Idempotent — repeat opens
     // serve from the in-memory cache.
     loadOrderTemplates().catch(() => { /* silent — picker stays empty */ });
+    return () => clearTimeout(_readyTimer);
   });
 </script>
 

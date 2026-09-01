@@ -68,7 +68,8 @@ function _openDB() {
         db.createObjectStore(STORE);
       }
     };
-    req.onerror = () => reject(req.error);
+    req.onerror   = () => reject(req.error);
+    req.onblocked = () => reject(new Error('IndexedDB blocked'));
     req.onsuccess = () => resolve(req.result);
   });
 }
