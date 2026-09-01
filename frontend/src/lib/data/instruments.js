@@ -109,54 +109,55 @@ function _derivedUnderlying(it) {
   return m ? m[1] : it.s;
 }
 
-function _buildIndexes(items) {
-  _items = items;
-  _byTradingsymbol = new Map();
-  _exchangesBySymbol = new Map();
-  _underlyings = new Set();
-  _byUnderlyingType = new Map();
+// Yield to the browser so a frame can paint between index chunks.
+const _yieldFrame = () => new Promise(r => setTimeout(r, 0));
 
-  for (const it of items) {
-    _byTradingsymbol.set(it.s, it);
-    // Multi-listing index — Kite's instruments dump has one row per
-    // (tradingsymbol, exchange) pair, so dual-listed equities (IFCI,
-    // RELIANCE, etc.) appear twice. The primary `_byTradingsymbol`
-    // map is last-write-wins for backward compatibility; this side-
-    // index preserves every exchange a symbol trades on so the order
-    // ticket can let the operator pick NSE vs BSE for dual-listed
-    // equities while locking it for single-exchange instruments.
-    if (it.e) {
-      const list = _exchangesBySymbol.get(it.s);
-      if (list) {
-        if (!list.includes(it.e)) list.push(it.e);
-      } else {
-        _exchangesBySymbol.set(it.s, [it.e]);
+async function _buildIndexes(items) {
+  // Build indexes in chunks of 5000 so the main thread yields between
+  // batches. Without chunking, 90K rows takes 300–600ms on Safari and
+  // freezes the UI right when the chain grid first appears.
+  const CHUNK = 5000;
+  const byTradingsymbol  = new Map();
+  const exchangesBySymbol = new Map();
+  const underlyings      = new Set();
+  const byUnderlyingType = new Map();
+
+  for (let i = 0; i < items.length; i += CHUNK) {
+    const end = Math.min(i + CHUNK, items.length);
+    for (let j = i; j < end; j++) {
+      const it = items[j];
+      byTradingsymbol.set(it.s, it);
+      if (it.e) {
+        const list = exchangesBySymbol.get(it.s);
+        if (list) {
+          if (!list.includes(it.e)) list.push(it.e);
+        } else {
+          exchangesBySymbol.set(it.s, [it.e]);
+        }
+      }
+      const underlying = _derivedUnderlying(it);
+      if (underlying) {
+        underlyings.add(underlying);
+        const key = `${underlying}|${it.t}`;
+        if (!byUnderlyingType.has(key)) byUnderlyingType.set(key, []);
+        byUnderlyingType.get(key).push(it);
       }
     }
-    const underlying = _derivedUnderlying(it);
-    if (underlying) {
-      _underlyings.add(underlying);
-      const key = `${underlying}|${it.t}`;
-      if (!_byUnderlyingType.has(key)) _byUnderlyingType.set(key, []);
-      _byUnderlyingType.get(key).push(it);
-    }
+    if (i + CHUNK < items.length) await _yieldFrame();
   }
-  _underlyingsSorted = Array.from(_underlyings).sort();
-  // Register the expiry lookup with decomposeSymbol so formatSymbol()
-  // can append the DD to monthly contracts (e.g. NIFTY-26JUN26-22000-CE
-  // instead of NIFTY-26JUN-22000-CE). Reads `inst.x` (YYYY-MM-DD).
-  // Module-bound by reference — every formatSymbol call after this point
-  // sees the expiry day, regardless of whether the caller is on Pulse /
-  // Legs / Performance / etc.
+
+  // Publish atomically — all indexes ready before any consumer sees them.
+  _items             = items;
+  _byTradingsymbol   = byTradingsymbol;
+  _exchangesBySymbol = exchangesBySymbol;
+  _underlyings       = underlyings;
+  _byUnderlyingType  = byUnderlyingType;
+  _underlyingsSorted = Array.from(underlyings).sort();
   _setExpiryLookup((sym) => {
     const inst = _byTradingsymbol?.get(String(sym || '').toUpperCase());
     return inst?.x || null;
   });
-  // Seed the virtual-root resolution map so rootOf() / rootOfLabel()
-  // can map MCX/CDS front/back-month contracts to their virtual roots.
   seedRootMapFromInstruments(items);
-  // Bump the cache-ready signal so subscribed `$derived` blocks re-fire
-  // and pick up the now-available expiry / lot-size / exchange data.
   instrumentsCacheVersion.update((n) => n + 1);
 }
 
@@ -199,7 +200,7 @@ export async function loadInstruments({ forceRefresh = false } = {}) {
       } catch (e) { /* ignore — fall through to fetch */ }
     }
     if (!items) items = await _fetchAndCache();
-    _buildIndexes(items);
+    await _buildIndexes(items);
     return items;
   })();
 
