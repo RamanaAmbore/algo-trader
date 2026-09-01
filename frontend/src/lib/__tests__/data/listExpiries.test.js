@@ -65,6 +65,15 @@ describe('listExpiries — cold cache (instruments not loaded)', () => {
     expect(listExpiries('RELIANCE', 'PE')).toEqual([]);
     expect(listExpiries('CRUDEOIL', 'CE')).toEqual([]);
   });
+
+  it('returns [] when loadInstruments() threw and cache was never populated', () => {
+    // This case occurs when IDB is unavailable (Safari private mode, quota exceeded)
+    // and the instruments fetch fails. OptionChainTab wraps loadInstruments() in
+    // try/catch and still sets instrumentsReady = true so the spinner clears.
+    // listExpiries must return [] gracefully rather than throwing.
+    expect(() => listExpiries('CRUDEOIL', 'CE')).not.toThrow();
+    expect(listExpiries('GOLDM', 'CE')).toEqual([]);
+  });
 });
 
 // ── Warm-cache tests (after _buildIndexes runs via loadInstruments) ────────────

@@ -923,7 +923,7 @@
   }
 
   onMount(async () => {
-    await loadInstruments();
+    try { await loadInstruments(); } catch { /* IDB/network failure — proceed with empty cache */ }
     instrumentsReady = true;
     // Self-fetch accounts when the prop didn't supply any.
     if (!accounts.length && !_isRealAcct(account)) {
