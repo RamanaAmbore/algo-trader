@@ -26,6 +26,7 @@
     instrumentsCacheVersion,
   } from '$lib/data/instruments';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
+  import { parseChainQuoteRow } from '$lib/data/chainQuotes';
   import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT } from '$lib/data/resolveUnderlying.js';
   import { priceFmt } from '$lib/format';
   // Order-template catalog — same source the OrderTicket uses.
@@ -444,13 +445,11 @@
     _pricesFetching = true;
     fetchChainQuotesPrices(u, e, { signal: ac.signal }).then((r) => {
       if (chainQuotesKey !== key) return;
-      /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>} */
+      /** @type {Record<string, object>} */
       const map = {};
       for (const row of (r?.rows || [])) {
-        map[String(row.k)] = {
-          ce: { bid: row.ce_bid == null ? null : Number(row.ce_bid), ask: row.ce_ask == null ? null : Number(row.ce_ask) },
-          pe: { bid: row.pe_bid == null ? null : Number(row.pe_bid), ask: row.pe_ask == null ? null : Number(row.pe_ask) },
-        };
+        const [k, q] = parseChainQuoteRow(row, r?.exchange);
+        map[k] = q;
       }
       chainQuotesMap = map;
     }).catch(() => {}).finally(() => { _pricesFetching = false; });

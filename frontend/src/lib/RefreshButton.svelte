@@ -30,13 +30,12 @@
   twice while the first request was still in flight).
 -->
 <script>
-  import { untrack } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, visibleInterval, postHibernationRefiring } from '$lib/stores';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { toast } from '$lib/data/toastStore.svelte.js';
-  import { onMount, onDestroy, untrack } from 'svelte';
 
   /**
    * @typedef {object} RefreshOpts

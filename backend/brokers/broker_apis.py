@@ -153,12 +153,12 @@ def _ts_label(unix_ts: float) -> str:
         return str(int(unix_ts))
 
 
-def _col_f64(lf: pl.DataFrame, col: str) -> pl.Expr:
+def _col_f64(col: str) -> pl.Expr:
     """Return a Float64 expression for `col`, coercing nulls/bad values to 0.0."""
     return pl.col(col).cast(pl.Float64, strict=False).fill_null(0.0)
 
 
-def _col_f64_nullable(lf: pl.DataFrame, col: str) -> pl.Expr:
+def _col_f64_nullable(col: str) -> pl.Expr:
     """Like _col_f64 but keeps nulls as nulls (for broker-value trust checks)."""
     return pl.col(col).cast(pl.Float64, strict=False)
 
@@ -1490,12 +1490,12 @@ def _build_holdings_pnl_expr(
     At true breakeven (ltp==avg) the formula also gives 0, so there is no
     regression for genuinely flat positions.
     """
-    _ltp = _col_f64(lf, "last_price")
-    _avg = _col_f64(lf, "average_price")
-    _qty = _col_f64(lf, "quantity")
+    _ltp = _col_f64("last_price")
+    _avg = _col_f64("average_price")
+    _qty = _col_f64("quantity")
     _pnl_calc = (_ltp - _avg) * _qty
     if has_pnl:
-        _broker_pnl = _col_f64_nullable(lf, "pnl")
+        _broker_pnl = _col_f64_nullable("pnl")
         # Trust broker pnl only when non-null AND non-zero. A zero from the
         # broker is indistinguishable from "no data" (e.g. Kite pre-market
         # window sends pnl=0 when last_price=0). At true breakeven (ltp==avg)
@@ -1539,8 +1539,8 @@ def _build_holdings_curval_exprs(
     fall back to inv_val + pnl (old formula) to avoid a ColumnNotFoundError.
     """
     _pnl_expr = pl.col("pnl")
-    _inv_expr = _col_f64(lf, "inv_val")
-    _ltp_expr = _col_f64(lf, "last_price")
+    _inv_expr = _col_f64("inv_val")
+    _ltp_expr = _col_f64("last_price")
 
     # Resolve qty column — prefer `quantity` (remaining shares), fall back
     # to `opening_quantity`, then to None (no qty column present).
@@ -1552,7 +1552,7 @@ def _build_holdings_curval_exprs(
     )
 
     if _qty_col is not None:
-        _qty_expr = _col_f64(lf, _qty_col)
+        _qty_expr = _col_f64(_qty_col)
         _cur_val_expr = (
             pl.when(_ltp_expr > 0)
             .then(_ltp_expr * _qty_expr)
@@ -1587,12 +1587,12 @@ def _build_holdings_dcv_expr(
     Uses `quantity` (remaining shares) not `opening_quantity` so partial-sold
     holdings compute day P&L only on the unsold portion.
     """
-    _ltp = _col_f64(lf, "last_price")
-    _cls = _col_f64(lf, "close_price")
-    _qty = _col_f64(lf, "quantity")
+    _ltp = _col_f64("last_price")
+    _cls = _col_f64("close_price")
+    _qty = _col_f64("quantity")
     if has_avg and has_pnl:
-        _avg2      = _col_f64(lf, "average_price")
-        _pnl2      = _col_f64_nullable(lf, "pnl")
+        _avg2      = _col_f64("average_price")
+        _pnl2      = _col_f64_nullable("pnl")
         _overnight = (_cls - _avg2) * _qty
         _dcv_calc = pl.when(_pnl2.is_not_null()).then(
             _pnl2 - _overnight
@@ -1603,7 +1603,7 @@ def _build_holdings_dcv_expr(
         _dcv_calc = (_ltp - _cls) * _qty
 
     if has_dcv:
-        _broker_dcv = _col_f64_nullable(lf, "day_change_val")
+        _broker_dcv = _col_f64_nullable("day_change_val")
         return (
             pl.when(_broker_dcv.is_not_null())
             .then(_broker_dcv)
@@ -1669,7 +1669,7 @@ def _build_holdings_computed_exprs(
 
     if has_close and has_avg:
         exprs.append(
-            (_col_f64(lf, "close_price") - _col_f64(lf, "average_price"))
+            (_col_f64("close_price") - _col_f64("average_price"))
             .alias("price_change")
         )
 
@@ -1683,7 +1683,7 @@ def _build_holdings_computed_exprs(
         _qty_name = "quantity" if has_qty else "opening_quantity"
         if _qty_name in cols:
             exprs.append(
-                (_col_f64(lf, "day_change") * _col_f64(lf, _qty_name))
+                (_col_f64("day_change") * _col_f64(_qty_name))
                 .alias("day_change_val")
             )
 
@@ -2105,10 +2105,10 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
 
     lf = pl.from_pandas(df, nan_to_null=True)
 
-    _ltp = _col_f64(lf, 'last_price')
-    _avg = _col_f64(lf, 'average_price')
-    _cls = _col_f64(lf, 'close_price')
-    _qty = _col_f64(lf, 'quantity')
+    _ltp = _col_f64('last_price')
+    _avg = _col_f64('average_price')
+    _cls = _col_f64('close_price')
+    _qty = _col_f64('quantity')
 
     _pnl_calc = (_ltp - _avg) * _qty
 
@@ -2118,11 +2118,11 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
         # rationale. `decomposed_intraday_pnl` takes scalars or polars
         # exprs interchangeably (each op is `+ * −` so polars Expr math
         # broadcasts the same way pandas Series math does).
-        _oq = _col_f64(lf, 'overnight_quantity')
-        _bq = _col_f64(lf, 'day_buy_quantity')
-        _sq = _col_f64(lf, 'day_sell_quantity')
-        _bv = _col_f64(lf, 'day_buy_value')
-        _sv = _col_f64(lf, 'day_sell_value')
+        _oq = _col_f64('overnight_quantity')
+        _bq = _col_f64('day_buy_quantity')
+        _sq = _col_f64('day_sell_quantity')
+        _bv = _col_f64('day_buy_value')
+        _sv = _col_f64('day_sell_value')
         _dcv_calc_expr = decomposed_intraday_pnl(
             _oq, _ltp, _cls, _bq, _bv, _sv, _sq,
         )
@@ -2135,14 +2135,14 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
         _dcv_entry = (_ltp - _avg) * _qty
         _dcv_calc_expr = pl.when((_cls <= 0) & (_avg > 0) & (_ltp > 0)).then(_dcv_entry).otherwise(_dcv_naive)
         if 'm2m' in cols:
-            _broker_m2m = _col_f64_nullable(lf, 'm2m')
+            _broker_m2m = _col_f64_nullable('m2m')
             _dcv_expr = (
                 pl.when(_broker_m2m.is_not_null())
                 .then(_broker_m2m)
                 .otherwise(_dcv_calc_expr)
             )
         elif 'day_change_val' in cols:
-            _broker_dcv = _col_f64_nullable(lf, 'day_change_val')
+            _broker_dcv = _col_f64_nullable('day_change_val')
             _dcv_expr = (
                 pl.when(_broker_dcv.is_not_null())
                 .then(_broker_dcv)
@@ -2153,9 +2153,9 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── pnl ──────────────────────────────────────────────────────────
     if 'pnl' in cols:
-        _broker_pnl = _col_f64_nullable(lf, 'pnl')
+        _broker_pnl = _col_f64_nullable('pnl')
         _broker_realised = (
-            _col_f64_nullable(lf, 'realised').fill_null(0.0)
+            _col_f64_nullable('realised').fill_null(0.0)
             if 'realised' in cols else pl.lit(0.0)
         )
         _pnl_expr = (
@@ -2182,8 +2182,8 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
     # percent would round to 0. Fall back to |avg × qty| (= notional at
     # entry) so opened-today rows still show a meaningful Day % — the same
     # number the operator computes mentally as `(LTP − entry)/entry × 100`.
-    _close_denom = (_cls * _col_f64(lf, 'quantity')).abs()
-    _avg_denom   = (_col_f64(lf, 'average_price') * _col_f64(lf, 'quantity')).abs()
+    _close_denom = (_cls * _col_f64('quantity')).abs()
+    _avg_denom   = (_col_f64('average_price') * _col_f64('quantity')).abs()
     lf = lf.with_columns([
         pl.when(_close_denom != 0.0)
         .then(pl.col("day_change_val") / _close_denom * 100.0)
@@ -2191,8 +2191,8 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
         .then(pl.col("day_change_val") / _avg_denom * 100.0)
         .otherwise(pl.lit(0.0))
         .alias("day_change_percentage"),
-        pl.when((_col_f64(lf, 'average_price') * _col_f64(lf, 'quantity')).abs() != 0.0)
-        .then(pl.col("pnl") / (_col_f64(lf, 'average_price') * _col_f64(lf, 'quantity')).abs() * 100.0)
+        pl.when((_col_f64('average_price') * _col_f64('quantity')).abs() != 0.0)
+        .then(pl.col("pnl") / (_col_f64('average_price') * _col_f64('quantity')).abs() * 100.0)
         .otherwise(pl.lit(0.0))
         .alias("pnl_percentage"),
     ])

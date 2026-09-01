@@ -13,7 +13,6 @@ from typing import Any, Optional
 from backend.shared.helpers.ssot_fetch import ssot_fetch
 
 import contextvars
-import socket
 
 import urllib3.util.connection
 import requests
@@ -50,7 +49,6 @@ _IPV6_FAMILY_OVERRIDE: contextvars.ContextVar[bool] = (
 
 urllib3.util.connection.HAS_IPV6 = False
 
-_orig_allowed_gai_family = urllib3.util.connection.allowed_gai_family
 def _ramboq_allowed_gai_family():
     # When an IPv6-source adapter is mid-request in this context, return
     # AF_UNSPEC so urllib3 honours the IPv6 source_address binding.
@@ -66,6 +64,9 @@ from backend.shared.helpers.decorators import retry_kite_conn
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.singleton_base import SingletonBase
 from backend.shared.helpers.utils import generate_totp, secrets, config
+
+
+_DHAN_LOGIN_COOLOFF_PATH = "/tmp/ramboq_dhan_login_cooloff.json"
 
 
 def _get_source_ip_from_secrets(section: str, account: str) -> str | None:
@@ -765,12 +766,10 @@ class DhanConnection:
         # Restore persisted login cooloff (survives process restarts so a
         # restarted service doesn't immediately re-hammer Dhan's rate-limited
         # generate_token endpoint).
-        _DHAN_LOGIN_COOLOFF_PATH = "/tmp/ramboq_dhan_login_cooloff.json"
         try:
-            import json as _json_mod, os as _os_mod
-            if _os_mod.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
+            if os.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
                 with open(_DHAN_LOGIN_COOLOFF_PATH) as _cf:
-                    _cd = _json_mod.load(_cf)
+                    _cd = json.load(_cf)
                 _blocked = float(_cd.get(self.account, 0.0))
                 if _blocked > _time_mod.time():
                     self._login_blocked_until = _blocked
@@ -1131,19 +1130,17 @@ class DhanConnection:
             # Persist the cooloff to disk so a process restart during the
             # cool-off window doesn't reset the counter, which would allow
             # immediate re-hammering of Dhan's rate-limited endpoint.
-            _DHAN_LOGIN_COOLOFF_PATH = "/tmp/ramboq_dhan_login_cooloff.json"
             try:
-                import json as _json_mod, os as _os_mod
                 _cooloff_data: dict = {}
-                if _os_mod.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
+                if os.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
                     try:
                         with open(_DHAN_LOGIN_COOLOFF_PATH) as _cf:
-                            _cooloff_data = _json_mod.load(_cf)
+                            _cooloff_data = json.load(_cf)
                     except Exception:
                         _cooloff_data = {}
                 _cooloff_data[self.account] = self._login_blocked_until
                 with open(_DHAN_LOGIN_COOLOFF_PATH, "w") as _cf:
-                    _json_mod.dump(_cooloff_data, _cf)
+                    json.dump(_cooloff_data, _cf)
             except Exception as _persist_err:
                 logger.warning(
                     "[DHAN-COOLOFF] %r: failed to persist login cooloff: %s",
@@ -1162,15 +1159,13 @@ class DhanConnection:
         )
         # Clear persisted cooloff so the next process restart doesn't
         # restore a now-stale block.
-        _DHAN_LOGIN_COOLOFF_PATH = "/tmp/ramboq_dhan_login_cooloff.json"
         try:
-            import json as _json_mod, os as _os_mod
-            if _os_mod.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
+            if os.path.exists(_DHAN_LOGIN_COOLOFF_PATH):
                 with open(_DHAN_LOGIN_COOLOFF_PATH) as _cf:
-                    _cd = _json_mod.load(_cf)
+                    _cd = json.load(_cf)
                 _cd.pop(self.account, None)
                 with open(_DHAN_LOGIN_COOLOFF_PATH, "w") as _cf:
-                    _json_mod.dump(_cd, _cf)
+                    json.dump(_cd, _cf)
         except Exception:
             pass
         self._access_token = access_token

@@ -823,7 +823,7 @@ class TickerManager:
             # operator would have intervened.
             if len(self._swap_history) > 128:
                 self._swap_history = self._swap_history[-128:]
-        _now = time.time()
+        _now = now
         if len(self._swap_history) % 10 == 0 or _now - self._last_swap_log_ts > 5.0:
             self._last_swap_log_ts = _now
             logger.info(
