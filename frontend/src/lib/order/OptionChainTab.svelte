@@ -12,7 +12,7 @@
   import { visibleInterval, withGuard } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
-    fetchOptionsSpot, fetchChainQuotes, fetchChainQuotesPrices, fetchChainExpiries,
+    fetchOptionsSpot, fetchChainQuotes, fetchChainQuotesPrices,
     placeTicketOrder,
     fetchAccounts,
   } from '$lib/api';
@@ -20,8 +20,8 @@
   import Select from '$lib/Select.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import {
-    suggestUnderlyings,
-    listFutures, getInstrument,
+    loadInstruments, suggestUnderlyings,
+    listExpiries, listFutures, getInstrument,
   } from '$lib/data/instruments';
   import { parseChainQuoteRow } from '$lib/data/chainQuotes';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
@@ -125,8 +125,10 @@
   // default-pick effect below prefers this expiry over chainExpiries[0]
   // (the near-month default) — operator clicking "close this position"
   // lands on the position's own contract month, not nearest-future.
+  let instrumentsReady = $state(false);
+
   const seedExpiry = $derived.by(() => {
-    if (!symbol) return null;
+    if (!instrumentsReady || !symbol) return null;
     const inst = getInstrument(String(symbol).toUpperCase());
     return inst?.x || null;
   });
@@ -253,65 +255,9 @@
     return out;
   });
 
-  let chainExpiries = $state(/** @type {string[]} */ ([]));
-  let _chainExpiriesLoading = $state(false);
-  $effect(() => {
-    const u = chainUnderlying;
-    let retryCount = 0;
-    /** @type {ReturnType<typeof setTimeout> | null} */
-    let retryTimer = null;
-    const controller = new AbortController();
-
-    function cancel() {
-      console.log(`[chain] cancel: underlying=${u} had retryCount=${retryCount}`);
-      controller.abort();
-      if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-    }
-
-    function attempt() {
-      if (!u) { chainExpiries = []; _chainExpiriesLoading = false; return; }
-      if (controller.signal.aborted) { chainExpiries = []; _chainExpiriesLoading = false; return; }
-      console.log(`[chain] attempt #${retryCount} underlying=${u}`);
-      // Only show the loading spinner on the very first attempt — subsequent retries
-      // are silent so the grid (empty) stays visible rather than hanging the UI.
-      if (retryCount === 0) _chainExpiriesLoading = true;
-      fetchChainExpiries(u, controller.signal)
-        .then(/** @param {any} d */ (d) => {
-          const expiries = Array.isArray(d?.expiries) ? d.expiries : [];
-          const cacheReady = d?.ready === true;
-          console.log(`[chain] response: expiries=${expiries.length} cacheReady=${cacheReady}`);
-          if (expiries.length > 0 || cacheReady || retryCount >= 6) {
-            // Accept the result — cache warm (ready) or found expiries or retry limit hit.
-            chainExpiries = expiries;
-            _chainExpiriesLoading = false;
-          } else {
-            // Cache cold: show empty grid immediately, retry silently in background.
-            chainExpiries = [];
-            _chainExpiriesLoading = false;
-            retryCount++;
-            retryTimer = setTimeout(attempt, 5000);
-          }
-        })
-        .catch((/** @type {any} */ err) => {
-          if (err?.name === 'AbortError') {
-            // Effect cleanup aborted this fetch — reset the spinner so the
-            // next effect run (new underlying) doesn't inherit a stuck state.
-            chainExpiries = [];
-            _chainExpiriesLoading = false;
-            return;
-          }
-          console.log(`[chain] fetch error: name=${err?.name} retrying=${retryCount < 6}`);
-          chainExpiries = [];
-          _chainExpiriesLoading = false;
-          if (retryCount < 6) {
-            retryCount++;
-            retryTimer = setTimeout(attempt, 5000);
-          }
-        });
-    }
-
-    attempt();
-    return cancel;
+  const chainExpiries = $derived.by(() => {
+    if (!instrumentsReady || !chainUnderlying) return [];
+    return listExpiries(chainUnderlying.toUpperCase(), 'CE');
   });
   // Human-readable expiry label for the picker. Input is YYYY-MM-DD;
   // output is e.g. "26 Jun 2026" / "26 Jun 2026 (Thu)" so the
@@ -407,7 +353,6 @@
 
   $effect(() => {
     void chainUnderlying;
-    void chainExpiries; // force tracking — array is assigned async, short-circuit would miss it
     if (chainExpiries.length && !chainExpiries.includes(chainExpiry)) {
       // Prefer the seed contract's own expiry if it's in the list —
       // operator clicked a specific position (e.g. NIFTY26MAY22000CE)
@@ -978,6 +923,8 @@
   }
 
   onMount(async () => {
+    await loadInstruments();
+    instrumentsReady = true;
     // Self-fetch accounts when the prop didn't supply any.
     if (!accounts.length && !_isRealAcct(account)) {
       fetchAccounts()
@@ -995,8 +942,8 @@
 </script>
 
 <div class="oct-root">
-  {#if _chainExpiriesLoading && !chainExpiries.length}
-    <div class="oct-empty">Fetching expiries…</div>
+  {#if !instrumentsReady && chainUnderlying}
+    <div class="oct-empty">Loading instruments…</div>
   {/if}
   <!-- Account / Underlying / Expiry / Kind / Mode pickers retired per
        operator request — Account lives in the modal header's Account
