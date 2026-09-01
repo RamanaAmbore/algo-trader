@@ -588,7 +588,6 @@ class ChainQuotesResponse(msgspec.Struct):
     expiry:     str
     rows:       list[ChainQuoteRow]
     expiries:   list[str] = []
-    ready:      bool      = False
 
 
 class ChainSnapshotLeg(msgspec.Struct):

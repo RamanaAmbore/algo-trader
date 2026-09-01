@@ -12,7 +12,7 @@
   import { visibleInterval } from '$lib/stores';
   import { isMarketOpen } from '$lib/marketHours';
   import {
-    fetchOptionsSpot, fetchChainQuotes, fetchChainQuotesPrices,
+    fetchOptionsSpot, fetchChainQuotesPrices,
     placeTicketOrder,
     fetchAccounts,
   } from '$lib/api';

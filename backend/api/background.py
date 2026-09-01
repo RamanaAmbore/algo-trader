@@ -2132,7 +2132,7 @@ async def _task_instruments() -> None:
                     _IR(cycle_date=result.cycle_date, count=len(_chain_items), items=_chain_items))
                 exp_idx = _build_expiries_index(_chain_items)
                 _store["instruments_chain_expiries"] = (_time.monotonic() + 86400, exp_idx)
-                logger.warning(
+                logger.info(
                     "Background: instruments_chain_expiries rebuilt — %d NFO+MCX rows, %d underlyings — %s",
                     len(_chain_items), len(exp_idx),
                     {k: v for k, v in list(exp_idx.items())[:8]},
@@ -2187,7 +2187,7 @@ async def _task_chain_instruments() -> None:
                     _IR(cycle_date=_full.cycle_date, count=len(_chain_items), items=_chain_items))
                 exp_idx = _build_expiries_index(_chain_items)
                 _store["instruments_chain_expiries"] = (_time.monotonic() + 86400, exp_idx)
-                logger.warning(
+                logger.info(
                     "[bg-chain-instruments] built from instruments cache: %d NFO+MCX, %d underlyings — %s",
                     len(_chain_items), len(exp_idx),
                     {k: v for k, v in list(exp_idx.items())[:8]},
@@ -2202,7 +2202,7 @@ async def _task_chain_instruments() -> None:
                 _store["instruments_chain"] = (_time.monotonic() + 86400, result)
                 exp_idx = _build_expiries_index(result.items)
                 _store["instruments_chain_expiries"] = (_time.monotonic() + 86400, exp_idx)
-                logger.warning(
+                logger.info(
                     "[bg-chain-instruments] broker fetch: %d NFO+MCX, %d underlyings — %s",
                     result.count, len(exp_idx),
                     {k: v for k, v in list(exp_idx.items())[:8]},
