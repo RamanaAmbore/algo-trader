@@ -3832,10 +3832,9 @@
 
   function ctxOpenOptions(row) {
     closeContextMenu();
-    const underlying = encodeURIComponent(
-      row.underlying || row.tradingsymbol || ''
-    );
-    window.location.href = `/admin/derivatives?u=${underlying}`;
+    const ts = String(row.tradingsymbol || '').toUpperCase();
+    const root = ts.replace(/\d.*$/, '') || String(row.underlying || '').replace(/\s+/g, '') || ts;
+    window.location.href = `/admin/derivatives?u=${encodeURIComponent(root)}`;
   }
   function ctxOpenTicket(row) {
     closeContextMenu();

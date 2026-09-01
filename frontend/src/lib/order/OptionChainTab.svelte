@@ -271,30 +271,34 @@
     function attempt() {
       if (!u) { chainExpiries = []; _chainExpiriesLoading = false; return; }
       console.log(`[chain] attempt #${retryCount} underlying=${u}`);
-      _chainExpiriesLoading = true;
+      // Only show the loading spinner on the very first attempt — subsequent retries
+      // are silent so the grid (empty) stays visible rather than hanging the UI.
+      if (retryCount === 0) _chainExpiriesLoading = true;
       fetchChainExpiries(u, controller.signal)
         .then(/** @param {any} d */ (d) => {
           const expiries = Array.isArray(d?.expiries) ? d.expiries : [];
-          const retrying = expiries.length === 0 && retryCount < 6;
-          console.log(`[chain] response: expiries=${expiries.length} retrying=${retrying}`);
-          if (expiries.length > 0 || retryCount >= 6) {
+          const cacheReady = d?.ready === true;
+          console.log(`[chain] response: expiries=${expiries.length} cacheReady=${cacheReady}`);
+          if (expiries.length > 0 || cacheReady || retryCount >= 6) {
+            // Accept the result — cache warm (ready) or found expiries or retry limit hit.
             chainExpiries = expiries;
             _chainExpiriesLoading = false;
           } else {
+            // Cache cold: show empty grid immediately, retry silently in background.
+            chainExpiries = [];
+            _chainExpiriesLoading = false;
             retryCount++;
             retryTimer = setTimeout(attempt, 5000);
           }
         })
         .catch((/** @type {any} */ err) => {
           if (err?.name === 'AbortError') return;
-          const retrying = retryCount < 6;
-          console.log(`[chain] fetch error: name=${err?.name} retrying=${retrying}`);
+          console.log(`[chain] fetch error: name=${err?.name} retrying=${retryCount < 6}`);
+          chainExpiries = [];
+          _chainExpiriesLoading = false;
           if (retryCount < 6) {
             retryCount++;
             retryTimer = setTimeout(attempt, 5000);
-          } else {
-            chainExpiries = [];
-            _chainExpiriesLoading = false;
           }
         });
     }

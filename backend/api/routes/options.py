@@ -588,6 +588,7 @@ class ChainQuotesResponse(msgspec.Struct):
     expiry:     str
     rows:       list[ChainQuoteRow]
     expiries:   list[str] = []
+    ready:      bool      = False
 
 
 class ChainSnapshotLeg(msgspec.Struct):
@@ -2674,7 +2675,7 @@ class OptionsController(Controller):
         When prices=False (default) the strike grid is returned
         immediately with bid=None / ask=None for every row — no broker
         call is made.  Use prices=True to fetch live bid/ask depth."""
-        und = (underlying or "").upper().strip()
+        und = _re.sub(r'\s+', '', (underlying or "").upper())
         exp = (expiry or "").strip()
         if not und:
             raise HTTPException(status_code=400,
@@ -2715,6 +2716,7 @@ class OptionsController(Controller):
                     underlying=und, expiry="",
                     expiries=_exp_index[und],
                     rows=[],
+                    ready=True,
                 )
             if _exp_index is None:
                 logger.debug("[chain-quotes] fast-path miss for %s: exp_index cold", und)
@@ -2726,11 +2728,11 @@ class OptionsController(Controller):
         # Expiry-only mode: return just the expiries list, no broker call.
         if not exp:
             return ChainQuotesResponse(
-                underlying=und, expiry="", expiries=all_expiries, rows=[]
+                underlying=und, expiry="", expiries=all_expiries, rows=[], ready=True
             )
         if not sym_by_strike:
             return ChainQuotesResponse(
-                underlying=und, expiry=exp, expiries=all_expiries, rows=[]
+                underlying=und, expiry=exp, expiries=all_expiries, rows=[], ready=True
             )
 
         # ── Fast path: prices=False skips broker call entirely ──
@@ -2740,7 +2742,7 @@ class OptionsController(Controller):
             book_by_strike = _chain_quotes_build_book(sym_by_strike, {}, {})
             rows = _chain_quotes_build_rows(book_by_strike)
             return ChainQuotesResponse(
-                underlying=und, expiry=exp, expiries=all_expiries, rows=rows
+                underlying=und, expiry=exp, expiries=all_expiries, rows=rows, ready=True
             )
 
         # ── Off-market gate: skip broker.quote() when prices are frozen ──
@@ -2760,6 +2762,7 @@ class OptionsController(Controller):
                 expiry=exp,
                 expiries=all_expiries,
                 rows=[],
+                ready=True,
             )
 
         # Build quote keys, fire one broker.quote() call.
@@ -2769,7 +2772,7 @@ class OptionsController(Controller):
         book_by_strike = _chain_quotes_build_book(sym_by_strike, quote_resp, key_meta)
         rows = _chain_quotes_build_rows(book_by_strike)
         result = ChainQuotesResponse(
-            underlying=und, expiry=exp, expiries=all_expiries, rows=rows
+            underlying=und, expiry=exp, expiries=all_expiries, rows=rows, ready=True
         )
         # Populate the closed-market cache so subsequent off-market polls
         # skip the broker call. Written on every live response so the cache
