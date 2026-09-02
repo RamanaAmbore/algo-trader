@@ -2715,7 +2715,6 @@ class OptionsController(Controller):
                     underlying=und, expiry="",
                     expiries=_exp_index[und],
                     rows=[],
-                    ready=True,
                 )
             if _exp_index is None:
                 logger.debug("[chain-quotes] fast-path miss for %s: exp_index cold", und)
@@ -2727,12 +2726,10 @@ class OptionsController(Controller):
         # Expiry-only mode: return just the expiries list, no broker call.
         if not exp:
             return ChainQuotesResponse(
-                underlying=und, expiry="", expiries=all_expiries, rows=[], ready=True
-            )
+                underlying=und, expiry="", expiries=all_expiries, rows=[]            )
         if not sym_by_strike:
             return ChainQuotesResponse(
-                underlying=und, expiry=exp, expiries=all_expiries, rows=[], ready=True
-            )
+                underlying=und, expiry=exp, expiries=all_expiries, rows=[]            )
 
         # ── Fast path: prices=False skips broker call entirely ──
         # Returns the strike skeleton (sym/ls/exchange populated, bid/ask=None)
@@ -2741,8 +2738,7 @@ class OptionsController(Controller):
             book_by_strike = _chain_quotes_build_book(sym_by_strike, {}, {})
             rows = _chain_quotes_build_rows(book_by_strike)
             return ChainQuotesResponse(
-                underlying=und, expiry=exp, expiries=all_expiries, rows=rows, ready=True
-            )
+                underlying=und, expiry=exp, expiries=all_expiries, rows=rows            )
 
         # ── Off-market gate: skip broker.quote() when prices are frozen ──
         # During off-market hours option prices don't change, so we return
@@ -2761,7 +2757,6 @@ class OptionsController(Controller):
                 expiry=exp,
                 expiries=all_expiries,
                 rows=[],
-                ready=True,
             )
 
         # Build quote keys, fire one broker.quote() call.
@@ -2771,8 +2766,7 @@ class OptionsController(Controller):
         book_by_strike = _chain_quotes_build_book(sym_by_strike, quote_resp, key_meta)
         rows = _chain_quotes_build_rows(book_by_strike)
         result = ChainQuotesResponse(
-            underlying=und, expiry=exp, expiries=all_expiries, rows=rows, ready=True
-        )
+            underlying=und, expiry=exp, expiries=all_expiries, rows=rows        )
         # Populate the closed-market cache so subsequent off-market polls
         # skip the broker call. Written on every live response so the cache
         # always holds the freshest data from the last market session.
