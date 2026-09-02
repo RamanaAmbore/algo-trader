@@ -218,6 +218,43 @@ async def test_agent_alerts_disabled_skips_dispatch():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_skip_channels_skips_listed_channels():
+    """skip_channels prevents telegram/email from firing when rich alert already handled them."""
+    from backend.api.algo.events import dispatch
+
+    fired_channels: list[str] = []
+
+    async def fake_dispatch_channel(ch, *args, **kwargs):
+        fired_channels.append(ch.get("channel"))
+
+    mock_agent = MagicMock()
+    mock_agent.events = [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "ntfy", "enabled": True},
+        {"channel": "email", "enabled": True},
+        {"channel": "log", "enabled": True},
+    ]
+    mock_agent.name = "loss-margin-low"
+    mock_agent.slug = "loss-margin-low"
+    mock_eval = MagicMock()
+    mock_eval.condition_text = "funds.any_acct avail_margin=0.00 (< 25000)"
+    mock_eval.detail = {}
+
+    with patch("backend.shared.helpers.utils.is_enabled", return_value=True), \
+         patch("backend.api.algo.template_registry.resolve_events",
+               return_value=mock_agent.events), \
+         patch("backend.api.algo.events._dispatch_channel", side_effect=fake_dispatch_channel), \
+         patch("backend.api.algo.events._log_event", new_callable=AsyncMock):
+        await dispatch(mock_agent, mock_eval,
+                       skip_channels=frozenset({"telegram", "email"}))
+
+    assert "telegram" not in fired_channels, "telegram should be skipped"
+    assert "email" not in fired_channels, "email should be skipped"
+    assert "ntfy" in fired_channels, "ntfy must fire even when rich alert sent"
+    assert "log" in fired_channels, "log must fire even when rich alert sent"
+
+
+@pytest.mark.asyncio
 async def test_agent_alerts_enabled_calls_dispatch():
     """When agent_alerts is enabled, dispatch() proceeds past the guard."""
     from unittest.mock import AsyncMock, MagicMock, patch, call

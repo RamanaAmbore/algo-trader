@@ -1988,17 +1988,18 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
     rich_sent = await _v2_send_rich_alert(
         agent, matches_, now, sim_mode=sim_mode_p, context=context,
     )
-    if not rich_sent:
-        await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p)
-    else:
-        await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode_p)
-        if broadcast_fn:
-            broadcast_fn('agent_alert', {
-                'slug': agent.slug,
-                'message': result.condition_text,
-                'timestamp': now.isoformat(),
-                'sim_mode': sim_mode_p,
-            })
+    # Rich alert (telegram+email table) runs first. If it succeeded, skip those
+    # channels in dispatch() — they were already handled by the rich path.
+    # ntfy / log / websocket / inapp always run via dispatch() regardless.
+    skip = frozenset({'telegram', 'email'}) if rich_sent else frozenset()
+    await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p, skip_channels=skip)
+    if rich_sent and broadcast_fn:
+        broadcast_fn('agent_alert', {
+            'slug': agent.slug,
+            'message': result.condition_text,
+            'timestamp': now.isoformat(),
+            'sim_mode': sim_mode_p,
+        })
     if agent.actions:
         action_ctx = dict(context)
         action_ctx["account"] = "TOTAL"

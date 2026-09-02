@@ -77,7 +77,8 @@ def _build_dispatch_email_body(
     )
 
 
-async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False):
+async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False,
+                   skip_channels: frozenset = frozenset()):
     """
     Send alert through all enabled channels for an agent.
 
@@ -127,6 +128,8 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
 
     for ch in channels:
         if not ch.get("enabled", False):
+            continue
+        if ch.get("channel") in skip_channels:
             continue
 
         try:
