@@ -1,73 +1,51 @@
-# Plan: Separate rate-of-change loss alerts into critical-tier agents
+# Plan: Suppress all agent alerts on dev
 
 ## Context
-Loss agents are hard-coded in `BUILTIN_AGENTS` in `agent_engine.py`. Currently:
-- `loss-positions-acct` (HIGH tier) contains BOTH static threshold conditions (`pnl_pct <= -2.0`,
-  `pnl <= -30000`) AND rate-of-change conditions (`pnl_rate_abs <= -3000`, `pnl_rate_pct <= -0.25`).
-- Rate-of-change conditions measure ₹/min burn rate over a rolling window — a different, more urgent
-  signal than static threshold breaches.
-- The operator wants ALL rate-of-change conditions to fire as CRITICAL, but mixing them with static
-  thresholds in a HIGH-tier agent prevents that.
-
-ntfy is already wired: `_LOSS_AGENT_NTFY` dict + additive event sync populates per-agent ntfy events
-with priorities on startup. Dispatch is gated by `is_enabled("ntfy")`, which is True in prod
-(only disabled in `cap_in_dev`). The legacy `agent_alert.ntfy: false` in backend_config.yaml is
-unused by the v2 engine.
-
-The `sync_builtin_agents()` function preserves operator-tuned `conditions`, `cooldown_minutes`,
-`events`, and `actions` on conflict — so operators can edit thresholds, cooldowns, and ntfy priority
-from `/automation` without redeployment. This already works; the plan just improves the initial seed.
+Agent alert dispatch in `backend/api/algo/events.py` gates `telegram`, `ntfy`, and `mail`
+channels via `is_enabled()` checks (all False in `cap_in_dev`). However, the `log`,
+`websocket`, and `inapp` channels in `_dispatch_channel()` fire unconditionally —
+they are not gated. Loss agents running on dev therefore still emit log entries and
+WebSocket/inapp notifications to any connected admin session. The fix adds one
+`cap_in_dev` flag and a single early-return guard at the top of `dispatch()`.
 
 ## Task
-In `backend/api/algo/agent_engine.py`:
 
-1. **Add `loss-rate-acct`** to `BUILTIN_AGENTS` — a new CRITICAL agent for per-account rate conditions:
-   - slug: `"loss-rate-acct"`
-   - tier: `"critical"`
-   - topic: `"positions_loss"`
-   - name: `"Positions per-account burn-rate guardrail"`
-   - conditions: `{"any": [{"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -3000}, {"metric": "pnl_rate_pct", "scope": "positions.any_acct", "op": "<=", "value": -0.25}]}`
-   - cooldown_minutes: 10 (shorter — rate conditions are time-sensitive)
-   - ntfy priority: `"urgent"` (add to `_LOSS_AGENT_NTFY`)
+1. **`backend/config/backend_config.yaml`** — add one flag to `cap_in_dev`:
+   ```yaml
+   agent_alerts:  False  # all agent alert dispatch (dev: off)
+   ```
+   No change to `cap_in_prod` (missing key defaults to True).
 
-2. **Remove rate conditions from `loss-positions-acct`** — keep only static thresholds:
-   - Retain: `pnl_pct <= -2.0`, `pnl <= -30000`
-   - Remove: `pnl_rate_abs <= -3000`, `pnl_rate_pct <= -0.25`
-
-3. **Leave `loss-positions-total` unchanged** — it is already CRITICAL tier and already contains
-   rate conditions (`pnl_rate_abs <= -6000`, `pnl_rate_pct <= -0.25`) which correctly fire critical alerts.
-
-4. **Leave other agents unchanged** — `loss-margin-low`, `loss-funds-negative`,
-   `loss-pos-total-auto-close` are unaffected.
-
-No DB schema changes needed — `agents` table already has all required columns
-(`cooldown_minutes`, `tier`, `topic`, `events` JSONB, `is_system`).
+2. **`backend/api/algo/events.py`** — add an early-return at the top of the
+   `dispatch()` function (line 80):
+   ```python
+   async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False):
+       if not is_enabled('agent_alerts'):
+           return
+       # ... existing body unchanged
+   ```
+   `is_enabled` is already imported on line 15 of events.py — no new import needed.
 
 ## Agents
-- backend: In `backend/api/algo/agent_engine.py`:
-  (a) Add `loss-rate-acct` dict to BUILTIN_AGENTS (insert after `loss-positions-acct`):
-      slug="loss-rate-acct", tier="critical", topic="positions_loss",
-      name="Positions per-account burn-rate guardrail",
-      long_name="when:positions.any_acct.pnl_rate critical/tg+ntfy+log do:notify-only",
-      conditions={"any": [{"metric":"pnl_rate_abs","scope":"positions.any_acct","op":"<=","value":-3000},
-                           {"metric":"pnl_rate_pct","scope":"positions.any_acct","op":"<=","value":-0.25}]},
-      cooldown_minutes=10 (override default of 30).
-  (b) In `_LOSS_AGENT_NTFY` dict (lines 913-919), add: `"loss-rate-acct": "urgent"`.
-  (c) In `loss-positions-acct` conditions (lines 805-810), remove the two rate lines
-      (pnl_rate_abs and pnl_rate_pct entries). Keep only pnl_pct and pnl static thresholds.
-  For every file changed, write or update at least one test covering the changed behaviour.
-  This is mandatory — not optional.
+- backend: Apply both changes:
+  (a) In `backend/config/backend_config.yaml`, add `agent_alerts: False` to the
+      `cap_in_dev` block (after the existing `ntfy: False` line).
+  (b) In `backend/api/algo/events.py`, insert `if not is_enabled('agent_alerts'): return`
+      as the first line of the `dispatch()` function body (after the docstring if any,
+      before any other logic).
+  For every file you change or create, you MUST write or update at least one test covering
+  the changed behaviour. This is mandatory — not optional.
 - frontend: skip
 - broker: skip
 - doc: skip
-- backend-test: In `backend/tests/` add tests (new file `test_loss_agents.py` or extend existing):
-  - Assert `loss-rate-acct` is in BUILTIN_AGENTS, tier=="critical", cooldown_minutes==10
-  - Assert `loss-rate-acct` events include ntfy channel with priority=="urgent"
-  - Assert `loss-positions-acct` conditions contain NO pnl_rate_abs/pnl_rate_pct entries
-  - Assert `loss-positions-total` conditions still include rate entries (unchanged)
-  - Assert `_LOSS_AGENT_NTFY["loss-rate-acct"] == "urgent"`
-  For every file changed, write or update at least one test covering the changed behaviour.
-  This is mandatory — not optional.
+- backend-test: Add tests to `backend/tests/test_cap_flags_dev.py` (already exists — extend it):
+  - Mock `is_enabled` to return False for 'agent_alerts'
+  - Call `events.dispatch(mock_agent, mock_result, broadcast_fn=mock_broadcast)`
+  - Assert the function returns immediately (broadcast_fn NOT called, no channels fired)
+  - Mock `is_enabled` to return True for 'agent_alerts'
+  - Assert dispatch proceeds normally (broadcast_fn IS called)
+  For every file you change or create, you MUST write or update at least one test covering
+  the changed behaviour. This is mandatory — not optional.
 - playwright: skip
 
 ## Tests
@@ -76,12 +54,11 @@ No DB schema changes needed — `agents` table already has all required columns
 - playwright: no
 
 ## Commit message
-feat(agents): split per-account rate-of-change into critical-tier loss-rate-acct agent
+fix(dev): suppress all agent alert dispatch on dev via agent_alerts cap flag
 
 ## Done when
-- `loss-rate-acct` (critical, cooldown 10 min, ntfy urgent) is in BUILTIN_AGENTS
-- `loss-positions-acct` conditions contain only static threshold conditions (no rate metrics)
-- `loss-positions-total` (critical, already has rate conditions) is unchanged
-- ntfy fires for all loss agents in prod (already wired — no config change needed)
-- Operator can tune thresholds, cooldowns, tier, ntfy priority from `/automation` without redeploy
+- `cap_in_dev.agent_alerts: False` is in backend_config.yaml
+- `events.dispatch()` returns immediately when `is_enabled('agent_alerts')` is False
+- No log entries, no WebSocket pushes, no ntfy/telegram from loss agents on dev
+- prod behaviour unchanged
 - pytest green

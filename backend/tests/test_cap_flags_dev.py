@@ -192,3 +192,62 @@ async def test_visitor_run_once_calls_arun_daily_when_cap_on():
             await arun_daily_mock()
 
     arun_daily_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Guard 4 — dispatch() exits early when agent_alerts is off
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_agent_alerts_disabled_skips_dispatch():
+    """When agent_alerts is disabled, dispatch() returns immediately without firing any channel."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from backend.api.algo.events import dispatch
+
+    mock_agent = MagicMock()
+    mock_agent.events = []
+    mock_agent.name = "test-agent"
+    mock_eval = MagicMock()
+    mock_eval.fired = True
+    mock_broadcast = MagicMock()
+
+    with patch("backend.shared.helpers.utils.is_enabled", return_value=False):
+        await dispatch(mock_agent, mock_eval, broadcast_fn=mock_broadcast)
+
+    mock_broadcast.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agent_alerts_enabled_calls_dispatch():
+    """When agent_alerts is enabled, dispatch() proceeds past the guard."""
+    from unittest.mock import AsyncMock, MagicMock, patch, call
+    from backend.api.algo.events import dispatch
+
+    mock_agent = MagicMock()
+    mock_agent.events = []  # no channels → dispatch proceeds but does nothing else
+    mock_agent.name = "test-agent"
+    mock_agent.slug = "test"
+    mock_agent.tier = "high"
+    mock_agent.topic = "test_topic"
+    mock_eval = MagicMock()
+    mock_eval.fired = False  # not fired → no channel dispatch
+    mock_eval.condition_text = "test condition"
+    mock_eval.detail = {}
+    mock_broadcast = MagicMock()
+
+    with patch("backend.shared.helpers.utils.is_enabled", return_value=True):
+        with patch(
+            "backend.api.algo.template_registry.resolve_events",
+            return_value=[],
+        ):
+            with patch(
+                "backend.api.algo.events._log_event",
+                new_callable=AsyncMock,
+            ) as mock_log:
+                # Should not raise even with minimal mock_agent/eval
+                try:
+                    await dispatch(mock_agent, mock_eval, broadcast_fn=mock_broadcast)
+                    # _log_event should be called since the cap is enabled
+                    mock_log.assert_called_once()
+                except Exception as e:
+                    pytest.fail(f"dispatch() raised {e} when agent_alerts is enabled")

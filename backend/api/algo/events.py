@@ -95,6 +95,9 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
 
     The branch tag is shown only on non-main deploys.
     """
+    if not is_enabled('agent_alerts'):
+        return
+
     from backend.shared.helpers.date_time_utils import timestamp_display
 
     branch = config.get("deploy_branch", "main")

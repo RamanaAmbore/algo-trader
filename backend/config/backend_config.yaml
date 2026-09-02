@@ -33,6 +33,7 @@ cap_in_dev:
   telegram:         False  # Telegram alert notifications
   mail:             False  # Email notifications (SMTP)
   ntfy:             False  # ntfy.sh push notifications
+  agent_alerts:     False  # all agent alert dispatch (dev: off)
   notify_on_deploy: False  # Dev branch alerts off per operator request.
   market_feed:      False  # Market news feed (Google News RSS)
   market_summary:  False   # open + close performance summaries (dev: off)
