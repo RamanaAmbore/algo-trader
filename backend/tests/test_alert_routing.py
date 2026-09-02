@@ -454,3 +454,95 @@ class TestBranchTagging:
             # Main branch should not have [main] tag (but will have just the prefix)
             assert '[main]' not in message, \
                 "Main branch should not be tagged [main] in message"
+
+
+class TestMarginLowZeroGuard:
+    """loss-margin-low must exclude avail_margin=0 (Kite data-load false positives)."""
+
+    def test_loss_margin_low_has_compound_all_condition(self):
+        """loss-margin-low conditions must be a compound 'all' node, not a bare leaf."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'loss-margin-low'), None)
+        assert agent is not None, "loss-margin-low not found in BUILTIN_AGENTS"
+        cond = agent['conditions']
+        assert 'all' in cond, (
+            "loss-margin-low conditions must be compound {'all': [...]} to exclude zero; "
+            f"got: {cond}"
+        )
+
+    def test_loss_margin_low_has_gt_zero_leaf(self):
+        """loss-margin-low must have an avail_margin > 0 leaf to exclude unloaded data."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'loss-margin-low'), None)
+        assert agent is not None
+        leaves = agent['conditions'].get('all', [])
+        gt_zero = [
+            leaf for leaf in leaves
+            if leaf.get('metric') == 'avail_margin'
+            and leaf.get('op') == '>'
+            and leaf.get('value') == 0
+        ]
+        assert len(gt_zero) == 1, (
+            "loss-margin-low must have exactly one avail_margin > 0 leaf; "
+            f"leaves found: {leaves}"
+        )
+
+    @staticmethod
+    def _load_registry_for_tests():
+        """Populate REGISTRY from SYSTEM_TOKENS (no DB needed) for evaluation tests."""
+        from backend.api.algo.grammar_registry import REGISTRY, _import_dotted
+        from backend.api.algo.grammar import SYSTEM_TOKENS, OPERATORS
+
+        REGISTRY.operators = dict(OPERATORS)
+        for tok in SYSTEM_TOKENS:
+            gk, tk, token = tok['grammar_kind'], tok['token_kind'], tok['token']
+            resolver = tok.get('resolver')
+            if gk == 'condition' and tk == 'metric' and resolver:
+                REGISTRY.metrics[token] = _import_dotted(resolver)
+            elif gk == 'condition' and tk == 'scope' and resolver:
+                REGISTRY.scopes[token] = _import_dotted(resolver)
+
+    def test_loss_margin_low_zero_does_not_fire(self):
+        """avail_margin=0.00 must NOT satisfy the loss-margin-low compound condition.
+
+        df_margins uses Kite column names: 'net' = available margin.
+        The _metric_avail_margin resolver reads row.get('net').
+        """
+        import pandas as pd
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS, v2_evaluate
+        from backend.api.algo.agent_evaluator import Context
+
+        self._load_registry_for_tests()
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'loss-margin-low'), None)
+        assert agent is not None
+
+        df = pd.DataFrame([
+            {'account': 'ACC1', 'net': 0.0, 'cash': 0.0, 'collateral': 0.0},
+        ])
+        ctx = Context(df_margins=df)
+        matches = v2_evaluate(agent['conditions'], ctx)
+        assert len(matches) == 0, (
+            "avail_margin=0.00 must NOT fire loss-margin-low (false positive guard); "
+            f"got matches: {matches}"
+        )
+
+    def test_loss_margin_low_nonzero_low_margin_fires(self):
+        """avail_margin between 0 and 25000 (exclusive) must fire loss-margin-low."""
+        import pandas as pd
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS, v2_evaluate
+        from backend.api.algo.agent_evaluator import Context
+
+        self._load_registry_for_tests()
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'loss-margin-low'), None)
+        assert agent is not None
+
+        df = pd.DataFrame([
+            {'account': 'ACC1', 'net': 15000.0, 'cash': 15000.0, 'collateral': 0.0},
+        ])
+        ctx = Context(df_margins=df)
+        matches = v2_evaluate(agent['conditions'], ctx)
+        assert len(matches) > 0, (
+            "avail_margin=15000 should fire loss-margin-low; no matches returned"
+        )

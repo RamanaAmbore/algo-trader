@@ -849,15 +849,19 @@ _LOSS_AGENTS = [
 
     # ── Funds: margin shortfall warning (early-warning before negative) ──
     dict(slug="loss-margin-low",
-         long_name="when:funds.any_acct.avail_margin<25000   alert:high/tg+email+ntfy+log   do:notify-only",
+         long_name="when:funds.any_acct.avail_margin>0&&<25000   alert:high/tg+email+ntfy+log   do:notify-only",
          tier="high",
          topic="funds_warning",
          name="Margin shortfall warning",
          description=(
              "Fires when available margin on any account drops below "
-             "₹25,000 — warning before margin goes negative."
+             "₹25,000 — warning before margin goes negative. "
+             "Excludes zero values (Kite data not yet loaded)."
          ),
-         conditions={"op": "<", "scope": "funds.any_acct", "value": 25000, "metric": "avail_margin"},
+         conditions={"all": [
+             {"op": "<", "scope": "funds.any_acct", "metric": "avail_margin", "value": 25000},
+             {"op": ">", "scope": "funds.any_acct", "metric": "avail_margin", "value": 0},
+         ]},
          scope="total",
          ),
 
