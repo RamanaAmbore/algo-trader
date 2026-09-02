@@ -35,6 +35,8 @@ cap_in_dev:
   ntfy:             False  # ntfy.sh push notifications
   notify_on_deploy: False  # Dev branch alerts off per operator request.
   market_feed:      False  # Market news feed (Google News RSS)
+  market_summary:  False   # open + close performance summaries (dev: off)
+  visitor_report:  False   # nightly nginx visitor digest (dev: off)
   simulator:        True   # /api/simulator market simulator (dev default: on)
   replay:           True   # /api/replay backtest engine (dev default: on)
 

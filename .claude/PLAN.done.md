@@ -1,51 +1,46 @@
-# Plan: Fix chain tab — restore July 2026 instruments-cache approach
+# Plan: Disable market summary and visitor reports on dev
 
 ## Context
-The chain tab broke across three compounding regressions:
-
-1. **IDB hang** — `_openDB()` had no `req.onblocked` handler. Safari fires `blocked` when another
-   tab holds the connection; without a handler the Promise hangs forever — try/catch can't rescue it.
-
-2. **Spinner never cleared** — `onMount` was `async` and awaited `loadInstruments()`. If IDB hung,
-   `instrumentsReady` was never set.
-
-3. **Grid never rendered** — `chainStrikes` was changed to derive from `Object.keys(chainQuotesMap)`
-   (API response keys) instead of `listStrikes()` (local instruments cache). Grid only appeared after
-   the slow broker API responded — or never, if `isMarketOpen()` was false.
-
-All three are fixed. Fixes 1+2 already committed (`ad7f4ee7`). Fix 3 is the remaining uncommitted
-change in the working tree (implemented and svelte-check verified by the implementation agent).
+Market open/close summaries and the nightly visitor report are currently firing on
+dev.ramboq.com. The cap_in_dev system already suppresses telegram, mail, and ntfy on
+dev — but the market summary (`_perf_fire_open_summary` / `_run_close_summary_once`) and
+visitor report (`_task_visitor_log_daily`) do not check any per-feature capability flag,
+so they run unconditionally regardless of the channel flags. The fix adds two new
+capability flags and gates the relevant code paths with them.
 
 ## Task
-Commit the already-implemented fix 3 to workshop and deploy:
+1. `backend/config/backend_config.yaml` — add two flags to `cap_in_dev`:
+   ```yaml
+   market_summary:  False  # open + close performance summaries (dev: off)
+   visitor_report:  False  # nightly nginx visitor digest (dev: off)
+   ```
+   No change to `cap_in_prod` (both are implicitly True there — missing key defaults to True).
 
-- `chainStrikes` → `listStrikes(underlying, 'CE', expiry)` from local instruments cache — grid
-  renders immediately when instruments are ready, no API wait
-- `addOptionToBasket` → uses `findOption()` for sym/ls/exchange; `chainQuotesMap` for bid/ask only
-- Quotes loading → single-phase `fetchChainQuotes` polled every 5 s; bid/ask overlaid on arrival;
-  grid shows `—` until first poll resolves
-- Removed: two-phase skeleton/prices loader, `_chainQuotesLoading`, `_chainQuotesError`,
-  `_pricesFetching`, `parseChainQuoteRow` import, `fetchChainQuotesPrices` import, `depthAvail`
-  template guards, `withGuard` import (was only used for chain quotes poll)
+2. `backend/api/background.py` — add `is_enabled()` guards in three places:
+   - `_perf_fire_open_summary()` (~line 626): early-return if `not is_enabled('market_summary')`
+   - `_run_close_summary_once()` (~line 5665): early-return if `not is_enabled('market_summary')`
+   - `_task_visitor_log_daily._run_once()` (~line 4267): early-return if `not is_enabled('visitor_report')`
+
+   Import `is_enabled` from `backend.shared.helpers.utils` (already imported in visitor task,
+   needs to be added locally in the other two functions or hoisted to the top of each).
 
 ## Agents
-- frontend: skip (changes already implemented and svelte-check verified — 0 errors)
-- backend: skip
+- backend: Apply all changes above to backend_config.yaml and background.py
+- frontend: skip
 - broker: skip
 - doc: skip
-- backend-test: skip
+- backend-test: skip (no new logic — guards are trivially correct; existing cap flag tests cover is_enabled)
 - playwright: skip
 
 ## Tests
 - pytest: no
-- svelte-check: yes (already green — verify before commit)
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(chain): revert chainStrikes to listStrikes() — grid from instruments cache, bid/ask overlaid from API
+fix(dev): disable market summary + visitor report on dev via cap_in_dev flags
 
 ## Done when
-- Strike grid appears immediately after expiry is picked (no API wait)
-- Bid/ask cells show `—` until `fetchChainQuotes` poll resolves (every 5 s when market is open)
-- svelte-check 0 errors, vitest passes
-- Committed to workshop → merged to dev → deployed to prod
+- dev.ramboq.com no longer sends market open/close summaries or visitor reports
+- prod.ramboq.com behaviour unchanged
+- `is_enabled('market_summary')` and `is_enabled('visitor_report')` toggleable from /admin/settings

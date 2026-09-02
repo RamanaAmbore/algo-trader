@@ -622,6 +622,9 @@ async def _perf_send_open_summaries(
 ) -> None:
     """Fire the once-per-day open summary per open segment. Uses
     `seg_state[seg['name']]['last_open']` as the idempotency key."""
+    from backend.shared.helpers.utils import is_enabled
+    if not is_enabled('market_summary'):
+        return
     from backend.shared.helpers.alert_utils import send_summary
     for seg in open_segments:
         ss = seg_state[seg['name']]
@@ -4265,6 +4268,9 @@ async def _task_visitor_log_daily() -> None:
     await asyncio.sleep(60)  # let DB init settle
 
     async def _run_once(send_telegram: bool = True) -> None:
+        from backend.shared.helpers.utils import is_enabled
+        if not is_enabled('visitor_report'):
+            return
         try:
             # Use `arun_daily` (the async variant) directly so the
             # call runs on this task's event loop — asyncpg's pool is
@@ -5645,6 +5651,9 @@ async def _task_broker_issue_daily() -> None:
 
 async def _run_close_once(state: dict) -> None:
     """One close-summary sweep — all segments that crossed their close trigger."""
+    from backend.shared.helpers.utils import is_enabled
+    if not is_enabled('market_summary'):
+        return
     from backend.shared.helpers.alert_utils import send_summary
     from backend.shared.helpers.summarise import (
         summarise_holdings as _summarise_holdings,
