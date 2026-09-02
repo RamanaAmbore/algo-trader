@@ -1,46 +1,87 @@
-# Plan: Disable market summary and visitor reports on dev
+# Plan: Separate rate-of-change loss alerts into critical-tier agents
 
 ## Context
-Market open/close summaries and the nightly visitor report are currently firing on
-dev.ramboq.com. The cap_in_dev system already suppresses telegram, mail, and ntfy on
-dev — but the market summary (`_perf_fire_open_summary` / `_run_close_summary_once`) and
-visitor report (`_task_visitor_log_daily`) do not check any per-feature capability flag,
-so they run unconditionally regardless of the channel flags. The fix adds two new
-capability flags and gates the relevant code paths with them.
+Loss agents are hard-coded in `BUILTIN_AGENTS` in `agent_engine.py`. Currently:
+- `loss-positions-acct` (HIGH tier) contains BOTH static threshold conditions (`pnl_pct <= -2.0`,
+  `pnl <= -30000`) AND rate-of-change conditions (`pnl_rate_abs <= -3000`, `pnl_rate_pct <= -0.25`).
+- Rate-of-change conditions measure ₹/min burn rate over a rolling window — a different, more urgent
+  signal than static threshold breaches.
+- The operator wants ALL rate-of-change conditions to fire as CRITICAL, but mixing them with static
+  thresholds in a HIGH-tier agent prevents that.
+
+ntfy is already wired: `_LOSS_AGENT_NTFY` dict + additive event sync populates per-agent ntfy events
+with priorities on startup. Dispatch is gated by `is_enabled("ntfy")`, which is True in prod
+(only disabled in `cap_in_dev`). The legacy `agent_alert.ntfy: false` in backend_config.yaml is
+unused by the v2 engine.
+
+The `sync_builtin_agents()` function preserves operator-tuned `conditions`, `cooldown_minutes`,
+`events`, and `actions` on conflict — so operators can edit thresholds, cooldowns, and ntfy priority
+from `/automation` without redeployment. This already works; the plan just improves the initial seed.
 
 ## Task
-1. `backend/config/backend_config.yaml` — add two flags to `cap_in_dev`:
-   ```yaml
-   market_summary:  False  # open + close performance summaries (dev: off)
-   visitor_report:  False  # nightly nginx visitor digest (dev: off)
-   ```
-   No change to `cap_in_prod` (both are implicitly True there — missing key defaults to True).
+In `backend/api/algo/agent_engine.py`:
 
-2. `backend/api/background.py` — add `is_enabled()` guards in three places:
-   - `_perf_fire_open_summary()` (~line 626): early-return if `not is_enabled('market_summary')`
-   - `_run_close_summary_once()` (~line 5665): early-return if `not is_enabled('market_summary')`
-   - `_task_visitor_log_daily._run_once()` (~line 4267): early-return if `not is_enabled('visitor_report')`
+1. **Add `loss-rate-acct`** to `BUILTIN_AGENTS` — a new CRITICAL agent for per-account rate conditions:
+   - slug: `"loss-rate-acct"`
+   - tier: `"critical"`
+   - topic: `"positions_loss"`
+   - name: `"Positions per-account burn-rate guardrail"`
+   - conditions: `{"any": [{"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -3000}, {"metric": "pnl_rate_pct", "scope": "positions.any_acct", "op": "<=", "value": -0.25}]}`
+   - cooldown_minutes: 10 (shorter — rate conditions are time-sensitive)
+   - ntfy priority: `"urgent"` (add to `_LOSS_AGENT_NTFY`)
 
-   Import `is_enabled` from `backend.shared.helpers.utils` (already imported in visitor task,
-   needs to be added locally in the other two functions or hoisted to the top of each).
+2. **Remove rate conditions from `loss-positions-acct`** — keep only static thresholds:
+   - Retain: `pnl_pct <= -2.0`, `pnl <= -30000`
+   - Remove: `pnl_rate_abs <= -3000`, `pnl_rate_pct <= -0.25`
+
+3. **Leave `loss-positions-total` unchanged** — it is already CRITICAL tier and already contains
+   rate conditions (`pnl_rate_abs <= -6000`, `pnl_rate_pct <= -0.25`) which correctly fire critical alerts.
+
+4. **Leave other agents unchanged** — `loss-margin-low`, `loss-funds-negative`,
+   `loss-pos-total-auto-close` are unaffected.
+
+No DB schema changes needed — `agents` table already has all required columns
+(`cooldown_minutes`, `tier`, `topic`, `events` JSONB, `is_system`).
 
 ## Agents
-- backend: Apply all changes above to backend_config.yaml and background.py
+- backend: In `backend/api/algo/agent_engine.py`:
+  (a) Add `loss-rate-acct` dict to BUILTIN_AGENTS (insert after `loss-positions-acct`):
+      slug="loss-rate-acct", tier="critical", topic="positions_loss",
+      name="Positions per-account burn-rate guardrail",
+      long_name="when:positions.any_acct.pnl_rate critical/tg+ntfy+log do:notify-only",
+      conditions={"any": [{"metric":"pnl_rate_abs","scope":"positions.any_acct","op":"<=","value":-3000},
+                           {"metric":"pnl_rate_pct","scope":"positions.any_acct","op":"<=","value":-0.25}]},
+      cooldown_minutes=10 (override default of 30).
+  (b) In `_LOSS_AGENT_NTFY` dict (lines 913-919), add: `"loss-rate-acct": "urgent"`.
+  (c) In `loss-positions-acct` conditions (lines 805-810), remove the two rate lines
+      (pnl_rate_abs and pnl_rate_pct entries). Keep only pnl_pct and pnl static thresholds.
+  For every file changed, write or update at least one test covering the changed behaviour.
+  This is mandatory — not optional.
 - frontend: skip
 - broker: skip
 - doc: skip
-- backend-test: skip (no new logic — guards are trivially correct; existing cap flag tests cover is_enabled)
+- backend-test: In `backend/tests/` add tests (new file `test_loss_agents.py` or extend existing):
+  - Assert `loss-rate-acct` is in BUILTIN_AGENTS, tier=="critical", cooldown_minutes==10
+  - Assert `loss-rate-acct` events include ntfy channel with priority=="urgent"
+  - Assert `loss-positions-acct` conditions contain NO pnl_rate_abs/pnl_rate_pct entries
+  - Assert `loss-positions-total` conditions still include rate entries (unchanged)
+  - Assert `_LOSS_AGENT_NTFY["loss-rate-acct"] == "urgent"`
+  For every file changed, write or update at least one test covering the changed behaviour.
+  This is mandatory — not optional.
 - playwright: skip
 
 ## Tests
-- pytest: no
+- pytest: yes
 - svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(dev): disable market summary + visitor report on dev via cap_in_dev flags
+feat(agents): split per-account rate-of-change into critical-tier loss-rate-acct agent
 
 ## Done when
-- dev.ramboq.com no longer sends market open/close summaries or visitor reports
-- prod.ramboq.com behaviour unchanged
-- `is_enabled('market_summary')` and `is_enabled('visitor_report')` toggleable from /admin/settings
+- `loss-rate-acct` (critical, cooldown 10 min, ntfy urgent) is in BUILTIN_AGENTS
+- `loss-positions-acct` conditions contain only static threshold conditions (no rate metrics)
+- `loss-positions-total` (critical, already has rate conditions) is unchanged
+- ntfy fires for all loss agents in prod (already wired — no config change needed)
+- Operator can tune thresholds, cooldowns, tier, ntfy priority from `/automation` without redeploy
+- pytest green

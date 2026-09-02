@@ -798,17 +798,32 @@ _LOSS_AGENTS = [
          name="Positions per-account loss guardrail",
          description=(
              "Fires when ANY account's positions trip the per-account "
-             "loss thresholds: -2% of margin OR -₹30k OR -₹3k/min OR "
-             "-0.25 %/min. One agent per topic; alert detail names the "
-             "matched threshold."
+             "static loss thresholds: -2% of margin OR -₹30k. "
+             "Rate-of-change conditions have been moved to "
+             "loss-rate-acct (critical tier, 10-min cooldown)."
          ),
          conditions={"any": [
-             {"metric": "pnl_pct",      "scope": "positions.any_acct", "op": "<=", "value": -2.0},
-             {"metric": "pnl",          "scope": "positions.any_acct", "op": "<=", "value": -30000},
+             {"metric": "pnl_pct", "scope": "positions.any_acct", "op": "<=", "value": -2.0},
+             {"metric": "pnl",     "scope": "positions.any_acct", "op": "<=", "value": -30000},
+         ]},
+         scope="total",
+         ),
+
+    # ── Positions: per-account burn-rate guardrail (critical tier) ───────
+    # Split from loss-positions-acct so rate conditions can have a shorter
+    # cooldown (10 min vs 30 min) and critical-tier ntfy priority. A burn
+    # rate that sustains beyond the first alert window needs to re-fire
+    # quickly; static threshold alerts do not.
+    dict(slug="loss-rate-acct",
+         long_name="when:positions.any_acct.pnl_rate critical/tg+ntfy+log do:notify-only",
+         tier="critical",
+         topic="positions_loss",
+         name="Positions per-account burn-rate guardrail",
+         conditions={"any": [
              {"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -3000},
              {"metric": "pnl_rate_pct", "scope": "positions.any_acct", "op": "<=", "value": -0.25},
          ]},
-         scope="total",
+         cooldown_minutes=10,
          ),
 
     # ── Positions: total guardrail (critical tier) ──────────────────────
@@ -912,6 +927,7 @@ _LOSS_AGENT_DEFAULTS = dict(
 # ntfy priority per agent slug. critical-tier agents → urgent; high-tier → high.
 _LOSS_AGENT_NTFY: dict[str, str] = {
     "loss-positions-acct":        "high",
+    "loss-rate-acct":             "urgent",
     "loss-positions-total":       "urgent",
     "loss-margin-low":            "high",
     "loss-funds-negative":        "urgent",
