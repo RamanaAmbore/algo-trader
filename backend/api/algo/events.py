@@ -211,13 +211,14 @@ async def _log_event(agent, event_type: str, condition_text: str = "",
 
 
 async def _send_telegram(message: str):
-    """Send Telegram alert using existing infrastructure."""
+    """Send Telegram alert as plain text — agent condition text may contain < > operators."""
     from backend.shared.helpers.alert_utils import _send_telegram as tg_send
-    from concurrent.futures import ThreadPoolExecutor
     import asyncio
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, tg_send, message)
+    # pass parse_mode="" so Telegram treats message as plain text;
+    # avoids 400 "Unsupported start tag" when condition text contains < or >.
+    await loop.run_in_executor(None, tg_send, message, "")
 
 
 async def _send_email_raw(subject: str, html_body: str):

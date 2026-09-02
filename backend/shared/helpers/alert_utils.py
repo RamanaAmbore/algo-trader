@@ -214,7 +214,7 @@ _MSG_TYPES = {
 }
 
 
-def _send_telegram(message: str):
+def _send_telegram(message: str, parse_mode: str = "HTML"):
     import logging
     _log = logging.getLogger('backend.api.background')
     # Dev-idle suppression — when dev's engine is idle (no operator
@@ -241,11 +241,10 @@ def _send_telegram(message: str):
         return
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = requests.post(
-            url,
-            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
-            timeout=10
-        )
+        payload: dict = {"chat_id": chat_id, "text": message}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        resp = requests.post(url, json=payload, timeout=10)
         if resp.ok:
             _log.info("Telegram alert sent")
         else:
