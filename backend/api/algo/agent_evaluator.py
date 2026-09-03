@@ -91,7 +91,9 @@ class Context:
     # ─── Cross-row helpers the resolvers rely on ─────────────────────────
 
     def used_margin_for(self, account: str) -> Optional[float]:
-        """Return utilised margin for an account (or TOTAL) from df_margins."""
+        """Return utilised margin for an account (or TOTAL) from df_margins.
+        Falls back to net column when util debits is zero.
+        """
         df = self.df_margins
         if df is None or df.empty or account is None:
             return None
@@ -99,7 +101,11 @@ class Context:
         if match.empty:
             return None
         try:
-            return float(match.iloc[0].get('util debits', 0) or 0)
+            util_debits = float(match.iloc[0].get('util debits', 0) or 0)
+            if util_debits > 0:
+                return util_debits
+            net = float(match.iloc[0].get('net', 0) or 0)
+            return net if net > 0 else None
         except Exception:
             return None
 

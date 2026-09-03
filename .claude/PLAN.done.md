@@ -1,119 +1,56 @@
-# Plan: Settings audit — close all gaps, seed notification caps to DB
+# Plan: Fix alert agent gaps — pnl_pct denominator + expiry debug logging
 
-## Context
-Dev alerts (Telegram, email) were leaking to prod channels because dev DB had
-`telegram_enabled=true` which overrides the YAML `cap_in_dev` default. A full 4-layer
-audit (YAML → SEEDS → DB → UI) revealed 4 additional structural gaps beyond the
-notification cap issue. All fixed in one commit.
+## Task
+Three gaps identified in the alert audit (₹ thresholds kept at current values per operator):
 
-YAML remains as the resilience fallback when DB is unreachable. DB is the runtime
-authority when reachable. SEEDS adds `dev_default` support so dev environments seed
-correctly on first boot without manual DB surgery.
+1. **P0 code bug** — `_metric_pnl_pct` always returns `None` for intraday/MIS positions.
+   `used_margin_for()` reads `util debits` from df_margins, which is 0 for intraday orders.
+   `None` causes the evaluator to silently skip the leaf → `loss-positions-acct` (pnl_pct ≤ -2%)
+   and `loss-positions-total` (pnl_pct ≤ -2%) never fire on intraday sessions.
+   Fix: fall back to `net` margin column when `util debits = 0`. `net` = available margin,
+   a non-zero proxy for capital deployed; makes pnl_pct = "P&L as % of available margin".
 
-## Gaps to fix
+2. **P1 expiry logging** — `spot_prices` dict is empty on the live path, so `is_itm` returns
+   `None` for every expiry-aware agent (`expiry-day-commodity-itm-auto-close`). Add a WARNING
+   log when spot_prices is empty at engine evaluation time so the operator can see when expiry
+   agents are silently skipped.
 
-### G1 — Notification caps: add 6 missing caps to SEEDS (main fix)
-`agent_alerts`, `market_summary`, `ntfy`, `visitor_report`, `market_feed`, `genai`
-are YAML-only today — no DB row, no UI toggle. Add them to SEEDS with `dev_default=false`.
-Add `dev_default` field support to `seed_settings()`.
-
-### G2 — 6 code keys not in SEEDS at all (P0)
-These keys are read in code via `get_int`/`get_float` but have no DB row — invisible in UI:
-- `templates.tp_limit_tick_offset_nfo` — template_attach.py, float, default 0.05
-- `templates.tp_limit_tick_offset_default` — template_attach.py, float, default 0.5
-- `templates.wing_min_oi_hard_reject` — template_attach.py, int, default 0
-- `orders.open_order_watchdog_seconds` — background.py, int, default 300
-- `retention.list_funds_hard_cap` — routes/history.py, int, default 1000
-- `alerts.fire_at_window_sec` — agent_engine.py, int, default 360
-Note: code uses `template.` (singular) prefix for the first 3; rename to `templates.` in both SEEDS and call sites.
-
-### G3 — orders.default_account seed default wrong (P1)
-SEEDS line 514 defaults to `"ZG0790"` — hardcodes a prod account ID. New dev envs
-would seed this wrong. Fix: change default to `""` (empty string = auto-pick).
-
-### G4 — execution.dev_active type inconsistency (P2)
-SEEDS stores default as Python string `"false"` but annotates type as `"bool"`.
-Functionally fine (get_bool lowercases), but inconsistent. Normalise to lowercase
-string `"false"` (already correct) — verify no type mismatch in seed_settings().
+3. **P2 test coverage** — no tests for the `pnl_pct` denominator fallback or for
+   `used_margin_for` with zero/non-zero util debits.
 
 ## Agents
-
-- backend: Changes to `backend/shared/helpers/settings.py`:
-  1. Add `dev_default` field support in `seed_settings()`: when `deploy_branch != 'main'`,
-     use `seed.get("dev_default", seed["default"])` for insert-if-absent value.
-  2. Add 6 notification cap SEEDS entries (category: notifications) with `dev_default="false"`:
-     - `notifications.agent_alerts_enabled` — prod default: true — "Agent alert dispatch"
-     - `notifications.market_summary_enabled` — prod default: true — "Market open/close summaries"
-     - `notifications.ntfy_enabled` — prod default: true — "ntfy.sh push notifications"
-     - `notifications.visitor_report_enabled` — prod default: true — "Nightly visitor report"
-     - `notifications.market_feed_enabled` — prod default: true — "Market news feed"
-     - `notifications.genai_enabled` — prod default: true — "GenAI market snapshot"
-  3. Add 6 missing code-used keys to SEEDS (G2):
-     - `templates.tp_limit_tick_offset_nfo` (float, 0.05)
-     - `templates.tp_limit_tick_offset_default` (float, 0.5)
-     - `templates.wing_min_oi_hard_reject` (int, 0)
-     - `orders.open_order_watchdog_seconds` (int, 300)
-     - `retention.list_funds_hard_cap` (int, 1000)
-     - `alerts.fire_at_window_sec` (int, 360)
-  4. Fix `orders.default_account` default from `"ZG0790"` to `""` (G3).
-  5. In `backend/api/algo/template_attach.py`: rename `get_float("template.tp_limit_tick_offset_nfo")` →
-     `get_float("templates.tp_limit_tick_offset_nfo")` (and the other 2 template. keys) (G2 rename).
-
-- frontend: The settings page auto-renders all SEEDS grouped by category — verify
-  new keys appear under the correct category headers. No template change needed
-  unless a category label needs adjustment.
-
+- backend: Fix `_metric_pnl_pct` denominator. In `backend/api/algo/agent_evaluator.py:93-104`,
+  update `used_margin_for()` to fall back to `net` column when `util debits` row value is 0:
+  ```python
+  util_debits = float(match.iloc[0].get('util debits', 0) or 0)
+  if util_debits > 0:
+      return util_debits
+  net = float(match.iloc[0].get('net', 0) or 0)
+  return net if net > 0 else None
+  ```
+  Also add a WARNING log in `backend/api/algo/agent_engine.py` (around line 1570 where Context
+  is constructed) when `spot_prices` is empty so expiry agents' silent skips are visible in logs.
+- frontend: skip
 - broker: skip
 - doc: skip
-
-- backend-test: Add to `backend/tests/test_cap_flags_dev.py`:
-  - `test_seed_uses_dev_default_on_non_main` — mock `deploy_branch=workshop`, verify
-    `agent_alerts_enabled` seeds as `"false"` not `"true"`
-  - `test_seed_uses_default_on_main` — mock `deploy_branch=main`, verify seeds as `"true"`
-  - `test_is_enabled_reads_new_caps_from_db` — verify `is_enabled('agent_alerts')` and
-    `is_enabled('market_summary')` read the DB value after seeding
-
+- backend-test: Add tests in `backend/tests/test_agent_grammar.py` (create if absent):
+  - `test_pnl_pct_falls_back_to_net_when_util_debits_zero`: df_margins with util_debits=0, net=100000, pnl=-3000 → pnl_pct = -3.0
+  - `test_pnl_pct_returns_none_when_both_zero`: util_debits=0, net=0 → None
+  - `test_pnl_pct_uses_util_debits_when_nonzero`: util_debits=50000, net=80000 → util_debits used as denominator
+  - `test_used_margin_for_falls_back_to_net`: direct unit test of Context.used_margin_for()
 - playwright: skip
-
-## Critical files
-- `backend/shared/helpers/settings.py` — SEEDS list + `seed_settings()` function
-- `backend/api/algo/template_attach.py` — rename `template.` → `templates.` (3 call sites)
-- `backend/shared/helpers/utils.py` — `is_enabled()` — no change needed (DB-first already works)
-- `frontend/src/routes/(algo)/admin/settings/+page.svelte` — verify new keys auto-render
-
-## Immediate DB fix (SSH — first step in impl, before code ships)
-
-### Dev server (`ramboq_dev`):
-```sql
-UPDATE settings SET value = 'false'
-WHERE key IN (
-  'notifications.telegram_enabled',
-  'notifications.email_enabled',
-  'notifications.notify_on_deploy',
-  'simulator.notify_during_run'
-);
-```
-
-### Prod server (`ramboq`):
-```sql
-UPDATE settings SET value = 'false'
-WHERE key = 'simulator.notify_during_run';
-```
-(Fixes capital-F `False` → lowercase `false` for consistency.)
 
 ## Tests
 - pytest: yes
-- svelte-check: yes
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(settings): close audit gaps — seed all notification caps to DB, add 6 missing keys, fix account default
+fix(agents): pnl_pct uses net margin fallback when util_debits=0 + spot_prices warning log
 
 ## Done when
-- All 10 notification caps visible and toggleable in `/admin/settings` UI
-- Dev server: telegram/email/notify_on_deploy/simulator.notify_during_run = false
-- `seed_settings()` uses `dev_default` on non-main branches
-- 6 code-used keys (`templates.tp_*`, `orders.open_order_watchdog_seconds`, `retention.list_funds_hard_cap`, `alerts.fire_at_window_sec`) visible in UI
-- `orders.default_account` SEEDS default = `""` (not `"ZG0790"`)
-- `template.` → `templates.` rename clean in template_attach.py
-- pytest green, svelte-check 0 errors
+- `_metric_pnl_pct` returns non-None for intraday positions where util_debits=0 (net margin denominator)
+- `used_margin_for()` returns `net` when `util debits=0` and `net>0`; None only when both are 0
+- 4 new tests pass covering the denominator fallback
+- WARNING log fires (once per tick) when spot_prices is empty during engine evaluation
+- Pytest green, broker cov ≥ 80%, api cov ≥ 45%

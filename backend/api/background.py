@@ -693,6 +693,10 @@ async def _perf_run_agent_engine(
             else []
         )
         spot_prices = await _run(_resolve_spot_prices, df_positions)
+        if not spot_prices:
+            logger.warning(
+                "agent_engine: spot_prices empty — expiry ITM agents will be skipped this tick"
+            )
         agent_context = {
             "sum_holdings": sum_holdings,
             "sum_positions": sum_positions,
