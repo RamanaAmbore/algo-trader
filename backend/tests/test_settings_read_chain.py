@@ -641,3 +641,262 @@ class TestRealWorldExamples:
         with patch.object(settings, "yaml_config", yaml_cfg):
             result = settings.get_float("ui.ltp_flash_pct")
             assert result == 0.5
+
+
+class TestNewSeedsPresence:
+    """Verify all 12 new SEEDS entries are present with correct shapes."""
+
+    def _find(self, key: str):
+        from backend.shared.helpers.settings import SEEDS
+        return next((s for s in SEEDS if s[1] == key), None)
+
+    # ── notifications ──────────────────────────────────────────────────────
+
+    def test_notifications_agent_alerts_enabled_seeded(self):
+        row = self._find("notifications.agent_alerts_enabled")
+        assert row is not None
+        assert row[0] == "notifications"
+        assert row[2] == "bool"
+        assert row[3] is True          # prod default
+        assert len(row) == 8
+        assert row[7] is False         # dev_default suppresses on dev
+
+    def test_notifications_market_summary_enabled_seeded(self):
+        row = self._find("notifications.market_summary_enabled")
+        assert row is not None
+        assert row[2] == "bool"
+        assert row[3] is True
+        assert len(row) == 8
+        assert row[7] is False
+
+    def test_notifications_ntfy_enabled_seeded(self):
+        row = self._find("notifications.ntfy_enabled")
+        assert row is not None
+        assert row[3] is True
+        assert len(row) == 8 and row[7] is False
+
+    def test_notifications_visitor_report_enabled_seeded(self):
+        row = self._find("notifications.visitor_report_enabled")
+        assert row is not None
+        assert row[3] is True
+        assert len(row) == 8 and row[7] is False
+
+    def test_notifications_market_feed_enabled_seeded(self):
+        row = self._find("notifications.market_feed_enabled")
+        assert row is not None
+        assert row[3] is True
+        assert len(row) == 8 and row[7] is False
+
+    def test_notifications_genai_enabled_seeded(self):
+        row = self._find("notifications.genai_enabled")
+        assert row is not None
+        assert row[3] is True
+        assert len(row) == 8 and row[7] is False
+
+    # ── templates ─────────────────────────────────────────────────────────
+
+    def test_templates_tp_limit_tick_offset_nfo_seeded(self):
+        row = self._find("templates.tp_limit_tick_offset_nfo")
+        assert row is not None
+        assert row[0] == "templates"
+        assert row[2] == "float"
+        assert row[3] == 0.05
+        assert len(row) == 7   # no dev_default
+
+    def test_templates_tp_limit_tick_offset_default_seeded(self):
+        row = self._find("templates.tp_limit_tick_offset_default")
+        assert row is not None
+        assert row[2] == "float"
+        assert row[3] == 0.5
+
+    def test_templates_wing_min_oi_hard_reject_seeded(self):
+        row = self._find("templates.wing_min_oi_hard_reject")
+        assert row is not None
+        assert row[2] == "int"
+        assert row[3] == 0
+
+    # ── orders ────────────────────────────────────────────────────────────
+
+    def test_orders_open_order_watchdog_seconds_seeded(self):
+        row = self._find("orders.open_order_watchdog_seconds")
+        assert row is not None
+        assert row[2] == "int"
+        assert row[3] == 300
+
+    # ── retention ─────────────────────────────────────────────────────────
+
+    def test_retention_list_funds_hard_cap_seeded(self):
+        row = self._find("retention.list_funds_hard_cap")
+        assert row is not None
+        assert row[2] == "int"
+        assert row[3] == 1000
+
+    # ── alerts ────────────────────────────────────────────────────────────
+
+    def test_alerts_fire_at_window_sec_seeded(self):
+        row = self._find("alerts.fire_at_window_sec")
+        assert row is not None
+        assert row[2] == "int"
+        assert row[3] == 360
+
+    # ── orders.default_account default changed to empty string ─────────────
+
+    def test_orders_default_account_default_is_empty(self):
+        row = self._find("orders.default_account")
+        assert row is not None, "orders.default_account must be in SEEDS"
+        assert row[3] == "", (
+            "orders.default_account default must be '' (empty); "
+            f"was '{row[3]}'"
+        )
+
+
+class TestUpsertSeedsDevDefault:
+    """Unit tests for _upsert_seeds dev_default branch logic."""
+
+    def _make_mock_setting(self, **kwargs):
+        m = MagicMock()
+        for k, v in kwargs.items():
+            setattr(m, k, v)
+        return m
+
+    def test_inserts_prod_default_on_main(self):
+        """When is_dev=False, the prod default is used for the inserted value."""
+        from backend.shared.helpers import settings as _settings
+        mock_session = MagicMock()
+
+        # Use a minimal 8-tuple seed with dev_default=False for a bool
+        _settings_backup = _settings.SEEDS
+        try:
+            _settings.SEEDS = [
+                ("notifications", "notifications.agent_alerts_enabled",
+                 "bool", True, "Test seed", None, None, False),
+            ]
+            _settings._upsert_seeds(mock_session, existing_by_key={}, is_dev=False)
+        finally:
+            _settings.SEEDS = _settings_backup
+
+        mock_session.add.assert_called_once()
+        call_arg = mock_session.add.call_args[0][0]
+        # On prod, value should be "true" (prod default=True)
+        assert call_arg.value == "true", f"Expected 'true' on prod, got {call_arg.value!r}"
+        assert call_arg.default_value == "true"
+
+    def test_inserts_dev_default_on_dev(self):
+        """When is_dev=True and dev_default present, dev_default is used for value."""
+        from backend.shared.helpers import settings as _settings
+        mock_session = MagicMock()
+
+        _settings_backup = _settings.SEEDS
+        try:
+            _settings.SEEDS = [
+                ("notifications", "notifications.agent_alerts_enabled",
+                 "bool", True, "Test seed", None, None, False),
+            ]
+            _settings._upsert_seeds(mock_session, existing_by_key={}, is_dev=True)
+        finally:
+            _settings.SEEDS = _settings_backup
+
+        mock_session.add.assert_called_once()
+        call_arg = mock_session.add.call_args[0][0]
+        # On dev, value should be "false" (dev_default=False) but default_value
+        # must stay "true" (prod default) for the Reset button.
+        assert call_arg.value == "false", (
+            f"Expected 'false' on dev branch, got {call_arg.value!r}"
+        )
+        assert call_arg.default_value == "true", (
+            f"default_value must remain prod default 'true', got {call_arg.default_value!r}"
+        )
+
+    def test_no_dev_default_uses_same_value_on_dev(self):
+        """Seeds without 8th element are not affected by is_dev."""
+        from backend.shared.helpers import settings as _settings
+        mock_session = MagicMock()
+
+        _settings_backup = _settings.SEEDS
+        try:
+            _settings.SEEDS = [
+                ("templates", "templates.tp_limit_tick_offset_nfo",
+                 "float", 0.05, "Test seed", None, None),  # 7-tuple
+            ]
+            _settings._upsert_seeds(mock_session, existing_by_key={}, is_dev=True)
+        finally:
+            _settings.SEEDS = _settings_backup
+
+        mock_session.add.assert_called_once()
+        call_arg = mock_session.add.call_args[0][0]
+        assert call_arg.value == "0.05"
+        assert call_arg.default_value == "0.05"
+
+    def test_existing_row_not_overwritten_on_dev(self):
+        """When a row already exists, is_dev does not change its live value."""
+        from backend.shared.helpers import settings as _settings
+        mock_session = MagicMock()
+
+        existing_row = self._make_mock_setting(
+            category="notifications",
+            key="notifications.agent_alerts_enabled",
+            value_type="bool",
+            description="old desc",
+            units=None,
+            schema=None,
+            default_value="true",
+            value="false",
+        )
+
+        _settings_backup = _settings.SEEDS
+        try:
+            _settings.SEEDS = [
+                ("notifications", "notifications.agent_alerts_enabled",
+                 "bool", True, "old desc", None, None, False),
+            ]
+            _settings._upsert_seeds(
+                mock_session,
+                existing_by_key={"notifications.agent_alerts_enabled": existing_row},
+                is_dev=True,
+            )
+        finally:
+            _settings.SEEDS = _settings_backup
+
+        # session.add should NOT be called — row already exists
+        mock_session.add.assert_not_called()
+
+
+class TestTemplateAttachKeyRename:
+    """Verify that template_attach.py now uses 'templates.' prefix for settings keys."""
+
+    def test_tp_limit_tick_offset_nfo_uses_templates_prefix(self):
+        """get_float('templates.tp_limit_tick_offset_nfo') is resolved from _CACHE."""
+        settings._CACHE.clear()
+        settings._CACHE["templates.tp_limit_tick_offset_nfo"] = "0.1"
+        assert settings.get_float("templates.tp_limit_tick_offset_nfo", 0.05) == 0.1
+
+    def test_tp_limit_tick_offset_default_uses_templates_prefix(self):
+        """get_float('templates.tp_limit_tick_offset_default') is resolved from _CACHE."""
+        settings._CACHE.clear()
+        settings._CACHE["templates.tp_limit_tick_offset_default"] = "1.0"
+        assert settings.get_float("templates.tp_limit_tick_offset_default", 0.5) == 1.0
+
+    def test_wing_min_oi_hard_reject_uses_templates_prefix(self):
+        """get_int('templates.wing_min_oi_hard_reject') is resolved from _CACHE."""
+        settings._CACHE.clear()
+        settings._CACHE["templates.wing_min_oi_hard_reject"] = "500"
+        assert settings.get_int("templates.wing_min_oi_hard_reject", 0) == 500
+
+    def test_old_singular_template_key_not_in_seeds(self):
+        """Confirm old 'template.' (singular) keys are not present in SEEDS."""
+        from backend.shared.helpers.settings import SEEDS
+        old_keys = {s[1] for s in SEEDS if s[1].startswith("template.")}
+        assert old_keys == set(), (
+            f"Found old singular 'template.' keys still in SEEDS: {old_keys}"
+        )
+
+    def test_new_templates_keys_in_seeds(self):
+        """Confirm all three renamed keys are present in SEEDS under 'templates.' prefix."""
+        from backend.shared.helpers.settings import SEEDS
+        seed_keys = {s[1] for s in SEEDS}
+        for key in (
+            "templates.tp_limit_tick_offset_nfo",
+            "templates.tp_limit_tick_offset_default",
+            "templates.wing_min_oi_hard_reject",
+        ):
+            assert key in seed_keys, f"Expected '{key}' in SEEDS but it is missing"

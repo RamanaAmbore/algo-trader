@@ -83,6 +83,9 @@ SEEDS: list[tuple] = [
     ("alerts", "alerts.summary_show_underlying_breakdown", "bool", True,
      "Append a per-underlying breakdown to the open/close summary "
      "Telegram + email message.", None, None),
+    ("alerts", "alerts.fire_at_window_sec", "int", 360,
+     "Time window in seconds for agent fire-at scheduling.",
+     "s", {"min": 0, "max": 3600, "step": 30}),
 
     # ── Market calendar overrides ───────────────────────────────────────
     # Comma-separated YYYY-MM-DD dates the operator pre-populates for
@@ -311,6 +314,9 @@ SEEDS: list[tuple] = [
      "365 days gives a full year of nightly static + runtime perf trends. "
      "0 disables.",
      "days", {"min": 0, "max": 1825, "step": 1}),
+    ("retention", "retention.list_funds_hard_cap", "int", 1000,
+     "Maximum number of fund history rows returned per account.",
+     None, {"min": 0, "max": 100000, "step": 100}),
 
     # ── Perf snapshot ────────────────────────────────────────────────────
     ("perf_snapshot", "perf_snapshot.runtime_enabled", "bool", False,
@@ -381,6 +387,15 @@ SEEDS: list[tuple] = [
      "second unwanted fill. Only applies to brokers without native OCO "
      "(Groww today).",
      "s", {"min": 5, "max": 300, "step": 5}),
+    ("templates", "templates.tp_limit_tick_offset_nfo", "float", 0.05,
+     "Limit order offset in ticks for NFO take-profit legs.",
+     None, None),
+    ("templates", "templates.tp_limit_tick_offset_default", "float", 0.5,
+     "Limit order offset in ticks for non-NFO take-profit legs.",
+     None, None),
+    ("templates", "templates.wing_min_oi_hard_reject", "int", 0,
+     "Hard reject wing strikes with OI below this threshold (0=disabled).",
+     None, {"min": 0, "max": 1000000, "step": 100}),
 
     # ── Notifications (per-branch capability toggles) ───────────────────
     # `is_enabled()` in utils.py reads notifications.<cap>_enabled from
@@ -397,6 +412,25 @@ SEEDS: list[tuple] = [
      "Auto-email monthly investor statements at 02:00 IST. Off by "
      "default — operator must opt in after validating the first "
      "month's PDF preview from the admin Portal modal.", None, None),
+    # Dev-default=False so dev branches never fire live notification channels.
+    ("notifications", "notifications.agent_alerts_enabled",   "bool", True,
+     "Fire agent condition alerts through all configured channels.",
+     None, None, False),
+    ("notifications", "notifications.market_summary_enabled", "bool", True,
+     "Send open + close performance summary to Telegram.",
+     None, None, False),
+    ("notifications", "notifications.ntfy_enabled",           "bool", True,
+     "Push alerts via ntfy.sh.",
+     None, None, False),
+    ("notifications", "notifications.visitor_report_enabled", "bool", True,
+     "Daily nginx visitor digest sent to Telegram.",
+     None, None, False),
+    ("notifications", "notifications.market_feed_enabled",    "bool", True,
+     "Google News RSS market feed.",
+     None, None, False),
+    ("notifications", "notifications.genai_enabled",          "bool", True,
+     "Gemini AI market update generation.",
+     None, None, False),
 
     # ── Connections / broker ─────────────────────────────────────────────
     ("connections", "connections.retry_count",      "int", 3,
@@ -511,12 +545,15 @@ SEEDS: list[tuple] = [
     # the host page doesn't supply context-specific account. Empty string
     # falls through to "auto-pick when exactly one account is loaded";
     # otherwise the operator picks manually.
-    ("orders",      "orders.default_account",    "string", "ZG0790",
+    ("orders",      "orders.default_account",    "string", "",
      "Broker account code (e.g. ZG0790) the order modal pre-selects "
      "when no host-supplied context overrides it. Leave blank to "
      "auto-pick when exactly one account is loaded; otherwise the "
      "operator chooses from the Account dropdown each time.",
      None, None),
+    ("orders",      "orders.open_order_watchdog_seconds", "int", 300,
+     "Cancel unacknowledged open orders after this many seconds.",
+     "s", {"min": 0, "max": 3600, "step": 30}),
     # Default symbol the order modal / chart modal pre-selects when the
     # host page doesn't supply a contextual symbol. Operator-friendly
     # underlying names (e.g. NIFTY / BANKNIFTY / CRUDEOIL / GOLD / RELIANCE)
@@ -606,20 +643,37 @@ SEEDS: list[tuple] = [
 #  Seeder + cache refresh
 # ═════════════════════════════════════════════════════════════════════════
 
-def _upsert_seeds(session: "Any", existing_by_key: dict) -> "tuple[int, int]":
+def _upsert_seeds(
+    session: "Any",
+    existing_by_key: dict,
+    is_dev: bool = False,
+) -> "tuple[int, int]":
     """Insert missing SEEDS rows and sync metadata on existing ones.
+
+    When *is_dev* is True and a seed row carries an 8th element (dev_default),
+    that value is used as the inserted `value` instead of `default`.  The
+    canonical `default_value` column always stores the production default so
+    the "Reset" button works correctly on all branches.
 
     Returns (inserted, updated_defaults).
     """
     from backend.api.models import Setting
     inserted = updated_defaults = 0
-    for category, key, value_type, default, desc, units, schema in SEEDS:
+    for seed_row in SEEDS:
+        category, key, value_type, default, desc, units, schema = seed_row[:7]
+        dev_default = seed_row[7] if len(seed_row) > 7 else None
         default_str = _serialise(default, value_type)
+        # On dev branches use dev_default for the initial inserted value when
+        # the seed provides one.  default_value always tracks the prod default.
+        if is_dev and dev_default is not None:
+            insert_str = _serialise(dev_default, value_type)
+        else:
+            insert_str = default_str
         row = existing_by_key.get(key)
         if row is None:
             session.add(Setting(
                 category=category, key=key, value_type=value_type,
-                value=default_str, default_value=default_str,
+                value=insert_str, default_value=default_str,
                 description=desc, units=units, schema=schema,
             ))
             inserted += 1
@@ -690,10 +744,17 @@ async def seed_settings() -> None:
     Insert any missing seeded rows. Updates default_value on existing rows
     so the "Reset" button reflects the current code default. Leaves the
     operator's `value` alone to preserve runtime overrides across deploys.
+
+    On non-main branches, seeds with a dev_default (8th tuple element) are
+    inserted with that value instead of the production default so dev boxes
+    never accidentally enable live notification channels on first boot.
     """
     from sqlalchemy import select
     from backend.api.database import async_session
     from backend.api.models import Setting
+
+    _branch = yaml_config.get("deploy_branch", "main")
+    _is_dev = _branch != "main"
 
     seed_keys = {s[1] for s in SEEDS}
 
@@ -701,7 +762,7 @@ async def seed_settings() -> None:
         existing = (await session.execute(select(Setting))).scalars().all()
         existing_by_key = {s.key: s for s in existing}
 
-        inserted, updated_defaults = _upsert_seeds(session, existing_by_key)
+        inserted, updated_defaults = _upsert_seeds(session, existing_by_key, is_dev=_is_dev)
         _seed_execution_flags(session, existing_by_key)
         removed = await _prune_retired_keys(session, existing_by_key, seed_keys)
 

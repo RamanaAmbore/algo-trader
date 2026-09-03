@@ -428,7 +428,7 @@ def _wing_score_candidate(
 class _WingHardRejectError(Exception):
     """Raised by _wing_scan_candidates when the OI hard-reject threshold is
     triggered (#10): all scanned candidates have OI below the configured
-    `template.wing_min_oi_hard_reject` floor. Caught by _pick_wing_by_premium
+    `templates.wing_min_oi_hard_reject` floor. Caught by _pick_wing_by_premium
     and converted to a (None, None, reason) return + ntfy alert."""
     pass
 
@@ -679,7 +679,7 @@ async def _pick_wing_by_premium(
     # #10: hard-reject floor — 0 = disabled (default).
     try:
         from backend.shared.helpers.settings import get_int as _get_int2
-        hard_reject_oi = _get_int2("template.wing_min_oi_hard_reject", 0)
+        hard_reject_oi = _get_int2("templates.wing_min_oi_hard_reject", 0)
     except Exception:
         hard_reject_oi = 0
 
@@ -1307,8 +1307,8 @@ def _tp_limit_offset(trigger: float, side: str, exchange: str = "") -> float:
     tick. For a SELL parent, the exit is BUY so we set LIMIT slightly *above*.
 
     Exchange-specific tick sizes read from settings with a YAML default:
-      template.tp_limit_tick_offset_nfo    (0.05) — options (NFO/MCX)
-      template.tp_limit_tick_offset_default (0.5) — futures + others
+      templates.tp_limit_tick_offset_nfo    (0.05) — options (NFO/MCX)
+      templates.tp_limit_tick_offset_default (0.5) — futures + others
 
     The offset is cosmetic on trigger-linked GTT legs (Kite fires the GTT at
     the trigger, then places the child LIMIT order); the adjustment protects
@@ -1319,9 +1319,9 @@ def _tp_limit_offset(trigger: float, side: str, exchange: str = "") -> float:
         exch_upper = (exchange or "").upper()
         is_options_exch = exch_upper in ("NFO", "BFO", "CDS")
         if is_options_exch:
-            offset = get_float("template.tp_limit_tick_offset_nfo", 0.05)
+            offset = get_float("templates.tp_limit_tick_offset_nfo", 0.05)
         else:
-            offset = get_float("template.tp_limit_tick_offset_default", 0.5)
+            offset = get_float("templates.tp_limit_tick_offset_default", 0.5)
     except Exception:
         offset = 0.05
     # exit side: BUY parent exits SELL → LIMIT below trigger;
