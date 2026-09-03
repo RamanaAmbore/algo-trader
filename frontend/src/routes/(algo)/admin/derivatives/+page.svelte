@@ -1850,6 +1850,16 @@
         }
       }
 
+      // Anchor contract tick → flash the underlying's spot cell in the snapshot card.
+      // When spot_anchor_contract is a far-month future its tradingsymbol ≠ root key,
+      // so the block above never fires. This bridges the gap so the LTP cell flashes.
+      const _anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+      const _stratUnd = String(strategy?.underlying || '').toUpperCase();
+      if (_anchor && root === _anchor && _stratUnd && _stratUnd in _underlyingQuotes) {
+        const _as = getSnapshot(root);
+        if (_as?.ltp != null) flash.update(`${_stratUnd}:ltp`, Number(_as.ltp));
+      }
+
       // 2. CandidateLegRow LTP cells — re-arm for each leg whose symbol matches.
       for (const c of candidatePositions) {
         if ((c.symbol ?? '').toUpperCase() === root) {
@@ -4808,9 +4818,14 @@
         {/if}
         {#each _byUnderlyingTotals as g (g.underlying)}
           {@const _q = _underlyingQuotes[g.underlying]}
-          {@const _ltp  = _q ? Number(_q.ltp) : null}
-          {@const _close = _q ? Number(_q.prev_close) : null}
-          {@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
+          {@const _useAnchor = g.underlying === selectedUnderlying && liveSpot != null && liveSpot > 0}
+          {@const _ltp   = _useAnchor ? liveSpot : (_q ? Number(_q.ltp) : null)}
+          {@const _close = _useAnchor && (strategy?.spot_prev_close ?? 0) > 0
+              ? Number(strategy.spot_prev_close)
+              : (_q ? Number(_q.prev_close) : null)}
+          {@const _pct   = _ltp != null && _close != null && _close > 0
+              ? ((_ltp - _close) / _close) * 100
+              : (_q?.day_pct ?? null)}
           <!-- SSOT: all three trios read from per-root maps that share
                _perRootReduce (same iteration, same _isLegEnabled gate,
                same _includeHoldings gate, same proxy routing). Only the
