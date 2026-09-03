@@ -43,7 +43,7 @@ App running:
 | Environment | Branch | Server path | API port | Domain | Database | API service |
 |---|---|---|---|---|---|---|
 | Production | `main` | `/opt/ramboq` | 8000 | ramboq.com | `ramboq` | `ramboq_api.service` |
-| Development | non-main | `/opt/ramboq_dev` | 8001 | dev.ramboq.com | `ramboq_dev` | `ramboq_dev_api.service` |
+| Development | `dev` / `workshop` | `/opt/ramboq_dev` | 8001 | dev.ramboq.com | `ramboq_dev` | `ramboq_dev_api.service` |
 
 Both branches (`main`, `dev`) are permanent — never deleted from GitHub.
 
@@ -144,6 +144,15 @@ CREATE DATABASE ramboq_dev OWNER rambo_admin;
 ```
 
 Tables are auto-created on first API startup via `init_db()`.
+
+**Caveats**:
+- Auto-creation only occurs if the `RAMBOQ_SKIP_INIT_DB` environment variable is
+  not set. If the variable is set to any non-empty value, `init_db()` is skipped
+  entirely.
+- Schema migrations (column additions, renames, removals) are NOT auto-applied.
+  These require manual SQL execution on the production database. Check the
+  `docs/MIGRATION.md` file for the history of schema changes and run
+  outstanding migrations manually before deploying new code.
 
 The API selects the database by `deploy_branch` in `backend_config.yaml`:
 - `main` → `ramboq`

@@ -651,6 +651,8 @@ Settings are for runtime knobs an operator changes without thinking about a depl
 
 The seeder behaves well across deploys: it inserts new keys, refreshes descriptions / schemas / defaults, **preserves your overrides**, and auto-prunes keys that have been retired in code.
 
+**`dev_default` (8th element in SEEDS tuple)**: when present, non-main branches (workshop/dev) use this value as the initial seed instead of `default`. This allows dev environments to start with safe defaults (e.g. alert channels disabled) without manual DB updates after every fresh setup.
+
 ### Execution mode banner
 
 The first thing you see on the page is the execution mode banner:

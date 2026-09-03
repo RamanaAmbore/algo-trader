@@ -75,8 +75,12 @@ for Greeks + payoff curves at all points on the range.
 - Vega: sensitivity to 1% IV move
 - Rho: sensitivity to interest-rate shift (typically small for India)
 
-**Risk-free rate**: `DEFAULT_RISK_FREE = 0.07` (7% p.a., calibrated to Indian RBI repo).
-**Default IV**: `DEFAULT_IV = 0.30` (30%, used when market data unavailable).
+**Risk-free rate**: `DEFAULT_RISK_FREE = 0.07` (7% p.a., calibrated to Indian
+RBI repo). Canonical source: `backend/api/algo/derivatives.py:DEFAULT_RISK_FREE`.
+All other files (`positions.py`, `expiry.py`) import from this constant — do not
+hardcode 0.07 elsewhere.
+**Default IV**: `DEFAULT_IV = 0.15` (15%, used when market data unavailable).
+Canonical source: `backend/api/algo/derivatives.py:41`.
 
 **Caching** (Phase 2 + Phase 4 leg-curve):
 - Strategy-analytics cache: 5s TTL, keyed on (sorted_legs_tuple, spot, mode). LRU 64.
@@ -157,6 +161,11 @@ for Greeks + payoff curves at all points on the range.
 ---
 
 ## 4. Payoff Curves
+
+**Underlying switch stale-while-revalidate**: During an underlying switch, the
+previous payoff curve remains visible until the new one finishes loading
+(stale-while-revalidate — avoids blank stub). The new curve replaces it
+atomically on arrival.
 
 **Range determination**: Normalized to underlying spot via σ-driven span.
 ```

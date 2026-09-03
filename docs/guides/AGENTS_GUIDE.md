@@ -128,7 +128,9 @@ Read the live catalog at `/admin/tokens`. The full canonical list is in [CLAUDE.
 
 **Point-in-time** — `pnl`, `pnl_pct`, `day_val`, `day_pct`, `inv_val`, `cur_val`, `cash`, `avail_margin`, `used_margin`, `collateral`.
 
-**Rate of change** (over `alerts.rate_window_min`, default 10 min) — `pnl_rate_abs`, `pnl_rate_pct`, `day_rate_abs`, `day_rate_pct`.
+For `pnl_pct` metric: when `util_debits = 0` (intraday/MIS positions with no margin utilization), the metric falls back to using `net` (available) margin as the denominator. Returns `None` (leaf skipped) only when both denominator options are zero.
+
+**Rate of change** (over `alerts.rate_window_min`, default 10 min) — `pnl_rate_abs`, `pnl_rate_pct`, `day_rate_abs`, `day_rate_pct`. These metrics return `None` (and are silent — no alert fires) until at least 2 samples have accumulated in the rate window, typically ~5 minutes after session start.
 
 **Rolling-window aggregates** (Phase 24) — `mean_pnl_30m / _1h`, `mean_day_30m / _1h`, `max_drawdown_pnl_30m / _1h / _4h`, `max_drawdown_pnl_pct_30m / _1h`, `max_drawdown_day_1h`, `stdev_pnl_30m / _1h`, `range_pnl_30m / _1h`.
 
@@ -232,16 +234,19 @@ Auto-deactivation is final — to re-enable, flip `status` back to `active` on `
 
 ## Built-in agents you can study
 
-Open `/automation` and look at these — every one is a teaching example you can clone:
+Open `/automation` and look at these — all 9 are teaching examples you can clone:
 
 | Slug | Topic | Why it's worth reading |
 |---|---|---|
 | `loss-positions-acct` | per-account guardrail | Uses an `any:` block to OR four threshold types |
+| `loss-rate-acct` | per-account rate alert | Rate-of-loss metric + re-fire suppression |
 | `loss-positions-total` | book-wide guardrail | Same shape, scoped to TOTAL |
+| `loss-margin-low` | available margin warning | Early signal before margin pressure |
+| `loss-funds-negative` | cash / margin hard stop | Fires when balance goes negative |
 | `loss-pos-total-auto-close` | destructive action | Wraps `chase_close_positions` — ships INACTIVE for a reason |
 | `expiry-day-positions-alert` | expiry alert | Uses `days_until_expiry` + `positions.expiring_today` |
-| `expiry-day-itm-auto-close` | expiry close (INACTIVE) | Combines `is_itm` + `chase_close_positions` |
-| `manual` | order-trail | Doesn't run on a tick — every manual order writes here for audit |
+| `expiry-day-equity-itm-auto-close` | equity expiry close (INACTIVE) | Combines `is_itm` + `chase_close_positions` |
+| `expiry-day-commodity-itm-auto-close` | commodity expiry close (INACTIVE) | Same pattern for MCX |
 
 Built-in agents are **force-reseeded on every boot** — your changes to their `conditions / cooldown / events / actions` are PRESERVED, but `slug / schedule / status` are pinned to code. To customise, clone to a new slug.
 

@@ -189,7 +189,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 ```mermaid
 flowchart LR
     Operator((Operator)) -->|browser| FE[SvelteKit frontend<br/>port 5173 / static build]
-    FE -->|HTTPS REST| API[Litestar API<br/>port 8502 prod / 8503 dev]
+    FE -->|HTTPS REST| API[Litestar API<br/>port 8502 prod / 8503 dev<br/>(nginx public ports;<br/>uvicorn 8000/8001)]
     API -->|asyncpg| DB[(PostgreSQL 17<br/>ramboq / ramboq_dev)]
     API -->|broker SDK| KITE[Kite Connect<br/>+ KiteTicker WebSocket]
     API -->|broker SDK| DHAN[Dhan v2]
@@ -860,7 +860,7 @@ All tables live in the branch-local DB except `broker_accounts`, which is shared
 | `broker_connection_events` | Shared table — audit log of connection lifecycle (auth_fail, fetch_fail, token_ok, circuit_open/close, ticker_error, etc.). Enables operator forensics on credential/network issues. | id (PK), account, event_type (VARCHAR 32), event_ts (TIMESTAMP TZ, indexed), detail (JSONB) |
 | `market_holidays` | Exchange holiday calendar (NSE/MCX/CDS). Seeded from broker API, cached. | id (PK), exchange, holiday_date (unique per exchange) |
 | `market_special_sessions` | Special trading sessions (e.g. Muhurat trading). Operator-editable overrides. | id (PK), exchange, date, start_time, end_time, reason |
-| `exchange_schedule` | Configurable segment opening hours and snapshot timing (equity + commodity exchanges). DB-backed single source of truth for `closed_hours_or_broker` gate logic via `exchange_clock.is_exchange_open(exchange)`. Default rows seeded at startup; operator can override via `/api/admin/exchange-schedule`. | id (PK), gate (NON-MCX\|MCX), date (NULL=default, non-NULL=override), session_name, is_open (boolean), exchanges (TEXT[] array), open_time, close_time, snapshot_time, reset_time, weekdays (int[] for Mon=0…Sun=6), reason, updated_at; UNIQUE (gate, date, session_name) |
+| `exchange_schedule` | Configurable segment opening hours and snapshot timing (equity + commodity exchanges). DB-backed single source of truth for `closed_hours_or_broker` gate logic via `exchange_clock.is_exchange_open(exchange)`. Default rows seeded at startup; operator can override via `/api/admin/exchange-schedule`. | id (PK), gate (NON-MCX\|MCX), date (NULL=default, non-NULL=override), session_name, is_open (boolean), exchanges (TEXT[] array), open_time, close_time, snapshot_time, snapshot_reset_time, weekdays (int[] for Mon=0…Sun=6), reason; UNIQUE (gate, date, session_name) |
 
 **Watchlists** — User-defined symbol groups:
 
@@ -2522,13 +2522,15 @@ are needed:
    fills on NIFTY 50, child GTT fires on the paired BANKNIFTY position
    simultaneously).
 
-4. **`POST /api/positions/pair` endpoint (new)** — lets operator manually
-   override waterfall pair assignments and persist them to a new
-   `position_pair_groups` DB table (currently all pairing is ephemeral).
+4. **`POST /api/positions/pair` endpoint (new)** — **[Future roadmap — not yet
+   implemented]** — lets operator manually override waterfall pair assignments
+   and persist them to a new `position_pair_groups` DB table (currently all
+   pairing is ephemeral).
 
-5. **`position_pair_groups` DB table** — `(account, symbol_a, symbol_b,
-   paired_qty, created_at)` — persists operator-defined pairs across fetches.
-   Operator can edit to rebalance or un-pair positions.
+5. **`position_pair_groups` DB table** — **[Future roadmap — not yet implemented]** —
+   `(account, symbol_a, symbol_b, paired_qty, created_at)` — persists
+   operator-defined pairs across fetches. Operator can edit to rebalance or
+   un-pair positions.
 
 **Key files:**
 - [backend/api/routes/positions.py:71-172](backend/api/routes/positions.py#L71-L172)
@@ -2937,6 +2939,10 @@ guarded by two independent gates on `broker_apis._fetch_*_local`:
 2. **Dhan interval gate** (`_dhan_next_poll[account]`) — advances the
    next-poll timestamp BEFORE the fetch runs, so a crash mid-fetch
    doesn't cause a tight-retry loop. Non-Dhan accounts always pass.
+3. **Dhan staggered pre-warm** — per-account delay to prevent simultaneous
+   token refresh races.
+4. **Cooloff state persistence** — circuit-breaker cooloff survives process
+   restarts (stored to disk/DB, not in-memory only).
 
 Auto-downgrade: when a Dhan account with both `circuit_breaker_enabled=True`
 AND `auto_downgrade_enabled=True` hits ≥5 breaker-OPEN events inside a

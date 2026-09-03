@@ -202,14 +202,20 @@ Each successful call stashes the DataFrame with a 30s TTL.
 
 ## 8. Event Queues
 
-Four active event queues (generic `EventQueue` class, bulk `executemany` INSERT):
+Five active event queues (generic `EventQueue` class, bulk `executemany` INSERT):
 
 | Queue | Table | Use | Retention |
 |---|---|---|---|
 | algo_events | algo_events | Agent conditions checked + fired | 30 days |
 | agent_events | agent_events | Alert delivery + action results | (see Audit log) |
+| agent_event_queue | agent_events | Coalesced agent fires (500-batch, 1s flush) | (see Audit log) |
 | algo_order_events | algo_order_events | GTT placements + fill events | 30 days |
 | mcp_audit | mcp_audit | MCP tool executions | 90 days |
+
+**`agent_event_queue`** — `EventQueue(AgentEvent, name="agent_event", batch_size=500,
+flush_interval_s=1.0, max_queue=10_000, on_full="drop")`. Coalesces N agent fires per
+cycle into one bulk INSERT, eliminating N individual DB round-trips during bursts.
+Defined in `backend/api/algo/events.py`.
 
 Workers are started at API boot and drained on shutdown. Failed writes are logged
 but don't stop the API (graceful degradation).

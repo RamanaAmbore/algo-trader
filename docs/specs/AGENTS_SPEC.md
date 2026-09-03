@@ -102,7 +102,7 @@ Condition trees are JSON with `all`, `any`, `not` combinators over atomic leaves
 | Metric | Scope | Definition | Units |
 |---|---|---|---|
 | `pnl` | positions, holdings, account | Unrealised P&L at current LTP | Currency |
-| `pnl_pct` | positions, holdings, account | P&L as % of cost/value | Percent (0–100) |
+| `pnl_pct` | positions, holdings, account | P&L as % of used margin (`util debits`). Falls back to `net` margin (available margin) when `util debits = 0`. Returns `None` (leaf skipped) when both are zero. | Percent (0–100) |
 | `day_pct` | positions, holdings, account | Today's intraday move | Percent (0–100) |
 
 ### Rate-of-change (per minute over window)
@@ -111,6 +111,9 @@ Condition trees are JSON with `all`, `any`, `not` combinators over atomic leaves
 |---|---|---|---|---|
 | `pnl_rate_abs` | positions, holdings, account | dP&L / dt absolute | `alert_rate_window_min` | Currency/min |
 | `pnl_rate_pct` | positions, holdings, account | d(P&L%) / dt | `alert_rate_window_min` | Percent/min |
+
+Returns `None` until ≥2 samples are accumulated in the rolling window — no alert fires
+during the ~5 min baseline accumulation period at session start.
 
 ### Rolling statistics (over `alert_rate_window_min`)
 
@@ -132,6 +135,12 @@ Condition trees are JSON with `all`, `any`, `not` combinators over atomic leaves
 ---
 
 ## 5. Alert Delivery
+
+### Dispatch skip_channels parameter
+
+`skip_channels: frozenset` — when provided, channels in this set are skipped even if
+enabled. Used when a richer alert channel (e.g. `inapp`) has already handled
+notification and simpler channels (e.g. `telegram`) should be suppressed.
 
 ### Channels
 
@@ -206,16 +215,20 @@ influence today's fire order.
 
 ### Seeded at startup
 
-Five loss agents ship as hardcoded rows (`BUILTIN_AGENTS` in `agent_engine.py`):
+Nine builtin agents ship as hardcoded rows (`BUILTIN_AGENTS` in `agent_engine.py`):
+
+Loss agents:
 - `loss-aggregate` — firm P&L threshold
 - `loss-positions` — position-level P&L threshold
 - `loss-holdings` — holding-level loss threshold
 - `loss-day-percent` — daily intraday move threshold
 - `loss-fund-negative` — available funds exhausted
+- `loss-rate-acct` — rolling P&L rate threshold per account
 
-Plus market-lifecycle agents:
+Market-lifecycle agents:
 - `expiry-auto-close-nse` — Auto-close F&O legs at 15:25 IST
 - `expiry-auto-close-mcx` — Auto-close F&O at 23:25 IST
+- `expiry-day-equity-itm-auto-close` — Auto-close ITM equity options on expiry day
 
 ### Orphan pruning
 

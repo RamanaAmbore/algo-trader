@@ -308,7 +308,7 @@ class ExpiryEngine:
         on degenerate inputs (no spot, no strike, expired). Safe to
         call for every position; failures fall back to 0."""
         try:
-            from backend.api.algo.derivatives import greeks, days_to_expiry
+            from backend.api.algo.derivatives import greeks, days_to_expiry, DEFAULT_RISK_FREE
             if pos.underlying_ltp <= 0 or pos.strike <= 0:
                 return 0.0
             close_time = (23, 30) if pos.exchange == "MCX" else (15, 30)
@@ -317,9 +317,8 @@ class ExpiryEngine:
             if T_years <= 0:
                 return 0.0
             sigma = 0.15
-            r = 0.07
             g = greeks(pos.underlying_ltp, pos.strike, T_years,
-                       r, sigma, pos.instrument_type)
+                       DEFAULT_RISK_FREE, sigma, pos.instrument_type)
             return float(g.get("theta", 0.0))
         except Exception:
             return 0.0

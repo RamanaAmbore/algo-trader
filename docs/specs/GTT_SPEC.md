@@ -133,9 +133,9 @@ for CRUDEOIL with lot_size=100). The `parent_lot_size` is baked into the Templat
 at resolve-time (never 0).
 
 **`broker.translate_qty(exchange, raw_qty, lot_size)`** — Called for EVERY GTT leg
-in `apply_plan_live` before the broker call. Converts lots → contracts if lot_size > 1.
+in `apply_plan_live` after the G1 guard. Converts lots → contracts if lot_size > 1.
 
-**G1 Guard (LOT_MULTIPLE)** — A synchronous check at the top of `apply_plan_live`
+**G1 Guard (LOT_MULTIPLE)** — A synchronous check at the TOP of `apply_plan_live`
 verifies that every GTT leg qty + wing qty is a valid multiple of `parent_lot_size`:
 ```python
 if parent_lot_size > 1:
@@ -144,7 +144,9 @@ if parent_lot_size > 1:
             if order['quantity'] % parent_lot_size != 0:
                 return AttachResult.errors("qty not a lot multiple")
 ```
-Returns `AttachResult.errors` immediately on failure; no broker call is made.
+G1 runs BEFORE `translate_qty` per leg (not after). Correct order: G1 → `translate_qty`
+→ `broker.place_gtt`. Returns `AttachResult.errors` immediately on failure; no broker
+call is made.
 
 The adapter ceiling in `kite.py:place_gtt()` provides a last-line defense (50-lot cap
 on Kite), but the synchronous G1 check fires first and faster.
@@ -173,6 +175,8 @@ on Kite), but the synchronous G1 check fires first and faster.
 3. For wing (if present):
    - Parallel `broker.place_order(wing)` via basket
    - Store wing_placed_id
+
+**Guard sequence**: G1 → `translate_qty` → `broker.place_gtt` (in that order).
 
 **Error handling**: AttachResult carries errors list. On G1 failure or broker exception,
 the function returns early with errors; other GTTs may have already been placed.

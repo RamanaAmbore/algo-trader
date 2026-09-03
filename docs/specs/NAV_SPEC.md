@@ -205,6 +205,30 @@ with the header pill.
 
 ---
 
+## 6.5 Previous Close (Day P&L Reference Price)
+
+**Canonical source and fallback chain** for holdings day P&L computation:
+
+1. **Primary**: `daily_book.ltp` (prior session settlement LTP, from row with
+   `captured_at < 08:00 IST`, ordered DESC). This is the SSOT.
+   Used in: `_override_stale_close_for_holdings()` in `holdings.py`.
+
+2. **Fallback** (when no daily_book row): broker `close_price` — stale until
+   ~08:00 IST next trading day (Zerodha BHAV copy timing).
+
+3. **COALESCE pattern deprecated**: Do not use
+   `COALESCE(daily_book.previous_close, ltp)` — `previous_close` is populated
+   from the stale Kite API and will produce wrong day P&L.
+
+Holdings day P&L formula uses the selected reference price:
+```
+day_pnl = (ltp - reference_price) × qty
+```
+
+Apply the stale-close guard: when `reference_price <= 0`, return 0.
+
+---
+
 ## 7. Test Coverage Map
 
 ### Backend — covered

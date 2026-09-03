@@ -87,9 +87,16 @@ Alert delivery channels and deployment notifications.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| notifications.telegram_enabled | BOOL | true | Enable Telegram delivery for alerts |
-| notifications.email_enabled | BOOL | true | Enable email delivery for alerts |
-| notifications.deploy_notify_channels | STRING | "" | Comma-separated Telegram chat IDs for deploy notifications |
+| notifications.agent_alerts_enabled | BOOL | true | Master gate for all agent alert dispatch |
+| notifications.telegram_enabled | BOOL | true | Telegram channel |
+| notifications.email_enabled | BOOL | true | Email channel |
+| notifications.ntfy_enabled | BOOL | true | ntfy.sh push notifications |
+| notifications.market_summary_enabled | BOOL | true | Market open/close summary emails |
+| notifications.visitor_report_enabled | BOOL | true | Daily visitor log report |
+| notifications.market_feed_enabled | BOOL | true | Market feed data ingestion |
+| notifications.genai_enabled | BOOL | true | Gemini AI market commentary generation |
+| notifications.monthly_statement_email | BOOL | true | Monthly performance statement |
+| notifications.notify_on_deploy | BOOL | false | Deployment notification |
 
 ### logging.*
 Log verbosity (live-effect fields — changes take effect without restart).
@@ -215,13 +222,19 @@ next read falls back to YAML.
 
 1. Query YAML for all keys in the defined buckets
 2. For each key not in DB, INSERT a row with the YAML value + default_value + schema
-3. Idempotent: re-running seed does not overwrite existing rows (ON CONFLICT ... DO NOTHING)
+3. Idempotent via `ON CONFLICT DO NOTHING` semantics — existing DB values are never
+overwritten by seed updates. Only new rows are inserted.
 
 **Retired-key cleanup** (optional, operator-triggered):
 
 When a key is removed from the codebase, the seeder can optionally DELETE its row.
 Allows gradual deprecation (key remains in DB until explicitly removed in a future
 deploy).
+
+**YAML structure — SEEDS tuple format**: Each setting seed entry is a tuple with up to
+8 elements: (category, key, value_type, default_value, description, schema, units,
+dev_default). The 8th element `dev_default` (optional) is the value to seed on
+non-main branches (workshop/dev). If absent, `default` is used on all branches.
 
 **YAML-first philosophy**: Buckets and keys are defined in `backend/config/backend_config.yaml`
 as the source of truth. Frontend + admin page discover settings by reading the list

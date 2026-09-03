@@ -2071,16 +2071,20 @@ refresh for all brokers in sequence.
 
 ### Token refresh during 05:30 task
 
-| Broker | Refresh Method | Behavior |
-|---|---|---|
-| Kite | TOTP auto-login | `get_kite_conn(test_conn=False)` during 05:30 window before 06:00 hard expiry |
-| Dhan | RenewToken API | Lightweight token renewal attempt; falls back to full TOTP if renewal fails |
-| Groww | Session refresh | Proactive `get_groww_conn()` refresh if `_is_token_expired()` returns True |
+| Broker | Refresh Method | Behavior | Pre-warm Timing |
+|---|---|---|---|
+| Kite | TOTP auto-login | `get_kite_conn(test_conn=False)` during 05:30 window before 06:00 hard expiry | 05:45–05:59 IST (Kite tokens expire daily at 06:00 IST) |
+| Dhan | RenewToken API | Lightweight token renewal attempt; falls back to full TOTP if renewal fails | When token age > 22 hours (expiry at 23h) |
+| Groww | Session refresh | Proactive `get_groww_conn()` refresh if `_is_token_expired()` returns True | When `_is_token_expired()` returns True |
 
 All three brokers attempt refresh during the single 05:30 IST combined task. Token refresh
 failures are logged as warnings only — they do NOT block subsequent API calls. The
 `@retry_kite_conn` decorator provides automatic recovery on the first failed fetch after
 token expiry (within 2–30s depending on broker).
+
+**Implementation**: `backend/brokers/service/app.py:_hourly_token_prewarm` handles per-broker
+pre-warm timing logic. Each broker's renewal is independent — a failure for one broker
+(e.g., Dhan 429 rate limit) does not block Kite or Groww refresh.
 
 **Rationale**: Merging separate 04:00 holiday + 05:45 Kite token tasks into a single
 05:30 call reduces task overhead and ensures both operations complete before the 06:00

@@ -75,6 +75,11 @@ return[i] = (close[i] - close[i-1]) / close[i-1]
 Stored in hedge_proxies table. Frontend displays β in the PROXY chip; correlation
 and r_squared are shown in the /admin hedge panel for operator review.
 
+**Negative β interpretation**: A negative β indicates inverse correlation between
+the position and proxy. The proxy is still valid for hedging — it is displayed
+with a negative sign. Warning threshold: r < 0.7 — below this correlation
+confidence the hedge is flagged as potentially unreliable.
+
 ---
 
 ## 3. Operator-Triggered Compute
@@ -192,6 +197,9 @@ for stability.
 **Window tightening**: For MCX targets, the auto-recompute task uses a shorter window
 (default 30 days instead of 60) so regression completes even on fresh contracts. The
 tradeoff: β may be less stable early in a contract's life.
+
+**Default lookback window**: 60 days for equity instruments; 30 days for MCX
+instruments (tighter due to seasonal patterns and shorter contract life).
 
 **Operator note**: Correlation warning (r < 0.7) is more likely on fresh contracts.
 Operator should review and possibly skip the first month of regression or extend the

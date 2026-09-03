@@ -299,18 +299,28 @@ So the first email when things go bad is the static agent. Subsequent emails are
 
 ### Built-in agents
 
-The platform ships with 16 loss / risk / market-status agents pre-seeded:
+The platform ships with 9 built-in agents pre-seeded:
 
-| Slug pattern | What it watches | Default status |
-|---|---|---|
-| `loss-pos-*` | Position P&L (intraday F&O exposure) | active |
-| `loss-hold-*` | Holdings P&L (long-term equity) | active |
-| `loss-margin-low` | Available margin on any account drops below ₹25,000 (early warning) | active |
-| `loss-funds-*-negative` | Cash or margin balance below zero | active |
-| `market-open-nse` | Fires at NSE open (09:15 IST), info-only notification | active |
-| `market-close-mcx` | Fires at MCX close (23:30 IST), info-only notification | active |
+- `loss-positions-acct` — Per-account position loss guardrail
+- `loss-rate-acct` — Per-account rate-of-loss alert
+- `loss-positions-total` — Book-wide position loss guardrail
+- `loss-margin-low` — Available margin low warning (early alert)
+- `loss-funds-negative` — Cash or margin negative (hard stop)
+- `loss-pos-total-auto-close` — Auto-close all positions on critical loss
+- `expiry-day-positions-alert` — Notification when positions expire today
+- `expiry-day-equity-itm-auto-close` — Auto-close ITM equity options on expiry
+- `expiry-day-commodity-itm-auto-close` — Auto-close ITM commodity options on expiry
 
-Edit them from `/agents` — change a threshold, add Telegram-only notification, or attach a `chase_close_positions` action that auto-cuts losses. The conditions are JSON trees you can read like a sentence.
+Edit them from `/automation` — change a threshold, pick notification channels (Telegram, email, ntfy, in-app, WebSocket, or log), or attach a `chase_close_positions` action that auto-cuts losses. The conditions are JSON trees you can read like a sentence.
+
+**Notification channels** — every alert can route through one or more delivery channels:
+
+- `telegram` — Telegram message to configured chat
+- `email` — HTML email to designated recipients
+- `ntfy` — Push notification via ntfy.sh
+- `inapp` — In-app notification (browser WebSocket)
+- `websocket` — Raw WebSocket event (API consumers only)
+- `log` — Server log entry only (no external delivery)
 
 ---
 

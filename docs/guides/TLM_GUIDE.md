@@ -29,6 +29,7 @@ Tools live in `tools/tlm/`. The master orchestrator is `tools/tlm/run_all.py`.
 | SNAPCHECK | `snapcheck.py` | Stale closed-hours snapshot detector | P1 (NAV/positions snapshot stale) | Daily cron; after market-close logic changes |
 | DEPSCAN | `depscan.py` | pip-audit + npm audit CVE scanner | P1 (CRITICAL/HIGH), P2 (MEDIUM), P3 (LOW) | Weekly; after `pip install` or `npm install` |
 | DOCDRIFT | `docdrift.py` | DESIGN_GUIDE.md drift vs recent architectural commits | P3 (doc not updated in commit window) | Daily cron; after architectural changes |
+| CONNCHECK | `conncheck.py` | Broker connection health verification — UDS socket reachability and broker registry state | P1 (socket unreachable), P2 (registry mismatch) | Daily cron; after broker connection changes |
 
 ### Severity / Exit Code Semantics
 

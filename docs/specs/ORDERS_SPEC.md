@@ -864,6 +864,12 @@ All brokers route to shared `_process_broker_postback`:
 - Dhan: `_process_broker_postback` (Dhan webhook)
 - Groww: `_process_broker_postback` (Groww webhook)
 
+**Dhan postback webhook configuration**: The Dhan webhook URL
+(`https://ramboq.com/api/orders/dhan_postback`) must be manually configured in
+the Dhan partner dashboard. If not configured, fills are only detected at the
+next 5-min `_task_performance` poll cycle (the guaranteed backstop for all
+brokers).
+
 **Status mapping** (broker → platform):
 - COMPLETE → FILLED
 - CANCELLED → CANCELLED

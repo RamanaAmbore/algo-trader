@@ -154,6 +154,10 @@ sorts by expiry, keeps first two per root. Called after the instruments cache lo
 
 ## 6. Instruments Cache
 
+**Caching behavior** — Instruments are cached with a 24-hour TTL via `_instruments_cache`
+in `backend/api/routes/instruments.py`. Cache is populated at startup (cold-boot) and
+refreshed daily at 08:00 IST. This prevents repeated broker API calls for each request.
+
 **Endpoint**: `GET /api/instruments` — full Kite instrument dump across NSE, NFO, BSE, MCX, CDS.
 
 **Format** (compact msgspec.Struct):
@@ -187,9 +191,10 @@ Kite's `instruments("MCX")` response returns `lot_size=1` for all commodities. T
 contract multiplier (CRUDEOIL=100 barrels, NATURALGAS=1250 mmBtu) is documented offline.
 
 **Override map** in `backend/api/routes/instruments.py` (`_MCX_LOT_OVERRIDES`):
-- Keyed by Kite `name` field (e.g. "CRUDEOIL", "CRUDE OIL", space variants)
+- Keyed by Kite `name` field (the symbol's display name)
 - Applies to FUT and CE/PE rows alike (options use same multiplier as underlying)
-- Applied during instruments fetch so the OrderTicket can render "Lots: 2 (× 100 = 200)"
+- Applied during the instruments fetch in `backend/api/routes/instruments.py`, before
+the result is cached, so the OrderTicket can render "Lots: 2 (× 100 = 200)"
 
 When a new MCX commodity is added to the platform, the override must be manually inserted
 after the trader desk verifies the contract size.

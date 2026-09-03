@@ -1214,6 +1214,7 @@ def _enrich_position_greeks(rows: list) -> None:
         return
     from backend.api.algo.derivatives import (
         parse_tradingsymbol, implied_vol, greeks, option_underlying_quote_key,
+        DEFAULT_RISK_FREE,
     )
 
     # Pass 1 — parse + collect unique underlying keys we need spots for.
@@ -1245,7 +1246,6 @@ def _enrich_position_greeks(rows: list) -> None:
     spot_by_key = _batch_fetch_spots(underlying_keys)
 
     # Pass 3 — per-option IV calibration + greeks compute.
-    r_rate = 0.07  # constant; matches the rate used in /api/options/analytics
     for i, (p, u_key) in parsed_by_idx.items():
         row = rows[i]
         S = spot_by_key.get(u_key, 0.0)
@@ -1265,8 +1265,8 @@ def _enrich_position_greeks(rows: list) -> None:
         T_days = max((expiry - today).days, 0)
         T_years = max(T_days, 1) / 365.0   # never let T hit zero
         try:
-            sigma = implied_vol(row.last_price, S, K, T_years, r_rate, p["opt_type"])
-            g = greeks(S, K, T_years, r_rate, sigma, p["opt_type"])
+            sigma = implied_vol(row.last_price, S, K, T_years, DEFAULT_RISK_FREE, p["opt_type"])
+            g = greeks(S, K, T_years, DEFAULT_RISK_FREE, sigma, p["opt_type"])
             row.delta_pos = g["delta"] * row.quantity
             row.theta_pos = g["theta"] * row.quantity
         except Exception:
