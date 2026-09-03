@@ -1,64 +1,95 @@
-# Plan: Suppress all agent alerts on dev
+# Plan: Fix payoff overlay vs snapshot card spot price SSOT drift
 
 ## Context
-Agent alert dispatch in `backend/api/algo/events.py` gates `telegram`, `ntfy`, and `mail`
-channels via `is_enabled()` checks (all False in `cap_in_dev`). However, the `log`,
-`websocket`, and `inapp` channels in `_dispatch_channel()` fire unconditionally —
-they are not gated. Loss agents running on dev therefore still emit log entries and
-WebSocket/inapp notifications to any connected admin session. The fix adds one
-`cap_in_dev` flag and a single early-return guard at the top of `dispatch()`.
+The payoff overlay (top-left chip in OptionsPayoff) shows a spot price that diverges from
+what the Snapshot card shows for the same underlying (e.g. 155450 vs 151953, ~3500pt gap).
 
-## Task
+Root cause — two different price sources reading different contracts:
+- **Payoff `liveSpot`**: reads `getSnapshot(strategy.spot_anchor_contract)` via SSE ticks
+  (Tier 1, lines 1905-1912). `spot_anchor_contract` is the contract the loaded strategy is
+  anchored to — could be any expiry month.
+- **Snapshot card `_underlyingQuotes[root].ltp`**: built from `loadUnderlyingQuotes()` which
+  calls `resolveUnderlying(g.underlying, findNearestFuture)` for the quoteKey — always the
+  NEAREST front-month futures contract.
 
-1. **`backend/config/backend_config.yaml`** — add one flag to `cap_in_dev`:
-   ```yaml
-   agent_alerts:  False  # all agent alert dispatch (dev: off)
-   ```
-   No change to `cap_in_prod` (missing key defaults to True).
+When `spot_anchor_contract` is a far-month future and `resolveUnderlying` returns a nearer
+contract, `liveSpot` and `_underlyingQuotes[root].ltp` refer to two completely different
+instruments — hence the 3500pt spread.
 
-2. **`backend/api/algo/events.py`** — add an early-return at the top of the
-   `dispatch()` function (line 80):
-   ```python
-   async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False):
-       if not is_enabled('agent_alerts'):
-           return
-       # ... existing body unchanged
-   ```
-   `is_enabled` is already imported on line 15 of events.py — no new import needed.
+Additionally, when anchor-contract ticks arrive in `tickBus`, the `flash.update` for
+`${root}:ltp` is never triggered (because `sym` is the anchor tradingsymbol, not `root`),
+so the LTP cell in the snapshot card doesn't flash on real-time price moves.
+
+## Fix
+Single file: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+
+### Change 1 — Snapshot card: use `liveSpot` as SSOT for selected underlying (lines 4810-4813)
+
+Replace:
+```svelte
+{@const _q = _underlyingQuotes[g.underlying]}
+{@const _ltp  = _q ? Number(_q.ltp) : null}
+{@const _close = _q ? Number(_q.prev_close) : null}
+{@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
+```
+
+With:
+```svelte
+{@const _q = _underlyingQuotes[g.underlying]}
+{@const _useAnchor = g.underlying === selectedUnderlying && liveSpot != null && liveSpot > 0}
+{@const _ltp   = _useAnchor ? liveSpot : (_q ? Number(_q.ltp) : null)}
+{@const _close = _useAnchor && (strategy?.spot_prev_close ?? 0) > 0
+    ? Number(strategy.spot_prev_close)
+    : (_q ? Number(_q.prev_close) : null)}
+{@const _pct   = _ltp != null && _close != null && _close > 0
+    ? ((_ltp - _close) / _close) * 100
+    : (_q?.day_pct ?? null)}
+```
+
+- For the selected underlying: LTP = `liveSpot` (anchor contract SSE tick), prev_close =
+  `strategy.spot_prev_close` (anchor's settlement), day% = recomputed from these.
+- For all other underlyings: unchanged (still use batch quote).
+
+### Change 2 — tickBus: flash the underlying's LTP cell when anchor ticks (lines 1840-1851)
+
+After the existing `if (root in _underlyingQuotes) { ... }` block, add:
+
+```javascript
+// Anchor contract tick → flash the underlying's spot cell in the snapshot card.
+// Without this the LTP cell never flashes when spot_anchor_contract is a far-month
+// future (its tradingsymbol ≠ root key) even though liveSpot is updating.
+const _anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+const _stratUnd = String(strategy?.underlying || '').toUpperCase();
+if (_anchor && root === _anchor && _stratUnd && _stratUnd in _underlyingQuotes) {
+  const _as = getSnapshot(root);
+  if (_as?.ltp != null) flash.update(`${_stratUnd}:ltp`, Number(_as.ltp));
+}
+```
 
 ## Agents
-- backend: Apply both changes:
-  (a) In `backend/config/backend_config.yaml`, add `agent_alerts: False` to the
-      `cap_in_dev` block (after the existing `ntfy: False` line).
-  (b) In `backend/api/algo/events.py`, insert `if not is_enabled('agent_alerts'): return`
-      as the first line of the `dispatch()` function body (after the docstring if any,
-      before any other logic).
-  For every file you change or create, you MUST write or update at least one test covering
-  the changed behaviour. This is mandatory — not optional.
-- frontend: skip
+- frontend: Implement both changes in +page.svelte as described above. Add a brief code
+  comment on the `_useAnchor` line explaining the SSOT motivation (anchor vs near-month
+  divergence). No other files need changes.
+- playwright: Add a new spec `e2e/derivatives_spot_ssot.spec.js` that:
+  1. Loads a strategy with a known underlying
+  2. Checks that the spot price shown in the Snapshot card for the selected underlying
+     matches the spot shown in the OptionsPayoff overlay header chip
+  3. Asserts the two values are equal (within 1 rupee tolerance to allow for tick timing)
+- backend: skip
 - broker: skip
 - doc: skip
-- backend-test: Add tests to `backend/tests/test_cap_flags_dev.py` (already exists — extend it):
-  - Mock `is_enabled` to return False for 'agent_alerts'
-  - Call `events.dispatch(mock_agent, mock_result, broadcast_fn=mock_broadcast)`
-  - Assert the function returns immediately (broadcast_fn NOT called, no channels fired)
-  - Mock `is_enabled` to return True for 'agent_alerts'
-  - Assert dispatch proceeds normally (broadcast_fn IS called)
-  For every file you change or create, you MUST write or update at least one test covering
-  the changed behaviour. This is mandatory — not optional.
-- playwright: skip
+- backend-test: skip
 
 ## Tests
-- pytest: yes
-- svelte-check: no
-- playwright: no
+- pytest: no
+- svelte-check: yes
+- playwright: yes
 
 ## Commit message
-fix(dev): suppress all agent alert dispatch on dev via agent_alerts cap flag
+fix(derivatives): sync snapshot card spot price with payoff overlay — use liveSpot (anchor contract) as SSOT for selected underlying
 
 ## Done when
-- `cap_in_dev.agent_alerts: False` is in backend_config.yaml
-- `events.dispatch()` returns immediately when `is_enabled('agent_alerts')` is False
-- No log entries, no WebSocket pushes, no ntfy/telegram from loss agents on dev
-- prod behaviour unchanged
-- pytest green
+- Snapshot card LTP for selected underlying = payoff overlay spot (same price, same contract)
+- Day % in snapshot card recomputed from anchor contract's prev_close (via strategy.spot_prev_close)
+- LTP cell flashes in snapshot when anchor contract ticks via SSE
+- svelte-check 0 errors, playwright spec passes
