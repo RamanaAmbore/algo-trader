@@ -338,18 +338,18 @@ describe('mkPrevCol — headerName is P.Close', () => {
   });
 });
 
-describe('mkRightColDefs — prevCol (P.Close) immediately after avg_combined', () => {
+describe('mkRightColDefs — column order Lots→Qty→Avg→LTP→P.Close', () => {
   function getOrderedCols() {
     return mkRightColDefs(makeOpts());
   }
 
-  it('prevCol (field "prev") appears immediately after avg_combined', () => {
+  it('prevCol (field "prev") appears immediately after ltpCol', () => {
     const cols = getOrderedCols();
-    const avgIdx  = cols.findIndex(c => c.colId === 'avg_combined' || c.field === 'avg_combined');
-    const prevIdx = cols.findIndex(c => c.colId === 'prev'         || c.field === 'prev');
-    expect(avgIdx,  'avg_combined column not found').not.toBe(-1);
+    const ltpIdx  = cols.findIndex(c => c.colId === 'ltp'  || c.field === 'ltp');
+    const prevIdx = cols.findIndex(c => c.colId === 'prev' || c.field === 'prev');
+    expect(ltpIdx,  'ltp column not found').not.toBe(-1);
     expect(prevIdx, 'prev column not found').not.toBe(-1);
-    expect(prevIdx).toBe(avgIdx + 1);
+    expect(prevIdx).toBe(ltpIdx + 1);
   });
 
   it('prevCol appears BEFORE day_pnl', () => {
