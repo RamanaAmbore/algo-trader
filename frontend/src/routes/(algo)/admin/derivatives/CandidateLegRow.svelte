@@ -303,6 +303,14 @@
       {/if}
     {/if}
   </span>
+  <span class="num tf-cell leg-ltp
+    {typeof ltp === 'number' && typeof cost === 'number' && cost > 0
+      ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
+      : ''}
+    {typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
+      ? (ltp > c.prev_close ? 'ltp-vs-prev-up' : ltp < c.prev_close ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat')
+      : ''}
+    {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <!-- Lots column. For proxy eq rows the lot count is in
        TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
        so the math derives from the same market_value /
@@ -340,14 +348,6 @@
     <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
   {/if}
   <span class="num {displayQty > 0 ? 'cell-pos' : displayQty < 0 ? 'cell-neg' : 'cell-flat'}">{cost != null ? priceFmt(cost) : '—'}</span>
-  <span class="num tf-cell leg-ltp
-    {typeof ltp === 'number' && typeof cost === 'number' && cost > 0
-      ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
-      : ''}
-    {typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
-      ? (ltp > c.prev_close ? 'ltp-vs-prev-up' : ltp < c.prev_close ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat')
-      : ''}
-    {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
   <span class="num tf-cell cand-pnl {_dayPnl == null ? 'cell-flat' : _dayPnl > 0 ? 'cell-pos' : _dayPnl < 0 ? 'cell-neg' : 'cell-flat'} {_dayPnl == null ? '' : flash.classOf(`${_legFlashKey}:day`)}"
         title={_legExp ? 'Day P&L promoted to Exp P&L on expiry day — settlement realized today.' : "Day P&L = today's intraday move × qty"}>

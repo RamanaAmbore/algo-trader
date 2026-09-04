@@ -4394,7 +4394,9 @@
       <OptionsPayoff
         payoff={strategy && !_strategyStale ? _mergedPayoff : (_clientPayoffStub ?? [])}
         spot={liveSpot}
-        prevClose={strategy?.spot_prev_close}
+        prevClose={(strategy?.spot_prev_close ?? 0) > 0
+          ? strategy.spot_prev_close
+          : (_underlyingQuotes[selectedUnderlying]?.prev_close ?? null)}
         breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
         intermediateCurves={!_strategyStale ? (strategy?.intermediate_curves || []) : []}
         spanSigmas={strategy?.span_sigmas}
@@ -4546,11 +4548,11 @@
                  expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
                  separate Expiry column would be redundant. -->
             <span>Symbol</span>
+            <span class="num">LTP</span>
             <span class="num"
                   title="Qty in F&O lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
             <span class="num">Qty</span>
             <span class="num">Avg</span>
-            <span class="num">LTP</span>
             <span class="num">P.Close</span>
             <span class="num"
                   title="Today's change in P&L (broker-agnostic split formula). Sum across all rows = strip's P∆ chip.">
@@ -6064,10 +6066,10 @@
       auto                                 /* checkbox */
       38px                                 /* pos state (GTT / paired / orphan) */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
+      minmax(62px, max-content)            /* ltp */
       minmax(44px, max-content)            /* lots */
       minmax(48px, max-content)            /* qty */
       minmax(62px, max-content)            /* avg (cost basis) */
-      minmax(62px, max-content)            /* ltp */
       minmax(72px, max-content)            /* prev close */
       minmax(62px, max-content)            /* day pnl - today */
       minmax(72px, max-content)            /* pnl - cumulative */
