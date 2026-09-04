@@ -213,6 +213,7 @@ _DHAN_INSTRUMENTS_DATE: str = ""            # IST date string when cache was bui
 _DHAN_BY_EXCHANGE: dict[str, list[dict]] = {}   # kite_exchange → [instrument rows]
 _DHAN_BY_SYMBOL: dict[tuple, str] = {}          # (kite_exchange, tradingsymbol) → security_id
 _DHAN_INSTRUMENTS_FAIL_UNTIL: float = 0.0       # epoch seconds; retry blocked until this time
+_DHAN_LOT_BY_SECURITY: dict[str, int] = {}  # securityId → lot_size for MCX/NCO instruments
 
 
 def _ist_today() -> str:
@@ -470,6 +471,14 @@ def _apply_dhan_instruments(data: dict) -> None:
         _DHAN_BY_EXCHANGE = data["by_exchange"]
         _DHAN_BY_SYMBOL = data["by_symbol"]
         _DHAN_INSTRUMENTS_DATE = data["date"]
+        _DHAN_LOT_BY_SECURITY.clear()
+        for _exch, _rows in data["by_exchange"].items():
+            if _exch in ("MCX", "NCO"):
+                for _row in _rows:
+                    _sid = str(_row.get("security_id") or "")
+                    _ls  = int(_row.get("lot_size") or 0)
+                    if _sid and _ls > 1:
+                        _DHAN_LOT_BY_SECURITY[_sid] = _ls
 
 
 def _load_dhan_instruments() -> None:
@@ -2075,13 +2084,25 @@ def _normalise_trades(resp: Any) -> list[dict]:
     out: list[dict] = []
     for t in _unwrap(resp):
         _raw_ts_t = str(t.get("tradingSymbol") or "")
+        _tq  = int(t.get("tradedQuantity", 0) or 0)
+        _seg = str(t.get("exchangeSegment") or "")
+        if _seg == "MCX_COMM" and _tq > 0:
+            _sid = str(t.get("securityId") or "")
+            _ls  = _DHAN_LOT_BY_SECURITY.get(_sid, 0)
+            if _ls > 1:
+                _tq *= _ls
+            else:
+                logger.warning(
+                    "[DHAN-TRADE-QTY] MCX securityId=%s not in lot cache — storing raw qty=%d",
+                    _sid, _tq,
+                )
         out.append({
             "trade_id":         str(t.get("tradeId")   or ""),
             "order_id":         str(t.get("orderId")   or ""),
             "tradingsymbol":    _dhan_to_kite_symbol(_raw_ts_t),
             "exchange":         t.get("exchange")      or "",
             "transaction_type": t.get("transactionType") or "BUY",
-            "quantity":         int(t.get("tradedQuantity", 0) or 0),
+            "quantity":         _tq,
             "average_price":    float(t.get("tradedPrice",  0) or 0),
             "exchange_timestamp": t.get("exchangeTime")   or "",
             "_raw":             t,

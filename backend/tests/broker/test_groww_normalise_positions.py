@@ -237,23 +237,26 @@ class TestGrowwTranslateQtyMCX:
         b._conn = conn
         return b
 
-    def test_mcx_contracts_to_lots(self):
+    def test_mcx_contracts_returned_raw(self):
         b = self._broker()
-        # 1 lot CRUDEOIL = 100 contracts; outbound Groww order must send 1
-        assert b.translate_qty("MCX", 100, 100) == 1
+        # Groww uses CONTRACTS for all exchanges including MCX — no lot conversion.
+        # CRUDEOIL 1 lot = 100 contracts, but Groww sends 100 → must return 100.
+        assert b.translate_qty("MCX", 100, 100) == 100
 
-    def test_mcx_2_lots(self):
+    def test_mcx_multiple_contracts_returned_raw(self):
         b = self._broker()
-        assert b.translate_qty("MCX", 200, 100) == 2
+        # 200 contracts sent by Groww → must stay 200, not divide by 100.
+        assert b.translate_qty("MCX", 200, 100) == 200
 
-    def test_mcx_naturalgas(self):
+    def test_mcx_naturalgas_returned_raw(self):
         b = self._broker()
-        # 1 lot NATURALGAS = 1250 contracts
-        assert b.translate_qty("MCX", 1250, 1250) == 1
+        # NATURALGAS lot_size=1250; Groww sends 1250 contracts → stay 1250.
+        assert b.translate_qty("MCX", 1250, 1250) == 1250
 
-    def test_nco_contracts_to_lots(self):
+    def test_nco_contracts_returned_raw(self):
         b = self._broker()
-        assert b.translate_qty("NCO", 100, 100) == 1
+        # NCO: Groww uses contracts, no conversion needed.
+        assert b.translate_qty("NCO", 100, 100) == 100
 
     def test_nfo_no_translation(self):
         b = self._broker()
@@ -264,20 +267,17 @@ class TestGrowwTranslateQtyMCX:
         b = self._broker()
         assert b.translate_qty("NSE", 10, 1) == 10
 
-    def test_mcx_cache_miss_raises(self):
+    def test_mcx_lot_size_one_returned_raw(self):
         b = self._broker()
-        # lot_size <= 1 on MCX = cache miss; must raise, not send 100x oversize
-        import pytest
-        with pytest.raises(ValueError, match="QTY-GUARD"):
-            b.translate_qty("MCX", 100, 1)
+        # lot_size=1 on MCX: Groww still returns contracts as-is.
+        assert b.translate_qty("MCX", 100, 1) == 100
 
-    def test_mcx_lot_size_zero_raises(self):
+    def test_mcx_lot_size_zero_returned_raw(self):
         b = self._broker()
-        import pytest
-        with pytest.raises(ValueError, match="QTY-GUARD"):
-            b.translate_qty("MCX", 100, 0)
+        # lot_size=0: Groww override ignores lot_size entirely.
+        assert b.translate_qty("MCX", 100, 0) == 100
 
     def test_mcx_sub_lot_passes_through(self):
         b = self._broker()
-        # raw_qty < lot_size: sub-lot, pass through unchanged (Groww will reject)
+        # sub-lot qty: Groww returns raw contracts unchanged.
         assert b.translate_qty("MCX", 10, 100) == 10

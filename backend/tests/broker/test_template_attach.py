@@ -828,10 +828,10 @@ class TestRemoteBrokerTranslateQty:
 # ─── Groww translate_qty MCX logging ────────────────────────────────────────────
 
 class TestGrowwTranslateQtyMcx:
-    """Groww translates MCX contracts → lots via the shared exchange convention."""
+    """Groww returns raw contracts for all exchanges — no lots conversion."""
 
-    def test_groww_translate_qty_mcx_contracts_to_lots(self):
-        """Groww.translate_qty for MCX divides contracts by lot_size."""
+    def test_groww_translate_qty_mcx_returns_raw_contracts(self):
+        """Groww.translate_qty for MCX returns raw_qty unchanged (Groww uses CONTRACTS)."""
         mock_conn = MagicMock()
         mock_conn.get_groww_conn.return_value = MagicMock()
 
@@ -839,9 +839,9 @@ class TestGrowwTranslateQtyMcx:
         adapter._conn = mock_conn
         adapter._account = "GR0001"
 
-        # 100 contracts with lot_size=2 → 50 lots
+        # Groww sends contracts; no division by lot_size — 100 in → 100 out
         result = adapter.translate_qty(exchange="MCX", raw_qty=100, lot_size=2)
-        assert result == 50
+        assert result == 100
 
 
 # ─── Helper for creating test plans ────────────────────────────────────────────

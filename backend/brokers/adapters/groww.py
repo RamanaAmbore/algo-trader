@@ -1364,8 +1364,9 @@ class GrowwBroker(Broker):
             page += 1
         return out
 
-    # translate_qty and normalise_qty are inherited from Broker base —
-    # @exchange_qty_convention in the base handles MCX/NCO lots conversion.
+    def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
+        # Groww uses CONTRACTS for all exchanges including MCX — no lot conversion needed.
+        return raw_qty
 
 
 # ── Response normalisers ──────────────────────────────────────────────
