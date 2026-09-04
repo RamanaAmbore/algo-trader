@@ -490,6 +490,7 @@ export function mkRightColDefs({
     },
     symColRight,
     sparkCol,
+    ltpCol,
     { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => {
@@ -516,7 +517,6 @@ export function mkRightColDefs({
       },
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
       headerTooltip: 'Weighted average entry across positions + holdings.' },
-    ltpCol,
     prevCol,
     { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,

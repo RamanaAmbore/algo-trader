@@ -1,50 +1,41 @@
-# Plan: Fix payoff dropdown stale-underlying race condition
+# Plan: Reorder LTP column in positions and holdings grids
 
 ## Context
-The payoff overlay dropdown sometimes shows COPPER (or any previously-viewed underlying)
-as the default even when no COPPER option positions exist. Root cause: the auto-select
-`$effect` at `+page.svelte:1544` has a missing case — when `selectedUnderlying` is
-restored from sessionStorage cache and that underlying is no longer in the options list
-after a fresh positions load, none of the existing conditions trigger and the stale value
-persists indefinitely.
+Operator wants LTP earlier in both grids so the live price is the first numeric column seen
+after the symbol. Currently LTP sits after Avg in both grids.
+
+Target orders:
+- **Positions**: St · Symbol · **LTP** · Lots · Qty · Avg · P.Close · Day P&L ...
+- **Holdings**: Symbol · **LTP** · Qty · Avg · P.Close · Day P&L ...
 
 ## Agents
 - backend: skip
-- frontend: Fix `+page.svelte:1575-1578` — add a "stale underlying not in options" case
-  to the auto-select effect. After reading `cur` and `opts`:
-  - Check `const curInOpts = opts.find(o => o.value === cur);`
-  - If `!curInOpts` AND `opts[0]?.value` exists → reset `selectedUnderlying = opts[0].value`
-  - Existing promote case (curIsPopular) remains unchanged below that
-  Replace lines 1575-1578 in `+page.svelte` with:
-  ```js
-  const curInOpts = opts.find(o => o.value === cur);
-  if (!curInOpts && opts[0]?.value) {
-    untrack(() => { selectedUnderlying = opts[0].value; });
-    return;
-  }
-  const curIsPopular = curInOpts?.hint === 'popular';
-  if (curIsPopular && opts[0]?.hint !== 'popular') {
-    untrack(() => { selectedUnderlying = opts[0].value; });
-  }
-  ```
-  File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` lines 1575-1578.
+- frontend: Three column-array edits (no logic changes, ordering only):
+
+  **Edit 1 — `frontend/src/lib/data/pulseColumns.js` (mkRightColDefs, ~line 491)**
+  Move `ltpCol` from after `avg_combined` block (currently line 519) to before the `lots`
+  column (currently line 493). New order: sparkCol → ltpCol → Lots → Qty → Avg → prevCol.
+
+  **Edit 2 — `frontend/src/lib/PerformancePage.svelte` (holdingsCols, ~line 561)**
+  Current order in array: Symbol, Qty (563), Avg (564), LTP (565), P.Close ...
+  Move LTP (`last_price`) entry to be the second element (right after Symbol/pinned col):
+  Symbol, **LTP**, Qty, Avg, P.Close ...
+
+  **Edit 3 — `frontend/src/lib/PerformancePage.svelte` (positionsCols, ~line 660)**
+  Current order: St, Symbol, Lots (694), Qty (698), Avg (699), LTP (700), P.Close ...
+  Move LTP (`last_price`) entry to be right after Symbol (before Lots):
+  St, Symbol, **LTP**, Lots, Qty, Avg, P.Close ...
 
   For every file you change or create, you MUST write or update at least one test that covers
   the changed behaviour. This is mandatory — not optional.
-  - `frontend/src/` UI change → add/update a Playwright spec in `frontend/tests/` covering the changed flow
-  No change ships without a corresponding test update.
+  - Frontend column-order change → update the relevant Vitest snapshot or Playwright spec
+    that asserts column order (check `frontend/src/lib/__tests__/` for pulseColumns tests,
+    and `frontend/e2e/` for derivatives/perf grid specs).
 
 - broker: skip
 - doc: skip
 - backend-test: skip
-- playwright: Write a Playwright spec verifying the payoff dropdown default-underlying
-  behaviour in `frontend/tests/derivatives-payoff-default.spec.js` (or add to an existing
-  derivatives spec). The spec should:
-  (a) Navigate to the derivatives admin page
-  (b) Wait for positions to load (wait for the dropdown to have a value)
-  (c) Assert the dropdown shows an underlying that has positions, not an empty/placeholder value
-  If the dev environment has no live positions, assert the dropdown at minimum shows a
-  non-empty value (first option selected, not blank).
+- playwright: skip
 
 ## Tests
 - pytest: no
@@ -52,9 +43,9 @@ persists indefinitely.
 - playwright: no
 
 ## Commit message
-fix(derivatives): reset payoff dropdown when cached underlying no longer in options
+fix(ui): move LTP before Lots (positions) and before Qty (holdings) in grids
 
 ## Done when
-- When positions refresh removes a previously-selected underlying from the options list,
-  `selectedUnderlying` resets to `opts[0].value` (first underlying with positions).
+- Positions grid (Pulse + Perf page): LTP appears before Lots column.
+- Holdings grid (Pulse + Perf page): LTP appears before Qty column.
 - svelte-check 0 errors.

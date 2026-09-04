@@ -338,18 +338,18 @@ describe('mkPrevCol — headerName is P.Close', () => {
   });
 });
 
-describe('mkRightColDefs — column order Lots→Qty→Avg→LTP→P.Close', () => {
+describe('mkRightColDefs — column order LTP→Lots→Qty→Avg→P.Close', () => {
   function getOrderedCols() {
     return mkRightColDefs(makeOpts());
   }
 
-  it('prevCol (field "prev") appears immediately after ltpCol', () => {
+  it('ltpCol appears before lots column', () => {
     const cols = getOrderedCols();
     const ltpIdx  = cols.findIndex(c => c.colId === 'ltp'  || c.field === 'ltp');
-    const prevIdx = cols.findIndex(c => c.colId === 'prev' || c.field === 'prev');
+    const lotsIdx = cols.findIndex(c => c.colId === 'lots' || c.field === 'lots');
     expect(ltpIdx,  'ltp column not found').not.toBe(-1);
-    expect(prevIdx, 'prev column not found').not.toBe(-1);
-    expect(prevIdx).toBe(ltpIdx + 1);
+    expect(lotsIdx, 'lots column not found').not.toBe(-1);
+    expect(ltpIdx).toBeLessThan(lotsIdx);
   });
 
   it('prevCol appears BEFORE day_pnl', () => {
