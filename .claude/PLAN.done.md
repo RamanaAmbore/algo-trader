@@ -1,54 +1,70 @@
-# Plan: Payoff overlay — spot % change row
+# Plan: Standardize position/holdings grid column order across all pages
 
 ## Context
 
-The `OptionsPayoff.svelte` overlay already has:
-- `SPOT` row (line 732–739): color-coded green/red via `ps-spot-{spotDir}` — derived from
-  `spot > prevClose` / `spot < prevClose` logic (lines 144–149). Already correct.
-- `CLOSE` row (line 741–749): shows `prevClose` in neutral cyan.
-- `prevClose` is already a prop (line 92), passed from page as `strategy?.spot_prev_close`.
+Industry standard (Zerodha Kite, Groww, IBKR, thinkorswim) is Qty → Avg → LTP, placing
+cost basis adjacent to current price for natural left-to-right comparison. All four grids
+currently have LTP → Avg → P.Close → Qty → Lots — backwards from the standard.
 
-Missing: a `CHG%` row showing `(spot − prevClose) / prevClose × 100`, color-coded with
-the same `spotDir` palette (green positive, red negative, cyan flat/unavailable).
+**Target order:**
+- Positions: `Lots | Qty | Avg | LTP | P.Close`
+- Holdings:  `Qty | Avg | LTP | P.Close` (no Lots — holdings are equity, lot_size=1)
 
-## Task
-
-Add one derived variable and one template row to `OptionsPayoff.svelte`:
-
-1. **Derived `spotPct`** — compute % change from prevClose. Place after `spotDir` (line 149):
-```javascript
-const spotPct = $derived.by(() => {
-  if (spot == null || prevClose == null || prevClose <= 0) return null;
-  return ((spot - prevClose) / prevClose) * 100;
-});
-```
-
-2. **Template row** — insert between the SPOT row (line 739) and the CLOSE row (line 741):
-```svelte
-{#if spotPct != null}
-  <div class="ps-row" title="Spot % change from previous session close">
-    <span class="ps-k">CHG%</span>
-    <span class={'ps-v ps-spot-' + spotDir}>
-      {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
-    </span>
-  </div>
-{/if}
-```
-
-Color reuses `ps-spot-{spotDir}` — no new CSS needed. The `+` prefix on positive values
-matches Bloomberg/Kite convention. `toFixed(2)` gives two decimal places.
+**Current order (all four grids):** `LTP → Avg → P.Close → Qty → Lots`
 
 ## Agents
 
-- frontend: make the two edits above in `frontend/src/lib/OptionsPayoff.svelte`
+- frontend: all four file changes below
 - backend: skip
 - backend-test: skip
 - playwright: skip
 - doc: skip
 
+## Changes — frontend agent
+
+### 1. `frontend/src/lib/PerformancePage.svelte`
+
+**Positions grid** (ag-Grid column defs, around line 668–722):
+Current sequence: `LTP(698) → Avg(699) → P.Close(700) → Qty(705) → Lots(710)`
+New sequence: `Lots → Qty → Avg → LTP → P.Close`
+Move the Lots colDef before Qty, keep Avg→LTP→P.Close in that order after Qty.
+
+**Holdings grid** (ag-Grid column defs, around line 561–587):
+Current sequence: `LTP(563) → Avg(564) → P.Close(565) → Qty(570) → Lots(575)`
+Holdings have no meaningful Lots column (equities, lot_size=1) — remove the Lots colDef
+if present. New sequence: `Qty → Avg → LTP → P.Close`
+
+### 2. `frontend/src/lib/data/pulseColumns.js`
+
+**Right grid** (mkRightColDefs, around line 463):
+Current sequence: `LTP(493) → Avg(494) → P.Close(506) → Qty(533) → Lots(538)`
+New sequence: `Lots → Qty → Avg → LTP → P.Close`
+Move `lots` colDef before `qty_net`, reorder `avg_combined → ltpCol → prevCol` after Qty.
+
+If the right grid shows both positions and holdings in one unified view, keep Lots but
+let it be empty/zero for holdings rows (existing behaviour — no logic change needed).
+
+### 3. `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+
+Svelte template with span cells. Current order:
+`LTP(306) → Avg(314) → P.Close(315) → Qty(323–333) → Lots(341–358)`
+
+New cell order in template:
+`Lots → Qty → Avg → LTP → P.Close`
+
+Also update the **header row** in
+`frontend/src/routes/(algo)/admin/derivatives/+page.svelte` —
+the `<span>` headers for these columns must be reordered to match, AND the
+`grid-template-columns` CSS track order must be updated to match the new cell sequence.
+Read the current header + grid-template-columns carefully before editing to preserve
+all other columns (Checkbox, St, Symbol, Account, Exp P&L, Greeks).
+
 ## Files touched
 
-- `frontend/src/lib/OptionsPayoff.svelte`
+- `frontend/src/lib/PerformancePage.svelte`
+- `frontend/src/lib/data/pulseColumns.js`
+- `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
 
 ## Tests
 
@@ -58,10 +74,11 @@ matches Bloomberg/Kite convention. `toFixed(2)` gives two decimal places.
 
 ## Commit message
 
-feat(derivatives): payoff overlay spot % change from prev close with color coding
+refactor(ui): standardize position grid column order to Lots→Qty→Avg→LTP→P.Close
 
 ## Done when
 
 1. `svelte-check` — 0 errors
-2. Overlay shows CHG% row between SPOT and CLOSE, green when positive, red when negative,
-   cyan when prevClose unavailable
+2. All four grids show: Lots (if applicable), Qty, Avg, LTP, P.Close in that order
+3. Holdings grids show Qty, Avg, LTP, P.Close (no Lots)
+4. Header row and grid-template-columns in Derivatives page match new cell order
