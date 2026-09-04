@@ -89,15 +89,19 @@ def _opl_price_from_ticker(tradingsymbol: str) -> Optional[float]:
     return None
 
 
-async def _opl_price_from_broker(tradingsymbol: str) -> Optional[float]:
+async def _opl_price_from_broker(tradingsymbol: str, exchange: str = "NFO") -> Optional[float]:
     """Try to resolve LTP via a one-shot broker.ltp() call.
 
     Returns the float price when found and positive, else None.
-    Extracted from _opp_resolve_notional_price to reduce CC there."""
+    Extracted from _opp_resolve_notional_price to reduce CC there.
+
+    exchange must be the actual exchange of the instrument (e.g. "MCX" for
+    commodity futures) — the broker key format is "{exchange}:{symbol}".
+    Passing the wrong exchange causes a key miss and returns None."""
     try:
         from backend.brokers.registry import get_market_data_broker
         broker = get_market_data_broker()
-        key = f"NFO:{tradingsymbol.upper()}"
+        key = f"{exchange.upper()}:{tradingsymbol.upper()}"
         quote = await asyncio.to_thread(broker.ltp, [key])
         v = (quote or {}).get(key)
         if isinstance(v, dict):
@@ -112,9 +116,13 @@ async def _opl_price_from_broker(tradingsymbol: str) -> Optional[float]:
 async def _opp_resolve_notional_price(
     tradingsymbol: str,
     price_hint: Optional[float],
+    exchange: str = "NFO",
 ) -> float:
     """Resolve the price for new-notional calculation. Priority: price_hint
-    → ticker LTP → broker.ltp(). Raises 503 when no price is resolvable."""
+    → ticker LTP → broker.ltp(). Raises 503 when no price is resolvable.
+
+    exchange is the actual exchange of the instrument — passed through to
+    _opl_price_from_broker so the broker key is "{exchange}:{symbol}"."""
     # Explicit zero guard: price_hint==0 means MARKET order (caller did not
     # supply a price); treat it the same as None so we fall through to the
     # ticker / broker LTP chain rather than computing 0 × qty = ₹0 notional.
@@ -124,7 +132,7 @@ async def _opp_resolve_notional_price(
     if px is None:
         px = _opl_price_from_ticker(tradingsymbol)
     if px is None:
-        px = await _opl_price_from_broker(tradingsymbol)
+        px = await _opl_price_from_broker(tradingsymbol, exchange)
     if px is None or px <= 0:
         raise HTTPException(
             status_code=503,
@@ -142,6 +150,7 @@ async def _enforce_capacity_guard(
     strategy_id: int,
     account: str,
     tradingsymbol: str,
+    exchange: str = "NFO",
     side_kite: str,
     quantity: int,
     price_hint: Optional[float],
@@ -188,7 +197,7 @@ async def _enforce_capacity_guard(
         if cap is None:
             return
 
-    px = await _opp_resolve_notional_price(tradingsymbol, price_hint)
+    px = await _opp_resolve_notional_price(tradingsymbol, price_hint, exchange)
     new_notional = float(quantity) * px
     projected = open_notional + new_notional
     if projected > cap:
@@ -1740,10 +1749,12 @@ async def _ticket_place_live(
 
     _bk_key = _opp_live_check_mode_gates(account, sym, side, qty)
 
-    # Defense-in-depth MCX lot_size cold-cache guard — validate_input already
-    # raises 503 first for all F&O, but re-check for MCX/NCO to thread the
-    # resolved lot_size through to _ticket_check_mcx_size_cap.
-    _mcx_ls_for_translate = await _ticket_check_mcx_lot_cache(data, sym, side, qty, lot_size)
+    # _ticket_check_mcx_lot_cache was removed here: the function's return
+    # value (_mcx_ls_for_translate) was never consumed — _ls_for_translate
+    # is derived independently below from `lot_size`. The call logged a
+    # spurious WARNING on every non-MCX ticket. Defense-in-depth MCX
+    # guards remain in _ticket_validate_input (lot_size resolution) and
+    # _ticket_check_mcx_size_cap (size-cap enforcement below).
 
     _pf = await _ticket_run_preflight(data, account, sym, side, qty)
     if not _pf["ok"]:
@@ -1997,6 +2008,7 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
             strategy_id=int(data.strategy_id),
             account=account,
             tradingsymbol=sym,
+            exchange=(data.exchange or "NFO"),
             side_kite=side,
             quantity=qty,
             price_hint=(float(data.price)

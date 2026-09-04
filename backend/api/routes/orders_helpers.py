@@ -31,7 +31,7 @@ _VARIETIES   = {"regular", "amo", "co"}
 _ORDER_TYPES = {"MARKET", "LIMIT", "SL", "SL-M"}
 _PRODUCTS    = {"CNC", "MIS", "NRML"}
 _TXN_TYPES   = {"BUY", "SELL"}
-_EXCHANGES   = {"NSE", "BSE", "NFO", "CDS", "MCX", "BFO"}
+_EXCHANGES   = {"NSE", "BSE", "NFO", "CDS", "MCX", "BFO", "NCO", "BCD"}
 _VALIDITIES  = {"DAY", "IOC"}
 
 _ORDERS_TTL  = 15   # orders refresh faster — 15 s cache

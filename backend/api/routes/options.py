@@ -583,11 +583,18 @@ class ChainQuotesResponse(msgspec.Struct):
     """Per-strike CE / PE bid / ask map for the chain picker — one
     round-trip populates the inline quote cells next to every Buy /
     Sell / (i) button on both sides of the strike grid.
-    When expiry is omitted only the expiries list is returned (no broker call)."""
+    When expiry is omitted only the expiries list is returned (no broker call).
+
+    stale=True means the data is from the off-market closed cache (or a
+    cold-cache miss when the market is closed). The frontend should surface
+    an appropriate indicator rather than showing an empty grid silently.
+    message carries a human-readable explanation when stale=True."""
     underlying: str
     expiry:     str
     rows:       list[ChainQuoteRow]
     expiries:   list[str] = []
+    stale:      bool = False
+    message:    str = ""
 
 
 class ChainSnapshotLeg(msgspec.Struct):
@@ -2138,7 +2145,8 @@ def _chain_sym_cache_clear() -> None:
 # avoids repeated broker.quote() calls that return identical data.
 # ---------------------------------------------------------------------------
 _CHAIN_QUOTES_CLOSED_CACHE: "dict[tuple, tuple[float, Any]]" = {}
-_CHAIN_QUOTES_CLOSED_TTL = 300.0   # 5 minutes during off-market hours
+_CHAIN_QUOTES_CLOSED_TTL = 300.0        # 5 minutes during off-market hours
+_CHAIN_QUOTES_CLOSED_CACHE_MAX_SIZE = 128  # LRU eviction cap (keyed by (underlying, expiry))
 
 
 def _chain_quotes_closed_cache_clear() -> None:
@@ -2746,17 +2754,28 @@ class OptionsController(Controller):
         # broker every 5 s. `_any_segment_open` covers all configured
         # segments (NSE + MCX) so this fires only when both are closed.
         _closed_cache_key = (und, exp)
+        # NOTE: Using _any_segment_open() directly instead of closed_hours_or_broker()
+        # (the canonical gate in snapshot_gate.py) because chain_quotes has no DB
+        # snapshot fallback. closed_hours_or_broker() would invoke the broker even
+        # when the market is closed; _any_segment_open() lets us serve the
+        # _CHAIN_QUOTES_CLOSED_CACHE instead, avoiding broker calls on frozen data.
         if not await asyncio.to_thread(_any_segment_open):
             _cached = _chain_quotes_closed_cache_get(_closed_cache_key)
             if _cached is not None:
-                return _cached
+                # Return the cached response with stale=True so the frontend can
+                # show a meaningful indicator (data is from the prior session).
+                import msgspec as _ms
+                return _ms.structs.replace(_cached, stale=True)
             # Off-market guard: cache miss and market closed — return empty rows
-            # rather than calling broker.quote() which would hang or return stale data.
+            # with stale=True so the frontend shows a meaningful state rather
+            # than a silent empty grid.
             return ChainQuotesResponse(
                 underlying=und,
                 expiry=exp,
                 expiries=all_expiries,
                 rows=[],
+                stale=True,
+                message="No chain data until next market open",
             )
 
         # Build quote keys, fire one broker.quote() call.
@@ -2770,6 +2789,10 @@ class OptionsController(Controller):
         # Populate the closed-market cache so subsequent off-market polls
         # skip the broker call. Written on every live response so the cache
         # always holds the freshest data from the last market session.
+        # LRU eviction: drop the oldest entry when the cap is reached (same
+        # pattern as _CHAIN_SYM_CACHE). Dict insertion order is stable (Py 3.7+).
+        if len(_CHAIN_QUOTES_CLOSED_CACHE) >= _CHAIN_QUOTES_CLOSED_CACHE_MAX_SIZE:
+            _CHAIN_QUOTES_CLOSED_CACHE.pop(next(iter(_CHAIN_QUOTES_CLOSED_CACHE)))
         _CHAIN_QUOTES_CLOSED_CACHE[_closed_cache_key] = (time.monotonic(), result)
         return result
 
@@ -2890,7 +2913,11 @@ class OptionsController(Controller):
                                 detail=f"interval must be one of {valid_intervals}")
 
         # ── Cache lookup ───────────────────────────────────────────────
-        cache_key = (sym, (exchange or "NFO").upper(), days, interval)
+        # Use raw exchange in the cache key (no "NFO" fallback). An empty
+        # exchange param from the caller gets keyed as "" — distinct from
+        # "NFO" or "MCX" — so an MCX call with no exchange param cannot
+        # pollute a subsequent legitimate NFO request for the same symbol.
+        cache_key = (sym, exchange.upper() if exchange else "", days, interval)
         if not fresh:
             _cached = _hist_cache_get(cache_key)
             if _cached is not None:
