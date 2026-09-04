@@ -58,6 +58,18 @@ _GROWW_RATE_LIMITER = TokenBucketLimiter({
 })
 
 
+def _groww_exc(e: Exception, status: int | None = None) -> BrokerError:
+    """Wrap a Groww exception in the typed BrokerError hierarchy."""
+    if status == 401:
+        return BrokerAuthError(str(e), broker="groww", status=status)
+    if status == 429:
+        return BrokerRateLimitError(str(e), broker="groww", status=status)
+    if status in (502, 503, 504):
+        return BrokerNetworkError(str(e), broker="groww", status=status)
+    if status in (400, 422):
+        return BrokerInputError(str(e), broker="groww", status=status)
+    return BrokerError(str(e), broker="groww", status=status)
+
 
 # ── Auth-retry decorator ──────────────────────────────────────────────
 #

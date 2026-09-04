@@ -45,6 +45,7 @@ from backend.brokers.errors import (
     BrokerRateLimitError,
     BrokerNetworkError,
     BrokerError,
+    BrokerOrderError,
 )
 
 
@@ -942,7 +943,7 @@ class TestGrowwBrokerPlaceOrder:
         broker.groww.place_order = MagicMock(return_value={
             "data": {}
         })
-        with pytest.raises(RuntimeError):
+        with pytest.raises(BrokerOrderError):
             broker.place_order(
                 tradingsymbol="RELIANCE",
                 exchange="NSE",
