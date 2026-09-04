@@ -1640,6 +1640,10 @@ re-introduction of the multiplier.
 - `translate_qty` inherited from base; MCX/NCO contracts→lots conversion now unified (Aug 2026),
   previously individual adapter implementations. Groww also participates.
 - Instruments CSV from `images.dhan.co` once per IST day; F&O symbol: Dhan format → Kite format
+- **Dhan MCX `tradedQuantity` lots→contracts normalization** (Aug 2026): `_normalise_trades()` 
+  detects MCX_COMM trades and multiplies `tradedQuantity` by lot_size. Lot-size lookup table 
+  `_DHAN_LOT_BY_SECURITY` (securityId → lot_size) populated during instruments cache load in 
+  `_apply_dhan_instruments()`. If security not cached, logs warning and stores raw qty.
 - **429 → BrokerRateLimitError** (Jul 2026): `_DhanSDKProxy` checks `resp.get("code") == "DH-904"`
   and raises `BrokerRateLimitError` instead of returning the dict as-is. Allows PriceBroker
   failover and registry retry-cooloff to activate correctly.
@@ -1659,8 +1663,10 @@ re-introduction of the multiplier.
 - `place_gtt()` raises `NotImplementedError` for MCX/NCO
 
 ### GrowwBroker
-- `translate_qty` inherited from base; MCX/NCO contracts→lots conversion now applied (Aug 2026).
-  Previously Groww was a noop for MCX, sending raw contract qty and causing potential oversize orders.
+- **Groww `translate_qty` contracts-only override** (Aug 2026): Groww positions API returns quantities 
+  in CONTRACTS for ALL segments including MCX (multiplier=1). Overrides `translate_qty` to return 
+  `raw_qty` unchanged (no lots conversion needed), preventing the inherited base-class 
+  MCX→lots logic from incorrectly converting Groww's already-contract qty.
 - `_retry_groww_auth` wraps every SDK call: `401/403` → re-mint + retry once; `429` → exponential backoff (1→2→4→8s, cap 30s, 3 retries); `504` → refresh session + retry; `400/404` → re-raise immediately
 - `instruments()` uses per-account `@ssot_fetch` key (`groww_instruments_{account}`) to prevent cache collision when multiple Groww accounts are active simultaneously
 - Entitlement counter in `GET /api/admin/broker-health extra` field
