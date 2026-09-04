@@ -29,15 +29,6 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
-def _is_exchange_open_at(exchange: str) -> bool:
-    """Delegate to exchange_clock (reads from DB-backed cache).
-
-    exchange_clock.is_exchange_open() reads the current IST time internally
-    from the DB-backed cache so timing is always consistent with the rest of
-    the system.
-    """
-    return _exchange_clock.is_exchange_open(exchange)
-
 
 def _extract_snapshot_extras(r: dict, ltp_val: float | None,
                              settled: bool) -> dict:
@@ -425,7 +416,7 @@ def _holdings_rows(
             continue
         exchange = r.get("exchange", "NSE")
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
-        mid_session = False if not market_open else _is_exchange_open_at(exchange)
+        mid_session = False if not market_open else _exchange_clock.is_exchange_open(exchange)
         ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session)
 
         # ltp=0 neutralisation (non-mid-session only):
@@ -719,7 +710,7 @@ def _positions_rows(
             multiplier = 1
 
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
-        mid_session = False if not market_open else _is_exchange_open_at(exchange)
+        mid_session = False if not market_open else _exchange_clock.is_exchange_open(exchange)
         # Prior-session daily_book.ltp is the SSOT for close reference.
         # Falls back to broker close_price for first-day rows (no prior daily_book row).
         pos_close_ref = (prev_ltp_map or {}).get((account, symbol, "positions")) or None

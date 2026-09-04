@@ -583,20 +583,11 @@ def _hold_tag_closed_row(r, snap_data, _msc) -> object:
         close_px = float(getattr(r, "close_price", 0.0) or 0.0)
         replace_kwargs["last_price"] = snap_price
         replace_kwargs["cur_val"] = snap_price * qty
-        if snap_day_pnl is not None and snap_day_pnl != 0.0:
-            # Stored EOD day P&L is authoritative — avoids the weekend zero-delta
-            # problem where snap_price == close_px (same Friday settlement snapshot).
-            replace_kwargs["day_change_val"] = snap_day_pnl
-            replace_kwargs["day_change"] = snap_day_pnl / qty if qty != 0 else 0.0
-            denom = abs(close_px * qty)
-            replace_kwargs["day_change_percentage"] = (snap_day_pnl / denom * 100) if denom else 0.0
-        elif close_px > 0 and qty != 0:
-            # Fallback: price recompute when day_pnl is genuinely 0 (stock flat all day)
-            # or missing from daily_book.
-            dcv = (snap_price - close_px) * qty
-            replace_kwargs["day_change_val"] = dcv
-            replace_kwargs["day_change"] = dcv / qty
-            replace_kwargs["day_change_percentage"] = dcv / abs(close_px * qty) * 100
+        dcv = _compute_holding_day_change(snap_day_pnl or 0.0, snap_price, close_px, None, qty)
+        replace_kwargs["day_change_val"] = dcv
+        replace_kwargs["day_change"] = dcv / qty if qty != 0 else 0.0
+        denom = abs(close_px * qty)
+        replace_kwargs["day_change_percentage"] = (dcv / denom * 100) if denom else 0.0
     return _msc.structs.replace(r, **replace_kwargs)
 
 

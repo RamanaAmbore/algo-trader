@@ -46,17 +46,22 @@ logger = get_logger(__name__)
 _JWT_ALGORITHM = "HS256"
 _TOKEN_TTL_SECONDS = 24 * 3600  # 24 hours
 
-# Rate-limit thresholds — slow brute-force credential stuffing without
-# locking out a typo'd legit user. Per (client_ip, route) sliding
-# window. /login: 5 attempts/min covers genuine wrong-password retries
-# but stops automated guessing dead. /forgot-password and
-# /reset-password: 3/min — these issue tokens + dispatch emails so the
-# cost of every hit is non-trivial.
-_login_rate_limit         = make_rate_limit_guard(limit=5, window_seconds=60)
-_forgot_pw_rate_limit     = make_rate_limit_guard(limit=3, window_seconds=60)
-_reset_pw_rate_limit      = make_rate_limit_guard(limit=3, window_seconds=60)
-_register_rate_limit      = make_rate_limit_guard(limit=3, window_seconds=300)
-_verify_email_rate_limit  = make_rate_limit_guard(limit=10, window_seconds=60)
+# Auth rate-limit parameters — adjust here to change all guards at once.
+# /login: 5 attempts / 60 s — covers genuine wrong-password retries without enabling brute-force.
+_RATE_LOGIN_LIMIT, _RATE_LOGIN_WINDOW        = 5, 60
+# /forgot-password and /reset-password: 3 / 60 s — each hit dispatches an email token.
+_RATE_FORGOT_LIMIT, _RATE_FORGOT_WINDOW      = 3, 60
+_RATE_RESET_LIMIT, _RATE_RESET_WINDOW        = 3, 60
+# /register: 3 / 300 s (5 min) — account creation triggers email verification.
+_RATE_REGISTER_LIMIT, _RATE_REGISTER_WINDOW  = 3, 300
+# /verify-email: 10 / 60 s — client may retry on slow delivery.
+_RATE_VERIFY_LIMIT, _RATE_VERIFY_WINDOW      = 10, 60
+
+_login_rate_limit        = make_rate_limit_guard(limit=_RATE_LOGIN_LIMIT, window_seconds=_RATE_LOGIN_WINDOW)
+_forgot_pw_rate_limit    = make_rate_limit_guard(limit=_RATE_FORGOT_LIMIT, window_seconds=_RATE_FORGOT_WINDOW)
+_reset_pw_rate_limit     = make_rate_limit_guard(limit=_RATE_RESET_LIMIT, window_seconds=_RATE_RESET_WINDOW)
+_register_rate_limit     = make_rate_limit_guard(limit=_RATE_REGISTER_LIMIT, window_seconds=_RATE_REGISTER_WINDOW)
+_verify_email_rate_limit = make_rate_limit_guard(limit=_RATE_VERIFY_LIMIT, window_seconds=_RATE_VERIFY_WINDOW)
 
 
 def _jwt_secret() -> str:

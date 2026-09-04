@@ -93,7 +93,8 @@ class TestHoldingsWriterNoneFallback:
         now_ist = datetime(2026, 8, 30, 9, 0, tzinfo=_IST)
 
         # Patch ltp lookup so no live broker call is needed
-        with patch("backend.api.algo.daily_snapshot._is_exchange_open_at", return_value=False):
+        import backend.api.algo.daily_snapshot as _ds
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
             with patch("backend.api.algo.daily_snapshot._snap_holding_eod_vals",
                        return_value=(407.5, 0.0, 0.0)):
                 rows = _holdings_rows(
@@ -122,7 +123,8 @@ class TestHoldingsWriterNoneFallback:
         now_ist = datetime(2026, 8, 30, 9, 0, tzinfo=_IST)
         prev_ltp_map = {("ZG0790", "RELIANCE", "holdings"): 374.10}
 
-        with patch("backend.api.algo.daily_snapshot._is_exchange_open_at", return_value=False):
+        import backend.api.algo.daily_snapshot as _ds
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
             with patch("backend.api.algo.daily_snapshot._snap_holding_eod_vals",
                        return_value=(407.5, 0.0, 0.0)):
                 rows = _holdings_rows(
@@ -148,7 +150,8 @@ class TestHoldingsWriterNoneFallback:
         row = self._make_holding_row(close_price=374.10, ltp=407.5)
         now_ist = datetime(2026, 8, 30, 9, 0, tzinfo=_IST)
 
-        with patch("backend.api.algo.daily_snapshot._is_exchange_open_at", return_value=False):
+        import backend.api.algo.daily_snapshot as _ds
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
             with patch("backend.api.algo.daily_snapshot._snap_holding_eod_vals",
                        return_value=(407.5, 0.0, 0.0)):
                 rows = _holdings_rows(

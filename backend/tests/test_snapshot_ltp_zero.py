@@ -59,8 +59,9 @@ class TestHoldingsWriterNeutralisesZeroLtpNonMidSession:
             "day_change": 50.0,
         }]
 
-        # Mock _is_exchange_open_at to return False (non-mid-session)
-        with patch('backend.api.algo.daily_snapshot._is_exchange_open_at', return_value=False):
+        # Mock _exchange_clock.is_exchange_open to return False (non-mid-session)
+        import backend.api.algo.daily_snapshot as _ds
+        with patch.object(_ds._exchange_clock, 'is_exchange_open', return_value=False):
             rows = _holdings_rows(
                 account="TEST",
                 target_date=date.today(),
@@ -91,7 +92,8 @@ class TestHoldingsWriterNeutralisesZeroLtpNonMidSession:
         }]
 
         # Mock to simulate mid-session (market open)
-        with patch('backend.api.algo.daily_snapshot._is_exchange_open_at', return_value=True):
+        import backend.api.algo.daily_snapshot as _ds
+        with patch.object(_ds._exchange_clock, 'is_exchange_open', return_value=True):
             rows = _holdings_rows(
                 account="TEST",
                 target_date=date.today(),
@@ -297,7 +299,8 @@ class TestHoldingsWriterNeutralisesZeroLtpNoFallback:
             "day_change": 50.0,
         }]
 
-        with patch('backend.api.algo.daily_snapshot._is_exchange_open_at', return_value=False):
+        import backend.api.algo.daily_snapshot as _ds
+        with patch.object(_ds._exchange_clock, 'is_exchange_open', return_value=False):
             rows = _holdings_rows(
                 account="TEST",
                 target_date=date.today(),
@@ -330,7 +333,8 @@ class TestHoldingsWriterNeutralisesZeroLtpNoFallback:
             "day_change": 50.0,
         }]
 
-        with patch('backend.api.algo.daily_snapshot._is_exchange_open_at', return_value=True):
+        import backend.api.algo.daily_snapshot as _ds
+        with patch.object(_ds._exchange_clock, 'is_exchange_open', return_value=True):
             rows = _holdings_rows(
                 account="TEST",
                 target_date=date.today(),
