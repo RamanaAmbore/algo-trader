@@ -24,6 +24,7 @@ from sqlalchemy import select as _sql_select
 from backend.api.cache import _store as _cache_store
 from backend.api.database import async_session as _async_session
 from backend.api.models import AlgoOrder as _AlgoOrder
+from backend.brokers.errors import BrokerInputError as _BrokerInputError
 from backend.brokers.registry import get_broker as _get_broker_registry
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -1058,6 +1059,30 @@ async def _ch_handle_attempt_error(
     Returns (abort_result, new_consecutive_errors).
     abort_result is non-None when the caller should immediately return it.
     """
+    if isinstance(exc, _BrokerInputError):
+        abort_msg = f"Order rejected by broker (input error): {exc}"
+        logger.error(f"Chase {symbol}: BrokerInputError — terminating immediately. {exc}")
+        result.status = ChaseStatus.FAILED
+        result.detail = abort_msg
+        emit("chase_failed", {"attempts": attempt, "error": str(exc), "reason": "input_rejected"})
+        try:
+            from backend.shared.helpers.alert_utils import send_order_failure_alert
+            send_order_failure_alert(
+                account=account, symbol=symbol, exchange=cfg.exchange,
+                side=transaction_type, qty=quantity, mode="live", source="chase",
+                error=abort_msg,
+            )
+        except Exception:
+            pass
+        if current_order_id:
+            import asyncio as _asyncio
+            _asyncio.create_task(_emit_chase_terminal(
+                current_order_id, "chase_failed",
+                symbol, transaction_type, quantity,
+                attempts=attempt, error=abort_msg, algo_order_id=algo_order_id,
+            ))
+        return result, consecutive_errors
+
     consecutive_errors += 1
     logger.error(
         f"Chase {symbol}: attempt {attempt} error "

@@ -64,3 +64,88 @@ def test_chase_killed_set_is_ttl_bounded():
     assert "expired" in _SRC or "ttl" in _SRC.lower() or "time.time()" in _SRC, (
         "killed-set must have a TTL expiry to prevent unbounded growth"
     )
+
+
+# ── Behavioral tests ──────────────────────────────────────────────────────
+
+import time
+import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
+
+
+@pytest.mark.asyncio
+async def test_broker_input_error_terminates_immediately():
+    """
+    BrokerInputError (e.g. margin shortfall) terminates the chase loop
+    immediately without retry sleep.
+
+    Verifies:
+      - Result status is FAILED
+      - Result detail contains "input error"
+      - Total elapsed time < 5 seconds (no sleep/retry happened)
+      - send_order_failure_alert is called exactly once
+    """
+    from backend.api.algo.chase import chase_order, ChaseStatus, ChaseConfig
+    from backend.brokers.errors import BrokerInputError
+
+    # Track elapsed time
+    start_time = time.time()
+
+    # Mock broker to raise BrokerInputError on place_order
+    mock_broker = MagicMock()
+    mock_broker.place_order.side_effect = BrokerInputError("insufficient funds")
+    mock_broker.normalise_qty.side_effect = lambda exchange, qty, lot_size: int(qty)
+    # Mock quote to provide market depth for price calculation
+    mock_broker.quote.return_value = {
+        "NFO:NIFTY25JULFUT": {
+            "depth": {
+                "buy": [{"price": 24500.0, "quantity": 100}],
+                "sell": [{"price": 24510.0, "quantity": 100}],
+            }
+        }
+    }
+
+    # Mock alert function (called synchronously, not async)
+    mock_alert = MagicMock()
+
+    # Mock the registry to return our stub broker and bypass market-hours check
+    with patch("backend.api.algo.chase._get_broker_registry", return_value=mock_broker), \
+         patch("backend.shared.helpers.alert_utils.send_order_failure_alert", mock_alert), \
+         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True), \
+         patch("backend.api.algo.agent_engine._symbol_exchange_open", return_value=True):
+
+        cfg = ChaseConfig(
+            interval_seconds=1,  # use 1 second to speed up test
+            max_attempts=20,
+        )
+        result = await chase_order(
+            account="ZG0790",
+            symbol="NIFTY25JULFUT",
+            transaction_type="BUY",
+            quantity=1,
+            cfg=cfg,
+        )
+
+    elapsed = time.time() - start_time
+
+    # Verify result status
+    assert result.status == ChaseStatus.FAILED, (
+        f"Expected status FAILED, got {result.status}"
+    )
+
+    # Verify detail contains "input error" (from the message format)
+    assert "input error" in result.detail.lower(), (
+        f"Expected 'input error' in detail, got: {result.detail}"
+    )
+
+    # Verify elapsed time is very short (no sleep/retry happened)
+    # Should be < 5 seconds; a single failed attempt takes < 1 second
+    assert elapsed < 5.0, (
+        f"Expected elapsed < 5s but got {elapsed:.2f}s — "
+        f"chase appears to have slept/retried instead of terminating immediately"
+    )
+
+    # Verify alert was called exactly once
+    assert mock_alert.call_count == 1, (
+        f"Expected send_order_failure_alert called exactly once, got {mock_alert.call_count}"
+    )
