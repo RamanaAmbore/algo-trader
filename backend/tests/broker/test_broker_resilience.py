@@ -1721,3 +1721,280 @@ class TestTickerWatchdogExitMechanism:
         assert "sys.exit" not in src, (
             "sys.exit still present in app.py — must be replaced with os.kill(SIGTERM)"
         )
+
+
+# ---------------------------------------------------------------------------
+# 21. place_order error handling — typed BrokerError subclasses
+# ---------------------------------------------------------------------------
+
+class TestPlaceOrderErrorHandling:
+    """place_order must raise typed BrokerError subclasses on input/placement failures."""
+
+    # ── Kite adapter ──────────────────────────────────────────────────
+
+    def test_kite_place_order_input_exception_raises_broker_input_error(self):
+        """Mock Kite SDK InputException → KiteBroker.place_order raises BrokerInputError."""
+        from unittest.mock import MagicMock, patch
+        from backend.brokers.adapters.kite import KiteBroker
+        from backend.brokers.errors import BrokerInputError
+
+        # Create a mock Kite connection and broker
+        mock_conn = MagicMock()
+        mock_conn.account = "ZG0790_input_test"
+        broker = KiteBroker(conn=mock_conn)
+
+        # Mock the SDK call to raise InputException
+        class InputException(Exception):
+            pass
+        InputException.__name__ = "InputException"
+
+        mock_kite = MagicMock()
+        mock_kite.place_order.side_effect = InputException("insufficient margin")
+        mock_conn.get_kite_conn.return_value = mock_kite
+
+        # Call place_order and verify it raises BrokerInputError
+        with pytest.raises(BrokerInputError) as exc_info:
+            broker.place_order(
+                exchange="NSE",
+                tradingsymbol="RELIANCE",
+                quantity=1,
+                order_type="MARKET",
+                transaction_type="BUY",
+                product="CNC",
+            )
+
+        assert exc_info.value.code == "InputException"
+        assert exc_info.value.broker == "zerodha_kite"
+        assert "insufficient margin" in str(exc_info.value)
+
+    def test_kite_place_order_network_exception_raises_broker_network_error(self):
+        """Mock Kite SDK NetworkException → KiteBroker.place_order raises BrokerNetworkError."""
+        from unittest.mock import MagicMock, patch
+        from backend.brokers.adapters.kite import KiteBroker
+        from backend.brokers.errors import BrokerNetworkError
+
+        mock_conn = MagicMock()
+        mock_conn.account = "ZG0790_network_test"
+        broker = KiteBroker(conn=mock_conn)
+
+        class NetworkException(Exception):
+            pass
+        NetworkException.__name__ = "NetworkException"
+
+        mock_kite = MagicMock()
+        mock_kite.place_order.side_effect = NetworkException("Connection timeout")
+        mock_conn.get_kite_conn.return_value = mock_kite
+
+        with pytest.raises(BrokerNetworkError) as exc_info:
+            broker.place_order(
+                exchange="NSE",
+                tradingsymbol="RELIANCE",
+                quantity=1,
+                order_type="MARKET",
+                transaction_type="BUY",
+                product="CNC",
+            )
+
+        assert exc_info.value.code == "NetworkException"
+        assert exc_info.value.broker == "zerodha_kite"
+
+    # ── Dhan adapter ──────────────────────────────────────────────────
+
+    def test_dhan_place_order_dh908_raises_broker_input_error(self):
+        """Mock Dhan response with DH-908 → DhanBroker.place_order raises BrokerInputError."""
+        from unittest.mock import MagicMock, patch
+        from backend.brokers.adapters.dhan import DhanBroker, _DhanSDKProxy
+        from backend.brokers.errors import BrokerInputError
+
+        mock_conn = MagicMock()
+        mock_conn.account = "DH6847_input_test"
+        broker = DhanBroker(conn=mock_conn)
+
+        # Mock _DhanSDKProxy so its __getattr__ returns a callable that yields the failure response
+        failure_resp = {
+            "status": "failure",
+            "code": "DH-908",
+            "message": "invalid request parameters",
+        }
+
+        def mock_getattr(self, name):
+            if name == "place_order":
+                return lambda **kw: failure_resp
+            raise AttributeError(name)
+
+        with patch.object(_DhanSDKProxy, '__getattr__', mock_getattr):
+            with pytest.raises(BrokerInputError) as exc_info:
+                broker.place_order(
+                    exchange="NSE",
+                    tradingsymbol="RELIANCE",
+                    quantity=1,
+                    order_type="MARKET",
+                    transaction_type="BUY",
+                    product="MIS",
+                )
+
+        assert exc_info.value.code == "DH-908"
+        assert exc_info.value.broker == "dhan"
+
+    def test_dhan_place_order_unknown_code_raises_broker_order_error(self):
+        """Mock Dhan response with unknown code → DhanBroker.place_order raises BrokerOrderError."""
+        from unittest.mock import MagicMock, patch
+        from backend.brokers.adapters.dhan import DhanBroker, _DhanSDKProxy
+        from backend.brokers.errors import BrokerOrderError
+
+        mock_conn = MagicMock()
+        mock_conn.account = "DH6847_unknown_test"
+        broker = DhanBroker(conn=mock_conn)
+
+        failure_resp = {
+            "status": "failure",
+            "code": "DH-999",
+            "message": "unknown error",
+        }
+
+        def mock_getattr(self, name):
+            if name == "place_order":
+                return lambda **kw: failure_resp
+            raise AttributeError(name)
+
+        with patch.object(_DhanSDKProxy, '__getattr__', mock_getattr):
+            with pytest.raises(BrokerOrderError) as exc_info:
+                broker.place_order(
+                    exchange="NSE",
+                    tradingsymbol="RELIANCE",
+                    quantity=1,
+                    order_type="MARKET",
+                    transaction_type="BUY",
+                    product="MIS",
+                )
+
+        assert exc_info.value.code == "DH-999"
+        assert exc_info.value.broker == "dhan"
+
+    def test_dhan_place_order_sdk_exception_raises_broker_network_error(self):
+        """Mock Dhan SDK exception → DhanBroker.place_order raises BrokerNetworkError."""
+        from unittest.mock import MagicMock, patch
+        from backend.brokers.adapters.dhan import DhanBroker, _DhanSDKProxy
+        from backend.brokers.errors import BrokerNetworkError
+
+        mock_conn = MagicMock()
+        mock_conn.account = "DH6847_network_test"
+        broker = DhanBroker(conn=mock_conn)
+
+        def mock_getattr(self, name):
+            if name == "place_order":
+                def raise_error(**kw):
+                    raise Exception("connection refused")
+                return raise_error
+            raise AttributeError(name)
+
+        with patch.object(_DhanSDKProxy, '__getattr__', mock_getattr):
+            with pytest.raises(BrokerNetworkError) as exc_info:
+                broker.place_order(
+                    exchange="NSE",
+                    tradingsymbol="RELIANCE",
+                    quantity=1,
+                    order_type="MARKET",
+                    transaction_type="BUY",
+                    product="MIS",
+                )
+
+        assert exc_info.value.broker == "dhan"
+
+    # ── Groww adapter ─────────────────────────────────────────────────
+
+    def test_groww_place_order_400_raises_broker_input_error(self):
+        """Mock Groww response with httpStatus 400 → GrowwBroker.place_order raises BrokerInputError."""
+        from unittest.mock import MagicMock, PropertyMock, patch
+        from backend.brokers.adapters.groww import GrowwBroker
+        from backend.brokers.errors import BrokerInputError
+
+        mock_conn = MagicMock()
+        mock_conn.account = "GW_TEST_400"
+        mock_conn._source_ip = None
+        broker = GrowwBroker(conn=mock_conn)
+
+        # Mock groww SDK to return failure with httpStatus 400 and no order_id
+        failure_resp = {
+            "httpStatus": 400,
+            "message": "insufficient margin",
+        }
+
+        mock_groww = MagicMock()
+        mock_groww.place_order.return_value = failure_resp
+
+        # Use PropertyMock to mock the groww property
+        with patch.object(type(broker), 'groww', new_callable=PropertyMock) as mock_prop:
+            mock_prop.return_value = mock_groww
+            with pytest.raises(BrokerInputError):
+                broker.place_order(
+                    exchange="NSE",
+                    tradingsymbol="RELIANCE",
+                    quantity=1,
+                    order_type="MARKET",
+                    transaction_type="BUY",
+                    product="MIS",
+                )
+
+    def test_groww_place_order_422_raises_broker_input_error(self):
+        """Mock Groww response with httpStatus 422 → GrowwBroker.place_order raises BrokerInputError."""
+        from unittest.mock import MagicMock, PropertyMock, patch
+        from backend.brokers.adapters.groww import GrowwBroker
+        from backend.brokers.errors import BrokerInputError
+
+        mock_conn = MagicMock()
+        mock_conn.account = "GW_TEST_422"
+        mock_conn._source_ip = None
+        broker = GrowwBroker(conn=mock_conn)
+
+        failure_resp = {
+            "httpStatus": 422,
+            "message": "unprocessable entity",
+        }
+
+        mock_groww = MagicMock()
+        mock_groww.place_order.return_value = failure_resp
+
+        with patch.object(type(broker), 'groww', new_callable=PropertyMock) as mock_prop:
+            mock_prop.return_value = mock_groww
+            with pytest.raises(BrokerInputError):
+                broker.place_order(
+                    exchange="NSE",
+                    tradingsymbol="RELIANCE",
+                    quantity=1,
+                    order_type="MARKET",
+                    transaction_type="BUY",
+                    product="MIS",
+                )
+
+    def test_groww_place_order_generic_failure_raises_broker_order_error(self):
+        """Mock Groww response without order_id and without httpStatus 400/422 → raises BrokerOrderError."""
+        from unittest.mock import MagicMock, PropertyMock, patch
+        from backend.brokers.adapters.groww import GrowwBroker
+        from backend.brokers.errors import BrokerOrderError
+
+        mock_conn = MagicMock()
+        mock_conn.account = "GW_TEST_generic"
+        mock_conn._source_ip = None
+        broker = GrowwBroker(conn=mock_conn)
+
+        # Response without order_id and without 400/422 httpStatus
+        failure_resp = {
+            "status": "ERROR",
+            "message": "order failed",
+        }
+
+        mock_groww = MagicMock()
+        mock_groww.place_order.return_value = failure_resp
+
+        with patch.object(type(broker), 'groww', new_callable=PropertyMock) as mock_prop:
+            mock_prop.return_value = mock_groww
+            with pytest.raises(BrokerOrderError):
+                broker.place_order(
+                    exchange="NSE",
+                    tradingsymbol="RELIANCE",
+                    quantity=1,
+                    order_type="MARKET",
+                    transaction_type="BUY",
+                    product="MIS",
+                )

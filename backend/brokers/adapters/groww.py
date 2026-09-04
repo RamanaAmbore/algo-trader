@@ -43,6 +43,7 @@ from typing import Any, Callable
 from backend.brokers.base import Broker
 from backend.brokers.errors import (
     BrokerAuthError, BrokerRateLimitError, BrokerNetworkError, BrokerError,
+    BrokerInputError, BrokerOrderError,
 )
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -56,16 +57,6 @@ _GROWW_RATE_LIMITER = TokenBucketLimiter({
     "data":   (5, 1.0),  # 5 calls/s for data fetch calls (conservative)
 })
 
-
-def _groww_exc(e: Exception, status: int | None = None) -> BrokerError:
-    """Wrap a Groww exception in the typed BrokerError hierarchy."""
-    if status == 401:
-        return BrokerAuthError(str(e), broker="groww", status=status)
-    if status == 429:
-        return BrokerRateLimitError(str(e), broker="groww", status=status)
-    if status in (502, 503, 504):
-        return BrokerNetworkError(str(e), broker="groww", status=status)
-    return BrokerError(str(e), broker="groww", status=status)
 
 
 # ── Auth-retry decorator ──────────────────────────────────────────────
@@ -972,7 +963,10 @@ class GrowwBroker(Broker):
         order_id = (data.get("groww_order_id") or data.get("order_id")
                     if isinstance(data, dict) else None)
         if not order_id:
-            raise RuntimeError(f"Groww place_order rejected: {resp}")
+            msg = resp.get("message", str(resp)) if isinstance(resp, dict) else str(resp)
+            if isinstance(resp, dict) and resp.get("httpStatus") in (400, 422):
+                raise BrokerInputError(msg, broker="groww")
+            raise BrokerOrderError(msg, broker="groww")
         return str(order_id)
 
     def _resolve_exchange_from_order(self, order_id: str) -> str:

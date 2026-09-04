@@ -303,31 +303,6 @@
       {/if}
     {/if}
   </span>
-  <!-- Lots column. For proxy eq rows the lot count is in
-       TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
-       so the math derives from the same market_value /
-       target_spot / target_lot_size chain the PROXY chip
-       tooltip surfaces. Plain rows pass through to the
-       shared lotsForRow helper (per-symbol inference: EQ
-       → qHold, CE/PE/FUT → qPos). -->
-  {#if c.proxy_for}
-    {@const _lotsTargetSpot = Number(strategy?.spot) || 0}
-    {@const _lotsProxyLtp   = Number(c.ltp) || 0}
-    {@const _lotsRow        = getProxyRow(c.symbol, c.proxy_for)}
-    {@const _lotsBeta       = _lotsRow?.beta != null ? Number(_lotsRow.beta) : 1.0}
-    {@const _lotsTargetLot  = getOptionUnderlyingLot(c.proxy_for)}
-    {@const _lotsEffQty     = (_lotsTargetSpot > 0 && _lotsProxyLtp > 0)
-        ? (_lotsBeta * Math.abs(displayQty) * _lotsProxyLtp) / _lotsTargetSpot : 0}
-    {@const _lotsTargetLots = _lotsTargetLot > 0 ? _lotsEffQty / _lotsTargetLot : 0}
-    <span class="num"
-          title={_lotsTargetLots > 0
-            ? `${_lotsTargetLots.toFixed(2)} ${c.proxy_for} lot${_lotsTargetLots === 1 ? '' : 's'} (β=${_lotsBeta.toFixed(2)}, ${_lotsEffQty.toFixed(2)} target units ÷ ${_lotsTargetLot}/lot)`
-            : `Waiting on ${c.proxy_for} spot`}>
-      {_lotsTargetLots > 0 ? fmtLots(_lotsTargetLots) : '—'}
-    </span>
-  {:else}
-    <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty, lots: c.lots ?? null }))}</span>
-  {/if}
   <span class="num tf-cell leg-ltp
     {typeof ltp === 'number' && typeof cost === 'number' && cost > 0
       ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
@@ -355,6 +330,31 @@
     {/if}
   {:else}
     <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
+  {/if}
+  <!-- Lots column. For proxy eq rows the lot count is in
+       TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
+       so the math derives from the same market_value /
+       target_spot / target_lot_size chain the PROXY chip
+       tooltip surfaces. Plain rows pass through to the
+       shared lotsForRow helper (per-symbol inference: EQ
+       → qHold, CE/PE/FUT → qPos). -->
+  {#if c.proxy_for}
+    {@const _lotsTargetSpot = Number(strategy?.spot) || 0}
+    {@const _lotsProxyLtp   = Number(c.ltp) || 0}
+    {@const _lotsRow        = getProxyRow(c.symbol, c.proxy_for)}
+    {@const _lotsBeta       = _lotsRow?.beta != null ? Number(_lotsRow.beta) : 1.0}
+    {@const _lotsTargetLot  = getOptionUnderlyingLot(c.proxy_for)}
+    {@const _lotsEffQty     = (_lotsTargetSpot > 0 && _lotsProxyLtp > 0)
+        ? (_lotsBeta * Math.abs(displayQty) * _lotsProxyLtp) / _lotsTargetSpot : 0}
+    {@const _lotsTargetLots = _lotsTargetLot > 0 ? _lotsEffQty / _lotsTargetLot : 0}
+    <span class="num"
+          title={_lotsTargetLots > 0
+            ? `${_lotsTargetLots.toFixed(2)} ${c.proxy_for} lot${_lotsTargetLots === 1 ? '' : 's'} (β=${_lotsBeta.toFixed(2)}, ${_lotsEffQty.toFixed(2)} target units ÷ ${_lotsTargetLot}/lot)`
+            : `Waiting on ${c.proxy_for} spot`}>
+      {_lotsTargetLots > 0 ? fmtLots(_lotsTargetLots) : '—'}
+    </span>
+  {:else}
+    <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty, lots: c.lots ?? null }))}</span>
   {/if}
   <span class="font-mono">{c.account}</span>
   <span class="num tf-cell cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'} {_expPnlLeg == null ? '' : flash.classOf(`${_legFlashKey}:exp`)}"

@@ -486,11 +486,11 @@
   // A recent MarketPulse fix changed the TOTAL row to use this live formula
   // instead of the broker-snapshot `r.pnl`, so the H pill slot 3 must do the
   // same to stay in sync. Falls back to broker `h.pnl` when no live LTP is
-  // available (cold-cache or missing symbol). Reads getSnapshot() directly so
-  // Svelte 5 tracks symbolStore as a reactive dependency — no _throttledTick
-  // gate here, because holdings counts are small (<20) and untrack() was
-  // preventing reactivity entirely (causing stale values outside market hours).
+  // available (cold-cache or missing symbol). H:3 throttle: `void _throttledTick`
+  // registers _throttledTick as a reactive dependency so this derived re-runs
+  // at 4Hz maximum, matching P:1, H:1, and P:3 cadence.
   const _liveHoldingsTotal = $derived.by(() => {
+    void _throttledTick;
     let s = 0;
     for (const h of holdings) {
       const sym      = String(h?.tradingsymbol || '').toUpperCase();
@@ -687,21 +687,22 @@
    * @returns {number}
    */
   function _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows) {
-    // SSOT: backend stamps underlying_ltp on each option row (positions.py
-    // _enrich_positions Pass 3). Prefer this — it's what Greeks / IV used,
-    // and it's populated even during closed hours via LKG cache.
-    let spot = Number(p?.underlying_ltp || 0);
-    if (spot > 0) return spot;
+    let spot = 0;
 
-    // Fallback chain — demo/sim mode + legacy payloads without underlying_ltp.
-    // Same 4 steps as derivatives/+page.svelte:_rootSpot().
+    // Priority 1-3: live ticker via symbolStore (most current).
+    // Same 3 keys as derivatives/+page.svelte:_rootSpot().
     for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
       const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
       if (typeof v === 'number' && v > 0) { spot = v; break; }
     }
     if (spot > 0) return spot;
 
-    // Row-scan fallback: check positions then holdings for a matching symbol.
+    // Priority 4: backend stamp — stale up to 5s but populated during
+    // closed hours via LKG cache (what Greeks / IV used).
+    spot = Number(p?.underlying_ltp || 0);
+    if (spot > 0) return spot;
+
+    // Priority 5 (row-scan fallback): check positions then holdings for a matching symbol.
     const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();
     const wantRoot = String(root).toUpperCase();
     for (const src of [posRows, holdRows]) {

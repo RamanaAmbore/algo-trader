@@ -1322,20 +1322,25 @@ class DhanBroker(Broker):
         if tag is not None:
             tag = str(tag)[:_DHAN_CORR_MAX]
 
-        resp = self._sdk_orders.place_order(
-            security_id=security_id,
-            exchange_segment=ex_seg,
-            transaction_type=kwargs.get("transaction_type", "BUY"),
-            quantity=_dhan_int(kwargs.get("quantity")),
-            order_type=otype,
-            product_type=product,
-            price=_dhan_num(kwargs.get("price")),
-            trigger_price=_dhan_num(kwargs.get("trigger_price")),
-            validity=kwargs.get("validity", "DAY"),
-            **({"tag": tag} if tag else {}),
-        )
+        try:
+            resp = self._sdk_orders.place_order(
+                security_id=security_id,
+                exchange_segment=ex_seg,
+                transaction_type=kwargs.get("transaction_type", "BUY"),
+                quantity=_dhan_int(kwargs.get("quantity")),
+                order_type=otype,
+                product_type=product,
+                price=_dhan_num(kwargs.get("price")),
+                trigger_price=_dhan_num(kwargs.get("trigger_price")),
+                validity=kwargs.get("validity", "DAY"),
+                **({"tag": tag} if tag else {}),
+            )
+        except Exception as e:
+            raise BrokerNetworkError(str(e), broker="dhan") from e
         if not isinstance(resp, dict) or resp.get("status") != "success":
-            raise RuntimeError(f"Dhan place_order rejected: {resp}")
+            code = resp.get("code", "") if isinstance(resp, dict) else ""
+            cls = _DHAN_ERROR_MAP.get(code, BrokerOrderError)
+            raise cls(f"Dhan place_order rejected: {resp}", broker="dhan", code=code)
         return str(resp.get("data", {}).get("orderId", ""))
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:

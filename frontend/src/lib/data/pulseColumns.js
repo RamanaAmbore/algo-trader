@@ -490,15 +490,6 @@ export function mkRightColDefs({
     },
     symColRight,
     sparkCol,
-    { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
-      type: 'numericColumn', headerClass: numericHdr,
-      cellClass: (p) => {
-        const d = p.data;
-        return d?.qty_pos !== undefined ? [RA, 'lots-left-sep'] : [RA];
-      },
-      valueGetter: (p) => lotsForRow(p.data),
-      valueFormatter: ({ value }) => fmtLots(value),
-      headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },
     ltpCol,
     { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
       width: 68, minWidth: 60, maxWidth: 90,
@@ -544,6 +535,15 @@ export function mkRightColDefs({
       cellClass: RA,
       valueGetter: _qtyNetValueGetter,
       valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
+    { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: (p) => {
+        const d = p.data;
+        return d?.qty_pos !== undefined ? [RA, 'lots-left-sep'] : [RA];
+      },
+      valueGetter: (p) => lotsForRow(p.data),
+      valueFormatter: ({ value }) => fmtLots(value),
+      headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },
     { field: 'inv_val', headerName: 'Invested', colId: 'inv_val',
       width: 78, type: 'numericColumn', headerClass: numericHdr,
       cellClass: `${RA} cell-muted`,

@@ -397,7 +397,10 @@ class KiteBroker(Broker):
             (intent or "").lower() == "close",
         )
         _KITE_RATE_LIMITER.throttle("orders")
-        return self.kite.place_order(**kwargs)
+        try:
+            return self.kite.place_order(**kwargs)
+        except Exception as e:
+            raise _kite_exc(e) from e
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
         _truncate_tag(kwargs)
