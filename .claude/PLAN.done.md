@@ -1,84 +1,60 @@
-# Plan: Standardize position/holdings grid column order across all pages
+# Plan: Fix payoff dropdown stale-underlying race condition
 
 ## Context
-
-Industry standard (Zerodha Kite, Groww, IBKR, thinkorswim) is Qty → Avg → LTP, placing
-cost basis adjacent to current price for natural left-to-right comparison. All four grids
-currently have LTP → Avg → P.Close → Qty → Lots — backwards from the standard.
-
-**Target order:**
-- Positions: `Lots | Qty | Avg | LTP | P.Close`
-- Holdings:  `Qty | Avg | LTP | P.Close` (no Lots — holdings are equity, lot_size=1)
-
-**Current order (all four grids):** `LTP → Avg → P.Close → Qty → Lots`
+The payoff overlay dropdown sometimes shows COPPER (or any previously-viewed underlying)
+as the default even when no COPPER option positions exist. Root cause: the auto-select
+`$effect` at `+page.svelte:1544` has a missing case — when `selectedUnderlying` is
+restored from sessionStorage cache and that underlying is no longer in the options list
+after a fresh positions load, none of the existing conditions trigger and the stale value
+persists indefinitely.
 
 ## Agents
-
-- frontend: all four file changes below
 - backend: skip
-- backend-test: skip
-- playwright: skip
+- frontend: Fix `+page.svelte:1575-1578` — add a "stale underlying not in options" case
+  to the auto-select effect. After reading `cur` and `opts`:
+  - Check `const curInOpts = opts.find(o => o.value === cur);`
+  - If `!curInOpts` AND `opts[0]?.value` exists → reset `selectedUnderlying = opts[0].value`
+  - Existing promote case (curIsPopular) remains unchanged below that
+  Replace lines 1575-1578 in `+page.svelte` with:
+  ```js
+  const curInOpts = opts.find(o => o.value === cur);
+  if (!curInOpts && opts[0]?.value) {
+    untrack(() => { selectedUnderlying = opts[0].value; });
+    return;
+  }
+  const curIsPopular = curInOpts?.hint === 'popular';
+  if (curIsPopular && opts[0]?.hint !== 'popular') {
+    untrack(() => { selectedUnderlying = opts[0].value; });
+  }
+  ```
+  File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` lines 1575-1578.
+
+  For every file you change or create, you MUST write or update at least one test that covers
+  the changed behaviour. This is mandatory — not optional.
+  - `frontend/src/` UI change → add/update a Playwright spec in `frontend/tests/` covering the changed flow
+  No change ships without a corresponding test update.
+
+- broker: skip
 - doc: skip
-
-## Changes — frontend agent
-
-### 1. `frontend/src/lib/PerformancePage.svelte`
-
-**Positions grid** (ag-Grid column defs, around line 668–722):
-Current sequence: `LTP(698) → Avg(699) → P.Close(700) → Qty(705) → Lots(710)`
-New sequence: `Lots → Qty → Avg → LTP → P.Close`
-Move the Lots colDef before Qty, keep Avg→LTP→P.Close in that order after Qty.
-
-**Holdings grid** (ag-Grid column defs, around line 561–587):
-Current sequence: `LTP(563) → Avg(564) → P.Close(565) → Qty(570) → Lots(575)`
-Holdings have no meaningful Lots column (equities, lot_size=1) — remove the Lots colDef
-if present. New sequence: `Qty → Avg → LTP → P.Close`
-
-### 2. `frontend/src/lib/data/pulseColumns.js`
-
-**Right grid** (mkRightColDefs, around line 463):
-Current sequence: `LTP(493) → Avg(494) → P.Close(506) → Qty(533) → Lots(538)`
-New sequence: `Lots → Qty → Avg → LTP → P.Close`
-Move `lots` colDef before `qty_net`, reorder `avg_combined → ltpCol → prevCol` after Qty.
-
-If the right grid shows both positions and holdings in one unified view, keep Lots but
-let it be empty/zero for holdings rows (existing behaviour — no logic change needed).
-
-### 3. `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
-
-Svelte template with span cells. Current order:
-`LTP(306) → Avg(314) → P.Close(315) → Qty(323–333) → Lots(341–358)`
-
-New cell order in template:
-`Lots → Qty → Avg → LTP → P.Close`
-
-Also update the **header row** in
-`frontend/src/routes/(algo)/admin/derivatives/+page.svelte` —
-the `<span>` headers for these columns must be reordered to match, AND the
-`grid-template-columns` CSS track order must be updated to match the new cell sequence.
-Read the current header + grid-template-columns carefully before editing to preserve
-all other columns (Checkbox, St, Symbol, Account, Exp P&L, Greeks).
-
-## Files touched
-
-- `frontend/src/lib/PerformancePage.svelte`
-- `frontend/src/lib/data/pulseColumns.js`
-- `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
-- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- backend-test: skip
+- playwright: Write a Playwright spec verifying the payoff dropdown default-underlying
+  behaviour in `frontend/tests/derivatives-payoff-default.spec.js` (or add to an existing
+  derivatives spec). The spec should:
+  (a) Navigate to the derivatives admin page
+  (b) Wait for positions to load (wait for the dropdown to have a value)
+  (c) Assert the dropdown shows an underlying that has positions, not an empty/placeholder value
+  If the dev environment has no live positions, assert the dropdown at minimum shows a
+  non-empty value (first option selected, not blank).
 
 ## Tests
-
 - pytest: no
 - svelte-check: yes
 - playwright: no
 
 ## Commit message
-
-refactor(ui): standardize position grid column order to Lots→Qty→Avg→LTP→P.Close
+fix(derivatives): reset payoff dropdown when cached underlying no longer in options
 
 ## Done when
-
-1. `svelte-check` — 0 errors
-2. All four grids show: Lots (if applicable), Qty, Avg, LTP, P.Close in that order
-3. Holdings grids show Qty, Avg, LTP, P.Close (no Lots)
-4. Header row and grid-template-columns in Derivatives page match new cell order
+- When positions refresh removes a previously-selected underlying from the options list,
+  `selectedUnderlying` resets to `opts[0].value` (first underlying with positions).
+- svelte-check 0 errors.

@@ -1572,7 +1572,14 @@
     // (set before positions loaded) but a position-tier entry is now
     // available. Overwrite so the operator's actual open positions drive
     // the default instead of NIFTY flashing and sticking.
-    const curIsPopular = opts.find(o => o.value === cur)?.hint === 'popular';
+    const curInOpts = opts.find(o => o.value === cur);
+    if (!curInOpts && opts[0]?.value) {
+      // Stale cache: previously-selected underlying is no longer in options — reset to first.
+      // Covered by Playwright spec derivatives-payoff-default.
+      untrack(() => { selectedUnderlying = opts[0].value; });
+      return;
+    }
+    const curIsPopular = curInOpts?.hint === 'popular';
     if (curIsPopular && opts[0]?.hint !== 'popular') {
       untrack(() => { selectedUnderlying = opts[0].value; });
     }
