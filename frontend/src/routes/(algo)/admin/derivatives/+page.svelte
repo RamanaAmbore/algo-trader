@@ -4539,8 +4539,11 @@
                  expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
                  separate Expiry column would be redundant. -->
             <span>Symbol</span>
-            <span class="num">LTP</span>
+            <span class="num"
+                  title="Qty in F&O lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
+            <span class="num">Qty</span>
             <span class="num">Avg</span>
+            <span class="num">LTP</span>
             <span class="num">P.Close</span>
             <span class="num"
                   title="Today's change in P&L (broker-agnostic split formula). Sum across all rows = strip's P∆ chip.">
@@ -4550,9 +4553,6 @@
                   title="Cumulative P&L on the position (lifetime, broker-reported). Sum across all rows = strip's P chip.">
               P&amp;L
             </span>
-            <span class="num">Qty</span>
-            <span class="num"
-                  title="Qty in F&O lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
             <span>Acct</span>
             <span class="num"
                   title="P&L if every contract expired RIGHT NOW at the current underlying spot — intrinsic value minus cost basis. Futures + equity track spot 1:1, so this matches their P&L. Options strip out time value and show only intrinsic settlement.">
@@ -6057,13 +6057,13 @@
       auto                                 /* checkbox */
       38px                                 /* pos state (GTT / paired / orphan) */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
-      minmax(62px, max-content)            /* ltp */
-      minmax(62px, max-content)            /* avg (cost basis) */
-      minmax(72px, max-content)            /* day pnl - today */
-      minmax(62px, max-content)            /* prev close */
-      minmax(72px, max-content)            /* pnl - cumulative */
-      minmax(48px, max-content)            /* qty */
       minmax(44px, max-content)            /* lots */
+      minmax(48px, max-content)            /* qty */
+      minmax(62px, max-content)            /* avg (cost basis) */
+      minmax(62px, max-content)            /* ltp */
+      minmax(72px, max-content)            /* prev close */
+      minmax(62px, max-content)            /* day pnl - today */
+      minmax(72px, max-content)            /* pnl - cumulative */
       minmax(max-content, max-content)     /* account */
       minmax(72px, max-content)            /* exp pnl @ current spot */
       minmax(52px, max-content)            /* iv */
