@@ -2441,6 +2441,7 @@
         disabled={_noSymbol}
         {productOptions}
         {exchangeOptions}
+        brokerCaps={_brokerCaps}
       />
       <!-- Strategy attribution (slice 7b). Optional in v1 — None /
            "—" means "no strategy" and the AlgoOrder.strategy_id is

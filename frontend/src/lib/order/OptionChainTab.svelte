@@ -128,6 +128,10 @@
   // (the near-month default) — operator clicking "close this position"
   // lands on the position's own contract month, not nearest-future.
   let _instrumentsTimedOut = $state(false);
+  // Set to true when loadInstruments() throws (IDB error / IndexedDB unavailable).
+  // Triggers an error banner + Retry button in the template so the operator
+  // can recover without a full page reload.
+  let _instrumentsError = $state(false);
   const instrumentsReady = $derived($instrumentsCacheVersion > 0 || _instrumentsTimedOut);
 
   const seedExpiry = $derived.by(() => {
@@ -295,7 +299,7 @@
   );
   // ── Chain quotes (bid/ask per strike) — declared here so chainStrikes
   //    can reference it before the polling $effect below.
-  /** @type {Record<string,{ce:{bid:number|null,ask:number|null},pe:{bid:number|null,ask:number|null}}>|null} */
+  /** @type {Record<string,{ce:{bid:number|null,ask:number|null,depthAvail:boolean},pe:{bid:number|null,ask:number|null,depthAvail:boolean}}>|null} */
   let chainQuotesMap = $state(null);
   let _pricesFetching = $state(false);
   let _pricesAbort = /** @type {AbortController|null} */ (null);
@@ -428,7 +432,7 @@
 
   // ── Chain quotes polling — bid/ask overlay ────────────────────────
   // Strike list comes from the local instruments cache (instant via
-  // listStrikes). This poll fetches bid/ask from the backend every 5 s
+  // listStrikes). This poll fetches bid/ask from the backend every 30 s
   // and overlays them onto the rendered grid. Grid shows immediately;
   // bid/ask cells show '—' until the first poll resolves.
 
@@ -501,8 +505,12 @@
   // and re-fire the fetchers so a tab activation always lands on fresh
   // chain data (operator request: "when chain tab is pressed, the
   // chain details need to be refreshed").
+  // Race-condition guard: capture refreshKey in the reactive scope BEFORE
+  // entering untrack(), then check it in the .then() handler so a double-tap
+  // (two parallel spot fetches) only writes state for the last-issued request.
   $effect(() => {
     if (refreshKey <= 0) return;
+    const capturedKey = refreshKey; // reactive read — establishes the guard value
     untrack(() => {
       // Clear keys so the next spot effect treats the underlying as
       // newly-set and re-fetches.
@@ -513,9 +521,13 @@
         // Spot re-fetch — bypass the key-equality short-circuit.
         const u = chainUnderlying; const e = chainExpiry || null;
         fetchOptionsSpot(u, e).then((r) => {
+          if (refreshKey !== capturedKey) return; // stale — a newer refresh fired
           chainSpotFetched = r ? { spot: Number(r.spot) || 0, source: String(r.spot_source || '') } : null;
           chainSpotKey = `${u.toUpperCase()}|${e || ''}`;
-        }).catch(() => { chainSpotFetched = null; });
+        }).catch(() => {
+          if (refreshKey !== capturedKey) return; // stale — discard error too
+          chainSpotFetched = null;
+        });
       }
       _refreshChainQuotes();
     });
@@ -796,11 +808,17 @@
     _finalizeBasket(failures, total);
   }
 
+  function _loadInstrumentsSafe() {
+    _instrumentsError = false;
+    loadInstruments().catch(() => { _instrumentsError = true; });
+  }
+
   onMount(() => {
     // Fire-and-forget: IDB may block (other tab holds connection); don't await.
     // instrumentsReady derives from instrumentsCacheVersion (bumped on load)
     // or _instrumentsTimedOut (8s fallback so spinner never freezes).
-    loadInstruments().catch(() => {});
+    // Errors (IDB unavailable, timeout) set _instrumentsError for user recovery.
+    _loadInstrumentsSafe();
     const _readyTimer = setTimeout(() => { _instrumentsTimedOut = true; }, 8000);
     // Self-fetch accounts when the prop didn't supply any.
     if (!accounts.length && !_isRealAcct(account)) {
@@ -820,7 +838,12 @@
 </script>
 
 <div class="oct-root">
-  {#if !instrumentsReady && chainUnderlying}
+  {#if _instrumentsError}
+    <div class="oct-instruments-error">
+      <span class="oct-instruments-error-msg">Failed to load instruments — IndexedDB may be unavailable.</span>
+      <button type="button" class="oct-instruments-retry" onclick={() => _loadInstrumentsSafe()}>Retry</button>
+    </div>
+  {:else if !instrumentsReady && chainUnderlying}
     <div class="oct-empty">Loading instruments…</div>
   {/if}
   <!-- Account / Underlying / Expiry / Kind / Mode pickers retired per
@@ -929,7 +952,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -965,7 +988,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -977,7 +1000,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1013,7 +1036,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -1248,6 +1271,20 @@
 
   .oct-spot-row { margin-bottom: 0.25rem; }
   .oct-empty { font-size: var(--fs-sm); color: var(--text-muted); font-style: italic; margin-top: 0.5rem; }
+  .oct-instruments-error {
+    display: flex; align-items: center; gap: 0.6rem;
+    margin-top: 0.5rem; padding: 0.35rem 0.6rem;
+    background: rgba(248,113,113,0.10); border: 1px solid rgba(248,113,113,0.35);
+    border-radius: 4px;
+  }
+  .oct-instruments-error-msg { font-size: var(--fs-sm); color: var(--c-short, #f87171); }
+  .oct-instruments-retry {
+    font-size: var(--fs-sm); font-weight: 600; padding: 0.15rem 0.5rem;
+    border: 1px solid rgba(251,191,36,0.55); border-radius: 3px;
+    background: rgba(251,191,36,0.10); color: var(--c-action, #fbbf24);
+    cursor: pointer; white-space: nowrap;
+  }
+  .oct-instruments-retry:hover { background: rgba(251,191,36,0.20); }
   .oct-inst-err { color: var(--c-short); font-style: normal; display: flex; align-items: center; gap: 0.5rem; }
   .oct-retry-btn {
     padding: 0.15rem 0.5rem; border-radius: 2px;

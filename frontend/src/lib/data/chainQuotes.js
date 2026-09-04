@@ -26,10 +26,11 @@
 /**
  * Parse a single row from the chain-quotes API response into a typed object.
  *
- * The `depthAvail` field defaults to `true` when the backend omits it (older
- * backend versions, or liquid strikes where depth was present). A value of
- * `false` means the broker returned no real market depth for that side and the
- * bid/ask shown is actually the last traded price.
+ * The `depthAvail` field is `true` only when the backend explicitly sends
+ * `true`. An absent, null, or undefined field means the backend did not confirm
+ * depth is available, so `depthAvail` defaults to `false` (no depth). A value
+ * of `false` means the broker returned no real market depth for that side and
+ * the bid/ask shown is actually the last traded price.
  *
  * @param {Record<string, unknown>} row  - raw row from r.rows[]
  * @param {string} [exchange]            - exchange from the outer response
@@ -47,7 +48,7 @@ export function parseChainQuoteRow(row, exchange) {
         sym:        /** @type {string|null} */ (row.ce_sym  || null),
         ls:         row.ce_ls   == null ? null : Number(row.ce_ls),
         exchange:   exch,
-        depthAvail: row.ce_depth_available !== false,
+        depthAvail: row.ce_depth_available === true,
       },
       pe: {
         bid:        row.pe_bid  == null ? null : Number(row.pe_bid),
@@ -55,7 +56,7 @@ export function parseChainQuoteRow(row, exchange) {
         sym:        /** @type {string|null} */ (row.pe_sym  || null),
         ls:         row.pe_ls   == null ? null : Number(row.pe_ls),
         exchange:   exch,
-        depthAvail: row.pe_depth_available !== false,
+        depthAvail: row.pe_depth_available === true,
       },
     },
   ];

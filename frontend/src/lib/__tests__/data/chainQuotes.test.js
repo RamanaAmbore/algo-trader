@@ -4,7 +4,8 @@
  * Five quality dimensions:
  *  1. SSOT   — exercises the same module path imported by OptionChainTab.svelte
  *  2. Perf   — all synchronous; no I/O
- *  3. Stale  — guards the depthAvail default (absent field → true, not false)
+ *  3. Stale  — guards the depthAvail default (absent/null/undefined → false;
+ *              only explicit true → true); backend defaults absent field to false
  *  4. Reuse  — parseChainQuoteRow is the single parse boundary for chain data
  *  5. UX     — visual "(L)" indicator is driven by depthAvail; these tests
  *              verify the flag is set correctly so the indicator fires when it
@@ -99,27 +100,28 @@ describe('parseChainQuoteRow — depthAvail flag', () => {
     expect(q.pe.depthAvail).toBe(false);
   });
 
-  // SSOT: the default must be true, not false. An absent field means "depth present"
-  // (backward-compatible with older backends that did not send depth_available).
-  it('defaults depthAvail=true when the field is absent (older backend)', () => {
+  // SSOT: absent field → false. Backend defaults absent ce/pe_depth_available to
+  // false (no depth confirmed). Only an explicit `true` from the backend means
+  // depth is available. The "(L)" indicator should fire on absent field.
+  it('defaults depthAvail=false when the field is absent (backend did not confirm depth)', () => {
     const row = makeRow();
     delete row.ce_depth_available;
     delete row.pe_depth_available;
     const [, q] = parseChainQuoteRow(row);
-    expect(q.ce.depthAvail).toBe(true);
-    expect(q.pe.depthAvail).toBe(true);
+    expect(q.ce.depthAvail).toBe(false);
+    expect(q.pe.depthAvail).toBe(false);
   });
 
-  it('defaults depthAvail=true when the field is null (broker returned null)', () => {
+  it('defaults depthAvail=false when the field is null (broker returned null)', () => {
     const [, q] = parseChainQuoteRow(makeRow({ ce_depth_available: null, pe_depth_available: null }));
-    expect(q.ce.depthAvail).toBe(true);
-    expect(q.pe.depthAvail).toBe(true);
+    expect(q.ce.depthAvail).toBe(false);
+    expect(q.pe.depthAvail).toBe(false);
   });
 
-  it('defaults depthAvail=true when the field is undefined', () => {
+  it('defaults depthAvail=false when the field is undefined', () => {
     const [, q] = parseChainQuoteRow(makeRow({ ce_depth_available: undefined, pe_depth_available: undefined }));
-    expect(q.ce.depthAvail).toBe(true);
-    expect(q.pe.depthAvail).toBe(true);
+    expect(q.ce.depthAvail).toBe(false);
+    expect(q.pe.depthAvail).toBe(false);
   });
 });
 

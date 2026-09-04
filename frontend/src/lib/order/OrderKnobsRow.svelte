@@ -10,6 +10,11 @@
   // Exchange is unidirectional: read via `exchange` prop, write via
   // `onExchangeChange` callback so the parent can also set
   // _exchangeTouched alongside the value update.
+  //
+  // brokerCaps: optional BrokerCapabilities dict from the parent. When
+  // broker_id is 'dhan' or 'groww', AMO is hidden because those adapters
+  // raise NotImplementedError at placement time (hard block, not a
+  // degraded path). Kite (and unknown brokers) show AMO normally.
 
   import Select from '$lib/Select.svelte';
 
@@ -23,7 +28,33 @@
     disabled      = false,
     productOptions = [],
     exchangeOptions = [],
+    /** @type {any} */
+    brokerCaps    = null,
   } = $props();
+
+  // AMO is unsupported (hard NotImplementedError) on Dhan and Groww.
+  // Hide it from the variety dropdown for those brokers to prevent the
+  // operator from placing a request that will always fail at the API.
+  const _amoAllowed = $derived(
+    brokerCaps == null ||
+    (brokerCaps.broker_id !== 'dhan' && brokerCaps.broker_id !== 'groww')
+  );
+
+  const _varietyOptions = $derived([
+    { value: 'regular', label: 'REG' },
+    ...(_amoAllowed ? [{ value: 'amo', label: 'AMO' }] : []),
+    { value: 'co',      label: 'CO'  },
+  ]);
+
+  // When the selected variety is no longer in the options list (e.g.
+  // operator switches from Kite to Dhan while variety === 'amo'), reset
+  // to 'regular' so the dropdown isn't left showing a blank/stale value.
+  $effect(() => {
+    const allowed = _varietyOptions.map(o => o.value);
+    if (variety && !allowed.includes(variety)) {
+      variety = 'regular';
+    }
+  });
 </script>
 
 <div class="ot-knob">
@@ -53,11 +84,7 @@
           bind:value={variety}
           ariaLabel="Variety"
           {disabled}
-          options={[
-            { value: 'regular', label: 'REG' },
-            { value: 'amo',     label: 'AMO' },
-            { value: 'co',      label: 'CO'  },
-          ]} />
+          options={_varietyOptions} />
 </div>
 <div class="ot-knob">
   <label class="ot-label" for="ot-validity-sel">Validity</label>

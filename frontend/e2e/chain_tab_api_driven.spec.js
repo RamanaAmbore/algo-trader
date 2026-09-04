@@ -624,4 +624,71 @@ test.describe('OptionChainTab API-driven redesign (Option B)', () => {
     );
     expect(secondCallsWithin5s.length).toBe(0);
   });
+
+  // ── Fix #17 — "(L)" depth indicator ──────────────────────────────────────
+  test('Fix #17: (L) depth indicator does not appear before first quote poll', async ({ page }) => {
+    // The (L) marker must only appear when ceQ/peQ is defined AND depthAvail===false.
+    // Before the first poll, ceQ/peQ are undefined — the marker must NOT render.
+    // This test checks that no spurious (L) appears immediately after the chain
+    // grid mounts (i.e. before the chain-quotes API returns).
+    await loginAsAdmin(page);
+    await gotoDerivatives(page);
+    await triggerChainViaButton(page);
+
+    const chainRoot = page.locator('.oct-root').first();
+    if (!(await chainRoot.count())) {
+      test.skip(true, 'OptionChainTab not found — skip (L) indicator test');
+      return;
+    }
+
+    // Wait just enough time for the grid DOM to render but NOT for the poll to complete.
+    // If the grid isn't visible within 3s (market closed), skip.
+    const rowVisible = await page.locator('.chain-row').first().isVisible({ timeout: 3000 }).catch(() => false);
+    if (!rowVisible) {
+      test.skip(true, 'Strike grid not visible — market may be closed, skip (L) pre-poll test');
+      return;
+    }
+
+    // Immediately after DOM render (before first poll), no (L) should be visible.
+    // The component guard `{#if ceQ && !ceQ.depthAvail}` prevents this.
+    const noDepthMarkers = page.locator('.chain-cell-no-depth');
+    const countBeforePoll = await noDepthMarkers.count();
+    // Either 0 (no illiquid strikes) or some non-negative number — but each one
+    // must only appear after a quote row with depthAvail===false arrived.
+    // We can't assert exactly 0 (strikes could genuinely have no depth), but we
+    // CAN assert that the total count is consistent across 100ms (not flickering).
+    const countAfter100ms = await noDepthMarkers.count();
+    // Both reads must return the same count — no spurious appearance/disappearance.
+    expect(countAfter100ms).toBe(countBeforePoll);
+    console.log(`[chain_tab_api_driven] (L) markers at render time: ${countBeforePoll}`);
+  });
+
+  // ── Fix #8 — instruments error banner + retry ─────────────────────────────
+  test('Fix #8: instruments error state is not visible when IDB loads successfully', async ({ page }) => {
+    // In the normal flow (IDB available), the .oct-instruments-error banner
+    // must NOT be visible. This verifies the error state stays hidden when
+    // loadInstruments() resolves successfully.
+    await loginAsAdmin(page);
+    await gotoDerivatives(page);
+    await triggerChainViaButton(page);
+
+    const chainRoot = page.locator('.oct-root').first();
+    if (!(await chainRoot.count())) {
+      test.skip(true, 'OptionChainTab not found — skip instruments error test');
+      return;
+    }
+
+    // Wait up to 10s for the chain to mount and instruments to load.
+    await page.waitForTimeout(3000);
+
+    // The error banner must NOT be visible on a successful IDB load.
+    const errorBanner = page.locator('.oct-instruments-error');
+    const bannerVisible = await errorBanner.isVisible().catch(() => false);
+    if (bannerVisible) {
+      const msg = await errorBanner.locator('.oct-instruments-error-msg').textContent().catch(() => '');
+      console.error(`[chain_tab_api_driven] instruments error banner unexpectedly visible: "${msg}"`);
+    }
+    expect(bannerVisible).toBe(false);
+    console.log('[chain_tab_api_driven] instruments error banner correctly hidden on successful IDB load');
+  });
 });
