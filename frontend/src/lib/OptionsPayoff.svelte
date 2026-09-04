@@ -148,6 +148,11 @@
     return 'flat';
   });
 
+  const spotPct = $derived.by(() => {
+    if (spot == null || prevClose == null || prevClose <= 0) return null;
+    return ((spot - prevClose) / prevClose) * 100;
+  });
+
   // Apply the realised-P&L offset to the entire payoff curve. Closed
   // positions (qty=0) contribute realised P&L that doesn't move with
   // spot — a constant vertical shift on both today and expiry curves.
@@ -737,6 +742,14 @@
           <span class="ps-k">SPOT</span>
           <span class={'ps-v ps-spot-' + spotDir}>{fmtSpot(spot)}</span>
         </div>
+        {#if spotPct != null}
+          <div class="ps-row" title="Spot % change from previous session close">
+            <span class="ps-k">CHG%</span>
+            <span class={'ps-v ps-spot-' + spotDir}>
+              {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
+            </span>
+          </div>
+        {/if}
       {/if}
       {#if prevClose != null && Number.isFinite(prevClose) && prevClose > 0}
         <!-- Yesterday's close — anchors the SPOT colour direction and
