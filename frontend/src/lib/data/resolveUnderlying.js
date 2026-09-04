@@ -92,14 +92,13 @@ export const INDEX_LTP_KEY = {
 
 export const MCX_COMMODITIES = new Set([
   'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'NATGASMINI',
-  'GOLD', 'GOLDM', 'GOLDMINI', 'GOLDPETAL', 'GOLDGUINEA',
-  'SILVER', 'SILVERM', 'SILVERMINI', 'SILVERMIC',
-  'COPPER', 'ZINC', 'ZINCMINI', 'LEAD', 'LEADMINI',
-  'ALUMINIUM', 'ALUMINI', 'NICKEL',
-  'MENTHAOIL', 'COTTON', 'CASTORSEED', 'KAPAS', 'CARDAMOM',
+  'GOLD', 'GOLDM', 'GOLDPETAL', 'GOLDGUINEA',
+  'SILVER', 'SILVERM', 'SILVERMIC',
+  'COPPER', 'ZINC', 'LEAD', 'ALUMINIUM', 'NICKEL',
+  'MENTHAOIL', 'COTTON', 'CPO',
 ]);
 
-export const CDS_CURRENCIES = new Set(['USDINR']);
+export const CDS_CURRENCIES = new Set(['USDINR', 'EURINR', 'GBPINR', 'JPYINR']);
 
 // Kite spot-index quote-keys → tradeable F&O underlying root. The chart
 // + order modals use the same translation so e.g. "NIFTY 50" → "NIFTY"

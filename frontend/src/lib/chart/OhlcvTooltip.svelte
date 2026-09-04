@@ -27,7 +27,13 @@
    */
   function _fmtBarTs(ts) {
     if (!ts) return '';
-    const d = new Date(ts);
+    // Daily bars carry a date-only string (YYYY-MM-DD, 10 chars).
+    // new Date("YYYY-MM-DD") parses as UTC midnight — for IST (+5:30)
+    // users this renders as the previous calendar day. Force local-time
+    // parsing by appending T00:00:00 (no timezone → local midnight).
+    const d = (typeof ts === 'string' && ts.length === 10)
+      ? new Date(ts + 'T00:00:00')
+      : new Date(ts);
     if (!Number.isFinite(d.getTime())) return ts.slice(0, 10);
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`;

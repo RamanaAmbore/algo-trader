@@ -516,6 +516,8 @@
     'NIFTY FIN SERVICE':  'FINNIFTY',
     'NIFTY MID SELECT':   'MIDCPNIFTY',
     'NIFTY NEXT 50':      'NIFTYNXT50',
+    'SENSEX':             'SENSEX',
+    'BANKEX':             'BANKEX',
   };
   async function _resolveFetchSymbol(/** @type {string} */ sym) {
     // Resolve any non-tradeable anchor (Kite index quote-key, MCX
@@ -758,8 +760,9 @@
         fetchOptionsHistorical(fetchSym, { days: _chartDays, exchange: fetchExch, fresh }),
       ];
       if (_isDerivative && _underlying) {
+        const _spotExch = MCX_COMMODITIES.has((_underlying || '').toUpperCase()) ? 'MCX' : 'NFO';
         promises.push(
-          fetchOptionsHistorical(_underlying, { days: _chartDays })
+          fetchOptionsHistorical(_underlying, { days: _chartDays, exchange: _spotExch })
             .catch(() => ({ bars: [] }))
         );
       }
@@ -770,13 +773,16 @@
 
       const _nextBars = Array.isArray(hist?.bars) ? hist.bars : [];
       if (_nextBars.length === 0) {
-        // Snapshot the current bars before overwriting so _handleEmptyBars
-        // can decide whether to keep them or surface the error.
+        // Capture current bars BEFORE any overwrite so _handleEmptyBars
+        // can restore them if needed (stale-while-revalidate).
         const prevBars = _bars;
+        // If _handleEmptyBars decides to keep last-good bars (or schedule
+        // a retry) it returns true — exit early without clearing the store.
+        if (_handleEmptyBars(hist, retryKey, prevBars)) return;
+        // Confirmed no-data: only now clear _bars and chartStore.
         _bars     = _nextBars;
         _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
         chartStore.setOhlcv(_bars, _spotBars);
-        if (_handleEmptyBars(hist, retryKey, prevBars)) return;
       } else {
         _bars     = _nextBars;
         _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
