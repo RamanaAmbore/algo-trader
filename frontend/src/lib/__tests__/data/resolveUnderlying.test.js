@@ -217,3 +217,76 @@ describe('resolveAnchorToTradeable — CDS anchor resolution', () => {
     expect(result).toBe('JPYINR26JUNFUT');
   });
 });
+
+// ── Bug C: _NEXT virtual roots in resolveUnderlying ──────────────────────────
+
+describe('resolveUnderlying — _NEXT virtual roots', () => {
+  it('CRUDEOIL_NEXT → MCX exchange, underlying_group=CRUDEOIL, kind=fut', () => {
+    const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOILM26SEPFUT', e: 'MCX' } : null);
+    const result = resolveUnderlying('CRUDEOIL_NEXT', findFut);
+    expect(result).not.toBeNull();
+    expect(result.exchange).toBe('MCX');
+    expect(result.underlying_group).toBe('CRUDEOIL');
+    expect(result.kind).toBe('fut');
+    expect(result.tradingsymbol).toBe('CRUDEOILM26SEPFUT');
+  });
+
+  it('USDINR_NEXT → CDS exchange, underlying_group=USDINR, kind=fut', () => {
+    const findFut = (root) => (root === 'USDINR' ? { s: 'USDINR26SEPFUT', e: 'CDS' } : null);
+    const result = resolveUnderlying('USDINR_NEXT', findFut);
+    expect(result).not.toBeNull();
+    expect(result.exchange).toBe('CDS');
+    expect(result.underlying_group).toBe('USDINR');
+    expect(result.kind).toBe('fut');
+  });
+
+  it('EURINR_NEXT → CDS exchange, underlying_group=EURINR', () => {
+    const findFut = (root) => (root === 'EURINR' ? { s: 'EURINR26SEPFUT', e: 'CDS' } : null);
+    const result = resolveUnderlying('EURINR_NEXT', findFut);
+    expect(result).not.toBeNull();
+    expect(result.exchange).toBe('CDS');
+    expect(result.underlying_group).toBe('EURINR');
+  });
+
+  it('RELIANCE (bare) → NSE spot, tradingsymbol=RELIANCE, underlying_group=RELIANCE', () => {
+    const result = resolveUnderlying('RELIANCE', null);
+    expect(result).not.toBeNull();
+    expect(result.exchange).toBe('NSE');
+    expect(result.tradingsymbol).toBe('RELIANCE');
+    expect(result.underlying_group).toBe('RELIANCE');
+  });
+
+  it('NIFTY26JUNFUT passes through to NSE with tradingsymbol preserved', () => {
+    const result = resolveUnderlying('NIFTY26JUNFUT', null);
+    expect(result).not.toBeNull();
+    expect(result.exchange).toBe('NSE');
+    expect(result.tradingsymbol).toBe('NIFTY26JUNFUT');
+  });
+
+  it('CRUDEOIL (bare root, no _NEXT) still routes to MCX front-month', () => {
+    const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOIL26JUNFUT', e: 'MCX' } : null);
+    const result = resolveUnderlying('CRUDEOIL', findFut);
+    expect(result).not.toBeNull();
+    expect(result.exchange).toBe('MCX');
+    expect(result.underlying_group).toBe('CRUDEOIL');
+    expect(result.kind).toBe('fut');
+  });
+});
+
+// ── Bug C: _NEXT virtual roots in resolveAnchorToTradeable ───────────────────
+
+describe('resolveAnchorToTradeable — _NEXT virtual roots', () => {
+  it('EURINR_NEXT resolves to the back-month contract via findNearestFut', () => {
+    // The back-month resolver returns the nearest future for the bare root;
+    // resolveAnchorToTradeable strips _NEXT before the lookup.
+    const findFut = (root) => (root === 'EURINR' ? { s: 'EURINR26SEPFUT', e: 'CDS' } : null);
+    const result = resolveAnchorToTradeable('EURINR_NEXT', findFut);
+    expect(result).toBe('EURINR26SEPFUT');
+  });
+
+  it('CRUDEOIL_NEXT resolves to the nearest future for CRUDEOIL root', () => {
+    const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOILM26SEPFUT', e: 'MCX' } : null);
+    const result = resolveAnchorToTradeable('CRUDEOIL_NEXT', findFut);
+    expect(result).toBe('CRUDEOILM26SEPFUT');
+  });
+});

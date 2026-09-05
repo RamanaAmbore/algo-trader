@@ -23,24 +23,29 @@
 export function resolveUnderlying(name, findNearestFut) {
   const n = String(name || '').toUpperCase();
   if (!n) return null;
-  const idx = INDEX_LTP_KEY[n];
+  // _NEXT virtual roots (e.g. CRUDEOIL_NEXT, USDINR_NEXT) carry the bare
+  // commodity/currency root in the set lookups. Strip the suffix so we
+  // match MCX_COMMODITIES / CDS_CURRENCIES correctly — the sets contain
+  // bare roots only (CRUDEOIL, USDINR, …).
+  const root = n.endsWith('_NEXT') ? n.slice(0, -5) : n;
+  const idx = INDEX_LTP_KEY[root];
   if (idx) {
     return {
       tradingsymbol: idx.tradingsymbol,
       exchange: idx.exchange,
       quoteKey: `${idx.exchange}:${idx.tradingsymbol}`,
-      underlying_group: n,
+      underlying_group: root,
       kind: 'spot',
     };
   }
-  if (MCX_COMMODITIES.has(n)) {
-    const fut = findNearestFut?.(n);
+  if (MCX_COMMODITIES.has(root)) {
+    const fut = findNearestFut?.(root);
     if (fut?.s && fut?.e) {
       return {
         tradingsymbol: fut.s,
         exchange: fut.e,
         quoteKey: `${fut.e}:${fut.s}`,
-        underlying_group: n,
+        underlying_group: root,
         kind: 'fut',
       };
     }
@@ -51,31 +56,31 @@ export function resolveUnderlying(name, findNearestFut) {
     // even when MCX hasn't published a matching nearest-future
     // tradingsymbol the instruments cache can find.
     return {
-      tradingsymbol: n,
+      tradingsymbol: root,
       exchange: 'MCX',
-      quoteKey: `MCX:${n}`,   // synthetic; quote will silently miss
-      underlying_group: n,
+      quoteKey: `MCX:${root}`,   // synthetic; quote will silently miss
+      underlying_group: root,
       kind: 'mcx',
     };
   }
-  if (CDS_CURRENCIES.has(n)) {
-    const fut = findNearestFut?.(n);
+  if (CDS_CURRENCIES.has(root)) {
+    const fut = findNearestFut?.(root);
     if (fut?.s && fut?.e) {
       return {
         tradingsymbol: fut.s,
         exchange: fut.e,
         quoteKey: `${fut.e}:${fut.s}`,
-        underlying_group: n,
+        underlying_group: root,
         kind: 'fut',
       };
     }
     return null;
   }
   return {
-    tradingsymbol: n,
+    tradingsymbol: n,     // keep original (RELIANCE, NIFTY26JUNFUT, etc.)
     exchange: 'NSE',
     quoteKey: `NSE:${n}`,
-    underlying_group: n,
+    underlying_group: root,
     kind: 'spot',
   };
 }
@@ -137,19 +142,24 @@ export const KITE_INDEX_QUOTE_KEY_TO_ROOT = {
 export function resolveAnchorToTradeable(anchor, findNearestFut) {
   const upper = String(anchor || '').toUpperCase();
   if (!upper) return null;
-  // Quote-key path (e.g. "NIFTY 50" → root "NIFTY").
+  // _NEXT virtual roots (e.g. CRUDEOIL_NEXT, USDINR_NEXT) need the bare
+  // root for set lookups. Strip the suffix before checking MCX/CDS sets.
+  const isNext   = upper.endsWith('_NEXT');
+  const stripped = isNext ? upper.slice(0, -5) : upper;
+  // Quote-key path (e.g. "NIFTY 50" → root "NIFTY"). Index quote-keys
+  // never carry _NEXT, so use `upper` directly here.
   const indexRoot   = KITE_INDEX_QUOTE_KEY_TO_ROOT[upper];
   // Already-a-root path (e.g. "NIFTY", "BANKNIFTY") — when the
   // operator's setting carries the bare root the dict lookup misses,
   // so we ALSO match against INDEX_LTP_KEY whose keys ARE the roots.
   // Without this, default_symbol="NIFTY" returned "NIFTY" unchanged
   // and the modal opened on a non-tradeable underlying name.
-  const isIndexRoot = !!INDEX_LTP_KEY[upper];
-  const isMcx       = MCX_COMMODITIES.has(upper);
-  const isCds       = CDS_CURRENCIES.has(upper);
+  const isIndexRoot = !!INDEX_LTP_KEY[stripped];
+  const isMcx       = MCX_COMMODITIES.has(stripped);
+  const isCds       = CDS_CURRENCIES.has(stripped);
   const root        = indexRoot
-                   || (isIndexRoot ? upper : null)
-                   || (isMcx || isCds ? upper : null);
+                   || (isIndexRoot ? stripped : null)
+                   || (isMcx || isCds ? stripped : null);
   if (!root) return upper;  // already tradeable (equity or specific contract)
   const fut = findNearestFut?.(root);
   return fut?.s ? String(fut.s) : null;

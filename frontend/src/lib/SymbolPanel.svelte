@@ -439,9 +439,12 @@
       // leave _localSymbol alone (operator may have picked a different
       // contract via Chain → +CE).
       if (_contextSymbol) _localSymbol = _contextSymbol;
+    } else if (id === 'chart') {
+      // Restore the context contract so chart shows the option/future
+      // the operator opened the panel with, not the root symbol that
+      // the Chain tab strips down to.
+      if (_contextSymbol) _localSymbol = _contextSymbol;
     }
-    // chart tab: keep _localSymbol as-is — ChartWorkspace shows whatever
-    // symbol is currently in the picker.
   }
   // Keep _contextSymbol in sync when the parent passes a new contract
   // (row click, chain pick, etc.). Only treat it as a "context" change
@@ -455,7 +458,14 @@
 
   // Live LTP for the current symbol — pulled from the shared symbolStore
   // so the tab row can show a real-time price without a separate fetch.
-  const _ltpSym = $derived(_parseRoot(_localSymbol) || _localSymbol);
+  // Chain tab shows root LTP (e.g. CRUDEOIL for any CRUDEOIL future);
+  // Ticket + Chart tabs show the contract's own LTP so the header price
+  // reflects the exact instrument the operator is viewing / trading.
+  const _ltpSym = $derived(
+    _activeTab === 'chain'
+      ? (_parseRoot(_localSymbol) || _localSymbol)
+      : _localSymbol
+  );
   const _ltp = $derived(getSnapshot(_ltpSym)?.ltp ?? null);
 
   // Tab-activation refresh bumps. Operator request: "when chain tab is

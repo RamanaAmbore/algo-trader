@@ -544,9 +544,19 @@
     //   • CDS currencies (USDINR, EURINR, GBPINR, JPYINR)
     //     → also front-month future. Same reasoning as MCX.
     const upper = String(sym || '').toUpperCase();
+    // _NEXT virtual roots (e.g. CRUDEOIL_NEXT) carry a bare commodity/currency
+    // name with _NEXT appended. Strip the suffix for set lookups because
+    // MCX_COMMODITIES / CDS_CURRENCIES contain bare roots only.
+    const isNext   = upper.endsWith('_NEXT');
+    const stripped = isNext ? upper.slice(0, -5) : upper;
+
     const indexRoot = _KITE_INDEX_TO_ROOT[upper];        // 'NIFTY 50' → 'NIFTY'
-    const isMcx     = MCX_COMMODITIES.has(upper);        // 'CRUDEOIL', 'GOLD', …
-    const isCds     = CDS_CURRENCIES.has(upper);         // 'USDINR'
+    const isMcx     = MCX_COMMODITIES.has(stripped);     // 'CRUDEOIL', 'GOLD', …
+    const isCds     = CDS_CURRENCIES.has(stripped);       // 'USDINR'
+
+    // Default exchange: MCX for commodities, CDS for currencies.
+    // Defined early so both the _NEXT path and the fut?.s return can use it.
+    const defaultExch = isMcx ? 'MCX' : 'CDS';
 
     // Index branch — keep the spot string, route to NSE.
     // This is the path that unlocks 1Y / 6M for NIFTY 50 / BANK
@@ -557,7 +567,7 @@
       return { sym: upper, exch: 'NSE' };
     }
 
-    const root = indexRoot || (isMcx || isCds ? upper : null);
+    const root = indexRoot || (isMcx || isCds ? stripped : null);
     if (!root) {
       // Plain NSE equity (RELIANCE, TCS, HDFCBANK, M&M, …).
       // Matches symbols that are alphabetic (with optional & or -) and
@@ -591,11 +601,20 @@
         fut = findNearestFuture(root);
       } catch (_) { /* still no instruments — fall through to literal */ }
     }
+
+    // Back-month: _NEXT virtual roots resolve via rootOf.js's seeded map,
+    // which tracks the two nearest contracts per root. resolveVirtual()
+    // maps e.g. "CRUDEOIL_NEXT" → "CRUDEOIL26JULFUT" using the same data
+    // that seedRootMapFromInstruments() built after the instruments load.
+    if (isNext) {
+      const { resolveVirtual } = await import('$lib/data/rootOf.js');
+      const resolved = resolveVirtual(upper, defaultExch);
+      if (resolved && resolved !== upper) return { sym: resolved, exch: defaultExch };
+    }
+
     if (fut?.s) {
-      // Default exchange: MCX for commodities, CDS for currencies.
       // (Index branch above intercepts before this line — that's why
       // 'NFO' is no longer in the fallback chain.)
-      const defaultExch = isMcx ? 'MCX' : 'CDS';
       return { sym: String(fut.s), exch: String(fut.e || defaultExch) };
     }
     return { sym, exch: '' };
