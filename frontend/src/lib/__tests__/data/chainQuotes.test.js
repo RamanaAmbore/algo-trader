@@ -12,7 +12,7 @@
  *              should. Full rendering coverage requires Playwright.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { parseChainQuoteRow } from '$lib/data/chainQuotes.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -174,5 +174,93 @@ describe('parseChainQuoteRow — exchange fallback', () => {
     delete row.exchange;
     const [, q] = parseChainQuoteRow(row);
     expect(q.ce.exchange).toBe('');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _refreshChainQuotes timeout/abort pattern (SSOT: OptionChainTab.svelte)
+//
+// The component attaches a 10-second AbortController timeout to every chain-
+// quotes fetch so that _pricesFetching is always reset — even when the backend
+// hangs (e.g. broker session inactive on weekends). This suite verifies the
+// raw AbortController + setTimeout + Promise pattern behaves correctly without
+// needing to import the Svelte component.
+//
+// Quality dimensions covered:
+//  1. SSOT   — mirrors the exact pattern used in _refreshChainQuotes()
+//  2. Perf   — fake timers; no real I/O or 10-second wall-clock wait
+//  3. Stale  — abort fires even when fetch never resolves (hanging backend)
+//  4. Reuse  — AbortController abort() is idempotent; double-abort is safe
+//  5. UX     — _pricesFetching reset ensures the spinner clears after timeout
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('_refreshChainQuotes — abort timeout pattern', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Replicates the core timeout pattern from _refreshChainQuotes() without
+   * importing the Svelte component. The fetch mock returns a promise that
+   * never resolves (simulates a hanging backend).
+   */
+  function runPattern(fetchMock) {
+    let pricesFetching = false;
+    const ac = new AbortController();
+
+    pricesFetching = true;
+    const tout = setTimeout(() => ac.abort(), 10_000);
+
+    return fetchMock(ac.signal)
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(tout);
+        pricesFetching = false;
+      })
+      .then(() => pricesFetching); // resolve with final value for assertion
+  }
+
+  it('resets pricesFetching=false after 10s when fetch never resolves', async () => {
+    // fetch that never resolves but rejects when the signal is aborted
+    const fetchMock = (signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('AbortError', 'AbortError')));
+      });
+
+    const p = runPattern(fetchMock);
+
+    // Before timeout fires, pricesFetching is still true (promise pending)
+    // Advance fake clock past the 10-second threshold
+    vi.advanceTimersByTime(10_001);
+
+    const finalValue = await p;
+    expect(finalValue).toBe(false);
+  });
+
+  it('does NOT fire the abort if the fetch resolves before 10s', async () => {
+    let aborted = false;
+    const fetchMock = (signal) => {
+      signal.addEventListener('abort', () => { aborted = true; });
+      return Promise.resolve({ rows: [], exchange: 'NFO' });
+    };
+
+    const p = runPattern(fetchMock);
+    const finalValue = await p;
+
+    // Advance timers after fetch already resolved — abort should not fire
+    vi.advanceTimersByTime(10_001);
+
+    expect(finalValue).toBe(false);
+    expect(aborted).toBe(false);
+  });
+
+  it('AbortController.abort() is idempotent — double-abort does not throw', () => {
+    const ac = new AbortController();
+    expect(() => { ac.abort(); ac.abort(); }).not.toThrow();
+    expect(ac.signal.aborted).toBe(true);
   });
 });

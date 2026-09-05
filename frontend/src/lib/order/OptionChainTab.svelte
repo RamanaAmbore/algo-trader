@@ -447,6 +447,7 @@
     const ac = new AbortController();
     _pricesAbort = ac;
     _pricesFetching = true;
+    const _tout = setTimeout(() => ac.abort(), 10_000);
     fetchChainQuotesPrices(u, e, { signal: ac.signal }).then((r) => {
       if (chainQuotesKey !== key) return;
       /** @type {Record<string, object>} */
@@ -456,7 +457,7 @@
         map[k] = q;
       }
       chainQuotesMap = map;
-    }).catch(() => {}).finally(() => { _pricesFetching = false; });
+    }).catch(() => {}).finally(() => { clearTimeout(_tout); _pricesFetching = false; });
   }
   $effect(() => {
     void chainUnderlying; void chainExpiry;
