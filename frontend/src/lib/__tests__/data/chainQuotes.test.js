@@ -335,3 +335,90 @@ describe('_refreshChainQuotes — abort timeout pattern', () => {
     expect(ac.signal.aborted).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _netAgainstBasket netting logic (SSOT: OptionChainTab.svelte)
+//
+// _netAgainstBasket is a closure inside the Svelte component and is not
+// directly importable. This suite replicates the arithmetic as a pure local
+// helper and exercises all four branches:
+//   • opposite leg found, newLots <= 0  → leg removed (filter path)
+//   • opposite leg found, newLots >  0  → leg kept with decremented lots (map path)
+//   • no opposite leg found             → returns false (no netting)
+//
+// Quality dimensions:
+//  1. SSOT   — mirrors the exact condition `newLots <= 0` used in the component
+//  2. Perf   — pure arithmetic; no I/O, no Svelte runtime
+//  3. Stale  — guards the `lots || 1` default so a missing lots field still nets
+//  4. Reuse  — shared netting arithmetic is tested once here, not per-consumer
+//  5. UX     — correct netting prevents duplicate/opposing legs in the basket
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('_netAgainstBasket netting logic', () => {
+  /**
+   * Pure replication of the _netAgainstBasket arithmetic from OptionChainTab.svelte.
+   * Returns { netted, basket } where `netted` mirrors the boolean return value and
+   * `basket` is the resulting array (using only the local/else path for simplicity).
+   *
+   * @param {Array<{sym:string, side:string, lots:number}>} basket
+   * @param {string} sym
+   * @param {'BUY'|'SELL'} sideTag
+   */
+  function netAgainstBasket(basket, sym, sideTag) {
+    const oppSide = sideTag === 'BUY' ? 'SELL' : 'BUY';
+    const idx = basket.findIndex(b => b.sym === sym && b.side === oppSide);
+    if (idx < 0) return { netted: false, basket };
+    const leg = basket[idx];
+    const newLots = (leg.lots || 1) - 1;
+    let next;
+    if (newLots <= 0) {
+      next = basket.filter((_, i) => i !== idx);
+    } else {
+      next = basket.map((b, i) => i === idx ? { ...b, lots: newLots } : b);
+    }
+    return { netted: true, basket: next };
+  }
+
+  it('BUY against existing SELL 1 lot → newLots=0 → leg removed', () => {
+    const basket = [{ sym: 'NIFTY25JAN24000CE', side: 'SELL', lots: 1 }];
+    const { netted, basket: next } = netAgainstBasket(basket, 'NIFTY25JAN24000CE', 'BUY');
+    expect(netted).toBe(true);
+    expect(next).toHaveLength(0);
+  });
+
+  it('BUY against existing SELL 2 lots → newLots=1 → leg kept with lots=1', () => {
+    const basket = [{ sym: 'NIFTY25JAN24000CE', side: 'SELL', lots: 2 }];
+    const { netted, basket: next } = netAgainstBasket(basket, 'NIFTY25JAN24000CE', 'BUY');
+    expect(netted).toBe(true);
+    expect(next).toHaveLength(1);
+    expect(next[0].lots).toBe(1);
+  });
+
+  it('SELL against existing BUY 1 lot → leg removed', () => {
+    const basket = [{ sym: 'BANKNIFTY25JAN48000PE', side: 'BUY', lots: 1 }];
+    const { netted, basket: next } = netAgainstBasket(basket, 'BANKNIFTY25JAN48000PE', 'SELL');
+    expect(netted).toBe(true);
+    expect(next).toHaveLength(0);
+  });
+
+  it('no opposite leg in basket → returns false, basket unchanged', () => {
+    const basket = [{ sym: 'NIFTY25JAN24000CE', side: 'BUY', lots: 1 }];
+    const { netted, basket: next } = netAgainstBasket(basket, 'NIFTY25JAN24000CE', 'BUY');
+    expect(netted).toBe(false);
+    expect(next).toHaveLength(1);
+  });
+
+  it('missing lots field defaults to 1 → removal on first net', () => {
+    // lots intentionally absent to test the (leg.lots || 1) fallback
+    const basket = /** @type {any} */ ([{ sym: 'NIFTY25JAN24000CE', side: 'SELL' }]);
+    const { netted, basket: next } = netAgainstBasket(basket, 'NIFTY25JAN24000CE', 'BUY');
+    expect(netted).toBe(true);
+    expect(next).toHaveLength(0);
+  });
+
+  it('netting is sym-specific — does not remove leg for a different symbol', () => {
+    const basket = [{ sym: 'NIFTY25JAN23000CE', side: 'SELL', lots: 1 }];
+    const { netted } = netAgainstBasket(basket, 'NIFTY25JAN24000CE', 'BUY');
+    expect(netted).toBe(false);
+  });
+});

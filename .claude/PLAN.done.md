@@ -1,86 +1,88 @@
-# Plan: Chain tab UX — disable +/- when no quote, spread warning, remove BASKET label
+# Plan: Chain basket netting — +/- on same strike nets opposite side
 
 ## Context
-Three targeted UX fixes to the option chain tab:
+Pressing + (BUY) and − (SELL) on the same CE or PE strike currently creates two separate
+basket legs (one BUY + one SELL for the same contract). Economically these cancel each
+other, but visually the operator sees two chips and has to manually clear them.
 
-1. **Disable +/- when bid/ask unavailable** — `addOptionToBasket()` (OptionChainTab.svelte:607)
-   falls back to `orderType: 'MARKET'` when `limit = 0` (no bid or ask). User wants the
-   buttons disabled entirely so an order cannot be placed without a known limit price.
+The fix: when pressing + or − for a strike that already has an opposite-side leg in the
+basket, decrement that leg's lot count instead of adding a new leg. If lots reach 0,
+remove the leg entirely. The basket chips update automatically via Svelte reactivity.
 
-2. **Wide-spread warning icon** — no spread indicator exists today. When the bid-ask spread
-   exceeds 10% of mid price, a small ⚠ should appear so the operator can see an illiquid
-   strike at a glance.
+## File
+`frontend/src/lib/order/OptionChainTab.svelte`
 
-3. **Remove BASKET text label** — `SymbolPanel.svelte` lines 2996 and 3013 each render
-   `<span class="oes-basket-label">BASKET</span>` next to the cart SVG icon. The text is
-   not visible enough to be useful and clutters the toolbar.
+## Approach
+Add `_netAgainstBasket(sym, sideTag)` helper and call it in both `addOptionToBasket`
+and `addFuturesToBasket` before the existing `_mergeIntoBasket` call.
 
-## Files
-- `frontend/src/lib/order/OptionChainTab.svelte` — features 1 + 2
-- `frontend/src/lib/SymbolPanel.svelte` — feature 3
+```javascript
+function _netAgainstBasket(sym, sideTag) {
+  const oppSide = sideTag === 'BUY' ? 'SELL' : 'BUY';
+  const idx = chainBasket.findIndex(b => b.sym === sym && b.side === oppSide);
+  if (idx < 0) return false;
+  const leg = chainBasket[idx];
+  const newLots = (leg.lots || 1) - 1;
+  if (newLots <= 0) {
+    if (_externalBasket && onRemoveLeg) { onRemoveLeg(leg); }
+    else { _localBasket = _localBasket.filter((_, i) => i !== idx); }
+  } else {
+    if (_externalBasket && onUpdateLeg) {
+      onUpdateLeg(leg.key, (l) => ({ ...l, lots: newLots }));
+    } else if (_externalBasket && onRemoveLeg && onAddLeg) {
+      onRemoveLeg(leg); onAddLeg({ ...leg, lots: newLots });
+    } else {
+      _localBasket = _localBasket.map((b, i) => i === idx ? { ...b, lots: newLots } : b);
+    }
+  }
+  return true;
+}
+```
+
+In `addOptionToBasket` (line ~631), add before `_mergeIntoBasket`:
+```javascript
+if (_netAgainstBasket(String(inst.s), sideTag)) {
+  basketError = ''; _flashToast(_quickKeyOpt(strike, optType), 'netted'); return;
+}
+```
+
+In `addFuturesToBasket` (line ~669), add before `_mergeIntoBasket`:
+```javascript
+if (_netAgainstBasket(String(sym), sideTag)) {
+  basketError = ''; _flashToast(_quickKeyFut(sym), 'netted'); return;
+}
+```
 
 ## Agents
-- frontend: Apply three targeted changes.
+- frontend: In `frontend/src/lib/order/OptionChainTab.svelte`:
 
-  **Feature 1 — Disable +/- option buttons when no valid quote**
+  1. Add `_netAgainstBasket(sym, sideTag)` helper function just before `_pushToBasket`
+     (currently line ~599). It finds the OPPOSITE-side leg for the same sym, decrements
+     its lots by 1, removes it if lots reach 0, and returns true if netting happened.
+     Handle all three paths: externalBasket+onUpdateLeg, externalBasket+onRemoveLeg/onAddLeg,
+     and local _localBasket.
 
-  In `OptionChainTab.svelte`, add `disabled` to each CE and PE buy/sell button pair when
-  the quote has no valid bid or ask. The four button locations are:
-  - Lines ~960-965: ATM CE BUY + SELL
-  - Lines ~978-983: ATM PE BUY + SELL
-  - Lines ~1008-1013: non-ATM CE BUY + SELL
-  - Lines ~1026-1031: non-ATM PE BUY + SELL
+  2. In `addOptionToBasket` (line ~631), insert before `if (_mergeIntoBasket(...))`:
+     ```javascript
+     if (_netAgainstBasket(String(inst.s), sideTag)) {
+       basketError = ''; _flashToast(_quickKeyOpt(strike, optType), 'netted'); return;
+     }
+     ```
 
-  Disable condition for CE: `!(ceQ?.bid > 0 || ceQ?.ask > 0)`
-  Disable condition for PE: `!(peQ?.bid > 0 || peQ?.ask > 0)`
+  3. In `addFuturesToBasket` (line ~669), insert before `if (_mergeIntoBasket(...))`:
+     ```javascript
+     if (_netAgainstBasket(String(sym), sideTag)) {
+       basketError = ''; _flashToast(_quickKeyFut(sym), 'netted'); return;
+     }
+     ```
 
-  Title tooltip when disabled: `"No quote — price unknown"`
-
-  Futures buttons (lines ~902-907) use `limit: 0` by design (opens ticket) — leave them
-  unchanged.
-
-  Add CSS for disabled state:
-  ```css
-  .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-  .chain-btn:disabled:hover { background: transparent; }
-  ```
-
-  **Feature 2 — Wide spread warning icon**
-
-  In the same `{#each chainStrikes}` block, compute spread width using `{@const}`:
-  ```svelte
-  {@const ceSpreadWide = ceQ?.bid > 0 && ceQ?.ask > 0 && (ceQ.ask - ceQ.bid) / ((ceQ.ask + ceQ.bid) / 2) > 0.10}
-  {@const peSpreadWide = peQ?.bid > 0 && peQ?.ask > 0 && (peQ.ask - peQ.bid) / ((peQ.ask + peQ.bid) / 2) > 0.10}
-  ```
-
-  These can go immediately after the existing `{@const ceQ}` / `{@const peQ}` lines (~947-948).
-
-  After each existing `(L)` depth indicator in the CE and PE bid-ask spans (4 locations:
-  ATM CE ~956, ATM PE ~992, non-ATM CE ~1004, non-ATM PE ~1040), add:
-  ```svelte
-  {#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
-  ```
-  (use `peSpreadWide` / `peQ` for PE locations)
-
-  CSS:
-  ```css
-  .chain-cell-spread-warn { font-size: 0.55rem; color: var(--algo-amber, #f59e0b); margin-left: 0.12rem; cursor: default; vertical-align: super; }
-  ```
-
-  **Feature 3 — Remove BASKET text label from SymbolPanel**
-
-  In `SymbolPanel.svelte`, delete both occurrences of:
-  ```svelte
-  <span class="oes-basket-label">BASKET</span>
-  ```
-  at lines ~2996 and ~3013. The cart SVG remains; only the text label is removed.
-
-  Also remove the `.oes-basket-label` CSS rule from the `<style>` block in SymbolPanel.svelte.
-
-  For the test requirement: add a Vitest unit test in
-  `frontend/src/lib/__tests__/data/chainQuotes.test.js` (or a new file) that verifies the
-  spread-wide threshold calculation: `(ask - bid) / mid > 0.10` for a set of sample values.
-  Also assert the disable condition `!(ceQ?.bid > 0 || ceQ?.ask > 0)` for null/0 inputs.
+  For the test requirement: add a Vitest test in
+  `frontend/src/lib/__tests__/data/chainQuotes.test.js` with a `describe('_netAgainstBasket
+  netting logic')` block testing the netting arithmetic:
+  - BUY against existing SELL 1 lot → lots reach 0 → remove leg
+  - BUY against existing SELL 2 lots → lots = 1 → keep leg
+  - SELL against existing BUY 1 lot → remove leg
+  - No opposite leg → no netting (return false)
 
   For every file you change or create, you MUST write or update at least one test that
   covers the changed behaviour. This is mandatory — not optional.
@@ -97,11 +99,11 @@ Three targeted UX fixes to the option chain tab:
 - playwright: no
 
 ## Commit message
-fix(chain): disable +/- when no quote, spread warning icon, remove BASKET label clutter
+fix(chain): net +/- presses on same strike — decrement opposite-side basket leg instead of adding new
 
 ## Done when
-- CE/PE +/- buttons show opacity 0.3 + not-allowed cursor when ceQ/peQ has no valid bid or ask
-- Futures +/- buttons unchanged
-- ⚠ appears after bid-ask display when spread > 10% of mid
-- `<span class="oes-basket-label">BASKET</span>` removed from both SymbolPanel locations
+- Pressing + CE when a SELL CE leg exists decrements SELL lots (removes if 0)
+- Pressing − CE when a BUY CE leg exists decrements BUY lots (removes if 0)
+- Same for PE and futures
+- Basket chips update immediately via Svelte reactivity
 - svelte-check 0 errors

@@ -596,6 +596,27 @@
     return true;
   }
 
+  function _netAgainstBasket(/** @type {string} */ sym, /** @type {'BUY'|'SELL'} */ sideTag) {
+    const oppSide = sideTag === 'BUY' ? 'SELL' : 'BUY';
+    const idx = chainBasket.findIndex(b => b.sym === sym && b.side === oppSide);
+    if (idx < 0) return false;
+    const leg = chainBasket[idx];
+    const newLots = (leg.lots || 1) - 1;
+    if (newLots <= 0) {
+      if (_externalBasket && onRemoveLeg) { onRemoveLeg(leg); }
+      else { _localBasket = _localBasket.filter((_, i) => i !== idx); }
+    } else {
+      if (_externalBasket && onUpdateLeg) {
+        onUpdateLeg(leg.key, (l) => ({ ...l, lots: newLots }));
+      } else if (_externalBasket && onRemoveLeg && onAddLeg) {
+        onRemoveLeg(leg); onAddLeg({ ...leg, lots: newLots });
+      } else {
+        _localBasket = _localBasket.map((b, i) => i === idx ? { ...b, lots: newLots } : b);
+      }
+    }
+    return true;
+  }
+
   function _pushToBasket(/** @type {any} */ newLeg) {
     if (_externalBasket && onAddLeg) {
       onAddLeg(newLeg);
@@ -627,6 +648,9 @@
       });
       _flashToast(_quickKeyOpt(strike, optType), '→ ticket');
       return;
+    }
+    if (_netAgainstBasket(String(inst.s), sideTag)) {
+      basketError = ''; _flashToast(_quickKeyOpt(strike, optType), 'netted'); return;
     }
     if (_mergeIntoBasket({ sym: String(inst.s), side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '+1 lot'); return;
@@ -665,6 +689,9 @@
       });
       _flashToast(_quickKeyFut(sym), '→ ticket');
       return;
+    }
+    if (_netAgainstBasket(String(sym), sideTag)) {
+      basketError = ''; _flashToast(_quickKeyFut(sym), 'netted'); return;
     }
     if (_mergeIntoBasket({ sym: String(sym), side: sideTag, lots: 1 })) {
       basketError = ''; _flashToast(_quickKeyFut(sym), '+1 lot'); return;
