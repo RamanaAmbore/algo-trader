@@ -2993,6 +2993,7 @@
                 <circle cx="19" cy="21" r="1" />
                 <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
               </svg>
+              <span class="oes-basket-label">BASKET</span>
             </span>
           {:else}
             <label class="oes-common-basket-toggle oes-common-basket-toggle-icon"
@@ -3009,6 +3010,7 @@
                 <circle cx="19" cy="21" r="1" />
                 <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
               </svg>
+              <span class="oes-basket-label">BASKET</span>
             </label>
           {/if}
         </div>
@@ -3727,14 +3729,14 @@
     .oes-basket-pill-tpl-chip { max-width: 6rem; overflow: hidden; text-overflow: ellipsis; }
   }
   .oes-basket-pill-buy {
-    color:        #67e8f9;
-    border-color: rgba(103,232,249,0.55);
-    background:   rgba(103,232,249,0.10);
+    color:        var(--c-long);
+    border-color: rgba(74,222,128,0.55);
+    background:   var(--c-long-14);
   }
   .oes-basket-pill-sell {
-    color:        var(--c-action);
-    border-color: rgba(251,191,36,0.55);
-    background:   rgba(251,191,36,0.10);
+    color:        var(--c-short);
+    border-color: rgba(248,113,113,0.55);
+    background:   var(--c-short-14);
   }
   .oes-basket-pill-side {
     font-weight: 900;
@@ -4011,8 +4013,7 @@
     box-shadow: inset 0 0 0 1px rgba(165, 180, 252, 0.32);
   }
   .oes-basket-pill.is-focused {
-    box-shadow: 0 0 0 2px rgba(165, 180, 252, 0.65),
-                inset 0 0 0 1px rgba(165, 180, 252, 0.45);
+    box-shadow: 0 0 0 1.5px rgba(165, 180, 252, 0.45);
   }
   .oes-basket-pill-limit-wrap {
     display: inline-flex;
@@ -4381,11 +4382,13 @@
      border doesn't shift effective height. */
   .oes-common-basket-toggle-icon {
     display: inline-flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     width: 1.7rem;
-    height: 1.7rem;
-    padding: 0;
+    height: auto;
+    min-height: 1.7rem;
+    padding: 0.15rem 0;
     cursor: pointer;
     user-select: none;
     border: 1px solid rgba(125, 211, 252, 0.40);
@@ -4395,6 +4398,14 @@
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
     box-sizing: border-box;
+  }
+  .oes-basket-label {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1;
+    margin-top: 0.15rem;
+    opacity: 0.8;
   }
   .oes-common-basket-toggle-icon:hover { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
   /* Operator: "active basket icon should have a different background
