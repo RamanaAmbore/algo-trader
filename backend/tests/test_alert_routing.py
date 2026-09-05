@@ -546,3 +546,75 @@ class TestMarginLowZeroGuard:
         assert len(matches) > 0, (
             "avail_margin=15000 should fire loss-margin-low; no matches returned"
         )
+
+
+class TestInfoAgentRename:
+    """Tests covering the market-close-mcx → market-preclose-mcx rename and
+    the fire_at_time condition_text override in _v2_fire_if_matches."""
+
+    def test_market_preclose_mcx_exists_with_correct_fire_at_time(self):
+        """market-preclose-mcx must be in BUILTIN_AGENTS with fire_at_time='23:00'."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+
+        agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-preclose-mcx'), None)
+        assert agent is not None, "market-preclose-mcx not found in BUILTIN_AGENTS"
+        assert agent.get('fire_at_time') == "23:00", (
+            f"Expected fire_at_time='23:00', got {agent.get('fire_at_time')!r}"
+        )
+
+    def test_market_close_mcx_no_longer_exists(self):
+        """market-close-mcx slug must NOT appear in BUILTIN_AGENTS after the rename."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+
+        old_agent = next((a for a in BUILTIN_AGENTS if a.get('slug') == 'market-close-mcx'), None)
+        assert old_agent is None, (
+            "market-close-mcx should have been replaced by market-preclose-mcx"
+        )
+
+    def test_fire_at_time_agent_gets_scheduled_condition_text(self):
+        """When _cycle_maybe_buffer_fire is called with a fire_at_time agent the
+        resulting EvalResult.condition_text is 'Scheduled — HH:MM IST', not a
+        margin dump from the match payload."""
+        from unittest.mock import MagicMock
+        from datetime import datetime, timezone
+        from backend.api.algo.agent_engine import _cycle_maybe_buffer_fire
+
+        # Build a minimal agent stub with fire_at_time set
+        agent = MagicMock()
+        agent.name = "MCX pre-close"
+        agent.slug = "market-preclose-mcx"
+        agent.fire_at_time = "23:00"
+
+        # Build a match entry that would normally produce a margin dump
+        matches = [{"scope": "funds.any_acct", "metric": "avail_margin",
+                    "op": ">=", "value": -999999999, "row": {"account": "ACC1"}}]
+
+        pending: list = []
+        now = datetime.now(timezone.utc)
+        cfg = {
+            'rate_window_min': 10,
+            'baseline_offset_min': 15,
+            'cooldown_min': 30,
+            'suppress_delta_abs': 15000,
+            'suppress_delta_pct': 0.5,
+        }
+        fired = _cycle_maybe_buffer_fire(
+            agent,
+            matches,
+            now=now,
+            bypass_suppression=True,  # skip cooldown gate
+            bypass_schedule=True,
+            sim_mode=False,
+            alert_state={},
+            cfg=cfg,
+            broadcast_fn=None,
+            debounce_min=0,
+            pending_dispatches=pending,
+        )
+
+        assert fired is True, "_cycle_maybe_buffer_fire should return True when matches is non-empty"
+        assert len(pending) == 1, "Should have buffered one dispatch entry"
+        result = pending[0]['result']
+        assert result.condition_text == "Scheduled — 23:00 IST", (
+            f"Expected 'Scheduled — 23:00 IST', got {result.condition_text!r}"
+        )

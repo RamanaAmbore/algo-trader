@@ -1153,11 +1153,11 @@ _INFO_AGENTS = [
         "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
     },
     {
-        "slug": "market-close-mcx",
-        "name": "MCX market close",
-        "long_name": "when:fire_at=23:30   alert:info/tg+ntfy(default)+log   do:notify-only",
-        "description": "Fires once at MCX close (23:30 IST) on trading days.",
-        "fire_at_time": "23:30",
+        "slug": "market-preclose-mcx",
+        "name": "MCX pre-close",
+        "long_name": "when:fire_at=23:00   alert:info/tg+ntfy(default)+log   do:notify-only",
+        "description": "Fires 30 minutes before MCX close (23:00 IST) on trading days.",
+        "fire_at_time": "23:00",
         "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
     },
 ]
@@ -1610,6 +1610,8 @@ def _cycle_maybe_buffer_fire(
         return False
 
     result = _v2_build_evalresult(matches, agent.name)
+    if getattr(agent, 'fire_at_time', None):
+        result.condition_text = f"Scheduled — {agent.fire_at_time} IST"
     if sim_mode:
         _cycle_shadow_lifespan_decrement(agent, alert_state)
     if broadcast_fn:

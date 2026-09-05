@@ -1,67 +1,63 @@
-# Plan: Basket pill color + ring + cart label polish
+# Plan: MCX pre-close alert — time + name + suppress margin condition
 
 ## Task
-Three cosmetic fixes to `frontend/src/lib/SymbolPanel.svelte`:
-1. BUY basket pills use cyan (#67e8f9) — semantically wrong vs chain chips (green=buy). Fix to green tokens (`var(--c-long)`, `var(--c-long-14)`).
-2. SELL basket pills use amber — semantically wrong vs chain chips (red=sell). Fix to red tokens (`var(--c-short)`, `var(--c-short-14)`).
-3. Focused basket pill ring is heavy (2px outer + 1px inset violet). Soften to a single 1.5px ring.
-4. Cart icon (basket mode toggle) is an SVG with no text label — purpose unclear without hover tooltip. Add a small "BASKET" text label beneath the SVG in both the static Chain span and the interactive Ticket label.
+Three changes to `backend/api/algo/agent_engine.py`:
+
+1. **Rename + reschedule**: "MCX market close" → "MCX pre-close", fires at 23:00 IST (30 min before actual MCX close at 23:30).
+2. **No margin condition in alert body**: info agents (NSE open, MCX pre-close) currently show `funds.any_acct avail_margin=338,625 (>= -999999999)` in the alert — this is the always-true sentinel condition used to trigger on schedule, not a real condition. Fix: after `_v2_build_evalresult()` is called in `_v2_fire_if_matches()`, if the agent has `fire_at_time` set, override `result.condition_text` to `"Scheduled — {fire_at_time} IST"`. Applies to NSE open (09:15) too, which has the same problem.
+3. **Update descriptions and long_name** to reflect the new name and time.
 
 ## Agents
-- backend: skip
-- frontend: In `frontend/src/lib/SymbolPanel.svelte` make four targeted edits:
+- backend: In `backend/api/algo/agent_engine.py`:
 
-  **Edit 1** — lines 3729-3733, `.oes-basket-pill-buy` CSS:
-  ```
-  OLD:
-    color:        #67e8f9;
-    border-color: rgba(103,232,249,0.55);
-    background:   rgba(103,232,249,0.10);
-  NEW:
-    color:        var(--c-long);
-    border-color: rgba(74,222,128,0.55);
-    background:   var(--c-long-14);
-  ```
-
-  **Edit 2** — lines 3734-3738, `.oes-basket-pill-sell` CSS:
-  ```
-  OLD:
-    color:        var(--c-action);
-    border-color: rgba(251,191,36,0.55);
-    background:   rgba(251,191,36,0.10);
-  NEW:
-    color:        var(--c-short);
-    border-color: rgba(248,113,113,0.55);
-    background:   var(--c-short-14);
+  **Edit 1** — `_INFO_AGENTS` MCX entry (~line 1155):
+  ```python
+  # OLD:
+  {
+      "slug": "market-close-mcx",
+      "name": "MCX market close",
+      "long_name": "when:fire_at=23:30   alert:info/tg+ntfy(default)+log   do:notify-only",
+      "description": "Fires once at MCX close (23:30 IST) on trading days.",
+      "fire_at_time": "23:30",
+      "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
+  },
+  # NEW:
+  {
+      "slug": "market-preclose-mcx",
+      "name": "MCX pre-close",
+      "long_name": "when:fire_at=23:00   alert:info/tg+ntfy(default)+log   do:notify-only",
+      "description": "Fires 30 minutes before MCX close (23:00 IST) on trading days.",
+      "fire_at_time": "23:00",
+      "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
+  },
   ```
 
-  **Edit 3** — lines 4013-4016, `.oes-basket-pill.is-focused` CSS:
+  **Edit 2** — `_v2_fire_if_matches()`, after line 1612 (`result = _v2_build_evalresult(matches, agent.name)`):
+  ```python
+  # Add immediately after the _v2_build_evalresult call:
+  if getattr(agent, 'fire_at_time', None):
+      result.condition_text = f"Scheduled — {agent.fire_at_time} IST"
   ```
-  OLD:
-    box-shadow: 0 0 0 2px rgba(165, 180, 252, 0.65),
-                inset 0 0 0 1px rgba(165, 180, 252, 0.45);
-  NEW:
-    box-shadow: 0 0 0 1.5px rgba(165, 180, 252, 0.45);
-  ```
+  This replaces the auto-generated margin dump with a clean "Scheduled — 09:15 IST" / "Scheduled — 23:00 IST" for all schedule-only agents.
 
-  **Edit 4** — cart icon markup (~lines 2984-3013). Add `<span class="oes-basket-label">BASKET</span>` after the SVG in both the static chain `<span>` and the interactive ticket `<label>`. Add CSS for `.oes-basket-label`: `font-size: 0.55rem; font-weight: 700; letter-spacing: 0.04em; line-height: 1; margin-top: 0.15rem; opacity: 0.8;` and wrap the SVG+label in a flex-col container by adding `flex-direction: column; align-items: center;` to `.oes-common-basket-toggle-icon`.
-
+- frontend: skip
 - broker: skip
 - doc: skip
-- backend-test: skip
+- backend-test: Add test to `backend/tests/test_alert_routing.py` (or a nearby alert test) verifying:
+  1. `market-preclose-mcx` slug exists in BUILTIN_AGENTS with fire_at_time="23:00"
+  2. `market-close-mcx` slug no longer exists
+  3. A fire_at_time agent produces condition_text "Scheduled — HH:MM IST", not a margin dump
 - playwright: skip
 
 ## Tests
-- pytest: no
-- svelte-check: yes
+- pytest: yes
+- svelte-check: no
 - playwright: no
 
 ## Commit message
-fix(ui): basket pill colors green/red + soften focus ring + BASKET label on cart icon
+fix(alerts): MCX pre-close at 23:00 + suppress margin condition for fire_at agents
 
 ## Done when
-- BUY basket pills render green (var(--c-long) / var(--c-long-14))
-- SELL basket pills render red (var(--c-short) / var(--c-short-14))
-- Focused pill shows single 1.5px violet ring (not the heavy 2px+1px double ring)
-- Cart icon shows "BASKET" text label beneath the SVG in both Chain (static) and Ticket (toggle) variants
-- svelte-check 0 errors
+- BUILTIN_AGENTS has slug=market-preclose-mcx with fire_at_time="23:00"
+- Alert body for MCX pre-close and NSE open shows "Scheduled — HH:MM IST" not funds values
+- pytest green, broker cov ≥ 80%, api cov ≥ 45%
