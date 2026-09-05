@@ -2656,12 +2656,6 @@
         <span class="ot-mode-hint-src">(navbar)</span>
       </span>
 
-      {#if _lastQuote?.ltp != null}
-        <span class="ot-ltp-display">
-          <span class="ot-ltp-label">LTP</span>
-          <span class="ot-ltp-val num">{priceFmt(_lastQuote.ltp)}</span>
-        </span>
-      {/if}
     </div>
     {/if}
 
@@ -3559,26 +3553,6 @@
     color: var(--c-action);
   }
 
-  .ot-ltp-display {
-    display: flex;
-    align-items: baseline;
-    gap: 0.3rem;
-    margin-left: auto;
-  }
-  .ot-ltp-label {
-    font-size: var(--fs-xs);
-    color: var(--c-muted);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .ot-ltp-val {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-md);
-    font-weight: 700;
-    color: var(--algo-slate);
-    font-variant-numeric: tabular-nums;
-  }
 
   .ot-err {
     background: var(--c-short-10);
