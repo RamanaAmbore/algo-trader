@@ -3175,10 +3175,10 @@
     display: inline-flex;
     align-items: center;
     padding: 0.22rem 0.5rem;
-    background: rgba(251, 191, 36, 0.10);
-    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: var(--c-action-14);
+    border: 1px solid rgba(251, 191, 36, 0.45);
     border-radius: 3px;
-    color: var(--c-action);
+    color: #fef9c3;
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
     font-weight: 800;

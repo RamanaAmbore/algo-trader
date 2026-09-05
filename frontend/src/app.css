@@ -267,11 +267,13 @@
   /* Long (green) alpha aliases — suffix = actual alpha */
   --c-long-06: var(--algo-green-bg-soft);    /* rgba(74, 222, 128, 0.06) */
   --c-long-10: var(--algo-green-bg);         /* rgba(74, 222, 128, 0.10) */
+  --c-long-14:  rgba(74, 222, 128, 0.14);
   --c-long-22: var(--algo-green-bg-strong);  /* rgba(74, 222, 128, 0.22) */
 
   /* Short (red) alpha aliases — suffix = actual alpha */
   --c-short-06: var(--algo-red-bg-soft);     /* rgba(248, 113, 113, 0.06) */
   --c-short-10: var(--algo-red-bg);          /* rgba(248, 113, 113, 0.10) */
+  --c-short-14: rgba(248, 113, 113, 0.14);
   --c-short-22: var(--algo-red-bg-strong);   /* rgba(248, 113, 113, 0.22) */
 
   /* Info (cyan) alpha aliases */

@@ -1499,15 +1499,15 @@
   }
   .chain-basket-leg:hover:not(.is-disabled) { background: var(--c-short-10); transform: translateY(-1px); }
   .chain-basket-leg.is-disabled { cursor: progress; opacity: 0.55; }
-  .chain-basket-leg-buy  { color: var(--c-long); background: var(--c-long-06); }
-  .chain-basket-leg-sell { color: var(--c-short); background: var(--c-short-06); }
+  .chain-basket-leg-buy  { color: var(--c-long); background: var(--c-long-14); }
+  .chain-basket-leg-sell { color: var(--c-short); background: var(--c-short-14); }
   .chain-basket-leg-type-ce  { border-left-color: var(--c-long); }
   .chain-basket-leg-type-pe  { border-left-color: var(--c-short); }
   .chain-basket-leg-type-fut { border-left-color: #7dd3fc; }
   .chain-basket-leg-type-eq  { border-left-color: var(--c-action); }
   .chain-basket-side { font-weight: 800; letter-spacing: 0.04em; }
-  .chain-basket-sym { color: var(--algo-slate); font-weight: 600; }
-  .chain-basket-qty { color: var(--text-muted); font-size: var(--fs-xs); opacity: 0.85; font-variant-numeric: tabular-nums; }
+  .chain-basket-sym { color: #e2e8f0; font-weight: 600; }
+  .chain-basket-qty { color: var(--c-muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
   .chain-basket-step {
     width: 1.05rem; height: 1.05rem; padding: 0; border-radius: 2px;
     border: 1px solid currentColor; background: transparent; color: currentColor;
