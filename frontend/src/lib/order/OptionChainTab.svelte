@@ -1431,7 +1431,7 @@
      strike. Box-shadow inset rather than background so it stacks
      visually with the ATM background without erasing it. */
   .chain-row-active > td {
-    box-shadow: inset 0 0 0 1px rgba(167,139,250,0.55);
+    box-shadow: inset 0 -1px 0 rgba(167,139,250,0.55);
     background-image: linear-gradient(
       to bottom,
       rgba(167,139,250,0.10),
@@ -1446,14 +1446,6 @@
       rgba(167,139,250,0.14),
       rgba(167,139,250,0.14)
     );
-  }
-  /* Per-side emphasis — left edge for CE, right edge for PE — to
-     show the operator which option leg they last touched on the row. */
-  .chain-row-active-ce > .chain-td-ce {
-    border-left: 2px solid #a78bfa;
-  }
-  .chain-row-active-pe > .chain-td-pe {
-    border-right: 2px solid #a78bfa;
   }
   .chain-spot-pill {
     display: inline-flex; align-items: center; gap: 0.3rem;

@@ -3730,7 +3730,7 @@
   }
   .oes-basket-pill-buy {
     color:        var(--c-long);
-    border-color: rgba(74,222,128,0.55);
+    border-color: rgba(74,222,128,0.35);
     background:   var(--c-long-14);
   }
   .oes-basket-pill-sell {
@@ -3748,6 +3748,10 @@
     font-weight: 800;
     color: #f1f7ff;
   }
+  .oes-basket-pill-sym :global(.leg-root)   { color: #f1f7ff; font-weight: 700; }
+  .oes-basket-pill-sym :global(.leg-month)  { color: rgba(148,163,184,0.70); font-weight: 400; }
+  .oes-basket-pill-sym :global(.leg-strike) { color: #f1f7ff; }
+  .oes-basket-pill-sym :global(.leg-sep)    { opacity: 0.35; }
   .oes-basket-pill-step {
     border: none;
     background: transparent;
@@ -4400,12 +4404,15 @@
     box-sizing: border-box;
   }
   .oes-basket-label {
-    font-size: 0.55rem;
+    font-size: 0.42rem;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
     line-height: 1;
-    margin-top: 0.15rem;
+    margin-top: 0.1rem;
     opacity: 0.8;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
   }
   .oes-common-basket-toggle-icon:hover { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
   /* Operator: "active basket icon should have a different background

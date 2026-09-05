@@ -1,63 +1,97 @@
-# Plan: MCX pre-close alert — time + name + suppress margin condition
+# Plan: Basket pill + chain row visual polish
 
-## Task
-Three changes to `backend/api/algo/agent_engine.py`:
+## Context
+Screenshots showed four UI issues:
+1. Chain row active state has a full violet inset border (all four sides) — user wants bottom-border-only like the ATM amber stripe
+2. Basket pill chip has 5 different text colors (gray root, dim month, amber strike, green/red type, dim sep) — too busy; needs cohesion
+3. BUY basket pill border is too vivid green — needs lighter alpha
+4. "BASKET" label in the cart icon spills outside the 1.7rem icon container
 
-1. **Rename + reschedule**: "MCX market close" → "MCX pre-close", fires at 23:00 IST (30 min before actual MCX close at 23:30).
-2. **No margin condition in alert body**: info agents (NSE open, MCX pre-close) currently show `funds.any_acct avail_margin=338,625 (>= -999999999)` in the alert — this is the always-true sentinel condition used to trigger on schedule, not a real condition. Fix: after `_v2_build_evalresult()` is called in `_v2_fire_if_matches()`, if the agent has `fire_at_time` set, override `result.condition_text` to `"Scheduled — {fire_at_time} IST"`. Applies to NSE open (09:15) too, which has the same problem.
-3. **Update descriptions and long_name** to reflect the new name and time.
+Alert: "NSE market open" (slug=market-open-nse, fire_at=09:15) already exists and works correctly after the fire_at condition_text fix — already shows "Scheduled — 09:15 IST". No new alert code needed.
+
+## Files
+- `frontend/src/lib/order/OptionChainTab.svelte` — chain row active border
+- `frontend/src/lib/SymbolPanel.svelte` — basket pill border + chip text colors + BASKET label
 
 ## Agents
-- backend: In `backend/api/algo/agent_engine.py`:
+- frontend: Make the following four edits.
 
-  **Edit 1** — `_INFO_AGENTS` MCX entry (~line 1155):
-  ```python
-  # OLD:
-  {
-      "slug": "market-close-mcx",
-      "name": "MCX market close",
-      "long_name": "when:fire_at=23:30   alert:info/tg+ntfy(default)+log   do:notify-only",
-      "description": "Fires once at MCX close (23:30 IST) on trading days.",
-      "fire_at_time": "23:30",
-      "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
-  },
-  # NEW:
-  {
-      "slug": "market-preclose-mcx",
-      "name": "MCX pre-close",
-      "long_name": "when:fire_at=23:00   alert:info/tg+ntfy(default)+log   do:notify-only",
-      "description": "Fires 30 minutes before MCX close (23:00 IST) on trading days.",
-      "fire_at_time": "23:00",
-      "conditions": {"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value": -999999999},
-  },
+  ### Edit 1 — OptionChainTab.svelte: bottom-border-only for active chain row
+  
+  File: `frontend/src/lib/order/OptionChainTab.svelte`
+  
+  **a)** `.chain-row-active > td` (~line 1433): change the inset box-shadow from full 4-side to bottom-only:
+  ```css
+  /* OLD */
+  box-shadow: inset 0 0 0 1px rgba(167,139,250,0.55);
+  /* NEW */
+  box-shadow: inset 0 -1px 0 rgba(167,139,250,0.55);
+  ```
+  Keep the background-image gradient unchanged.
+  
+  **b)** Remove the per-side edge borders (~lines 1452-1456) — these add left/right borders on CE/PE side; just delete these two rules:
+  ```css
+  /* DELETE these two rules entirely */
+  .chain-row-active-ce > .chain-td-ce { border-left: 2px solid #a78bfa; }
+  .chain-row-active-pe > .chain-td-pe { border-right: 2px solid #a78bfa; }
   ```
 
-  **Edit 2** — `_v2_fire_if_matches()`, after line 1612 (`result = _v2_build_evalresult(matches, agent.name)`):
-  ```python
-  # Add immediately after the _v2_build_evalresult call:
-  if getattr(agent, 'fire_at_time', None):
-      result.condition_text = f"Scheduled — {agent.fire_at_time} IST"
+  ### Edit 2 — SymbolPanel.svelte: basket pill chip text color cohesion
+  
+  File: `frontend/src/lib/SymbolPanel.svelte`
+  
+  LegLabel renders symbol parts (root, month, strike, type, sep) with scoped CSS. Inside the basket pill, the colors are too varied. Add `:global()` overrides in the `<style>` block, inside a new block placed after `.oes-basket-pill-sym { ... }` (~line 3750):
+  ```css
+  /* LegLabel color overrides inside basket pills — flatten the palette */
+  .oes-basket-pill-sym :global(.leg-root)   { color: #f1f7ff; font-weight: 700; }
+  .oes-basket-pill-sym :global(.leg-month)  { color: rgba(148,163,184,0.70); font-weight: 400; }
+  .oes-basket-pill-sym :global(.leg-strike) { color: #f1f7ff; }
+  .oes-basket-pill-sym :global(.leg-sep)    { opacity: 0.35; }
   ```
-  This replaces the auto-generated margin dump with a clean "Scheduled — 09:15 IST" / "Scheduled — 23:00 IST" for all schedule-only agents.
+  This keeps CE green / PE red (leg-type-ce/pe) but makes root+strike both bright white and dims the month separator.
 
-- frontend: skip
+  ### Edit 3 — SymbolPanel.svelte: lighter BUY pill border
+  
+  `.oes-basket-pill-buy` (~line 3733): reduce border-color alpha from 0.55 → 0.35:
+  ```css
+  /* OLD */ border-color: rgba(74,222,128,0.55);
+  /* NEW */ border-color: rgba(74,222,128,0.35);
+  ```
+  
+  ### Edit 4 — SymbolPanel.svelte: BASKET label text overflow fix
+  
+  `.oes-basket-label` (~line 4402): reduce font-size and add overflow guard:
+  ```css
+  .oes-basket-label {
+    font-size: 0.42rem;         /* was 0.55rem — fits within 1.7rem container */
+    font-weight: 700;
+    letter-spacing: 0.02em;    /* was 0.04em — less spill */
+    line-height: 1;
+    margin-top: 0.1rem;
+    opacity: 0.8;
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  ```
+
+- backend: skip
 - broker: skip
 - doc: skip
-- backend-test: Add test to `backend/tests/test_alert_routing.py` (or a nearby alert test) verifying:
-  1. `market-preclose-mcx` slug exists in BUILTIN_AGENTS with fire_at_time="23:00"
-  2. `market-close-mcx` slug no longer exists
-  3. A fire_at_time agent produces condition_text "Scheduled — HH:MM IST", not a margin dump
+- backend-test: skip
 - playwright: skip
 
 ## Tests
-- pytest: yes
-- svelte-check: no
+- pytest: no
+- svelte-check: yes
 - playwright: no
 
 ## Commit message
-fix(alerts): MCX pre-close at 23:00 + suppress margin condition for fire_at agents
+fix(ui): chain row bottom-border-only + basket pill chip colors + lighter BUY border + BASKET label overflow
 
 ## Done when
-- BUILTIN_AGENTS has slug=market-preclose-mcx with fire_at_time="23:00"
-- Alert body for MCX pre-close and NSE open shows "Scheduled — HH:MM IST" not funds values
-- pytest green, broker cov ≥ 80%, api cov ≥ 45%
+- Active chain row shows only a bottom violet line (no full inset border)
+- Basket pill chip: root + strike = #f1f7ff white, month = dim gray, type CE/PE colors kept
+- BUY pill border-color alpha reduced to 0.35
+- "BASKET" label fits inside the 1.7rem icon without spilling
+- svelte-check 0 errors
