@@ -946,6 +946,8 @@
             {@const activeRow = activeCe || activePe}
             {@const ceQ = chainQuotesMap?.[String(k)]?.ce}
             {@const peQ = chainQuotesMap?.[String(k)]?.pe}
+            {@const ceSpreadWide = ceQ?.bid > 0 && ceQ?.ask > 0 && (ceQ.ask - ceQ.bid) / ((ceQ.ask + ceQ.bid) / 2) > 0.10}
+            {@const peSpreadWide = peQ?.bid > 0 && peQ?.ask > 0 && (peQ.ask - peQ.bid) / ((peQ.ask + peQ.bid) / 2) > 0.10}
             {#if isAtm}
               <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} class:chain-row-active-ce={activeCe} class:chain-row-active-pe={activePe} use:chainAtmRow>
                 <td class="chain-td-ce">
@@ -953,15 +955,17 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
-                                title="BUY {k} CE"
+                                disabled={!(ceQ?.bid > 0 || ceQ?.ask > 0)}
+                                title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `BUY ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'long')}>+</button>
                         <button type="button" class="chain-btn chain-btn-sell"
-                                title="SELL {k} CE"
+                                disabled={!(ceQ?.bid > 0 || ceQ?.ask > 0)}
+                                title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `SELL ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'short')}>−</button>
                       </span>
                       {#if quickToast?.key === ceKey}
@@ -976,10 +980,12 @@
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
-                                title="BUY {k} PE"
+                                disabled={!(peQ?.bid > 0 || peQ?.ask > 0)}
+                                title={peQ?.bid > 0 || peQ?.ask > 0 ? `BUY ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'long')}>+</button>
                         <button type="button" class="chain-btn chain-btn-sell"
-                                title="SELL {k} PE"
+                                disabled={!(peQ?.bid > 0 || peQ?.ask > 0)}
+                                title={peQ?.bid > 0 || peQ?.ask > 0 ? `SELL ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'short')}>−</button>
                       </span>
                       {#if quickToast?.key === peKey}
@@ -989,7 +995,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -1001,15 +1007,17 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
-                                title="BUY {k} CE"
+                                disabled={!(ceQ?.bid > 0 || ceQ?.ask > 0)}
+                                title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `BUY ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'long')}>+</button>
                         <button type="button" class="chain-btn chain-btn-sell"
-                                title="SELL {k} CE"
+                                disabled={!(ceQ?.bid > 0 || ceQ?.ask > 0)}
+                                title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `SELL ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'short')}>−</button>
                       </span>
                       {#if quickToast?.key === ceKey}
@@ -1024,10 +1032,12 @@
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
                         <button type="button" class="chain-btn chain-btn-buy"
-                                title="BUY {k} PE"
+                                disabled={!(peQ?.bid > 0 || peQ?.ask > 0)}
+                                title={peQ?.bid > 0 || peQ?.ask > 0 ? `BUY ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'long')}>+</button>
                         <button type="button" class="chain-btn chain-btn-sell"
-                                title="SELL {k} PE"
+                                disabled={!(peQ?.bid > 0 || peQ?.ask > 0)}
+                                title={peQ?.bid > 0 || peQ?.ask > 0 ? `SELL ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'short')}>−</button>
                       </span>
                       {#if quickToast?.key === peKey}
@@ -1037,7 +1047,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -1468,6 +1478,9 @@
   .chain-btn-sell { color: var(--c-short); }
   .chain-btn-buy:hover  { background: var(--c-long-10); }
   .chain-btn-sell:hover { background: var(--c-short-10); }
+  .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .chain-btn:disabled:hover { background: transparent; }
+  .chain-cell-spread-warn { font-size: 0.55rem; color: var(--algo-amber, #f59e0b); margin-left: 0.12rem; cursor: default; vertical-align: super; }
   .chain-quick-toast {
     display: inline-block; padding: 2px 8px; border-radius: 2px;
     background: rgba(74,222,128,0.18); color: var(--c-long);

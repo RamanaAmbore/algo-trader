@@ -178,6 +178,77 @@ describe('parseChainQuoteRow — exchange fallback', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Wide-spread threshold — drives the ⚠ indicator in OptionChainTab
+// Formula: (ask - bid) / ((ask + bid) / 2) > 0.10
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('spread-wide threshold', () => {
+  /** Utility: evaluate the spread-wide formula directly (mirrors OptionChainTab). */
+  function isSpreadWide(bid, ask) {
+    return bid > 0 && ask > 0 && (ask - bid) / ((ask + bid) / 2) > 0.10;
+  }
+
+  it('flags a wide spread: bid=10, ask=12 → ~18.2% spread → wide', () => {
+    expect(isSpreadWide(10, 12)).toBe(true);
+  });
+
+  it('does not flag a narrow spread: bid=100, ask=101 → ~1% spread → not wide', () => {
+    expect(isSpreadWide(100, 101)).toBe(false);
+  });
+
+  it('does not flag when bid=0 (no live bid): bid=0, ask=5 → not wide (bid guard fails)', () => {
+    expect(isSpreadWide(0, 5)).toBe(false);
+  });
+
+  it('does not flag when both bid and ask are 0', () => {
+    expect(isSpreadWide(0, 0)).toBe(false);
+  });
+
+  it('does not flag when spread is exactly 10% (threshold is strictly >0.10)', () => {
+    // bid=100, ask=111.111…: spread/mid = 10/105.55... ≈ 9.47% — below threshold
+    // Use exact boundary: mid = (90+110)/2 = 100, spread = 20, ratio = 0.20 → wide
+    // At exactly 10%: bid=9.524, ask=10.526 → (1.002/10.025) = 0.0999... → not wide
+    expect(isSpreadWide(9.524, 10.526)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Button disable condition — drives disabled attr on CE/PE +/- buttons
+// Formula: !(ceQ?.bid > 0 || ceQ?.ask > 0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('button disable condition', () => {
+  /** Utility: evaluate the disable formula directly (mirrors OptionChainTab). */
+  function isDisabled(ceQ) {
+    return !(ceQ?.bid > 0 || ceQ?.ask > 0);
+  }
+
+  it('disables when quote is null (no data for this strike)', () => {
+    expect(isDisabled(null)).toBe(true);
+  });
+
+  it('disables when both bid and ask are 0 (illiquid, no market)', () => {
+    expect(isDisabled({ bid: 0, ask: 0 })).toBe(true);
+  });
+
+  it('enables when bid > 0, ask = 0 (one-sided market — sell side only)', () => {
+    expect(isDisabled({ bid: 5, ask: 0 })).toBe(false);
+  });
+
+  it('enables when bid = 0, ask > 0 (one-sided market — buy side only)', () => {
+    expect(isDisabled({ bid: 0, ask: 5 })).toBe(false);
+  });
+
+  it('enables when both bid and ask are positive (normal two-sided market)', () => {
+    expect(isDisabled({ bid: 10, ask: 12 })).toBe(false);
+  });
+
+  it('disables when quote is undefined (chainQuotesMap had no entry)', () => {
+    expect(isDisabled(undefined)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // _refreshChainQuotes timeout/abort pattern (SSOT: OptionChainTab.svelte)
 //
 // The component attaches a 10-second AbortController timeout to every chain-

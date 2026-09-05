@@ -2993,7 +2993,6 @@
                 <circle cx="19" cy="21" r="1" />
                 <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
               </svg>
-              <span class="oes-basket-label">BASKET</span>
             </span>
           {:else}
             <label class="oes-common-basket-toggle oes-common-basket-toggle-icon"
@@ -3010,7 +3009,6 @@
                 <circle cx="19" cy="21" r="1" />
                 <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
               </svg>
-              <span class="oes-basket-label">BASKET</span>
             </label>
           {/if}
         </div>
@@ -4402,17 +4400,6 @@
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
     box-sizing: border-box;
-  }
-  .oes-basket-label {
-    font-size: 0.42rem;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    line-height: 1;
-    margin-top: 0.1rem;
-    opacity: 0.8;
-    max-width: 100%;
-    overflow: hidden;
-    white-space: nowrap;
   }
   .oes-common-basket-toggle-icon:hover { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
   /* Operator: "active basket icon should have a different background
