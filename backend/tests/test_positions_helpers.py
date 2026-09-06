@@ -573,6 +573,48 @@ def test_closed_overnight_position_preserves_day_pnl():
     )
 
 
+def test_mcx_settlement_snapshot_prev_ltp_fallback():
+    """MCX settlement snapshot writes previous_close = settlement_ltp (pc == ltp).
+    _resolve_previous_close must fall back to prev_ltp (prior-batch Friday close)
+    so day_pnl = (settlement - thursday_close) * oq instead of 0.
+
+    Regression test for the bug where prev_ltp_f was not passed to
+    _resolve_previous_close in build_row_from_snapshot_raw.
+    """
+    import json
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
+
+    settlement_price = Decimal("1280.00")   # MCX settlement = ltp
+    thursday_close   = Decimal("1200.00")   # prev_ltp = prior-batch Friday close
+    avg_cost         = Decimal("1100.00")
+    oq               = 1
+    total_pnl        = Decimal("180.00")    # (1280 - 1100) * 1 = 180
+    raw_row = (
+        "ZJ6294",
+        "GOLDM26SEP160000CE",
+        "MCX",
+        oq,                        # qty
+        avg_cost,
+        settlement_price,          # ltp = settlement price
+        Decimal("0.00"),           # day_pnl stored (0 from UPSERT)
+        total_pnl,
+        json.dumps({"overnight_quantity": oq}),
+        None,                      # captured_at
+        settlement_price,          # previous_close = settlement (corrupted by UPSERT)
+        thursday_close,            # prev_ltp = prior-batch Friday close
+        None,                      # prev_settlement_pnl
+    )
+    row = build_row_from_snapshot_raw(raw_row)
+
+    # (settlement - thursday_close) * oq = (1280 - 1200) * 1 = 80.0
+    expected = (float(settlement_price) - float(thursday_close)) * oq
+    assert math.isclose(row.day_change_val, expected, rel_tol=1e-6), (
+        f"MCX settlement: expected day_pnl=(settlement-thursday)*oq={expected}, "
+        f"got {row.day_change_val} (0 means prev_ltp not used as corruption fallback)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 8. _compute_snapshot_day_pnl — extracted CC-reduction helper
 # ---------------------------------------------------------------------------

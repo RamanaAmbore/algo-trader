@@ -359,12 +359,12 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     _pc_raw = float(previous_close) if previous_close and float(previous_close) > 0 else 0.0
     _ltp_f  = float(ltp) if ltp else 0.0
     backup_f = float(previous_close_backup) if previous_close_backup else 0.0
+    _prev_ltp_f = float(prev_ltp) if prev_ltp else None
 
-    # Use the corruption-detection helper to resolve the final previous_close value.
-    # prev_ltp is NOT passed here — positions falls back to prev_ltp only when
-    # previous_close is completely absent (None/zero), not as a corruption fallback.
-    # Corruption fallback (pc ≈ ltp) tries backup_f only; if no backup, keeps pc as-is.
-    resolved_pc = _resolve_previous_close(_pc_raw, _ltp_f, backup_f)
+    # Pass prev_ltp_f so corruption detection (pc ≈ ltp, e.g. MCX settlement
+    # snapshot writing previous_close = settlement_ltp) can fall back to the
+    # prior-batch settlement from prev_batch CTE instead of returning ltp as-is.
+    resolved_pc = _resolve_previous_close(_pc_raw, _ltp_f, backup_f, prev_ltp_f=_prev_ltp_f)
     actual_previous_close = resolved_pc if resolved_pc > 0 else None
     prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
     # Universal day_pnl formula using overnight_quantity from payload_json.
