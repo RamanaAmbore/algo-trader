@@ -184,8 +184,14 @@ async function _request(/** @type {string} */ method,
     res = await fetch(`${BASE}${path}`, init);
   } catch (e) {
     if (_timeoutId != null) clearTimeout(_timeoutId);
-    // Re-throw AbortError so callers can detect intentional cancellation.
-    if (/** @type {any} */ (e)?.name === 'AbortError') throw e;
+    if (/** @type {any} */ (e)?.name === 'AbortError') {
+      // Internal 15s timeout (no external signal was supplied) — swallow
+      // quietly so a slow poll doesn't surface an uncaught error to the UI.
+      // Caller-supplied signal aborts propagate so the caller can detect
+      // intentional cancellation (e.g. component unmount, navigation).
+      if (_defaultAc) return null;
+      throw e;
+    }
     _logApiError(path, null, /** @type {any} */ (e)?.message || e);
     throw new Error(_friendlyError(null, null));
   }

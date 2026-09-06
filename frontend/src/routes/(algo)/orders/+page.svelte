@@ -300,7 +300,9 @@
       }
     });
   });
-  onDestroy(() => { unsub?.(); });
+  // No Vitest test: onDestroy cleanup in .svelte components requires a component
+  // mount harness; no corresponding Vitest test file exists for this route component.
+  onDestroy(() => { unsub?.(); if (_loadOrdersTimer) clearTimeout(_loadOrdersTimer); });
 
   // book_changed bus — symmetry with /pulse + /dashboard + /admin/
   // derivatives. Redundant with the existing `order_update` WS hook

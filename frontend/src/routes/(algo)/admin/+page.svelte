@@ -497,7 +497,7 @@
   );
 
   /** Computed recipient count label for the confirm dialog. */
-  const emailRecipientLabel = $derived(() => {
+  const emailRecipientLabel = $derived.by(() => {
     if (emailPreset === 'all-partners')   return `all partners (${emailResolvedRecipients.length})`;
     if (emailPreset === 'all-designated') return `all designated (${emailResolvedRecipients.length})`;
     if (emailPreset === 'all')            return `all users (${emailResolvedRecipients.length})`;
@@ -521,7 +521,7 @@
 
   async function doSendEmail() {
     if (!emailReady) return;
-    const label = emailRecipientLabel();
+    const label = emailRecipientLabel;
     if (!await confirmRef.ask({
       title: 'Send email?',
       message: `Send to <b>${label}</b>? This cannot be unsent.`,
@@ -778,7 +778,7 @@
               <div><span class="text-muted">Email:</span> {user.email || '—'}</div>
               <div><span class="text-muted">Phone:</span> {user.phone || '—'}</div>
               <div><span class="text-muted">PAN:</span> {user.pan || '—'}</div>
-              <div><span class="text-muted">Contribution:</span> ₹{user.contribution.toLocaleString('en-IN')}</div>
+              <div><span class="text-muted">Contribution:</span> ₹{(user.contribution ?? 0).toLocaleString('en-IN')}</div>
               <div><span class="text-muted">Contributed:</span> {user.contribution_date || '—'}</div>
               <div><span class="text-muted">Share:</span> {user.share_pct}%</div>
               <div><span class="text-muted">Joined:</span> {user.join_date || '—'}</div>
@@ -1351,7 +1351,7 @@
                       {/if}
                     </td>
                     <td class="td-num td-mono">₹{Math.round(e.amount).toLocaleString('en-IN')}</td>
-                    <td class="td-num td-mono">{e.nav_per_unit.toFixed(4)}</td>
+                    <td class="td-num td-mono">{(e.nav_per_unit ?? 0).toFixed(4)}</td>
                     <td class="td-num td-mono">{e.units_delta.toFixed(4)}</td>
                     <td class="ip-modal-note" title={e.note || ''}>{e.note || '—'}</td>
                     <td class="td-actions">

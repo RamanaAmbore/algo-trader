@@ -41,6 +41,7 @@
   --algo-ai:           #a78bfa;   /* violet — AI-generated content / prompts */
 
   --algo-slate:        #c8d8f0;   /* primary text on dark surfaces */
+  --algo-slate-dim:    rgba(148, 163, 184, 0.4); /* dim slate for subtle overlays */
   --algo-muted:        #7e97b8;   /* secondary / label text */
   --algo-dim:          #94a3b8;   /* tertiary text */
 
@@ -216,6 +217,7 @@
        --fs-xl    was 0.8  / 0.82 / 0.85 / 0.9  / 0.95 (title cluster)
        --fs-2xl   headline size (NavCard nav-big, 1.55rem)
      ≤2 px reflow on dense tables is acceptable — operator-approved. */
+  --fs-base: 0.875rem;            /* 14px base font size */
   --fs-2xs: 0.5rem;
   --fs-xs:  0.55rem;
   --fs-sm:  0.6rem;

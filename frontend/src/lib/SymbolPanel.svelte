@@ -550,6 +550,14 @@
   /** @type {'ok' | 'warn' | 'err' | ''} */ let _stickyResultLevel = $state('');
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let _stickyResultTimer;
+  // No Vitest test: onDestroy cleanup in .svelte components requires a component
+  // mount harness; no corresponding Vitest test file exists for this component.
+  onDestroy(() => {
+    // Prevent dangling debounce from firing a symbol search after unmount.
+    if (_symbolDebounce) clearTimeout(_symbolDebounce);
+    // Prevent sticky result clear-timer from accessing destroyed state.
+    if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
+  });
 
   function addToBasket(/** @type {any} */ leg) {
     basketLegs = [...basketLegs, leg];

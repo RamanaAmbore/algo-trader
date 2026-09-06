@@ -8,7 +8,7 @@
   // switch to the Ticket tab pre-filled rather than opening a nested
   // modal.
 
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { authStore, executionMode } from '$lib/stores';
   import { get as getStore } from 'svelte/store';
   import { loadInstruments, getInstrument } from '$lib/data/instruments';
@@ -113,6 +113,15 @@
       cmdBar?.refresh();
       _ltp = getLtpForContext(_cmdCtx);
     });
+  });
+  // No Vitest test: onDestroy cleanup in .svelte components requires a component
+  // mount harness; no corresponding Vitest test file exists for this component.
+  onDestroy(() => {
+    // Clear debounced margin preview timer so it cannot fire after unmount.
+    if (_marginTimer) clearTimeout(_marginTimer);
+    // Unregister the quote-loaded callback so stale closures don't fire
+    // after this component instance is destroyed.
+    setQuoteLoadedCallback(null);
   });
 
   function authHeaders() {
