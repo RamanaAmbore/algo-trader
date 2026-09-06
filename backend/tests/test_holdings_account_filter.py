@@ -216,12 +216,12 @@ class TestHoldingsAccountFilter:
     def test_empty_account_param_returns_all(
         self,
         auth_token: str,
-        all_holdings: dict[str, Any],
     ) -> None:
         """?account= (empty string) must return the same result as no param."""
         pytest_skip_if_unreachable()
 
-        # Pass an empty account param — should return all rows.
+        # Fetch both variants back-to-back from the same live state.
+        unfiltered = _get_holdings(auth_token)
         req = urllib.request.Request(
             f"{HOLDINGS_URL}?account=",
             headers={
@@ -232,7 +232,7 @@ class TestHoldingsAccountFilter:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             filtered = json.loads(resp.read())
 
-        unfiltered_count = len(all_holdings.get("rows", []))
+        unfiltered_count = len(unfiltered.get("rows", []))
         filtered_count = len(filtered.get("rows", []))
         assert filtered_count == unfiltered_count, (
             f"?account= (empty) returned {filtered_count} rows; "
