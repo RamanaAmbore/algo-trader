@@ -225,13 +225,13 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     # the query runs on a Friday afternoon (old today-08:00 cutoff would exclude
     # it because 15:45 > 08:00, causing Thursday's data to be served instead).
     #   Mon–Fri : tomorrow midnight — includes any EOD snapshot written today
-    #   Saturday: today midnight   — excludes any Sat market-special-session
-    #   Sunday  : Saturday 00:00   — same intent as Saturday path
+    #   Saturday: today 02:00 IST  — includes MCX 00:15 settlement, excludes Sat sessions (09:00+)
+    #   Sunday  : Saturday 02:00   — same boundary as Saturday path
     _weekday = _now_ist.weekday()  # Mon=0 … Sun=6
-    if _weekday == 5:   # Saturday
-        _snapshot_cutoff = _today_ist_midnight
-    elif _weekday == 6:  # Sunday
-        _snapshot_cutoff = _today_ist_midnight - timedelta(days=1)
+    if _weekday == 5:   # Saturday: +2 h to capture MCX 00:15 settlement
+        _snapshot_cutoff = _today_ist_midnight + timedelta(hours=2)
+    elif _weekday == 6:  # Sunday: same boundary = Saturday 02:00 IST
+        _snapshot_cutoff = _today_ist_midnight - timedelta(hours=22)
     else:               # Mon–Fri
         _snapshot_cutoff = _today_ist_midnight + timedelta(days=1)
 

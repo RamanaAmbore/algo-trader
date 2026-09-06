@@ -102,13 +102,13 @@ async def _query_holdings_snapshot_rows():
     # < Sat 08:00) but excluded Friday's snapshot when queried on a Friday
     # afternoon (Fri 15:45 > Fri 08:00 → would serve Thursday instead).
     #   Mon–Fri : tomorrow midnight (includes any EOD snapshot written today)
-    #   Saturday: today midnight   (excludes any Sat market-special-session)
-    #   Sunday  : yesterday midnight == Saturday 00:00 (same intent as Sat)
+    #   Saturday: today 02:00 IST  (includes MCX 00:15 settlement; Sat sessions start 09:00+)
+    #   Sunday  : Saturday 02:00   (same boundary as Saturday path)
     _weekday = _now_ist.weekday()  # Mon=0 … Sun=6
-    if _weekday == 5:   # Saturday
-        snapshot_cutoff = _today_ist_midnight
-    elif _weekday == 6:  # Sunday
-        snapshot_cutoff = _today_ist_midnight - timedelta(days=1)  # Saturday 00:00
+    if _weekday == 5:   # Saturday: +2 h to capture MCX 00:15 settlement
+        snapshot_cutoff = _today_ist_midnight + timedelta(hours=2)
+    elif _weekday == 6:  # Sunday: Saturday 02:00 IST
+        snapshot_cutoff = _today_ist_midnight - timedelta(hours=22)
     else:               # Mon–Fri
         snapshot_cutoff = _today_ist_midnight + timedelta(days=1)  # tomorrow midnight
 
