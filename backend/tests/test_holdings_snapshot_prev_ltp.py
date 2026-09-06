@@ -58,14 +58,16 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
     # -----------------------------------------------------------------------
 
     def test_stored_day_pnl_takes_first_priority_over_previous_close(self):
-        """Stored day_pnl is used as primary when non-zero, even when previous_close > 0.
+        """Stored day_pnl is used when non-zero and prev_ltp shows no meaningful movement.
 
-        ltp=1650, previous_close=1620, prev_ltp=1648, qty=10, day_pnl=100
+        ltp=1650, previous_close=1620, prev_ltp=1650.002 (≈ltp, same session),
+        qty=10, day_pnl=100
+        -> epsilon guard skips prev_ltp (|1650-1650.002|<0.005)
         -> day_change_val = 100 (stored EOD, NOT (1650-1620)*10 = 300)
         """
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1648, qty=10, day_pnl="100.00")
+        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1650.002, qty=10, day_pnl="100.00")
         row, inv_val, cur_val, total_pnl_f, day_change_f = _build_holding_row_from_snapshot(raw_row)
 
         assert row.day_change_val == pytest.approx(100.0, rel=1e-5), (
@@ -88,11 +90,12 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
         )
 
     def test_day_pnl_used_even_when_prev_ltp_close_to_ltp(self):
-        """When day_pnl is non-zero, it is used regardless of prev_ltp proximity to ltp."""
+        """day_pnl wins when prev_ltp is within epsilon of ltp (same-session float noise)."""
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        # day_pnl=100 is authoritative even though (1650-1620)*10=300 is also computable
-        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1649.5, qty=10, day_pnl="100.00")
+        # prev_ltp=1650.002 — within epsilon 0.005 of ltp=1650.
+        # Epsilon guard skips prev_ltp → day_pnl=100 is authoritative.
+        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1650.002, qty=10, day_pnl="100.00")
         row, *_ = _build_holding_row_from_snapshot(raw_row)
 
         assert row.day_change_val == pytest.approx(100.0, rel=1e-5), (
@@ -107,8 +110,8 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
         """When day_pnl == 0 and previous_close > 0, recompute from prices."""
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        # day_pnl=0 -> fall back to (ltp-previous_close)*qty = (1650-1620)*10 = 300
-        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1648, qty=10, day_pnl="0.00")
+        # day_pnl=0, prev_ltp≈ltp (epsilon guard skips) -> (ltp-previous_close)*qty = 300
+        raw_row = _make_row(ltp=1650, previous_close=1620, prev_ltp=1650.002, qty=10, day_pnl="0.00")
         row, *_ = _build_holding_row_from_snapshot(raw_row)
 
         assert row.day_change_val == pytest.approx(300.0, rel=1e-5), (
@@ -189,7 +192,7 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
         # day_change_val = (550-530)*100 = 2000
         # day_change_percentage = 2000 / (530*100) * 100 ≈ 3.77%
         raw_row = _make_row(
-            ltp=550, previous_close=530, prev_ltp=549,  # prev_ltp must NOT win
+            ltp=550, previous_close=530, prev_ltp=550.002,  # within epsilon — day_pnl wins
             qty=100, avg_cost="500.00", day_pnl="2000.00", total_pnl="5000.00",
             symbol="SBIN",
         )
@@ -209,13 +212,13 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
         """
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
-        # day_pnl=0 forces fallback to (ltp - previous_close) * qty
+        # day_pnl=0, prev_ltp≈ltp (epsilon guard skips) → (ltp - previous_close) * qty
         row1_raw = _make_row(
-            ltp=1650, previous_close=1600, prev_ltp=1649,
+            ltp=1650, previous_close=1600, prev_ltp=1650.002,
             qty=10, avg_cost="1600.00", symbol="HDFCBANK", day_pnl="0.00",
         )
         row2_raw = _make_row(
-            ltp=2600, previous_close=2550, prev_ltp=2599,
+            ltp=2600, previous_close=2550, prev_ltp=2600.002,
             qty=5, avg_cost="2500.00", symbol="INFY", day_pnl="0.00",
         )
 
@@ -246,8 +249,9 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
         # ltp=1550 (below close 1600) on short -10 -> profit
+        # prev_ltp≈ltp (epsilon guard skips) → day_pnl=500 wins
         raw_row = _make_row(
-            ltp=1550, previous_close=1600, prev_ltp=1599,
+            ltp=1550, previous_close=1600, prev_ltp=1550.002,
             qty=-10, avg_cost="1600.00", day_pnl="500.00", total_pnl="500.00",
             symbol="SHORTSTOCK",
         )
@@ -300,11 +304,11 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
             10, Decimal("2500.00"), Decimal("2600.00"),
             Decimal("2550.00"), Decimal("500.00"), Decimal("1000.00"),
             captured_at,
-            Decimal("2549.00"),  # prev_ltp -- 11th column (must NOT win over previous_close)
+            Decimal("2600.002"),  # prev_ltp ≈ ltp (within epsilon) → day_pnl wins
         )
         row, inv_val, cur_val, total_pnl_f, day_change_f = _build_holding_row_from_snapshot(raw_row)
 
         assert row.tradingsymbol == "RELIANCE"
         assert row.quantity == 10
-        # day_change_val = (2600-2550)*10 = 500 (previous_close path wins)
+        # day_change_val = 500 (stored day_pnl — prev_ltp within epsilon so skipped)
         assert row.day_change_val == pytest.approx(500.0, rel=1e-5)

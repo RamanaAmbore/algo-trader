@@ -9,34 +9,50 @@ import pytest
 from backend.api.routes.holdings import _compute_holding_day_change
 
 
-def test_holding_day_change_prev_ltp_beats_stored_eod():
-    """prev_ltp_f (prior-batch settlement) beats day_pnl when available."""
+def test_holding_day_change_prev_ltp_beats_stored_eod_when_different():
+    """prev_ltp_f beats day_pnl when |ltp - prev_ltp| > 0.005 (meaningful movement)."""
     snap_day_pnl = 500.0
     snap_price = 102.0
     close_px = 100.0
-    prev_ltp = 99.0  # prior-batch settlement is available
+    prev_ltp = 99.0  # meaningfully different from ltp=102
     qty = 10
 
     result = _compute_holding_day_change(snap_day_pnl, snap_price, close_px, prev_ltp, qty)
 
-    # prev_ltp wins; day_pnl may be stale (UPSERT carry-forward)
+    # prev_ltp wins because |102 - 99| = 3 > 0.005
     assert result == (102.0 - 99.0) * 10, (
         f"expected prev_ltp-based recompute (30.0), got {result}"
     )
 
 
-def test_holding_day_change_stored_eod_last_resort():
-    """When prev_ltp=None and previous_close=0, day_pnl is the last-resort fallback."""
+def test_holding_day_change_same_session_prev_ltp_falls_through_to_day_pnl():
+    """When prev_ltp ≈ ltp (same-session data, no movement), skip prev_ltp and use day_pnl."""
+    snap_day_pnl = 1650.0   # Kite's correct session day_pnl
+    snap_price = 417.6
+    close_px = 417.6
+    prev_ltp = 417.6        # same-session batch, no meaningful movement
+    qty = 10
+
+    result = _compute_holding_day_change(snap_day_pnl, snap_price, close_px, prev_ltp, qty)
+
+    # prev_ltp ≈ ltp → skip → day_pnl_f is authoritative Kite value
+    assert result == 1650.0, (
+        f"expected Kite day_pnl=1650.0 when prev_ltp≈ltp, got {result}"
+    )
+
+
+def test_holding_day_change_day_pnl_used_when_prev_ltp_none():
+    """When prev_ltp=None, day_pnl (Kite session value) is used before previous_close fallback."""
     snap_day_pnl = 500.0
     snap_price = 102.0
-    close_px = 0.0   # no reference price
+    close_px = 100.0
     prev_ltp = None  # no prior-batch ltp
     qty = 10
 
     result = _compute_holding_day_change(snap_day_pnl, snap_price, close_px, prev_ltp, qty)
 
     assert result == 500.0, (
-        f"expected stored day_pnl as last resort, got {result}"
+        f"expected day_pnl=500.0 when prev_ltp is None, got {result}"
     )
 
 

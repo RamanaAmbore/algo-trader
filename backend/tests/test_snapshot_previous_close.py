@@ -595,11 +595,12 @@ def test_build_row_from_snapshot_raw_fallback_to_prev_ltp_when_no_previous_close
 
     row = build_row_from_snapshot_raw(raw_row)
 
-    # With actual_previous_close=None the formula branch is skipped; stored
-    # day_pnl passes through resolve_snapshot_day_pnl unchanged.
-    assert row.day_change_val == pytest.approx(STORED_DAY_PNL, rel=1e-4), (
-        f"day_change_val={row.day_change_val} must equal stored day_pnl "
-        f"({STORED_DAY_PNL}) when previous_close is None"
+    # With previous_close=None, _resolve_previous_close falls back to prev_ltp=5100.
+    # Universal formula: total_pnl - (prev_ltp - avg) * oq = 10000 - (5100-5100)*100 = 10000.
+    expected_dcv = 10000.0  # (ltp - prev_ltp) * qty = (5200-5100)*100
+    assert row.day_change_val == pytest.approx(expected_dcv, rel=1e-4), (
+        f"day_change_val={row.day_change_val} must equal universal formula result "
+        f"({expected_dcv}) when previous_close is None and prev_ltp is used as baseline"
     )
     assert abs(row.day_change_val) > 0, "day_change_val must be non-zero"
 

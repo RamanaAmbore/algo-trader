@@ -138,17 +138,19 @@ def _compute_holding_day_change(
     """Return day_change_val for a holdings snapshot row.
 
     Priority:
-      1. Prior-batch settlement LTP: (ltp - prev_ltp) * qty — immune to UPSERT carry-forward.
-      2. Price recompute using prior-session close: (ltp - previous_close) * qty.
-      3. Stored EOD day_pnl as last-resort fallback (may be stale if UPSERT carried forward).
+      1. Prior-batch settlement LTP when it differs from ltp by >0.005:
+         (ltp - prev_ltp) * qty — immune to UPSERT carry-forward.
+         Skip when prev_ltp ≈ ltp (same-session data; ltp hasn't moved).
+      2. Stored EOD day_pnl when non-zero — Kite's authoritative session value.
+      3. Price recompute using prior-session close: (ltp - previous_close) * qty.
       4. Zero when no reference price is available.
     """
-    if prev_ltp_f is not None:
+    if prev_ltp_f is not None and abs(ltp_f - prev_ltp_f) > 0.005:
         return (ltp_f - prev_ltp_f) * qty_i
+    if day_pnl_f is not None and day_pnl_f != 0.0:
+        return day_pnl_f
     if previous_close_f > 0:
         return (ltp_f - previous_close_f) * qty_i
-    if day_pnl_f != 0.0:
-        return day_pnl_f
     return 0.0
 
 

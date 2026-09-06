@@ -423,9 +423,10 @@ async def test_positions_snapshot_multiple_accounts_and_symbols():
 
     snapshot_rows = [
         # Position 1: ZG0790 / NIFTY — has yesterday snapshot
+        # ltp=5520 ≠ previous_close=5500 → no corruption detection → close_price=5500
         (
             "ZG0790", "NIFTY26JULFUT", "NFO", 10,
-            Decimal("5000.00"), Decimal("5500.00"),
+            Decimal("5000.00"), Decimal("5520.00"),
             Decimal("500.00"), Decimal("5000.00"), "{}",
             captured_ts, Decimal("5500.00"),
             Decimal("5400.00"), Decimal("4000.00"),
