@@ -1687,7 +1687,11 @@
   const expiryChoicesForUnderlying = $derived.by(() => {
     if (!instrumentsReady || !selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
-    const prefixRe = new RegExp(`^${target}\\d`, 'i');
+    // Strip _NEXT suffix before building the prefix regex — a URL-restored
+    // underlying like "CRUDEOIL_NEXT" must still match instrument symbols
+    // that start with the bare root "CRUDEOIL".
+    const base = target.replace(/_NEXT$/i, '');
+    const prefixRe = new RegExp(`^${base}\\d`, 'i');
     const set = new Set();
     const consider = /** @param {string} sym */ (sym) => {
       const upper = String(sym || '').toUpperCase();

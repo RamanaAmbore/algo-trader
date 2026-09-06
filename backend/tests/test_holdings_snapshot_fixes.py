@@ -415,3 +415,52 @@ async def test_overlay_snapshot_holdings_path_skips_ref_close_query():
         "_fetch_ref_close_map must not be called for kind='holdings' — "
         "holdings day P&L is already patched by _override_stale_close_for_holdings"
     )
+
+
+# ---------------------------------------------------------------------------
+# _query_holdings_snapshot_rows docstring accuracy (Fix: updated docstring to
+# describe weekday-aware cutoff instead of the old "today 08:00 IST" text)
+# ---------------------------------------------------------------------------
+
+class TestQueryHoldingsSnapshotRowsDocstring:
+    """Verify the _query_holdings_snapshot_rows docstring describes the correct logic.
+
+    The old docstring said "snapshot_cutoff = today 08:00 IST (yesterday 08:00 if
+    before 08:00 today)" but the code uses a weekday-aware calculation:
+      Mon–Fri → tomorrow midnight
+      Saturday → today 02:00 IST
+      Sunday → Saturday 02:00 IST
+    This test guards against the docstring regressing to the stale "08:00" form.
+    """
+
+    def test_docstring_does_not_say_today_08_00(self):
+        """Docstring must not contain the stale '08:00' snapshot_cutoff description."""
+        from backend.api.routes import holdings as _holdings_mod
+        doc = _holdings_mod._query_holdings_snapshot_rows.__doc__ or ""
+        assert "today 08:00" not in doc, (
+            "_query_holdings_snapshot_rows docstring still contains stale "
+            "'today 08:00 IST' text — update it to describe the weekday-aware logic"
+        )
+        assert "yesterday 08:00" not in doc, (
+            "_query_holdings_snapshot_rows docstring still contains stale "
+            "'yesterday 08:00' text — update it to describe the weekday-aware logic"
+        )
+
+    def test_docstring_describes_saturday_path(self):
+        """Docstring must mention Saturday 02:00 IST cutoff."""
+        from backend.api.routes import holdings as _holdings_mod
+        doc = _holdings_mod._query_holdings_snapshot_rows.__doc__ or ""
+        assert "Saturday" in doc, (
+            "_query_holdings_snapshot_rows docstring must describe Saturday cutoff (02:00 IST)"
+        )
+        assert "02:00" in doc, (
+            "_query_holdings_snapshot_rows docstring must mention 02:00 IST for Saturday path"
+        )
+
+    def test_docstring_describes_weekday_path(self):
+        """Docstring must mention Mon–Fri tomorrow midnight cutoff."""
+        from backend.api.routes import holdings as _holdings_mod
+        doc = _holdings_mod._query_holdings_snapshot_rows.__doc__ or ""
+        assert "Mon" in doc or "midnight" in doc, (
+            "_query_holdings_snapshot_rows docstring must describe Mon–Fri tomorrow-midnight cutoff"
+        )

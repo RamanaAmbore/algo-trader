@@ -1610,7 +1610,11 @@ def _cycle_maybe_buffer_fire(
         return False
 
     result = _v2_build_evalresult(matches, agent.name)
-    if getattr(agent, 'fire_at_time', None):
+    # Only cosmetic-/notify-only tiers get the "Scheduled — HH:MM IST" label.
+    # Critical/high/medium fire_at_time agents (e.g. expiry-day auto-close) emit
+    # their real condition text so operators know what condition actually fired.
+    if (getattr(agent, 'fire_at_time', None)
+            and getattr(agent, 'tier', 'medium') in ('info', 'low')):
         result.condition_text = f"Scheduled — {agent.fire_at_time} IST"
     if sim_mode:
         _cycle_shadow_lifespan_decrement(agent, alert_state)

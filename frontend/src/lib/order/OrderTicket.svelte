@@ -3172,7 +3172,7 @@
     background: var(--c-action-14);
     border: 1px solid rgba(251, 191, 36, 0.45);
     border-radius: 3px;
-    color: #fef9c3;
+    color: var(--algo-amber-text, #fde68a);
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
     font-weight: 800;

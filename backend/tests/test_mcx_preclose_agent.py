@@ -4,10 +4,15 @@ Tests for MCX pre-close agent configuration and scheduled fire_at_time override.
 Covers:
 1. market-preclose-mcx slug exists with correct fire_at_time="23:00" and name
 2. market-close-mcx slug does NOT exist in BUILTIN_AGENTS
-3. When _cycle_maybe_buffer_fire is called with an agent that has fire_at_time set,
-   the EvalResult's condition_text is overridden to "Scheduled — {fire_at_time} IST"
+3. When _cycle_maybe_buffer_fire is called with an info-tier agent that has
+   fire_at_time set, the EvalResult's condition_text is overridden to
+   "Scheduled — {fire_at_time} IST"
 4. When _cycle_maybe_buffer_fire is called with an agent without fire_at_time,
    the condition_text is NOT overridden (remains the auto-generated match text)
+5. A critical-tier fire_at_time agent does NOT get the "Scheduled — …" override
+   so expiry-day auto-close agents emit their real condition text
+6. BUILTIN_AGENTS confirms expiry-day auto-close agents are critical tier with
+   fire_at_time set
 """
 
 import pytest
@@ -72,16 +77,22 @@ class TestMCXPrecloseAgentConfig:
 class TestFireAtTimeConditionOverride:
     """_cycle_maybe_buffer_fire overrides condition_text when fire_at_time is set."""
 
-    def _make_mock_agent(self, slug="test-agent", fire_at_time=None, **kwargs):
-        """Helper to create a mock agent with common defaults."""
+    def _make_mock_agent(self, slug="test-agent", fire_at_time=None, tier='info', **kwargs):
+        """Helper to create a mock agent with common defaults.
+
+        tier defaults to 'info' so scheduled notification agents get the
+        "Scheduled — HH:MM IST" override.  Pass tier='critical' / 'high' /
+        'medium' to test that critical agents preserve their real condition text.
+        """
         agent = MagicMock()
         agent.slug = slug
         agent.name = "Test Agent"
         agent.fire_at_time = fire_at_time
+        agent.tier = tier
         agent.debounce_minutes = kwargs.get('debounce_minutes', 0)
         agent.trigger_count = kwargs.get('trigger_count', 0)
         for k, v in kwargs.items():
-            if k != 'debounce_minutes' and k != 'trigger_count':
+            if k not in ('debounce_minutes', 'trigger_count'):
                 setattr(agent, k, v)
         return agent
 
@@ -386,3 +397,212 @@ class TestFireAtTimeConditionOverride:
             f"Expected metric in text, got '{result.condition_text}'"
         assert "Scheduled" not in result.condition_text, \
             f"Should not have 'Scheduled' override when attribute missing, got '{result.condition_text}'"
+
+
+class TestFireAtTimeTierGating:
+    """Critical/high/medium tier agents with fire_at_time preserve real condition text.
+
+    Regression guard for expiry-day auto-close agents: they are tier='critical' and
+    must NOT have their condition_text replaced with "Scheduled — HH:MM IST".
+    """
+
+    _CFG = {
+        'rate_window_min': 10,
+        'baseline_offset_min': 15,
+        'cooldown_min': 30,
+        'suppress_delta_abs': 15000,
+        'suppress_delta_pct': 0.5,
+    }
+    _ITM_MATCHES = [
+        {
+            'scope': 'positions.expiring_today.nfo',
+            'metric': 'is_itm',
+            'value': 1.0,
+            'op': '==',
+            'threshold': 1.0,
+            'row': {'account': 'ACC1'},
+        }
+    ]
+
+    def _call_buffer_fire(self, agent, matches=None):
+        from datetime import datetime, timezone
+        from backend.api.algo.agent_engine import _cycle_maybe_buffer_fire
+        pending = []
+        triggered = _cycle_maybe_buffer_fire(
+            agent,
+            matches or self._ITM_MATCHES,
+            now=datetime.now(timezone.utc),
+            bypass_suppression=True,
+            bypass_schedule=True,
+            sim_mode=False,
+            alert_state={},
+            cfg=self._CFG,
+            broadcast_fn=None,
+            debounce_min=0,
+            pending_dispatches=pending,
+        )
+        return triggered, pending
+
+    def _make_agent(self, slug, tier, fire_at_time):
+        agent = MagicMock()
+        agent.slug = slug
+        agent.name = "Test Agent"
+        agent.tier = tier
+        agent.fire_at_time = fire_at_time
+        agent.debounce_minutes = 0
+        agent.trigger_count = 0
+        return agent
+
+    def test_critical_tier_fire_at_time_preserves_condition_text(self):
+        """tier='critical' + fire_at_time='15:00' → condition_text NOT overridden."""
+        agent = self._make_agent(
+            slug="expiry-day-equity-itm-auto-close",
+            tier="critical",
+            fire_at_time="15:00",
+        )
+        triggered, pending = self._call_buffer_fire(agent)
+        assert triggered is True
+        result = pending[0]['result']
+        assert "Scheduled" not in result.condition_text, (
+            f"Critical-tier agent must NOT get 'Scheduled' override; "
+            f"got condition_text='{result.condition_text}'"
+        )
+        # Real condition text should reference the actual match scope/metric
+        assert "positions.expiring_today.nfo" in result.condition_text or "is_itm" in result.condition_text, (
+            f"Expected real condition text, got '{result.condition_text}'"
+        )
+
+    def test_critical_tier_mcx_fire_at_time_preserves_condition_text(self):
+        """tier='critical' + fire_at_time='23:00' (MCX expiry) → condition_text NOT overridden."""
+        mcx_matches = [
+            {
+                'scope': 'positions.expiring_today.mcx_unhedged',
+                'metric': 'is_itm',
+                'value': 1.0,
+                'op': '==',
+                'threshold': 1.0,
+                'row': {'account': 'ACC1'},
+            }
+        ]
+        agent = self._make_agent(
+            slug="expiry-day-commodity-itm-auto-close",
+            tier="critical",
+            fire_at_time="23:00",
+        )
+        triggered, pending = self._call_buffer_fire(agent, matches=mcx_matches)
+        assert triggered is True
+        result = pending[0]['result']
+        assert "Scheduled" not in result.condition_text, (
+            f"Critical-tier MCX expiry agent must NOT get 'Scheduled' override; "
+            f"got condition_text='{result.condition_text}'"
+        )
+
+    def test_high_tier_fire_at_time_preserves_condition_text(self):
+        """tier='high' + fire_at_time set → condition_text NOT overridden."""
+        agent = self._make_agent(
+            slug="some-high-tier-agent",
+            tier="high",
+            fire_at_time="12:00",
+        )
+        triggered, pending = self._call_buffer_fire(agent)
+        assert triggered is True
+        assert "Scheduled" not in pending[0]['result'].condition_text
+
+    def test_medium_tier_fire_at_time_preserves_condition_text(self):
+        """tier='medium' + fire_at_time set → condition_text NOT overridden."""
+        agent = self._make_agent(
+            slug="some-medium-tier-agent",
+            tier="medium",
+            fire_at_time="10:00",
+        )
+        triggered, pending = self._call_buffer_fire(agent)
+        assert triggered is True
+        assert "Scheduled" not in pending[0]['result'].condition_text
+
+    def test_info_tier_fire_at_time_gets_scheduled_override(self):
+        """tier='info' + fire_at_time='09:15' → condition_text IS overridden."""
+        agent = self._make_agent(
+            slug="market-open-nse",
+            tier="info",
+            fire_at_time="09:15",
+        )
+        funds_matches = [
+            {
+                'scope': 'funds.any_acct',
+                'metric': 'avail_margin',
+                'value': 500000.0,
+                'op': '>=',
+                'threshold': -999999999,
+                'row': {'account': 'ACC1'},
+            }
+        ]
+        triggered, pending = self._call_buffer_fire(agent, matches=funds_matches)
+        assert triggered is True
+        assert pending[0]['result'].condition_text == "Scheduled — 09:15 IST"
+
+    def test_low_tier_fire_at_time_gets_scheduled_override(self):
+        """tier='low' + fire_at_time set → condition_text IS overridden (same as info)."""
+        agent = self._make_agent(
+            slug="some-low-tier-agent",
+            tier="low",
+            fire_at_time="14:00",
+        )
+        triggered, pending = self._call_buffer_fire(agent)
+        assert triggered is True
+        assert pending[0]['result'].condition_text == "Scheduled — 14:00 IST"
+
+
+class TestExpiryAutoCloseAgentBuiltins:
+    """Verify BUILTIN_AGENTS expiry-day auto-close agents have the correct configuration.
+
+    These are the agents most affected by Fix 1: they are tier='critical' with
+    fire_at_time set, so they must NOT get the 'Scheduled — …' label.
+    """
+
+    def test_expiry_day_equity_itm_auto_close_is_critical_tier(self):
+        """expiry-day-equity-itm-auto-close has tier='critical'."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+        agent = next(
+            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-equity-itm-auto-close'),
+            None,
+        )
+        assert agent is not None, "expiry-day-equity-itm-auto-close not found in BUILTIN_AGENTS"
+        assert agent.get('tier') == 'critical', (
+            f"Expected tier='critical', got {agent.get('tier')!r}"
+        )
+
+    def test_expiry_day_equity_itm_auto_close_has_fire_at_time(self):
+        """expiry-day-equity-itm-auto-close has fire_at_time='15:00'."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+        agent = next(
+            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-equity-itm-auto-close'),
+            None,
+        )
+        assert agent is not None
+        assert agent.get('fire_at_time') == '15:00', (
+            f"Expected fire_at_time='15:00', got {agent.get('fire_at_time')!r}"
+        )
+
+    def test_expiry_day_commodity_itm_auto_close_is_critical_tier(self):
+        """expiry-day-commodity-itm-auto-close has tier='critical'."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+        agent = next(
+            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-commodity-itm-auto-close'),
+            None,
+        )
+        assert agent is not None, "expiry-day-commodity-itm-auto-close not found in BUILTIN_AGENTS"
+        assert agent.get('tier') == 'critical', (
+            f"Expected tier='critical', got {agent.get('tier')!r}"
+        )
+
+    def test_expiry_day_commodity_itm_auto_close_has_fire_at_time(self):
+        """expiry-day-commodity-itm-auto-close has fire_at_time='23:00'."""
+        from backend.api.algo.agent_engine import BUILTIN_AGENTS
+        agent = next(
+            (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-commodity-itm-auto-close'),
+            None,
+        )
+        assert agent is not None
+        assert agent.get('fire_at_time') == '23:00', (
+            f"Expected fire_at_time='23:00', got {agent.get('fire_at_time')!r}"
+        )

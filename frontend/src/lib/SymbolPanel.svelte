@@ -3744,11 +3744,11 @@
   }
   .oes-basket-pill-sym {
     font-weight: 800;
-    color: #f1f7ff;
+    color: var(--algo-blue-tint, #f1f7ff);
   }
-  .oes-basket-pill-sym :global(.leg-root)   { color: #f1f7ff; font-weight: 700; }
+  .oes-basket-pill-sym :global(.leg-root)   { color: var(--algo-blue-tint, #f1f7ff); font-weight: 700; }
   .oes-basket-pill-sym :global(.leg-month)  { color: rgba(148,163,184,0.70); font-weight: 400; }
-  .oes-basket-pill-sym :global(.leg-strike) { color: #f1f7ff; }
+  .oes-basket-pill-sym :global(.leg-strike) { color: var(--algo-blue-tint, #f1f7ff); }
   .oes-basket-pill-sym :global(.leg-sep)    { opacity: 0.35; }
   .oes-basket-pill-step {
     border: none;
@@ -3766,7 +3766,7 @@
     min-width: 1rem;
     text-align: center;
     font-weight: 800;
-    color: #f1f7ff;
+    color: var(--algo-blue-tint, #f1f7ff);
   }
   .oes-basket-pill-qty {
     font-size: var(--fs-2xs);

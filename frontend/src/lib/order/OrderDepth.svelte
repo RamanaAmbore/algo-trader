@@ -137,12 +137,10 @@
        in market depth". Dropped the prefix. Prev chip kept
        since it's useful market context above the bid/ask ladder.
        LTP chip removed — canonical LTP lives in the tab bar (oes-tab-ltp). -->
-  {#if (q && q.ltp) || err}
+  {#if (q && q.ltp && q.ohlc?.close && q.ohlc.close > 0) || err}
     <div class="ot-depth-h">
-      {#if q && q.ltp}
-        {#if q.ohlc?.close && q.ohlc.close > 0}
-          <span class="ot-depth-prev">Prev ₹{priceFmt(q.ohlc.close)}</span>
-        {/if}
+      {#if q && q.ltp && q.ohlc?.close && q.ohlc.close > 0}
+        <span class="ot-depth-prev">Prev ₹{priceFmt(q.ohlc.close)}</span>
       {:else if err}
         <span class="ot-depth-meta">{err}</span>
       {/if}
@@ -237,7 +235,6 @@
     font-size: var(--fs-sm);
     text-transform: none;
     letter-spacing: 0;
-    margin-left: 0.5rem;
   }
   .ot-depth-grid {
     display: grid;

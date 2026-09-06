@@ -604,7 +604,12 @@
     const newLots = (leg.lots || 1) - 1;
     if (newLots <= 0) {
       if (_externalBasket && onRemoveLeg) { onRemoveLeg(leg); }
-      else { _localBasket = _localBasket.filter((_, i) => i !== idx); }
+      else if (_externalBasket && !onRemoveLeg) {
+        // External basket mode without a remove handler — cannot safely
+        // mutate _localBasket (wrong array). Caller must provide onRemoveLeg.
+        console.warn('OptionChainTab: _externalBasket requires onRemoveLeg — leg not removed');
+        return false;
+      } else { _localBasket = _localBasket.filter((_, i) => i !== idx); }
     } else {
       if (_externalBasket && onUpdateLeg) {
         onUpdateLeg(leg.key, (l) => ({ ...l, lots: newLots }));
@@ -968,15 +973,13 @@
             {@const dir   = chainSpot != null ? (k < chainSpot ? 'itm-call' : k > chainSpot ? 'itm-put' : 'atm') : ''}
             {@const ceKey = _quickKeyOpt(k, 'CE')}
             {@const peKey = _quickKeyOpt(k, 'PE')}
-            {@const activeCe = activeOptionRow?.strike === k && activeOptionRow?.optType === 'CE'}
-            {@const activePe = activeOptionRow?.strike === k && activeOptionRow?.optType === 'PE'}
-            {@const activeRow = activeCe || activePe}
+            {@const activeRow = activeOptionRow?.strike === k}
             {@const ceQ = chainQuotesMap?.[String(k)]?.ce}
             {@const peQ = chainQuotesMap?.[String(k)]?.pe}
             {@const ceSpreadWide = ceQ?.bid > 0 && ceQ?.ask > 0 && (ceQ.ask - ceQ.bid) / ((ceQ.ask + ceQ.bid) / 2) > 0.10}
             {@const peSpreadWide = peQ?.bid > 0 && peQ?.ask > 0 && (peQ.ask - peQ.bid) / ((peQ.ask + peQ.bid) / 2) > 0.10}
             {#if isAtm}
-              <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} class:chain-row-active-ce={activeCe} class:chain-row-active-pe={activePe} use:chainAtmRow>
+              <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} use:chainAtmRow>
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
                     <span class="chain-cell-quote">
@@ -1028,7 +1031,7 @@
                 </td>
               </tr>
             {:else}
-              <tr class="chain-row chain-row-{dir}" class:chain-row-active={activeRow} class:chain-row-active-ce={activeCe} class:chain-row-active-pe={activePe}>
+              <tr class="chain-row chain-row-{dir}" class:chain-row-active={activeRow}>
                 <td class="chain-td-ce">
                   <span class="chain-cell-row chain-cell-row-ce">
                     <span class="chain-cell-quote">
@@ -1507,7 +1510,7 @@
   .chain-btn-sell:hover { background: var(--c-short-10); }
   .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
   .chain-btn:disabled:hover { background: transparent; }
-  .chain-cell-spread-warn { font-size: 0.55rem; color: var(--algo-amber, #f59e0b); margin-left: 0.12rem; cursor: default; vertical-align: super; }
+  .chain-cell-spread-warn { font-size: 0.55rem; color: var(--algo-amber, #fbbf24); margin-left: 0.12rem; cursor: default; vertical-align: super; }
   .chain-quick-toast {
     display: inline-block; padding: 2px 8px; border-radius: 2px;
     background: rgba(74,222,128,0.18); color: var(--c-long);
@@ -1539,7 +1542,7 @@
   .chain-basket-leg-type-fut { border-left-color: #7dd3fc; }
   .chain-basket-leg-type-eq  { border-left-color: var(--c-action); }
   .chain-basket-side { font-weight: 800; letter-spacing: 0.04em; }
-  .chain-basket-sym { color: #e2e8f0; font-weight: 600; }
+  .chain-basket-sym { color: var(--algo-slate, #c8d8f0); font-weight: 600; }
   .chain-basket-qty { color: var(--c-muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
   .chain-basket-step {
     width: 1.05rem; height: 1.05rem; padding: 0; border-radius: 2px;

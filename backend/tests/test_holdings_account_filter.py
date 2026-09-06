@@ -94,7 +94,12 @@ def pytest_skip_if_unreachable():
 def auth_token() -> str:
     """Module-scoped JWT token obtained via login."""
     pytest_skip_if_unreachable()
-    return _login()
+    try:
+        return _login()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            pytest.skip("dev.ramboq.com rate-limiting login (429) — skip live tests")
+        raise
 
 
 @pytest.fixture(scope="module")

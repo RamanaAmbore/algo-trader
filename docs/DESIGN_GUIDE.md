@@ -2024,6 +2024,21 @@ sequenceDiagram
 
 **Schema update** — `BasketLeg` msgspec.Struct adds optional `strategy_id: Optional[int] = None` field for future per-leg strategy attribution.
 
+### 5.2 Order entry data displays — LTP in tab bar, OrderDepth shows prior close only
+
+**Tab bar LTP display** — The SymbolPanel tab bar (`oes-tab-ltp` class in SymbolPanel.svelte) is the **canonical LTP display** on the order-entry modal. It is **always visible**, updated via SSE WebSocket push at 4Hz cadence, and serves as the operator's primary real-time price reference while filling an order.
+
+**OrderDepth panel constraint** — The OrderDepth component (bid/ask depth ladder below the Ticket form) displays the **prior session's close price only** (not live LTP) to avoid duplication and reduce visual clutter. The depth ladder is used for volume profile reference (how many orders at each level); the price reference should come from the always-visible tab bar. This prevents the operator from having two competing price signals on the same modal.
+
+**Rationale:**
+- Single LTP source of truth (tab bar) ensures consistent price reference across all order tickets and basket legs
+- OrderDepth avoids information redundancy; depth data and price level reference are independent concerns
+- Prior close in OrderDepth provides context for overnight gap without distracting from live action
+
+**Files:**
+- `frontend/src/lib/SymbolPanel.svelte` — tab bar LTP display, `oes-tab-ltp` class
+- `frontend/src/lib/order/OrderDepth.svelte` — prior close display logic; no live LTP rendering
+
 ---
 
 ## 6. Order placement — basket (Chain tab)
@@ -3478,6 +3493,58 @@ ensures the total matches the sum of individual per-cell Day P&L values.
 
 **Files:**
 - `frontend/src/lib/data/nav.js::aggregateDayPnlForPositions` + `baseDayPnlForPosition`
+
+---
+
+## 19.2 CSS design tokens — palette + background variants
+
+Canonical CSS custom properties live in `frontend/src/app.css`. These tokens establish the visual language across the platform — colors, opacities, spacing. All UI changes MUST respect these tokens to maintain consistency.
+
+### Core colour palette
+
+| Token | Hex | Usage | Notes |
+|---|---|---|---|
+| `--algo-green` | `#4ade80` | Buy signals, profit, long positions | emerald-400 |
+| `--algo-red` | `#f87171` | Sell signals, loss, short positions | red-400 |
+| `--algo-cyan` | `#06b6d4` | Neutral data, UI accents | cyan-500 |
+| `--algo-amber` | `#fbbf24` | Warnings, TOTAL row highlight | amber-400 |
+| `--algo-blue` | `#3b82f6` | Secondary UI elements | blue-500 |
+
+### Background variants (opacity layering)
+
+| Token | Formula | Usage | Notes |
+|---|---|---|---|
+| `--algo-green-bg-mid` | `rgba(74, 222, 128, 0.14)` | Mid-intensity buy backgrounds | 14% opacity for subtle pill/card backgrounds |
+| `--algo-red-bg-mid` | `rgba(248, 113, 113, 0.14)` | Mid-intensity loss backgrounds | 14% opacity for subtle pill/card backgrounds |
+| `--c-long-14` | alias to `--algo-green-bg-mid` | Long position basket pill backgrounds | semantic alias for clarity |
+| `--c-short-14` | alias to `--algo-red-bg-mid` | Short position basket pill backgrounds | semantic alias for clarity |
+| `--algo-blue-tint` | `#f1f7ff` | Panel highlight tint | very light blue, used for card backgrounds |
+
+### Token sourcing
+
+All tokens are defined centrally in `frontend/src/app.css` and consumed via CSS classes or inline `var()` references. **Never hardcode colours inline** — always use a token. If a new colour is needed:
+
+1. Add the token to `app.css` with a clear semantic name
+2. Export it as a CSS custom property (`:root { --token-name: value }`)
+3. Reference via `var(--token-name)` or tie to a `.class` utility
+
+### Panel backgrounds (dark theme)
+
+- **Card body**: `#1d2a44` (dark slate, primary)
+- **Card hover**: `#242f47` (slightly lighter)
+- **Input background**: `#0f172a` (very dark)
+- **Code/monospace**: `#1e293b` (slate-800)
+
+### Text contrast
+
+- **Primary text**: `#e2e8f0` (slate-200)
+- **Secondary text**: `#94a3b8` (slate-400)
+- **Disabled text**: `#64748b` (slate-500, low contrast)
+- **Action text** (`--c-action`): `#fbbf24` (amber-400, matching TOTAL rows)
+
+**Files:**
+- `frontend/src/app.css` — CSS custom properties `:root` scope + theme utilities
+- All consuming components: inline `var(--token-name)` or `.class-using-token`
 
 ---
 

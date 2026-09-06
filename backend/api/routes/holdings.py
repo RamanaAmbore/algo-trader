@@ -85,11 +85,14 @@ async def _query_holdings_snapshot_rows():
     still applies inside the batch in case the writer slipped one
     through.
 
-    snapshot_cutoff = today 08:00 IST (yesterday 08:00 if before 08:00 today).
+    snapshot_cutoff is weekday-aware (mirrors positions.py):
+      Mon–Fri : tomorrow midnight IST (includes any EOD snapshot written today)
+      Saturday: today 02:00 IST    (captures MCX 00:15 settlement; Sat sessions start 09:00+)
+      Sunday  : Saturday 02:00 IST (same boundary as Saturday path)
     Bounding latest_batch by this cutoff prevents weekend/holiday snapshots
-    (captured after 08:00 on a non-trading day) from shadowing the last
-    valid EOD snapshot.  Friday's 15:45 snapshot is always < Saturday 08:00,
-    so it persists correctly through the full weekend.
+    captured during special sessions from shadowing the last valid EOD snapshot.
+    Friday's 15:45 snapshot is always before Saturday 02:00, so it persists
+    correctly through the full weekend.
     """
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text

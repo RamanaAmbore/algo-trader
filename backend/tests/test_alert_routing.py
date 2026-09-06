@@ -584,6 +584,7 @@ class TestInfoAgentRename:
         agent.name = "MCX pre-close"
         agent.slug = "market-preclose-mcx"
         agent.fire_at_time = "23:00"
+        agent.tier = "info"  # info-tier agents get the "Scheduled" override
 
         # Build a match entry that would normally produce a margin dump
         matches = [{"scope": "funds.any_acct", "metric": "avail_margin",
