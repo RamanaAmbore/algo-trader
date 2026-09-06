@@ -17,6 +17,7 @@ from backend.api.rbac import (
 )
 from backend.api.algo.pnl_math import recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
+from backend.api.helpers.exchange_clock import is_market_active_for_prev_close
 from backend.api.helpers.ltp_patch import apply_ltp_patch, holdings_policy
 from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
@@ -443,36 +444,61 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
         return
 
-    from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
     from backend.api.helpers.exchange_clock import settlement_cutoff_for
 
-    # Cutoff = last passed 08:00 IST boundary (the prev_close invariant).
-    # Use NON-MCX gate; MCX gate has the same reset time (08:00 IST) so one
-    # cutoff covers all exchanges.  Both daily_book snapshots (NSE ~15:45 and
-    # MCX ~00:15) fall before the 08:00 boundary and are included by this query.
-    today_ist_cutoff = await settlement_cutoff_for("NON-MCX")
+    # Two-path query: on a trading day (or during the post-close snapshot window)
+    # the latest entry before the 08:00 IST boundary is the correct prior-session
+    # settlement LTP.  On a non-trading day the latest entry IS the frozen ltp
+    # (= wrong prev_close), so we skip it and return the entry before it.
+    # daily_book has one write per trading day (~24h gap) so no time-window
+    # filter is needed for the two-CTE path.
+    # settlement_cutoff_for("NON-MCX") returns the last 08:00 IST boundary.
+    today_08 = await settlement_cutoff_for("NON-MCX")
 
-    # ref_close: ltp directly — canonical prior-session settlement LTP.
-    # previous_close (Kite BHAV-copy) is stale during the overnight window
-    # and must not be used here (see docstring).
     snapshot_map: dict[tuple[str, str], float] = {}
     try:
+        from backend.api.database import async_session
         async with async_session() as session:
-            result = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol)
-                       account, symbol,
-                       ltp AS ref_close
-                FROM daily_book
-                WHERE kind = 'holdings'
-                  AND ltp IS NOT NULL AND ltp > 0
-                  AND captured_at >= :lower_cutoff
-                  AND captured_at < :eod_cutoff
-                ORDER BY account, symbol, captured_at DESC
-            """), {
-                "lower_cutoff": today_ist_cutoff - timedelta(days=7),
-                "eod_cutoff": today_ist_cutoff,
-            })
+            if is_market_active_for_prev_close():
+                # Trading day / snapshot pending — single query; latest entry
+                # before today 08:00 = correct prev_close.
+                result = await session.execute(_sql_text("""
+                    SELECT DISTINCT ON (account, symbol)
+                           account, symbol,
+                           ltp AS ref_close
+                    FROM daily_book
+                    WHERE kind = 'holdings'
+                      AND ltp IS NOT NULL AND ltp > 0
+                      AND captured_at < :today_08
+                    ORDER BY account, symbol, captured_at DESC
+                """), {"today_08": today_08})
+            else:
+                # Non-trading day: skip the latest (frozen) entry; return the
+                # one before it (the real prior trading day settlement LTP).
+                result = await session.execute(_sql_text("""
+                    WITH latest_batch AS (
+                        SELECT account, symbol, MAX(captured_at) AS max_at
+                        FROM daily_book
+                        WHERE kind = 'holdings'
+                          AND ltp IS NOT NULL AND ltp > 0
+                          AND captured_at < :today_08
+                        GROUP BY account, symbol
+                    ),
+                    prev_batch AS (
+                        SELECT DISTINCT ON (db.account, db.symbol)
+                               db.account, db.symbol,
+                               db.ltp AS ref_close
+                        FROM daily_book db
+                        JOIN latest_batch lb
+                          ON db.account = lb.account AND db.symbol = lb.symbol
+                        WHERE db.kind = 'holdings'
+                          AND db.ltp IS NOT NULL AND db.ltp > 0
+                          AND db.captured_at < lb.max_at
+                        ORDER BY db.account, db.symbol, db.captured_at DESC
+                    )
+                    SELECT account, symbol, ref_close FROM prev_batch
+                """), {"today_08": today_08})
             for account, symbol, ref_close in result.all():
                 v = float(ref_close) if ref_close is not None else 0.0
                 if v > 0:

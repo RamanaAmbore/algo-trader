@@ -25,6 +25,8 @@ import pandas as pd
 
 from backend.api.database import async_session
 from backend.api.helpers import exchange_clock
+from backend.api.helpers.exchange_clock import is_trading_day_today, sessions_with_snapshot_time_now
+from backend.api.algo.daily_snapshot import fix_daily_book_prev_close
 from backend.shared.helpers.date_time_utils import timestamp_indian, is_market_open, timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.settings import get_int
@@ -1999,7 +2001,6 @@ async def _task_daily_snapshot() -> None:
     market hours to avoid polluting daily_book with mid-session LTPs
     (observed incident 2026-06-22).
     """
-    from backend.api.algo.daily_snapshot import fix_daily_book_prev_close
     from backend.shared.helpers.date_time_utils import timestamp_indian
 
     # ── startup snapshot (closed hours only) ───────────────────────────
@@ -2008,15 +2009,30 @@ async def _task_daily_snapshot() -> None:
     _nse_open = exchange_clock.is_exchange_open("NSE")
     _mcx_open = exchange_clock.is_exchange_open("MCX")
     if _today_d.weekday() >= 5:
-        # Weekend (Saturday=5, Sunday=6): the previous trading day's EOD snapshot
-        # already lives in daily_book. Creating today's date rows with stale prices
+        # Weekend (Saturday=5, Sunday=6): the prior trading day's EOD snapshot
+        # already lives in daily_book. Writing today's date rows with stale prices
         # (LTP ≈ prior close, day_pnl ≈ 0) displaces the EOD rows in latest_batch
-        # (positions route uses MAX(captured_at)) making Day P&L = 0 all weekend.
-        # MCX Saturday sessions are handled by the 23:31 MCX-close settlement pass.
+        # (positions route uses MAX(captured_at)), making Day P&L = 0 all weekend.
+        # Muhurrat Saturdays have a date-specific override row in exchange_schedule
+        # (open_time != None), so is_trading_day_today() correctly returns True
+        # for those; fire the snapshot for Muhurrat, skip otherwise.
+        if is_trading_day_today():
+            pass  # Muhurrat or special weekend session — fall through to normal path
+        else:
+            logger.info(
+                "Background: skipping startup snapshot — weekend "
+                "(existing EOD data serves closed-hours Pulse correctly)"
+            )
+            return
+    elif not is_trading_day_today():
+        # Non-weekend non-trading day (public holiday, exchange-closed day):
+        # same reasoning — existing EOD snapshot serves correctly; no settlement
+        # passes needed, so return before entering the while loop.
         logger.info(
-            "Background: skipping startup snapshot — weekend "
+            "Background: skipping startup snapshot — non-trading day "
             "(existing EOD data serves closed-hours Pulse correctly)"
         )
+        return
     elif _nse_open or _mcx_open:
         logger.info(
             f"Background: skipping startup daily snapshot — markets open "

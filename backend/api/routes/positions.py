@@ -14,6 +14,7 @@ from backend.api.algo.pnl_math import (
     recompute_row_percentages,
 )
 from backend.api.cache import get_or_fetch, invalidate
+from backend.api.helpers.exchange_clock import is_market_active_for_prev_close
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
 from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
@@ -916,38 +917,80 @@ async def _fetch_snapshot_close_map(
 ) -> tuple[dict, dict]:
     """Query daily_book for the most-recent settlement LTP per (account, symbol).
 
-    Uses a 7-day lookback window anchored at *cutoff* (the last 08:00 IST
-    boundary).  Both NSE (~15:45) and MCX (~00:15) settlement snapshots fall
-    within this window.
+    Two paths depending on whether the market is currently active:
+
+    - Trading day / snapshot pending (is_market_active_for_prev_close=True):
+      Latest entry before today 08:00 IST = correct prev_close (prior session
+      settlement LTP, same as the existing single-query path).
+
+    - Non-trading day (is_market_active_for_prev_close=False):
+      The latest entry IS the frozen current ltp (= wrong prev_close).  Use a
+      two-CTE query to skip the latest batch and return the entry BEFORE it
+      (the prior trading day's real settlement LTP).  daily_book has exactly
+      one write per trading day (~24h gap) so no time-window filter is needed.
 
     Returns ``(snapshot_map, prev_pnl_map)`` where both are
     ``dict[tuple[str, str], float]`` keyed by ``(account, tradingsymbol)``.
     On any DB error logs a warning and returns ``({}, {})``.
     """
-    from datetime import timedelta
-    from backend.api.database import async_session
+    from datetime import datetime as _dt
     from sqlalchemy import text as _sql_text
+    from zoneinfo import ZoneInfo
+
+    now_ist = _dt.now(ZoneInfo("Asia/Kolkata"))
+    today_08 = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
 
     snapshot_map: dict[tuple[str, str], float] = {}
     prev_pnl_map: dict[tuple[str, str], float] = {}
     try:
+        from backend.api.database import async_session
         async with async_session() as session:
-            result = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol) account, symbol,
-                       daily_book.ltp AS ref_close,
-                       total_pnl
-                FROM daily_book
-                WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
-                  AND captured_at >= :lower_cutoff
-                  AND captured_at < :today_open
-                ORDER BY account, symbol, captured_at DESC
-            """), {
-                "lower_cutoff": cutoff - timedelta(days=7),
-                "today_open": cutoff,
-            })
+            if is_market_active_for_prev_close():
+                # Trading day / snapshot pending — latest entry before today 08:00
+                # is the correct prior-session settlement LTP.
+                result = await session.execute(_sql_text("""
+                    SELECT DISTINCT ON (account, symbol)
+                           account, symbol,
+                           daily_book.ltp AS ref_close,
+                           total_pnl
+                    FROM daily_book
+                    WHERE kind = 'positions'
+                      AND ltp IS NOT NULL AND ltp > 0
+                      AND captured_at < :today_08
+                    ORDER BY account, symbol, captured_at DESC
+                """), {"today_08": today_08})
+            else:
+                # Non-trading day: latest entry = frozen ltp = wrong prev_close.
+                # Need the entry BEFORE the latest. daily_book has one write per
+                # trading day (~24h gap), so no time-window filter is needed.
+                result = await session.execute(_sql_text("""
+                    WITH latest_batch AS (
+                        SELECT account, symbol, MAX(captured_at) AS max_at
+                        FROM daily_book
+                        WHERE kind = 'positions'
+                          AND ltp IS NOT NULL AND ltp > 0
+                          AND captured_at < :today_08
+                        GROUP BY account, symbol
+                    ),
+                    prev_batch AS (
+                        SELECT DISTINCT ON (db.account, db.symbol)
+                               db.account, db.symbol,
+                               db.ltp AS ref_close,
+                               db.total_pnl
+                        FROM daily_book db
+                        JOIN latest_batch lb
+                          ON db.account = lb.account AND db.symbol = lb.symbol
+                        WHERE db.kind = 'positions'
+                          AND db.ltp IS NOT NULL AND db.ltp > 0
+                          AND db.captured_at < lb.max_at
+                        ORDER BY db.account, db.symbol, db.captured_at DESC
+                    )
+                    SELECT account, symbol, ref_close, total_pnl FROM prev_batch
+                """), {"today_08": today_08})
             for account, symbol, ref_close, total_pnl in result.all():
                 key = (str(account), str(symbol))
-                snapshot_map[key] = float(ref_close)
+                if ref_close is not None:
+                    snapshot_map[key] = float(ref_close)
                 if total_pnl is not None:
                     prev_pnl_map[key] = float(total_pnl)
     except Exception as e:

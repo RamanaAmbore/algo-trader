@@ -295,6 +295,57 @@ def is_any_segment_open(exchanges: list[str] | None = None) -> bool:
     return False
 
 
+def is_market_active_for_prev_close() -> bool:
+    """True when the single-query prev_close path is correct.
+
+    Returns True if any segment is in-session (open_time <= now < close_time)
+    OR in the post-close snapshot window (close_time <= now <= snapshot_time)
+    where today's settlement snapshot hasn't fired yet.
+
+    Returns False on non-trading days (weekends after weekdays fix, holidays,
+    and after snapshot_time when the day's only daily_book write is complete).
+    Fully calendar-driven via exchange_schedule — no hard-coded hours.
+
+    Fail-open: returns True when the cache is empty so callers default to the
+    simpler single-query path rather than the two-CTE path.  This means the
+    bug persists on a non-trading day only if the cache is empty — acceptable
+    since fail-open is the existing contract for all exchange_clock functions.
+    """
+    if not _CACHE:
+        return True  # fail-open: prefer single query over empty result
+    now = _now_ist()
+    for gate in {r.gate for r in _CACHE}:
+        for row in _effective_gate_rows(gate):
+            if row.open_time is None or row.close_time is None:
+                continue  # holiday override — gate closed today
+            now_t = now.time().replace(second=0, microsecond=0)
+            if row.open_time <= now_t < row.close_time:
+                return True
+            if row.snapshot_time is not None and row.close_time <= now_t <= row.snapshot_time:
+                return True
+    return False
+
+
+def is_trading_day_today() -> bool:
+    """True if any segment is scheduled to trade today.
+
+    Holiday override rows (open_time=None) → False.
+    Default rows with weekdays=[0,1,2,3,4] → False on weekends (after the
+    ARRAY[0,1,2,3,4] migration fix so weekdays is not NULL).
+    Date-specific Muhurrat/weekend-trading overrides → True.
+    Fully calendar-driven — no hard-coded weekday numbers.
+
+    Fail-open: returns True when the cache is empty.
+    """
+    if not _CACHE:
+        return True  # fail-open
+    for gate in {r.gate for r in _CACHE}:
+        for row in _effective_gate_rows(gate):
+            if row.open_time is not None:
+                return True
+    return False
+
+
 def sessions_with_snapshot_time_now(tolerance_minutes: int = 1) -> list["ExchangeSchedule"]:
     """Return rows whose ``snapshot_time`` is within ± *tolerance_minutes* of now.
 
@@ -451,7 +502,7 @@ async def seed_and_warm() -> None:
                 # is_exchange_open() return True on Saturday/Sunday between 08:00–15:30 IST.
                 await session.execute(_text("""
                     UPDATE exchange_schedule
-                    SET weekdays = '[0,1,2,3,4]'
+                    SET weekdays = ARRAY[0,1,2,3,4]
                     WHERE weekdays IS NULL
                       AND date IS NULL
                       AND source = 'system'
