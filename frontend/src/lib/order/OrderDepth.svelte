@@ -134,12 +134,12 @@
 
 <div class="ot-depth">
   <!-- Operator: "I don't want to see DEPTH · CRUDEOIL26JUNFUT · MCX
-       in market depth". Dropped the prefix. LTP / Prev chips kept
-       since they're useful market context above the bid/ask ladder. -->
+       in market depth". Dropped the prefix. Prev chip kept
+       since it's useful market context above the bid/ask ladder.
+       LTP chip removed — canonical LTP lives in the tab bar (oes-tab-ltp). -->
   {#if (q && q.ltp) || err}
     <div class="ot-depth-h">
       {#if q && q.ltp}
-        <span class="ot-depth-ltp">LTP ₹{priceFmt(q.ltp)}</span>
         {#if q.ohlc?.close && q.ohlc.close > 0}
           <span class="ot-depth-prev">Prev ₹{priceFmt(q.ohlc.close)}</span>
         {/if}
@@ -227,13 +227,6 @@
     text-transform: none;
     letter-spacing: 0;
     opacity: 0.7;
-  }
-  .ot-depth-ltp {
-    color: var(--algo-amber, var(--c-action));
-    font-weight: 700;
-    font-size: var(--fs-sm);
-    text-transform: none;
-    letter-spacing: 0;
   }
   /* Prev close anchor right beside LTP — neutral cyan, lighter
      weight so the eye reads LTP first (the live number) and PREV
