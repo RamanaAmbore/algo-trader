@@ -650,15 +650,27 @@ class TestComputeSnapshotDayPnl:
 class TestComputeHoldingDayChange:
     """Unit tests for _compute_holding_day_change helper."""
 
-    def test_day_pnl_nonzero_wins(self):
-        """Stored day_pnl is authoritative when non-zero."""
+    def test_prev_ltp_beats_day_pnl(self):
+        """prev_ltp (prior-batch settlement) is priority 1; day_pnl is last-resort."""
         from backend.api.routes.holdings import _compute_holding_day_change
 
         result = _compute_holding_day_change(
             day_pnl_f=500.0, ltp_f=2100.0, previous_close_f=2050.0,
             prev_ltp_f=2040.0, qty_i=10
         )
-        assert result == 500.0, f"Stored day_pnl=500 should win, got {result}"
+        # prev_ltp_f available → (2100-2040)*10 = 600; day_pnl (500) is last-resort
+        expected = (2100.0 - 2040.0) * 10  # 600.0
+        assert result == expected, f"prev_ltp should win over day_pnl, got {result}"
+
+    def test_day_pnl_as_last_resort(self):
+        """day_pnl is returned when both prev_ltp=None and previous_close=0."""
+        from backend.api.routes.holdings import _compute_holding_day_change
+
+        result = _compute_holding_day_change(
+            day_pnl_f=500.0, ltp_f=2100.0, previous_close_f=0.0,
+            prev_ltp_f=None, qty_i=10
+        )
+        assert result == 500.0, f"day_pnl should be last-resort fallback, got {result}"
 
     def test_price_recompute_using_previous_close(self):
         """day_pnl=0, previous_close valid: use (ltp - previous_close) * qty."""
@@ -673,8 +685,8 @@ class TestComputeHoldingDayChange:
             f"Expected (ltp-pc)*qty={expected}, got {result}"
         )
 
-    def test_price_recompute_using_prev_ltp_fallback(self):
-        """day_pnl=0, previous_close=0, prev_ltp set: use (ltp - prev_ltp) * qty."""
+    def test_price_recompute_using_prev_ltp_priority(self):
+        """prev_ltp is priority 1: use (ltp - prev_ltp) * qty when prev_ltp is set."""
         from backend.api.routes.holdings import _compute_holding_day_change
 
         result = _compute_holding_day_change(

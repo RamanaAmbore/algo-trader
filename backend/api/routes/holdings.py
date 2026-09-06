@@ -138,17 +138,17 @@ def _compute_holding_day_change(
     """Return day_change_val for a holdings snapshot row.
 
     Priority:
-      1. Stored EOD day_pnl when non-zero — authoritative (broker-computed at session end).
+      1. Prior-batch settlement LTP: (ltp - prev_ltp) * qty — immune to UPSERT carry-forward.
       2. Price recompute using prior-session close: (ltp - previous_close) * qty.
-      3. Price recompute using prior snapshot batch LTP as fallback.
+      3. Stored EOD day_pnl as last-resort fallback (may be stale if UPSERT carried forward).
       4. Zero when no reference price is available.
     """
-    if day_pnl_f != 0.0:
-        return day_pnl_f
-    if previous_close_f > 0:
-        return (ltp_f - previous_close_f) * qty_i
     if prev_ltp_f is not None:
         return (ltp_f - prev_ltp_f) * qty_i
+    if previous_close_f > 0:
+        return (ltp_f - previous_close_f) * qty_i
+    if day_pnl_f != 0.0:
+        return day_pnl_f
     return 0.0
 
 

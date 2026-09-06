@@ -9,19 +9,34 @@ import pytest
 from backend.api.routes.holdings import _compute_holding_day_change
 
 
-def test_holding_day_change_stored_eod_wins():
-    """When snap_day_pnl is non-zero, it is authoritative (stored EOD value)."""
+def test_holding_day_change_prev_ltp_beats_stored_eod():
+    """prev_ltp_f (prior-batch settlement) beats day_pnl when available."""
     snap_day_pnl = 500.0
     snap_price = 102.0
     close_px = 100.0
-    prev_ltp = None
+    prev_ltp = 99.0  # prior-batch settlement is available
     qty = 10
 
     result = _compute_holding_day_change(snap_day_pnl, snap_price, close_px, prev_ltp, qty)
 
-    # Stored EOD day P&L should win regardless of other prices
+    # prev_ltp wins; day_pnl may be stale (UPSERT carry-forward)
+    assert result == (102.0 - 99.0) * 10, (
+        f"expected prev_ltp-based recompute (30.0), got {result}"
+    )
+
+
+def test_holding_day_change_stored_eod_last_resort():
+    """When prev_ltp=None and previous_close=0, day_pnl is the last-resort fallback."""
+    snap_day_pnl = 500.0
+    snap_price = 102.0
+    close_px = 0.0   # no reference price
+    prev_ltp = None  # no prior-batch ltp
+    qty = 10
+
+    result = _compute_holding_day_change(snap_day_pnl, snap_price, close_px, prev_ltp, qty)
+
     assert result == 500.0, (
-        f"expected stored day_pnl to be returned as-is, got {result}"
+        f"expected stored day_pnl as last resort, got {result}"
     )
 
 
@@ -76,9 +91,8 @@ def test_holding_day_change_zero_when_no_reference():
     )
 
 
-def test_holding_day_change_none_day_pnl_returned_as_is():
-    """When snap_day_pnl=None (NULL from DB), function returns it as-is
-    (None is treated as non-zero because None != 0.0)."""
+def test_holding_day_change_none_day_pnl_falls_through_to_price():
+    """When snap_day_pnl=None and prev_ltp=None, price formula (previous_close) wins."""
     snap_day_pnl = None
     snap_price = 105.0
     close_px = 100.0
@@ -87,9 +101,9 @@ def test_holding_day_change_none_day_pnl_returned_as_is():
 
     result = _compute_holding_day_change(snap_day_pnl, snap_price, close_px, prev_ltp, qty)
 
-    # None is returned as-is because None != 0.0
-    assert result is None, (
-        f"expected None when snap_day_pnl=None (None != 0.0), got {result}"
+    # prev_ltp=None → fallback to previous_close formula
+    assert result == (105.0 - 100.0) * 5, (
+        f"expected (105-100)*5=25.0 from previous_close, got {result}"
     )
 
 
