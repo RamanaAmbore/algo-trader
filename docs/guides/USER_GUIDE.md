@@ -304,7 +304,7 @@ The platform ships with 9 built-in agents pre-seeded:
 - `loss-positions-acct` — Per-account position loss guardrail
 - `loss-rate-acct` — Per-account rate-of-loss alert
 - `loss-positions-total` — Book-wide position loss guardrail
-- `loss-margin-low` — Available margin low warning (early alert)
+- `loss-margin-low` — Available margin low warning (DISABLED — cross-account false positive with Dhan/Groww; `loss-funds-negative` covers the critical case)
 - `loss-funds-negative` — Cash or margin negative (hard stop)
 - `loss-pos-total-auto-close` — Auto-close all positions on critical loss
 - `expiry-day-positions-alert` — Notification when positions expire today

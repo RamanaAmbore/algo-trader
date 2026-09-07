@@ -241,7 +241,7 @@ Open `/automation` and look at these — all 9 are teaching examples you can clo
 | `loss-positions-acct` | per-account guardrail | Uses an `any:` block to OR four threshold types |
 | `loss-rate-acct` | per-account rate alert | Rate-of-loss metric + re-fire suppression |
 | `loss-positions-total` | book-wide guardrail | Same shape, scoped to TOTAL |
-| `loss-margin-low` | available margin warning | Early signal before margin pressure |
+| `loss-margin-low` | available margin warning (DISABLED) | Disabled: cross-account false positive with Dhan/Groww zero margin; `loss-funds-negative` covers the critical case |
 | `loss-funds-negative` | cash / margin hard stop | Fires when balance goes negative |
 | `loss-pos-total-auto-close` | destructive action | Wraps `chase_close_positions` — ships INACTIVE for a reason |
 | `expiry-day-positions-alert` | expiry alert | Uses `days_until_expiry` + `positions.expiring_today` |
