@@ -75,11 +75,10 @@ function makeCtx(marketOpen, snapMap = {}) {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('mergePositionRows — marketOpen gate (Fix B)', () => {
-  it('marketOpen=false: day_pnl uses stable brokerDcv, not live LTP', () => {
+  it('marketOpen=false: day_pnl uses price formula (pollLtp - closePx) * qty, not live SSE LTP', () => {
     const byKey = {};
     const row = makeOvernightPositionRow();
-    // brokerDcv = baseDayPnlForPosition(row). The row has overnight_quantity=50
-    // and day_change_val=300 — so brokerDcv = 300 (fast-path).
+    // Confirm brokerDcv = 300 so we can assert it is NOT used.
     const expectedBrokerDcv = baseDayPnlForPosition(row);
     expect(expectedBrokerDcv).toBe(300);
 
@@ -92,8 +91,9 @@ describe('mergePositionRows — marketOpen gate (Fix B)', () => {
 
     const result = byKey['NIFTY25AUG24000CE__pos'];
     expect(result).toBeDefined();
-    // Closed hours must NOT use live LTP (750); must use brokerDcv (300).
-    expect(result.day_pnl).toBe(300);
+    // Closed hours uses price formula: (pollLtp=130 - closePx=125) * qty=50 = 250.
+    // Must NOT use live SSE LTP (750) nor raw brokerDcv (300).
+    expect(result.day_pnl).toBe(250);
     expect(result.day_pnl).not.toBe(750);
   });
 
@@ -130,11 +130,12 @@ describe('mergePositionRows — marketOpen gate (Fix B)', () => {
     };
 
     const first  = run(6200);
-    const second = run(6350);  // different LTP — simulates next SSE tick
+    const second = run(6350);  // different SSE LTP — simulates next tick
 
-    // Both runs must produce the same brokerDcv (300), not different live values.
-    expect(first).toBe(300);
-    expect(second).toBe(300);
+    // Both runs use price formula (pollLtp=130 − closePx=125) × qty=50 = 250.
+    // SSE LTP (6200 / 6350) does not affect the result — only pollLtp matters.
+    expect(first).toBe(250);
+    expect(second).toBe(250);
     expect(first).toBe(second);
   });
 

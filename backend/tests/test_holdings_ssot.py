@@ -9,19 +9,24 @@ import pytest
 from backend.api.routes.holdings import _compute_holding_day_change
 
 
-def test_holding_day_change_prev_ltp_beats_stored_eod_when_different():
-    """prev_ltp_f beats day_pnl when |ltp - prev_ltp| > 0.005 (meaningful movement)."""
+def test_holding_day_change_day_pnl_beats_prev_ltp_even_when_different():
+    """day_pnl wins over prev_ltp regardless of how different they are.
+
+    prev_ltp is only a last-resort fallback (Priority 3) when both day_pnl
+    AND previous_close are absent/zero. When day_pnl is non-zero, it is always
+    the authoritative Kite session value and must win.
+    """
     snap_day_pnl = 500.0
     snap_price = 102.0
     close_px = 100.0
-    prev_ltp = 99.0  # meaningfully different from ltp=102
+    prev_ltp = 99.0  # differs from ltp by 3 — irrelevant; day_pnl wins
     qty = 10
 
     result = _compute_holding_day_change(snap_day_pnl, snap_price, close_px, prev_ltp, qty)
 
-    # prev_ltp wins because |102 - 99| = 3 > 0.005
-    assert result == (102.0 - 99.0) * 10, (
-        f"expected prev_ltp-based recompute (30.0), got {result}"
+    # day_pnl is Priority 1 — wins regardless of prev_ltp magnitude
+    assert result == 500.0, (
+        f"expected day_pnl=500.0 (Priority 1), got {result}"
     )
 
 

@@ -199,6 +199,15 @@ export function livePositionDayPnl({ closePx, pollLtp, qty, avg, dcvRow }, liveL
     // positions with closePx=0 should return 0, not lifetime P&L from avg).
     return (live - avg) * qty;
   }
+  // Market closed with price data — use (pollLtp − closePx) × qty directly.
+  // baseDayPnlForPosition returns 0 when prev_settlement_pnl === pnl (flat/settled
+  // options whose Thursday and Friday book values are identical). The close_price
+  // field on snapshot rows carries the corrected prior-session settlement (from
+  // previous_close_backup), so (last_price − close_price) × qty gives the real
+  // Friday vs Thursday move without depending on the settlement-PNL delta.
+  if (!marketOpen && pollLtp > 0 && closePx > 0 && qty !== 0) {
+    return (pollLtp - closePx) * qty;
+  }
   return brokerDcv;
 }
 

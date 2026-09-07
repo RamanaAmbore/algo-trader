@@ -133,11 +133,41 @@ describe('livePositionDayPnl', () => {
     ...overrides,
   });
 
-  it('market closed → falls back to baseDayPnlForPosition', () => {
+  it('market closed with closePx > 0 → price formula (pollLtp - closePx) * qty', () => {
+    // makeFields: closePx=100, pollLtp=102, qty=5 → (102-100)*5=10
     const fields = makeFields();
-    // baseDayPnlForPosition of dcvRow: oq>0, dcv=10 (non-zero) → 10
     const result = livePositionDayPnl(fields, 105, { marketOpen: false });
     expect(result).toBe(10);
+  });
+
+  it('market closed, flat settlement (pnl = prev_settlement_pnl) → price formula rescues 0', () => {
+    // MCX option: Thursday close=930, Friday settlement=850, qty=100 contracts
+    // baseDayPnlForPosition would return pnl - prev_settlement_pnl = 0
+    // Price formula: (850 - 930) * 100 = -8000
+    const dcvRow = {
+      pnl: -5000,
+      prev_settlement_pnl: -5000,  // same → baseDayPnlForPosition = 0
+      overnight_quantity: 100,
+      day_change_val: 0,
+      close_price: 930,
+    };
+    const result = livePositionDayPnl(
+      { closePx: 930, pollLtp: 850, qty: 100, avg: 1000, dcvRow },
+      null,
+      { marketOpen: false },
+    );
+    expect(result).toBe(-8000);
+  });
+
+  it('market closed, closePx = 0 → falls back to baseDayPnlForPosition', () => {
+    // No prior-session close available — cannot apply price formula; use brokerDcv.
+    const dcvRow = { pnl: 500, prev_settlement_pnl: null, overnight_quantity: 5, day_change_val: 500, close_price: 0 };
+    const result = livePositionDayPnl(
+      { closePx: 0, pollLtp: 102, qty: 5, avg: 98, dcvRow },
+      null,
+      { marketOpen: false },
+    );
+    expect(result).toBe(500);  // brokerDcv via baseDayPnlForPosition
   });
 
   it('market open + liveLtp > 0 + closePx > 0 → live recompute', () => {
