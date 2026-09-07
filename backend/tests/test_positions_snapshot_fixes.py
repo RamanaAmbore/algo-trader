@@ -148,3 +148,80 @@ def test_override_stale_close_mid_session_excluded():
         "Mid-session deploy snapshot at 09:30 IST (04:00 UTC) must be >= the "
         "08:00 IST cutoff (02:30 UTC) so it is excluded from the close-override query."
     )
+
+
+# ---------------------------------------------------------------------------
+# Regression: zero close_price (BHAV not yet distributed)
+# ---------------------------------------------------------------------------
+
+def test_patch_close_from_snapshot_map_zero_close_price():
+    """Regression: close_price = 0 (BHAV copy not yet distributed from Kite)
+    must be replaced by daily_book.ltp from the snapshot map.
+
+    Before the fix, _patch_close_from_snapshot_map used COALESCE(previous_close, ltp)
+    — when previous_close = 0 both sides of the epsilon check were near-zero and the
+    check passed, leaving close_price = 0 → day_change_percentage = 100% for any
+    holding with a non-zero LTP.
+
+    Now: `daily_book.ltp` is used directly as `ref_close`. The epsilon guard
+    (abs(snap_ltp - current_close) <= 0.005) fires only when close_price already
+    matches the snapshot; for close_price = 0 the delta is 150.0 >> 0.005, so the
+    patch always applies.
+    """
+    import pandas as pd
+    from backend.api.routes.positions import _patch_close_from_snapshot_map
+
+    df = pd.DataFrame([{
+        'account': 'TEST001',
+        'tradingsymbol': 'E2E',
+        'close_price': 0.0,      # Kite BHAV not yet distributed
+        'previous_close': 0.0,
+    }])
+
+    # daily_book.ltp = 150.0 is the prior-session settlement price
+    snapshot_map = {('TEST001', 'E2E'): 150.0}
+
+    patched_idx = _patch_close_from_snapshot_map(df, snapshot_map)
+
+    # close_price must be patched from 0 → 150.0
+    assert abs(df.iloc[0]['close_price'] - 150.0) < 0.01, (
+        f"close_price must be patched to 150.0 when BHAV close_price = 0; "
+        f"got {df.iloc[0]['close_price']}"
+    )
+    # previous_close must also be set unconditionally
+    assert abs(df.iloc[0]['previous_close'] - 150.0) < 0.01, (
+        f"previous_close must be 150.0; got {df.iloc[0]['previous_close']}"
+    )
+    # The function must report this row as patched
+    assert len(patched_idx) == 1, (
+        f"Expected 1 patched row for zero close_price, got {len(patched_idx)}"
+    )
+
+
+def test_patch_close_from_snapshot_map_uses_ltp_not_previous_close():
+    """_patch_close_from_snapshot_map must use daily_book.ltp (passed as snapshot_map
+    value), not daily_book.previous_close (Kite BHAV copy).
+
+    Verify by supplying a snapshot_map whose value (daily_book.ltp = 150.0) differs
+    from the row's existing previous_close = 0 and close_price = 0.
+    The function must write 150.0 to both close_price and previous_close.
+    """
+    import pandas as pd
+    from backend.api.routes.positions import _patch_close_from_snapshot_map
+
+    df = pd.DataFrame([{
+        'account': 'ZG1234',
+        'tradingsymbol': 'HFCL',
+        'close_price': 0.0,
+        'previous_close': 0.0,
+    }])
+
+    snapshot_map = {('ZG1234', 'HFCL'): 150.0}
+    _patch_close_from_snapshot_map(df, snapshot_map)
+
+    assert abs(df.iloc[0]['close_price'] - 150.0) < 0.01, (
+        "close_price must come from daily_book.ltp (snapshot_map value), not BHAV previous_close"
+    )
+    assert abs(df.iloc[0]['previous_close'] - 150.0) < 0.01, (
+        "previous_close must be set to daily_book.ltp value"
+    )

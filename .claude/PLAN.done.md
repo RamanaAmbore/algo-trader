@@ -1,143 +1,68 @@
-# Plan: NavStrip heartbeat + Payoff exp-profit correction
+# Plan: Fix stale prev_close — daily_book.ltp for holdings AND positions
 
 ## Context
 
-Two bugs reported during MCX-open hours:
+Holdings day P&L% shows 100% for HFCL, E2E, and any holding where
+`daily_book.previous_close = 0` (Kite BHAV copy not yet distributed or missing).
 
-**Bug 1 — NavStrip border animation silent during MCX-only hours**
-`_heartbeatOn` $effect fires only on `_dataChangedTick` (fingerprint change — at most once per 30s
-backend cache cycle). During quiet MCX periods, fingerprint rarely changes → heartbeat never
-fires. The 5s `bookPollerTick` increments `_pollCycleStamp` but `_pollCycleStamp` is not tracked
-in the heartbeat $effect, so the heartbeat never wakes up from book-poll cadence.
+`_override_stale_close_for_holdings` in `holdings.py` queries
+`COALESCE(daily_book.previous_close, ltp)` as `ref_close`. When `previous_close = 0`,
+COALESCE returns 0. The epsilon check `|0 − close_price| ≤ 0.005` passes → no patch →
+`close_price = 0` propagates → day P&L% = 100%.
 
-**Bug 2 — Payoff Exp P&L total wrong when showDraftInPayoff is off**
-`_legsExpPnlTotal` (the number shown in the Legs panel TOTAL row and passed to the chart as
-`legsExpPnlAtSpot`) does NOT apply the `showDraftInPayoff` gate. The identical filter is already
-used in `legs` (line 2336-2337) to exclude provisional/draft/draft_store sources from the backend
-strategy analytics call. When `showDraftInPayoff=false`, the backend payoff curve excludes drafts
-(showing 406000) but `_legsExpPnlTotal` still includes them (showing 269826 — the draft closing
-leg reduces the net qty from -3 to -2 lots). Same missing gate in `_expiryPnlOffset` causes the
-chart's expiry offset to be wrong too.
+Same root cause can hit positions: `_override_stale_close_from_snapshot` in `positions.py`
+must also use `daily_book.ltp` directly (not `COALESCE(previous_close, …)`).
+
+Fix for both: use `daily_book.ltp` (our own settlement snapshot, reliable) as `ref_close`
+instead of Kite's `previous_close` / BHAV copy. Same invariant documented in CLAUDE.md:
+"Never use daily_book.previous_close. Use daily_book.ltp."
 
 ## Agents
-- frontend: Both fixes (PositionStrip.svelte + derivatives/+page.svelte)
-- backend-test: skip
+- backend: Apply `daily_book.ltp` fix to BOTH `_override_stale_close_for_holdings`
+  (holdings.py) AND verify/fix `_override_stale_close_from_snapshot` (positions.py).
+  Add pytest covering the 0-prev_close case for holdings; verify positions test exists.
+- frontend: skip
 - broker: skip
 - doc: skip
-- playwright: Update navstrip_pslot_closed_hours.spec.js to assert `_pollCycleStamp` drives heartbeat; add derivatives legsExpPnlTotal spec (source-scan)
+- backend-test: skip (backend agent writes tests)
+- playwright: skip
 
-## Fix 1 — NavStrip heartbeat fires every 5s during any market-open session
+## Fix — holdings.py + positions.py
 
-**File:** `frontend/src/lib/PositionStrip.svelte`  
-**Location:** `_heartbeatOn` $effect, line ~907
+**Files:**
+- `backend/api/routes/holdings.py` — `_override_stale_close_for_holdings`
+- `backend/api/routes/positions.py` — `_override_stale_close_from_snapshot`
 
-Add `void _pollCycleStamp;` as the first reactive read:
-
-```javascript
-// BEFORE:
-$effect(() => {
-  if (_dataChangedTick === 0) return;
-  if (_mktTick === 0) return;
-  _heartbeatOn = true;
-  ...
-
-// AFTER:
-$effect(() => {
-  void _pollCycleStamp;  // fire on every 5s bookPollerTick during open hours
-  if (_dataChangedTick === 0) return;  // keep: skip mount (no data yet)
-  if (_mktTick === 0) return;          // keep: no heartbeat during closed hours
-  _heartbeatOn = true;
-  ...
+In both functions, find the query that computes `ref_close`. Change any occurrence of:
+```sql
+COALESCE(daily_book.previous_close, ...)
+-- or: daily_book.previous_close
+```
+to:
+```sql
+daily_book.ltp
 ```
 
-`_pollCycleStamp` already increments on every `bookPollerTick.value` change (line 144-147).
-The `_mktTick === 0` gate ensures this only fires during NSE or MCX open.
-The `_dataChangedTick === 0` guard prevents a mount-paint before any data has loaded.
+`daily_book.ltp` = the LTP we captured at settlement from our own snapshot
+(`captured_at < 08:00 IST`, DESC per account+symbol). Reliable regardless of Kite's
+BHAV distribution schedule.
 
-## Fix 2 — _legsExpPnlTotal + _expiryPnlOffset respect showDraftInPayoff
+Add a pytest that mocks a holding row with `close_price = 0` and
+`daily_book.ltp = <valid settlement price>`, and asserts:
+- returned holding has patched `close_price` = `daily_book.ltp`
+- day P&L% is not 100%
 
-**File:** `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-
-### _legsExpPnlTotal (line 2150-2161)
-
-Apply the exact same source filter already used in `legs` (line 2336-2337):
-
-```javascript
-// BEFORE:
-const _legsExpPnlTotal = $derived.by(() => {
-  const spot = liveSpot ?? null;
-  return displayedCandidates
-    .filter(c => _isLegEnabled(c))
-    .reduce((s, c) => {
-      const v = _legExpPnlDisplay(c, spot);
-      return v == null ? s : s + v;
-    }, 0);
-});
-
-// AFTER:
-const _legsExpPnlTotal = $derived.by(() => {
-  const spot = liveSpot ?? null;
-  return displayedCandidates
-    .filter(c => {
-      if (!_isLegEnabled(c)) return false;
-      if (!showDraftInPayoff &&
-          (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
-      return true;
-    })
-    .reduce((s, c) => {
-      const v = _legExpPnlDisplay(c, spot);
-      return v == null ? s : s + v;
-    }, 0);
-});
-```
-
-### _expiryPnlOffset (line 2173-2178)
-
-Same gate — offset is passed to the chart overlay which already excludes drafts from its legs:
-
-```javascript
-// BEFORE:
-const _expiryPnlOffset = $derived.by(() =>
-  displayedCandidates
-    .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
-    .reduce((s, c) => s + (Number(c.qty || 0) === 0
-      ? Number(c.realised || c.pnl || 0)
-      : Number(c.realised || 0)), 0)
-);
-
-// AFTER:
-const _expiryPnlOffset = $derived.by(() =>
-  displayedCandidates
-    .filter(c => {
-      if (!_isLegEnabled(c) || c.kind === 'eq') return false;
-      if (!showDraftInPayoff &&
-          (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
-      return true;
-    })
-    .reduce((s, c) => s + (Number(c.qty || 0) === 0
-      ? Number(c.realised || c.pnl || 0)
-      : Number(c.realised || 0)), 0)
-);
-```
-
-**Why both:** `_legsExpPnlTotal` is the number in the Legs TOTAL row + `legsExpPnlAtSpot` prop on
-the chart. `_expiryPnlOffset` shifts the expiry curve. Both must use the same source set as `legs`
-or the chart and the TOTAL row diverge.
-
-**Behaviour when `showDraftInPayoff=true` (default):** unchanged — all sources included.  
-**Behaviour when `showDraftInPayoff=false`:** drafts/provisional excluded from TOTAL row and
-offset, matching what the backend payoff curve already computed.
+Verify an equivalent test already covers the positions path; add one if missing.
 
 ## Tests
-- pytest: no
-- svelte-check: yes
-- playwright: yes
+- pytest: yes
+- svelte-check: no
+- playwright: no
 
 ## Commit message
-fix(derivatives+navstrip): _legsExpPnlTotal respects showDraftInPayoff + heartbeat fires on bookPollerTick
+fix(holdings+positions): use daily_book.ltp (not COALESCE previous_close) as stale close_price reference
 
 ## Done when
-1. MCX open: navstrip amber border animation fires every ~5s (not only on data change)
-2. With showDraftInPayoff=false: Legs TOTAL Exp P&L = same as backend payoff at current spot
-3. With showDraftInPayoff=true: no behaviour change (all sources included as before)
-4. svelte-check 0 errors, playwright spec passes
+1. HFCL and E2E (and any holding/position with previous_close=0) show correct day P&L%
+2. Holdings and positions day P&L totals are accurate
+3. pytest passes with new/updated tests covering the 0-prev_close case

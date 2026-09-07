@@ -439,6 +439,53 @@ class TestHoldingsCloseOverrideForHoldings:
             + str(df.get('previous_close', 'ABSENT'))
         )
 
+    def test_zero_close_price_patched_from_snapshot_ltp(self):
+        """Regression test: close_price = 0 (BHAV not yet distributed) must be
+        replaced by daily_book.ltp and must NOT produce day_change_percentage = 100%.
+
+        Bug: when Kite's BHAV copy hasn't been distributed yet, previous_close = 0.
+        The old COALESCE(previous_close, ltp) path would use ltp as close → day
+        change % = (ltp - ltp)/ltp = 0 (masked), or ltp-as-close → P&L% = 100%
+        when the denominator used avg instead of close. daily_book.ltp = 150.0
+        is the prior-session settlement and must become close_price and previous_close.
+        """
+        df = _make_holdings_df(
+            account="TEST001",
+            tradingsymbol="HFCL",
+            quantity=100,
+            last_price=155.0,
+            close_price=0.0,      # Kite BHAV not yet distributed
+            average_price=140.0,
+        )
+        # daily_book.ltp = 150.0 is our reliable settlement snapshot
+        snapshot_rows = [("TEST001", "HFCL", 150.0)]
+
+        df = _run_close_override_for_holdings(df, snapshot_rows)
+
+        # close_price must be patched from 0 → 150.0
+        assert abs(df.iloc[0]['close_price'] - 150.0) < 0.01, (
+            f"close_price must be patched to 150.0 (daily_book.ltp), "
+            f"got {df.iloc[0]['close_price']}"
+        )
+        # previous_close must also be written
+        assert abs(df.iloc[0]['previous_close'] - 150.0) < 0.01, (
+            f"previous_close must be 150.0, got {df.iloc[0]['previous_close']}"
+        )
+        # day_change_val = (ltp - close) * qty = (155 - 150) * 100 = 500
+        expected_dcv = (155.0 - 150.0) * 100
+        assert abs(df.iloc[0]['day_change_val'] - expected_dcv) < 0.01, (
+            f"day_change_val must be {expected_dcv} (not 0 or 15500), "
+            f"got {df.iloc[0]['day_change_val']}"
+        )
+        # day_change_percentage must NOT be 100% — that was the bug symptom
+        if df.iloc[0]['previous_close'] > 0:
+            dcp = df.iloc[0].get('day_change_percentage', None)
+            if dcp is not None:
+                assert abs(dcp) < 50.0, (
+                    f"day_change_percentage must not be ~100% when close_price was 0; "
+                    f"got {dcp:.2f}%"
+                )
+
     def test_recompute_row_percentages_skipped_when_no_matches(self):
         """recompute_row_percentages must not be called when patched_indices is empty.
 
