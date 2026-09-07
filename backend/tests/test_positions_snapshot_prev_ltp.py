@@ -194,11 +194,10 @@ async def test_positions_snapshot_loop_unpacks_prev_ltp_and_prev_settlement_pnl(
 async def test_positions_snapshot_prev_close_val_prefers_prev_ltp():
     """actual_previous_close (frozen settlement) is the primary reference for day P&L.
 
-    After the CC-refactor (2026-08-30), the `prev_close_val` dead-variable was removed.
-    The helper `_resolve_previous_close` is now called WITHOUT prev_ltp so that
-    corruption detection (pc ≈ ltp) does not fall through to prev_ltp — positions
-    only uses prev_ltp when previous_close is completely absent/zero.
-    Verify: (a) actual_previous_close is computed, (b) _resolve_previous_close is used.
+    After the prev_close pipeline redesign (2026-09-06), build_row_from_snapshot_raw
+    reads previous_close directly from the snapshot tuple without calling
+    _resolve_previous_close (which is now only available for external callers).
+    Verify: (a) actual_previous_close is computed, (b) prev_ltp is still unpacked.
     """
     import inspect
     from backend.api.routes import positions_helpers as _helpers
@@ -208,12 +207,7 @@ async def test_positions_snapshot_prev_close_val_prefers_prev_ltp():
         "build_row_from_snapshot_raw must compute actual_previous_close "
         "(the frozen prior-session settlement) as the primary reference"
     )
-    assert "_resolve_previous_close" in src, (
-        "build_row_from_snapshot_raw must use _resolve_previous_close helper "
-        "for corruption-detection (CC-reduction refactor 2026-08-30)"
-    )
-    # prev_ltp must still be unpacked from the tuple (column 11) but is no
-    # longer passed to _resolve_previous_close (positions fallback removed).
+    # prev_ltp must still be unpacked from the tuple (column 11) for forward compat.
     assert "prev_ltp, prev_settlement_pnl" in src, (
         "Tuple unpack must still include prev_ltp (column 11)"
     )

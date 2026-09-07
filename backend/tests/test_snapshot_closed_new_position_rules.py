@@ -86,15 +86,21 @@ def test_new_position_ignores_broker_close_price():
 
 
 def test_overnight_position_uses_close_ref_not_avg_cost():
-    """overnight_quantity>0 → previous_close must NOT use avg_cost."""
-    pos = {**_BASE_POS, "quantity": 50, "overnight_quantity": 50}
-    prev_map = {("ZG0790", "NIFTY26AUGFUT", "positions"): 24350.0}
-    rows = _call_positions_rows([pos], prev_ltp_map=prev_map)
+    """overnight_quantity>0 → previous_close must use broker close_price, NOT avg_cost.
+
+    After the prev_close pipeline redesign (2026-09-06), prev_ltp_map is no longer
+    consulted during snapshot writes. The broker's close_price (from Kite BHAV) is
+    written directly to previous_close. fix_daily_book_prev_close at 08:00 IST then
+    overwrites it with the canonical daily_book.ltp from the prior session.
+    """
+    pos = {**_BASE_POS, "quantity": 50, "overnight_quantity": 50,
+           "close_price": 24400.0}  # broker BHAV close
+    rows = _call_positions_rows([pos], prev_ltp_map={})
 
     row = rows[0]
-    # SSOT: daily_book.ltp from prior session, not avg_cost
-    assert row["previous_close"] == 24350.0, (
-        f"Overnight position: previous_close should be daily_book.ltp=24350, got {row['previous_close']}"
+    # Post-redesign: broker close_price wins (24400), not prev_ltp_map
+    assert row["previous_close"] == 24400.0, (
+        f"Overnight position: previous_close should be broker close_price=24400, got {row['previous_close']}"
     )
 
 

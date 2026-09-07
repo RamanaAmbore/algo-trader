@@ -158,16 +158,19 @@ class TestDailySnapshotPreviousCloseNeverNull:
         )
 
     def test_daily_snapshot_previous_close_fallback_chain(self):
-        """Verify the fallback chain: prev_ltp_map > close_price > None (no ltp fallback)."""
+        """Verify the simplified fallback chain: close_price > None.
+
+        The prev_ltp_map pre-load query was removed in the pipeline redesign.
+        previous_close now comes directly from the broker row's close_price field.
+        fix_daily_book_prev_close(settlement_map=...) at 08:00 IST supplies
+        the correct settlement value when close_price is stale or missing.
+        """
         from backend.shared.helpers.date_time_utils import timestamp_indian
 
         now_ist = timestamp_indian()
         ltp_val = 1520.0
 
-        # Case 1: prev_ltp_map entry exists — use it (highest priority)
-        prev_ltp_map_case1 = {
-            ("TEST_ACCT", "INFY", "holdings"): 1510.0,
-        }
+        # Case 1: close_price > 0 — use it directly (simplified pipeline)
         raw_holding = {
             "tradingsymbol": "INFY",
             "exchange": "NSE",
@@ -175,7 +178,7 @@ class TestDailySnapshotPreviousCloseNeverNull:
             "opening_quantity": 50,
             "average_price": 1500.0,
             "last_price": ltp_val,
-            "close_price": 1505.0,  # not used
+            "close_price": 1505.0,
         }
         rows = _holdings_rows(
             account="TEST_ACCT",
@@ -184,13 +187,16 @@ class TestDailySnapshotPreviousCloseNeverNull:
             now_ist=now_ist,
             settled=False,
             market_open=False,
-            prev_ltp_map=prev_ltp_map_case1,
+            prev_ltp_map={},  # prev_ltp_map is accepted but no longer used
         )
-        assert rows[0]["previous_close"] == pytest.approx(1510.0), (
-            "prev_ltp_map entry should win"
+        assert rows[0]["previous_close"] == pytest.approx(1505.0), (
+            "close_price should be used as previous_close (simplified pipeline)"
         )
 
-        # Case 2: no prev_ltp_map, but close_price > 0 — use close_price
+        # Case 2: close_price > 0 even with non-empty prev_ltp_map — close_price wins
+        prev_ltp_map_ignored = {
+            ("TEST_ACCT", "INFY", "holdings"): 1510.0,
+        }
         raw_holding2 = {
             "tradingsymbol": "INFY",
             "exchange": "NSE",
@@ -207,14 +213,14 @@ class TestDailySnapshotPreviousCloseNeverNull:
             now_ist=now_ist,
             settled=False,
             market_open=False,
-            prev_ltp_map={},
+            prev_ltp_map=prev_ltp_map_ignored,  # ignored in simplified pipeline
         )
         assert rows2[0]["previous_close"] == pytest.approx(1505.0), (
-            "close_price should be used when prev_ltp_map is empty"
+            "close_price should be used regardless of prev_ltp_map (simplified pipeline)"
         )
 
-        # Case 3: no prev_ltp_map, close_price=0 — previous_close is None (no ltp fallback).
-        # The morning fix_daily_book_prev_close will populate from yesterday's daily_book.ltp.
+        # Case 3: close_price=0 — previous_close is None.
+        # The morning fix_daily_book_prev_close will populate from settlement_map.
         raw_holding3 = {
             "tradingsymbol": "INFY",
             "exchange": "NSE",
@@ -234,7 +240,7 @@ class TestDailySnapshotPreviousCloseNeverNull:
             prev_ltp_map={},
         )
         assert rows3[0]["previous_close"] is None, (
-            f"previous_close should be None when close_price=0 and prev_ltp_map empty; "
+            f"previous_close should be None when close_price=0; "
             f"got {rows3[0]['previous_close']!r}"
         )
 

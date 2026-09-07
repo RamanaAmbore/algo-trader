@@ -114,14 +114,16 @@ class TestHoldingsWriterNoneFallback:
             f"got {prev_close!r} instead"
         )
 
-    def test_holdings_previous_close_uses_prev_ltp_map_when_present(self):
-        """When prev_ltp_map has a value, it must be used as previous_close."""
+    def test_holdings_previous_close_uses_close_price_when_present(self):
+        """After the prev_close pipeline redesign (2026-09-06), broker close_price is the
+        canonical source during snapshot writes. prev_ltp_map is no longer consulted.
+        When close_price=374.10, previous_close must equal 374.10.
+        """
         from datetime import date
         from backend.api.algo.daily_snapshot import _holdings_rows
 
-        row = self._make_holding_row(close_price=0.0, ltp=407.5)
+        row = self._make_holding_row(close_price=374.10, ltp=407.5)
         now_ist = datetime(2026, 8, 30, 9, 0, tzinfo=_IST)
-        prev_ltp_map = {("ZG0790", "RELIANCE", "holdings"): 374.10}
 
         import backend.api.algo.daily_snapshot as _ds
         with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
@@ -134,12 +136,12 @@ class TestHoldingsWriterNoneFallback:
                     now_ist=now_ist,
                     settled=True,
                     market_open=False,
-                    prev_ltp_map=prev_ltp_map,
+                    prev_ltp_map={},   # ignored post-redesign
                 )
 
         assert len(rows) == 1
         assert rows[0]["previous_close"] == pytest.approx(374.10), (
-            "previous_close must use prev_ltp_map value when available"
+            "previous_close must use broker close_price=374.10 when available"
         )
 
     def test_holdings_previous_close_uses_close_price_fallback(self):

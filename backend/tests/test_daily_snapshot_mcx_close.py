@@ -59,6 +59,7 @@ async def db_session():
         Column("day_pnl", Numeric, nullable=True),
         Column("total_pnl", Numeric, nullable=True),
         Column("previous_close", Float, nullable=True),
+        Column("previous_close_backup", Float, nullable=True),
         Column("payload_json", Text, nullable=True),
         Column("captured_at", DateTime(timezone=True), nullable=False),
         UniqueConstraint("date", "account", "kind", "symbol",
@@ -96,6 +97,9 @@ async def _upsert_rows(session: AsyncSession, rows: list[dict]) -> int:
     now_utc = datetime.now(timezone.utc)
     for r in rows:
         r["captured_at"] = now_utc
+        # previous_close_backup required by the new UPSERT SQL
+        if "previous_close_backup" not in r:
+            r["previous_close_backup"] = r.get("previous_close")
     await session.execute(_get_upsert_sql(), rows)
     await session.commit()
     return len(rows)

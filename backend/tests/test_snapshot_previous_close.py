@@ -562,19 +562,19 @@ def test_build_row_from_snapshot_raw_previous_close_beats_prev_ltp():
 
 
 def test_build_row_from_snapshot_raw_fallback_to_prev_ltp_when_no_previous_close():
-    """When previous_close is None but prev_ltp is a valid prior reference,
-    day_change_val comes from the stored day_pnl column (not the formula).
+    """When previous_close is None, day_change_val falls back to the stored day_pnl column.
 
-    When actual_previous_close is None, computed_day_pnl falls back to the
-    stored day_pnl value.  The stored day_pnl must be non-zero for the test
-    to be meaningful.
+    After the prev_close pipeline redesign (2026-09-06), prev_ltp is no longer
+    used as a close baseline in build_row_from_snapshot_raw. When actual_previous_close
+    is None (previous_close=None in the DB row), _compute_snapshot_day_pnl falls back
+    to the stored day_pnl column value (8000.0).
     """
     from decimal import Decimal
     from datetime import datetime, timezone
     from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
 
     LTP = 5200.0
-    STORED_DAY_PNL = 8000.0     # non-zero stored value
+    STORED_DAY_PNL = 8000.0     # non-zero stored value — this is the expected fallback
 
     captured_ts = datetime(2026, 8, 11, 17, 0, tzinfo=timezone.utc)
     raw_row = (
@@ -588,19 +588,19 @@ def test_build_row_from_snapshot_raw_fallback_to_prev_ltp_when_no_previous_close
         Decimal("10000.00"),         # total_pnl
         "{}",
         captured_ts,
-        None,                        # previous_close — absent (new position)
-        5100.0,                      # prev_ltp — valid but different from ltp
+        None,                        # previous_close — absent
+        5100.0,                      # prev_ltp — present but NOT used as close baseline
         None,
     )
 
     row = build_row_from_snapshot_raw(raw_row)
 
-    # With previous_close=None, _resolve_previous_close falls back to prev_ltp=5100.
-    # Universal formula: total_pnl - (prev_ltp - avg) * oq = 10000 - (5100-5100)*100 = 10000.
-    expected_dcv = 10000.0  # (ltp - prev_ltp) * qty = (5200-5100)*100
+    # With previous_close=None, the formula path is skipped → falls back to stored day_pnl.
+    # prev_ltp is no longer used as a baseline (post-redesign).
+    expected_dcv = STORED_DAY_PNL  # 8000.0 (stored column fallback)
     assert row.day_change_val == pytest.approx(expected_dcv, rel=1e-4), (
-        f"day_change_val={row.day_change_val} must equal universal formula result "
-        f"({expected_dcv}) when previous_close is None and prev_ltp is used as baseline"
+        f"day_change_val={row.day_change_val} must equal stored day_pnl fallback "
+        f"({expected_dcv}) when previous_close is None (formula path skipped)"
     )
     assert abs(row.day_change_val) > 0, "day_change_val must be non-zero"
 
@@ -689,9 +689,12 @@ def test_holdings_rows_accepts_prev_ltp_map_kwarg():
     assert param.default is None, "prev_ltp_map must default to None"
 
 
-def test_holdings_rows_previous_close_uses_prev_ltp_map_when_present():
-    """When prev_ltp_map has entry for (account, symbol, 'holdings'),
-    previous_close uses it instead of broker close_price."""
+def test_holdings_rows_previous_close_uses_close_price_directly():
+    """Simplified pipeline: previous_close comes from broker row.close_price directly.
+    prev_ltp_map is accepted (backward compat) but no longer used to override close_price.
+    fix_daily_book_prev_close(settlement_map=...) at 08:00 IST provides the correct
+    settlement value when broker's BHAV data is confirmed.
+    """
     from backend.api.algo.daily_snapshot import _holdings_rows
     from datetime import date, datetime, timezone
 
@@ -702,11 +705,11 @@ def test_holdings_rows_previous_close_uses_prev_ltp_map_when_present():
         "average_price": 2500.0,
         "last_price": 2550.0,
         "day_change": 50.0,
-        "close_price": 2520.0,  # broker's first-cut close (may be stale)
+        "close_price": 2520.0,  # broker's close_price — this is the settlement reference
         "pnl": 500.0,
     }
 
-    # Prior-day ltp from daily_book
+    # prev_ltp_map is passed but ignored in the simplified pipeline
     prev_ltp_map = {
         ("ACC1", "RELIANCE", "holdings"): 2500.0
     }
@@ -718,9 +721,10 @@ def test_holdings_rows_previous_close_uses_prev_ltp_map_when_present():
     )
 
     assert len(rows) == 1
-    assert rows[0]["previous_close"] == 2500.0, (
-        f"previous_close should use prev_ltp_map value (2500.0), "
-        f"not broker close_price (2520.0), got {rows[0]['previous_close']}"
+    # Simplified pipeline: close_price is used directly (not prev_ltp_map)
+    assert rows[0]["previous_close"] == 2520.0, (
+        f"previous_close should use broker close_price (2520.0), "
+        f"got {rows[0]['previous_close']}"
     )
 
 
@@ -756,8 +760,9 @@ def test_holdings_rows_previous_close_falls_back_to_close_price():
 
 
 def test_holdings_rows_previous_close_multi_account_symbol_isolation():
-    """prev_ltp_map uses (account, symbol, kind) as key;
-    entries for different accounts/symbols must not cross."""
+    """Each symbol's previous_close comes from its own broker row.close_price.
+    Different symbols must not cross-contaminate each other.
+    """
     from backend.api.algo.daily_snapshot import _holdings_rows
     from datetime import date, datetime, timezone
 
@@ -783,37 +788,32 @@ def test_holdings_rows_previous_close_multi_account_symbol_isolation():
         "pnl": 300.0,
     }
 
-    prev_ltp_map = {
-        ("ACC1", "RELIANCE", "holdings"): 2475.0,
-        ("ACC1", "INFY", "holdings"): 1450.0,
-    }
-
     now_ist = datetime(2026, 8, 15, 15, 35, 0)
 
-    # Test RELIANCE
+    # Test RELIANCE — uses its own close_price
     rows = _holdings_rows(
         "ACC1", date(2026, 8, 15), [acc1_reliance], now_ist,
-        prev_ltp_map=prev_ltp_map
     )
     assert len(rows) == 1
-    assert rows[0]["previous_close"] == 2475.0, (
-        f"RELIANCE should use map value 2475.0, got {rows[0]['previous_close']}"
+    assert rows[0]["previous_close"] == 2520.0, (
+        f"RELIANCE should use broker close_price 2520.0, got {rows[0]['previous_close']}"
     )
 
-    # Test INFY
+    # Test INFY — uses its own close_price
     rows = _holdings_rows(
         "ACC1", date(2026, 8, 15), [acc1_infy], now_ist,
-        prev_ltp_map=prev_ltp_map
     )
     assert len(rows) == 1
-    assert rows[0]["previous_close"] == 1450.0, (
-        f"INFY should use map value 1450.0, got {rows[0]['previous_close']}"
+    assert rows[0]["previous_close"] == 1500.0, (
+        f"INFY should use broker close_price 1500.0, got {rows[0]['previous_close']}"
     )
 
 
-def test_holdings_rows_previous_close_map_priority_over_broker_close():
-    """prev_ltp_map entry takes priority over broker close_price even
-    when they differ significantly (e.g., broker close is stale)."""
+def test_holdings_rows_previous_close_uses_broker_close_price():
+    """Simplified pipeline: previous_close comes from broker close_price.
+    fix_daily_book_prev_close(settlement_map=...) at 08:00 IST provides
+    the BHAV-confirmed settlement value when Kite confirms it.
+    """
     from backend.api.algo.daily_snapshot import _holdings_rows
     from datetime import date, datetime, timezone
 
@@ -824,25 +824,19 @@ def test_holdings_rows_previous_close_map_priority_over_broker_close():
         "average_price": 3400.0,
         "last_price": 3450.0,
         "day_change": 50.0,
-        "close_price": 3400.0,  # broker's first-cut (early capture)
+        "close_price": 3400.0,  # broker's close_price is the settlement reference
         "pnl": 500.0,
-    }
-
-    # Actual prior-day settlement is different
-    prev_ltp_map = {
-        ("ACC1", "TCS", "holdings"): 3350.0
     }
 
     now_ist = datetime(2026, 8, 15, 15, 35, 0)
     rows = _holdings_rows(
         "ACC1", date(2026, 8, 15), [holding], now_ist,
-        prev_ltp_map=prev_ltp_map
     )
 
     assert len(rows) == 1
-    # Map value (3350) should win, not broker close_price (3400)
-    assert rows[0]["previous_close"] == 3350.0, (
-        f"prev_ltp_map should take priority: expected 3350.0, "
+    # Broker's close_price is used directly (not overridden by prev_ltp_map)
+    assert rows[0]["previous_close"] == 3400.0, (
+        f"previous_close should use broker close_price (3400.0), "
         f"got {rows[0]['previous_close']}"
     )
 
@@ -948,15 +942,16 @@ def _make_position_row(symbol="NIFTY26JULFUT", exchange="NFO", qty=50,
     }
 
 
-def test_positions_rows_prev_ltp_map_priority_over_close_price():
-    """When prev_ltp_map has entry for (account, symbol, 'positions'),
-    it wins over broker close_price for both previous_close and day_pnl."""
+def test_positions_rows_uses_broker_close_price_directly():
+    """Simplified pipeline: previous_close and day_pnl use broker close_price directly.
+    prev_ltp_map is accepted (backward compat) but no longer overrides close_price.
+    fix_daily_book_prev_close(settlement_map=...) at 08:00 IST provides BHAV confirmation.
+    """
     from unittest.mock import patch
     import backend.api.algo.daily_snapshot as _ds
     from backend.api.algo.daily_snapshot import _positions_rows
     from datetime import date, datetime, timezone
 
-    PRIOR_LTP = 22500.0
     BROKER_CLOSE = 22800.0
     LTP = 23200.0
     QTY = 50
@@ -964,23 +959,24 @@ def test_positions_rows_prev_ltp_map_priority_over_close_price():
     raw = [_make_position_row(last_price=LTP, close_price=BROKER_CLOSE, qty=QTY,
                               overnight_quantity=QTY)]
     now_ist = datetime(2026, 8, 15, 16, 0, 0, tzinfo=timezone.utc)
-    prev_ltp_map = {("ZG0790", "NIFTY26JULFUT", "positions"): PRIOR_LTP}
+    # prev_ltp_map is passed but ignored in simplified pipeline
+    prev_ltp_map = {("ZG0790", "NIFTY26JULFUT", "positions"): 22500.0}
 
     # Market closed (post-session) so ltp is captured
     with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=False):
         rows = _positions_rows("ZG0790", date(2026, 8, 15), raw, now_ist,
                                settled=True, prev_ltp_map=prev_ltp_map)
         assert len(rows) == 1
-        assert rows[0]["previous_close"] == pytest.approx(PRIOR_LTP), (
-            f"previous_close={rows[0]['previous_close']} must equal prev_ltp_map "
-            f"value ({PRIOR_LTP}), not broker close_price ({BROKER_CLOSE})"
+        # Simplified pipeline: broker close_price is used directly
+        assert rows[0]["previous_close"] == pytest.approx(BROKER_CLOSE), (
+            f"previous_close={rows[0]['previous_close']} must equal broker "
+            f"close_price ({BROKER_CLOSE})"
         )
-        # day_pnl must also use prior_ltp as the close reference
-        expected = (LTP - PRIOR_LTP) * QTY  # 35000
-        wrong = (LTP - BROKER_CLOSE) * QTY   # 20000
+        # day_pnl uses broker close_price as the reference
+        expected = (LTP - BROKER_CLOSE) * QTY  # 20000
         assert rows[0]["day_pnl"] == pytest.approx(expected, rel=1e-4), (
-            f"day_pnl={rows[0]['day_pnl']} must use prev_ltp ({PRIOR_LTP}), "
-            f"not broker close_price ({BROKER_CLOSE}); expected={expected}, wrong={wrong}"
+            f"day_pnl={rows[0]['day_pnl']} must use broker close_price ({BROKER_CLOSE}); "
+            f"expected={expected}"
         )
 
 
@@ -1004,29 +1000,29 @@ def test_positions_rows_prev_ltp_map_fallback_to_close_price_for_new_position():
     )
 
 
-def test_positions_rows_monday_after_weekend_uses_friday_ltp():
-    """Monday snapshot must use Friday's daily_book.ltp as previous_close.
+def test_positions_rows_monday_uses_broker_close_price():
+    """Monday snapshot uses broker's close_price directly.
 
-    Weekend gap: Friday LTP=22500 is in prev_ltp_map; Monday broker returns
-    close_price=22800 (stale). previous_close must be 22500 (Friday socket LTP).
+    In the simplified pipeline, broker's close_price IS the BHAV settlement value
+    (Kite updates it from BHAV at ~08:00 IST). On Monday morning, Kite's close_price
+    reflects Friday's settlement. fix_daily_book_prev_close(settlement_map=...) at
+    08:00 IST provides additional confirmation using that day's broker data.
     """
     from backend.api.algo.daily_snapshot import _positions_rows
     from datetime import date, datetime, timezone
 
-    FRIDAY_LTP = 22500.0
-    MONDAY_BROKER_CLOSE = 22800.0
+    MONDAY_BROKER_CLOSE = 22800.0  # Kite's BHAV-confirmed Friday settlement
 
     raw = [_make_position_row(last_price=23100.0, close_price=MONDAY_BROKER_CLOSE)]
     now_ist = datetime(2026, 8, 17, 16, 0, 0, tzinfo=timezone.utc)
-    # prev_ltp_map contains Friday's entry (date < Monday enforced by SQL)
-    prev_ltp_map = {("ZG0790", "NIFTY26JULFUT", "positions"): FRIDAY_LTP}
 
     rows = _positions_rows("ZG0790", date(2026, 8, 17), raw, now_ist,
-                           settled=True, prev_ltp_map=prev_ltp_map)
+                           settled=True, prev_ltp_map={})
     assert len(rows) == 1
-    assert rows[0]["previous_close"] == pytest.approx(FRIDAY_LTP), (
+    # Simplified pipeline: broker close_price is used directly
+    assert rows[0]["previous_close"] == pytest.approx(MONDAY_BROKER_CLOSE), (
         f"Monday previous_close={rows[0]['previous_close']} must equal "
-        f"Friday daily_book.ltp ({FRIDAY_LTP}), not broker close_price ({MONDAY_BROKER_CLOSE})"
+        f"broker close_price ({MONDAY_BROKER_CLOSE})"
     )
 
 

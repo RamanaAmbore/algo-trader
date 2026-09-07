@@ -1,348 +1,163 @@
-# Plan: Fix Snapshot Cutoff — Positions Day P&L = 0 + Holdings Oscillation (Any Non-Trading Day)
+# Plan: prev_close pipeline — remove settlement snapshots, 08:00 fixup for both MCX+NSE
 
 ## Context
 
-**Bug report (2026-09-06, Saturday, market closed):**
-- Positions Day P&L = -0.00 (should be ~2.03L)
-- Holdings Day P&L oscillating between ~2K and ~89K (correct is ~89K)
-
-**Root cause — affects any non-trading day (weekends, single holidays, Diwali runs):**
-
-`_fetch_snapshot_close_map` (positions) and `_override_stale_close_for_holdings` (holdings)
-query `daily_book` with `captured_at < settlement_cutoff_for()` (= today 08:00 IST).
-`DISTINCT ON + DESC` returns the **most recent** snapshot before that boundary.
-
-On any non-trading day, the most recent snapshot = prior trading day's settlement (e.g. Fri 23:45).
-Broker REST also returns ltp frozen at that same price. Result: `close_price = ltp` → Day P&L = 0.
-
-**Compounding bug — `exchange_schedule.weekdays` is NULL:**
-
-`seed_and_warm()` has a migration (`SET weekdays = '[0,1,2,3,4]'`) but the value
-is JSON notation; PostgreSQL array columns require `ARRAY[0,1,2,3,4]`. Migration silently
-fails → `weekdays IS NULL` on both MCX and NON-MCX default rows → `_row_matches_now()`
-returns True every day including Saturday → `is_any_segment_open()` = True on weekends
-08:00–23:30. Any gate built on `is_any_segment_open()` alone is unreliable on weekends.
-
-**How `daily_book` is written (key facts):**
-- Written **once per trading day** per account/symbol at `exchange_schedule.snapshot_time`
-  - MCX: 23:45 IST, NSE: 15:45 IST — from DB column, NOT hardcoded
-- Consecutive `daily_book` entries for the same symbol are ~24 hours apart (one per trading day)
-- No intraday writes; no close+settlement split — one write per day at `snapshot_time`
-- On non-trading days: no new writes — latest entry is the prior trading day's snapshot
-
-**Design goals (ALL must hold simultaneously):**
-- No hard-coded market hours, close times, or settlement times — fully calendar-driven
-- Muhurrat trades (special Saturday session): exchange_schedule date override row handles it
-- Weekend trading days: same date override mechanism
-- Survive code redeployment at any time on any day
+Multiple `previous_close` bugs traced to settlement snapshots (16:15 NSE, 00:15 MCX) creating
+date/timing complexity that corrupts the reference price pipeline. Simplify: one snapshot per
+exchange at close, prev_close updated at 08:00 next trade day for both.
 
 ---
 
-## Fix Overview
+## Proposed Architecture
 
-**Two changes work together:**
+### One rule for all exchanges — no MCX special-casing
 
-1. **Fix the weekdays migration SQL** in `exchange_clock.py:seed_and_warm()` so
-   `exchange_schedule.weekdays = ARRAY[0,1,2,3,4]` on default rows after the next deploy.
-   This makes `_effective_gate_rows()` return empty on regular weekends — no hard-coded
-   weekday guard needed anywhere.
+| Step | When | All exchanges (MCX and non-MCX identical) |
+|---|---|---|
+| Close snapshot | NSE 15:45 / MCX 23:45 IST | Captures `ltp` (EOD price). Sets `previous_close = broker.close_price` (prior session's settlement already in Kite) |
+| Settlement snapshot | — | **REMOVED for both** |
+| 08:00 fixup | Next trading day 08:00 IST | Calls broker API once for all positions + holdings. Reads `close_price` (BHAV for NSE, MCX official settlement for MCX — both available at 08:00). Writes `previous_close` uniformly. No MCX-specific logic. |
 
-2. **New gate + two-CTE query** in positions.py and holdings.py:
-   - Gate: `is_market_active_for_prev_close()` — new function in `exchange_clock.py`
-   - Trading day / active: single query (existing path) — latest snapshot < today 08:00
-   - Non-trading day / fully closed: two-CTE — `latest_batch → prev_batch`
-     (no time-window filter since `daily_book` has one write per trading day, ~24h gap)
+**Settlement price source — Kite's `close_price` field:**
+At 08:00 IST, `positions.close_price` and `holdings.close_price` from Kite carry the official
+settlement price for all exchanges:
+- NSE: BHAV-confirmed settlement (Zerodha loads at ~08:00 IST)
+- MCX: official 00:15 settlement (available in Kite API well before 08:00)
+
+One broker API call at 08:00 covers both. No exchange-specific branching.
+
+**Snapshot time `previous_close` (initial value):**
+At snapshot time (15:45 / 23:45), Kite's `close_price` = prior session's settlement (set at the
+PREVIOUS 08:00, unchanged during the current session). Use this directly as `previous_close` for
+new rows — no pre-load query from daily_book needed.
+
+**08:00 fixup** (edge case only): corrects rows created between 00:30–07:59 IST (maintenance
+restart before BHAV loads). Single broker API call, all exchanges, uniform logic.
+
+**No MCX-specific code anywhere** — no date-offset, no midnight cutoff, no overnight epsilon
+guard, no exchange checks in any of these paths.
+
+### `previous_close_backup` invariant
+
+Written once per (date, account, symbol): the value of `previous_close` at first INSERT.
+- Currently NOT written during UPSERT — only by `fix_daily_book_prev_close`.
+- Fix: add to UPSERT so backup is set from day 1 of a row's life.
+- Survives code redeployment (DB-side data, not code-side logic).
+
+### No runtime corruption detection
+
+`_resolve_previous_close` fires when `|previous_close − ltp| < 0.01`. At 08:00 session open, ltp
+equals previous_close (no movement yet) — this is **valid**, not corruption. With settlement
+snapshots removed and `fix_daily_book_prev_close` as the only writer of `previous_close`, the
+stored value is always correct. Corruption detection is unnecessary and actively harmful.
 
 ---
 
-## Scenario Walkthrough
+## Inconsistencies — Current Code vs Proposed Design
 
-| Scenario | `_effective_gate_rows` returns | `is_market_active_for_prev_close()` | Path |
-|---|---|---|---|
-| Sat 10:00 (no override) | empty (weekdays fixed → Mon-Fri filter) | False | Two-CTE → Thu settlement ✓ |
-| Muhurrat Sat 18:30 NSE override open | override row, 18:15–19:15, within session | True | Single query → Fri settlement ✓ |
-| Muhurrat Sat 22:00 (after snapshot) | override row, after snapshot_time | False | Two-CTE → Thu settlement ✓ |
-| Diwali Thu (Tue was last trading day) | empty (holiday override with open_time=None) | False | Two-CTE → Fri settlement ✓ |
-| Live Tue 14:00 NSE open | default NON-MCX row, within session | True | Single query → Mon settlement ✓ |
-| Tue 23:35 post-MCX-close, before 23:45 snap | default MCX row, in snapshot window | True | Single query → Mon settlement ✓ |
-| Tue 23:50 after MCX snapshot | default MCX row, after snapshot_time | False | Two-CTE → Mon settlement ✓ |
-| Redeploy Sat 14:00 | empty (after migration fix runs on startup) | False | Two-CTE → Thu settlement ✓ |
+### I1 — Settlement snapshots still exist in scheduler
+- **File**: `backend/api/background.py` — `_task_daily_snapshot()`
+- **Current**: Triggers `trigger_settlement_capture("NON-MCX")` at 16:15 IST and
+  `trigger_settlement_capture("MCX")` at 00:15 IST via `_snapshot_probe_nse_mcx()`
+- **Proposed**: Remove both. `_snapshot_probe_nse_mcx` should only fire `trigger_close_snapshot`,
+  never `trigger_settlement_capture`.
+- **Fix**: Delete `trigger_settlement_capture` calls (and the function if unused elsewhere).
+  Remove session detection logic that routes to settlement vs close path.
 
----
+### I2 — `snapshot_daily_book` has unused `settled` / `market_open=False` params
+- **File**: `backend/api/algo/daily_snapshot.py` — `snapshot_daily_book(settled=True, market_open=False)`
+- **Current**: `settled=True` is passed by settlement snapshots. Downstream code checks `settled`
+  to prefer settlement ltp.
+- **Proposed**: With settlement snapshots removed, `settled` is always `False`. Parameter and
+  any `settled`-conditional logic become dead code.
+- **Fix**: Remove `settled` parameter and any `if settled:` branches from `snapshot_daily_book`.
+  Keep `market_open` param if used for other logic; verify and remove if not.
 
-## Files to Change
+### I3 — `_resolve_previous_close` false-positive corruption guard
+- **File**: `backend/api/routes/positions_helpers.py:33–51`
+- **Current**: `abs(pc_f - ltp_f) < 0.01` → substitute `previous_close_backup`. Fires at
+  session open when `ltp = previous_close` is valid.
+- **Proposed**: Delete the function. `build_row_from_snapshot_raw` (line 367) reads
+  `previous_close` directly: `actual_previous_close = _pc_raw if _pc_raw > 0 else 0.0`.
+- **Fix**: Delete `_resolve_previous_close`; update call site.
 
-### 1. `backend/api/helpers/exchange_clock.py`
+### I4 — UPSERT does not write `previous_close_backup` at INSERT time
+- **File**: `backend/api/algo/daily_snapshot.py:819–845` (UPSERT SQL)
+- **Current**: `previous_close_backup` not in INSERT column list. Only written by
+  `fix_daily_book_prev_close`. Rows created before 08:00 fixup have `backup = NULL`.
+- **Fix**: Add to UPSERT:
+  ```sql
+  -- INSERT columns: add previous_close_backup
+  -- INSERT values:  :previous_close  (same value as previous_close on first insert)
+  -- ON CONFLICT:    previous_close_backup = COALESCE(daily_book.previous_close_backup, daily_book.previous_close)
+  ```
 
-**Fix weekdays migration SQL (~line 454) — change JSON notation to PostgreSQL array:**
+### I5 — `fix_daily_book_prev_close` reads `daily_book.ltp` instead of broker settlement price; has MCX-specific overnight mode
+- **File**: `daily_snapshot.py:1129–1137` (new-session pre-load SQL), `963–996` (update SQL)
+- **Current**: New-session mode reads `yesterday's daily_book.ltp`; overnight mode (ε=0.005) exists
+  for MCX settlement rows. Both are wrong direction: self-reading ltp instead of querying broker,
+  and MCX-specific branching that should not exist.
+- **Proposed**: `fix_daily_book_prev_close` at 08:00 calls `broker.get_positions()` and
+  `broker.get_holdings()` for each account — one pass, all exchanges. Reads `close_price`
+  (settlement price, available for both NSE and MCX at 08:00). Updates any `date = today` rows.
+  No overnight branch. No MCX-specific logic. No exchange checks.
+- **Fix**:
+  - Remove overnight branch and epsilon guard entirely.
+  - Remove pre-load SQL query (daily_book self-read).
+  - Add broker API calls (all accounts, all exchanges); build `(account, symbol) → close_price` map.
+  - UPDATE `daily_book` rows for `date = today` using that map — uniform for all exchanges.
 
-```python
-# BEFORE (broken — JSON notation silently fails for PostgreSQL integer[] column):
-await session.execute(_text("""
-    UPDATE exchange_schedule
-    SET weekdays = '[0,1,2,3,4]'
-    WHERE weekdays IS NULL
-      AND date IS NULL
-      AND source = 'system'
-"""))
-
-# AFTER (correct — PostgreSQL array literal notation):
-await session.execute(_text("""
-    UPDATE exchange_schedule
-    SET weekdays = ARRAY[0,1,2,3,4]
-    WHERE weekdays IS NULL
-      AND date IS NULL
-      AND source = 'system'
-"""))
-```
-
-**Add two new functions after `is_any_segment_open()`:**
-
-```python
-def is_market_active_for_prev_close() -> bool:
-    """True when the existing single-query prev_close path is correct.
-
-    Returns True if any segment is:
-    - Currently in-session (open_time <= now < close_time), OR
-    - In the post-close snapshot window (close_time <= now <= snapshot_time)
-      where today's settlement snapshot hasn't fired yet.
-
-    Returns False on non-trading days (weekends, holidays, after snapshot_time).
-    Fully calendar-driven — no hard-coded hours or weekday numbers.
-    exchange_schedule.weekdays must be [0,1,2,3,4] on default rows (fixed by migration).
-    """
-    if not _CACHE:
-        return True  # fail-open: use single query path when cache not loaded
-    now = _now_ist()
-    for gate in {r.gate for r in _CACHE}:
-        for row in _effective_gate_rows(gate):
-            if row.open_time is None or row.close_time is None:
-                continue  # holiday override — closed
-            now_t = now.time().replace(second=0, microsecond=0)
-            # In-session
-            if row.open_time <= now_t < row.close_time:
-                return True
-            # In post-close snapshot window
-            if row.snapshot_time is not None and row.close_time <= now_t <= row.snapshot_time:
-                return True
-    return False
-
-
-def is_trading_day_today() -> bool:
-    """True if any segment is scheduled to trade today.
-
-    Uses _effective_gate_rows so: holiday override rows (open_time=None) → False,
-    weekday-filtered default rows (weekdays=[0,1,2,3,4]) → False on weekends,
-    date-specific Muhurrat/weekend-trading overrides → True.
-    Fully calendar-driven.
-    """
-    if not _CACHE:
-        return True  # fail-open
-    for gate in {r.gate for r in _CACHE}:
-        for row in _effective_gate_rows(gate):
-            if row.open_time is not None:
-                return True
-    return False
-```
-
-### 2. `backend/api/routes/positions.py`
-
-**`_fetch_snapshot_close_map(raw, cutoff)` — around line 913 — two-path rewrite:**
-
-```python
-async def _fetch_snapshot_close_map(raw: pd.DataFrame, cutoff: datetime) -> dict:
-    from backend.api.helpers.exchange_clock import is_market_active_for_prev_close
-    from zoneinfo import ZoneInfo
-
-    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-    today_08 = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
-
-    async with get_session() as session:
-        if is_market_active_for_prev_close():
-            # Trading day / snapshot pending — latest entry before today 08:00 = correct prev_close
-            result = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol)
-                       account, symbol, ltp AS ref_close, total_pnl
-                FROM daily_book
-                WHERE kind = 'positions'
-                  AND ltp IS NOT NULL AND ltp > 0
-                  AND captured_at < :today_08
-                ORDER BY account, symbol, captured_at DESC
-            """), {"today_08": today_08})
-        else:
-            # Non-trading day — latest entry = frozen ltp = NOT prev_close.
-            # Need the entry BEFORE the latest. daily_book has one write per trading
-            # day (~24h gap between entries), so no time-window filter needed.
-            result = await session.execute(_sql_text("""
-                WITH latest_batch AS (
-                    SELECT account, symbol, MAX(captured_at) AS max_at
-                    FROM daily_book
-                    WHERE kind = 'positions'
-                      AND ltp IS NOT NULL AND ltp > 0
-                      AND captured_at < :today_08
-                    GROUP BY account, symbol
-                ),
-                prev_batch AS (
-                    SELECT DISTINCT ON (db.account, db.symbol)
-                           db.account, db.symbol,
-                           db.ltp AS ref_close,
-                           db.total_pnl
-                    FROM daily_book db
-                    JOIN latest_batch lb
-                      ON db.account = lb.account AND db.symbol = lb.symbol
-                    WHERE db.kind = 'positions'
-                      AND db.ltp IS NOT NULL AND db.ltp > 0
-                      AND db.captured_at < lb.max_at
-                    ORDER BY db.account, db.symbol, db.captured_at DESC
-                )
-                SELECT account, symbol, ref_close, total_pnl FROM prev_batch
-            """), {"today_08": today_08})
-
-        rows = result.mappings().all()
-    # ... rest of existing mapping logic unchanged
-```
-
-`_override_stale_close_from_snapshot()` — no change; it calls `_fetch_snapshot_close_map`.
-
-### 3. `backend/api/routes/holdings.py`
-
-**`_override_stale_close_for_holdings()` — around line 454 — same two-path pattern:**
-
-```python
-async def _override_stale_close_for_holdings(rows: list[dict]) -> list[dict]:
-    from backend.api.helpers.exchange_clock import is_market_active_for_prev_close
-    from zoneinfo import ZoneInfo
-
-    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-    today_08 = now_ist.replace(hour=8, minute=0, second=0, microsecond=0)
-
-    async with get_session() as session:
-        if is_market_active_for_prev_close():
-            result = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol)
-                       account, symbol, ltp AS ref_close
-                FROM daily_book
-                WHERE kind = 'holdings'
-                  AND ltp IS NOT NULL AND ltp > 0
-                  AND captured_at < :today_08
-                ORDER BY account, symbol, captured_at DESC
-            """), {"today_08": today_08})
-        else:
-            result = await session.execute(_sql_text("""
-                WITH latest_batch AS (
-                    SELECT account, symbol, MAX(captured_at) AS max_at
-                    FROM daily_book
-                    WHERE kind = 'holdings'
-                      AND ltp IS NOT NULL AND ltp > 0
-                      AND captured_at < :today_08
-                    GROUP BY account, symbol
-                ),
-                prev_batch AS (
-                    SELECT DISTINCT ON (db.account, db.symbol)
-                           db.account, db.symbol,
-                           db.ltp AS ref_close
-                    FROM daily_book db
-                    JOIN latest_batch lb
-                      ON db.account = lb.account AND db.symbol = lb.symbol
-                    WHERE db.kind = 'holdings'
-                      AND db.ltp IS NOT NULL AND db.ltp > 0
-                      AND db.captured_at < lb.max_at
-                    ORDER BY db.account, db.symbol, db.captured_at DESC
-                )
-                SELECT account, symbol, ref_close FROM prev_batch
-            """), {"today_08": today_08})
-    # ... rest of existing patching logic unchanged
-```
-
-### 4. `backend/api/background.py`
-
-**`_task_daily_snapshot()` — add `is_trading_day_today()` guard:**
-
-```python
-async def _task_daily_snapshot():
-    now = datetime.now(ZoneInfo("Asia/Kolkata"))
-    if now.weekday() >= 5:  # existing: skip weekends
-        return
-    from backend.api.helpers.exchange_clock import is_trading_day_today
-    if not is_trading_day_today():  # new: skip weekday holidays
-        return
-    ...  # rest unchanged
-```
+### I6 — Pre-load query uses `daily_book.ltp` instead of broker `close_price`; has MCX/non-MCX branching
+- **File**: `daily_snapshot.py:1101–1147` (`prev_ltp_map` pre-load block)
+- **Current**: Pre-load branches on session time (overnight vs new-session), reading either
+  `previous_close` or `ltp` from daily_book depending on exchange and time. MCX and non-MCX take
+  different paths. All of this complexity exists to approximate settlement — none of it is needed.
+- **Proposed**: Snapshot already has the Kite broker response. Use `position.close_price` /
+  `holding.close_price` directly as `previous_close` for new rows. At any snapshot time (15:45
+  or 23:45), Kite's `close_price` = prior session's settlement (loaded at the PREVIOUS 08:00,
+  unchanged during session). Same logic for MCX and non-MCX — no branching.
+- **Fix**: In `_holdings_rows` and `_positions_rows`, replace `prev_ltp_map.get(...)` with
+  `float(row.close_price or 0)` from the broker row. Delete `prev_ltp_map` construction and
+  all pre-load SQL. Delete the new-session vs overnight branch entirely.
 
 ---
 
-## Redeployment Safety Analysis
+## Changes Required
 
-| Scenario | What happens on startup | Result |
-|---|---|---|
-| Sat 14:00 redeploy | `seed_and_warm` runs → migration sets weekdays=ARRAY[0,1,2,3,4] → cache warm | `is_market_active_for_prev_close()` = False → two-CTE → correct ✓ |
-| Mon holiday redeploy | weekdays migration runs → holiday override row (open_time=None) in cache | `is_market_active_for_prev_close()` = False; `is_trading_day_today()` = False → no startup snapshot written ✓ |
-| Live Tue redeploy | weekdays migration runs → default rows with weekdays=[0,1,2,3,4] → in-session | `is_market_active_for_prev_close()` = True → single query → correct ✓ |
-| Muhurrat Sat redeploy (before session) | override row loaded → open_time not yet in window | False → two-CTE → prev prev_close ✓ |
-| Muhurrat Sat redeploy (during session) | override row loaded → in-session | True → single query → Fri settlement ✓ |
+### `backend/api/background.py`
+1. Remove `trigger_settlement_capture("NON-MCX")` call and its scheduling logic (~16:15 IST branch)
+2. Remove `trigger_settlement_capture("MCX")` call and its scheduling logic (~00:15 IST branch)
+3. Remove `trigger_settlement_capture` function definition if it has no other callers
+4. Simplify `_snapshot_probe_nse_mcx`: only close snapshot path remains
 
-**ltp, qty accuracy on redeployment:**
-- Position qty / holdings qty: fresh from broker REST on first request → always accurate
-- ltp: from KiteTicker WebSocket (reconnects immediately) or broker REST fallback. On non-trading day, WebSocket sends last settlement price within seconds of connect → ltp = correct frozen settlement
-- prev_close: fixed by this plan → two-CTE gives correct prior settlement ✓
+### `backend/api/algo/daily_snapshot.py`
+5. Remove `settled` parameter from `snapshot_daily_book`; remove any `if settled:` branches
+6. UPSERT SQL: add `previous_close_backup` to INSERT columns + ON CONFLICT clause (I4)
+7. `fix_daily_book_prev_close`:
+   - Remove overnight branch and all pre-load SQL (I5)
+   - At 08:00: call `broker.get_positions()` + `broker.get_holdings()` per account
+   - Build `(account, symbol) → close_price` map
+   - UPDATE `daily_book` rows where `date = today` using broker settlement prices
+8. `_holdings_rows` and `_positions_rows`:
+   - Remove `prev_ltp_map` parameter and lookup (I6)
+   - Set `previous_close = float(row.close_price or 0)` from the broker DataFrame row directly
 
----
-
-## Tests
-
-### `backend/tests/test_holiday_snapshot_cutoff.py` (new file)
-
-Mock `is_market_active_for_prev_close()` + async DB.
-
-**Two-CTE path (market closed):**
-
-| Test | daily_book rows | Expected ref_close |
-|---|---|---|
-| `test_saturday_mcx` | Fri 23:45 ltp=500, Thu 23:45 ltp=490 | 490 (Thu settlement) |
-| `test_diwali_3day_gap` | Tue 23:45 ltp=500, Fri 23:45 ltp=480 (72h gap) | 480 (Fri) |
-| `test_nse_non_trading` | Fri 15:45 ltp=1000, Thu 15:45 ltp=980 | 980 (Thu) |
-| `test_no_prev_returns_empty` | only one row: Fri 23:45 | empty map |
-| `test_holdings_saturday` | Fri 23:45 ltp=1000, Thu 23:45 ltp=980 | 980 (Thu), holdings kind |
-
-**Single-query path (market active):**
-
-| Test | daily_book rows | Expected ref_close |
-|---|---|---|
-| `test_live_tuesday` | Mon 23:45 ltp=490 | 490 (Mon, single query) |
-| `test_post_close_snapshot_window` | Mon 23:45 ltp=490 | 490 (Mon) |
-
-**`is_market_active_for_prev_close()` unit tests** (mock `_effective_gate_rows()`):
-
-| Test | Mocked rows | Expected |
-|---|---|---|
-| `test_empty_rows_returns_false` | [] | False |
-| `test_holiday_override_none_open` | [open_time=None] | False |
-| `test_in_session` | [open=08:00, close=23:30, snap=23:45], now=14:00 | True |
-| `test_post_close_in_window` | same, now=23:35 | True |
-| `test_after_snapshot_false` | same, now=23:50 | False |
-| `test_muhurrat_in_session` | [open=18:15, close=19:15, snap=19:30], now=18:30 | True |
-
-**`is_trading_day_today()` unit tests:**
-
-| Test | Mocked rows | Expected |
-|---|---|---|
-| `test_empty_rows_not_trading` | [] | False |
-| `test_holiday_override` | [open_time=None] | False |
-| `test_regular_weekday` | [open_time=08:00] | True |
-
-**Weekdays migration fix test:**
-- `test_weekdays_migration_sql`: runs the migration SQL in a test transaction, confirms weekdays = [0,1,2,3,4] after update
+### `backend/api/routes/positions_helpers.py`
+8. Delete `_resolve_previous_close` (lines 33–51)
+9. `build_row_from_snapshot_raw` line 367: replace `_resolve_previous_close(...)` with
+   `actual_previous_close = float(_pc_raw) if _pc_raw and float(_pc_raw) > 0 else 0.0`
 
 ---
 
 ## Agents
 
-- backend: (1) Fix weekdays migration SQL in exchange_clock.py; (2) Add `is_market_active_for_prev_close()` + `is_trading_day_today()` to exchange_clock.py; (3) Rewrite `_fetch_snapshot_close_map` in positions.py; (4) Rewrite `_override_stale_close_for_holdings` in holdings.py; (5) Add `is_trading_day_today()` guard to `_task_daily_snapshot` in background.py
-- frontend: skip
-- broker: skip
-- doc: skip
-- backend-test: Write `backend/tests/test_holiday_snapshot_cutoff.py` per test table above
-- playwright: skip
+- backend: changes 1–9 above across `background.py`, `daily_snapshot.py`, `positions_helpers.py`
+- backend-test: add/update pytest:
+  - `fix_daily_book_prev_close` calls broker API at 08:00, uses `close_price` not `daily_book.ltp`
+  - `_holdings_rows` / `_positions_rows` use `row.close_price` as `previous_close` (not pre-load map)
+  - UPSERT sets `previous_close_backup` on first INSERT, preserves on conflict
+  - `build_row_from_snapshot_raw` uses direct read (no `_resolve_previous_close`)
+  - Verify no settlement snapshot calls remain in background task
 
 ## Tests
 - pytest: yes
@@ -350,12 +165,13 @@ Mock `is_market_active_for_prev_close()` + async DB.
 - playwright: no
 
 ## Commit message
-fix(backend): calendar-driven prev_close — two-CTE on closed days, fix weekdays migration SQL
+fix(snapshot): remove settlement snapshots, use broker.close_price as settlement reference in snapshots + 08:00 fixup, delete _resolve_previous_close false-positive guard, write previous_close_backup at UPSERT INSERT time
 
 ## Done when
-- Positions Day P&L non-zero on Saturday (~2.03L based on Thu→Fri MCX move)
-- Holdings Day P&L stable (~89K, not oscillating)
-- Works for single holidays, multi-day runs (Diwali), Muhurrat Saturday trades
-- Survives code redeployment at any time on any day
-- `exchange_schedule.weekdays = {0,1,2,3,4}` on default rows after deploy
-- pytest green, coverage thresholds held
+- No settlement snapshot triggers remain in `background.py`
+- `snapshot_daily_book` has no `settled` parameter
+- `fix_daily_book_prev_close` calls broker API at 08:00; uses `close_price` not `daily_book.ltp`
+- Pre-load query removed; `_holdings_rows`/`_positions_rows` use `row.close_price` directly
+- `_resolve_previous_close` deleted; no references remain
+- `previous_close_backup` written at INSERT time in UPSERT
+- All pytest pass, broker cov ≥ 80%, api cov ≥ 45%

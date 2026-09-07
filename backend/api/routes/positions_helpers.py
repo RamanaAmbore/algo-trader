@@ -347,25 +347,15 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     # lots × lot_size before the row was written.  No multiplier needed here.
     effective_qty = qty or 0
 
-    # `previous_close` is frozen by COALESCE on the first daily UPSERT and
-    # never overwritten — it is the official prior-session settlement price.
-    # `prev_ltp` is the most-recent batch LTP and converges toward the current
-    # LTP during a session, which would make day_change ≈ 0.  Use
-    # `actual_previous_close` as the primary reference and fall back to
-    # `prev_ltp` only when `previous_close` is absent or zero.
-    # Safety net: when previous_close was corrupted by the rolling-shift UPSERT
-    # (i.e. previous_close == ltp), fall back to previous_close_backup (saved
-    # before fix_daily_book_prev_close overwrote previous_close).
+    # `previous_close` is the broker's close_price written at snapshot time and
+    # frozen by COALESCE on the first daily UPSERT — it is the official prior-session
+    # settlement price (Kite confirms this via BHAV by 08:00 IST).
+    # Read it directly: if it is absent or zero, there is no prior-session reference
+    # available (cold-boot first day). The corruption guard (pc ≈ ltp) is no longer
+    # applied — at session open ltp == previous_close is valid because no intraday
+    # movement has occurred yet.
     _pc_raw = float(previous_close) if previous_close and float(previous_close) > 0 else 0.0
-    _ltp_f  = float(ltp) if ltp else 0.0
-    backup_f = float(previous_close_backup) if previous_close_backup else 0.0
-    _prev_ltp_f = float(prev_ltp) if prev_ltp else None
-
-    # Pass prev_ltp_f so corruption detection (pc ≈ ltp, e.g. MCX settlement
-    # snapshot writing previous_close = settlement_ltp) can fall back to the
-    # prior-batch settlement from prev_batch CTE instead of returning ltp as-is.
-    resolved_pc = _resolve_previous_close(_pc_raw, _ltp_f, backup_f, prev_ltp_f=_prev_ltp_f)
-    actual_previous_close = resolved_pc if resolved_pc > 0 else None
+    actual_previous_close = float(_pc_raw) if _pc_raw and float(_pc_raw) > 0 else None
     prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
     # Universal day_pnl formula using overnight_quantity from payload_json.
     # Handles all position states (overnight open, new today, partial close,

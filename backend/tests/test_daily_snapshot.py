@@ -1101,8 +1101,12 @@ class TestHoldingsRowPreviousCloseLtpFallback:
                 "expected None when no prior close reference"
             )
 
-    def test_prev_ltp_map_takes_priority_over_ltp_fallback(self):
-        """prev_ltp_map value wins over the ltp_val fallback."""
+    def test_prev_ltp_map_ignored_close_price_used_directly(self):
+        """After the prev_close pipeline redesign (2026-09-06), prev_ltp_map is no
+        longer consulted during snapshot writes. When broker close_price=0 and
+        prev_ltp_map has a value, previous_close is still None — the correct value
+        is written at 08:00 IST via fix_daily_book_prev_close using daily_book.ltp.
+        """
         from backend.api.algo.daily_snapshot import _holdings_rows
 
         holding = {
@@ -1116,13 +1120,14 @@ class TestHoldingsRowPreviousCloseLtpFallback:
             "pnl": 250.0,
             "close_price": 0,          # broker close absent
         }
-        # prev_ltp_map provides the real prior session LTP
+        # prev_ltp_map is passed but ignored (post-redesign)
         prev_ltp_map = {("ZG0790", "HDFCBANK", "holdings"): 1620.0}
         rows = _holdings_rows("ZG0790", self._D, [holding], self._NOW_EOD,
                                prev_ltp_map=prev_ltp_map)
         assert len(rows) == 1
-        assert rows[0]["previous_close"] == pytest.approx(1620.0), (
-            f"prev_ltp_map should win over ltp_val fallback; "
+        # Post-redesign: close_price=0 → previous_close=None (prev_ltp_map ignored)
+        assert rows[0]["previous_close"] is None, (
+            f"Post-redesign: prev_ltp_map is ignored; close_price=0 → previous_close=None; "
             f"got {rows[0]['previous_close']}"
         )
 

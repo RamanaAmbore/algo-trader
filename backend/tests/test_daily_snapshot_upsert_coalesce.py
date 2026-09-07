@@ -54,6 +54,7 @@ async def db_session():
         Column("day_pnl", Numeric, nullable=True),
         Column("total_pnl", Numeric, nullable=True),
         Column("previous_close", Numeric, nullable=True),
+        Column("previous_close_backup", Numeric, nullable=True),
         Column("payload_json", Text, nullable=True),
         Column("captured_at", DateTime(timezone=True), nullable=False),
         UniqueConstraint("date", "account", "kind", "symbol",
@@ -81,6 +82,8 @@ def _make_patch_upsert(session):
         now_utc = datetime.now(timezone.utc)
         for r in rows:
             r["captured_at"] = now_utc
+            if "previous_close_backup" not in r:
+                r["previous_close_backup"] = r.get("previous_close")
         await session.execute(_UPSERT_SQL, rows)
         await session.commit()
         return len(rows)

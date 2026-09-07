@@ -147,8 +147,11 @@ class TestSnapshotProbeDispatch:
         mock_settle.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_nse_settlement_routes_to_settlement_capture(self):
-        """NSE/settlement session → trigger_settlement_capture("NSE"), not close-snapshot."""
+    async def test_nse_settlement_session_skipped(self):
+        """NSE/settlement session → neither trigger_close_snapshot nor trigger_settlement_capture
+        is called. Settlement snapshots are removed; prev_close is set at 08:00 IST via
+        fix_daily_book_prev_close(settlement_map=...) instead.
+        """
         sessions = [_make_session("NSE", "settlement")]
 
         with (
@@ -161,8 +164,8 @@ class TestSnapshotProbeDispatch:
             from backend.api.background import _snapshot_probe_nse_mcx
             await _snapshot_probe_nse_mcx()
 
-        mock_settle.assert_awaited_once_with("NSE")
         mock_close.assert_not_awaited()
+        mock_settle.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_mcx_evening_routes_to_close_snapshot(self):
@@ -183,8 +186,11 @@ class TestSnapshotProbeDispatch:
         mock_settle.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_mcx_settlement_routes_to_settlement_capture(self):
-        """MCX/settlement session → trigger_settlement_capture("MCX")."""
+    async def test_mcx_settlement_session_skipped(self):
+        """MCX/settlement session → neither trigger_close_snapshot nor trigger_settlement_capture
+        is called. Settlement snapshots are removed; prev_close is set at 08:00 IST via
+        fix_daily_book_prev_close(settlement_map=...) instead.
+        """
         sessions = [_make_session("MCX", "settlement")]
 
         with (
@@ -197,8 +203,8 @@ class TestSnapshotProbeDispatch:
             from backend.api.background import _snapshot_probe_nse_mcx
             await _snapshot_probe_nse_mcx()
 
-        mock_settle.assert_awaited_once_with("MCX")
         mock_close.assert_not_awaited()
+        mock_settle.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_sessions_fires_neither_helper(self):
@@ -218,10 +224,10 @@ class TestSnapshotProbeDispatch:
 
     @pytest.mark.asyncio
     async def test_multiple_sessions_dispatch_individually(self):
-        """Multiple sessions in same minute: each dispatched to the correct helper."""
+        """Multiple sessions in same minute: regular → close-snapshot; settlement → skipped."""
         sessions = [
             _make_session("NSE", "regular"),    # → close
-            _make_session("MCX", "settlement"), # → settle
+            _make_session("MCX", "settlement"), # → skipped (settlement removed)
         ]
 
         with (
@@ -235,7 +241,8 @@ class TestSnapshotProbeDispatch:
             await _snapshot_probe_nse_mcx()
 
         mock_close.assert_awaited_once_with("NSE")
-        mock_settle.assert_awaited_once_with("MCX")
+        # MCX settlement is skipped — prev_close handled by 08:00 IST fix_daily_book_prev_close
+        mock_settle.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dedup_sentinel_fires_gate_only_once_per_day(self):

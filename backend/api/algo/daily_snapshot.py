@@ -459,8 +459,7 @@ def _holdings_rows(
             "day_pnl":        day_pnl_v,
             "total_pnl":      total_pnl_v,
             "previous_close": (
-                (prev_ltp_map or {}).get((account, symbol, "holdings"))
-                or (float(r["close_price"]) if r.get("close_price") else None)
+                float(r["close_price"]) if r.get("close_price") else None
             ),
             "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
@@ -711,9 +710,10 @@ def _positions_rows(
 
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
         mid_session = False if not market_open else _exchange_clock.is_exchange_open(exchange)
-        # Prior-session daily_book.ltp is the SSOT for close reference.
-        # Falls back to broker close_price for first-day rows (no prior daily_book row).
-        pos_close_ref = (prev_ltp_map or {}).get((account, symbol, "positions")) or None
+        # Use broker's close_price directly as prior-session settlement reference.
+        # Falls back to None when close_price is absent/zero (cold-boot first day).
+        _broker_close = r.get("close_price")
+        pos_close_ref = float(_broker_close) if _broker_close else None
         # Captured AT EOD (after the exchange closes) this is the correct
         # day_pnl. Captured MID-SESSION it's a partial-day value — skip.
         ltp_val, day_pnl, total_pnl_v, skip = _snap_position_eod_vals(
@@ -820,10 +820,12 @@ _UPSERT_SQL = text("""
     INSERT INTO daily_book
         (date, account, segment, kind, symbol, exchange,
          qty, lots, lot_size, avg_cost, ltp, day_pnl, total_pnl, previous_close,
+         previous_close_backup,
          payload_json, captured_at)
     VALUES
         (:date, :account, :segment, :kind, :symbol, :exchange,
          :qty, :lots, :lot_size, :avg_cost, :ltp, :day_pnl, :total_pnl, :previous_close,
+         :previous_close_backup,
          :payload_json, :captured_at)
     ON CONFLICT (date, account, kind, symbol) DO UPDATE SET
         segment        = EXCLUDED.segment,
@@ -840,6 +842,7 @@ _UPSERT_SQL = text("""
         day_pnl        = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END,
         total_pnl      = EXCLUDED.total_pnl,
         previous_close = daily_book.previous_close,
+        previous_close_backup = COALESCE(daily_book.previous_close_backup, daily_book.previous_close),
         payload_json   = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json ELSE daily_book.payload_json END,
         captured_at    = EXCLUDED.captured_at
 """)
@@ -852,6 +855,10 @@ async def _upsert_rows(rows: list[dict]) -> int:
     now_utc = datetime.now(timezone.utc)
     for r in rows:
         r["captured_at"] = now_utc
+        # Seed previous_close_backup with the same value as previous_close on first INSERT.
+        # ON CONFLICT preserves the first-ever written value via COALESCE.
+        if "previous_close_backup" not in r:
+            r["previous_close_backup"] = r.get("previous_close")
     async with async_session() as session:
         await session.execute(_UPSERT_SQL, rows)
         await session.commit()
@@ -934,8 +941,14 @@ async def _delete_prior_orphan_positions(account: str, current_symbols: set) -> 
         return result.rowcount
 
 
-async def fix_daily_book_prev_close(now_ist=None) -> int:
-    """Repair daily_book.previous_close for today's rows.
+async def fix_daily_book_prev_close(
+    now_ist=None,
+    *,
+    settlement_map: "dict[tuple[str, str], float] | None" = None,
+) -> int:
+    """Update previous_close for today's daily_book rows.
+
+    Two modes depending on the time of day (overnight or new-session mode):
 
     Overnight mode (now_ist < today's session open):
       Reads yesterday's daily_book.previous_close (= prior-prior-session settlement).
@@ -944,11 +957,12 @@ async def fix_daily_book_prev_close(now_ist=None) -> int:
       After fix: day_change = (today's settlement - prior-prior-session) × qty,
       showing yesterday's session performance during the closed-hours window.
 
-    New-session mode (now_ist >= today's 08:00 IST):
-      Reads yesterday's daily_book.ltp (= prior-session settlement = yesterday's close).
-      Updates today's rows unconditionally — transitions the baseline from the
-      overnight display to the new session. ltp == prev_close is valid here
-      (session opened, no intraday movement yet).
+    New-session mode (now_ist >= today's session open, i.e. 08:00 IST):
+      When settlement_map is provided (fetched from broker at 08:00 IST), updates
+      today's daily_book rows using broker close_price values from that map.
+      Falls back to yesterday's daily_book.ltp when settlement_map is absent.
+      ltp == prev_close at session open is intentionally valid — no intraday
+      movement has occurred yet.
     """
     if now_ist is None:
         now_ist = timestamp_indian()
@@ -970,6 +984,37 @@ async def fix_daily_book_prev_close(now_ist=None) -> int:
         ref_cond = "ltp IS NOT NULL AND ltp > 0"
         epsilon = 999999.0  # unconditional — transition all today's rows
         mode = "new-session"
+
+    # New-session mode with settlement_map: update rows using broker close_price directly.
+    # This covers rows created between 00:30–07:59 IST (maintenance restart) where
+    # the stored previous_close may be stale.
+    if mode == "new-session" and settlement_map:
+        try:
+            updated = 0
+            async with async_session() as session:
+                for (account, symbol), close_price in settlement_map.items():
+                    if not close_price or close_price <= 0:
+                        continue
+                    result = await session.execute(text("""
+                        UPDATE daily_book d
+                        SET previous_close        = :close_price,
+                            previous_close_backup = COALESCE(d.previous_close_backup, d.previous_close)
+                        WHERE d.date = :today
+                          AND d.account = :account
+                          AND d.symbol = :symbol
+                          AND d.kind IN ('holdings', 'positions')
+                    """), {"today": today, "account": account, "symbol": symbol,
+                           "close_price": close_price})
+                    updated += result.rowcount
+                await session.commit()
+            logger.info(
+                "[PREV-CLOSE-FIX] mode=%s settlement_map=%d entries updated=%d rows (today=%s)",
+                mode, len(settlement_map), updated, today,
+            )
+            return updated
+        except Exception as e:
+            logger.warning("[PREV-CLOSE-FIX] settlement_map path failed: %s — falling back to daily_book", e)
+            # Fall through to the standard daily_book-based path below
 
     try:
         async with async_session() as session:
@@ -1098,54 +1143,6 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
     errors: list[str] = []
     processed: list[str] = []
 
-    # Pre-fetch prior-session close for every (account, symbol, kind) to use as
-    # previous_close in today's INSERT rows instead of broker's stale close_price.
-    #
-    # Two modes based on session boundary (08:00 IST):
-    #   Before session open (overnight): read daily_book.previous_close from yesterday's rows.
-    #     previous_close = prior-prior-session settlement (immutable after INSERT — UPSERT
-    #     no longer overwrites it). Using this value as today's INSERT previous_close
-    #     gives the correct overnight display: day_change = (today's settlement - prior-prior-session).
-    #   At/after 08:00 IST (new session): read daily_book.ltp from yesterday's rows.
-    #     ltp = prior-session settlement (e.g., Aug 24 settlement = 98.00) — the correct
-    #     new-session baseline. ltp == prev_close at session open is intentionally valid.
-    _open = _exchange_clock.get_nse_open_time()
-    if _open is not None:
-        _snap_open = now_ist.replace(hour=_open.hour, minute=_open.minute, second=0, microsecond=0)
-        _before_session_open = now_ist < _snap_open
-    else:
-        _before_session_open = True   # holiday — treat as before session open
-    if _before_session_open:
-        _prev_sql = """
-            SELECT DISTINCT ON (account, symbol, kind)
-                   account, symbol, kind, previous_close AS ltp
-            FROM daily_book
-            WHERE date < :today
-              AND previous_close IS NOT NULL AND previous_close > 0
-              AND kind IN ('holdings', 'positions')
-            ORDER BY account, symbol, kind, date DESC
-        """
-    else:
-        _prev_sql = """
-            SELECT DISTINCT ON (account, symbol, kind)
-                   account, symbol, kind, ltp
-            FROM daily_book
-            WHERE date < :today
-              AND ltp IS NOT NULL AND ltp > 0
-              AND kind IN ('holdings', 'positions')
-            ORDER BY account, symbol, kind, date DESC
-        """
-    prev_ltp_map: dict[tuple[str, str, str], float] = {}
-    try:
-        async with async_session() as _sess:
-            _prev_result = await _sess.execute(text(_prev_sql), {"today": target_date})
-            prev_ltp_map = {
-                (row.account, row.symbol, row.kind): float(row.ltp)
-                for row in _prev_result
-            }
-    except Exception as _e:
-        logger.warning("Snapshot: prev_ltp_map query failed (%s) — falling back to broker close_price", _e)
-
     from backend.brokers.registry import all_brokers
     for broker in all_brokers():
         account = broker.account
@@ -1154,8 +1151,8 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
                 _local_executor, _fetch_account_data, broker, account, target_date
             )
 
-            h_rows = _holdings_rows(account,  target_date, raw["holdings"],       now_ist, settled=settled, market_open=market_open, prev_ltp_map=prev_ltp_map)
-            p_rows = _positions_rows(account, target_date, raw["positions"] or [], now_ist, settled=settled, market_open=market_open, prev_ltp_map=prev_ltp_map)
+            h_rows = _holdings_rows(account,  target_date, raw["holdings"],       now_ist, settled=settled, market_open=market_open)
+            p_rows = _positions_rows(account, target_date, raw["positions"] or [], now_ist, settled=settled, market_open=market_open)
             t_rows = _trades_rows(account,    target_date, raw["trades"])
             f_rows = _funds_rows(account,     target_date, raw["funds"])
 

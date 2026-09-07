@@ -131,12 +131,19 @@ def test_holdings_reader_backup_preferred_over_prev_ltp():
 # Test 3: Positions reader safety net — day_change uses backup
 # ---------------------------------------------------------------------------
 
-def test_positions_reader_backup_used_for_day_pnl():
-    """When previous_close ≈ ltp, build_row_from_snapshot_raw uses backup for day P&L."""
+def test_positions_reader_uses_previous_close_directly():
+    """build_row_from_snapshot_raw uses previous_close directly from daily_book.
+
+    The simplified pipeline no longer applies the corruption guard (pc ≈ ltp).
+    At session open, ltp == previous_close is valid because no intraday movement
+    has occurred yet. The backup column is preserved in the DB but not used
+    by the reader to override a valid previous_close.
+    """
     from backend.api.routes.positions_helpers import build_row_from_snapshot_raw
 
     ltp = 407.50
-    backup = 374.10
+    prev_close = 374.10  # valid prior-session settlement (different from ltp)
+    backup = 360.00
     qty = 10
     avg_cost = 300.0
     # total_pnl = (ltp - avg) * qty
@@ -144,7 +151,7 @@ def test_positions_reader_backup_used_for_day_pnl():
 
     row = _make_positions_row(
         ltp=ltp,
-        previous_close=ltp,          # corrupted: equals ltp
+        previous_close=prev_close,   # valid settlement price
         previous_close_backup=backup,
         qty=qty,
         avg_cost=avg_cost,
@@ -153,17 +160,15 @@ def test_positions_reader_backup_used_for_day_pnl():
     pos_row = build_row_from_snapshot_raw(row)
 
     # day_pnl formula: total_pnl - (prev_close - avg) * oq
-    # With backup as prev_close: (407.50*10 - 300*10) - (374.10 - 300) * 10
-    # = 1075 - 741 = 334
-    expected_day_pnl = total_pnl - (backup - avg_cost) * qty
+    # With prev_close=374.10: 1075 - (374.10 - 300) * 10 = 1075 - 741 = 334
+    expected_day_pnl = total_pnl - (prev_close - avg_cost) * qty
     assert abs(pos_row.day_change_val - expected_day_pnl) < 0.01, (
-        f"Expected day_change_val={expected_day_pnl:.2f} (from backup), "
+        f"Expected day_change_val={expected_day_pnl:.2f} (from previous_close), "
         f"got {pos_row.day_change_val}"
     )
-    # close_price on the returned PositionRow should reflect backup (not ltp)
-    # because build_snapshot_position_row uses actual_previous_close as close_price_f.
-    assert abs(pos_row.close_price - backup) < 0.01, (
-        f"Expected close_price={backup} (from backup), got {pos_row.close_price}"
+    # close_price on the returned PositionRow should reflect previous_close
+    assert abs(pos_row.close_price - prev_close) < 0.01, (
+        f"Expected close_price={prev_close} (from previous_close), got {pos_row.close_price}"
     )
 
 

@@ -1858,7 +1858,7 @@ async def trigger_settlement_capture(gate: str) -> None:
 
 
 async def _snapshot_probe_nse_mcx() -> None:
-    """Fire snapshot/settlement triggers keyed on the exchange_clock schedule.
+    """Fire close-snapshot triggers keyed on the exchange_clock schedule.
 
     Called every 30 s from ``_task_daily_snapshot``. Delegates trigger detection
     to ``exchange_clock.sessions_with_snapshot_time_now()`` which returns sessions
@@ -1866,6 +1866,11 @@ async def _snapshot_probe_nse_mcx() -> None:
     A per-gate daily dedup sentinel (``_snapshot_fired_today``) ensures each gate
     fires exactly once per calendar day even if multiple 30-second polls land in
     the ±1 min window.
+
+    Settlement snapshot sessions (session_name == "settlement") are intentionally
+    skipped — previous_close is now set at 08:00 IST via fix_daily_book_prev_close
+    using broker close_price, which provides the same settlement reference without
+    a separate 16:15 / 00:15 snapshot pass.
     """
     from datetime import date as _date
     global _snapshot_fired_today
@@ -1875,7 +1880,13 @@ async def _snapshot_probe_nse_mcx() -> None:
         if _snapshot_fired_today.get(session.gate) == today:
             continue  # already fired this gate today
         if session.session_name == "settlement":
-            await trigger_settlement_capture(session.gate)
+            # Settlement snapshot passes removed — prev_close is updated at 08:00 IST
+            # via fix_daily_book_prev_close(settlement_map=...). Skip silently.
+            logger.debug(
+                "Background: %s settlement session at snapshot_time — skipping "
+                "(prev_close handled by 08:00 IST fix_daily_book_prev_close)",
+                session.gate,
+            )
         else:
             await trigger_close_snapshot(session.gate)
         _snapshot_fired_today[session.gate] = today
@@ -1985,21 +1996,17 @@ def _snapshot_restart_ticker() -> None:
 
 async def _task_daily_snapshot() -> None:
     """
-    Two-pass settlement snapshot.
+    Daily close snapshot task.
 
-    Whatever data is present at market close IS the EOD snapshot — no
-    separate close-triggered write is needed.  The two settlement passes
-    capture exchange-published prices that are only available after close:
-
-      NSE settlement — 16:15 IST: NSE OCP/closing-session prices settled.
-      MCX settlement — 00:15 IST: MCX settlement prices.
-          MCX closes at 23:30 on trade-date D; 00:15 fires on calendar D+1.
-          Dedup is keyed on trade-date D (yesterday when 00:15 ticks).
+    Fires a close snapshot at the time configured in exchange_clock for each
+    gate (NON-MCX ~15:45 IST, MCX ~23:45 IST). Settlement snapshot passes
+    (session_name == "settlement") are intentionally skipped — previous_close
+    is now set at 08:00 IST via fix_daily_book_prev_close(settlement_map=...)
+    using broker close_price from BHAV, which Kite confirms by that time.
 
     Startup: fires once when both markets are closed so a service restart
-    has data immediately without waiting until 16:15.  Skipped during
-    market hours to avoid polluting daily_book with mid-session LTPs
-    (observed incident 2026-06-22).
+    has data immediately.  Skipped during market hours to avoid polluting
+    daily_book with mid-session LTPs (observed incident 2026-06-22).
     """
     from backend.shared.helpers.date_time_utils import timestamp_indian
 
@@ -2044,11 +2051,11 @@ async def _task_daily_snapshot() -> None:
         # awareness) cannot suppress ltp capture for Dhan accounts.
         await _snapshot_fire("startup", market_open=False)
 
-    # One-time data repair on startup: fix today's rows where previous_close = ltp (wrong).
-    # Uses yesterday's daily_book.previous_close (correctly stored by UPSERT rolling-shift)
-    # so overnight display shows yesterday's session performance instead of zero.
-    # fix_daily_book_prev_close guards its own exceptions and returns 0 on failure.
-    await fix_daily_book_prev_close(_now_ist)
+    # Startup fix_daily_book_prev_close is intentionally removed.
+    # prev_close is set once per day at 08:00 IST via the loop below,
+    # using broker settlement prices from that morning's BHAV data.
+    # Running it at startup (when broker data may not be ready or markets
+    # are mid-session) can stamp wrong previous_close values.
 
     # ── ticker lifecycle dedup sentinels ──────────────────────────────
     # Close/settlement snapshot triggers are now driven by
@@ -2086,17 +2093,41 @@ async def _task_daily_snapshot() -> None:
         # Window is dynamic: [nse_open_time, nse_open_time + 30 min). Falls back to
         # the hardcoded 08:00–08:30 window when exchange_clock has no open time cached.
         _nse_open_t = exchange_clock.get_nse_open_time()
-        if _nse_open_t is not None:
-            _nse_open_minutes = _nse_open_t.hour * 60 + _nse_open_t.minute
-            _nse_close_t = dtime((_nse_open_minutes + 30) // 60, (_nse_open_minutes + 30) % 60)
-        else:
-            _nse_close_t = None
         if (_nse_open_t is not None
-                and _nse_open_t <= now.time() < _nse_close_t
+                and now.time() >= _nse_open_t      # any restart after 08:00 catches missed window
                 and _prev_close_fix_done != today):
             logger.info("Background: %s IST — daily prev_close new-session transition",
                         _nse_open_t.strftime("%H:%M"))
-            await fix_daily_book_prev_close(now)  # guards its own exceptions
+            # Build settlement_map from broker positions + holdings (both have close_price
+            # set from BHAV by this time of day). Keyed (account, symbol) → close_price.
+            _settlement_map: dict[tuple[str, str], float] = {}
+            try:
+                (_df_h, _) = await asyncio.wait_for(
+                    _run(_fetch_holdings_direct), timeout=30
+                )
+                if not _df_h.empty and "account" in _df_h.columns and "tradingsymbol" in _df_h.columns and "close_price" in _df_h.columns:
+                    for _hr in _df_h.itertuples(index=False):
+                        _acct = str(getattr(_hr, "account", "") or "")
+                        _sym = str(getattr(_hr, "tradingsymbol", "") or "")
+                        _cp = float(getattr(_hr, "close_price", 0) or 0)
+                        if _acct and _sym and _cp > 0:
+                            _settlement_map[(_acct, _sym)] = _cp
+            except Exception as _smap_exc:
+                logger.warning("[PREV-CLOSE-FIX] holdings fetch for settlement_map failed: %s", _smap_exc)
+            try:
+                (_df_p, _) = await asyncio.wait_for(
+                    _run(_fetch_positions_direct), timeout=30
+                )
+                if not _df_p.empty and "account" in _df_p.columns and "tradingsymbol" in _df_p.columns and "close_price" in _df_p.columns:
+                    for _pr in _df_p.itertuples(index=False):
+                        _acct = str(getattr(_pr, "account", "") or "")
+                        _sym = str(getattr(_pr, "tradingsymbol", "") or "")
+                        _cp = float(getattr(_pr, "close_price", 0) or 0)
+                        if _acct and _sym and _cp > 0:
+                            _settlement_map.setdefault((_acct, _sym), _cp)
+            except Exception as _smap_exc:
+                logger.warning("[PREV-CLOSE-FIX] positions fetch for settlement_map failed: %s", _smap_exc)
+            await fix_daily_book_prev_close(now, settlement_map=_settlement_map or None)
             _prev_close_fix_done = today
 
         # ---- Ticker: drop non-MCX subscriptions at 16:15 IST ----------

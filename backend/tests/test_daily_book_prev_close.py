@@ -139,54 +139,44 @@ async def test_fix_daily_book_prev_close_new_session_uses_ltp():
 # 4. prev_ltp_map — overnight SQL selects previous_close AS ltp
 # ---------------------------------------------------------------------------
 
-def test_prev_ltp_map_overnight_sql_uses_previous_close():
-    """snapshot_daily_book source must contain a branch that reads
-    'previous_close AS ltp' (the overnight path for prev_ltp_map).
+def test_snapshot_daily_book_uses_broker_close_price_directly():
+    """snapshot_daily_book no longer runs a pre-load query against daily_book.
+    The pre-load query (prev_ltp_map) has been removed. Holdings and positions
+    now use broker row's close_price directly as previous_close.
+    Verify that the pre-load query variables are absent from the source.
     """
     from backend.api.algo import daily_snapshot as _ds_module
 
     src = inspect.getsource(_ds_module.snapshot_daily_book)
 
-    assert "previous_close AS ltp" in src, (
-        "snapshot_daily_book must contain 'previous_close AS ltp' for the "
-        "overnight prev_ltp_map branch (before 08:00 IST)"
+    # Pre-load query variables must not be present (removed in pipeline redesign)
+    assert "prev_ltp_map" not in src, (
+        "prev_ltp_map pre-load query must be removed from snapshot_daily_book; "
+        "previous_close now comes from broker row.close_price directly"
     )
-    assert "_before_session_open" in src, (
-        "snapshot_daily_book must define '_before_session_open' to gate the two SQL branches"
+    assert "_before_session_open" not in src, (
+        "_before_session_open conditional must be removed from snapshot_daily_book; "
+        "session-boundary logic now lives in fix_daily_book_prev_close only"
     )
 
 
 # ---------------------------------------------------------------------------
-# 5. prev_ltp_map — new-session SQL selects ltp (not previous_close)
+# 5. snapshot_daily_book — broker close_price is the settlement reference
 # ---------------------------------------------------------------------------
 
-def test_prev_ltp_map_new_session_sql_uses_ltp():
-    """snapshot_daily_book source must contain both branches. The new-session
-    branch must select plain ltp (not previous_close), verified by the presence
-    of the else-branch after _before_session_open.
+def test_snapshot_daily_book_holdings_rows_called_without_prev_ltp_map():
+    """snapshot_daily_book calls _holdings_rows and _positions_rows without
+    the prev_ltp_map keyword. The previous_close fallback chain is now:
+    broker close_price > None (no daily_book pre-load).
     """
     from backend.api.algo import daily_snapshot as _ds_module
 
     src = inspect.getsource(_ds_module.snapshot_daily_book)
 
-    # Both branches must be present
-    assert "_before_session_open" in src, (
-        "snapshot_daily_book must define '_before_session_open' conditional"
+    # Neither _holdings_rows nor _positions_rows call sites should pass prev_ltp_map.
+    assert "prev_ltp_map=prev_ltp_map" not in src, (
+        "snapshot_daily_book must not pass prev_ltp_map to _holdings_rows/_positions_rows"
     )
-    # The overnight form uses 'previous_close AS ltp'; the new-session form just selects ltp.
-    # Verify the else-branch body contains a plain 'ltp' select (without previous_close alias).
-    # We do this by checking the two SQL string variables are assigned in the source.
-    assert "_prev_sql" in src, (
-        "snapshot_daily_book must assign '_prev_sql' variable for the conditional SQL branches"
-    )
-    # The new-session SQL string (else branch) must not use 'previous_close AS ltp'
-    # We verify by checking there are two distinct SQL strings in the source:
-    # one with 'previous_close AS ltp' and one that selects plain ltp.
-    lines = src.splitlines()
-    has_overnight_branch = any("previous_close AS ltp" in l for l in lines)
-    has_else_branch = any(l.strip().startswith("else:") for l in lines)
-    assert has_overnight_branch, "overnight SQL branch (previous_close AS ltp) not found"
-    assert has_else_branch, "else: branch (new-session ltp path) not found in snapshot_daily_book"
 
 
 # ---------------------------------------------------------------------------
