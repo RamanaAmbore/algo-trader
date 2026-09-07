@@ -2153,7 +2153,12 @@
     // so sum(per-leg rows in the grid) == this TOTAL by construction.
     // Handles open F&O, closed F&O, equity/proxy legs, and null (no-spot) legs uniformly.
     return displayedCandidates
-      .filter(c => _isLegEnabled(c))
+      .filter(c => {
+        if (!_isLegEnabled(c)) return false;
+        if (!showDraftInPayoff &&
+            (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
+        return true;
+      })
       .reduce((/** @type {number} */ s, c) => {
         const v = _legExpPnlDisplay(c, spot);
         return v == null ? s : s + v;
@@ -2172,7 +2177,12 @@
    *  For open legs: c.realised only (c.pnl includes unrealised MTM). */
   const _expiryPnlOffset = $derived.by(() =>
     displayedCandidates
-      .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
+      .filter(c => {
+        if (!_isLegEnabled(c) || c.kind === 'eq') return false;
+        if (!showDraftInPayoff &&
+            (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
+        return true;
+      })
       .reduce((s, c) => s + (Number(c.qty || 0) === 0
         ? Number(c.realised || c.pnl || 0)
         : Number(c.realised || 0)), 0)

@@ -905,6 +905,7 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _heartbeatTimer = null;
   $effect(() => {
+    void _pollCycleStamp;  // fire on every 5s bookPollerTick during open hours
     if (_dataChangedTick === 0) return; // skip mount — no data yet
     if (_mktTick === 0) return;         // both markets closed — slate pulse handles it
     _heartbeatOn = true;

@@ -88,4 +88,20 @@ test.describe('NavStrip P-slot / HD∆ zero-flash guard', () => {
 
     console.log('[navstrip_pslot_closed_hours] PositionStrip in layout verified');
   });
+
+  // ── Test 5: _pollCycleStamp drives heartbeat $effect ──────────────────────
+  test('5-SSOT: _heartbeatOn $effect reads _pollCycleStamp', () => {
+    const source = readFileSync(STRIP_PATH, 'utf-8');
+
+    // _pollCycleStamp must appear before the _dataChangedTick guard in the heartbeat $effect
+    // The $effect block that sets _heartbeatOn must read void _pollCycleStamp first
+    expect(source, 'heartbeat $effect must read _pollCycleStamp to fire on every 5s poll')
+      .toContain('void _pollCycleStamp;');
+
+    // Verify _heartbeatOn is set to true in the same $effect
+    expect(source, '_heartbeatOn must be set to true in the poll cycle')
+      .toMatch(/_pollCycleStamp[\s\S]*_heartbeatOn\s*=\s*true/);
+
+    console.log('[navstrip_pslot_closed_hours] _pollCycleStamp heartbeat dependency verified');
+  });
 });
