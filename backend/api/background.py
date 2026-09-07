@@ -1994,6 +1994,44 @@ def _snapshot_restart_ticker() -> None:
         logger.warning(f"Background: ticker restart failed: {_restart_exc}")
 
 
+async def _build_settlement_map() -> "dict[tuple[str, str], float]":
+    """Fetch broker holdings+positions and return (account, symbol) → close_price map.
+
+    Used at 08:00 IST to supply settlement prices to fix_daily_book_prev_close.
+    Errors from either fetch are logged and skipped; an empty dict is safe (function falls back).
+    """
+    settlement_map: dict[tuple[str, str], float] = {}
+
+    def _extract(df, update: bool) -> None:
+        if df.empty:
+            return
+        if not {"account", "tradingsymbol", "close_price"}.issubset(df.columns):
+            return
+        for row in df.itertuples(index=False):
+            acct = str(getattr(row, "account", "") or "")
+            sym  = str(getattr(row, "tradingsymbol", "") or "")
+            cp   = float(getattr(row, "close_price", 0) or 0)
+            if acct and sym and cp > 0:
+                if update:
+                    settlement_map[(acct, sym)] = cp
+                else:
+                    settlement_map.setdefault((acct, sym), cp)
+
+    try:
+        (df_h, _) = await asyncio.wait_for(_run(_fetch_holdings_direct), timeout=30)
+        _extract(df_h, update=True)
+    except Exception as exc:
+        logger.warning("[PREV-CLOSE-FIX] holdings fetch for settlement_map failed: %s", exc)
+
+    try:
+        (df_p, _) = await asyncio.wait_for(_run(_fetch_positions_direct), timeout=30)
+        _extract(df_p, update=False)
+    except Exception as exc:
+        logger.warning("[PREV-CLOSE-FIX] positions fetch for settlement_map failed: %s", exc)
+
+    return settlement_map
+
+
 async def _task_daily_snapshot() -> None:
     """
     Daily close snapshot task.
@@ -2098,35 +2136,7 @@ async def _task_daily_snapshot() -> None:
                 and _prev_close_fix_done != today):
             logger.info("Background: %s IST — daily prev_close new-session transition",
                         _nse_open_t.strftime("%H:%M"))
-            # Build settlement_map from broker positions + holdings (both have close_price
-            # set from BHAV by this time of day). Keyed (account, symbol) → close_price.
-            _settlement_map: dict[tuple[str, str], float] = {}
-            try:
-                (_df_h, _) = await asyncio.wait_for(
-                    _run(_fetch_holdings_direct), timeout=30
-                )
-                if not _df_h.empty and "account" in _df_h.columns and "tradingsymbol" in _df_h.columns and "close_price" in _df_h.columns:
-                    for _hr in _df_h.itertuples(index=False):
-                        _acct = str(getattr(_hr, "account", "") or "")
-                        _sym = str(getattr(_hr, "tradingsymbol", "") or "")
-                        _cp = float(getattr(_hr, "close_price", 0) or 0)
-                        if _acct and _sym and _cp > 0:
-                            _settlement_map[(_acct, _sym)] = _cp
-            except Exception as _smap_exc:
-                logger.warning("[PREV-CLOSE-FIX] holdings fetch for settlement_map failed: %s", _smap_exc)
-            try:
-                (_df_p, _) = await asyncio.wait_for(
-                    _run(_fetch_positions_direct), timeout=30
-                )
-                if not _df_p.empty and "account" in _df_p.columns and "tradingsymbol" in _df_p.columns and "close_price" in _df_p.columns:
-                    for _pr in _df_p.itertuples(index=False):
-                        _acct = str(getattr(_pr, "account", "") or "")
-                        _sym = str(getattr(_pr, "tradingsymbol", "") or "")
-                        _cp = float(getattr(_pr, "close_price", 0) or 0)
-                        if _acct and _sym and _cp > 0:
-                            _settlement_map.setdefault((_acct, _sym), _cp)
-            except Exception as _smap_exc:
-                logger.warning("[PREV-CLOSE-FIX] positions fetch for settlement_map failed: %s", _smap_exc)
+            _settlement_map = await _build_settlement_map()
             await fix_daily_book_prev_close(now, settlement_map=_settlement_map or None)
             _prev_close_fix_done = today
 
