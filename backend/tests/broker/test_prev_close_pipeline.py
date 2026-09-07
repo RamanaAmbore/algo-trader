@@ -222,7 +222,8 @@ class TestFixDailyBookPrevCloseRewritten:
                        return_value=mock_ctx):
                 result = await fix_daily_book_prev_close(now_ist=now_ist)
 
-        call_args = mock_ctx.execute.call_args
+        # First call is prev_close UPDATE (has backup COALESCE); second is day_pnl recompute.
+        call_args = mock_ctx.execute.call_args_list[0]
         sql_text = str(call_args[0][0]) if call_args else ""
         assert "previous_close_backup = COALESCE(d.previous_close_backup, d.previous_close)" in sql_text, (
             "Backup persistence must use COALESCE pattern"
@@ -369,7 +370,8 @@ class TestSessionOpenNoCorruption:
 
         def _capture_sql(sql_obj, params):
             nonlocal captured_sql
-            captured_sql = str(sql_obj)
+            if captured_sql is None:  # only capture first call (prev_close UPDATE)
+                captured_sql = str(sql_obj)
             return mock_result
 
         mock_ctx.execute = AsyncMock(side_effect=_capture_sql)

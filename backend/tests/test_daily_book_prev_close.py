@@ -69,8 +69,8 @@ async def test_fix_daily_book_prev_close_overnight_uses_previous_close():
 
     assert updated == 3, f"Expected 3 updated rows, got {updated}"
 
-    # Inspect the SQL sent to execute
-    call_args = mock_session.execute.call_args
+    # Inspect the first SQL call (prev_close UPDATE); second call is day_pnl recompute.
+    call_args = mock_session.execute.call_args_list[0]
     sql_obj = call_args[0][0]
     sql_str = str(sql_obj)
     params = call_args[0][1]
@@ -115,7 +115,8 @@ async def test_fix_daily_book_prev_close_new_session_uses_ltp():
 
     assert updated == 7, f"Expected 7 updated rows, got {updated}"
 
-    call_args = mock_session.execute.call_args
+    # First call is prev_close UPDATE; second call is day_pnl recompute.
+    call_args = mock_session.execute.call_args_list[0]
     sql_obj = call_args[0][0]
     sql_str = str(sql_obj)
     params = call_args[0][1]

@@ -509,3 +509,80 @@ class TestHoldingsCloseOverrideForHoldings:
         mock_recompute.assert_not_called(), (
             "recompute_row_percentages must not be called when no rows were patched"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests for day_pnl=NULL guard and fix_daily_book_prev_close second UPDATE
+# ---------------------------------------------------------------------------
+
+def test_zero_close_price_writes_null_day_pnl():
+    """When close_price=0 (BHAV not yet published), day_pnl must be None, not ltp*qty.
+
+    Root cause of 100% holdings P&L bug: Kite sets close_price=0 between MCX
+    close (23:45) and next-day BHAV publish (~08:00). The snapshot then stores
+    day_pnl = ltp × qty (= 56718 for E2E), giving day_change_pct = 100%.
+
+    Fix: _snap_holding_eod_vals returns day_pnl_v=None when close_price=0.
+    The UPSERT NULLIF then preserves the correct prior snapshot value.
+    """
+    from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+    r = {
+        "last_price": 630.20,
+        "close_price": 0,
+        "day_change": 630.20,   # Kite: day_change = last_price - close_price = 630.20 - 0
+        "pnl": 0.0,
+        "quantity": 90,
+        "opening_quantity": 90,
+    }
+    ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session=False)
+
+    assert ltp_val == pytest.approx(630.20)
+    assert day_pnl_v is None, (
+        f"Expected day_pnl_v=None when close_price=0, got {day_pnl_v}. "
+        "close_price=0 means BHAV not yet published — day_change equals ltp, not real change."
+    )
+
+
+def test_snap_compute_day_pnl_zero_close_returns_none():
+    """_snap_compute_day_pnl must return None when close_price=0 (positions guard).
+
+    Same guard as holdings: naive_day_pnl(ltp=630.20, cls=0.0, qty=90) = 56718
+    would be stored as day_pnl — same 100% bug as holdings. The fix short-circuits
+    before the formula runs when close_price <= 0.
+    """
+    from backend.api.algo.daily_snapshot import _snap_compute_day_pnl
+
+    r = {}   # no intraday fields → falls to naive_day_pnl path
+    result = _snap_compute_day_pnl(r, ltp_val=630.20, close_price=0.0, qty=90)
+
+    assert result is None, (
+        f"Expected None when close_price=0.0, got {result}. "
+        "naive_day_pnl(630.20, 0.0, 90) = 56718 would be stored as day_pnl."
+    )
+
+
+def test_fix_daily_book_prev_close_second_update_present():
+    """Structural: fix_daily_book_prev_close must contain the NULL day_pnl recompute UPDATE.
+
+    When a snapshot is taken with close_price=0 (missed-snapshot recovery or MCX
+    overwrite), day_pnl is stored as NULL. fix_daily_book_prev_close at 08:00 IST
+    patches previous_close from BHAV. It must also recompute day_pnl for those NULL
+    rows using (ltp - previous_close) × qty, otherwise Priority 1 in
+    _compute_holding_day_change returns NULL/0 and P&L stays wrong until market open.
+    """
+    import inspect
+    from backend.api.algo.daily_snapshot import fix_daily_book_prev_close
+
+    src = inspect.getsource(fix_daily_book_prev_close)
+
+    assert "day_pnl IS NULL" in src, (
+        "fix_daily_book_prev_close must contain a second UPDATE for rows with day_pnl IS NULL. "
+        "These rows were captured when close_price=0 (BHAV lag) and need day_pnl recomputed "
+        "once previous_close is patched from BHAV."
+    )
+    assert "day_pnl" in src and "previous_close" in src and (
+        "ltp - previous_close" in src or "previous_close" in src
+    ), (
+        "fix_daily_book_prev_close must SET day_pnl using (ltp - previous_close) in the second UPDATE"
+    )

@@ -396,7 +396,12 @@ def _snap_holding_eod_vals(
         _fallback = r.get("close_price") or r.get("previous_close")
         if _fallback:
             ltp_val = float(_fallback)
-    day_pnl_v = None if mid_session else (
+    # When close_price=0, Kite's day_change = ltp - 0 = ltp (BHAV not yet published).
+    # Storing day_pnl = ltp × qty would yield 100% day P&L%. Write None so the
+    # UPSERT COALESCE preserves the existing correct value from the NON-MCX snapshot.
+    _close_price = r.get("close_price")
+    _close_zero = _close_price is not None and float(_close_price) == 0.0
+    day_pnl_v = None if mid_session or _close_zero else (
         float(day_change) * qty if day_change is not None else None
     )
     total_pnl_v = float(total_pnl_raw) if total_pnl_raw is not None else None
@@ -495,6 +500,8 @@ def _snap_compute_day_pnl(r: dict, ltp_val: float, close_price, qty, multiplier:
     if ltp_val is None or close_price is None:
         return None
     cls = float(close_price)
+    if cls <= 0.0:
+        return None
     qty_f = float(qty)
     m = int(multiplier) if multiplier and int(multiplier) > 1 else 1
     if _INTRADAY_FIELDS.issubset(r.keys()):
@@ -1007,6 +1014,23 @@ async def fix_daily_book_prev_close(
                            "close_price": close_price})
                     updated += result.rowcount
                 await session.commit()
+                # Recompute day_pnl for rows where close_price was 0 at snapshot time
+                # (day_pnl written as NULL by _snap_holding_eod_vals / _snap_compute_day_pnl guard).
+                result2 = await session.execute(text("""
+                    UPDATE daily_book
+                    SET day_pnl = (ltp - previous_close) * qty
+                    WHERE date = :today
+                      AND day_pnl IS NULL
+                      AND previous_close IS NOT NULL AND previous_close > 0
+                      AND ltp IS NOT NULL AND ltp > 0
+                      AND kind IN ('holdings', 'positions')
+                """), {"today": today})
+                await session.commit()
+                if result2.rowcount:
+                    logger.info(
+                        "[PREV-CLOSE-FIX] recomputed day_pnl for %d NULL rows (today=%s)",
+                        result2.rowcount, today,
+                    )
             logger.info(
                 "[PREV-CLOSE-FIX] mode=%s settlement_map=%d entries updated=%d rows (today=%s)",
                 mode, len(settlement_map), updated, today,
@@ -1041,6 +1065,27 @@ async def fix_daily_book_prev_close(
             """), {"today": today, "epsilon": epsilon})
             await session.commit()
             updated = result.rowcount
+        # Recompute day_pnl for rows where close_price was 0 at snapshot time
+        # (day_pnl written as NULL by _snap_holding_eod_vals / _snap_compute_day_pnl guard).
+        try:
+            async with async_session() as session2:
+                result2 = await session2.execute(text("""
+                    UPDATE daily_book
+                    SET day_pnl = (ltp - previous_close) * qty
+                    WHERE date = :today
+                      AND day_pnl IS NULL
+                      AND previous_close IS NOT NULL AND previous_close > 0
+                      AND ltp IS NOT NULL AND ltp > 0
+                      AND kind IN ('holdings', 'positions')
+                """), {"today": today})
+                await session2.commit()
+            if result2.rowcount:
+                logger.info(
+                    "[PREV-CLOSE-FIX] recomputed day_pnl for %d NULL rows (today=%s)",
+                    result2.rowcount, today,
+                )
+        except Exception as e2:
+            logger.warning("[PREV-CLOSE-FIX] day_pnl recompute failed: %s", e2)
         logger.info(
             "[PREV-CLOSE-FIX] mode=%s updated=%d rows (today=%s)",
             mode, updated, today,
