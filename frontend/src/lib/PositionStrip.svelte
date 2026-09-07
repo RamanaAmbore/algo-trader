@@ -6,7 +6,8 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval, executionMode, ltpFlashPct } from '$lib/stores';
+  import { visibleInterval, executionMode, ltpFlashPct, postHibernationRefiring } from '$lib/stores';
+  import { get } from 'svelte/store';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash, createFreshnessShimmer } from '$lib/data/tickFlash.svelte.js';
@@ -252,7 +253,11 @@
     // the whole strip surface (no per-symbol routing needed here — any tick
     // landing on any tracked symbol signals liveness to the operator).
     _tickBusUnsub = tickBus.subscribe(() => {
-      _shimmer.notify('strip');
+      // Skip the underline sweep during the post-hibernation SSE reconnect burst
+      // (tab just returned from hibernation — stores are reloading and a flurry
+      // of ticks arrives before data stabilises). postHibernationRefiring clears
+      // after all stores resolve or after a 3s max-wait timeout.
+      if (!get(postHibernationRefiring)) _shimmer.notify('strip');
     });
   });
 
@@ -580,15 +585,24 @@
     // writer logged zeros (auth outage) and never recovered — operator
     // saw 0.0 instead of the real ₹84k positions P∆. The snapshot is
     // now the SSOT so we read from it directly.
-    // Guard: only overwrite dispPositionsToday when the live derived is
-    // meaningful — prevents a zero flash during the brief live→snapshot
-    // gap at market close when positions briefly clear before the snapshot
-    // arrives. The last non-zero value from the in-session poll is retained.
-    if (positions.length > 0 || positionsDayPnlStore.total !== 0) {
-      dispPositionsToday = positionsDayPnlStore.total;
+    // Guard: only overwrite dispPositionsToday/dispHoldingsToday when the
+    // live derived is meaningful — prevents a zero flash during tab return
+    // (post-hibernation SSE reconnect) or the brief live→snapshot gap at
+    // market close when positions briefly clear before the snapshot arrives.
+    // Rule: if total is non-zero → update; if total is zero AND the list is
+    // empty → reset to 0 (no positions); if total is zero BUT positions exist
+    // → keep previous value (prevents flash to 0 while stores are reloading).
+    const newPTotal = positionsDayPnlStore.total;
+    if (newPTotal !== 0) {
+      dispPositionsToday = newPTotal;
+    } else if (positions.length === 0) {
+      dispPositionsToday = 0;
     }
-    if (holdings.length > 0 || holdingsDayPnlStore.total !== 0) {
-      dispHoldingsToday = holdingsDayPnlStore.total;
+    const newHTotal = holdingsDayPnlStore.total;
+    if (newHTotal !== 0) {
+      dispHoldingsToday = newHTotal;
+    } else if (holdings.length === 0) {
+      dispHoldingsToday = 0;
     }
     if (!open) return;
   });
