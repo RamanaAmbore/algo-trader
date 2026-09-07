@@ -854,15 +854,17 @@ _LOSS_AGENTS = [
          topic="funds_warning",
          name="Margin shortfall warning",
          description=(
-             "Fires when available margin on any account drops below "
-             "₹25,000 — warning before margin goes negative. "
-             "Excludes zero values (Kite data not yet loaded)."
+             "Disabled — cross-account false positives: Dhan/Groww accounts "
+             "always report avail_margin=0 (their funds API maps differently), "
+             "satisfying the <25000 branch while Kite accounts satisfy >0. "
+             "The loss-funds-negative agent covers the real case (margin < 0)."
          ),
          conditions={"all": [
              {"op": "<", "scope": "funds.any_acct", "metric": "avail_margin", "value": 25000},
              {"op": ">", "scope": "funds.any_acct", "metric": "avail_margin", "value": 0},
          ]},
          scope="total",
+         status="inactive",
          ),
 
     # ── Funds: operational negatives (one agent — both are critical) ────

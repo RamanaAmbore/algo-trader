@@ -355,9 +355,9 @@ class TestLossAgentsConsistency:
         for agent in BUILTIN_AGENTS:
             if not agent["slug"].startswith("loss-"):
                 continue
-            if agent["slug"] == "loss-pos-total-auto-close":
+            if agent["slug"] in ("loss-pos-total-auto-close", "loss-margin-low"):
                 assert agent.get("status") == "inactive", (
-                    "loss-pos-total-auto-close should ship inactive"
+                    f"{agent['slug']} should ship inactive"
                 )
             else:
                 status = agent.get("status", "active")
