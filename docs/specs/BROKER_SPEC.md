@@ -36,6 +36,7 @@ Code, tests, and documentation must stay in sync with this file.
 7.3.12 [Universal Day P&L Formula in Snapshot](#7312-universal-day-pnl-formula-in-snapshot-aug-2026)
 7.3.13 [Positions P&L Unification — `pnl + realised`](#7313-positions-pnl-unification--pnl--realised-aug-2026)
 7.3.14 [Holdings Snapshot Day Change Percentage Formula](#7314-holdings-snapshot-day-change-percentage-formula)
+7.5 [SSE Quote Stream — Server Version Handshake](#75-sse-quote-stream--server-version-handshake-sep-2026)
 8. [Adapter Implementations](#8-adapter-implementations)
 8.1 [Order Placement Guards & Intent Bypass](#81-order-placement-guards--intent-bypass)
 8.2 [GTT Exchange Validation & MCX Broker Restrictions](#82-gtt-exchange-validation--mcx-broker-restrictions)
@@ -1616,6 +1617,70 @@ already in contracts; no further scaling is needed.
 **Related guard**: `extract_snapshot_multiplier()` is now deprecated and always returns 1 
 (kept for import compatibility). This documents the invariant and prevents accidental 
 re-introduction of the multiplier.
+
+---
+
+## 7.5 SSE Quote Stream — Server Version Handshake (Sep 2026)
+
+**File**: `backend/api/routes/quote.py` — `QuoteController.quote_stream()`
+
+The `GET /api/quotes/stream` Server-Sent Events endpoint now sends a `version` 
+event as the FIRST event on every new SSE connection, before the `snapshot` event. 
+This enables frontend clients to detect server redeployment and reload the page 
+to prevent stale Vite chunk 404s.
+
+### Version Event Payload
+
+```json
+{ "hash": "<git-short-sha>" }
+```
+
+The `hash` is captured at module load time via `git rev-parse --short HEAD` 
+(falls back to `"unknown"` if git is unavailable or the command times out). 
+The value never changes during a server's lifetime — it reflects the deployed 
+commit at boot.
+
+**Implementation**: `_read_server_hash()` function reads the commit hash once at 
+module import, stored in module-level constant `_SERVER_HASH`. This minimises 
+subprocess overhead (zero per-request cost).
+
+### SSE Event Sequence per Connection
+
+| Order | Event | Payload | Purpose |
+|---|---|---|---|
+| 1 | `version` | `{"hash": "<sha>"}` | Handshake: inform client of current server version |
+| 2 | `snapshot` | `{token: {ltp, sym}, ...}` | LTP map for all currently subscribed instruments |
+| 3+ | `tick` | `{"tok": int, "sym": str, "ltp": float, "ts": float}` | Per-tick LTP deltas (event-driven) |
+| 30s | `heartbeat` | `"1"` | Keep-alive when no ticks arrive; prevents proxy timeout |
+
+### Frontend Detection Logic
+
+Client-side code (`quoteStream.js`) should:
+
+1. Open the SSE stream via `EventSource("/api/quotes/stream")`
+2. Attach listener to `"version"` event
+3. Parse `{"hash": string}` payload
+4. On reconnect (EventSource auto-reconnect after network hiccup):
+   - Compare new hash against the stored hash at startup
+   - If **hash changed** → server was redeployed → call `window.location.reload()`
+   - If **hash unchanged** → continue using existing Vite chunks
+
+This prevents stale imports when bundle files are deleted from the old deploy 
+(which would otherwise surface as 404 on chunk loads during Vite module discovery).
+
+### Backpressure & Broadcast
+
+The stream is shared across all connected clients via `BroadcastBus`. Each 
+client owns a private queue (maxsize=1000). If the client reads slower than 
+the tick rate, new ticks are dropped silently (`QueueFull` swallowed). The 
+client reconnects automatically via EventSource retry-logic and receives a 
+fresh `version` + `snapshot` on the new connection, allowing it to resync.
+
+### Security
+
+Protected by `auth_or_demo_guard` at the controller level. Both authenticated 
+users and demo sessions receive the same tick stream (public market prices 
+carry no PII).
 
 ---
 
