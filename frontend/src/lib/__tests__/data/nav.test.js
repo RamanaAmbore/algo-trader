@@ -272,6 +272,40 @@ describe('livePositionDayPnl', () => {
     );
     expect(result).toBe((310 - 250) * 5);  // 300 — correct for intraday
   });
+
+  it('Case 2: dcv=0 overnight position uses pnl-based rescue', () => {
+    // Overnight position where broker shipped dcv=0 but pnl is valid.
+    // baseDayPnlForPosition applies Case 3 formula: pnl - oq*(close - avg)
+    // Example: close=5800, avg=5700, oq=1, pnl=150
+    // baseDayPnl = 150 - 1*(5800-5700) = 150 - 100 = 50
+    // pollLtp=5850 → realisedToday = 50 - (5850-5800)*1 = 50 - 50 = 0
+    // liveLtp=5860 → result = 0 + (5860-5800)*1 = 60
+    const result = livePositionDayPnl(
+      { closePx: 5800, pollLtp: 5850, qty: 1, avg: 5700,
+        dcvRow: { qty: 1, overnight_quantity: 1, day_change_val: 0, pnl: 150,
+                  previous_close: 5800, average_price: 5700 } },
+      5860,
+      { marketOpen: true }
+    );
+    expect(result).toBeCloseTo(60, 1);
+  });
+
+  it('Case 2 variant: simple overnight dcv present, live price update', () => {
+    // When broker has valid dcv (day_change_val=50), realisedToday calculation
+    // subtracts the poll-to-close residual correctly.
+    // brokerDcv = 50 (dcv present and non-zero)
+    // pollLtp=5850, closePx=5800 → residual = (5850-5800)*1 = 50
+    // realisedToday = 50 - 50 = 0
+    // liveLtp=5860 → result = 0 + (5860-5800)*1 = 60
+    const result = livePositionDayPnl(
+      { closePx: 5800, pollLtp: 5850, qty: 1, avg: 5700,
+        dcvRow: { qty: 1, overnight_quantity: 1, day_change_val: 50, pnl: 150,
+                  previous_close: 5800, average_price: 5700 } },
+      5860,
+      { marketOpen: true }
+    );
+    expect(result).toBeCloseTo(60, 1);
+  });
 });
 
 // ── navTotalRow ──────────────────────────────────────────────────────────────

@@ -1,88 +1,119 @@
-# Plan: Auto-reload on deploy — SSE version event
+# Plan: Fix day P&L SSOT — overlay candidatesDayPnl must use livePositionDayPnl
 
 ## Context
-After a prod redeployment, Vite generates new hashed chunk filenames. The browser's
-in-memory entry point references old chunk URLs. SvelteKit's client-side navigation
-tries to dynamic-import those old chunks → 404 → derivatives page garbles. This only
-started recently because the page grew large enough for Vite to split it into multiple
-async chunks.
+The derivatives overlay `candidatesDayPnl` and NavStrip P1 (`positionsDayPnlStore.total`)
+use different formulas for per-leg day P&L, causing the sum of per-root overlay day P&Ls
+(CRUDEOIL + GOLDM) to not equal NavStrip P1.
 
-Fix: send a `version` SSE event (before each `snapshot`) containing the server's git hash.
-The frontend stores the first hash it sees. On every SSE reconnect (which happens naturally
-when a deploy kills the server), it compares the new hash — if changed, `window.location.reload()`.
-No new endpoint, no polling, no SvelteKit config changes.
+Current overlay per-leg formula (two-step):
+  1. `_dayPnlForLeg(c)` → `(legLiveLtp − close) × qty`  OR  `baseDayPnlForPosition(c)` fallback
+  2. `+ delta = (liveLtp − pollLtp) × qty` only when step 1 fell back
+
+NavStrip formula (`livePositionDayPnl`):
+  `realisedToday = brokerDcv − (pollLtp − close) × qty`
+  `return realisedToday + (live − close) × qty`
+
+These converge algebraically when `brokerDcv = (pollLtp − close) × qty` (simple case) but
+diverge for Case 2 overnight positions (dcv=0, pnl≠0) and when live-LTP reads happen at
+different reactive granularities.
+
+Fix: in `candidatesDayPnl`, replace the `_dayPnlForLeg + delta` two-step with a direct call
+to `livePositionDayPnl()` (the SSOT function already used by `positionsDayPnlStore`).
+`_dayPnlForLeg` is kept for other callers (e.g. `_legExpPnlDisplay`); only `candidatesDayPnl`
+switches to the unified formula.
 
 ## Agents
 
-- backend: In `backend/api/routes/quote.py`, add a module-level `_SERVER_HASH` constant and
-  yield a `version` ServerSentEvent before the `snapshot` event in `quote_stream()`.
+- frontend: In `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`:
 
-  Add at module level (import subprocess already present in health.py pattern; add near top
-  of quote.py after existing imports):
-  ```python
-  import subprocess as _sp
-
-  def _read_server_hash() -> str:
-      try:
-          return _sp.run(
-              ["git", "rev-parse", "--short", "HEAD"],
-              capture_output=True, text=True, timeout=2
-          ).stdout.strip() or "unknown"
-      except Exception:
-          return "unknown"
-
-  _SERVER_HASH: str = _read_server_hash()
-  ```
-
-  In `quote_stream()` (around line 1821 where `snapshot` is yielded), add BEFORE the
-  snapshot yield:
-  ```python
-  yield ServerSentEvent(
-      data=json.dumps({"hash": _SERVER_HASH}),
-      event="version",
-  )
-  ```
-
-  `json` is already imported in quote.py. `ServerSentEvent` is already used.
-
-- frontend: In `frontend/src/lib/data/quoteStream.js`, add a `version` event listener that
-  detects hash change on reconnect and reloads.
-
-  Add after the `_BACKOFF_MAX` constant:
+  **Step 1 — add `livePositionDayPnl` to the nav import (line ~60):**
+  Change:
   ```javascript
-  let _serverHash = null;  // persists across reconnects; cleared only on page load
+  import { baseDayPnlForPosition, FO_EXCHANGES } from '$lib/data/nav';
+  ```
+  To:
+  ```javascript
+  import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
   ```
 
-  Add handler:
+  **Step 2 — rewrite the per-leg computation inside `candidatesDayPnl` (lines ~1999-2025):**
+
+  The current block iterates `candidatePositions`, calls `_dayPnlForLeg(c, liveSpot)`, then
+  conditionally adds a `(liveLtp − pollLtp) × qty` delta. Replace the per-leg P&L section with:
+
   ```javascript
-  function _onVersion(e) {
-      const { hash } = JSON.parse(e.data);
-      if (!hash || hash === 'unknown') return;
-      if (_serverHash === null) {
-          _serverHash = hash;          // first connection — record baseline
-      } else if (_serverHash !== hash) {
-          window.location.reload();    // deploy detected — reload with fresh chunks
+  const candidatesDayPnl = $derived.by(() => {
+      void _throttledTick;
+      let s = 0;
+      for (const c of candidatePositions) {
+          if (!_isLegEnabled(c)) continue;
+          if (!_includeHoldings && c.kind === 'eq') continue;
+          const legLiveLtp = untrack(() => getSnapshot(String(c.symbol || '').toUpperCase())?.ltp);
+          const day = livePositionDayPnl(
+              {
+                  closePx:  Number(c.prev_close ?? 0),
+                  pollLtp:  Number(c.ltp || 0),
+                  qty:      Number(c.qty || 0),
+                  avg:      Number(c.average_price || c.avg_cost || 0),
+                  dcvRow:   c,
+              },
+              legLiveLtp ?? null,
+              { marketOpen: _isMarketOpen },
+          );
+          s += day;
       }
-  }
+      return s;
+  });
   ```
 
-  In `startQuoteStream()`, after the existing `_es.addEventListener('heartbeat', ...)` line,
-  add:
+  Notes:
+  - `_isMarketOpen` — verify the exact variable name used in the page for market-open state
+    (search for `isMarketOpen` or `_isMarketOpen` or `marketOpen` in the reactive block area);
+    use whatever name is already in scope.
+  - `c.average_price || c.avg_cost` — check which field positions use for entry price;
+    use whichever is populated.
+  - `_dayPnlForLeg` function itself is NOT removed — it's still used by `_legExpPnlDisplay`
+    and other callers. Only `candidatesDayPnl` switches to `livePositionDayPnl`.
+  - Remove the now-unused `oq`, `close`, `qty`, `day`, `pollLtp`, `liveLtp`, `dayPnlUsedLive`,
+    `delta` variables from the old block.
+
+- backend-test: Add a Vitest test in `frontend/src/lib/__tests__/data/` verifying that
+  `livePositionDayPnl` produces the correct result for the key cases that previously diverged:
+
+  **Test A — Case 2 overnight (dcv=0, pnl≠0):**
   ```javascript
-  _es.addEventListener('version', _onVersion);
+  it('Case 2: dcv=0 overnight position uses pnl-based rescue', () => {
+      const result = livePositionDayPnl(
+          { closePx: 5800, pollLtp: 5850, qty: 1, avg: 5700,
+            dcvRow: { qty: 1, overnight_quantity: 1, day_change_val: 0, pnl: 150,
+                      previous_close: 5800, average_price: 5700 } },
+          5860,  // liveLtp
+          { marketOpen: true }
+      );
+      // realisedToday = baseDayPnlForPosition(dcvRow) - (5850-5800)*1 = 150-(50) = 100
+      // return 100 + (5860-5800)*1 = 100 + 60 = 160
+      expect(result).toBeCloseTo(160, 1);
+  });
   ```
 
-  `_serverHash` must NOT be reset in `_onStreamError` or the reconnect path — it must
-  survive reconnects to detect the hash change.
+  **Test B — simple overnight (dcv matches (ltp-close)×qty):**
+  ```javascript
+  it('simple overnight: result equals (livePrice - close) * qty', () => {
+      const result = livePositionDayPnl(
+          { closePx: 5800, pollLtp: 5850, qty: 1, avg: 5700,
+            dcvRow: { qty: 1, overnight_quantity: 1, day_change_val: 50, pnl: 150,
+                      previous_close: 5800, average_price: 5700 } },
+          5860,
+          { marketOpen: true }
+      );
+      // realisedToday = 50 - (5850-5800)*1 = 0 ; return 0 + (5860-5800)*1 = 60
+      expect(result).toBeCloseTo(60, 1);
+  });
+  ```
 
-- backend-test: Add vitest test in `frontend/src/lib/__tests__/data/quoteStream.test.js`
-  (or new file `quoteStreamVersion.test.js`) testing:
-  - Test A: first `version` event sets `_serverHash`, does NOT reload
-  - Test B: second `version` event with same hash does NOT reload
-  - Test C: second `version` event with different hash calls `window.location.reload()`
-  - Test D: hash === 'unknown' is ignored (no reload, no baseline set)
-
-  Mock `EventSource` and `window.location.reload` (vi.spyOn).
+  Import `livePositionDayPnl` from `$lib/data/nav.js`. Place in a new file
+  `frontend/src/lib/__tests__/data/livePositionDayPnl.test.js` or append to an existing
+  nav-related test file if one exists.
 
 - playwright: skip
 - doc: skip
@@ -94,12 +125,10 @@ No new endpoint, no polling, no SvelteKit config changes.
 - vitest: yes
 
 ## Commit message
-fix(sse): auto-reload on deploy — version event detects git hash change on SSE reconnect
+fix(derivatives): candidatesDayPnl uses livePositionDayPnl — SSOT with positionsDayPnlStore
 
 ## Done when
-- SSE `version` event sent before every `snapshot` on every new connection
-- Frontend detects hash change on reconnect → `window.location.reload()`
-- `_serverHash` persists across reconnects (survives network hiccups; only cleared on hard reload)
-- Same hash on reconnect (network hiccup) → no reload
-- `unknown` hash → no action
-- svelte-check 0 errors, vitest passes including 4 new version-event tests
+- `candidatesDayPnl` delegates to `livePositionDayPnl()` for every leg
+- `_dayPnlForLeg` untouched (still used by `_legExpPnlDisplay`)
+- svelte-check 0 errors, vitest passes
+- CRUDEOIL overlay day P&L + GOLDM overlay day P&L ≈ NavStrip P1 positions total

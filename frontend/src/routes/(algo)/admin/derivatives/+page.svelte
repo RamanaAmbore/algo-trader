@@ -57,7 +57,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
-  import { baseDayPnlForPosition, FO_EXCHANGES } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
   import { applyUnderlyingTickLtp } from '$lib/data/underlyingQuoteUtils.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
@@ -2002,24 +2002,19 @@
     for (const c of candidatePositions) {
       if (!_isLegEnabled(c)) continue;
       if (!_includeHoldings && c.kind === 'eq') continue;
-      const oq        = Number(/** @type {any} */ (c).overnight_quantity ?? /** @type {any} */ (c).opening_quantity ?? 0);
       const legLiveLtp = untrack(() => getSnapshot(String(c.symbol || '').toUpperCase())?.ltp);
-      const close     = Number(c.prev_close ?? 0);
-      const qty       = Number(c.qty || 0);
-      const day       = _dayPnlForLeg(c, liveSpot);
-      const pollLtp   = Number(c.ltp || 0);
-      const liveLtp   = Number(untrack(() => getSnapshot(c.symbol)?.ltp || 0));
-      // _dayPnlForLeg already used SSE ltp for overnight legs — adding delta
-      // would count the live-tick move twice. Only apply delta for legs where
-      // _dayPnlForLeg fell back to baseDayPnlForPosition (oq=0 or no SSE ltp).
-      const dayPnlUsedLive = oq !== 0 && legLiveLtp != null && Number(legLiveLtp) > 0 && close > 0 && qty !== 0;
-      // Only apply the SSE-tick delta when the leg is still pre-expiry
-      // (post-expiry day = Exp P&L already, no further intraday move).
-      // Both LTPs must be positive — a stale 0 would post a phantom move.
-      const delta = (!dayPnlUsedLive && !_isLegExpired(c) && pollLtp > 0 && liveLtp > 0 && qty !== 0)
-        ? (liveLtp - pollLtp) * qty
-        : 0;
-      s += day + delta;
+      const day = livePositionDayPnl(
+        {
+          closePx:  Number(c.prev_close ?? 0),
+          pollLtp:  Number(c.ltp || 0),
+          qty:      Number(c.qty || 0),
+          avg:      Number(c.avg_cost || 0),
+          dcvRow:   c,
+        },
+        legLiveLtp ?? null,
+        { marketOpen: isMarketOpen() },
+      );
+      s += day;
     }
     return s;
   });
