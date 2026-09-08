@@ -33,7 +33,22 @@ logger = get_logger(__name__)
 # the operator can grep the api_log_file without noise during a closed-hours
 # night. Uses a module-level timestamp (float) guarded by the GIL; no Lock
 # needed — worst case two nearly-simultaneous requests both log, which is fine.
+import subprocess as _sp
 import time as _time_mod
+
+
+def _read_server_hash() -> str:
+    try:
+        return _sp.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2
+        ).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+_SERVER_HASH: str = _read_server_hash()
+
 _spark_db_only_last_log: float = 0.0
 
 # Per-symbol rate-limited "empty series" diagnostic log.  Maps (sym, exch) →
@@ -1817,6 +1832,10 @@ class SparklineController(Controller):
             try:
                 # Initial snapshot so the client has a starting LTP map
                 # without waiting for the first tick.
+                yield ServerSentEvent(
+                    data=json.dumps({"hash": _SERVER_HASH}),
+                    event="version",
+                )
                 snap = ticker.snapshot()
                 yield {"event": "snapshot", "data": json.dumps(snap)}
 

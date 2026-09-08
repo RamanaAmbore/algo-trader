@@ -47,6 +47,8 @@ let _backoffMs = 2_000;
 const _BACKOFF_MIN = 2_000;
 const _BACKOFF_MAX = 60_000;
 
+let _serverHash = null;  // persists across reconnects; cleared only on hard page load
+
 /**
  * Open the SSE connection (idempotent — safe to call multiple times).
  * Must only be called in a browser context (onMount or behind `if (browser)`).
@@ -123,6 +125,27 @@ function _onTick(e) {
 }
 
 /**
+ * Handle an SSE 'version' event. Compares the server git hash against the
+ * hash recorded on the first connection. If it changes (deploy detected)
+ * the page is reloaded so stale JS chunks are never used against a new API.
+ * _serverHash is intentionally NOT reset in the error/reconnect path so it
+ * survives temporary disconnects and only compares against the original hash
+ * seen at module load time (i.e. the baseline of this browser session).
+ * @param {MessageEvent} e
+ */
+function _onVersion(e) {
+  try {
+    const { hash } = JSON.parse(e.data);
+    if (!hash || hash === 'unknown') return;
+    if (_serverHash === null) {
+      _serverHash = hash;           // first connection — record baseline
+    } else if (_serverHash !== hash) {
+      window.location.reload();     // deploy detected — reload with fresh chunks
+    }
+  } catch (_) { /* malformed JSON — ignore */ }
+}
+
+/**
  * Handle an SSE error event. Closes the broken EventSource and schedules
  * a manual reopen with exponential backoff capped at _BACKOFF_MAX.
  * Native EventSource would otherwise retry at ~3s indefinitely, including
@@ -156,6 +179,7 @@ function _open() {
   // Heartbeat keeps the connection alive through proxies/firewalls that
   // close idle TCP connections. No state update needed.
   _es.addEventListener('heartbeat', () => { /* noop */ });
+  _es.addEventListener('version', _onVersion);
   _es.onerror = _onStreamError;
 }
 
