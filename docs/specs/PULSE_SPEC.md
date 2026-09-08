@@ -1024,6 +1024,45 @@ the number of ITM positions requiring action.
 **Impact**: Operators see accurate close-action counts; stale in-session closed legs no 
 longer spike the orange "Exp close" badge count after partial closes.
 
+### 17.5 Candidate Position Filtering — Closed Positions (qty=0) Now Always Included
+
+The `buildCandidatePositions()` function in `frontend/src/lib/derivatives/pageLoad.js` 
+includes all F&O positions regardless of whether their symbols are present in Kite's 
+instruments master dump. Previously, closed F&O positions (qty=0) whose symbols were 
+absent from the instruments cache were silently excluded, causing their locked-in P&L 
+to vanish from exp P&L totals.
+
+**Filtering gates** (three places where qty=0 now bypasses filters):
+
+1. **Expiry filter** (line 311) — `if (qty !== 0 && !matchExpiry(sym)) continue;`
+   - Closed positions pass through regardless of selectedExpiries filter
+   
+2. **Instrument cache lookup** (line 314) — `if (!_inst && qty !== 0) continue;`
+   - Closed positions no longer require instrument lookup success
+   - Critical for deep OTM options and low-liquidity contracts absent from Kite's master
+   
+3. **Expired contract filter** (line 316) — checks if contract expiry < today
+   - `if (_inst?.x && _inst.x < todayIST() && qty !== 0) continue;`
+   - Closed positions bypass the contract-expiry cutoff
+   - Settled contracts are accepted in candidatePositions
+
+**Impact on exp P&L totals**:
+- **`_legsExpPnlTotal`** — now includes realised P&L from closed legs even when 
+  instruments are missing from Kite's dump. Example: deep OTM MCX option sold for +500, 
+  now expired and removed from master; closed position (qty=0) previously excluded, now 
+  contributes +500 to total.
+  
+- **`_expiryPnlOffset`** — payoff chart expiry curve now shifts to include closed-leg P&L, 
+  matching the Legs grid TOTAL row.
+  
+- **`_expPnlByRootMap`** — NavStrip P3 per-root exp P&L now includes settled positions' 
+  realised/pnl values via `_legExpPnlDisplay`.
+
+**Closed leg P&L source** — per `_legExpPnlDisplay()` helper:
+- Uses `leg.realised || leg.pnl || 0` (checks both fields; Kite returns `realised=0` 
+  when options settle at expiry, storing actual P&L in `pnl` instead)
+- No sensitivity to spot price (position is flat, P&L is locked)
+
 ---
 
 ## 18. Sparklines
