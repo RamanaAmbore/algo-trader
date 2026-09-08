@@ -308,12 +308,12 @@ export function buildCandidatePositions({
     const isFut = /FUT$/i.test(sym);
     const isOpt = /(CE|PE)$/i.test(sym);
     if (!isFut && !isOpt) continue;
-    if (!matchExpiry(sym)) continue;
+    if (Number(p?.qty || 0) !== 0 && !matchExpiry(sym)) continue;
     // Skip instruments no longer in master (expired and removed by Kite).
     const _inst = getInstrument(sym);
-    if (!_inst) continue;
+    if (!_inst && Number(p?.qty || 0) !== 0) continue;
     // Skip contracts where the expiry date has already passed.
-    if (_inst.x && _inst.x < todayIST()) continue;
+    if (_inst?.x && _inst.x < todayIST() && Number(p?.qty || 0) !== 0) continue;
     real.push({ ...p, kind: isFut ? 'fut' : 'opt' });
   }
 

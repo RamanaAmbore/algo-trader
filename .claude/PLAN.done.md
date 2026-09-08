@@ -1,115 +1,157 @@
-# Plan: Fix holdings 100% day P&L% — gate-filter + missed-snapshot guard
+# Plan: Fix closed F&O options excluded from exp P&L when instrument not in cache
 
-## Context
+## Context / Root Cause
 
-**Root cause (primary):**
+When a CRUDEOIL option position is closed (qty=0), its locked-in realized P&L should appear
+in the derivatives overlay exp P&L total (`_legsExpPnlTotal`) and NavStrip P3. It doesn't.
 
-`snapshot_daily_book` has no gate/exchange filter. When triggered by MCX close at 23:45 IST,
-it fetches ALL broker holdings (NSE + MCX) and UPSERTs everything. This overwrites the
-correct NON-MCX 15:45 snapshot for NSE symbols (E2E, HFCL) with data captured when
-`close_price=0` (NSE BHAV not published at 23:45 IST), giving `day_pnl = ltp × qty = 56718`.
-`day_change_pct = 56718 / (previous_close × qty) × 100 = 100%`.
+`buildCandidatePositions` (pageLoad.js) applies three filters to all positions — open AND closed:
 
-**Root cause (secondary — missed-snapshot):**
+```javascript
+if (!matchExpiry(sym)) continue;             // line 311 — expiry filter
+const _inst = getInstrument(sym);
+if (!_inst) continue;                         // line 314 — instrument lookup
+if (_inst.x && _inst.x < todayIST()) continue; // line 316 — expired contract
+```
 
-When a deployment happens during the 15:45 or 23:45 close window (snapshot missed), the
-startup snapshot fires afterward with `close_price=0` from Kite (BHAV lag). `_snap_holding_eod_vals`
-computes `day_pnl = ltp × qty` — same 100% bug. `fix_daily_book_prev_close` at 08:00 patches
-`previous_close` but does NOT recompute `day_pnl`. Priority 1 in `_compute_holding_day_change`
-returns the wrong stored `day_pnl` directly (non-zero check).
+The failure path: deep OTM CRUDEOIL options (illiquid, low open interest) are OMITTED from
+Kite's `/api/instruments` master dump. `getInstrument(sym)` returns null for these symbols.
+The `if (!_inst) continue` silently drops the closed position. Its `realised` P&L (e.g. 136,174)
+never reaches `_legExpPnlDisplay`, so the overlay shows only open positions' intrinsic.
 
-**Full timeline (Monday trading day — normal):**
-1. **15:45 IST** — NON-MCX close snapshot fires → ALL holdings written (NSE + MCX):
-   NSE E2E: `ltp=630.20, close_price=601.55` (Fri BHAV available), `day_pnl=2578.5` ✓
-2. **23:45 IST** — MCX close snapshot fires → ALL holdings UPSERTed again (no filter):
-   NSE E2E: `close_price=0` (Mon BHAV not published until Tue 08:00), `day_pnl=56718` ✗
-   Overwrites the correct 15:45 row on `(date=Mon, account, E2E, holdings)`.
-3. **~01:11 IST Tue** — Service restart startup snapshot → NEW row `date=Tue`:
-   rolling-shifts `previous_close = prior ltp = 630.20`, `day_pnl=56718` ✗
-4. **08:00 IST Tue** — `fix_daily_book_prev_close` fixes `previous_close` in `date=Tue`
-   rows to Monday settlement = 630.20. No change (was already 630.20). `day_pnl` not touched.
-5. **09:15 IST Tue** — NSE opens → live path bypasses snapshot → 100% disappears.
+The operator observes: overlay = 269,826 (= open intrinsic only), Kite = ~406,000 (= open MTM
++ closed realized). "The value you are showing may be correct for tomorrow [after positions
+disappear from broker API], but not today."
 
-**Missed-snapshot timeline (deployment at 15:45 on trading day):**
-1. **15:45 IST** — NON-MCX snapshot missed (service restarting).
-2. **~16:00 IST** — Startup snapshot fires → NSE E2E: `close_price=0` → guard: `day_pnl=NULL` ✓ (new)
-3. **23:45 IST** — MCX snapshot fires → gate filter: NSE symbols SKIPPED ✓ (new)
-4. **08:00 IST Tue** — `fix_daily_book_prev_close` patches `previous_close=settlement`
-   AND recomputes `day_pnl=(ltp − previous_close) × qty` for NULL rows ✓ (new)
-5. **09:15 IST Tue** — NSE opens → live path takes over.
-   Pre-market window shows ~0% instead of 100% — correct and safe.
+All three guards need a `qty !== 0` gate: closed positions (qty=0) have locked-in P&L that
+needs NO instrument lookup — their `realised || pnl` is self-contained.
 
-Non-trading days: `fix_daily_book_prev_close` returns early (no-op) — no impact.
-
-**Fix 1 — Gate filter (primary):**
-Pass `gate` through `trigger_close_snapshot` → `_snapshot_fire` → `snapshot_daily_book`.
-Filter `_holdings_rows` / `_positions_rows` to only write symbols in the gate's exchange set.
-
-**Fix 2 — Missed-snapshot guard (secondary — two parts):**
-- **Write-time:** In `_snap_holding_eod_vals` and `_snap_position_eod_vals`, if `close_price == 0`
-  (or null/NaN), store `day_pnl = None` (NULL) instead of `ltp × qty`. Prevents garbage persistence.
-- **Fix-time:** In `fix_daily_book_prev_close`, after patching `previous_close`, run a second
-  UPDATE: `SET day_pnl = (ltp - previous_close) * quantity WHERE day_pnl IS NULL AND previous_close > 0`
-  (scoped to same date+account+source batch). This recomputes correct `day_pnl` using BHAV at 08:00.
-
-Exchange membership:
-- NON-MCX: `{"NSE", "BSE", "NFO", "BFO", "CDS"}`
-- MCX: `{"MCX"}`
-- `gate=None` (startup snapshot, admin manual): no filter — write everything (existing behaviour)
-
-## Task
-
-**Files to change:**
-
-1. **`backend/api/algo/daily_snapshot.py`**:
-   - `snapshot_daily_book`: add optional `gate: str | None = None` param.
-   - Derive `gate_exchanges: set[str]` from gate name (NON-MCX → {"NSE","BSE","NFO","BFO","CDS"},
-     MCX → {"MCX"}, None/empty → no filter).
-   - Pass `gate_exchanges` to `_holdings_rows` and `_positions_rows`; skip rows not in set.
-   - `_snap_holding_eod_vals`: if `close_price == 0 or close_price is None`, set `day_pnl_v = None`
-     (do not compute `ltp × qty`).
-   - `_snap_position_eod_vals`: same guard for positions `day_change_val`.
-   - `fix_daily_book_prev_close`: after existing `previous_close` UPDATE, add second UPDATE:
-     `SET day_pnl = (ltp - previous_close) * quantity WHERE day_pnl IS NULL AND previous_close > 0`
-     scoped to the same `date + account + source` batch being fixed. Only runs on trading days
-     (existing guard: `_open=None` → returns 0 early).
-
-2. **`backend/api/background.py`**:
-   - `trigger_close_snapshot(gate)`: forward `gate` to `_snapshot_fire(label, gate=gate)`.
-   - `_snapshot_fire(label, ..., gate=None)`: forward `gate` to `snapshot_daily_book(gate=gate)`.
-   - Startup snapshot (`_snapshot_fire("startup")`): no gate → writes everything (keep as-is).
-
-3. **`backend/tests/test_holdings_close_override.py`** (or new `test_daily_snapshot.py`)**:
-   - `test_mcx_snapshot_does_not_write_nse_holdings`: `snapshot_daily_book(gate="MCX")` with
-     NSE+MCX holdings → assert only MCX symbols written.
-   - `test_zero_close_price_writes_null_day_pnl`: holdings row with `close_price=0` →
-     assert `day_pnl=None` in the UPSERT (not `ltp × qty`).
-   - `test_fix_daily_book_recomputes_null_day_pnl`: row with `day_pnl=NULL, previous_close=0`
-     → after `fix_daily_book_prev_close` with patched `previous_close=601.55` → assert
-     `day_pnl = (ltp - 601.55) × qty`.
+**NavStrip P3**: `_expPnlByRootMap` iterates `candidatePositions` (via `_perRootReduce`).
+Fixing `buildCandidatePositions` fixes NavStrip P3 automatically — no separate change needed.
 
 ## Agents
-- backend: Implement both fixes in `daily_snapshot.py` and `background.py` as described above.
-- frontend: skip
-- broker: skip
-- doc: skip
-- backend-test: Add all three tests in `backend/tests/test_holdings_close_override.py`
-  (or `test_daily_snapshot.py`).
+
+- frontend: In `frontend/src/lib/derivatives/pageLoad.js`, apply three guards in
+  `buildCandidatePositions` (lines 311-316):
+
+  **Fix 1 — expiry filter (line 311):**
+  Change:
+  ```javascript
+  if (!matchExpiry(sym)) continue;
+  ```
+  To:
+  ```javascript
+  if (Number(p?.qty || 0) !== 0 && !matchExpiry(sym)) continue;
+  ```
+
+  **Fix 2 — instrument lookup (lines 313-314) — most important:**
+  Change:
+  ```javascript
+  const _inst = getInstrument(sym);
+  if (!_inst) continue;
+  ```
+  To:
+  ```javascript
+  const _inst = getInstrument(sym);
+  if (!_inst && Number(p?.qty || 0) !== 0) continue;
+  ```
+
+  **Fix 3 — expired contract filter (line 316):**
+  Change:
+  ```javascript
+  if (_inst.x && _inst.x < todayIST()) continue;
+  ```
+  To:
+  ```javascript
+  if (_inst?.x && _inst.x < todayIST() && Number(p?.qty || 0) !== 0) continue;
+  ```
+  (Note: `_inst?.x` because `_inst` may now be null for closed positions.)
+
+  No other changes needed.
+
+- backend-test: Add/update test cases in `frontend/src/lib/__tests__/data/pageLoad_expired.test.js`
+  (the file already has `makeGetInst`, `vi.mock('$lib/dateFormat.js', ...)` pattern, and
+  imports `buildCandidatePositions`).
+
+  **Test A** — closed option where getInstrument returns null (not in cache):
+  ```javascript
+  it('closed option not in instruments cache still contributes realised P&L', () => {
+    // getInstrument returns null for this deep-OTM closed option.
+    const getInstrument = () => null;
+    const result = buildCandidatePositions({
+      positions: [
+        {
+          symbol: 'CRUDEOIL11SEP26P5800CE', account: 'ZG0790', qty: 0,
+          realised: 136174, pnl: 136174, source: 'live',
+          overnight_quantity: 0, day_buy_quantity: 0, day_sell_quantity: 0,
+          day_buy_value: 0, day_sell_value: 0,
+        },
+        {
+          symbol: 'CRUDEOIL11SEP26P6200CE', account: 'ZG0790', qty: 25,
+          realised: 0, pnl: 20000, source: 'live',
+          overnight_quantity: 25, day_buy_quantity: 0, day_sell_quantity: 0,
+          day_buy_value: 0, day_sell_value: 0,
+        },
+      ],
+      holdings: [], drafts: [],
+      target: 'CRUDEOIL',
+      selectedExpiries: [],
+      selectedAccounts: [],
+      simActive: false,
+      proxiesForTarget: () => [],
+      getInstrument,
+      provisionalPositions: [], draftStorePositions: [],
+    });
+    // Closed position must appear even though instrument is not in cache.
+    const syms = result.map(r => r.symbol);
+    expect(syms).toContain('CRUDEOIL11SEP26P5800CE');
+    const closed = result.find(r => r.symbol === 'CRUDEOIL11SEP26P5800CE');
+    expect(Number(closed?.realised)).toBe(136174);
+  });
+  ```
+
+  **Test B** — closed option in expired contract still included:
+  ```javascript
+  it('closed option in expired contract still contributes (expired-contract filter)', () => {
+    // expiry '2026-09-07' is in the past relative to todayIST mock '2026-09-11'.
+    const getInstrument = makeGetInst({ 'CRUDEOIL7SEP26P5800CE': '2026-09-07' });
+    const result = buildCandidatePositions({
+      positions: [{
+        symbol: 'CRUDEOIL7SEP26P5800CE', account: 'ZG0790', qty: 0,
+        realised: 136174, pnl: 136174, source: 'live',
+        overnight_quantity: 0, day_buy_quantity: 0, day_sell_quantity: 0,
+        day_buy_value: 0, day_sell_value: 0,
+      }],
+      holdings: [], drafts: [],
+      target: 'CRUDEOIL', selectedExpiries: [], selectedAccounts: [],
+      simActive: false,
+      proxiesForTarget: () => [],
+      getInstrument,
+      provisionalPositions: [], draftStorePositions: [],
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].symbol).toBe('CRUDEOIL7SEP26P5800CE');
+  });
+  ```
+
+  Note: `buildCandidatePositions` returns a flat array (`[...real, ...provisional, ...draftStore]`),
+  NOT `{ real }`. Check `result.toHaveLength()` and `result.find()`, not `result.real`.
+
 - playwright: skip
+- doc: skip
 
 ## Tests
-- pytest: yes
-- svelte-check: no
+- pytest: no
+- svelte-check: yes
 - playwright: no
+- vitest: yes
 
 ## Commit message
-fix(snapshot): gate-filter by exchange + null day_pnl guard for zero close_price — prevents 100% holdings P&L%
+fix(derivatives): include closed F&O positions in exp P&L when instrument not in instruments cache
 
 ## Done when
-- MCX 23:45 snapshot writes only MCX positions; NSE holdings are skipped
-- NON-MCX 15:45 snapshot writes only NSE/BSE holdings; MCX positions are skipped
-- Startup snapshot (gate=None) writes all — behaviour unchanged
-- Snapshot with `close_price=0` writes `day_pnl=NULL` (not `ltp × qty`)
-- `fix_daily_book_prev_close` at 08:00 recomputes `day_pnl` for NULL rows using BHAV
-- E2E and HFCL show correct day P&L% after Monday MCX close; pre-market shows ~0% (not 100%) if snapshot missed
-- All three new tests pass; pytest green
+- `npx vitest run` passes including both new tests
+- `npx svelte-check` 0 errors
+- Closed CRUDEOIL options with no instrument cache entry appear in `candidatePositions`
+  and their `realised || pnl` contributes to `_legsExpPnlTotal` and `_expPnlByRootMap` (NavStrip P3)
+- Three guards in `buildCandidatePositions` all use `qty !== 0` condition

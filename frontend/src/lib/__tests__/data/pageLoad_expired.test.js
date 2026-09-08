@@ -160,6 +160,79 @@ describe('buildCandidatePositions — expired-contract filtering', () => {
     });
     expect(result.filter(r => r.source === 'draft')).toHaveLength(1);
   });
+
+  it('closed option not in instruments cache still contributes realised P&L', () => {
+    // getInstrument returns null for this deep-OTM closed option.
+    const getInstrument = () => null;
+    const result = buildCandidatePositions({
+      ...BASE_PARAMS,
+      positions: [
+        {
+          symbol: 'CRUDEOIL17SEP26P5800CE',
+          account: 'ZG0790',
+          qty: 0,
+          realised: 136174,
+          pnl: 136174,
+          source: 'live',
+          overnight_quantity: 0,
+          day_buy_quantity: 0,
+          day_sell_quantity: 0,
+          day_buy_value: 0,
+          day_sell_value: 0,
+        },
+        {
+          symbol: 'CRUDEOIL17SEP26P6200CE',
+          account: 'ZG0790',
+          qty: 25,
+          realised: 0,
+          pnl: 20000,
+          source: 'live',
+          overnight_quantity: 25,
+          day_buy_quantity: 0,
+          day_sell_quantity: 0,
+          day_buy_value: 0,
+          day_sell_value: 0,
+        },
+      ],
+      target: 'CRUDEOIL',
+      getInstrument,
+    });
+    // Closed position must appear even though instrument is not in cache.
+    const syms = result.map(r => r.symbol);
+    expect(syms).toContain('CRUDEOIL17SEP26P5800CE');
+    const closed = result.find(r => r.symbol === 'CRUDEOIL17SEP26P5800CE');
+    expect(Number(closed?.realised)).toBe(136174);
+  });
+
+  it('closed option in expired contract still contributes (expired-contract filter)', () => {
+    // expiry '2026-09-07' equals todayIST, but a closed position (qty=0) should
+    // pass through the expiry check because qty=0 exempts it from the filter.
+    const getInstrument = makeGetInst({
+      'CRUDEOIL7SEP26P5800CE': '2026-09-07',
+    });
+    const result = buildCandidatePositions({
+      ...BASE_PARAMS,
+      positions: [
+        {
+          symbol: 'CRUDEOIL7SEP26P5800CE',
+          account: 'ZG0790',
+          qty: 0,
+          realised: 136174,
+          pnl: 136174,
+          source: 'live',
+          overnight_quantity: 0,
+          day_buy_quantity: 0,
+          day_sell_quantity: 0,
+          day_buy_value: 0,
+          day_sell_value: 0,
+        },
+      ],
+      target: 'CRUDEOIL',
+      getInstrument,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].symbol).toBe('CRUDEOIL7SEP26P5800CE');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
