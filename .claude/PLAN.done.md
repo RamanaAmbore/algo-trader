@@ -1,137 +1,89 @@
-# Plan: Fix payoff overlay auto-selection — sort by qty + provisional flag + localStorage
+# Plan: Fix payoff overlay auto-select — qty-sort only (revert + targeted sort fix)
 
 ## Context
 
-The derivatives payoff overlay fails to auto-select CRUDEOIL/GOLDM reliably, instead
-showing COPPER or NIFTY. Three independent failure modes converge:
+Commit `b5c1ea68` introduced three changes: qty-sort, _provisionalSeed flag, and localStorage
+persistence. The localStorage restore (`selectedUnderlying` set before positions load in onMount)
+causes `loadStrategy({ clear: true })` to fire with empty `legs` → `strategy = null` → payoff
+chart shows "No legs selected / pick legs to see payoff" until the 5s poll re-triggers the fetch.
+The `_provisionalSeed` flag also has a P1 audit bug (not cleared on manual pick → can override
+operator's explicit selection). The PULSE_SPEC doc (`bdb3209c`) references the reverted approach.
 
-**Failure 1 — Alphabetical sort bug (COPPER beats CRUDEOIL)**  
-Tier 2 (futures-only) sorts by position-count desc then alphabetical. When CRUDEOIL,
-GOLDM, and COPPER each have 1 position row, alphabetical tiebreaker puts COPPER first.
-
-**Failure 2 — Provisional-seed watchlist trap (NIFTY sticks)**  
-Cold-start sequence: (a) cold-start provisional seed fires (`_provisionalSeed → true`,
-`selectedUnderlying = 'NIFTY'`), (b) watchlist loads → NIFTY moves from Tier 6
-(`hint='popular'`) to Tier 4 (`hint='pinned'`), (c) positions load → promote condition
-checks `curIsPopular` (false — now 'pinned') → doesn't fire → NIFTY sticks even though
-CRUDEOIL is in Tier 2.
-
-**Failure 3 — Race condition (inconsistent result)**  
-On warm cache, positions may arrive before watchlist. On cold cache, order is random
-depending on API latency. Each ordering fires the auto-select effect with different
-opts[0], selecting different underlyings. localStorage would pin the selection after the
-first correct visit, eliminating all subsequent races.
+**Root cause of COPPER > CRUDEOIL auto-select**: Tier 1/2 sorts by position-count desc then
+alphabetical asc. COPPER ('O') < CRUDEOIL ('R') alphabetically → COPPER wins when both have
+1 position row. Fix: add `_rootQtySum` (sum of `|qty|` per root) as primary sort key.
 
 ## Agents
 
-- frontend: Three targeted changes to
-  `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`:
+- frontend: Two steps:
 
-  **Change 1 — Sort by |qty| (lines ~1468–1490)**
+  **Step 1 — Revert commits**
 
-  In `underlyingOptionsForPicker`, alongside the existing `_rootPosCount` map, build a
-  `_rootQtySum` map summing `Math.abs(Number(p.qty ?? 0))` per root. Change the Tier 1
-  and Tier 2 sort to: `_rootQtySum desc → _rootPosCount desc → alphabetical`.
+  Run:
+  ```bash
+  git revert --no-commit b5c1ea68
+  git revert --no-commit bdb3209c
+  git checkout HEAD -- frontend/e2e/derivatives_auto_select.spec.js 2>/dev/null || true
+  ```
+  After revert, verify `_provisionalSeed`, `localStorage.getItem('ramboq.derivatives.underlying')`,
+  and `localStorage.setItem(...)` are NOT present in `+page.svelte`.
 
+  **Step 2 — Apply qty-sort only (Change 1 from the reverted commit)**
+
+  In `underlyingOptionsForPicker` in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`:
+
+  Find where `const _rootPosCount = new Map()` is declared. Add alongside it:
   ```javascript
-  // existing:
-  const _rootPosCount = new Map();
-  // add:
   const _rootQtySum = new Map();
+  ```
 
-  // in the positions loop (line ~1470):
-  _rootPosCount.set(r, (_rootPosCount.get(r) || 0) + 1);
+  In the positions loop that accumulates `_rootPosCount`, also accumulate:
+  ```javascript
   _rootQtySum.set(r, (_rootQtySum.get(r) || 0) + Math.abs(Number(p.qty ?? 0)));
+  ```
 
-  // Tier 1 sort (line ~1477):
-  [..._rootsWithOptions].sort((a, b) =>
+  Change the Tier 1 sort (on `_rootsWithOptions`) from:
+  ```javascript
+  .sort((a, b) => (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) || a.localeCompare(b))
+  ```
+  to:
+  ```javascript
+  .sort((a, b) =>
     (_rootQtySum.get(b) || 0) - (_rootQtySum.get(a) || 0) ||
     (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) ||
     a.localeCompare(b))
-
-  // Tier 2 sort (line ~1485): same pattern
   ```
 
-  Effect: CRUDEOIL 2 lots beats COPPER 1 lot. Multi-account positions accumulate.
+  Change the Tier 2 sort (on `_rootsWithFuturesOnly`) the same way.
 
-  **Change 2 — `_provisionalSeed` flag (lines ~3954–3957 + effect ~1582–1585)**
+  **Step 3 — Write/update playwright spec**
 
-  Declare at the top of the script section:
-  ```javascript
-  let _provisionalSeed = $state(false);
-  ```
+  Update or recreate `frontend/e2e/derivatives_auto_select.spec.js` to be a static
+  source-inspection spec with ONLY the qty-sort assertions (no localStorage or
+  provisional-seed assertions):
+  1. `_rootQtySum` Map is declared in `underlyingOptionsForPicker`
+  2. `_rootQtySum` is accumulated with `Math.abs(Number(p.qty ?? 0))`
+  3. `_rootQtySum.get(b) - _rootQtySum.get(a)` is the primary sort key in Tier 1
+  4. Same pattern in Tier 2
+  5. `_provisionalSeed` is NOT present in the source (regression guard)
+  6. `localStorage.getItem('ramboq.derivatives.underlying')` is NOT present (regression guard)
 
-  In the cold-start NIFTY seed block (line ~3956), set the flag:
-  ```javascript
-  selectedUnderlying = POPULAR_UNDERLYINGS[0];
-  _provisionalSeed = true;
-  ```
-
-  In the auto-selection `$effect` (line ~1582), extend the promote condition from
-  `curIsPopular` to `curIsPopular || _provisionalSeed`, and reset on promote:
-  ```javascript
-  const curIsPromotable = curInOpts?.hint === 'popular' || _provisionalSeed;
-  if (curIsPromotable && (opts[0]?.hint === 'options' || opts[0]?.hint === 'futures')) {
-    _provisionalSeed = false;
-    untrack(() => { selectedUnderlying = opts[0].value; });
-  }
-  ```
-
-  Also add `void _provisionalSeed;` to the tracked sources list at the top of the
-  $effect (alongside the existing `void positions; void holdings;` etc.).
-
-  Effect: even after watchlist absorbs NIFTY into Tier 4 (changing hint to 'pinned'),
-  `_provisionalSeed` stays true → promote fires when positions arrive. One-shot:
-  `_provisionalSeed = false` after first promote prevents fighting later manual picks.
-
-  **Change 3 — localStorage persistence (lines ~326–334 + new $effect)**
-
-  In onMount #1 (after URL param read, before it ends), if no URL param was applied,
-  attempt to restore from localStorage:
-  ```javascript
-  if (!selectedUnderlying) {
-    try {
-      const saved = localStorage.getItem('ramboq.derivatives.underlying');
-      if (saved) selectedUnderlying = saved.toUpperCase().trim();
-    } catch {}
-  }
-  ```
-
-  Add a dedicate $effect to persist selection changes (near the URL sync $effect):
-  ```javascript
-  $effect(() => {
-    if (selectedUnderlying) {
-      try { localStorage.setItem('ramboq.derivatives.underlying', selectedUnderlying); } catch {}
-    }
-  });
-  ```
-
-  The auto-selection effect already handles stale saved selection (Case 2: if saved
-  symbol is not in opts → resets to opts[0]). No additional guard needed.
-
-  Effect: on return visits the selection is immediately stable — no race condition, no
-  dependency on positions/watchlist load order.
-
-- backend-test: Update `frontend/e2e/derivatives_pulse_day_pnl_ssot.spec.js` — add a
-  new test block (or new file `frontend/e2e/derivatives_auto_select.spec.js`) verifying:
-  1. `_provisionalSeed` state variable is declared in the derivatives page source
-  2. `_rootQtySum` map is built and used in the Tier 1/2 sort
-  3. `localStorage.setItem('ramboq.derivatives.underlying'` is present
-  4. `localStorage.getItem('ramboq.derivatives.underlying'` is present in onMount
+- backend-test: skip
+- doc: Update `docs/specs/PULSE_SPEC.md` — revert the §17.2 auto-select changes added in
+  `bdb3209c` back to how they were before (remove provisional-seed, localStorage, and the
+  3-tier sort documentation; restore the prior description or remove if it didn't exist).
 
 ## Tests
-
 - pytest: no
 - svelte-check: yes
 - playwright: yes
 
 ## Commit message
-
-fix(derivatives): auto-select by qty-sort + provisional-seed flag + localStorage persistence
+fix(derivatives): auto-select sort by |qty| desc — CRUDEOIL beats COPPER on equal count
 
 ## Done when
-
-- Tier 1/2 sort uses `|qty| desc` as primary key — CRUDEOIL with 2 lots ranks before COPPER with 1
-- `_provisionalSeed` flag causes promote to fire even after watchlist absorbs NIFTY into Tier 4
-- `selectedUnderlying` persisted to localStorage — return visits restore last selection instantly
+- `b5c1ea68` and `bdb3209c` effects are reverted
+- Tier 1/2 sort uses `|qty| desc → count desc → alpha` only
+- No `_provisionalSeed` or `localStorage` changes in derivatives page
 - svelte-check 0 errors, playwright spec green
+- Payoff chart loads normally (no regression from localStorage early-restore)

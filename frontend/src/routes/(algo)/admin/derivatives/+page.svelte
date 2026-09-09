@@ -306,11 +306,6 @@
   let _seenAccts = new Set();
   /** @type {string} Underlying name (e.g. NIFTY); '' = pick required */
   let selectedUnderlying = $state('');
-  /** @type {boolean} True when selectedUnderlying was set by the cold-start
-   *  provisional NIFTY seed (not by the operator or by real position data).
-   *  The auto-select $effect promotes away from the seed as soon as a
-   *  position-tier entry (hint='options'|'futures') appears in the picker. */
-  let _provisionalSeed = $state(false);
   /** @type {string[]} Expiry filter (YYYY-MM-DD[]); empty = all expiries.
    *  Multi-select — operator can view candidates from multiple expiries
    *  simultaneously. The strategy endpoint now accepts cross-expiry baskets. */
@@ -336,12 +331,6 @@
       const e = (sp.get('e') || '').trim();
       if (e) selectedExpiries = e.split(',').map(x => x.trim()).filter(Boolean);
     } catch {}
-    if (!selectedUnderlying) {
-      try {
-        const saved = localStorage.getItem('ramboq.derivatives.underlying');
-        if (saved) selectedUnderlying = saved.toUpperCase().trim();
-      } catch {}
-    }
   });
 
   // URL sync — debounced 150 ms so a flurry of picks doesn't queue N
@@ -378,14 +367,6 @@
         } catch {}
       }, 150);
     });
-  });
-  // Persist the operator's last-selected underlying to localStorage so it
-  // survives page refresh and the cold-start provisional seed doesn't clobber
-  // it on the next visit. Written every time selectedUnderlying changes.
-  $effect(() => {
-    if (selectedUnderlying) {
-      try { localStorage.setItem('ramboq.derivatives.underlying', selectedUnderlying); } catch {}
-    }
   });
   /** @type {Record<string, boolean>} `${account}|${symbol}` → enabled flag.
    * Composite key so the same option symbol in two broker accounts gets
@@ -1482,8 +1463,9 @@
   const underlyingOptionsForPicker = $derived.by(() => {
     const seen = new Set();
     const out = [];
-    // Build a position-count map for roots so that roots with more legs
-    // surface first within each tier (secondary sort: alphabetical).
+    // Build position-count and qty-sum maps for roots so that roots with
+    // more absolute exposure surface first within each tier (secondary:
+    // leg count, tertiary: alphabetical).
     const _rootPosCount = new Map();
     const _rootQtySum = new Map();
     const _allow = _accountAllow;
@@ -1496,7 +1478,7 @@
       }
     }
     // Tier 1 — Options positions on this root. Cyan-highlighted label
-    // + 'options' hint chip. Sorted by |qty| desc, position count desc, then alpha.
+    // + 'options' hint chip. Sorted by |qty| desc, then count desc, then alpha.
     for (const u of [..._rootsWithOptions].sort((a, b) =>
       (_rootQtySum.get(b) || 0) - (_rootQtySum.get(a) || 0) ||
       (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) ||
@@ -1506,7 +1488,7 @@
       out.push({ value: u, label: u, hint: 'options' });
     }
     // Tier 2 — Futures positions on this root (no options). Default
-    // colour, 'futures' hint chip. Sorted by |qty| desc, position count desc, then alpha.
+    // colour, 'futures' hint chip. Sorted by |qty| desc, then count desc, then alpha.
     for (const u of [..._rootsWithFuturesOnly].sort((a, b) =>
       (_rootQtySum.get(b) || 0) - (_rootQtySum.get(a) || 0) ||
       (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) ||
@@ -1587,7 +1569,6 @@
     void _positionsLoaded;
     void _pinnedWatchlistRoots;
     void _regularWatchlistRoots;
-    void _provisionalSeed;
     const opts = underlyingOptionsForPicker;
     const cur  = untrack(() => selectedUnderlying);
     // Standard case: nothing selected yet — pick the first picker entry.
@@ -1607,9 +1588,8 @@
       untrack(() => { selectedUnderlying = opts[0].value; });
       return;
     }
-    const curIsPromotable = curInOpts?.hint === 'popular' || _provisionalSeed;
-    if (curIsPromotable && (opts[0]?.hint === 'options' || opts[0]?.hint === 'futures')) {
-      _provisionalSeed = false;
+    const curIsPopular = curInOpts?.hint === 'popular';
+    if (curIsPopular && opts[0]?.hint !== 'popular') {
       untrack(() => { selectedUnderlying = opts[0].value; });
     }
   });
@@ -3983,7 +3963,6 @@
     if (!selectedUnderlying && !(positionsStore.value?.length) && !(pulsePositionsStore.value?.length)
         && !_pinnedWatchlistRoots.length && !_regularWatchlistRoots.length) {
       selectedUnderlying = POPULAR_UNDERLYINGS[0]; // 'NIFTY' provisional
-      _provisionalSeed = true;
     }
     // Load the instruments cache so the option-chain picker has data.
     // Already cached in IndexedDB after the first /console autocomplete
