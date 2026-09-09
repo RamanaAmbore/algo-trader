@@ -995,11 +995,27 @@ cancel/reduce orders queued, preventing accidental double-reduces.
 - CSS grid layout updated: `.cand-grid` now defines `grid-template-columns: auto 38px ...`
   where `auto` is the checkbox and `38px` is the St cell width
 
-**Underlying options picker sort** (Aug 2026, commit e6656b7e):
-- `underlyingOptionsForPicker` Tier 1 + Tier 2 now sort by **position-count descending**
-  (then alphabetical), instead of purely alphabetical
-- Operators see underlyings with the most active legs first when selecting roots
-- Example: NIFTY with 5 open positions appears before BANKNIFTY with 2 positions
+**Underlying options picker sort** (Sept 2026, commit b5c1ea68):
+- `underlyingOptionsForPicker` Tier 1 + Tier 2 now sort by **three-tier hierarchy**:
+  1. Position quantity magnitude (`|qty|` descending) — symbols with largest absolute qty first
+  2. Position count (`posCount` descending) — underlyings with most open legs second
+  3. Alphabetical (`alpha` ascending) — ties broken alphabetically
+- Operators see high-conviction positions first regardless of count. Example: CRUDEOIL with 2 lots 
+  now reliably beats COPPER with 1 lot (even if COPPER had more position count)
+
+**Cold-start seed suppression** (Sept 2026, commit b5c1ea68):
+- `_provisionalSeed` flag prevents NIFTY (Tier 6 default seed) from persisting when watchlist 
+  loads and promotes NIFTY to Tier 4 (via SPY/IVV watchlist proxies)
+- Behavior: on cold-start, NIFTY seeds the picker; once positions load, if higher-tier underlyings 
+  (e.g., CRUDEOIL, GOLDM) exist, NIFTY seed is suppressed and replaced with top-qty underlying
+- Prevents user confusion where NIFTY appears selected despite no open options legs
+
+**Underlying selection persistence** (Sept 2026, commit b5c1ea68):
+- `selectedUnderlying` now persisted to `localStorage['ramboq.derivatives.underlying']` and 
+  restored on page `onMount`
+- Eliminates race condition on return visits: operator's prior underlying selection no longer 
+  lost to watchlist load promotion
+- Selection survives page reload + browser close
 
 ### 17.4 Expiry-Close Analysis — "Exp close" Badge Counts
 
@@ -1518,3 +1534,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-07 | v1.10 Derivatives overlay day P&L SSOT convergence (commit 346a26dd): §13 Day P&L recompute updated — `candidatesDayPnl` in derivatives overlay now calls `livePositionDayPnl()` (SSOT from `$lib/data/nav`) for each candidate position leg, matching the formula used by `positionsDayPnlStore` (NavStrip P1) and Pulse grids. Per-root day P&L sums in overlay now correctly converge to `positionsDayPnlStore.total`. `_dayPnlForLeg` helper retained for `_legExpPnlDisplay`, flash updates, and per-root `_expPnlByRootMap` aggregation (legacy callers unchanged). |
 | 2026-09-07 | v1.11 Derivatives overlay store-lookup SSOT refinement (commit 202ecd93): §13 Day P&L recompute refined — `candidatesDayPnl` now reads directly from `positionsDayPnlStore.byKey[sym]` (F&O/equity positions) and `holdingsDayPnlStore.byKey[sym]` (equity holdings) instead of calling `livePositionDayPnl()`, with symbol deduplication via `seen` Set; returns `null` when no enabled legs exist (previously `0`). OptionsPayoff DAY P&L row guard updated from `{#if dayPnl != null && dayPnl !== 0}` to `{#if dayPnl != null}`, showing ₹0 during poll-gap windows instead of disappearing. Overlay day P&L now guaranteed identical to NavStrip P1 and Pulse positions TOTAL. |
 | 2026-09-08 | v1.12 Derivatives overlay stale-while-revalidating cache for candidatesDayPnl (commit 593a5e25): §13 Day P&L recompute reverted from `positionsDayPnlStore.byKey[sym]` lookup back to `_dayPnlForLeg(c, null)` per-candidate computation. Root cause: `positionsDayPnlStore.byKey` returns `_pulseByKey ?? _store.byKey`; `_pulseByKey` (set by MarketPulse from positions page) can exclude MCX futures (CRUDEOIL, GOLDM) that are closed/filtered, causing byKey[sym] to return undefined→0 for those symbols. Added `_lastCandidatesDayPnl` stale-while-revalidating cache — when `candidatePositions` briefly empties during the 5-second poll refresh, the last non-null day P&L is returned instead of null, preventing the day P&L row in OptionsPayoff from flashing away during poll gaps. |
+| 2026-09-08 | v1.13 Derivatives underlying picker auto-selection + persistence (commit b5c1ea68): §17.2 updated — `underlyingOptionsForPicker` Tier 1/2 sort now uses three-tier hierarchy: `|qty| descending → posCount descending → alpha ascending` (previously posCount only). CRUDEOIL with 2 lots now reliably ranks above COPPER with 1 lot. Added `_provisionalSeed` flag to suppress NIFTY cold-start seed when watchlist loads and promotes higher-tier underlyings (e.g., CRUDEOIL, GOLDM), preventing user confusion. Added `selectedUnderlying` localStorage persistence (`ramboq.derivatives.underlying`) restored on page `onMount`, eliminating race condition on return visits where watchlist load promotion overwrites operator's prior selection. |
