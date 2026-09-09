@@ -761,7 +761,7 @@
           <span class="ps-v ps-flat">{fmtSpot(prevClose)}</span>
         </div>
       {/if}
-      {#if dayPnl != null && dayPnl !== 0}
+      {#if dayPnl != null}
         <!-- DAY P&L row — sum of today's mark-to-market change across
              enabled candidates. Reconciles with the PositionStrip's
              P∆ chip when the basket covers every position in the

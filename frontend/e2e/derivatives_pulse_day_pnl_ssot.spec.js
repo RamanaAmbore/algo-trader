@@ -4,21 +4,31 @@
  * Regression guard for the SSOT violation (2026-07-04): /pulse Positions grid
  * showed correct Day P&L for CRUDEOIL while /admin/derivatives Snapshot showed 0.
  *
- * Root cause: Pulse applied a live-LTP recompute (livePositionDayPnl) rescuing
+ * Original root cause: Pulse applied a live-LTP recompute (livePositionDayPnl) rescuing
  * the MCX stale-ticker fingerprint (last_price === close_price → day_change_val=0).
  * Derivatives' _dayPnlForLeg called only baseDayPnlForPosition with no live rescue.
  *
- * Fix: livePositionDayPnl extracted to nav.js SSOT; both surfaces now call it,
- * normalising field names from raw broker (Pulse) and candidate rows (Derivatives).
+ * Fix (2026-07-04): livePositionDayPnl extracted to nav.js SSOT; both surfaces now
+ * call it, normalising field names from raw broker (Pulse) and candidate rows (Derivatives).
+ *
+ * Fix (2026-09-07): candidatesDayPnl (payoff overlay DAY P&L) replaced per-leg
+ * livePositionDayPnl recompute with direct positionsDayPnlStore / holdingsDayPnlStore
+ * lookups — the same stores NavStrip P1 reads. This eliminates the SSOT gap where
+ * overlay DAY P&L and NavStrip P1 diverged for the same enabled legs. Symbol-level
+ * deduplication prevents double-counting when two accounts hold the same contract.
+ * OptionsPayoff guard changed from `dayPnl != null && dayPnl !== 0` to `dayPnl != null`
+ * so the DAY P&L row renders even when the day change is exactly 0 (flat day).
  *
  * Quality dimensions checked:
- *   SSOT   — both surfaces import and call livePositionDayPnl; no inline recompute
- *            duplicates; derivatives _dayPnlForLeg calls the new helper
+ *   SSOT   — candidatesDayPnl reads positionsDayPnlStore/holdingsDayPnlStore (not
+ *            inline livePositionDayPnl); both are the same stores NavStrip P1 reads;
+ *            _dayPnlForLeg still uses baseDayPnlForPosition for per-leg cell display;
+ *            pulseUnified.js still calls livePositionDayPnl for position rows
  *   Perf   — no XHR budget regression on Pulse cold-load
- *   Stale  — no "realisedToday" inline computation remaining in consumers
- *   Reuse  — pulseUnified.js + derivatives page both import from $lib/data/nav
- *   UX     — Day P&L values visible on both pages for same underlying when
- *            market is open; CRUDEOIL row (if present) shows matching values
+ *   Stale  — candidatesDayPnl no longer calls livePositionDayPnl inline;
+ *            no "realisedToday" inline computation remaining in consumers
+ *   Reuse  — positionsDayPnlStore + holdingsDayPnlStore are the module-level singletons
+ *   UX     — DAY P&L row in payoff overlay renders for flat days (dayPnl=0 no longer hidden)
  */
 
 import { test, expect } from '@playwright/test';
@@ -40,6 +50,10 @@ const NAV_SRC = path.resolve(
   process.cwd(),
   'src/lib/data/nav.js'
 );
+const PAYOFF_SRC = path.resolve(
+  process.cwd(),
+  'src/lib/OptionsPayoff.svelte'
+);
 
 // ── Static SSOT checks ────────────────────────────────────────────────────────
 
@@ -56,24 +70,62 @@ test('SSOT: livePositionDayPnl is defined and exported from nav.js', () => {
   ).toBe(true);
 });
 
-test('SSOT: derivatives _dayPnlForLeg calls livePositionDayPnl (not inline math)', () => {
+test('SSOT: candidatesDayPnl reads positionsDayPnlStore and holdingsDayPnlStore (not inline livePositionDayPnl)', () => {
   const src = fs.readFileSync(DERIV_SRC, 'utf8');
 
-  // Import must include livePositionDayPnl
+  // candidatesDayPnl must NOT call livePositionDayPnl inline — that bypasses the SSOT stores
+  const blockStart = src.indexOf('const candidatesDayPnl = $derived.by(');
+  expect(blockStart, 'candidatesDayPnl $derived.by block must exist').toBeGreaterThan(0);
+  const blockEnd = src.indexOf('\n  });', blockStart) + 6;
+  const blockBody = src.slice(blockStart, blockEnd);
+
   expect(
-    src.includes('livePositionDayPnl') && src.includes("$lib/data/nav"),
-    'derivatives page must import livePositionDayPnl from $lib/data/nav'
+    blockBody.includes('livePositionDayPnl('),
+    'candidatesDayPnl must NOT call livePositionDayPnl inline — use positionsDayPnlStore.byKey instead'
+  ).toBe(false);
+
+  // Must use positionsDayPnlStore.byKey for F&O legs
+  expect(
+    blockBody.includes('positionsDayPnlStore.byKey'),
+    'candidatesDayPnl must read positionsDayPnlStore.byKey for F&O legs (matches NavStrip P1 SSOT)'
   ).toBe(true);
 
-  // _dayPnlForLeg body must call livePositionDayPnl
-  const fnStart = src.indexOf('function _dayPnlForLeg(');
-  expect(fnStart, '_dayPnlForLeg must exist in derivatives page').toBeGreaterThan(0);
-  // Extract function body (up to the matching closing brace pattern)
-  const fnEnd = src.indexOf('\n  }', fnStart) + 4;
-  const fnBody = src.slice(fnStart, fnEnd);
+  // Must use holdingsDayPnlStore.byKey for equity legs
   expect(
-    fnBody.includes('livePositionDayPnl('),
-    '_dayPnlForLeg must call livePositionDayPnl for the non-expired path'
+    blockBody.includes('holdingsDayPnlStore.byKey'),
+    'candidatesDayPnl must read holdingsDayPnlStore.byKey for equity legs'
+  ).toBe(true);
+
+  // Must deduplicate by symbol (seen Set) to prevent double-counting multi-account positions
+  expect(
+    blockBody.includes('seen.has(sym)') || blockBody.includes('seen.add(sym)'),
+    'candidatesDayPnl must deduplicate by symbol (seen Set) to prevent multi-account double-count'
+  ).toBe(true);
+
+  // Must import the stores
+  expect(
+    src.includes("positionsDayPnlStore.svelte.js"),
+    'derivatives page must import positionsDayPnlStore'
+  ).toBe(true);
+  expect(
+    src.includes("holdingsDayPnlStore.svelte.js"),
+    'derivatives page must import holdingsDayPnlStore'
+  ).toBe(true);
+});
+
+test('SSOT: OptionsPayoff DAY P&L guard uses null-only check (shows 0 on flat days)', () => {
+  const src = fs.readFileSync(PAYOFF_SRC, 'utf8');
+
+  // Guard must be `dayPnl != null` — not `dayPnl != null && dayPnl !== 0`
+  // The `!== 0` clause incorrectly hid the DAY P&L row on flat days.
+  expect(
+    src.includes('{#if dayPnl != null && dayPnl !== 0}'),
+    'OptionsPayoff must NOT have the old `dayPnl !== 0` guard — flat-day P&L row would be hidden'
+  ).toBe(false);
+
+  expect(
+    src.includes('{#if dayPnl != null}'),
+    'OptionsPayoff must use `{#if dayPnl != null}` — render DAY P&L row whenever store provides a value (including 0)'
   ).toBe(true);
 });
 
