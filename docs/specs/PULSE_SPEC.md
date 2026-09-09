@@ -995,11 +995,14 @@ cancel/reduce orders queued, preventing accidental double-reduces.
 - CSS grid layout updated: `.cand-grid` now defines `grid-template-columns: auto 38px ...`
   where `auto` is the checkbox and `38px` is the St cell width
 
-**Underlying options picker sort** (Aug 2026, commit e6656b7e):
-- `underlyingOptionsForPicker` Tier 1 + Tier 2 now sort by **position-count descending**
-  (then alphabetical), instead of purely alphabetical
-- Operators see underlyings with the most active legs first when selecting roots
-- Example: NIFTY with 5 open positions appears before BANKNIFTY with 2 positions
+**Underlying options picker sort** (Aug 2026, commit e6656b7e; updated commit 58d8bed6):
+- `underlyingOptionsForPicker` Tier 1 + Tier 2 now sort by **total absolute quantity
+  descending** (then alphabetical), instead of purely alphabetical
+- Tier 1 groups option positions; Tier 2 groups futures positions. The sort key reflects
+  the sum of all contract quantities per root, giving priority to the operator's most
+  significant position. Example: CRUDEOIL with 2 lots (200 contracts) ranks above COPPER
+  with 2 small option legs (qty 4 contracts total)
+- Operators see underlyings with the largest total quantity first when selecting roots
 
 ### 17.4 Expiry-Close Analysis — "Exp close" Badge Counts
 
