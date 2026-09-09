@@ -1465,17 +1465,17 @@
     const out = [];
     // Build a position-count map for roots so that roots with more legs
     // surface first within each tier (secondary sort: alphabetical).
-    const _rootPosCount = new Map();
+    const _rootQtySum = new Map();
     const _allow = _accountAllow;
     for (const p of positions) {
       if (_allow && !_allow.has(String(p.account || ''))) continue;
       const r = p.symbol.replace(/\d.*$/, '');
-      if (r) _rootPosCount.set(r, (_rootPosCount.get(r) || 0) + 1);
+      if (r) _rootQtySum.set(r, (_rootQtySum.get(r) || 0) + Math.abs(Number(p.qty || 0)));
     }
     // Tier 1 — Options positions on this root. Cyan-highlighted label
     // + 'options' hint chip. Sorted by position count desc, then alpha.
     for (const u of [..._rootsWithOptions].sort((a, b) =>
-      (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) || a.localeCompare(b))) {
+      (_rootQtySum.get(b) || 0) - (_rootQtySum.get(a) || 0) || a.localeCompare(b))) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u, hint: 'options' });
@@ -1483,7 +1483,7 @@
     // Tier 2 — Futures positions on this root (no options). Default
     // colour, 'futures' hint chip. Sorted by position count desc, then alpha.
     for (const u of [..._rootsWithFuturesOnly].sort((a, b) =>
-      (_rootPosCount.get(b) || 0) - (_rootPosCount.get(a) || 0) || a.localeCompare(b))) {
+      (_rootQtySum.get(b) || 0) - (_rootQtySum.get(a) || 0) || a.localeCompare(b))) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u, hint: 'futures' });

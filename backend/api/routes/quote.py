@@ -1832,10 +1832,7 @@ class SparklineController(Controller):
             try:
                 # Initial snapshot so the client has a starting LTP map
                 # without waiting for the first tick.
-                yield ServerSentEvent(
-                    data=json.dumps({"hash": _SERVER_HASH}),
-                    event="version",
-                )
+                yield {"event": "version", "data": json.dumps({"hash": _SERVER_HASH})}
                 snap = ticker.snapshot()
                 yield {"event": "snapshot", "data": json.dumps(snap)}
 
