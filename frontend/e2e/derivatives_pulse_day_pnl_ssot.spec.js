@@ -14,20 +14,24 @@
  * Fix (2026-09-07): candidatesDayPnl (payoff overlay DAY P&L) replaced per-leg
  * livePositionDayPnl recompute with direct positionsDayPnlStore / holdingsDayPnlStore
  * lookups — the same stores NavStrip P1 reads. This eliminates the SSOT gap where
- * overlay DAY P&L and NavStrip P1 diverged for the same enabled legs. Symbol-level
- * deduplication prevents double-counting when two accounts hold the same contract.
- * OptionsPayoff guard changed from `dayPnl != null && dayPnl !== 0` to `dayPnl != null`
- * so the DAY P&L row renders even when the day change is exactly 0 (flat day).
+ * overlay DAY P&L and NavStrip P1 diverged for the same enabled legs.
+ *
+ * Fix (2026-09-08): candidatesDayPnl reverted from positionsDayPnlStore/holdingsDayPnlStore
+ * lookups back to _dayPnlForLeg per-row, with a _lastCandidatesDayPnl stale-cache guard.
+ * Root cause of regression: positionsDayPnlStore.byKey returns _pulseByKey ?? _store.byKey;
+ * if _pulseByKey was set from a prior MarketPulse visit but didn't include CRUDEOIL/GOLDM
+ * (closed/filtered positions), lookups returned undefined → 0. _dayPnlForLeg operates on
+ * the raw candidate row's own qty + LTP fields and is unaffected by filter state.
+ * OptionsPayoff guard `dayPnl != null` stays — flat-day (0) renders correctly.
  *
  * Quality dimensions checked:
- *   SSOT   — candidatesDayPnl reads positionsDayPnlStore/holdingsDayPnlStore (not
- *            inline livePositionDayPnl); both are the same stores NavStrip P1 reads;
- *            _dayPnlForLeg still uses baseDayPnlForPosition for per-leg cell display;
- *            pulseUnified.js still calls livePositionDayPnl for position rows
+ *   SSOT   — candidatesDayPnl uses _dayPnlForLeg per row (not store lookups that can
+ *            return undefined for filtered-out symbols); _dayPnlForLeg delegates to
+ *            baseDayPnlForPosition; pulseUnified.js still calls livePositionDayPnl
  *   Perf   — no XHR budget regression on Pulse cold-load
- *   Stale  — candidatesDayPnl no longer calls livePositionDayPnl inline;
+ *   Stale  — _lastCandidatesDayPnl caches last non-empty value to bridge 5s poll gaps;
  *            no "realisedToday" inline computation remaining in consumers
- *   Reuse  — positionsDayPnlStore + holdingsDayPnlStore are the module-level singletons
+ *   Reuse  — _dayPnlForLeg is the existing per-leg SSOT function
  *   UX     — DAY P&L row in payoff overlay renders for flat days (dayPnl=0 no longer hidden)
  */
 
@@ -70,46 +74,51 @@ test('SSOT: livePositionDayPnl is defined and exported from nav.js', () => {
   ).toBe(true);
 });
 
-test('SSOT: candidatesDayPnl reads positionsDayPnlStore and holdingsDayPnlStore (not inline livePositionDayPnl)', () => {
+test('SSOT: _lastCandidatesDayPnl stale-cache variable is present in derivatives page source', () => {
+  const src = fs.readFileSync(DERIV_SRC, 'utf8');
+  expect(
+    src.includes('let _lastCandidatesDayPnl = $state('),
+    'derivatives page must declare _lastCandidatesDayPnl as a $state stale-cache variable'
+  ).toBe(true);
+});
+
+test('SSOT: candidatesDayPnl uses _dayPnlForLeg for per-row computation (not store lookups)', () => {
   const src = fs.readFileSync(DERIV_SRC, 'utf8');
 
-  // candidatesDayPnl must NOT call livePositionDayPnl inline — that bypasses the SSOT stores
   const blockStart = src.indexOf('const candidatesDayPnl = $derived.by(');
   expect(blockStart, 'candidatesDayPnl $derived.by block must exist').toBeGreaterThan(0);
   const blockEnd = src.indexOf('\n  });', blockStart) + 6;
   const blockBody = src.slice(blockStart, blockEnd);
 
+  // Must call _dayPnlForLeg — the per-row SSOT that reads each candidate's own qty+LTP
   expect(
-    blockBody.includes('livePositionDayPnl('),
-    'candidatesDayPnl must NOT call livePositionDayPnl inline — use positionsDayPnlStore.byKey instead'
-  ).toBe(false);
+    blockBody.includes('_dayPnlForLeg('),
+    'candidatesDayPnl must use _dayPnlForLeg per row — store lookups can return undefined for filtered symbols'
+  ).toBe(true);
 
-  // Must use positionsDayPnlStore.byKey for F&O legs
+  // Must NOT use store byKey lookups — these can miss symbols not present in _pulseByKey
   expect(
     blockBody.includes('positionsDayPnlStore.byKey'),
-    'candidatesDayPnl must read positionsDayPnlStore.byKey for F&O legs (matches NavStrip P1 SSOT)'
-  ).toBe(true);
-
-  // Must use holdingsDayPnlStore.byKey for equity legs
+    'candidatesDayPnl must NOT use positionsDayPnlStore.byKey (regresses CRUDEOIL/GOLDM to ₹0 when store is filtered)'
+  ).toBe(false);
   expect(
     blockBody.includes('holdingsDayPnlStore.byKey'),
-    'candidatesDayPnl must read holdingsDayPnlStore.byKey for equity legs'
-  ).toBe(true);
+    'candidatesDayPnl must NOT use holdingsDayPnlStore.byKey'
+  ).toBe(false);
+});
 
-  // Must deduplicate by symbol (seen Set) to prevent double-counting multi-account positions
-  expect(
-    blockBody.includes('seen.has(sym)') || blockBody.includes('seen.add(sym)'),
-    'candidatesDayPnl must deduplicate by symbol (seen Set) to prevent multi-account double-count'
-  ).toBe(true);
+test('SSOT: candidatesDayPnl returns stale cache when candidatePositions is empty', () => {
+  const src = fs.readFileSync(DERIV_SRC, 'utf8');
 
-  // Must import the stores
+  const blockStart = src.indexOf('const candidatesDayPnl = $derived.by(');
+  expect(blockStart, 'candidatesDayPnl $derived.by block must exist').toBeGreaterThan(0);
+  const blockEnd = src.indexOf('\n  });', blockStart) + 6;
+  const blockBody = src.slice(blockStart, blockEnd);
+
+  // Must return stale value rather than null during transient empty candidatePositions
   expect(
-    src.includes("positionsDayPnlStore.svelte.js"),
-    'derivatives page must import positionsDayPnlStore'
-  ).toBe(true);
-  expect(
-    src.includes("holdingsDayPnlStore.svelte.js"),
-    'derivatives page must import holdingsDayPnlStore'
+    blockBody.includes('return _lastCandidatesDayPnl'),
+    'candidatesDayPnl must return _lastCandidatesDayPnl as stale fallback when candidatePositions is empty'
   ).toBe(true);
 });
 

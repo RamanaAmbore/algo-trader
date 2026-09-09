@@ -58,8 +58,6 @@
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
   import { baseDayPnlForPosition, FO_EXCHANGES } from '$lib/data/nav';
-  import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
-  import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { applyUnderlyingTickLtp } from '$lib/data/underlyingQuoteUtils.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
@@ -1998,28 +1996,23 @@
   // overlay stayed pinned at the last poll's value while ticks were
   // flowing — operator: "I see P∆ constant while P is changing." Mirrors
   // the per-row delta pattern PositionStrip uses (BH2).
+  let _lastCandidatesDayPnl = $state(/** @type {number|null} */ (null));
   const candidatesDayPnl = $derived.by(() => {
     void _throttledTick;
     let s = 0;
     let hasLegs = false;
-    // Deduplicate by symbol: positionsDayPnlStore.byKey and holdingsDayPnlStore.byKey
-    // are already aggregated across all accounts for each tradingsymbol. Adding the same
-    // symbol twice (two accounts holding the same contract) would double-count.
-    const seen = new Set();
     for (const c of candidatePositions) {
       if (!_isLegEnabled(c)) continue;
       if (!_includeHoldings && c.kind === 'eq') continue;
       hasLegs = true;
-      const sym = String(c.symbol || '').toUpperCase();
-      if (seen.has(sym)) continue;
-      seen.add(sym);
-      // Use store lookup matching NavStrip P1 SSOT — same value displayed there.
-      const val = c.kind === 'eq'
-        ? (holdingsDayPnlStore.byKey[sym] ?? 0)
-        : (positionsDayPnlStore.byKey[sym] ?? 0);
-      s += val;
+      s += _dayPnlForLeg(c, null);
     }
-    return hasLegs ? s : null;
+    if (hasLegs) {
+      _lastCandidatesDayPnl = s;
+      return s;
+    }
+    // candidatePositions briefly empty during 5s poll refresh — return stale value
+    return _lastCandidatesDayPnl;
   });
 
   // Net strategy cost — total premium paid (positive = net debit) or
