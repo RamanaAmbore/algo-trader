@@ -237,3 +237,267 @@ describe('Fix 8 — CandidateLegRow LTP priority chain', () => {
     expect(deriveLtp(undefined, undefined, undefined)).toBeUndefined();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 1 — qtySum in picker options
+//
+// underlyingOptionsForPicker now includes a `qtySum` field on each option.
+// Tier 1 (options) and Tier 2 (futures) derive it from the _rootQtySum map;
+// Tiers 3-6 (holdings/pinned/watchlist/popular) always emit 0.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Fix 1 — qtySum in picker options', () => {
+  /**
+   * Simulate the _rootQtySum map-building logic from underlyingOptionsForPicker.
+   * @param {Array<{symbol: string, qty: number}>} positions
+   * @returns {Map<string, number>}
+   */
+  function buildRootQtySum(positions) {
+    const map = new Map();
+    for (const p of positions) {
+      // Mirror: const r = p.symbol.replace(/\d.*$/, '');
+      const r = p.symbol.replace(/\d.*$/, '');
+      if (r) map.set(r, (map.get(r) || 0) + Math.abs(Number(p.qty || 0)));
+    }
+    return map;
+  }
+
+  /**
+   * Simulate one tier of the picker push logic.
+   * @param {string[]} roots
+   * @param {Map<string, number>} rootQtySum
+   * @param {string} hint
+   * @param {boolean} useQtySum - true for Tier 1+2, false for Tier 3-6
+   */
+  function buildTierOpts(roots, rootQtySum, hint, useQtySum) {
+    return roots.map(u => ({
+      value: u, label: u, hint,
+      qtySum: useQtySum ? (rootQtySum.get(u) || 0) : 0,
+    }));
+  }
+
+  it('Tier 1 (options) gets non-zero qtySum from position roots', () => {
+    const positions = [
+      { symbol: 'CRUDEOIL26JUNFUT', qty: 2 },
+      { symbol: 'CRUDEOIL26JUNPE',  qty: 1 },
+      { symbol: 'GOLDM26JUNCE',     qty: 3 },
+    ];
+    const rootQtySum = buildRootQtySum(positions);
+    // CRUDEOIL has 3 total abs(qty), GOLDM has 3
+    expect(rootQtySum.get('CRUDEOIL')).toBe(3);
+    expect(rootQtySum.get('GOLDM')).toBe(3);
+
+    const opts = buildTierOpts(['CRUDEOIL', 'GOLDM'], rootQtySum, 'options', true);
+    expect(opts[0]).toMatchObject({ value: 'CRUDEOIL', hint: 'options', qtySum: 3 });
+    expect(opts[1]).toMatchObject({ value: 'GOLDM', hint: 'options', qtySum: 3 });
+  });
+
+  it('Tier 2 (futures) gets qtySum from position roots', () => {
+    const positions = [{ symbol: 'BANKNIFTY26JUNFUT', qty: 5 }];
+    const rootQtySum = buildRootQtySum(positions);
+    expect(rootQtySum.get('BANKNIFTY')).toBe(5);
+
+    const opts = buildTierOpts(['BANKNIFTY'], rootQtySum, 'futures', true);
+    expect(opts[0]).toMatchObject({ value: 'BANKNIFTY', hint: 'futures', qtySum: 5 });
+  });
+
+  it('Tier 5 (watchlist) always emits qtySum=0', () => {
+    const rootQtySum = new Map([['COPPER', 10]]);  // COPPER IS in positions map
+    // but watchlist tier ignores it
+    const opts = buildTierOpts(['COPPER'], rootQtySum, 'watchlist', false);
+    expect(opts[0]).toMatchObject({ value: 'COPPER', hint: 'watchlist', qtySum: 0 });
+  });
+
+  it('Tier 6 (popular) always emits qtySum=0', () => {
+    const rootQtySum = new Map([['NIFTY', 50]]);
+    const opts = buildTierOpts(['NIFTY'], rootQtySum, 'popular', false);
+    expect(opts[0]).toMatchObject({ value: 'NIFTY', hint: 'popular', qtySum: 0 });
+  });
+
+  it('firstActive finds first option with qtySum > 0', () => {
+    const opts = [
+      { value: 'COPPER',    hint: 'watchlist', qtySum: 0 },
+      { value: 'CRUDEOIL',  hint: 'futures',   qtySum: 5 },
+      { value: 'GOLDM',     hint: 'options',   qtySum: 3 },
+    ];
+    // Mirror: opts.find(o => (o.qtySum || 0) > 0) ?? opts[0]
+    const firstActive = opts.find(o => (o.qtySum || 0) > 0) ?? opts[0];
+    expect(firstActive.value).toBe('CRUDEOIL');
+  });
+
+  it('firstActive falls back to opts[0] when no option has active qty', () => {
+    const opts = [
+      { value: 'NIFTY',  hint: 'popular', qtySum: 0 },
+      { value: 'COPPER', hint: 'popular', qtySum: 0 },
+    ];
+    const firstActive = opts.find(o => (o.qtySum || 0) > 0) ?? opts[0];
+    expect(firstActive.value).toBe('NIFTY');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 1 — one-time promote to active underlying
+//
+// The auto-select $effect fires a one-time promote when:
+//   _autoSelectDone = false, _positionsLoaded = true,
+//   curHasActiveQty = false, bestHasActiveQty = true.
+// After _autoSelectDone is set to true the promote must NOT re-fire.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Fix 1 — one-time promote to active underlying', () => {
+  /**
+   * Simulate the promote guard logic extracted from the $effect.
+   * Returns { promoted: boolean, newUnderlying: string | null, newDone: boolean }.
+   */
+  function runPromoteLogic({ curUnderlying, opts, positionsLoaded, autoSelectDone }) {
+    const curInOpts = opts.find(o => o.value === curUnderlying);
+    const firstActive = opts.find(o => (o.qtySum || 0) > 0) ?? opts[0];
+
+    const curIsPopular    = curInOpts?.hint === 'popular';
+    const curHasActiveQty = (curInOpts?.qtySum || 0) > 0;
+    const bestHasActiveQty = (firstActive?.qtySum || 0) > 0;
+
+    // Popular promote (existing logic — not the one-time path).
+    if (curIsPopular && firstActive?.hint !== 'popular') {
+      return { promoted: true, newUnderlying: firstActive.value, newDone: autoSelectDone };
+    }
+
+    // One-time promote.
+    if (!autoSelectDone && positionsLoaded && !curIsPopular && !curHasActiveQty && bestHasActiveQty) {
+      return { promoted: true, newUnderlying: firstActive.value, newDone: true };
+    }
+
+    return { promoted: false, newUnderlying: curUnderlying, newDone: autoSelectDone };
+  }
+
+  it('fires promote when all conditions met', () => {
+    const opts = [
+      { value: 'CRUDEOIL', hint: 'futures',   qtySum: 5 },
+      { value: 'COPPER',   hint: 'watchlist',  qtySum: 0 },
+    ];
+    const result = runPromoteLogic({
+      curUnderlying: 'COPPER',
+      opts,
+      positionsLoaded: true,
+      autoSelectDone: false,
+    });
+    expect(result.promoted).toBe(true);
+    expect(result.newUnderlying).toBe('CRUDEOIL');
+    expect(result.newDone).toBe(true);
+  });
+
+  it('does NOT re-fire after _autoSelectDone = true', () => {
+    const opts = [
+      { value: 'CRUDEOIL', hint: 'futures',   qtySum: 5 },
+      { value: 'COPPER',   hint: 'watchlist',  qtySum: 0 },
+    ];
+    // Simulate second effect run after done=true
+    const result = runPromoteLogic({
+      curUnderlying: 'COPPER',
+      opts,
+      positionsLoaded: true,
+      autoSelectDone: true,  // already done
+    });
+    expect(result.promoted).toBe(false);
+    expect(result.newUnderlying).toBe('COPPER');  // operator's pick preserved
+  });
+
+  it('does NOT promote when positions not loaded yet', () => {
+    const opts = [
+      { value: 'CRUDEOIL', hint: 'futures',   qtySum: 5 },
+      { value: 'COPPER',   hint: 'watchlist',  qtySum: 0 },
+    ];
+    const result = runPromoteLogic({
+      curUnderlying: 'COPPER',
+      opts,
+      positionsLoaded: false,  // not loaded yet
+      autoSelectDone: false,
+    });
+    expect(result.promoted).toBe(false);
+  });
+
+  it('does NOT promote when current already has active qty', () => {
+    const opts = [
+      { value: 'CRUDEOIL', hint: 'futures',   qtySum: 5 },
+      { value: 'COPPER',   hint: 'futures',    qtySum: 2 },
+    ];
+    const result = runPromoteLogic({
+      curUnderlying: 'COPPER',
+      opts,
+      positionsLoaded: true,
+      autoSelectDone: false,
+    });
+    // COPPER has qtySum=2, curHasActiveQty=true → no promote
+    expect(result.promoted).toBe(false);
+  });
+
+  it('does NOT promote when no option has active qty (no positions)', () => {
+    const opts = [
+      { value: 'NIFTY',  hint: 'popular',    qtySum: 0 },
+      { value: 'COPPER', hint: 'watchlist',  qtySum: 0 },
+    ];
+    const result = runPromoteLogic({
+      curUnderlying: 'COPPER',
+      opts,
+      positionsLoaded: true,
+      autoSelectDone: false,
+    });
+    // bestHasActiveQty = false → no promote
+    expect(result.promoted).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 2 — _snapshotTotalDay = sum of _dayPnlByRootMap
+//
+// The new formula: Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
+// Must equal the algebraic sum of all per-root values, including negatives and zeros.
+// Symmetric with _snapshotTotalPnl / _snapshotTotalExp.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Fix 2 — _snapshotTotalDay = sum of _dayPnlByRootMap', () => {
+  /**
+   * Simulate the new _snapshotTotalDay formula.
+   * @param {Record<string, number>} dayPnlByRootMap
+   */
+  function computeSnapshotTotalDay(dayPnlByRootMap) {
+    return Object.values(dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0);
+  }
+
+  it('sums two roots correctly (CRUDEOIL + GOLDM)', () => {
+    const map = { CRUDEOIL: -16000, GOLDM: -8000 };
+    expect(computeSnapshotTotalDay(map)).toBe(-24000);
+  });
+
+  it('empty map returns 0', () => {
+    expect(computeSnapshotTotalDay({})).toBe(0);
+  });
+
+  it('single positive root', () => {
+    expect(computeSnapshotTotalDay({ NIFTY: 12500 })).toBe(12500);
+  });
+
+  it('mixed positive and negative roots', () => {
+    const map = { NIFTY: 5000, BANKNIFTY: -3000, CRUDEOIL: -16000, GOLDM: 2000 };
+    expect(computeSnapshotTotalDay(map)).toBe(-12000);
+  });
+
+  it('null/undefined values are treated as 0 (Number(null)=0)', () => {
+    const map = { NIFTY: null, BANKNIFTY: undefined, CRUDEOIL: -16000 };
+    // Number(null)=0, Number(undefined)=NaN → || 0 guard handles undefined
+    expect(computeSnapshotTotalDay(map)).toBe(-16000);
+  });
+
+  it('SSOT: per-row sum equals total (no formula divergence)', () => {
+    // Each per-root value is already the output of _dayPnlForLeg (with
+    // prev_settlement_pnl adjustment). Total = sum of per-rows by construction.
+    const perRootValues = [-16000, -8000, 5000];
+    const map = Object.fromEntries(
+      ['CRUDEOIL', 'GOLDM', 'NIFTY'].map((k, i) => [k, perRootValues[i]])
+    );
+    const total = computeSnapshotTotalDay(map);
+    const sumOfRows = perRootValues.reduce((s, v) => s + v, 0);
+    expect(total).toBe(sumOfRows);
+    expect(total).toBe(-19000);
+  });
+});

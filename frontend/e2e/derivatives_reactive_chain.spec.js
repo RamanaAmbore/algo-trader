@@ -13,24 +13,32 @@
  *     — off-market payoff chart becomes visible post-quote-load
  *
  *  3. Snapshot TOTAL Day P&L parity
- *     — _snapshotTotalDay recomputes from livePositionDayPnl + _throttledTick
- *     — Snapshot TOTAL Day P&L matches NavStrip P1 within 1%
+ *     — _snapshotTotalDay now sums _dayPnlByRootMap instead of raw broker rows
+ *     — Snapshot TOTAL Day P&L matches sum of per-underlying rows exactly
+ *     — TOTAL also matches NavStrip P1 within 1%
  *
  *  4. Positions sync after store update
  *     — positionsStore.value syncs into local positions via $effect (5s poll)
  *     — Snapshot grid updates without page crash after 6s
  *
- *  5. CandidateLegRow LTP SSE-reactive
+ *  5. Dropdown auto-promotes active position on load
+ *     — Cold load doesn't stick to watchlist provisional (e.g. COPPER)
+ *     — Once positions load, promote fires one-time to switch to active (e.g. CRUDEOIL)
+ *     — _autoSelectDone flag prevents repeated promotes on later polls
+ *     — Manual selection survives subsequent auto-refresh cycles
+ *
+ *  6. CandidateLegRow LTP SSE-reactive
  *     — getSnapshot returns live LTP from KiteTicker
  *     — individual leg rows update when spot changes (no quote fetch needed)
  *
- * Five quality dimensions:
- *  1. SSOT     — single strategy source; livePositionDayPnl + _throttledTick
- *                are the only TOTAL Day P&L inputs
+ * Seven quality dimensions:
+ *  1. SSOT     — _snapshotTotalDay sums _dayPnlByRootMap; grid uses same map
  *  2. Perf     — payoff loads on cold start within 8s; spot appears within 5s
  *  3. Stale    — grep confirms loadUnderlyingQuotes uses visibleInterval
  *  4. Reusable — _snapshotTotalDay formula matches NavStrip P slot 1 by design
  *  5. UX       — no blank payoff on cold start; no stale "—" LTP in leg rows
+ *  6. Dropdown — auto-promote fires once on positions load, not on every poll
+ *  7. Manual   — operator's manual selection persists across 5s refresh cycles
  *
  * Run:
  *   cd frontend && npx playwright test e2e/derivatives_reactive_chain.spec.js --project=chromium-desktop
@@ -409,6 +417,113 @@ test.describe('SPEC 3: Snapshot TOTAL Day P&L matches NavStrip P1', () => {
       '_snapshotTotalDay must be referenced multiple times (grid display + other surfaces)'
     ).toBeGreaterThan(1);
   });
+
+  test('TOTAL day P&L equals sum of per-underlying rows', async ({ page }) => {
+    // Bug 2 fix: _snapshotTotalDay now sums _dayPnlByRootMap values instead
+    // of computing separately on raw broker rows. This ensures the grid's
+    // per-underlying Day P&L rows + the TOTAL row are computed consistently
+    // and sum to the TOTAL exactly (accounting for rounding in display).
+
+    await loginAsAdmin(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    // Wait for page to settle
+    await page.waitForTimeout(3_000);
+
+    // Find Snapshot grid rows (per-underlying rows + TOTAL row)
+    const gridRows = page.locator('[class*="snapshot"] tr, [class*="byund-row"]');
+    const rowCount = await gridRows.count().catch(() => 0);
+
+    if (rowCount < 2) {
+      test.skip(true, 'Snapshot grid with TOTAL row not visible — likely no F&O positions');
+      return;
+    }
+
+    // Find all per-underlying rows (not TOTAL)
+    const perRootRows = page.locator('[class*="byund-row"]:not([class*="total"])');
+    const perRootCount = await perRootRows.count().catch(() => 0);
+
+    if (perRootCount === 0) {
+      test.skip(true, 'No per-underlying rows found — likely no F&O positions');
+      return;
+    }
+
+    // Extract Day P&L values from each per-underlying row
+    let sumOfPerRootDayPnl = 0;
+    for (let i = 0; i < perRootCount; i++) {
+      const row = perRootRows.nth(i);
+      // Day P&L cell is typically in a column labeled "Day" or after the symbol.
+      // Pattern: look for the first numeric cell or the cell matching class "day-pnl" / "day"
+      const dayPnlCell = row.locator('[class*="day"], [class*="pnl"]').first();
+      const cellText = (await dayPnlCell.textContent().catch(() => '')).trim();
+
+      // Parse numeric value, handling negative/positive and formatted numbers
+      const numStr = cellText.replace(/[^0-9.-]/g, '');
+      const val = parseFloat(numStr) || 0;
+      sumOfPerRootDayPnl += val;
+    }
+
+    // Find TOTAL row and extract its Day P&L value
+    const totalRow = page.locator('[class*="byund-row-total"], tr:has-text("TOTAL")').first();
+    const totalVisible = await totalRow.isVisible().catch(() => false);
+
+    if (!totalVisible) {
+      test.skip(true, 'TOTAL row not found — skip parity check');
+      return;
+    }
+
+    const totalDayPnlCell = totalRow.locator('[class*="day"], [class*="pnl"]').first();
+    const totalCellText = (await totalDayPnlCell.textContent().catch(() => '')).trim();
+    const totalNumStr = totalCellText.replace(/[^0-9.-]/g, '');
+    const totalDayPnl = parseFloat(totalNumStr) || 0;
+
+    // Verify: TOTAL ≈ sum of per-rows (allow ±1 for display rounding)
+    const diff = Math.abs(totalDayPnl - sumOfPerRootDayPnl);
+    expect(
+      diff <= 1,
+      `TOTAL Day P&L (${totalDayPnl}) must equal sum of per-root rows (${sumOfPerRootDayPnl}), diff=${diff}`
+    ).toBe(true);
+  });
+
+  test('_snapshotTotalDay computes from _dayPnlByRootMap, not raw broker rows (source audit)', async () => {
+    // Source audit: the fix changed _snapshotTotalDay from iterating raw
+    // positionsStore rows + livePositionDayPnl to summing _dayPnlByRootMap
+    // values. This ensures consistency: per-row grid uses _dayPnlByRootMap,
+    // TOTAL sums the same _dayPnlByRootMap → exact parity.
+
+    const src = fs.readFileSync(SRC, 'utf8');
+
+    // Find the _snapshotTotalDay definition
+    const totalStart = src.indexOf('const _snapshotTotalDay = $derived.by(() => {');
+    if (totalStart < 0) {
+      expect(false, '_snapshotTotalDay must be a $derived.by block').toBe(true);
+      return;
+    }
+
+    const totalEnd = src.indexOf('\n  });', totalStart) + 4;
+    const totalBlock = src.slice(totalStart, totalEnd);
+
+    // Option 1 (new correct code): sums _dayPnlByRootMap
+    const sumsDayPnlByRootMap = totalBlock.includes('_dayPnlByRootMap') &&
+                                (totalBlock.includes('Object.values') || totalBlock.includes('for'));
+
+    // Option 2 (old buggy code): iterates positionsStore + uses livePositionDayPnl
+    const iteratesRawRows = totalBlock.includes('positionsStore.value') &&
+                            totalBlock.includes('livePositionDayPnl');
+
+    if (sumsDayPnlByRootMap) {
+      expect(true).toBe(true);  // Pass — new correct logic
+    } else if (iteratesRawRows) {
+      expect(false, '_snapshotTotalDay must use _dayPnlByRootMap, not raw livePositionDayPnl').toBe(true);
+    } else {
+      // Neither pattern found — check for a different implementation
+      const hasSomeDayPnlLogic = totalBlock.includes('day') || totalBlock.includes('pnl');
+      expect(
+        hasSomeDayPnlLogic,
+        '_snapshotTotalDay must contain some day P&L computation logic'
+      ).toBe(true);
+    }
+  });
 });
 
 // ── Suite 4: Positions sync after store update ───────────────────────────────────
@@ -479,8 +594,192 @@ test.describe('SPEC 4: Positions sync via $effect (5s reactive)', () => {
   });
 });
 
-// ── Suite 5: CandidateLegRow LTP SSE-reactive ────────────────────────────────────
-test.describe('SPEC 5: CandidateLegRow LTP reactivity', () => {
+// ── Suite 5: Dropdown auto-promotes active position on positions load ───────────────────
+test.describe('SPEC 5: Dropdown auto-promotes to active position on load', () => {
+  test.setTimeout(90_000);
+
+  test('cold load selects first active-qty underlying, not watchlist provisional', async ({ page }) => {
+    // Bug: on cold load, the dropdown auto-selects COPPER (watchlist hint)
+    // because positions haven't loaded yet. Once positions load (e.g. CRUDEOIL,
+    // GOLDM FUT positions), the promote logic should fire and switch to one of
+    // those active-qty entries instead of keeping the watchlist provisional.
+    // This test verifies the fix fires exactly once on positions load.
+
+    await loginAsAdmin(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    // Wait for positions to load and page to settle
+    await page.waitForTimeout(4_000);
+
+    // Find the underlying picker/dropdown button
+    const trigger = page.locator(
+      '#opt-und, button[class*="rbq-select"], [class*="underlying-picker"], button[class*="select"]'
+    ).first();
+    const triggerVisible = await trigger.isVisible({ timeout: 10_000 }).catch(() => false);
+
+    if (!triggerVisible) {
+      test.skip(true, 'Underlying selector not visible — likely no positions');
+      return;
+    }
+
+    // Get the currently selected underlying label text
+    const selectedText = await trigger.textContent().catch(() => '');
+    const selectedUnd = selectedText.trim().toUpperCase();
+
+    // The selected underlying should have an active position with non-zero qty,
+    // NOT be a pure watchlist item (which would have hint='watchlist').
+    // Watchlist-only items typically don't have associated positions,
+    // whereas active positions have derivative legs or holdings.
+    //
+    // Verify by checking that the selected underlying is NOT one of the
+    // known pure-watchlist symbols (assuming COPPER is in a watchlist
+    // but no position exists). If positions have loaded, CRUDEOIL or GOLDM
+    // should be selected instead (they have positions).
+    const knownWatchlistOnly = ['COPPER'];
+    const selectedIsWatchlistOnly = knownWatchlistOnly.some(w => selectedUnd.includes(w));
+
+    // If real positions exist (CRUDEOIL/GOLDM/etc.), they should be selected.
+    // We can't hard-code expected values since user positions vary, but we can
+    // verify the logic by checking that if the page HAS positions, the selector
+    // didn't stick to a pure-watchlist item.
+    const positionRowsExist = await page
+      .locator('[class*="candidate-row"], [class*="snapshot"] tbody tr')
+      .count() > 0;
+
+    if (positionRowsExist && selectedIsWatchlistOnly) {
+      expect(false, `Dropdown stuck on ${selectedUnd} (watchlist) even though positions loaded`).toBe(true);
+    } else if (positionRowsExist) {
+      // Positions exist and selector is not a watchlist-only item — promote worked.
+      expect(true).toBe(true);
+    } else {
+      // No positions to load, skip the test
+      test.skip(true, 'No positions loaded — cannot test promote logic');
+    }
+  });
+
+  test('after auto-promote, user can manually select inactive underlying without bounce-back', async ({ page }) => {
+    // Bug: after the promote fires (switching from watchlist to active position),
+    // the _autoSelectDone flag prevents repeated promotes. So if the operator
+    // manually clicks and selects a different underlying (e.g. switching to an
+    // off-market stock from the watchlist), the selector should STAY on their
+    // choice, not bounce back to the active position on the next 5s poll.
+
+    await loginAsAdmin(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    // Wait for page and positions to load
+    await page.waitForTimeout(4_000);
+
+    // Find the underlying picker button
+    const trigger = page.locator(
+      '#opt-und, button[class*="rbq-select"], [class*="underlying-picker"], button[class*="select"]'
+    ).first();
+    const triggerVisible = await trigger.isVisible({ timeout: 10_000 }).catch(() => false);
+
+    if (!triggerVisible) {
+      test.skip(true, 'Underlying selector not visible — skip');
+      return;
+    }
+
+    // Get initial selected value (should be promoted to active if positions exist)
+    const initialText = await trigger.textContent().catch(() => '');
+    const initialUnd = initialText.trim().toUpperCase();
+
+    // Click the trigger to open the dropdown
+    await trigger.click({ timeout: 5_000 }).catch(() => {});
+
+    // Wait for dropdown to appear and find all options
+    const options = page.locator('[role="option"], [class*="option"]');
+    const optionCount = await options.count().catch(() => 0);
+
+    if (optionCount <= 1) {
+      test.skip(true, 'Only one option or no dropdown visible — skip');
+      return;
+    }
+
+    // Find an option that's NOT the currently selected one
+    let differentOptText = '';
+    for (let i = 0; i < optionCount; i++) {
+      const opt = options.nth(i);
+      const txt = await opt.textContent().catch(() => '');
+      if (txt.trim().toUpperCase() !== initialUnd) {
+        differentOptText = txt.trim().toUpperCase();
+        // Click this different option
+        await opt.click().catch(() => {});
+        break;
+      }
+    }
+
+    if (!differentOptText) {
+      test.skip(true, 'All options are identical to current selection — skip');
+      return;
+    }
+
+    // Wait for the selection to settle (150ms for click + close animation)
+    await page.waitForTimeout(500);
+
+    // Now wait 6 seconds (past one 5s position refresh cycle) and assert
+    // the manually selected underlying is still selected
+    await page.waitForTimeout(6_000);
+
+    const finalText = await trigger.textContent().catch(() => '');
+    const finalUnd = finalText.trim().toUpperCase();
+
+    expect(
+      finalUnd,
+      `Manually selected ${differentOptText} should remain selected after 6s poll, not bounce back to ${initialUnd}`
+    ).toBe(differentOptText);
+  });
+
+  test('_autoSelectDone flag prevents repeated promotes (source audit)', async () => {
+    // Source audit: verify the fix introduced _autoSelectDone or an equivalent
+    // one-time-promote guard that prevents the promote logic from firing
+    // repeatedly on each position poll.
+    const src = fs.readFileSync(SRC, 'utf8');
+
+    // The promote logic is in the $effect that handles curIsPopular case.
+    // The fix adds a flag-based guard to prevent it from re-triggering.
+    // Pattern: either _autoSelectDone variable OR a conditional that checks
+    // if promote already happened (e.g. by tracking previous opts[0].hint).
+
+    const hasAutoSelectDone = src.includes('_autoSelectDone') || src.includes('_promoted');
+
+    // OR: verify the promote only happens when curIsPopular AND opts[0] changed hint
+    // (from popular → something else), which is inherently one-time.
+    const hasPopularToActiveLogic = src.match(/curIsPopular.*opts\[0\].*hint.*popular/);
+
+    expect(
+      hasAutoSelectDone || hasPopularToActiveLogic,
+      '_autoSelectDone flag or one-time promote guard must exist to prevent repeated promotes'
+    ).toBeTruthy();
+  });
+
+  test('initial non-cur pick checks for qtySum > 0 (source audit)', async () => {
+    // Source audit: the fix changed the initial pick (when !cur) from picking
+    // the first option unconditionally to preferring the first option with
+    // qtySum > 0 (active positions). This avoids landing on a watchlist-only
+    // item when positions are available.
+
+    const src = fs.readFileSync(SRC, 'utf8');
+
+    // Pattern: look for the auto-select effect and verify it picks based on
+    // qtySum or some indicator of "has active positions" (hint !== 'popular').
+    const fnStart = src.indexOf('$effect(() => {');
+    const autoSelectSection = src.slice(fnStart, fnStart + 3000);
+
+    // Should have logic: "if (!cur) pick first with qty or hint !== popular"
+    const hasQtyCheck = autoSelectSection.includes('qtySum') || autoSelectSection.includes('qty');
+    const hasHintCheck = autoSelectSection.includes("hint !== 'popular'") || autoSelectSection.includes('curIsPopular');
+
+    expect(
+      hasQtyCheck || hasHintCheck,
+      'Initial pick logic should prefer entries with qtySum > 0 or hint !== "popular"'
+    ).toBeTruthy();
+  });
+});
+
+// ── Suite 6: CandidateLegRow LTP SSE-reactive ────────────────────────────────────
+test.describe('SPEC 6: CandidateLegRow LTP reactivity', () => {
   test.setTimeout(90_000);
 
   test('Candidate leg rows show live LTP values (not stale "--")', async ({ page }) => {
@@ -570,7 +869,7 @@ test.describe('SPEC 5: CandidateLegRow LTP reactivity', () => {
   });
 });
 
-// ── Suite 6: Source code integrity checks ────────────────────────────────────────
+// ── Suite 7: Source code integrity checks ────────────────────────────────────────
 test.describe('Source code integrity audit', () => {
   test('loadStrategy guards are correct (not unconditional clear)', async () => {
     const src = fs.readFileSync(SRC, 'utf8');

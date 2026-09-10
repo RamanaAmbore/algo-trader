@@ -1484,7 +1484,7 @@
       (_rootQtySum.get(b) || 0) - (_rootQtySum.get(a) || 0) || a.localeCompare(b))) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      out.push({ value: u, label: u, hint: 'options' });
+      out.push({ value: u, label: u, hint: 'options', qtySum: _rootQtySum.get(u) || 0 });
     }
     // Tier 2 — Futures positions on this root (no options). Default
     // colour, 'futures' hint chip. Sorted by position count desc, then alpha.
@@ -1492,7 +1492,7 @@
       (_rootQtySum.get(b) || 0) - (_rootQtySum.get(a) || 0) || a.localeCompare(b))) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      out.push({ value: u, label: u, hint: 'futures' });
+      out.push({ value: u, label: u, hint: 'futures', qtySum: _rootQtySum.get(u) || 0 });
     }
     // Tier 3 — Roots present in cash-equity holdings. Extract the bare
     // symbol from each holding row (already uppercased in
@@ -1508,7 +1508,7 @@
     for (const u of [..._holdingsRoots].sort()) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      out.push({ value: u, label: u, hint: 'holdings' });
+      out.push({ value: u, label: u, hint: 'holdings', qtySum: 0 });
     }
     // Tier 4 — Pinned watchlist F&O underlying roots. Comes before regular
     // watchlists so operator-curated pinned symbols surface above ordinary lists.
@@ -1516,14 +1516,14 @@
     for (const u of _pinnedWatchlistRoots) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      out.push({ value: u, label: u, hint: 'pinned' });
+      out.push({ value: u, label: u, hint: 'pinned', qtySum: 0 });
     }
     // Tier 5 — Non-pinned watchlist F&O underlying roots. Populated from
     // regularSyms; appears after pinned watchlist and before popular fallback.
     for (const u of _regularWatchlistRoots) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      out.push({ value: u, label: u, hint: 'watchlist' });
+      out.push({ value: u, label: u, hint: 'watchlist', qtySum: 0 });
     }
     // Tier 6 — Popular/liquid F&O underlyings (NIFTY, BANKNIFTY,
     // RELIANCE, …). Always emitted — the operator sees the popular
@@ -1535,49 +1535,45 @@
     for (const u of POPULAR_UNDERLYINGS) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      out.push({ value: u, label: u, hint: 'popular' });
+      out.push({ value: u, label: u, hint: 'popular', qtySum: 0 });
     }
     return out;
   });
 
   // Auto-select the best underlying when the page lands without a
-  // cached selection. Reads the first entry from the four-tier picker
-  // list (options > futures > holdings > popular). Cold-start with no
-  // book AND no holdings lands on POPULAR_UNDERLYINGS[0] = 'NIFTY';
-  // when the operator has real positions or holdings, those take
-  // precedence. Untracks the selectedUnderlying read so operator-
-  // driven changes don't re-trigger the fallback logic.
+  // cached selection. Reads the first active-position entry from the
+  // picker list. Cold-start with no book AND no holdings lands on
+  // POPULAR_UNDERLYINGS[0] = 'NIFTY'; when the operator has real
+  // positions or holdings, those take precedence. Untracks the
+  // selectedUnderlying read so operator-driven changes don't re-trigger
+  // the fallback logic.
+  //
+  // One-time promote (Fix 1): fires once when positions first load and
+  // the current provisional selection (watchlist/pinned) has no active
+  // qty. _autoSelectDone guards against re-firing on every 5s refresh
+  // so the operator can manually pick an inactive underlying (e.g.
+  // COPPER for analysis) without being bounced back.
   $effect(() => {
-    // Auto-select the first entry in the picker whenever the picker
-    // has options but selectedUnderlying is empty. Operator: "if symbol
-    // context is not clear, use the first symbol in dropdown as default
-    // while loading the payoff."
-    //
     // Track EVERY upstream source explicitly. The picker's `$derived.by`
     // recomputes when any of these change, but reading only the derived
     // wasn't reliably propagating in production builds — the effect
     // fired once on mount (opts empty) and never re-fired when the
     // stores hydrated. Belt + suspenders: touch each source AND the
     // picker itself so any of them re-firing wakes the effect.
-    void positions;
-    void holdings;
-    void _rootsWithOptions;
-    void _rootsWithFuturesOnly;
-    void _positionsLoaded;
-    void _pinnedWatchlistRoots;
-    void _regularWatchlistRoots;
+    void positions; void holdings; void _rootsWithOptions; void _rootsWithFuturesOnly;
+    void _positionsLoaded; void _pinnedWatchlistRoots; void _regularWatchlistRoots;
     const opts = underlyingOptionsForPicker;
     const cur  = untrack(() => selectedUnderlying);
-    // Standard case: nothing selected yet — pick the first picker entry.
+    // First option with active positions; fallback to opts[0]
+    const firstActive = opts.find(o => (o.qtySum || 0) > 0) ?? opts[0];
+
+    // Standard case: nothing selected yet — pick first active (skip popular if positions exist).
     if (!cur) {
-      const first = opts[0]?.value;
+      const first = (firstActive ?? opts[0])?.value;
       if (first) untrack(() => { selectedUnderlying = first; });
       return;
     }
-    // Promote case: current selection is a 'popular' provisional seed
-    // (set before positions loaded) but a position-tier entry is now
-    // available. Overwrite so the operator's actual open positions drive
-    // the default instead of NIFTY flashing and sticking.
+
     const curInOpts = opts.find(o => o.value === cur);
     if (!curInOpts && opts[0]?.value) {
       // Stale cache: previously-selected underlying is no longer in options — reset to first.
@@ -1585,9 +1581,27 @@
       untrack(() => { selectedUnderlying = opts[0].value; });
       return;
     }
+
     const curIsPopular = curInOpts?.hint === 'popular';
-    if (curIsPopular && opts[0]?.hint !== 'popular') {
-      untrack(() => { selectedUnderlying = opts[0].value; });
+    const curHasActiveQty = (curInOpts?.qtySum || 0) > 0;
+    const bestHasActiveQty = (firstActive?.qtySum || 0) > 0;
+
+    // Promote: popular provisional → any position tier (existing logic, unchanged).
+    if (curIsPopular && firstActive?.hint !== 'popular') {
+      untrack(() => { selectedUnderlying = firstActive.value; });
+      return;
+    }
+
+    // One-time promote: fires when positions first load and current is a non-active
+    // provisional (watchlist/pinned selected before positions were available).
+    // Guard: _autoSelectDone prevents re-firing on every subsequent 5s position refresh
+    // so the operator can manually pick an inactive underlying (e.g. COPPER for analysis)
+    // without being immediately bounced back to the active one.
+    if (!untrack(() => _autoSelectDone) && _positionsLoaded && !curIsPopular && !curHasActiveQty && bestHasActiveQty) {
+      untrack(() => {
+        _autoSelectDone = true;
+        selectedUnderlying = firstActive.value;
+      });
     }
   });
 
@@ -3428,36 +3442,15 @@
   /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number}>} */
   let positions = $state([]);
 
-  // _snapshotTotalDay — SSOT: MarketPulse positions TOTAL (gold standard).
-  // Reads raw positionsStore.value (unmodified broker rows) and applies
-  // baseDayPnlForPosition over ALL positions (no exchange filter), matching
-  // NavStrip P1 and Pulse positions TOTAL exactly. Account filter applied
-  // when accounts are selected.
-  // Using _dayPnlByRootMap here was wrong: it applies _expiryPnl for
-  // expired legs, substituting current-spot intrinsic for the actual
-  // realized day_change_val — closed positions (qty=0) contributed 0
-  // instead of their realized P&L, and open expired legs drifted vs broker.
+  // _snapshotTotalDay — sum of _dayPnlByRootMap, same formula as per-row grid.
+  // Symmetric with _snapshotTotalPnl / _snapshotTotalExp (lines ~987-992).
+  // TOTAL = sum of per-underlying rows by construction — no formula divergence.
+  // This eliminates the MCX FUT divergence where livePositionDayPnl on raw
+  // positionsStore rows diverged from _dayPnlForLeg (which applies
+  // prev_settlement_pnl adjustment) by tens of thousands of rupees.
   const _snapshotTotalDay = $derived.by(() => {
     void _throttledTick;
-    const matchAccount = buildAcctMatcher(selectedAccounts);
-    let sum = 0;
-    for (const p of (positionsStore.value ?? [])) {
-      if (!matchAccount(String(p?.account || ''))) continue;
-      const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-      const liveLtp = sym ? untrack(() => getSnapshot(sym)?.ltp ?? null) : null;
-      sum += livePositionDayPnl(
-        {
-          closePx: Number(p.previous_close) || Number(p.close_price ?? 0),
-          pollLtp: Number(p.last_price ?? 0),
-          qty:     Number(p.quantity ?? 0),
-          avg:     Number(p.average_price ?? 0),
-          dcvRow:  p,
-        },
-        liveLtp,
-        { marketOpen: isMarketOpen() },
-      );
-    }
-    return sum;
+    return Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0);
   });
 
   /** Raw broker holdings keyed by symbol. When the operator picks an
@@ -3627,6 +3620,13 @@
   // replacing them with the correct option-root tier, which the
   // operator perceived as "sometimes showing all underlyings."
   let _positionsLoaded = $state(false);
+  // Guard for the one-time promote logic in the auto-select $effect.
+  // Set to true after the first promote fires (positions → active underlying)
+  // so subsequent 5s position refreshes don't bounce the operator back to
+  // the active underlying if they manually picked an inactive one (e.g. COPPER
+  // for analysis). Reset is intentionally omitted — page reload is the only
+  // way to re-trigger the one-time promote.
+  let _autoSelectDone = $state(false);
 
   // Propagate book-poller updates (positionsStore.value refreshes every 5s)
   // into the local `positions` $state without requiring a full loadPositions()
@@ -4978,7 +4978,7 @@
                component) per operator: equity tracks spot 1:1. -->
           {@const _hExpNetTotal = _snapshotTotalExp + _hPnlTotal}
           <div class="byund-row byund-row-total">
-            <span class="byund-und" title="Includes all positions (equity intraday + F&O)">TOTAL</span>
+            <span class="byund-und" title="F&O positions total">TOTAL</span>
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
