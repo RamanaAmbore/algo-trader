@@ -35,8 +35,9 @@ if (typeof globalThis.window === 'undefined') {
 /**
  * Simulates the quoteStream _onVersion logic in isolation.
  * Maintains module-level state (_serverHash) to test persistence across calls.
+ * Includes visibility-gated reload logic (tab-switch garble fix).
  *
- * @type {{ serverHash: null | string, onVersion: (e: {data: string}) => {reloadTriggered: boolean} | undefined }}
+ * @type {{ serverHash: null | string, onVersion: (e: {data: string}, visibility?: string) => {reloadTriggered: boolean, deferredToVisibility: boolean} }}
  */
 const versionHandler = (() => {
   let serverHash = null;
@@ -46,22 +47,26 @@ const versionHandler = (() => {
     set serverHash(v) { serverHash = v; },
     /**
      * @param {{data: string}} e
+     * @param {string} [visibility] - simulates document.visibilityState
      */
-    onVersion(e) {
+    onVersion(e, visibility = 'visible') {
       try {
         const { hash } = JSON.parse(e.data);
-        if (!hash || hash === 'unknown') return { reloadTriggered: false };
+        if (!hash || hash === 'unknown') return { reloadTriggered: false, deferredToVisibility: false };
         if (serverHash === null) {
           serverHash = hash;           // first connection — record baseline
-          return { reloadTriggered: false };
+          return { reloadTriggered: false, deferredToVisibility: false };
         } else if (serverHash !== hash) {
+          if (visibility === 'hidden') {
+            // Defer: register visibilitychange listener, do NOT reload now
+            return { reloadTriggered: false, deferredToVisibility: true };
+          }
           // In real code: window.location.reload()
-          // In test: we detect this condition instead
-          return { reloadTriggered: true };
+          return { reloadTriggered: true, deferredToVisibility: false };
         }
-        return { reloadTriggered: false };
+        return { reloadTriggered: false, deferredToVisibility: false };
       } catch (_) { /* malformed JSON — ignore */ }
-      return { reloadTriggered: false };
+      return { reloadTriggered: false, deferredToVisibility: false };
     },
   };
 })();
@@ -577,6 +582,74 @@ describe('quoteStream _onVersion — SSE version event handling', () => {
       const e2 = { data: JSON.stringify({ hash: 'different' }) };
       const result = versionHandler.onVersion(e2);
       expect(result.reloadTriggered).toBe(true);
+    });
+  });
+
+  // ── Test 13: Visibility-gated reload (tab-switch garble fix) ─────────────────
+  // Root cause: after SSE version event fix, a tab that was hidden during a server
+  // restart would reload() mid-render on tab return, causing "garbled" appearance.
+  // Fix: defer reload to visibilitychange when document.visibilityState === 'hidden'.
+
+  describe('L: Visibility-gated reload', () => {
+    beforeEach(() => {
+      versionHandler.serverHash = null;
+    });
+
+    it('hash change while VISIBLE triggers immediate reload (no deferral)', () => {
+      const e1 = { data: JSON.stringify({ hash: 'v1' }) };
+      versionHandler.onVersion(e1, 'visible');
+
+      const e2 = { data: JSON.stringify({ hash: 'v2' }) };
+      const result = versionHandler.onVersion(e2, 'visible');
+
+      expect(result.reloadTriggered).toBe(true);
+      expect(result.deferredToVisibility).toBe(false);
+    });
+
+    it('hash change while HIDDEN defers reload, does NOT reload immediately', () => {
+      const e1 = { data: JSON.stringify({ hash: 'v1' }) };
+      versionHandler.onVersion(e1, 'visible');  // baseline set while visible
+
+      const e2 = { data: JSON.stringify({ hash: 'v2' }) };
+      const result = versionHandler.onVersion(e2, 'hidden');  // tab hidden during deploy
+
+      expect(result.reloadTriggered).toBe(false);       // no immediate reload
+      expect(result.deferredToVisibility).toBe(true);   // deferred to tab return
+    });
+
+    it('no change while hidden: neither reload nor deferral', () => {
+      const e1 = { data: JSON.stringify({ hash: 'stable' }) };
+      versionHandler.onVersion(e1, 'visible');
+
+      const e2 = { data: JSON.stringify({ hash: 'stable' }) };
+      const result = versionHandler.onVersion(e2, 'hidden');
+
+      expect(result.reloadTriggered).toBe(false);
+      expect(result.deferredToVisibility).toBe(false);
+    });
+
+    it('first connection while hidden: records baseline, no reload/deferral', () => {
+      const e1 = { data: JSON.stringify({ hash: 'v1' }) };
+      const result = versionHandler.onVersion(e1, 'hidden');
+
+      expect(result.reloadTriggered).toBe(false);
+      expect(result.deferredToVisibility).toBe(false);
+      expect(versionHandler.serverHash).toBe('v1');
+    });
+
+    it('tab-switch scenario: hidden during deploy → deferred; on tab return → fires', () => {
+      // User has tab open, session starts
+      versionHandler.onVersion({ data: JSON.stringify({ hash: 'pre-deploy' }) }, 'visible');
+
+      // User switches away; server gets deployed; SSE reconnects while hidden
+      const result = versionHandler.onVersion({ data: JSON.stringify({ hash: 'post-deploy' }) }, 'hidden');
+      expect(result.deferredToVisibility).toBe(true);
+      expect(result.reloadTriggered).toBe(false);
+
+      // User switches back — visibilitychange fires → reload() runs
+      // (In real code: the addEventListener callback calls window.location.reload().
+      //  Here we just verify the condition: deferredToVisibility=true means the
+      //  listener was registered and will fire on the next visibilitychange.)
     });
   });
 });

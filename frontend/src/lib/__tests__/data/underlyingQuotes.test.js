@@ -1,6 +1,77 @@
 import { describe, it, expect } from 'vitest';
 import { applyUnderlyingTickLtp } from '$lib/data/underlyingQuoteUtils.js';
 
+// ── prevClose priority logic (tab-switch garble fix) ─────────────────────────
+// Mirrors the _prevClose derived in +page.svelte:
+//   if (strategy?.spot_prev_close > 0) → use strategy.spot_prev_close
+//   else → _underlyingQuotes[selectedUnderlying]?.prev_close ?? null
+//
+// This is gated by _throttledTick + untrack() in the real component to prevent
+// OptionsPayoff SVG re-renders on every _underlyingQuotes wholesale replacement.
+
+/**
+ * @param {{ spot_prev_close?: number|null } | null} strategy
+ * @param {Record<string, { prev_close?: number }>} underlyingQuotes
+ * @param {string} selectedUnderlying
+ * @returns {number|null}
+ */
+function computePrevClose(strategy, underlyingQuotes, selectedUnderlying) {
+  if ((strategy?.spot_prev_close ?? 0) > 0) return strategy.spot_prev_close;
+  return underlyingQuotes[selectedUnderlying]?.prev_close ?? null;
+}
+
+describe('_prevClose priority logic (derivatives page)', () => {
+  it('strategy.spot_prev_close > 0 takes priority over underlyingQuotes', () => {
+    const result = computePrevClose(
+      { spot_prev_close: 24000 },
+      { NIFTY: { prev_close: 23500 } },
+      'NIFTY',
+    );
+    expect(result).toBe(24000);
+  });
+
+  it('falls back to underlyingQuotes when strategy.spot_prev_close is 0', () => {
+    const result = computePrevClose(
+      { spot_prev_close: 0 },
+      { NIFTY: { prev_close: 23500 } },
+      'NIFTY',
+    );
+    expect(result).toBe(23500);
+  });
+
+  it('falls back to underlyingQuotes when strategy is null', () => {
+    const result = computePrevClose(
+      null,
+      { NIFTY: { prev_close: 23880 } },
+      'NIFTY',
+    );
+    expect(result).toBe(23880);
+  });
+
+  it('returns null when strategy has no prev_close and underlyingQuotes is empty', () => {
+    const result = computePrevClose(null, {}, 'NIFTY');
+    expect(result).toBe(null);
+  });
+
+  it('returns null when selectedUnderlying not in underlyingQuotes', () => {
+    const result = computePrevClose(
+      { spot_prev_close: 0 },
+      { BANKNIFTY: { prev_close: 52000 } },
+      'NIFTY',
+    );
+    expect(result).toBe(null);
+  });
+
+  it('strategy.spot_prev_close negative → falls through to underlyingQuotes', () => {
+    const result = computePrevClose(
+      { spot_prev_close: -1 },
+      { NIFTY: { prev_close: 23880 } },
+      'NIFTY',
+    );
+    expect(result).toBe(23880);
+  });
+});
+
 const BASE_QUOTES = {
   NIFTY: { ltp: 24000, day_pct: 0.5, prev_close: 23880 },
   BANKNIFTY: { ltp: 52000, day_pct: -0.3, prev_close: 52156 },

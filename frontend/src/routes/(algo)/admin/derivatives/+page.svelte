@@ -1991,6 +1991,19 @@
     String(strategy.underlying || '').toUpperCase() !== selectedUnderlying.toUpperCase()
   );
 
+  // prevClose for the payoff chart — throttle-gated and untracked to prevent
+  // OptionsPayoff from re-rendering on every _underlyingQuotes wholesale
+  // replacement (which happens on every loadUnderlyingQuotes() call, including
+  // on tab return via exitHibernation). Mirrors the same pattern as liveSpot.
+  // Raw template read of _underlyingQuotes[selectedUnderlying]?.prev_close
+  // would fire on every SSE tick that replaces the quotes object, causing
+  // spotDir / spotPct flicker in the chart SPOT chip.
+  const _prevClose = $derived.by(() => {
+    void _throttledTick;
+    if ((strategy?.spot_prev_close ?? 0) > 0) return strategy.spot_prev_close;
+    return untrack(() => _underlyingQuotes[selectedUnderlying]?.prev_close) ?? null;
+  });
+
   // Live-adjusted: incorporate SSE-tick price moves on top of the broker
   // snapshot day_change_val. Without this, the DAY row in the payoff
   // overlay stayed pinned at the last poll's value while ticks were
@@ -4399,9 +4412,7 @@
       <OptionsPayoff
         payoff={strategy && !_strategyStale ? _mergedPayoff : (_clientPayoffStub ?? [])}
         spot={liveSpot}
-        prevClose={(strategy?.spot_prev_close ?? 0) > 0
-          ? strategy.spot_prev_close
-          : (_underlyingQuotes[selectedUnderlying]?.prev_close ?? null)}
+        prevClose={_prevClose}
         breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
         intermediateCurves={!_strategyStale ? (strategy?.intermediate_curves || []) : []}
         spanSigmas={strategy?.span_sigmas}

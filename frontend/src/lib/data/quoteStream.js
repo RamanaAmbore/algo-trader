@@ -140,7 +140,14 @@ function _onVersion(e) {
     if (_serverHash === null) {
       _serverHash = hash;           // first connection — record baseline
     } else if (_serverHash !== hash) {
-      window.location.reload();     // deploy detected — reload with fresh chunks
+      // Deploy detected — reload with fresh chunks. Defer until visible so
+      // a tab-return after a server restart doesn't hard-reload mid-render
+      // (which the operator perceives as the page "garbling").
+      if (document.visibilityState === 'hidden') {
+        document.addEventListener('visibilitychange', () => window.location.reload(), { once: true });
+      } else {
+        window.location.reload();
+      }
     }
   } catch (_) { /* malformed JSON — ignore */ }
 }
