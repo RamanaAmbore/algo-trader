@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.11 — 2026-08-23  
+**Version**: 1.13 — 2026-09-10  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -746,6 +746,58 @@ Holdings grid (St column filtered out):
 - Holdings: sums all filtered holdings; day P&L = sum of per-row holdings day change
 - Styling: amber background (22% opacity) + borders to distinguish from data rows
 - P&L %-cell formula: `day_pnl / (close × qty)` per symbol, market-value-weighted for TOTAL
+
+### 13.1 Derivatives Snapshot Grid Reactive Chain (Sep 2026, commit 91cccd02)
+
+The derivatives page (`/admin/derivatives`) Snapshot grid received eight reactive chain 
+improvements for faster data-sync and tighter payoff chart alignment with NavStrip.
+
+**Per-row Snapshot P&L (5s update latency)**:
+1. A `$effect` watches `positionsStore.value` and re-runs the F&O position transformation 
+   whenever positions load (at page mount or on 5s book-poller). Sim rows preserved. 
+   Per-row Snapshot P&L and Exp P&L values update within 5 seconds of the broker's 
+   book cycle — no fill event required.
+
+**Payoff chart spot price (always-on off-market refresh)**:
+2. A `_quoteGeneration` counter (`$state(0)`) is incremented in `loadUnderlyingQuotes()` 
+   after `_underlyingQuotes = next`. Both `liveSpot` and `_clientPayoffStub` track the 
+   counter via `if (!isMarketOpen()) void _quoteGeneration`, ensuring the payoff chart's 
+   spot price re-derives after each quote refresh even when SSE ticks are frozen 
+   (off-market window).
+3. `loadUnderlyingQuotes()` interval changed from `marketAwareInterval` (pauses off-market) 
+   to `visibleInterval` with throttle `'throttle:30000'` (5s when visible, 30s when hidden). 
+   Off-market spot prices are now fetched continuously, needed for payoff curve positioning 
+   and EV calculations during closed-hours.
+4. `loadUnderlyingQuotes()` is called fire-and-forget at the end of `loadPositions()` 
+   (not waiting for interval tick), ensuring underlying quotes are available immediately 
+   when positions first load.
+
+**Cold-start strategy preservation**:
+5. The `strategy = null` clear branch now requires `_positionsLoaded && instrumentsReady` 
+   before proceeding, preventing a race where a sessionStorage-cached strategy was wiped 
+   before positions and instruments finished loading.
+
+**TOTAL row NavStrip parity**:
+6. `_snapshotTotalDay` rewritten to use `livePositionDayPnl()` (the same SSOT function 
+   as `positionsDayPnlStore`) with live LTP sourced from `getSnapshot(sym)?.ltp` at 4Hz 
+   via `void _throttledTick`. The Snapshot grid TOTAL row now matches NavStrip P1 exactly 
+   when no equity intraday positions exist (eliminating prior discrepancies from separate 
+   day-P&L calculation paths).
+
+**CandidateLegRow LTP reactivity**:
+7. LTP in CandidateLegRow now reads `getSnapshot(sym)?.ltp` first (SSE-reactive at 4Hz), 
+   falling back to `legAnalytics.ltp` then `c.ltp` (broker API). Leg rows show live ticks 
+   immediately from the symbol store rather than waiting for broker polling cycles.
+
+**TOTAL row label clarity**:
+8. Added `title="Includes all positions (equity intraday + F&O)"` tooltip to the TOTAL 
+   row label, clarifying why the total may exceed the sum of per-underlying sub-rows 
+   (equity intraday positions are not grouped by underlying).
+
+**Impact**: All per-row Snapshot data refreshes within 5 seconds of the broker's book 
+poller cycle. Payoff chart spot price and day-P&L TOTAL remain synchronized across the 
+derivatives page, MarketPulse grids, and NavStrip throughout market-open and closed-hours 
+windows.
 
 ---
 
@@ -1521,3 +1573,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-07 | v1.10 Derivatives overlay day P&L SSOT convergence (commit 346a26dd): §13 Day P&L recompute updated — `candidatesDayPnl` in derivatives overlay now calls `livePositionDayPnl()` (SSOT from `$lib/data/nav`) for each candidate position leg, matching the formula used by `positionsDayPnlStore` (NavStrip P1) and Pulse grids. Per-root day P&L sums in overlay now correctly converge to `positionsDayPnlStore.total`. `_dayPnlForLeg` helper retained for `_legExpPnlDisplay`, flash updates, and per-root `_expPnlByRootMap` aggregation (legacy callers unchanged). |
 | 2026-09-07 | v1.11 Derivatives overlay store-lookup SSOT refinement (commit 202ecd93): §13 Day P&L recompute refined — `candidatesDayPnl` now reads directly from `positionsDayPnlStore.byKey[sym]` (F&O/equity positions) and `holdingsDayPnlStore.byKey[sym]` (equity holdings) instead of calling `livePositionDayPnl()`, with symbol deduplication via `seen` Set; returns `null` when no enabled legs exist (previously `0`). OptionsPayoff DAY P&L row guard updated from `{#if dayPnl != null && dayPnl !== 0}` to `{#if dayPnl != null}`, showing ₹0 during poll-gap windows instead of disappearing. Overlay day P&L now guaranteed identical to NavStrip P1 and Pulse positions TOTAL. |
 | 2026-09-08 | v1.12 Derivatives overlay stale-while-revalidating cache for candidatesDayPnl (commit 593a5e25): §13 Day P&L recompute reverted from `positionsDayPnlStore.byKey[sym]` lookup back to `_dayPnlForLeg(c, null)` per-candidate computation. Root cause: `positionsDayPnlStore.byKey` returns `_pulseByKey ?? _store.byKey`; `_pulseByKey` (set by MarketPulse from positions page) can exclude MCX futures (CRUDEOIL, GOLDM) that are closed/filtered, causing byKey[sym] to return undefined→0 for those symbols. Added `_lastCandidatesDayPnl` stale-while-revalidating cache — when `candidatePositions` briefly empties during the 5-second poll refresh, the last non-null day P&L is returned instead of null, preventing the day P&L row in OptionsPayoff from flashing away during poll gaps. |
+| 2026-09-10 | v1.13 Derivatives page reactive chain improvements (commit 91cccd02): Eight fixes for Snapshot grid freshness and payoff chart consistency. (1) **positions $effect**: watches `positionsStore.value` and re-runs F&O position transformation synchronously on every 5s book-poller update; sim rows preserved; per-row Snapshot P&L and Exp P&L update within 5s without requiring a fill event. (2) **_quoteGeneration counter**: `$state(0)` counter incremented in `loadUnderlyingQuotes()` after `_underlyingQuotes = next`; both `liveSpot` and `_clientPayoffStub` track counter via `if (!isMarketOpen()) void _quoteGeneration`, re-deriving payoff chart spot price after each quote refresh even when SSE ticks frozen. (3) **loadStrategy guard**: `strategy = null` branch now requires `_positionsLoaded && instrumentsReady` before clearing strategy, preventing cold-start race where sessionStorage-cached strategy was wiped before positions/instruments loaded. (4) **loadUnderlyingQuotes seeded from loadPositions**: called fire-and-forget at end of `loadPositions()`, ensuring underlying spot quotes fetched immediately when positions first load (not waiting for interval tick). (5) **Underlying quotes always-on**: `loadUnderlyingQuotes` interval changed from `marketAwareInterval` (pauses off-market) to `visibleInterval` with `'throttle:30000'` (5s when visible, 30s when hidden, always runs); off-market spot prices now needed for payoff chart positioning and EV calculations. (6) **_snapshotTotalDay NavStrip parity**: rewritten to use `livePositionDayPnl()` (same function as `positionsDayPnlStore`) with live LTP from `getSnapshot(sym)?.ltp` at 4Hz via `void _throttledTick`; TOTAL row now matches NavStrip P1 exactly when no equity intraday positions exist. (7) **CandidateLegRow LTP SSE-reactive**: `ltp` now reads `getSnapshot(sym)?.ltp` first (SSE-reactive at 4Hz), falling back to `legAnalytics.ltp` then `c.ltp` (broker API); faster feedback for live ticks on leg rows. (8) **TOTAL row label**: added `title="Includes all positions (equity intraday + F&O)"` to clarify why TOTAL may exceed the sum of per-underlying rows. Impact: all per-row Snapshot data refreshes within 5s of book-poller cycle; payoff chart and day-P&L TOTAL stay synchronized across derivatives, MarketPulse, and NavStrip. |
