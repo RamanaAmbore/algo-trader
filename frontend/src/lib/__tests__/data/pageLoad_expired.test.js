@@ -236,6 +236,102 @@ describe('buildCandidatePositions — expired-contract filtering', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// buildCandidatePositions — instruments-cache cold-start guard (MCX futures)
+//
+// Root cause (2026-09): candidatePositions $derived did not depend on
+// instrumentsReady. When the cache was cold on page-load, getInstrument()
+// returned null for MCX futures (CRUDEOIL/GOLDM) → positions were dropped →
+// legs=[] → _clientPayoffStub with empty activeLegs → today_value:0 →
+// horizontal flat line. Fix: add `void instrumentsReady` to the derived.
+//
+// These tests verify the warm-cache (included) vs cold-cache (dropped) gate
+// directly in buildCandidatePositions. The reactive recompute is covered by
+// the $derived dependency fix in +page.svelte.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('buildCandidatePositions — MCX futures warm vs cold instruments cache', () => {
+  const MCX_FUT_POS = {
+    symbol: 'CRUDEOIL26SEPFUT',
+    account: 'ZG0790',
+    qty: 1,
+    source: 'live',
+    pnl: 2000,
+    realised: 0,
+    overnight_quantity: 1,
+    day_buy_quantity: 0,
+    day_sell_quantity: 0,
+    day_buy_value: 0,
+    day_sell_value: 0,
+  };
+  const MCX_PARAMS = {
+    holdings: [],
+    drafts: [],
+    target: 'CRUDEOIL',
+    selectedExpiries: [],
+    selectedAccounts: [],
+    simActive: false,
+    proxiesForTarget: () => [],
+  };
+
+  it('includes open MCX futures position when instrument IS in cache (warm cache)', () => {
+    // Simulates the state after instrumentsReady flips to true and
+    // candidatePositions recomputes — getInstrument returns a valid entry.
+    const getInstrument = makeGetInst({ 'CRUDEOIL26SEPFUT': '2026-09-18' });
+    const result = buildCandidatePositions({
+      ...MCX_PARAMS,
+      positions: [MCX_FUT_POS],
+      getInstrument,
+    });
+    expect(result.filter(r => r.kind === 'fut')).toHaveLength(1);
+    expect(result[0].symbol).toBe('CRUDEOIL26SEPFUT');
+  });
+
+  it('drops open MCX futures position when instrument is NOT in cache (cold cache)', () => {
+    // Simulates the state on page-load before instrumentsReady flips.
+    // Without `void instrumentsReady` in the derived, this would be the
+    // permanent state and the payoff chart would show a flat line at 0.
+    const result = buildCandidatePositions({
+      ...MCX_PARAMS,
+      positions: [MCX_FUT_POS],
+      getInstrument: () => null,
+    });
+    expect(result.filter(r => r.kind === 'fut')).toHaveLength(0);
+  });
+
+  it('GOLDM FUT included when warm, dropped when cold', () => {
+    const goldPos = { ...MCX_FUT_POS, symbol: 'GOLDM26OCTFUT' };
+    const warm = buildCandidatePositions({
+      ...MCX_PARAMS,
+      target: 'GOLDM',
+      positions: [goldPos],
+      getInstrument: makeGetInst({ 'GOLDM26OCTFUT': '2026-10-30' }),
+    });
+    expect(warm.filter(r => r.kind === 'fut')).toHaveLength(1);
+
+    const cold = buildCandidatePositions({
+      ...MCX_PARAMS,
+      target: 'GOLDM',
+      positions: [goldPos],
+      getInstrument: () => null,
+    });
+    expect(cold.filter(r => r.kind === 'fut')).toHaveLength(0);
+  });
+
+  it('closed MCX futures position (qty=0) passes through regardless of cache state', () => {
+    // Closed positions must always appear even when the cache is cold —
+    // they contribute realised P&L and must not be silently dropped.
+    const closedPos = { ...MCX_FUT_POS, qty: 0, realised: 5000, pnl: 5000 };
+    const result = buildCandidatePositions({
+      ...MCX_PARAMS,
+      positions: [closedPos],
+      getInstrument: () => null,
+    });
+    expect(result.filter(r => r.kind === 'fut')).toHaveLength(1);
+    expect(Number(result[0].realised)).toBe(5000);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // buildCleanLegs — expiry safety-net filter
 // ─────────────────────────────────────────────────────────────────────────────
 

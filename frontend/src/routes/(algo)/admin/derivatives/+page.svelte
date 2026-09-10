@@ -1727,6 +1727,7 @@
   /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
+    void instrumentsReady;  // re-derive when instruments cache warms (cold start drops MCX open positions)
     void proxyTableReady;   // re-derive when the proxy table loads
     // Reading the store Maps here registers reactive dependencies —
     // getProvisionalPositions() and getDraftPositions() return $state Maps
