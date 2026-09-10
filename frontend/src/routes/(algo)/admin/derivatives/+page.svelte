@@ -57,7 +57,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
-  import { baseDayPnlForPosition, FO_EXCHANGES } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
   import { applyUnderlyingTickLtp } from '$lib/data/underlyingQuoteUtils.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
@@ -1023,6 +1023,11 @@
    *  render as "—". */
   /** @type {Record<string, { ltp: number, day_pct: number | null, prev_close: number }>} */
   let _underlyingQuotes = $state({});
+  /** Monotonic counter incremented each time _underlyingQuotes is replaced.
+   *  Used as a reactive dependency in liveSpot and _clientPayoffStub when
+   *  the market is closed — guarantees those derived values re-run after
+   *  every batchQuote refresh off-market (where _throttledTick is frozen). */
+  let _quoteGeneration = $state(0);
 
   /** Map every Snapshot underlying → { root, quoteKey } via
    *  resolveUnderlying. Indices land on the spot tradingsymbol
@@ -1188,6 +1193,7 @@
         next[root] = { ltp, day_pct: pct, prev_close: close };
       }
       _underlyingQuotes = next;
+      _quoteGeneration++;
     } catch (_) { /* leave previous values up — chip stays */ }
   }
 
@@ -1976,6 +1982,11 @@
     //    the 250 ms _throttledTick gate above — defeating the throttle
     //    and causing downstream OptionsPayoff SVG re-renders at 30 s
     //    intervals even with no user interaction.
+    // Off-market: _throttledTick freezes, so _quoteGeneration is the only
+    // reactive dependency that fires when batchQuote refreshes. Touching it
+    // here (as a void) registers it as a dependency without a reactive read
+    // of _underlyingQuotes itself (the untrack below prevents that).
+    if (!isMarketOpen()) void _quoteGeneration;
     const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
     if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
 
@@ -2501,6 +2512,9 @@
     // Spot resolution — strategy is null at this point; read the same
     // sources that liveSpot's tiers 3+4 use.
     const spot = (() => {
+      // Off-market: _throttledTick is frozen; register _quoteGeneration so this
+      // derived re-runs when batchQuote delivers a fresh price.
+      if (!isMarketOpen()) void _quoteGeneration;
       const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
       if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
       const und = String(selectedUnderlying || '').toUpperCase();
@@ -3424,11 +3438,24 @@
   // realized day_change_val — closed positions (qty=0) contributed 0
   // instead of their realized P&L, and open expired legs drifted vs broker.
   const _snapshotTotalDay = $derived.by(() => {
+    void _throttledTick;
     const matchAccount = buildAcctMatcher(selectedAccounts);
     let sum = 0;
     for (const p of (positionsStore.value ?? [])) {
       if (!matchAccount(String(p?.account || ''))) continue;
-      sum += baseDayPnlForPosition(p);
+      const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+      const liveLtp = sym ? untrack(() => getSnapshot(sym)?.ltp ?? null) : null;
+      sum += livePositionDayPnl(
+        {
+          closePx: Number(p.previous_close) || Number(p.close_price ?? 0),
+          pollLtp: Number(p.last_price ?? 0),
+          qty:     Number(p.quantity ?? 0),
+          avg:     Number(p.average_price ?? 0),
+          dcvRow:  p,
+        },
+        liveLtp,
+        { marketOpen: isMarketOpen() },
+      );
     }
     return sum;
   });
@@ -3601,6 +3628,39 @@
   // operator perceived as "sometimes showing all underlyings."
   let _positionsLoaded = $state(false);
 
+  // Propagate book-poller updates (positionsStore.value refreshes every 5s)
+  // into the local `positions` $state without requiring a full loadPositions()
+  // call. The effect reads positionsStore.value as the reactive dependency and
+  // uses untrack() for all writes so it doesn't create a circular dependency.
+  // Skips until _positionsLoaded is true (first full load sets the baseline).
+  // Sim rows (source === 'sim') are preserved from the current positions array
+  // since positionsStore only holds live broker rows.
+  $effect(() => {
+    const rawPos = positionsStore.value;
+    if (!rawPos || !_positionsLoaded) return;
+    untrack(() => {
+      const merged = [];
+      /** @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
+      const excluded = {};
+      for (const p of rawPos) {
+        const sym = p?.tradingsymbol || p?.symbol;
+        if (!sym) continue;
+        if (!isFOSymbol(sym)) {
+          bumpExcluded(excluded, p?.account, {
+            pos_pnl: Number(p?.pnl || 0),
+            pos_day: baseDayPnlForPosition(p),
+          });
+          continue;
+        }
+        const baseRow = buildPositionRowFromBroker(p, 'live');
+        for (const row of splitClosedReopened(baseRow)) merged.push(row);
+      }
+      const simRows = positions.filter(r => r.source === 'sim');
+      positions = [...merged, ...simRows];
+      _excludedByAccount = excluded;
+    });
+  });
+
   // splitClosedReopened — imported from $lib/derivatives/pageLoad.js
   // (moved for cc reduction; see pageLoad.js for the full implementation + docs)
 
@@ -3663,6 +3723,9 @@
     } catch (_) { /* ignore */ }
 
     positions = merged;
+    // Seed underlying spot prices immediately after positions land —
+    // avoids blank payoff chart on cold load (before the first interval fires).
+    loadUnderlyingQuotes();
 
     // Cash-equity holdings — skipped in sim (sim doesn't model equity book).
     // Only EQ rows are kept; derivative holdings are picked up by positions.
@@ -3750,7 +3813,7 @@
         // sets (all qty=0) must not keep the prior symbol's payoff chart
         // visible under the new symbol's label.
         const _hasEnabledLegs = legs.some(l => l.kind !== 'eq' && Number(l.qty) !== 0);
-        if (!_hasEnabledLegs && strategy !== null) strategy = null;
+        if (!_hasEnabledLegs && strategy !== null && _positionsLoaded && instrumentsReady) strategy = null;
         _synthCache = null;
       }
       strategyErr = ''; _stratFails = 0;
@@ -4030,7 +4093,7 @@
     // calls (fills, order updates, manual refresh) still fire as before.
     // Underlying quotes at 5s — same cadence as loadStrategy — so liveSpot
     // stays within 5s even when the underlying is not in the SSE ticker.
-    quotesTeardown = marketAwareInterval(loadUnderlyingQuotes, 5000, 10_000);
+    quotesTeardown = visibleInterval(loadUnderlyingQuotes, 5000, 'throttle:30000');
     simTeardown    = marketAwareInterval(loadSimStatus, 30000, 30_000);
 
     // Real-time fill notifications — Kite postback fires a
@@ -4915,7 +4978,7 @@
                component) per operator: equity tracks spot 1:1. -->
           {@const _hExpNetTotal = _snapshotTotalExp + _hPnlTotal}
           <div class="byund-row byund-row-total">
-            <span class="byund-und">TOTAL</span>
+            <span class="byund-und" title="Includes all positions (equity intraday + F&O)">TOTAL</span>
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
