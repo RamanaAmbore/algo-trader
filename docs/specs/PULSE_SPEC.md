@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.13 — 2026-09-10  
+**Version**: 1.14 — 2026-09-10  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -799,6 +799,62 @@ poller cycle. Payoff chart spot price and day-P&L TOTAL remain synchronized acro
 derivatives page, MarketPulse grids, and NavStrip throughout market-open and closed-hours 
 windows.
 
+### 13.2 Underlying Picker Auto-Select Active-Qty Underlying (One-Time Promote)
+
+The derivatives page underlying picker now auto-promotes from a watchlist/pinned provisional 
+selection to the first active-position-tier underlying on cold load.
+
+**Picker tiers architecture**:
+- **Tier 1** (options): option positions keyed by root
+- **Tier 2** (futures): futures positions keyed by root
+- **Tiers 3–6** (watchlist, indices, commodities, etc.): provisional/informational roots
+- **qtySum field**: All six tiers now carry a `qtySum` field
+  - Tier 1 & 2: actual position qty (sum of all contracts for that root)
+  - Tiers 3–6: 0 (no active position)
+
+**Auto-select behaviour** (one-time, gated by `_autoSelectDone` flag):
+- Fires once when `_positionsLoaded` first becomes true
+- Condition: current selection has `qtySum = 0` AND a position-tier option (Tier 1 or 2) 
+  with `qtySum > 0` exists
+- Action: auto-promotes to the first active underlying (highest `qtySum`)
+- After promotion: `_autoSelectDone = true` → subsequent 5s position refreshes do NOT 
+  re-promote, allowing operator to manually select an inactive underlying if desired
+
+**Initial picker selection** (when page mounts with no prior session selection):
+- Now prefers `firstActive` (first option with `qtySum > 0`) over `opts[0]`
+- Ensures operators land on a position-tier root rather than a random watchlist symbol
+
+**Rationale**: Operators frequently return to positions they hold. Auto-promoting to the 
+first active-qty underlying on cold load reduces one-click navigation and surfaces the 
+operator's most material positions immediately.
+
+---
+
+### 13.3 Snapshot TOTAL Day P&L — Sum of Per-Underlying Rows
+
+The Snapshot grid TOTAL row day P&L now computes as the sum of per-row day P&L values 
+via `Object.values(_dayPnlByRootMap)` instead of applying `livePositionDayPnl` to raw 
+`positionsStore.value` rows.
+
+**Problem fixed**:
+- Prior formula applied `livePositionDayPnl` to broker-stamped positions, which included 
+  `prev_settlement_pnl` field. This caused `baseDayPnlForPosition` to diverge from 
+  `(pollLtp - prev_close) × qty`, creating large day P&L divergence (up to ±54k on 
+  MCX futures positions).
+- Example: a MCX FUT with `prev_settlement_pnl = 10000` and `(ltp - close) × qty = 500` 
+  would show TOTAL = 10000 instead of 500.
+
+**New formula**:
+- `_snapshotTotalDay = Object.values(_dayPnlByRootMap).reduce((a, b) => a + b, 0)`
+- Each entry in `_dayPnlByRootMap` is the canonical day P&L for that root (computed via 
+  `livePositionDayPnl` for live positions or `_dayPnlForLeg` for option legs)
+- Symmetric with `_snapshotTotalPnl` and `_snapshotTotalExp` — TOTAL = sum of per-rows 
+  by construction
+
+**Impact**: Snapshot grid TOTAL day P&L now matches the sum of visible per-row day P&L 
+cells, eliminating ±54k divergence on MCX positions and ensuring visual consistency with 
+the grid.
+
 ---
 
 ## 14. Column Definitions
@@ -1574,3 +1630,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-07 | v1.11 Derivatives overlay store-lookup SSOT refinement (commit 202ecd93): §13 Day P&L recompute refined — `candidatesDayPnl` now reads directly from `positionsDayPnlStore.byKey[sym]` (F&O/equity positions) and `holdingsDayPnlStore.byKey[sym]` (equity holdings) instead of calling `livePositionDayPnl()`, with symbol deduplication via `seen` Set; returns `null` when no enabled legs exist (previously `0`). OptionsPayoff DAY P&L row guard updated from `{#if dayPnl != null && dayPnl !== 0}` to `{#if dayPnl != null}`, showing ₹0 during poll-gap windows instead of disappearing. Overlay day P&L now guaranteed identical to NavStrip P1 and Pulse positions TOTAL. |
 | 2026-09-08 | v1.12 Derivatives overlay stale-while-revalidating cache for candidatesDayPnl (commit 593a5e25): §13 Day P&L recompute reverted from `positionsDayPnlStore.byKey[sym]` lookup back to `_dayPnlForLeg(c, null)` per-candidate computation. Root cause: `positionsDayPnlStore.byKey` returns `_pulseByKey ?? _store.byKey`; `_pulseByKey` (set by MarketPulse from positions page) can exclude MCX futures (CRUDEOIL, GOLDM) that are closed/filtered, causing byKey[sym] to return undefined→0 for those symbols. Added `_lastCandidatesDayPnl` stale-while-revalidating cache — when `candidatePositions` briefly empties during the 5-second poll refresh, the last non-null day P&L is returned instead of null, preventing the day P&L row in OptionsPayoff from flashing away during poll gaps. |
 | 2026-09-10 | v1.13 Derivatives page reactive chain improvements (commit 91cccd02): Eight fixes for Snapshot grid freshness and payoff chart consistency. (1) **positions $effect**: watches `positionsStore.value` and re-runs F&O position transformation synchronously on every 5s book-poller update; sim rows preserved; per-row Snapshot P&L and Exp P&L update within 5s without requiring a fill event. (2) **_quoteGeneration counter**: `$state(0)` counter incremented in `loadUnderlyingQuotes()` after `_underlyingQuotes = next`; both `liveSpot` and `_clientPayoffStub` track counter via `if (!isMarketOpen()) void _quoteGeneration`, re-deriving payoff chart spot price after each quote refresh even when SSE ticks frozen. (3) **loadStrategy guard**: `strategy = null` branch now requires `_positionsLoaded && instrumentsReady` before clearing strategy, preventing cold-start race where sessionStorage-cached strategy was wiped before positions/instruments loaded. (4) **loadUnderlyingQuotes seeded from loadPositions**: called fire-and-forget at end of `loadPositions()`, ensuring underlying spot quotes fetched immediately when positions first load (not waiting for interval tick). (5) **Underlying quotes always-on**: `loadUnderlyingQuotes` interval changed from `marketAwareInterval` (pauses off-market) to `visibleInterval` with `'throttle:30000'` (5s when visible, 30s when hidden, always runs); off-market spot prices now needed for payoff chart positioning and EV calculations. (6) **_snapshotTotalDay NavStrip parity**: rewritten to use `livePositionDayPnl()` (same function as `positionsDayPnlStore`) with live LTP from `getSnapshot(sym)?.ltp` at 4Hz via `void _throttledTick`; TOTAL row now matches NavStrip P1 exactly when no equity intraday positions exist. (7) **CandidateLegRow LTP SSE-reactive**: `ltp` now reads `getSnapshot(sym)?.ltp` first (SSE-reactive at 4Hz), falling back to `legAnalytics.ltp` then `c.ltp` (broker API); faster feedback for live ticks on leg rows. (8) **TOTAL row label**: added `title="Includes all positions (equity intraday + F&O)"` to clarify why TOTAL may exceed the sum of per-underlying rows. Impact: all per-row Snapshot data refreshes within 5s of book-poller cycle; payoff chart and day-P&L TOTAL stay synchronized across derivatives, MarketPulse, and NavStrip. |
+| 2026-09-10 | v1.14 Underlying picker auto-select + Snapshot TOTAL day P&L formula (TBD): §13.2 new subsection documents underlying picker auto-select: all six tiers now carry `qtySum` field (Tier 1–2 = actual position qty, Tiers 3–6 = 0); on cold load, `_autoSelectDone` gate fires once when `_positionsLoaded` first true, promoting to first active underlying (qtySum > 0) if current selection has qtySum = 0; after promote, subsequent 5s refreshes do NOT re-promote, allowing manual inactive selection. Initial picker selection now prefers `firstActive` over `opts[0]`. §13.3 new subsection documents Snapshot TOTAL day P&L formula: `_snapshotTotalDay = Object.values(_dayPnlByRootMap).reduce((a, b) => a + b, 0)` (sum of per-row values) instead of applying `livePositionDayPnl` to raw positions (which included `prev_settlement_pnl`). Eliminates ±54k divergence on MCX FUT positions where prior formula conflated settled P&L with intraday P&L. New formula is symmetric with `_snapshotTotalPnl` and `_snapshotTotalExp` — TOTAL = sum of rows by construction. |
