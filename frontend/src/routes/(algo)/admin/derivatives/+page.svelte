@@ -1896,7 +1896,11 @@
       const _stratUnd = String(strategy?.underlying || '').toUpperCase();
       if (_anchor && root === _anchor && _stratUnd && _stratUnd in _underlyingQuotes) {
         const _as = getSnapshot(root);
-        if (_as?.ltp != null) flash.update(`${_stratUnd}:ltp`, Number(_as.ltp));
+        if (_as?.ltp != null) {
+          flash.update(`${_stratUnd}:ltp`, Number(_as.ltp));
+          const _next = applyUnderlyingTickLtp(_underlyingQuotes, _stratUnd, _as.ltp);
+          if (_next !== _underlyingQuotes) _underlyingQuotes = _next;
+        }
       }
 
       // 2. CandidateLegRow LTP cells — re-arm for each leg whose symbol matches.
@@ -2565,7 +2569,9 @@
       const bqLtp = untrack(() => _underlyingQuotes[_sel]?.ltp);
       if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
       if (_sel) {
-        const v = untrack(() => Number(getSnapshot(String(_sel).toUpperCase())?.ltp));
+        const _resolvedSym = untrack(() => resolveUnderlying(String(_sel).toUpperCase(), findNearestFuture)?.tradingsymbol);
+        const _lookupSym = _resolvedSym || String(_sel).toUpperCase();
+        const v = untrack(() => Number(getSnapshot(_lookupSym)?.ltp));
         if (Number.isFinite(v) && v > 0) return v;
       }
       return 0;
