@@ -86,6 +86,7 @@
   import CandidateLegRow from './CandidateLegRow.svelte';
   import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
+  import { debugLog } from '$lib/debug/debugLog.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -1166,6 +1167,7 @@
     const pairs = untrack(() => _underlyingQuoteKeys);
     if (pairs.length === 0) return;
     const keys = pairs.map(p => p.quoteKey);
+    debugLog('payoff:bq', 'request', { keys: [...keys] });
     try {
       const res = await batchQuote(keys);
       // Publish underlying-anchor quotes to symbolStore so liveSpot
@@ -1201,6 +1203,7 @@
       }
       _underlyingQuotes = next;
       _quoteGeneration++;
+      debugLog('payoff:bq', 'result', Object.fromEntries(Object.entries(_underlyingQuotes).map(([k, v]) => [k, v?.ltp])));
     } catch (_) { /* leave previous values up — chip stays */ }
   }
 
@@ -1900,6 +1903,7 @@
           flash.update(`${_stratUnd}:ltp`, Number(_as.ltp));
           const _next = applyUnderlyingTickLtp(_underlyingQuotes, _stratUnd, _as.ltp);
           if (_next !== _underlyingQuotes) _underlyingQuotes = _next;
+          debugLog('payoff:anchor', 'tick', { root, stratUnd: _stratUnd, ltp: Number(_as.ltp) });
         }
       }
 
@@ -1959,10 +1963,16 @@
       const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
       if (anchor) {
         const v = Number(untrack(() => getSnapshot(anchor)?.ltp));
-        if (Number.isFinite(v) && v > 0) return v;
+        if (Number.isFinite(v) && v > 0) {
+          untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1a-anchor', anchor, value: v }));
+          return v;
+        }
       }
       const v = Number(untrack(() => getSnapshot(stratUnd)?.ltp));
-      if (Number.isFinite(v) && v > 0) return v;
+      if (Number.isFinite(v) && v > 0) {
+        untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1b-stratUnd', sym: stratUnd, value: v }));
+        return v;
+      }
     }
 
     // Try SSE tick via the resolved contract key — for MCX virtual roots
@@ -1973,7 +1983,10 @@
     const _resolvedTs = resolveUnderlying(selectedUnderlying, findNearestFuture)?.tradingsymbol;
     if (_resolvedTs) {
       const v = Number(untrack(() => getSnapshot(_resolvedTs)?.ltp));
-      if (Number.isFinite(v) && v > 0) return v;
+      if (Number.isFinite(v) && v > 0) {
+        untrack(() => debugLog('payoff:spot', 'resolved', { tier: '2-resolvedTs', sym: _resolvedTs, value: v }));
+        return v;
+      }
     }
 
     // SSOT — backend-stamped underlying_ltp from positions (Pass 3).
@@ -1990,7 +2003,10 @@
           }
           return null;
         });
-    if (posUltp != null) return posUltp;
+    if (posUltp != null) {
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3-posScan', value: posUltp }));
+      return posUltp;
+    }
 
     // Fourth fallback: the Snapshot card's batchQuote result for the
     // selected underlying. Covers the IDFC-style case where the SSE
@@ -2013,8 +2029,16 @@
     //    intervals even with no user interaction.
     void _quoteGeneration;
     const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
-    if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
+    if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) {
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '4-bq', key: selectedUnderlying, value: bqLtp }));
+      return bqLtp;
+    }
 
+    if (stratMatchesSel && strategy?.spot != null) {
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: 'last-strategySpot', value: strategy?.spot }));
+      return strategy?.spot;
+    }
+    untrack(() => debugLog('payoff:spot', 'unresolved', { selectedUnderlying }));
     return stratMatchesSel ? strategy?.spot : undefined;
   });
 
@@ -2505,10 +2529,25 @@
   });
   const _mergedPayoff = $derived.by(() => {
     const base = strategy?.payoff;
-    if (!Array.isArray(base) || base.length === 0) return base || [];
+    if (!Array.isArray(base) || base.length === 0) {
+      const result = base || [];
+      untrack(() => debugLog('payoff:merge', 'computed', {
+        length: result?.length ?? 0,
+        spotMin: result?.[0]?.spot,
+        spotMax: result?.at?.(-1)?.spot,
+      }));
+      return result;
+    }
     const linearLegs = _equityLinearLegs;
-    if (linearLegs.length === 0) return base;
-    return base.map(/** @param {{spot:number,today_value:number,expiry_value:number}} pt */ pt => {
+    if (linearLegs.length === 0) {
+      untrack(() => debugLog('payoff:merge', 'computed', {
+        length: base.length,
+        spotMin: base[0]?.spot,
+        spotMax: base.at(-1)?.spot,
+      }));
+      return base;
+    }
+    const result = base.map(/** @param {{spot:number,today_value:number,expiry_value:number}} pt */ pt => {
       let add = 0;
       for (const l of linearLegs) add += (pt.spot - l.cost) * l.qty;
       return {
@@ -2517,6 +2556,12 @@
         expiry_value: pt.expiry_value + add,
       };
     });
+    untrack(() => debugLog('payoff:merge', 'computed', {
+      length: result?.length ?? 0,
+      spotMin: result?.[0]?.spot,
+      spotMax: result?.at?.(-1)?.spot,
+    }));
+    return result;
   });
 
   /** Client-side intrinsic payoff stub — rendered immediately when legs
@@ -2576,6 +2621,7 @@
       }
       return 0;
     })();
+    untrack(() => debugLog('payoff:stub', 'spot', { spot, legs: activeLegs?.length ?? 0, selectedUnderlying }));
     if (spot <= 0) return [];
 
     // 41-point grid from 80 % to 120 % of spot.
@@ -3846,7 +3892,15 @@
         if (!_synthCache || _synthCache.key !== key) {
           _synthCache = { key, value: synthEquityOnlyStrategy(enabledEqs, selectedUnderlying) };
         }
-        if (strategy !== _synthCache.value) strategy = _synthCache.value;
+        if (strategy !== _synthCache.value) {
+          strategy = _synthCache.value;
+          debugLog('payoff:strategy', 'loaded', {
+            underlying: strategy?.underlying,
+            anchor: strategy?.spot_anchor_contract,
+            legs: strategy?.legs?.length ?? 0,
+            spot: strategy?.spot,
+          });
+        }
       } else {
         // Clear when no non-eq leg has a non-zero qty — closed-position-only
         // sets (all qty=0) must not keep the prior symbol's payoff chart
@@ -3889,6 +3943,12 @@
       strategyErr   = '';
       _stratFails   = 0;
       _saveCache();
+      debugLog('payoff:strategy', 'loaded', {
+        underlying: strategy?.underlying,
+        anchor: strategy?.spot_anchor_contract,
+        legs: strategy?.legs?.length ?? 0,
+        spot: strategy?.spot,
+      });
     } catch (e) {
       if (_thisGen !== _stratGen) return;
       _stratFails  += 1;
@@ -3950,7 +4010,15 @@
       // Restore data first, then selections — derived state (candidates,
       // legs) recomputes off the restored positions + drafts.
       if (Array.isArray(d.positions)) positions = d.positions;
-      if (d.strategy)                  strategy  = d.strategy;
+      if (d.strategy) {
+        strategy  = d.strategy;
+        debugLog('payoff:strategy', 'loaded', {
+          underlying: strategy?.underlying,
+          anchor: strategy?.spot_anchor_contract,
+          legs: strategy?.legs?.length ?? 0,
+          spot: strategy?.spot,
+        });
+      }
       if (Array.isArray(d.drafts))     drafts    = d.drafts;
       if (Array.isArray(d.selectedAccounts)) selectedAccounts = d.selectedAccounts;
       // URL param (set by onMount #1 which runs before this onMount #2)
@@ -5018,9 +5086,12 @@
           {@const _hPnlTotal = Object.values(_hPnlByRoot).reduce((s, v) => s + v, 0)}
           {@const _hDayNetTotal = _snapshotTotalDay + _hDayTotal}
           {@const _hPnlNetTotal = _snapshotTotalPnl + _hPnlTotal}
-          <!-- Exp P&L Net TOTAL uses holdings' P&L (same as P&L Net's H
-               component) per operator: equity tracks spot 1:1. -->
-          {@const _hExpNetTotal = _snapshotTotalExp + _hPnlTotal}
+          <!-- Exp P&L Net TOTAL uses holdings' expiry-at-spot P&L (same
+               formula as NavStrip P-slot-3: intrinsic value for equity
+               = (spot − avg) × qty via _hExpByRoot). Using _hPnlTotal
+               (lifetime P&L) here was semantically wrong — it mixed
+               equity lifetime P&L with F&O expiry P&L. -->
+          {@const _hExpNetTotal = _snapshotTotalExp + Object.values(_hExpByRoot).reduce((s, v) => s + (Number(v) || 0), 0)}
           <div class="byund-row byund-row-total">
             <span class="byund-und" title="F&O positions total">TOTAL</span>
             <span class="num">—</span>

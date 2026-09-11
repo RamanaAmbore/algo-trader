@@ -29,6 +29,7 @@ import { browser } from '$app/environment';
 import { mergeSymbolUpdate, mergeSymbolBatch } from './symbolStore.svelte.js';
 import { isNseOpen, isMcxOpen, fetchMarketStatus } from '../marketHours.js';
 import { visibleInterval } from '../stores.js';
+import { debugLog } from '../debug/debugLog.js';
 
 /**
  * True when the SSE connection has been acknowledged by the server (snapshot
@@ -96,6 +97,7 @@ function _onSnapshot(e) {
     // ltp_ts arbitration means a tick already newer-by-ms can't be
     // clobbered by a re-snapshot landing later.
     if (symbolUpdates.length) mergeSymbolBatch(symbolUpdates);
+    debugLog('sse', 'snapshot', { count: symbolUpdates.length, sample: symbolUpdates.slice(0, 3).map(u => `${u.sym}=${u.fields.ltp}`) });
     if (!get(streamOpen)) streamOpen.set(true);
     _backoffMs = _BACKOFF_MIN;
   } catch (_) { /* malformed JSON — ignore */ }
@@ -115,6 +117,7 @@ function _onTick(e) {
     // filters but the frontend is the last line of defence and cheap to check.
     const t_ltp = Number(t.ltp);
     if (!Number.isFinite(t_ltp) || t_ltp <= 0) return;
+    if (globalThis.__RAMBOQ_DEBUG === 'sse:tick') debugLog('sse:tick', 'tick', { sym: t.sym, ltp: t_ltp });
     // BH3: writes only land in symbolStore. ltp_ts = Date.now() at
     // receive time arbitrates correctly against any poll that
     // lands afterward carrying older broker-side LTP.
@@ -160,6 +163,7 @@ function _onVersion(e) {
  */
 function _onStreamError() {
   streamOpen.set(false);
+  debugLog('sse', 'error', { backoffMs: _backoffMs, stopped: _stopped });
   if (_es) {
     try { _es.close(); } catch (_) {}
     _es = null;
@@ -170,6 +174,7 @@ function _onStreamError() {
   _backoffMs = Math.min(_backoffMs * 2, _BACKOFF_MAX);
   _reconnectTimer = setTimeout(() => {
     _reconnectTimer = null;
+    debugLog('sse', 'reconnect', { delayMs: delay, backoffMs: _backoffMs });
     _open();
   }, delay);
 }
@@ -181,6 +186,7 @@ function _open() {
   // bearer-token auth cannot be used here; cookie auth is the fallback the
   // backend already supports for SSE.
   _es = new EventSource('/api/quotes/stream', { withCredentials: true });
+  debugLog('sse', 'connect', { url: '/api/quotes/stream' });
   _es.addEventListener('snapshot', _onSnapshot);
   _es.addEventListener('tick', _onTick);
   // Heartbeat keeps the connection alive through proxies/firewalls that

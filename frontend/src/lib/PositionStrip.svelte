@@ -25,6 +25,7 @@
   // baseDayPnlForPosition + livePositionDayPnl removed — now in positionsDayPnlStore
   import NavBreakdown from '$lib/NavBreakdown.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
+  import { debugLog } from '$lib/debug/debugLog.js';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
@@ -190,8 +191,10 @@
       keys.add(resolved.quoteKey);
     }
     if (keys.size === 0) return;
+    debugLog('navstrip:spot', 'request', { keys: [...keys] });
     const res = await batchQuote([...keys]);
     publishPulseQuotes(res?.items ?? []);
+    debugLog('navstrip:spot', 'result', { count: res?.items?.length ?? 0 });
   }
 
   // BH2: live LTP reads come from symbolStore.get(sym) via getSnapshot.
@@ -816,10 +819,13 @@
     void _throttledTick;
     void _mktTick;
     let total = 0;
+    let _skipped = 0;
     for (const p of positions) {
       const v = _expiryForPosition(p);
       if (v != null) total += v;
+      else _skipped++;
     }
+    untrack(() => debugLog('navstrip:expiry', 'computed', { total, legCount: positions.length, skipped: _skipped }));
     return total;
   });
 

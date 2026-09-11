@@ -233,3 +233,97 @@ describe('_clientPayoffStub spot fallback — MCX resolves futures tradingsymbol
     expect(_lookupSym).toBe('NIFTY 50');
   });
 });
+
+// ── _hExpNetTotal formula — Part 3 fix ───────────────────────────────────────
+// Verifies the corrected formula: Exp P&L Net = F&O expiry total + equity
+// holdings expiry-at-spot total (sum of _hExpByRoot), NOT + holdings lifetime P&L.
+//
+// The old formula was: _snapshotTotalExp + _hPnlTotal  (semantically wrong)
+// The new formula is:  _snapshotTotalExp + sum(_hExpByRoot)  (correct)
+//
+// For equity holdings, expiry-at-spot = (spot − avg_cost) × qty, which is what
+// _hExpByRoot computes.  _hPnlTotal = (ltp − avg_cost) × qty (lifetime, same at
+// snapshot time) — but they diverge when there are multiple holdings at
+// different avg-cost-to-spot ratios, or when the spot differs from the LTP used
+// for lifetime P&L.  This pure-arithmetic test validates the formula pattern.
+
+/**
+ * Mirrors the template expression:
+ *   _snapshotTotalExp + Object.values(_hExpByRoot).reduce((s, v) => s + (Number(v) || 0), 0)
+ *
+ * @param {number} snapshotTotalExp - F&O expiry P&L total
+ * @param {Record<string, number>} hExpByRoot - per-root equity expiry P&L
+ * @returns {number}
+ */
+function computeHExpNetTotal(snapshotTotalExp, hExpByRoot) {
+  return snapshotTotalExp + Object.values(hExpByRoot).reduce((s, v) => s + (Number(v) || 0), 0);
+}
+
+/**
+ * Old (incorrect) formula for comparison.
+ * @param {number} snapshotTotalExp
+ * @param {number} hPnlTotal - sum of _hPnlByRoot (lifetime P&L)
+ * @returns {number}
+ */
+function computeHExpNetTotalOld(snapshotTotalExp, hPnlTotal) {
+  return snapshotTotalExp + hPnlTotal;
+}
+
+describe('_hExpNetTotal — corrected formula (Part 3 fix)', () => {
+  it('new formula sums _hExpByRoot values correctly', () => {
+    const snapshotTotalExp = 15000;
+    const hExpByRoot = { NIFTY: 3000, RELIANCE: -500 };
+    const result = computeHExpNetTotal(snapshotTotalExp, hExpByRoot);
+    expect(result).toBe(15000 + 3000 + (-500));  // 17500
+  });
+
+  it('handles empty _hExpByRoot (no equity holdings)', () => {
+    const result = computeHExpNetTotal(20000, {});
+    expect(result).toBe(20000);
+  });
+
+  it('handles negative F&O expiry total', () => {
+    const result = computeHExpNetTotal(-8000, { INFY: 2000 });
+    expect(result).toBe(-6000);
+  });
+
+  it('handles non-numeric values in _hExpByRoot gracefully via Number() coercion', () => {
+    // Simulate a root where the value could be undefined or NaN-ish
+    const hExpByRoot = { NIFTY: 5000, BADROOT: /** @type {any} */ (null) };
+    const result = computeHExpNetTotal(10000, hExpByRoot);
+    // null → Number(null) = 0 → does not add
+    expect(result).toBe(15000);
+  });
+
+  it('new and old formulas agree when _hExpByRoot sum equals _hPnlTotal (degenerate case)', () => {
+    // If equity holdings happen to have pnl = expiry value (e.g. same spot as
+    // avg cost → lifetime pnl = 0, expiry = 0 too), both formulas give same result.
+    const snapshotTotalExp = 5000;
+    const hExpByRoot = { NIFTY: 0, GOLD: 0 };
+    const hPnlTotal = 0;
+    expect(computeHExpNetTotal(snapshotTotalExp, hExpByRoot))
+      .toBe(computeHExpNetTotalOld(snapshotTotalExp, hPnlTotal));
+  });
+
+  it('new and old formulas DIVERGE when _hExpByRoot != _hPnlTotal', () => {
+    // Holdings intrinsic expiry at a different spot vs lifetime P&L.
+    // e.g. RELIANCE: avg=2900, qty=100, current ltp=3050, spot-at-expiry=3000
+    //   lifetime pnl = (3050-2900)*100 = 15000
+    //   expiry-at-spot = (3000-2900)*100 = 10000
+    const snapshotTotalExp = 20000;
+    const hExpByRoot = { RELIANCE: 10000 };  // expiry intrinsic
+    const hPnlTotal  = 15000;                // lifetime P&L
+    const newResult = computeHExpNetTotal(snapshotTotalExp, hExpByRoot);
+    const oldResult = computeHExpNetTotalOld(snapshotTotalExp, hPnlTotal);
+    expect(newResult).toBe(30000);  // 20000 + 10000
+    expect(oldResult).toBe(35000);  // 20000 + 15000
+    expect(newResult).not.toBe(oldResult);
+  });
+
+  it('multi-underlying case sums all roots', () => {
+    const snapshotTotalExp = 0;
+    const hExpByRoot = { NIFTY: 10000, BANKNIFTY: 5000, CRUDEOIL: -2000, GOLD: 3000 };
+    const result = computeHExpNetTotal(snapshotTotalExp, hExpByRoot);
+    expect(result).toBe(16000);  // 0 + 10000 + 5000 - 2000 + 3000
+  });
+});
