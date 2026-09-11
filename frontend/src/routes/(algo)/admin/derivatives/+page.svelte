@@ -490,6 +490,13 @@
   /** @type {Array<{symbol:string, qty:any, avg_cost:any, ltp:any, source:string, kind?:string}>} */
   let legs = $state([]);
 
+  // Timestamp (ms) set each time loadPositions successfully completes.
+  // Used to guard the strategy-wipe in loadStrategy: if positions data
+  // is stale (loaded >30s ago, e.g. on hibernation exit before the book
+  // poller has refreshed), we do NOT wipe the strategy — doing so would
+  // show a blank chart until the next poll tick.
+  let _positionsRefreshedAt = 0;
+
   // Legs panel collapsed/expanded — operator may want to fold it
   // away once they've vetted the basket so the chart + cards have
   // more vertical room.
@@ -1987,20 +1994,20 @@
     // symbol whose KiteTicker subscription hasn't landed), so
     // `getSnapshot` returns null and `strategy.spot` carries a stale
     // server-poll value. `_underlyingQuotes` is refreshed on every
-    // Snapshot poll (every 30 s) via batchQuote, so it's at most 30 s
-    // stale vs an SSE tick that could be arbitrarily old if the
-    // underlying hasn't printed a tick since page-open.
+    // batchQuote poll (every 30 s), so it's at most 30 s stale vs an SSE
+    // tick that could be arbitrarily old if the underlying hasn't printed
+    // a tick since page-open.
+    // Always track _quoteGeneration — batchQuote updates must re-trigger
+    // liveSpot regardless of market state. This covers MCX pre-open
+    // (17:00–17:30) where _throttledTick is sparse and liveSpot would
+    // otherwise freeze on a stale/zero spot until the next SSE tick.
     // ── untrack() here is essential: `_underlyingQuotes` is replaced
     //    wholesale every 30 s (new object reference). Without untrack,
     //    liveSpot would re-derive on EVERY snapshot poll in addition to
     //    the 250 ms _throttledTick gate above — defeating the throttle
     //    and causing downstream OptionsPayoff SVG re-renders at 30 s
     //    intervals even with no user interaction.
-    // Off-market: _throttledTick freezes, so _quoteGeneration is the only
-    // reactive dependency that fires when batchQuote refreshes. Touching it
-    // here (as a void) registers it as a dependency without a reactive read
-    // of _underlyingQuotes itself (the untrack below prevents that).
-    if (!isMarketOpen()) void _quoteGeneration;
+    void _quoteGeneration;
     const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
     if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
 
@@ -2387,6 +2394,26 @@
         }));
     });
   });
+
+  // Bug 1 fix: loadStrategy trigger that fires AFTER legs have been updated
+  // following a symbol switch. The existing trigger effect (line ~1695) reads
+  // selectedUnderlying and calls loadStrategy immediately — but it runs BEFORE
+  // the legs-update $effect above (Svelte 5 runs effects in declaration order).
+  // That means the first call runs with the stale previous symbol's legs,
+  // hits the memo (_stratLastKey), and returns early. By the time the
+  // legs-update $effect fires and writes the new symbol's legs, there is no
+  // other reactive path to re-run loadStrategy until the next 5s interval tick.
+  // This effect tracks `legs` (written by the update $effect above) and fires
+  // loadStrategy() when the strategy is stale for the current underlying.
+  $effect(() => {
+    void legs;
+    const sel = selectedUnderlying;
+    const stratUnd = String(strategy?.underlying || '').toUpperCase();
+    if (!legs.length) return;
+    if (stratUnd && stratUnd === sel.toUpperCase()) return; // strategy already matches — skip
+    untrack(() => { try { loadStrategy(); } catch (_) {} });
+  });
+
   // Enabled equity-holding legs of the underlying — held out of the
   // strategy-analytics POST (backend only accepts opt/fut) and layered
   // onto the rendered payoff in the chart instead. Two contribution
@@ -2525,15 +2552,20 @@
 
     // Spot resolution — strategy is null at this point; read the same
     // sources that liveSpot's tiers 3+4 use.
+    // Gap A: capture selectedUnderlying BEFORE any untrack() so a symbol
+    //        switch always triggers re-derive — if the bqLtp early-return
+    //        fires, selectedUnderlying would otherwise be inside untrack
+    //        and never tracked.
+    // Gap B: always track _quoteGeneration regardless of market state so
+    //        batchQuote updates (MCX pre-open, post-open) re-trigger this
+    //        derived even when _throttledTick is sparse.
     const spot = (() => {
-      // Off-market: _throttledTick is frozen; register _quoteGeneration so this
-      // derived re-runs when batchQuote delivers a fresh price.
-      if (!isMarketOpen()) void _quoteGeneration;
-      const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
+      void _quoteGeneration;            // Gap B: always track
+      const _sel = selectedUnderlying;  // Gap A: capture before untrack
+      const bqLtp = untrack(() => _underlyingQuotes[_sel]?.ltp);
       if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-      const und = String(selectedUnderlying || '').toUpperCase();
-      if (und) {
-        const v = untrack(() => Number(getSnapshot(und)?.ltp));
+      if (_sel) {
+        const v = untrack(() => Number(getSnapshot(String(_sel).toUpperCase())?.ltp));
         if (Number.isFinite(v) && v > 0) return v;
       }
       return 0;
@@ -3752,6 +3784,7 @@
 
     _excludedByAccount = _excluded;
     _positionsLoaded   = true;
+    _positionsRefreshedAt = Date.now();
     if (!positionsStore.error) lastRefreshAt.set(Date.now());
 
     // Do NOT include enabledSymbols in the positions-poll snapshot —
@@ -3812,8 +3845,13 @@
         // Clear when no non-eq leg has a non-zero qty — closed-position-only
         // sets (all qty=0) must not keep the prior symbol's payoff chart
         // visible under the new symbol's label.
+        // Guard: only wipe if positions data is fresh (<30s old). On
+        // hibernation exit the marketAwareInterval edge fires loadStrategy
+        // before the book poller has refreshed — stale qty=0 legs must not
+        // blank the chart until the next poll tick delivers real data.
         const _hasEnabledLegs = legs.some(l => l.kind !== 'eq' && Number(l.qty) !== 0);
-        if (!_hasEnabledLegs && strategy !== null && _positionsLoaded && instrumentsReady) strategy = null;
+        const _positionsFresh = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);
+        if (!_hasEnabledLegs && strategy !== null && _positionsLoaded && instrumentsReady && _positionsFresh) strategy = null;
         _synthCache = null;
       }
       strategyErr = ''; _stratFails = 0;
