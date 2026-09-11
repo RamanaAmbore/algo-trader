@@ -749,8 +749,48 @@ Holdings grid (St column filtered out):
 
 ### 13.1 Derivatives Snapshot Grid Reactive Chain (Sep 2026, commit 91cccd02)
 
-The derivatives page (`/admin/derivatives`) Snapshot grid received eight reactive chain 
-improvements for faster data-sync and tighter payoff chart alignment with NavStrip.
+The derivatives page (`/admin/derivatives`) Snapshot grid and payoff chart received 
+reactive-chain fixes to eliminate data-sync gaps during symbol switches, market-open/close 
+transitions, and hibernation exit. Eight improvements ensure consistent per-row Snapshot P&L, 
+payoff chart spot-price, and TOTAL row convergence with NavStrip.
+
+**REACTIVE-CHAIN BUG FIXES**:
+
+**Gap A — Symbol switch stale stub** (fix: capture `selectedUnderlying` before `untrack()`):
+- `_clientPayoffStub` derived was reading `selectedUnderlying` INSIDE `untrack()`, so symbol 
+  switches from user-click never reached the derived. When operator changed underlying via 
+  picker, old payoff curve remained visible until next SSE tick or manual refresh.
+- Fix: derive captures `const _sel = selectedUnderlying` BEFORE calling `untrack()`, then 
+  uses `_sel` inside the untracked closure. Now symbol switch triggers immediate payoff 
+  chart re-render.
+
+**Gap B — Market-close quote stall** (fix: always track `_quoteGeneration`, never gate it):
+- `liveSpot` and `_clientPayoffStub` previously gated the counter via 
+  `if (!isMarketOpen()) void _quoteGeneration`, dropping quote-generation count from 
+  dependency set during market hours. Batchquote completions then failed to re-trigger 
+  spot price or payoff stub re-derivation.
+- Fix: unconditionally `void _quoteGeneration` in both deriveds (outside the `if` gate). 
+  Now every batchQuote completion always triggers payoff chart re-render, even during 
+  closed hours when SSE ticks are frozen.
+
+**legs-driven loadStrategy effect (fix: fire after legs updated, not before)**:
+- `loadStrategy()` on symbol switch previously fired BEFORE `legs` were re-written (Svelte 5 
+  effect declaration order), so strategy fetch used stale legs from the old underlying. 
+  Users would see the old strategy briefly displayed.
+- Fix: added new `$effect` that fires AFTER legs-update effect (declared later in file) 
+  with guard `if (stratUnd && stratUnd === sel.toUpperCase()) return` to skip when strategy 
+  already matches. Now symbol switch: legs update → strategy refetch → both visible in sync.
+
+**Strategy wipe guard on hibernation** (fix: check `_positionsRefreshedAt` freshness):
+- On page show (hibernation exit), `loadStrategy()` could fire before `loadPositions()` 
+  completed, using qty=0 legs → strategy wiped (set to null). Users returned to page and 
+  saw strategy erased.
+- Fix: added `_positionsRefreshedAt` timestamp (set after each successful `loadPositions()`). 
+  Strategy wipe guard now checks `_positionsFresh = _positionsRefreshedAt > 0 && 
+  (Date.now() - _positionsRefreshedAt < 30_000)` before clearing. Only wipes if positions 
+  are stale (>30s old) or never loaded.
+
+**DATA-SYNC IMPROVEMENTS**:
 
 **Per-row Snapshot P&L (5s update latency)**:
 1. A `$effect` watches `positionsStore.value` and re-runs the F&O position transformation 
@@ -761,9 +801,8 @@ improvements for faster data-sync and tighter payoff chart alignment with NavStr
 **Payoff chart spot price (always-on off-market refresh)**:
 2. A `_quoteGeneration` counter (`$state(0)`) is incremented in `loadUnderlyingQuotes()` 
    after `_underlyingQuotes = next`. Both `liveSpot` and `_clientPayoffStub` track the 
-   counter via `if (!isMarketOpen()) void _quoteGeneration`, ensuring the payoff chart's 
-   spot price re-derives after each quote refresh even when SSE ticks are frozen 
-   (off-market window).
+   counter unconditionally, ensuring the payoff chart's spot price re-derives after each 
+   quote refresh even when SSE ticks are frozen (off-market window).
 3. `loadUnderlyingQuotes()` interval changed from `marketAwareInterval` (pauses off-market) 
    to `visibleInterval` with throttle `'throttle:30000'` (5s when visible, 30s when hidden). 
    Off-market spot prices are now fetched continuously, needed for payoff curve positioning 
@@ -796,8 +835,8 @@ improvements for faster data-sync and tighter payoff chart alignment with NavStr
 
 **Impact**: All per-row Snapshot data refreshes within 5 seconds of the broker's book 
 poller cycle. Payoff chart spot price and day-P&L TOTAL remain synchronized across the 
-derivatives page, MarketPulse grids, and NavStrip throughout market-open and closed-hours 
-windows.
+derivatives page, MarketPulse grids, and NavStrip throughout symbol switches, market-open 
+and closed-hours windows, and hibernation transitions.
 
 ### 13.2 Underlying Picker Auto-Select Active-Qty Underlying (One-Time Promote)
 
@@ -1629,5 +1668,5 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-07 | v1.10 Derivatives overlay day P&L SSOT convergence (commit 346a26dd): §13 Day P&L recompute updated — `candidatesDayPnl` in derivatives overlay now calls `livePositionDayPnl()` (SSOT from `$lib/data/nav`) for each candidate position leg, matching the formula used by `positionsDayPnlStore` (NavStrip P1) and Pulse grids. Per-root day P&L sums in overlay now correctly converge to `positionsDayPnlStore.total`. `_dayPnlForLeg` helper retained for `_legExpPnlDisplay`, flash updates, and per-root `_expPnlByRootMap` aggregation (legacy callers unchanged). |
 | 2026-09-07 | v1.11 Derivatives overlay store-lookup SSOT refinement (commit 202ecd93): §13 Day P&L recompute refined — `candidatesDayPnl` now reads directly from `positionsDayPnlStore.byKey[sym]` (F&O/equity positions) and `holdingsDayPnlStore.byKey[sym]` (equity holdings) instead of calling `livePositionDayPnl()`, with symbol deduplication via `seen` Set; returns `null` when no enabled legs exist (previously `0`). OptionsPayoff DAY P&L row guard updated from `{#if dayPnl != null && dayPnl !== 0}` to `{#if dayPnl != null}`, showing ₹0 during poll-gap windows instead of disappearing. Overlay day P&L now guaranteed identical to NavStrip P1 and Pulse positions TOTAL. |
 | 2026-09-08 | v1.12 Derivatives overlay stale-while-revalidating cache for candidatesDayPnl (commit 593a5e25): §13 Day P&L recompute reverted from `positionsDayPnlStore.byKey[sym]` lookup back to `_dayPnlForLeg(c, null)` per-candidate computation. Root cause: `positionsDayPnlStore.byKey` returns `_pulseByKey ?? _store.byKey`; `_pulseByKey` (set by MarketPulse from positions page) can exclude MCX futures (CRUDEOIL, GOLDM) that are closed/filtered, causing byKey[sym] to return undefined→0 for those symbols. Added `_lastCandidatesDayPnl` stale-while-revalidating cache — when `candidatePositions` briefly empties during the 5-second poll refresh, the last non-null day P&L is returned instead of null, preventing the day P&L row in OptionsPayoff from flashing away during poll gaps. |
-| 2026-09-10 | v1.13 Derivatives page reactive chain improvements (commit 91cccd02): Eight fixes for Snapshot grid freshness and payoff chart consistency. (1) **positions $effect**: watches `positionsStore.value` and re-runs F&O position transformation synchronously on every 5s book-poller update; sim rows preserved; per-row Snapshot P&L and Exp P&L update within 5s without requiring a fill event. (2) **_quoteGeneration counter**: `$state(0)` counter incremented in `loadUnderlyingQuotes()` after `_underlyingQuotes = next`; both `liveSpot` and `_clientPayoffStub` track counter via `if (!isMarketOpen()) void _quoteGeneration`, re-deriving payoff chart spot price after each quote refresh even when SSE ticks frozen. (3) **loadStrategy guard**: `strategy = null` branch now requires `_positionsLoaded && instrumentsReady` before clearing strategy, preventing cold-start race where sessionStorage-cached strategy was wiped before positions/instruments loaded. (4) **loadUnderlyingQuotes seeded from loadPositions**: called fire-and-forget at end of `loadPositions()`, ensuring underlying spot quotes fetched immediately when positions first load (not waiting for interval tick). (5) **Underlying quotes always-on**: `loadUnderlyingQuotes` interval changed from `marketAwareInterval` (pauses off-market) to `visibleInterval` with `'throttle:30000'` (5s when visible, 30s when hidden, always runs); off-market spot prices now needed for payoff chart positioning and EV calculations. (6) **_snapshotTotalDay NavStrip parity**: rewritten to use `livePositionDayPnl()` (same function as `positionsDayPnlStore`) with live LTP from `getSnapshot(sym)?.ltp` at 4Hz via `void _throttledTick`; TOTAL row now matches NavStrip P1 exactly when no equity intraday positions exist. (7) **CandidateLegRow LTP SSE-reactive**: `ltp` now reads `getSnapshot(sym)?.ltp` first (SSE-reactive at 4Hz), falling back to `legAnalytics.ltp` then `c.ltp` (broker API); faster feedback for live ticks on leg rows. (8) **TOTAL row label**: added `title="Includes all positions (equity intraday + F&O)"` to clarify why TOTAL may exceed the sum of per-underlying rows. Impact: all per-row Snapshot data refreshes within 5s of book-poller cycle; payoff chart and day-P&L TOTAL stay synchronized across derivatives, MarketPulse, and NavStrip. |
+| 2026-09-10 | v1.13 Derivatives page reactive chain improvements (commit 16c8e44f + 91cccd02): Critical fixes for symbol-switch stalls, market-transition quote stalls, and hibernation strategy wipe. Four reactive-chain bug fixes: (A) **Symbol-switch stale stub** — `_clientPayoffStub` was reading `selectedUnderlying` inside `untrack()` so symbol changes never triggered re-derive; fix: capture `const _sel = selectedUnderlying` before `untrack()`. (B) **Market-close quote stall** — `liveSpot` and `_clientPayoffStub` gated `_quoteGeneration` counter via `if (!isMarketOpen())`, so batchQuote completions dropped from dependency set during hours; fix: unconditionally track counter always. (C) **legs-driven loadStrategy effect** — on symbol switch, `loadStrategy()` fired before legs updated (Svelte 5 declaration order); fix: added new effect after legs that fires strategy refetch with guard to skip when strategy already matches. (D) **Strategy wipe on hibernation** — `loadStrategy()` fired before `loadPositions()` on page show, using qty=0 legs; fix: added `_positionsRefreshedAt` freshness check, only wipe if positions stale >30s. Eight data-sync improvements: (1) positions `$effect` re-runs F&O transform on 5s book-poller, per-row P&L updates within 5s. (2–5) `_quoteGeneration` counter always tracked; quotes fetched continuously via `visibleInterval` with throttle; seeded at `loadPositions()` end. (6) `_snapshotTotalDay` uses `livePositionDayPnl()` SSOT via `getSnapshot` at 4Hz, matches NavStrip P1. (7) CandidateLegRow LTP reads `getSnapshot` first (4Hz SSE-reactive). (8) TOTAL row label clarified. Impact: symbol switches update payoff chart immediately; market-open/close quote refreshes trigger chart re-render; hibernation exit preserves strategy. All Snapshot data within 5s cycle; payoff chart + day-P&L TOTAL synchronized across page, MarketPulse, NavStrip. |
 | 2026-09-10 | v1.14 Underlying picker auto-select + Snapshot TOTAL day P&L formula (TBD): §13.2 new subsection documents underlying picker auto-select: all six tiers now carry `qtySum` field (Tier 1–2 = actual position qty, Tiers 3–6 = 0); on cold load, `_autoSelectDone` gate fires once when `_positionsLoaded` first true, promoting to first active underlying (qtySum > 0) if current selection has qtySum = 0; after promote, subsequent 5s refreshes do NOT re-promote, allowing manual inactive selection. Initial picker selection now prefers `firstActive` over `opts[0]`. §13.3 new subsection documents Snapshot TOTAL day P&L formula: `_snapshotTotalDay = Object.values(_dayPnlByRootMap).reduce((a, b) => a + b, 0)` (sum of per-row values) instead of applying `livePositionDayPnl` to raw positions (which included `prev_settlement_pnl`). Eliminates ±54k divergence on MCX FUT positions where prior formula conflated settled P&L with intraday P&L. New formula is symmetric with `_snapshotTotalPnl` and `_snapshotTotalExp` — TOTAL = sum of rows by construction. |
