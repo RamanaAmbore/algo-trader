@@ -27,7 +27,7 @@
   import { baseDayPnlForPosition } from '$lib/data/nav';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
-  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { connStatus } from '$lib/stores';
@@ -284,6 +284,7 @@
   //   fallback to h.cur_val when ltp unavailable.
   // lifetimePnl: Σ h.pnl from pulseHoldingsStore rows.
   const _hByAcct = $derived.by(() => {
+    void symbolTickCount;
     return _scopedAccounts.map(acct => {
       const key  = acct.toUpperCase();
       const rows = _pulseHoldings.filter(h => String(h.account) === acct);
@@ -291,7 +292,7 @@
       let value = 0;
       for (const h of rows) {
         const sym = String(h?.tradingsymbol || '').toUpperCase();
-        const ltp = getSnapshot(sym)?.ltp;
+        const ltp = untrack(() => getSnapshot(sym)?.ltp);
         const qty = Number(h?.quantity || 0);
         value += (ltp != null && ltp > 0 && qty !== 0) ? ltp * qty : Number(h?.cur_val || 0);
       }

@@ -24,7 +24,8 @@
   //   onOpenChartTicket(c)  — fired for non-actionable rows (opens Chart tab)
   //   onContextMenu(c, ev)  — parent sets _ctxMenu from right-click / long-press
 
-  import { getSnapshot }             from '$lib/data/symbolStore.svelte.js';
+  import { untrack } from 'svelte';
+  import { getSnapshot, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { rootOfLabel }            from '$lib/data/rootOf.js';
   import { formatSymbol }           from '$lib/data/decomposeSymbol';
   import { decomposeSymbol }        from '$lib/data/decomposeSymbol';
@@ -86,7 +87,10 @@
 
   // ── Derived locals (identical logic to what was in {@const} blocks) ───
 
-  const ltp       = $derived(getSnapshot(String(c.symbol || '').toUpperCase())?.ltp ?? (lg?.ltp ?? c.ltp));
+  const ltp       = $derived.by(() => {
+    void symbolTickCount;
+    return untrack(() => getSnapshot(String(c.symbol || '').toUpperCase())?.ltp) ?? (lg?.ltp ?? c.ltp);
+  });
   const cost      = $derived(c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null));
   const isClosed  = $derived(Number(c.qty || 0) === 0);
 

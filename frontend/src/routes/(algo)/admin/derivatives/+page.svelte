@@ -619,7 +619,7 @@
 
     const spotResolver = (/** @type {string} */ underlying) => {
       const key = String(underlying || '').toUpperCase();
-      const v = Number(getSnapshot(key)?.ltp);
+      const v = Number(untrack(() => getSnapshot(key)?.ltp));
       if (Number.isFinite(v) && v > 0) return v;
       const bq = Number(uq[key]?.ltp);
       if (Number.isFinite(bq) && bq > 0) return bq;
