@@ -494,20 +494,26 @@ class TestTaskDailySnapshotGuard:
     @patch("backend.api.background.is_trading_day_today", return_value=False)
     @patch("backend.api.background._snapshot_fired_today", {})
     async def test_non_trading_day_skips_snapshot(self, mock_trading):
-        """Non-trading day (holiday) → _task_daily_snapshot returns early before while loop.
+        """Non-trading day (holiday) → startup snapshot skipped; function parks in while loop.
 
-        The is_trading_day_today() guard returns False → function logs and returns
-        before entering the settlement-pass while loop. Verified by the function
-        completing (not hanging) and sessions_with_snapshot_time_now not being called.
+        The is_trading_day_today() guard returns False → startup _snapshot_fire is NOT called.
+        The function then falls through to the while True loop (supervised invariant: never
+        bare-return). asyncio.sleep is patched to raise CancelledError so the loop exits
+        cleanly in the test, proving the function reached the parking loop.
         """
+        import asyncio as _asyncio
         from backend.api.background import _task_daily_snapshot
 
-        with patch("backend.api.background.sessions_with_snapshot_time_now") as mock_sessions:
-            # Function should return early — completes without hanging
-            await _task_daily_snapshot()
-            # Guard fired before the while loop — sessions_with_snapshot_time_now
-            # (called inside the loop) should not have been invoked.
-            assert mock_sessions.call_count == 0
+        with patch("backend.api.background._snapshot_fire", new_callable=AsyncMock) as mock_fire, \
+             patch("backend.api.background._snapshot_probe_nse_mcx", new_callable=AsyncMock), \
+             patch("backend.api.background.sessions_with_snapshot_time_now", return_value=[]) as mock_sessions, \
+             patch.object(_asyncio, "sleep", side_effect=_asyncio.CancelledError):
+            with pytest.raises(_asyncio.CancelledError):
+                await _task_daily_snapshot()
+        # Startup snapshot was skipped — _snapshot_fire not called during startup block
+        assert mock_fire.call_count == 0, "startup _snapshot_fire must not fire on non-trading day"
+        # sessions_with_snapshot_time_now not reached — CancelledError fires at the first sleep
+        assert mock_sessions.call_count == 0
 
     @pytest.mark.asyncio
     @patch("backend.api.background.is_trading_day_today", return_value=True)
