@@ -2070,7 +2070,7 @@
   // overlay stayed pinned at the last poll's value while ticks were
   // flowing — operator: "I see P∆ constant while P is changing." Mirrors
   // the per-row delta pattern PositionStrip uses (BH2).
-  let _lastCandidatesDayPnl = $state(/** @type {number|null} */ (null));
+  let _lastCandidatesDayPnl = /** @type {number|null} */ (null);
   const candidatesDayPnl = $derived.by(() => {
     void _throttledTick;
     let s = 0;
