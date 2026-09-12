@@ -502,7 +502,7 @@
     let s = 0;
     for (const h of holdings) {
       const sym      = String(h?.tradingsymbol || '').toUpperCase();
-      const liveHold = getSnapshot(sym)?.ltp;
+      const liveHold = untrack(() => getSnapshot(sym)?.ltp);
       const avgCost  = Number(h?.average_price || 0);
       const qty      = Number(h?.quantity || 0);
       if (liveHold != null && liveHold > 0 && avgCost > 0 && qty !== 0) {
@@ -522,10 +522,11 @@
   // the backend sets cur_val = inv_val = average_price × qty (investment cost, not market
   // value). Using last_price × qty gives 0 (clearly missing) rather than an invented value.
   const _liveHoldingsValue = $derived.by(() => {
+    void _throttledTick;
     let s = 0;
     for (const h of holdings) {
       const sym    = String(h?.tradingsymbol || '').toUpperCase();
-      const ltp    = getSnapshot(sym)?.ltp;
+      const ltp    = untrack(() => getSnapshot(sym)?.ltp);
       const qty    = Number(h?.quantity || 0);
       const lastPx = Number(h?.last_price || 0);
       if (ltp != null && ltp > 0 && qty !== 0) {

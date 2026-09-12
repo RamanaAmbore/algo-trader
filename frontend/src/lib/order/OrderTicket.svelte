@@ -1224,8 +1224,11 @@
     return _underlyingSymbol(sym, exch) || null;
   });
 
-  // Lookup the underlying's snapshot from symbolStore (reactive on tick).
-  const _underlyingSnap  = $derived(_rootSym ? getSnapshot(_rootSym) : null);
+  // Lookup the underlying's snapshot from symbolStore.
+  const _underlyingSnap  = $derived.by(() => {
+    const sym = _rootSym;
+    return sym ? untrack(() => getSnapshot(sym)) : null;
+  });
   const _underlyingLtp   = $derived(_underlyingSnap?.ltp ?? null);
   const _underlyingChange = $derived(_underlyingSnap?.day_change_pct ?? null);
 
