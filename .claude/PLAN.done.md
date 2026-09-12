@@ -1,109 +1,85 @@
-# Plan: Remove equity hedge columns from snapshot grid
+# Plan: Fix three snapshot grid defects — Day P&L zero, EV per-row, Day% flash
 
 ## Context
 
-The snapshot grid has F&O-only columns (Day P&L, P&L, Exp P&L) and equity-inclusive
-columns (H Day P&L, Day P&L Net, P&L Net, Exp P&L Net, Eq Qty). The total row includes
-both, so the snapshot Day P&L total ≠ NavStrip P1 slot (which is F&O-only positions).
+Three distinct defects in the derivatives snapshot grid, all in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` and its helpers:
 
-Operator: remove equity hedge columns entirely so the snapshot total row is F&O-only
-and matches NavStrip P1. Remove all stale derived state that only served those columns.
+1. **Day P&L zero for CRUDEOIL, GOLDM (and total row)** — root cause: `buildPositionRowFromBroker` in `pageLoad.js` does NOT copy `prev_settlement_pnl` from the raw broker row to the normalized position. `_dayPnlForLeg(c)` calls `baseDayPnlForPosition(c)` as fallback when `prev_close = 0` (MCX stale). That function checks `c.prev_settlement_pnl` first — but it's missing from the normalized row → falls to `day_change_val` (0 for MCX) → Case 4 → returns 0. NavStrip P1 uses `positionsDayPnlStore` which passes raw broker rows (which DO have `prev_settlement_pnl`) to `baseDayPnlForPosition`, so it computes correctly.
+
+2. **EV only shows for active underlying** — line 4904-4909: `_mergedEv` (strategy-level probabilistic EV from backend) only exists for the selected underlying's active strategy call. Non-active rows hard-code '—'. `_expVal` (`_expPnlByRootMap[g.underlying]` = deterministic expiry P&L at current spot) is already computed per-row but used only in the Exp P&L column (line 4897). The EV column should fall back to `_expVal` for non-active rows so every row shows a meaningful value.
+
+3. **Day% flashing** — line 1022-1023: `flash.update(`${root}:pct`, q?.day_pct)` fires whenever underlying quotes update (same cadence as LTP). Line 4893 applies `flash.classOf(`${g.underlying}:pct`)` to the Day% span. Day% is derived from LTP — user wants only LTP to flash.
+
+---
+
+## File: `frontend/src/lib/derivatives/pageLoad.js`
+
+### Fix 1a — add `prev_settlement_pnl` to `buildPositionRowFromBroker` (line 61–85)
+
+```js
+// After the existing day_sell_value line, add:
+prev_settlement_pnl: r?.prev_settlement_pnl != null ? Number(r.prev_settlement_pnl) : null,
+```
+
+No other changes to this function. The normalized position now carries `prev_settlement_pnl` so `baseDayPnlForPosition(c)` uses the authoritative `pnl − prev_settlement_pnl` formula instead of Case 4.
 
 ---
 
 ## File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
 
-### 1. Remove derived state (stale after columns gone)
+### Fix 1b — update JSDoc type annotation (~line 3395)
 
-- **`_hDayByRoot`** (~line 1007): drives H Day P&L column → delete
-- **`_hPnlByRoot`** (~line 922): drives P&L Net / Exp P&L Net → delete
-- **`_hExpByRoot`** (~line 942): drives Exp P&L Net total → delete
+Add `prev_settlement_pnl?:number|null` to the type comment on `positions`.
 
-### 2. Remove flash updates for equity columns (~lines 1088-1091)
+### Fix 2 — EV column per row (~line 4904-4909)
 
-Delete these two lines from the underlying-groups $effect:
-```js
-flash.update(`${g.underlying}:day_h`,  g.day_with);
-flash.update(`${g.underlying}:pnl_h`,  g.pnl_with);
+Change the EV cell from:
+```html
+{selectedUnderlying === g.underlying && _mergedEv != null
+  ? aggCompact(_mergedEv) : '—'}
+```
+to:
+```html
+{selectedUnderlying === g.underlying && _mergedEv != null
+  ? aggCompact(_mergedEv)
+  : _expVal !== 0 ? aggCompact(_expVal) : '—'}
 ```
 
-### 3. Simplify `_byUnderlyingTotal` (~lines 1280-1300)
+Active row: shows probabilistic EV (`_mergedEv` from strategy analytics).  
+Other rows: shows deterministic expiry P&L at current spot (`_expVal`), same computation as the Exp P&L column.
 
-- Remove the holdings pass: `for (const _h of holdings) { _accumulateHoldingTotal(...) }`
-- Remove `_accumulateHoldingTotal` function (~lines 1254-1270) — only served net columns
-- Remove `pnl_with`, `day_with`, `legs_with`, `qty_eq` fields from accumulator object
-- Keep: `pnl_without`, `day_without`, `legs_without`, `qty_fno`
-- In total row, Legs display: just `Math.round(t.legs_without)` (no with/without split)
+### Fix 3 — stop Day% from flashing (~lines 1022-1023 and 4893)
 
-### 4. Per-row download data (~lines 4920-4965)
+Remove `flash.update(`${root}:pct`, q?.day_pct)` from the underlying-quotes `$effect`.  
+Remove `{flash.classOf(`${g.underlying}:pct`)}` from the Day% span.
 
-In the `onDownload` handler:
-- Remove `const hDay = _hDayByRoot[...]` and `const hPnl = _hPnlByRoot[...]`
-- Remove from row object: `h_day_pnl`, `day_pnl_net`, `pnl_net`, `exp_pnl_net`, `qty_eq`
-- Change `legs: g.legs_with` → `legs: g.legs_without`
-- Remove from CSV column defs: H Day P&L, Day P&L Net, P&L Net, Exp P&L Net, Eq Qty
+---
 
-### 5. Column header row (~lines 4988-5002)
+## File: `frontend/src/lib/__tests__/data/pageLoad_expired.test.js`
 
-Remove these header `<span>` cells:
-- H Day P&L
-- Day P&L Net
-- P&L Net
-- Exp P&L Net
-- Eq Qty
-
-### 6. Per-row grid cells (~lines 5037-5082)
-
-- Remove `{@const _hDay}`, `{@const _hPnl}`, `{@const _dayNet}`, `{@const _pnlNet}`, `{@const _expNet}` local const blocks
-- Remove H Day P&L `<span>`
-- Remove Day P&L Net `<span>` (flash: `day_h`)
-- Remove P&L Net `<span>` (flash: `pnl_h`)
-- Remove Exp P&L Net `<span>`
-- Remove Eq Qty `<span>` (`g.qty_eq`)
-- Legs: change `g.legs_with` → `g.legs_without`, remove the `/without` conditional
-
-### 7. Total row (~lines 5082-5117)
-
-- Remove `{@const _hDayTotal}`, `{@const _hPnlTotal}`, `{@const _hDayNetTotal}`, `{@const _hPnlNetTotal}`, `{@const _hExpNetTotal}` local vars
-- Remove H Day P&L cell
-- Remove Day P&L Net cell
-- Remove P&L Net cell
-- Remove Exp P&L Net cell
-- Remove Eq Qty cell
-- Legs: `Math.round(_byUnderlyingTotal.legs_without)` only
-
-### 8. CSS grid-template-columns (~lines 5975-5990)
-
-Remove these five tracks:
-```css
-minmax(3.8rem, 0.6fr)  /* H Day P&L */
-minmax(3.8rem, 0.6fr)  /* Day P&L Net */
-minmax(3.8rem, 0.6fr)  /* P&L Net */
-minmax(4rem,   0.6fr)  /* Exp P&L Net */
-minmax(4rem,   0.6fr)  /* Eq qty */
-```
+Add one test case to the existing `buildPositionRowFromBroker` describe block (~line 403):
+- Verify that `prev_settlement_pnl` is copied when present on the raw broker row
+- Verify it is `null` when absent
 
 ---
 
 ## Agents
 
-- frontend: make all changes above in the single derivatives page file
-- backend: skip
-- doc: skip
-- backend-test: skip
+- frontend: make all changes above (pageLoad.js + derivatives/+page.svelte)
+- backend-test: add Vitest test for prev_settlement_pnl in pageLoad_expired.test.js
 
 ## Tests
 
 - svelte-check: yes — 0 errors
-- vitest: yes — 968 passed
+- vitest: yes — 968+ passed
 
 ## Commit message
 
-feat(derivatives): remove equity hedge columns from snapshot — F&O-only total syncs with NavStrip P1
+fix(derivatives): copy prev_settlement_pnl to normalized position — MCX Day P&L zero fixed; EV per-row; stop Day% flash
 
 ## Done when
 
-- H Day P&L, Day P&L Net, P&L Net, Exp P&L Net, Eq Qty columns gone from grid + total row
-- `_hDayByRoot`, `_hPnlByRoot`, `_hExpByRoot`, `_accumulateHoldingTotal` removed
-- Snapshot total Day P&L = F&O positions only (= NavStrip P1)
-- svelte-check 0 errors, vitest 968 passed
+- CRUDEOIL, GOLDM Day P&L non-zero in snapshot, matches NavStrip P1 total
+- EV column shows expiry P&L for non-active rows instead of '—'
+- Day% cell no longer flashes on tick; only LTP cell flashes
+- svelte-check 0 errors, vitest passed

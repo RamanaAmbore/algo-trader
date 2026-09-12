@@ -1020,7 +1020,6 @@
     untrack(() => {
       for (const [root, q] of Object.entries(quotes)) {
         flash.update(`${root}:ltp`, q?.ltp);
-        flash.update(`${root}:pct`, q?.day_pct);
       }
     });
   });
@@ -3392,7 +3391,7 @@
   // Position lists for the picker. Carries avg_cost + ltp so that
   // the strategy leg-builder can ship them inline (sim legs need this
   // because the backend can't fetch their ltp from the broker).
-  /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number}>} */
+  /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number, prev_settlement_pnl?:number|null}>} */
   let positions = $state([]);
 
   // _snapshotTotalDay — sum of _dayPnlByRootMap, same formula as per-row grid.
@@ -4890,7 +4889,7 @@
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
-            <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pct`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
+            <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayVal)}</span>
             <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(_pnlVal)}</span>
@@ -4905,7 +4904,8 @@
                               ? ((_mergedEv ?? 0) > 0 ? 'cell-pos' : 'cell-neg')
                               : 'cell-muted'}">
               {selectedUnderlying === g.underlying && _mergedEv != null
-                ? aggCompact(_mergedEv) : '—'}
+                ? aggCompact(_mergedEv)
+                : _expVal !== 0 ? aggCompact(_expVal) : '—'}
             </span>
           </div>
         {/each}

@@ -447,6 +447,34 @@ describe('buildPositionRowFromBroker — prev_close uses previous_close over clo
   });
 });
 
+describe('buildPositionRowFromBroker — prev_settlement_pnl propagation', () => {
+  it('copies prev_settlement_pnl when present', () => {
+    const row = buildPositionRowFromBroker({
+      tradingsymbol: 'CRUDEOIL24OCTFUT',
+      quantity: 1,
+      prev_settlement_pnl: 1234.56,
+    }, 'live');
+    expect(row.prev_settlement_pnl).toBeCloseTo(1234.56);
+  });
+
+  it('sets prev_settlement_pnl to null when absent', () => {
+    const row = buildPositionRowFromBroker({
+      tradingsymbol: 'CRUDEOIL24OCTFUT',
+      quantity: 1,
+    }, 'live');
+    expect(row.prev_settlement_pnl).toBeNull();
+  });
+
+  it('sets prev_settlement_pnl to null when null in source', () => {
+    const row = buildPositionRowFromBroker({
+      tradingsymbol: 'CRUDEOIL24OCTFUT',
+      quantity: 1,
+      prev_settlement_pnl: null,
+    }, 'live');
+    expect(row.prev_settlement_pnl).toBeNull();
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // buildHoldingRowFromBroker — prev_close field priority
 // ─────────────────────────────────────────────────────────────────────────────

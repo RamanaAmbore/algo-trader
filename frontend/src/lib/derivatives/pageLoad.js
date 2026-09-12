@@ -81,6 +81,7 @@ export function buildPositionRowFromBroker(p, source) {
     day_sell_quantity:  Number(p?.day_sell_quantity || 0),
     day_buy_value:      Number(p?.day_buy_value || 0),
     day_sell_value:     Number(p?.day_sell_value || 0),
+    prev_settlement_pnl: p?.prev_settlement_pnl != null ? Number(p.prev_settlement_pnl) : null,
   };
 }
 
