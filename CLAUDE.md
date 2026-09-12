@@ -274,6 +274,8 @@ Any new broker proxy layer must do the same — failing to do so sends raw contr
 Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` / `'snapshot'` / 
 `'snapshot-fallback'`. Every new data route MUST use. Tests patch `_any_segment_open()`.
 
+**Reactive safety (state_unsafe_mutation prevention)** — Never call `get(store)` directly inside `$derived(...)`. Always wrap in `untrack()` or use `safeRead(store)` from `frontend/src/lib/utils/safeRead.js`. For symbol data, use `liveSnap(sym)` from `symbolStore.svelte.js`. The `state_referenced_locally` compiler warning surfaces these at build time — do NOT suppress it globally; add per-line `svelte-ignore state_referenced_locally` with a one-line justification comment at each suppression site.
+
 **Broker auth health badge** — `BrokerHealthBadge.svelte` (admin/designated navbar, polls 30s 
 via `visibleInterval`). State: green (last_good < 5min), amber (stale), red (last_fail > last_ok). 
 Worst state drives color. Click opens per-account modal.

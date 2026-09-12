@@ -1,114 +1,152 @@
-# Plan: Frontend debug-logging framework + payoff/NavStrip instrumentation
+# Plan: Prevent state_unsafe_mutation — detection + enforcement framework
 
 ## Context
 
-Diagnosing frontend issues (payoff chart blank, spot resolution failures, NavStrip exp-profit mismatch) requires repeatedly deploying debug builds and reading raw console noise. A lightweight, always-on-in-dev, zero-overhead-in-prod logging framework eliminates this: enable a namespace in the browser console, reproduce the issue, dump the decision trace.
+`state_unsafe_mutation` is Svelte 5's runtime error when reactive state (SvelteMap,
+`$state`, writable stores) is written while a `$derived` computation is evaluating.
+The codebase has 195 `untrack()` fixes and a `liveSnap()` helper, but `svelte.config.js`
+globally suppresses all `state_referenced_locally` compiler warnings — meaning new
+violations are INVISIBLE at build time and only surface as runtime crashes.
 
-The payoff chart and NavStrip exp-profit discrepancies both trace through the same 6-7 key decision points (spot resolution tiers, batchQuote results, SSE tick routing, strategy loading, stub computation). Instrumenting those points makes every future diagnosis a 30-second console dump instead of a multi-day code audit.
+Three things are needed:
+1. A canonical `safeRead()` utility that makes the correct pattern trivially easy
+2. Detection in CI that surfaces dangerous patterns before runtime
+3. Remove the global suppression so `svelte-check` catches new violations at build time
 
-## Task
+---
 
-### Part 1 — `debugLog.js` module
-
-Create `frontend/src/lib/debug/debugLog.js`:
+## Root cause pattern
 
 ```js
-// Usage: window.__RAMBOQ_DEBUG = 'payoff' | 'sse' | true | false
-// Dump:  copy(window.__RAMBOQ_DUMP('payoff'))  → JSON to clipboard
+// DANGEROUS — triggers state_unsafe_mutation at runtime:
+const total = $derived(get(positionsStore).reduce(...));
+//                     ^^^ store read inside $derived, no untrack
 
-const _ring = [];
+// SAFE:
+const total = $derived(untrack(() => get(positionsStore)).reduce(...));
+// OR use safeRead():
+const total = $derived(safeRead(positionsStore).reduce(...));
+```
 
-export function debugLog(ns, event, data) {
-  if (!globalThis.__RAMBOQ_DEBUG) return;
-  const filter = globalThis.__RAMBOQ_DEBUG;
-  if (typeof filter === 'string' && !ns.startsWith(filter)) return;
-  const entry = { ts: Date.now(), ns, event, data };
-  _ring.push(entry);
-  if (_ring.length > 500) _ring.shift();
-  console.debug(`[RQ:${ns}] ${event}`, data ?? '');
-}
+---
 
-if (typeof globalThis !== 'undefined') {
-  globalThis.__RAMBOQ_DUMP = (ns) => {
-    const rows = ns ? _ring.filter(e => e.ns === ns || e.ns.startsWith(ns + ':')) : _ring;
-    return JSON.stringify(rows, null, 2);
-  };
-  globalThis.__RAMBOQ_DOWNLOAD = (ns) => {
-    const json = globalThis.__RAMBOQ_DUMP(ns);
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
-    a.download = `ramboq-debug-${ns || 'all'}-${Date.now()}.json`;
-    a.click();
-  };
+## Changes
+
+### 1. `frontend/src/lib/utils/safeRead.js` (new file)
+Single canonical utility that wraps `get()` in `untrack()`:
+
+```js
+import { untrack } from 'svelte';
+import { get } from 'svelte/store';
+
+/**
+ * Read a Svelte store safely inside $derived / $derived.by().
+ * Wraps get() in untrack() — the store's reactive write path
+ * cannot trigger state_unsafe_mutation during derivation.
+ * @template T
+ * @param {import('svelte/store').Readable<T>} store
+ * @returns {T}
+ */
+export function safeRead(store) {
+  return untrack(() => get(store));
 }
 ```
 
-Zero overhead when `window.__RAMBOQ_DEBUG` is falsy — the guard exits before any string formatting or allocation.
+Use this anywhere `get(someStore)` appears inside a `$derived` expression.
+Existing `untrack(() => get(...))` calls can be migrated to `safeRead()` over time.
 
-### Part 2 — Instrumentation points
+### 2. `frontend/svelte.config.js` — remove global suppression
 
-Instrument these 8 points (import `debugLog` in each file, add one-liner calls):
+Current (masks ALL state_referenced_locally warnings):
+```js
+onwarn: (warning, handler) => {
+  if (warning.code.startsWith('a11y_') || warning.code === 'state_referenced_locally') return;
+  handler(warning);
+},
+```
 
-| Namespace | File | Event | Key data |
-|---|---|---|---|
-| `sse` | `quoteStream.js` | `snapshot` | symbol count, first 3 syms, ts |
-| `sse` | `quoteStream.js` | `tick` | sym, ltp |
-| `sse` | `quoteStream.js` | `connect/error/reconnect` | backoffMs |
-| `payoff:bq` | `derivatives/+page.svelte` → `loadUnderlyingQuotes` | `request` | keys array |
-| `payoff:bq` | `derivatives/+page.svelte` → `loadUnderlyingQuotes` | `result` | {sym→ltp} map |
-| `payoff:anchor` | `derivatives/+page.svelte` → tickBus anchor bridge | `tick` | root, stratUnd, ltp |
-| `payoff:spot` | `derivatives/+page.svelte` → `liveSpot` | `resolved` | tier (1a/1b/2/3/4/stub), value |
-| `payoff:stub` | `derivatives/+page.svelte` → `_clientPayoffStub` | `spot` | tier, value, legs count |
-| `payoff:strategy` | `derivatives/+page.svelte` → strategy load | `loaded` | underlying, anchor, legs count, spot |
-| `payoff:merge` | `derivatives/+page.svelte` → `_mergedPayoff` | `computed` | length, spot range min/max |
-| `navstrip:spot` | `PositionStrip.svelte` → `_loadUnderlyingSpots` | `request/result` | keys, {sym→ltp} |
-| `navstrip:expiry` | `PositionStrip.svelte` → `_expiryProfit` | `computed` | total, leg count, skipped count |
+New (a11y still suppressed, but reactive warnings now surface):
+```js
+onwarn: (warning, handler) => {
+  if (warning.code.startsWith('a11y_')) return;
+  handler(warning);
+},
+```
 
-For `liveSpot`, the log must emit which tier fired and the resolved value — this is the critical trace for the payoff chart blank issue.
+After this change, `svelte-check` will surface all 24 existing `state_referenced_locally`
+sites. The frontend agent must add per-line `// svelte-ignore state_referenced_locally`
+with a short justification comment at each of the 24 known-safe sites before committing.
 
-For the SSE namespace: log on connect, each snapshot (count only), and each error — NOT on every tick (too noisy). Ticks logged only for `window.__RAMBOQ_DEBUG === 'sse:tick'`.
+Known sites (24 total):
+- OrderTicket.svelte: lines 541, 559, 572, 585, 591, 603, 698, 757, 767, 769, 973, 980
+- SymbolPanel.svelte: lines 249, 416, 584, 595, 835, 1141, 1246, 1649
+- CommandBar.svelte: line 69
+- LogPanel.svelte: line 201
+- OptionChainTab.svelte: line 184
+- InfoHint.svelte: line 62
 
-### Part 3 — Fix: NavStrip exp profit vs Snapshot mismatch
+Pattern for each suppression comment:
+```js
+// svelte-ignore state_referenced_locally -- captures snapshot at init for change detection
+```
 
-Root cause: `_hExpNetTotal = _snapshotTotalExp + _hPnlTotal` mixes F&O expiry P&L (intrinsic at spot) with equity holdings LIFETIME broker P&L. These are different metrics. The column should either:
-- Show F&O expiry + equity **expiry-equivalent** P&L (= `_snapshotTotalExp + sum(_hExpByRoot)`)
-- Or label it clearly so users know it includes equity lifetime P&L
+### 3. `scripts/check-unsafe-reactive.sh` (new file)
+Pre-commit detection script to catch `get(` inside `$derived` without `untrack`:
 
-NavStrip P-slot-3 (54K) = F&O-only intrinsic expiry. Snapshot "Exp P&L Net" (4.15L) = F&O expiry + equity lifetime P&L. The fix: change Snapshot "Exp P&L Net" to use `_hExpTotal` (sum of `_hExpByRoot`) instead of `_hPnlTotal` so both use the same "intrinsic expiry at current spot" formula for equity and F&O. After the fix, NavStrip + Snapshot should agree (both = F&O expiry + equity expiry-equivalent P&L at current spot).
+```bash
+#!/usr/bin/env bash
+# Detect bare get() calls inside $derived blocks without untrack wrapping.
+# Exits non-zero if any violations found.
+set -euo pipefail
 
-Files to change for Part 3:
-- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — find `_hExpNetTotal` computation and change `_hPnlTotal` → sum of `_hExpByRoot` values
+VIOLATIONS=$(grep -rn \
+  --include="*.svelte" --include="*.svelte.js" \
+  -E '\$derived[^;{]*get\(' \
+  frontend/src/ | grep -v 'untrack\|safeRead\|// safe' || true)
+
+if [[ -n "$VIOLATIONS" ]]; then
+  echo "❌ state_unsafe_mutation risk: bare get() inside \$derived without untrack/safeRead:"
+  echo "$VIOLATIONS"
+  exit 1
+fi
+echo "✓ no unsafe reactive reads detected"
+```
+
+Wire into `/ddev` gate (add before push step, non-blocking first run until codebase is clean).
+
+### 4. CLAUDE.md — add to Key Patterns section
+
+```markdown
+**Reactive safety (state_unsafe_mutation prevention)** — Never call `get(store)` directly
+inside `$derived(...)`. Always wrap in `untrack()` or use `safeRead(store)` from
+`frontend/src/lib/utils/safeRead.js`. For symbol data, use `liveSnap(sym)` from
+`symbolStore.svelte.js`. The `state_referenced_locally` compiler warning surfaces these
+at build time — do NOT suppress it globally; add per-line `svelte-ignore` with a justification.
+```
+
+---
 
 ## Agents
 
+- frontend: create `safeRead.js`, update `svelte.config.js`, add 24 per-line svelte-ignore comments
+- doc: add reactive safety pattern to CLAUDE.md Key Patterns
 - backend: skip
-- frontend: Implement all three parts as described:
-  1. Create `frontend/src/lib/debug/debugLog.js` with the exact implementation above.
-  2. Instrument the 8 namespaces listed in Part 2 — import `debugLog` in each file, add calls. For `liveSpot` in derivatives/+page.svelte, the log must track which tier (1a=anchor, 1b=stratUnd, 2=resolvedTs, 3=pos scan, 4=batchQuote, stub) succeeded and the value. Add `debugLog('payoff:spot', 'resolved', { tier, value })` at each return path in the `liveSpot` derived block.
-  3. Fix `_hExpNetTotal` in derivatives/+page.svelte: change from `_snapshotTotalExp + _hPnlTotal` to `_snapshotTotalExp + Object.values(_hExpByRoot).reduce((s, v) => s + (v ?? 0), 0)` (sum of equity expiry-equivalent P&L). Update the `_hExpNetTotal` variable accordingly.
-  4. Write or update Vitest tests in `frontend/src/lib/__tests__/` covering `debugLog` (ring buffer, namespace filter, dump/download globals) and the `_hExpNetTotal` formula change.
-
-  For every file you change or create, you MUST write or update at least one test that covers the changed behaviour. This is mandatory — not optional.
-
-- broker: skip
-- doc: skip
 - backend-test: skip
-- playwright: skip
 
 ## Tests
 
-- pytest: no
-- svelte-check: yes
-- playwright: no
+- svelte-check: yes — must exit 0 after svelte.config.js change (all 24 sites annotated)
+- vitest: yes — 968 still pass
+- Check: `bash scripts/check-unsafe-reactive.sh` exits 0
 
 ## Commit message
 
-feat(debug): frontend debugLog framework + payoff/NavStrip instrumentation + fix snapshot Exp P&L Net formula
+feat(frontend): safeRead() utility + svelte.config state_referenced_locally enforcement
 
 ## Done when
 
-- `window.__RAMBOQ_DEBUG = 'payoff'` in browser console enables structured trace logs for the payoff chart
-- `window.__RAMBOQ_DOWNLOAD('payoff')` downloads the ring buffer as JSON
-- `svelte-check` passes with 0 errors
-- Snapshot "Exp P&L Net" = F&O expiry + equity expiry-equivalent P&L (matches NavStrip P-slot-3 + equity expiry)
-- Vitest passes (ring buffer, namespace filter, dump function all tested)
+- `safeRead.js` exists and is documented
+- svelte.config.js no longer globally suppresses `state_referenced_locally`
+- All 24 existing suppressions have per-line `svelte-ignore` with justification comments
+- `npx svelte-check --output machine` exits 0 errors
+- Detection script passes (0 violations found)

@@ -3,8 +3,8 @@ import adapter from '@sveltejs/adapter-static';
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
   onwarn: (warning, handler) => {
-    // suppress a11y and state_referenced_locally warnings — cosmetic, not functional
-    if (warning.code.startsWith('a11y_') || warning.code === 'state_referenced_locally') return;
+    // suppress a11y warnings — cosmetic, not functional
+    if (warning.code.startsWith('a11y_')) return;
     handler(warning);
   },
   kit: {
