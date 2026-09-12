@@ -119,7 +119,7 @@ CAPS: dict[str, frozenset[str]] = {
     # ── Risk / settings ───────────────────────────────────────────────
     "adjust_risk_floors":       frozenset({"designated", "risk"}),
     "manage_settings":          frozenset({"designated"}),
-    "view_hedge_proxies":       frozenset({"designated", "trader", "risk", "demo"}),
+    "view_hedge_proxies":       frozenset({"designated", "trader", "risk", "admin", "demo"}),
     "manage_hedge_proxies":     frozenset({"designated", "trader"}),
     "view_exchange_schedule":   frozenset({"designated", "trader", "risk", "admin", "demo"}),
     "manage_exchange_schedule": frozenset({"designated"}),
@@ -139,7 +139,7 @@ CAPS: dict[str, frozenset[str]] = {
     "manage_investor_tokens":   frozenset({"designated"}),
 
     # ── Sim / replay / lab ────────────────────────────────────────────
-    "run_simulator":            frozenset({"designated", "trader", "risk", "demo"}),  # demo session-only
+    "run_simulator":            frozenset({"designated", "trader", "risk", "admin", "demo"}),  # demo session-only
     "run_replay":               frozenset({"designated", "trader", "risk", "demo"}),
     "manage_lab_threads":       frozenset({"designated", "trader"}),
     "mint_mcp_token":           frozenset({"designated"}),

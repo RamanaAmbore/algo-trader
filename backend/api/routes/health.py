@@ -1034,11 +1034,19 @@ class BrokerHealthController(Controller):
                 for acct, entry in health_map.items()
             ]
 
-        # Sort by canonical display_order so the chip popup always shows
-        # accounts in the operator-configured sequence.
+        # Sort by canonical display_order — direct async query avoids the
+        # ThreadPoolExecutor+asyncio.run() path in get_account_order_map()
+        # which corrupts the asyncpg pool and causes intermittent 500s on
+        # /api/admin/brokers.
         try:
-            from backend.brokers.broker_apis import get_account_order_map as _gaom
-            _display_order_map = _gaom()
+            from backend.api.database import shared_async_session as _sas
+            from backend.api.models import BrokerAccount as _BA2
+            from sqlalchemy import select as _sel2
+            async with _sas() as _sess:
+                _ord_rows = (await _sess.execute(
+                    _sel2(_BA2.account, _BA2.display_order)
+                )).all()
+                _display_order_map = {str(r.account): int(r.display_order) for r in _ord_rows}
         except Exception:
             _display_order_map = {}
         accounts.sort(
