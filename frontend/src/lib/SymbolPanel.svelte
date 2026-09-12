@@ -60,7 +60,7 @@
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
-  import { getSnapshot, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
+  import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
 
   // Pinned anchors: no hardcoded list — SymbolSearchInput's own
@@ -466,10 +466,7 @@
       ? (_parseRoot(_localSymbol) || _localSymbol)
       : _localSymbol
   );
-  const _ltp = $derived.by(() => {
-    void symbolTickCount;
-    return untrack(() => getSnapshot(_ltpSym)?.ltp ?? null);
-  });
+  const _ltp = $derived(liveSnap(_ltpSym)?.ltp ?? null);
 
   // Tab-activation refresh bumps. Operator request: "when chain tab is
   // pressed, the chain details need to be refreshed. when order ticket

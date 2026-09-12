@@ -48,6 +48,7 @@
 import { browser } from '$app/environment';
 import { SvelteMap } from 'svelte/reactivity';
 import { writable } from 'svelte/store';
+import { untrack } from 'svelte';
 import { cachedRead, cachedWrite, TTL } from './persistentCache.js';
 import { createTickBus } from './tickFlash.svelte.js';
 
@@ -99,6 +100,18 @@ export const symbolStore = new SvelteMap();
  * scanning the map on every render.
  */
 export const symbolTickCount = writable(0);
+
+/**
+ * Throttled $state tick counter — safe reactive trigger for $derived.
+ * Increments at most 4Hz (250ms debounce) regardless of SSE burst rate.
+ * Use via liveSnap() rather than directly.
+ */
+export let snapTick = $state(0);
+let _snapTickTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
+function _bumpSnapTick() {
+  if (_snapTickTimer) return;
+  _snapTickTimer = setTimeout(() => { snapTick++; _snapTickTimer = null; }, 250);
+}
 
 /**
  * Single-origin directional tick bus — emits {sym, dir, at} on every
@@ -307,7 +320,7 @@ export function mergeSymbolUpdate(sym, fields, ts = {}) {
   // dead during heavy flat-market ticks because every tick was a no-op
   // write. Throttles downstream (50ms snap rebuild, 250ms halo + 250ms
   // _liveDeltaByRow) absorb the call rate regardless of write outcome.
-  if (sym) symbolTickCount.update(n => n + 1);
+  if (sym) { symbolTickCount.update(n => n + 1); _bumpSnapTick(); }
   return wrote;
 }
 
@@ -334,6 +347,7 @@ export function mergeSymbolBatch(updates) {
   // RefreshButton + MarketPulse should see). One bump per call
   // (not per item) preserves the BH6 anti-saturation fix.
   symbolTickCount.update(c => c + 1);
+  _bumpSnapTick();
   return n;
 }
 
@@ -348,6 +362,34 @@ export function mergeSymbolBatch(updates) {
 export function getSnapshot(sym) {
   if (!sym) return null;
   return symbolStore.get(String(sym).toUpperCase()) ?? null;
+}
+
+/**
+ * Reactive snapshot getter safe for use inside $derived / $derived.by().
+ *
+ * Plain getSnapshot() reads directly from the SvelteMap, which tracks its
+ * internal per-key sources as reactive dependencies. When a tick updates
+ * any key, Svelte calls increment(version) on the map — if that write lands
+ * while a $derived is evaluating a different source, Svelte throws
+ * state_unsafe_mutation. liveSnap() avoids this by:
+ *   1. Tracking snapTick (a throttled $state counter, ≤4Hz) as the
+ *      reactive trigger — the $derived re-runs when new data arrives.
+ *   2. Reading the map inside untrack() — no SvelteMap source dependency,
+ *      so the unsafe write path is never triggered.
+ *
+ * Usage:
+ *   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
+ *
+ *   // Safe inside $derived — replaces getSnapshot() + manual untrack pattern
+ *   const ltp = $derived(liveSnap(sym)?.ltp ?? null);
+ *   const _hByAcct = $derived.by(() => liveSnap(sym)?.ltp);
+ *
+ * @param {string | null | undefined} sym
+ * @returns {import('./symbolStore.svelte.js').MarketSnapshot | null}
+ */
+export function liveSnap(sym) {
+  void snapTick;
+  return untrack(() => getSnapshot(sym));
 }
 
 // ── Refresh-cycle reset paths (BH1) ──────────────────────────────────────

@@ -58,7 +58,7 @@
     listExchangesForSymbol,
   } from '$lib/data/instruments';
   import { isNseOpen, isMcxOpen, isMarketOpen } from '$lib/marketHours';
-  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, liveSnap } from '$lib/data/symbolStore.svelte.js';
   import { rootOf } from '$lib/data/rootOf.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -1224,11 +1224,8 @@
     return _underlyingSymbol(sym, exch) || null;
   });
 
-  // Lookup the underlying's snapshot from symbolStore.
-  const _underlyingSnap  = $derived.by(() => {
-    const sym = _rootSym;
-    return sym ? untrack(() => getSnapshot(sym)) : null;
-  });
+  // Lookup the underlying's snapshot from symbolStore (tick-reactive via liveSnap).
+  const _underlyingSnap  = $derived(_rootSym ? liveSnap(_rootSym) : null);
   const _underlyingLtp   = $derived(_underlyingSnap?.ltp ?? null);
   const _underlyingChange = $derived(_underlyingSnap?.day_change_pct ?? null);
 
