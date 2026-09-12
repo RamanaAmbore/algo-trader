@@ -101,12 +101,10 @@ export const symbolStore = new SvelteMap();
  */
 export const symbolTickCount = writable(0);
 
-/**
- * Throttled $state tick counter — safe reactive trigger for $derived.
- * Increments at most 4Hz (250ms debounce) regardless of SSE burst rate.
- * Use via liveSnap() rather than directly.
- */
-export let snapTick = $state(0);
+// Throttled $state tick counter. Incremented by _bumpSnapTick() on every
+// SSE update (250ms debounce). liveSnap() reads this to register a reactive
+// dependency — consumers use liveSnap() instead of this directly.
+let snapTick = $state(0);
 let _snapTickTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 function _bumpSnapTick() {
   if (_snapTickTimer) return;
