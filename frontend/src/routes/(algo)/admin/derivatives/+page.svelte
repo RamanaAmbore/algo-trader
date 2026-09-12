@@ -699,19 +699,15 @@
    *  It should be wired to account dropdown in the page. not
    *  underlying."
    *
-   *  Reads raw `positions` (opt + fut) + `holdings` (eq) directly so
-   *  the picker bar's Underlying / Expiry filters DO NOT scope this
-   *  rollup. The only filter applied is the Account multi-select.
-   *  Each row is one underlying root; columns split totals into
-   *  "with Hold" (eq layer included) and "without Hold" (F&O only)
-   *  so the operator sees the covered-call / hedge contribution at
-   *  a glance. */
+   *  Reads raw `positions` (opt + fut) directly so the picker bar's
+   *  Underlying / Expiry filters DO NOT scope this rollup. The only
+   *  filter applied is the Account multi-select. Each row is one
+   *  underlying root with F&O-only totals. */
   const _byUnderlyingTotals = $derived.by(() => {
     const wantedSource = simActive ? 'sim' : 'live';
     // Delegates to rollupByUnderlying in derivativesMath.js.
     // buildAcctMatcher + buildStrategyMatcher eliminate the duplicated
-    // closure boilerplate that appears in _byUnderlyingExp,
-    // _hDayByRoot, _hPnlByRoot, _hExpByRoot, and _perRootReduce.
+    // closure boilerplate that appears in _byUnderlyingExp and _perRootReduce.
     const matchAccount  = buildAcctMatcher(selectedAccounts);
     const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
     return rollupByUnderlying({
@@ -917,52 +913,6 @@
     return buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
   }
 
-  /** Per-underlying holdings-only P&L (lifetime). Same shape as
-   *  _hDayByRoot but for lifetime pnl instead of day_change_val. */
-  const _hPnlByRoot = $derived.by(() => {
-    /** @type {Record<string, number>} */
-    const out = {};
-    const matchAccount = buildAcctMatcher(selectedAccounts);
-    for (const _h of holdings) {
-      const h = /** @type {any} */ (_h);
-      if (!matchAccount(h.account)) continue;
-      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      const dbase = Number(h.pnl) || 0;
-      const _targets = targetsForProxy(sym);
-      const credits = _targets.length ? _targets : [sym];
-      for (const root of credits) {
-        out[root] = (out[root] || 0) + dbase;
-      }
-    }
-    return out;
-  });
-
-  /** Per-underlying holdings-only Exp P&L (equity 1:1 with spot). */
-  const _hExpByRoot = $derived.by(() => {
-    void _throttledTick;
-    /** @type {Record<string, number>} */
-    const out = {};
-    const matchAccount = buildAcctMatcher(selectedAccounts);
-    for (const _h of holdings) {
-      const h = /** @type {any} */ (_h);
-      if (!matchAccount(h.account)) continue;
-      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      const qty = Number(h.qty ?? h.quantity ?? h.opening_qty ?? h.opening_quantity) || 0;
-      const cost = Number(h.average_price ?? h.avg_cost) || 0;
-      const _targets = targetsForProxy(sym);
-      const credits = _targets.length ? _targets : [sym];
-      for (const root of credits) {
-        const spot = untrack(() => _rootSpot(root));
-        if (spot == null) continue;
-        const v = (Number(spot) - cost) * qty;
-        if (!isFinite(v)) continue;
-        out[root] = (out[root] || 0) + v;
-      }
-    }
-    return out;
-  });
 
   // Per-root maps consumed by every Snapshot row. All three use the
   // same _perRootReduce iteration — the ONLY difference is the per-leg
@@ -999,31 +949,6 @@
     Object.values(_expPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
 
-  /** Per-underlying H Day P&L — Day P&L from equity holdings on that root
-   *  ONLY. Operator 2026-07-01: "you can h day p & l from holdings for
-   *  the symbol." Read directly from h.day_change_val + SSE-tick delta,
-   *  independent of the F&O positions loop. Proxy hedges (e.g. GOLDBEES
-   *  → GOLD) route to the target root's key. */
-  const _hDayByRoot = $derived.by(() => {
-    void _throttledTick;
-    /** @type {Record<string, number>} */
-    const out = {};
-    const matchAccount = buildAcctMatcher(selectedAccounts);
-    for (const _h of holdings) {
-      const h = /** @type {any} */ (_h);
-      if (!matchAccount(h.account)) continue;
-      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      // Broker's day_change_val — matches H pill / overlay poll-time values.
-      const dbase = Number(h.day_change_val) || 0;
-      const _targets = targetsForProxy(sym);
-      const credits = _targets.length ? _targets : [sym];
-      for (const root of credits) {
-        out[root] = (out[root] || 0) + dbase;
-      }
-    }
-    return out;
-  });
 
   /** Per-underlying live quote map — { ROOT: { ltp, day_pct, prev_close } }.
    *  Populated by loadUnderlyingQuotes() (one batchQuote per Snapshot
@@ -1087,8 +1012,6 @@
       for (const g of groups) {
         flash.update(`${g.underlying}:day_w`,  g.day_without);
         flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
-        flash.update(`${g.underlying}:day_h`,  g.day_with);
-        flash.update(`${g.underlying}:pnl_h`,  g.pnl_with);
       }
     });
   });
@@ -1209,17 +1132,16 @@
 
   /**
    * Accumulate one F&O position into the TOTAL row accumulator.
-   * Mutates `t` and `rootsWithFnO` in place.
+   * Mutates `t` in place.
    * Returns false when the row should be skipped (wrong source / account / kind).
    *
    * @param {any}    p             - position row
    * @param {string} wantedSource  - 'sim' | 'live'
    * @param {Function} matchAccount
    * @param {object} t             - running totals object
-   * @param {Set<string>} rootsWithFnO - mutable set populated here
    * @returns {boolean}
    */
-  function _accumulateFnOTotal(p, wantedSource, matchAccount, t, rootsWithFnO) {
+  function _accumulateFnOTotal(p, wantedSource, matchAccount, t) {
     if (p.source !== wantedSource) return false;
     if (!matchAccount(p.account)) return false;
     const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
@@ -1229,74 +1151,21 @@
     // SSOT: baseDayPnlForPosition uses daily_book settlement as base; keeps TOTAL in sync with NavStrip P1.
     const day = baseDayPnlForPosition(p);
     t.qty_fno      += qty;
-    t.legs_with++;
     t.legs_without++;
-    t.pnl_with     += pnl;
     t.pnl_without  += pnl;
-    t.day_with     += day;
     t.day_without  += day;
-    const root = (decomposeSymbol(sym).root || sym).toUpperCase();
-    if (root) rootsWithFnO.add(root);
     return true;
   }
 
-  /**
-   * Accumulate one equity holding into the TOTAL row accumulator.
-   * Credits only when the holding's root has an F&O position in the snapshot
-   * AND that root has an F&O lot size (Operator 2026-07-01 invariant).
-   * Mutates `t` in place.
-   *
-   * @param {any}           h           - holding row
-   * @param {Function}      matchAccount
-   * @param {Set<string>}   rootsWithFnO - populated by _accumulateFnOTotal pass
-   * @param {object}        t            - running totals object
-   */
-  function _accumulateHoldingTotal(h, matchAccount, rootsWithFnO, t) {
-    if (!matchAccount(h.account)) return;
-    const qty = Number(h.opening_qty ?? h.opening_quantity ?? h.quantity ?? h.qty) || 0;
-    const pnl = Number(h.pnl) || 0;
-    const day = Number(h.day_change_val) || 0;
-    t.qty_eq += qty;
-    const sym  = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-    const tgts = sym ? targetsForProxy(sym) : [];
-    const root = tgts[0] || sym;
-    if (!root || !rootsWithFnO.has(root)) return;
-    const lot = getOptionUnderlyingLot(root);
-    if (lot > 0) {
-      t.legs_with += qty / lot;
-      t.pnl_with  += pnl;
-      t.day_with  += day;
-    }
-  }
-
-  /** TOTAL row — sums across EVERY filtered position + holding so the
-   *  rollup reconciles to the navbar PositionStrip's P / P∆ chips
-   *  exactly. Operator: "make sure snapshot totals are in sync with
-   *  nav strip numbers." Includes holdings even when their root has
-   *  no F&O exposure (those underlyings stay hidden from the row
-   *  display, but they still contribute to the rollup so the Net
-   *  columns match the strip). Same matchAccount + day-fallback
-   *  semantics as the per-row derivation. */
+  /** TOTAL row — sums F&O positions only so the rollup matches the
+   *  NavStrip P1 slot exactly. */
   const _byUnderlyingTotal = $derived.by(() => {
     const wantedSource = simActive ? 'sim' : 'live';
     const matchAccount = buildAcctMatcher(selectedAccounts);
-    const t = { qty_fno: 0, qty_eq: 0,
-                legs_with: 0, legs_without: 0,
-                pnl_with: 0, pnl_without: 0,
-                day_with: 0, day_without: 0 };
-    // First pass — F&O positions. Tracks roots with active option/future;
-    // the holdings pass only credits equities whose root is in this set.
-    /** @type {Set<string>} */
-    const _rootsWithFnO = new Set();
+    const t = { qty_fno: 0, legs_without: 0, pnl_without: 0, day_without: 0 };
     for (const _p of positions) {
-      _accumulateFnOTotal(/** @type {any} */ (_p), wantedSource, matchAccount, t, _rootsWithFnO);
+      _accumulateFnOTotal(/** @type {any} */ (_p), wantedSource, matchAccount, t);
     }
-    // Holdings — credit only when root has F&O position + F&O lot size.
-    for (const _h of holdings) {
-      _accumulateHoldingTotal(/** @type {any} */ (_h), matchAccount, _rootsWithFnO, t);
-    }
-    // Excluded-rows adjustment removed 2026-07-01. Snapshot TOTAL targets
-    // F&O-only to match NavStrip P. Net variants include equity via loops above.
     return t;
   });
 
@@ -4926,23 +4795,16 @@
         const dayVal  = _dayPnlByRootMap[g.underlying] ?? 0;
         const pnlVal  = _pnlByRootMap[g.underlying] ?? 0;
         const expVal  = _expPnlByRootMap[g.underlying] ?? 0;
-        const hDay    = _hDayByRoot[g.underlying] || 0;
-        const hPnl    = _hPnlByRoot[g.underlying] || 0;
         return {
           underlying:  g.underlying,
           spot:        _q ? _q.ltp        : '',
           day_pct:     _q && _q.day_pct != null ? _q.day_pct : '',
           prev_close:  _q ? _q.prev_close : '',
           day_pnl:     dayVal,
-          h_day_pnl:   hDay,
           pnl:         pnlVal,
           exp_pnl:     expVal,
-          day_pnl_net: dayVal + hDay,
-          pnl_net:     pnlVal + hPnl,
-          exp_pnl_net: expVal + hPnl,
-          legs:        g.legs_with,
+          legs:        g.legs_without,
           qty_fno:     g.qty_fno || '',
-          qty_eq:      g.qty_eq  || '',
         };
       });
       exportRowsToCsv(
@@ -4953,15 +4815,10 @@
           { header: 'Day %',        key: 'day_pct',     format: (v) => v === '' ? '' : Number(v).toFixed(2) },
           { header: 'Close',        key: 'prev_close',  format: (v) => v == null ? '' : String(v) },
           { header: 'Day P&L',      key: 'day_pnl',     format: (v) => String(v) },
-          { header: 'H Day P&L',    key: 'h_day_pnl',   format: (v) => String(v) },
           { header: 'P&L',          key: 'pnl',         format: (v) => String(v) },
           { header: 'Exp P&L',      key: 'exp_pnl',     format: (v) => String(v) },
-          { header: 'Day P&L Net',  key: 'day_pnl_net', format: (v) => String(v) },
-          { header: 'P&L Net',      key: 'pnl_net',     format: (v) => String(v) },
-          { header: 'Exp P&L Net',  key: 'exp_pnl_net', format: (v) => String(v) },
           { header: 'Legs',         key: 'legs',        format: (v) => String(v) },
           { header: 'F&O Qty',      key: 'qty_fno',     format: (v) => v == null ? '' : String(v) },
-          { header: 'Eq Qty',       key: 'qty_eq',      format: (v) => v == null ? '' : String(v) },
         ],
         'snapshot.csv'
       );
@@ -4990,17 +4847,10 @@
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Day %</span>
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">P.Close</span>
           <span class="num" title="Today's Day P&L for the underlying — matches the payoff overlay value for this symbol.">Day P&amp;L</span>
-          <span class="num" title="Today's Day P&L from equity holdings on this underlying (h.day_change_val, proxy-target routed).">H Day P&amp;L</span>
-          <!-- F&O-only pair. -->
           <span class="num" title="Total P&L from F&O legs only. Sums to the NavStrip P slot 2 value.">P&amp;L</span>
           <span class="num" title="F&O-only expiry P&L for this group. Sums to the NavStrip P slot 3 value.">Exp P&amp;L</span>
-          <!-- Net trio: F&O + equity holdings. -->
-          <span class="num" title="Today's P&L change including F&O legs + equity holdings on this underlying.">Day P&amp;L Net</span>
-          <span class="num" title="Total P&L including F&O legs + equity holdings on this underlying.">P&amp;L Net</span>
-          <span class="num" title="Expiry P&L including F&O + equity holdings for this group.">Exp P&amp;L Net</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
-          <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
           <span class="num"
                 title="Expected value — probability-weighted average payoff at expiry. Per-underlying EV requires backend support; populates only when the current strategy is scoped to a single underlying. TOTAL carries the merged strategy EV.">
             EV
@@ -5037,34 +4887,16 @@
           {@const _dayVal = _dayPnlByRootMap[g.underlying] ?? 0}
           {@const _pnlVal = _pnlByRootMap[g.underlying] ?? 0}
           {@const _expVal = _expPnlByRootMap[g.underlying] ?? 0}
-          {@const _hDay   = _hDayByRoot[g.underlying] || 0}
-          {@const _hPnl   = _hPnlByRoot[g.underlying] || 0}
-          {@const _dayNet = _dayVal + _hDay}
-          {@const _pnlNet = _pnlVal + _hPnl}
-          <!-- Exp P&L Net = Exp P&L (F&O) + holdings' P&L. Operator
-               2026-07-01: "expiry p & l net should include profit/loss
-               from underlying holding p & l net." Equity tracks spot
-               1:1 so holdings' current P&L is the expiry-day value. -->
-          {@const _expNet = _expVal + _hPnl}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pct`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
-            <!-- Day P&L + H Day P&L (SSOT overlay compute for Day P&L). -->
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayVal)}</span>
-            <span class="num {_hDay > 0 ? 'cell-pos' : _hDay < 0 ? 'cell-neg' : 'cell-flat'}">{_hDay === 0 ? '—' : aggCompact(_hDay)}</span>
-            <!-- F&O pair: P&L (SSOT overlay compute) | Exp P&L (SSOT overlay compute) -->
             <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(_pnlVal)}</span>
             <span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-flat'}">{_expVal === 0 ? '—' : aggCompact(_expVal)}</span>
-            <!-- Net trio = primary (F&O) + holdings-only contribution.
-                 Operator 2026-07-01: "day p & l net = day p & l + h day p & l." -->
-            <span class="num {_dayNet > 0 ? 'cell-pos' : _dayNet < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_h`)}">{aggCompact(_dayNet)}</span>
-            <span class="num {_pnlNet > 0 ? 'cell-pos' : _pnlNet < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_h`)}">{aggCompact(_pnlNet)}</span>
-            <span class="num {_expNet > 0 ? 'cell-pos' : _expNet < 0 ? 'cell-neg' : 'cell-flat'}">{_expNet === 0 ? '—' : aggCompact(_expNet)}</span>
-            <span class="num cell-muted">{Math.round(g.legs_with)}{Math.round(g.legs_with) !== g.legs_without ? `/${g.legs_without}` : ''}</span>
+            <span class="num cell-muted">{Math.round(g.legs_without)}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
-            <span class="num cell-muted">{g.qty_eq || '—'}</span>
             <!-- Per-underlying EV: surfaces _mergedEv when the
                  current strategy is scoped to this exact root.
                  Otherwise '—' (placeholder for backend per-group
@@ -5078,38 +4910,16 @@
           </div>
         {/each}
         {#if _byUnderlyingTotals.length > 0}
-          <!-- TOTAL Exp P&L split into two independent columns, decoupled
-               from the Hold toggle (like the per-row cells). -->
-          {@const _expTotalFno = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.without, 0)}
-          {@const _expTotalNet = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.with, 0)}
-          {@const _hDayTotal = Object.values(_hDayByRoot).reduce((s, v) => s + v, 0)}
-          {@const _hPnlTotal = Object.values(_hPnlByRoot).reduce((s, v) => s + v, 0)}
-          {@const _hDayNetTotal = _snapshotTotalDay + _hDayTotal}
-          {@const _hPnlNetTotal = _snapshotTotalPnl + _hPnlTotal}
-          <!-- Exp P&L Net TOTAL uses holdings' expiry-at-spot P&L (same
-               formula as NavStrip P-slot-3: intrinsic value for equity
-               = (spot − avg) × qty via _hExpByRoot). Using _hPnlTotal
-               (lifetime P&L) here was semantically wrong — it mixed
-               equity lifetime P&L with F&O expiry P&L. -->
-          {@const _hExpNetTotal = _snapshotTotalExp + Object.values(_hExpByRoot).reduce((s, v) => s + (Number(v) || 0), 0)}
           <div class="byund-row byund-row-total">
             <span class="byund-und" title="F&O positions total">TOTAL</span>
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
-            <!-- Day P&L + H Day P&L (SSOT — same values published to NavStrip). -->
             <span class="num tf-cell {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_snapshotTotalDay)}</span>
-            <span class="num {_hDayTotal > 0 ? 'cell-pos' : _hDayTotal < 0 ? 'cell-neg' : 'cell-flat'}">{_hDayTotal === 0 ? '—' : aggCompact(_hDayTotal)}</span>
-            <!-- F&O pair (SSOT). -->
             <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}">{aggCompact(_snapshotTotalPnl)}</span>
             <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}">{aggCompact(_snapshotTotalExp)}</span>
-            <!-- Net trio = SSOT F&O totals + H totals (composed above). -->
-            <span class="num {_hDayNetTotal > 0 ? 'cell-pos' : _hDayNetTotal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_hDayNetTotal)}</span>
-            <span class="num {_hPnlNetTotal > 0 ? 'cell-pos' : _hPnlNetTotal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_hPnlNetTotal)}</span>
-            <span class="num {_hExpNetTotal > 0 ? 'cell-pos' : _hExpNetTotal < 0 ? 'cell-neg' : 'cell-flat'}">{_hExpNetTotal === 0 ? '—' : aggCompact(_hExpNetTotal)}</span>
-            <span class="num">{Math.round(_byUnderlyingTotal.legs_with)}{Math.round(_byUnderlyingTotal.legs_with) !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
+            <span class="num">{Math.round(_byUnderlyingTotal.legs_without)}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
-            <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
             <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
               {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
             </span>
@@ -5978,15 +5788,10 @@
       minmax(3.5rem, 0.5fr)  /* Day % */
       minmax(4rem,   0.65fr) /* Prev Close */
       minmax(3.8rem, 0.6fr)  /* Day P&L */
-      minmax(3.8rem, 0.6fr)  /* H Day P&L */
-      minmax(3.8rem, 0.6fr)  /* P&L (F&O only) */
-      minmax(4rem,   0.6fr)  /* Exp P&L (F&O only) */
-      minmax(3.8rem, 0.6fr)  /* Day P&L Net */
-      minmax(3.8rem, 0.6fr)  /* P&L Net */
-      minmax(4rem,   0.6fr)  /* Exp P&L Net */
+      minmax(3.8rem, 0.6fr)  /* P&L */
+      minmax(4rem,   0.6fr)  /* Exp P&L */
       minmax(3rem,   0.55fr) /* Legs */
       minmax(4rem,   0.6fr)  /* F&O qty */
-      minmax(4rem,   0.6fr)  /* Eq qty */
       minmax(4rem,   0.6fr); /* EV */
     min-width: 920px;
     font-family: var(--font-numeric);
