@@ -2068,16 +2068,16 @@ async def _task_daily_snapshot() -> None:
                 "Background: skipping startup snapshot — weekend "
                 "(existing EOD data serves closed-hours Pulse correctly)"
             )
-            return
+            # do NOT return — fall through to the while loop below so
+            # _supervised's tight-loop invariant is satisfied (park, don't return)
     elif not is_trading_day_today():
         # Non-weekend non-trading day (public holiday, exchange-closed day):
-        # same reasoning — existing EOD snapshot serves correctly; no settlement
-        # passes needed, so return before entering the while loop.
+        # same reasoning — existing EOD snapshot serves correctly.
         logger.info(
             "Background: skipping startup snapshot — non-trading day "
             "(existing EOD data serves closed-hours Pulse correctly)"
         )
-        return
+        # do NOT return — fall through to the while loop below
     elif _nse_open or _mcx_open:
         logger.info(
             f"Background: skipping startup daily snapshot — markets open "

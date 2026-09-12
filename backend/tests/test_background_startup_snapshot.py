@@ -303,3 +303,40 @@ def test_weekend_skip_message_in_background_py():
     assert "skipping startup snapshot — weekend" in startup_block, (
         "startup block must log 'skipping startup snapshot — weekend' for weekend skip"
     )
+
+
+def test_no_bare_return_before_while_loop():
+    """Regression: weekend/holiday early return caused 100K/s tight-loop.
+
+    On 2026-09-12 (Saturday deploy) _task_daily_snapshot returned early
+    before the while-True loop. _supervised has no sleep on normal return,
+    so it restarted the coroutine immediately → 100K iterations/s → 95% CPU
+    → asyncio starved → startup hooks never completed → site down.
+
+    The invariant: supervised tasks must park (sleep), not bare-return.
+    Verified by ensuring no bare 'return' exists before the while-True loop.
+    """
+    import pytest
+    from pathlib import Path
+
+    bg_file = Path(__file__).parent.parent / "api" / "background.py"
+    src = bg_file.read_text(encoding="utf-8")
+
+    fn_start = src.find("async def _task_daily_snapshot()")
+    fn_end = src.find("\nasync def ", fn_start + 1)
+    fn_body = src[fn_start:fn_end]
+
+    # The function must have a while True loop (the parking loop)
+    while_pos = fn_body.find("    while True:")
+    assert while_pos > 0, "_task_daily_snapshot must contain a while True loop"
+
+    # Startup section: everything before the while-True loop
+    startup_section = fn_body[:while_pos]
+
+    for i, line in enumerate(startup_section.split("\n")):
+        if line.strip() == "return":
+            pytest.fail(
+                f"Bare 'return' at startup-section line {i} — this causes "
+                "_supervised to tight-loop on weekends/holidays. "
+                "Fall through to while True instead."
+            )
