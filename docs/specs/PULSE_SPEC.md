@@ -838,6 +838,18 @@ poller cycle. Payoff chart spot price and day-P&L TOTAL remain synchronized acro
 derivatives page, MarketPulse grids, and NavStrip throughout symbol switches, market-open 
 and closed-hours windows, and hibernation transitions.
 
+**Per-leg Day P&L rescue path (Sep 2026)** — MCX settlement fix:
+- Per-leg Day P&L in the Candidate Legs grid now reads from `positionsDayPnlStore.byKey[tradingsymbol]` 
+  first (canonical source shared with NavStrip), then falls back to `baseDayPnlForPosition(c)`.
+- **Problem**: After MCX settlement reset at 23:30 IST, Kite's stale REST poll returns `day_change_val=0` 
+  for closed-out MCX positions (GOLDM, CRUDEOIL, etc.), even though the position has real intraday P&L.
+- **Solution**: The store (`positionsDayPnlStore.byKey`) is populated by Pulse's `mergePositionRows()` 
+  during market hours and persists across settlement windows. Leg rows now check the store first, 
+  ensuring MCX positions show correct non-zero Day P&L matching the NavStrip F&O pill (P1) and 
+  positions grid TOTAL row.
+- **Fallback**: If the symbol is not in the store (e.g., closed-out holdings or non-position legs), 
+  calculation reverts to `baseDayPnlForPosition(c)` (broker `day_change_val` or lifetime `pnl`).
+
 ### 13.2 Underlying Picker Auto-Select Active-Qty Underlying (One-Time Promote)
 
 The derivatives page underlying picker now auto-promotes from a watchlist/pinned provisional 
@@ -985,10 +997,16 @@ child rows remain adjacent to their parent.
 
 ## 16. LTP Tick Flash
 
-Directional 350ms pulse overlay on LTP and P&L cells when prices move. Two sources drive flashes 
+Directional 350ms pulse overlay on LTP cells when prices move. Two sources drive flashes 
 on different schedules:
 - **LTP cascade** (sub-second): SSE tick flashes via `symbolStore` updates; tight feedback loop
-- **Poll-diff** (every 5 s): broker fetch cycle detects change from prior poll; P&L columns flash
+- **Poll-diff** (every 5 s): broker fetch cycle detects change from prior poll; LTP cells flash
+
+**Flash scope** — **Derivatives page change (Sep 2026)**: On the `/admin/derivatives` page, 
+the snapshot grid and candidate legs grid now scope animation to LTP cells **only**. Previously, 
+Day P&L, P&L, Greeks, EV, KV, and TOTAL cells also flashed. LTP cells receive the full 
+`ltp-flash-up` / `ltp-flash-down` pulse; all other data cells remain static. This reduces 
+visual clutter during tick updates while maintaining tight feedback on price movement.
 
 **Implementation** (via `createTickFlash.svelte.js`):
 - `_ltpFlashUp` / `_ltpFlashDown`: Set of symbols with active upward/downward flash
