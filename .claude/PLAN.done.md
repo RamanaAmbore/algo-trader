@@ -1,242 +1,106 @@
-# Plan: Snapshot SSOT — Day P&L per-row, EV total, EV color + legs alignment
-
-## Context
-
-Five SSOT defects in the derivatives snapshot/legs grids:
-
-1. **Snapshot Day P&L wrong for MCX (GOLDM, CRUDEOIL)** — `_dayPnlByRootMap` uses `_dayPnlForLeg` which fires `(ltp - prev_close) * qty` when `prev_close > 0`. For MCX, Kite qty is in lots — the formula gives the wrong rupee P&L. `g.day_without` from `rollupByUnderlying → baseDayPnlForPosition` is already correct (uses `day_change_val` / `pnl - prev_settlement_pnl` — lot-size-adjusted). Fix: replace `_dayPnlByRootMap` with `g.day_without` everywhere in the snapshot.
-
-2. **Snapshot EV total shows only active symbol's `_mergedEv`** — Total row uses `_mergedEv`. Fix: new derived `_snapshotTotalEvFull = _snapshotTotalExp - _expPnlByRootMap[selectedUnderlying] + (_mergedEv ?? _expPnlByRootMap[selectedUnderlying] ?? 0)`.
-
-3. **Snapshot EV total color wrong** — color driven by `(_mergedEv ?? 0)`. Fix: drive from `_snapshotTotalEvFull`.
-
-4. **Snapshot per-row EV wrong** — shows `_mergedEv` when the row's underlying is the active payoff symbol, `_expVal` otherwise. This causes the EV value to change as you switch symbol selection in the payoff. Color is always `cell-muted` for non-active rows even when `_expVal > 0`. Fix: always show `_expVal` per row, color by `_expVal` sign. `_mergedEv` belongs in total row only.
-
-5. **Legs TOTAL row column alignment broken** — Missing a P.Close `—` span shifts P&L, Exp P&L, and all Greeks one column left. Currently: P&L value appears in P.Close column; P&L column shows `—`; Exp P&L appears in Acct column; Acct column shows `—`; Greeks are one column off; EV column empty. Fix: add P.Close span, reorder Day P&L before P&L.
-
-6. **Legs Day P&L wrong for MCX** — `_dayPnlForLeg` used in per-leg row prop, legs TOTAL `_totalDcv`, `candidatesDayPnl` (chart annotation), and flash. Includes equity. Fix: replace all call sites with `baseDayPnlForPosition(c)`, which uses `prev_settlement_pnl` (SSOT) → `day_change_val` → fallback. Exclude `c.kind === 'eq'` from TOTAL Day P&L.
-
-7. **Remove AccountMultiSelect from snapshot card header** — operator requested UI cleanup.
+# Plan: Legs Day P&L + Flash LTP-only + Loss/ROC Alert routing
 
 ---
 
-## File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+## Issue 1 — Legs Day P&L zero
 
-### 1. Remove AccountMultiSelect import (~line 35)
+Same MCX stale-ticker root cause as snapshot: `baseDayPnlForPosition(c)` returns 0 when
+`day_change_val = 0` (Kite stale poll after settlement reset). Candidate objects for real
+positions spread all broker fields (`...p` in `pageLoad.js:318`) so `pnl`, `overnight_quantity`,
+`day_change_val` ARE present — but `pnl ≈ 0` post-settlement AND `dcv = 0` → formula gives 0.
 
-Remove line:
+**Fix**: replace `baseDayPnlForPosition(c)` with `positionsDayPnlStore.byKey[sym] ?? baseDayPnlForPosition(c)` at all 4 per-leg Day P&L call sites. `byKey` already uses `livePositionDayPnl` rescue path.
+
+**File**: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` only.
+
+Add inline helper (not a new function — use a `const` inside `<script>`):
 ```js
-import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
+// after positionsDayPnlStore is used for _fnoDayPnlByRoot
+const _candDayPnl = (c) => {
+  const sym = String(c?.tradingsymbol || c?.symbol || '').toUpperCase();
+  return positionsDayPnlStore.byKey[sym] ?? baseDayPnlForPosition(c);
+};
 ```
 
-### 2. Replace all `_dayPnlForLeg` call sites with `baseDayPnlForPosition`
+Replace `baseDayPnlForPosition(c)` with `_candDayPnl(c)` at:
+1. `flash.update(\`leg:${k}:day\`, baseDayPnlForPosition(c))` (~line 1063)
+2. `candidatesDayPnl` accumulator (~line 1944): `s += baseDayPnlForPosition(c)`
+3. Per-leg prop (~line 4630): `dayPnl={baseDayPnlForPosition(c)}`
+4. `_totalDcv` template const (~line 4691): `.reduce((s,c) => s + baseDayPnlForPosition(c), 0)`
 
-**Line 1068 (flash effect):**
-```js
-flash.update(`leg:${k}:day`, _dayPnlForLeg(c, spot ?? null));
-```
-→
-```js
-flash.update(`leg:${k}:day`, baseDayPnlForPosition(c));
-```
+---
 
-**Line 1950 (`candidatesDayPnl`):**
-```js
-s += _dayPnlForLeg(c, null);
-```
-→
-```js
-s += baseDayPnlForPosition(c);
-```
+## Issue 2 — Flash: scope to LTP only
 
-**Line 4651 (CandidateLegRow dayPnl prop):**
-```js
-dayPnl={_dayPnlForLeg(c, liveSpot ?? null)}
-```
-→
-```js
-dayPnl={baseDayPnlForPosition(c)}
-```
+**Current**: Day P&L, P&L, Exp P&L, Greeks, EV, KV, and TOTAL cells all flash with background
+color on every tick. **User wants**: ONLY LTP cells flash with background color.
 
-**Line 4714 (legs TOTAL `_totalDcv`):**
-```js
-{@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(_dayPnlForLeg(c, liveSpot) ?? 0), 0)}
-```
-→ (exclude equity, use baseDayPnlForPosition):
-```js
-{@const _totalDcv = _selectedCands.filter(c => c.kind !== 'eq').reduce((s, c) => s + baseDayPnlForPosition(c), 0)}
-```
+**Approach**: Remove `{flash.classOf(...)}` from all non-LTP template cells. The `flash.update()`
+calls can stay (state maintained for potential future use — no visual effect without classOf).
+LTP flash on `leg-ltp` class and snapshot LTP column stays unchanged.
 
-### 3. Remove dead code
+**In `+page.svelte` — remove `flash.classOf()` from**:
+- Snapshot per-row: `day_w` and `pnl_w` spans (~lines 4864–4865)
+- Snapshot TOTAL row: day, pnl, exp cells (~lines 4884–4886)
+- Legs TOTAL row: day, pnl, exp cells (~lines 4704–4716)
+- Payoff Greeks chips: delta, gamma, theta, vega, rho (~lines 4399–4415, 4913–4929)
+- KV card: pop, ev, ev_pct, max_profit, max_loss (~lines 4967–4976, 1051–1052)
+- Payoff EV chip (~line 4378)
 
-After replacing all call sites, remove:
-- `_dayPnlByRootMap` derived (~line 922-926): `const _dayPnlByRootMap = $derived.by(...)` block
-- `_snapshotTotalDay` derived (~line 3397-3406): const + comment block
-- `_dayPnlForLeg` function (~line 2008-2037): full function + JSDoc
+**In `CandidateLegRow.svelte` — remove `flash.classOf()` from**:
+- Day P&L cell (line 353), P&L cell (line 357), Exp P&L cell (line 361)
+- **Keep** `flash.classOf()` on the `leg-ltp` span (line 314) — LTP stays
 
-### 4. Add `_snapshotTotalEvFull` derived (~after line 3407, after removing `_snapshotTotalDay`)
+**Keep `flash.classOf()` on**: `${g.underlying}:ltp` span in snapshot grid only.
 
-```js
-const _snapshotTotalEvFull = $derived.by(() => {
-  const base = _snapshotTotalExp;
-  const mergedEv = _mergedEv;
-  if (mergedEv == null) return base;
-  const activeExp = _expPnlByRootMap[selectedUnderlying] ?? 0;
-  return base - activeExp + mergedEv;
-});
+---
+
+## Issue 3 — Loss + ROC alerts not reaching user
+
+**Root cause** (confirmed): On prod (main branch), `is_engine_idle()` always returns `False`
+and `is_prod_branch()` is `True` — the agent engine DOES run during market hours. But
+`alert_routing.agent_alert.ntfy: false` means loss/ROC alerts route ONLY via Telegram + email,
+bypassing ntfy entirely. All other critical alerts (order_failure, ticker_degraded, gtt_asymmetric,
+etc.) use ntfy. If the user monitors ntfy for alerts, loss alerts are invisible.
+
+**Secondary cause**: sim_active check in `_perf_run_agent_engine()` — if the backend simulation
+engine is running, real agent evaluation is skipped. Not a code bug — expected behavior.
+
+**Fix**: `backend/config/backend_config.yaml` — one line change:
+
+```yaml
+# Before:
+agent_alert: { telegram: ops, ntfy: false,  email: true }
+
+# After:
+agent_alert: { telegram: ops, ntfy: urgent, email: true }
 ```
 
-### 5. Snapshot per-row `_dayVal` (~line 4886)
+`urgent` priority matches `order_failure` routing — appropriate for loss events.
 
-```html
-{@const _dayVal = _dayPnlByRootMap[g.underlying] ?? 0}
-```
-→
-```html
-{@const _dayVal = g.day_without}
-```
-
-### 6. Snapshot total row — Day P&L cell (~line 4918)
-
-```html
-<span class="num tf-cell {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_snapshotTotalDay)}</span>
-```
-→
-```html
-<span class="num tf-cell {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
-```
-
-### 7. Snapshot per-row EV cell (~line 4903-4909)
-
-Current code shows `_mergedEv` when this row's underlying is the active selected symbol, and `_expVal` otherwise. This means the EV value changes when you switch which symbol is selected in the payoff — same underlying shows different values depending on `selectedUnderlying`. Also the color is `cell-muted` for all non-active rows even when `_expVal > 0`.
-
-Replace the current span with:
-```html
-<span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-muted'}">
-  {_expVal !== 0 ? aggCompact(_expVal) : '—'}
-</span>
-```
-
-`_expVal` = `_expPnlByRootMap[g.underlying] ?? 0` (already declared above this line). This makes per-row EV stable (no `selectedUnderlying` dependency) and color-coded correctly. `_mergedEv` (probabilistic backend EV) appears ONLY in the total row.
-
-### 8. Snapshot total row — EV cell (~line 4923-4925)
-
-```html
-<span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
-  {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
-</span>
-```
-→
-```html
-<span class="num {_snapshotTotalEvFull > 0 ? 'cell-pos' : _snapshotTotalEvFull < 0 ? 'cell-neg' : 'cell-flat'}">
-  {_snapshotTotalEvFull !== 0 ? aggCompact(_snapshotTotalEvFull) : '—'}
-</span>
-```
-
-### 9. Flash for total:day (~line 1078-1082)
-
-Change:
-```js
-const day = _snapshotTotalDay;
-...
-flash.update('total:day', day);
-```
-→
-```js
-flash.update('total:day', _byUnderlyingTotal.day_without);
-```
-(remove the `const day = ...` local variable)
-
-### 10. Download handler (~line 4794)
-
-```js
-const dayVal  = _dayPnlByRootMap[g.underlying] ?? 0;
-```
-→
-```js
-const dayVal  = g.day_without;
-```
-
-### 11. Fix legs TOTAL row HTML (~lines 4716-4752)
-
-The TOTAL row is missing the P.Close `—` span, causing all columns from Day P&L onward to shift left by 1. The current span order has `_totalPnl` (P&L) BEFORE `_totalDcv` (Day P&L), which also mismatches the header column order (Day P&L col 9, P&L col 10).
-
-Replace the current block from `<div class="cand-row cand-row-total">` through `</div>`:
-
-```html
-<div class="cand-row cand-row-total">
-  <span></span>
-  <span class="cand-total-label">TOTAL</span>
-  <span>—</span>
-  <span class="num">—</span>
-  <span class="num">—</span>
-  <span class="num">—</span>
-  <span class="num">—</span>
-  <span class="num">—</span><!-- P.Close — was missing, caused 1-column offset -->
-  <span class="num tf-cell cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}"
-        title="Σ Day P&L across enabled F&O legs (excludes equity)">
-    {aggCompact(_totalDcv)}
-  </span>
-  <span class="num tf-cell cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}"
-        title="Σ P&L across every visible row = strip's P chip for these accounts">
-    {aggCompact(_totalPnl)}
-  </span>
-  <span class="num">—</span>
-  <!-- _legsExpPnlTotal is the script-level SSOT shared with the
-       snapshot row for the selected underlying — both surfaces
-       read the same derived value so they are always identical. -->
-  <span class="num tf-cell cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}"
-        title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
-    {aggCompact(_legsExpPnlTotal)}
-  </span>
-  <span class="num">—</span>
-  <span class="num" title="Σ Δ across every selected leg (position-scaled).">{pctFmt(_tg.delta)}</span>
-  <span class="num" title="Σ Γ across every selected leg (position-scaled).">{pctFmt(_tg.gamma)}</span>
-  <span class="num {_tg.theta < 0 ? 'cell-neg' : 'cell-flat'}"
-        title="Σ Θ across every selected leg (position-scaled). Negative = decay eating value each day.">
-    {aggCompact(_tg.theta)}
-  </span>
-  <span class="num" title="Σ 𝒱 across every selected leg (position-scaled).">{aggCompact(_tg.vega)}</span>
-  <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}"
-        title="Strategy-level EV across every selected leg.">
-    {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
-  </span>
-</div>
-```
-
-### 12. Remove AccountMultiSelect from snapshot CardHeader middle snippet (~lines 4826-4831)
-
-Remove the `AccountMultiSelect` component from the `{#snippet middle()}` block. Keep `StrategyPicker`. The middle snippet becomes:
-```html
-{#snippet middle()}
-  <StrategyPicker label="Strategy" />
-{/snippet}
-```
+**Additional context for operator** (include in foreground output after impl):
+- `loss-rate-acct` ROC alert is blocked for first **10 min** after market open (baseline window — by design, not a bug)
+- `loss-rate-acct` has **10-min cooldown** after each fire
+- `loss-positions-acct` has **30-min cooldown** after each fire
+- `loss-positions-total` (critical tier) suppresses `loss-positions-acct` (high tier) on same topic fire
+- If simulator engine is running: real loss alerts are suppressed (disable sim before expecting live alerts)
 
 ---
 
 ## Agents
-
-- frontend: make all changes above in `derivatives/+page.svelte` only (no other files)
+- frontend: Issues 1 + 2 (legs Day P&L + flash LTP scoping in +page.svelte + CandidateLegRow.svelte)
+- backend: Issue 3 — change `backend/config/backend_config.yaml` line 206: `agent_alert.ntfy: false → urgent`
 
 ## Tests
-
-- svelte-check: yes — 0 errors
-- vitest: yes — 971 passed (no new tests needed; behaviour fix only)
+- svelte-check: yes
+- vitest: yes
+- pytest: no (config-only backend change, no logic change)
 
 ## Commit message
-
-fix(derivatives): SSOT Day P&L — baseDayPnlForPosition per-row/legs; fix EV total + legs column alignment; rm accounts filter
+fix(derivatives): legs Day P&L via positionsDayPnlStore; LTP-only flash; route loss alerts via ntfy
 
 ## Done when
-
-- GOLDM/CRUDEOIL Day P&L in snapshot and legs matches NavStrip P1
-- Snapshot total Day P&L = `_byUnderlyingTotal.day_without` = NavStrip P1
-- Snapshot per-row EV always shows `_expVal` (stable, not affected by symbol selection)
-- Snapshot per-row EV color: green when positive, red when negative, muted when zero
-- Snapshot EV total = sum of per-row `_expVal` (with active root substituted by `_mergedEv` when available)
-- EV total color-coded correctly when positive
-- Legs TOTAL row: Day P&L in col 9, P&L in col 10, Exp P&L in col 12, Greeks in correct columns
-- Legs TOTAL Day P&L excludes equity, uses `baseDayPnlForPosition`
-- Snapshot header has no accounts dropdown
+- Legs per-leg + TOTAL Day P&L show correct non-zero values matching NavStrip F&O portion
+- Only LTP cells animate on tick; Day P&L, Greeks, EV, KV cells are static
+- `agent_alert.ntfy = urgent` in backend_config.yaml committed
 - svelte-check 0 errors, vitest 971 passed

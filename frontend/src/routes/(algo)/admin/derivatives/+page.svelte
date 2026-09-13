@@ -1060,7 +1060,7 @@
     untrack(() => {
       for (const c of candidates) {
         const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
-        flash.update(`leg:${k}:day`, baseDayPnlForPosition(c));
+        flash.update(`leg:${k}:day`, _candDayPnl(c));
         flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
         flash.update(`leg:${k}:exp`, _legExpPnlDisplay(c, spot ?? null));
         flash.update(`leg:${k}:ltp`, c.ltp != null ? Number(c.ltp) : null);
@@ -1180,6 +1180,13 @@
     }
     return { byRoot, total };
   });
+
+  /** Per-candidate Day P&L: positionsDayPnlStore (live SSE-backed) with
+   *  baseDayPnlForPosition as fallback when the store has no entry yet. */
+  const _candDayPnl = (c) => {
+    const sym = String(c?.tradingsymbol || c?.symbol || '').toUpperCase();
+    return positionsDayPnlStore.byKey[sym] ?? baseDayPnlForPosition(c);
+  };
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
    *  the latest strategy response. Lets the Candidates panel show
@@ -1960,7 +1967,7 @@
       if (!_isLegEnabled(c)) continue;
       if (!_includeHoldings && c.kind === 'eq') continue;
       hasLegs = true;
-      s += baseDayPnlForPosition(c);
+      s += _candDayPnl(c);
     }
     if (hasLegs) {
       _lastCandidatesDayPnl = s;
@@ -4375,7 +4382,7 @@
                expectancy; negative = lose money on average. Companion
                to POP for assessing trade quality (POP alone is
                misleading on asymmetric clip sizes). -->
-          <span class="opt-section-tag tf-cell {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'} {flash.classOf('payoff:ev')}"
+          <span class="opt-section-tag tf-cell {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'}"
                 title="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|.">
             EV {fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}
           </span>
@@ -4396,23 +4403,23 @@
                etc.) — causing the page-wide hang. `?.` throughout so the
                expression returns undefined instead of throwing; pctFmt
                renders '—' for undefined. -->
-          <span class="opt-section-tag tf-cell tag-greek {flash.classOf('payoff:delta')}"
+          <span class="opt-section-tag tf-cell tag-greek"
             title="Delta — net directional exposure (₹ per ₹1 spot move). Includes +qty for enabled equity-holding legs.">
             Δ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}
           </span>
-          <span class="opt-section-tag tf-cell tag-greek {flash.classOf('payoff:gamma')}"
+          <span class="opt-section-tag tf-cell tag-greek"
             title="Gamma — convexity, rate of change of Δ as spot moves">
             Γ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}
           </span>
-          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:theta')}"
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''}"
             title="Theta — daily decay (₹/day, positive when net short premium)">
             Θ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}
           </span>
-          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:vega')}"
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''}"
             title="Vega — P&L per 1% IV move (positive = long volatility)">
             𝒱 {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}
           </span>
-          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:rho')}"
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''}"
             title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
             ρ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
           </span>
@@ -4627,7 +4634,7 @@
               legAnalytics={legAnalyticsBySymbol[c.symbol]}
               pendingQty={$openOrderQtyBySymbol[c.symbol] ?? 0}
               enabled={_isLegEnabled(c)}
-              dayPnl={baseDayPnlForPosition(c)}
+              dayPnl={_candDayPnl(c)}
               expPnl={_legExpPnlDisplay(c, liveSpot ?? null)}
               legExpired={_isLegExpired(c)}
               {strategy}
@@ -4690,7 +4697,7 @@
                  TOTAL row now reconciles cell-by-cell with the chart. -->
             {@const _selectedCands = displayedCandidates.filter(c => _isLegEnabled(c))}
             {@const _totalPnl = _selectedCands.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
-            {@const _totalDcv = _selectedCands.filter(c => c.kind !== 'eq').reduce((s, c) => s + baseDayPnlForPosition(c), 0)}
+            {@const _totalDcv = _selectedCands.filter(c => c.kind !== 'eq').reduce((s, c) => s + _candDayPnl(c), 0)}
             {@const _tg = _mergedGreeks ?? strategy?.aggregate_greeks ?? { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 }}
             <div class="cand-row cand-row-total">
               <span></span>
@@ -4701,11 +4708,11 @@
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span><!-- P.Close — was missing, caused 1-column offset -->
-              <span class="num tf-cell cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}"
+              <span class="num tf-cell cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Day P&L across enabled F&O legs (excludes equity)">
                 {aggCompact(_totalDcv)}
               </span>
-              <span class="num tf-cell cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}"
+              <span class="num tf-cell cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ P&L across every visible row = strip's P chip for these accounts">
                 {aggCompact(_totalPnl)}
               </span>
@@ -4713,7 +4720,7 @@
               <!-- _legsExpPnlTotal is the script-level SSOT shared with the
                    snapshot row for the selected underlying — both surfaces
                    read the same derived value so they are always identical. -->
-              <span class="num tf-cell cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}"
+              <span class="num tf-cell cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
                 {aggCompact(_legsExpPnlTotal)}
               </span>
@@ -4861,8 +4868,8 @@
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
-            <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayVal)}</span>
-            <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(_pnlVal)}</span>
+            <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>
+            <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlVal)}</span>
             <span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-flat'}">{_expVal === 0 ? '—' : aggCompact(_expVal)}</span>
             <span class="num cell-muted">{Math.round(g.legs_without)}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
@@ -4881,9 +4888,9 @@
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
-            <span class="num tf-cell {_fnoDayPnlByRoot.total > 0 ? 'cell-pos' : _fnoDayPnlByRoot.total < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_fnoDayPnlByRoot.total)}</span>
-            <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}">{aggCompact(_snapshotTotalPnl)}</span>
-            <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}">{aggCompact(_snapshotTotalExp)}</span>
+            <span class="num tf-cell {_fnoDayPnlByRoot.total > 0 ? 'cell-pos' : _fnoDayPnlByRoot.total < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_fnoDayPnlByRoot.total)}</span>
+            <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalPnl)}</span>
+            <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalExp)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_without)}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num {_snapshotTotalEvFull > 0 ? 'cell-pos' : _snapshotTotalEvFull < 0 ? 'cell-neg' : 'cell-flat'}">
@@ -4910,23 +4917,23 @@
           <div class="opt-kv opt-kv-greeks">
             <div class="kv-pair">
               <span class="kv-k kv-k-greek">Δ <InfoHint popup text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." /></span>
-              <span class="kv-v tf-cell {flash.classOf('payoff:delta')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
+              <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k kv-k-greek">Γ <InfoHint popup text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." /></span>
-              <span class="kv-v tf-cell {flash.classOf('payoff:gamma')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
+              <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k kv-k-greek">Θ <InfoHint popup text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." /></span>
-              <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'} {flash.classOf('payoff:theta')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
+              <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k kv-k-greek">𝒱 <InfoHint popup text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." /></span>
-              <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'} {flash.classOf('payoff:vega')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
+              <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k kv-k-greek">ρ <InfoHint popup text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." /></span>
-              <span class="kv-v tf-cell {flash.classOf('payoff:rho')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
+              <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
             </div>
           </div>
         </div>
@@ -4964,16 +4971,16 @@
             </div>
             <div class="kv-pair">
               <span class="kv-k">POP <InfoHint popup text={'<b>Probability of profit</b> at expiry — sum of lognormal mass over every contiguous profitable region of the payoff curve. For range strategies (iron condors), this measures "P(spot ends inside the wings)".'} /></span>
-              <span class="kv-v tf-cell {(_mergedPop ?? strategy?.risk?.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy?.risk?.pop) < 0.4 ? 'kv-neg' : ''} {flash.classOf('kv:pop')}">{fmtPct(_mergedPop ?? strategy?.risk?.pop)}</span>
+              <span class="kv-v tf-cell {(_mergedPop ?? strategy?.risk?.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy?.risk?.pop) < 0.4 ? 'kv-neg' : ''}">{fmtPct(_mergedPop ?? strategy?.risk?.pop)}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k">EV <InfoHint popup text={'<b>Expected value</b> — POP × win-magnitude − (1−POP) × loss-magnitude, integrated against the lognormal pdf of the underlying. Positive EV = edge in expectation; negative EV = no edge, even if POP is high.'} /></span>
-              <span class="kv-v tf-cell {(_mergedEv ?? strategy?.risk?.ev) > 0 ? 'kv-pos' : (_mergedEv ?? strategy?.risk?.ev) < 0 ? 'kv-neg' : ''} {flash.classOf('kv:ev')}">{fmtMoney(_mergedEv ?? strategy?.risk?.ev)}</span>
+              <span class="kv-v tf-cell {(_mergedEv ?? strategy?.risk?.ev) > 0 ? 'kv-pos' : (_mergedEv ?? strategy?.risk?.ev) < 0 ? 'kv-neg' : ''}">{fmtMoney(_mergedEv ?? strategy?.risk?.ev)}</span>
             </div>
             {#if strategy?.risk?.ev_pct != null}
               <div class="kv-pair">
                 <span class="kv-k">EV / cost <InfoHint popup text={'<b>EV / cost</b> — EV as a percentage of |net cost|. Return-on-capital expectation. +5 % = "on average, my outlay returns 5 % of itself per cycle".'} /></span>
-                <span class="kv-v tf-cell {(_mergedEvPct ?? strategy?.risk?.ev_pct) > 0 ? 'kv-pos' : (_mergedEvPct ?? strategy?.risk?.ev_pct) < 0 ? 'kv-neg' : ''} {flash.classOf('kv:ev_pct')}">
+                <span class="kv-v tf-cell {(_mergedEvPct ?? strategy?.risk?.ev_pct) > 0 ? 'kv-pos' : (_mergedEvPct ?? strategy?.risk?.ev_pct) < 0 ? 'kv-neg' : ''}">
                   {pctFmt(_mergedEvPct ?? strategy?.risk?.ev_pct)}%
                 </span>
               </div>

@@ -203,5 +203,5 @@ alert_routing:
   market_open:          { telegram: info,  ntfy: false,   email: true  }
   market_close:         { telegram: info,  ntfy: false,   email: true  }
   visitor_report:       { telegram: info,  ntfy: false,   email: false }
-  agent_alert:          { telegram: ops,   ntfy: false,   email: true  }
+  agent_alert:          { telegram: ops,   ntfy: urgent,  email: true  }
   deploy:               { telegram: info,  ntfy: default, email: false }
