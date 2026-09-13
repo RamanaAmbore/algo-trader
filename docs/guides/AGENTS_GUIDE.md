@@ -57,7 +57,8 @@ Stored as a row in the `agents` table:
   "lifespan_expires_at": null,
   "tags":             [],
   "conditions":       { /* condition tree, see below */ },
-  "events":           [ { "channel": "telegram", "enabled": true }, … ],
+  "events":           [ { "channel": "telegram", "enabled": true }, … ],  // ntfy routed at urgent priority for agent_alert events
+
   "actions":          [ { "type": "chase_close_positions", "params": { … } }, … ]
 }
 ```
@@ -217,6 +218,34 @@ Eight gates between tick and dispatch. Dry-run's `blocked_by` names the culprit.
 
 ---
 
+## Alert routing for loss agents
+
+Loss agents (`loss-positions-acct`, `loss-rate-acct`, `loss-positions-total`) emit
+`agent_alert` events that route to **all configured channels at urgent priority**.
+This includes ntfy.sh in addition to Telegram and email. Routing matches the priority
+of `order_failure` alerts — operators monitoring ntfy see loss events immediately.
+
+**Three built-in loss agents — behaviour and gating:**
+
+- **`loss-positions-acct`** (high tier, 30-min cooldown) — per-account absolute loss.
+  Suppressed by `loss-positions-total` when both fire on the same tick.
+  Routes to ntfy, Telegram, email at urgent priority.
+
+- **`loss-rate-acct`** (critical tier, 10-min cooldown + 10-min baseline window) —
+  per-account rate-of-loss. Blocked from firing for the first 10 minutes after market
+  open (baseline window, by design) — no early false alarms. Routes to ntfy, Telegram,
+  email at urgent priority.
+
+- **`loss-positions-total`** (critical tier, suppresses per-acct) — book-wide absolute
+  loss. Fires independently; suppresses re-fire of `loss-positions-acct` on same topic.
+  Routes to ntfy, Telegram, email at urgent priority.
+
+**Simulator engine suppression:** When the simulator is running (`execution.sim_mode:
+true`), all real loss alerts are blocked — only sim-tagged events fire. This prevents
+cross-alert noise during dry-runs. Stop the sim or wait 30 min for auto-stop.
+
+---
+
 ## Lifespan — let the agent retire itself
 
 Three options beyond perpetual:
@@ -238,9 +267,9 @@ Open `/automation` and look at these — all 9 are teaching examples you can clo
 
 | Slug | Topic | Why it's worth reading |
 |---|---|---|
-| `loss-positions-acct` | per-account guardrail | Uses an `any:` block to OR four threshold types |
-| `loss-rate-acct` | per-account rate alert | Rate-of-loss metric + re-fire suppression |
-| `loss-positions-total` | book-wide guardrail | Same shape, scoped to TOTAL |
+| `loss-positions-acct` | per-account guardrail (30-min cooldown) | Uses an `any:` block to OR four threshold types; routes to ntfy at urgent priority |
+| `loss-rate-acct` | per-account rate alert (10-min cooldown, 10-min baseline) | Rate-of-loss metric + re-fire suppression; silent for first 10 min after market open; routes to ntfy at urgent priority |
+| `loss-positions-total` | book-wide guardrail (critical tier) | Same shape, scoped to TOTAL; suppresses `loss-positions-acct` on same fire; routes to ntfy at urgent priority |
 | `loss-margin-low` | available margin warning (DISABLED) | Disabled: cross-account false positive with Dhan/Groww zero margin; `loss-funds-negative` covers the critical case |
 | `loss-funds-negative` | cash / margin hard stop | Fires when balance goes negative |
 | `loss-pos-total-auto-close` | destructive action | Wraps `chase_close_positions` — ships INACTIVE for a reason |
@@ -326,6 +355,8 @@ The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 | `dry-run` shows `would_fire: false` but you expect true | Condition mismatch — operator's threshold vs current state | Use the dry-run `matches` array; each entry shows the metric, scope, threshold, and actual value |
 | `dry-run` shows `blocked_by: "schedule"` | Agent has `schedule: market_hours` but markets are closed | Either wait for session, or flip `schedule: always` for diagnostic agents |
 | Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/automation/<slug>` Events tab + `/admin/alerts` log; or set `cooldown_minutes: 0` temporarily |
+| Loss agent silent for first 10–15 min after market open | ROC agents (`loss-rate-acct`) silent during baseline window; point-in-time agents normal | Wait for window or check `loss-rate-acct` baseline gate |
+| Real loss alerts never fire but sim fires OK | Simulator engine running — real loss alerts suppressed while sim is active | Stop the sim via `/admin/execution` or wait for auto-stop (30 min default) |
 | Sim shows alert + action but real ticks don't | Real `_task_performance` skipped because sim was active — sims auto-stop in 30 min by default | Stop the sim or wait for auto-stop |
 | Action wrote an `AlgoOrder` row but broker didn't see it | `execution.paper_trading_mode: true` — paper engine handled it, real broker untouched | Flip mode via navbar dropdown → LIVE for prod |
 | Action raised on prod with `409 Exchange closed` | Phase 23 gate — symbol's exchange is closed | Wait for session; sim mode bypasses |
