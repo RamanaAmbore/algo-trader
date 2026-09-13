@@ -32,7 +32,6 @@
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
-  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
   import CardControls from '$lib/CardControls.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
@@ -919,11 +918,6 @@
   // value function, matching what the overlay uses for each metric.
   // SSOT: pass the strategy matcher so the TOTAL sums ONLY the same rows
   // visible above it.
-  const _dayPnlByRootMap = $derived.by(() => {
-    void _throttledTick;
-    const ms = _makeStrategyMatcher();
-    return _perRootReduce((c, spot) => _dayPnlForLeg(c, spot), ms);
-  });
   const _pnlByRootMap = $derived.by(() => {
     const ms = _makeStrategyMatcher();
     return _perRootReduce((c, _spot) => Number(c.pnl || 0), ms);
@@ -1065,7 +1059,7 @@
     untrack(() => {
       for (const c of candidates) {
         const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
-        flash.update(`leg:${k}:day`, _dayPnlForLeg(c, spot ?? null));
+        flash.update(`leg:${k}:day`, baseDayPnlForPosition(c));
         flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
         flash.update(`leg:${k}:exp`, _legExpPnlDisplay(c, spot ?? null));
         flash.update(`leg:${k}:ltp`, c.ltp != null ? Number(c.ltp) : null);
@@ -1075,9 +1069,9 @@
 
   // Snapshot TOTAL row.
   $effect(() => {
-    const day = _snapshotTotalDay;
     const pnl = _snapshotTotalPnl;
     const exp = _snapshotTotalExp;
+    const day = _byUnderlyingTotal.day_without;
     untrack(() => {
       flash.update('total:day', day);
       flash.update('total:pnl', pnl);
@@ -1947,7 +1941,7 @@
       if (!_isLegEnabled(c)) continue;
       if (!_includeHoldings && c.kind === 'eq') continue;
       hasLegs = true;
-      s += _dayPnlForLeg(c, null);
+      s += baseDayPnlForPosition(c);
     }
     if (hasLegs) {
       _lastCandidatesDayPnl = s;
@@ -2003,37 +1997,6 @@
     } catch (_) {
       return false;
     }
-  }
-
-  /** Day P&L for a leg — SSOT: broker snapshot formula, matching NavStrip P1
-   *  and Pulse positions TOTAL. Expired-leg intrinsic (Exp P&L) belongs only
-   *  in the Exp P&L column via `_expiryPnl`; substituting it here inflated
-   *  Day P&L TOTAL to ~-54k by replacing the broker's actual settlement
-   *  day_change_val with a recomputed intrinsic that diverges from the
-   *  settled price. Same reasoning as NavStrip: read baseDayPnlForPosition,
-   *  add live SSE correction, no exchange filter, no expiry promotion.
-   *  @param {any} c
-   *  @param {number|null} spot */
-  function _dayPnlForLeg(c, spot) {
-    // Direct formula matching mergeHoldingRows / mergePositionRows:
-    // (ltp − close) × qty. No isMarketOpen() gate — last tick persists
-    // after close, giving the same end-of-session P&L as holdings.
-    // untrack() on getSnapshot prevents bypassing the 4 Hz throttle.
-    //
-    // Guard: oq !== 0 prevents close-based formula firing for new intraday
-    // F&O positions where overnight_quantity=0 but prev_close > 0 (the
-    // instrument has a yesterday close even though THIS position was opened
-    // today). Without the guard the formula returns overnight drift P&L
-    // instead of entry-based P&L. Falls through to baseDayPnlForPosition
-    // which handles the new-position case correctly (oq=0, pnl→day_pnl).
-    const legLiveLtp = untrack(() => getSnapshot(String(c.symbol || '').toUpperCase())?.ltp);
-    const close = Number(c.prev_close ?? 0);
-    const qty   = Number(c.qty ?? 0);
-    const oq    = Number(c.overnight_quantity ?? c.opening_quantity ?? 0);
-    if (oq !== 0 && legLiveLtp != null && Number(legLiveLtp) > 0 && close > 0 && qty !== 0) {
-      return (Number(legLiveLtp) - close) * qty;
-    }
-    return baseDayPnlForPosition(c);
   }
 
   /** @param {any} c - candidate row
@@ -3394,15 +3357,12 @@
   /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number, prev_settlement_pnl?:number|null}>} */
   let positions = $state([]);
 
-  // _snapshotTotalDay — sum of _dayPnlByRootMap, same formula as per-row grid.
-  // Symmetric with _snapshotTotalPnl / _snapshotTotalExp (lines ~987-992).
-  // TOTAL = sum of per-underlying rows by construction — no formula divergence.
-  // This eliminates the MCX FUT divergence where livePositionDayPnl on raw
-  // positionsStore rows diverged from _dayPnlForLeg (which applies
-  // prev_settlement_pnl adjustment) by tens of thousands of rupees.
-  const _snapshotTotalDay = $derived.by(() => {
-    void _throttledTick;
-    return Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0);
+  const _snapshotTotalEvFull = $derived.by(() => {
+    const base = _snapshotTotalExp;
+    const mergedEv = _mergedEv;
+    if (mergedEv == null) return base;
+    const activeExp = _expPnlByRootMap[selectedUnderlying] ?? 0;
+    return base - activeExp + mergedEv;
   });
 
   /** Raw broker holdings keyed by symbol. When the operator picks an
@@ -4648,7 +4608,7 @@
               legAnalytics={legAnalyticsBySymbol[c.symbol]}
               pendingQty={$openOrderQtyBySymbol[c.symbol] ?? 0}
               enabled={_isLegEnabled(c)}
-              dayPnl={_dayPnlForLeg(c, liveSpot ?? null)}
+              dayPnl={baseDayPnlForPosition(c)}
               expPnl={_legExpPnlDisplay(c, liveSpot ?? null)}
               legExpired={_isLegExpired(c)}
               {strategy}
@@ -4711,7 +4671,7 @@
                  TOTAL row now reconciles cell-by-cell with the chart. -->
             {@const _selectedCands = displayedCandidates.filter(c => _isLegEnabled(c))}
             {@const _totalPnl = _selectedCands.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
-            {@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(_dayPnlForLeg(c, liveSpot) ?? 0), 0)}
+            {@const _totalDcv = _selectedCands.filter(c => c.kind !== 'eq').reduce((s, c) => s + baseDayPnlForPosition(c), 0)}
             {@const _tg = _mergedGreeks ?? strategy?.aggregate_greeks ?? { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 }}
             <div class="cand-row cand-row-total">
               <span></span>
@@ -4721,13 +4681,14 @@
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
+              <span class="num">—</span><!-- P.Close — was missing, caused 1-column offset -->
+              <span class="num tf-cell cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}"
+                    title="Σ Day P&L across enabled F&O legs (excludes equity)">
+                {aggCompact(_totalDcv)}
+              </span>
               <span class="num tf-cell cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}"
                     title="Σ P&L across every visible row = strip's P chip for these accounts">
                 {aggCompact(_totalPnl)}
-              </span>
-              <span class="num tf-cell cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}"
-                    title="Σ Day P&L Δ across every visible row = strip's P∆ chip for these accounts">
-                {aggCompact(_totalDcv)}
               </span>
               <span class="num">—</span>
               <!-- _legsExpPnlTotal is the script-level SSOT shared with the
@@ -4791,7 +4752,7 @@
     onDownload={() => {
       const rows = _byUnderlyingTotals.map(g => {
         const _q      = _underlyingQuotes[g.underlying];
-        const dayVal  = _dayPnlByRootMap[g.underlying] ?? 0;
+        const dayVal  = g.day_without;
         const pnlVal  = _pnlByRootMap[g.underlying] ?? 0;
         const expVal  = _expPnlByRootMap[g.underlying] ?? 0;
         return {
@@ -4824,16 +4785,6 @@
     }}
   >
     {#snippet middle()}
-      <AccountMultiSelect
-        bind:value={selectedAccounts}
-        options={accountChoices.map(a => ({ value: a, label: a }))}
-        placeholder="All accounts"
-        ariaLabel="Filter Snapshot by broker account" />
-      <!-- Slice 7f — strategy filter chip. When the operator picks a
-           strategy, the snapshot's _byUnderlyingTotals derivation
-           below narrows `positions` to rows whose strategy_id matches.
-           Mounted here (not in the card-control trio) so it lives
-           with the OTHER scope chip (account list). -->
       <StrategyPicker label="Strategy" />
     {/snippet}
   </CardHeader>
@@ -4883,7 +4834,7 @@
                each metric (candidatesDayPnl, candidatesActualPnl,
                _legsExpPnlTotal). Operator 2026-07-01: "reusable similar
                code should be used for both." -->
-          {@const _dayVal = _dayPnlByRootMap[g.underlying] ?? 0}
+          {@const _dayVal = g.day_without}
           {@const _pnlVal = _pnlByRootMap[g.underlying] ?? 0}
           {@const _expVal = _expPnlByRootMap[g.underlying] ?? 0}
           <div class="byund-row">
@@ -4900,12 +4851,8 @@
                  current strategy is scoped to this exact root.
                  Otherwise '—' (placeholder for backend per-group
                  EV support). -->
-            <span class="num {selectedUnderlying === g.underlying && (_mergedEv ?? 0) !== 0
-                              ? ((_mergedEv ?? 0) > 0 ? 'cell-pos' : 'cell-neg')
-                              : 'cell-muted'}">
-              {selectedUnderlying === g.underlying && _mergedEv != null
-                ? aggCompact(_mergedEv)
-                : _expVal !== 0 ? aggCompact(_expVal) : '—'}
+            <span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-muted'}">
+              {_expVal !== 0 ? aggCompact(_expVal) : '—'}
             </span>
           </div>
         {/each}
@@ -4915,13 +4862,13 @@
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
-            <span class="num tf-cell {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_snapshotTotalDay)}</span>
+            <span class="num tf-cell {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
             <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}">{aggCompact(_snapshotTotalPnl)}</span>
             <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}">{aggCompact(_snapshotTotalExp)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_without)}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
-            <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
-              {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
+            <span class="num {_snapshotTotalEvFull > 0 ? 'cell-pos' : _snapshotTotalEvFull < 0 ? 'cell-neg' : 'cell-flat'}">
+              {_snapshotTotalEvFull !== 0 ? aggCompact(_snapshotTotalEvFull) : '—'}
             </span>
           </div>
         {/if}

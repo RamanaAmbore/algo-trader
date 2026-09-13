@@ -1,85 +1,242 @@
-# Plan: Fix three snapshot grid defects — Day P&L zero, EV per-row, Day% flash
+# Plan: Snapshot SSOT — Day P&L per-row, EV total, EV color + legs alignment
 
 ## Context
 
-Three distinct defects in the derivatives snapshot grid, all in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` and its helpers:
+Five SSOT defects in the derivatives snapshot/legs grids:
 
-1. **Day P&L zero for CRUDEOIL, GOLDM (and total row)** — root cause: `buildPositionRowFromBroker` in `pageLoad.js` does NOT copy `prev_settlement_pnl` from the raw broker row to the normalized position. `_dayPnlForLeg(c)` calls `baseDayPnlForPosition(c)` as fallback when `prev_close = 0` (MCX stale). That function checks `c.prev_settlement_pnl` first — but it's missing from the normalized row → falls to `day_change_val` (0 for MCX) → Case 4 → returns 0. NavStrip P1 uses `positionsDayPnlStore` which passes raw broker rows (which DO have `prev_settlement_pnl`) to `baseDayPnlForPosition`, so it computes correctly.
+1. **Snapshot Day P&L wrong for MCX (GOLDM, CRUDEOIL)** — `_dayPnlByRootMap` uses `_dayPnlForLeg` which fires `(ltp - prev_close) * qty` when `prev_close > 0`. For MCX, Kite qty is in lots — the formula gives the wrong rupee P&L. `g.day_without` from `rollupByUnderlying → baseDayPnlForPosition` is already correct (uses `day_change_val` / `pnl - prev_settlement_pnl` — lot-size-adjusted). Fix: replace `_dayPnlByRootMap` with `g.day_without` everywhere in the snapshot.
 
-2. **EV only shows for active underlying** — line 4904-4909: `_mergedEv` (strategy-level probabilistic EV from backend) only exists for the selected underlying's active strategy call. Non-active rows hard-code '—'. `_expVal` (`_expPnlByRootMap[g.underlying]` = deterministic expiry P&L at current spot) is already computed per-row but used only in the Exp P&L column (line 4897). The EV column should fall back to `_expVal` for non-active rows so every row shows a meaningful value.
+2. **Snapshot EV total shows only active symbol's `_mergedEv`** — Total row uses `_mergedEv`. Fix: new derived `_snapshotTotalEvFull = _snapshotTotalExp - _expPnlByRootMap[selectedUnderlying] + (_mergedEv ?? _expPnlByRootMap[selectedUnderlying] ?? 0)`.
 
-3. **Day% flashing** — line 1022-1023: `flash.update(`${root}:pct`, q?.day_pct)` fires whenever underlying quotes update (same cadence as LTP). Line 4893 applies `flash.classOf(`${g.underlying}:pct`)` to the Day% span. Day% is derived from LTP — user wants only LTP to flash.
+3. **Snapshot EV total color wrong** — color driven by `(_mergedEv ?? 0)`. Fix: drive from `_snapshotTotalEvFull`.
 
----
+4. **Snapshot per-row EV wrong** — shows `_mergedEv` when the row's underlying is the active payoff symbol, `_expVal` otherwise. This causes the EV value to change as you switch symbol selection in the payoff. Color is always `cell-muted` for non-active rows even when `_expVal > 0`. Fix: always show `_expVal` per row, color by `_expVal` sign. `_mergedEv` belongs in total row only.
 
-## File: `frontend/src/lib/derivatives/pageLoad.js`
+5. **Legs TOTAL row column alignment broken** — Missing a P.Close `—` span shifts P&L, Exp P&L, and all Greeks one column left. Currently: P&L value appears in P.Close column; P&L column shows `—`; Exp P&L appears in Acct column; Acct column shows `—`; Greeks are one column off; EV column empty. Fix: add P.Close span, reorder Day P&L before P&L.
 
-### Fix 1a — add `prev_settlement_pnl` to `buildPositionRowFromBroker` (line 61–85)
+6. **Legs Day P&L wrong for MCX** — `_dayPnlForLeg` used in per-leg row prop, legs TOTAL `_totalDcv`, `candidatesDayPnl` (chart annotation), and flash. Includes equity. Fix: replace all call sites with `baseDayPnlForPosition(c)`, which uses `prev_settlement_pnl` (SSOT) → `day_change_val` → fallback. Exclude `c.kind === 'eq'` from TOTAL Day P&L.
 
-```js
-// After the existing day_sell_value line, add:
-prev_settlement_pnl: r?.prev_settlement_pnl != null ? Number(r.prev_settlement_pnl) : null,
-```
-
-No other changes to this function. The normalized position now carries `prev_settlement_pnl` so `baseDayPnlForPosition(c)` uses the authoritative `pnl − prev_settlement_pnl` formula instead of Case 4.
+7. **Remove AccountMultiSelect from snapshot card header** — operator requested UI cleanup.
 
 ---
 
 ## File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
 
-### Fix 1b — update JSDoc type annotation (~line 3395)
+### 1. Remove AccountMultiSelect import (~line 35)
 
-Add `prev_settlement_pnl?:number|null` to the type comment on `positions`.
-
-### Fix 2 — EV column per row (~line 4904-4909)
-
-Change the EV cell from:
-```html
-{selectedUnderlying === g.underlying && _mergedEv != null
-  ? aggCompact(_mergedEv) : '—'}
-```
-to:
-```html
-{selectedUnderlying === g.underlying && _mergedEv != null
-  ? aggCompact(_mergedEv)
-  : _expVal !== 0 ? aggCompact(_expVal) : '—'}
+Remove line:
+```js
+import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
 ```
 
-Active row: shows probabilistic EV (`_mergedEv` from strategy analytics).  
-Other rows: shows deterministic expiry P&L at current spot (`_expVal`), same computation as the Exp P&L column.
+### 2. Replace all `_dayPnlForLeg` call sites with `baseDayPnlForPosition`
 
-### Fix 3 — stop Day% from flashing (~lines 1022-1023 and 4893)
+**Line 1068 (flash effect):**
+```js
+flash.update(`leg:${k}:day`, _dayPnlForLeg(c, spot ?? null));
+```
+→
+```js
+flash.update(`leg:${k}:day`, baseDayPnlForPosition(c));
+```
 
-Remove `flash.update(`${root}:pct`, q?.day_pct)` from the underlying-quotes `$effect`.  
-Remove `{flash.classOf(`${g.underlying}:pct`)}` from the Day% span.
+**Line 1950 (`candidatesDayPnl`):**
+```js
+s += _dayPnlForLeg(c, null);
+```
+→
+```js
+s += baseDayPnlForPosition(c);
+```
 
----
+**Line 4651 (CandidateLegRow dayPnl prop):**
+```js
+dayPnl={_dayPnlForLeg(c, liveSpot ?? null)}
+```
+→
+```js
+dayPnl={baseDayPnlForPosition(c)}
+```
 
-## File: `frontend/src/lib/__tests__/data/pageLoad_expired.test.js`
+**Line 4714 (legs TOTAL `_totalDcv`):**
+```js
+{@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(_dayPnlForLeg(c, liveSpot) ?? 0), 0)}
+```
+→ (exclude equity, use baseDayPnlForPosition):
+```js
+{@const _totalDcv = _selectedCands.filter(c => c.kind !== 'eq').reduce((s, c) => s + baseDayPnlForPosition(c), 0)}
+```
 
-Add one test case to the existing `buildPositionRowFromBroker` describe block (~line 403):
-- Verify that `prev_settlement_pnl` is copied when present on the raw broker row
-- Verify it is `null` when absent
+### 3. Remove dead code
+
+After replacing all call sites, remove:
+- `_dayPnlByRootMap` derived (~line 922-926): `const _dayPnlByRootMap = $derived.by(...)` block
+- `_snapshotTotalDay` derived (~line 3397-3406): const + comment block
+- `_dayPnlForLeg` function (~line 2008-2037): full function + JSDoc
+
+### 4. Add `_snapshotTotalEvFull` derived (~after line 3407, after removing `_snapshotTotalDay`)
+
+```js
+const _snapshotTotalEvFull = $derived.by(() => {
+  const base = _snapshotTotalExp;
+  const mergedEv = _mergedEv;
+  if (mergedEv == null) return base;
+  const activeExp = _expPnlByRootMap[selectedUnderlying] ?? 0;
+  return base - activeExp + mergedEv;
+});
+```
+
+### 5. Snapshot per-row `_dayVal` (~line 4886)
+
+```html
+{@const _dayVal = _dayPnlByRootMap[g.underlying] ?? 0}
+```
+→
+```html
+{@const _dayVal = g.day_without}
+```
+
+### 6. Snapshot total row — Day P&L cell (~line 4918)
+
+```html
+<span class="num tf-cell {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_snapshotTotalDay)}</span>
+```
+→
+```html
+<span class="num tf-cell {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
+```
+
+### 7. Snapshot per-row EV cell (~line 4903-4909)
+
+Current code shows `_mergedEv` when this row's underlying is the active selected symbol, and `_expVal` otherwise. This means the EV value changes when you switch which symbol is selected in the payoff — same underlying shows different values depending on `selectedUnderlying`. Also the color is `cell-muted` for all non-active rows even when `_expVal > 0`.
+
+Replace the current span with:
+```html
+<span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-muted'}">
+  {_expVal !== 0 ? aggCompact(_expVal) : '—'}
+</span>
+```
+
+`_expVal` = `_expPnlByRootMap[g.underlying] ?? 0` (already declared above this line). This makes per-row EV stable (no `selectedUnderlying` dependency) and color-coded correctly. `_mergedEv` (probabilistic backend EV) appears ONLY in the total row.
+
+### 8. Snapshot total row — EV cell (~line 4923-4925)
+
+```html
+<span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
+  {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
+</span>
+```
+→
+```html
+<span class="num {_snapshotTotalEvFull > 0 ? 'cell-pos' : _snapshotTotalEvFull < 0 ? 'cell-neg' : 'cell-flat'}">
+  {_snapshotTotalEvFull !== 0 ? aggCompact(_snapshotTotalEvFull) : '—'}
+</span>
+```
+
+### 9. Flash for total:day (~line 1078-1082)
+
+Change:
+```js
+const day = _snapshotTotalDay;
+...
+flash.update('total:day', day);
+```
+→
+```js
+flash.update('total:day', _byUnderlyingTotal.day_without);
+```
+(remove the `const day = ...` local variable)
+
+### 10. Download handler (~line 4794)
+
+```js
+const dayVal  = _dayPnlByRootMap[g.underlying] ?? 0;
+```
+→
+```js
+const dayVal  = g.day_without;
+```
+
+### 11. Fix legs TOTAL row HTML (~lines 4716-4752)
+
+The TOTAL row is missing the P.Close `—` span, causing all columns from Day P&L onward to shift left by 1. The current span order has `_totalPnl` (P&L) BEFORE `_totalDcv` (Day P&L), which also mismatches the header column order (Day P&L col 9, P&L col 10).
+
+Replace the current block from `<div class="cand-row cand-row-total">` through `</div>`:
+
+```html
+<div class="cand-row cand-row-total">
+  <span></span>
+  <span class="cand-total-label">TOTAL</span>
+  <span>—</span>
+  <span class="num">—</span>
+  <span class="num">—</span>
+  <span class="num">—</span>
+  <span class="num">—</span>
+  <span class="num">—</span><!-- P.Close — was missing, caused 1-column offset -->
+  <span class="num tf-cell cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}"
+        title="Σ Day P&L across enabled F&O legs (excludes equity)">
+    {aggCompact(_totalDcv)}
+  </span>
+  <span class="num tf-cell cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}"
+        title="Σ P&L across every visible row = strip's P chip for these accounts">
+    {aggCompact(_totalPnl)}
+  </span>
+  <span class="num">—</span>
+  <!-- _legsExpPnlTotal is the script-level SSOT shared with the
+       snapshot row for the selected underlying — both surfaces
+       read the same derived value so they are always identical. -->
+  <span class="num tf-cell cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}"
+        title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
+    {aggCompact(_legsExpPnlTotal)}
+  </span>
+  <span class="num">—</span>
+  <span class="num" title="Σ Δ across every selected leg (position-scaled).">{pctFmt(_tg.delta)}</span>
+  <span class="num" title="Σ Γ across every selected leg (position-scaled).">{pctFmt(_tg.gamma)}</span>
+  <span class="num {_tg.theta < 0 ? 'cell-neg' : 'cell-flat'}"
+        title="Σ Θ across every selected leg (position-scaled). Negative = decay eating value each day.">
+    {aggCompact(_tg.theta)}
+  </span>
+  <span class="num" title="Σ 𝒱 across every selected leg (position-scaled).">{aggCompact(_tg.vega)}</span>
+  <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}"
+        title="Strategy-level EV across every selected leg.">
+    {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
+  </span>
+</div>
+```
+
+### 12. Remove AccountMultiSelect from snapshot CardHeader middle snippet (~lines 4826-4831)
+
+Remove the `AccountMultiSelect` component from the `{#snippet middle()}` block. Keep `StrategyPicker`. The middle snippet becomes:
+```html
+{#snippet middle()}
+  <StrategyPicker label="Strategy" />
+{/snippet}
+```
 
 ---
 
 ## Agents
 
-- frontend: make all changes above (pageLoad.js + derivatives/+page.svelte)
-- backend-test: add Vitest test for prev_settlement_pnl in pageLoad_expired.test.js
+- frontend: make all changes above in `derivatives/+page.svelte` only (no other files)
 
 ## Tests
 
 - svelte-check: yes — 0 errors
-- vitest: yes — 968+ passed
+- vitest: yes — 971 passed (no new tests needed; behaviour fix only)
 
 ## Commit message
 
-fix(derivatives): copy prev_settlement_pnl to normalized position — MCX Day P&L zero fixed; EV per-row; stop Day% flash
+fix(derivatives): SSOT Day P&L — baseDayPnlForPosition per-row/legs; fix EV total + legs column alignment; rm accounts filter
 
 ## Done when
 
-- CRUDEOIL, GOLDM Day P&L non-zero in snapshot, matches NavStrip P1 total
-- EV column shows expiry P&L for non-active rows instead of '—'
-- Day% cell no longer flashes on tick; only LTP cell flashes
-- svelte-check 0 errors, vitest passed
+- GOLDM/CRUDEOIL Day P&L in snapshot and legs matches NavStrip P1
+- Snapshot total Day P&L = `_byUnderlyingTotal.day_without` = NavStrip P1
+- Snapshot per-row EV always shows `_expVal` (stable, not affected by symbol selection)
+- Snapshot per-row EV color: green when positive, red when negative, muted when zero
+- Snapshot EV total = sum of per-row `_expVal` (with active root substituted by `_mergedEv` when available)
+- EV total color-coded correctly when positive
+- Legs TOTAL row: Day P&L in col 9, P&L in col 10, Exp P&L in col 12, Greeks in correct columns
+- Legs TOTAL Day P&L excludes equity, uses `baseDayPnlForPosition`
+- Snapshot header has no accounts dropdown
+- svelte-check 0 errors, vitest 971 passed
