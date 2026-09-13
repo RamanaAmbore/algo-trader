@@ -24,6 +24,7 @@
     batchQuote,
   } from '$lib/api';
   import { positionsStore, holdingsStore, pulsePositionsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
   import { getDraftPositions } from '$lib/data/draftPositions.svelte.js';
@@ -1004,7 +1005,7 @@
     const groups = _byUnderlyingTotals;
     untrack(() => {
       for (const g of groups) {
-        flash.update(`${g.underlying}:day_w`,  g.day_without);
+        flash.update(`${g.underlying}:day_w`,  _fnoDayPnlByRoot.byRoot[g.underlying] ?? 0);
         flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
       }
     });
@@ -1071,7 +1072,7 @@
   $effect(() => {
     const pnl = _snapshotTotalPnl;
     const exp = _snapshotTotalExp;
-    const day = _byUnderlyingTotal.day_without;
+    const day = _fnoDayPnlByRoot.total;
     untrack(() => {
       flash.update('total:day', day);
       flash.update('total:pnl', pnl);
@@ -1160,6 +1161,24 @@
       _accumulateFnOTotal(/** @type {any} */ (_p), wantedSource, matchAccount, t);
     }
     return t;
+  });
+
+  /** Day P&L by underlying root, sourced from positionsDayPnlStore (which
+   *  uses livePositionDayPnl with the SSE rescue path for MCX stale-ticker).
+   *  Replaces baseDayPnlForPosition in the snapshot rows so GOLDM/CRUDEOIL
+   *  show the correct value post-settlement instead of 0. */
+  const _fnoDayPnlByRoot = $derived.by(() => {
+    const byKey = positionsDayPnlStore.byKey;
+    /** @type {Record<string, number>} */
+    const byRoot = {};
+    let total = 0;
+    for (const [sym, val] of Object.entries(byKey)) {
+      if (!/FUT$|(CE|PE)$/i.test(sym)) continue;
+      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
+      byRoot[root] = (byRoot[root] ?? 0) + val;
+      total += val;
+    }
+    return { byRoot, total };
   });
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
@@ -4752,7 +4771,7 @@
     onDownload={() => {
       const rows = _byUnderlyingTotals.map(g => {
         const _q      = _underlyingQuotes[g.underlying];
-        const dayVal  = g.day_without;
+        const dayVal  = _fnoDayPnlByRoot.byRoot[g.underlying] ?? 0;
         const pnlVal  = _pnlByRootMap[g.underlying] ?? 0;
         const expVal  = _expPnlByRootMap[g.underlying] ?? 0;
         return {
@@ -4834,7 +4853,7 @@
                each metric (candidatesDayPnl, candidatesActualPnl,
                _legsExpPnlTotal). Operator 2026-07-01: "reusable similar
                code should be used for both." -->
-          {@const _dayVal = g.day_without}
+          {@const _dayVal = _fnoDayPnlByRoot.byRoot[g.underlying] ?? 0}
           {@const _pnlVal = _pnlByRootMap[g.underlying] ?? 0}
           {@const _expVal = _expPnlByRootMap[g.underlying] ?? 0}
           <div class="byund-row">
@@ -4862,7 +4881,7 @@
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
-            <span class="num tf-cell {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
+            <span class="num tf-cell {_fnoDayPnlByRoot.total > 0 ? 'cell-pos' : _fnoDayPnlByRoot.total < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_fnoDayPnlByRoot.total)}</span>
             <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}">{aggCompact(_snapshotTotalPnl)}</span>
             <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}">{aggCompact(_snapshotTotalExp)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_without)}</span>
