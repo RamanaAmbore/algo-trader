@@ -4,7 +4,7 @@ __pycache__/
 .idea
 .venv
 .icon-venv/
-.vscode
+.vscode/settings.json
 .DS_Store
 backend/config/secrets.yaml
 backend/config/ramboq_logger.yaml
