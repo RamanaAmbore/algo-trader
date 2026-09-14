@@ -1,36 +1,12 @@
 /**
- * positionsDerivedStore — unified module-level singleton that is the single
- * source of truth for three related aggregates across all surfaces:
+ * positionsDerivedStore — unified SSOT for Day P&L, Exp P&L, and Extrinsic
+ * across all surfaces (NavStrip, Pulse, Legs, Snapshot).
  *
- *   dayTotal       — live Day P&L across all F&O + equity positions (4 Hz)
- *   expiryTotal    — expiry-scenario P&L (intrinsic for options, spot-cost
- *                    for futures; closed-leg realised locked in)
- *   byRootPositions — { ROOT: { day, expiry } } for F&O positions (Snapshot)
- *   byRootHoldings  — { ROOT: { expiry } } for equity holdings (Snapshot Hold toggle)
+ * Runs at 4 Hz (symbolTickCount + 250ms throttle) — same cadence as the
+ * old positionsDayPnlStore. Expiry math uses expiryPnl.js (SSOT formula).
  *
- * Replaces the split positionsDayPnlStore / PositionStrip._expiryProfit /
- * derivatives._byUnderlyingExp family.  One $derived.by() that runs at 4 Hz
- * (symbolTickCount + 250ms throttle, same cadence as positionsDayPnlStore).
- *
- * Pattern: module-local $state, no exported reassigned binding (Svelte 5
- * forbids exporting a reassigned $state). Read-only handle exposed via
- * `positionsDerivedStore.value`.
- *
- * setFromPulse() override — MarketPulse writes cq-accurate per-symbol and
- * aggregate values after each buildUnified pass.  These take priority over
- * the SSE-derived computation (identical contract to positionsDayPnlStore).
- *
- * Spot resolution for expiry P&L (positions):
- *   Priority 1: p.underlying_ltp (backend-stamped, positions.py Pass 3 — SSOT)
- *   Priority 2: underlyingSpotStore (shared batchQuote result every 30s)
- *   No further SSE fallback — avoids mis-keyed MCX option LTP as spot proxy.
- *
- * Expiry semantics per position row (mirrors PositionStrip._expiryForPosition):
- *   - Non-derivative exchanges (NSE/BSE) → null (excluded from expiry total)
- *   - qty === 0 (closed leg) → realised = p.pnl (no spot needed)
- *   - CE / PE → option intrinsic via expiryPnl({ kind:'opt' }, spot)
- *   - FUT / other F&O → futures formula via expiryPnl({ kind:'fut' }, live)
- *   - v != null → v + Number(p.realised || 0)
+ * setFromPulse() is retained as a no-op so MarketPulse imports compile
+ * without changes — all values now come from reactive computation only.
  */
 
 import { browser } from '$app/environment';
@@ -42,128 +18,33 @@ import { isMarketOpen } from '$lib/marketHours';
 import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
 import { expiryPnl } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
-import { targetsForProxy } from '$lib/data/hedgeProxies.js';
+import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
 
-// ---------------------------------------------------------------------------
-// 4 Hz throttle — mirrors positionsDayPnlStore / holdingsDayPnlStore pattern.
-// Wrapped in browser guard: SSR has no setTimeout and no symbolTickCount.
-// ---------------------------------------------------------------------------
+const FO_EXCHS = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
+
 let _tick = $state(0);
-/** @type {ReturnType<typeof setTimeout> | null} */
+/** @type {ReturnType<typeof setTimeout>|null} */
 let _tickTimer = null;
-
 if (browser) {
   symbolTickCount.subscribe(() => {
     if (_tickTimer) return;
-    _tickTimer = setTimeout(() => {
-      _tickTimer = null;
-      _tick++;
-    }, 250);
+    _tickTimer = setTimeout(() => { _tickTimer = null; _tick++; }, 250);
   });
 }
 
-// ---------------------------------------------------------------------------
-// Pulse override — written by MarketPulse after each buildUnified.
-// null = no override yet; store falls back to _computed values.
-// ---------------------------------------------------------------------------
-let _pulseTotal = $state(/** @type {number|null} */ (null));
-let _pulseByKey = $state(/** @type {Record<string,number>|null} */ (null));
-
-// ---------------------------------------------------------------------------
-// Derivative-exchange gate — same set as FO_EXCHANGES in nav.js
-// ---------------------------------------------------------------------------
-const FO_EXCHS = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
-
 /**
- * Resolve spot for an option/futures leg.
- *   Priority 1: backend-stamped underlying_ltp (positions.py Pass 3)
- *   Priority 2: underlyingSpotStore (shared batchQuote, updated every 30s)
- *
- * @param {any} p   - raw position row
- * @param {string} root  - underlying root (e.g. "NIFTY", "CRUDEOIL")
- * @returns {number}
+ * Pure computation — exported for Vitest.
+ * @param {any[]} posRows
+ * @param {any[]} holdRows
+ * @param {object} [deps] - injectable for testing
  */
-function _resolveSpot(p, root) {
-  const spot1 = Number(p?.underlying_ltp || 0);
-  if (spot1 > 0) return spot1;
-  return getUnderlyingSpot(root);
-}
-
-/**
- * Per-position expiry P&L contribution.
- * Mirrors PositionStrip._expiryForPosition exactly (closed-leg, realised,
- * spot-priority, equity gate).
- *
- * @param {any} p  - raw position row
- * @returns {number | null}
- */
-function _expiryForPosition(p) {
-  const exch = String(p?.exchange || '').toUpperCase();
-  if (!FO_EXCHS.has(exch)) return null;  // equity NSE/BSE → excluded
-
-  const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-  const qty = Number(p?.quantity ?? p?.qty) || 0;
-  const avg = Number(p?.average_price ?? p?.avg_cost) || 0;
-
-  // Closed leg — realised P&L is locked in; no spot needed.
-  if (!qty) return Number(p?.pnl || 0);
-
-  const isCE  = sym.endsWith('CE');
-  const isPE  = sym.endsWith('PE');
-  const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
-
-  let v = null;
-  if (isCE || isPE) {
-    const decomp = decomposeSymbol(sym);
-    const root   = (decomp.root || sym).toUpperCase();
-    if (root) {
-      const spot = _resolveSpot(p, root);
-      if (spot > 0) {
-        v = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
-      }
-    }
-  } else if (isFut) {
-    // Futures: own LTP is the spot.
-    const live = untrack(() => getSnapshot(sym)?.ltp) || Number(p?.last_price || 0);
-    if (live > 0) {
-      v = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
-    }
-  }
-
-  if (v != null) return v + Number(p?.realised || 0);
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Main reactive computation — runs at 4 Hz maximum.
-// ---------------------------------------------------------------------------
-const _computed = $derived.by(() => {
-  // Register reactive dependency on the throttled tick.
-  void _tick;
-
-  const posRows  = positionsStore.value    ?? [];
-  const holdRows = pulseHoldingsStore.value ?? [];
-
-  let dayTotal    = 0;
-  let expiryTotal = 0;
-  /** @type {Record<string, number>} — keyed by uppercase tradingsymbol for setFromPulse compat */
-  const byKey = {};
-  /** @type {Record<string, { day: number, expiry: number }>} */
-  const byRootPositions = {};
-  /** @type {Record<string, { expiry: number }>} */
-  const byRootHoldings  = {};
-  /** @type {Map<string, number>} — per-account expiry P&L for NavBreakdown P slot */
-  const expiryByAcct = new Map();
-
-  // ---- Positions ----
-  for (const p of posRows) {
-    const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-    if (!sym) continue;
-
-    // Day P&L — uses untrack so per-symbol reads don't register extra deps.
-    const snap    = untrack(() => getSnapshot(sym));
-    const liveLtp = snap?.ltp ?? null;
-    const dayVal  = livePositionDayPnl(
+export function _computeDerived(posRows, holdRows, deps = {}) {
+  const {
+    getSnap    = sym  => untrack(() => getSnapshot(sym)),
+    getSpot    = root => getUnderlyingSpot(root),
+    getTargets = sym  => targetsForProxy(sym),
+    getProxy   = (sym, tgt) => getProxyRow(sym, tgt),
+    livePosDay = (p, ltp, opts) => livePositionDayPnl(
       {
         closePx: Number(p?.previous_close) || Number(p?.close_price ?? 0),
         pollLtp: Number(p?.last_price      ?? 0),
@@ -171,108 +52,165 @@ const _computed = $derived.by(() => {
         avg:     Number(p?.average_price   ?? 0),
         dcvRow:  p,
       },
-      liveLtp,
-      { marketOpen: isMarketOpen() },
-    );
+      ltp,
+      opts,
+    ),
+    marketOpen = isMarketOpen(),
+  } = deps;
 
-    byKey[sym] = (byKey[sym] ?? 0) + dayVal;
-    dayTotal  += dayVal;
+  const total = { day_pnl: 0, exp_pnl: 0, extrinsic: 0 };
+  /** @type {Record<string,{day_pnl:number,exp_pnl:number|null,extrinsic:number|null,pnl:number}>} */
+  const byKey = {};
+  /** @type {Record<string,{day_pnl:number,exp_pnl:number,extrinsic:number,pnl:number}>} */
+  const byRootPositions = {};
+  /** @type {Record<string,{day_pnl:number,exp_pnl:number,extrinsic:number,pnl:number}>} */
+  const byRootHoldings  = {};
+  /** @type {Map<string,number>} */
+  const expiryByAcct = new Map();
 
-    // Expiry P&L — F&O only; returns null for equity.
-    const expVal = _expiryForPosition(p);
-    if (expVal != null) {
-      expiryTotal += expVal;
+  // ── Positions ────────────────────────────────────────────────────────────
+  for (const p of posRows) {
+    const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+    if (!sym) continue;
 
-      // Per-account expiry accumulation (NavBreakdown P slot).
+    const qty  = Number(p?.quantity ?? 0) || 0;
+    const avg  = Number(p?.average_price ?? 0) || 0;
+    const pnl  = Number(p?.pnl ?? 0);
+    const snap = getSnap(sym);
+    const ltp  = snap?.ltp ?? Number(p?.last_price ?? 0);
+
+    const day_pnl = livePosDay(p, ltp, { marketOpen });
+
+    const exch = String(p?.exchange || '').toUpperCase();
+    const isFO = FO_EXCHS.has(exch);
+
+    let exp_pnl   = null;
+    let extrinsic = null;
+    let expVal    = null;   // raw expiryPnl() result (without realised)
+
+    if (isFO) {
+      const realised = Number(p?.realised ?? 0) || 0;
+
+      if (qty === 0) {
+        // Closed leg — realised is locked in, no spot math needed
+        exp_pnl   = Number(p?.realised || p?.pnl || 0);
+        extrinsic = 0;
+        expVal    = exp_pnl;
+      } else {
+        const isCE = sym.endsWith('CE');
+        const isPE = sym.endsWith('PE');
+
+        let ev = null;
+        if (isCE || isPE) {
+          // Option intrinsic
+          const decomp  = decomposeSymbol(sym);
+          const root    = (decomp.root || sym).toUpperCase();
+          const spot1   = Number(p?.underlying_ltp || 0);
+          const spot    = spot1 > 0 ? spot1 : getSpot(root);
+          if (spot > 0) {
+            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
+          }
+        } else {
+          // Futures — own LTP is the "expiry" value
+          const live = ltp || 0;
+          if (live > 0) {
+            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
+          }
+        }
+
+        if (ev != null) {
+          exp_pnl   = ev + realised;
+          extrinsic = ev - (ltp - avg) * qty;
+          expVal    = exp_pnl;
+        }
+      }
+    }
+
+    byKey[sym] = { day_pnl, exp_pnl, extrinsic, pnl };
+
+    total.day_pnl += day_pnl;
+    if (exp_pnl   != null) total.exp_pnl   += exp_pnl;
+    if (extrinsic != null) total.extrinsic += extrinsic;
+
+    if (isFO && expVal != null) {
       const acct = String(p?.account || '');
       if (acct) expiryByAcct.set(acct, (expiryByAcct.get(acct) ?? 0) + expVal);
 
-      const exch = String(p?.exchange || '').toUpperCase();
-      if (FO_EXCHS.has(exch)) {
-        const decomp = decomposeSymbol(sym);
-        const root   = (decomp.root || sym).toUpperCase();
-        if (root) {
-          const slot = byRootPositions[root] ?? (byRootPositions[root] = { day: 0, expiry: 0 });
-          slot.day    += dayVal;
-          slot.expiry += expVal;
-        }
+      const decomp = decomposeSymbol(sym);
+      const root   = (decomp.root || sym).toUpperCase();
+      if (root) {
+        const r = byRootPositions[root] ??= { day_pnl: 0, exp_pnl: 0, extrinsic: 0, pnl: 0 };
+        r.day_pnl += day_pnl;
+        r.pnl     += pnl;
+        r.exp_pnl   += (exp_pnl   ?? 0);
+        r.extrinsic += (extrinsic ?? 0);
       }
     }
   }
 
-  // ---- Holdings expiry ----
-  // Formula: (liveLtp − avgCost) × qty — expiry P&L (what we'd realise if we
-  // sold at current price vs our average cost). This mirrors _accumulateHoldingExpPnl
-  // in derivatives/+page.svelte which uses (spot − avg_cost) × qty.
-  // NOT the day-P&L formula (liveLtp − closePx) × qty — that's a different concept.
-  //
-  // Proxy routing: if h.symbol is a proxy hedge (e.g. IDFIRSTB → CRUDEOIL),
-  // targetsForProxy() returns the target root(s) to credit; otherwise credit the
-  // holding's own tradingsymbol as root (equity symbols are their own root).
+  // ── Holdings (cross-hedge) ───────────────────────────────────────────────
   for (const h of holdRows) {
     const sym = String(h?.tradingsymbol || h?.symbol || '').toUpperCase();
     if (!sym) continue;
 
-    const snapH   = untrack(() => getSnapshot(sym));
-    const snapLtp = snapH?.ltp;
-    const liveLtp = (snapLtp != null && snapLtp > 0)
-      ? Number(snapLtp)
-      : Number(h?.last_price ?? 0);
-    const avgCost = Number(h?.average_price ?? h?.avg_cost) || 0;
-    const heldQty = Number(h?.quantity) || 0;
+    const qty  = Number(h?.quantity) || 0;
+    const cost = Number(h?.average_price ?? h?.avg_cost) || 0;
+    const snapH = getSnap(sym);
+    const ltp   = (snapH?.ltp ?? 0) > 0 ? Number(snapH.ltp) : Number(h?.last_price ?? 0);
 
-    if (!(liveLtp > 0) || heldQty === 0) continue;
+    if (qty === 0) continue;
 
-    const expH = (liveLtp - avgCost) * heldQty;
-    if (!isFinite(expH)) continue;
+    const targets = getTargets(sym);
+    const credits = targets.length ? targets : [sym];
 
-    // Proxy-hedge routing: targetsForProxy returns the underlying root(s) this
-    // holding hedges. Falls back to [sym] (equity symbols are their own root).
-    const targets = targetsForProxy(sym);
-    const roots   = targets.length ? targets : [sym];
-    for (const root of roots) {
-      const slot = byRootHoldings[root] ?? (byRootHoldings[root] = { expiry: 0 });
-      slot.expiry += expH;
+    for (const target of credits) {
+      let exp_pnl = null;
+
+      if (targets.length && ltp > 0) {
+        // Beta-adjusted cross-hedge contribution
+        const proxyRow   = getProxy(sym, target);
+        const beta       = proxyRow?.beta ?? 1;
+        const targetSpot = getSpot(target);
+        if (targetSpot > 0) {
+          const effQty = (beta * ltp * qty) / targetSpot;
+          exp_pnl = (targetSpot - ltp / (beta || 1)) * effQty;
+        }
+      } else if (!targets.length && ltp > 0) {
+        // Direct equity: (ltp − cost) × qty
+        exp_pnl = (ltp - cost) * qty;
+      }
+
+      const r = byRootHoldings[target] ??= { day_pnl: 0, exp_pnl: 0, extrinsic: 0, pnl: 0 };
+      r.pnl += Number(h?.pnl ?? 0);
+      if (exp_pnl != null) r.exp_pnl += exp_pnl;
     }
   }
 
-  return { dayTotal, expiryTotal, byKey, byRootPositions, byRootHoldings, expiryByAcct };
+  return { total, byKey, byRootPositions, byRootHoldings, expiryByAcct };
+}
+
+const _computed = $derived.by(() => {
+  void _tick;
+  const posRows  = positionsStore.value    ?? [];
+  const holdRows = pulseHoldingsStore.value ?? [];
+  return _computeDerived(posRows, holdRows);
 });
 
-/**
- * Unified reactive store for positions Day P&L + Expiry P&L.
- *
- * Accessors:
- *   .dayTotal        — aggregate live Day P&L (pulse-overridable)
- *   .total           — alias for .dayTotal (positionsDayPnlStore compat)
- *   .expiryTotal     — aggregate Exp P&L at current spot
- *   .byKey           — { [tradingsymbol]: dayPnl } (pulse-overridable)
- *   .expiryByAcct    — Map<account, expiryPnl> for NavBreakdown P slot
- *   .byRootPositions — { [root]: { day, expiry } } for Snapshot rows
- *   .byRootHoldings  — { [root]: { expiry } } for Snapshot Hold toggle
- *
- * setFromPulse(byKey, total) — called by MarketPulse after each buildUnified
- * with cq-accurate values. Takes priority over SSE-derived totals when set.
- */
 export const positionsDerivedStore = {
-  /** Aggregate live Day P&L — pulse-overridable. Alias for positionsDayPnlStore compat. */
-  get total()           { return _pulseTotal ?? _computed.dayTotal; },
-  /** Same as .total — preferred name in new code. */
-  get dayTotal()        { return _pulseTotal ?? _computed.dayTotal; },
-  get expiryTotal()     { return _computed.expiryTotal; },
-  get byKey()           { return _pulseByKey ?? _computed.byKey; },
-  get expiryByAcct()    { return _computed.expiryByAcct; },
+  /** { day_pnl, exp_pnl, extrinsic } — aggregate totals */
+  get total()           { return _computed.total;           },
+  /** Alias — same as total.exp_pnl, for consumers that used the old expiryTotal */
+  get expiryTotal()     { return _computed.total.exp_pnl;   },
+  /** { [sym]: { day_pnl, exp_pnl, extrinsic, pnl } } */
+  get byKey()           { return _computed.byKey;           },
+  /** Map<account, expiry P&L> — for NavBreakdown P slot */
+  get expiryByAcct()    { return _computed.expiryByAcct;    },
+  /** { [root]: { day_pnl, exp_pnl, extrinsic, pnl } } — for Snapshot */
   get byRootPositions() { return _computed.byRootPositions; },
-  get byRootHoldings()  { return _computed.byRootHoldings; },
+  /** { [root]: { exp_pnl, ... } } — for Snapshot Hold toggle */
+  get byRootHoldings()  { return _computed.byRootHoldings;  },
 
-  /**
-   * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
-   * and aggregate values. Takes priority over the SSE-only _computed derivation.
-   * @param {Record<string,number>} byKey
-   * @param {number} total
-   */
-  setFromPulse(byKey, total) {
-    _pulseByKey = byKey;
-    _pulseTotal = total;
-  },
+  // no-op: MarketPulse used to override day P&L via this. Now the store is
+  // the sole SSOT — Pulse no longer needs to push overrides.
+  setFromPulse() {},
 };

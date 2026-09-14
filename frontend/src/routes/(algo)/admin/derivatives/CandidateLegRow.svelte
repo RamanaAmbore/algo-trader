@@ -48,6 +48,7 @@
    *   enabled: boolean,
    *   dayPnl: number | null,
    *   expPnl: number | null,
+   *   extrinsic?: number | null,
    *   legExpired: boolean,
    *   strategy: any,
    *   flash: any,
@@ -71,6 +72,7 @@
     enabled,
     dayPnl: _dayPnl,
     expPnl: _expPnlLeg,
+    extrinsic: _extrinsicLeg = null,
     legExpired: _legExp,
     strategy,
     flash,
@@ -338,10 +340,9 @@
     <span class="num">{fmtLots(lotsForRow({ tradingsymbol: c.symbol, quantity: displayQty, lots: c.lots ?? null }))}</span>
   {/if}
   {#if isClosed}
-    <span class="cand-status-chip cand-closed-chip">closed</span>
+    <span class="num cell-flat">0</span>
   {:else if pendingQty > 0}
     <span class="num kv-pos">{pendingQty}</span>
-    <span class="cand-status-chip cand-open-chip">open</span>
     {#if Math.abs(displayQty) - pendingQty > 0}
       <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{Math.abs(displayQty) - pendingQty}</span>
     {/if}
@@ -361,6 +362,10 @@
   <span class="num tf-cell cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'}"
         title="P&L if expired now at spot. Intrinsic value minus cost basis × qty.">
     {_expPnlLeg == null ? '—' : aggCompact(_expPnlLeg)}
+  </span>
+  <span class="num tf-cell cand-pnl {_extrinsicLeg == null ? 'cell-flat' : _extrinsicLeg > 0 ? 'cell-pos' : _extrinsicLeg < 0 ? 'cell-neg' : 'cell-flat'}"
+        title="Extrinsic value in P&L terms — Exp P&L minus (ltp−avg)×qty. Positive = paid/received more than current mark-to-market.">
+    {_extrinsicLeg == null ? '—' : aggCompact(_extrinsicLeg)}
   </span>
   <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
   <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>

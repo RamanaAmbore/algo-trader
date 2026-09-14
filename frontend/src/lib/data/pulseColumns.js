@@ -632,6 +632,50 @@ export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, dirCellClass, 
   ];
 }
 
+// ─── Exp P&L + Extrinsic columns (positionsDerivedStore) ────────────
+
+/**
+ * Exp P&L column — reads positionsDerivedStore.byKey[sym].exp_pnl.
+ * Blank for non-derivative rows (exp_pnl === null).
+ * @param {() => import('$lib/data/positionsDerivedStore.svelte.js').positionsDerivedStore['byKey']} getDerivedByKey
+ */
+export function mkExpPnlCol(getDerivedByKey) {
+  return {
+    headerName: 'Exp P&L',
+    colId: 'exp_pnl',
+    width: 90,
+    type: 'numericColumn',
+    valueGetter: p => {
+      const sym = String(p.data?.tradingsymbol || '').toUpperCase();
+      return getDerivedByKey()[sym]?.exp_pnl ?? null;
+    },
+    cellClass: p => dirCls(p.value),
+    valueFormatter: p => p.value != null ? p.value.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '',
+    headerTooltip: 'Projected P&L at expiry — option intrinsic × qty (options) or (spot − avg) × qty (futures). Blank for equity rows.',
+  };
+}
+
+/**
+ * Extrinsic column — reads positionsDerivedStore.byKey[sym].extrinsic.
+ * Blank for non-derivative rows (extrinsic === null).
+ * @param {() => import('$lib/data/positionsDerivedStore.svelte.js').positionsDerivedStore['byKey']} getDerivedByKey
+ */
+export function mkExtrinsicCol(getDerivedByKey) {
+  return {
+    headerName: 'Extrinsic',
+    colId: 'extrinsic',
+    width: 90,
+    type: 'numericColumn',
+    valueGetter: p => {
+      const sym = String(p.data?.tradingsymbol || '').toUpperCase();
+      return getDerivedByKey()[sym]?.extrinsic ?? null;
+    },
+    cellClass: p => dirCls(p.value),
+    valueFormatter: p => p.value != null ? p.value.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '',
+    headerTooltip: 'Extrinsic value in P&L terms — Exp P&L minus intrinsic (ltp−avg)×qty. Positive when you paid/received more than the current mark-to-market.',
+  };
+}
+
 // ─── Holdings Weight % column ────────────────────────────────────────
 
 /**

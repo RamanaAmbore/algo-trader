@@ -24,6 +24,7 @@
   } from '$lib/api';
   import { positionsStore, holdingsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
+  import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
   import { getDraftPositions } from '$lib/data/draftPositions.svelte.js';
@@ -777,88 +778,11 @@
    * @param {Function} ensure     - (root) => out[root]
    * @returns {boolean}  true if row was accumulated
    */
-  function _accumulatePosExpPnl(p, wantedSource, matchAccount, matchStrategy, ensure) {
-    if (p.source !== wantedSource) return false;
-    if (!matchAccount(p.account)) return false;
-    if (!matchStrategy(p.symbol || p.tradingsymbol)) return false;
-    const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
-    if (!sym) return false;
-    const isFut = /FUT$/i.test(sym);
-    const isOpt = /(CE|PE)$/i.test(sym);
-    if (!isFut && !isOpt) return false;
-    const root = (decomposeSymbol(sym).root || sym).toUpperCase();
-    if (!root) return false;
-    // SSOT: prefer backend-stamped underlying_ltp (positions.py Pass 3).
-    // Falls through to client-side chain when missing (sim/legacy payloads).
-    const p_ul = Number(p.underlying_ltp || 0);
-    // untrack — _underlyingQuotes replaced wholesale every 30s; without
-    // untrack this derived fires on snapshot cycle AND positions cycle,
-    // doubling SVG re-renders that starve click events.
-    const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
-    const v = _expiryPnl({
-      symbol: sym, qty: p.quantity ?? p.qty,
-      avg_cost: p.average_price ?? p.avg_cost,
-      kind: isOpt ? 'opt' : 'fut',
-    }, spot);
-    if (v == null) return false;
-    const g = ensure(root);
-    g.with    += v;
-    g.without += v;
-    return true;
-  }
-
-  /**
-   * Accumulate one equity holding into the exp-P&L map.
-   * Proxy targets route to their root keys; plain equities key on symbol.
-   * Mutates `out` in place via `ensure`.
-   *
-   * @param {any}      h       - holding row
-   * @param {Function} matchAccount
-   * @param {Function} ensure  - (root) => out[root]
-   */
-  function _accumulateHoldingExpPnl(h, matchAccount, ensure) {
-    if (!matchAccount(h.account)) return;
-    const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-    if (!sym) return;
-    // Use h.qty (current quantity) to match the legs grid (c.qty).
-    // h.opening_qty diverges when equity is partially sold intraday.
-    const qty  = Number(h.qty ?? h.quantity) || 0;
-    const cost = Number(h.average_price ?? h.avg_cost) || 0;
-    const _targets = targetsForProxy(sym);
-    const credits = _targets.length ? _targets : [sym];
-    for (const root of credits) {
-      const spot = untrack(() => _rootSpot(root));
-      if (spot == null) continue;
-      const v = (Number(spot) - cost) * qty;
-      if (!isFinite(v)) continue;
-      ensure(root).with += v;
-    }
-  }
-
-  /** Per-underlying Exp P&L at current spot — { ROOT: { eq: number, no_eq: number } }.
-   *  Walks the same positions + holdings universe the Snapshot uses, but
-   *  computes each leg's expiry-day P&L (intrinsic - cost × qty for
-   *  options; spot - cost × qty for futures + equity) instead of broker
-   *  MTM. Operator request: "in snapshot and legs, show profit/loss
-   *  for each on expiration day and updated total for the column".
-   *  Spot per root via _rootSpot (multi-source chain); rows whose spot
-   *  can't be resolved from any source show "—". */
-  const _byUnderlyingExp = $derived.by(() => {
-    /** @type {Record<string, { with: number, without: number }>} */
-    const out = {};
-    const wantedSource = simActive ? 'sim' : 'live';
-    const matchAccount  = buildAcctMatcher(selectedAccounts);
-    const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
-    const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
-
-    for (const _p of positions) {
-      _accumulatePosExpPnl(/** @type {any} */ (_p), wantedSource, matchAccount, matchStrategy, ensure);
-    }
-    for (const _h of holdings) {
-      _accumulateHoldingExpPnl(/** @type {any} */ (_h), matchAccount, ensure);
-    }
-    return out;
-  });
+  // _accumulatePosExpPnl, _accumulateHoldingExpPnl, _byUnderlyingExp removed —
+  // Exp P&L per root now comes from positionsDerivedStore.byRootPositions /
+  // positionsDerivedStore.byRootHoldings (unified 4 Hz SSOT).
+  // Note: positionsDerivedStore reads the unfiltered positionsStore; the
+  // derivatives page account + strategy filter is NOT applied to these values.
 
   /** Shared per-root accumulator — mirrors overlay's per-leg iteration
    *  (candidatesDayPnl / candidatesActualPnl / _legsExpPnlTotal) but
@@ -923,26 +847,15 @@
     const ms = _makeStrategyMatcher();
     return _perRootReduce((c, _spot) => Number(c.pnl || 0), ms);
   });
-  const _expPnlByRootMap = $derived.by(() => {
-    void _throttledTick;
-    const ms = _makeStrategyMatcher();
-    return _perRootReduce((c, spot) => {
-      const v = _expiryPnl(c, spot);
-      if (v != null) return v + Number(c.realised || 0);
-      if (Number(c.qty || 0) === 0) return Number(c.realised || c.pnl || 0);
-      return null;
-    }, ms);
-  });
+  // _expPnlByRootMap removed — Snapshot Exp P&L per root now reads from
+  // positionsDerivedStore.byRootPositions[root].exp_pnl (unified 4 Hz SSOT).
 
-  // Snapshot TOTAL sums — P&L + Exp computed here (they only reference
-  // _pnlByRootMap/_expPnlByRootMap, both declared above). Day sum is
-  // declared below after `positions` to avoid a forward reference.
+  // Snapshot TOTAL sums — P&L uses _pnlByRootMap (filter-aware); Exp uses
+  // positionsDerivedStore.total.exp_pnl (global, unfiltered).
   const _snapshotTotalPnl = $derived(
     Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
-  const _snapshotTotalExp = $derived(
-    Object.values(_expPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
-  );
+  const _snapshotTotalExp = $derived(positionsDerivedStore.total.exp_pnl);
 
 
   /** Per-underlying live quote map — { ROOT: { ltp, day_pct, prev_close } }.
@@ -3377,7 +3290,8 @@
     const base = _snapshotTotalExp;
     const mergedEv = _mergedEv;
     if (mergedEv == null) return base;
-    const activeExp = _expPnlByRootMap[selectedUnderlying] ?? 0;
+    // Replace the selected underlying's exp_pnl with the overlay-merged EV.
+    const activeExp = positionsDerivedStore.byRootPositions[selectedUnderlying]?.exp_pnl ?? 0;
     return base - activeExp + mergedEv;
   });
 
@@ -4603,6 +4517,10 @@
                   title="P&L if every contract expired RIGHT NOW at the current underlying spot — intrinsic value minus cost basis. Futures + equity track spot 1:1, so this matches their P&L. Options strip out time value and show only intrinsic settlement.">
               Exp P&amp;L
             </span>
+            <span class="num"
+                  title="Extrinsic value in P&L terms — Exp P&amp;L minus (ltp−avg)×qty. Positive = time value still in the option premium.">
+              Extrinsic
+            </span>
             <span class="num">IV</span>
             <span class="num">Δ</span>
             <span class="num">Γ</span>
@@ -4626,6 +4544,7 @@
               enabled={_isLegEnabled(c)}
               dayPnl={_candDayPnl(c)}
               expPnl={_legExpPnlDisplay(c, liveSpot ?? null)}
+              extrinsic={positionsDerivedStore.byKey[String(c.symbol || '').toUpperCase()]?.extrinsic ?? null}
               legExpired={_isLegExpired(c)}
               {strategy}
               {flash}
@@ -4714,6 +4633,11 @@
                     title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
                 {aggCompact(_legsExpPnlTotal)}
               </span>
+              {@const _legsTotalExtrinsic = positionsDerivedStore.total.extrinsic}
+              <span class="num tf-cell cand-pnl {_legsTotalExtrinsic > 0 ? 'cell-pos' : _legsTotalExtrinsic < 0 ? 'cell-neg' : 'cell-flat'}"
+                    title="Σ Extrinsic value across all positions — total time value remaining in the portfolio.">
+                {aggCompact(_legsTotalExtrinsic)}
+              </span>
               <span class="num">—</span>
               <span class="num" title="Σ Δ across every selected leg (position-scaled).">{pctFmt(_tg.delta)}</span>
               <span class="num" title="Σ Γ across every selected leg (position-scaled).">{pctFmt(_tg.gamma)}</span>
@@ -4770,7 +4694,7 @@
         const _q      = _underlyingQuotes[g.underlying];
         const dayVal  = _fnoDayPnlByRoot.byRoot[g.underlying] ?? 0;
         const pnlVal  = _pnlByRootMap[g.underlying] ?? 0;
-        const expVal  = _expPnlByRootMap[g.underlying] ?? 0;
+        const expVal  = positionsDerivedStore.byRootPositions[g.underlying]?.exp_pnl ?? 0;
         return {
           underlying:  g.underlying,
           spot:        _q ? _q.ltp        : '',
@@ -4815,6 +4739,7 @@
           <span class="num" title="Today's Day P&L for the underlying — matches the payoff overlay value for this symbol.">Day P&amp;L</span>
           <span class="num" title="Total P&L from F&O legs only. Sums to the NavStrip P slot 2 value.">P&amp;L</span>
           <span class="num" title="F&O-only expiry P&L for this group. Sums to the NavStrip P slot 3 value.">Exp P&amp;L</span>
+          <span class="num" title="Extrinsic value in P&L terms — Exp P&L minus (ltp−avg)×qty. Positive when premium captured exceeds current mark-to-market.">Extrinsic</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num"
@@ -4852,7 +4777,8 @@
                code should be used for both." -->
           {@const _dayVal = _fnoDayPnlByRoot.byRoot[g.underlying] ?? 0}
           {@const _pnlVal = _pnlByRootMap[g.underlying] ?? 0}
-          {@const _expVal = _expPnlByRootMap[g.underlying] ?? 0}
+          {@const _expVal = positionsDerivedStore.byRootPositions[g.underlying]?.exp_pnl ?? 0}
+          {@const _extVal = positionsDerivedStore.byRootPositions[g.underlying]?.extrinsic ?? 0}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
@@ -4861,6 +4787,7 @@
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>
             <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlVal)}</span>
             <span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-flat'}">{_expVal === 0 ? '—' : aggCompact(_expVal)}</span>
+            <span class="num {_extVal > 0 ? 'cell-pos' : _extVal < 0 ? 'cell-neg' : 'cell-flat'}">{_extVal === 0 ? '—' : aggCompact(_extVal)}</span>
             <span class="num cell-muted">{Math.round(g.legs_without)}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <!-- Per-underlying EV: surfaces _mergedEv when the
@@ -4881,6 +4808,7 @@
             <span class="num tf-cell {_fnoDayPnlByRoot.total > 0 ? 'cell-pos' : _fnoDayPnlByRoot.total < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_fnoDayPnlByRoot.total)}</span>
             <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalPnl)}</span>
             <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalExp)}</span>
+            <span class="num tf-cell {positionsDerivedStore.total.extrinsic > 0 ? 'cell-pos' : positionsDerivedStore.total.extrinsic < 0 ? 'cell-neg' : 'cell-flat'}">{positionsDerivedStore.total.extrinsic === 0 ? '—' : aggCompact(positionsDerivedStore.total.extrinsic)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_without)}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num {_snapshotTotalEvFull > 0 ? 'cell-pos' : _snapshotTotalEvFull < 0 ? 'cell-neg' : 'cell-flat'}">
@@ -5753,10 +5681,11 @@
       minmax(3.8rem, 0.6fr)  /* Day P&L */
       minmax(3.8rem, 0.6fr)  /* P&L */
       minmax(4rem,   0.6fr)  /* Exp P&L */
+      minmax(4rem,   0.6fr)  /* Extrinsic */
       minmax(3rem,   0.55fr) /* Legs */
       minmax(4rem,   0.6fr)  /* F&O qty */
       minmax(4rem,   0.6fr); /* EV */
-    min-width: 920px;
+    min-width: 1020px;
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);        /* match Pulse Positions ~0.625rem */
   }
@@ -6038,6 +5967,7 @@
       minmax(72px, max-content)            /* pnl - cumulative */
       minmax(max-content, max-content)     /* account */
       minmax(72px, max-content)            /* exp pnl @ current spot */
+      minmax(72px, max-content)            /* extrinsic (time value in P&L terms) */
       minmax(52px, max-content)            /* iv */
       minmax(56px, max-content)            /* delta */
       minmax(56px, max-content)            /* gamma */

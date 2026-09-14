@@ -1,17 +1,28 @@
 /**
- * positionsDayPnlStore — thin shim delegating to positionsDerivedStore.
+ * positionsDayPnlStore — backward-compat shim.
+ * Delegates to positionsDerivedStore; exposes the legacy numeric API so
+ * existing consumers (NavCard, NavBreakdown, MarketPulse) need no changes.
  *
- * Historical consumers (derivatives/_fnoDayPnlByRoot, NavCard, NavBreakdown,
- * MarketPulse) import this module by name. The shim keeps those imports
- * working without churn while positionsDerivedStore becomes the SSOT.
- *
- * `total` and `byKey` now read from positionsDerivedStore which:
- *   - uses the same 4 Hz symbolTickCount + 250ms throttle cadence
- *   - respects the same setFromPulse() pulse-override contract
- *   - adds byRootPositions / byRootHoldings / expiryTotal on top
- *
- * setFromPulse() is forwarded into positionsDerivedStore so MarketPulse
- * only needs to call one surface.
+ *   .total         → number  (= positionsDerivedStore.total.day_pnl)
+ *   .byKey[sym]    → number  (= positionsDerivedStore.byKey[sym]?.day_pnl ?? 0)
+ *   .setFromPulse  → no-op
  */
+import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
+export { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
 
-export { positionsDerivedStore as positionsDayPnlStore } from '$lib/data/positionsDerivedStore.svelte.js';
+const _byKeyProxy = new Proxy({}, {
+  get(_t, sym) {
+    if (typeof sym !== 'string') return undefined;
+    return positionsDerivedStore.byKey[sym]?.day_pnl ?? 0;
+  },
+  has(_t, sym) { return sym in positionsDerivedStore.byKey; },
+});
+
+export const positionsDayPnlStore = {
+  get total() { return positionsDerivedStore.total.day_pnl; },
+  get byKey() { return _byKeyProxy; },
+  setFromPulse() {},
+};
+
+// no-op export so old import { setFromPulse } patterns compile
+export function setFromPulse() {}

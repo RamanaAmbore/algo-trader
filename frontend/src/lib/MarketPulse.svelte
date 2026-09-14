@@ -83,6 +83,7 @@
     publishWatchQuotes, publishPulseQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
+  import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   // resolveUnderlying helpers used by loadPulse are imported via pulseLoad.js.
   import CardControls from '$lib/CardControls.svelte';
@@ -2866,11 +2867,9 @@
   // After 125+ symbols the old `_prefetchTimers.length * 80` delay would
   // exceed 10s; this counter resets toward zero as each request completes.
   let _prefetchPending = $state(0);
-  // Paisa-level change gate for positionsDayPnlStore.setFromPulse — prevents
-  // no-op $state writes (and consequent NavStrip/NavCard re-renders) at full
+  // Paisa-level change gate for holdingsDayPnlStore.setFromPulse — prevents
+  // no-op $state writes (and consequent NavStrip H re-renders) at full
   // SSE rate (~10 Hz). Only fires when the total changed by at least 1 paisa.
-  /** @type {number | null} */
-  let _lastPulseTotal = null;
   /** @type {number | null} */
   let _lastHoldTotal = null;
   function _stagedPrefetch(sym, exch) {
@@ -2925,26 +2924,9 @@
     }
   });
 
-  // Pulse is the authoritative source for positions day P&L — it uses live cq
-  // quotes. Write the computed aggregate to positionsDayPnlStore so NavStrip P
-  // reads the same value without recomputing.
-  $effect(() => {
-    const posRows = unifiedRows.filter(r => r._majorGroup === 'positions');
-    /** @type {Record<string, number>} */
-    const pulseByKey = {};
-    let pulseTotal = 0;
-    for (const r of posRows) {
-      const sym = String(r?.tradingsymbol || r?.symbol || '').toUpperCase();
-      if (!sym) continue;
-      const v = r.day_pnl ?? 0;
-      pulseByKey[sym] = (pulseByKey[sym] ?? 0) + v;
-      pulseTotal += v;
-    }
-    if (Math.round(pulseTotal * 100) !== Math.round((_lastPulseTotal ?? NaN) * 100)) {
-      _lastPulseTotal = pulseTotal;
-      positionsDayPnlStore.setFromPulse(pulseByKey, pulseTotal);
-    }
-  });
+  // Positions day P&L is now the sole domain of positionsDerivedStore (4 Hz
+  // reactive compute from positionsStore + symbolTickCount). The Pulse
+  // setFromPulse() override is removed — NavStrip P reads the store directly.
 
   // Holdings day P&L — mirror positions pattern. Pulse is authoritative;
   // setFromPulse writes to holdingsDayPnlStore so NavStrip H reads the
@@ -3558,6 +3540,21 @@
       pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
       lotsForRow, fmtLots,
     });
+    // Patch the day_pnl column to prefer positionsDerivedStore (the 4 Hz SSOT)
+    // for positions rows, falling back to the row's own day_pnl (holdings).
+    const _dayPnlColIdx = rightColDefs.findIndex(c => c.field === 'day_pnl');
+    if (_dayPnlColIdx >= 0) {
+      const _origDayPnlCol = rightColDefs[_dayPnlColIdx];
+      rightColDefs[_dayPnlColIdx] = {
+        ..._origDayPnlCol,
+        valueGetter: p => {
+          const sym = String(p.data?.tradingsymbol || '').toUpperCase();
+          const storeVal = positionsDerivedStore.byKey[sym]?.day_pnl;
+          if (storeVal != null) return storeVal;
+          return p.data?.day_pnl ?? null;
+        },
+      };
+    }
 
     // Group-preserving postSortRows. After ag-Grid sorts each row
     // independently by the selected column, we re-arrange so an

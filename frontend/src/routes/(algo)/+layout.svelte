@@ -26,7 +26,7 @@
   import ShortcutCheatsheet from '$lib/ShortcutCheatsheet.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
-  import { startBookPollers, setBookPollerInterval, setBookPollerLiveMs, setBookPollerClosedMs } from '$lib/data/marketDataStores.svelte.js';
+  import { startBookPollers, setBookPollerLiveMs, setBookPollerClosedMs } from '$lib/data/marketDataStores.svelte.js';
   import { loadAccountOrder } from '$lib/data/accountSort.js';
   import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream } from '$lib/data/quoteStream';
   import { tickBus } from '$lib/data/symbolStore.svelte.js';
@@ -810,11 +810,6 @@
         const idleRow = all.find?.(s => s?.key === 'polling.idle_timeout_min');
         const idleV = Number(idleRow?.value ?? idleRow?.default_value);
         if (Number.isFinite(idleV) && idleV >= 0) setHibernationIdleMinutes(idleV);
-        const tickRow = all.find?.(s => s?.key === 'pulse.tick_interval_ms');
-        const tickV = Number(tickRow?.value ?? tickRow?.default_value);
-        if (Number.isFinite(tickV) && tickV >= 500 && tickV <= 60000) {
-          setBookPollerInterval(tickV);
-        }
         const liveRow = all.find?.(s => s?.key === 'polling.book_live_ms');
         const liveV   = Number(liveRow?.value ?? liveRow?.default_value);
         if (Number.isFinite(liveV) && liveV >= 1000) setBookPollerLiveMs(liveV);

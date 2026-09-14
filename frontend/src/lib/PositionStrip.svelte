@@ -16,6 +16,7 @@
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
+  import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
@@ -662,176 +663,8 @@
   });
   const cashTotal = $derived(liveCashTotal + longOptionsCashPaid);
 
-  // Expiry profit — F&O positions only (futures + options), excludes equity.
-  // "What would I make/lose if every open derivative position expired RIGHT NOW
-  //  at the current spot?" — useful for understanding max-risk at expiry.
-  //
-  // Math:
-  //   Futures:      (live_ltp − avg_cost) × qty
-  //   Long CE:      max(spot − strike, 0) × qty − avg × qty
-  //   Short CE:     avg × |qty| − max(spot − strike, 0) × |qty|
-  //   PE symmetric.  [qty is signed: positive = long, negative = short;
-  //                   formula (intrinsic − avg) × qty handles both signs]
-  //
-  // Spot source: symbolStore snapshot keyed by the RESOLVED tradingsymbol
-  // (e.g. "NIFTY 50" for NIFTY options, "GOLD26JUNFUT" for MCX GOLD options).
-  // inst.u gives the underlying root name ("NIFTY", "GOLD") — resolveUnderlying
-  // translates that to the correct tradeable tradingsymbol stored in symbolStore.
-  // Spots are pre-fetched by _loadUnderlyingSpots() on each poll cycle.
-  // If no live snapshot exists for an option's underlying we skip that leg
-  // (contribute 0) rather than feeding the option's own LTP as a proxy —
-  // doing so would compute max(300 − 22000, 0) = 0 (wrong for deep ITM)
-  // or huge phantom intrinsic.
-  //
-  // Gated by _throttledTick (4 Hz) not per-SSE-tick to avoid scheduler
-  // pressure; matches the same throttle already used by _liveDeltaByRow.
-
-  /** Returns true when the exchange is a derivative segment (not equity). */
-  function _isDerivativeExch(/** @type {string} */ exch) {
-    return ['NFO', 'MCX', 'CDS', 'BFO'].includes(exch);
-  }
-
-  /**
-   * Step 1: try the backend-stamped underlying_ltp (SSOT, always preferred).
-   * Step 2: symbolStore snapshot chain for resolved tradingsymbol / root / inst.u.
-   * Step 3: row-scan of positions + holdings for a matching last_price.
-   * Returns the spot price, or 0 when none found.
-   *
-   * @param {any} p - raw position row (for underlying_ltp)
-   * @param {string} root - underlying root name (e.g. "NIFTY", "GOLD")
-   * @param {any} inst - instrument record from instruments cache
-   * @param {any} resolved - result of resolveUnderlying()
-   * @param {any[]} posRows - positions array for row-scan fallback
-   * @param {any[]} holdRows - holdings array for row-scan fallback
-   * @returns {number}
-   */
-  function _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows) {
-    // Priority 1: backend-stamped underlying_ltp (SSOT, always preferred).
-    // Matches derivatives/+page.svelte:_accumulatePosExpPnl which reads
-    // p.underlying_ltp before falling to _rootSpot(). Putting symbolStore
-    // ahead of underlying_ltp caused MCX CRUDEOIL divergence when the live
-    // SSE ticker had a stale/wrong contract LTP in symbolStore while the
-    // backend had already stamped the correct spot via positions.py Pass 3.
-    const spot1 = Number(p?.underlying_ltp || 0);
-    if (spot1 > 0) return spot1;
-
-    // Priority 2: shared underlyingSpotStore — same batchQuote result as the
-    // derivatives snapshot page. Eliminates the cold-instruments symbolStore
-    // race where MCX futures LTP was never populated in symbolStore because
-    // the instruments cache was cold when _loadUnderlyingSpots fired.
-    const spot2 = getUnderlyingSpot(root);
-    if (spot2 > 0) return spot2;
-
-    return 0;
-  }
-
-  /**
-   * Compute expiry P&L for one option leg.
-   * Returns the contribution (number) or null when spot cannot be resolved.
-   *
-   * @param {any} p - raw position row
-   * @param {string} sym - tradingsymbol (upper-cased)
-   * @param {number} qty - signed quantity
-   * @param {number} avg - average price
-   * @param {any[]} posRows - positions for spot row-scan fallback
-   * @param {any[]} holdRows - holdings for spot row-scan fallback
-   * @returns {number | null}
-   */
-  function _optionLegExpiryPnl(p, sym, qty, avg, posRows, holdRows) {
-    // Resolve underlying root — regex-first so cold instruments cache
-    // doesn't gate the compute.
-    const decomp = decomposeSymbol(sym);
-    const inst   = getInstrument(sym);
-    const root   = decomp.root || inst?.u || null;
-    if (!root) return null;
-
-    const resolved = resolveUnderlying(root, findNearestFuture);
-    const spot = _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows);
-    if (!(spot > 0)) return null;
-
-    // SHARED SSOT — same helper the derivatives page uses.
-    return expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
-  }
-
-  /**
-   * Compute expiry P&L for one futures leg.
-   * Returns the contribution (number) or null when LTP is unavailable.
-   *
-   * @param {any} p - raw position row
-   * @param {string} sym - tradingsymbol (upper-cased)
-   * @param {number} qty - signed quantity
-   * @param {number} avg - average price
-   * @returns {number | null}
-   */
-  function _futureLegExpiryPnl(p, sym, qty, avg) {
-    // Future spot = its own LTP; use shared helper for parity.
-    const live = untrack(() => getSnapshot(sym)?.ltp) || Number(p?.last_price || 0);
-    if (!(live > 0)) return null;
-    return expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
-  }
-
-  /**
-   * Per-position expiry P&L contribution.
-   * Returns the numeric contribution for this single position row,
-   * or null when the exchange is not a derivative segment.
-   * Called by both `_expiryProfit` (grand total) and
-   * `_expiryProfitByAcct` (per-account map).
-   *
-   * @param {any} p - raw position row
-   * @returns {number | null}
-   */
-  function _expiryForPosition(p) {
-    const exch = String(p?.exchange || '').toUpperCase();
-    if (!_isDerivativeExch(exch)) return null;
-    const sym  = String(p?.tradingsymbol || '').toUpperCase();
-    const qty  = Number(p?.quantity) || 0;
-    const avg  = Number(p?.average_price) || 0;
-    if (!qty) {
-      // Closed leg — realized P&L is locked in, no spot needed
-      return Number(p?.pnl || 0);
-    }
-    const isCE  = sym.endsWith('CE');
-    const isPE  = sym.endsWith('PE');
-    const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
-    let v = null;
-    if (isCE || isPE) {
-      v = _optionLegExpiryPnl(p, sym, qty, avg, positions, holdings);
-    } else if (isFut) {
-      v = _futureLegExpiryPnl(p, sym, qty, avg);
-    }
-    if (v != null) return v + Number(p?.realised || 0);
-    return null;
-  }
-
-  const _expiryProfit = $derived.by(() => {
-    void _throttledTick;
-    void _mktTick;
-    let total = 0;
-    let _skipped = 0;
-    for (const p of positions) {
-      const v = _expiryForPosition(p);
-      if (v != null) total += v;
-      else _skipped++;
-    }
-    untrack(() => debugLog('navstrip:expiry', 'computed', { total, legCount: positions.length, skipped: _skipped }));
-    return total;
-  });
-
-  /** Map<account, expiry P&L sum> — used by NavBreakdown P slot expiry column. */
-  const _expiryProfitByAcct = $derived.by(() => {
-    void _throttledTick;
-    void _mktTick;
-    /** @type {Map<string, number>} */
-    const map = new Map();
-    for (const p of positions) {
-      const acct = String(p?.account || '');
-      if (!acct) continue;
-      const v = _expiryForPosition(p);
-      if (v == null) continue;
-      map.set(acct, (map.get(acct) ?? 0) + v);
-    }
-    return map;
-  });
+  // Expiry profit and per-account map now come from positionsDerivedStore
+  // (the unified 4 Hz SSOT). PositionStrip no longer computes these locally.
   // Margin: available (what's deployable) and total (used + avail = full
   // capacity). Pill shows avail / total to match the operator's mental
   // model "what room do I have, out of what I'd have if everything
@@ -867,7 +700,7 @@
     _pollCycleStamp;
     untrack(() => {
       flash.update('P',    _livePositionsPnl);
-      flash.update('PE',   _expiryProfit);
+      flash.update('PE',   positionsDerivedStore.expiryTotal);
       flash.update('M',    marginAvail);
       flash.update('Mt',   marginTotal);
       flash.update('Cp',   cashTotal);
@@ -965,7 +798,7 @@
       style="cursor:pointer" role="button" tabindex="0"
       onclick={(e) => _openBreakdown(e, 'P')}
       onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'P')}
-      >{fmtMoney(_expiryProfit)}</span
+      >{fmtMoney(positionsDerivedStore.expiryTotal)}</span
     >
   </span>
   <!-- Margin pill: available / total (used + avail). Operator wants the
@@ -1055,7 +888,7 @@
         <button type="button" class="ps-breakdown-close"
                 onclick={() => (_breakdown.open = false)}
                 aria-label="Close breakdown">✕</button>
-        <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={_expiryProfitByAcct} />
+        <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={positionsDerivedStore.expiryByAcct} />
       </div>
     </div>
   {/if}
