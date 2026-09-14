@@ -710,13 +710,14 @@ Positions grid:
 - Lots (52px) — qty in F&O lot units; via `lotsForRow()` helper; null hidden
 - LTP (77px) — SSE tick + vs-avg/vs-prev heat; snapshot-frozen when is_animating=false
 - Avg (68px) — weighted average entry (directional tint: long green, short red, flat gray)
-- Day P&L (78px) — today's profit/loss; tick-flash on poll cycles (300ms)
+- Day P&L (78px) — today's profit/loss; tick-flash on poll cycles (300ms); reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, not Pulse-driven)
 - Close (68px) — previous close (muted)
 - P&L (78px) — lifetime profit/loss; directional + tick-flash
 - P&L % (64px) — P&L as % of cost basis
+- **Exp P&L** (78px, F&O only, new) — expected P&L at expiry for open option legs; reads from `positionsDerivedStore.byKey[sym].exp_pnl` (5s cadence); blank for holdings/equity rows
+- **Extrinsic** (78px, F&O only, new) — time value remaining: `exp_pnl - (ltp - avg) × qty`; zero for closed legs, zero for FUT/equity; blank for holdings rows
 - Qty (56px) — net qty; aggregated across accounts; null hidden
 - Account (86px) — lead account + "+N" for multi-account rows; STALE@HH:MM badge on circuit-breaker rows
-- Exp P&L (78px, F&O only) — expected P&L at expiry for open option legs
 
 Holdings grid (St column filtered out):
 - Symbol (168px, pinned) — account-tinted background
@@ -735,11 +736,12 @@ Holdings grid (St column filtered out):
 - Value (78px) — current value (LTP × held qty)
 - Account (86px)
 
-**Day P&L recompute** — via `livePositionDayPnl()` helper (SSOT shared across NavStrip, Pulse, and derivatives):
-- When market open: `(liveLtp − closePx) × qty + realisedToday`
+**Day P&L recompute** — reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence):
+- Store computes via `livePositionDayPnl()` helper on every 5s book-poll cycle + immediate on postback fill (WebSocket order_update triggers cache invalidation)
+- When market open: `(liveLtp − closePx) × qty + realisedToday` with SSE live-tick override
 - When market closed: `baseDayPnlForPosition(row)` (broker day_change_val or lifetime pnl if missing)
-- MCX stale-ticker rescue: when broker LTP ≈ close_price (KiteTicker lag), use SSE live tick if available
-- **Derivatives candidates SSOT fix (commit 202ecd93)**: `candidatesDayPnl` in derivatives overlay now reads directly from `positionsDayPnlStore.byKey[sym]` (for F&O/equity positions) and `holdingsDayPnlStore.byKey[sym]` (for equity holdings) — the same stores NavStrip P1 uses — with symbol deduplication via a `seen` Set. Returns `null` when no enabled legs exist (instead of `0`), so OptionsPayoff DAY P&L row hides cleanly. OptionsPayoff row guard changed from `{#if dayPnl != null && dayPnl !== 0}` to `{#if dayPnl != null}`, showing ₹0 during poll-gap windows instead of disappearing. Per-root day P&L sums in overlay now correctly converge to the Pulse positions TOTAL. `_dayPnlForLeg` helper is retained for `_legExpPnlDisplay`, flash updates, and per-root overlay aggregation.
+- **No Pulse override**: Replaces legacy `setFromPulse()` mechanism; all consumers read the store's computed value directly instead of Pulse-written values
+- **Derivatives candidates**: Per-root day P&L sums in overlay converge to Pulse positions TOTAL by reading `positionsDerivedStore.byKey[sym]` (F&O/equity positions) and `holdingsDayPnlStore.byKey[sym]` (equity holdings). `_dayPnlForLeg` helper retained for `_legExpPnlDisplay`, flash updates, and per-root aggregation.
 
 **TOTAL row** (pinned bottom):
 - Positions: sums all filtered position rows; F&O-only expiry value appended to P pill slot 3
@@ -838,15 +840,15 @@ poller cycle. Payoff chart spot price and day-P&L TOTAL remain synchronized acro
 derivatives page, MarketPulse grids, and NavStrip throughout symbol switches, market-open 
 and closed-hours windows, and hibernation transitions.
 
-**Per-leg Day P&L rescue path (Sep 2026)** — MCX settlement fix:
-- Per-leg Day P&L in the Candidate Legs grid now reads from `positionsDayPnlStore.byKey[tradingsymbol]` 
-  first (canonical source shared with NavStrip), then falls back to `baseDayPnlForPosition(c)`.
-- **Problem**: After MCX settlement reset at 23:30 IST, Kite's stale REST poll returns `day_change_val=0` 
-  for closed-out MCX positions (GOLDM, CRUDEOIL, etc.), even though the position has real intraday P&L.
-- **Solution**: The store (`positionsDayPnlStore.byKey`) is populated by Pulse's `mergePositionRows()` 
-  during market hours and persists across settlement windows. Leg rows now check the store first, 
-  ensuring MCX positions show correct non-zero Day P&L matching the NavStrip F&O pill (P1) and 
-  positions grid TOTAL row.
+**Per-leg Day P&L rescue path (Sep 2026)** — unified store approach:
+- Per-leg Day P&L in the Candidate Legs grid reads from `positionsDerivedStore.byKey[tradingsymbol]` 
+  (canonical source shared with NavStrip P:1), then falls back to `baseDayPnlForPosition(c)`.
+- **Store-driven refresh**: `positionsDerivedStore` is populated on every 5s book-poll and immediate 
+  postback fill, ensuring Candidate Legs display matches NavStrip hero badge and Pulse grid cells 
+  without any Pulse-page-dependency or stale-override side effects.
+- **MCX settlement stability**: After MCX settlement reset at 23:30 IST, store retains computed day P&L 
+  across the settlement window even when broker REST poll returns `day_change_val=0`. Leg rows see correct 
+  non-zero Day P&L matching NavStrip F&O pill (P1) and positions grid TOTAL row.
 - **Fallback**: If the symbol is not in the store (e.g., closed-out holdings or non-position legs), 
   calculation reverts to `baseDayPnlForPosition(c)` (broker `day_change_val` or lifetime `pnl`).
 
@@ -1688,3 +1690,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-08 | v1.12 Derivatives overlay stale-while-revalidating cache for candidatesDayPnl (commit 593a5e25): §13 Day P&L recompute reverted from `positionsDayPnlStore.byKey[sym]` lookup back to `_dayPnlForLeg(c, null)` per-candidate computation. Root cause: `positionsDayPnlStore.byKey` returns `_pulseByKey ?? _store.byKey`; `_pulseByKey` (set by MarketPulse from positions page) can exclude MCX futures (CRUDEOIL, GOLDM) that are closed/filtered, causing byKey[sym] to return undefined→0 for those symbols. Added `_lastCandidatesDayPnl` stale-while-revalidating cache — when `candidatePositions` briefly empties during the 5-second poll refresh, the last non-null day P&L is returned instead of null, preventing the day P&L row in OptionsPayoff from flashing away during poll gaps. |
 | 2026-09-10 | v1.13 Derivatives page reactive chain improvements (commit 16c8e44f + 91cccd02): Critical fixes for symbol-switch stalls, market-transition quote stalls, and hibernation strategy wipe. Four reactive-chain bug fixes: (A) **Symbol-switch stale stub** — `_clientPayoffStub` was reading `selectedUnderlying` inside `untrack()` so symbol changes never triggered re-derive; fix: capture `const _sel = selectedUnderlying` before `untrack()`. (B) **Market-close quote stall** — `liveSpot` and `_clientPayoffStub` gated `_quoteGeneration` counter via `if (!isMarketOpen())`, so batchQuote completions dropped from dependency set during hours; fix: unconditionally track counter always. (C) **legs-driven loadStrategy effect** — on symbol switch, `loadStrategy()` fired before legs updated (Svelte 5 declaration order); fix: added new effect after legs that fires strategy refetch with guard to skip when strategy already matches. (D) **Strategy wipe on hibernation** — `loadStrategy()` fired before `loadPositions()` on page show, using qty=0 legs; fix: added `_positionsRefreshedAt` freshness check, only wipe if positions stale >30s. Eight data-sync improvements: (1) positions `$effect` re-runs F&O transform on 5s book-poller, per-row P&L updates within 5s. (2–5) `_quoteGeneration` counter always tracked; quotes fetched continuously via `visibleInterval` with throttle; seeded at `loadPositions()` end. (6) `_snapshotTotalDay` uses `livePositionDayPnl()` SSOT via `getSnapshot` at 4Hz, matches NavStrip P1. (7) CandidateLegRow LTP reads `getSnapshot` first (4Hz SSE-reactive). (8) TOTAL row label clarified. Impact: symbol switches update payoff chart immediately; market-open/close quote refreshes trigger chart re-render; hibernation exit preserves strategy. All Snapshot data within 5s cycle; payoff chart + day-P&L TOTAL synchronized across page, MarketPulse, NavStrip. |
 | 2026-09-10 | v1.14 Underlying picker auto-select + Snapshot TOTAL day P&L formula (TBD): §13.2 new subsection documents underlying picker auto-select: all six tiers now carry `qtySum` field (Tier 1–2 = actual position qty, Tiers 3–6 = 0); on cold load, `_autoSelectDone` gate fires once when `_positionsLoaded` first true, promoting to first active underlying (qtySum > 0) if current selection has qtySum = 0; after promote, subsequent 5s refreshes do NOT re-promote, allowing manual inactive selection. Initial picker selection now prefers `firstActive` over `opts[0]`. §13.3 new subsection documents Snapshot TOTAL day P&L formula: `_snapshotTotalDay = Object.values(_dayPnlByRootMap).reduce((a, b) => a + b, 0)` (sum of per-row values) instead of applying `livePositionDayPnl` to raw positions (which included `prev_settlement_pnl`). Eliminates ±54k divergence on MCX FUT positions where prior formula conflated settled P&L with intraday P&L. New formula is symmetric with `_snapshotTotalPnl` and `_snapshotTotalExp` — TOTAL = sum of rows by construction. |
+| 2026-09-14 | v1.15 positionsDerivedStore unification (TBD): §13 Right-grid column definitions updated — Day P&L column now reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, replaces `setFromPulse`). Two new columns added after P&L: **Exp P&L** (78px, F&O only, reads `positionsDerivedStore.byKey[sym].exp_pnl`) and **Extrinsic** (78px, F&O only, `exp_pnl - (ltp - avg) × qty`, zero for closed/equity). §13 Day P&L recompute section updated — store computes on 5s book-poll + immediate postback fill; replaces legacy `setFromPulse()` with unified store read across all consumers (NavStrip, Pulse grids, derivatives page). Per-leg Day P&L rescue path updated — uses store-driven refresh instead of Pulse-page-dependency. §13.1 Per-leg Day P&L section reworded to reflect store-driven MCX settlement stability and fallback behavior. All Pulse surfaces now converge on single `positionsDerivedStore` SSOT for day P&L and exp P&L metrics; 5s cadence + immediate fills eliminate cross-page divergence. Related: NAVSTRIP_SPEC updated §1 P:1 and P:3 slots, new §1.4 "Positions Derived Store" subsection documenting module design, cadence, data flow, and consumers. |
