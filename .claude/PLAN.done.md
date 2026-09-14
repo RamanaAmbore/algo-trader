@@ -1,98 +1,91 @@
-# Plan: Fix bg-sparkline-warm crash + NavStrip Exp P&L divergence + VS Code svelte error
+# Plan: SSOT for underlying spot prices — NavStrip / Snapshot / Pulse alignment
 
 ## Context
 
-Three bugs found:
+NavStrip Exp P&L has diverged from derivatives snapshot Exp P&L across multiple fixes because there is no single source of truth for underlying spot prices. Today's state:
 
-1. **bg-sparkline-warm crash (P1)** — `NameError: name 'is_engine_idle' is not defined` crashes `_task_sparkline_warm` every 60s on prod. Logs confirm at `2026-09-14 02:30:00`. Lines 3990 and 4006 in `background.py` call `is_engine_idle()` without a local import (all other call sites at 1110, 4293, 6031 correctly use `from backend.shared.helpers.utils import is_engine_idle` inline).
+- **Derivatives snapshot** (correct, per operator): falls back to `_underlyingQuotes[root]?.ltp` (batchQuote REST, refreshed every 30s) when `p.underlying_ltp = 0`. Correct price → correct intrinsic → correct Exp P&L.
+- **NavStrip** (wrong): falls back to `symbolStore` (live KiteTicker) when `p.underlying_ltp = 0`. KiteTicker only has MCX option LTPs subscribed (the positions the user holds), NOT the underlying futures. So `getSnapshot('CRUDEOIL')` = null → row-scan returns 0 or option premium (not futures price) → wrong spot → wrong Exp P&L.
 
-2. **NavStrip Exp P&L diverges from snapshot (wrong value, not zero)** — NavStrip shows 37k; derivatives snapshot shows 2.79L. Root cause:
-   - `_enrich_position_greeks` (positions.py line 762) is called inside the live broker path only. When market is closed (NSE holiday + MCX morning closed), positions route fast-returns the DB snapshot (positions.py ~1392) **before** enrichment runs → `underlying_ltp` is null on snapshot rows.
-   - NavStrip `_resolveOptionSpot` (PositionStrip.svelte:716) checks `p.underlying_ltp` first — falls through to symbolStore when null. KiteTicker has no MCX spot subscribed directly (only option contracts, not the underlying futures) → symbolStore miss. Row-scan finds stale `last_price` from old position rows (may be yesterday's settlement, giving wrong spot) → wrong exp P&L (37k instead of 2.79L).
-   - Derivatives snapshot avoids this via `_underlyingQuotes` (batchQuote REST, refreshed every 30s), which fetches underlying via `broker.quote()` even on closed hours — returns current last known price from Kite.
-   - **During MCX evening open** (after 17:00 IST): live broker path runs, `_enrich_position_greeks` stamps `underlying_ltp` via `broker.quote()`. NavStrip and snapshot should align then. If still diverging, likely a contract resolution mismatch (NavStrip resolves nearest future, snapshot uses batchQuote with a different key) — verify post-fix.
+The `underlying_ltp` backend fix (962c020e) stamps the value on snapshot rows, but:
+1. If `broker.quote()` fails for any reason (session hiccup, wrong key), `underlying_ltp = 0` → fallback divergence reappears.
+2. Priorities 2–5 in NavStrip's `_resolveOptionSpot` are structurally wrong for MCX.
 
-3. **VS Code `import('svelte')` "module not found" error** — JSDoc type annotations `@type {import('svelte').Snippet}` in `.svelte` files cause TypeScript LS to show red squiggles. Root cause: VS Code is opened from repo root (`/Users/ramanambore/projects/ramboq`), TypeScript LS resolves modules from root `node_modules/`, but `svelte` is only in `frontend/node_modules/`. The Svelte VS Code extension has a TypeScript plugin that fixes this when enabled. Fix: add `"svelte.enable-ts-plugin": true` to `.vscode/settings.json`. The build and `svelte-check` are unaffected; this is a dev-experience-only issue.
+**Root cause**: three independent spot sources (backend `underlying_ltp`, page-local batchQuote, symbolStore) that return different values. Every patch fixes one code path but leaves the structural divergence.
 
-**Holiday recognition**: System handled today correctly. NSE holiday was in the in-memory Tier-1 cache at 8:00 IST (populated by the 5:30 IST Tier-4 NSE-API fallback). MCX `evening_open_on_holidays: true` (backend_config.yaml line 106) correctly reopens MCX at 17:00 IST on holidays.
+**Fix**: Create a single `underlyingSpotStore.svelte.js` that both NavStrip and derivatives page import. One batchQuote poll, one cache, one result for every surface.
+
+The three critical metrics (Day P&L, P&L, Exp P&L) must all derive from the same `positionsStore` base. Exp P&L additionally needs spot — that spot must come from a single frontend store, not three different fallback chains.
 
 ## Task
 
-### Bug 3 (trivial, no agent needed) — VS Code svelte.enable-ts-plugin
+### 1. Create `frontend/src/lib/data/underlyingSpotStore.svelte.js`
 
-**File**: `.vscode/settings.json`
+New module. Responsibilities:
+- Watches `positionsStore.value` reactively → extracts unique F&O underlying roots (e.g., `'CRUDEOIL'`, `'NIFTY'`)
+- Polls `GET /api/instruments/batchQuote?symbols=<root1>,<root2>,...` every 30s (same API the derivatives page already uses)
+- Exports:
+  - `underlyingQuotes`: `$state({})` — map of `{ ROOT: { ltp, day_pct, prev_close } }` (same shape as derivatives page's current `_underlyingQuotes`)
+  - `getUnderlyingSpot(root): number` — returns `underlyingQuotes[root]?.ltp ?? 0`
+  - `loadUnderlyingSpots()`: triggers an immediate refresh (for call-sites that currently call `loadUnderlyingQuotes()`)
 
-Add one key:
-```json
-"svelte.enable-ts-plugin": true
-```
+Pattern: follow the shape of `positionsDayPnlStore.svelte.js` for the store structure and polling pattern.
 
-This registers the Svelte extension's TypeScript Language Service Plugin, which resolves `import('svelte')` module references from `frontend/node_modules/` regardless of workspace root. No code change, no tests needed.
+### 2. `frontend/src/lib/PositionStrip.svelte` — fix `_resolveOptionSpot`
 
----
+Current priorities 1–5:
+1. `p.underlying_ltp` (backend-stamped) ← keep
+2–4. symbolStore (wrong for MCX futures when not subscribed) ← REMOVE
+5. row-scan (option last_price, not spot price) ← REMOVE
 
-### Bug 1 — background.py: missing is_engine_idle import
+New priorities:
+1. `p.underlying_ltp` — backend SSOT
+2. `getUnderlyingSpot(root)` from `underlyingSpotStore` — same batchQuote as derivatives page
+3. Return 0 if both fail (show 0 rather than wrong value)
 
-**File**: `backend/api/background.py`
+Import: `import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js'`
 
-Around line 3988 (just before `if now >= midnight_dt_now and midnight_warm_date != today:`), add a local import:
-```python
-from backend.shared.helpers.utils import is_engine_idle
-```
-This single import covers both line 3990 and 4006 (both are inside the same outer loop).
+### 3. `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — use shared store
 
-### Bug 2 — positions.py: enrich snapshot rows with underlying_ltp
+- Import `underlyingQuotes, loadUnderlyingSpots` from `underlyingSpotStore.svelte.js`
+- Remove local `let _underlyingQuotes = $state({})` declaration
+- Remove local `loadUnderlyingQuotes()` function definition
+- Replace every `_underlyingQuotes` reference with the imported `underlyingQuotes`
+- Replace every `loadUnderlyingQuotes()` call with `loadUnderlyingSpots()`
+- `_rootSpot(root)` already uses `_underlyingQuotes[root]?.ltp` — no formula change, just the variable name
 
-**File**: `backend/api/routes/positions.py`
+The derivatives snapshot Exp P&L formula and `_perRootReduce` logic stay unchanged.
 
-The fast-return snapshot path at ~line 1388:
-```python
-if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
-    logger.debug(...)
-    return resp   # ← enrichment never runs here
-```
+### 4. Tests
 
-Change to:
-```python
-if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
-    logger.debug(...)
-    await _asyncio.to_thread(_enrich_position_greeks, resp.rows)   # stamp underlying_ltp
-    return resp
-```
+**Vitest** (`frontend/src/lib/__tests__/data/underlyingSpotStore.test.js`):
+- Mock batchQuote API; verify `getUnderlyingSpot('CRUDEOIL')` returns the mocked ltp
+- Verify store refreshes roots from positionsStore (reactive extraction)
+- Verify 0 returned for unknown root (no crash)
 
-`_enrich_position_greeks` → `_batch_fetch_spots` → `broker.quote()` works during closed hours (Kite REST returns last known price). Single round-trip per positions request, acceptable latency.
-
-**Skip-condition in `_enrich_position_greeks`** (line 1274): `r.last_price <= 0` — confirm snapshot rows have `last_price > 0` from the DB snapshot. They do (snapshot captures LTP at settlement time).
-
-### Tests required
-
-**Backend**: Add a test case to `backend/tests/test_positions_snapshot_prev_ltp.py` (or similar) that:
-- Simulates closed-hours snapshot path (mocking `closed_hours_or_broker` to return snapshot + `source='snapshot'`)
-- Verifies that returned rows have `underlying_ltp > 0` for option rows
-- Patches `_batch_fetch_spots` to return a fixed spot
-
-**Frontend** (Vitest): Add a test in `frontend/src/lib/__tests__/data/expiryPnl.test.js` (or PositionStrip-level) confirming:
-- When `p.underlying_ltp = 0` (null), `_resolveOptionSpot` returns 0 and `expiryPnl` returns null (leg skipped) — documents the known failure mode
-- When `p.underlying_ltp = 5100`, NavStrip correctly computes intrinsic
+**Vitest** (`frontend/src/lib/__tests__/data/expiryPnl.test.js` or PositionStrip-level):
+- `_resolveOptionSpot`: when `underlying_ltp = 0`, priority 2 uses `getUnderlyingSpot` not symbolStore
+- When `getUnderlyingSpot('CRUDEOIL') = 5788`, Exp P&L is computed correctly
 
 ## Agents
-- backend: Fix background.py (missing import) + positions.py (enrich snapshot rows). Files: `backend/api/background.py`, `backend/api/routes/positions.py`
-- backend-test: Write test for positions snapshot enrichment. Target: `backend/tests/test_positions_snapshot_prev_ltp.py` or `test_positions_snapshot_fixes.py`
-- frontend: Edit `.vscode/settings.json` — add `"svelte.enable-ts-plugin": true`
+- frontend: Implement underlyingSpotStore.svelte.js + patch PositionStrip.svelte (_resolveOptionSpot priorities) + patch derivatives/+page.svelte (use shared store). Files: `frontend/src/lib/data/underlyingSpotStore.svelte.js` (new), `frontend/src/lib/PositionStrip.svelte`, `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- backend: skip
+- backend-test: skip
 - doc: skip
 - playwright: skip
 
 ## Tests
-- pytest: yes
-- svelte-check: no
+- pytest: no
+- svelte-check: yes
 - playwright: no
+- vitest: yes (frontend unit tests)
 
 ## Commit message
-fix(positions): stamp underlying_ltp on closed-hours snapshot rows; fix is_engine_idle NameError in sparkline-warm; enable svelte TS plugin for VS Code
+fix(navstrip): single underlyingSpotStore SSOT — share batchQuote between NavStrip and derivatives snapshot; remove symbolStore fallback from _resolveOptionSpot
 
 ## Done when
-- `bg-sparkline-warm` no longer crashes on prod (NameError gone)
-- `/api/positions` snapshot rows have `underlying_ltp > 0` for option rows
-- NavStrip Exp P&L for CRUDEOIL options matches derivatives snapshot value when market is closed
-- VS Code no longer shows `import('svelte')` module-not-found squiggle
-- pytest green
+- `underlyingSpotStore.svelte.js` exists, polls batchQuote, exports `getUnderlyingSpot`
+- NavStrip `_resolveOptionSpot` uses `getUnderlyingSpot` as priority 2 (no symbolStore/row-scan fallback)
+- Derivatives page imports from shared store (no more local `_underlyingQuotes`)
+- NavStrip Exp P&L matches derivatives snapshot Exp P&L for CRUDEOIL options during closed-hours AND during MCX open
+- svelte-check 0 errors, vitest green

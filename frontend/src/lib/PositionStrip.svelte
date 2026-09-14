@@ -14,14 +14,14 @@
   import { cachedDelete } from '$lib/data/persistentCache';
   import { getSnapshot, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
-  import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
-  import { batchQuote } from '$lib/api';
+  import { getUnderlyingSpot, loadUnderlyingSpots } from '$lib/data/underlyingSpotStore.svelte.js';
   // baseDayPnlForPosition + livePositionDayPnl removed — now in positionsDayPnlStore
   import NavBreakdown from '$lib/NavBreakdown.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -167,12 +167,13 @@
   // independently — mergeSymbolBatch(ltp_ts=0) handles the collision
   // without conflict; the most recent snapshot_ts wins.
   async function _loadUnderlyingSpots() {
-    // Collect unique quote keys for all F&O option positions only
-    // (futures use their own tradingsymbol as the spot key — already
-    // in symbolStore from _publishPositionsRows — so they don't need
-    // a separate batchQuote here).
-    /** @type {Set<string>} */
-    const keys = new Set();
+    // Collect { root, quoteKey } pairs for all F&O option positions.
+    // Futures use their own tradingsymbol as the spot key — already in
+    // symbolStore from _publishPositionsRows — so they don't need a
+    // separate batchQuote here.
+    /** @type {Array<{ root: string, quoteKey: string }>} */
+    const pairs = [];
+    const seen = new Set();
     const snap = untrack(() => positionsStore.value ?? []);
     for (const p of snap) {
       const sym  = String(p?.tradingsymbol || '').toUpperCase();
@@ -187,14 +188,14 @@
       const root = decomp.root || getInstrument(sym)?.u;
       if (!root) continue;
       const resolved = resolveUnderlying(root, findNearestFuture);
-      if (!resolved?.quoteKey) continue;
-      keys.add(resolved.quoteKey);
+      if (!resolved?.quoteKey || seen.has(resolved.quoteKey)) continue;
+      seen.add(resolved.quoteKey);
+      pairs.push({ root, quoteKey: resolved.quoteKey });
     }
-    if (keys.size === 0) return;
-    debugLog('navstrip:spot', 'request', { keys: [...keys] });
-    const res = await batchQuote([...keys]);
-    publishPulseQuotes(res?.items ?? []);
-    debugLog('navstrip:spot', 'result', { count: res?.items?.length ?? 0 });
+    if (pairs.length === 0) return;
+    debugLog('navstrip:spot', 'request', { pairs });
+    await loadUnderlyingSpots(pairs);
+    debugLog('navstrip:spot', 'result', { count: pairs.length });
   }
 
   // BH2: live LTP reads come from symbolStore.get(sym) via getSnapshot.
@@ -705,41 +706,23 @@
    * @returns {number}
    */
   function _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows) {
-    let spot = 0;
-
     // Priority 1: backend-stamped underlying_ltp (SSOT, always preferred).
     // Matches derivatives/+page.svelte:_accumulatePosExpPnl which reads
     // p.underlying_ltp before falling to _rootSpot(). Putting symbolStore
     // ahead of underlying_ltp caused MCX CRUDEOIL divergence when the live
     // SSE ticker had a stale/wrong contract LTP in symbolStore while the
     // backend had already stamped the correct spot via positions.py Pass 3.
-    spot = Number(p?.underlying_ltp || 0);
-    if (spot > 0) return spot;
+    const spot1 = Number(p?.underlying_ltp || 0);
+    if (spot1 > 0) return spot1;
 
-    // Priority 2-4: live ticker via symbolStore (most current).
-    // Same 3 keys as derivatives/+page.svelte:_rootSpot().
-    for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
-      const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
-      if (typeof v === 'number' && v > 0) { spot = v; break; }
-    }
-    if (spot > 0) return spot;
+    // Priority 2: shared underlyingSpotStore — same batchQuote result as the
+    // derivatives snapshot page. Eliminates the cold-instruments symbolStore
+    // race where MCX futures LTP was never populated in symbolStore because
+    // the instruments cache was cold when _loadUnderlyingSpots fired.
+    const spot2 = getUnderlyingSpot(root);
+    if (spot2 > 0) return spot2;
 
-    // Priority 5 (row-scan fallback): check positions then holdings for a matching symbol.
-    const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();
-    const wantRoot = String(root).toUpperCase();
-    for (const src of [posRows, holdRows]) {
-      if (spot > 0) break;
-      for (const _row of (src ?? [])) {
-        const row = /** @type {any} */ (_row);
-        const rSym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
-        if (!rSym) continue;
-        if (rSym === wantKey || rSym === wantRoot) {
-          const lp = Number(row?.last_price || 0);
-          if (lp > 0) { spot = lp; break; }
-        }
-      }
-    }
-    return spot;
+    return 0;
   }
 
   /**

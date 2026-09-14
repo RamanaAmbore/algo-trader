@@ -21,9 +21,8 @@
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
-    batchQuote,
   } from '$lib/api';
-  import { positionsStore, holdingsStore, pulsePositionsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, holdingsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
@@ -58,7 +57,7 @@
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
   import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
-  import { applyUnderlyingTickLtp } from '$lib/data/underlyingQuoteUtils.js';
+  // applyUnderlyingTickLtp — tick patches now go through patchUnderlyingSpot in underlyingSpotStore
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -87,6 +86,7 @@
   import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
   import { debugLog } from '$lib/debug/debugLog.js';
+  import { underlyingSpotStore, loadUnderlyingSpots as _loadUnderlyingSpotsFn, patchUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -946,11 +946,11 @@
 
 
   /** Per-underlying live quote map — { ROOT: { ltp, day_pct, prev_close } }.
-   *  Populated by loadUnderlyingQuotes() (one batchQuote per Snapshot
-   *  poll). Drives the Spot / Day % / Prev Close columns. Missing roots
-   *  render as "—". */
+   *  Populated by loadUnderlyingQuotes() via the shared underlyingSpotStore
+   *  (one batchQuote per Snapshot poll). Drives the Spot / Day % / Prev Close
+   *  columns. Missing roots render as "—". */
   /** @type {Record<string, { ltp: number, day_pct: number | null, prev_close: number }>} */
-  let _underlyingQuotes = $state({});
+  let _underlyingQuotes = $derived(underlyingSpotStore.value);
   /** Monotonic counter incremented each time _underlyingQuotes is replaced.
    *  Used as a reactive dependency in liveSpot and _clientPayoffStub when
    *  the market is closed — guarantees those derived values re-run after
@@ -1083,44 +1083,16 @@
   async function loadUnderlyingQuotes() {
     const pairs = untrack(() => _underlyingQuoteKeys);
     if (pairs.length === 0) return;
-    const keys = pairs.map(p => p.quoteKey);
-    debugLog('payoff:bq', 'request', { keys: [...keys] });
+    debugLog('payoff:bq', 'request', { keys: pairs.map(p => p.quoteKey) });
     try {
-      const res = await batchQuote(keys);
-      // Publish underlying-anchor quotes to symbolStore so liveSpot
-      // in OptionsPayoff (and any other consumer) can read them via
-      // getSnapshot. Without this, the derivatives page fetched its
-      // own batchQuote but never fed the central store — operator
-      // reported the payoff overlay numbers didn't update with ticks
-      // because the anchor symbol had no entry in symbolStore and
-      // liveSpot fell back to the server-poll strategy.spot value.
-      publishPulseQuotes(res?.items ?? []);
-      // /api/quote/batch returns `{refreshed_at, items: [...]}` where
-      // each item is `{exchange, tradingsymbol, ltp, change_pct, close,
-      // bid, ask, ...}`. Build an exchange:symbol → item map so we
-      // can look up by the same quote-key we sent.
-      /** @type {Record<string, any>} */
-      const byKey = {};
-      for (const it of (res?.items ?? [])) {
-        if (!it?.exchange || !it?.tradingsymbol) continue;
-        byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
-      }
-      /** @type {Record<string, { ltp: number, day_pct: number | null, prev_close: number }>} */
-      const next = {};
-      for (const { root, quoteKey } of pairs) {
-        const q = byKey[quoteKey];
-        if (!q) continue;
-        const ltp   = Number(q.ltp   ?? q.last_price ?? 0);
-        const close = Number(q.close ?? q.ohlc?.close ?? 0);
-        let pct = null;
-        if (q.change_pct != null)          pct = Number(q.change_pct);
-        else if (q.change_percent != null) pct = Number(q.change_percent);
-        else if (close > 0 && ltp > 0)     pct = ((ltp - close) / close) * 100;
-        next[root] = { ltp, day_pct: pct, prev_close: close };
-      }
-      _underlyingQuotes = next;
+      // Delegate to the shared store — batchQuote + publishPulseQuotes +
+      // store update happen in one place so NavStrip and this page share
+      // the same underlying spot prices without a second network call.
+      await _loadUnderlyingSpotsFn(pairs);
       _quoteGeneration++;
-      debugLog('payoff:bq', 'result', Object.fromEntries(Object.entries(_underlyingQuotes).map(([k, v]) => [k, v?.ltp])));
+      debugLog('payoff:bq', 'result', Object.fromEntries(
+        Object.entries(underlyingSpotStore.value).map(([k, v]) => [k, v?.ltp])
+      ));
     } catch (_) { /* leave previous values up — chip stays */ }
   }
 
@@ -1793,8 +1765,9 @@
         const snap = getSnapshot(root);
         if (snap?.ltp != null) {
           flash.update(`${root}:ltp`, Number(snap.ltp));
-          const _next = applyUnderlyingTickLtp(_underlyingQuotes, root, snap.ltp);
-          if (_next !== _underlyingQuotes) _underlyingQuotes = _next;
+          // Write through the shared store so NavStrip (getUnderlyingSpot)
+          // sees per-tick patches, not just 30s poll refreshes.
+          patchUnderlyingSpot(root, snap.ltp);
         }
       }
 
@@ -1807,8 +1780,7 @@
         const _as = getSnapshot(root);
         if (_as?.ltp != null) {
           flash.update(`${_stratUnd}:ltp`, Number(_as.ltp));
-          const _next = applyUnderlyingTickLtp(_underlyingQuotes, _stratUnd, _as.ltp);
-          if (_next !== _underlyingQuotes) _underlyingQuotes = _next;
+          patchUnderlyingSpot(_stratUnd, _as.ltp);
           debugLog('payoff:anchor', 'tick', { root, stratUnd: _stratUnd, ltp: Number(_as.ltp) });
         }
       }
