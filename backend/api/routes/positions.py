@@ -1389,6 +1389,7 @@ async def _resolve_positions_source(
         logger.debug(
             f"positions: market closed ({source}) — serving daily_book snapshot"
         )
+        await _asyncio.to_thread(_enrich_position_greeks, resp.rows)   # stamp underlying_ltp on snapshot rows
         return resp
     # Market is open or stale-live — resp is already the broker response.
     if source in ("live", "stale-live"):

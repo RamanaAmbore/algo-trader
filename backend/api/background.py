@@ -3987,6 +3987,7 @@ async def _task_sparkline_warm(state: dict) -> None:
         )
         if now >= midnight_dt_now and midnight_warm_date != today:
             midnight_warm_date = today
+            from backend.shared.helpers.utils import is_engine_idle
             if is_engine_idle():
                 logger.info("sparkline warm: skipped daily-midnight — engine idle (dev)")
             else:
