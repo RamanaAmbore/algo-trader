@@ -4633,10 +4633,9 @@
                     title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
                 {aggCompact(_legsExpPnlTotal)}
               </span>
-              {@const _legsTotalExtrinsic = positionsDerivedStore.total.extrinsic}
-              <span class="num tf-cell cand-pnl {_legsTotalExtrinsic > 0 ? 'cell-pos' : _legsTotalExtrinsic < 0 ? 'cell-neg' : 'cell-flat'}"
+              <span class="num tf-cell cand-pnl {positionsDerivedStore.total.extrinsic > 0 ? 'cell-pos' : positionsDerivedStore.total.extrinsic < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Extrinsic value across all positions — total time value remaining in the portfolio.">
-                {aggCompact(_legsTotalExtrinsic)}
+                {aggCompact(positionsDerivedStore.total.extrinsic)}
               </span>
               <span class="num">—</span>
               <span class="num" title="Σ Δ across every selected leg (position-scaled).">{pctFmt(_tg.delta)}</span>
