@@ -707,17 +707,21 @@
   function _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows) {
     let spot = 0;
 
-    // Priority 1-3: live ticker via symbolStore (most current).
+    // Priority 1: backend-stamped underlying_ltp (SSOT, always preferred).
+    // Matches derivatives/+page.svelte:_accumulatePosExpPnl which reads
+    // p.underlying_ltp before falling to _rootSpot(). Putting symbolStore
+    // ahead of underlying_ltp caused MCX CRUDEOIL divergence when the live
+    // SSE ticker had a stale/wrong contract LTP in symbolStore while the
+    // backend had already stamped the correct spot via positions.py Pass 3.
+    spot = Number(p?.underlying_ltp || 0);
+    if (spot > 0) return spot;
+
+    // Priority 2-4: live ticker via symbolStore (most current).
     // Same 3 keys as derivatives/+page.svelte:_rootSpot().
     for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
       const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
       if (typeof v === 'number' && v > 0) { spot = v; break; }
     }
-    if (spot > 0) return spot;
-
-    // Priority 4: backend stamp — stale up to 5s but populated during
-    // closed hours via LKG cache (what Greeks / IV used).
-    spot = Number(p?.underlying_ltp || 0);
     if (spot > 0) return spot;
 
     // Priority 5 (row-scan fallback): check positions then holdings for a matching symbol.

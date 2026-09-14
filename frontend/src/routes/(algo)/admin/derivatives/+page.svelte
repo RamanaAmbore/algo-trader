@@ -1181,11 +1181,29 @@
     return { byRoot, total };
   });
 
-  /** Per-candidate Day P&L: positionsDayPnlStore (live SSE-backed) with
-   *  baseDayPnlForPosition as fallback when the store has no entry yet. */
+  /** Per-candidate Day P&L — computed per-row using livePositionDayPnl.
+   *
+   *  positionsDayPnlStore.byKey[sym] aggregates across ALL accounts
+   *  for that symbol. candidatePositions has per-account rows so using
+   *  byKey would double-count when two accounts hold the same symbol
+   *  (e.g. CRUDEOIL26AUGPE5400 in two accounts → byKey returns 2×).
+   *  Fix: apply livePositionDayPnl directly using each candidate's own
+   *  fields, which is exactly what the store does per-row before aggregating.
+   */
   const _candDayPnl = (c) => {
-    const sym = String(c?.tradingsymbol || c?.symbol || '').toUpperCase();
-    return positionsDayPnlStore.byKey[sym] ?? baseDayPnlForPosition(c);
+    const sym  = String(c?.symbol || c?.tradingsymbol || '').toUpperCase();
+    const snap = untrack(() => getSnapshot(sym));
+    return livePositionDayPnl(
+      {
+        closePx: c.prev_close ?? 0,
+        pollLtp: c.ltp        ?? 0,
+        qty:     c.qty        ?? 0,
+        avg:     c.avg_cost   ?? 0,
+        dcvRow:  c,
+      },
+      snap?.ltp ?? null,
+      { marketOpen: isMarketOpen() },
+    );
   };
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
