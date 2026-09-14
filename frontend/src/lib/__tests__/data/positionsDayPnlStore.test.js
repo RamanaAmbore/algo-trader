@@ -726,3 +726,94 @@ describe('positionsDayPnlStore — previous_close preference over close_price', 
     expect(result.byKey['NSE:TATASTEEL']).not.toBeCloseTo(149.9, 0);
   });
 });
+
+// ── Test N: Proxy enumeration (ownKeys + getOwnPropertyDescriptor) ────────────
+// The byKey shim is a Proxy. Without ownKeys/getOwnPropertyDescriptor traps,
+// Object.entries(proxy) returns [] (target is {} empty), breaking
+// _fnoDayPnlByRoot in the derivatives page which iterates byKey to build the
+// Day P&L per-root map for the Snapshot table.
+
+describe('positionsDayPnlStore.byKey proxy — Object.entries enumeration', () => {
+  function makeShimProxy(fakeStore) {
+    return new Proxy({}, {
+      get(_t, sym) {
+        if (typeof sym !== 'string') return undefined;
+        return fakeStore[sym]?.day_pnl ?? 0;
+      },
+      has(_t, sym) { return sym in fakeStore; },
+      ownKeys(_t) { return Object.keys(fakeStore); },
+      getOwnPropertyDescriptor(_t, sym) {
+        if (typeof sym === 'string' && sym in fakeStore) {
+          return { configurable: true, enumerable: true, value: fakeStore[sym]?.day_pnl ?? 0 };
+        }
+        return undefined;
+      },
+    });
+  }
+
+  it('Object.entries returns all key-value pairs (not empty)', () => {
+    const fakeStore = {
+      'CRUDEOIL26AUGFUT': { day_pnl: -1356, exp_pnl: -2100, extrinsic: 0 },
+      'GOLDM26AUGFUT':    { day_pnl: 420,   exp_pnl: 630,   extrinsic: 0 },
+    };
+    const proxy = makeShimProxy(fakeStore);
+    const entries = Object.entries(proxy);
+    expect(entries).toHaveLength(2);
+    expect(entries).toContainEqual(['CRUDEOIL26AUGFUT', -1356]);
+    expect(entries).toContainEqual(['GOLDM26AUGFUT', 420]);
+  });
+
+  it('Object.keys returns all symbol keys', () => {
+    const fakeStore = { 'NIFTY26SEP24000CE': { day_pnl: -200 } };
+    const proxy = makeShimProxy(fakeStore);
+    expect(Object.keys(proxy)).toEqual(['NIFTY26SEP24000CE']);
+  });
+
+  it('missing key returns 0 via get trap', () => {
+    const fakeStore = { 'GOLDM26AUGFUT': { day_pnl: 420 } };
+    const proxy = makeShimProxy(fakeStore);
+    expect(proxy['UNKNOWN']).toBe(0);
+  });
+
+  it('empty store: Object.entries returns []', () => {
+    const proxy = makeShimProxy({});
+    expect(Object.entries(proxy)).toHaveLength(0);
+  });
+
+  it('without ownKeys trap, Object.entries returns [] (demonstrates the old bug)', () => {
+    const fakeStore = { 'CRUDEOIL26AUGFUT': { day_pnl: -1356 } };
+    const brokenProxy = new Proxy({}, {
+      get(_t, sym) {
+        if (typeof sym !== 'string') return undefined;
+        return fakeStore[sym]?.day_pnl ?? 0;
+      },
+      has(_t, sym) { return sym in fakeStore; },
+      // no ownKeys — this is the broken version
+    });
+    expect(Object.entries(brokenProxy)).toHaveLength(0);
+  });
+
+  it('_fnoDayPnlByRoot pattern: iterate byKey and build root→dayPnl map', () => {
+    const fakeStore = {
+      'CRUDEOIL26AUGFUT':  { day_pnl: -1356 },
+      'GOLDM26AUGFUT':     { day_pnl: 420 },
+      'NIFTY26SEP24000CE': { day_pnl: -50 },
+      'TATASTEEL':         { day_pnl: 80 },  // equity — filtered (doesn't end FUT/CE/PE)
+    };
+    const proxy = makeShimProxy(fakeStore);
+
+    // Simulate _fnoDayPnlByRoot logic from derivatives page
+    const byRoot = {};
+    let total = 0;
+    for (const [sym, val] of Object.entries(proxy)) {
+      if (!/FUT$|(CE|PE)$/i.test(sym)) continue;
+      // decomposeSymbol would give root; use simple regex here for test isolation
+      const root = sym.replace(/\d{2}[A-Z]{3}(?:FUT|CE|PE|\d+(CE|PE))$/, '').replace(/\d+$/, '');
+      byRoot[root] = (byRoot[root] ?? 0) + val;
+      total += val;
+    }
+    // TATASTEEL doesn't end in FUT/CE/PE so filtered out; total = sum of F&O only
+    expect(total).toBeCloseTo(-1356 + 420 + (-50), 4);
+    expect(byRoot['TATASTEEL']).toBeUndefined();  // filtered out (equity)
+  });
+});

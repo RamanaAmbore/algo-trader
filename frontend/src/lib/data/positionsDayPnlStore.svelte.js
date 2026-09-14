@@ -16,6 +16,16 @@ const _byKeyProxy = new Proxy({}, {
     return positionsDerivedStore.byKey[sym]?.day_pnl ?? 0;
   },
   has(_t, sym) { return sym in positionsDerivedStore.byKey; },
+  // ownKeys + getOwnPropertyDescriptor required so Object.entries/keys work.
+  // Without these, Object.entries returns [] (target is {}) — breaking
+  // _fnoDayPnlByRoot in the derivatives page which iterates byKey.
+  ownKeys(_t) { return Object.keys(positionsDerivedStore.byKey); },
+  getOwnPropertyDescriptor(_t, sym) {
+    if (typeof sym === 'string' && sym in positionsDerivedStore.byKey) {
+      return { configurable: true, enumerable: true, value: positionsDerivedStore.byKey[sym]?.day_pnl ?? 0 };
+    }
+    return undefined;
+  },
 });
 
 export const positionsDayPnlStore = {
