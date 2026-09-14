@@ -101,13 +101,46 @@ contribute to EXP. Equity rows (`NSE`, `BSE`) are skipped.
    - Example: sold 2 CE 2850 short, covered today for +100 profit → contributes +100 total
 
 **Spot resolution** (for open legs):
-- Backend-stamped `underlying_ltp` (SSOT, via Pass 3 enrichment) takes precedence
-- Fallback chain: `symbolStore` snapshot for resolved tradingsymbol → underlying root → 
-  positions/holdings row-scan for a matching symbol's LTP
+- `underlyingSpotStore.getUnderlyingSpot(root)` (SSOT, fetched via batchQuote) — most 
+  accurate; used by both PositionStrip and the derivatives page so NavStrip and 
+  derivatives Exp P&L always agree
+- Falls back to 0 when root is not yet loaded in the store
+- batchQuote is triggered every 5s (book-poller cadence) by PositionStrip's 
+  `_loadUnderlyingSpots()`; live LTP ticks patch per-tick via 
+  `patchUnderlyingSpot(root, ltp)`
 - If no spot can be resolved, the leg contributes 0 (no error thrown)
 
 **Throttling**: Recomputed at 4 Hz max (same `_throttledTick` gate as `_liveDeltaByRow`) 
 to avoid scheduler pressure during high-frequency SSE ticks.
+
+#### Exp P&L Spot Architecture (SSOT Consolidation)
+
+The NavStrip Exp P&L slot and the `/admin/derivatives` page Exp P&L column previously
+used different spot-price fallback chains, causing divergence. As of 2026-09, both
+surfaces share a single SSOT: `underlyingSpotStore` in `frontend/src/lib/data/underlyingSpotStore.svelte.js`.
+
+**Store design**:
+- Module-level `$state({})` map: `{ ROOT: { ltp, day_pct, prev_close } }` 
+  (e.g., `{ CRUDEOIL: { ltp: 5788, day_pct: 0.4, prev_close: 5763 } }`)
+- Exported getter `getUnderlyingSpot(root)` → returns `.ltp` or 0
+- Exported loader `loadUnderlyingSpots(pairs)` → fetches batchQuote, populates store, 
+  publishes to symbolStore via `publishPulseQuotes` so OptionsPayoff charts stay fresh
+- Per-tick patcher `patchUnderlyingSpot(root, ltp)` → updates LTP only, preserves 
+  day_pct/prev_close from last batchQuote
+
+**PositionStrip refresh cadence**:
+- Calls `_loadUnderlyingSpots()` every 5s (book-poller cadence) to fetch fresh 
+  underlying quotes via batchQuote for all F&O option positions
+- Options-only; futures use their own tradingsymbol (already in symbolStore from 
+  `_publishPositionsRows`), so no batchQuote needed for futures
+- tickBus handlers call `patchUnderlyingSpot(root, ltp)` for per-tick LTP updates 
+  between 5s polls
+- Failures are silent (catch/ignore) so a batchQuote error doesn't block strip rendering
+
+**Derivatives page equivalence**:
+- `/admin/derivatives` page's `loadUnderlyingQuotes()` also delegates to 
+  `loadUnderlyingSpots()`, writing to the same shared store
+- Both pages read via `getUnderlyingSpot(root)` → converged Exp P&L values
 
 ### M pill: Margin
 
@@ -234,7 +267,7 @@ Every value must match a canonical source to stay in sync with other surfaces.
 |---|---|---|
 | P:1 | `positionsDayPnlStore` (module-level singleton) | Dual-path: (1) MarketPulse writes accurate cq-based day P&L via `setFromPulse(byKey, total)` when page is open; (2) SSE-based fallback computation (4Hz throttle via `livePositionDayPnl()`) when Pulse is closed. Getters `total` and `byKey` prefer Pulse values (`_pulseTotal ?? _store.total`). Exports `total` + `byKey[symbol]`. |
 | P:2 | MarketPulse Positions grid TOTAL row, P&L column | `Σ p.pnl` summed + live delta |
-| P:3 | `/admin/derivatives` TOTAL row at expiry | `expiryPnl()` helper, F&O only |
+| P:3 | `underlyingSpotStore` (module-level singleton) | `getUnderlyingSpot(root)` via batchQuote (5s refresh) + per-tick patches. Both PositionStrip and derivatives page use this shared SSOT so Exp P&L converges between NavStrip and derivatives grid. |
 | M:1, M:2 | `/api/funds` response margin fields | `funds[].avail_margin`, `funds[].used_margin` |
 | C:1 | Broker's live cash (CA) | `fundsStore.load()` → `funds[].live_cash` |
 | C:2 | Option premium tied up in long positions | Derived from `positions[]` CE/PE rows |
@@ -593,6 +626,11 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 - **New-position day P&L**: New intraday position (oq=0) with missing close_price shows correct P:1 value via `(live − avg) × qty` escape hatch; overnight positions (oq≠0) with missing close_price return 0
 - **Closed-leg EXP**: Fully exited F&O leg (qty=0) contributes `p.pnl` to EXP; not skipped
 - **Partial-close EXP**: Partially exited F&O leg (qty≠0) adds realised + intrinsic to EXP
+- **Exp P&L SSOT convergence**: PositionStrip (NavStrip P:3 slot) and derivatives page 
+  (`/admin/derivatives` Exp P&L column) both read from `underlyingSpotStore`; when an 
+  option position updates its LTP tick, both surfaces see the same intrinsic-value 
+  computation via `getUnderlyingSpot(root)`; verify no divergence between strip and 
+  grid even during high-frequency tick bursts
 - **Panel popups (Round 6)**: Click P/M/C/H label → panel opens with accent-colored title, left-border stripe, and gradient background; accent color matches pill identity
 - **Per-slot hover hints (Round 6)**: Hover any slot value → ⓘ icon visible; hover icon → panel opens with correct title and slot description; leaves on mouse-out
 
@@ -624,3 +662,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-08-21 | H:1 post-settlement guard updated: When `|ltp − close| ≤ 0.005` paise (settlement convergence detected), fallback to broker snapshot `day_change_val` instead of computing `(ltp − close) × qty`. Prevents H slot from showing 0 immediately after NSE/MCX settlement when prices converge and formula would yield spurious result. Guards applied in `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` and `pulseUnified.js:mergeHoldingRows`. Also note: `_brokerHealthWorstState` in `frontend/src/lib/stores.js` now returns 'green' when all accounts are `inactive` (expected post-market state, no quote calls) instead of 'amber', seeding `worstState: 'green'` before first health poll. |
 | 2026-08-25 | v1.3 NavBreakdown TOTAL row SSOT + tick-border underline animation (commit b33d056b): (1) NavBreakdown P-pill breakdown TOTAL row now reads `positionsDayPnlStore.total` directly, ensuring it always matches the P:1 pill value exactly, even when MarketPulse pulse-override is active via `setFromPulse`. Added explicit note in §1 Pill label click-to-breakdown. (2) Tick-border shimmer updated: PositionStrip's border element now receives `cell-freshness-pulse` class on each LTP tick exceeding 0.1% threshold; applies CSS keyframe `freshness-sweep` (sky-300 → indigo-400 gradient, left-to-right, 0.6s) via `createFreshnessShimmer` wired to tickBus SSE ticks. §5 Data Freshness and Staleness updated. |
 | 2026-08-30 | v1.4 Holdings day P&L guard fix + H:2 three-tier fallback (commit adc5e1f0): (1) H:1 closePx guard updated — removed `closePx === avgCost` condition which incorrectly fell back to broker `day_change_val` on valid trading days when price coincidentally equaled cost basis. New guard: `closePx <= 0` only. When `closePx > 0`, formula always computes `(liveLtp − closePx) × heldQty`. (2) H:2 current value added three-tier fallback in `_liveHoldingsValue`: Tier 1 `symbolStore ltp × qty` (SSE tick), Tier 2 `h.last_price × qty` (prevents invented value when broker sends last_price=0), Tier 3 `h.cur_val` (final fallback). Detailed subsection added in §1. |
+| 2026-09-14 | v1.5 Exp P&L spot SSOT consolidation (underlyingSpotStore): (1) New module-level store `underlyingSpotStore.svelte.js` centralizes underlying spot quotes (`{ ROOT: { ltp, day_pct, prev_close } }`). Exported API: `getUnderlyingSpot(root)` (cached LTP or 0), `loadUnderlyingSpots(pairs)` (batchQuote fetch + symbolStore publish), `patchUnderlyingSpot(root, ltp)` (per-tick update). (2) PositionStrip simplified: `_resolveOptionSpot(p.underlying_ltp)` reduced to single `getUnderlyingSpot(root)` call; removed symbolStore fallback chain (3 key attempts). (3) Derivatives page delegates to shared store: `loadUnderlyingQuotes()` → `loadUnderlyingSpots()`, eliminating local state duplication. Both surfaces now read identical spot prices; NavStrip P:3 and derivatives Exp P&L no longer diverge. (4) Update §1 EXP Slot spec: Spot resolution now SSOT-first via store (5s batchQuote + per-tick patches). Added detailed subsection §1.4 "Exp P&L Spot Architecture" documenting store design, refresh cadence, per-tick patching. Updated §2 SSOT table: P:3 row now references `underlyingSpotStore` instead of backend Pass 3 enrichment. Added test case: Exp P&L convergence check. |
