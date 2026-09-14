@@ -1184,8 +1184,19 @@
   /** Per-candidate Day P&L: positionsDayPnlStore (live SSE-backed) with
    *  baseDayPnlForPosition as fallback when the store has no entry yet. */
   const _candDayPnl = (c) => {
-    const sym = String(c?.tradingsymbol || c?.symbol || '').toUpperCase();
-    return positionsDayPnlStore.byKey[sym] ?? baseDayPnlForPosition(c);
+    const sym  = String(c?.symbol || c?.tradingsymbol || '').toUpperCase();
+    const snap = untrack(() => getSnapshot(sym));
+    return livePositionDayPnl(
+      {
+        closePx: c.prev_close ?? 0,
+        pollLtp: c.ltp        ?? 0,
+        qty:     c.qty        ?? 0,
+        avg:     c.avg_cost   ?? 0,
+        dcvRow:  c,
+      },
+      snap?.ltp ?? null,
+      { marketOpen: isMarketOpen() },
+    );
   };
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from

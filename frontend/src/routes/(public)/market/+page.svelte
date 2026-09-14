@@ -90,9 +90,9 @@
     loading = true; error = '';
     try {
       const data  = await fetchMarket();
-      content     = data.content ?? '';
-      lastRefresh = data.refreshed_at ?? '';
-      dataCache.market = data;
+      content     = data?.content ?? '';
+      lastRefresh = data?.refreshed_at ?? '';
+      if (data) dataCache.market = data;
     } catch (e) {
       error = e.message || 'Failed to load market update';
     } finally { loading = false; }
