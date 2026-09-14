@@ -29,7 +29,8 @@
                     "remoteRoot": "/opt/ramboq_dev"
                 }
             ],
-            "justMyCode": false
+            "justMyCode": false,
+            "subProcess": false
         }
     ]
 }
