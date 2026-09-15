@@ -405,10 +405,10 @@
     // simultaneously.
     const sym = (params.data?.tradingsymbol ?? '').toUpperCase();
     if (sym && _perfLtpFlashUp.has(sym)) {
-      const absPct = _perfLtpFlashPctMap.get(sym) ?? 1;
+      const absPct = Math.abs(params.data?.day_change_percentage ?? _perfLtpFlashPctMap.get(sym) ?? 1);
       cls.push(_tcFlashClass('up', absPct));
     } else if (sym && _perfLtpFlashDown.has(sym)) {
-      const absPct = _perfLtpFlashPctMap.get(sym) ?? 1;
+      const absPct = Math.abs(params.data?.day_change_percentage ?? _perfLtpFlashPctMap.get(sym) ?? 1);
       cls.push(_tcFlashClass('down', absPct));
     } else {
       const k = _perfFlashKey(params.data);

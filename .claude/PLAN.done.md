@@ -1,149 +1,117 @@
-# Plan: LTP color SSOT + magnitude-based flash + unified threshold + CSS token cleanup
+# Plan: Flash tier from day % (not tick delta)
 
 ## Context
 
-LTP and day % currently produce identical text color (`cell-pos/neg/flat`) but from
-different data sources. Unifying to `change_pct`/`day_pnl_pct` field makes LTP color a
-true SSOT.
+The 3-tier flash system currently reads `absPct` from `_ltpFlashPctMap`, which stores
+the tick-to-tick % delta from the SSE bus. This means the tier reflects "how much did
+the price just tick" — a tiny corrective tick on a big day-mover flashes `sm`, while
+a large tick on a flat stock flashes `lg`. 
 
-Flash threshold: LTP uses operator-configurable `ltpFlashPct`; day % uses `0.001` hardcoded
-floor. Unifying to one threshold (`ltpFlashPct`) applied to both eliminates the split.
-Settings label updates from "LTP flash threshold" → "Price flash threshold (%)".
+The correct signal is "how significant is this symbol's move today" = day %.
+A stock up 3% on the day should always flash `lg` whenever its LTP ticks, regardless
+of the size of the individual tick. A flat stock should always flash `sm`.
 
-Flash intensity: currently all flash classes use a fixed starting color regardless of how
-large the move was. Magnitude-based tiers make large moves stand out visually.
-
-PerformancePage still uses background flash (`ltp-flash-up/down`) for P&L cascade; every
-other surface uses text-color flash (`ltp-tc-flash-up/down`). Fix to complete parity.
+Where day % is not pre-computed on the row (derivatives spot, CandidateLegRow),
+compute independently: `Math.abs((ltp − prevClose) / prevClose × 100)`.
 
 ## Task
 
-Five changes, all frontend:
+Four targeted changes, all frontend:
 
-### Fix 1 — LTP cell color from `change_pct` field (SSOT)
+### Fix 1 — `_ltpFlashClass` reads day % from row data (pulseColumns.js)
 
-**File:** `src/lib/data/pulseColumns.js`
+**File:** `frontend/src/lib/data/pulseColumns.js`
 
-**`_ltpCellClass()`:** Read `change_pct` (left grid) or `day_pnl_pct` (right grid) field
-directly — same source as day % color. Fall back to `ltp vs close_price` when field absent.
+Add `rowData` parameter to `_ltpFlashClass` (currently `(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct)`):
 
 ```javascript
-const pct = p.data?.change_pct ?? p.data?.day_pnl_pct ?? null;
-const dir = pct != null
-  ? (pct > 0 ? 'cell-pos' : pct < 0 ? 'cell-neg' : 'cell-flat')
-  : (ltp > close ? 'cell-pos' : ltp < close ? 'cell-neg' : 'cell-flat');
-```
-
-Derivatives Snapshot spot (`_spotDir` in `+page.svelte`) stays as-is — no precomputed
-`change_pct` field available for the underlying; `ltp vs spot_prev_close` is equivalent.
-
-### Fix 2 — Magnitude-based flash intensity (3-tier)
-
-**CSS tokens to add in `src/app.css` `:root`:**
-```css
---algo-green-text-dim:    rgba(74, 222, 128, 0.50);   /* small move */
---algo-green-text-bright: #86efac;                     /* large move — lighter/whiter */
---algo-red-text-dim:      rgba(248, 113, 113, 0.50);
---algo-red-text-bright:   #fca5a5;
-/* Background cascade tiers */
---algo-green-cascade-sm:  rgba(74, 222, 128, 0.07);
---algo-green-cascade-lg:  rgba(74, 222, 128, 0.25);
---algo-red-cascade-sm:    rgba(248, 113, 113, 0.07);
---algo-red-cascade-lg:    rgba(248, 113, 113, 0.25);
-```
-
-**New CSS classes in `src/app.css`** (text-color tiers):
-```css
-/* small: |Δ%| < 0.5 */
-.ltp-tc-flash-up-sm   { animation: ltp-tc-flash-up-sm   500ms ease-out; }
-.ltp-tc-flash-down-sm { animation: ltp-tc-flash-down-sm 500ms ease-out; }
-/* default: 0.5 ≤ |Δ%| < 2 — existing ltp-tc-flash-up/down, unchanged */
-/* large: |Δ%| ≥ 2 */
-.ltp-tc-flash-up-lg   { animation: ltp-tc-flash-up-lg   500ms ease-out; }
-.ltp-tc-flash-down-lg { animation: ltp-tc-flash-down-lg 500ms ease-out; }
-
-/* background cascade tiers (tf-up/down analogues) */
-.tf-up-sm   { animation: tf-up-sm   350ms ease-out; }
-.tf-down-sm { animation: tf-down-sm 350ms ease-out; }
-.tf-up-lg   { animation: tf-up-lg   350ms ease-out; }
-.tf-down-lg { animation: tf-down-lg 350ms ease-out; }
-```
-
-**Keyframes**: same start→fade pattern as existing, using the dim/bright tokens.
-
-**Bucketing helper in `src/lib/data/pulseColumns.js`:**
-```javascript
-// |pct| in percent (e.g. 1.5 means 1.5%)
-function _flashTier(absPct) {
-  return absPct >= 2 ? 'lg' : absPct < 0.5 ? 'sm' : '';
-}
-function _tcFlashClass(dir, absPct) {
-  const t = _flashTier(absPct);
-  return `ltp-tc-flash-${dir}${t ? '-' + t : ''}`;
-}
-function _bgFlashClass(dir, absPct) {
-  const t = _flashTier(absPct);
-  return `tf-${dir}${t ? '-' + t : ''}`;
+function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, rowData) {
+  if (getLtpFlashUp?.().has(sym)) {
+    const absPct = rowData?.change_pct != null ? Math.abs(rowData.change_pct)
+                 : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
+                 : getLtpFlashPct?.()?.get(sym) ?? 1;
+    return _tcFlashClass('up', absPct);
+  }
+  if (getLtpFlashDown?.().has(sym)) {
+    const absPct = rowData?.change_pct != null ? Math.abs(rowData.change_pct)
+                 : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
+                 : getLtpFlashPct?.()?.get(sym) ?? 1;
+    return _tcFlashClass('down', absPct);
+  }
 }
 ```
 
-Apply `_tcFlashClass` everywhere LTP and day % flash classes are chosen (replacing the
-current fixed `ltp-tc-flash-up/down`). Pass `Math.abs(change_pct ?? ltpDeltaPct)` as
-`absPct`. For LTP tick-bus flash where `change_pct` may not be available, compute
-`absPct = Math.abs((ltp - prevLtp) / prevLtp * 100)` from tick delta.
-
-Apply `_bgFlashClass` for P&L cascade flash rows.
-
-### Fix 3 — Unified flash threshold (ltpFlashPct → both LTP and day %)
-
-**File:** `src/lib/data/pulseColumns.js` and `src/lib/MarketPulse.svelte`
-
-Day % flash currently uses `0.001` hardcoded floor. Change to read `ltpFlashPct` from
-settings (already imported in MarketPulse / pulseColumns via the settings store). Gate:
+Update the call site in `mkLtpCol`'s `cellClass` to pass `p.data`:
 ```javascript
-if (Math.abs(newPct - oldPct) < ltpFlashPct) return;   // replaces 0.001 check
+const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, p.data);
 ```
 
-**File:** `src/routes/(algo)/admin/settings/+page.svelte` (or wherever the ltpFlashPct
-label is rendered)  
-Change label from `"LTP flash threshold (%)"` → `"Price flash threshold (%)"` and update
-tooltip/hint to note it applies to both LTP tick-bus and day % poll-diff flash.
-
-### Fix 4 — PerformancePage P&L cascade flash (`src/lib/PerformancePage.svelte`)
-
-Lines ~370–375: change `ltp-flash-up`/`ltp-flash-down` → tiered `_bgFlashClass` output
-(import / inline the helper). Default to medium tier when P&L cascade magnitude is unknown.
-
+Similarly in `mkPnlCellClass` (lines ~97-102) — where it reads
+`getLtpFlashPct().get(symUpper) ?? 1`, change to:
 ```javascript
-if (ltpFlashUp.has(symUpper))   return `${base} ${_bgFlashClass('up',   absPct)}`;
-if (ltpFlashDown.has(symUpper)) return `${base} ${_bgFlashClass('down', absPct)}`;
+const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
+             : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
+             : getLtpFlashPct?.()?.get(symUpper) ?? 1;
 ```
 
-If magnitude is not readily available in PerformancePage's LTP cascade path, use fixed
-medium tier (`tf-up` / `tf-down`) as a safe fallback — still text-color consistent.
+The `_ltpFlashPctMap` (tick delta) remains as the last-resort fallback — useful when
+`change_pct` hasn't been populated yet on the row (e.g., first tick before first poll).
 
-### Fix 5 — Tokenize remaining hardcoded directional hex in .svelte/.js files
+### Fix 2 — PerformancePage reads day_change_percentage for tier
 
-**`src/lib/data/pulseColumns.js` (~line 502)** — GTT badge inline style:
-- `'#4ade80'` → `'var(--algo-green)'`
-- `'rgba(74,222,128,0.20)'` → `'var(--algo-green-badge)'`
-  (add `--algo-green-badge: rgba(74, 222, 128, 0.20)` to `:root`)
+**File:** `frontend/src/lib/PerformancePage.svelte`
 
-**`src/lib/MarketPulse.svelte` (~line 4704)** — scoped style override:
-- `color: #94a3b8` → `color: var(--algo-dim)`
-- `rgba(148,163,184,0.08)` → `var(--algo-dim-bg)`
-  (add `--algo-dim-bg: rgba(148, 163, 184, 0.08)` to `:root`)
+In `avgVsLtpCls` at ~lines 407-412, change from map to row field:
+```javascript
+const absPct = Math.abs(params.data?.day_change_percentage ?? _perfLtpFlashPctMap.get(sym) ?? 1);
+```
 
-**`src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` (~line 855)**:
-- `color: #94a3b8` → `color: var(--algo-dim)`
+PerformancePage's day % field is `day_change_percentage` (confirmed in column defs at ~line 549).
 
-**`src/routes/(algo)/admin/derivatives/+page.svelte` (~lines 5783–5784, 6006–6007)**:
-- `#86efac` → `var(--algo-green-text-bright)` (reuses Fix 2 token)
-- `#fca5a5` → `var(--algo-red-text-bright)` (reuses Fix 2 token)
+`_perfLtpFlashPctMap` remains as fallback (for first-tick before first poll).
+
+### Fix 3 — Derivatives Snapshot spot: compute day % independently
+
+**File:** `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+
+At line ~4772, the spot cell currently uses fixed-tier flash (maps `tf-up/down → ltp-tc-flash-up/down` with no magnitude selection). Change to compute day % from `_ltp` and `_close` which are already in scope in the same `{@const}` block:
+
+```javascript
+{@const _spotDayPct = (_ltp != null && _ltp > 0 && _close != null && _close > 0)
+    ? Math.abs((_ltp - _close) / _close * 100) : 1}
+```
+
+Then use `_tcFlashClass` (already exported from pulseColumns.js — add to import) for
+the flash class:
+
+```javascript
+{flash.classOf(`${g.underlying}:ltp`) === 'tf-up'   ? _tcFlashClass('up',   _spotDayPct) :
+ flash.classOf(`${g.underlying}:ltp`) === 'tf-down' ? _tcFlashClass('down', _spotDayPct) : ''}
+```
+
+### Fix 4 — CandidateLegRow LTP: compute day % independently
+
+**File:** `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+
+At line ~316, same pattern — currently maps `tf-up/down → ltp-tc-flash-up` (fixed tier).
+The leg object `c` has `ltp` and `prev_close` (or equivalent). Compute independently:
+
+```javascript
+{@const _legDayPct = (ltp != null && ltp > 0 && c.prev_close > 0)
+    ? Math.abs((ltp - c.prev_close) / c.prev_close * 100) : 1}
+```
+
+Then apply `_tcFlashClass('up'/'down', _legDayPct)` from the flash class map.
+
+If `c.prev_close` is not available on the leg object, check for `c.close_price` or
+`c.change_pct` as alternative sources. If none are available, default to `absPct=1`
+(medium tier) — still better than tick delta.
+
+Import `_tcFlashClass` from `$lib/data/pulseColumns.js` if not already imported.
 
 ## Agents
 
-- frontend: Implement all five fixes.
+- frontend: Implement all four fixes.
 - backend: skip
 - broker: skip
 - doc: skip
@@ -156,13 +124,12 @@ medium tier (`tf-up` / `tf-down`) as a safe fallback — still text-color consis
 - vitest: no
 
 ## Commit message
-fix(ui): magnitude-based flash tiers; unified price flash threshold; LTP color from change_pct SSOT; P&L cascade flash parity; tokenize directional hex
+fix(ui): flash tier from day % instead of tick delta — LTP and spot tier reflects cumulative day move
 
 ## Done when
-- LTP cell color reads `change_pct`/`day_pnl_pct` field; fallback to `ltp vs close`
-- Flash intensity varies by 3 tiers (`-sm` / default / `-lg`) for both text-color (LTP/day%) and background (P&L cascade) flash
-- `ltpFlashPct` threshold applied to day % poll-diff flash (replaces `0.001` hardcoded floor)
-- Settings label updated to "Price flash threshold (%)"
-- PerformancePage P&L cells use `tf-up/down` (background) tiered flash on LTP cascade
-- No `#4ade80`, `#f87171`, `#94a3b8`, `#86efac`, `#fca5a5` hardcoded in .svelte or .js files (outside `:root` token definitions)
+- `_ltpFlashClass` in pulseColumns.js reads `change_pct`/`day_pnl_pct` from row data; `_ltpFlashPctMap` tick delta as fallback only
+- `mkPnlCellClass` reads day % from `p.data` for tier
+- PerformancePage LTP flash tier reads `day_change_percentage` from row; map as fallback
+- Derivatives Snapshot spot flash tier from `(ltp−prevClose)/prevClose×100`
+- CandidateLegRow LTP flash tier from day % (or independent compute); not tick delta
 - svelte-check exits 0

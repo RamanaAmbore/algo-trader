@@ -93,12 +93,17 @@ export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown,
     const ltpFlashDown = getLtpFlashDown();
     // LTP cascade takes precedence over poll-diff flash.
     // Use _bgFlashClass so the background cascade is magnitude-tiered.
+    // Prefer cumulative day % from row data; tick-delta map is fallback only.
     if (ltpFlashUp.has(symUpper)) {
-      const absPct = getLtpFlashPct ? (getLtpFlashPct().get(symUpper) ?? 1) : 1;
+      const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
+                   : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
+                   : getLtpFlashPct?.()?.get(symUpper) ?? 1;
       return `${base} ${_bgFlashClass('up', absPct)}`;
     }
     if (ltpFlashDown.has(symUpper)) {
-      const absPct = getLtpFlashPct ? (getLtpFlashPct().get(symUpper) ?? 1) : 1;
+      const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
+                   : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
+                   : getLtpFlashPct?.()?.get(symUpper) ?? 1;
       return `${base} ${_bgFlashClass('down', absPct)}`;
     }
     const fc = getMpFlash().classOf(`${sym}:${field}`);
@@ -223,15 +228,19 @@ function _ltpAvgFor(row) {
 // Uses getter functions (not frozen Set values) so the closure stays live.
 // Text-color flash (ltp-tc-flash-*) replaces the background flash on LTP
 // cells so the animation doesn't fight the ltp-vs-avg background tint.
-// Magnitude is sourced from getLtpFlashPct() (Map<sym, absPct>) when
-// available; defaults to absPct=1 (middle tier) when not.
-function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct) {
-  if (getLtpFlashUp().has(sym)) {
-    const absPct = getLtpFlashPct ? (getLtpFlashPct().get(sym) ?? 1) : 1;
+// Magnitude is sourced from rowData (cumulative day %) when available;
+// falls back to getLtpFlashPct() (tick-delta map) as last resort.
+function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, rowData) {
+  if (getLtpFlashUp?.().has(sym)) {
+    const absPct = rowData?.change_pct != null  ? Math.abs(rowData.change_pct)
+                 : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
+                 : getLtpFlashPct?.()?.get(sym) ?? 1;
     return _tcFlashClass('up', absPct);
   }
-  if (getLtpFlashDown().has(sym)) {
-    const absPct = getLtpFlashPct ? (getLtpFlashPct().get(sym) ?? 1) : 1;
+  if (getLtpFlashDown?.().has(sym)) {
+    const absPct = rowData?.change_pct != null  ? Math.abs(rowData.change_pct)
+                 : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
+                 : getLtpFlashPct?.()?.get(sym) ?? 1;
     return _tcFlashClass('down', absPct);
   }
   return null;
@@ -270,7 +279,7 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, ge
   // Animation gate — tick-flash only when the row's exchange is
   // currently open. Snapshot rows render static.
   if (_isAnimating(p.data)) {
-    const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct);
+    const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, p.data);
     if (fc) cls.push(fc);
   } else {
     cls.push('ltp-snap');

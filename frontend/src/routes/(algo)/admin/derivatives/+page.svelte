@@ -52,6 +52,7 @@
   import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction } from '$lib/format';
+  import { _tcFlashClass } from '$lib/data/pulseColumns.js';
   import { todayIST } from '$lib/dateFormat.js';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
@@ -4767,9 +4768,12 @@
           {@const _pnlVal  = _snRow?.pnl       ?? 0}
           {@const _expVal  = _snRow?.exp_pnl   ?? 0}
           {@const _extVal  = _snRow?.extrinsic ?? 0}
+          {@const _spotDayPct = (_ltp != null && _ltp > 0 && _close != null && _close > 0)
+              ? Math.abs((_ltp - _close) / _close * 100) : 1}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
-            <span class="num {_spotDir} {flash.classOf(`${g.underlying}:ltp`) === 'tf-up' ? 'ltp-tc-flash-up' : flash.classOf(`${g.underlying}:ltp`) === 'tf-down' ? 'ltp-tc-flash-down' : ''}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
+            <span class="num {_spotDir} {flash.classOf(`${g.underlying}:ltp`) === 'tf-up'   ? _tcFlashClass('up',   _spotDayPct) :
+                                         flash.classOf(`${g.underlying}:ltp`) === 'tf-down' ? _tcFlashClass('down', _spotDayPct) : ''}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>

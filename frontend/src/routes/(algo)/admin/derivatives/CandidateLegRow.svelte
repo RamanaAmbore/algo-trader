@@ -33,6 +33,7 @@
   import { lotsForRow, fmtLots }    from '$lib/data/lotsForRow';
   import { getProxyRow }            from '$lib/data/hedgeProxies';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { _tcFlashClass } from '$lib/data/pulseColumns.js';
   import { longPress }              from '$lib/actions/longPress.js';
 
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
@@ -127,6 +128,16 @@
   );
   const _acctColor = $derived(c.account ? acctColor(c.account) : null);
   const _legFlashKey = $derived(`leg:${c.account ?? ''}|${c.symbol ?? ''}`);
+
+  // Cumulative day % for flash tier — prefers change_pct when available,
+  // otherwise computes from prev_close, falls back to 1 (middle tier).
+  const _legDayPct = $derived(
+    c.change_pct != null
+      ? Math.abs(c.change_pct)
+      : (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
+          ? Math.abs((ltp - c.prev_close) / c.prev_close * 100)
+          : 1)
+  );
 
   // Band-header visibility — show when this row is first of its band in expiry view.
   const _showBandHeader = $derived(
@@ -313,7 +324,8 @@
     {typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
       ? (ltp > c.prev_close ? 'cell-pos' : ltp < c.prev_close ? 'cell-neg' : 'cell-flat')
       : ''}
-    {flash.classOf(`${_legFlashKey}:ltp`) === 'tf-up' ? 'ltp-tc-flash-up' : flash.classOf(`${_legFlashKey}:ltp`) === 'tf-down' ? 'ltp-tc-flash-down' : ''}">{ltp != null ? priceFmt(ltp) : '—'}</span>
+    {flash.classOf(`${_legFlashKey}:ltp`) === 'tf-up'   ? _tcFlashClass('up',   _legDayPct) :
+     flash.classOf(`${_legFlashKey}:ltp`) === 'tf-down' ? _tcFlashClass('down', _legDayPct) : ''}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <!-- Lots column. For proxy eq rows the lot count is in
        TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
        so the math derives from the same market_value /
