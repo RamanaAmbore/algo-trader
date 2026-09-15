@@ -1,225 +1,114 @@
-# Plan: Fix Derivatives Snapshot SSOT — Day P&L and Exp P&L (Strict)
+# Plan: Fix Derivatives Exp P&L, Day P&L sync, and column sequence
 
 ## Context
+Three regressions / gaps observed after the derivatives SSOT refactor (fd408b1a):
 
-After the `positionsDerivedStore` refactor (commit `ce2e568c`) unified P&L signals into a global store, the Derivatives page Snapshot panel broke in three ways:
+1. **GOLDM Exp P&L shows a loss** (~-X) instead of expected ~2.82L profit — a regression in `rawPosExpPnl` introduced in our last commit.
+2. **Day P&L not in sync** across Pulse, Legs, Snapshot, NavStrip — `positionsDerivedStore.byKey[sym]` is last-write-wins (not accumulated) for multi-account same-symbol positions.
+3. **Column sequence mismatch** — Legs has Acct between P&L and Exp P&L; MarketPulse doesn't show Exp P&L / Extrinsic at all. User wants Day P&L → P&L → Exp P&L → Extrinsic in sequence across all three grids.
 
-1. **Day P&L = 0** — `_fnoDayPnlByRoot` reads `positionsDerivedStore.byKey` (last-write-wins per symbol); multi-account positions overwrite each other, losing rows whose last entry had `dcv=0`.
-2. **Exp P&L mismatch (-4.64L vs -2.84L)** — `positionsDerivedStore.byRootPositions[root].exp_pnl` uses only 2 spot fallbacks (`underlying_ltp → getUnderlyingSpot`), no SSE tick chain, and no `legAnalyticsBySymbol`. Legs uses `_legsExpPnlTotal` with `liveSpot` (4-tier SSE) + `legAnalyticsBySymbol`.
-3. **Snapshot TOTAL Exp** reads `positionsDerivedStore.total.exp_pnl` — global, unfiltered, different from the per-row sum visible above it.
-
-**Operator requirement: strict SSOT** — the Snapshot row for the *selected* underlying must show the **exact same number** as the Legs TOTAL for both Day P&L and Exp P&L. For other roots, use filter-aware `_perRootReduce`.
+---
 
 ## Task
+Fix the three issues in one commit.
 
-In `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`:
-
-1. **Hoist `_legsDayPnlTotal`** to script level (same formula as template `_totalDcv`). Replace the template's inline `_totalDcv` with it.
-2. **Replace `_fnoDayPnlByRoot`** with `_dayPnlByRootMap` via `_perRootReduce` (filter-aware, multi-account correct).
-3. **Restore `_expPnlByRootMap`** via `_perRootReduce` with a `_rawPosExpPnl` helper (uses `_rootSpot` 4-tier, `legAnalyticsBySymbol`).
-4. **Snapshot per-row**: for the selected underlying, read `_legsDayPnlTotal` / `_legsExpPnlTotal` directly; for all other roots, read from the `_perRootReduce` maps.
-5. **Snapshot TOTAL**: `_legsDayPnlTotal + Σ_dayPnlByRootMap[root≠selected]` and `_legsExpPnlTotal + Σ_expPnlByRootMap[root≠selected]`.
-6. **Write Vitest tests** for `_rawPosExpPnl` — extract to `derivativesMath.js` and export.
+---
 
 ## Agents
 
-- frontend: Implement all changes to `+page.svelte` + extract `_rawPosExpPnl` to `derivativesMath.js`
-- backend-test: Add Vitest tests for `_rawPosExpPnl` in `frontend/src/lib/__tests__/data/derivativesMath.test.js` (or existing file)
-- backend: skip
-- broker: skip
-- doc: skip
-- playwright: skip
-
-## Spec
-
-### 1. Hoist `_legsDayPnlTotal` to script level
-
-Add near `_legsExpPnlTotal` (line ~1975):
-
-```javascript
-/** Day P&L TOTAL for the currently selected underlying across all enabled
- *  F&O legs — script-level SSOT shared by the Legs TOTAL row AND the
- *  Snapshot row for the selected underlying so both surfaces always show
- *  an identical number. Excludes equity legs (kind === 'eq'). */
-const _legsDayPnlTotal = $derived.by(() =>
-  displayedCandidates
-    .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
-    .reduce((s, c) => s + _candDayPnl(c), 0)
-);
-```
-
-In the template TOTAL row (line ~4609), replace the inline `_totalDcv` definition:
-
-```svelte
-// Remove: {@const _totalDcv = _selectedCands.filter(...).reduce(...)}
-// Change all _totalDcv references to _legsDayPnlTotal
-```
+- **frontend**: Fix all three issues as detailed below. Skip backend and broker.
+- **backend**: skip
+- **broker**: skip
+- **doc**: skip
+- **backend-test**: skip
+- **frontend-test**: Update `derivativesMath.test.js` — fix `rawPosExpPnl` futures tests to expect `spot`-based result (not `last_price`).
+- **playwright**: skip
 
 ---
 
-### 2. `_rawPosExpPnl` helper → extract to `derivativesMath.js`
+## Fix 1: rawPosExpPnl futures branch (derivativesMath.js)
 
-Add and export from `frontend/src/lib/data/derivativesMath.js`:
+**File:** `frontend/src/lib/data/derivativesMath.js`
 
+**Bug:** The `fut` branch ignores the `spot` parameter passed in (which is the resolved underlying LTP via 4-tier chain) and reads stale `c.last_price` from the position row instead:
 ```javascript
-/**
- * Exp P&L for a raw position row (fields: .quantity / .average_price / .tradingsymbol).
- * Used by _expPnlByRootMap via _perRootReduce.
- * @param {any} c - raw position row with kind added by perRootReduce
- * @param {number|null} spot
- * @param {Record<string,{strike?:number,opt_type?:string}>} [legAnalytics]
- * @returns {number|null}
- */
-export function rawPosExpPnl(c, spot, legAnalytics = {}) {
-  const sym      = String(c.tradingsymbol || c.symbol || '').toUpperCase();
-  const qty      = Number(c.quantity      ?? 0);
-  const avg      = Number(c.average_price ?? 0);
-  const realised = Number(c.realised      ?? 0);
-  const pnl      = Number(c.pnl          ?? 0);
-  if (qty === 0) return realised || pnl;
-  if (c.kind === 'fut') {
-    const live = Number(c.last_price ?? 0);
-    return live > 0 ? (live - avg) * qty + realised : null;
-  }
-  if (spot == null || spot <= 0) return null;
-  const ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: c.kind }, spot, legAnalytics);
-  return ev != null ? ev + realised : null;
+// BUGGY
+if (c.kind === 'fut') {
+  const live = Number(c.last_price ?? 0);
+  return live > 0 ? (live - avg) * qty + realised : null;
 }
 ```
 
-Import `rawPosExpPnl` in `+page.svelte` and use it:
+**Fix:** Use `spot` when available; fall back to `last_price` only when spot is unavailable:
+```javascript
+// FIXED
+if (c.kind === 'fut') {
+  const ref = (spot != null && spot > 0) ? spot : Number(c.last_price ?? 0);
+  return ref > 0 ? (ref - avg) * qty + realised : null;
+}
+```
+
+This aligns futures with the same spot resolution used for options (4-tier: batch-quote → SSE tick → positions underlying_ltp → strategy.spot).
+
+---
+
+## Fix 2: positionsDerivedStore byKey accumulation (positionsDerivedStore.svelte.js)
+
+**File:** `frontend/src/lib/data/positionsDerivedStore.svelte.js`
+
+**Bug:** `byKey[sym] = { day_pnl, exp_pnl, extrinsic, pnl }` is last-write-wins — for the same symbol across two accounts only the last position row survives.
+
+**Fix:** Accumulate like `byRootPositions` already does:
+```javascript
+// Replace last-write-wins assignment with accumulation:
+if (!byKey[sym]) byKey[sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0 };
+const bk = byKey[sym];
+bk.day_pnl += day_pnl;
+bk.pnl     += pnl;
+if (exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + exp_pnl;
+if (extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + extrinsic;
+```
+
+This makes MarketPulse per-symbol Day P&L and NavStrip (which uses `total.day_pnl`, already a direct sum, so already correct) agree on the accumulated value.
+
+---
+
+## Fix 3: Column sequence — Legs and Pulse
+
+### Legs panel (derivatives/+page.svelte ~line 4540)
+
+Current order: ... Day P&L, P&L, **Acct**, Exp P&L, Extrinsic, IV, Greeks ...
+
+Move `<th>Acct</th>` and corresponding `<td>` cells to after Extrinsic:
+... Day P&L, P&L, Exp P&L, Extrinsic, **Acct**, IV, Greeks ...
+
+### MarketPulse Right grid (MarketPulse.svelte + pulseColumns.js)
+
+`mkExpPnlCol()` and `mkExtrinsicCol()` already exist in `pulseColumns.js` (lines 635–677) but are not wired into the grid. Insert them into the `mkRightColDefs()` return array right after P&L (current position 11):
 
 ```javascript
-// In +page.svelte, near _pnlByRootMap:
-const _expPnlByRootMap = $derived.by(() => {
-  const ms = _makeStrategyMatcher();
-  return _perRootReduce((c, spot) => rawPosExpPnl(c, spot, legAnalyticsBySymbol), ms);
-});
+// In mkRightColDefs(), after pnlCol (line 531), before pnlPctCol:
+mkExpPnlCol(),
+mkExtrinsicCol(),
 ```
+
+Result sequence: ..., Day P&L, Day%, P&L, **Exp P&L, Extrinsic**, P&L%, P&L/sh, ...
+
+(Snapshot is already correct: Day P&L → P&L → Exp P&L → Extrinsic.)
 
 ---
-
-### 3. Replace `_fnoDayPnlByRoot` with `_dayPnlByRootMap`
-
-Add near `_pnlByRootMap` (line ~849), **remove** the `_fnoDayPnlByRoot` block (lines 1055–1067) entirely:
-
-```javascript
-const _dayPnlByRootMap = $derived.by(() => {
-  const ms   = _makeStrategyMatcher();
-  const open = isMarketOpen();
-  return _perRootReduce((c, _spot) => {
-    const sym  = String(c.tradingsymbol || c.symbol || '').toUpperCase();
-    const snap = untrack(() => getSnapshot(sym));
-    return livePositionDayPnl(
-      {
-        closePx: Number(c.previous_close) || Number(c.close_price  ?? 0),
-        pollLtp: Number(c.last_price      ?? 0),
-        qty:     Number(c.quantity        ?? 0),
-        avg:     Number(c.average_price   ?? 0),
-        dcvRow:  c,
-      },
-      snap?.ltp ?? null,
-      { marketOpen: open },
-    );
-  }, ms);
-});
-```
-
----
-
-### 4. Remove stale comments + update `_snapshotTotalExp`
-
-Remove comment block (lines ~850–858):
-```
-// _expPnlByRootMap removed — ...
-// Snapshot TOTAL sums — P&L uses _pnlByRootMap ...; Exp uses positionsDerivedStore.total.exp_pnl (global, unfiltered).
-const _snapshotTotalExp = $derived(positionsDerivedStore.total.exp_pnl);
-```
-
-Replace with:
-
-```javascript
-// Snapshot TOTAL sums. For the selected underlying, uses the Legs-TOTAL
-// script-level deriveds (_legsDayPnlTotal / _legsExpPnlTotal) so the
-// highlighted Snapshot row and the Legs TOTAL row are always identical.
-// For all other roots, uses the _perRootReduce maps (filter-aware, 4-tier spot).
-const _snapshotTotalDay = $derived.by(() => {
-  let sum = _legsDayPnlTotal;
-  for (const [root, v] of Object.entries(_dayPnlByRootMap)) {
-    if (root !== selectedUnderlying) sum += Number(v || 0);
-  }
-  return sum;
-});
-const _snapshotTotalExp = $derived.by(() => {
-  let sum = _legsExpPnlTotal;
-  for (const [root, v] of Object.entries(_expPnlByRootMap)) {
-    if (root !== selectedUnderlying) sum += Number(v || 0);
-  }
-  return sum;
-});
-```
-
----
-
-### 5. Template changes — Snapshot per-row
-
-Replace (lines ~4777–4779):
-
-```svelte
-{@const _dayVal = g.underlying === selectedUnderlying
-  ? _legsDayPnlTotal
-  : (_dayPnlByRootMap[g.underlying] ?? 0)}
-{@const _pnlVal = _pnlByRootMap[g.underlying] ?? 0}
-{@const _expVal = g.underlying === selectedUnderlying
-  ? _legsExpPnlTotal
-  : (_expPnlByRootMap[g.underlying] ?? 0)}
-{@const _extVal = positionsDerivedStore.byRootPositions[g.underlying]?.extrinsic ?? 0}
-```
-
-Replace TOTAL row (lines ~4807–4809):
-
-```svelte
-<span ...>{aggCompact(_snapshotTotalDay)}</span>
-<span ...>{aggCompact(_snapshotTotalPnl)}</span>
-<span ...>{aggCompact(_snapshotTotalExp)}</span>
-```
-
-Remove stale comment at lines ~4629–4631 ("_legsExpPnlTotal is the script-level SSOT shared with the snapshot row...") — replace with accurate comment:
-
-```
-<!-- Strict SSOT: Snapshot row for selectedUnderlying reads _legsDayPnlTotal /
-     _legsExpPnlTotal directly — identical to the Legs TOTAL row above.
-     Other roots read from _dayPnlByRootMap / _expPnlByRootMap (_perRootReduce). -->
-```
-
----
-
-### 6. Tests — `rawPosExpPnl` in derivativesMath.test.js
-
-Add to `frontend/src/lib/__tests__/data/derivativesMath.test.js` (create if needed):
-
-1. Option with valid spot → `(intrinsic - avg) * qty + realised`
-2. Short option (negative qty) → correct sign
-3. Future with `last_price` → `(ltp - avg) * qty + realised`
-4. Closed leg (`qty=0`) → `realised || pnl`
-5. Option with `spot=0` → null
-6. Option with `spot=null` → null
-7. Uses `legAnalytics` strike when provided (skips regex parse)
 
 ## Tests
-
-- pytest: no
-- svelte-check: yes
-- playwright: no
+- **pytest**: no
+- **svelte-check**: yes
+- **playwright**: no
 
 ## Commit message
-
-fix(derivatives): strict SSOT — Snapshot selected-root row reads _legsDayPnlTotal/_legsExpPnlTotal directly; other roots via _perRootReduce with 4-tier spot + account filter
+fix(derivatives): rawPosExpPnl futures → use spot not last_price; fix byKey accumulation; align column sequence Legs+Pulse
 
 ## Done when
-
-- Snapshot Day P&L and Exp P&L for the selected underlying **exactly match** Legs TOTAL row
-- Snapshot Day P&L and Exp P&L for other roots use filter-aware `_perRootReduce` with `_rootSpot` 4-tier spot
-- Snapshot TOTAL = `_legsDayPnlTotal + Σ other roots` (consistent with per-row values)
-- `svelte-check` 0 errors
-- `npx vitest run` passes (1031+ tests, 7 new `rawPosExpPnl` cases)
+1. GOLDM Snapshot Exp P&L row shows a profit value consistent with `(liveSpot − avg) × qty` (not stale last_price)
+2. MarketPulse per-symbol Day P&L matches sum across all accounts for that symbol (no last-write-wins drop)
+3. Legs grid: Day P&L → P&L → Exp P&L → Extrinsic → Acct (contiguous block)
+4. MarketPulse right grid: Day P&L → P&L → Exp P&L → Extrinsic visible in sequence
+5. svelte-check: 0 errors; Vitest passes

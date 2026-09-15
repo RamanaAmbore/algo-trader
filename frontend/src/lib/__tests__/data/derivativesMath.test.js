@@ -198,28 +198,91 @@ describe('rawPosExpPnl', () => {
   });
 
   /**
-   * Test 3: Future with last_price
-   * c = { tradingsymbol: 'CRUDEOIL26AUGFUT', quantity: 1, average_price: 6000, last_price: 6200, realised: 0, pnl: 0, kind: 'fut' }
-   * spot = 6300 (ignored for futures)
-   * Expected: (6200 - 6000) * 1 + 0 = 200
+   * Test 3: Future with valid spot parameter (preferred over last_price)
+   * c = { tradingsymbol: 'CRUDEOIL26AUGFUT', quantity: 10, average_price: 7300, last_price: 7600, realised: 0, pnl: 0, kind: 'fut' }
+   * spot = 7580 (spot is preferred)
+   * Expected: (7580 - 7300) * 10 + 0 = 2800
    */
-  it('Future with last_price', () => {
+  it('Future with valid spot parameter overrides last_price', () => {
     const c = {
       tradingsymbol: 'CRUDEOIL26AUGFUT',
-      quantity: 1,
-      average_price: 6000,
-      last_price: 6200,
+      quantity: 10,
+      average_price: 7300,
+      last_price: 7600,
       realised: 0,
       pnl: 0,
       kind: 'fut',
     };
-    const spot = 6300;
+    const spot = 7580;
     const result = rawPosExpPnl(c, spot, {});
-    expect(result).toBeCloseTo(200, 2);
+    expect(result).toBeCloseTo(2800, 2);
   });
 
   /**
-   * Test 4: Closed leg (qty=0)
+   * Test 4: Future with spot=0 falls back to last_price
+   * c = { tradingsymbol: 'CRUDEOIL26AUGFUT', quantity: 10, average_price: 7300, last_price: 7580, realised: 0, pnl: 0, kind: 'fut' }
+   * spot = 0 (invalid, should fall back to last_price)
+   * Expected: (7580 - 7300) * 10 + 0 = 2800
+   */
+  it('Future with spot=0 falls back to last_price', () => {
+    const c = {
+      tradingsymbol: 'CRUDEOIL26AUGFUT',
+      quantity: 10,
+      average_price: 7300,
+      last_price: 7580,
+      realised: 0,
+      pnl: 0,
+      kind: 'fut',
+    };
+    const spot = 0;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBeCloseTo(2800, 2);
+  });
+
+  /**
+   * Test 5: Future with spot=null falls back to last_price
+   * c = { tradingsymbol: 'CRUDEOIL26AUGFUT', quantity: 10, average_price: 7300, last_price: 7580, realised: 0, pnl: 0, kind: 'fut' }
+   * spot = null (invalid, should fall back to last_price)
+   * Expected: (7580 - 7300) * 10 + 0 = 2800
+   */
+  it('Future with spot=null falls back to last_price', () => {
+    const c = {
+      tradingsymbol: 'CRUDEOIL26AUGFUT',
+      quantity: 10,
+      average_price: 7300,
+      last_price: 7580,
+      realised: 0,
+      pnl: 0,
+      kind: 'fut',
+    };
+    const spot = null;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBeCloseTo(2800, 2);
+  });
+
+  /**
+   * Test 6: Future with spot=0 and last_price=0 returns null
+   * c = { tradingsymbol: 'CRUDEOIL26AUGFUT', quantity: 10, average_price: 7300, last_price: 0, realised: 0, pnl: 0, kind: 'fut' }
+   * spot = 0 (both invalid)
+   * Expected: null
+   */
+  it('Future with spot=0 and last_price=0 returns null', () => {
+    const c = {
+      tradingsymbol: 'CRUDEOIL26AUGFUT',
+      quantity: 10,
+      average_price: 7300,
+      last_price: 0,
+      realised: 0,
+      pnl: 0,
+      kind: 'fut',
+    };
+    const spot = 0;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBeNull();
+  });
+
+  /**
+   * Test 7: Closed leg (qty=0)
    * c = { tradingsymbol: 'NIFTY25SEPC24000CE', quantity: 0, average_price: 200, realised: 5000, pnl: 0, kind: 'opt' }
    * spot = 24500
    * Expected: 5000 (realised || pnl)
@@ -239,7 +302,7 @@ describe('rawPosExpPnl', () => {
   });
 
   /**
-   * Test 5: Option with spot=0
+   * Test 8: Option with spot=0
    * c = { tradingsymbol: 'NIFTY25SEPC24000CE', quantity: 50, average_price: 200, realised: 0, pnl: 0, kind: 'opt' }
    * spot = 0
    * Expected: null (spot <= 0)
@@ -259,7 +322,7 @@ describe('rawPosExpPnl', () => {
   });
 
   /**
-   * Test 6: Option with spot=null
+   * Test 9: Option with spot=null
    * c = { tradingsymbol: 'NIFTY25SEPC24000CE', quantity: 50, average_price: 200, realised: 0, pnl: 0, kind: 'opt' }
    * spot = null
    * Expected: null (spot == null)
@@ -279,7 +342,7 @@ describe('rawPosExpPnl', () => {
   });
 
   /**
-   * Test 7: Uses legAnalytics strike when provided (skips regex parse)
+   * Test 10: Uses legAnalytics strike when provided (skips regex parse)
    * c = { tradingsymbol: 'SOMEWEIRDOPTION', quantity: 75, average_price: 100, realised: 0, pnl: 0, kind: 'opt' }
    * legAnalytics = { 'SOMEWEIRDOPTION': { strike: 23000, opt_type: 'CE' } }
    * spot = 23500

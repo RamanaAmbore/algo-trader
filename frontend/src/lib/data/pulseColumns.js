@@ -457,6 +457,7 @@ function _qtyNetValueGetter(p) {
  *   qtyFmt: (v: number) => string,
  *   lotsForRow: (row: any) => number|null,
  *   fmtLots: (v: number|null|undefined) => string,
+ *   getDerivedByKey?: () => Record<string, {day_pnl: number, exp_pnl: number|null, extrinsic: number|null, pnl: number}>,
  * }} opts
  * @returns {any[]}
  */
@@ -465,6 +466,7 @@ export function mkRightColDefs({
   RA, numericHdr,
   pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
   lotsForRow, fmtLots,
+  getDerivedByKey,
 }) {
   return /** @type {any[]} */ ([
     { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
@@ -532,6 +534,7 @@ export function mkRightColDefs({
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'pnl'),
       valueFormatter: aggFmtGrid },
+    ...(getDerivedByKey ? [mkExpPnlCol(getDerivedByKey), mkExtrinsicCol(getDerivedByKey)] : []),
     { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => `${RA} ${dirCls(p.value)}`,

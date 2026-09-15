@@ -4542,7 +4542,6 @@
                   title="Cumulative P&L on the position (lifetime, broker-reported). Sum across all rows = strip's P chip.">
               P&amp;L
             </span>
-            <span>Acct</span>
             <span class="num"
                   title="P&L if every contract expired RIGHT NOW at the current underlying spot — intrinsic value minus cost basis. Futures + equity track spot 1:1, so this matches their P&L. Options strip out time value and show only intrinsic settlement.">
               Exp P&amp;L
@@ -4551,6 +4550,7 @@
                   title="Extrinsic value in P&L terms — Exp P&amp;L minus (ltp−avg)×qty. Positive = time value still in the option premium.">
               Extrinsic
             </span>
+            <span>Acct</span>
             <span class="num">IV</span>
             <span class="num">Δ</span>
             <span class="num">Γ</span>
@@ -5996,9 +5996,9 @@
       minmax(72px, max-content)            /* prev close */
       minmax(62px, max-content)            /* day pnl - today */
       minmax(72px, max-content)            /* pnl - cumulative */
-      minmax(max-content, max-content)     /* account */
       minmax(72px, max-content)            /* exp pnl @ current spot */
       minmax(72px, max-content)            /* extrinsic (time value in P&L terms) */
+      minmax(max-content, max-content)     /* account */
       minmax(52px, max-content)            /* iv */
       minmax(56px, max-content)            /* delta */
       minmax(56px, max-content)            /* gamma */

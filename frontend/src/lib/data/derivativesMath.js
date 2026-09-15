@@ -534,7 +534,13 @@ export function rawPosExpPnl(c, spot, legAnalytics = {}) {
   const pnl      = Number(c.pnl          ?? 0);
   if (qty === 0) return realised || pnl;
   if (c.kind === 'fut') {
-    const live = Number(c.last_price ?? 0);
+    // For futures: prefer spot parameter if available; fall back to last_price
+    let live = null;
+    if (spot != null && spot > 0) {
+      live = spot;
+    } else {
+      live = Number(c.last_price ?? 0);
+    }
     return live > 0 ? (live - avg) * qty + realised : null;
   }
   if (spot == null || spot <= 0) return null;

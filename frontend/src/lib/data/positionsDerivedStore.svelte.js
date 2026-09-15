@@ -126,7 +126,12 @@ export function _computeDerived(posRows, holdRows, deps = {}) {
       }
     }
 
-    byKey[sym] = { day_pnl, exp_pnl, extrinsic, pnl };
+    if (!byKey[sym]) byKey[sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0 };
+    const bk = byKey[sym];
+    bk.day_pnl += day_pnl;
+    bk.pnl     += pnl;
+    if (exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + exp_pnl;
+    if (extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + extrinsic;
 
     total.day_pnl += day_pnl;
     if (exp_pnl   != null) total.exp_pnl   += exp_pnl;

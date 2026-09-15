@@ -3539,6 +3539,7 @@
       RA, numericHdr,
       pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
       lotsForRow, fmtLots,
+      getDerivedByKey: () => positionsDerivedStore.byKey,
     });
     // Patch the day_pnl column to prefer positionsDerivedStore (the 4 Hz SSOT)
     // for positions rows, falling back to the row's own day_pnl (holdings).

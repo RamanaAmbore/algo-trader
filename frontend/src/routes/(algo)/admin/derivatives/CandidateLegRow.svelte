@@ -358,7 +358,6 @@
   <span class="num tf-cell cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'}">
     {pnl == null ? '—' : aggCompact(pnl)}
   </span>
-  <span class="font-mono">{c.account}</span>
   <span class="num tf-cell cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'}"
         title="P&L if expired now at spot. Intrinsic value minus cost basis × qty.">
     {_expPnlLeg == null ? '—' : aggCompact(_expPnlLeg)}
@@ -367,6 +366,7 @@
         title="Extrinsic value in P&L terms — Exp P&L minus (ltp−avg)×qty. Positive = paid/received more than current mark-to-market.">
     {_extrinsicLeg == null ? '—' : aggCompact(_extrinsicLeg)}
   </span>
+  <span class="font-mono">{c.account}</span>
   <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
   <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
   <span class="num">{lg ? pctFmt(lg.greeks.gamma) : '—'}</span>
