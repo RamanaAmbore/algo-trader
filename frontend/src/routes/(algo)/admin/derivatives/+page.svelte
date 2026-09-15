@@ -4752,6 +4752,9 @@
           {@const _pct   = _ltp != null && _close != null && _close > 0
               ? ((_ltp - _close) / _close) * 100
               : (_q?.day_pct ?? null)}
+          {@const _spotDir = (_ltp != null && _ltp > 0 && _close != null && _close > 0)
+              ? (_ltp > _close ? 'cell-pos' : _ltp < _close ? 'cell-neg' : 'cell-flat')
+              : ''}
           <!-- SSOT: all three trios read from per-root maps that share
                _perRootReduce (same iteration, same _isLegEnabled gate,
                same _includeHoldings gate, same proxy routing). Only the
@@ -4766,7 +4769,7 @@
           {@const _extVal  = _snRow?.extrinsic ?? 0}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
-            <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
+            <span class="num {_spotDir} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>

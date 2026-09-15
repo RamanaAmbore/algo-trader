@@ -311,7 +311,7 @@
       ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
       : ''}
     {typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
-      ? (ltp > c.prev_close ? 'ltp-vs-prev-up' : ltp < c.prev_close ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat')
+      ? (ltp > c.prev_close ? 'cell-pos' : ltp < c.prev_close ? 'cell-neg' : 'cell-flat')
       : ''}
     {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <!-- Lots column. For proxy eq rows the lot count is in
@@ -579,9 +579,6 @@
      but scoped to this component (which isn't an ag-Grid surface). */
   .ltp-vs-avg-up   { background-color: var(--algo-green-bg); }
   .ltp-vs-avg-down { background-color: var(--algo-red-bg); }
-  .ltp-vs-prev-up   { box-shadow: inset 1px 0 0 0 rgba(74,222,128,0.85); }
-  .ltp-vs-prev-down { box-shadow: inset 1px 0 0 0 rgba(248,113,113,0.85); }
-  .ltp-vs-prev-flat { box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.50); }
 
   /* ── Split-row tags ───────────────────────────────────────────────── */
   /* Split-row tags — small chip beside the symbol, indicates whether
