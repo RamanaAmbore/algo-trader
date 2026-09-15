@@ -1,114 +1,180 @@
-# Plan: Fix Derivatives Exp P&L, Day P&L sync, and column sequence
+# Plan: Fix MCX virtual-root batchQuote subscription + Legs/Spot LTP text color
 
-## Context
-Three regressions / gaps observed after the derivatives SSOT refactor (fd408b1a):
+## Plan A — MCX subscription bug (ship first, separate commit)
 
-1. **GOLDM Exp P&L shows a loss** (~-X) instead of expected ~2.82L profit — a regression in `rawPosExpPnl` introduced in our last commit.
-2. **Day P&L not in sync** across Pulse, Legs, Snapshot, NavStrip — `positionsDerivedStore.byKey[sym]` is last-write-wins (not accumulated) for multi-account same-symbol positions.
-3. **Column sequence mismatch** — Legs has Acct between P&L and Exp P&L; MarketPulse doesn't show Exp P&L / Extrinsic at all. User wants Day P&L → P&L → Exp P&L → Extrinsic in sequence across all three grids.
+### Context
 
----
+**Root cause (frontend)**: `_underlyingQuoteKeys` ($derived.by at +page.svelte:870) is
+computed at render time, before instruments load. `findNearestFuture("CRUDEOIL")` returns
+null (instruments.js `_byUnderlyingType` is a plain `let`, not `$state` — reading it
+inside a $derived gives no reactivity). `resolveUnderlying` falls back to
+`quoteKey = "MCX:CRUDEOIL"` (synthetic virtual root). Since `_underlyingQuoteKeys`
+doesn't read `instrumentsReady`, it **never re-derives** when instruments load.
+Every subsequent 30 s batchQuote call keeps sending "MCX:CRUDEOIL".
 
-## Task
-Fix the three issues in one commit.
+Two things fail downstream from this wrong quoteKey:
 
----
+1. **Backend subscription gap** — `batch_quote` builds `seen_pairs` from the original key:
+   `("MCX", "CRUDEOIL")`. Token map has no entry for the bare root; only
+   "CRUDEOIL26OCTFUT" has a token. `_subscribe_batch_universe_to_ticker` finds nothing
+   → no KiteTicker subscription → CRUDEOIL26OCTFUT never receives SSE ticks.
 
-## Agents
+2. **byKey mismatch in `loadUnderlyingSpots`** — batchQuote response items carry
+   `tradingsymbol: "CRUDEOIL26OCTFUT"` (resolved by backend). `byKey` is indexed by
+   `"MCX:CRUDEOIL26OCTFUT"`, but the lookup key is `quoteKey = "MCX:CRUDEOIL"` →
+   no match → `_quotes["CRUDEOIL"]` never set → `_underlyingQuotes["CRUDEOIL"]`
+   undefined → tier 4 of `liveSpot` (batchQuote fallback) also fails.
 
-- **frontend**: Fix all three issues as detailed below. Skip backend and broker.
-- **backend**: skip
-- **broker**: skip
-- **doc**: skip
-- **backend-test**: skip
-- **frontend-test**: Update `derivativesMath.test.js` — fix `rawPosExpPnl` futures tests to expect `spot`-based result (not `last_price`).
-- **playwright**: skip
+**Why "page refresh fixes it"**: `liveSpot` falls through all four tiers and returns
+`strategy.spot` — the underlying spot fetched from the broker REST API at analytics
+load time (every page-load calls `loadStrategy()`). This looks "current" immediately
+after refresh but drifts as the session continues.
 
----
+**Cascading to NavStrip**: During MCX-only hours (NSE closed), if no MCX symbol is
+subscribed to KiteTicker, `symbolTickCount` never increments → all tick-gated stores
+freeze: `holdingsDayPnlStore`, `positionsDayPnlStore`, and `liveSpot`'s
+`_throttledTick`. Even with NSE open the issue persists because `liveSpot` tier 1a/2
+fail (CRUDEOIL26OCTFUT not in symbolStore) and tier 4 also fails (byKey mismatch).
 
-## Fix 1: rawPosExpPnl futures branch (derivativesMath.js)
+### Fix A1 — Frontend: `_underlyingQuoteKeys` instruments dependency
+**File**: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` line ~870
 
-**File:** `frontend/src/lib/data/derivativesMath.js`
+Add `void instrumentsReady;` as the first line of the `_underlyingQuoteKeys`
+`$derived.by` body. When instruments load, `instrumentsReady` becomes true →
+the derived re-computes → `findNearestFuture("CRUDEOIL")` now returns
+"CRUDEOIL26OCTFUT" (instruments are loaded) → `quoteKey = "MCX:CRUDEOIL26OCTFUT"`.
 
-**Bug:** The `fut` branch ignores the `spot` parameter passed in (which is the resolved underlying LTP via 4-tier chain) and reads stale `c.last_price` from the position row instead:
+**Before:**
 ```javascript
-// BUGGY
-if (c.kind === 'fut') {
-  const live = Number(c.last_price ?? 0);
-  return live > 0 ? (live - avg) * qty + realised : null;
-}
+const _underlyingQuoteKeys = $derived.by(() => {
+  const out = [];
+  for (const g of _byUnderlyingTotals) {
+    const r = resolveUnderlying(g.underlying, findNearestFuture);
+    if (r?.quoteKey) out.push({ root: g.underlying, quoteKey: r.quoteKey });
+  }
+  return out;
+});
 ```
 
-**Fix:** Use `spot` when available; fall back to `last_price` only when spot is unavailable:
+**After:**
 ```javascript
-// FIXED
-if (c.kind === 'fut') {
-  const ref = (spot != null && spot > 0) ? spot : Number(c.last_price ?? 0);
-  return ref > 0 ? (ref - avg) * qty + realised : null;
-}
+const _underlyingQuoteKeys = $derived.by(() => {
+  void instrumentsReady; // re-derive after instruments load so findNearestFuture resolves MCX contracts
+  const out = [];
+  for (const g of _byUnderlyingTotals) {
+    const r = resolveUnderlying(g.underlying, findNearestFuture);
+    if (r?.quoteKey) out.push({ root: g.underlying, quoteKey: r.quoteKey });
+  }
+  return out;
+});
 ```
 
-This aligns futures with the same spot resolution used for options (4-tier: batch-quote → SSE tick → positions underlying_ltp → strategy.spot).
+Effect: the 30 s batchQuote poll (via `visibleInterval` at line 3951) uses the
+re-derived quoteKey "MCX:CRUDEOIL26OCTFUT" → backend `seen_pairs` gets the real
+contract ("MCX","CRUDEOIL26OCTFUT") → token found → KiteTicker subscribed → SSE
+ticks flow → `getSnapshot("CRUDEOIL26OCTFUT")` returns live LTP → `liveSpot` tier 1a
+resolves in real-time.
+
+The seed call at line 3899 fires synchronously after `instrumentsReady = true` before
+Svelte's microtask flushes the $derived — it still uses the old quoteKey. This is
+acceptable: the first 30 s batchQuote call (the throttled interval) will use the
+correct key. The seed call is best-effort only.
+
+### Fix A2 — Backend resilience: `backend/api/routes/quote.py` — batch_quote handler
+
+Defensive fix for cases where the frontend still sends virtual roots (seed call, other
+callers). In the `for k in keys` loop (around line 783), move `broker_key` computation
+before `seen_pairs.append` and use the resolved broker key:
+
+**Before:**
+```python
+exch, sym = k.split(":", 1)
+seen_pairs.append((exch.upper(), sym.upper()))
+
+# Record LKG for closed-hours fallback.
+broker_key = key_map.input_to_broker.get(k, k)
+```
+
+**After:**
+```python
+exch, sym = k.split(":", 1)
+# Use resolved broker key for ticker subscription — virtual MCX/CDS roots
+# (e.g. "MCX:CRUDEOIL") have no instrument token; only the actual front-month
+# contract (e.g. "MCX:CRUDEOIL26OCTFUT") can be subscribed.
+broker_key = key_map.input_to_broker.get(k, k)
+bk_exch, bk_sym = broker_key.split(":", 1) if ":" in broker_key else (exch, sym)
+seen_pairs.append((bk_exch.upper(), bk_sym.upper()))
+```
+
+Remove the now-duplicate `broker_key` assignment below. Keep `_record_live_batch_lkg`
+unchanged.
+
+### Tests
+- **vitest**: add test for `_underlyingQuoteKeys` — when `instrumentsReady` is false,
+  quoteKey should be virtual ("MCX:CRUDEOIL"); when true (instruments loaded with MCX
+  futures), quoteKey should resolve to "MCX:CRUDEOIL26OCTFUT". This can be a unit test
+  in `frontend/src/lib/__tests__/` targeting `resolveUnderlying` + `findNearestFuture`
+  with a stub instruments map.
+- **pytest**: add test asserting that batch_quote with "MCX:CRUDEOIL" (virtual root)
+  causes `_subscribe_batch_universe_to_ticker` to receive `("MCX","CRUDEOIL26OCTFUT")`
+  in `seen_pairs`, not `("MCX","CRUDEOIL")`. Mock `_subscribe_batch_universe_to_ticker`
+  to capture the argument.
+
+### Agents
+- **frontend**: Apply Fix A1 (add `void instrumentsReady` to `_underlyingQuoteKeys`).
+- **backend**: Apply Fix A2 (seen_pairs uses resolved broker key in quote.py).
+- **backend-test**: Add pytest for Fix A2.
+- All others: skip.
+
+Note: Fix A1's unit test should be added by the frontend agent using an existing
+instruments stub pattern (grep `__tests__` for any instruments mock to reuse).
+
+### Commit message
+fix(derivatives): resolve MCX futures contract for batchQuote subscription and spot-quote key
+
+### Done when
+1. After instruments load (within ~30 s of page open), CRUDEOIL spot in derivatives
+   page Snapshot and payoff updates in real-time without page refresh
+2. NavStrip values (holdings P&L, positions day P&L) update during MCX-only hours
+3. pytest green, svelte-check 0 errors, vitest green
 
 ---
 
-## Fix 2: positionsDerivedStore byKey accumulation (positionsDerivedStore.svelte.js)
+## Plan B — Legs/Spot LTP text color (separate commit after Plan A ships)
 
-**File:** `frontend/src/lib/data/positionsDerivedStore.svelte.js`
+### Context
 
-**Bug:** `byKey[sym] = { day_pnl, exp_pnl, extrinsic, pnl }` is last-write-wins — for the same symbol across two accounts only the last position row survives.
+Currently, Legs LTP has a left vertical bar that is color-coded. User wants the **LTP
+text itself** to be colored green/red based on `ltp > prev_close` (not the bar). Same
+treatment for the Spot LTP in the Snapshot card of the derivatives page.
 
-**Fix:** Accumulate like `byRootPositions` already does:
-```javascript
-// Replace last-write-wins assignment with accumulation:
-if (!byKey[sym]) byKey[sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0 };
-const bk = byKey[sym];
-bk.day_pnl += day_pnl;
-bk.pnl     += pnl;
-if (exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + exp_pnl;
-if (extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + extrinsic;
-```
+### Fixes
 
-This makes MarketPulse per-symbol Day P&L and NavStrip (which uses `total.day_pnl`, already a direct sum, so already correct) agree on the accumulated value.
+**File 1**: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+- Find the LTP span in the template
+- Compute `_ltpVsClose = (c.ltp != null && c.prev_close > 0) ? (c.ltp > c.prev_close ? 'cell-pos' : c.ltp < c.prev_close ? 'cell-neg' : 'cell-flat') : ''`
+- Apply `class={_ltpVsClose}` to the LTP value span
+- Remove/keep the vertical bar as appropriate (user said "instead", so remove the bar; add the color to the LTP text)
 
----
+**File 2**: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- Find the Spot LTP display in the Snapshot card
+- `spotPrevClose` comes from `_underlyingQuotes[selectedUnderlying]?.prev_close` or strategy `spot_prev_close`
+- Compute `_spotDir = (liveSpot > 0 && spotPrevClose > 0) ? (liveSpot > spotPrevClose ? 'cell-pos' : liveSpot < spotPrevClose ? 'cell-neg' : 'cell-flat') : ''`
+- Apply `class={_spotDir}` to the Spot LTP text span
 
-## Fix 3: Column sequence — Legs and Pulse
+### Agents
+- **frontend**: Apply LTP text color changes in CandidateLegRow.svelte and +page.svelte.
+- All others: skip.
 
-### Legs panel (derivatives/+page.svelte ~line 4540)
+### Tests
+- svelte-check: yes
+- pytest: no
+- vitest: no
 
-Current order: ... Day P&L, P&L, **Acct**, Exp P&L, Extrinsic, IV, Greeks ...
+### Commit message
+feat(derivatives): color-code LTP text by prev_close direction in Legs and Spot
 
-Move `<th>Acct</th>` and corresponding `<td>` cells to after Extrinsic:
-... Day P&L, P&L, Exp P&L, Extrinsic, **Acct**, IV, Greeks ...
-
-### MarketPulse Right grid (MarketPulse.svelte + pulseColumns.js)
-
-`mkExpPnlCol()` and `mkExtrinsicCol()` already exist in `pulseColumns.js` (lines 635–677) but are not wired into the grid. Insert them into the `mkRightColDefs()` return array right after P&L (current position 11):
-
-```javascript
-// In mkRightColDefs(), after pnlCol (line 531), before pnlPctCol:
-mkExpPnlCol(),
-mkExtrinsicCol(),
-```
-
-Result sequence: ..., Day P&L, Day%, P&L, **Exp P&L, Extrinsic**, P&L%, P&L/sh, ...
-
-(Snapshot is already correct: Day P&L → P&L → Exp P&L → Extrinsic.)
-
----
-
-## Tests
-- **pytest**: no
-- **svelte-check**: yes
-- **playwright**: no
-
-## Commit message
-fix(derivatives): rawPosExpPnl futures → use spot not last_price; fix byKey accumulation; align column sequence Legs+Pulse
-
-## Done when
-1. GOLDM Snapshot Exp P&L row shows a profit value consistent with `(liveSpot − avg) × qty` (not stale last_price)
-2. MarketPulse per-symbol Day P&L matches sum across all accounts for that symbol (no last-write-wins drop)
-3. Legs grid: Day P&L → P&L → Exp P&L → Extrinsic → Acct (contiguous block)
-4. MarketPulse right grid: Day P&L → P&L → Exp P&L → Extrinsic visible in sequence
-5. svelte-check: 0 errors; Vitest passes
+### Done when
+1. Legs LTP text is green when ltp > prev_close, red when ltp < prev_close
+2. Spot LTP text is green/red based on same rule
+3. svelte-check: 0 errors

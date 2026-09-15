@@ -868,6 +868,7 @@
    *  (NSE:NIFTY 50), MCX commodities land on the nearest future,
    *  everything else lands on NSE:<root>. */
   const _underlyingQuoteKeys = $derived.by(() => {
+    void instrumentsReady; // re-derive after instruments load so findNearestFuture resolves MCX contracts
     /** @type {Array<{ root: string, quoteKey: string }>} */
     const out = [];
     for (const g of _byUnderlyingTotals) {

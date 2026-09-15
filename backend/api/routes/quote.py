@@ -786,13 +786,17 @@ class QuoteController(Controller):
             row = _build_live_batch_row(k, quote_data, key_map)
             items.append(row)
             exch, sym = k.split(":", 1)
-            seen_pairs.append((exch.upper(), sym.upper()))
+            # Use resolved broker key for ticker subscription — virtual MCX/CDS roots
+            # (e.g. "MCX:CRUDEOIL") have no instrument token; only the actual front-month
+            # contract (e.g. "MCX:CRUDEOIL26OCTFUT") can be subscribed.
+            broker_key = key_map.input_to_broker.get(k, k)
+            bk_exch, bk_sym = broker_key.split(":", 1) if ":" in broker_key else (exch, sym)
+            seen_pairs.append((bk_exch.upper(), bk_sym.upper()))
 
             # Record LKG for closed-hours fallback.  Key by the RESOLVED
             # broker symbol so virtual roots (MCX:CRUDEOIL → CRUDEOIL26JUNFUT)
             # persist under the same key both live-path and closed-hours
             # readers use.
-            broker_key = key_map.input_to_broker.get(k, k)
             if quote_data.get(broker_key):
                 _record_live_batch_lkg(
                     broker_key, sym, row.ltp, row.open, row.close,
