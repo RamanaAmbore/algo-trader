@@ -3,9 +3,9 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.15 — 2026-09-15  
+**Version**: 1.16 — 2026-09-15  
 **Owner**: Platform  
-**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
+**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
 ---
 
@@ -38,7 +38,11 @@ and data sources. Code, tests, and documentation must stay in sync with this fil
 25. [Stale-While-Revalidate Bridge for DataStore Updates](#25-stale-while-revalidate-bridge-for-datastore-updates)
 26. [Column Sort Now Respects User Click (postSortGroups Guard)](#26-column-sort-now-respects-user-click-postsortgroups-guard)
 27. [Public Performance Page CardControls Color Override](#27-public-performance-page-cardcontrols-color-override)
-28. [Known Defects](#28-known-defects)
+28. [CSS Directional Flash Tokens](#28-css-directional-flash-tokens)
+29. [LTP & Spot & Day % Text-Color Flash](#29-ltp--spot--day--text-color-flash)
+30. [Holdings & Positions Exp P&L Column Scoping](#30-holdings--positions-exp-pl-column-scoping)
+31. [Tab-Return SSE Reconnect](#31-tab-return-sse-reconnect)
+32. [Known Defects](#32-known-defects)
 
 ---
 
