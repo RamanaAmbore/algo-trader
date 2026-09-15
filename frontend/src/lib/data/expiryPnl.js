@@ -23,7 +23,7 @@
  * to render "—" for null rows. avg_cost=0 is valid (Kite returns 0 for
  * fresh intraday fills) — full intrinsic value is profit when cost=0.
  *
- * @param {{ symbol: string, qty: number|string, avg_cost: number|string, kind: 'opt'|'fut'|'eq'|string }} c
+ * @param {{ symbol: string, qty?: number|string, quantity?: number|string, avg_cost?: number|string, average_price?: number|string, kind: 'opt'|'fut'|'eq'|string }} c
  * @param {number|null|undefined} spot   underlying spot for intrinsic calculation
  * @param {Record<string, {strike?: number, opt_type?: string}>} [legAnalyticsBySymbol]
  *   optional map of symbol → backend leg analytics (strike + opt_type
@@ -33,8 +33,8 @@
  */
 export function expiryPnl(c, spot, legAnalyticsBySymbol = {}) {
   if (spot == null || !isFinite(Number(spot)) || Number(spot) <= 0) return null;
-  const qty = Number(c?.qty || 0);
-  const cost = Number(c?.avg_cost || 0);
+  const qty  = Number(c?.qty  ?? c?.quantity       ?? 0);
+  const cost = Number(c?.avg_cost ?? c?.average_price ?? 0);
   if (!qty) return null;
   const S = Number(spot);
   if (c?.kind === 'opt') {

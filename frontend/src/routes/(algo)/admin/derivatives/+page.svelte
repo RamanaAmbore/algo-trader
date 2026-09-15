@@ -838,62 +838,17 @@
   }
 
 
-  // Per-root maps consumed by every Snapshot row. All three use the
-  // same _perRootReduce iteration — the ONLY difference is the per-leg
-  // value function, matching what the overlay uses for each metric.
-  // SSOT: pass the strategy matcher so the TOTAL sums ONLY the same rows
-  // visible above it.
-  const _pnlByRootMap = $derived.by(() => {
-    const ms = _makeStrategyMatcher();
-    return _perRootReduce((c, _spot) => Number(c.pnl || 0), ms);
-  });
-
-  const _dayPnlByRootMap = $derived.by(() => {
-    const ms   = _makeStrategyMatcher();
-    const open = isMarketOpen();
-    return _perRootReduce((c, _spot) => {
-      const sym  = String(c.tradingsymbol || c.symbol || '').toUpperCase();
-      const snap = untrack(() => getSnapshot(sym));
-      return livePositionDayPnl(
-        {
-          closePx: Number(c.previous_close) || Number(c.close_price  ?? 0),
-          pollLtp: Number(c.last_price      ?? 0),
-          qty:     Number(c.quantity        ?? 0),
-          avg:     Number(c.average_price   ?? 0),
-          dcvRow:  c,
-        },
-        snap?.ltp ?? null,
-        { marketOpen: open },
-      );
-    }, ms);
-  });
-
-  const _expPnlByRootMap = $derived.by(() => {
-    const ms = _makeStrategyMatcher();
-    return _perRootReduce((c, spot) => rawPosExpPnl(c, spot, legAnalyticsBySymbol), ms);
-  });
-
-  // Snapshot TOTAL sums. For the selected underlying, uses the Legs-TOTAL
-  // script-level deriveds (_legsDayPnlTotal / _legsExpPnlTotal) so the
-  // Snapshot row for that root and the Legs TOTAL row always show identical numbers.
-  // For all other roots, uses the _perRootReduce maps (filter-aware, 4-tier spot).
-  const _snapshotTotalPnl = $derived(
-    Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
+  // Snapshot TOTAL sums — read directly from positionsDerivedStore.byRootPositions
+  // (accumulated across accounts, selection-independent, reactive at 4Hz).
+  const _snapshotTotalPnl = $derived.by(() =>
+    Object.values(positionsDerivedStore.byRootPositions).reduce((s, v) => s + (v?.pnl ?? 0), 0)
   );
-  const _snapshotTotalDay = $derived.by(() => {
-    let sum = _legsDayPnlTotal;
-    for (const [root, v] of Object.entries(_dayPnlByRootMap)) {
-      if (root !== selectedUnderlying) sum += Number(v || 0);
-    }
-    return sum;
-  });
-  const _snapshotTotalExp = $derived.by(() => {
-    let sum = _legsExpPnlTotal;
-    for (const [root, v] of Object.entries(_expPnlByRootMap)) {
-      if (root !== selectedUnderlying) sum += Number(v || 0);
-    }
-    return sum;
-  });
+  const _snapshotTotalDay = $derived.by(() =>
+    Object.values(positionsDerivedStore.byRootPositions).reduce((s, v) => s + (v?.day_pnl ?? 0), 0)
+  );
+  const _snapshotTotalExp = $derived.by(() =>
+    Object.values(positionsDerivedStore.byRootPositions).reduce((s, v) => s + (v?.exp_pnl ?? 0), 0)
+  );
 
 
   /** Per-underlying live quote map — { ROOT: { ltp, day_pct, prev_close } }.
@@ -956,7 +911,7 @@
     const groups = _byUnderlyingTotals;
     untrack(() => {
       for (const g of groups) {
-        flash.update(`${g.underlying}:day_w`,  g.underlying === selectedUnderlying ? _legsDayPnlTotal : (_dayPnlByRootMap[g.underlying] ?? 0));
+        flash.update(`${g.underlying}:day_w`,  positionsDerivedStore.byRootPositions[g.underlying]?.day_pnl ?? 0);
         flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
       }
     });
@@ -4719,9 +4674,10 @@
     onDownload={() => {
       const rows = _byUnderlyingTotals.map(g => {
         const _q      = _underlyingQuotes[g.underlying];
-        const dayVal  = g.underlying === selectedUnderlying ? _legsDayPnlTotal : (_dayPnlByRootMap[g.underlying] ?? 0);
-        const pnlVal  = _pnlByRootMap[g.underlying] ?? 0;
-        const expVal  = g.underlying === selectedUnderlying ? _legsExpPnlTotal : (_expPnlByRootMap[g.underlying] ?? 0);
+        const _snRow  = positionsDerivedStore.byRootPositions[g.underlying];
+        const dayVal  = _snRow?.day_pnl ?? 0;
+        const pnlVal  = _snRow?.pnl     ?? 0;
+        const expVal  = _snRow?.exp_pnl ?? 0;
         return {
           underlying:  g.underlying,
           spot:        _q ? _q.ltp        : '',
@@ -4802,14 +4758,11 @@
                each metric (candidatesDayPnl, candidatesActualPnl,
                _legsExpPnlTotal). Operator 2026-07-01: "reusable similar
                code should be used for both." -->
-          {@const _dayVal = g.underlying === selectedUnderlying
-            ? _legsDayPnlTotal
-            : (_dayPnlByRootMap[g.underlying] ?? 0)}
-          {@const _pnlVal = _pnlByRootMap[g.underlying] ?? 0}
-          {@const _expVal = g.underlying === selectedUnderlying
-            ? _legsExpPnlTotal
-            : (_expPnlByRootMap[g.underlying] ?? 0)}
-          {@const _extVal = positionsDerivedStore.byRootPositions[g.underlying]?.extrinsic ?? 0}
+          {@const _snRow   = positionsDerivedStore.byRootPositions[g.underlying]}
+          {@const _dayVal  = _snRow?.day_pnl   ?? 0}
+          {@const _pnlVal  = _snRow?.pnl       ?? 0}
+          {@const _expVal  = _snRow?.exp_pnl   ?? 0}
+          {@const _extVal  = _snRow?.extrinsic ?? 0}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
