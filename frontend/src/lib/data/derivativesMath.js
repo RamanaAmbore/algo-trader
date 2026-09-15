@@ -11,6 +11,8 @@
  *   and the shared matcher closures repeated across 5+ $derived.by blocks.
  */
 
+import { expiryPnl } from './expiryPnl.js';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared filter factories (eliminate repeated closure boilerplate)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -514,4 +516,28 @@ export function perRootReduce({
     out[root] = (out[root] || 0) + Number(v);
   }
   return out;
+}
+
+/**
+ * Exp P&L for a raw position row (fields: .quantity / .average_price / .tradingsymbol).
+ * Used by _expPnlByRootMap via _perRootReduce in the Derivatives page.
+ * @param {any} c - raw position row with kind ('opt'|'fut') added by perRootReduce
+ * @param {number|null} spot
+ * @param {Record<string,{strike?:number,opt_type?:string}>} [legAnalytics]
+ * @returns {number|null}
+ */
+export function rawPosExpPnl(c, spot, legAnalytics = {}) {
+  const sym      = String(c.tradingsymbol || c.symbol || '').toUpperCase();
+  const qty      = Number(c.quantity      ?? 0);
+  const avg      = Number(c.average_price ?? 0);
+  const realised = Number(c.realised      ?? 0);
+  const pnl      = Number(c.pnl          ?? 0);
+  if (qty === 0) return realised || pnl;
+  if (c.kind === 'fut') {
+    const live = Number(c.last_price ?? 0);
+    return live > 0 ? (live - avg) * qty + realised : null;
+  }
+  if (spot == null || spot <= 0) return null;
+  const ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: c.kind }, spot, legAnalytics);
+  return ev != null ? ev + realised : null;
 }

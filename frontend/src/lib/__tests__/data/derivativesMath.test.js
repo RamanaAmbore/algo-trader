@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, rawPosExpPnl } from '$lib/data/derivativesMath.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal fixture helpers
@@ -147,5 +147,159 @@ describe('annotateOptionCandidates — qty=0 guard', () => {
     });
     expect(result).toHaveLength(1);
     expect(result[0].symbol).toBe('NIFTY26AUG750PE');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rawPosExpPnl — compute expiry-day P&L for positions
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('rawPosExpPnl', () => {
+  /**
+   * Test 1: CE option with valid spot above strike
+   * c = { tradingsymbol: 'NIFTY25SEPC24000CE', quantity: 50, average_price: 200, realised: 0, pnl: 0, kind: 'opt' }
+   * spot = 24500
+   * intrinsic = max(0, 24500 - 24000) = 500
+   * Expected: (500 - 200) * 50 + 0 = 15000
+   */
+  it('CE option with valid spot above strike', () => {
+    const c = {
+      tradingsymbol: 'NIFTY25SEPC24000CE',
+      quantity: 50,
+      average_price: 200,
+      realised: 0,
+      pnl: 0,
+      kind: 'opt',
+    };
+    const spot = 24500;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBeCloseTo(15000, 2);
+  });
+
+  /**
+   * Test 2: PE option short (negative qty)
+   * c = { tradingsymbol: 'NIFTY25SEPC24000PE', quantity: -50, average_price: 150, realised: 500, pnl: 0, kind: 'opt' }
+   * spot = 23500 (put is in the money: intrinsic = 500)
+   * intrinsic = max(0, 24000 - 23500) = 500
+   * Expected: (500 - 150) * -50 + 500 = -17000
+   */
+  it('PE option short (negative qty)', () => {
+    const c = {
+      tradingsymbol: 'NIFTY25SEPC24000PE',
+      quantity: -50,
+      average_price: 150,
+      realised: 500,
+      pnl: 0,
+      kind: 'opt',
+    };
+    const spot = 23500;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBeCloseTo(-17000, 2);
+  });
+
+  /**
+   * Test 3: Future with last_price
+   * c = { tradingsymbol: 'CRUDEOIL26AUGFUT', quantity: 1, average_price: 6000, last_price: 6200, realised: 0, pnl: 0, kind: 'fut' }
+   * spot = 6300 (ignored for futures)
+   * Expected: (6200 - 6000) * 1 + 0 = 200
+   */
+  it('Future with last_price', () => {
+    const c = {
+      tradingsymbol: 'CRUDEOIL26AUGFUT',
+      quantity: 1,
+      average_price: 6000,
+      last_price: 6200,
+      realised: 0,
+      pnl: 0,
+      kind: 'fut',
+    };
+    const spot = 6300;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBeCloseTo(200, 2);
+  });
+
+  /**
+   * Test 4: Closed leg (qty=0)
+   * c = { tradingsymbol: 'NIFTY25SEPC24000CE', quantity: 0, average_price: 200, realised: 5000, pnl: 0, kind: 'opt' }
+   * spot = 24500
+   * Expected: 5000 (realised || pnl)
+   */
+  it('Closed leg (qty=0) returns realised', () => {
+    const c = {
+      tradingsymbol: 'NIFTY25SEPC24000CE',
+      quantity: 0,
+      average_price: 200,
+      realised: 5000,
+      pnl: 0,
+      kind: 'opt',
+    };
+    const spot = 24500;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBe(5000);
+  });
+
+  /**
+   * Test 5: Option with spot=0
+   * c = { tradingsymbol: 'NIFTY25SEPC24000CE', quantity: 50, average_price: 200, realised: 0, pnl: 0, kind: 'opt' }
+   * spot = 0
+   * Expected: null (spot <= 0)
+   */
+  it('Option with spot=0 returns null', () => {
+    const c = {
+      tradingsymbol: 'NIFTY25SEPC24000CE',
+      quantity: 50,
+      average_price: 200,
+      realised: 0,
+      pnl: 0,
+      kind: 'opt',
+    };
+    const spot = 0;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBeNull();
+  });
+
+  /**
+   * Test 6: Option with spot=null
+   * c = { tradingsymbol: 'NIFTY25SEPC24000CE', quantity: 50, average_price: 200, realised: 0, pnl: 0, kind: 'opt' }
+   * spot = null
+   * Expected: null (spot == null)
+   */
+  it('Option with spot=null returns null', () => {
+    const c = {
+      tradingsymbol: 'NIFTY25SEPC24000CE',
+      quantity: 50,
+      average_price: 200,
+      realised: 0,
+      pnl: 0,
+      kind: 'opt',
+    };
+    const spot = null;
+    const result = rawPosExpPnl(c, spot, {});
+    expect(result).toBeNull();
+  });
+
+  /**
+   * Test 7: Uses legAnalytics strike when provided (skips regex parse)
+   * c = { tradingsymbol: 'SOMEWEIRDOPTION', quantity: 75, average_price: 100, realised: 0, pnl: 0, kind: 'opt' }
+   * legAnalytics = { 'SOMEWEIRDOPTION': { strike: 23000, opt_type: 'CE' } }
+   * spot = 23500
+   * intrinsic = max(0, 23500 - 23000) = 500
+   * Expected: (500 - 100) * 75 + 0 = 30000
+   */
+  it('Uses legAnalytics strike when provided (skips regex parse)', () => {
+    const c = {
+      tradingsymbol: 'SOMEWEIRDOPTION',
+      quantity: 75,
+      average_price: 100,
+      realised: 0,
+      pnl: 0,
+      kind: 'opt',
+    };
+    const spot = 23500;
+    const legAnalytics = {
+      SOMEWEIRDOPTION: { strike: 23000, opt_type: 'CE' },
+    };
+    const result = rawPosExpPnl(c, spot, legAnalytics);
+    expect(result).toBeCloseTo(30000, 2);
   });
 });
