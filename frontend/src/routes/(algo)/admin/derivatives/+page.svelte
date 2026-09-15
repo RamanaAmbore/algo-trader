@@ -863,6 +863,10 @@
    *  the market is closed — guarantees those derived values re-run after
    *  every batchQuote refresh off-market (where _throttledTick is frozen). */
   let _quoteGeneration = $state(0);
+  /** Reactive LTP of the currently selected underlying from underlyingSpotStore.
+   *  Updates when patchUnderlyingSpot patches _quotes on each anchor/Path-3 tick,
+   *  so liveSpot re-derives per-tick instead of waiting for the 30s _quoteGeneration bump. */
+  const _activeQuoteLtp = $derived(_underlyingQuotes[selectedUnderlying]?.ltp ?? 0);
 
   /** Map every Snapshot underlying → { root, quoteKey } via
    *  resolveUnderlying. Indices land on the spot tradingsymbol
@@ -1675,6 +1679,22 @@
         }
       }
 
+      // Path 3: resolved quoteKey tradingsymbol — covers MCX when spot_anchor_contract is null.
+      // Fires only when Path 1 (direct root key) and Path 2 (anchor) both missed this sym.
+      if (!(root in _underlyingQuotes) && root !== _anchor) {
+        for (const { root: und, quoteKey } of _underlyingQuoteKeys) {
+          const _ts = quoteKey.includes(':') ? quoteKey.split(':')[1].toUpperCase() : '';
+          if (_ts === root && und in _underlyingQuotes) {
+            const _ps = getSnapshot(root);
+            if (_ps?.ltp != null) {
+              flash.update(`${und}:ltp`, Number(_ps.ltp));
+              patchUnderlyingSpot(und, _ps.ltp);
+            }
+            break;
+          }
+        }
+      }
+
       // 2. CandidateLegRow LTP cells — re-arm for each leg whose symbol matches.
       for (const c of candidatePositions) {
         if ((c.symbol ?? '').toUpperCase() === root) {
@@ -1723,6 +1743,7 @@
 
   const liveSpot = $derived.by(() => {
     void _throttledTick;
+    void _activeQuoteLtp;  // re-derive when tick-patched underlying LTP changes
     void _postCloseUndLtp;
     const stratUnd = String(strategy?.underlying || '').toUpperCase();
     const stratMatchesSel = stratUnd && stratUnd === selectedUnderlying;

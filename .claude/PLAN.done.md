@@ -1,135 +1,101 @@
-# Plan: Flash tier from day % (not tick delta)
+# Plan: Fix CRUDEOIL spot SSOT gap — derivatives Snapshot + payoff not updating per-tick
 
 ## Context
+CRUDEOIL spot price updates live in MarketPulse positions grid but is frozen in the derivatives
+Snapshot card (spot column) and payoff overlay. Both use `liveSpot` ($derived.by in +page.svelte).
 
-The 3-tier flash system currently reads `absPct` from `_ltpFlashPctMap`, which stores
-the tick-to-tick % delta from the SSE bus. This means the tier reflects "how much did
-the price just tick" — a tiny corrective tick on a big day-mover flashes `sm`, while
-a large tick on a flat stock flashes `lg`. 
+Root cause: `patchUnderlyingSpot("CRUDEOIL", ltp)` IS called from the tick bus anchor path (Path 2)
+whenever the anchor contract ticks, updating `underlyingSpotStore._quotes["CRUDEOIL"].ltp` and
+therefore `_underlyingQuotes["CRUDEOIL"].ltp`. But `liveSpot` reads `_underlyingQuotes[selectedUnderlying]?.ltp`
+inside `untrack()` and is only re-triggered by `_quoteGeneration` (incremented after each 30s batchQuote).
+So tick-level patches to `_underlyingQuotes` are invisible to `liveSpot` until the next 30s poll.
 
-The correct signal is "how significant is this symbol's move today" = day %.
-A stock up 3% on the day should always flash `lg` whenever its LTP ticks, regardless
-of the size of the individual tick. A flat stock should always flash `sm`.
-
-Where day % is not pre-computed on the row (derivatives spot, CandidateLegRow),
-compute independently: `Math.abs((ltp − prevClose) / prevClose × 100)`.
+Second gap: when `strategy.spot_anchor_contract` is null (sim mode, fallback), Path 2 never fires at
+all for CRUDEOIL ticks — the underlying's nearest-future tradingsymbol (e.g., "CRUDEOILSEP26FUT")
+has no handler in the tick bus.
 
 ## Task
+Three targeted changes to `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`:
 
-Four targeted changes, all frontend:
+1. Add a reactive derived `_activeQuoteLtp` that tracks the selected underlying's LTP from
+   `_underlyingQuotes`. This is reactive (not `untrack`-ed), so Svelte will re-derive it whenever
+   `patchUnderlyingSpot` patches `_quotes`.
 
-### Fix 1 — `_ltpFlashClass` reads day % from row data (pulseColumns.js)
+2. Add `void _activeQuoteLtp` in `liveSpot` so it re-derives whenever the patched LTP changes —
+   closing the 30s-only update gap.
 
-**File:** `frontend/src/lib/data/pulseColumns.js`
-
-Add `rowData` parameter to `_ltpFlashClass` (currently `(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct)`):
-
-```javascript
-function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, rowData) {
-  if (getLtpFlashUp?.().has(sym)) {
-    const absPct = rowData?.change_pct != null ? Math.abs(rowData.change_pct)
-                 : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
-                 : getLtpFlashPct?.()?.get(sym) ?? 1;
-    return _tcFlashClass('up', absPct);
-  }
-  if (getLtpFlashDown?.().has(sym)) {
-    const absPct = rowData?.change_pct != null ? Math.abs(rowData.change_pct)
-                 : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
-                 : getLtpFlashPct?.()?.get(sym) ?? 1;
-    return _tcFlashClass('down', absPct);
-  }
-}
-```
-
-Update the call site in `mkLtpCol`'s `cellClass` to pass `p.data`:
-```javascript
-const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, p.data);
-```
-
-Similarly in `mkPnlCellClass` (lines ~97-102) — where it reads
-`getLtpFlashPct().get(symUpper) ?? 1`, change to:
-```javascript
-const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
-             : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
-             : getLtpFlashPct?.()?.get(symUpper) ?? 1;
-```
-
-The `_ltpFlashPctMap` (tick delta) remains as the last-resort fallback — useful when
-`change_pct` hasn't been populated yet on the row (e.g., first tick before first poll).
-
-### Fix 2 — PerformancePage reads day_change_percentage for tier
-
-**File:** `frontend/src/lib/PerformancePage.svelte`
-
-In `avgVsLtpCls` at ~lines 407-412, change from map to row field:
-```javascript
-const absPct = Math.abs(params.data?.day_change_percentage ?? _perfLtpFlashPctMap.get(sym) ?? 1);
-```
-
-PerformancePage's day % field is `day_change_percentage` (confirmed in column defs at ~line 549).
-
-`_perfLtpFlashPctMap` remains as fallback (for first-tick before first poll).
-
-### Fix 3 — Derivatives Snapshot spot: compute day % independently
-
-**File:** `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-
-At line ~4772, the spot cell currently uses fixed-tier flash (maps `tf-up/down → ltp-tc-flash-up/down` with no magnitude selection). Change to compute day % from `_ltp` and `_close` which are already in scope in the same `{@const}` block:
-
-```javascript
-{@const _spotDayPct = (_ltp != null && _ltp > 0 && _close != null && _close > 0)
-    ? Math.abs((_ltp - _close) / _close * 100) : 1}
-```
-
-Then use `_tcFlashClass` (already exported from pulseColumns.js — add to import) for
-the flash class:
-
-```javascript
-{flash.classOf(`${g.underlying}:ltp`) === 'tf-up'   ? _tcFlashClass('up',   _spotDayPct) :
- flash.classOf(`${g.underlying}:ltp`) === 'tf-down' ? _tcFlashClass('down', _spotDayPct) : ''}
-```
-
-### Fix 4 — CandidateLegRow LTP: compute day % independently
-
-**File:** `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
-
-At line ~316, same pattern — currently maps `tf-up/down → ltp-tc-flash-up` (fixed tier).
-The leg object `c` has `ltp` and `prev_close` (or equivalent). Compute independently:
-
-```javascript
-{@const _legDayPct = (ltp != null && ltp > 0 && c.prev_close > 0)
-    ? Math.abs((ltp - c.prev_close) / c.prev_close * 100) : 1}
-```
-
-Then apply `_tcFlashClass('up'/'down', _legDayPct)` from the flash class map.
-
-If `c.prev_close` is not available on the leg object, check for `c.close_price` or
-`c.change_pct` as alternative sources. If none are available, default to `absPct=1`
-(medium tier) — still better than tick delta.
-
-Import `_tcFlashClass` from `$lib/data/pulseColumns.js` if not already imported.
+3. Add Path 3 in the tick bus handler: when neither Path 1 (direct root match) nor Path 2 (anchor)
+   matched the ticked symbol, scan `_underlyingQuoteKeys` for a `quoteKey` whose tradingsymbol part
+   equals `root`. If found, call `patchUnderlyingSpot(und, ltp)` + `flash.update`. Handles the case
+   where `strategy.spot_anchor_contract` is null.
 
 ## Agents
-
-- frontend: Implement all four fixes.
 - backend: skip
+- frontend: Implement the three changes below in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
 - broker: skip
 - doc: skip
 - backend-test: skip
-- playwright: skip
+- playwright: Add a Playwright smoke test for the derivatives page confirming the spot cell for the
+  selected underlying renders a non-zero numeric value (covers the liveSpot derivation path end-to-end).
+
+## Exact changes
+
+### Change 1 — after line 865 (`let _quoteGeneration = $state(0);`)
+
+Insert:
+```javascript
+  /** Reactive LTP of the currently selected underlying from underlyingSpotStore.
+   *  Updates when patchUnderlyingSpot patches _quotes on each anchor/Path-3 tick,
+   *  so liveSpot re-derives per-tick instead of waiting for the 30s _quoteGeneration bump. */
+  const _activeQuoteLtp = $derived(_underlyingQuotes[selectedUnderlying]?.ltp ?? 0);
+```
+
+### Change 2 — in `liveSpot` at line 1725, after `void _throttledTick;`
+
+Insert:
+```javascript
+    void _activeQuoteLtp;  // re-derive when tick-patched underlying LTP changes
+```
+
+### Change 3 — after the Path 2 anchor block (after line 1676, before the candidateLegRow loop)
+
+Insert:
+```javascript
+      // Path 3: resolved quoteKey tradingsymbol — covers MCX when spot_anchor_contract is null.
+      // Fires only when Path 1 (direct root key) and Path 2 (anchor) both missed this sym.
+      if (!(root in _underlyingQuotes) && root !== _anchor) {
+        for (const { root: und, quoteKey } of _underlyingQuoteKeys) {
+          const _ts = quoteKey.includes(':') ? quoteKey.split(':')[1].toUpperCase() : '';
+          if (_ts === root && und in _underlyingQuotes) {
+            const _ps = getSnapshot(root);
+            if (_ps?.ltp != null) {
+              flash.update(`${und}:ltp`, Number(_ps.ltp));
+              patchUnderlyingSpot(und, _ps.ltp);
+            }
+            break;
+          }
+        }
+      }
+```
+
+## Files
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (lines 865, 1725, 1676)
+
+## Reused utilities
+- `patchUnderlyingSpot` from `frontend/src/lib/data/underlyingSpotStore.svelte.js` (already imported)
+- `_underlyingQuoteKeys` derived (line 871) — already computed; reused in Path 3
+- `flash.update` / `getSnapshot` — already available in tick bus handler scope
 
 ## Tests
 - pytest: no
 - svelte-check: yes
-- vitest: no
+- playwright: yes (smoke test — derivatives page loads and spot cell shows a value)
 
 ## Commit message
-fix(ui): flash tier from day % instead of tick delta — LTP and spot tier reflects cumulative day move
+fix(derivatives): react to per-tick underlying spot patches — CRUDEOIL liveSpot SSOT gap
 
 ## Done when
-- `_ltpFlashClass` in pulseColumns.js reads `change_pct`/`day_pnl_pct` from row data; `_ltpFlashPctMap` tick delta as fallback only
-- `mkPnlCellClass` reads day % from `p.data` for tier
-- PerformancePage LTP flash tier reads `day_change_percentage` from row; map as fallback
-- Derivatives Snapshot spot flash tier from `(ltp−prevClose)/prevClose×100`
-- CandidateLegRow LTP flash tier from day % (or independent compute); not tick delta
-- svelte-check exits 0
+- `_activeQuoteLtp` declared and tracked in `liveSpot`
+- Path 3 in tick bus handler matches CRUDEOILSEP26FUT → CRUDEOIL and calls patchUnderlyingSpot
+- svelte-check 0 errors
+- Playwright smoke passes
