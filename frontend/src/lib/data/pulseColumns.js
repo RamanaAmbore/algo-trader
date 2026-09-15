@@ -175,9 +175,11 @@ function _ltpAvgFor(row) {
 
 // Return the tick-flash class for a symbol, or null when not flashing.
 // Uses getter functions (not frozen Set values) so the closure stays live.
+// Text-color flash (ltp-tc-flash-*) replaces the background flash on LTP
+// cells so the animation doesn't fight the ltp-vs-avg background tint.
 function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown) {
-  if (getLtpFlashUp().has(sym))   return 'ltp-flash-up';
-  if (getLtpFlashDown().has(sym)) return 'ltp-flash-down';
+  if (getLtpFlashUp().has(sym))   return 'ltp-tc-flash-up';
+  if (getLtpFlashDown().has(sym)) return 'ltp-tc-flash-down';
   return null;
 }
 
@@ -224,6 +226,12 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
   }
   const heatCls = _ltpHeatClasses(ltp, _ltpAvgFor(p.data), p.data.close ?? null);
   for (const c of heatCls) cls.push(c);
+  // Text-color direction vs prev_close so the LTP value itself reads
+  // green/red/slate independently of the background tint axis.
+  const prev = p.data.close ?? null;
+  if (typeof ltp === 'number' && typeof prev === 'number' && prev > 0) {
+    cls.push(ltp > prev ? 'cell-pos' : ltp < prev ? 'cell-neg' : 'cell-flat');
+  }
   return cls.join(' ');
 }
 
@@ -381,17 +389,29 @@ export function mkAcctColTrailing({ RA }) {
  *   numericHdr: string,
  *   dirCellClass: (p: any) => string,
  *   pctFmtGrid: (p: { value: any }) => string,
+ *   getMpFlash?: () => ReturnType<typeof import('$lib/data/tickFlash.svelte.js').createTickFlash>,
  * }} opts
  * @returns {any[]}
  */
-export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, volCol, oiCol, numericHdr, dirCellClass, pctFmtGrid }) {
+export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, volCol, oiCol, numericHdr, dirCellClass, pctFmtGrid, getMpFlash }) {
+  // Day % cellClass with optional poll-diff flash.
+  const changePctCellClass = getMpFlash
+    ? (p) => {
+        const sym = p.data?.tradingsymbol;
+        const base = dirCellClass(p);
+        if (!sym) return base;
+        const fc = getMpFlash().classOf(`${sym}:change_pct`);
+        if (!fc) return base;
+        return `${base} ${fc === 'tf-up' ? 'ltp-tc-flash-up' : 'ltp-tc-flash-down'}`;
+      }
+    : dirCellClass;
   return /** @type {any[]} */ ([
     symColLeft,
     sparkCol,
     ltpCol,
     { field: 'change_pct', headerName: 'Day %', colId: 'left_change_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: dirCellClass,
+      cellClass: changePctCellClass,
       valueFormatter: pctFmtGrid,
       headerTooltip: 'Raw symbol day-change % (no qty).' },
     prevCol,
@@ -458,6 +478,7 @@ function _qtyNetValueGetter(p) {
  *   lotsForRow: (row: any) => number|null,
  *   fmtLots: (v: number|null|undefined) => string,
  *   getDerivedByKey?: () => Record<string, {day_pnl: number, exp_pnl: number|null, extrinsic: number|null, pnl: number}>,
+ *   getMpFlash?: () => ReturnType<typeof import('$lib/data/tickFlash.svelte.js').createTickFlash>,
  * }} opts
  * @returns {any[]}
  */
@@ -467,6 +488,7 @@ export function mkRightColDefs({
   pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
   lotsForRow, fmtLots,
   getDerivedByKey,
+  getMpFlash,
 }) {
   return /** @type {any[]} */ ([
     { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
@@ -526,7 +548,16 @@ export function mkRightColDefs({
       valueFormatter: aggFmtGrid },
     { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: (p) => `${RA} ${dirCls(p.value)}`,
+      cellClass: getMpFlash
+        ? (p) => {
+            const base = `${RA} ${dirCls(p.value)}`;
+            const sym = p.data?.tradingsymbol;
+            if (!sym) return base;
+            const fc = getMpFlash().classOf(`${sym}:day_pnl_pct`);
+            if (!fc) return base;
+            return `${base} ${fc === 'tf-up' ? 'ltp-tc-flash-up' : 'ltp-tc-flash-down'}`;
+          }
+        : (p) => `${RA} ${dirCls(p.value)}`,
       valueGetter: _dayPnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
@@ -649,6 +680,11 @@ export function mkExpPnlCol(getDerivedByKey) {
     width: 90,
     type: 'numericColumn',
     valueGetter: p => {
+      // TOTAL row carries the pre-summed exp_pnl from _totalsRowFor.
+      if (p.data?._isTotal) return p.data.exp_pnl ?? null;
+      // Non-derivative rows (holdings, equity positions) have no expiry
+      // exposure — hide rather than show "—".
+      if (!p.data?.qty_pos) return null;
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
       return getDerivedByKey()[sym]?.exp_pnl ?? null;
     },
@@ -670,6 +706,10 @@ export function mkExtrinsicCol(getDerivedByKey) {
     width: 90,
     type: 'numericColumn',
     valueGetter: p => {
+      // TOTAL row: extrinsic is not summed (doesn't apply to the aggregate).
+      if (p.data?._isTotal) return null;
+      // Only meaningful for derivative positions.
+      if (!p.data?.qty_pos) return null;
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
       return getDerivedByKey()[sym]?.extrinsic ?? null;
     },

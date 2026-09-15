@@ -1966,6 +1966,7 @@
     return {
       day_pnl: 0, pnl: 0, cost: 0, prevMktVal: 0,
       invSum: 0, curSum: 0, qty_pos: 0, qty_hold: 0,
+      exp_pnl: 0,
       anyDayPnl: false, anyPnl: false, anyInv: false, anyCur: false,
     };
   }
@@ -1988,6 +1989,12 @@
     if (r.cur_val != null) { acc.curSum += Number(r.cur_val) || 0; acc.anyCur = true; }
     acc.qty_pos  += Number(r.qty_pos)  || 0;
     acc.qty_hold += Number(r.qty_hold) || 0;
+    // Exp P&L totals — read from positionsDerivedStore so it tracks live.
+    if (r.qty_pos) {
+      const sym = String(r.tradingsymbol || '').toUpperCase();
+      const expPnl = positionsDerivedStore.byKey[sym]?.exp_pnl;
+      if (expPnl != null) acc.exp_pnl += Number(expPnl) || 0;
+    }
   }
 
   // TOTAL row for one major (positions / holdings). Each carries
@@ -2010,6 +2017,7 @@
       inv_val:  acc.anyInv ? acc.invSum : null,
       cur_val:  acc.anyCur ? acc.curSum : null,
       qty_pos: acc.qty_pos, qty_hold: acc.qty_hold,
+      exp_pnl: acc.exp_pnl || null,
     };
   }
   const positionsTotalRows = $derived.by(() => {
@@ -2100,10 +2108,32 @@
   // One effect per grid — Svelte 5 reactivity tracks the closed-over
   // derivation so any source change automatically pushes fresh row
   // data without us having to re-bundle effects.
-  $effect(() => { if (gridPinnedReady && gridPinned)
-    gridPinned.setGridOption('rowData', pinnedRows); });
-  $effect(() => { if (gridWatchReady && gridWatch)
-    gridWatch.setGridOption('rowData', watchRows); });
+  $effect(() => { if (gridPinnedReady && gridPinned) {
+    const rows = pinnedRows;
+    untrack(() => {
+      for (const r of rows) {
+        const sym = r.tradingsymbol;
+        if (!sym || r._isTotal) continue;
+        if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
+      }
+      gridPinned.setGridOption('rowData', rows);
+      try { gridPinned.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
+      setTimeout(() => { try { gridPinned.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
+    });
+  } });
+  $effect(() => { if (gridWatchReady && gridWatch) {
+    const rows = watchRows;
+    untrack(() => {
+      for (const r of rows) {
+        const sym = r.tradingsymbol;
+        if (!sym || r._isTotal) continue;
+        if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
+      }
+      gridWatch.setGridOption('rowData', rows);
+      try { gridWatch.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
+      setTimeout(() => { try { gridWatch.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
+    });
+  } });
   $effect(() => { if (gridPositionsReady && gridPositions) {
     // Read reactive deps BEFORE untrack so the effect re-fires on changes.
     const pRows      = positionsRows;
@@ -2116,17 +2146,19 @@
         if (r._isTotal) continue;
         const sym = r.tradingsymbol;
         if (!sym) continue;
-        if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
-        if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
+        if (r.day_pnl     != null) _mpFlash.update(`${sym}:day_pnl`,     Number(r.day_pnl));
+        if (r.pnl         != null) _mpFlash.update(`${sym}:pnl`,         Number(r.pnl));
+        if (r.change_pct  != null) _mpFlash.update(`${sym}:change_pct`,  Number(r.change_pct));
+        if (r.day_pnl_pct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(r.day_pnl_pct));
       }
       gridPositions.setGridOption('rowData', pRows);
       gridPositions.setGridOption('pinnedBottomRowData', pTotalRows);
       // Force a refreshCells pass so cellClass callbacks re-evaluate the
       // flash state set above. Deferred 0ms so ag-Grid's own row-data
       // transaction finishes first; second refresh at +400ms clears flash.
-      try { gridPositions.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+      try { gridPositions.refreshCells({ columns: ['day_pnl', 'pnl', 'day_pnl_pct'], force: true }); } catch (_) {}
       setTimeout(() => {
-        try { gridPositions.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+        try { gridPositions.refreshCells({ columns: ['day_pnl', 'pnl', 'day_pnl_pct'], force: true }); } catch (_) {}
       }, 400);
     });
   } });
@@ -2139,14 +2171,16 @@
         if (r._isTotal) continue;
         const sym = r.tradingsymbol;
         if (!sym) continue;
-        if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
-        if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
+        if (r.day_pnl     != null) _mpFlash.update(`${sym}:day_pnl`,     Number(r.day_pnl));
+        if (r.pnl         != null) _mpFlash.update(`${sym}:pnl`,         Number(r.pnl));
+        if (r.change_pct  != null) _mpFlash.update(`${sym}:change_pct`,  Number(r.change_pct));
+        if (r.day_pnl_pct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(r.day_pnl_pct));
       }
       gridHoldings.setGridOption('rowData', hRows);
       gridHoldings.setGridOption('pinnedBottomRowData', hTotalRows);
-      try { gridHoldings.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+      try { gridHoldings.refreshCells({ columns: ['day_pnl', 'pnl', 'day_pnl_pct'], force: true }); } catch (_) {}
       setTimeout(() => {
-        try { gridHoldings.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+        try { gridHoldings.refreshCells({ columns: ['day_pnl', 'pnl', 'day_pnl_pct'], force: true }); } catch (_) {}
       }, 400);
     });
   } });
@@ -3528,6 +3562,7 @@
       symColLeft: _symColLeft, sparkCol: _sparkCol, ltpCol: _ltpCol,
       prevCol: _prevCol, openCol: _openCol, volCol: _volCol, oiCol: _oiCol,
       numericHdr, dirCellClass, pctFmtGrid,
+      getMpFlash: () => _mpFlash,
     });
 
     // ─── Right grid: Positions / Holdings ────────────────────────
@@ -3540,6 +3575,7 @@
       pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
       lotsForRow, fmtLots,
       getDerivedByKey: () => positionsDerivedStore.byKey,
+      getMpFlash: () => _mpFlash,
     });
     // Patch the day_pnl column to prefer positionsDerivedStore (the 4 Hz SSOT)
     // for positions rows, falling back to the row's own day_pnl (holdings).

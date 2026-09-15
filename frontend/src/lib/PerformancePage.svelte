@@ -401,24 +401,25 @@
     // simultaneously.
     const sym = (params.data?.tradingsymbol ?? '').toUpperCase();
     if (sym && _perfLtpFlashUp.has(sym)) {
-      cls.push('ltp-flash-up');
+      cls.push('ltp-tc-flash-up');
     } else if (sym && _perfLtpFlashDown.has(sym)) {
-      cls.push('ltp-flash-down');
+      cls.push('ltp-tc-flash-down');
     } else {
       const k = _perfFlashKey(params.data);
       if (k) {
         const ltpCls = _perfFlash.classOf(`${k}:last_price`);
-        if (ltpCls) cls.push(ltpCls === 'tf-up' ? 'ltp-flash-up' : 'ltp-flash-down');
+        if (ltpCls) cls.push(ltpCls === 'tf-up' ? 'ltp-tc-flash-up' : 'ltp-tc-flash-down');
       }
     }
     // Two-axis heat: bg vs avg_cost ("am I up overall?"), left-border
-    // vs prev_close ("is it moving my way today?"). Operator scans
-    // both axes at once. Legacy pnl-* text-colour kept alongside so
-    // the cell value still reads green/red.
+    // vs prev_close ("is it moving my way today?"). cell-pos/neg/flat
+    // text colour on the LTP value (distinct from pnl-* which also adds
+    // a background tint — LTP column uses text-only to avoid fighting
+    // the ltp-vs-avg background).
     if (typeof avg === 'number' && avg > 0) {
-      if (ltp > avg) cls.push('ltp-vs-avg-up', 'pnl-gain');
-      else if (ltp < avg) cls.push('ltp-vs-avg-down', 'pnl-loss');
-      else cls.push('ltp-vs-avg-flat', 'pnl-zero');
+      if (ltp > avg) cls.push('ltp-vs-avg-up', 'cell-pos');
+      else if (ltp < avg) cls.push('ltp-vs-avg-down', 'cell-neg');
+      else cls.push('ltp-vs-avg-flat', 'cell-flat');
     }
     if (typeof prev === 'number' && prev > 0 && prev !== ltp) {
       cls.push(ltp > prev ? 'ltp-vs-prev-up' : 'ltp-vs-prev-down');

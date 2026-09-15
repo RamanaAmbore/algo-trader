@@ -4769,7 +4769,7 @@
           {@const _extVal  = _snRow?.extrinsic ?? 0}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
-            <span class="num {_spotDir} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
+            <span class="num {_spotDir} {flash.classOf(`${g.underlying}:ltp`) === 'tf-up' ? 'ltp-tc-flash-up' : flash.classOf(`${g.underlying}:ltp`) === 'tf-down' ? 'ltp-tc-flash-down' : ''}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>

@@ -47,6 +47,11 @@ let _reconnectTimer = null;
 let _backoffMs = 2_000;
 const _BACKOFF_MIN = 2_000;
 const _BACKOFF_MAX = 60_000;
+// Guards the one-time visibilitychange listener installed in startQuoteStream.
+// Without this, calling startQuoteStream() multiple times (e.g. component
+// remounts) would stack duplicate listeners and fire restartQuoteStream()
+// multiple times on the next tab-return.
+let _visHandlerInstalled = false;
 
 let _serverHash = null;  // persists across reconnects; cleared only on hard page load
 
@@ -64,6 +69,18 @@ export function startQuoteStream() {
   _opened = true;
   _stopped = false;
   _open();
+  // One-time tab-return reconnect: when the operator switches away and
+  // returns, the SSE connection may have been silently dropped by the
+  // browser or a proxy. Restart fresh on visibility restore so tick data
+  // resumes immediately rather than waiting for the backoff cycle.
+  if (!_visHandlerInstalled) {
+    _visHandlerInstalled = true;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        restartQuoteStream();
+      }
+    });
+  }
 }
 
 /**

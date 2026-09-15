@@ -313,7 +313,7 @@
     {typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
       ? (ltp > c.prev_close ? 'cell-pos' : ltp < c.prev_close ? 'cell-neg' : 'cell-flat')
       : ''}
-    {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
+    {flash.classOf(`${_legFlashKey}:ltp`) === 'tf-up' ? 'ltp-tc-flash-up' : flash.classOf(`${_legFlashKey}:ltp`) === 'tf-down' ? 'ltp-tc-flash-down' : ''}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <!-- Lots column. For proxy eq rows the lot count is in
        TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
        so the math derives from the same market_value /
@@ -378,12 +378,6 @@
 </div>
 
 <style>
-  /* ── LTP flash — alpha 0.22 / 450ms, between P&L calm (0.13) and real-time LTP (0.35) ── */
-  @keyframes leg-ltp-up   { 0% { background-color: rgba(74, 222, 128, 0.22); } 100% { background-color: transparent; } }
-  @keyframes leg-ltp-down { 0% { background-color: rgba(248, 113, 113, 0.22); } 100% { background-color: transparent; } }
-  .leg-ltp:global(.tf-up)   { animation: leg-ltp-up   450ms ease-out; }
-  .leg-ltp:global(.tf-down) { animation: leg-ltp-down 450ms ease-out; }
-
   /* ── Position state indicator — first column (38px) ─────────────── */
   .cand-state-cell {
     font-size: 9px;
