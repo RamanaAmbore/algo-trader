@@ -117,7 +117,7 @@ describe('mkRightColDefs — pos_state cellRenderer quantity fallback (Fix 1)', 
   it('cellStyle returns green when has_gtt is true regardless of quantity', () => {
     const col = getPosStateCol();
     const result = col.cellStyle({ data: { has_gtt: true, quantity: 10 } });
-    expect(result).toEqual({ background: 'rgba(74,222,128,0.20)', color: '#4ade80' });
+    expect(result).toEqual({ background: 'var(--algo-green-badge)', color: 'var(--algo-green)' });
   });
 
   it('cellStyle returns {} for _isTotal rows regardless of quantity', () => {

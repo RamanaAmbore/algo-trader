@@ -5780,8 +5780,8 @@
   /* byund TOTAL > span: amber background/border/color/font-weight from shared
      .cand-row.cand-row-total, .byund-row-total > span rule above.
      Padding inherited from .byund-row > span. Direction tints below. */
-  .byund-row-total > .cell-pos { color: #86efac !important; }
-  .byund-row-total > .cell-neg { color: #fca5a5 !important; }
+  .byund-row-total > .cell-pos { color: var(--algo-green-text-bright) !important; }
+  .byund-row-total > .cell-neg { color: var(--algo-red-text-bright) !important; }
   .byund-empty {
     grid-column: 1 / -1;
     padding: 0.85rem 0.7rem;
@@ -6003,8 +6003,8 @@
   }
   .cand-row.cand-row-total > span.num { text-align: right; }
   /* Direction tints — lighter green/red readable against amber. */
-  .cand-row.cand-row-total > .cell-pos  { color: #86efac !important; }
-  .cand-row.cand-row-total > .cell-neg  { color: #fca5a5 !important; }
+  .cand-row.cand-row-total > .cell-pos  { color: var(--algo-green-text-bright) !important; }
+  .cand-row.cand-row-total > .cell-neg  { color: var(--algo-red-text-bright) !important; }
   .cand-row.cand-row-total > .cell-flat { color: rgba(251,191,36,0.75) !important; }
   .cand-total-label {
     color: var(--c-action);

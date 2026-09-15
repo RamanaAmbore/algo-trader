@@ -1682,7 +1682,246 @@ no editing."
 
 ---
 
-## 28. Known Defects
+## 28. CSS Directional Flash Tokens
+
+Directional color animations (LTP flash, P&L changes, day % shifts) now use canonical
+CSS named-color tokens from `:root` instead of hardcoded hex values. This centralizes
+the color palette and ensures consistency across all flash effects.
+
+**Solid directional tokens**:
+- `--algo-green` (#4ade80) — bullish direction (price up, P&L gain)
+- `--algo-red` (#f87171) — bearish direction (price down, P&L loss)
+- `--algo-green-text` (#6ee7b7) — lighter tint for text on green backgrounds
+- `--algo-red-text` (#fecaca) — lighter tint for text on red backgrounds
+- `--algo-dim` (#94a3b8) — flat/neutral direction (no change)
+
+**Flash animation tokens** (used in keyframes):
+- `--algo-green-flash` (rgba 35% alpha) — source pulse for upward LTP flash
+- `--algo-red-flash` (rgba 35% alpha) — source pulse for downward LTP flash
+- `--algo-green-cascade` (rgba 13% alpha) — subtle cascade pulse for P&L gains
+- `--algo-red-cascade` (rgba 13% alpha) — subtle cascade pulse for P&L losses
+- `--algo-green-pnl-bg` (rgba 8% alpha) — background tint for P&L-gain cells
+- `--algo-red-pnl-bg` (rgba 8% alpha) — background tint for P&L-loss cells
+
+**Cell color classes** (apply to LTP, spot, day%, P&L, and other directional values):
+- `.cell-pos` — green text (v > 0); applies `color: var(--algo-green)`
+- `.cell-neg` — red text (v < 0); applies `color: var(--algo-red)`
+- `.cell-flat` — dim gray text (v = 0); applies `color: var(--algo-dim)`
+- `.mp-pnl-cell` — background tint (10% green or red via cascade)
+
+**Rationale**: Named tokens make palette tweaks mechanical (edit `:root` once → all
+surfaces instantly update) and prevent color drift across flashy animations, static
+backgrounds, and text labels.
+
+---
+
+## 29. LTP & Spot & Day % Text-Color Flash
+
+Three data surfaces now apply directional text-color animations when prices or
+percentages move: LTP cells, spot prices, and day-change percentages.
+
+### Flash trigger and timing
+
+**LTP cascade flash** (SSE-driven, sub-second):
+- Fires when `symbolStore` LTP updates via WebSocket tick
+- Animation: `.ltp-tc-flash-up` or `.ltp-tc-flash-down` keyframes
+- Duration: 500ms; text color animates from `--algo-green-text` or `--algo-red-text`
+  back to `inherit`
+- Applied to: LTP cells in all grids (Watchlist, Positions, Holdings, Derivatives)
+- Contrast: high (color accent on white/light text) + quick fade (not distracting)
+
+**Day % poll-cycle flash** (broker-polling, every ~5-30s):
+- Fires when `change_pct` or `day_pnl_pct` values update from broker poll
+- Animation: same `.ltp-tc-flash-up` / `.ltp-tc-flash-down` keyframes
+- Trigger: used on left-grid `change_pct` (day % column) and right-grid
+  `day_pnl_pct` (day P&L % column)
+- Resets on next poll cycle; if no change detected, no flash
+
+**Reference price comparison**:
+- **LTP flash**: text color reflects `ltp vs prev_close` direction
+  - Green if `ltp > prev_close`; Red if `ltp < prev_close`; Gray if equal
+- **Day % flash**: text color reflects `change_pct vs 0` direction
+  - Green if `change_pct > 0`; Red if `change_pct < 0`; Gray if zero
+- **Spot flash**: on derivatives page, Spot LTP color same as regular LTP flash
+  (reflects `liveSpot vs prev_close`)
+
+### Affected columns and surfaces
+
+**MarketPulse grids**:
+- Left grid: `change_pct` (Day %) column flashes on poll-cycle updates
+- Right grid (Positions): `day_pnl_pct` (Day P&L %) column flashes on updates
+- Right grid (Holdings): `day_pnl_pct` column flashes
+
+**Derivatives page**:
+- Snapshot grid LTP cells flash on SSE + poll-cycle updates
+- CandidateLegRow LTP cells flash (SSE-driven at 4Hz via `getSnapshot`)
+- Spot price display in OptionsPayoff card flashes on quote updates
+
+**Nav surfaces**:
+- PositionStrip P/H pills animate on day-P&L store updates (4Hz throttle)
+- Dashboard positions/holdings cards use same flash tokens
+
+### Implementation
+
+**Keyframe definitions** (in `app.css`):
+```css
+@keyframes ltp-tc-flash-up {
+  0% { color: var(--algo-green-text); }
+  100% { color: inherit; }
+}
+
+@keyframes ltp-tc-flash-down {
+  0% { color: var(--algo-red-text); }
+  100% { color: inherit; }
+}
+```
+
+Applied via `.ltp-tc-flash-up` / `.ltp-tc-flash-down` CSS classes (500ms duration).
+
+**Cell class logic** (from column renderer):
+```javascript
+const direction = newValue > oldValue ? 'up' : (newValue < oldValue ? 'down' : '');
+// Apply flash class + directional color:
+cellEl.classList.add(`ltp-tc-flash-${direction}`);
+cellEl.classList.add(direction === 'up' ? 'cell-pos' : (direction === 'down' ? 'cell-neg' : 'cell-flat'));
+```
+
+---
+
+## 30. Holdings & Positions Exp P&L Column Scoping
+
+The Exp P&L and Extrinsic value columns are now scoped to positions grids only.
+Holdings rows (pure equity long-term holdings, no derivatives) return null for both
+columns, rendering blank cells ("—").
+
+### Exp P&L column behavior
+
+**Positions grid**:
+- Visible for all F&O legs (futures, options)
+- Formula: `expiryPnl(row, liveSpot) + (row.realised || 0)`
+  - Open legs (qty ≠ 0): expected intrinsic + realized partial closes
+  - Closed legs (qty = 0): locked-in realized P&L or lifetime P&L fallback
+- Data source: `positionsDerivedStore.byKey[sym].exp_pnl` (5s cadence)
+- Null for equity positions (equity has no expiry value)
+
+**Holdings grid**:
+- Returns null for all rows (holdings never have expiry value)
+- Cell renders "—" (blank)
+- Why: holdings are long-term equity; no derivatives overlay; expiry value concept
+  does not apply
+
+**Totals row** (Positions only):
+- Pinned-bottom TOTAL row sums Exp P&L across all open/closed position legs
+- Formula: `Object.values(_dayPnlByRootMap).reduce((a, b) => a + b, 0)` + expiry offset
+- Visible only when positions grid active; holdings TOTAL ignores Exp P&L
+
+### Extrinsic column behavior
+
+**Positions grid**:
+- Visible for F&O legs with `qty ≠ 0` (open legs only)
+- Formula: `exp_pnl - (ltp - avg) × qty` (time value remaining)
+  - Positive: call holders / put buyers still have time value at current spot
+  - Zero: ATM options or no remaining time value
+- Returns 0 for closed legs (qty = 0) — no remaining time value
+- Returns 0 for FUT (futures have no time decay; intrinsic = total value)
+- Returns 0 for equity (no optionality)
+
+**Holdings grid**:
+- Returns null for all rows
+- Cell renders "—" (blank)
+- Holdings never have derivatives components; extrinsic value not applicable
+
+### Scoping implementation (frontend)
+
+**Column factory functions** (`mkExpPnlCol`, `mkExtrinsicCol`):
+```javascript
+export function mkExpPnlCol(accessor) {
+  return {
+    headerName: 'Exp P&L',
+    valueGetter: (params) => {
+      const row = params.data;
+      // Only for positions rows; holdings return null
+      if (row._majorGroup !== 'positions') return null;
+      return accessor(row)?.exp_pnl ?? null;
+    },
+    // ... formatting, styling
+  };
+}
+
+export function mkExtrinsicCol(accessor) {
+  return {
+    headerName: 'Extrinsic',
+    valueGetter: (params) => {
+      const row = params.data;
+      // Only for positions; holdings & equity return null
+      if (row._majorGroup !== 'positions' || row.kind === 'eq') return null;
+      const exp = accessor(row)?.exp_pnl;
+      const intrinsic = (row.ltp - row.avg_pos) * row.qty_pos;
+      return (exp != null ? exp - intrinsic : null);
+    },
+  };
+}
+```
+
+**Rationale**: Holdings and positions are separate grids with different economic
+semantics. Holdings day P&L is purely mark-to-market (no expiry concept); positions
+may carry F&O overlay with expiry P&L and time-value components. Segregating the
+columns prevents confusion and keeps the interface clean (no blank cells mixed into
+positions data).
+
+---
+
+## 31. Tab-Return SSE Reconnect
+
+The `quoteStream.js` module now registers a permanent `visibilitychange` listener
+in `startQuoteStream()` that automatically restarts the SSE connection when the
+browser tab becomes visible after being backgrounded (tab switch away and back).
+
+### Problem addressed
+
+When an operator switches to a different browser tab during market hours and then
+returns to RamboQuant, the SSE WebSocket connection for symbol LTP ticks may have
+been suspended by the browser or closed by the server (idle timeout). The LTP cells
+on MarketPulse grids, derivatives Snapshot grids, and Nav surfaces would freeze at
+the last-known price until the next scheduled data poll (5–30s depending on the surface).
+This creates a perception of stale data and lost real-time visibility.
+
+### Implementation
+
+**Listener registration** (in `startQuoteStream()`):
+```javascript
+// Permanent visibilitychange listener for tab-return reconnect
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !_streamAborted) {
+    console.log('[SSE reconnect] Tab returned to focus; restarting stream');
+    restartQuoteStream();
+  }
+});
+```
+
+**Reconnect flow**:
+1. Operator switches to another tab → browser may pause/close SSE connection
+2. Operator returns to RamboQuant tab → `document.hidden === false` fires event
+3. Event listener calls `restartQuoteStream()` immediately
+4. `restartQuoteStream()` aborts current stream (if any) and starts a fresh one
+5. Fresh SSE connection subscribes to the current symbol universe
+6. LTP ticks resume flowing within ~100ms; grids re-animate
+
+**Error handling**:
+- If `_streamAborted === true` (user intentionally closed stream), listener skips reconnect
+- If reconnect fails (network error), the error is logged; regular polling continues
+  as fallback; user can manually refresh if needed
+
+### Impact
+
+- **Real-time LTP visibility** preserved across tab switches
+- **No operator action required** — automatic and transparent
+- **Fallback graceful** — if reconnect fails, regular 5-30s polling continues
+- **No double connections** — guard `!_streamAborted` ensures user-close is respected
+
+---
+
+## 32. Known Defects
 
 See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1–D4 fixed in `b6e52b2a`).
 
@@ -1732,4 +1971,5 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-10 | v1.13 Derivatives page reactive chain improvements (commit 16c8e44f + 91cccd02): Critical fixes for symbol-switch stalls, market-transition quote stalls, and hibernation strategy wipe. Four reactive-chain bug fixes: (A) **Symbol-switch stale stub** — `_clientPayoffStub` was reading `selectedUnderlying` inside `untrack()` so symbol changes never triggered re-derive; fix: capture `const _sel = selectedUnderlying` before `untrack()`. (B) **Market-close quote stall** — `liveSpot` and `_clientPayoffStub` gated `_quoteGeneration` counter via `if (!isMarketOpen())`, so batchQuote completions dropped from dependency set during hours; fix: unconditionally track counter always. (C) **legs-driven loadStrategy effect** — on symbol switch, `loadStrategy()` fired before legs updated (Svelte 5 declaration order); fix: added new effect after legs that fires strategy refetch with guard to skip when strategy already matches. (D) **Strategy wipe on hibernation** — `loadStrategy()` fired before `loadPositions()` on page show, using qty=0 legs; fix: added `_positionsRefreshedAt` freshness check, only wipe if positions stale >30s. Eight data-sync improvements: (1) positions `$effect` re-runs F&O transform on 5s book-poller, per-row P&L updates within 5s. (2–5) `_quoteGeneration` counter always tracked; quotes fetched continuously via `visibleInterval` with throttle; seeded at `loadPositions()` end. (6) `_snapshotTotalDay` uses `livePositionDayPnl()` SSOT via `getSnapshot` at 4Hz, matches NavStrip P1. (7) CandidateLegRow LTP reads `getSnapshot` first (4Hz SSE-reactive). (8) TOTAL row label clarified. Impact: symbol switches update payoff chart immediately; market-open/close quote refreshes trigger chart re-render; hibernation exit preserves strategy. All Snapshot data within 5s cycle; payoff chart + day-P&L TOTAL synchronized across page, MarketPulse, NavStrip. |
 | 2026-09-10 | v1.14 Underlying picker auto-select + Snapshot TOTAL day P&L formula (TBD): §13.2 new subsection documents underlying picker auto-select: all six tiers now carry `qtySum` field (Tier 1–2 = actual position qty, Tiers 3–6 = 0); on cold load, `_autoSelectDone` gate fires once when `_positionsLoaded` first true, promoting to first active underlying (qtySum > 0) if current selection has qtySum = 0; after promote, subsequent 5s refreshes do NOT re-promote, allowing manual inactive selection. Initial picker selection now prefers `firstActive` over `opts[0]`. §13.3 new subsection documents Snapshot TOTAL day P&L formula: `_snapshotTotalDay = Object.values(_dayPnlByRootMap).reduce((a, b) => a + b, 0)` (sum of per-row values) instead of applying `livePositionDayPnl` to raw positions (which included `prev_settlement_pnl`). Eliminates ±54k divergence on MCX FUT positions where prior formula conflated settled P&L with intraday P&L. New formula is symmetric with `_snapshotTotalPnl` and `_snapshotTotalExp` — TOTAL = sum of rows by construction. |
 | 2026-09-14 | v1.15 positionsDerivedStore unification (TBD): §13 Right-grid column definitions updated — Day P&L column now reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, replaces `setFromPulse`). Two new columns added after P&L: **Exp P&L** (78px, F&O only, reads `positionsDerivedStore.byKey[sym].exp_pnl`) and **Extrinsic** (78px, F&O only, `exp_pnl - (ltp - avg) × qty`, zero for closed/equity). §13 Day P&L recompute section updated — store computes on 5s book-poll + immediate postback fill; replaces legacy `setFromPulse()` with unified store read across all consumers (NavStrip, Pulse grids, derivatives page). Per-leg Day P&L rescue path updated — uses store-driven refresh instead of Pulse-page-dependency. §13.1 Per-leg Day P&L section reworded to reflect store-driven MCX settlement stability and fallback behavior. All Pulse surfaces now converge on single `positionsDerivedStore` SSOT for day P&L and exp P&L metrics; 5s cadence + immediate fills eliminate cross-page divergence. Related: NAVSTRIP_SPEC updated §1 P:1 and P:3 slots, new §1.4 "Positions Derived Store" subsection documenting module design, cadence, data flow, and consumers. |
-| 2026-09-15 | v1.16 MCX underlying spot resolution + LTP text direction coloring (TBD): §13.4 new subsection documents MCX synthetic-root resolution: `_underlyingQuoteKeys` derived now reads `instrumentsReady` cache-ready flag, then resolves each root via `findNearestFuture()` to its nearest-expiry contract (e.g. "CRUDEOIL" → "CRUDEOIL26OCTFUT") before sending to `batchQuote`. Backend `batch_quote()` handler subscribes resolved contract keys to KiteTicker, enabling SSE real-time ticks for MCX spot prices throughout trading day instead of freezing at page-load. §14 LTP cell styling updated — Legs grid `CandidateLegRow` LTP and Snapshot card Spot LTP now apply `cell-pos` / `cell-neg` / `cell-flat` text color classes based on LTP vs `prev_close` direction; replaced old `ltp-vs-prev-*` vertical bar box-shadow. Rationale: text color provides higher contrast and faster direction recognition than bar styling. Impact: MCX spot prices tick live in real-time on derivatives page; LTP text direction instantly recognizable via color (green/red/gray). |
+| 2026-09-14 | v1.15 positionsDerivedStore unification (TBD): §13 Right-grid column definitions updated — Day P&L column now reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, replaces `setFromPulse`). Two new columns added after P&L: **Exp P&L** (78px, F&O only, reads `positionsDerivedStore.byKey[sym].exp_pnl`) and **Extrinsic** (78px, F&O only, `exp_pnl - (ltp - avg) × qty`, zero for closed/equity). §13 Day P&L recompute section updated — store computes on 5s book-poll + immediate postback fill; replaces legacy `setFromPulse()` with unified store read across all consumers (NavStrip, Pulse grids, derivatives page). Per-leg Day P&L rescue path updated — uses store-driven refresh instead of Pulse-page-dependency. §13.1 Per-leg Day P&L section reworded to reflect store-driven MCX settlement stability and fallback behavior. All Pulse surfaces now converge on single `positionsDerivedStore` SSOT for day P&L and exp P&L metrics; 5s cadence + immediate fills eliminate cross-page divergence. Related: NAVSTRIP_SPEC updated §1 P:1 and P:3 slots, new §1.4 "Positions Derived Store" subsection documenting module design, cadence, data flow, and consumers. |
+| 2026-09-15 | v1.16 CSS tokens + LTP/day% text flash + Exp P&L scoping + tab-reconnect (commit 562c1a4b): (1) **§28 CSS Directional Flash Tokens** — new section documents canonical tokens (`--algo-green`, `--algo-red`, `--algo-dim`, `--algo-green-flash`, `--algo-red-flash`, `--algo-green-cascade`, `--algo-red-cascade`, `--algo-green-pnl-bg`, `--algo-red-pnl-bg`) for directional colors + animations. All cell color classes (`cell-pos/neg/flat`, `mp-pnl-cell`) now reference tokens instead of hardcoded hex. Palette updates now mechanical. (2) **§29 LTP & Spot & Day % Text-Color Flash** — new section documents new animation pair (`.ltp-tc-flash-up/down`, 500ms) for LTP, spot, and day%-change cells. Text color animates from `--algo-green-text` / `--algo-red-text` back to `inherit`. Applied to: LTP cells (all grids), spot price (derivatives), `change_pct` (left grid), `day_pnl_pct` (right grids). Reference price comparison: LTP vs `prev_close`, day% vs 0. SSE-driven (sub-second) + poll-cycle triggered (5–30s cadence). (3) **§30 Holdings & Positions Exp P&L Column Scoping** — new section documents Exp P&L / Extrinsic columns now scoped to **positions grid only**. Holdings rows return null, render "—". Rationale: holdings are long-term equity without derivatives overlay; no expiry value. Positions grid totals row sums Exp P&L across all F&O legs; holdings totals row omits. (4) **§31 Tab-Return SSE Reconnect** — new section documents permanent `visibilitychange` listener in `quoteStream.js:startQuoteStream()`. When browser tab returns to focus, listener calls `restartQuoteStream()` immediately. LTP ticks resume flowing within ~100ms; preserves real-time visibility across tab switches. Graceful fallback to polling if reconnect fails. Impact: all changes ship in commit 562c1a4b (CSS token consolidation, text-color flash intro, Exp P&L column scoping, SSE reconnect) with no behavior breaking changes — purely visual + UX refinement. |

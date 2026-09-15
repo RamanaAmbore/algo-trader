@@ -70,7 +70,7 @@
   import NavCard from '$lib/NavCard.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols } from '$lib/data/pulseColumns.js';
+  import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols, _tcFlashClass } from '$lib/data/pulseColumns.js';
   import { postSortGroups2Level } from '$lib/data/pulseGridSetup.js';
   import { pairGroupSort } from '$lib/data/pairGroupSort.js';
 
@@ -341,6 +341,8 @@
   let _perfLtpFlashUp   = $state(/** @type {Set<string>} */ (new Set()));
   let _perfLtpFlashDown = $state(/** @type {Set<string>} */ (new Set()));
   const _perfLtpTimers  = /** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map());
+  // Per-sym absolute pct magnitude from tickBus for tiered text-color flash.
+  const _perfLtpFlashPctMap = /** @type {Map<string, number>} */ (new Map());
   /** @type {(() => void) | null} */
   let _perfTickUnsub = null;
 
@@ -366,13 +368,15 @@
       const k = _perfFlashKey(params.data);
       if (!k) return base;
       // Tick-bus priority: real-time SSE direction propagates to P&L cascade columns.
+      // Uses background cascade class (tf-up/tf-down) — medium tier, consistent
+      // with the MarketPulse P&L cascade and the global flash-class parity model.
       const sym = (params.data?.tradingsymbol ?? '').toUpperCase();
-      if (sym && _perfLtpFlashUp.has(sym))   { base.push('ltp-flash-up');   return base; }
-      if (sym && _perfLtpFlashDown.has(sym)) { base.push('ltp-flash-down'); return base; }
+      if (sym && _perfLtpFlashUp.has(sym))   { base.push('tf-up');   return base; }
+      if (sym && _perfLtpFlashDown.has(sym)) { base.push('tf-down'); return base; }
       // LTP cascade: if last_price changed this poll cycle, propagate its
       // direction to derived columns (source-based, not per-cell-diff).
       const ltpCls = _perfFlash.classOf(`${k}:last_price`);
-      if (ltpCls) { base.push(ltpCls === 'tf-up' ? 'ltp-flash-up' : 'ltp-flash-down'); return base; }
+      if (ltpCls) { base.push(ltpCls); return base; }
       const fc = _perfFlash.classOf(`${k}:${field}`);
       if (fc) base.push(fc);
       return base;
@@ -401,9 +405,11 @@
     // simultaneously.
     const sym = (params.data?.tradingsymbol ?? '').toUpperCase();
     if (sym && _perfLtpFlashUp.has(sym)) {
-      cls.push('ltp-tc-flash-up');
+      const absPct = _perfLtpFlashPctMap.get(sym) ?? 1;
+      cls.push(_tcFlashClass('up', absPct));
     } else if (sym && _perfLtpFlashDown.has(sym)) {
-      cls.push('ltp-tc-flash-down');
+      const absPct = _perfLtpFlashPctMap.get(sym) ?? 1;
+      cls.push(_tcFlashClass('down', absPct));
     } else {
       const k = _perfFlashKey(params.data);
       if (k) {
@@ -669,7 +675,7 @@
       cellStyle: (p) => {
         const d = p.data;
         if (!d || d._isTotal) return {};
-        if (d.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
+        if (d.has_gtt)        return { background: 'var(--algo-green-badge)', color: 'var(--algo-green)' };
         if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
         if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
         return {};
@@ -1217,10 +1223,12 @@
     // Tick-bus subscription — drives _perfLtpFlashUp/Down from real SSE ticks
     // (sub-250ms per sym) instead of the 30 s poll-diffed _perfFlash.
     // Per-sym clearance timers prevent one symbol's 300ms window wiping another.
-    _perfTickUnsub = tickBus.subscribe(({ sym, dir }) => {
+    _perfTickUnsub = tickBus.subscribe(({ sym, dir, pct }) => {
       const isPos  = (rawPositions  ?? []).some(r => (r.tradingsymbol ?? '').toUpperCase() === sym);
       const isHold = (rawHoldings   ?? []).some(r => (r.tradingsymbol ?? '').toUpperCase() === sym);
       if (!isPos && !isHold) return;
+      // Record magnitude for tiered text-color flash in avgVsLtpCls.
+      _perfLtpFlashPctMap.set(sym, pct);
       if (dir === 'up') {
         _perfLtpFlashUp   = new Set([..._perfLtpFlashUp, sym]);
         _perfLtpFlashDown = new Set([..._perfLtpFlashDown].filter(s => s !== sym));
@@ -1233,6 +1241,7 @@
       if (existing) clearTimeout(existing);
       _perfLtpTimers.set(sym, setTimeout(() => {
         _perfLtpTimers.delete(sym);
+        _perfLtpFlashPctMap.delete(sym);
         _perfLtpFlashUp   = new Set([..._perfLtpFlashUp].filter(s => s !== sym));
         _perfLtpFlashDown = new Set([..._perfLtpFlashDown].filter(s => s !== sym));
         try { positionsAllGrid?.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}

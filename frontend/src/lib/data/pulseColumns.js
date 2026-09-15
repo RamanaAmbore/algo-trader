@@ -16,6 +16,44 @@
 
 // ─── Pure helpers ────────────────────────────────────────────────────
 
+// ── Magnitude-tiered flash helpers ──────────────────────────────────
+// Three tiers: sm (absPct < 0.5), default (0.5–2), lg (≥ 2).
+// Pairs with the CSS keyframes added to app.css in the same change set.
+
+/**
+ * Map an absolute percentage change to a tier suffix.
+ * Returns 'sm', 'lg', or '' (default tier).
+ * @param {number} absPct
+ * @returns {'sm'|'lg'|''}
+ */
+function _flashTier(absPct) {
+  return absPct >= 2 ? 'lg' : absPct < 0.5 ? 'sm' : '';
+}
+
+/**
+ * Return the text-color flash CSS class for direction + magnitude.
+ * e.g. 'ltp-tc-flash-up', 'ltp-tc-flash-up-sm', 'ltp-tc-flash-up-lg'.
+ * @param {'up'|'down'} dir
+ * @param {number} absPct
+ * @returns {string}
+ */
+export function _tcFlashClass(dir, absPct) {
+  const t = _flashTier(absPct);
+  return `ltp-tc-flash-${dir}${t ? '-' + t : ''}`;
+}
+
+/**
+ * Return the background-cascade flash CSS class for direction + magnitude.
+ * e.g. 'tf-up', 'tf-up-sm', 'tf-up-lg'.
+ * @param {'up'|'down'} dir
+ * @param {number} absPct
+ * @returns {string}
+ */
+function _bgFlashClass(dir, absPct) {
+  const t = _flashTier(absPct);
+  return `tf-${dir}${t ? '-' + t : ''}`;
+}
+
 /**
  * Map a numeric P&L value to a CSS direction class.
  * Pure function — safe to call anywhere without reactive context.
@@ -41,10 +79,11 @@ export function dirCls(v) {
  *   getMpFlash: () => ReturnType<typeof import('$lib/data/tickFlash.svelte.js').createTickFlash>,
  *   getLtpFlashUp: () => Set<string>,
  *   getLtpFlashDown: () => Set<string>,
+ *   getLtpFlashPct?: () => Map<string, number>,
  * }} opts
  * @returns {(p: any, field: string) => string}
  */
-export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown }) {
+export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct }) {
   return (p, field) => {
     const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
     const sym = p.data?.tradingsymbol;
@@ -53,8 +92,15 @@ export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown 
     const ltpFlashUp   = getLtpFlashUp();
     const ltpFlashDown = getLtpFlashDown();
     // LTP cascade takes precedence over poll-diff flash.
-    if (ltpFlashUp.has(symUpper))   return `${base} ltp-flash-up`;
-    if (ltpFlashDown.has(symUpper)) return `${base} ltp-flash-down`;
+    // Use _bgFlashClass so the background cascade is magnitude-tiered.
+    if (ltpFlashUp.has(symUpper)) {
+      const absPct = getLtpFlashPct ? (getLtpFlashPct().get(symUpper) ?? 1) : 1;
+      return `${base} ${_bgFlashClass('up', absPct)}`;
+    }
+    if (ltpFlashDown.has(symUpper)) {
+      const absPct = getLtpFlashPct ? (getLtpFlashPct().get(symUpper) ?? 1) : 1;
+      return `${base} ${_bgFlashClass('down', absPct)}`;
+    }
     const fc = getMpFlash().classOf(`${sym}:${field}`);
     return fc ? `${base} ${fc}` : base;
   };
@@ -177,9 +223,17 @@ function _ltpAvgFor(row) {
 // Uses getter functions (not frozen Set values) so the closure stays live.
 // Text-color flash (ltp-tc-flash-*) replaces the background flash on LTP
 // cells so the animation doesn't fight the ltp-vs-avg background tint.
-function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown) {
-  if (getLtpFlashUp().has(sym))   return 'ltp-tc-flash-up';
-  if (getLtpFlashDown().has(sym)) return 'ltp-tc-flash-down';
+// Magnitude is sourced from getLtpFlashPct() (Map<sym, absPct>) when
+// available; defaults to absPct=1 (middle tier) when not.
+function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct) {
+  if (getLtpFlashUp().has(sym)) {
+    const absPct = getLtpFlashPct ? (getLtpFlashPct().get(sym) ?? 1) : 1;
+    return _tcFlashClass('up', absPct);
+  }
+  if (getLtpFlashDown().has(sym)) {
+    const absPct = getLtpFlashPct ? (getLtpFlashPct().get(sym) ?? 1) : 1;
+    return _tcFlashClass('down', absPct);
+  }
   return null;
 }
 
@@ -203,7 +257,8 @@ function _ltpHeatClasses(ltp, avg, prev) {
 // Consolidate all cellClass branches for the LTP column into one named function.
 // `resolveCellLtp` is the pre-bound resolver from mkResolveCellLtp so it sees
 // the current live-snap map at render time (not a frozen snapshot).
-function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
+// getLtpFlashPct is an optional getter returning Map<sym, absPct> for tiered flash.
+function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct) {
   if (!p.data || p.data._isTotal) return RA;
   // Prefer quote_symbol over tradingsymbol so MCX mover rows (where
   // tradingsymbol is the bare commodity root e.g. "CRUDEOIL") look up
@@ -215,7 +270,7 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
   // Animation gate — tick-flash only when the row's exchange is
   // currently open. Snapshot rows render static.
   if (_isAnimating(p.data)) {
-    const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown);
+    const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct);
     if (fc) cls.push(fc);
   } else {
     cls.push('ltp-snap');
@@ -226,12 +281,19 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
   }
   const heatCls = _ltpHeatClasses(ltp, _ltpAvgFor(p.data), p.data.close ?? null);
   for (const c of heatCls) cls.push(c);
-  // Text-color direction vs prev_close so the LTP value itself reads
-  // green/red/slate independently of the background tint axis.
+  // Text-color direction for the LTP value — prefer the precomputed
+  // change_pct / day_pnl_pct field (same SSOT as the Day % column) so
+  // LTP color agrees with the adjacent day-% cell on every row type.
+  // Falls back to ltp vs close_price when neither field is present
+  // (e.g. underlying snapshot rows where change_pct may be absent).
+  const pct = p.data.change_pct ?? p.data.day_pnl_pct ?? null;
   const prev = p.data.close ?? null;
-  if (typeof ltp === 'number' && typeof prev === 'number' && prev > 0) {
-    cls.push(ltp > prev ? 'cell-pos' : ltp < prev ? 'cell-neg' : 'cell-flat');
-  }
+  const dir = pct != null
+    ? (pct > 0 ? 'cell-pos' : pct < 0 ? 'cell-neg' : 'cell-flat')
+    : (typeof ltp === 'number' && typeof prev === 'number' && prev > 0
+        ? (ltp > prev ? 'cell-pos' : ltp < prev ? 'cell-neg' : 'cell-flat')
+        : null);
+  if (dir) cls.push(dir);
   return cls.join(' ');
 }
 
@@ -244,17 +306,18 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
  *   getLiveLtpSnap: () => Record<string, number>,
  *   getLtpFlashUp: () => Set<string>,
  *   getLtpFlashDown: () => Set<string>,
+ *   getLtpFlashPct?: () => Map<string, number>,
  *   numFmt: (p: { value: any }) => string,
  *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  * }} opts
  */
-export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFmt, RA, numericHdr }) {
+export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, numFmt, RA, numericHdr }) {
   const resolveCellLtp = mkResolveCellLtp({ getLiveLtpSnap });
   return {
     colId: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
     type: 'numericColumn', headerClass: numericHdr,
-    cellClass: (p) => _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown),
+    cellClass: (p) => _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct),
     valueGetter: resolveCellLtp,
     valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
   };
@@ -395,6 +458,8 @@ export function mkAcctColTrailing({ RA }) {
  */
 export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, volCol, oiCol, numericHdr, dirCellClass, pctFmtGrid, getMpFlash }) {
   // Day % cellClass with optional poll-diff flash.
+  // Uses _tcFlashClass() for magnitude-tiered text-color flash; absPct comes
+  // from change_pct on the row data (same field that changed to trigger the flash).
   const changePctCellClass = getMpFlash
     ? (p) => {
         const sym = p.data?.tradingsymbol;
@@ -402,7 +467,9 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
         if (!sym) return base;
         const fc = getMpFlash().classOf(`${sym}:change_pct`);
         if (!fc) return base;
-        return `${base} ${fc === 'tf-up' ? 'ltp-tc-flash-up' : 'ltp-tc-flash-down'}`;
+        const dir = fc === 'tf-up' ? 'up' : 'down';
+        const absPct = Math.abs(p.data?.change_pct ?? 1);
+        return `${base} ${_tcFlashClass(dir, absPct)}`;
       }
     : dirCellClass;
   return /** @type {any[]} */ ([
@@ -499,7 +566,7 @@ export function mkRightColDefs({
       cellStyle: (p) => {
         const d = p.data;
         if (!d || d._isTotal) return {};
-        if (d.has_gtt)        return { background: 'rgba(74,222,128,0.20)',  color: '#4ade80' };
+        if (d.has_gtt)        return { background: 'var(--algo-green-badge)',  color: 'var(--algo-green)' };
         if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
         return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
       },
@@ -555,7 +622,9 @@ export function mkRightColDefs({
             if (!sym) return base;
             const fc = getMpFlash().classOf(`${sym}:day_pnl_pct`);
             if (!fc) return base;
-            return `${base} ${fc === 'tf-up' ? 'ltp-tc-flash-up' : 'ltp-tc-flash-down'}`;
+            const dir = fc === 'tf-up' ? 'up' : 'down';
+            const absPct = Math.abs(p.data?.day_pnl_pct ?? p.data?.change_pct ?? 1);
+            return `${base} ${_tcFlashClass(dir, absPct)}`;
           }
         : (p) => `${RA} ${dirCls(p.value)}`,
       valueGetter: _dayPnlPctValueGetter,

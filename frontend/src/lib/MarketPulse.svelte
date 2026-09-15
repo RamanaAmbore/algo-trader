@@ -1547,7 +1547,12 @@
 
     // Subscribe to the ltpFlashPct store so the threshold stays in sync
     // if the admin changes the setting (e.g. /admin/settings) in this session.
-    _pctUnsub = ltpFlashPct.subscribe(v => { _pctThreshold = v; });
+    // Propagates to both the tickBus gate (_pctThreshold) and the poll-diff
+    // flash instance (_mpFlash) so day % and P&L columns obey the same threshold.
+    _pctUnsub = ltpFlashPct.subscribe(v => {
+      _pctThreshold = v;
+      _mpFlash.setPctThreshold(v);
+    });
 
     // Tick-bus subscription — drives _ltpFlashUp/Down from real SSE ticks
     // (sub-250ms per sym) instead of the poll-diffed $effect. Direction
@@ -1558,6 +1563,8 @@
       // Skip flashes below the operator-configured percentage threshold.
       // pctThreshold === 0 means "no gate" (same as before this feature).
       if (_pctThreshold > 0 && pct < _pctThreshold) return;
+      // Record magnitude so cellClass closures can apply tiered flash.
+      _ltpFlashPctMap.set(sym, pct);
       if (dir === 'up') {
         _ltpFlashUp = new Set([..._ltpFlashUp, sym]);
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
@@ -1574,6 +1581,7 @@
       if (existing) clearTimeout(existing);
       _ltpFlashTimers.set(sym, setTimeout(() => {
         _ltpFlashTimers.delete(sym);
+        _ltpFlashPctMap.delete(sym);
         _ltpFlashUp   = new Set([..._ltpFlashUp].filter(s => s !== sym));
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
         // Repaint once more after clearing flash so cells revert to
@@ -2234,6 +2242,10 @@
   // whole set when one symbol clears — prevents flicker when multiple
   // symbols have staggered 300ms windows).
   const _ltpFlashTimers = /** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map());
+  // Tracks per-sym absolute percentage change from the tickBus so
+  // _ltpCellClass and mkPnlCellClass can apply magnitude-tiered flash.
+  // Plain Map (not $state) — read only inside cellClass closures.
+  const _ltpFlashPctMap = /** @type {Map<string, number>} */ (new Map());
   let _flashRefreshTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
   /** @type {(() => void) | null} */
   let _tickBusUnsub = null;
@@ -3531,6 +3543,7 @@
       getMpFlash:       () => _mpFlash,
       getLtpFlashUp:    () => _ltpFlashUp,
       getLtpFlashDown:  () => _ltpFlashDown,
+      getLtpFlashPct:   () => _ltpFlashPctMap,
     });
 
     // Main symbols grid — only built when the parent opted into the
@@ -3550,6 +3563,7 @@
       getLiveLtpSnap:  () => _liveLtpSnap,
       getLtpFlashUp:   () => _ltpFlashUp,
       getLtpFlashDown: () => _ltpFlashDown,
+      getLtpFlashPct:  () => _ltpFlashPctMap,
       numFmt, RA, numericHdr,
     });
     const _prevCol          = mkPrevCol({ RA, numericHdr, numFmt });
@@ -4701,7 +4715,7 @@
   /* Day Δ / P&L cells. */
   :global(.cell-pos)  { color: var(--c-long) !important; }
   :global(.cell-neg)  { color: var(--c-short) !important; }
-  :global(.cell-flat) { color: #94a3b8 !important; }
+  :global(.cell-flat) { color: var(--algo-dim) !important; }
   /* P&L cell background tint — same colour family + same alphas as the
      /admin/derivatives Candidates panel (`.cand-pnl.cell-pos` etc.) so
      the two surfaces' P&L columns read with the same visual identity.
@@ -4709,7 +4723,7 @@
      P&L / Day P&L / P&L % / Day % columns + the summary grids. */
   :global(.mp-pnl-cell.cell-pos)  { background-color: var(--algo-green-bg) !important; }
   :global(.mp-pnl-cell.cell-neg)  { background-color: var(--algo-red-bg) !important; }
-  :global(.mp-pnl-cell.cell-flat) { background-color: rgba(148,163,184,0.08) !important; }
+  :global(.mp-pnl-cell.cell-flat) { background-color: var(--algo-dim-bg) !important; }
   :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
 
   /* Pinned sub-group dividers — first row of each pinned category

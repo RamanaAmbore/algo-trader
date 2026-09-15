@@ -102,6 +102,21 @@
   --algo-red-cascade:      rgba(248, 113, 113, 0.13);
   --algo-red-pnl-bg:       rgba(248, 113, 113, 0.08);
 
+  /* Magnitude-tiered flash tokens — three intensity tiers (sm / default / lg).
+     sm  = subtle tick, absPct < 0.5  (dim alpha text / very faint bg)
+     default = normal tick, 0.5 ≤ absPct < 2  (existing ltp-tc-flash-up/down)
+     lg  = big move, absPct ≥ 2  (bright text / stronger bg pulse) */
+  --algo-green-text-dim:    rgba(74, 222, 128, 0.50);
+  --algo-green-text-bright: #86efac;
+  --algo-red-text-dim:      rgba(248, 113, 113, 0.50);
+  --algo-red-text-bright:   #fca5a5;
+  --algo-green-cascade-sm:  rgba(74, 222, 128, 0.07);
+  --algo-green-cascade-lg:  rgba(74, 222, 128, 0.25);
+  --algo-red-cascade-sm:    rgba(248, 113, 113, 0.07);
+  --algo-red-cascade-lg:    rgba(248, 113, 113, 0.25);
+  --algo-dim-bg:            rgba(148, 163, 184, 0.08);
+  --algo-green-badge:       rgba(74, 222, 128, 0.20);
+
   /* UI tint — used for basket pill symbol text on semi-dark surfaces */
   --algo-blue-tint:        #f1f7ff;
 
@@ -2529,6 +2544,61 @@ button:not(:disabled):active,
 .ltp-tc-flash-down { animation: ltp-tc-flash-down 500ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
   .ltp-tc-flash-up, .ltp-tc-flash-down { animation: none; }
+}
+
+/* ── Magnitude-tiered text-color flash (sm = faint, lg = bright) ─────────────
+   Three-tier bucketing: absPct < 0.5 → sm (dim), 0.5–2 → default, ≥ 2 → lg.
+   Pairs with _tcFlashClass() / _bgFlashClass() in pulseColumns.js. */
+@keyframes ltp-tc-flash-up-sm {
+  0%   { color: var(--algo-green-text-dim); }
+  100% { color: inherit; }
+}
+@keyframes ltp-tc-flash-down-sm {
+  0%   { color: var(--algo-red-text-dim); }
+  100% { color: inherit; }
+}
+@keyframes ltp-tc-flash-up-lg {
+  0%   { color: var(--algo-green-text-bright); }
+  100% { color: inherit; }
+}
+@keyframes ltp-tc-flash-down-lg {
+  0%   { color: var(--algo-red-text-bright); }
+  100% { color: inherit; }
+}
+.ltp-tc-flash-up-sm   { animation: ltp-tc-flash-up-sm   500ms ease-out; }
+.ltp-tc-flash-down-sm { animation: ltp-tc-flash-down-sm 500ms ease-out; }
+.ltp-tc-flash-up-lg   { animation: ltp-tc-flash-up-lg   500ms ease-out; }
+.ltp-tc-flash-down-lg { animation: ltp-tc-flash-down-lg 500ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .ltp-tc-flash-up-sm, .ltp-tc-flash-down-sm,
+  .ltp-tc-flash-up-lg, .ltp-tc-flash-down-lg { animation: none; }
+}
+
+/* ── Magnitude-tiered background cascade flash (sm / lg) ─────────────────────
+   Background-pulse tiers for P&L cascade. .tf-up/.tf-down are the
+   default tier (medium). sm = very subtle, lg = prominent. */
+@keyframes tf-up-sm {
+  0%   { background-color: var(--algo-green-cascade-sm); }
+  100% { background-color: transparent; }
+}
+@keyframes tf-down-sm {
+  0%   { background-color: var(--algo-red-cascade-sm); }
+  100% { background-color: transparent; }
+}
+@keyframes tf-up-lg {
+  0%   { background-color: var(--algo-green-cascade-lg); }
+  100% { background-color: transparent; }
+}
+@keyframes tf-down-lg {
+  0%   { background-color: var(--algo-red-cascade-lg); }
+  100% { background-color: transparent; }
+}
+.tf-up-sm   { animation: tf-up-sm   350ms ease-out; }
+.tf-down-sm { animation: tf-down-sm 350ms ease-out; }
+.tf-up-lg   { animation: tf-up-lg   350ms ease-out; }
+.tf-down-lg { animation: tf-down-lg 350ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .tf-up-sm, .tf-down-sm, .tf-up-lg, .tf-down-lg { animation: none; }
 }
 
 /* ── Card theming — dark/cream variants ─────────────────────────────────────

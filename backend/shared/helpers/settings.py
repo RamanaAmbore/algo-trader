@@ -140,8 +140,9 @@ SEEDS: list[tuple] = [
 
     # ── UI tuning ───────────────────────────────────────────────────────
     ("ui", "ui.ltp_flash_pct", "float", 0.1,
-     "Minimum LTP percentage change required to trigger the background flash animation "
-     "on Pulse, Dashboard, and Derivatives grid cells. 0 = flash on any tick change.",
+     "Price flash threshold (%) — minimum percentage change required to trigger the "
+     "directional flash animation on LTP tick-bus cells AND day % poll-diff cells "
+     "across Pulse, Dashboard, and Derivatives grids. 0 = flash on any change.",
      "%", {"min": 0.0, "max": 5.0, "step": 0.05}),
 
     # ── Performance refresh ─────────────────────────────────────────────

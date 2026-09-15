@@ -196,11 +196,11 @@
        Three states: GTT (green) / Paired (cyan) / Orphan (amber).
        Maps to the second grid-template-columns track. -->
   <span class="cand-state-cell" style:background={
-    c.has_gtt ? 'rgba(74,222,128,0.20)' :
+    c.has_gtt ? 'var(--algo-green-badge)' :
     c.pair_group_key ? 'rgba(34,211,238,0.18)' :
     'rgba(251,191,36,0.15)'
   } style:color={
-    c.has_gtt ? '#4ade80' :
+    c.has_gtt ? 'var(--algo-green)' :
     c.pair_group_key ? '#67e8f9' :
     '#fbbf24'
   }>
@@ -852,7 +852,7 @@
   }
   .expiry-id-netted {
     background: rgba(125, 145, 184, 0.15);
-    color: #94a3b8;
+    color: var(--algo-dim);
     border: 1px solid rgba(125, 145, 184, 0.3);
   }
 </style>
